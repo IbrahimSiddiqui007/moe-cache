@@ -9,17 +9,19 @@ llama.cpp build uses (CUDA, ROCm/HIP, Vulkan, SYCL, ...). That makes it independ
 |---|---|---|
 | Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** | all results in `RESULTS.md` |
 | Linux + AMD CPU (x86-64) | Expected to work, **untested** | the plugin uses llama.cpp's own CPU kernels, nothing Intel-specific; needs the AVX2 CPU variant like llama.cpp itself |
-| Linux, CPU only (no GPU usable by llama.cpp) | **Works, with two limits** | stock llama.cpp repacks CPU expert weights into a faster layout when no GPU is present; the plugin keeps the original layout. Measured on DeepSeek-V2-Lite (model fits in RAM): output not bit-identical (3 of 4 prompts identical over 40 tokens, the rest differ by float rounding) and 24 % slower (8.4 stock vs 6.4 tok/s). When the model does not fit in RAM the cache gain should outweigh this, but that combination is not measured. Repack support is on the roadmap. |
-| Linux + Vulkan GPU (AMD, Intel, NVIDIA) | **Untested**, build prepared | needs the Vulkan build of llama.cpp; AMD cards without ROCm support use this path |
+| Linux, CPU only (no GPU usable by llama.cpp) | **Tested**: identity 4/4 and the same speed as stock | stock llama.cpp repacks CPU expert weights when no GPU is present; the plugin does the same per expert (`MOE_CACHE_REPACK=auto`). With a memory limit smaller than the model: 3.1 -> 9.9 tok/s (Qwen3.6, 12 GB, stock needs `--no-repack`). |
+| Linux + Vulkan, Intel integrated GPU | **Tested**: identity 4/4 (Granite), plugin active (3,549 expert loads, 97 % hits) | llama.cpp built from the same commit with `GGML_VULKAN=ON GGML_BACKEND_DL=ON GGML_CPU_ALL_VARIANTS=ON` (how official releases are built); loaded with `GGML_BACKEND_PATH` |
+| Linux + Vulkan, NVIDIA GPU | **Tested**: identity 4/4 | same build |
+| Linux + Vulkan, AMD GPU | Expected to work (same Vulkan path, same host-buffer behaviour as the tested devices), **not tested on AMD hardware** | the path AMD cards without ROCm support use |
 | Linux + AMD GPU via ROCm/HIP | Expected to work, **untested** | |
 | Linux + Intel GPU (SYCL or Vulkan) | **Untested** | Intel iGPU available on the development machine for testing |
 | Windows (any CPU/GPU) | **Not supported yet** | see below |
 | macOS / Apple Silicon | Not supported | uses Linux memory APIs; unified memory changes the problem |
 
-## Why the plugin is identical to stock with a GPU but not on CPU only
+## Repacking (why CPU-only needed extra work)
 
-With a GPU backend present (CUDA, Vulkan, ...) llama.cpp stores CPU-side expert weights in that backend's host buffer, unrepacked; the plugin holds the same layout, so the results are bit-identical.
-With no GPU backend llama.cpp uses a repacked CPU buffer instead (for example `q4_0_8x8`), which changes the order of the floating-point sums. A machine whose GPU llama.cpp cannot use (for example an unsupported AMD card with a CPU-only build) falls in this case.
+With a GPU backend present (CUDA, Vulkan, ...) llama.cpp stores CPU-side expert weights in that backend's host buffer, unrepacked. With no GPU backend it stores them in a repacked CPU layout (for example `q4_0_8x8`), which changes the order of the floating-point sums.
+moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CACHE_REPACK=auto`), so both cases give bit-identical results. `MOE_CACHE_REPACK=on` forces repacking even with a GPU (measured: no decode speedup, so it is off by default there).
 
 ## Why Windows needs work
 

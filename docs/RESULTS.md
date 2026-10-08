@@ -98,3 +98,16 @@ Stock needs `--no-repack` here (default repacking makes a full copy in anonymous
 ## 6. Two-times-RAM model on a small machine (Qwen3-Next-80B, 48.5 GB, 24 GB limit, about 2.6 GB of GPU use)
 
 Stock 2.3 tok/s, plugin 10.6 tok/s (4.6x).
+
+## 7. Prompt processing when the model fits in RAM and a GPU is present (DeepSeek-V2-Lite, ctx 4096, ~2.7k-3.2k token prompts)
+
+| | prompt tok/s |
+|---|---|
+| Stock (GPU takes over the big batches) | 188, 166 |
+| moe-cache (CPU does the expert work) | 42, 43 (repack on: 44, 45) |
+
+A regression to fix (v0.2c). In the memory-starved case stock cannot use this path efficiently (6 to 8 tok/s vs 55 for moe-cache).
+
+## 8. Forced repacking with a GPU present (DeepSeek-V2-Lite, all experts on CPU)
+
+Token generation: stock-like (repack off) 12.7 to 14.6 tok/s, repack on 11.8 to 13.3 tok/s: no decode gain. Repack stays automatic (on only when stock would repack).

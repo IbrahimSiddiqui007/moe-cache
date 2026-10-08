@@ -70,6 +70,8 @@ struct tinfo_t {
     int     layer = -1;       // from the tensor name blk.N.
     int     fdi = 0;          // model file index (split GGUF)
     bool    direct = false;   // can be read straight into place
+    bool    repack = false;   // stored in llama.cpp's repacked CPU layout (faster CPU kernels)
+    ggml_tensor * tensor = nullptr;
 };
 
 struct usage_t {
@@ -204,6 +206,7 @@ struct io_job_t {
     size_t nb2;
     int    fdi;      // which model file (split GGUF)
     bool   direct;   // memory address matches the file offset (mod 4096): read straight into place
+    const ggml_tensor * rtensor = nullptr;   // set: repack this expert while loading it
 };
 
 struct state_t {
@@ -213,6 +216,10 @@ struct state_t {
     int    fd = -1;
     std::vector<int> fds;                       // one per GGUF file (split models have several)
     std::unordered_map<std::string, int> file_shard;
+    ggml_backend_buffer_type_t repack_buft = nullptr;   // llama.cpp CPU_REPACK buffer type (mode on)
+    ggml_backend_buffer_t repack_buf = nullptr;         // a real repack buffer, used for init_tensor / set_tensor only
+    ggml_backend_buffer_t repack_tag = nullptr;         // empty buffer of the repack type, swapped in while an operation runs
+    std::atomic<uint64_t> repack_jobs{0};
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
     size_t budget = 0;
@@ -345,7 +352,41 @@ struct state_t {
             fds.push_back(f);
         }
         fd = fds[0];
-        direct_ok = getenv("MOE_CACHE_DIRECT") != nullptr;   // off by default: reading straight into place measured no faster than the bounce buffer
+        direct_ok = getenv("MOE_CACHE_DIRECT") != nullptr;
+        {
+            const char * rp = getenv("MOE_CACHE_REPACK");
+            const std::string mode = rp ? rp : "auto";
+            bool want = mode == "on";
+            if (mode == "auto") {
+                // stock llama.cpp repacks CPU weights only when no GPU backend is present: do the same, so results stay identical
+                bool gpu = false;
+                for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+                    const auto t = ggml_backend_dev_type(ggml_backend_dev_get(i));
+                    gpu = gpu || t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU;
+                }
+                want = !gpu;
+            }
+            if (want) {
+                ggml_backend_dev_t cd = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+                auto fn = cd ? (ggml_backend_buffer_type_t * (*)(ggml_backend_dev_t)) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cd), "ggml_backend_dev_get_extra_bufts") : nullptr;
+                for (ggml_backend_buffer_type_t * b = fn ? fn(cd) : nullptr; b && *b; ++b) {
+                    if (strcmp(ggml_backend_buft_name(*b), "CPU_REPACK") == 0) {
+                        repack_buft = *b;
+                    }
+                }
+                if (repack_buft) {
+                    repack_buf = ggml_backend_buft_alloc_buffer(repack_buft, 64);
+                    ggml_backend_buffer_i empty;
+                    memset(&empty, 0, sizeof(empty));
+                    repack_tag = ggml_backend_buffer_init(repack_buft, empty, nullptr, 0);
+                }
+                fprintf(stderr, "moe-cache: CPU weight repacking %s\n", repack_buf && repack_tag ? "on (faster CPU kernels)" : "requested but not available in this llama.cpp");
+                if (!repack_buf || !repack_tag) {
+                    repack_buf = nullptr;
+                    repack_tag = nullptr;
+                }
+            }
+        }   // off by default: reading straight into place measured no faster than the bounce buffer
         if (strcmp(gib, "auto") == 0) {
             auto_mode = true;
             limit_bytes = read_mem_limit();
@@ -415,7 +456,7 @@ struct state_t {
         }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
-            fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs);
+            fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu, repacked %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
             fprintf(stderr, "moe-cache: graphs=%llu groups=%llu ops=%llu hits=%llu misses=%llu (hit %.1f%%) read=%.1f MB evictions=%llu resident=%.2f GiB%s\n",
                     (unsigned long long) graphs, (unsigned long long) groups, (unsigned long long) ops, (unsigned long long) h, (unsigned long long) m,
@@ -500,7 +541,18 @@ struct state_t {
                     }
                     done += (size_t) got;
                 }
-                if (!j.direct) {
+                if (j.rtensor) {
+                    // repack this one expert into its place: use a copy of the tensor that describes a single expert
+                    ggml_tensor v = *j.rtensor;
+                    v.ne[2] = 1;
+                    v.ne[3] = 1;
+                    v.nb[2] = v.nb[1] * v.ne[1];
+                    v.nb[3] = v.nb[2];
+                    v.data = j.dst;
+                    v.view_src = nullptr;
+                    repack_buf->iface.set_tensor(repack_buf, &v, bounce + shift, 0, j.nb2);
+                    repack_jobs++;
+                } else if (!j.direct) {
                     memcpy(j.dst, bounce + shift, j.nb2);
                     bounce_jobs++;
                 } else {
@@ -536,7 +588,13 @@ struct state_t {
         {
             auto sh = file_shard.find(t->name);
             ti->fdi = sh != file_shard.end() ? sh->second : 0;
-            ti->direct = direct_ok && ((uintptr_t) ti->data % PAGE) == (ti->file_off % PAGE);
+            ti->tensor = const_cast<ggml_tensor *>(t);
+            if (repack_buf) {
+                ti->tensor->extra = nullptr;
+                repack_buf->iface.init_tensor(repack_buf, ti->tensor);     // llama.cpp picks the layout, or none for types it cannot repack
+                ti->repack = ti->tensor->extra != nullptr;
+            }
+            ti->direct = direct_ok && !ti->repack && ((uintptr_t) ti->data % PAGE) == (ti->file_off % PAGE);
         }
         sscanf(t->name, "blk.%d.", &ti->layer);
         ti->node0 = (int) nodes.size();
@@ -657,7 +715,7 @@ struct state_t {
                 resident_bytes += ti.nb2;
                 push_mru(s);
                 max_nb2 = std::max(max_nb2, ti.nb2);
-                jobs.push_back({ ti.data + (size_t) take[i].e * ti.nb2, ti.file_off + (size_t) take[i].e * ti.nb2, ti.nb2, ti.fdi, ti.direct });
+                jobs.push_back({ ti.data + (size_t) take[i].e * ti.nb2, ti.file_off + (size_t) take[i].e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr });
                 n_taken++;
             }
         }
@@ -812,7 +870,7 @@ struct state_t {
                 n.epoch = epoch;
                 resident_bytes += ti.nb2;
                 push_mru(s);
-                jobs.push_back({ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct });
+                jobs.push_back({ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr });
                 pending_bytes += ti.nb2;
                 if (auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
                     flush_reads(jobs, max_nb2);
@@ -1100,8 +1158,27 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         }
     }
 
+    // repacked experts: tag the weight as living in llama.cpp's repack buffer type while the kernel runs, so it picks the repacked code path
+    std::vector<std::pair<ggml_tensor *, ggml_backend_buffer_t>> tagged;
+    if (s.cache_on && s.repack_tag) {
+        const int n_all = ggml_graph_n_nodes(cg);
+        for (int i = 0; i < n_all; i++) {
+            ggml_tensor * node = ggml_graph_node(cg, i);
+            if (node->op != GGML_OP_MUL_MAT_ID) {
+                continue;
+            }
+            auto it = s.by_tensor.find(node->src[0]);
+            if (it != s.by_tensor.end() && s.tensors[it->second]->repack && node->src[0]->buffer != s.repack_tag) {
+                tagged.emplace_back(node->src[0], node->src[0]->buffer);
+                node->src[0]->buffer = s.repack_tag;
+            }
+        }
+    }
     const auto c0 = std::chrono::steady_clock::now();
     const enum ggml_status st = ggml_backend_graph_compute(c->cpu, cg);
+    for (auto & tg : tagged) {
+        tg.first->buffer = tg.second;
+    }
     s.ns_cpu += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - c0).count();
 
     return st;

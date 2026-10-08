@@ -9,7 +9,7 @@ LS="${LLAMA_SERVER:-llama-server}"; NCMOE=999; RAM=""; N=100; PORT=8099
 while [ $# -gt 0 ]; do case "$1" in --llama-server) LS=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;; --ram) RAM=$2; shift 2;; --tokens) N=$2; shift 2;; *) echo "unknown: $1"; exit 1;; esac; done
 [ -f "$MODEL" ] || { echo "usage: tests/identity.sh MODEL.gguf [options]"; exit 1; }
 TMP=$(mktemp -d); trap 'kill $SPID 2>/dev/null || true; rm -rf "$TMP"' EXIT
-COMMON=(-m "$MODEL" -ngl 99 --n-cpu-moe "$NCMOE" -c 4096 -fa on --load-mode mmap --no-warmup --port $PORT --seed 42)
+COMMON=(-m "$MODEL" ${DEVICE:+--device $DEVICE} -ngl 99 --n-cpu-moe "$NCMOE" -c 4096 -fa on --load-mode mmap --no-warmup --port $PORT --seed 42)
 wait_up() { for i in $(seq 300); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health)" = 200 ] && return 0; sleep 2; done; echo "server did not start"; return 1; }
 echo "1/2 stock server"; "$LS" "${COMMON[@]}" > "$TMP/stock.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/stock.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
 echo "2/2 server with the plugin"

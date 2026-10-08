@@ -58,9 +58,10 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 
 | Platform | Status |
 |---|---|
-| Linux + Intel CPU + NVIDIA GPU | **Tested** |
-| Linux, no usable GPU (CPU only) | Works; tokens can differ slightly from stock (float rounding), see [compatibility](docs/COMPATIBILITY.md) |
-| Linux + AMD CPU / AMD GPU / Intel GPU | Expected to work, **not tested yet** |
+| Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
+| Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested**, loaded the official way (`GGML_BACKEND_PATH`) |
+| Linux, no usable GPU (CPU only) | **Tested**, identical to stock and the same speed |
+| Linux + AMD GPU / AMD CPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
 | Windows | **Not yet** (planned, needs a port of the memory and file code) |
 | macOS | No |
 
@@ -83,6 +84,12 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 
 Each expert keeps its normal address inside one large reserved block of memory; moe-cache decides which experts have real memory behind them.
 It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp can run through its expert multiplication works.
+
+## Known limitations
+
+- **Long prompts when the model fits in RAM and you have a GPU:** stock llama.cpp hands big prompt batches to the GPU (measured 188 tok/s on DeepSeek-V2-Lite); moe-cache currently does that work on the CPU (about 43 tok/s). When memory is short the picture flips (see the table above: 6 to 8 tok/s for stock, 55 for moe-cache). GPU-assisted prompt processing is the next feature.
+- It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier is under investigation ([docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md)).
+- Needs a llama.cpp with shared ggml libraries; tested with commit `7fe450e19` (ggml 0.25.1). Linux only for now.
 
 ## FAQ
 
