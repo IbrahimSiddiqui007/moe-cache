@@ -1,0 +1,119 @@
+<h1 align="center">moe-cache</h1>
+
+<p align="center"><b>Run Mixture-of-Experts models that are bigger than your RAM, without the speed cliff.</b><br>
+A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
+
+<p align="center">
+<img alt="status" src="https://img.shields.io/badge/status-v0.1%20alpha-orange">
+<img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+<img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
+<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-7fe450e19%20(ggml%200.25.1)-green">
+</p>
+
+<p align="center"><img src="docs/img/results.svg" alt="speed with and without moe-cache" width="860"></p>
+
+## Why
+
+MoE models such as Qwen3, gpt-oss or DeepSeek only use a few "experts" per token, but stock llama.cpp keeps all expert weights in memory-mapped files.
+When they do not fit in RAM, the OS page cache thrashes and speed falls off a cliff.
+
+moe-cache manages the CPU-side experts itself:
+
+- keeps the **hot experts in RAM** and reads the rest from your SSD with large, parallel direct reads;
+- **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
+- **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
+- produces **token-identical output** to stock llama.cpp (checked on every model below);
+- works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0.
+
+If the model already fits in your RAM you get the same speed as stock (within a few percent). It is for the case where it does not.
+
+## Quick start (Linux)
+
+```bash
+git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
+./build.sh                                   # needs g++ and the libggml-base.so that comes with your llama.cpp
+pip install gguf                             # for the automatic GPU/CPU split
+tests/identity.sh model.gguf --llama-server /path/to/llama-server     # PASS = same tokens as stock
+bin/moe-cache-server model.gguf --ram 12 --llama-server /path/to/llama-server --open
+```
+
+`moe-cache-server` plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the built-in web UI
+(the same address is an OpenAI-compatible API, so Open WebUI, editors and scripts connect to it). Full guide: [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
+## Results (measured, clean runs)
+
+| Situation | Stock llama.cpp | moe-cache |
+|---|---|---|
+| 48.5 GB model (Qwen3-Next-80B), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** |
+| Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** |
+| Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
+| Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
+| Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s | **55 tok/s** |
+| Model fits in RAM (Qwen3.6, 28 GB, warm start) | 29.0 tok/s | 31.1 tok/s |
+| Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
+
+Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 30 GB RAM, RTX 4060 8 GB, NVMe SSD.
+
+## Hardware and OS support
+
+| Platform | Status |
+|---|---|
+| Linux + Intel CPU + NVIDIA GPU | **Tested** |
+| Linux, no usable GPU (CPU only) | Works; tokens can differ slightly from stock (float rounding), see [compatibility](docs/COMPATIBILITY.md) |
+| Linux + AMD CPU / AMD GPU / Intel GPU | Expected to work, **not tested yet** |
+| Windows | **Not yet** (planned, needs a port of the memory and file code) |
+| macOS | No |
+
+## How it works
+
+```
+ llama.cpp builds the graph of the model
+          |
+  ggml scheduler hands each operation to a backend
+          |
+   +------+------------------+
+   |  GPU backend            |  attention, norms, shared layers, the experts you put on the GPU
+   |  CPU backend            |  everything else
+   |  moe-cache backend  <-----+  the CPU-side expert matrix multiplications:
+   +-------------------------+    1. look at which experts the router picked
+                                  2. make sure those experts are in RAM (read the missing ones from the SSD)
+                                  3. give back the memory of experts nobody needs (LRU)
+                                  4. run llama.cpp's own CPU kernels on them (so results are identical)
+```
+
+Each expert keeps its normal address inside one large reserved block of memory; moe-cache decides which experts have real memory behind them.
+It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp can run through its expert multiplication works.
+
+## FAQ
+
+**Do I need this if my model fits in RAM?** No. It matches stock speed there (a few percent either way). The gain is when memory is short or the model is larger than your RAM.
+
+**Does it use my GPU?** Yes, through llama.cpp as usual. `moe-cache-server` picks how many layers' experts live on the GPU from your free VRAM (that alone is worth about +60 % over keeping everything on the CPU). moe-cache itself manages the experts that stay on the CPU side.
+
+**Is there a GUI?** `llama-server` already ships a web UI (`moe-cache-server --open`). For a fancier chat app, point [Open WebUI](https://github.com/open-webui/open-webui) at `http://localhost:8080/v1` (OpenAI-compatible API; we have not tested that combination ourselves).
+
+**Why not an own inference engine like Strata or Maya?** Short answer: they are single-model engines with a high hardware floor; moe-cache is a small layer that works with any MoE llama.cpp runs. The reasoning and our measurements: [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
+
+## Documentation
+
+[Quick start](docs/QUICKSTART.md) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md)
+
+## Configuration (environment variables; `moe-cache-server` sets them for you)
+
+| Variable | Meaning |
+|---|---|
+| `MOE_CACHE_SIZE_GIB` | cache size in GiB, or `auto` (size from the memory limit) |
+| `MOE_CACHE_RAM_GIB`, `MOE_CACHE_MARGIN_GIB` | override the detected memory limit; memory to keep free (default 1 GiB) |
+| `MOE_CACHE_GGUF` | model file (split models: the first part) |
+| `MOE_CACHE_PROFILE` / `MOE_CACHE_WARM` | learn expert usage here and warm-start from it / warm start only |
+| `MOE_CACHE_STATS=1` | print hit rate, reads and evictions at exit |
+| `MOE_CACHE_DISABLE=1` | load nothing: the server behaves exactly like stock |
+
+## Acknowledgements
+
+Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml (MIT). The idea of tiering experts across VRAM, RAM and SSD comes from projects like
+[Strata](https://github.com/Niko1221/Strata) and [Project Maya](https://github.com/mw00/project-maya); moe-cache applies it as a drop-in layer for any MoE model.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Interface headers from ggml/llama.cpp (MIT) are included in `third_party/ggml`.

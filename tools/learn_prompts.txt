@@ -1,0 +1,14 @@
+Write an async Python function that downloads a list of URLs concurrently with a limit of 5 at a time, and explain how the semaphore works.
+Explain Rust lifetimes with a small example of a function that returns the longer of two string slices.
+Write a Go program that starts three worker goroutines reading jobs from a channel and collects the results safely.
+Implement a debounce function in JavaScript and show how to use it for a search box.
+Write a SQL query using a window function that ranks employees by salary within each department and returns the top two.
+Write a bash script that watches a directory and prints a message whenever a new file appears, with error handling.
+Show a C++ template class for a fixed-size ring buffer with push, pop and size, and explain the invariants.
+Write a regular expression that validates an ISO 8601 date and time with an optional time zone, and test it on three examples.
+Explain what a Dockerfile multi-stage build is and write one for a small Python web service.
+Review this function and point out the bugs: def avg(xs): return sum(xs)/len(xs) if xs else None; also explain how you would test it.
+Write a Python class that implements an LRU cache with O(1) get and put, using only the standard library.
+Explain the difference between optimistic and pessimistic locking in databases and give a short example of each.
+Write a TypeScript type-safe event emitter and explain how the generic types prevent wrong event names.
+Describe how a B-tree index speeds up range queries and when it does not help.

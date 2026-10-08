@@ -1,0 +1,31 @@
+#!/bin/bash
+# moe-cache-server: run llama-server with the expert-cache plugin.
+#   moe-cache-server MODEL.gguf [--ram GB] [--vram GB] [--ctx N] [--n-cpu-moe N] [--port P] [--llama-server PATH] [--load-method auto|preload|path] [--open] [--dry-run] [-- extra llama-server args]
+# --ram      memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it.
+# MOE_CACHE_PYTHON  python with the gguf package for the planner (default python3)
+# --n-cpu-moe  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
+set -e
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; EXTRA=()
+while [ $# -gt 0 ]; do case "$1" in
+  --ram) RAM=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
+  --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
+  -h|--help) sed -n 2,6p "$0"; exit 0;; *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
+[ -f "$MODEL" ] || { echo "usage: moe-cache-server MODEL.gguf [options]  (model file not found: '$MODEL')"; exit 1; }
+LIB="${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}"
+[ -f "$LIB" ] || { echo "plugin not built: run ./build.sh first (looked for $LIB)"; exit 1; }
+if [ -z "$NCMOE" ]; then
+  P=("${MOE_CACHE_PYTHON:-python3}" "$HERE/planner/plan.py" "$MODEL" --ctx "$CTX" --json); [ -n "$RAM" ] && P+=(--ram-gib "$RAM"); [ -n "$VRAM" ] && P+=(--vram-gib "$VRAM")
+  NCMOE=$("${P[@]}" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["n_cpu_moe"])' 2>/dev/null || true)
+  if [ -z "$NCMOE" ]; then echo "planner unavailable (needs python3 and 'pip install gguf'); keeping all experts on the CPU"; NCMOE=999; fi
+fi
+PROFILE="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").usage"
+. "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" "$METHOD"
+ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL" MOE_CACHE_PROFILE="$PROFILE")
+[ -n "$RAM" ] && ENVV+=(MOE_CACHE_RAM_GIB="$RAM")
+CMD=("$LS" -m "$MODEL" -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -fa on --load-mode mmap --no-warmup --port "$PORT" "${EXTRA[@]}")
+echo "moe-cache: experts of the first $NCMOE layers stay on the CPU; profile $PROFILE; plugin loaded by $MOE_CACHE_METHOD"
+echo "moe-cache: web UI and API will be at http://localhost:$PORT"
+if [ $DRY = 1 ]; then echo "env ${ENVV[*]} ${CMD[*]}"; exit 0; fi
+if [ $OPEN = 1 ]; then ( for i in $(seq 600); do [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)" = 200 ] && { xdg-open "http://localhost:$PORT" >/dev/null 2>&1 || true; break; }; sleep 1; done ) & fi
+exec env "${ENVV[@]}" "${CMD[@]}"

@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="488" viewBox="0 0 860 488" font-family="Helvetica,Arial,sans-serif">
+<text x="20" y="32" font-size="20" font-weight="bold" fill="#808080">Generation speed, tokens per second (higher is better)</text>
+<rect x="20" y="44" width="14" height="14" fill="#9aa0a6"/><text x="40" y="56" font-size="13" fill="#808080">stock llama.cpp</text>
+<rect x="170" y="44" width="14" height="14" fill="#2f81f7"/><text x="190" y="56" font-size="13" fill="#808080">with moe-cache</text>
+<text x="20" y="106" font-size="14" fill="#808080">Qwen3-Next-80B (48.5 GB) in 24 GB RAM</text>
+<rect x="330" y="84" width="30.2" height="18" rx="3" fill="#9aa0a6"/><text x="368.2" y="98" font-size="13" fill="#808080">2.3</text>
+<rect x="330" y="106" width="139.3" height="18" rx="3" fill="#2f81f7"/><text x="477.3" y="120" font-size="13" font-weight="bold" fill="#808080">10.6</text>
+<text x="20" y="160" font-size="14" fill="#808080">Qwen3-Next-80B (48.5 GB) in 20 GB RAM</text>
+<rect x="330" y="138" width="17.1" height="18" rx="3" fill="#9aa0a6"/><text x="355.1" y="152" font-size="13" fill="#808080">1.3</text>
+<rect x="330" y="160" width="122.2" height="18" rx="3" fill="#2f81f7"/><text x="460.2" y="174" font-size="13" font-weight="bold" fill="#808080">9.3</text>
+<text x="20" y="214" font-size="14" fill="#808080">Qwen3.6-35B in 12 GB RAM</text>
+<rect x="330" y="192" width="134.1" height="18" rx="3" fill="#9aa0a6"/><text x="472.1" y="206" font-size="13" fill="#808080">10.2</text>
+<rect x="330" y="214" width="310.2" height="18" rx="3" fill="#2f81f7"/><text x="648.2" y="228" font-size="13" font-weight="bold" fill="#808080">23.6</text>
+<text x="20" y="268" font-size="14" fill="#808080">Qwen3.6-35B in 12 GB RAM, no GPU</text>
+<rect x="330" y="246" width="40.7" height="18" rx="3" fill="#9aa0a6"/><text x="378.7" y="260" font-size="13" fill="#808080">3.1</text>
+<rect x="330" y="268" width="130.1" height="18" rx="3" fill="#2f81f7"/><text x="468.1" y="282" font-size="13" font-weight="bold" fill="#808080">9.9</text>
+<text x="20" y="322" font-size="14" fill="#808080">Qwen3.6-35B, fits in RAM (28 GB)</text>
+<rect x="330" y="300" width="381.1" height="18" rx="3" fill="#9aa0a6"/><text x="719.1" y="314" font-size="13" fill="#808080">29.0</text>
+<rect x="330" y="322" width="408.7" height="18" rx="3" fill="#2f81f7"/><text x="746.7" y="336" font-size="13" font-weight="bold" fill="#808080">31.1</text>
+<text x="20" y="376" font-size="14" fill="#808080">KAT-Coder-35B, fits in RAM (28 GB)</text>
+<rect x="330" y="354" width="424.5" height="18" rx="3" fill="#9aa0a6"/><text x="762.5" y="368" font-size="13" fill="#808080">32.3</text>
+<rect x="330" y="376" width="417.9" height="18" rx="3" fill="#2f81f7"/><text x="755.9" y="390" font-size="13" font-weight="bold" fill="#808080">31.8</text>
+<text x="20" y="430" font-size="14" fill="#808080">gpt-oss-20b, fits in RAM (28 GB)</text>
+<rect x="330" y="408" width="199.8" height="18" rx="3" fill="#9aa0a6"/><text x="537.8" y="422" font-size="13" fill="#808080">15.2</text>
+<rect x="330" y="430" width="193.2" height="18" rx="3" fill="#2f81f7"/><text x="531.2" y="444" font-size="13" font-weight="bold" fill="#808080">14.7</text>
+<text x="20" y="474" font-size="12" fill="#808080">Clean runs on one laptop (i7-13620H, RTX 4060 8 GB, NVMe). Details and caveats: docs/RESULTS.md</text>
+</svg>

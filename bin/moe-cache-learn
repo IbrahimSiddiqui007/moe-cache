@@ -1,0 +1,32 @@
+#!/bin/bash
+# moe-cache-learn: build a warm-start profile for a model by running a set of prompts through it with the plugin.
+#   moe-cache-learn MODEL.gguf [--ram GB] [--n-cpu-moe N] [--tokens N] [--prompts FILE] [--out FILE] [--llama-server PATH] [--port P]
+# The profile records which experts your prompts use. moe-cache-server loads it automatically (same default path) and warm-starts from it.
+# Use prompts like the ones you will run. --n-cpu-moe defaults to 999 (all experts on the CPU) so the profile covers every layer.
+set -e
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+METHOD=auto; MODEL=""; RAM=20; NCMOE=999; TOK=150; PROMPTS="$HERE/tools/learn_prompts.txt"; OUT=""; LS="${LLAMA_SERVER:-llama-server}"; PORT=8097
+while [ $# -gt 0 ]; do case "$1" in
+  --ram) RAM=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;; --tokens) TOK=$2; shift 2;; --prompts) PROMPTS=$2; shift 2;;
+  --out) OUT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --port) PORT=$2; shift 2;; --load-method) METHOD=$2; shift 2;; -h|--help) sed -n 2,6p "$0"; exit 0;;
+  *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
+[ -f "$MODEL" ] || { echo "usage: moe-cache-learn MODEL.gguf [options]"; exit 1; }
+LIB="${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}"; [ -f "$LIB" ] || { echo "plugin not built: run ./build.sh first"; exit 1; }
+[ -n "$OUT" ] || OUT="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").usage"
+mkdir -p "$(dirname "$OUT")"
+echo "learning from $(grep -c . "$PROMPTS") prompts, $TOK tokens each; profile -> $OUT"
+. "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" "$METHOD"
+env "${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_RAM_GIB="$RAM" MOE_CACHE_GGUF="$MODEL" MOE_CACHE_PROFILE="$OUT" \
+  "$LS" -m "$MODEL" -ngl 99 --n-cpu-moe "$NCMOE" -c 4096 -fa on --load-mode mmap --no-warmup --port "$PORT" --seed 42 > "${TMPDIR:-/tmp}/moe-cache-learn.log" 2>&1 &
+SPID=$!; trap 'kill $SPID 2>/dev/null || true' EXIT
+for i in $(seq 300); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health)" = 200 ] && break; sleep 2; done
+python3 - "$PROMPTS" "$PORT" "$TOK" <<'PY'
+import json, sys, urllib.request
+prompts = [l.strip() for l in open(sys.argv[1]) if l.strip()]
+for i, p in enumerate(prompts, 1):
+    body = {"prompt": p, "n_predict": int(sys.argv[3]), "temperature": 0, "seed": 42, "cache_prompt": False}
+    req = urllib.request.Request(f"http://127.0.0.1:{sys.argv[2]}/completion", json.dumps(body).encode(), {"Content-Type": "application/json"})
+    json.load(urllib.request.urlopen(req, timeout=3000)); print(f"  prompt {i}/{len(prompts)} done", flush=True)
+PY
+kill $SPID; wait $SPID 2>/dev/null || true; trap - EXIT
+ls -la "$OUT" && echo "done: moe-cache-server will warm-start from $OUT"
