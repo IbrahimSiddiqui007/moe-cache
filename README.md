@@ -22,7 +22,7 @@ moe-cache manages the CPU-side experts itself:
 - keeps the **hot experts in RAM** and reads the rest from your SSD with large, parallel direct reads;
 - **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
 - **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
-- produces **token-identical output** to stock llama.cpp (checked on every model below);
+- produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](docs/RESULTS.md); one model, Hunyuan, only with a short test);
 - works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
 - runs long prompts on the GPU like stock llama.cpp does.
 
@@ -89,7 +89,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp 
 ## Known limitations
 
 - Long prompts (32+ tokens per batch) run their expert blocks on the GPU, as stock llama.cpp does, so prompt processing is at stock speed when the model fits (DeepSeek-V2-Lite: 166 to 183 tok/s vs 166 to 188 stock) and much faster when memory is short.
-- It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier is under investigation ([docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md)).
+- It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier was evaluated and is not built, see [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
 - Needs a llama.cpp with shared ggml libraries; tested with commit `7fe450e19` (ggml 0.25.1). Linux only for now.
 
 ## FAQ
@@ -119,9 +119,13 @@ It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp 
 
 ## Acknowledgements
 
-Built on [llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml (MIT). The idea of tiering experts across VRAM, RAM and SSD comes from projects like
-[Strata](https://github.com/Niko1221/Strata) and [Project Maya](https://github.com/mw00/project-maya); moe-cache applies it as a drop-in layer for any MoE model.
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml (MIT, Copyright The ggml authors): moe-cache is a plugin for their backend interface, and it runs their CPU kernels unchanged.
+- [Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221): the idea of tiering experts across VRAM, RAM and SSD.
+- [Project Maya](https://github.com/mw00/project-maya) (MIT, by mw00, built on Strata): the same idea, plus keeping a usage profile between sessions.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Interface headers from ggml/llama.cpp (MIT) are included in `third_party/ggml`.
+- moe-cache is MIT-licensed, see [LICENSE](LICENSE).
+- `third_party/ggml/` contains interface headers copied from ggml / llama.cpp (MIT, Copyright The ggml authors). Their license text is kept in `third_party/ggml/LICENSE`.
+- moe-cache does not include any model weights. Models you run with it keep their own licenses.
+- Product and model names (Qwen, gpt-oss, DeepSeek, Granite, Hunyuan, KAT-Coder and others) belong to their owners and are used only to say what was tested.

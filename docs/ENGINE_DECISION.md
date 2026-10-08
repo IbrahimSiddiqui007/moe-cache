@@ -38,3 +38,9 @@ llama.cpp/ggml plus their own CUDA/AMD kernels, with a hot-expert tier in VRAM, 
 ## What we cannot claim
 
 The emulation ran on one machine with one model; the GPU tier has never been built; Strata/Maya's own performance depends on their narrow model choice and quantizations and is not comparable to our numbers.
+
+## Gate result (2026-10-09, simulation and a small identity probe; no tier was built)
+
+- Simulation on 22 recorded Qwen3.6 decode traces: at about 1 GiB of GPU expert memory (a 4 GB card) a profile-chosen static tier gives 1.13x over all experts on the CPU (whole-layer placement: 1.06x); a dynamic tier needs about 90 to 100 expert copies per token and loses (0.83x to 0.88x) once each copy costs 0.178 ms. The +20 % bar is not reached.
+- Identity probe (Granite 3B): computing the expert block on the GPU for short batches changes the generated tokens within 3 to 20 tokens, because GPU and CPU kernels round differently. A tier that mixes both cannot be token-identical to stock.
+- Decision: no GPU hot tier; GPU use stays with llama.cpp's own placement (`--n-cpu-moe`, chosen by the planner). Caveats: one model's traces, a cost model fitted on an emulation, no real 4 GB card.

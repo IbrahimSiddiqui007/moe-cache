@@ -26,7 +26,7 @@ The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_
 ## 1. Get and build it (2 minutes)
 
 ```bash
-git clone <repo-url> moe-cache && cd moe-cache
+git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
 ./build.sh                       # finds libggml-base.so next to your llama-server; or: GGML_LIB_DIR=/path/to/libs ./build.sh
 pip install gguf                 # only needed for the automatic GPU/CPU split
 ```
