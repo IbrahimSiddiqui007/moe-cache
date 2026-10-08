@@ -4,6 +4,25 @@ You need: Linux, `llama-server` from a **shared-library** llama.cpp build (a dis
 The plugin was built and tested against **llama.cpp commit 7fe450e19 (ggml 0.25.1)**. Other versions may work; the plugin prints a warning if the version differs.
 Currently tested on: Linux, Intel CPU, NVIDIA GPU. Everything else is in `COMPATIBILITY.md`.
 
+## 0. If your distro's llama.cpp is not usable: build the matching llama.cpp with Vulkan (about 20 minutes, once)
+
+Works on any Linux GPU that has a Vulkan driver (AMD with the open Mesa/RADV driver, Intel, NVIDIA). This is exactly how we built and tested the Vulkan setup.
+
+```bash
+# packages: cmake ninja g++ and the Vulkan development files + glslc + SPIR-V headers
+#   Ubuntu/Debian: sudo apt install cmake ninja-build g++ libvulkan-dev glslc spirv-headers mesa-vulkan-drivers
+#   Fedora:        sudo dnf install cmake ninja-build gcc-c++ vulkan-devel glslc spirv-headers-devel mesa-vulkan-drivers
+#   openSUSE:      sudo zypper install cmake ninja gcc-c++ vulkan-devel shaderc spirv-headers
+git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp && git checkout 7fe450e19
+cmake -B build -G Ninja -DGGML_VULKAN=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
+cmake --build build --target llama-server -j8
+./build/bin/llama-server --list-devices        # your GPU should be listed as Vulkan0
+```
+
+Then in the moe-cache folder: `GGML_LIB_DIR=/path/to/llama.cpp/build/bin ./build.sh` and use `--llama-server /path/to/llama.cpp/build/bin/llama-server` below.
+The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_PATH` automatically. Package names differ between distro versions; the tools you need are cmake, ninja, a C++ compiler, the Vulkan headers/loader, `glslc` and the SPIR-V headers.
+
 ## 1. Get and build it (2 minutes)
 
 ```bash
