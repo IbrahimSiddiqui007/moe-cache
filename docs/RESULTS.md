@@ -93,7 +93,7 @@ Stock needs `--no-repack` here (default repacking makes a full copy in anonymous
 | Limit | Stock (--no-repack) | Plugin |
 |---|---|---|
 | 12 GB | 3.1 | 9.9 |
-| 16 GB | 6.4 | 10.7 (run flagged unclean, clean rerun pending) |
+| 16 GB | 6.4 | **10.3** (clean rerun, requests 2-4 = 10.6, 10.1, 10.2; stock 6.6, 6.4, 6.1) |
 
 ## 6. Two-times-RAM model on a small machine (Qwen3-Next-80B, 48.5 GB, 24 GB limit, about 2.6 GB of GPU use)
 

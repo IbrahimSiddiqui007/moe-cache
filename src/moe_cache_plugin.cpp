@@ -1,15 +1,15 @@
-// T7 prototype: out-of-tree ggml backend "MOE_CACHE" (no llama.cpp patch).
-// Load with env GGML_BACKEND_PATH=/path/libggml-moe-cache.so. Expert tensors that llama.cpp would put in a CPU buffer
-// (for example with --n-cpu-moe N) land in this backend's buffer type, because it is an ACCEL device that supports MUL_MAT_ID.
+// moe-cache: out-of-tree ggml backend (ACCEL device) that manages which MoE experts are resident in RAM. No llama.cpp patch.
+// Expert tensors that llama.cpp keeps on the CPU (for example with --n-cpu-moe N) land in this backend's buffer, which is
+// virtual memory only, at stock addresses. The cache decides which experts have physical pages: a miss is an O_DIRECT read
+// from the GGUF, an eviction is madvise(DONTNEED). The unmodified CPU kernels then run, so output is token-identical.
+// The backend claims exactly MUL_MAT_ID and GLU (plus trivial view ops). Batches of MOE_CACHE_GPU_MIN_TOKENS or more run on the GPU.
+// Load: LD_PRELOAD + MOE_CACHE_PRELOAD=1 (builds that link backends directly), or GGML_BACKEND_PATH (loadable backends).
+// Main env:
+//   MOE_CACHE_SIZE_GIB=N|auto   MOE_CACHE_GGUF=model file   MOE_CACHE_PROFILE / MOE_CACHE_WARM=profile file
+//   MOE_CACHE_RAM_GIB, MOE_CACHE_MARGIN_GIB   MOE_CACHE_REPACK=auto|on|off   MOE_CACHE_LAYERS=lo-hi
+//   MOE_CACHE_STATS=1   MOE_CACHE_DISABLE=1 (load nothing)
+// All variables are listed in the env parsing block of state_t below.
 //
-// Env:
-//   MOE_CACHE_LAYERS=lo-hi   only claim expert tensors of blk.lo .. blk.hi (default all)
-//   MOE_CACHE_SIZE_GIB=x    cache mode: expert data is read on demand from the GGUF (O_DIRECT) into an LRU cache of x GiB
-//   MOE_CACHE_GGUF=path      the GGUF the model was loaded from (needed in cache mode)
-//   MOE_CACHE_STATS=1        print counters at exit
-// Without MOE_CACHE_SIZE_GIB the weights are copied into the buffer and the stock CPU kernel runs unchanged (pass-through).
-// In cache mode MUL_MAT_ID nodes are rewritten before the stock CPU kernel runs: src0 becomes a view of a slot array and
-// the ids become slot numbers, so the CPU kernel itself is not modified.
 
 #include "ggml.h"
 #include "ggml-backend.h"

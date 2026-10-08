@@ -49,7 +49,7 @@ bin/moe-cache-server model.gguf --ram 12 --llama-server /path/to/llama-server --
 | Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** |
 | Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
 | Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
-| Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s | **55 tok/s** |
+| Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s (older measurement) | **60 to 62 tok/s** |
 | Model fits in RAM (Qwen3.6, 28 GB, warm start) | 29.0 tok/s | 31.1 tok/s |
 | Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
 
