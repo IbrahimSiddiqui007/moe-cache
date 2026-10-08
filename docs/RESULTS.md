@@ -99,15 +99,26 @@ Stock needs `--no-repack` here (default repacking makes a full copy in anonymous
 
 Stock 2.3 tok/s, plugin 10.6 tok/s (4.6x).
 
-## 7. Prompt processing when the model fits in RAM and a GPU is present (DeepSeek-V2-Lite, ctx 4096, ~2.7k-3.2k token prompts)
+## 7. Prompt processing (long prompts, 2.6k to 3.2k tokens)
 
-| | prompt tok/s |
-|---|---|
-| Stock (GPU takes over the big batches) | 188, 166 |
-| moe-cache (CPU does the expert work) | 42, 43 (repack on: 44, 45) |
+| Setup | Stock | moe-cache, CPU does the expert work | moe-cache, GPU-assisted (default) |
+|---|---|---|---|
+| DeepSeek-V2-Lite, fits in RAM, GPU present | 188, 166 tok/s | 42, 43 | **166, 183** |
+| Qwen3.6-35B, 12 GB limit | 6 to 8 (thrashing, older measurement) | 48, 48 | **62, 60** |
 
-A regression to fix (v0.2c). In the memory-starved case stock cannot use this path efficiently (6 to 8 tok/s vs 55 for moe-cache).
+Long-prompt identity vs stock: 2 of 2 prompts identical on DeepSeek with the GPU path active (`tests/identity.sh --long`).
 
 ## 8. Forced repacking with a GPU present (DeepSeek-V2-Lite, all experts on CPU)
 
-Token generation: stock-like (repack off) 12.7 to 14.6 tok/s, repack on 11.8 to 13.3 tok/s: no decode gain. Repack stays automatic (on only when stock would repack).
+Token generation: repack off 12.7 to 14.6 tok/s, repack on 11.8 to 13.3 tok/s: no decode gain. Repack stays automatic (on only when stock would repack).
+
+## 9. Memory-limit test (`tests/limit.sh`, hard cgroup limit, no swap, short + long prompts)
+
+| Model | Limit | Result |
+|---|---|---|
+| gpt-oss-20b | 10 GB | PASS (long prompt 110 tok/s, generation up to 16.7) |
+| DeepSeek-V2-Lite | 9 GB | PASS (long prompt 280 tok/s, generation up to 18.0) |
+| Qwen3-Next-80B (48.5 GB) | 20 GB | PASS (generation 6 to 11 tok/s) |
+| Qwen3.6-35B | 12 GB | PASS (long prompt 67 tok/s, generation up to 20) |
+
+A first version of the memory controller let a long first prompt grow the cache past the limit (the budget raced ahead of what was loaded and the correction was too weak); fixed by tying the budget to the actually loaded bytes.

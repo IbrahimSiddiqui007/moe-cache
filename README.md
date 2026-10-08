@@ -23,7 +23,8 @@ moe-cache manages the CPU-side experts itself:
 - **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
 - **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
 - produces **token-identical output** to stock llama.cpp (checked on every model below);
-- works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0.
+- works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
+- runs long prompts on the GPU like stock llama.cpp does.
 
 If the model already fits in your RAM you get the same speed as stock (within a few percent). It is for the case where it does not.
 
@@ -87,7 +88,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp 
 
 ## Known limitations
 
-- **Long prompts when the model fits in RAM and you have a GPU:** stock llama.cpp hands big prompt batches to the GPU (measured 188 tok/s on DeepSeek-V2-Lite); moe-cache currently does that work on the CPU (about 43 tok/s). When memory is short the picture flips (see the table above: 6 to 8 tok/s for stock, 55 for moe-cache). GPU-assisted prompt processing is the next feature.
+- Long prompts (32+ tokens per batch) run their expert blocks on the GPU, as stock llama.cpp does, so prompt processing is at stock speed when the model fits (DeepSeek-V2-Lite: 166 to 183 tok/s vs 166 to 188 stock) and much faster when memory is short.
 - It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier is under investigation ([docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md)).
 - Needs a llama.cpp with shared ggml libraries; tested with commit `7fe450e19` (ggml 0.25.1). Linux only for now.
 

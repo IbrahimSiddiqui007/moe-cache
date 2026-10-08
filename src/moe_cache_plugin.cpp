@@ -13,6 +13,7 @@
 
 #include "ggml.h"
 #include "ggml-backend.h"
+#include "ggml-alloc.h"
 #include "ggml-backend-impl.h"
 #include "ggml-cpu.h"
 #include "gguf.h"
@@ -34,6 +35,7 @@
 #include <chrono>
 #include <cmath>
 #include <map>
+#include <unordered_set>
 #include <sys/stat.h>
 
 #include <cerrno>
@@ -220,6 +222,10 @@ struct state_t {
     ggml_backend_buffer_t repack_buf = nullptr;         // a real repack buffer, used for init_tensor / set_tensor only
     ggml_backend_buffer_t repack_tag = nullptr;         // empty buffer of the repack type, swapped in while an operation runs
     std::atomic<uint64_t> repack_jobs{0};
+    ggml_backend_dev_t gpu_dev = nullptr;               // first GPU backend device, used for long prompts
+    int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
+    std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0};
+    std::atomic<uint64_t> gpu_up_bytes{0};
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
     size_t budget = 0;
@@ -353,6 +359,16 @@ struct state_t {
         }
         fd = fds[0];
         direct_ok = getenv("MOE_CACHE_DIRECT") != nullptr;
+        if (const char * v = getenv("MOE_CACHE_GPU_MIN_TOKENS")) {
+            gpu_min_tokens = atoi(v);
+        }
+        for (size_t i = 0; i < ggml_backend_dev_count() && gpu_min_tokens > 0; i++) {
+            ggml_backend_dev_t d = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                gpu_dev = d;
+                break;
+            }
+        }
         {
             const char * rp = getenv("MOE_CACHE_REPACK");
             const std::string mode = rp ? rp : "auto";
@@ -453,6 +469,9 @@ struct state_t {
         }
         if (!cache_on && stats) {
             fprintf(stderr, "moe-cache: pass-through graphs=%llu MUL_MAT_ID ops=%llu\n", (unsigned long long) graphs, (unsigned long long) ops);
+        }
+        if (cache_on && stats && gpu_dev) {
+            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (uploaded %.1f GB), fell back to the CPU %llu\n", (unsigned long long) gpu_segments, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks);
         }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
@@ -747,11 +766,13 @@ struct state_t {
             return;
         }
         const size_t target = limit_bytes > margin ? limit_bytes - margin : limit_bytes / 2;
+        // bytes of expert data that are really in memory (pending ones are marked but not read yet)
+        const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
         if (rss > target) {
-            // over the target: give back what is missing (plus a little), then evict down to the new budget
-            const size_t need = rss - target + ((size_t) 64 << 20);
-            size_t nb = budget > need ? budget - need : 0;
-            nb = std::max(nb, min_budget);
+            // over the target: the new budget is what is loaded now minus the excess, so eviction starts at once
+            const size_t over = rss - target + ((size_t) 64 << 20);
+            size_t nb = have > over ? have - over : 0;
+            nb = std::min(std::max(nb, min_budget), budget);
             if (nb < budget) {
                 budget = nb;
                 tune_shrinks++;
@@ -766,8 +787,8 @@ struct state_t {
                 }
                 evict(v);
             }
-        } else if (rss + ((size_t) 512 << 20) < target && budget < max_budget) {
-            // clearly under the target: grow, at most 1 GiB per step
+        } else if (resident_bytes + ((size_t) 512 << 20) >= budget && rss + ((size_t) 512 << 20) < target && budget < max_budget) {
+            // the cache is full and there is clearly room: grow, at most 1 GiB per step
             const size_t g = std::min<size_t>(target - rss - ((size_t) 256 << 20), (size_t) 1 << 30);
             budget = std::min(max_budget, budget + g);
             tune_grows++;
@@ -1049,6 +1070,9 @@ struct moe_cache_backend_ctx {
     ggml_threadpool_t  tp = nullptr;
     int                tp_n = 0;
     int                n_threads = 6;
+    ggml_backend_t     gpu = nullptr;
+    ggml_gallocr_t     galloc = nullptr;
+    bool               gpu_failed = false;
 };
 
 const char * be_name(ggml_backend_t) {
@@ -1063,8 +1087,140 @@ void be_free(ggml_backend_t backend) {
     if (c->tp && CPU().tp_free) {
         CPU().tp_free(c->tp);
     }
+    if (c->galloc) {
+        ggml_gallocr_free(c->galloc);
+    }
+    if (c->gpu) {
+        ggml_backend_free(c->gpu);
+    }
     delete c;
     delete backend;
+}
+
+// Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
+// to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
+bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
+    const int n_all = ggml_graph_n_nodes(cg);
+    std::unordered_set<const ggml_tensor *> inside;
+    for (int i = first; i <= last; i++) {
+        ggml_tensor * n = ggml_graph_node(cg, i);
+        if (n->op != GGML_OP_MUL_MAT_ID && n->op != GGML_OP_GLU) {
+            return false;
+        }
+        inside.insert(n);
+        seg.push_back(n);
+    }
+    ggml_tensor * out = seg.back();
+    if (!ggml_is_contiguous(out)) {
+        return false;
+    }
+    // inputs must exist already (not produced by another node of this graph) and be plain F32 / I32 / weights
+    std::unordered_set<const ggml_tensor *> produced;
+    for (int i = 0; i < n_all; i++) {
+        produced.insert(ggml_graph_node(cg, i));
+    }
+    for (ggml_tensor * n : seg) {
+        for (int k = 0; k < GGML_MAX_SRC; k++) {
+            const ggml_tensor * src = n->src[k];
+            if (!src || inside.count(src)) {
+                continue;
+            }
+            if (produced.count(src) || src->view_src) {
+                return false;
+            }
+            const auto it = s.by_tensor.find(src);
+            if (it != s.by_tensor.end()) {
+                if (s.tensors[it->second]->repack) {
+                    return false;
+                }
+            } else if (src->type != GGML_TYPE_F32 && src->type != GGML_TYPE_I32) {
+                return false;
+            }
+        }
+    }
+    if (!c->gpu) {
+        c->gpu = ggml_backend_dev_init(s.gpu_dev, nullptr);
+        if (!c->gpu) {
+            c->gpu_failed = true;
+            return false;
+        }
+        c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
+    }
+    ggml_init_params ip = { ggml_tensor_overhead() * 4 * (size_t) (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) {
+        return false;
+    }
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
+    std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
+    auto ext = [&](const ggml_tensor * t) {
+        auto it = clone.find(t);
+        if (it != clone.end()) {
+            return it->second;
+        }
+        ggml_tensor * nt = ggml_new_tensor(ctx, t->type, GGML_MAX_DIMS, t->ne);
+        ggml_set_input(nt);
+        clone[t] = nt;
+        uploads.emplace_back(t, nt);
+        return nt;
+    };
+    for (ggml_tensor * n : seg) {
+        ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, n->ne);
+        nn->op = n->op;
+        memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
+        for (int k = 0; k < GGML_MAX_SRC; k++) {
+            if (n->src[k]) {
+                nn->src[k] = inside.count(n->src[k]) ? clone[n->src[k]] : ext(n->src[k]);
+            }
+        }
+        clone[n] = nn;
+    }
+    ggml_tensor * gout = clone[out];
+    ggml_set_output(gout);
+    ggml_cgraph * g = ggml_new_graph(ctx);
+    ggml_build_forward_expand(g, gout);
+    if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
+        ggml_free(ctx);
+        c->gpu_failed = true;
+        return false;
+    }
+    std::vector<uint8_t> pack;
+    for (auto & u : uploads) {
+        const ggml_tensor * t = u.first;
+        ggml_tensor * d = u.second;
+        if (ggml_is_contiguous(t)) {
+            ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
+            s.gpu_up_bytes += ggml_nbytes(d);
+        } else {
+            // activations / ids that are views: pack row by row
+            const size_t es = ggml_type_size(t->type);
+            if (t->nb[0] != es) {
+                ggml_free(ctx);
+                return false;
+            }
+            pack.assign(ggml_nbytes(d), 0);
+            size_t o = 0;
+            for (int64_t i3 = 0; i3 < t->ne[3]; i3++) {
+                for (int64_t i2 = 0; i2 < t->ne[2]; i2++) {
+                    for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
+                        memcpy(pack.data() + o, (const char *) t->data + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3], (size_t) t->ne[0] * es);
+                        o += (size_t) t->ne[0] * es;
+                    }
+                }
+            }
+            ggml_backend_tensor_set(d, pack.data(), 0, ggml_nbytes(d));
+        }
+    }
+    const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
+    ggml_backend_synchronize(c->gpu);
+    if (st != GGML_STATUS_SUCCESS) {
+        ggml_free(ctx);
+        return false;
+    }
+    ggml_backend_tensor_get(gout, out->data, 0, ggml_nbytes(out));
+    ggml_free(ctx);
+    s.gpu_segments++;
+    return true;
 }
 
 enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
@@ -1103,6 +1259,8 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
         }
     }
+    struct group_t { int first; int last; int n_tok; };
+    std::vector<group_t> groups_found;
     if (s.cache_on) {
         if (!s.preload_done) {
             s.preload();
@@ -1148,6 +1306,12 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                     }
                 }
             }
+            groups_found.push_back({ i, 0, (int) n_tok });
+            for (int j = 0; j < n_nodes; j++) {
+                if (done[j] && ggml_graph_node(cg, j)->src[2] == ids) {
+                    groups_found.back().last = j;
+                }
+            }
             const auto p0 = std::chrono::steady_clock::now();
             s.prepare_group(tidx, used);
             if (!s.profile_path.empty() && ++s.groups_since_save >= 100000) {
@@ -1155,6 +1319,25 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 s.save_profile();
             }
             s.ns_prep += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - p0).count();
+        }
+    }
+
+    // long prompts: run the expert block on the GPU (what llama.cpp's own offload does for batches of 32+ tokens)
+    std::vector<std::pair<ggml_tensor *, ggml_op>> silenced;
+    if (s.cache_on && s.gpu_dev && !c->gpu_failed) {
+        for (const auto & gr : groups_found) {
+            if (gr.n_tok < s.gpu_min_tokens) {
+                continue;
+            }
+            std::vector<ggml_tensor *> seg;
+            if (gpu_segment(c, s, cg, gr.first, gr.last, seg)) {
+                for (ggml_tensor * n : seg) {
+                    silenced.emplace_back(n, n->op);
+                    n->op = GGML_OP_NONE;
+                }
+            } else {
+                s.gpu_fallbacks++;
+            }
         }
     }
 
@@ -1178,6 +1361,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     const enum ggml_status st = ggml_backend_graph_compute(c->cpu, cg);
     for (auto & tg : tagged) {
         tg.first->buffer = tg.second;
+    }
+    for (auto & sl : silenced) {
+        sl.first->op = sl.second;
     }
     s.ns_cpu += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - c0).count();
 
