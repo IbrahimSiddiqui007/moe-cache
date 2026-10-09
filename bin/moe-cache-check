@@ -14,6 +14,7 @@ echo "moe-cache check"
 # system
 [ "$(uname -s)" = Linux ] && ok system "Linux $(uname -r)" || fail system "$(uname -s): only Linux is supported for now"
 case "$(uname -m)" in x86_64) ok cpu "x86-64";; *) warn cpu "$(uname -m): only x86-64 was tested";; esac
+if [ -r /sys/devices/cpu_core/cpus ]; then ok "cpu pinning" "hybrid Intel CPU (performance cores $(cat /sys/devices/cpu_core/cpus)): threads are pinned to the performance cores automatically (about +15 %)"; else ok "cpu pinning" "not a hybrid Intel CPU: no pinning needed"; fi
 
 # llama-server
 LSP="$(command -v "$LS" 2>/dev/null || true)"
