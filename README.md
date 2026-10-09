@@ -53,6 +53,8 @@ bin/moe-cache-server model.gguf --ram 12 --llama-server /path/to/llama-server --
 | Model fits in RAM (Qwen3.6, 28 GB, warm start) | 29.0 tok/s | 31.1 tok/s |
 | Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
 
+Conditions: "RAM" is a memory limit set with a cgroup on a 30 GB machine. The 80B model, the 20 GB case and gpt-oss-20b keep **all experts on the CPU** and use the GPU only for the rest of the model (about 2.6 GB). The Qwen3.6 rows put 6 layers of experts on the GPU (about 6 GB), KAT-Coder 7 layers. The "no GPU" row hides the GPU completely. The chart above lists the setup per row.
+
 Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 30 GB RAM, RTX 4060 8 GB, NVMe SSD.
 
 ## Hardware and OS support
