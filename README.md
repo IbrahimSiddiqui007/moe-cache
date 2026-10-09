@@ -122,8 +122,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp 
 ## Acknowledgements
 
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml (MIT, Copyright The ggml authors): moe-cache is a plugin for their backend interface, and it runs their CPU kernels unchanged.
-- [Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221): the idea of tiering experts across VRAM, RAM and SSD.
-- [Project Maya](https://github.com/mw00/project-maya) (MIT, by mw00, built on Strata): the same idea, plus keeping a usage profile between sessions.
+- Related projects with a similar approach (tiering experts across VRAM, RAM and SSD), built as single-model engines: [Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221) and [Project Maya](https://github.com/mw00/project-maya) (MIT, by mw00).
 
 ## License
 
