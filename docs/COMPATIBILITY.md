@@ -15,7 +15,7 @@ llama.cpp build uses (CUDA, ROCm/HIP, Vulkan, SYCL, ...). That makes it independ
 | Linux + Vulkan, AMD GPU | Expected to work (same Vulkan path, same host-buffer behaviour as the tested devices), **not tested on AMD hardware** | the path AMD cards without ROCm support use |
 | Linux + AMD GPU via ROCm/HIP | Expected to work, **untested** | |
 | Linux + Intel GPU (SYCL or Vulkan) | **Untested** | Intel iGPU available on the development machine for testing |
-| Windows (any CPU/GPU) | **Not supported yet** | see below |
+| Windows (any CPU/GPU) | **Not supported yet** (code written, never run on Windows) | see "Windows status" below |
 | macOS / Apple Silicon | Not supported | uses Linux memory APIs; unified memory changes the problem |
 
 ## Repacking (why CPU-only needed extra work)
@@ -23,19 +23,9 @@ llama.cpp build uses (CUDA, ROCm/HIP, Vulkan, SYCL, ...). That makes it independ
 With a GPU backend present (CUDA, Vulkan, ...) llama.cpp stores CPU-side expert weights in that backend's host buffer, unrepacked. With no GPU backend it stores them in a repacked CPU layout (for example `q4_0_8x8`), which changes the order of the floating-point sums.
 moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CACHE_REPACK=auto`), so both cases give bit-identical results. `MOE_CACHE_REPACK=on` forces repacking even with a GPU (measured: no decode speedup, so it is off by default there).
 
-## Why Windows needs work
+## Windows status
 
-Linux-specific parts of the plugin: `O_DIRECT` reads, `madvise(DONTNEED)` to give memory back, `mmap` reservations, `/proc` and cgroup files to read memory use and limits.
-Windows equivalents exist (`FILE_FLAG_NO_BUFFERING`, `VirtualAlloc`/`DiscardVirtualMemory`, `GetProcessMemoryInfo`, job objects) but are not written or tested.
-Official Windows llama.cpp builds load their backends as separate DLLs, so the plugin could be loaded with `GGML_BACKEND_PATH` (no `LD_PRELOAD` needed). That path is already used by the launcher for such builds.
-Estimated effort: a few days including testing.
-
-## What a user needs for any platform
-
-1. A llama.cpp whose ggml version matches the headers in `third_party/ggml` (currently 0.25.1, backend API version 2); the plugin warns when it differs.
-2. Shared ggml libraries (`libggml-base.so`), not a fully static `llama-server`.
-3. A single-file or split GGUF model with MoE expert tensors (any architecture llama.cpp runs through `MUL_MAT_ID`).
-
-## Models tested
-
-Qwen3.6-35B-A3B, Qwen3-Coder-30B-A3B, KAT-Coder-35B-A3B, Qwen3-Next-80B-A3B, Hunyuan-A13B, DeepSeek-V2-Lite, gpt-oss-20b, Granite-3.1-MoE-3B (Q4_K_M, MXFP4; IQ4_XS and Q5_0 via a requantized model).
+- The operating-system code is in `src/platform.h` (Linux: `O_DIRECT`, `madvise`, `mmap`, cgroups; Windows: `FILE_FLAG_NO_BUFFERING` overlapped reads, `VirtualAlloc` reserve/commit/decommit, job-object and free-memory limits).
+- `./build.sh --windows` cross-compiles `ggml-moe-cache.dll` with mingw-w64 (load it with `GGML_BACKEND_PATH`; official Windows llama.cpp builds load their backends as DLLs).
+- `tests/platform_test.cpp` passes natively on Linux and, compiled for Windows, under Wine (reserve/commit/decommit, unbuffered reads at the end of a file, limits, file replacement).
+- **Never run on real Windows with llama.cpp**: no token-identity test, no speed numbers, and the launcher scripts are still bash. Treat it as a code port waiting for a tester.

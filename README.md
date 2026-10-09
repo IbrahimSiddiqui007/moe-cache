@@ -63,9 +63,9 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 |---|---|
 | Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
 | Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested**, loaded the official way (`GGML_BACKEND_PATH`) |
-| Linux, no usable GPU (CPU only) | **Tested**, identical to stock and the same speed |
+| Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
 | Linux + AMD GPU / AMD CPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
-| Windows | **Not yet** (planned, needs a port of the memory and file code) |
+| Windows | **Not supported yet.** The code has a Windows layer that compiles with mingw-w64 (`./build.sh --windows`) and passes its tests under Wine, but it has never run on real Windows with llama.cpp |
 | macOS | No |
 
 ## How it works

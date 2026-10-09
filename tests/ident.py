@@ -10,9 +10,28 @@ if os.environ.get("IDENT_LONG"):
     # long prompts (many hundreds of tokens): these take the batched path that llama.cpp may hand to the GPU
     txt = (pathlib.Path(__file__).resolve().parent.parent / "README.md").read_text().splitlines(True)
     P = ["Summarize this text in two sentences:\n\n" + "".join(txt[a:b]) for a, b in [(0, 45), (40, 85)]]
-res = []
-for p in P:
+if os.environ.get("IDENT_FILL"):
+    # pad each prompt with distinct filler text to about N tokens (long-context test)
+    import random
+    words = ("alpha beta gamma delta river stone engine memory window cable forest signal garden planet silver copper orbit lantern "
+             "harbor meadow pencil rocket violet thunder marble compass ribbon desert island bridge anchor falcon quartz").split()
+    n_tok = int(os.environ["IDENT_FILL"])
+    P2 = []
+    for k, p in enumerate(P):
+        rnd = random.Random(1000 + k)
+        filler = " ".join(rnd.choice(words) for _ in range(int(n_tok * 0.75)))
+        P2.append("Here is some background text, ignore its content:\n" + filler + "\n\nNow the task: " + p)
+    P = P2
+def ask(p):
     body = {"prompt": p, "n_predict": n, "temperature": 0, "seed": 42, "cache_prompt": False, "return_tokens": True}
     req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", json.dumps(body).encode(), {"Content-Type": "application/json"})
-    res.append(json.load(urllib.request.urlopen(req, timeout=3000))["tokens"])
+    return json.load(urllib.request.urlopen(req, timeout=3000))["tokens"]
+if os.environ.get("IDENT_PAR"):
+    from concurrent.futures import ThreadPoolExecutor
+    res = []
+    with ThreadPoolExecutor(2) as ex:
+        for i in range(0, len(P), 2):
+            res += list(ex.map(ask, P[i:i + 2]))
+else:
+    res = [ask(p) for p in P]
 json.dump(res, open(out, "w"))

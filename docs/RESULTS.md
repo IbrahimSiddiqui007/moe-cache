@@ -84,7 +84,15 @@ Section 2 numbers use the earlier fixed cache margin; they have not been re-meas
 
 ## 4. CPU-only machine (GPU hidden from llama.cpp), DeepSeek-V2-Lite, model fits in RAM
 
-Stock 8.4 tok/s (expert weights repacked as q4_0_8x8), plugin 6.4 tok/s (-24 %); identity 3 of 4 prompts over 40 tokens (float rounding from the different summation order). See COMPATIBILITY.md.
+Measured 2026-10-09 with the repack support, clean runs (GPU hidden, 28 GB limit, ctx 8192, 4 prompts x 300 tokens, forward and reverse order, true stock binary):
+
+| | Stock (repacked weights) | Plugin (repack on, 7.5 GiB cache) |
+|---|---|---|
+| Steady tok/s (requests 2-4) | 17.4 and 17.2 (mean 17.3) | 16.7 and 16.7 (mean 16.7) |
+| First request | 18.2 | 16.5 (cache is cold: prompt phase 10 tok/s vs 48) |
+
+The plugin is 3.5 % slower when the model fits in RAM on a CPU-only machine; identity is 4/4. The earlier figures (stock 8.4, plugin 6.4, -24 %, identity 3 of 4) were measured before repack support
+and under different conditions; they are replaced by this table.
 
 ## 5. No dedicated GPU, memory limited (Qwen3.6 35B, 21.7 GB model, GPU hidden from llama.cpp, ctx 8192)
 
@@ -122,3 +130,15 @@ Token generation: repack off 12.7 to 14.6 tok/s, repack on 11.8 to 13.3 tok/s: n
 | Qwen3.6-35B | 12 GB | PASS (long prompt 67 tok/s, generation up to 20) |
 
 A first version of the memory controller let a long first prompt grow the cache past the limit (the budget raced ahead of what was loaded and the correction was too weak); fixed by tying the budget to the actually loaded bytes.
+
+## 10. Robustness tests (Granite 3.1 MoE and DeepSeek-V2-Lite, token identity vs stock)
+
+| Test | Result |
+|---|---|
+| `-np 2`, requests sent one after the other | 4/4 identical |
+| `-np 2`, requests sent two at a time | server healthy and answers both. Output depends on when the requests arrive, **for stock llama.cpp too** (stock differs from its own delay-0 output in 17 of 20 timing variants; the plugin in 20 of 20): batches of 32+ tokens switch from CPU to GPU math. Identity cannot be promised for concurrent use. |
+| Long context: about 12,000-token prompts, ctx 16384 (Granite) | 4/4 identical |
+| Long context, DeepSeek-V2-Lite, 9 GB limit | 4/4 identical |
+| Failing direct reads (every 40th expert read fails all its direct attempts; test switch `MOE_CACHE_FAULT_EVERY`) | 320 reads fell back to a buffered read, output 4/4 identical. If the buffered read fails too, the server stops with a message (it never serves wrong data). |
+| Memory-bandwidth probe (CPU and GPU reading host memory at the same time) | CPU alone 40-41 GB/s, GPU alone 12.5 GB/s, together 39-41 GB/s in total: the two share one memory bus and do not add up |
+

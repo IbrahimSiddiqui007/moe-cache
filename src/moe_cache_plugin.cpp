@@ -36,12 +36,7 @@
 #include <cmath>
 #include <map>
 #include <unordered_set>
-#include <sys/stat.h>
-
-#include <cerrno>
-#include <fcntl.h>
-#include <sys/mman.h>
-#include <unistd.h>
+#include "platform.h"
 
 #ifndef MOE_CACHE_TESTED_GGML
 #define MOE_CACHE_TESTED_GGML "0.25.1"
@@ -141,65 +136,13 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
     return true;
 }
 
-// memory limit of this process: the smallest memory.max on the cgroup path, else MemAvailable
+// memory limit of this process and its private memory (see platform.h)
 size_t read_mem_limit() {
-    size_t lim = (size_t) -1;
-    std::string path;
-    if (FILE * f = fopen("/proc/self/cgroup", "r")) {
-        char line[1024];
-        while (fgets(line, sizeof(line), f)) {
-            if (strncmp(line, "0::", 3) == 0) {
-                path = line + 3;
-                while (!path.empty() && (path.back() == '\n' || path.back() == '\r')) { path.pop_back(); }
-            }
-        }
-        fclose(f);
-    }
-    std::string p = path;
-    for (;;) {
-        const std::string fn = "/sys/fs/cgroup" + p + "/memory.max";
-        if (FILE * g = fopen(fn.c_str(), "r")) {
-            char b[64] = { 0 };
-            if (fgets(b, sizeof(b), g) && strncmp(b, "max", 3) != 0) {
-                lim = std::min<size_t>(lim, (size_t) strtoull(b, nullptr, 10));
-            }
-            fclose(g);
-        }
-        if (p.empty() || p == "/") {
-            break;
-        }
-        const size_t sl = p.rfind('/');
-        p = sl == std::string::npos ? std::string() : p.substr(0, sl);
-    }
-    if (lim == (size_t) -1) {
-        if (FILE * f = fopen("/proc/meminfo", "r")) {
-            char line[256];
-            while (fgets(line, sizeof(line), f)) {
-                unsigned long long kb = 0;
-                if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) {
-                    lim = (size_t) kb * 1024;
-                }
-            }
-            fclose(f);
-        }
-    }
-    return lim;
+    return plat::mem_limit();
 }
 
 size_t read_rss_anon() {
-    size_t r = 0;
-    if (FILE * f = fopen("/proc/self/status", "r")) {
-        char line[256];
-        while (fgets(line, sizeof(line), f)) {
-            unsigned long long kb = 0;
-            if (sscanf(line, "RssAnon: %llu kB", &kb) == 1) {
-                r = (size_t) kb * 1024;
-                break;
-            }
-        }
-        fclose(f);
-    }
-    return r;
+    return plat::rss_private();
 }
 
 struct io_job_t {
@@ -215,8 +158,12 @@ struct state_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
-    int    fd = -1;
-    std::vector<int> fds;                       // one per GGUF file (split models have several)
+    std::vector<plat::file_t> fds;              // one per GGUF file (split models have several)
+    std::vector<std::string> shard_paths;
+    std::vector<plat::file_t> fds_buf;          // buffered (no O_DIRECT) handles, opened only if a direct read keeps failing
+    std::mutex fds_buf_mu;
+    int    fault_every = 0;                     // MOE_CACHE_FAULT_EVERY=N: test switch, every Nth expert read fails all its direct attempts
+    std::atomic<uint64_t> fault_ctr{0}, read_fallbacks{0};
     std::unordered_map<std::string, int> file_shard;
     ggml_backend_buffer_type_t repack_buft = nullptr;   // llama.cpp CPU_REPACK buffer type (mode on)
     ggml_backend_buffer_t repack_buf = nullptr;         // a real repack buffer, used for init_tensor / set_tensor only
@@ -350,14 +297,18 @@ struct state_t {
                 file_shard[nm] = (int) si;
             }
             gguf_free(g);
-            const int f = open(shards[si].c_str(), O_RDONLY | O_DIRECT);
-            if (f < 0) {
+            const plat::file_t f = plat::file_open(shards[si].c_str(), true);
+            if (!f.ok()) {
                 fail("cannot open " + shards[si] + " with O_DIRECT");
                 return;
             }
             fds.push_back(f);
+            shard_paths.push_back(shards[si]);
+            fds_buf.push_back(plat::file_t());
         }
-        fd = fds[0];
+        if (const char * v = getenv("MOE_CACHE_FAULT_EVERY")) {
+            fault_every = atoi(v);
+        }
         direct_ok = getenv("MOE_CACHE_DIRECT") != nullptr;
         if (const char * v = getenv("MOE_CACHE_GPU_MIN_TOKENS")) {
             gpu_min_tokens = atoi(v);
@@ -475,6 +426,9 @@ struct state_t {
         }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
+            if (read_fallbacks) {
+                fprintf(stderr, "moe-cache: reads that needed the buffered fallback: %llu\n", (unsigned long long) read_fallbacks);
+            }
             fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu, repacked %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
             fprintf(stderr, "moe-cache: graphs=%llu groups=%llu ops=%llu hits=%llu misses=%llu (hit %.1f%%) read=%.1f MB evictions=%llu resident=%.2f GiB%s\n",
@@ -527,8 +481,9 @@ struct state_t {
             static thread_local size_t bounce_size = 0;
             const size_t need = round_up(max_nb2) + 2 * PAGE;
             if (bounce_size < need) {
-                free(bounce);
-                if (posix_memalign((void **) &bounce, PAGE, need) != 0) {
+                plat::aligned_free_page(bounce);
+                bounce = (char *) plat::aligned_alloc_page(need);
+                if (!bounce) {
                     abort();
                 }
                 bounce_size = need;
@@ -543,22 +498,48 @@ struct state_t {
                 const size_t shift = j.off - aoff;
                 const size_t len = round_up(shift + j.nb2);
                 char * buf = j.direct ? j.dst - shift : bounce;   // direct: the aligned read lands exactly around the expert
-                size_t done = 0;
-                int retries = 0;
-                while (done < shift + j.nb2) {
-                    const ssize_t got = pread(fds[j.fdi], buf + done, len - done, (off_t) (aoff + done));
-                    if (got < 0 && errno == EINTR) {
-                        continue;
-                    }
-                    if (got <= 0) {
-                        if (++retries <= 3) {
-                            usleep(20000);
-                            continue;
+                // the pages must exist before they are written (Windows); one extra page covers kernels that read a little past the end
+                plat::mem_commit(j.direct ? j.dst - shift : j.dst, (j.direct ? len : j.nb2) + PAGE);
+                // direct read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
+                const bool inject_job = fault_every > 0 && (++fault_ctr % (uint64_t) fault_every) == 0;   // test switch: this read fails every direct attempt
+                auto read_all = [&](const plat::file_t & rfd, bool inject) {
+                    size_t done = 0;
+                    int retries = 0;
+                    while (done < shift + j.nb2) {
+                        ptrdiff_t got;
+                        if (inject && inject_job) {
+                            got = -1;
+                            errno = EIO;
+                        } else {
+                            got = plat::file_pread(rfd, buf + done, len - done, (uint64_t) (aoff + done));
                         }
-                        fprintf(stderr, "moe-cache: read failed at offset %zu: %s (disk error, or the model file changed after loading)\n", aoff + done, got < 0 ? strerror(errno) : "unexpected end of file");
+                        if (got <= 0) {
+                            if (++retries <= 3) {
+                                plat::sleep_ms(20);
+                                continue;
+                            }
+                            return false;
+                        }
+                        done += (size_t) got;
+                    }
+                    return true;
+                };
+                if (!read_all(fds[j.fdi], true)) {
+                    plat::file_t bfd;
+                    {
+                        std::lock_guard<std::mutex> lk(fds_buf_mu);
+                        if (!fds_buf[j.fdi].ok()) {
+                            fds_buf[j.fdi] = plat::file_open(shard_paths[j.fdi].c_str(), false);
+                        }
+                        bfd = fds_buf[j.fdi];
+                    }
+                    if (!bfd.ok() || !read_all(bfd, false)) {
+                        fprintf(stderr, "moe-cache: read failed at offset %zu of %s: %s (disk error, or the model file changed after loading)\n", aoff, shard_paths[j.fdi].c_str(), plat::last_error().c_str());
                         abort();
                     }
-                    done += (size_t) got;
+                    if (read_fallbacks++ == 0) {
+                        fprintf(stderr, "moe-cache: direct read failed, used a buffered read instead (output stays correct; this may be slower)\n");
+                    }
                 }
                 if (j.rtensor) {
                     // repack this one expert into its place: use a copy of the tensor that describes a single expert
@@ -621,7 +602,7 @@ struct state_t {
         if (thp >= 0) {
             const uintptr_t a = (uintptr_t) ti->data / PAGE * PAGE;
             const uintptr_t b = ((uintptr_t) ti->data + ggml_nbytes(t) + PAGE - 1) / PAGE * PAGE;
-            madvise((void *) a, b - a, thp ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
+            plat::mem_hugepage((void *) a, b - a, thp != 0);
         }
         const int idx = (int) tensors.size();
         tensors.push_back(std::move(ti));
@@ -649,14 +630,14 @@ struct state_t {
                 out[(size_t) l * ne + e] = (float) v;
             }
         }
-        const size_t slash = profile_path.rfind('/');
+        const size_t slash = profile_path.find_last_of("/\\");
         if (slash != std::string::npos && slash > 0) {
             const std::string dir = profile_path.substr(0, slash);
             size_t pos = 0;
-            while ((pos = dir.find('/', pos + 1)) != std::string::npos) {
-                mkdir(dir.substr(0, pos).c_str(), 0755);
+            while ((pos = dir.find_first_of("/\\", pos + 1)) != std::string::npos) {
+                plat::make_dir(dir.substr(0, pos).c_str());
             }
-            mkdir(dir.c_str(), 0755);
+            plat::make_dir(dir.c_str());
         }
         const std::string tmp = profile_path + ".tmp";
         FILE * f = fopen(tmp.c_str(), "wb");
@@ -670,7 +651,7 @@ struct state_t {
         fwrite(out.data(), sizeof(float), out.size(), f);
         fwrite(&fingerprint, 8, 1, f);
         fclose(f);
-        rename(tmp.c_str(), profile_path.c_str());
+        plat::replace_file(tmp.c_str(), profile_path.c_str());
     }
 
     // warm start: read the most used experts of the profile into place, most used last (so it is the most recently used)
@@ -826,7 +807,7 @@ struct state_t {
         const uintptr_t a = (start + PAGE - 1) / PAGE * PAGE;
         const uintptr_t b = (start + ti.nb2) / PAGE * PAGE;
         if (b > a) {
-            madvise((void *) a, b - a, MADV_DONTNEED);
+            plat::mem_decommit((void *) a, b - a);
         }
         unlink(s);
         nodes[s].resident = false;
@@ -934,7 +915,7 @@ const char * buft_name(ggml_backend_buffer_type_t) {
 
 void buf_free(ggml_backend_buffer_t buffer) {
     auto * c = (moe_cache_buffer_ctx *) buffer->context;
-    munmap(c->base, c->size);
+    plat::mem_release(c->base, c->size);
     delete c;
 }
 
@@ -943,6 +924,7 @@ void * buf_base(ggml_backend_buffer_t buffer) {
 }
 
 void buf_memset(ggml_backend_buffer_t, ggml_tensor * t, uint8_t v, size_t off, size_t size) {
+    plat::mem_commit((char *) t->data + off, size);
     memset((char *) t->data + off, v, size);
 }
 
@@ -953,6 +935,7 @@ void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t o
         s.register_tensor(t);
         return;
     }
+    plat::mem_commit((char *) t->data + off, size);
     memcpy((char *) t->data + off, data, size);
 }
 
@@ -962,6 +945,9 @@ void buf_get(ggml_backend_buffer_t, const ggml_tensor * t, void * data, size_t o
 
 void buf_clear(ggml_backend_buffer_t buffer, uint8_t v) {
     auto * c = (moe_cache_buffer_ctx *) buffer->context;
+    if (S().cache_on) {
+        return;   // the buffer is address space only; experts get their data from the file
+    }
     memset(c->base, v, c->size);
 }
 
@@ -1002,9 +988,12 @@ const ggml_backend_buffer_i g_buf_i = {
 
 ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     size = round_up(std::max<size_t>(size, 1));
-    void * p = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
-    if (p == MAP_FAILED) {
+    void * p = plat::mem_reserve(size);
+    if (!p) {
         return nullptr;
+    }
+    if (!S().cache_on) {
+        plat::mem_commit(p, size);   // pass-through mode: the weights are copied in, all pages are needed
     }
     return ggml_backend_buffer_init(buft, g_buf_i, new moe_cache_buffer_ctx{ p, size }, size);
 }
@@ -1529,7 +1518,7 @@ const ggml_backend_reg_i g_reg_i = {
 
 }
 
-extern "C" __attribute__((visibility("default"))) ggml_backend_reg_t ggml_backend_init(void) {
+extern "C" MOE_CACHE_EXPORT ggml_backend_reg_t ggml_backend_init(void) {
     static ggml_backend_reg reg = { GGML_BACKEND_API_VERSION, g_reg_i, nullptr };
     return &reg;
 }
@@ -1538,15 +1527,18 @@ extern "C" __attribute__((visibility("default"))) ggml_backend_reg_t ggml_backen
 // because llama.cpp only reads GGML_BACKEND_PATH when no backend is registered yet.
 static bool g_registered = false;
 
-extern "C" __attribute__((visibility("default"))) void moe_cache_register(void) {
+extern "C" MOE_CACHE_EXPORT void moe_cache_register(void) {
     if (!g_registered) {
         g_registered = true;
         ggml_backend_register(ggml_backend_init());
     }
 }
 
+#ifndef _WIN32
+// LD_PRELOAD loading (Linux builds that link their backends directly); on Windows the library is loaded through GGML_BACKEND_PATH
 __attribute__((constructor)) static void moe_cache_autoload() {
     if (getenv("MOE_CACHE_PRELOAD") && !getenv("MOE_CACHE_DISABLE")) {
         moe_cache_register();
     }
 }
+#endif
