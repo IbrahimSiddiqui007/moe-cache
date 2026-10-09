@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moe-cache bench</title>
+<style>
+:root{--bg:#fff;--fg:#1f2328;--muted:#656d76;--grid:#d0d7de;--card:#f6f8fa;--line:#d0d7de;--accent:#2f81f7;--ok:#1a7f37;--bad:#cf222e}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--grid:#30363d;--card:#161b22;--line:#30363d;--accent:#58a6ff;--ok:#3fb950;--bad:#f85149}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,Helvetica,Arial,sans-serif;margin:0;line-height:1.45}
+main{max-width:980px;margin:0 auto;padding:16px}
+h1{font-size:22px;margin:4px 0 2px}h2{font-size:16px;margin:0 0 10px}h3{font-size:14px;margin:14px 0 4px}
+.sub{color:var(--muted);margin:0 0 14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+label{display:block;font-size:12px;color:var(--muted);margin:6px 0 2px}
+input[type=text],input[type=number],textarea,select{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
+textarea{min-height:110px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+.row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.row label{display:inline-flex;gap:6px;align-items:center;color:var(--fg);font-size:14px;margin:4px 0}
+button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:9px 16px;font:inherit;cursor:pointer}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+.muted{color:var(--muted)}.warn{color:var(--bad)}
+.bar{height:10px;background:var(--line);border-radius:5px;overflow:hidden;margin:8px 0}.bar>div{height:100%;background:var(--accent);width:0%;transition:width .4s}
+pre.log{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;max-height:210px;overflow:auto;font-size:12px;white-space:pre-wrap}
+table{border-collapse:collapse;width:100%;margin:6px 0;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}
+details{margin:6px 0}summary{cursor:pointer}pre{white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:6px;border:1px solid var(--line)}
+a{color:var(--accent)}
+.chart{margin:10px 0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px}
+code{background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var(--line);font-size:12px}
+</style>
+</head>
+<body>
+<main>
+<h1>moe-cache bench</h1>
+<p class="sub">Compare stock llama.cpp with moe-cache on your own machine: speed, identity, your own prompts. Everything runs locally.</p>
+
+<div class="card" id="sys"><h2>This machine</h2><div id="sysinfo" class="muted">looking...</div></div>
+
+<div class="card">
+  <h2>1. Setup</h2>
+  <div class="grid">
+    <div><label>llama-server (the program to benchmark)</label><input type="text" id="llama_server"></div>
+    <div><label>moe-cache plugin library</label><input type="text" id="plugin_lib"></div>
+  </div>
+  <label>Model file (.gguf)</label><input type="text" id="model" placeholder="/path/to/model.gguf"><div id="modelinfo" class="muted"></div>
+  <div class="row" style="margin-top:8px">
+    <label><input type="checkbox" id="m_stock" checked> stock llama.cpp</label>
+    <label><input type="checkbox" id="m_plugin" checked> with moe-cache</label>
+  </div>
+  <div class="grid">
+    <div><label>Memory limits to test, GB (comma separated; each run is placed in its own limited cgroup)</label><input type="text" id="limits"></div>
+    <div><label>Context size</label><input type="number" id="ctx" value="8192"></div>
+    <div><label>Experts on the CPU: layers (auto = chosen from free VRAM, all = every layer, or a number)</label><input type="text" id="n_cpu_moe" value="auto"></div>
+    <div><label>Extra llama-server arguments (optional)</label><input type="text" id="extra_args" placeholder="--spec-type draft-mtp --spec-draft-n-max 2"></div>
+  </div>
+  <div class="row"><label id="pinlbl"><input type="checkbox" id="pin" checked> pin threads to the performance cores (hybrid Intel CPUs)</label></div>
+</div>
+
+<div class="card">
+  <h2>2. What to measure</h2>
+  <div class="row">
+    <label><input type="checkbox" id="speed" checked> Speed: generation tok/s, first request vs steady</label>
+    <label>tokens per prompt <input type="number" id="speed_tokens" value="100" style="width:80px"></label>
+    <label>prompts (1-4) <input type="number" id="speed_prompts" value="4" min="1" max="4" style="width:60px"></label>
+  </div>
+  <div class="row"><label><input type="checkbox" id="long" checked> Prompt processing: one long prompt (about 2,000 tokens)</label></div>
+  <div class="muted">Identity (same tokens for stock and moe-cache) is checked automatically whenever both are selected.</div>
+  <h3>Your own prompts (optional)</h3>
+  <textarea id="custom" placeholder="Write one prompt, then a line with --- between prompts.&#10;Optional: a line 'EXPECT: word' makes the prompt pass only if the answer contains that word.&#10;&#10;What is the capital of France?&#10;EXPECT: Paris&#10;---&#10;Write a haiku about memory."></textarea>
+  <div class="row"><label>tokens per custom answer <input type="number" id="custom_tokens" value="100" style="width:80px"></label></div>
+  <details><summary>Quality: perplexity and KL divergence (advanced, slow)</summary>
+    <p class="muted">Needs <code>llama-perplexity</code> next to llama-server and a plain text file (the llama.cpp convention is the Wikitext-2 test set). Stock records reference logits; moe-cache is compared against them (KL divergence 0 means identical).</p>
+    <div class="grid"><div><label>Text file</label><input type="text" id="ppl_file"></div><div><label>Chunks of 512 tokens</label><input type="number" id="ppl_chunks" value="8"></div></div>
+  </details>
+  <div class="row" style="margin-top:8px">
+    <label><input type="checkbox" id="both_orders"> run twice, second time in reverse order (cancels heat drift, doubles the time)</label>
+    <label>start only below <input type="number" id="gate_temp" value="58" style="width:64px"> C</label>
+  </div>
+</div>
+
+<div class="card">
+  <h2>3. Run</h2>
+  <div class="row"><button id="start">Start benchmark</button><button id="cancel" class="sec" disabled>Cancel</button><span id="status" class="muted"></span></div>
+  <div class="bar"><div id="progress"></div></div>
+  <pre class="log" id="log">Nothing running.</pre>
+</div>
+
+<div class="card" id="resultcard" style="display:none">
+  <h2>Results <span id="rtitle" class="muted"></span></h2>
+  <div class="row" id="exports"></div>
+  <div id="tables"></div>
+  <div id="charts"></div>
+</div>
+
+<div class="card">
+  <h2>Saved results</h2>
+  <div id="saved" class="muted">none yet</div>
+</div>
+
+<div class="card">
+  <h2>Other benchmarks (model quality)</h2>
+  <p class="muted">MMLU-Pro, GPQA, GSM8K, HumanEval and the other capability benchmarks measure the model, not moe-cache; the scores must match stock. Run them with lm-evaluation-harness against a running server:</p>
+  <pre id="lmeval">pip install lm-eval
+lm_eval --model local-completions --model_args base_url=http://localhost:8080/v1/completions,model=any,num_concurrent=1 --tasks gsm8k,hellaswag --limit 200</pre>
+  <p class="muted">Start the server with <code>moe-cache-server MODEL.gguf --ram 24</code> (moe-cache) or plain <code>llama-server -m MODEL.gguf</code> (stock). Full list: docs/BENCHMARKS.md.</p>
+</div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let job = null, timer = null;
+const num = s => s.split(',').map(x => parseFloat(x)).filter(x => !isNaN(x) && x > 0);
+async function j(url, opt){ const r = await fetch(url, opt); return r.json(); }
+
+async function init(){
+  const c = await j('/api/config');
+  for (const k of ['llama_server','plugin_lib','model','ctx','n_cpu_moe','extra_args','speed_tokens','speed_prompts','custom','custom_tokens','ppl_file','ppl_chunks','gate_temp']) if (c[k] !== undefined) $(k).value = c[k];
+  $('limits').value = (c.limits || []).join(', ');
+  for (const k of ['pin','speed','long','both_orders']) $(k).checked = !!c[k];
+  $('m_stock').checked = c.modes.includes('stock'); $('m_plugin').checked = c.modes.includes('plugin');
+  sysinfo(); modelinfo(); saved();
+}
+async function sysinfo(){
+  const s = await j('/api/system?ls=' + encodeURIComponent($('llama_server').value));
+  $('sysinfo').innerHTML = `${s.cpu} · ${s.threads} threads${s.hybrid ? ' (hybrid cores)' : ''} · ${s.ram_gb} GB RAM (${s.ram_free_gb} GB free) · ` +
+    `${s.devices.length ? s.devices.join(', ') : 'no GPU backend found in this llama-server'} · ${s.temp_c ? s.temp_c.toFixed(0) + ' C now' : ''}` +
+    (s.systemd_run ? '' : '<br><span class="warn">systemd-run not found: memory limits are not available</span>');
+  $('pinlbl').style.display = s.hybrid ? '' : 'none';
+}
+async function modelinfo(){
+  const p = $('model').value.trim(); if (!p) { $('modelinfo').textContent = ''; return; }
+  const m = await j('/api/modelinfo?path=' + encodeURIComponent(p));
+  $('modelinfo').innerHTML = m.exists ? `${m.gb} GB` : '<span class="warn">file not found</span>';
+}
+$('model').addEventListener('change', modelinfo); $('llama_server').addEventListener('change', sysinfo);
+
+function config(){
+  return { llama_server: $('llama_server').value.trim(), plugin_lib: $('plugin_lib').value.trim(), model: $('model').value.trim(),
+    modes: [$('m_stock').checked ? 'stock' : null, $('m_plugin').checked ? 'plugin' : null].filter(Boolean), limits: num($('limits').value),
+    ctx: +$('ctx').value, n_cpu_moe: $('n_cpu_moe').value.trim() || 'auto', pin: $('pin').checked, extra_args: $('extra_args').value,
+    speed: $('speed').checked, speed_tokens: +$('speed_tokens').value, speed_prompts: +$('speed_prompts').value, long: $('long').checked,
+    custom: $('custom').value, custom_tokens: +$('custom_tokens').value, ppl_file: $('ppl_file').value.trim(), ppl_chunks: +$('ppl_chunks').value,
+    both_orders: $('both_orders').checked, gate_temp: +$('gate_temp').value, gate_wait_s: 600 };
+}
+$('start').onclick = async () => {
+  const r = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(config())});
+  const d = await r.json();
+  if (!r.ok) { $('log').textContent = 'Cannot start:\n- ' + d.errors.join('\n- '); return; }
+  job = d.id; $('start').disabled = true; $('cancel').disabled = false; $('resultcard').style.display = 'none';
+  timer = setInterval(poll, 2000); poll();
+};
+$('cancel').onclick = async () => { if (job) await fetch(`/api/job/${job}/cancel`, {method:'POST'}); $('status').textContent = 'cancelling...'; };
+async function poll(){
+  const s = await j('/api/job/' + job);
+  $('log').textContent = s.log.join('\n') || '...'; $('log').scrollTop = 1e9;
+  $('progress').style.width = Math.round(100 * s.done / Math.max(1, s.total)) + '%';
+  $('status').textContent = `${s.state} · ${s.done}/${s.total}`;
+  if (['done','failed','cancelled'].includes(s.state)) {
+    clearInterval(timer); $('start').disabled = false; $('cancel').disabled = true;
+    if (s.result_id) show(s.result_id); saved();
+  }
+}
+async function show(id){
+  const d = await j('/api/result/' + id);
+  $('resultcard').style.display = ''; $('rtitle').textContent = id;
+  $('tables').innerHTML = d.tables;
+  $('charts').innerHTML = Object.values(d.charts).map(c => `<div class="chart">${c}</div>`).join('');
+  $('exports').innerHTML = `<a href="/report/${id}.html" target="_blank">open report (HTML, shareable)</a> · <a href="/export/${id}.csv">CSV</a> · <a href="/export/${id}.json">JSON</a>`;
+  $('resultcard').scrollIntoView({behavior:'smooth'});
+}
+async function saved(){
+  const l = await j('/api/results');
+  $('saved').innerHTML = l.length ? '<table><tr><th>when</th><th>model</th><th>stock tok/s</th><th>moe-cache tok/s</th><th></th></tr>' + l.map(r =>
+    `<tr><td>${r.created}</td><td>${r.model} (${r.model_gb} GB)</td><td>${r.stock ? r.stock.toFixed(2) : '-'}</td><td>${r.plugin ? r.plugin.toFixed(2) : '-'}</td>` +
+    `<td><a href="#" onclick="show('${r.id}');return false">view</a> · <a href="#" onclick="del('${r.id}');return false">delete</a></td></tr>`).join('') + '</table>' : 'none yet';
+}
+async function del(id){ if (confirm('Delete this saved result?')) { await fetch(`/api/result/${id}/delete`, {method:'POST'}); saved(); } }
+init();
+</script>
+</body>
+</html>

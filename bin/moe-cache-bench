@@ -1,0 +1,4 @@
+#!/bin/bash
+# moe-cache-bench: benchmark GUI (speed, identity, your own prompts) for stock llama.cpp vs moe-cache. Opens http://127.0.0.1:8765
+#   bin/moe-cache-bench [--port N] [--no-browser]
+exec python3 "$(cd "$(dirname "$0")/.." && pwd)/bench/moe_bench.py" "$@"

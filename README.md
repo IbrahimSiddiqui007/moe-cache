@@ -28,6 +28,26 @@ moe-cache manages the CPU-side experts itself:
 
 If the model already fits in your RAM you get stock speed or better (on our hybrid-CPU laptop: +15 % over stock with default settings, the same as stock with hand-tuned CPU pinning, see [RESULTS](docs/RESULTS.md) section 11). It is for the case where it does not.
 
+## Fresh Ubuntu or Debian machine: one script
+
+```bash
+git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
+./install.sh                # installs the build tools (sudo), builds the matching llama.cpp (about 10-20 minutes) and the plugin, runs the setup check
+./install.sh --vulkan       # same, plus the Vulkan backend (AMD / Intel / NVIDIA GPUs and integrated GPUs)
+```
+
+It prints the commands to run a model at the end. `install.sh` is new and has so far only been tried on Arch Linux with `--no-apt`; if it fails on your Ubuntu, please open an issue.
+
+## Benchmark GUI
+
+```bash
+bin/moe-cache-bench         # opens http://127.0.0.1:8765
+```
+
+Pick a model, tick stock llama.cpp and/or moe-cache, set memory limits, and press Start. You get speed graphs, a stock-vs-moe-cache identity check,
+your own prompts (with optional expected answers), perplexity/KL divergence (optional), saved results, and a shareable HTML report. Python standard library only.
+Which benchmarks exist and what they mean: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+
 ## Quick start (Linux)
 
 ```bash
@@ -47,6 +67,7 @@ bin/moe-cache-server model.gguf --ram 12 --llama-server /path/to/llama-server --
 |---|---|---|
 | 48.5 GB model (Qwen3-Next-80B), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** |
 | Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** |
+| **gpt-oss-120b (63 GB, 2.6x the memory limit)**, 24 GB RAM, one run each | 0.34 tok/s | **2.71 tok/s** |
 | Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
 | Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
 | Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s (older measurement) | **60 to 62 tok/s** |
@@ -109,7 +130,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp 
 
 ## Documentation
 
-[Quick start](docs/QUICKSTART.md) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md)
+[Quick start](docs/QUICKSTART.md) | [Benchmarks](docs/BENCHMARKS.md) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md)
 
 ## Configuration (environment variables; `moe-cache-server` sets them for you)
 

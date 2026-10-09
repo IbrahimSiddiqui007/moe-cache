@@ -1,5 +1,7 @@
 # Quick start (Linux)
 
+**Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
+
 You need: Linux, `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release), `g++`, `python3`, and a MoE model in GGUF format.
 The plugin was built and tested against **llama.cpp commit 7fe450e19 (ggml 0.25.1)**. Other versions may work; the plugin prints a warning if the version differs.
 Currently tested on: Linux, Intel CPU, NVIDIA GPU. Everything else is in `COMPATIBILITY.md`.

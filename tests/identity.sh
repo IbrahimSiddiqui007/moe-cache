@@ -1,24 +1,27 @@
 #!/bin/bash
 # Token-identity test: the same model with and without the plugin must produce the same tokens (temperature 0, seed 42).
-#   tests/identity.sh MODEL.gguf [--llama-server PATH] [--n-cpu-moe N] [--ram GB] [--tokens N] [--long] [--ctx N] [--np N] [--fill TOKENS] [--parallel]
+#   tests/identity.sh MODEL.gguf [--llama-server PATH] [--n-cpu-moe N] [--ram GB] [--tokens N] [--long] [--ctx N] [--np N] [--fill TOKENS] [--parallel] [--limit GB]
 # --ctx N sets the context size (default 8192); --fill T pads every prompt to about T tokens (long-context test, needs --ctx > T);
+# --limit GB runs both servers in their own memory-limited scope (systemd-run, swap off): use it for models bigger than your RAM, so a runaway
+#   server is killed alone instead of taking the desktop session down.
 # --np N starts the server with N slots; --parallel sends the prompts two at a time (use with --np 2).
 # --long uses long prompts (hundreds of tokens), which exercise the batched / GPU-assisted path.
 # Starts the stock server (no plugin), then the server with the plugin, on port 8099, and compares 4 prompts.
 set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MODEL="$1"; shift || true
-LS="${LLAMA_SERVER:-llama-server}"; NCMOE=999; RAM=""; N=100; PORT=8099; CTX=8192; NP=1
-while [ $# -gt 0 ]; do case "$1" in --llama-server) LS=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;; --ram) RAM=$2; shift 2;; --tokens) N=$2; shift 2;; --long) export IDENT_LONG=1; shift;; --ctx) CTX=$2; shift 2;; --np) NP=$2; shift 2;; --fill) export IDENT_FILL=$2; shift 2;; --parallel) export IDENT_PAR=1; shift;; *) echo "unknown: $1"; exit 1;; esac; done
+LS="${LLAMA_SERVER:-llama-server}"; NCMOE=999; RAM=""; N=100; PORT=8099; CTX=8192; NP=1; LIMIT=""
+while [ $# -gt 0 ]; do case "$1" in --llama-server) LS=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;; --ram) RAM=$2; shift 2;; --tokens) N=$2; shift 2;; --long) export IDENT_LONG=1; shift;; --ctx) CTX=$2; shift 2;; --np) NP=$2; shift 2;; --limit) LIMIT=$2; shift 2;; --fill) export IDENT_FILL=$2; shift 2;; --parallel) export IDENT_PAR=1; shift;; *) echo "unknown: $1"; exit 1;; esac; done
 [ -f "$MODEL" ] || { echo "usage: tests/identity.sh MODEL.gguf [options]"; exit 1; }
+PRE=(); [ -n "$LIMIT" ] && PRE=(systemd-run --user --scope -q -p MemoryMax=${LIMIT}G -p MemorySwapMax=0)
 TMP=$(mktemp -d); trap 'kill $SPID 2>/dev/null || true; rm -rf "$TMP"' EXIT
 COMMON=(-m "$MODEL" ${DEVICE:+--device $DEVICE} -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -np "$NP" -fa on --load-mode mmap --no-warmup --port $PORT --seed 42)
 wait_up() { for i in $(seq 300); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$PORT/health)" = 200 ] && return 0; sleep 2; done; echo "server did not start"; return 1; }
-echo "1/2 stock server"; "$LS" "${COMMON[@]}" > "$TMP/stock.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/stock.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
+echo "1/2 stock server"; "${PRE[@]}" "$LS" "${COMMON[@]}" > "$TMP/stock.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/stock.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
 echo "2/2 server with the plugin"
 . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}" "${METHOD:-auto}"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL"); [ -n "$RAM" ] && ENVV+=(MOE_CACHE_RAM_GIB="$RAM")
-env "${ENVV[@]}" "$LS" "${COMMON[@]}" > "$TMP/plugin.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/plugin.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
+"${PRE[@]}" env "${ENVV[@]}" "$LS" "${COMMON[@]}" > "$TMP/plugin.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/plugin.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
 [ -n "$MOE_CACHE_STATS" ] && grep "moe-cache:" "$TMP/plugin.log" | tail -6
 python3 - "$TMP/stock.json" "$TMP/plugin.json" <<'PY'
 import json, sys
