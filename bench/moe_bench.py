@@ -175,12 +175,12 @@ def free_port():
 
 
 def planner_ncmoe(cfg, limit):
-    py = os.environ.get("MOE_CACHE_PYTHON", sys.executable)
-    cmd = [py, str(REPO / "planner/plan.py"), cfg["model"], "--ctx", str(cfg["ctx"]), "--json"]
-    if limit:
-        cmd += ["--ram-gib", str(limit)]
+    """GPU placement: as many whole layers of experts on the GPU as fit in the free VRAM (reads only the GGUF header, no extra packages)."""
     try:
-        return int(json.loads(sh(cmd, 120))["n_cpu_moe"])
+        sys.path.insert(0, str(HERE))
+        from gguf_plan import fit_n_cpu_moe
+        n, lay, free = fit_n_cpu_moe(cfg["model"], int(cfg["ctx"]))
+        return int(n)
     except Exception:
         return 999
 
@@ -365,7 +365,7 @@ def run_one(job, cfg, mode, limit, rep, tag):
     t, bg, clean = gate(job, cfg)
     st.update(start_temp=t, bg_cpu=round(bg, 1), clean=clean)
     ncm = cfg["n_cpu_moe"]
-    ncm = planner_ncmoe(cfg, limit) if ncm == "auto" else (999 if ncm == "all" else int(ncm))
+    ncm = planner_ncmoe(cfg, limit) if ncm in ("auto", "fit") else (999 if ncm == "all" else int(ncm))
     st["n_cpu_moe"] = ncm
     port = free_port()
     prefix = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={limit}G", "-p", "MemorySwapMax=0"] if limit else []
@@ -698,6 +698,31 @@ def report_html(res):
             f'<script>{lib}</script><script>const RESULT={data};MoeCharts.render(document.getElementById("charts"),RESULT);</script>')
 
 
+_PATH = re.compile(r"/(?:[^\s/\"']+/)+([^\s/\"']+)")
+
+
+def share_safe(res):
+    """Copy of a result for sharing: no prompts, outputs, token ids, kernel string or absolute paths (paths shrink to file names).
+    The full result stays in the local store; the full export needs ?full=1."""
+    def clean(o):
+        if isinstance(o, dict):
+            return {k: clean(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [clean(v) for v in o]
+        return _PATH.sub(r"\1", o) if isinstance(o, str) else o
+    r = clean(res)
+    r["config"]["custom"] = ""
+    r["config"]["ppl_file"] = ""
+    r["system"].pop("kernel", None)
+    for run in r["runs"]:
+        for q in run["requests"]:
+            q["text"] = ""
+            q["tokens"] = []
+            if "prompt" in q:
+                q["prompt"] = "(hidden in the shareable report)"
+    return r
+
+
 def csv_export(res):
     b = io.StringIO()
     w = csv.writer(b)
@@ -738,6 +763,10 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
 
+    def full(self):
+        """?full=1 asks for the unfiltered result (prompts, outputs, local paths): only for your own use."""
+        return "full=1" in self.path.partition("?")[2].split("&")
+
     def result(self, rid):
         f = RESULTS / (re.sub(r"[^A-Za-z0-9._-]", "", rid) + ".json")
         return json.loads(f.read_text()) if f.exists() else None
@@ -776,13 +805,15 @@ class H(BaseHTTPRequestHandler):
                 return self.send(200, {"result": r, "tables": tables_html(r)})
             m = re.match(r"/report/([\w.-]+)\.html$", p)
             if m and self.result(m.group(1)):
-                return self.send(200, report_html(self.result(m.group(1))), "text/html")
+                r = self.result(m.group(1))
+                return self.send(200, report_html(r if self.full() else share_safe(r)), "text/html")
             m = re.match(r"/export/([\w.-]+)\.csv$", p)
             if m and self.result(m.group(1)):
                 return self.send(200, csv_export(self.result(m.group(1))), "text/csv")
             m = re.match(r"/export/([\w.-]+)\.json$", p)
             if m and self.result(m.group(1)):
-                return self.send(200, json.dumps(self.result(m.group(1)), indent=1))
+                r = self.result(m.group(1))
+                return self.send(200, json.dumps(r if self.full() else share_safe(r), indent=1))
             self.send(404, {"error": "not found"})
         except Exception as e:
             self.send(500, {"error": str(e)})
@@ -813,12 +844,25 @@ class H(BaseHTTPRequestHandler):
             self.send(500, {"error": str(e)})
 
 
+def make_store_private():
+    """Results, logs and reports can contain prompts and outputs: keep them readable by this user only."""
+    os.umask(0o077)
+    DATA.mkdir(parents=True, exist_ok=True)
+    for d, _, files in os.walk(DATA):
+        try:
+            os.chmod(d, 0o700)
+            for f in files:
+                os.chmod(os.path.join(d, f), 0o600)
+        except OSError:
+            pass
+
+
 def main():
     ap = argparse.ArgumentParser(description="moe-cache benchmark GUI")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
-    DATA.mkdir(parents=True, exist_ok=True)
+    make_store_private()
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), H)
     url = f"http://127.0.0.1:{a.port}"
     print(f"moe-cache-bench is running at {url}  (Ctrl+C to stop; results are kept in {RESULTS})")
