@@ -116,7 +116,10 @@ lm_eval --model local-completions --model_args base_url=http://localhost:8080/v1
 const $ = id => document.getElementById(id);
 let job = null, timer = null;
 const num = s => s.split(',').map(x => parseFloat(x)).filter(x => !isNaN(x) && x > 0);
-async function j(url, opt){ const r = await fetch(url, opt); return r.json(); }
+const TOKEN = "__BENCH_TOKEN__";
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function api(url, opt){ opt = opt || {}; opt.headers = Object.assign({'X-Bench-Token': TOKEN}, opt.headers || {}); return fetch(url, opt); }
+async function j(url, opt){ const r = await api(url, opt); return r.json(); }
 
 async function init(){
   const c = await j('/api/config');
@@ -130,8 +133,8 @@ async function init(){
 }
 async function sysinfo(){
   const s = await j('/api/system?ls=' + encodeURIComponent($('llama_server').value));
-  $('sysinfo').innerHTML = `${s.cpu} · ${s.threads} threads${s.hybrid ? ' (hybrid cores)' : ''} · ${s.ram_gb} GB RAM (${s.ram_free_gb} GB free) · ` +
-    `${s.devices.length ? s.devices.join(', ') : 'no GPU backend found in this llama-server'} · ${s.temp_c ? s.temp_c.toFixed(0) + ' C now' : ''}` +
+  $('sysinfo').innerHTML = `${esc(s.cpu)} · ${+s.threads} threads${s.hybrid ? ' (hybrid cores)' : ''} · ${+s.ram_gb} GB RAM (${+s.ram_free_gb} GB free) · ` +
+    `${s.devices.length ? s.devices.map(esc).join(', ') : 'no GPU backend found in this llama-server'} · ${s.temp_c ? s.temp_c.toFixed(0) + ' C now' : ''}` +
     (s.systemd_run ? '' : '<br><span class="warn">systemd-run not found: memory limits are not available</span>');
   $('pinlbl').style.display = s.hybrid ? '' : 'none';
 }
@@ -151,13 +154,13 @@ function config(){
     both_orders: $('both_orders').checked, gate_temp: +$('gate_temp').value, bg_max: +$('bg_max').value, gate_wait_s: 600 };
 }
 $('start').onclick = async () => {
-  const r = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(config())});
+  const r = await api('/api/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(config())});
   const d = await r.json();
   if (!r.ok) { $('log').textContent = 'Cannot start:\n- ' + d.errors.join('\n- '); return; }
   job = d.id; $('start').disabled = true; $('cancel').disabled = false; $('resultcard').style.display = 'none';
   timer = setInterval(poll, 2000); poll();
 };
-$('cancel').onclick = async () => { if (job) await fetch(`/api/job/${job}/cancel`, {method:'POST'}); $('status').textContent = 'cancelling...'; };
+$('cancel').onclick = async () => { if (job) await api(`/api/job/${job}/cancel`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); $('status').textContent = 'cancelling...'; };
 async function poll(){
   const s = await j('/api/job/' + job);
   $('log').textContent = s.log.join('\n') || '...'; $('log').scrollTop = 1e9;
@@ -173,16 +176,19 @@ async function show(id){
   $('resultcard').style.display = ''; $('rtitle').textContent = id;
   $('tables').innerHTML = d.tables;
   MoeCharts.render($('charts'), d.result);
-  $('exports').innerHTML = `<a href="/report/${id}.html" target="_blank">open report (HTML, safe to share: no prompts, outputs or paths)</a> · <a href="/export/${id}.csv">CSV</a> · <a href="/export/${id}.json">JSON (safe)</a> · <span class="muted">for yourself only, with prompts, outputs and local paths: <a href="/report/${id}.html?full=1" target="_blank">full report</a> · <a href="/export/${id}.json?full=1">full JSON</a></span>`;
+  const T = encodeURIComponent(TOKEN), I = encodeURIComponent(id);
+  $('exports').innerHTML = `<a href="/report/${I}.html?t=${T}" target="_blank">open report (HTML, safe to share: no prompts, outputs or paths)</a> · <a href="/export/${I}.csv?t=${T}">CSV</a> · <a href="/export/${I}.json?t=${T}">JSON (safe)</a> · <span class="muted">for yourself only, with prompts, outputs and local paths: <a href="/report/${I}.html?full=1&t=${T}" target="_blank">full report</a> · <a href="/export/${I}.json?full=1&t=${T}">full JSON</a></span>`;
   $('resultcard').scrollIntoView({behavior:'smooth'});
 }
 async function saved(){
   const l = await j('/api/results');
   $('saved').innerHTML = l.length ? '<table><tr><th>when</th><th>model</th><th>stock tok/s</th><th>moe-cache tok/s</th><th></th></tr>' + l.map(r =>
-    `<tr><td>${r.created}</td><td>${r.model} (${r.model_gb} GB)</td><td>${r.stock ? r.stock.toFixed(2) : '-'}</td><td>${r.plugin ? r.plugin.toFixed(2) : '-'}</td>` +
-    `<td><a href="#" onclick="show('${r.id}');return false">view</a> · <a href="#" onclick="del('${r.id}');return false">delete</a></td></tr>`).join('') + '</table>' : 'none yet';
+    `<tr><td>${esc(r.created)}</td><td>${esc(r.model)} (${+r.model_gb} GB)</td><td>${r.stock ? (+r.stock).toFixed(2) : '-'}</td><td>${r.plugin ? (+r.plugin).toFixed(2) : '-'}</td>` +
+    `<td><a href="#" data-act="show" data-id="${esc(r.id)}">view</a> · <a href="#" data-act="del" data-id="${esc(r.id)}">delete</a></td></tr>`).join('') + '</table>' : 'none yet';
 }
-async function del(id){ if (confirm('Delete this saved result?')) { await fetch(`/api/result/${id}/delete`, {method:'POST'}); saved(); } }
+document.addEventListener('click', ev => { const a = ev.target.closest && ev.target.closest('a[data-act]'); if (!a) return; ev.preventDefault();
+  if (a.dataset.act === 'show') show(a.dataset.id); else if (a.dataset.act === 'del') del(a.dataset.id); });
+async function del(id){ if (confirm('Delete this saved result?')) { await api(`/api/result/${id}/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); saved(); } }
 init();
 </script>
 </body>

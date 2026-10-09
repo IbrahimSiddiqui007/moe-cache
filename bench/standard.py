@@ -4,8 +4,12 @@
    Needs the benchmark server (bin/moe-cache-bench --no-browser) to be running. Prints one row per cell; full results are saved like any other run."""
 import argparse, json, os, sys, time, urllib.request
 
+def token():
+    d = os.environ.get("MOE_BENCH_DATA") or os.path.expanduser("~/.local/share/moe-cache-bench")
+    return open(os.path.join(d, "token")).read().strip()
+
 def api(base, path, body=None):
-    r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None, {"Content-Type": "application/json"})
+    r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None, {"Content-Type": "application/json", "X-Bench-Token": token()})
     return json.load(urllib.request.urlopen(r, timeout=30))
 
 def main():

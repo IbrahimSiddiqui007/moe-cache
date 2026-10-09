@@ -8,7 +8,7 @@ and look at the results as graphs in a local web page. Python standard library o
 Every server run happens in its own memory-limited scope (systemd-run, swap off) so a model bigger than RAM can never take the desktop down.
 Results are saved in ~/.local/share/moe-cache-bench/results (override with MOE_BENCH_DATA).
 """
-import argparse, csv, glob, html, io, json, os, re, shlex, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request, webbrowser
+import argparse, csv, glob, hmac, html, io, json, os, re, secrets, shlex, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -197,7 +197,10 @@ def stop_proc(p):
 
 def complete(port, prompt, n):
     body = json.dumps({"prompt": prompt, "n_predict": n, "temperature": 0, "seed": 42, "cache_prompt": False, "return_tokens": True}).encode()
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", body, {"Content-Type": "application/json"})
+    hdr = {"Content-Type": "application/json"}
+    if port in API_KEYS:
+        hdr["Authorization"] = "Bearer " + API_KEYS[port]
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/completion", body, hdr)
     t0 = time.time()
     r = json.load(urllib.request.urlopen(req, timeout=7200))
     t = r.get("timings", {})
@@ -378,8 +381,13 @@ def run_one(job, cfg, mode, limit, rep, tag):
             if "=" in kv:
                 envs[kv.split("=", 1)[0]] = kv.split("=", 1)[1]
         st["load_method"] = method
+    key = secrets.token_hex(16)
+    keyf = DATA / f"key_{job.id}_{tag}"
+    keyf.write_text(key)
+    keyf.chmod(0o600)
+    API_KEYS[port] = key       # key file, not --api-key: command lines are visible to other users
     args = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", str(ncm), "-c", str(cfg["ctx"]), "-fa", "on", "--load-mode", "mmap", "--no-warmup",
-            "--port", str(port), "--seed", "42", "-np", "1"]
+            "--port", str(port), "--seed", "42", "-np", "1", "--api-key-file", str(keyf)]
     if cfg.get("pin"):
         m = pcore_mask()
         if m:
@@ -459,6 +467,8 @@ def run_one(job, cfg, mode, limit, rep, tag):
         finally:
             stop_proc(p)
             job.proc = None
+            keyf.unlink(missing_ok=True)
+            API_KEYS.pop(port, None)
     try:
         txt = Path(logp).read_text(errors="ignore")
         m = re.findall(r"hits=(\d+) misses=(\d+) \(hit ([\d.]+)%\) read=([\d.]+) MB evictions=(\d+)", txt)
@@ -614,13 +624,7 @@ def run_job(job):
 
 
 def start_job(cfg):
-    errs = []
-    if not (cfg["llama_server"] and os.access(cfg["llama_server"], os.X_OK)):
-        errs.append("llama-server path is not an executable file")
-    if not os.path.isfile(cfg["model"]):
-        errs.append("model file not found")
-    if "plugin" in cfg["modes"] and not os.path.isfile(cfg["plugin_lib"]):
-        errs.append("plugin library not found (build it with ./build.sh)")
+    errs = validate_cfg(cfg)
     if not cfg["modes"]:
         errs.append("pick stock, plugin or both")
     tot, av = mem_gb()
@@ -747,6 +751,60 @@ def list_results():
     return out
 
 
+# ---------------------------------------------------------------- security
+# The GUI starts programs and reads your results, so a web page you visit must not be able to drive it:
+#  - a random token (embedded in the page this server serves; never readable cross-site) is required on every API call
+#  - Host must be 127.0.0.1 / localhost with our port (blocks DNS rebinding); Origin and Sec-Fetch-Site must be ours
+#  - the run configuration is validated (program name, library name, MOE_CACHE_* variables only, no file-writing or network flags)
+TOKEN = secrets.token_urlsafe(24)
+TOKEN_FILE = DATA / "token"          # 0600; read by bin/moe-cache-bench-watch and bench/standard.py
+PORT = 0
+API_KEYS = {}                         # llama-server port -> key (passed by key file, never on the command line)
+DENIED_FLAGS = {"--log-file", "--slot-save-path", "--host", "--api-key", "--api-key-file", "--path", "--ssl-key-file", "--ssl-cert-file",
+                "--webui-config-file", "--models-dir", "--models-preset"}
+
+
+def is_gguf(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"GGUF"
+    except OSError:
+        return False
+
+
+def server_name_ok(path):
+    return bool(path) and os.path.basename(path).startswith("llama-server") and os.access(path, os.X_OK) and os.path.isfile(path)
+
+
+def validate_cfg(cfg):
+    errs = []
+    if not server_name_ok(cfg.get("llama_server", "")):
+        errs.append("llama-server path must be an executable file named llama-server*")
+    if not is_gguf(cfg.get("model", "")):
+        errs.append("model must be a GGUF file")
+    if "plugin" in cfg.get("modes", []):
+        n = os.path.basename(cfg.get("plugin_lib", ""))
+        if not (re.fullmatch(r"(lib)?ggml-moe-cache[\w.-]*\.(so|dll)", n) and os.path.isfile(cfg["plugin_lib"])):
+            errs.append("plugin library must be the built ggml-moe-cache library (build it with ./build.sh)")
+    try:
+        toks = shlex.split(cfg.get("plugin_env") or "")
+    except ValueError:
+        toks = []
+        errs.append("plugin environment: unbalanced quotes")
+    for kv in toks:
+        if not re.fullmatch(r"MOE_CACHE_[A-Z0-9_]+=[^\s]*", kv):
+            errs.append(f"plugin environment: only MOE_CACHE_* variables are allowed (got '{kv.split('=')[0][:40]}')")
+    try:
+        xs = shlex.split(cfg.get("extra_args") or "")
+    except ValueError:
+        xs = []
+        errs.append("extra arguments: unbalanced quotes")
+    for a in xs:
+        if a.split("=", 1)[0] in DENIED_FLAGS:
+            errs.append(f"extra arguments: {a.split('=')[0]} is not allowed here")
+    return errs
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -756,12 +814,38 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header("Content-Type", ctype + "; charset=utf-8")
         self.send_header("Content-Length", str(len(b)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
+                         "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         self.end_headers()
         self.wfile.write(b)
 
     def body(self):
         n = int(self.headers.get("Content-Length") or 0)
         return json.loads(self.rfile.read(n) or b"{}")
+
+    def gate(self, need_token=True, post=False):
+        """True when the request may proceed; otherwise the 4xx answer was already sent."""
+        host = (self.headers.get("Host") or "").lower()
+        if host not in (f"127.0.0.1:{PORT}", f"localhost:{PORT}"):
+            self.send(403, {"error": "bad Host header"}); return False
+        site = self.headers.get("Sec-Fetch-Site")
+        if site not in (None, "same-origin", "none"):
+            self.send(403, {"error": "cross-site request refused"}); return False
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.lower() not in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+            self.send(403, {"error": "foreign Origin refused"}); return False
+        if post and not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+            self.send(415, {"error": "Content-Type must be application/json"}); return False
+        if need_token:
+            q = self.path.partition("?")[2].split("&")
+            tok = self.headers.get("X-Bench-Token") or next((x[2:] for x in q if x.startswith("t=")), "")
+            if not hmac.compare_digest(tok.encode(), TOKEN.encode()):
+                self.send(401, {"error": "missing or wrong token"}); return False
+        return True
 
     def full(self):
         """?full=1 asks for the unfiltered result (prompts, outputs, local paths): only for your own use."""
@@ -774,8 +858,11 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self):
         p = self.path.split("?")[0]
         try:
+            if not self.gate(need_token=p not in ("/", "/charts.js")):
+                return
             if p == "/":
-                return self.send(200, (HERE / "ui.html").read_bytes(), "text/html")
+                page = (HERE / "ui.html").read_text().replace("__BENCH_TOKEN__", TOKEN)
+                return self.send(200, page, "text/html")
             if p == "/charts.js":
                 return self.send(200, (HERE / "charts.js").read_bytes(), "application/javascript")
             if p == "/api/config":
@@ -784,11 +871,12 @@ class H(BaseHTTPRequestHandler):
                     cfg.update(json.loads(CONFIG.read_text()))
                 return self.send(200, cfg)
             if p == "/api/system":
-                q = self.path.split("ls=", 1)[1] if "ls=" in self.path else find_llama_server()
-                return self.send(200, system_info(urllib.request.unquote(q)))
+                q = urllib.request.unquote(self.path.split("ls=", 1)[1].split("&")[0]) if "ls=" in self.path else find_llama_server()
+                return self.send(200, system_info(q if server_name_ok(q) else None))
             if p == "/api/modelinfo":
-                path = urllib.request.unquote(self.path.split("path=", 1)[1]) if "path=" in self.path else ""
-                return self.send(200, {"gb": round(model_size_gb(path), 2), "exists": os.path.isfile(path)})
+                path = urllib.request.unquote(self.path.split("path=", 1)[1].split("&")[0]) if "path=" in self.path else ""
+                ok = is_gguf(path)
+                return self.send(200, {"gb": round(model_size_gb(path), 2) if ok else 0, "exists": ok})
             if p == "/api/jobs":
                 return self.send(200, [j.public() for j in JOBS.values() if j.state in ("queued", "running")])
             if p == "/api/results":
@@ -819,8 +907,10 @@ class H(BaseHTTPRequestHandler):
             self.send(500, {"error": str(e)})
 
     def do_POST(self):
-        p = self.path
+        p = self.path.split("?")[0]
         try:
+            if not self.gate(post=True):
+                return
             if p == "/api/run":
                 cfg = default_config()
                 cfg.update(self.body())
@@ -862,7 +952,12 @@ def main():
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--no-browser", action="store_true")
     a = ap.parse_args()
+    global PORT
+    PORT = a.port
     make_store_private()
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as tf:
+        tf.write(TOKEN)
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), H)
     url = f"http://127.0.0.1:{a.port}"
     print(f"moe-cache-bench is running at {url}  (Ctrl+C to stop; results are kept in {RESULTS})")

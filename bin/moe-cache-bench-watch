@@ -7,8 +7,13 @@ while true; do
   python3 - "$PORT" <<'PY'
 import json, sys, urllib.request
 port = sys.argv[1]
+import os
+def token():
+    d = os.environ.get("MOE_BENCH_DATA") or os.path.expanduser("~/.local/share/moe-cache-bench")
+    return open(os.path.join(d, "token")).read().strip()
 def get(p):
-    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}{p}", timeout=5))
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{p}", headers={"X-Bench-Token": token()})
+    return json.load(urllib.request.urlopen(req, timeout=5))
 try:
     jobs = get("/api/jobs")
     if not jobs:
