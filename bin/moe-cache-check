@@ -1,0 +1,70 @@
+#!/bin/bash
+# moe-cache-check: check that this machine, your llama-server and your model are ready for moe-cache.
+#   moe-cache-check [MODEL.gguf] [--llama-server PATH] [--ram GB]
+# Prints one line per check (OK / WARN / FAIL) and a summary. Changes nothing. Exit code 1 if any check FAILED.
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+MODEL=""; LS="${LLAMA_SERVER:-llama-server}"; RAM=""
+while [ $# -gt 0 ]; do case "$1" in --llama-server) LS=$2; shift 2;; --ram) RAM=$2; shift 2;; -h|--help) sed -n 2,5p "$0"; exit 0;; *) MODEL=$1; shift;; esac; done
+NF=0; NW=0
+ok()   { printf '  [ OK ] %-22s %s\n' "$1" "$2"; }
+warn() { printf '  [WARN] %-22s %s\n' "$1" "$2"; NW=$((NW+1)); }
+fail() { printf '  [FAIL] %-22s %s\n' "$1" "$2"; NF=$((NF+1)); }
+echo "moe-cache check"
+
+# system
+[ "$(uname -s)" = Linux ] && ok system "Linux $(uname -r)" || fail system "$(uname -s): only Linux is supported for now"
+case "$(uname -m)" in x86_64) ok cpu "x86-64";; *) warn cpu "$(uname -m): only x86-64 was tested";; esac
+
+# llama-server
+LSP="$(command -v "$LS" 2>/dev/null || true)"
+if [ -z "$LSP" ]; then fail llama-server "not found ('$LS'); pass --llama-server PATH"; else
+  VER="$("$LSP" --version 2>&1 | grep -m1 -o 'commit [0-9a-f]*')"
+  ok llama-server "$LSP (${VER:-version unknown})"
+  case "$VER" in *7fe450e*) ok "ggml version" "matches the tested commit 7fe450e";; *) warn "ggml version" "tested with 7fe450e only; other versions usually load but may not (the plugin warns at start)";; esac
+  if ldd "$LSP" 2>/dev/null | grep -q libggml-base; then ok "shared ggml" "libggml-base is a shared library"; else fail "shared ggml" "this llama-server has ggml built in; the plugin cannot be loaded (use a build with BUILD_SHARED_LIBS=ON)"; fi
+fi
+
+# plugin
+LIB="${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}"; [ -f "$LIB" ] || LIB="$HERE/lib/libggml-moe-cache.so"
+if [ ! -f "$LIB" ]; then
+  if command -v g++ >/dev/null; then warn plugin "not built yet: run ./build.sh (g++ found)"; else fail plugin "not built and no g++ found; use the prebuilt release or install g++"; fi
+else
+  ok plugin "$LIB"
+  if [ -n "$LSP" ]; then
+    . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LSP" "$LIB" 2>/dev/null
+    if env "${MOE_CACHE_LOAD[@]}" "$LSP" --list-devices 2>&1 | grep -q "MOE_CACHE"; then ok "plugin loads" "yes, via $MOE_CACHE_METHOD"; else fail "plugin loads" "llama-server did not list the MOE_CACHE device (method tried: $MOE_CACHE_METHOD)"; fi
+    DEVS="$("$LSP" --list-devices 2>&1 | grep -E '^ +(CUDA|Vulkan|ROCm|HIP|SYCL|Metal)[0-9]*:' | sed 's/^ *//' | head -4)"
+    if [ -n "$DEVS" ]; then ok gpu "$(echo "$DEVS" | head -1)"; else warn gpu "no GPU backend in this llama-server: CPU-only mode (works, slower)"; fi
+  fi
+fi
+
+# memory
+MEMAV=$(awk '/MemAvailable/ {printf "%.1f", $2/1048576}' /proc/meminfo)
+CG=""; if [ -r /proc/self/cgroup ]; then P=$(cut -d: -f3 /proc/self/cgroup); for f in "/sys/fs/cgroup$P/memory.max" /sys/fs/cgroup/memory.max; do [ -r "$f" ] && v=$(cat "$f") && [ "$v" != max ] && CG=$(awk -v v="$v" 'BEGIN{printf "%.1f", v/1073741824}') && break; done; fi
+ok memory "${RAM:+--ram $RAM GB; }available ${MEMAV} GB${CG:+, cgroup limit $CG GB}"
+SW=$(awk '/SwapTotal/ {printf "%.1f", $2/1048576}' /proc/meminfo); [ "${SW%.*}" -gt 0 ] 2>/dev/null && warn swap "swap is on (${SW} GB): if memory runs out the system may swap (very slow) instead of killing the server"
+
+# python helper
+PY="${MOE_CACHE_PYTHON:-python3}"
+if command -v "$PY" >/dev/null; then
+  if "$PY" -c "import gguf" 2>/dev/null; then ok "python gguf" "installed (planner works)"; else warn "python gguf" "missing: pip install gguf (without it all experts stay on the CPU)"; fi
+else warn python "python3 not found (planner and tests need it)"; fi
+[ -w "${XDG_CACHE_HOME:-$HOME/.cache}" ] && ok "profile dir" "${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache" || warn "profile dir" "cache directory not writable: profiles will not be saved"
+
+# model
+if [ -n "$MODEL" ]; then
+  if [ ! -r "$MODEL" ]; then fail model "cannot read '$MODEL'"; else
+    SZ=$(stat -c %s "$MODEL" | awk '{printf "%.1f", $1/1073741824}')
+    [ "$(head -c4 "$MODEL")" = GGUF ] && ok model "GGUF, ${SZ} GB" || fail model "not a GGUF file"
+    if head -c 4194304 "$MODEL" | grep -aq "expert_count"; then ok "MoE model" "has experts (expert_count found)"; else warn "MoE model" "no expert_count in the header: this may not be a MoE model, moe-cache will not help"; fi
+    "$PY" - "$MODEL" <<'PYEOF' && ok "direct reads" "O_DIRECT works on this file system" || fail "direct reads" "O_DIRECT is not supported here (tmpfs/overlay/network disk?): put the model on a normal disk"
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECT); os.close(fd)
+PYEOF
+    LIM=${RAM:-${CG:-$MEMAV}}
+    if awk -v s="$SZ" -v l="$LIM" 'BEGIN{exit !(s>l)}'; then ok fit "model (${SZ} GB) is larger than the memory limit (${LIM} GB): this is where moe-cache helps most"; else warn fit "model (${SZ} GB) fits in ${LIM} GB: you get about stock speed, the gain is when memory is short"; fi
+  fi
+else echo "  (give a model path to also check the model: moe-cache-check MODEL.gguf)"; fi
+
+echo "summary: $NF failed, $NW warnings"
+[ $NF = 0 ]

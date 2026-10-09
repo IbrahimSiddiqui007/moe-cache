@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.1%20alpha-orange">
+<img alt="status" src="https://img.shields.io/badge/status-v0.1.1%20alpha-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-7fe450e19%20(ggml%200.25.1)-green">

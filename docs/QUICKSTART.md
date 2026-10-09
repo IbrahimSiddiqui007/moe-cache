@@ -23,13 +23,26 @@ cmake --build build --target llama-server -j8
 Then in the moe-cache folder: `GGML_LIB_DIR=/path/to/llama.cpp/build/bin ./build.sh` and use `--llama-server /path/to/llama.cpp/build/bin/llama-server` below.
 The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_PATH` automatically. Package names differ between distro versions; the tools you need are cmake, ninja, a C++ compiler, the Vulkan headers/loader, `glslc` and the SPIR-V headers.
 
-## 1. Get and build it (2 minutes)
+## 1. Get it (2 minutes)
+
+**Option A, prebuilt plugin (no compiler needed):** download `moe-cache-v0.1.1-linux-x86_64.tar.gz` from the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases), check it against `SHA256SUMS`, unpack it and `cd` into the folder.
+The plugin in it needs glibc 2.14 or newer and a libstdc++ from GCC 12 or newer (any distro from about 2022 on) and a llama.cpp built with shared ggml libraries.
+
+**Option B, build it yourself:**
 
 ```bash
 git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
 ./build.sh                       # finds libggml-base.so next to your llama-server; or: GGML_LIB_DIR=/path/to/libs ./build.sh
-pip install gguf                 # only needed for the automatic GPU/CPU split
 ```
+
+Then, for both options:
+
+```bash
+pip install gguf                 # only needed for the automatic GPU/CPU split
+bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server     # checks your setup, changes nothing
+```
+
+`moe-cache-check` tells you with OK / WARN / FAIL whether your llama-server can load the plugin, whether a GPU is found, whether the model is a MoE and can be read with direct reads, and how the model size compares with your memory.
 
 ## 2. Check that it is correct on YOUR model (1-5 minutes)
 
