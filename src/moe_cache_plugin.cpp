@@ -661,9 +661,6 @@ struct state_t {
             return;
         }
         preload_done = true;
-        if (!preload_on) {
-            return;
-        }
         std::map<int, std::vector<int>> by_layer;
         size_t total = 0;
         for (size_t i = 0; i < tensors.size(); i++) {
@@ -674,6 +671,14 @@ struct state_t {
         }
         if (by_layer.empty()) {
             return;
+        }
+        // no profile: if every CPU expert fits in the cache, load them all in layer order (a cache filled expert by expert on demand
+        // decodes about 15 % slower than one filled in order; MOE_CACHE_PRELOAD_ALL=0 turns this off)
+        if (!preload_on) {
+            const char * pa = getenv("MOE_CACHE_PRELOAD_ALL");
+            if ((pa && strcmp(pa, "0") == 0) || total > budget * 0.97) {
+                return;
+            }
         }
         double frac = preload_frac;
         if (frac < 0) {
@@ -884,6 +889,7 @@ struct state_t {
 
     // read the queued experts, then (auto mode) look at the real memory use again
     void flush_reads(std::vector<io_job_t> & jobs, size_t max_nb2) {
+        const bool did_reads = !jobs.empty();
         if (!jobs.empty()) {
             const auto r0 = std::chrono::steady_clock::now();
             do_reads(jobs, max_nb2);
@@ -891,7 +897,7 @@ struct state_t {
             jobs.clear();
         }
         pending_bytes = 0;
-        if (auto_mode) {
+        if (auto_mode && did_reads) {   // nothing was read: memory did not change (prepare_group re-checks every 32 groups anyway); reading /proc each layer cost ~2 ms per token
             tune();
         }
     }

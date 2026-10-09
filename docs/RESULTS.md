@@ -166,5 +166,14 @@ Qwen3.6 35B, 6 layers of experts on the GPU, ctx 32768, 28 GB limit (the model f
 
 `moe-cache-server` now adds `-C MASK --cpu-strict 1` on hybrid Intel CPUs (`--no-pin` to disable). Pinning does not change the output (identity 4/4).
 
-**Open problem:** when the model fits in RAM, stock with pinning (35.7 to 36.5) is still about 13 % faster than the plugin with pinning (about 31.5). The plugin's cold-start reads only affect the first request. Polling is not the cause. The cause is not found yet.
+**What closed the gap to stock (2026-10-09):** the plugin was slower than pinned stock only with a *cold* cache (experts loaded one by one on demand). With a warm start the pinned plugin reached 37.5, 37.2, 34.3 tok/s (mean 36.3). So when every CPU expert fits in the cache and no profile exists yet, the plugin now loads all of them in order at start (`MOE_CACHE_PRELOAD_ALL=0` turns this off; startup takes about 6 s for 15 GiB). Result, same setup, plugin pinned, no profile:
 
+| | Runs (steady tok/s) | Mean | First request |
+|---|---|---|---|
+| plugin before (cold cache) | 31.7, 30.2, 30.8, 32.2, 31.9, 31.3, 30.8 | about 31.3 | about 18 |
+| plugin after (loads all experts at start) | 34.9, 36.7, 34.8 | **35.5** | 36-38 |
+| stock, pinned (for comparison) | 36.2, 35.1, 37.5, 35.4 | 36.0 | 38 |
+| stock, defaults | 31.1, 30.8 | 30.9 | |
+
+So with pinning (automatic on hybrid Intel CPUs) the plugin is at parity with pinned stock and about 15 % above stock with default settings, when the model fits in RAM. Identity 4/4. The memory-limit tests (gpt-oss 10 GB, DeepSeek 9 GB, Qwen3-Next 20 GB, Qwen3.6 12 GB) still pass, and none of those cases preloads (they do not fit).
+Also fixed: the memory tuner re-read `/proc/self/status` after every layer even when nothing was read; no measurable speed change.
