@@ -4,13 +4,75 @@ how many layers keep their experts on the GPU (--n-cpu-moe), how big the expert 
 usage: plan.py MODEL.gguf [--ctx 32768] [--kv f16|q8_0] [--mtp] [--vram-gib X] [--ram-gib X] [--profile FILE] [--check NCMOE] [--json]
 Constants are calibrated on one machine (see doc.md): CUDA context + compute buffers ~0.65 GiB, safety margin 1.0 GiB (llama.cpp auto-fit uses 1 GiB), process RAM overhead 3.0 GiB."""
 import argparse, glob, json, os, re, subprocess, sys, collections
-import gguf
+try:
+    import gguf
+except ImportError:                      # the built-in reader below does not need the package
+    gguf = None
 GIB = 2**30
+
+
+class _Field:
+    def __init__(self, v): self.v = v
+    def contents(self): return self.v
+
+
+class _Tensor:
+    def __init__(self, name, n_bytes): self.name, self.n_bytes = name, n_bytes
+
+
+class MiniGGUF:
+    """Reads only the header of a GGUF file (metadata and tensor table). It needs no table of quantisation types: a tensor's size is the
+    distance to the next tensor's offset, so models that use types newer than the installed python 'gguf' package still plan correctly."""
+    SCALAR = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+
+    def __init__(self, path):
+        import struct, os
+        self.fields, self.tensors = {}, []
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF": raise ValueError(f"{path}: not a GGUF file")
+            def rd(fmt): n = struct.calcsize(fmt); return struct.unpack(fmt, f.read(n))[0]
+            def rstr(): return f.read(rd("<Q")).decode("utf-8", "replace")
+            def rval(t):
+                if t in self.SCALAR: return rd(self.SCALAR[t])
+                if t == 8: return rstr()
+                if t == 9:
+                    et, n = rd("<I"), rd("<Q")
+                    if et in self.SCALAR and et != 7:
+                        fmt = self.SCALAR[et]; sz = struct.calcsize(fmt)
+                        return list(struct.unpack("<" + str(n) + fmt[1:], f.read(n * sz)))
+                    return [rval(et) for _ in range(n)]
+                raise ValueError(f"unknown GGUF value type {t}")
+            version, n_tensors, n_kv = rd("<I"), rd("<Q"), rd("<Q")
+            if version < 2: raise ValueError("GGUF version 1 is not supported")
+            for _ in range(n_kv):
+                key = rstr(); t = rd("<I"); self.fields[key] = _Field(rval(t))
+            info = []
+            for _ in range(n_tensors):
+                name = rstr(); nd = rd("<I"); [rd("<Q") for _ in range(nd)]; rd("<I"); info.append((name, rd("<Q")))
+            align = int(self.fields["general.alignment"].v) if "general.alignment" in self.fields else 32
+            data_off = (f.tell() + align - 1) // align * align
+            size = os.path.getsize(path) - data_off
+        order = sorted(range(len(info)), key=lambda i: info[i][1])
+        sizes = {}
+        for k, i in enumerate(order):
+            end = info[order[k + 1]][1] if k + 1 < len(order) else size
+            sizes[i] = max(0, end - info[i][1])
+        self.tensors = [_Tensor(info[i][0], sizes[i]) for i in range(len(info))]
+
+
+def open_gguf(path):
+    if gguf is not None and not os.environ.get("MOE_PLAN_MINI"):
+        try:
+            return gguf.GGUFReader(path)
+        except Exception:
+            pass                          # unknown quantisation type or similar: use the built-in reader
+    return MiniGGUF(path)
+
 ap = argparse.ArgumentParser(); ap.add_argument("model"); ap.add_argument("--ctx", type=int, default=32768); ap.add_argument("--kv", default="f16")
 ap.add_argument("--mtp", action="store_true"); ap.add_argument("--vram-gib", type=float); ap.add_argument("--ram-gib", type=float)
 ap.add_argument("--profile"); ap.add_argument("--check", type=int); ap.add_argument("--json", action="store_true"); a = ap.parse_args()
 
-r = gguf.GGUFReader(a.model)
+r = open_gguf(a.model)
 def val(key, default=None):
     f = r.fields.get(key)
     if f is None: return default
@@ -27,10 +89,21 @@ key_len = int(val(f"{arch}.attention.key_length", embd // heads)); val_len = int
 interval = int(val(f"{arch}.full_attention_interval", 0) or 0); ssm = val(f"{arch}.ssm.inner_size") is not None
 n_attn = n_main // interval if interval else n_main
 
-exp_layer = collections.defaultdict(int); core = 0; mtp_core = 0
-for t in r.tensors:
+def all_tensors():
+    m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", a.model)
+    if not m:
+        return list(r.tensors)
+    out = []
+    for i in range(1, int(m[2]) + 1):
+        part = a.model[:m.start()] + f"-{i:05d}-of-{m[2]}.gguf"
+        out += list(r.tensors if part == a.model else open_gguf(part).tensors)
+    return out
+
+exp_layer = collections.defaultdict(int); core = 0; mtp_core = 0; table = 0
+for t in all_tensors():
     m = re.match(r"blk\.(\d+)\.", t.name); layer = int(m[1]) if m else -1
     if re.search(r"ffn_(gate_up|gate|up|down)_exps", t.name): exp_layer[layer] += int(t.n_bytes)   # gate_up = fused gate+up tensor (e.g. qwen4exp)
+    elif "per_layer_token_embd" in t.name: table += int(t.n_bytes)   # n-gram lookup table (qwen4exp): read from the file when needed, never on the GPU
     elif layer >= n_main: mtp_core += int(t.n_bytes)
     else: core += int(t.n_bytes)
 main_layers = [l for l in range(n_main) if l in exp_layer]
@@ -92,7 +165,7 @@ info = dict(arch=arch, layers=n_main, experts=n_exp, used=n_used, expert_MB=per_
             cache_GiB=cache / GIB, cache_holds_all_cpu_experts=fits, note=note, env=env, command=cmd)
 if a.json: print(json.dumps(info, indent=1))
 else:
-    print(f"{arch}: {n_main} layers x {n_exp} experts (top-{n_used}), {per_layer/n_exp/1e6:.2f} MB/expert, experts {n_main*per_layer/GIB:.1f} GiB, core {core/GIB:.2f} GiB, KV@{a.ctx} {kv_bytes/GIB:.2f} GiB")
+    print(f"{arch}: {n_main} layers x {n_exp} experts (top-{n_used}), {per_layer/n_exp/1e6:.2f} MB/expert, experts {n_main*per_layer/GIB:.1f} GiB, core {core/GIB:.2f} GiB, KV@{a.ctx} {kv_bytes/GIB:.2f} GiB" + (f", n-gram table {table/GIB:.1f} GiB (stays in the file)" if table else ""))
     print(f"GPU: free {free_vram/GIB:.2f} GiB -> {n_gpu} layers of experts on the GPU (predicted use {predicted_vram(n_gpu)/GIB:.2f} GiB)" if free_vram else "GPU: none")
     print(f"RAM: available {ram/GIB:.1f} GiB -> expert cache {cache/GIB:.1f} GiB ({'holds every CPU expert' if fits else 'partial: ' + format(cache/cpu_experts*100, '.0f') + '% of CPU experts'})")
     if note: print("NOTE:", note)
