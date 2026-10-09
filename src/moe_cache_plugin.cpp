@@ -1054,6 +1054,66 @@ cpu_api_t & CPU() {
     return a;
 }
 
+// CPUs to pin the plugin's compute threads to, best first: one thread per performance core, then their hyper-threading siblings.
+// Only on hybrid Intel CPUs (performance + efficiency cores), where a worker on an efficiency core or on a busy sibling slows every layer.
+// MOE_CACHE_CPU_PIN=off disables it; MOE_CACHE_CPU_MASK=hex picks the CPUs yourself (bit i = CPU i).
+std::vector<int> pin_cpus() {
+    std::vector<int> out;
+#ifdef __linux__
+    const char * off = getenv("MOE_CACHE_CPU_PIN");
+    if (off && strcmp(off, "off") == 0) {
+        return out;
+    }
+    if (const char * m = getenv("MOE_CACHE_CPU_MASK")) {
+        const size_t n = strlen(m);
+        for (size_t i = 0; i < n; i++) {
+            const char ch = m[n - 1 - i];
+            const int v = ch >= '0' && ch <= '9' ? ch - '0' : (ch | 32) >= 'a' && (ch | 32) <= 'f' ? (ch | 32) - 'a' + 10 : 0;
+            for (int b = 0; b < 4; b++) {
+                if (v & (1 << b)) {
+                    out.push_back((int) (i * 4 + b));
+                }
+            }
+        }
+        return out;
+    }
+    auto parse = [](const std::string & txt) {
+        std::vector<int> r;
+        size_t i = 0;
+        while (i < txt.size()) {
+            int a = atoi(txt.c_str() + i), b = a;
+            while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
+            if (i < txt.size() && txt[i] == '-') {
+                i++;
+                b = atoi(txt.c_str() + i);
+                while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
+            }
+            for (int c = a; c <= b; c++) { r.push_back(c); }
+            while (i < txt.size() && !isdigit((unsigned char) txt[i])) { i++; }
+        }
+        return r;
+    };
+    auto slurp = [](const std::string & fn) {
+        std::string t;
+        if (FILE * f = fopen(fn.c_str(), "r")) {
+            char b[256];
+            while (fgets(b, sizeof(b), f)) { t += b; }
+            fclose(f);
+        }
+        return t;
+    };
+    const std::vector<int> pcpus = parse(slurp("/sys/devices/cpu_core/cpus"));   // exists only on hybrid Intel CPUs
+    std::vector<int> primary, secondary;
+    for (int c : pcpus) {
+        const std::vector<int> sib = parse(slurp("/sys/devices/system/cpu/cpu" + std::to_string(c) + "/topology/thread_siblings_list"));
+        (!sib.empty() && sib[0] != c ? secondary : primary).push_back(c);
+    }
+    out = primary;
+    out.insert(out.end(), secondary.begin(), secondary.end());
+#endif
+    return out;
+}
+
 struct moe_cache_backend_ctx {
     ggml_backend_t     cpu = nullptr;
     ggml_threadpool_t  tp = nullptr;
@@ -1062,6 +1122,7 @@ struct moe_cache_backend_ctx {
     ggml_backend_t     gpu = nullptr;
     ggml_gallocr_t     galloc = nullptr;
     bool               gpu_failed = false;
+    bool               pin_reported = false;
 };
 
 const char * be_name(ggml_backend_t) {
@@ -1229,6 +1290,17 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         tpp.n_threads = c->n_threads;
         tpp.prio = GGML_SCHED_PRIO_NORMAL;
         tpp.poll = 50;
+        static const std::vector<int> pins = pin_cpus();
+        if (!pins.empty() && (size_t) c->n_threads <= pins.size()) {
+            for (int i = 0; i < c->n_threads; i++) {
+                tpp.cpumask[pins[(size_t) i]] = true;
+            }
+            tpp.strict_cpu = true;
+            if (!c->pin_reported) {
+                c->pin_reported = true;
+                fprintf(stderr, "moe-cache: compute threads pinned to %d performance cores (MOE_CACHE_CPU_PIN=off to disable)\n", c->n_threads);
+            }
+        }
         if (const char * v = getenv("MOE_CACHE_POLL")) {
             tpp.poll = (uint32_t) atoi(v);
         }

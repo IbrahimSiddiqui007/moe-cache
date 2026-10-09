@@ -142,3 +142,29 @@ A first version of the memory controller let a long first prompt grow the cache 
 | Failing direct reads (every 40th expert read fails all its direct attempts; test switch `MOE_CACHE_FAULT_EVERY`) | 320 reads fell back to a buffered read, output 4/4 identical. If the buffered read fails too, the server stops with a message (it never serves wrong data). |
 | Memory-bandwidth probe (CPU and GPU reading host memory at the same time) | CPU alone 40-41 GB/s, GPU alone 12.5 GB/s, together 39-41 GB/s in total: the two share one memory bus and do not add up |
 
+## 11. CPU thread pinning on a hybrid CPU (i7-13620H: 6 performance cores with 2 threads each, 4 efficiency cores)
+
+Qwen3.6 35B, 6 layers of experts on the GPU, ctx 32768, 28 GB limit (the model fits), steady tok/s, forward and reverse order, clean runs (start 57-59 C, no background load).
+
+**Stock llama.cpp** (no plugin):
+
+| Setting | Runs | Mean | vs default |
+|---|---|---|---|
+| default (threads float over all cores) | 31.1, 30.8 | 30.9 | |
+| `-C 0x555 --cpu-strict 1` (one thread per performance core) | 36.2, 35.1 | 35.7 | **+15 %** |
+| `-t 12 -C 0xFFF --cpu-strict 1` (all threads of the performance cores) | 37.5, 35.4 | 36.5 | **+18 %** |
+| `--poll 100` | 31.0, 31.9 | 31.5 | +2 % (noise) |
+
+**With the plugin** (cold cache, auto size; the plugin has its own thread pool, so llama.cpp's flags do not reach it):
+
+| Setting | Runs | vs unpinned plugin |
+|---|---|---|
+| plugin not pinned (`MOE_CACHE_CPU_PIN=off`) | 26.4, 25.8 | |
+| plugin pins its threads automatically (default on hybrid Intel CPUs) | 31.3, 30.8 | **+19 %** |
+| plugin pinned and `-C 0x555 --cpu-strict 1` for llama.cpp | 31.9, 31.9 | **+22 %** |
+| same with polling off in both pools (`MOE_CACHE_POLL=0 --poll 0`) | 31.4, 32.1 | no effect |
+
+`moe-cache-server` now adds `-C MASK --cpu-strict 1` on hybrid Intel CPUs (`--no-pin` to disable). Pinning does not change the output (identity 4/4).
+
+**Open problem:** when the model fits in RAM, stock with pinning (35.7 to 36.5) is still about 13 % faster than the plugin with pinning (about 31.5). The plugin's cold-start reads only affect the first request. Polling is not the cause. The cause is not found yet.
+

@@ -4,12 +4,14 @@
 # --ram      memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it.
 # MOE_CACHE_PYTHON  python with the gguf package for the planner (default python3)
 # --n-cpu-moe  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
+# --no-pin     do not pin llama-server's threads. By default on hybrid Intel CPUs (performance + efficiency cores) it gets
+#              -C MASK --cpu-strict 1 (one thread on each performance core): about +15 % decode speed measured on an i7-13620H
 set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; EXTRA=()
+MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
   --ram) RAM=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
-  --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
+  --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
   -h|--help) sed -n 2,6p "$0"; exit 0;; *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
 [ -f "$MODEL" ] || { echo "usage: moe-cache-server MODEL.gguf [options]  (model file not found: '$MODEL')"; exit 1; }
 LIB="${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}"
@@ -23,7 +25,24 @@ PROFILE="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").usage"
 . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" "$METHOD"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL" MOE_CACHE_PROFILE="$PROFILE")
 [ -n "$RAM" ] && ENVV+=(MOE_CACHE_RAM_GIB="$RAM")
-CMD=("$LS" -m "$MODEL" -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -fa on --load-mode mmap --no-warmup --port "$PORT" "${EXTRA[@]}")
+PINARGS=()
+if [ $PIN = 1 ] && [ -r /sys/devices/cpu_core/cpus ] && ! printf '%s ' "${EXTRA[@]}" | grep -qE -- '(^| )(-C|--cpu-mask|-Cr|--cpu-range)( |$)'; then
+  MASK=$(python3 - <<'PYEOF' 2>/dev/null
+def parse(t):
+    r = []
+    for part in t.strip().split(","):
+        if "-" in part:
+            a, b = part.split("-"); r += range(int(a), int(b) + 1)
+        elif part: r.append(int(part))
+    return r
+p = parse(open("/sys/devices/cpu_core/cpus").read())
+prim = [c for c in p if min(parse(open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read())) == c]
+print(hex(sum(1 << c for c in prim)))
+PYEOF
+)
+  [ -n "$MASK" ] && PINARGS=(-C "$MASK" --cpu-strict 1) && echo "moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C $MASK); --no-pin to disable"
+fi
+CMD=("$LS" -m "$MODEL" -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -fa on --load-mode mmap --no-warmup --port "$PORT" "${PINARGS[@]}" "${EXTRA[@]}")
 echo "moe-cache: experts of the first $NCMOE layers stay on the CPU; profile $PROFILE; plugin loaded by $MOE_CACHE_METHOD"
 echo "moe-cache: web UI and API will be at http://localhost:$PORT"
 if [ $DRY = 1 ]; then echo "env ${ENVV[*]} ${CMD[*]}"; exit 0; fi

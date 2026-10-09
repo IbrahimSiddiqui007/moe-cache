@@ -26,7 +26,7 @@ moe-cache manages the CPU-side experts itself:
 - works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
 - runs long prompts on the GPU like stock llama.cpp does.
 
-If the model already fits in your RAM you get the same speed as stock (within a few percent). It is for the case where it does not.
+If the model already fits in your RAM you get about the speed of stock llama.cpp with default settings (within a few percent; with CPU pinning stock can be up to about 13 % faster, see [RESULTS](docs/RESULTS.md) section 11). It is for the case where it does not.
 
 ## Quick start (Linux)
 
@@ -54,6 +54,8 @@ bin/moe-cache-server model.gguf --ram 12 --llama-server /path/to/llama-server --
 | Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
 
 Conditions: "RAM" is a memory limit set with a cgroup on a 30 GB machine. The 80B model, the 20 GB case and gpt-oss-20b keep **all experts on the CPU** and use the GPU only for the rest of the model (about 2.6 GB). The Qwen3.6 rows put 6 layers of experts on the GPU (about 6 GB), KAT-Coder 7 layers. The "no GPU" row hides the GPU completely. The chart above lists the setup per row.
+
+**Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](docs/RESULTS.md), section 11.
 
 Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 30 GB RAM, RTX 4060 8 GB, NVMe SSD.
 
