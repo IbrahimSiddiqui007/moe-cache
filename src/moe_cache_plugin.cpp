@@ -216,6 +216,7 @@ struct state_t {
     FILE * trace_f = nullptr;                           // MOE_CACHE_TRACE_IDS=file: record the experts picked in every decode step (int16 layer, int16 n, n x int16 expert)
     std::vector<uint64_t> layer_hits, layer_misses;     // per layer, updated under mu
     // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
+    bool   l3_prefetch = false;                         // MOE_CACHE_L3PREFETCH=1: a helper thread pulls the later tensors of a group into the L3 cache while the first ones compute
     bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
     std::atomic<uint64_t> sibling_loads{0};
     bool   lookahead = false;
@@ -484,6 +485,13 @@ struct state_t {
             workers.emplace_back([this, i] { worker_main(i + 1); });
         }
         fprintf(stderr, "moe-cache: cache mode, %.2f GiB, %zu tensors in %s, layers %d-%d\n", budget / 1073741824.0, file_tensors.size(), file, lo, hi);
+        if (const char * l3 = getenv("MOE_CACHE_L3PREFETCH")) {
+            l3_prefetch = strcmp(l3, "0") != 0;
+            if (l3_prefetch && pf_threads.empty()) {
+                pf_threads.emplace_back([this] { pf_main(); });
+                fprintf(stderr, "moe-cache: L3 prefetch helper thread on\n");
+            }
+        }
         if (const char * sb = getenv("MOE_CACHE_SIBLINGS")) {
             siblings = strcmp(sb, "0") != 0;
         }
@@ -1873,6 +1881,28 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
             const auto p0 = std::chrono::steady_clock::now();
             s.cur_decode = n_tok == 1;
+            if (s.l3_prefetch && n_tok == 1 && tidx.size() >= 2) {
+                // ranges of the experts this step will read in its second and later tensors (not yet touched by the kernel)
+                std::vector<std::pair<const char *, size_t>> ranges;
+                for (size_t q = 1; q < tidx.size(); q++) {
+                    const tinfo_t & ti = *s.tensors[tidx[q]];
+                    for (size_t e = 0; e < used.size() && e < (size_t) ti.n_expert; e++) {
+                        if (used[e]) {
+                            ranges.push_back({ ti.data + e * ti.nb2, ti.nb2 });
+                        }
+                    }
+                }
+                s.pf_submit([ranges = std::move(ranges)] {
+                    static volatile uint64_t sink;
+                    uint64_t acc = 0;
+                    for (const auto & r : ranges) {
+                        for (size_t off = 0; off + 8 <= r.second; off += 64) {
+                            acc += *(const volatile uint64_t *) (r.first + off);   // a real load: a prefetch hint can be dropped on a TLB miss
+                        }
+                    }
+                    sink = acc;
+                });
+            }
             if (s.trace_f && n_tok == 1) {
                 int16_t hdr[2] = { (int16_t) s.tensors[tidx[0]]->layer, (int16_t) n_used };
                 fwrite(hdr, sizeof(int16_t), 2, s.trace_f);
