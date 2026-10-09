@@ -7,6 +7,7 @@
 # --no-pin     do not pin llama-server's threads. By default on hybrid Intel CPUs (performance + efficiency cores) it gets
 #              -C MASK --cpu-strict 1 (one thread on each performance core): about +15 % decode speed measured on an i7-13620H
 set -e
+umask 077   # the usage profile is private to this user
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
@@ -21,6 +22,11 @@ if [ -z "$NCMOE" ]; then
   NCMOE=$("${P[@]}" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["n_cpu_moe"])' 2>/dev/null || true)
   if [ -z "$NCMOE" ]; then echo "planner unavailable (needs python3 and 'pip install gguf'); keeping all experts on the CPU"; NCMOE=999; fi
 fi
+HOSTARG=""
+for ((i = 0; i < ${#EXTRA[@]}; i++)); do if [ "${EXTRA[$i]}" = --host ]; then HOSTARG="${EXTRA[$((i + 1))]}"; fi; done
+case "$HOSTARG" in ""|127.*|localhost|::1) ;; *)
+  printf '%s ' "${EXTRA[@]}" | grep -q -- '--api-key' || echo "WARNING: llama-server will listen on '$HOSTARG' without --api-key: anyone who can reach this machine can use the model and the web UI. Add --api-key KEY after the -- or bind to 127.0.0.1." >&2;;
+esac
 PROFILE="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").usage"
 . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" "$METHOD"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL" MOE_CACHE_PROFILE="$PROFILE")

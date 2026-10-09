@@ -8,6 +8,8 @@
 # Takes about 10-20 minutes, almost all of it compiling llama.cpp. Needs about 3 GB of disk. Run it as a normal user (it asks for sudo only for apt).
 set -e
 LLAMA_SHA=7fe450e19305b828c199d602c23a8337aaa1f03b   # the llama.cpp commit moe-cache was built and tested against (ggml 0.25.1)
+MOE_CACHE_REF=v0.1.2                                  # tag of moe-cache used when this script is run without a moe-cache checkout
+GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 VULKAN=0; PREFIX="$HOME/moe-cache-setup"; JOBS=$(nproc); APT=1
 while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;;
   -h|--help) sed -n 2,9p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
@@ -45,24 +47,33 @@ BIN="$L/build/bin"; [ -x "$BIN/llama-server" ] || { echo "llama-server was not b
 
 say "4/5 moe-cache plugin"
 if [ -f "$(dirname "$0")/build.sh" ] && [ -d "$(dirname "$0")/src" ]; then M="$(cd "$(dirname "$0")" && pwd)"; else
-  M="$PREFIX/moe-cache"; [ -d "$M/.git" ] && git -C "$M" pull -q || git clone -q https://github.com/IbrahimSiddiqui007/moe-cache "$M"; fi
+  M="$PREFIX/moe-cache"
+  if [ -d "$M/.git" ]; then git -C "$M" fetch -q --tags origin && git -C "$M" checkout -q "$MOE_CACHE_REF"
+  else git clone -q --branch "$MOE_CACHE_REF" https://github.com/IbrahimSiddiqui007/moe-cache "$M"; fi
+fi
 GGML_LIB_DIR="$BIN" "$M/build.sh"
 
 say "5/5 python environment for the planner"
-python3 -m venv "$PREFIX/venv" && "$PREFIX/venv/bin/pip" install -q --upgrade pip gguf
+python3 -m venv "$PREFIX/venv" && "$PREFIX/venv/bin/pip" install -q "gguf==$GGUF_PY_VERSION"
 PY="$PREFIX/venv/bin/python3"
 
-cat > "$PREFIX/env.sh" <<EOT
-# source this file:  . $PREFIX/env.sh
-export LLAMA_SERVER="$BIN/llama-server"
-export MOE_CACHE_PYTHON="$PY"
-export PATH="$M/bin:\$PATH"
-EOT
+{
+  echo "# source this file:  . $(printf '%q' "$PREFIX/env.sh")"
+  printf 'export LLAMA_SERVER=%q\n' "$BIN/llama-server"
+  printf 'export MOE_CACHE_PYTHON=%q\n' "$PY"
+  printf 'export PATH=%q:"$PATH"\n' "$M/bin"
+} > "$PREFIX/env.sh"
+{
+  echo "# fish:  source $PREFIX/env.fish"
+  printf 'set -gx LLAMA_SERVER %q\n' "$BIN/llama-server"
+  printf 'set -gx MOE_CACHE_PYTHON %q\n' "$PY"
+  printf 'set -gx PATH %q $PATH\n' "$M/bin"
+} > "$PREFIX/env.fish"
 say "setup check"
 LLAMA_SERVER="$BIN/llama-server" MOE_CACHE_PYTHON="$PY" "$M/bin/moe-cache-check" --llama-server "$BIN/llama-server" || true
 cat <<EOT
 
-Done. Next steps (bash or zsh):
+Done. Next steps (bash or zsh; for fish use: source $PREFIX/env.fish):
   . $PREFIX/env.sh
   # get any MoE model in GGUF format, for example (12 GB):
   #   curl -L -o gpt-oss-20b.gguf https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf
