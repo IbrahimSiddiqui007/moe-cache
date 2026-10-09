@@ -37,6 +37,10 @@
 #include <map>
 #include <unordered_set>
 #include "platform.h"
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 #include <filesystem>
 #include <condition_variable>
 #include <deque>
@@ -44,6 +48,16 @@
 #ifdef __linux__
 #include <sched.h>
 #endif
+
+// trace and profile files show what the user ran: create them readable by the owner only
+static FILE * fopen_private(const char * path) {
+#ifdef _WIN32
+    return fopen(path, "wb");
+#else
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    return fd < 0 ? nullptr : fdopen(fd, "wb");
+#endif
+}
 
 #ifndef MOE_CACHE_TESTED_GGML
 #define MOE_CACHE_TESTED_GGML "0.25.1"
@@ -496,7 +510,7 @@ struct state_t {
             siblings = strcmp(sb, "0") != 0;
         }
         if (const char * tp = getenv("MOE_CACHE_TRACE_IDS")) {
-            trace_f = fopen(tp, "wb");
+            trace_f = fopen_private(tp);
         }
         if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
             lookahead = strcmp(v, "0") != 0;
@@ -1053,7 +1067,7 @@ struct state_t {
             plat::make_dir(dir.c_str());
         }
         const std::string tmp = profile_path + ".tmp";
-        FILE * f = fopen(tmp.c_str(), "wb");
+        FILE * f = fopen_private(tmp.c_str());
         if (!f) {
             fprintf(stderr, "moe-cache: cannot write profile %s\n", tmp.c_str());
             return;
