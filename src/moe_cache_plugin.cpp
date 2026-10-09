@@ -42,8 +42,14 @@
 #define MOE_CACHE_TESTED_GGML "0.25.1"
 #endif
 
+#ifdef __linux__
+#include <signal.h>
+#endif
 namespace {
 
+#ifdef __linux__
+int g_stats_pipe[2] = { -1, -1 };
+#endif
 constexpr size_t PAGE = 4096;
 
 size_t round_up(size_t x, size_t a = PAGE) {
@@ -173,6 +179,10 @@ struct state_t {
     int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
     std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0};
     std::atomic<uint64_t> gpu_up_bytes{0};
+    // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
+    std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
+    bool cur_decode = false;                            // the group being prepared is a single-token (decode) step
+    std::vector<uint64_t> layer_hits, layer_misses;     // per layer, updated under mu
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
     size_t budget = 0;
@@ -404,6 +414,43 @@ struct state_t {
             workers.emplace_back([this, i] { worker_main(i + 1); });
         }
         fprintf(stderr, "moe-cache: cache mode, %.2f GiB, %zu tensors in %s, layers %d-%d\n", budget / 1073741824.0, file_tensors.size(), file, lo, hi);
+#ifdef __linux__
+        if (getenv("MOE_CACHE_STATS_SIGNAL")) {
+            if (pipe(g_stats_pipe) == 0) {
+                struct sigaction sa;
+                memset(&sa, 0, sizeof(sa));
+                sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_stats_pipe[1], &c, 1); (void) r; };   // async-signal-safe: only write()
+                sa.sa_flags = SA_RESTART;
+                sigaction(SIGUSR1, &sa, nullptr);
+                std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1) { print_snapshot(); } }).detach();
+            }
+        }
+#endif
+    }
+
+    // one line of cumulative counters on stderr (see MOE_CACHE_STATS_SIGNAL)
+    void print_snapshot() {
+        std::string j;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            char b[1024];
+            snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,"
+                     "\"resident_bytes\":%llu,\"budget\":%llu,\"ns_prep\":%llu,\"ns_read\":%llu,\"ns_cpu\":%llu,\"ns_total\":%llu,\"graphs\":%llu,"
+                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu",
+                     (unsigned long long) hits, (unsigned long long) misses, (unsigned long long) hits_dec, (unsigned long long) misses_dec, (unsigned long long) bytes,
+                     (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) resident_bytes, (unsigned long long) budget,
+                     (unsigned long long) ns_prep, (unsigned long long) ns_read, (unsigned long long) ns_cpu, (unsigned long long) ns_total, (unsigned long long) graphs,
+                     (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs, (unsigned long long) gpu_segments,
+                     (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows);
+            j = b;
+            j += ",\"layer_hits\":[";
+            for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
+            j += "],\"layer_misses\":[";
+            for (size_t i = 0; i < layer_misses.size(); i++) { j += (i ? "," : "") + std::to_string(layer_misses[i]); }
+            j += "]}";
+        }
+        fprintf(stderr, "moe-cache-stats %s\n", j.c_str());
+        fflush(stderr);
     }
 
     ~state_t() {
@@ -814,6 +861,7 @@ struct state_t {
         if (b > a) {
             plat::mem_decommit((void *) a, b - a);
         }
+        evict_age_sum += epoch - nodes[s].epoch;   // how many groups ago this expert was last used
         unlink(s);
         nodes[s].resident = false;
         resident_bytes -= ti.nb2;
@@ -854,14 +902,23 @@ struct state_t {
                 }
                 const int s = ti.node0 + (int) e;
                 node_t & n = nodes[s];
+                if (ti.layer >= 0) {
+                    if ((size_t) ti.layer >= layer_hits.size()) {
+                        layer_hits.resize((size_t) ti.layer + 1, 0);
+                        layer_misses.resize((size_t) ti.layer + 1, 0);
+                    }
+                    (n.resident ? layer_hits : layer_misses)[(size_t) ti.layer]++;
+                }
                 if (n.resident) {
                     hits++;
+                    if (cur_decode) { hits_dec++; }
                     unlink(s);
                     push_mru(s);
                     n.epoch = epoch;
                     continue;
                 }
                 misses++;
+                if (cur_decode) { misses_dec++; }
                 while (resident_bytes + ti.nb2 > budget) {
                     int v = lru;
                     for (int k = 0; k < 100000 && v >= 0 && nodes[v].epoch == epoch; k++) {
@@ -1380,6 +1437,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 }
             }
             const auto p0 = std::chrono::steady_clock::now();
+            s.cur_decode = n_tok == 1;
             s.prepare_group(tidx, used);
             if (!s.profile_path.empty() && ++s.groups_since_save >= 100000) {
                 s.groups_since_save = 0;

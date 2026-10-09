@@ -23,7 +23,6 @@ STOCK_PROMPTS = [
     "Write a SQL query that finds the top 3 customers by revenue per month, and explain which indexes would help.",
     "Explain the difference between processes and threads in Linux and show a small C example of each.",
 ]
-C_STOCK, C_PLUG = "#9aa0a6", "#2f81f7"
 
 
 # ---------------------------------------------------------------- system information
@@ -91,17 +90,28 @@ def temp_c():
     return None
 
 
-def bg_load():
-    """CPU percent used by everything except the benchmark itself."""
-    tot = 0.0
-    for l in sh(["ps", "-eo", "pcpu,comm"]).splitlines()[1:]:
+def _cpu_times():
+    d = {}
+    for p in glob.glob("/proc/[0-9]*/stat"):
         try:
-            p, c = l.strip().split(None, 1)
-        except ValueError:
-            continue
-        if c in ("llama-server", "llama-perplexity", "ps", "systemd-run") or c.startswith("python"):
-            continue
-        tot += float(p)
+            x = open(p).read()
+            f = x[x.rindex(")") + 2:].split()
+            d[p] = (x[x.index("(") + 1:x.rindex(")")], int(f[11]) + int(f[12]))
+        except Exception:
+            pass
+    return d
+
+
+def bg_load(window=1.5):
+    """CPU used right now (percent of one core) by everything except the benchmark itself, measured over a short window."""
+    a = _cpu_times()
+    time.sleep(window)
+    b = _cpu_times()
+    clk = os.sysconf("SC_CLK_TCK")
+    tot = 0.0
+    for p, (c, t) in b.items():
+        if p in a and c not in ("llama-server", "llama-perplexity", "systemd-run") and not c.startswith("python"):
+            tot += (t - a[p][1]) / clk / window * 100
     return tot
 
 
@@ -134,8 +144,8 @@ def default_config():
     lib = str(REPO / "build/libggml-moe-cache.so")
     return {"llama_server": find_llama_server(), "plugin_lib": lib if os.path.exists(lib) else "", "model": "", "modes": ["stock", "plugin"],
             "limits": [max(4, int(tot * 0.8))], "ctx": 8192, "n_cpu_moe": "auto", "pin": True, "extra_args": "",
-            "speed": True, "speed_tokens": 100, "speed_prompts": 4, "long": True, "custom": "", "custom_tokens": 100,
-            "ppl_file": "", "ppl_chunks": 8, "both_orders": False, "gate_temp": 58, "gate_wait_s": 300}
+            "speed": True, "speed_tokens": 100, "sweep": "100,1000,4000", "sweep_tokens": 64, "speed_prompts": 4, "long": True, "custom": "", "custom_tokens": 100,
+            "ppl_file": "", "ppl_chunks": 8, "both_orders": False, "gate_temp": 58, "bg_max": 25, "gate_wait_s": 300}
 
 
 def model_size_gb(path):
@@ -197,6 +207,10 @@ def complete(port, prompt, n):
 
 
 def long_prompt(n_words=1500):
+    return words_prompt(n_words)
+
+
+def words_prompt(n_words):
     words = "alpha river stone engine memory window cable forest signal garden planet silver copper orbit lantern harbor meadow pencil rocket violet".split()
     import random
     rnd = random.Random(7)
@@ -242,8 +256,106 @@ def gate(job, cfg):
         time.sleep(10)
         t = temp_c()
     bg = bg_load()
-    clean = (t is None or t <= limit_t + 4) and bg < 15
+    clean = (t is None or t <= limit_t + 4) and bg < float(cfg.get("bg_max", 25))
     return t, bg, clean
+
+
+# ---------------------------------------------------------------- per-request measurements
+CLK = os.sysconf("SC_CLK_TCK")
+
+
+def find_pid(port):
+    needle = f"--port\0{port}\0".encode()
+    for d in glob.glob("/proc/[0-9]*"):
+        try:
+            if needle in open(d + "/cmdline", "rb").read() and Path(d + "/comm").read_text().startswith("llama-server"):
+                return int(d.rsplit("/", 1)[1])
+        except Exception:
+            pass
+    return None
+
+
+def gpu_mem_mb():
+    if not shutil.which("nvidia-smi"):
+        return None
+    try:
+        return float(sh(["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"], 5).split()[0])
+    except Exception:
+        return None
+
+
+def proc_sample(pid):
+    d = {"temp": temp_c(), "gpu_mb": gpu_mem_mb()}
+    try:
+        io = dict(l.split(": ") for l in open(f"/proc/{pid}/io").read().splitlines())
+        d["read_bytes"] = int(io["read_bytes"])
+        st = open(f"/proc/{pid}/stat").read().rsplit(")", 1)[1].split()
+        d["majflt"], d["cpu_s"] = int(st[9]), (int(st[11]) + int(st[12])) / CLK
+        for l in open(f"/proc/{pid}/status"):
+            if l.startswith(("RssAnon", "RssFile")):
+                k, v = l.split(":")
+                d[k.lower()] = int(v.split()[0]) / 1048576
+        base = "/sys/fs/cgroup" + open(f"/proc/{pid}/cgroup").read().strip().split("::")[-1]
+        for f in ("memory.current", "memory.peak"):
+            try:
+                d["cg_" + f.split(".")[1]] = int(open(f"{base}/{f}").read()) / 1e9
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return d
+
+
+def plugin_snapshot(pid, logp, seen):
+    """Ask the plugin for its cumulative counters (SIGUSR1) and read the answer from the server log."""
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except Exception:
+        return None, seen
+    for _ in range(50):
+        time.sleep(0.1)
+        lines = [l for l in open(logp, errors="ignore") if l.startswith("moe-cache-stats ")]
+        if len(lines) > seen:
+            try:
+                return json.loads(lines[-1].split(" ", 1)[1]), len(lines)
+            except Exception:
+                return None, len(lines)
+    return None, seen
+
+
+def derive(r, s0, s1, c0, c1):
+    """Per-request metrics from the before/after samples."""
+    n = max(1, r["gen_n"])
+    m = {"gen_tps": r["gen_tps"], "prompt_tps": r["prompt_tps"], "ttft_ms": r["ttft_ms"], "e2e_s": r["wall_s"]}
+    if "read_bytes" in s0 and "read_bytes" in s1:
+        m["io_mb_tok"] = (s1["read_bytes"] - s0["read_bytes"]) / 1e6 / n
+        m["majflt_tok"] = (s1["majflt"] - s0["majflt"]) / n
+        m["cpu_ms_tok"] = (s1["cpu_s"] - s0["cpu_s"]) * 1000 / n
+    for k in ("temp", "gpu_mb", "rssanon", "rssfile", "cg_current", "cg_peak"):
+        if s1.get(k) is not None:
+            m[k] = s1[k]
+    if c0 and c1:
+        d = lambda k: c1[k] - c0[k]
+        hd, md = d("hits_dec"), d("misses_dec")
+        h, mi = d("hits"), d("misses")
+        m["hit_dec_pct"] = 100.0 * hd / (hd + md) if hd + md else None
+        m["hit_pct"] = 100.0 * h / (h + mi) if h + mi else None
+        m["cache_read_mb_tok"] = d("read_bytes") / 1e6 / n
+        m["evictions"] = d("evictions")
+        m["evictions_tok"] = d("evictions") / n
+        m["evict_age"] = d("evict_age_sum") / d("evictions") if d("evictions") else None
+        m["misses_tok"] = mi / n
+        wall = r["wall_s"] * 1e9
+        reads, comp, prep = d("ns_read"), d("ns_cpu"), d("ns_prep")
+        m["ms_tok_reads"] = reads / 1e6 / n
+        m["ms_tok_compute"] = comp / 1e6 / n
+        m["ms_tok_bookkeeping"] = max(0.0, prep - reads) / 1e6 / n
+        m["ms_tok_other"] = max(0.0, wall - d("ns_total")) / 1e6 / n
+        m["resident_gb"] = c1["resident_bytes"] / 1e9
+        m["budget_gb"] = c1["budget"] / 1e9
+        m["layer_hits"] = [a - b for a, b in zip(c1["layer_hits"], c0["layer_hits"] + [0] * len(c1["layer_hits"]))]
+        m["layer_misses"] = [a - b for a, b in zip(c1["layer_misses"], c0["layer_misses"] + [0] * len(c1["layer_misses"]))]
+    return m
 
 
 def run_one(job, cfg, mode, limit, rep, tag):
@@ -261,7 +373,7 @@ def run_one(job, cfg, mode, limit, rep, tag):
     if mode == "plugin":
         e, method = load_env(ls, cfg["plugin_lib"])
         envs.update(e)
-        envs.update(MOE_CACHE_SIZE_GIB="auto", MOE_CACHE_GGUF=model, MOE_CACHE_STATS="1")
+        envs.update(MOE_CACHE_SIZE_GIB="auto", MOE_CACHE_GGUF=model, MOE_CACHE_STATS="1", MOE_CACHE_STATS_SIGNAL="1")
         st["load_method"] = method
     args = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", str(ncm), "-c", str(cfg["ctx"]), "-fa", "on", "--load-mode", "mmap", "--no-warmup",
             "--port", str(port), "--seed", "42", "-np", "1"]
@@ -290,32 +402,53 @@ def run_one(job, cfg, mode, limit, rep, tag):
                     raise RuntimeError("server did not become ready in 30 minutes")
                 time.sleep(2)
             job.say("server ready")
+            pid = find_pid(port)
+            seen = 0
+            if mode == "plugin" and pid:
+                _, seen = plugin_snapshot(pid, logp, 0)      # baseline (loading counts are not part of any request)
             reqs = []
+
+            def ask(prompt, n, **tags):
+                nonlocal seen
+                if job.cancel:
+                    raise RuntimeError("cancelled")
+                s0 = proc_sample(pid) if pid else {}
+                c0 = None
+                if mode == "plugin" and pid:
+                    c0, seen = plugin_snapshot(pid, logp, seen)
+                r = complete(port, prompt, n)
+                s1 = proc_sample(pid) if pid else {}
+                c1 = None
+                if mode == "plugin" and pid:
+                    c1, seen = plugin_snapshot(pid, logp, seen)
+                r.update(tags)
+                r["m"] = derive(r, s0, s1, c0, c1)
+                reqs.append(r)
+                return r
+
             if cfg["speed"]:
                 for i, pr in enumerate(STOCK_PROMPTS[:max(1, min(4, int(cfg["speed_prompts"])))]):
-                    if job.cancel:
-                        raise RuntimeError("cancelled")
-                    r = complete(port, pr, int(cfg["speed_tokens"]))
-                    r.update(suite="speed", name=f"prompt {i + 1}", index=i + 1)
-                    reqs.append(r)
+                    r = ask(pr, int(cfg["speed_tokens"]), suite="speed", name=f"prompt {i + 1}", index=i + 1)
                     job.say(f"  speed prompt {i + 1}: {r['gen_tps']:.2f} tok/s generation, {r['prompt_tps']:.1f} tok/s prompt")
                 st["suites"].append("speed")
             if cfg["long"]:
-                if job.cancel:
-                    raise RuntimeError("cancelled")
-                r = complete(port, long_prompt(), 16)
-                r.update(suite="long", name="long prompt", index=1)
-                reqs.append(r)
+                r = ask(long_prompt(), 16, suite="long", name="long prompt", index=1)
                 job.say(f"  long prompt ({r['prompt_n']} tokens): {r['prompt_tps']:.1f} tok/s prompt processing")
                 st["suites"].append("long")
+            lens = [int(x) for x in re.findall(r"\d+", str(cfg.get("sweep", "")))]
+            for n_in in lens:
+                if n_in + 200 > int(cfg["ctx"]):
+                    job.say(f"  latency sweep: {n_in} tokens skipped (context is {cfg['ctx']})")
+                    continue
+                r = ask(words_prompt(max(10, int(n_in / 1.46))), int(cfg.get("sweep_tokens", 64)), suite="sweep", name=f"{n_in} in", index=n_in, nominal=n_in)
+                job.say(f"  sweep {n_in} tokens in: first token after {r['ttft_ms'] / 1000:.2f} s, then {r['gen_tps']:.2f} tok/s")
+            if lens:
+                st["suites"].append("sweep")
             cust = parse_custom(cfg.get("custom", ""))
             for i, c in enumerate(cust):
-                if job.cancel:
-                    raise RuntimeError("cancelled")
-                r = complete(port, c["prompt"], int(cfg["custom_tokens"]))
-                ok = all(x.lower() in r["text"].lower() or x.lower() in r.get("text", "").lower() for x in c["expect"]) if c["expect"] else None
-                r.update(suite="custom", name=f"custom {i + 1}", index=i + 1, expect=c["expect"], passed=ok, prompt=c["prompt"][:200])
-                reqs.append(r)
+                r = ask(c["prompt"], int(cfg["custom_tokens"]), suite="custom", name=f"custom {i + 1}", index=i + 1)
+                ok = all(x.lower() in r["text"].lower() for x in c["expect"]) if c["expect"] else None
+                r.update(expect=c["expect"], passed=ok, prompt=c["prompt"][:200])
                 job.say(f"  custom prompt {i + 1}: {r['gen_tps']:.2f} tok/s" + ("" if ok is None else (" PASS" if ok else " FAIL")))
             if cust:
                 st["suites"].append("custom")
@@ -374,41 +507,65 @@ def run_perplexity(job, cfg, runs):
 
 
 def summarize(runs):
-    """runs -> numbers used by the charts and tables."""
-    sm = {"speed": {}, "long": {}, "identity": {}, "custom": {}, "plugin": {}, "clean": {}}
-    keyf = lambda r: f"{r['limit_gb']}|{r['mode']}"
+    """runs -> the numbers used by the charts and tables."""
+    sm = {"speed": {}, "long": {}, "sweep": {}, "identity": {}, "custom": {}, "deep": {}, "layers": {}, "clean": {}}
+    mean = lambda v: sum(v) / len(v) if v else None
     for r in runs:
-        k = keyf(r)
+        k = f"{r['limit_gb']}|{r['mode']}"
+        sm["clean"].setdefault(k, []).append(bool(r.get("clean")))
         sp = [q for q in r["requests"] if q["suite"] == "speed"]
         if sp:
+            e = sm["speed"].setdefault(k, {"first": [], "steady": [], "per_req": [[] for _ in sp], "all": []})
             g = [q["gen_tps"] for q in sp]
-            e = sm["speed"].setdefault(k, {"first": [], "steady": [], "per_req": [[] for _ in g]})
             e["first"].append(g[0])
-            if len(g) > 1:
-                e["steady"].append(sum(g[1:]) / (len(g) - 1))
+            e["steady"].append(sum(g[1:]) / (len(g) - 1) if len(g) > 1 else g[0])
+            e["all"] += g[1:] if len(g) > 1 else g
             for i, x in enumerate(g):
                 e["per_req"][i].append(x)
+            dp = sm["deep"].setdefault(k, {"per_req": {}, "reqs": 0})
+            dp["reqs"] = max(dp["reqs"], len(sp))
+            for i, q in enumerate(sp):
+                for mk, mv in q.get("m", {}).items():
+                    if mk.startswith("layer_") or mv is None:
+                        continue
+                    dp["per_req"].setdefault(mk, [[] for _ in range(len(sp))])[i].append(mv)
         for q in r["requests"]:
             if q["suite"] == "long":
                 sm["long"].setdefault(k, []).append(q["prompt_tps"])
+            if q["suite"] == "sweep":
+                sw = sm["sweep"].setdefault(k, {})
+                sw.setdefault(q["nominal"], []).append((q["prompt_n"], q["ttft_ms"], q["gen_tps"], q["wall_s"]))
             if q["suite"] == "custom" and q.get("passed") is not None:
                 c = sm["custom"].setdefault(k, [0, 0])
                 c[1] += 1
                 c[0] += 1 if q["passed"] else 0
-        if "plugin_stats" in r:
-            sm["plugin"][k] = r["plugin_stats"]
-        sm["clean"].setdefault(k, []).append(bool(r.get("clean")))
-    mean = lambda v: sum(v) / len(v) if v else None
+            lh = q.get("m", {}).get("layer_hits")
+            if lh:
+                L = sm["layers"].setdefault(k, {"hits": [], "misses": []})
+                for key, arr in (("hits", lh), ("misses", q["m"]["layer_misses"])):
+                    L[key] += [0] * (len(arr) - len(L[key]))
+                    for i, v in enumerate(arr):
+                        L[key][i] += v
     for k, e in sm["speed"].items():
-        e["first"], e["steady"] = mean(e["first"]), mean(e["steady"])
-        e["per_req"] = [mean(v) for v in e["per_req"]]
+        lo, hi = (min(e["all"]), max(e["all"])) if e["all"] else (None, None)
+        e.update(first=mean(e["first"]), steady=mean(e["steady"]), per_req=[mean(v) for v in e["per_req"]], min=lo, max=hi, n=len(e["all"]))
+        e.pop("all")
+    for k, dp in sm["deep"].items():
+        per = {mk: [mean(v) for v in lst] for mk, lst in dp["per_req"].items()}
+        steady = {}
+        for mk, lst in per.items():
+            vals = [x for x in lst[1:] if x is not None] or [x for x in lst if x is not None]
+            steady[mk] = mean(vals) if mk not in ("cg_peak", "gpu_mb", "temp") else (max(vals) if vals else None)
+        dp["per_req"], dp["steady"] = per, steady
     sm["long"] = {k: mean(v) for k, v in sm["long"].items()}
-    for lim in sorted({r["limit_gb"] for r in runs}):
-        a = next((r for r in runs if r["limit_gb"] == lim and r["mode"] == "stock"), None)
-        b = next((r for r in runs if r["limit_gb"] == lim and r["mode"] == "plugin"), None)
+    for k, sw in sm["sweep"].items():
+        sm["sweep"][k] = {str(n): {"prompt_n": mean([x[0] for x in v]), "ttft_ms": mean([x[1] for x in v]), "out_tps": mean([x[2] for x in v]), "e2e_s": mean([x[3] for x in v])} for n, v in sorted(sw.items())}
+    for lim in sorted({r["limit_gb"] for r in runs}, key=lambda x: x or 0):
+        a = next((r for r in runs if r["limit_gb"] == lim and r["mode"] == "stock" and r["requests"]), None)
+        b = next((r for r in runs if r["limit_gb"] == lim and r["mode"] == "plugin" and r["requests"]), None)
         if a and b:
-            ta = [q["tokens"] for q in a["requests"] if q["suite"] in ("speed", "custom")]
-            tb = [q["tokens"] for q in b["requests"] if q["suite"] in ("speed", "custom")]
+            ta = [q["tokens"] for q in a["requests"] if q["suite"] in ("speed", "custom", "sweep")]
+            tb = [q["tokens"] for q in b["requests"] if q["suite"] in ("speed", "custom", "sweep")]
             n = min(len(ta), len(tb))
             sm["identity"][str(lim)] = [sum(1 for i in range(n) if ta[i] == tb[i]), n]
     return sm
@@ -480,108 +637,8 @@ def start_job(cfg):
     return job, []
 
 
-# ---------------------------------------------------------------- charts (SVG, theme aware)
 def esc(s):
     return html.escape(str(s))
-
-
-def nice_max(v):
-    if v <= 0:
-        return 1.0
-    import math
-    e = 10 ** math.floor(math.log10(v))
-    for m in (1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10):
-        if v <= m * e:
-            return m * e
-    return 10 * e
-
-
-def svg_wrap(w, h, body, title):
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="100%" role="img" aria-label="{esc(title)}" '
-            f'font-family="system-ui,Helvetica,Arial,sans-serif"><style>.t{{fill:#1f2328}}.m{{fill:#656d76}}.g{{stroke:#d0d7de}}@media(prefers-color-scheme:dark){{.t{{fill:#e6edf3}}.m{{fill:#8b949e}}.g{{stroke:#30363d}}}}.t{{fill:var(--fg,#1f2328)}}.m{{fill:var(--muted,#656d76)}}.g{{stroke:var(--grid,#d0d7de)}}</style>{body}</svg>')
-
-
-def bar_chart(title, cats, series, unit="tok/s"):
-    """cats: group labels; series: [(name, colour, [value|None per cat])]"""
-    W, H, L, R, T, B = 860, 350, 64, 20, 60, 66
-    vals = [v for _, _, vs in series for v in vs if v]
-    ymax = nice_max(max(vals) * 1.15 if vals else 1)
-    pw, ph = W - L - R, H - T - B
-    o = [f'<text x="{L}" y="26" class="t" font-size="17" font-weight="600">{esc(title)}</text>']
-    lx = L
-    for name, col, _ in series:
-        o.append(f'<rect x="{lx}" y="36" width="12" height="12" rx="2" fill="{col}"/><text x="{lx + 17}" y="47" class="m" font-size="12">{esc(name)}</text>')
-        lx += 24 + 8 * len(name)
-    for i in range(6):
-        y = T + ph - ph * i / 5
-        o.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W - R}" y2="{y:.1f}" class="g" stroke-width="1"/><text x="{L - 8}" y="{y + 4:.1f}" class="m" font-size="11" text-anchor="end">{ymax * i / 5:g}</text>')
-    o.append(f'<text x="14" y="{T + ph / 2}" class="m" font-size="11" transform="rotate(-90 14 {T + ph / 2})" text-anchor="middle">{esc(unit)}</text>')
-    gw = pw / max(1, len(cats))
-    bw = min(70, gw * 0.7 / max(1, len(series)))
-    for gi, c in enumerate(cats):
-        gx = L + gw * gi + gw / 2 - bw * len(series) / 2
-        for si, (_, col, vs) in enumerate(series):
-            v = vs[gi]
-            if v is None:
-                continue
-            h = ph * v / ymax
-            x = gx + si * bw
-            o.append(f'<rect x="{x + 2:.1f}" y="{T + ph - h:.1f}" width="{bw - 4:.1f}" height="{h:.1f}" rx="3" fill="{col}"/>'
-                     f'<text x="{x + bw / 2:.1f}" y="{T + ph - h - 6:.1f}" class="t" font-size="12" text-anchor="middle" font-weight="600">{v:.2f}</text>')
-        if len(series) == 2 and series[0][2][gi] and series[1][2][gi]:
-            o.append(f'<text x="{L + gw * gi + gw / 2:.1f}" y="{H - 10}" fill="{C_PLUG}" font-size="14" font-weight="700" text-anchor="middle">moe-cache {series[1][2][gi] / series[0][2][gi]:.1f}x</text>')
-        o.append(f'<text x="{L + gw * gi + gw / 2:.1f}" y="{H - 34}" class="t" font-size="12" text-anchor="middle">{esc(c)}</text>')
-    return svg_wrap(W, H, "".join(o), title)
-
-
-def line_chart(title, xs, series, unit="tok/s"):
-    W, H, L, R, T, B = 860, 320, 64, 20, 56, 44
-    vals = [v for _, _, vs, _ in series for v in vs if v]
-    ymax = nice_max(max(vals) * 1.15 if vals else 1)
-    pw, ph = W - L - R, H - T - B
-    o = [f'<text x="{L}" y="26" class="t" font-size="17" font-weight="600">{esc(title)}</text>']
-    lx = L
-    for name, col, _, dash in series:
-        o.append(f'<line x1="{lx}" y1="42" x2="{lx + 16}" y2="42" stroke="{col}" stroke-width="3" {dash}/><text x="{lx + 21}" y="47" class="m" font-size="12">{esc(name)}</text>')
-        lx += 36 + 7 * len(name)
-    for i in range(6):
-        y = T + ph - ph * i / 5
-        o.append(f'<line x1="{L}" y1="{y:.1f}" x2="{W - R}" y2="{y:.1f}" class="g" stroke-width="1"/><text x="{L - 8}" y="{y + 4:.1f}" class="m" font-size="11" text-anchor="end">{ymax * i / 5:g}</text>')
-    px = lambda i: L + (pw * i / max(1, len(xs) - 1) if len(xs) > 1 else pw / 2)
-    for i, x in enumerate(xs):
-        o.append(f'<text x="{px(i):.1f}" y="{H - 18}" class="m" font-size="12" text-anchor="middle">{esc(x)}</text>')
-    for _, col, vs, dash in series:
-        pts = [(px(i), T + ph - ph * v / ymax) for i, v in enumerate(vs) if v is not None]
-        if len(pts) > 1:
-            o.append(f'<polyline fill="none" stroke="{col}" stroke-width="2.5" {dash} points="{" ".join(f"{x:.1f},{y:.1f}" for x, y in pts)}"/>')
-        for x, y in pts:
-            o.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{col}"/>')
-    return svg_wrap(W, H, "".join(o), title)
-
-
-def charts(res):
-    sm, out = res["summary"], {}
-    lims = sorted({k.split("|")[0] for k in list(sm["speed"]) + list(sm["long"])}, key=lambda x: float(x) if x != "None" else 0)
-    lab = lambda l: f"{l} GB limit" if l != "None" else "no limit"
-    def ser(src, getter):
-        s = []
-        for mode, col in (("stock", C_STOCK), ("plugin", C_PLUG)):
-            vs = [getter(src.get(f"{l}|{mode}")) for l in lims]
-            if any(v is not None for v in vs):
-                s.append(("stock llama.cpp" if mode == "stock" else "with moe-cache", col, vs))
-        return s
-    if sm["speed"]:
-        out["speed"] = bar_chart("Generation speed, steady state (requests 2 to end)", [lab(l) for l in lims], ser(sm["speed"], lambda e: e and e["steady"]))
-        out["first"] = bar_chart("First request (cold start)", [lab(l) for l in lims], ser(sm["speed"], lambda e: e and e["first"]))
-        n = max(len(e["per_req"]) for e in sm["speed"].values())
-        series = []
-        for k, e in sorted(sm["speed"].items()):
-            l, mode = k.split("|")
-            series.append((f"{'stock' if mode == 'stock' else 'moe-cache'}, {lab(l)}", C_STOCK if mode == "stock" else C_PLUG, e["per_req"], 'stroke-dasharray="6 4"' if mode == "stock" else ""))
-        out["per_request"] = line_chart("Generation speed per request", [f"#{i + 1}" for i in range(n)], series)
-    if sm["long"]:
-        out["long"] = bar_chart("Prompt processing speed (long prompt)", [lab(l) for l in lims], ser(sm["long"], lambda e: e))
-    return out
 
 
 def tables_html(res):
@@ -589,22 +646,30 @@ def tables_html(res):
     o = []
     s = res["system"]
     o.append(f'<p class="muted">{esc(s.get("cpu", ""))} · {s.get("ram_gb", "?")} GB RAM · {esc(", ".join(s.get("devices", [])) or "no GPU backend")} · model {res["model_gb"]} GB · {esc(res["created"])}</p>')
+    # the one table that tells the story: every run, every key number
+    f = lambda v, d=2: "-" if v is None else f"{v:.{d}f}"
+    rows = []
+    for k in sorted(sm["speed"], key=lambda x: (float(x.split("|")[0]) if x.split("|")[0] != "None" else 0, x.split("|")[1] != "stock")):
+        lim, mode = k.split("|")
+        e, st = sm["speed"][k], sm["deep"].get(k, {}).get("steady", {})
+        rows.append(f'<tr><td>{lim}</td><td>{"stock" if mode == "stock" else "moe-cache"}</td><td><b>{f(e["steady"])}</b></td><td>{f(e["min"])} to {f(e["max"])}</td><td>{f(e["first"])}</td>'
+                    f'<td>{f(st.get("io_mb_tok"), 1)}</td><td>{f(st.get("majflt_tok"), 1)}</td><td>{f(st.get("cpu_ms_tok"), 1)}</td>'
+                    f'<td>{f(st.get("hit_dec_pct"), 1)}</td><td>{f(st.get("evictions_tok"), 2)}</td><td>{f(st.get("evict_age"), 0)}</td>'
+                    f'<td>{f(st.get("cg_peak"), 1)}</td><td>{f(st.get("temp"), 0)}</td></tr>')
+    o.append('<h3>Summary (steady state = requests 2 and later)</h3><div style="overflow-x:auto"><table><tr><th>limit GB</th><th>mode</th><th>gen tok/s</th><th>range</th><th>1st req</th>'
+             '<th>SSD MB / token</th><th>page faults / token</th><th>CPU ms / token</th><th>cache hit % (decode)</th><th>evictions / token</th><th>evicted expert idle (groups)</th><th>peak memory GB</th><th>max temp C</th></tr>' + "".join(rows) + "</table></div>")
     rows = []
     for r in res["runs"]:
         sp = [q["gen_tps"] for q in r["requests"] if q["suite"] == "speed"]
-        rows.append(f'<tr><td>{r["limit_gb"] or "-"}</td><td>{r["mode"]}</td><td>{r.get("repeat", 0) + 1}</td>'
-                    f'<td>{", ".join(f"{x:.2f}" for x in sp) or esc(r.get("error", "-"))}</td>'
+        rows.append(f'<tr><td>{r["limit_gb"] or "-"}</td><td>{r["mode"]}</td><td>{r.get("repeat", 0) + 1}</td><td>{", ".join(f"{x:.2f}" for x in sp) or esc(r.get("error", "-"))}</td>'
                     f'<td>{"yes" if r.get("clean") else "<b>no</b>"} ({(r.get("start_temp") or 0):.0f} C)</td></tr>')
     o.append('<h3>Runs</h3><table><tr><th>limit GB</th><th>mode</th><th>repeat</th><th>generation tok/s per request</th><th>clean start</th></tr>' + "".join(rows) + "</table>")
     if sm["identity"]:
-        o.append("<h3>Identity (same tokens, stock vs moe-cache)</h3><table><tr><th>limit GB</th><th>identical prompts</th></tr>" +
+        o.append("<h3>Identity (same tokens, stock vs moe-cache)</h3><table><tr><th>limit GB</th><th>identical answers</th></tr>" +
                  "".join(f"<tr><td>{k}</td><td>{a}/{b} {'PASS' if a == b else '<b>DIFFERENT</b>'}</td></tr>" for k, (a, b) in sm["identity"].items()) + "</table>")
     if sm["custom"]:
         o.append("<h3>Custom prompts with expected answers</h3><table><tr><th>run</th><th>passed</th></tr>" +
                  "".join(f"<tr><td>{esc(k.replace('|', ' GB, '))}</td><td>{a}/{b}</td></tr>" for k, (a, b) in sm["custom"].items()) + "</table>")
-    if sm["plugin"]:
-        o.append("<h3>moe-cache cache statistics</h3><table><tr><th>run</th><th>hit rate</th><th>read from SSD</th><th>evictions</th></tr>" +
-                 "".join(f"<tr><td>{esc(k.replace('|', ' GB, '))}</td><td>{v['hit_pct']:.1f}%</td><td>{v['read_gb']:.1f} GB</td><td>{v['evictions']}</td></tr>" for k, v in sm["plugin"].items()) + "</table>")
     if res.get("perplexity"):
         p = res["perplexity"]
         o.append("<h3>Perplexity / KL divergence</h3><table><tr><th>mode</th><th>perplexity</th><th>mean KLD vs stock</th><th>same top token %</th></tr>" +
@@ -618,22 +683,25 @@ def tables_html(res):
     return "".join(o)
 
 
-STYLE = ":root{--bg:#fff;--fg:#1f2328;--muted:#656d76;--grid:#d0d7de;--card:#f6f8fa;--line:#d0d7de}@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--grid:#30363d;--card:#161b22;--line:#30363d}}body{background:var(--bg);color:var(--fg);font-family:system-ui,Helvetica,Arial,sans-serif;max-width:920px;margin:0 auto;padding:16px}table{border-collapse:collapse;width:100%;margin:8px 0}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}.muted{color:var(--muted)}pre{white-space:pre-wrap;background:var(--card);padding:8px;border-radius:6px}"
+STYLE = ":root{--bg:#fff;--fg:#1f2328;--muted:#656d76;--grid:#d0d7de;--card:#f6f8fa;--line:#d0d7de}@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--grid:#30363d;--card:#161b22;--line:#30363d}}body{background:var(--bg);color:var(--fg);font-family:system-ui,Helvetica,Arial,sans-serif;max-width:960px;margin:0 auto;padding:16px}table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:5px 7px;text-align:left}.muted{color:var(--muted)}pre{white-space:pre-wrap;background:var(--card);padding:8px;border-radius:6px}.chart{margin:10px 0;border:1px solid var(--line);border-radius:8px;padding:6px}"
 
 
 def report_html(res):
-    ch = charts(res)
+    """One self-contained file: tables, the interactive charts (same library as the GUI) and the data."""
+    lib = (HERE / "charts.js").read_text()
+    data = json.dumps(res).replace("</", "<\\/")
     return (f'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>moe-cache benchmark report</title><style>{STYLE}</style>'
-            f'<h1>moe-cache benchmark: {esc(Path(res["config"]["model"]).name)}</h1>' + tables_html(res) + "".join(f"<div>{v}</div>" for v in ch.values()))
+            f'<h1>moe-cache benchmark: {esc(Path(res["config"]["model"]).name)}</h1>{tables_html(res)}<div id="charts"></div>'
+            f'<script>{lib}</script><script>const RESULT={data};MoeCharts.render(document.getElementById("charts"),RESULT);</script>')
 
 
 def csv_export(res):
     b = io.StringIO()
     w = csv.writer(b)
-    w.writerow(["limit_gb", "mode", "repeat", "suite", "name", "gen_tok_s", "prompt_tok_s", "prompt_tokens", "gen_tokens", "ttft_ms", "clean_start", "start_temp_c"])
+    w.writerow(["limit_gb", "mode", "repeat", "suite", "name", "gen_tok_s", "prompt_tok_s", "prompt_tokens", "gen_tokens", "ttft_ms", "e2e_s", "ssd_mb_per_token", "page_faults_per_token", "cpu_ms_per_token", "cache_hit_pct_decode", "evictions", "cache_read_mb_per_token", "clean_start", "start_temp_c"])
     for r in res["runs"]:
         for q in r["requests"]:
-            w.writerow([r["limit_gb"], r["mode"], r.get("repeat", 0) + 1, q["suite"], q["name"], round(q["gen_tps"], 3), round(q["prompt_tps"], 2), q["prompt_n"], q["gen_n"], round(q["ttft_ms"], 1), r.get("clean"), r.get("start_temp")])
+            w.writerow([r["limit_gb"], r["mode"], r.get("repeat", 0) + 1, q["suite"], q["name"], round(q["gen_tps"], 3), round(q["prompt_tps"], 2), q["prompt_n"], q["gen_n"], round(q["ttft_ms"], 1), round(q["wall_s"], 2)] + [q.get("m", {}).get(x) for x in ("io_mb_tok", "majflt_tok", "cpu_ms_tok", "hit_dec_pct", "evictions", "cache_read_mb_tok")] + [r.get("clean"), r.get("start_temp")])
     return b.getvalue()
 
 
@@ -676,6 +744,8 @@ class H(BaseHTTPRequestHandler):
         try:
             if p == "/":
                 return self.send(200, (HERE / "ui.html").read_bytes(), "text/html")
+            if p == "/charts.js":
+                return self.send(200, (HERE / "charts.js").read_bytes(), "application/javascript")
             if p == "/api/config":
                 cfg = default_config()
                 if CONFIG.exists():
@@ -687,6 +757,8 @@ class H(BaseHTTPRequestHandler):
             if p == "/api/modelinfo":
                 path = urllib.request.unquote(self.path.split("path=", 1)[1]) if "path=" in self.path else ""
                 return self.send(200, {"gb": round(model_size_gb(path), 2), "exists": os.path.isfile(path)})
+            if p == "/api/jobs":
+                return self.send(200, [j.public() for j in JOBS.values() if j.state in ("queued", "running")])
             if p == "/api/results":
                 return self.send(200, list_results())
             m = re.match(r"/api/job/(\w+)$", p)
@@ -698,7 +770,7 @@ class H(BaseHTTPRequestHandler):
                 r = self.result(m.group(1))
                 if not r:
                     return self.send(404, {"error": "unknown result"})
-                return self.send(200, {"result": r, "charts": charts(r), "tables": tables_html(r)})
+                return self.send(200, {"result": r, "tables": tables_html(r)})
             m = re.match(r"/report/([\w.-]+)\.html$", p)
             if m and self.result(m.group(1)):
                 return self.send(200, report_html(self.result(m.group(1))), "text/html")

@@ -45,7 +45,7 @@ bin/moe-cache-bench         # opens http://127.0.0.1:8765
 ```
 
 Pick a model, tick stock llama.cpp and/or moe-cache, set memory limits, and press Start. You get speed graphs, a stock-vs-moe-cache identity check,
-your own prompts (with optional expected answers), perplexity/KL divergence (optional), saved results, and a shareable HTML report. Python standard library only.
+a latency sweep (time to first token at several input lengths), deep metrics (SSD reads per token, page faults, CPU time, cache hit rate by layer, evictions, time breakdown, memory), your own prompts (with optional expected answers), perplexity/KL divergence (optional), saved results, and a shareable HTML report. Charts are interactive: hover for details, click the legend to hide a series. `bin/moe-cache-bench-watch` shows a running benchmark in a terminal. Python standard library only.
 Which benchmarks exist and what they mean: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Quick start (Linux)

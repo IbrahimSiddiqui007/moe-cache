@@ -16,6 +16,17 @@ benchmarks are listed too, because people ask for them; they can be run against 
 | Run-to-run variation | whether a number can be trusted | repeats, forward and reverse order, start temperature recorded |
 | `llama-bench` style pp/tg sweeps | comparison with other people's numbers | not duplicated: use `llama-bench` itself |
 
+### Deep metrics recorded for every request (hover any chart in moe-cache-bench for the exact numbers)
+| Metric | Source | Why it matters |
+|---|---|---|
+| SSD MB read per generated token | `/proc/PID/io` (stock and moe-cache alike) | the cost of not fitting in RAM; stock pays it as page-cache misses |
+| Major page faults per token, CPU ms per token | `/proc/PID/stat` | thrashing and spinning show up here |
+| Cache hit rate (decode steps, per request, per layer) | plugin counters (`SIGUSR1` snapshot) | how well the LRU cache fits the workload; which layers keep missing |
+| Evictions per token, mean idle time of evicted experts | plugin counters | cache churn; a long idle time means the LRU choice was good |
+| Time per token: expert compute / SSD reads / cache bookkeeping / everything else | plugin timers | tells you whether to buy a faster SSD, more RAM or a faster CPU |
+| Time to first token, output speed and end-to-end latency at 100 / 1,000 / 4,000 input tokens | the server's timings | the Artificial-Analysis-style latency profile |
+| Peak memory (cgroup), RSS anonymous vs file-backed, GPU memory, CPU temperature | `/sys/fs/cgroup`, `/proc`, `nvidia-smi`, hwmon | memory headroom, and whether heat explains a slow-down |
+
 ## 2. Identity and quality-drift benchmarks (built in; the perplexity ones need `llama-perplexity` and a text file)
 | Measure | What it tells you |
 |---|---|

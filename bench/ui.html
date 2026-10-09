@@ -28,7 +28,7 @@ pre.log{background:var(--bg);border:1px solid var(--line);border-radius:6px;padd
 table{border-collapse:collapse;width:100%;margin:6px 0;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}
 details{margin:6px 0}summary{cursor:pointer}pre{white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:6px;border:1px solid var(--line)}
 a{color:var(--accent)}
-.chart{margin:10px 0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px}
+.chart{margin:10px 0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px}.chart svg text{font-family:system-ui,sans-serif}
 code{background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var(--line);font-size:12px}
 </style>
 </head>
@@ -67,7 +67,8 @@ code{background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var
     <label>prompts (1-4) <input type="number" id="speed_prompts" value="4" min="1" max="4" style="width:60px"></label>
   </div>
   <div class="row"><label><input type="checkbox" id="long" checked> Prompt processing: one long prompt (about 2,000 tokens)</label></div>
-  <div class="muted">Identity (same tokens for stock and moe-cache) is checked automatically whenever both are selected.</div>
+  <div class="row"><label>Latency sweep (time to first token and output speed at these input lengths, tokens; empty = skip) <input type="text" id="sweep" value="100,1000,4000" style="width:150px"></label></div>
+  <div class="muted">Identity (same tokens for stock and moe-cache) is checked automatically whenever both are selected. Deep metrics (SSD reads per token, page faults, CPU time, cache hit rate, evictions, time breakdown, memory) are recorded for every request.</div>
   <h3>Your own prompts (optional)</h3>
   <textarea id="custom" placeholder="Write one prompt, then a line with --- between prompts.&#10;Optional: a line 'EXPECT: word' makes the prompt pass only if the answer contains that word.&#10;&#10;What is the capital of France?&#10;EXPECT: Paris&#10;---&#10;Write a haiku about memory."></textarea>
   <div class="row"><label>tokens per custom answer <input type="number" id="custom_tokens" value="100" style="width:80px"></label></div>
@@ -78,6 +79,7 @@ code{background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var
   <div class="row" style="margin-top:8px">
     <label><input type="checkbox" id="both_orders"> run twice, second time in reverse order (cancels heat drift, doubles the time)</label>
     <label>start only below <input type="number" id="gate_temp" value="58" style="width:64px"> C</label>
+    <label>and background CPU below <input type="number" id="bg_max" value="25" style="width:64px"> % of one core</label>
   </div>
 </div>
 
@@ -108,6 +110,7 @@ lm_eval --model local-completions --model_args base_url=http://localhost:8080/v1
   <p class="muted">Start the server with <code>moe-cache-server MODEL.gguf --ram 24</code> (moe-cache) or plain <code>llama-server -m MODEL.gguf</code> (stock). Full list: docs/BENCHMARKS.md.</p>
 </div>
 </main>
+<script src="/charts.js"></script>
 <script>
 const $ = id => document.getElementById(id);
 let job = null, timer = null;
@@ -116,11 +119,13 @@ async function j(url, opt){ const r = await fetch(url, opt); return r.json(); }
 
 async function init(){
   const c = await j('/api/config');
-  for (const k of ['llama_server','plugin_lib','model','ctx','n_cpu_moe','extra_args','speed_tokens','speed_prompts','custom','custom_tokens','ppl_file','ppl_chunks','gate_temp']) if (c[k] !== undefined) $(k).value = c[k];
+  for (const k of ['llama_server','plugin_lib','model','ctx','n_cpu_moe','extra_args','speed_tokens','speed_prompts','sweep','custom','custom_tokens','ppl_file','ppl_chunks','gate_temp','bg_max']) if (c[k] !== undefined) $(k).value = c[k];
   $('limits').value = (c.limits || []).join(', ');
   for (const k of ['pin','speed','long','both_orders']) $(k).checked = !!c[k];
   $('m_stock').checked = c.modes.includes('stock'); $('m_plugin').checked = c.modes.includes('plugin');
   sysinfo(); modelinfo(); saved();
+  const running = await j('/api/jobs');
+  if (running.length) { job = running[0].id; $('start').disabled = true; $('cancel').disabled = false; timer = setInterval(poll, 2000); poll(); }
 }
 async function sysinfo(){
   const s = await j('/api/system?ls=' + encodeURIComponent($('llama_server').value));
@@ -140,9 +145,9 @@ function config(){
   return { llama_server: $('llama_server').value.trim(), plugin_lib: $('plugin_lib').value.trim(), model: $('model').value.trim(),
     modes: [$('m_stock').checked ? 'stock' : null, $('m_plugin').checked ? 'plugin' : null].filter(Boolean), limits: num($('limits').value),
     ctx: +$('ctx').value, n_cpu_moe: $('n_cpu_moe').value.trim() || 'auto', pin: $('pin').checked, extra_args: $('extra_args').value,
-    speed: $('speed').checked, speed_tokens: +$('speed_tokens').value, speed_prompts: +$('speed_prompts').value, long: $('long').checked,
+    speed: $('speed').checked, sweep: $('sweep').value, sweep_tokens: 64, speed_tokens: +$('speed_tokens').value, speed_prompts: +$('speed_prompts').value, long: $('long').checked,
     custom: $('custom').value, custom_tokens: +$('custom_tokens').value, ppl_file: $('ppl_file').value.trim(), ppl_chunks: +$('ppl_chunks').value,
-    both_orders: $('both_orders').checked, gate_temp: +$('gate_temp').value, gate_wait_s: 600 };
+    both_orders: $('both_orders').checked, gate_temp: +$('gate_temp').value, bg_max: +$('bg_max').value, gate_wait_s: 600 };
 }
 $('start').onclick = async () => {
   const r = await fetch('/api/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(config())});
@@ -166,7 +171,7 @@ async function show(id){
   const d = await j('/api/result/' + id);
   $('resultcard').style.display = ''; $('rtitle').textContent = id;
   $('tables').innerHTML = d.tables;
-  $('charts').innerHTML = Object.values(d.charts).map(c => `<div class="chart">${c}</div>`).join('');
+  MoeCharts.render($('charts'), d.result);
   $('exports').innerHTML = `<a href="/report/${id}.html" target="_blank">open report (HTML, shareable)</a> · <a href="/export/${id}.csv">CSV</a> · <a href="/export/${id}.json">JSON</a>`;
   $('resultcard').scrollIntoView({behavior:'smooth'});
 }

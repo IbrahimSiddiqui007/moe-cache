@@ -1,0 +1,30 @@
+#!/bin/bash
+# Live terminal view of the benchmark that moe-cache-bench is running: progress, per-request speeds and the log. Refreshes every 5 s. Ctrl+C to quit.
+#   bin/moe-cache-bench-watch [PORT]      (default 8765; the GUI server must be running)
+PORT=${1:-8765}
+while true; do
+  clear
+  python3 - "$PORT" <<'PY'
+import json, sys, urllib.request
+port = sys.argv[1]
+def get(p):
+    return json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}{p}", timeout=5))
+try:
+    jobs = get("/api/jobs")
+    if not jobs:
+        res = get("/api/results")
+        print("No benchmark is running.")
+        if res:
+            r = res[0]
+            print(f"Latest saved result: {r['created']}  {r['model']}  stock {r['stock']:.2f} tok/s, moe-cache {r['plugin']:.2f} tok/s")
+        sys.exit()
+    j = get(f"/api/job/{jobs[0]['id']}")
+    bar = "#" * int(30 * j["done"] / max(1, j["total"])) + "-" * (30 - int(30 * j["done"] / max(1, j["total"])))
+    print(f"moe-cache bench  job {j['id']}  [{bar}] {j['done']}/{j['total']} runs  ({j['state']})\n")
+    print("\n".join(j["log"][-22:]))
+except Exception as e:
+    print("cannot reach the benchmark server on port", port, "-", e, "\nStart it with: bin/moe-cache-bench --no-browser")
+PY
+  echo; echo "(refreshes every 5 s, Ctrl+C to quit)  GUI: http://127.0.0.1:$PORT"
+  sleep 5
+done
