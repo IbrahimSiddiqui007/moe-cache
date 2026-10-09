@@ -55,6 +55,7 @@ code{background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var
     <div><label>Context size</label><input type="number" id="ctx" value="8192"></div>
     <div><label>Experts on the CPU: layers (auto = chosen from free VRAM, all = every layer, or a number)</label><input type="text" id="n_cpu_moe" value="auto"></div>
     <div><label>Extra llama-server arguments (optional)</label><input type="text" id="extra_args" placeholder="--spec-type draft-mtp --spec-draft-n-max 2"></div>
+    <div><label>Extra moe-cache settings (optional, for the plugin runs)</label><input type="text" id="plugin_env" placeholder="MOE_CACHE_IO_THREADS=12 MOE_CACHE_CPU_PIN=off"></div>
   </div>
   <div class="row"><label id="pinlbl"><input type="checkbox" id="pin" checked> pin threads to the performance cores (hybrid Intel CPUs)</label></div>
 </div>
@@ -119,7 +120,7 @@ async function j(url, opt){ const r = await fetch(url, opt); return r.json(); }
 
 async function init(){
   const c = await j('/api/config');
-  for (const k of ['llama_server','plugin_lib','model','ctx','n_cpu_moe','extra_args','speed_tokens','speed_prompts','sweep','custom','custom_tokens','ppl_file','ppl_chunks','gate_temp','bg_max']) if (c[k] !== undefined) $(k).value = c[k];
+  for (const k of ['llama_server','plugin_lib','model','ctx','n_cpu_moe','extra_args','plugin_env','speed_tokens','speed_prompts','sweep','custom','custom_tokens','ppl_file','ppl_chunks','gate_temp','bg_max']) if (c[k] !== undefined) $(k).value = c[k];
   $('limits').value = (c.limits || []).join(', ');
   for (const k of ['pin','speed','long','both_orders']) $(k).checked = !!c[k];
   $('m_stock').checked = c.modes.includes('stock'); $('m_plugin').checked = c.modes.includes('plugin');
@@ -144,7 +145,7 @@ $('model').addEventListener('change', modelinfo); $('llama_server').addEventList
 function config(){
   return { llama_server: $('llama_server').value.trim(), plugin_lib: $('plugin_lib').value.trim(), model: $('model').value.trim(),
     modes: [$('m_stock').checked ? 'stock' : null, $('m_plugin').checked ? 'plugin' : null].filter(Boolean), limits: num($('limits').value),
-    ctx: +$('ctx').value, n_cpu_moe: $('n_cpu_moe').value.trim() || 'auto', pin: $('pin').checked, extra_args: $('extra_args').value,
+    ctx: +$('ctx').value, n_cpu_moe: $('n_cpu_moe').value.trim() || 'auto', pin: $('pin').checked, extra_args: $('extra_args').value, plugin_env: $('plugin_env').value,
     speed: $('speed').checked, sweep: $('sweep').value, sweep_tokens: 64, speed_tokens: +$('speed_tokens').value, speed_prompts: +$('speed_prompts').value, long: $('long').checked,
     custom: $('custom').value, custom_tokens: +$('custom_tokens').value, ppl_file: $('ppl_file').value.trim(), ppl_chunks: +$('ppl_chunks').value,
     both_orders: $('both_orders').checked, gate_temp: +$('gate_temp').value, bg_max: +$('bg_max').value, gate_wait_s: 600 };

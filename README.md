@@ -67,7 +67,7 @@ bin/moe-cache-server model.gguf --ram 12 --llama-server /path/to/llama-server --
 |---|---|---|
 | 48.5 GB model (Qwen3-Next-80B), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** |
 | Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** |
-| **gpt-oss-120b (63 GB, 2.6x the memory limit)**, 24 GB RAM, one run each | 0.34 tok/s | **2.71 tok/s** |
+| **gpt-oss-120b (63 GB, 2.6x the memory limit)**, 24 GB RAM, 2 expert layers on the GPU, one run each | 0.37 tok/s | **3.72 tok/s** |
 | Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
 | Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
 | Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s (older measurement) | **60 to 62 tok/s** |

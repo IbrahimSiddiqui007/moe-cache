@@ -214,3 +214,20 @@ All experts on the CPU, ctx 8192, 4 prompts x 100 tokens, both pinned to the per
 What this shows: both read **the same amount** from the SSD per token (about 325 MB), but stock does it with about 79,000 small page-fault reads per token and moe-cache with about 770 large reads. The 8x is read efficiency, not less data.
 Compared with all experts on the CPU (section 12: 0.34 and 2.71 tok/s), moving 2 of 36 layers to the GPU gave +9 % (stock) and +11 % (moe-cache), about what 2/36 of the traffic predicts.
 
+### 12c. What speeds up gpt-oss-120b (24 GB limit, 2 of 36 expert layers on the GPU, moe-cache only; moe-cache-bench, 2026-10-09)
+
+Same setup as 12b, 4 prompts x 100 tokens, one run per row, tool-flagged clean with the background-CPU allowance set to 40 % of one core (the desktop was running). Steady = requests 2-4.
+
+| Setting | tok/s | SSD reads per token | Note |
+|---|---|---|---|
+| default before (bounce buffer, 6 reader threads) | 3.02 | 175 ms | |
+| 12 reader threads | 3.02 | 173 ms | no effect |
+| 24 reader threads | 2.94 | 175 ms | no effect |
+| **read straight into place** | **3.70** | 144 ms | +22 %, identical tokens |
+| read straight into place, 12 threads | 3.62 | 144 ms | |
+| new default (automatic for models that do not fit) | **3.72** | 143 ms | +23 % |
+
+- The SSD streams 3.9 GB/s with parallel direct reads (2.8 GB/s with one reader); moe-cache gets about 2.3 GB/s effective, so the read path still has headroom.
+- Token identity vs the stock run: 4/4 for every row.
+- Read-into-place is switched on automatically when the model file is larger than 85 % of the memory limit (`MOE_CACHE_DIRECT=0/1` forces it). It restores what the old llama.cpp patch did. On Qwen3.6 at a 12 GB limit (reads are 20x smaller) old and new path are the same within noise: 27.8 and 25.2 tok/s (old, mean 26.5) against 27.5 and 26.4 (new, mean 27.0).
+

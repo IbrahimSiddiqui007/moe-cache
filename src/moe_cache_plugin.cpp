@@ -37,6 +37,7 @@
 #include <map>
 #include <unordered_set>
 #include "platform.h"
+#include <filesystem>
 
 #ifndef MOE_CACHE_TESTED_GGML
 #define MOE_CACHE_TESTED_GGML "0.25.1"
@@ -319,7 +320,8 @@ struct state_t {
         if (const char * v = getenv("MOE_CACHE_FAULT_EVERY")) {
             fault_every = atoi(v);
         }
-        direct_ok = getenv("MOE_CACHE_DIRECT") != nullptr;
+        const char * direct_env = getenv("MOE_CACHE_DIRECT");   // 1 / 0 forces it; unset = on when the model does not fit (decided below)
+        direct_ok = direct_env && strcmp(direct_env, "0") != 0;
         if (const char * v = getenv("MOE_CACHE_GPU_MIN_TOKENS")) {
             gpu_min_tokens = atoi(v);
         }
@@ -373,6 +375,15 @@ struct state_t {
             if (const char * v = getenv("MOE_CACHE_MARGIN_GIB")) {
                 margin = (size_t) (atof(v) * (1u << 30));
             }
+            if (!direct_env) {
+                // the model does not fit: SSD reads dominate, and reading straight into place (no bounce buffer, no page re-zeroing) was +22 % on gpt-oss-120b
+                size_t total = 0;
+                for (const auto & sp : shard_paths) {
+                    std::error_code ec;
+                    total += (size_t) std::filesystem::file_size(sp, ec);
+                }
+                direct_ok = total > limit_bytes * 0.85;
+            }
             const size_t guess = (size_t) 7 << 29;   // 3.5 GiB for everything that is not expert cache, until measured
             budget = limit_bytes > margin + guess + ((size_t) 1 << 30) ? limit_bytes - margin - guess : (size_t) 1 << 30;
             fprintf(stderr, "moe-cache: auto cache size, memory limit %.2f GiB, margin %.2f GiB, start budget %.2f GiB\n", limit_bytes / 1073741824.0, margin / 1073741824.0, budget / 1073741824.0);
@@ -409,7 +420,10 @@ struct state_t {
                 fprintf(stderr, "moe-cache: no profile at %s yet%s\n", src.c_str(), profile_path.empty() ? "" : " (it will be created at exit)");
             }
         }
-        const int n_io = 5;
+        int n_io = 5;   // helper threads; the calling thread reads too, so MOE_CACHE_IO_THREADS=N means N parallel readers in total
+        if (const char * v = getenv("MOE_CACHE_IO_THREADS")) {
+            n_io = std::max(0, std::min(63, atoi(v) - 1));
+        }
         for (int i = 0; i < n_io; i++) {
             workers.emplace_back([this, i] { worker_main(i + 1); });
         }

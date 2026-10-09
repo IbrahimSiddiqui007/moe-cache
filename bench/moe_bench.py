@@ -143,7 +143,7 @@ def default_config():
     tot, _ = mem_gb()
     lib = str(REPO / "build/libggml-moe-cache.so")
     return {"llama_server": find_llama_server(), "plugin_lib": lib if os.path.exists(lib) else "", "model": "", "modes": ["stock", "plugin"],
-            "limits": [max(4, int(tot * 0.8))], "ctx": 8192, "n_cpu_moe": "auto", "pin": True, "extra_args": "",
+            "limits": [max(4, int(tot * 0.8))], "ctx": 8192, "n_cpu_moe": "auto", "pin": True, "extra_args": "", "plugin_env": "",
             "speed": True, "speed_tokens": 100, "sweep": "100,1000,4000", "sweep_tokens": 64, "speed_prompts": 4, "long": True, "custom": "", "custom_tokens": 100,
             "ppl_file": "", "ppl_chunks": 8, "both_orders": False, "gate_temp": 58, "bg_max": 25, "gate_wait_s": 300}
 
@@ -374,6 +374,9 @@ def run_one(job, cfg, mode, limit, rep, tag):
         e, method = load_env(ls, cfg["plugin_lib"])
         envs.update(e)
         envs.update(MOE_CACHE_SIZE_GIB="auto", MOE_CACHE_GGUF=model, MOE_CACHE_STATS="1", MOE_CACHE_STATS_SIGNAL="1")
+        for kv in shlex.split(cfg.get("plugin_env") or ""):
+            if "=" in kv:
+                envs[kv.split("=", 1)[0]] = kv.split("=", 1)[1]
         st["load_method"] = method
     args = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", str(ncm), "-c", str(cfg["ctx"]), "-fa", "on", "--load-mode", "mmap", "--no-warmup",
             "--port", str(port), "--seed", "42", "-np", "1"]
