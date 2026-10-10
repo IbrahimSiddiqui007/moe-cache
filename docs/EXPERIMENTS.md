@@ -64,3 +64,21 @@ What this changes in the ranking above:
 - Decode here is limited by **expert math on the CPU**, not by the SSD: thread count does not matter (hyper-threads share the same execution units, efficiency cores are slower and the rows are split statically) and reads are about a quarter of the time. Ideas 6 to 9 (IO tuning) can give at most the read share, so roughly 10 to 20 %.
 - The levers that act on the compute are: fewer experts evaluated per token (ideas 4 and 5, both change tokens), moving compute to the GPU (idea 11), and a **format the CPU kernels run faster**: the model's authors report 1.9x lower latency for their Q2_0 variant against IQ2_XS (66.4 GB file, not downloaded).
 - The last picks of a token miss 7 times as often as the first and carry the smallest weights, which is exactly where idea 4 (substitution) and idea 5 (adaptive top-k) would act.
+
+## Result: the bottleneck was one kernel (2026-10-10)
+
+The "IQ2_XS" file of Qwen3.8-Flash-Next is not pure IQ2_XS: gate and up are IQ2_S / IQ2_XXS / IQ1_M, and **all 48 down projections are Q2_0**. llama.cpp (7fe450e19) has
+no SIMD implementation of the Q2_0 x Q8_0 dot product on x86; it runs a scalar C loop. From the two files' compute times the Q2_0 weights cost about 5 times as much per
+weight as the IQ2 weights and made up about 70 % of the expert math.
+
+| Step | Result |
+|---|---|
+| Kernel written (`src/fast_q2_0.h`, AVX2, integer part exact, float part in the C loop's order with fused multiply-add) | 3.1x faster than the library function on a 2560-weight dot |
+| Bit-exactness (`tests/kernel_check.cpp` against the installed libggml-cpu) | 0 mismatches in 18,000 random inputs incl. extreme values; half to float identical for all 65,536 values |
+| Token identity, Flash-Next IQ2_XS, 4 prompts x 48 tokens, 24 GB limit | 4/4 identical to stock |
+| Speed, same session, 10 requests of 48 tokens, mean of requests 6 to 10 | kernel on **10.26 tok/s**, kernel off (`MOE_CACHE_FAST_KERNELS=0`) 6.94 tok/s |
+| Expert compute time over the run | 29.3 s with the kernel, 45.8 s without |
+| Q2_0 file of the same model | 4.03 tok/s before, 8.35 tok/s with the kernel |
+
+One paired run each, not gated (desktop apps were using CPU), so read the ratio (about 1.5x), not the absolute numbers. How it is applied: the plugin exports
+`ggml_vec_dot_q2_0_q8_0`; with `LD_PRELOAD` the dynamic linker resolves libggml-cpu's function table to it. In `GGML_BACKEND_PATH` mode it is not used.

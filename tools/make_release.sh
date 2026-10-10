@@ -19,7 +19,7 @@ if [ -z "$MOE_CACHE_RELEASE_EXPORT" ]; then
 fi
 ./build.sh --portable
 N=moe-cache-v$V-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
-cp -r bin planner tests tools profiles docs bench LICENSE README.md build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/*.c* dist/$N/src/
+cp -r bin planner tests tools profiles docs bench LICENSE README.md build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
 rm -f dist/$N/tools/make_release.sh
 tar -C dist -czf dist/$N.tar.gz $N
 ( cd dist && sha256sum $N.tar.gz > SHA256SUMS )

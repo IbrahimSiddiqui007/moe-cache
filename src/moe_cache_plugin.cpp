@@ -2229,3 +2229,30 @@ __attribute__((constructor)) static void moe_cache_autoload() {
     }
 }
 #endif
+
+#if defined(__x86_64__) && defined(__linux__)
+// ---- faster Q2_0 kernel (bit-identical to llama.cpp's) ----
+// llama.cpp has no SIMD version of the Q2_0 x Q8_0 dot product on x86: it runs a plain C loop. This definition replaces it when the
+// plugin is preloaded (LD_PRELOAD), because the function table of libggml-cpu is filled by symbol name. Results are bit-identical
+// (tests/kernel_check.cpp compares them with the real library function). MOE_CACHE_FAST_KERNELS=0 switches it off.
+#include <dlfcn.h>
+#include "fast_q2_0.h"
+extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
+    typedef void (*fn_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+    static fn_t orig = (fn_t) dlsym(RTLD_NEXT, "ggml_vec_dot_q2_0_q8_0");
+    static const bool fast = [] {
+        const char * e = getenv("MOE_CACHE_FAST_KERNELS");
+        return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+    }();
+    if (fast && nrc == 1 && n > 0 && n % 64 == 0) {
+        fastk::vec_dot_q2_0_q8_0_avx2<true>(n, s, vx, vy);
+        return;
+    }
+    if (orig) {
+        orig(n, s, bs, vx, bx, vy, by, nrc);
+        return;
+    }
+    fprintf(stderr, "moe-cache: no Q2_0 dot product available\n");
+    abort();
+}
+#endif

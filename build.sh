@@ -21,7 +21,7 @@ if [ "$1" = "--portable" ]; then
   mkdir -p build
   gcc -O2 -fPIC -std=gnu99 -U_GNU_SOURCE -c src/compat_glibc.c -o build/compat_glibc.o 2>/dev/null || gcc -O2 -fPIC -std=c99 -c src/compat_glibc.c -o build/compat_glibc.o
   g++ -O2 $HARDEN -fPIC -shared -std=c++17 -Wall -Wno-unused-function -Ithird_party/ggml/include -Ithird_party/ggml/src src/moe_cache_plugin.cpp build/compat_glibc.o \
-      -o build/libggml-moe-cache.so -lpthread -Wl,-z,undefs -Wl,--as-needed $LDHARDEN
+      -o build/libggml-moe-cache.so -lpthread -ldl -Wl,-z,undefs -Wl,--as-needed $LDHARDEN
   echo "built portable build/libggml-moe-cache.so"
   exit 0
 fi
@@ -36,5 +36,5 @@ fi
 BASE="$(ls "$LIBS"/libggml-base.so "$LIBS"/libggml-base.so.* 2>/dev/null | head -1)"
 mkdir -p build
 echo "using libggml-base from $LIBS"
-g++ -O2 $HARDEN -fPIC -shared -std=c++17 -Wall -Wno-unused-function -Ithird_party/ggml/include -Ithird_party/ggml/src src/moe_cache_plugin.cpp -o build/libggml-moe-cache.so -lpthread "$BASE" -Wl,-rpath,"$LIBS" $LDHARDEN
+g++ -O2 $HARDEN -fPIC -shared -std=c++17 -Wall -Wno-unused-function -Ithird_party/ggml/include -Ithird_party/ggml/src src/moe_cache_plugin.cpp -o build/libggml-moe-cache.so -lpthread -ldl "$BASE" -Wl,-rpath,"$LIBS" $LDHARDEN
 echo "built build/libggml-moe-cache.so"

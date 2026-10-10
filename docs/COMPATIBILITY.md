@@ -40,4 +40,6 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
 | lfm2moe, granitehybrid, olmoe, smallthinker, bailingmoe2 | supported by llama.cpp at this commit, **not tested** with the plugin (a speed test of olmoe and smallthinker is in progress) |
 | Dense models (Ministral 3 3B and others) | nothing to manage: the plugin has no effect (a few percent slower than stock in a CPU-only test) |
 
+Q2_0 (Qwen3.8-Flash-Next) runs through a faster plugin kernel in preload mode, checked bit-identical against llama.cpp's (see TECHNIQUES.md).
+
 Quantisation types seen working: Q4_K, Q6_K, Q5_0, Q8_0, MXFP4, IQ4_XS, IQ2_XS and the Q2_0 type of Qwen3.8-Flash-Next. Files with experts below about 4.25 bits are not possible for models whose expert rows are not a multiple of 256 (gpt-oss).
