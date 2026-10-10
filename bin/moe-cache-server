@@ -4,15 +4,16 @@
 # --ram      memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it.
 # MOE_CACHE_PYTHON  python with the gguf package for the planner (default python3)
 # --n-cpu-moe  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
+# --no-ecores  do not let the expert executor use the efficiency cores (hybrid Intel CPUs: up to 4 of them are used by default, about +10-15 %)
 # --no-pin     do not pin llama-server's threads. By default on hybrid Intel CPUs (performance + efficiency cores) it gets
 #              -C MASK --cpu-strict 1 (one thread on each performance core): about +15 % decode speed measured on an i7-13620H
 set -e
 umask 077   # the usage profile is private to this user
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; EXTRA=()
+MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
   --ram) RAM=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
-  --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
+  --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --no-ecores) ECORES=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
   -h|--help) sed -n 2,6p "$0"; exit 0;; *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
 [ -f "$MODEL" ] || { echo "usage: moe-cache-server MODEL.gguf [options]  (model file not found: '$MODEL')"; exit 1; }
 LIB="${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}"
@@ -31,6 +32,14 @@ PROFILE="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").usage"
 . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" "$METHOD"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL" MOE_CACHE_PROFILE="$PROFILE")
 [ -n "$RAM" ] && ENVV+=(MOE_CACHE_RAM_GIB="$RAM")
+if [ $ECORES = 1 ] && [ -z "${MOE_CACHE_EXEC_ECORES:-}" ] && [ -r /sys/devices/cpu_atom/cpus ]; then
+  NE=$(python3 -c 'import sys
+n = 0
+for part in open("/sys/devices/cpu_atom/cpus").read().strip().split(","):
+    a, _, b = part.partition("-"); n += int(b or a) - int(a) + 1
+print(min(n, 4))' 2>/dev/null || echo 0)
+  [ "${NE:-0}" -gt 0 ] && ENVV+=(MOE_CACHE_EXEC_ECORES=$NE) && echo "moe-cache: expert executor will also use $NE efficiency cores (--no-ecores to disable)"
+fi
 PINARGS=()
 if [ $PIN = 1 ] && [ -r /sys/devices/cpu_core/cpus ] && ! printf '%s ' "${EXTRA[@]}" | grep -qE -- '(^| )(-C|--cpu-mask|-Cr|--cpu-range)( |$)'; then
   MASK=$(python3 - <<'PYEOF' 2>/dev/null

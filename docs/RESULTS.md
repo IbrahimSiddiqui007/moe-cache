@@ -277,3 +277,16 @@ Stock has to be run with `--no-repack` when the model does not fit. Same cells w
 | OLMoE-1B-7B Q4_0 | 2 GB | 1.8 | 6.1 | 6.1 |
 
 Findings: the plugin is not faster when the whole model fits (about 2 to 14 % slower on these small CPU-only runs, SmallThinker the most); it keeps models usable that do not fit, 2 to 4 times faster than stock with repacking switched off, and stock with default settings is killed. On CPU-only machines the automatic repacking was slower than repack off in the 3 GB OLMoE cell (13.7 against 16.6): not understood yet. Ministral Q8_0 (3.65 GB, dense) in the 3 GB limit ran at 0.8 tok/s for stock.
+
+## 14. Qwen3.8-Flash-Next IQ2_XS, 24 GB limit, 3 expert layers on the GPU: kernel and executor (2026-10-10)
+
+10 requests of 48 tokens, mean of requests 6 to 10, one run per row, not gated (desktop programs were using CPU: read the ratios, not the absolute values). Rows of one table were run in the same session.
+Token identity against stock: 4/4 for every configuration listed.
+
+| Configuration | tok/s | Note |
+|---|---|---|
+| plugin 0.1.4 (llama.cpp's scalar Q2_0 kernel) | 6.9 | before |
+| fast Q2_0 kernel | 10.3 | paired run, see docs/EXPERIMENTS.md |
+| fast kernel, executor off | 8.2 | second session |
+| fast kernel + executor, 6 threads | 10.9 | +33 % over the row above |
+| fast kernel + executor, 6 threads + 4 efficiency cores | 12.4 | +52 % over the row above |

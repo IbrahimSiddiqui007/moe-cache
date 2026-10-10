@@ -29,6 +29,12 @@ jobs:
           for f in install.sh build.sh bin/* tests/*.sh tools/*.sh; do bash -n "$f"; done
           python3 -m py_compile planner/plan.py bench/moe_bench.py tests/ident.py
 
+      - name: Q2_0 kernel is bit-exact (no model needed)
+        run: |
+          g++ -O2 -std=c++17 -Isrc tests/kernel_check.cpp -o /tmp/kernel_check -ldl
+          /tmp/kernel_check | tee /tmp/kc.txt
+          grep -q "mismatches with fused multiply-add 0," /tmp/kc.txt
+
       - name: Version
         id: v
         run: |

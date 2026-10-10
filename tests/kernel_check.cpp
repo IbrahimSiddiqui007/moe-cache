@@ -1,5 +1,7 @@
-// Bit-exactness and speed check of the plugin's Q2_0 kernel against the real ggml_vec_dot_q2_0_q8_0 of an installed libggml-cpu.
-//   g++ -O2 -std=c++17 -Isrc tests/kernel_check.cpp -o /tmp/kernel_check -ldl && /tmp/kernel_check /path/to/libggml-cpu.so.0
+// Bit-exactness and speed check of the plugin's Q2_0 kernel.
+//   g++ -O2 -std=c++17 -Isrc tests/kernel_check.cpp -o /tmp/kernel_check -ldl && /tmp/kernel_check [/path/to/libggml-cpu.so.0]
+// With a library path it compares against the real ggml_vec_dot_q2_0_q8_0 of that library; without one (or when it cannot be loaded) it compares
+// against a plain C++ copy of llama.cpp's loop (same operations, same order, fused multiply-add as the compiled library uses).
 #include "fast_q2_0.h"
 #include <chrono>
 #include <cstdio>
@@ -10,13 +12,43 @@
 
 using dot_fn = void (*)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
 
+// llama.cpp's generic loop, written out; the compiled library fuses the two multiply-adds, so this does too
+static void ref_loop(int n, float * s, size_t, const void * vx, size_t, const void * vy, size_t, int) {
+    const fastk::block_q2_0 * x = (const fastk::block_q2_0 *) vx;
+    const fastk::block_q8_0 * y = (const fastk::block_q8_0 *) vy;
+    float sumf = 0.0f;
+    for (int i = 0; i < n / 64; i++) {
+        const float d0 = fastk::half_to_float(x[i].d);
+        float sumi = 0.0f;
+        for (int k = 0; k < 2; k++) {
+            const fastk::block_q8_0 & yb = y[i * 2 + k];
+            const float d1 = fastk::half_to_float(yb.d);
+            int sb = 0;
+            for (int b = 0; b < 8; b++) {
+                const uint8_t byte = x[i].qs[k * 8 + b];
+                for (int j = 0; j < 4; j++) {
+                    sb += ((int) ((byte >> (2 * j)) & 3) - 1) * yb.qs[b * 4 + j];
+                }
+            }
+            sumi = __builtin_fmaf(d1, (float) sb, sumi);
+        }
+        sumf = __builtin_fmaf(d0, sumi, sumf);
+    }
+    *s = sumf;
+}
+
 __attribute__((target("f16c"))) static float hw_half(unsigned short h) { return _cvtsh_ss(h); }
 int main(int argc, char ** argv) {
-    void * h = dlopen(argc > 1 ? argv[1] : "libggml-cpu.so.0", RTLD_NOW | RTLD_GLOBAL);
-    if (!h) { fprintf(stderr, "dlopen: %s\n", dlerror()); return 2; }
-    if (auto init = (void (*)()) dlsym(h, "ggml_cpu_init")) init();   // fills the fp16 -> fp32 table the library kernel reads
-    dot_fn ref = (dot_fn) dlsym(h, "ggml_vec_dot_q2_0_q8_0");
-    if (!ref) { fprintf(stderr, "symbol not found\n"); return 2; }
+    dot_fn ref = nullptr;
+    if (argc > 1) {
+        void * h = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
+        if (h) {
+            if (auto init = (void (*)()) dlsym(h, "ggml_cpu_init")) init();   // fills the fp16 -> fp32 table the library kernel reads
+            ref = (dot_fn) dlsym(h, "ggml_vec_dot_q2_0_q8_0");
+        }
+    }
+    printf("reference: %s\n", ref ? "the real library function" : "built-in copy of llama.cpp's loop");
+    if (!ref) ref = ref_loop;
     // the half -> float conversion must match the hardware one for all 65536 values
     {
         long bad = 0;

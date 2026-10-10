@@ -16,6 +16,18 @@ benchmarks are listed too, because people ask for them; they can be run against 
 On a remote machine: `ssh -L 8765:127.0.0.1:8765 host`, then open `http://127.0.0.1:8765` locally (the tool only listens on loopback).
 For a comparable set of cells across models use `bench/standard.py` (see TEST_PROTOCOL.md).
 
+## 0b. Benchmark many models and publish the numbers
+
+```bash
+bench/run_matrix.py --ollama --dir ~/models --exclude Q2_0           # plan: which MoE models, which limits (dense models are skipped)
+bench/run_matrix.py --ollama --dir ~/models --exclude Q2_0 --run     # run (hours; start it before you go to bed)
+bench/run_matrix.py --model big.gguf --limits 12,16,24 --run         # one model, limits of your choice
+```
+
+Per model it runs two placements (all experts on the CPU, and as many expert layers on the GPU as fit) at several hard memory limits (default 0.4, 0.6, 0.8 and 1.1 times the file size), stock and moe-cache, both orders,
+and writes a markdown table with the hardware line and a CSV. Before posting: look at the `Clean` column and rerun rows marked NO (close browsers and other heavy programs first);
+quote the hardware line, the llama.cpp commit (`moe-cache-check` prints it) and the moe-cache version; say that the memory limits are cgroup limits on a machine with more RAM. The tables contain no prompts, outputs or paths.
+
 ## 1. Speed and resource benchmarks (built into moe-cache-bench)
 | Measure | What it tells you | How moe-cache-bench does it |
 |---|---|---|

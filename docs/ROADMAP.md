@@ -18,3 +18,18 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 
 - **Web UI**: not built here. `llama-server` already serves a web UI at its address, and `moe-cache-server --open` opens it. Anything that speaks the OpenAI API (for example Open WebUI) can connect to the same address.
 - **Setup GUI** (choose model, RAM, GPU split with sliders): reasonable for v0.4, a small local web page or a terminal menu.
+
+## Status against the v1.0 list (2026-10-10, version 0.2.0)
+
+| v1.0 requirement | State |
+|---|---|
+| Linux + Windows | Linux only tested. Windows code exists (platform layer, DLL build), never ran on real Windows. **Open: needs a Windows machine.** |
+| NVIDIA, AMD and Intel GPUs each tested | NVIDIA (CUDA, Vulkan) and Intel iGPU (Vulkan) tested; **AMD not tested** (a Ryzen mini PC is waiting). |
+| Compatibility list checked automatically per model | list exists (docs/COMPATIBILITY.md); `bench/run_matrix.py` runs identity + speed over a folder of models; not yet run by CI (needs models). |
+| Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; only llama.cpp 7fe450e19 is supported. **Open: bump the pinned commit (GLM-5.3 and its MTP landed upstream after it) and re-run the identity matrix.** |
+| Continuous tests (identity + speed regression guard) | CI builds, syntax-checks and runs the kernel bit-exactness check (needs no model). Identity and speed need models and a GPU runner. **Open.** |
+| Documentation for contributors | CONTRIBUTING.md, TECHNIQUES.md, SECURITY.md exist. |
+| Safety: automatic fallback on a fault | read faults fall back to buffered reads; a wrong model file disables caching instead of aborting; an unrecoverable read still stops the server (never serves wrong data). |
+| Sanitizer runs | whole plugin under ASan + UBSan with the executor, forced evictions and byte checking: clean. |
+
+Summary: not v1.0. The remaining gaps are hardware coverage (Windows, AMD), a moving llama.cpp pin, and CI that can run models. Version 0.2.0 is feature-complete for the Linux NVIDIA/CPU case.

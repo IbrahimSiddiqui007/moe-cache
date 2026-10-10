@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.1.4%20alpha-orange">
+<img alt="status" src="https://img.shields.io/badge/status-v0.2.0%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-7fe450e19%20(ggml%200.25.1)-green">
@@ -24,7 +24,9 @@ moe-cache manages the CPU-side experts itself:
 - **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
 - produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](docs/RESULTS.md); one model, Hunyuan, only with a short test);
 - works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
-- runs long prompts on the GPU like stock llama.cpp does.
+- runs long prompts on the GPU like stock llama.cpp does;
+- **expert executor** (on by default): while missing experts load from the SSD it already computes the ones in RAM, and on hybrid Intel CPUs it can use the efficiency cores too. Results are bit-identical (every output was compared byte for byte with llama.cpp's own on the test models);
+- **faster Q2_0 kernel**: llama.cpp has no SIMD Q2_0 dot product on x86; the plugin supplies one (bit-identical, about 3x faster), which matters for models whose down projections are Q2_0 (for example Qwen3.8-Flash-Next).
 
 If the model already fits in your RAM you get stock speed or better (on our hybrid-CPU laptop: +15 % over stock with default settings, the same as stock with hand-tuned CPU pinning, see [RESULTS](docs/RESULTS.md) section 11). It is for the case where it does not.
 
@@ -62,6 +64,13 @@ bench/standard.py MODEL.gguf --limits 12,24 --profiles cpu,gpu
 ```
 
 The shareable HTML report and JSON export contain no prompts, outputs or local paths; the unfiltered versions are for you only (see [docs/SECURITY.md](docs/SECURITY.md)).
+Benchmark every model on your disk (all Ollama models and all GGUF files in a folder, both placements, several memory limits) and get a table to publish:
+
+```bash
+bench/run_matrix.py --ollama --dir ~/models           # prints the plan: models, cells, limits
+bench/run_matrix.py --ollama --dir ~/models --run     # runs it; writes results-matrix-DATE.md and .csv
+```
+
 What the benchmarks mean and how to run the usual capability suites against the same server: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Quick start (Linux)
@@ -158,6 +167,11 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 | `MOE_CACHE_PROFILE` / `MOE_CACHE_WARM` | learn expert usage here and warm-start from it / warm start only |
 | `MOE_CACHE_STATS=1` | print hit rate, reads and evictions at exit |
 | `MOE_CACHE_DISABLE=1` | load nothing: the server behaves exactly like stock |
+| `MOE_CACHE_EXEC=0` | switch the expert executor off (default on) |
+| `MOE_CACHE_EXEC_ECORES=N` | let the executor use N efficiency cores as well (the launcher sets up to 4 on hybrid Intel CPUs; `--no-ecores` to disable) |
+| `MOE_CACHE_EXEC_THREADS=N`, `MOE_CACHE_EXEC_READERS=N` | compute threads (default: what llama.cpp asks for) and background reader threads (default 4) |
+| `MOE_CACHE_EXEC_CHECK=1` | recompute every expert op the stock way and compare (slow; for testing) |
+| `MOE_CACHE_FAST_KERNELS=0` | use llama.cpp's own Q2_0 kernel instead of the plugin's |
 
 ## Acknowledgements
 

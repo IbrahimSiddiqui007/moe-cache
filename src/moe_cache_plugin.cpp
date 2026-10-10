@@ -45,6 +45,12 @@
 #include <condition_variable>
 #include <deque>
 #include <fstream>
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 #ifdef __linux__
 #include <sched.h>
 #endif
@@ -233,6 +239,146 @@ struct io_job_t {
     int    fdi;      // which model file (split GGUF)
     bool   direct;   // memory address matches the file offset (mod 4096): read straight into place
     const ggml_tensor * rtensor = nullptr;   // set: repack this expert while loading it
+    int    node = -1;        // index in the node table (asynchronous loads clear its "loading" flag when done)
+};
+
+// ---- compute pool for decode-time expert matrix products (MOE_CACHE_EXEC=1) ----
+// llama.cpp splits the rows of an expert statically over its threads and waits for all SSD reads before it starts. This pool takes row chunks
+// from a shared counter, starts on the experts that are already in RAM and waits only for the others, so it can also use slower cores.
+// It calls the same dot-product functions with the same arguments, so every output value is bit-identical to llama.cpp's.
+static inline void cpu_relax() {
+#if defined(__x86_64__)
+    _mm_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
+
+struct exec_task_t {
+    const char * w;        // first row of this expert's matrix
+    const char * col;      // quantised activation column
+    float *      dst;      // output (rows floats)
+    const uint8_t * flag;  // non-null: the expert is still being read while *flag is non-zero
+    int64_t      rows;
+};
+
+struct exec_job_t {
+    const exec_task_t * tasks = nullptr;
+    int      total = 0;        // chunks
+    int      nch = 1;          // chunks per task
+    int      chunk = 32;       // rows per chunk
+    int64_t  ne00 = 0;
+    size_t   nb01 = 0;
+    ggml_vec_dot_t dot = nullptr;
+    std::atomic<int> next{0};
+    std::atomic<int> done{0};
+};
+
+struct exec_pool_t {
+    std::vector<std::thread> th;
+    std::atomic<uint32_t> gen{0};
+    std::atomic<bool> stop{false};
+    std::atomic<exec_job_t *> cur{nullptr};
+    std::atomic<int> inside{0};
+    std::atomic<int> parked{0};
+    std::mutex m;
+    std::condition_variable cv;
+    exec_job_t jobs[2];
+    int which = 0;
+
+    static void work(exec_job_t * j) {
+        for (;;) {
+            const int c = j->next.fetch_add(1, std::memory_order_relaxed);
+            if (c >= j->total) {
+                return;
+            }
+            const exec_task_t & t = j->tasks[c / j->nch];
+            const int64_t r0 = (int64_t) (c % j->nch) * j->chunk;
+            const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
+            if (t.flag) {
+                while (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE)) {
+                    cpu_relax();
+                }
+            }
+            for (int64_t r = r0; r < r1; r++) {
+                j->dot((int) j->ne00, &t.dst[r], 0, t.w + (size_t) r * j->nb01, 0, t.col, 0, 1);
+            }
+            j->done.fetch_add(1, std::memory_order_release);
+        }
+    }
+
+    void start(const std::vector<int> & cpus, int n_workers) {
+        for (int i = 0; i < n_workers; i++) {
+            const int cpu = i < (int) cpus.size() ? cpus[(size_t) i] : -1;
+            th.emplace_back([this, cpu] {
+#ifdef __linux__
+                if (cpu >= 0 && cpu < CPU_SETSIZE) {
+                    cpu_set_t set;
+                    CPU_ZERO(&set);
+                    CPU_SET(cpu, &set);
+                    sched_setaffinity(0, sizeof(set), &set);
+                }
+#endif
+                uint32_t seen = gen.load(std::memory_order_acquire);
+                for (;;) {
+                    int spins = 0;
+                    while (gen.load(std::memory_order_acquire) == seen) {
+                        if (stop.load(std::memory_order_relaxed)) {
+                            return;
+                        }
+                        if (++spins < 40000) {
+                            cpu_relax();
+                        } else {
+                            std::unique_lock<std::mutex> lk(m);
+                            parked++;
+                            cv.wait_for(lk, std::chrono::microseconds(200));
+                            parked--;
+                            spins = 0;
+                        }
+                    }
+                    seen = gen.load(std::memory_order_acquire);
+                    inside.fetch_add(1);
+                    exec_job_t * j = cur.load(std::memory_order_acquire);
+                    if (j) {
+                        work(j);
+                    }
+                    inside.fetch_sub(1);
+                }
+            });
+        }
+    }
+
+    // runs the job on the pool and the calling thread; returns when every chunk is done and no worker is inside the job any more
+    void run(const exec_task_t * tasks, int n_tasks, int64_t rows, int64_t ne00, size_t nb01, ggml_vec_dot_t dot, int chunk) {
+        exec_job_t * j = &jobs[which];
+        which ^= 1;
+        j->tasks = tasks;
+        j->nch = (int) ((rows + chunk - 1) / chunk);
+        j->total = n_tasks * j->nch;
+        j->chunk = chunk;
+        j->ne00 = ne00;
+        j->nb01 = nb01;
+        j->dot = dot;
+        j->next.store(0, std::memory_order_relaxed);
+        j->done.store(0, std::memory_order_relaxed);
+        cur.store(j, std::memory_order_release);
+        gen.fetch_add(1, std::memory_order_acq_rel);
+        if (parked.load() > 0) {
+            cv.notify_all();
+        }
+        work(j);
+        while (j->done.load(std::memory_order_acquire) < j->total || inside.load() > 0) {
+            cpu_relax();
+        }
+    }
+
+    ~exec_pool_t() {
+        stop = true;
+        cv.notify_all();
+        for (auto & t : th) {
+            t.join();
+        }
+    }
 };
 
 struct state_t {
@@ -302,6 +448,19 @@ struct state_t {
     int    mru = -1;
     int    lru = -1;
     int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
+    // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
+    bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
+    bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
+    int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
+    int    exec_ecores = 0;                             // extra workers on efficiency cores
+    int    exec_readers = 4;
+    std::unique_ptr<exec_pool_t> pool;
+    std::vector<std::thread> readers;
+    std::mutex rq_mu;
+    std::condition_variable rq_cv;
+    std::deque<io_job_t> rq;
+    bool   rq_stop = false;
+    std::atomic<uint64_t> exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
 
     // usage profile and warm start
     std::string profile_path;          // learn here and warm start from it
@@ -330,7 +489,7 @@ struct state_t {
 
     state_t() {
         stats = getenv("MOE_CACHE_STATS") != nullptr;
-        fprintf(stderr, "moe-cache: plugin v0.1.4 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
+        fprintf(stderr, "moe-cache: plugin v0.2.0 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
         if (strcmp(ggml_version(), MOE_CACHE_TESTED_GGML) != 0) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only; if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML);
         }
@@ -543,6 +702,27 @@ struct state_t {
                 fprintf(stderr, "moe-cache: L3 prefetch helper thread on\n");
             }
         }
+        if (const char * ex = getenv("MOE_CACHE_EXEC")) {
+            exec_on = strcmp(ex, "0") != 0;
+        }
+        if (const char * v = getenv("MOE_CACHE_EXEC_CHECK")) {
+            exec_check = strcmp(v, "0") != 0;
+        }
+        if (const char * v = getenv("MOE_CACHE_EXEC_THREADS")) {
+            exec_threads = std::max(0, std::min(64, atoi(v)));
+        }
+        if (const char * v = getenv("MOE_CACHE_EXEC_ECORES")) {
+            exec_ecores = std::max(0, std::min(32, atoi(v)));
+        }
+        if (const char * v = getenv("MOE_CACHE_EXEC_READERS")) {
+            exec_readers = std::max(1, std::min(16, atoi(v)));
+        }
+        if (exec_on) {
+            for (int i = 0; i < exec_readers; i++) {
+                readers.emplace_back([this] { reader_main(); });
+            }
+            fprintf(stderr, "moe-cache: expert executor on (%d reader threads, %d extra efficiency-core workers)\n", exec_readers, exec_ecores);
+        }
         if (const char * sb = getenv("MOE_CACHE_SIBLINGS")) {
             siblings = strcmp(sb, "0") != 0;
         }
@@ -583,6 +763,43 @@ struct state_t {
             }
         }
 #endif
+    }
+
+    // ---- executor: background expert reads ----
+    void reader_main() {
+        static thread_local char * bounce = nullptr;
+        static thread_local size_t bounce_size = 0;
+        for (;;) {
+            io_job_t j;
+            {
+                std::unique_lock<std::mutex> lk(rq_mu);
+                rq_cv.wait(lk, [this] { return rq_stop || !rq.empty(); });
+                if (rq_stop && rq.empty()) {
+                    return;
+                }
+                j = rq.front();
+                rq.pop_front();
+            }
+            const size_t need = round_up(max_nb2_all) + 2 * PAGE;
+            if (bounce_size < need) {
+                plat::aligned_free_page(bounce);
+                bounce = (char *) plat::aligned_alloc_page(need);
+                if (!bounce) {
+                    fprintf(stderr, "moe-cache: out of memory for a read buffer\n");
+                    abort();
+                }
+                bounce_size = need;
+            }
+            const auto r0 = std::chrono::steady_clock::now();
+            read_job(j, bounce);
+            ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                pending_bytes = pending_bytes > j.nb2 ? pending_bytes - j.nb2 : 0;
+                __atomic_store_n(&nodes[(size_t) j.node].loading, false, __ATOMIC_RELEASE);
+            }
+            load_cv.notify_all();
+        }
     }
 
     // ---- lookahead prefetch ----
@@ -851,6 +1068,15 @@ struct state_t {
     }
 
     ~state_t() {
+        {
+            std::lock_guard<std::mutex> lk(rq_mu);
+            rq_stop = true;
+        }
+        rq_cv.notify_all();
+        for (auto & t : readers) {
+            t.join();
+        }
+        pool.reset();
 #ifdef __linux__
         g_stats_stop = true;
         if (g_stats_pipe[1] >= 0) {
@@ -894,6 +1120,10 @@ struct state_t {
                 fprintf(stderr, "moe-cache: lookahead: prefetched %llu experts, used %llu, wasted %llu, late %llu; prediction recall %.1f%% (%llu of %llu), skipped %llu\n",
                         (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
                         pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
+            }
+            if (exec_on) {
+                fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s\n", (unsigned long long) exec_ops,
+                        exec_check ? (std::string(", checked ") + std::to_string(exec_checked.load()) + ", mismatches " + std::to_string(exec_mismatch.load())).c_str() : "");
             }
             fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu, repacked %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
@@ -1303,7 +1533,7 @@ struct state_t {
     }
 
     // make sure all experts used by the ops of one group (same ids tensor) are resident
-    void prepare_group(const std::vector<int> & tidx, const std::vector<int> & cnt) {
+    void prepare_group(const std::vector<int> & tidx, const std::vector<int> & cnt, bool async = false) {
         std::unique_lock<std::mutex> lk(mu);
         epoch++;
         std::vector<int> wait_list;       // experts a lookahead read is still filling
@@ -1320,7 +1550,7 @@ struct state_t {
             }
         }
         groups++;
-        if (auto_mode && (groups % 32) == 1) {
+        if (auto_mode && (groups % (async ? 4 : 32)) == 1) {
             tune();
         }
         if (!profile_path.empty()) {
@@ -1391,9 +1621,9 @@ struct state_t {
                     n.epoch = epoch;
                     resident_bytes += ti.nb2;
                     push_mru(s);
-                    jobs.push_back({ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr });
+                    { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                     pending_bytes += ti.nb2;
-                    if (auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
+                    if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
                         flush_reads(jobs, max_nb2);
                     }
                     continue;
@@ -1436,12 +1666,25 @@ struct state_t {
                 n.epoch = epoch;
                 resident_bytes += ti.nb2;
                 push_mru(s);
-                jobs.push_back({ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr });
+                { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                 pending_bytes += ti.nb2;
-                if (auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
+                if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
                     flush_reads(jobs, max_nb2);
                 }
             }
+        }
+        if (async) {
+            // hand the reads to the reader threads and return: the executor waits for each expert's flag when it needs it
+            if (!jobs.empty()) {
+                {
+                    std::lock_guard<std::mutex> ql(rq_mu);
+                    for (const auto & j : jobs) {
+                        rq.push_back(j);
+                    }
+                }
+                rq_cv.notify_all();
+            }
+            return;
         }
         flush_reads(jobs, max_nb2);
         for (int s : wait_list) {
@@ -1844,6 +2087,200 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     return true;
 }
 
+
+// ---- executor: decode-time expert matrix products run by the plugin itself ----
+// the CPU backend's type table, looked up at run time: builds that load their CPU backend as a separate library do not link it into the plugin
+typedef const struct ggml_type_traits_cpu * (*cpu_traits_fn_t)(enum ggml_type);
+const ggml_type_traits_cpu * cpu_traits(enum ggml_type t) {
+#ifdef __linux__
+    static cpu_traits_fn_t fn = (cpu_traits_fn_t) dlsym(RTLD_DEFAULT, "ggml_get_type_traits_cpu");
+    return fn ? fn(t) : nullptr;
+#else
+    (void) t;
+    return nullptr;
+#endif
+}
+
+bool exec_view_op(ggml_op op) {
+    return op == GGML_OP_NONE || op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+// true when every expert op of the graph is a single-token decode step that the executor can reproduce exactly
+bool exec_eligible(state_t & s, ggml_cgraph * cg) {
+    if (!s.exec_on || s.lookahead || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
+        return false;
+    }
+    const int n = ggml_graph_n_nodes(cg);
+    int seen = 0;
+    for (int i = 0; i < n; i++) {
+        const ggml_tensor * nd = ggml_graph_node(cg, i);
+        if (nd->op != GGML_OP_MUL_MAT_ID) {
+            continue;
+        }
+        const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
+        auto it = s.by_tensor.find(w);
+        if (it == s.by_tensor.end() || s.tensors[it->second]->repack) {
+            return false;
+        }
+        const ggml_type_traits_cpu * tt = cpu_traits(w->type);
+        if (!tt || !tt->vec_dot || !cpu_traits(tt->vec_dot_type) || ids->type != GGML_TYPE_I32 || ids->ne[1] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1) {
+            return false;
+        }
+        if (a->type != GGML_TYPE_F32 || a->nb[0] != sizeof(float) || a->ne[2] != 1 || a->ne[3] != 1 || nd->type != GGML_TYPE_F32 || nd->nb[0] != sizeof(float)) {
+            return false;
+        }
+        if (w->nb[0] != ggml_type_size(w->type) || w->ne[2] <= 1 || tt->nrows != 1 || cpu_traits(tt->vec_dot_type)->from_float == nullptr) {
+            if (!(a->type == tt->vec_dot_type)) {
+                return false;
+            }
+        }
+        seen++;
+    }
+    return seen > 0;
+}
+
+// computes exactly the listed nodes with the CPU backend (all other nodes are switched to NONE for the call)
+enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, const std::vector<int> & which) {
+    bool real = false;
+    for (int i : which) {
+        real = real || !exec_view_op(ggml_graph_node(cg, i)->op);
+    }
+    if (!real) {
+        return GGML_STATUS_SUCCESS;
+    }
+    const int n = ggml_graph_n_nodes(cg);
+    std::vector<char> keep((size_t) n, 0);
+    for (int i : which) {
+        keep[(size_t) i] = 1;
+    }
+    std::vector<std::pair<ggml_tensor *, ggml_op>> saved;
+    for (int i = 0; i < n; i++) {
+        ggml_tensor * nd = ggml_graph_node(cg, i);
+        if (!keep[(size_t) i] && nd->op != GGML_OP_NONE) {
+            saved.emplace_back(nd, nd->op);
+            nd->op = GGML_OP_NONE;
+        }
+    }
+    const enum ggml_status st = ggml_backend_graph_compute(c->cpu, cg);
+    for (auto & sv : saved) {
+        sv.first->op = sv.second;
+    }
+    return st;
+}
+
+void exec_one_op(state_t & s, ggml_tensor * nd) {
+    const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
+    const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
+    const ggml_type_traits_cpu * tt = cpu_traits(w->type);
+    const ggml_type vdt = tt->vec_dot_type;
+    const int n_ids = (int) ids->ne[0];
+    const int64_t ne10 = a->ne[0], ne11 = a->ne[1];
+    const size_t row_size = ggml_row_size(vdt, ne10);
+    static thread_local std::vector<uint8_t> wbuf;
+    const char * cols;
+    size_t col_stride;
+    if (a->type == vdt) {
+        cols = (const char *) a->data;
+        col_stride = a->nb[1];
+    } else {
+        wbuf.resize((size_t) ne11 * row_size + 64);
+        const ggml_from_float_t from_float = cpu_traits(vdt)->from_float;
+        for (int64_t i11 = 0; i11 < ne11; i11++) {
+            from_float((const float *) ((const char *) a->data + (size_t) i11 * a->nb[1]), wbuf.data() + (size_t) i11 * row_size, ne10);
+        }
+        cols = (const char *) wbuf.data();
+        col_stride = row_size;
+    }
+    std::vector<exec_task_t> tasks;
+    tasks.reserve((size_t) n_ids);
+    std::vector<exec_task_t> late;
+    for (int slot = 0; slot < n_ids; slot++) {
+        const int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0]);
+        if (e < 0 || e >= w->ne[2]) {
+            fprintf(stderr, "moe-cache: expert id %d out of range\n", e);
+            abort();
+        }
+        exec_task_t t;
+        t.w = (const char *) w->data + (size_t) e * w->nb[2];
+        t.col = cols + (size_t) (slot % ne11) * col_stride;
+        t.dst = (float *) ((char *) nd->data + (size_t) slot * nd->nb[1]);
+        t.flag = (const uint8_t *) &s.nodes[(size_t) (ti.node0 + e)].loading;
+        t.rows = w->ne[1];
+        (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? late : tasks).push_back(t);   // experts already in RAM first
+    }
+    for (const auto & t : late) {
+        tasks.push_back(t);
+    }
+    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], tt->vec_dot, 32);
+    s.exec_ops++;
+}
+
+enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg) {
+    if (!s.pool) {
+        const int n = s.exec_threads > 0 ? s.exec_threads : std::max(1, c->n_threads);
+        static const std::vector<int> pins = pin_cpus();
+        std::vector<int> cpus;
+        for (int i = 1; i < n; i++) {
+            cpus.push_back(pins.size() >= (size_t) n ? pins[(size_t) i] : -1);
+        }
+        int extra = 0;
+#ifdef __linux__
+        if (s.exec_ecores > 0) {
+            std::ifstream f("/sys/devices/cpu_atom/cpus");
+            std::string txt;
+            if (f && std::getline(f, txt)) {
+                size_t i = 0;
+                while (i < txt.size() && extra < s.exec_ecores) {
+                    int a = atoi(txt.c_str() + i), b = a;
+                    while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
+                    if (i < txt.size() && txt[i] == '-') {
+                        i++;
+                        b = atoi(txt.c_str() + i);
+                        while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
+                    }
+                    for (int cpu = a; cpu <= b && extra < s.exec_ecores; cpu++) { cpus.push_back(cpu); extra++; }
+                    while (i < txt.size() && !isdigit((unsigned char) txt[i])) { i++; }
+                }
+            }
+        }
+#endif
+        s.pool.reset(new exec_pool_t());
+        s.pool->start(cpus, (int) cpus.size());
+        fprintf(stderr, "moe-cache: executor pool: %d compute threads (%d on efficiency cores)\n", (int) cpus.size() + 1, extra);
+    }
+    if (CPU().set_n_threads) {
+        CPU().set_n_threads(c->cpu, 1);       // the small nodes between the matrix products need no pool
+    }
+    const int n = ggml_graph_n_nodes(cg);
+    std::vector<int> batch;
+    enum ggml_status st = GGML_STATUS_SUCCESS;
+    for (int i = 0; i < n && st == GGML_STATUS_SUCCESS; i++) {
+        ggml_tensor * nd = ggml_graph_node(cg, i);
+        if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
+            st = exec_run_nodes(c, cg, batch);
+            batch.clear();
+            exec_one_op(s, nd);
+            if (s.exec_check) {
+                const size_t nb = ggml_nbytes(nd);
+                std::vector<char> mine((const char *) nd->data, (const char *) nd->data + nb);
+                memset(nd->data, 0, nb);
+                exec_run_nodes(c, cg, std::vector<int>{ i });
+                s.exec_checked++;
+                if (memcmp(mine.data(), nd->data, nb) != 0) {
+                    s.exec_mismatch++;
+                    memcpy(nd->data, mine.data(), nb);
+                }
+            }
+        } else {
+            batch.push_back(i);
+        }
+    }
+    if (st == GGML_STATUS_SUCCESS) {
+        st = exec_run_nodes(c, cg, batch);
+    }
+    return st;
+}
+
 enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     auto * c = (moe_cache_backend_ctx *) backend->context;
     state_t & s = S();
@@ -1895,6 +2332,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     }
     struct group_t { int first; int last; int n_tok; };
     std::vector<group_t> groups_found;
+    const bool exec_graph = s.cache_on && exec_eligible(s, cg);
     if (s.cache_on) {
         if (!s.preload_done) {
             s.preload();
@@ -1978,7 +2416,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                     fwrite(&e, sizeof(int16_t), 1, s.trace_f);
                 }
             }
-            s.prepare_group(tidx, used);
+            s.prepare_group(tidx, used, exec_graph);
             if (s.lookahead && n_tok == 1) {
                 const ggml_tensor * xin = node->src[1];
                 if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {
@@ -1996,6 +2434,13 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
             s.ns_prep += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - p0).count();
         }
+    }
+
+    if (exec_graph) {
+        const auto e0 = std::chrono::steady_clock::now();
+        const enum ggml_status est = exec_run_graph(c, s, cg);
+        s.ns_cpu += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - e0).count();
+        return est;
     }
 
     // long prompts: run the expert block on the GPU (what llama.cpp's own offload does for batches of 32+ tokens)
