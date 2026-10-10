@@ -290,3 +290,14 @@ Token identity against stock: 4/4 for every configuration listed.
 | fast kernel, executor off | 8.2 | second session |
 | fast kernel + executor, 6 threads | 10.9 | +33 % over the row above |
 | fast kernel + executor, 6 threads + 4 efficiency cores | 12.4 | +52 % over the row above |
+
+Second round, same configuration with the permuted-activation Q2_0 kernel (the executor rearranges each quantised activation column once; 5.9x the library's dot product, bit-identical):
+
+| Configuration (same session) | tok/s |
+|---|---|
+| executor off | 11.2 |
+| executor on, 6 threads | 12.3 |
+| executor on + 4 efficiency cores | 13.5 |
+
+Identity 4/4 and 0 byte mismatches over 12,420 expert ops with `MOE_CACHE_EXEC_CHECK=1`. The same configuration measured 8.2 tok/s in a busier session: absolute values on this laptop move by about 30 % with
+desktop load and temperature, so compare only rows measured together.

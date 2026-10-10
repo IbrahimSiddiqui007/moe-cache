@@ -59,7 +59,7 @@ int main(int argc, char ** argv) {
         printf("half -> float: %ld of 65536 values differ from the hardware conversion\n", bad);
     }
     std::mt19937_64 rng(12345);
-    long bad_fma = 0, bad_nofma = 0, total = 0;
+    long bad_fma = 0, bad_nofma = 0, bad_perm = 0, total = 0;
     for (int n : { 64, 128, 640, 2560, 4096, 12288 }) {
         const int nb = n / 64;
         std::vector<fastk::block_q2_0> x(nb);
@@ -68,8 +68,14 @@ int main(int argc, char ** argv) {
             for (auto & b : x) { b.d = (uint16_t) (0x2000 + rng() % 0x1800); for (auto & q : b.qs) q = (uint8_t) rng(); }   // positive, normal halves
             for (auto & b : y) { b.d = (uint16_t) (0x2000 + rng() % 0x1800); for (auto & q : b.qs) q = (int8_t) rng(); }
             if (trial % 7 == 0) { for (auto & b : y) for (auto & q : b.qs) q = (rng() & 1) ? 127 : -128; }              // extreme values
-            float r = 0, a = 0, c = 0;
+            float r = 0, a = 0, c = 0, pm = 0;
             ref(n, &r, 0, x.data(), 0, y.data(), 0, 1);
+            {
+                std::vector<fastk::block_q8_0_perm> yp(nb * 2);
+                fastk::permute_q8_0(y.data(), yp.data(), nb * 2);
+                fastk::vec_dot_q2_0_perm_avx2(n, &pm, 0, x.data(), 0, yp.data(), 0, 1);
+                uint32_t ri2, pi2; memcpy(&ri2, &r, 4); memcpy(&pi2, &pm, 4); bad_perm += ri2 != pi2;
+            }
             fastk::vec_dot_q2_0_q8_0_avx2<true>(n, &a, x.data(), y.data());
             fastk::vec_dot_q2_0_q8_0_avx2<false>(n, &c, x.data(), y.data());
             uint32_t ri, ai, ci; memcpy(&ri, &r, 4); memcpy(&ai, &a, 4); memcpy(&ci, &c, 4);
@@ -77,6 +83,7 @@ int main(int argc, char ** argv) {
         }
     }
     printf("trials %ld: mismatches with fused multiply-add %ld, with separate multiply/add %ld\n", total, bad_fma, bad_nofma);
+    printf("permuted-activation kernel: %ld mismatches in %ld trials\n", bad_perm, total);
     // speed: one expert-row sized dot (n = 2560) repeated, data in L2
     const int n = 2560, nb = n / 64, reps = 400000;
     std::vector<fastk::block_q2_0> x(nb); std::vector<fastk::block_q8_0> y(nb * 2);
@@ -90,5 +97,13 @@ int main(int argc, char ** argv) {
     auto t2 = std::chrono::steady_clock::now();
     const double a = std::chrono::duration<double>(t1 - t0).count(), b = std::chrono::duration<double>(t2 - t1).count();
     printf("n=%d: library %.1f ns per dot, avx2 %.1f ns per dot, speed-up %.1fx\n", n, a / reps * 1e9, b / reps * 1e9, a / b);
-    return (bad_fma && bad_nofma) ? 1 : 0;
+    {
+        std::vector<fastk::block_q8_0_perm> yp(nb * 2);
+        fastk::permute_q8_0(y.data(), yp.data(), nb * 2);
+        auto t3 = std::chrono::steady_clock::now();
+        for (int i = 0; i < reps; i++) { fastk::vec_dot_q2_0_perm_avx2(n, &s, 0, x.data(), 0, yp.data(), 0, 1); sink += s; }
+        const double c = std::chrono::duration<double>(std::chrono::steady_clock::now() - t3).count();
+        printf("n=%d: permuted-activation kernel %.1f ns per dot (%.1fx the library, %.1fx the first kernel)\n", n, c / reps * 1e9, a / c, b / c);
+    }
+    return ((bad_fma && bad_nofma) || bad_perm) ? 1 : 0;
 }

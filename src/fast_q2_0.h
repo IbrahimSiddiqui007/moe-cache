@@ -89,4 +89,60 @@ static inline void vec_dot_q2_0_q8_0_avx2(int n, float * s, const void * vx, con
     *s = sumf;
 }
 
+
+// ---- second version: activations in a kernel-friendly layout (only the expert executor uses it) ----
+// The executor quantises one activation column and reuses it for thousands of weight rows, so it can afford to rearrange that column once.
+// Per Q8_0 block of 32 values: the values are stored in the order (field j, byte b) = original index 4*b + j, plus their integer sum.
+// A Q2_0 byte b of the block holds the weights 4b..4b+3 in its four 2-bit fields, so with this layout one shift and one mask give a vector
+// that lines up with the activations and the whole group is two instructions of multiply-add: no unpacking, no table lookups.
+// The integer result is the same, and the floating point part is the same as in vec_dot_q2_0_q8_0_avx2 (checked in tests/kernel_check.cpp).
+struct block_q8_0_perm { uint16_t d; int16_t sum; int8_t qs[32]; };   // 36 bytes
+
+static inline void permute_q8_0(const block_q8_0 * y, block_q8_0_perm * out, int nblocks) {
+    for (int i = 0; i < nblocks; i++) {
+        out[i].d = y[i].d;
+        int sum = 0;
+        for (int b = 0; b < 8; b++) {
+            for (int j = 0; j < 4; j++) {
+                const int8_t v = y[i].qs[4 * b + j];
+                out[i].qs[j * 8 + b] = v;
+                sum += v;
+            }
+        }
+        out[i].sum = (int16_t) sum;
+    }
+}
+
+__attribute__((target("avx2,fma,f16c")))
+static inline void vec_dot_q2_0_perm_avx2(int n, float * s, size_t, const void * vx, size_t, const void * vy, size_t, int) {
+    const block_q2_0 * x = (const block_q2_0 *) vx;
+    const block_q8_0_perm * y = (const block_q8_0_perm *) vy;
+    const int nb = n / 64;
+    const __m256i shifts = _mm256_setr_epi64x(0, 2, 4, 6);
+    const __m256i m3 = _mm256_set1_epi8(3);
+    const __m256i ones16 = _mm256_set1_epi16(1);
+    float sumf = 0.0f;
+    for (int i = 0; i < nb; i++) {
+        uint64_t q0, q1;
+        memcpy(&q0, &x[i].qs[0], 8);
+        memcpy(&q1, &x[i].qs[8], 8);
+        const __m256i v0 = _mm256_and_si256(_mm256_srlv_epi64(_mm256_set1_epi64x((long long) q0), shifts), m3);
+        const __m256i v1 = _mm256_and_si256(_mm256_srlv_epi64(_mm256_set1_epi64x((long long) q1), shifts), m3);
+        const __m256i a0 = _mm256_loadu_si256((const __m256i *) y[2 * i].qs);
+        const __m256i a1 = _mm256_loadu_si256((const __m256i *) y[2 * i + 1].qs);
+        const __m256i p0 = _mm256_madd_epi16(_mm256_maddubs_epi16(v0, a0), ones16);
+        const __m256i p1 = _mm256_madd_epi16(_mm256_maddubs_epi16(v1, a1), ones16);
+        const __m128i r0 = _mm_add_epi32(_mm256_castsi256_si128(p0), _mm256_extracti128_si256(p0, 1));
+        const __m128i r1 = _mm_add_epi32(_mm256_castsi256_si128(p1), _mm256_extracti128_si256(p1, 1));
+        const __m128i h = _mm_hadd_epi32(_mm_hadd_epi32(r0, r1), _mm_setzero_si128());   // lane 0 = sum of r0, lane 1 = sum of r1 (exact integers)
+        const int sb0 = _mm_cvtsi128_si32(h) - (int) y[2 * i].sum;
+        const int sb1 = _mm_extract_epi32(h, 1) - (int) y[2 * i + 1].sum;
+        const float d0 = _cvtsh_ss(x[i].d), d1a = _cvtsh_ss(y[2 * i].d), d1b = _cvtsh_ss(y[2 * i + 1].d);
+        float sumi = __builtin_fmaf(d1a, (float) sb0, 0.0f);
+        sumi = __builtin_fmaf(d1b, (float) sb1, sumi);
+        sumf = __builtin_fmaf(d0, sumi, sumf);
+    }
+    *s = sumf;
+}
+
 }  // namespace fastk

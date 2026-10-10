@@ -51,6 +51,9 @@
 #ifdef __linux__
 #include <dlfcn.h>
 #endif
+#if defined(__x86_64__) && defined(__linux__)
+#include "fast_q2_0.h"
+#endif
 #ifdef __linux__
 #include <sched.h>
 #endif
@@ -2101,6 +2104,20 @@ const ggml_type_traits_cpu * cpu_traits(enum ggml_type t) {
 #endif
 }
 
+#if defined(__x86_64__) && defined(__linux__)
+// Q2_0 weights: the executor rearranges the quantised activation column once and uses the permuted-layout kernel (bit-identical, about 2x the other one)
+void q2_0_perm_dot(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
+    fastk::vec_dot_q2_0_perm_avx2(n, s, bs, vx, bx, vy, by, nrc);
+}
+bool fast_kernels_enabled() {
+    static const bool on = [] {
+        const char * e = getenv("MOE_CACHE_FAST_KERNELS");
+        return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
+    }();
+    return on;
+}
+#endif
+
 bool exec_view_op(ggml_op op) {
     return op == GGML_OP_NONE || op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
 }
@@ -2177,8 +2194,14 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     const int64_t ne10 = a->ne[0], ne11 = a->ne[1];
     const size_t row_size = ggml_row_size(vdt, ne10);
     static thread_local std::vector<uint8_t> wbuf;
+    static thread_local std::vector<uint8_t> pbuf;
     const char * cols;
     size_t col_stride;
+    ggml_vec_dot_t dot = tt->vec_dot;
+    bool permuted = false;
+#if defined(__x86_64__) && defined(__linux__)
+    permuted = w->type == GGML_TYPE_Q2_0 && vdt == GGML_TYPE_Q8_0 && a->type == GGML_TYPE_F32 && ne10 % 64 == 0 && fast_kernels_enabled();
+#endif
     if (a->type == vdt) {
         cols = (const char *) a->data;
         col_stride = a->nb[1];
@@ -2190,6 +2213,19 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
         }
         cols = (const char *) wbuf.data();
         col_stride = row_size;
+#if defined(__x86_64__) && defined(__linux__)
+        if (permuted) {
+            const size_t nbk = (size_t) (ne10 / 32);
+            pbuf.resize((size_t) ne11 * nbk * sizeof(fastk::block_q8_0_perm) + 64);
+            for (int64_t i11 = 0; i11 < ne11; i11++) {
+                fastk::permute_q8_0((const fastk::block_q8_0 *) (wbuf.data() + (size_t) i11 * row_size),
+                                    (fastk::block_q8_0_perm *) (pbuf.data() + (size_t) i11 * nbk * sizeof(fastk::block_q8_0_perm)), (int) nbk);
+            }
+            cols = (const char *) pbuf.data();
+            col_stride = nbk * sizeof(fastk::block_q8_0_perm);
+            dot = q2_0_perm_dot;
+        }
+#endif
     }
     std::vector<exec_task_t> tasks;
     tasks.reserve((size_t) n_ids);
@@ -2211,7 +2247,7 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     for (const auto & t : late) {
         tasks.push_back(t);
     }
-    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], tt->vec_dot, 32);
+    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32);
     s.exec_ops++;
 }
 
