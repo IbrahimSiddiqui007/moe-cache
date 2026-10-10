@@ -136,7 +136,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 ## FAQ
 
-**Do I need this if my model fits in RAM?** No. It matches stock speed there (a few percent either way). The gain is when memory is short or the model is larger than your RAM.
+**Do I need this if my model fits in RAM?** No. It matches stock speed there (a few percent either way). The gain is when memory is short or the model is larger than your RAM. _work in progress though, I'm currently seeing different ways to improve speed and efficiency_
 
 **Does it use my GPU?** Yes, through llama.cpp as usual. `moe-cache-server` picks how many layers' experts live on the GPU from your free VRAM (that alone is worth about +60 % over keeping everything on the CPU). moe-cache itself manages the experts that stay on the CPU side.
 
