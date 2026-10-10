@@ -14,7 +14,7 @@ if [ -z "$MOE_CACHE_RELEASE_EXPORT" ]; then
   MOE_CACHE_RELEASE_EXPORT=1 "$X/tools/make_release.sh" "$V"
   mkdir -p dist; cp "$X"/dist/moe-cache-v"$V"-linux-x86_64.tar.gz "$X"/dist/SHA256SUMS dist/
   echo "built from commit $(git rev-parse --short HEAD) -> dist/"; ( cd dist && cat SHA256SUMS )
-  echo "note: SHA256SUMS detects corruption only; it is not a signature (see docs: signing is a v1.0 item)"
+  echo "note: SHA256SUMS detects corruption only. Releases built by the GitHub workflow also carry a build attestation (see docs/SECURITY.md)."
   exit 0
 fi
 ./build.sh --portable

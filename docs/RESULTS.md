@@ -248,3 +248,32 @@ Same setup as 12b, 4 prompts x 100 tokens, one run per row, tool-flagged clean w
 | **L3 cache helper thread** (an efficiency-core thread loads the up/down experts into L3 while gate computes), Qwen3.6-35B 28 GB, 4 clean runs each | off 38.4 tok/s (39.8, 37.6, 36.8, 39.3); on 31.2 (34.2, 30.7, 29.8, 30.0) | **-19 %**; off by default (`MOE_CACHE_L3PREFETCH=1`) |
 
 Where the 120B stands now (24 GB limit, 2 of 36 expert layers on the GPU, 4 prompts x 100 tokens): stock llama.cpp 0.37 tok/s, moe-cache 4.47 tok/s (12x).
+
+## 13. Small models, CPU only, hard memory limit (Raspberry-Pi-class test, 2026-10-10)
+
+GPU hidden (`CUDA_VISIBLE_DEVICES=`), 4 threads pinned to 4 performance cores, every run in its own cgroup with the stated limit and swap off, start at 51 to 55 C
+(the gate is 58 C), `llama-bench` pp64 / tg64 with 3 repetitions (mean ± standard deviation), one run per cell, stock = same llama.cpp without the plugin.
+**These are not Raspberry Pi numbers**: this CPU is several times faster than a Pi's. They show how the plugin behaves relative to stock with 1 to 3 GB of memory.
+
+| Model (total / active) | File | Limit | Stock tg64 tok/s | moe-cache tg64 tok/s | Note |
+|---|---|---|---|---|---|
+| Granite 3.1 MoE 1B-A400M Q4_K_M | 0.82 GB | 3 GB | 107.5 ± 3.4 | 98.7 ± 3.5 | fits: plugin about 8 % slower |
+| Granite 3.1 MoE 1B-A400M Q8_0 | 1.42 GB | 3 GB | 68.2 ± 0.9 | 66.9 ± 1.5 | fits: about 2 % slower |
+| Granite 3.1 MoE 3B-A800M Q4_K_M | 2.0 GB | 3 GB | 55.2 ± 0.4 | 51.6 ± 1.4 | fits: about 7 % slower |
+| SmallThinker 4B-A0.6B Q4_K_M | 2.65 GB | 3 GB | 54.0 ± 0.2 | 46.3 ± 1.5 | fits: about 14 % slower |
+| Ministral 3 3B Q4_K_M (dense, no experts) | 2.15 GB | 3 GB | 16.3 ± 0.3 | 15.6 ± 0.3 | the plugin has nothing to manage; about 4 % slower |
+| Granite 3.1 MoE 3B-A800M Q4_K_M | 2.0 GB | 1.2 GB | killed (out of memory) | 5.3 ± 0.0 | stock repacks the weights into anonymous memory |
+| Granite 3.1 MoE 1B-A400M Q8_0 | 1.42 GB | 0.9 GB | 2.2 ± 0.0 | 4.5 ± 2.0 | |
+| OLMoE-1B-7B-0125 Q4_0 (6.9B / 1.3B) | 3.93 GB | 3 GB | killed (out of memory) | 19.4 ± 0.9 | file larger than the limit |
+| OLMoE-1B-7B-0125 Q4_0 | 3.93 GB | 2 GB | killed (out of memory) | 9.2 ± 0.1 | |
+
+Stock has to be run with `--no-repack` when the model does not fit. Same cells with `llama-server`, 4 requests x 48 tokens, mean of requests 2 to 4, stock `--no-repack` against the plugin with `MOE_CACHE_REPACK=off` (like for like):
+
+| Model | Limit | Stock `--no-repack` | moe-cache (repack off) | moe-cache (repack auto) |
+|---|---|---|---|---|
+| Granite 3B-A800M Q4_K_M | 1.2 GB | 1.4 | 5.4 | 5.3 |
+| Granite 1B-A400M Q8_0 | 0.9 GB | 2.0 | 6.5 | 6.5 |
+| OLMoE-1B-7B Q4_0 | 3 GB | 7.6 | 16.6 | 13.7 |
+| OLMoE-1B-7B Q4_0 | 2 GB | 1.8 | 6.1 | 6.1 |
+
+Findings: the plugin is not faster when the whole model fits (about 2 to 14 % slower on these small CPU-only runs, SmallThinker the most); it keeps models usable that do not fit, 2 to 4 times faster than stock with repacking switched off, and stock with default settings is killed. On CPU-only machines the automatic repacking was slower than repack off in the 3 GB OLMoE cell (13.7 against 16.6): not understood yet. Ministral Q8_0 (3.65 GB, dense) in the 3 GB limit ran at 0.8 tok/s for stock.
