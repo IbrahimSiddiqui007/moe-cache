@@ -36,7 +36,7 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
 |---|---|
 | qwen3moe (Qwen3-Coder 30B-A3B), qwen35moe (Qwen3.6 35B-A3B, KAT-Coder), granitemoe (Granite 3.1 MoE), deepseek2 (DeepSeek-V2-Lite), gpt-oss (gpt-oss-20b / 120b), qwen3next (Qwen3-Next-80B) | **Tested**: token-identical to stock |
 | hunyuan-moe (Hunyuan-A13B) | short identity test only |
-| qwen4exp (Qwen3.8-Flash-Next, IQ2_XS) | loads and answers correctly with the plugin; token identity against stock **not yet checked** |
+| qwen4exp (Qwen3.8-Flash-Next, IQ2_XS) | **token-identical to stock** on 4 prompts x 24 tokens in a 24 GB cgroup with 3 expert layers on the GPU (short test, 2026-10-10) |
 | lfm2moe, granitehybrid, olmoe, smallthinker, bailingmoe2 | supported by llama.cpp at this commit, **not tested** with the plugin (a speed test of olmoe and smallthinker is in progress) |
 | Dense models (Ministral 3 3B and others) | nothing to manage: the plugin has no effect (a few percent slower than stock in a CPU-only test) |
 
