@@ -34,3 +34,33 @@ Every idea that changes the generated tokens is opt-in and needs a quality measu
 2. Ideas 2 and 3 (no change to tokens, cheap, directly useful for a "just run the model" user).
 3. Ideas 6 to 9 as microbenchmarks before touching the plugin.
 4. Ideas 4 and 5 only with a written quality measurement plan, as clearly labelled opt-in modes.
+
+## Measured (2026-10-10, Qwen3.8-Flash-Next IQ2_XS, this laptop, 24 GB limit, 3 expert layers on the GPU)
+
+**Routing trace** (12 varied prompts, 948 decode tokens, 45 CPU layers, 512 experts, top-10; `MOE_CACHE_TRACE_IDS`):
+
+| Statistic | Value |
+|---|---|
+| Top 5 / 10 / 25 / 50 % of (layer, expert) pairs cover | 30.5 / 47.0 / 76.1 / 95.2 % of picks (uniform would be 5 / 10 / 25 / 50 %) |
+| Distinct pairs used in 948 tokens | 18,325 of 23,040 (80 %) |
+| Global LRU hit rate, cold start, whole run / second half | 4 GiB 70 / 71 %, 8 GiB 85 / 85 %, 12 GiB 91 / 92 %, 16 GiB 94 / 95 %, **19.5 GiB 95 / 97 %**, 24 GiB 96 / 98 % |
+| Miss rate by pick rank at 19.5 GiB | rank 0: 1.0 %, rank 5: 3.3 %, rank 9: 7.1 % (the last picks miss 7 times as often as the first) |
+| Token-to-token overlap per layer | 36.1 % (random 2.0 %) |
+| Static top set from the first half, evaluated on the second half | 61 % at 8 GiB, 87 % at 19.5 GiB (LRU does better, so a profile is a warm start, not a replacement) |
+
+**Time per token** (plugin counters, 384 tokens): about 99 ms expert compute on the CPU and about 32 ms SSD reads (cache still warming); the rest is small.
+
+**Threads** (same 8 requests, cold file cache, 24 GB limit):
+
+| Setting | Mean of requests 5-8 |
+|---|---|
+| 6 threads on the 6 performance cores (baseline) | 5.57 tok/s |
+| 12 threads (performance cores and their siblings) | 5.40 tok/s |
+| 16 threads, no pinning (includes efficiency cores) | 5.49 tok/s |
+
+**Compressibility** of 1 GiB of expert bytes: zstd gives 97.4 % of the original size, so a compressed RAM cache is out.
+
+What this changes in the ranking above:
+- Decode here is limited by **expert math on the CPU**, not by the SSD: thread count does not matter (hyper-threads share the same execution units, efficiency cores are slower and the rows are split statically) and reads are about a quarter of the time. Ideas 6 to 9 (IO tuning) can give at most the read share, so roughly 10 to 20 %.
+- The levers that act on the compute are: fewer experts evaluated per token (ideas 4 and 5, both change tokens), moving compute to the GPU (idea 11), and a **format the CPU kernels run faster**: the model's authors report 1.9x lower latency for their Q2_0 variant against IQ2_XS (66.4 GB file, not downloaded).
+- The last picks of a token miss 7 times as often as the first and carry the smallest weights, which is exactly where idea 4 (substitution) and idea 5 (adaptive top-k) would act.
