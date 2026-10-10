@@ -70,7 +70,7 @@ inline file_t file_open(const char * path, bool direct) {
     f.h = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                       FILE_FLAG_OVERLAPPED | (direct ? FILE_FLAG_NO_BUFFERING : 0), nullptr);
 #else
-    f.fd = open(path, O_RDONLY | (direct ? O_DIRECT : 0));
+    f.fd = open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
 #endif
     return f;
 }
@@ -270,7 +270,7 @@ inline void make_dir(const char * path) {
 #ifdef _WIN32
     _mkdir(path);
 #else
-    mkdir(path, 0755);
+    mkdir(path, 0700);
 #endif
 }
 // rename tmp over dst (replaces an existing file on both systems)
@@ -278,7 +278,9 @@ inline void replace_file(const char * tmp, const char * dst) {
 #ifdef _WIN32
     MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING);
 #else
-    rename(tmp, dst);
+    if (rename(tmp, dst) != 0) {
+        fprintf(stderr, "moe-cache: cannot replace %s (%s); the new data is in %s\n", dst, strerror(errno), tmp);
+    }
 #endif
 }
 

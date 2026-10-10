@@ -54,7 +54,7 @@ static FILE * fopen_private(const char * path) {
 #ifdef _WIN32
     return fopen(path, "wb");
 #else
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);   // never follows a symlink someone put there
     return fd < 0 ? nullptr : fdopen(fd, "wb");
 #endif
 }
@@ -70,8 +70,21 @@ namespace {
 
 #ifdef __linux__
 int g_stats_pipe[2] = { -1, -1 };
+std::atomic<bool> g_stats_stop{false};   // set when the state is destroyed: the snapshot thread then stops without touching it
 #endif
 constexpr size_t PAGE = 4096;
+
+// GiB value from an environment variable: finite, not negative, at most 1 PiB; anything else is ignored with a message
+bool parse_gib(const char * name, const char * txt, size_t & out) {
+    char * end = nullptr;
+    const double v = strtod(txt, &end);
+    if (end == txt || !std::isfinite(v) || v < 0.0 || v > 1048576.0) {
+        fprintf(stderr, "moe-cache: ignoring %s=%s (expected a number of GiB, 0 to 1048576)\n", name, txt);
+        return false;
+    }
+    out = (size_t) (v * 1073741824.0);
+    return true;
+}
 
 size_t round_up(size_t x, size_t a = PAGE) {
     return (x + a - 1) / a * a;
@@ -111,6 +124,7 @@ struct usage_t {
 
 // file "XUSE", int32 layers, int32 experts, float counts[layers*experts], optional uint64 model fingerprint; or old int16 pairs (layer, expert), most used first
 bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
+    constexpr size_t MAX_CELLS = (size_t) 32 << 20;   // far above any real model (48 layers x 512 experts = 24k)
     FILE * f = fopen(path, "rb");
     if (!f) {
         return false;
@@ -118,10 +132,14 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
     if (fp) {
         *fp = 0;
     }
+    fseek(f, 0, SEEK_END);
+    const long fsz = ftell(f);
+    rewind(f);
     char magic[4];
-    if (fread(magic, 1, 4, f) == 4 && memcmp(magic, "XUSE", 4) == 0) {
+    if (fsz >= 4 && fread(magic, 1, 4, f) == 4 && memcmp(magic, "XUSE", 4) == 0) {
         int32_t nl = 0, ne = 0;
-        if (fread(&nl, 4, 1, f) != 1 || fread(&ne, 4, 1, f) != 1 || nl <= 0 || ne <= 0 || nl > 4096 || ne > 65536) {
+        if (fread(&nl, 4, 1, f) != 1 || fread(&ne, 4, 1, f) != 1 || nl <= 0 || ne <= 0 || nl > 4096 || ne > 65536 ||
+            (size_t) nl * (size_t) ne > MAX_CELLS || (size_t) fsz < 12 + (size_t) nl * (size_t) ne * sizeof(float)) {   // the file must really hold the counts it announces
             fclose(f);
             return false;
         }
@@ -140,10 +158,19 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
         u.c.assign(tmp.begin(), tmp.end());
         return true;
     }
+    // old format: int16 pairs (layer, expert), most used first
+    if (fsz <= 0 || fsz % 4 != 0 || (size_t) fsz > ((size_t) 64 << 20)) {
+        fclose(f);
+        return false;
+    }
     rewind(f);
     std::vector<int16_t> pairs;
     int16_t v;
     while (fread(&v, sizeof(v), 1, f) == 1) {
+        if (v < 0) {                  // a negative index would write outside the table
+            fclose(f);
+            return false;
+        }
         pairs.push_back(v);
     }
     fclose(f);
@@ -155,6 +182,9 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
     for (size_t i = 0; i < n; i++) {
         ml = std::max<int>(ml, pairs[2 * i] + 1);
         me = std::max<int>(me, pairs[2 * i + 1] + 1);
+    }
+    if ((size_t) ml * (size_t) me > MAX_CELLS) {
+        return false;
     }
     u.n_layers = ml;
     u.n_exp = me;
@@ -271,6 +301,7 @@ struct state_t {
     std::vector<node_t> nodes;
     int    mru = -1;
     int    lru = -1;
+    int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
 
     // usage profile and warm start
     std::string profile_path;          // learn here and warm start from it
@@ -441,10 +472,13 @@ struct state_t {
             auto_mode = true;
             limit_bytes = read_mem_limit();
             if (const char * v = getenv("MOE_CACHE_RAM_GIB")) {
-                limit_bytes = (size_t) (atof(v) * (1u << 30));
+                size_t x = 0;
+                if (parse_gib("MOE_CACHE_RAM_GIB", v, x) && x > 0) {
+                    limit_bytes = x;
+                }
             }
             if (const char * v = getenv("MOE_CACHE_MARGIN_GIB")) {
-                margin = (size_t) (atof(v) * (1u << 30));
+                parse_gib("MOE_CACHE_MARGIN_GIB", v, margin);
             }
             if (!direct_env) {
                 // the model does not fit: SSD reads dominate, and reading straight into place (no bounce buffer, no page re-zeroing) was +22 % on gpt-oss-120b
@@ -459,7 +493,10 @@ struct state_t {
             budget = limit_bytes > margin + guess + ((size_t) 1 << 30) ? limit_bytes - margin - guess : (size_t) 1 << 30;
             fprintf(stderr, "moe-cache: auto cache size, memory limit %.2f GiB, margin %.2f GiB, start budget %.2f GiB\n", limit_bytes / 1073741824.0, margin / 1073741824.0, budget / 1073741824.0);
         } else {
-            budget = (size_t) (atof(gib) * (1u << 30));
+            if (!parse_gib("MOE_CACHE_SIZE_GIB", gib, budget) || budget == 0) {
+                fail(std::string("MOE_CACHE_SIZE_GIB='") + gib + "' is not a valid size");
+                return;
+            }
         }
         cache_on = true;
         {
@@ -542,7 +579,7 @@ struct state_t {
                 sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_stats_pipe[1], &c, 1); (void) r; };   // async-signal-safe: only write()
                 sa.sa_flags = SA_RESTART;
                 sigaction(SIGUSR1, &sa, nullptr);
-                std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1) { print_snapshot(); } }).detach();
+                std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1 && !g_stats_stop) { print_snapshot(); } }).detach();
             }
         }
 #endif
@@ -728,6 +765,10 @@ struct state_t {
                 if (bounce_size < need) {
                     plat::aligned_free_page(bounce);
                     bounce = (char *) plat::aligned_alloc_page(need);
+                    if (!bounce) {
+                        fprintf(stderr, "moe-cache: out of memory for a read buffer\n");
+                        abort();
+                    }
                     bounce_size = need;
                 }
                 read_job(j, bounce);
@@ -810,6 +851,12 @@ struct state_t {
     }
 
     ~state_t() {
+#ifdef __linux__
+        g_stats_stop = true;
+        if (g_stats_pipe[1] >= 0) {
+            close(g_stats_pipe[1]);          // wakes the snapshot thread, which then exits
+        }
+#endif
         if (trace_f) {
             fclose(trace_f);
         }
@@ -999,8 +1046,11 @@ struct state_t {
         }
         auto ft = file_tensors.find(t->name);
         if (ft == file_tensors.end() || t->ne[2] <= 1 || ft->second.second != t->nb[2] * (size_t) t->ne[2]) {
-            fprintf(stderr, "moe-cache: cannot cache tensor %s (not in the GGUF or size mismatch)\n", t->name);
-            abort();
+            // not the model MOE_CACHE_GGUF describes: keep this tensor as plain memory (the stock way) instead of stopping the server
+            if (unmatched++ == 0) {
+                fprintf(stderr, "moe-cache: tensor %s is not in the GGUF or has another size: it is loaded normally and not cached (is MOE_CACHE_GGUF the model you loaded?)\n", t->name);
+            }
+            return -1;
         }
         auto ti = std::make_unique<tinfo_t>();
         ti->name = t->name;
@@ -1452,8 +1502,9 @@ void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t o
     state_t & s = S();
     if (s.cache_on && t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0 && off == 0 && size == ggml_nbytes(t)) {
         std::lock_guard<std::mutex> lk(s.mu);
-        s.register_tensor(t);
-        return;
+        if (s.register_tensor(t) >= 0) {
+            return;
+        }
     }
     plat::mem_commit((char *) t->data + off, size);
     memcpy((char *) t->data + off, data, size);
@@ -1590,7 +1641,7 @@ std::vector<int> pin_cpus() {
             const char ch = m[n - 1 - i];
             const int v = ch >= '0' && ch <= '9' ? ch - '0' : (ch | 32) >= 'a' && (ch | 32) <= 'f' ? (ch | 32) - 'a' + 10 : 0;
             for (int b = 0; b < 4; b++) {
-                if (v & (1 << b)) {
+                if ((v & (1 << b)) && i * 4 + b < GGML_MAX_N_THREADS) {   // cpumask has GGML_MAX_N_THREADS entries
                     out.push_back((int) (i * 4 + b));
                 }
             }
@@ -1608,7 +1659,7 @@ std::vector<int> pin_cpus() {
                 b = atoi(txt.c_str() + i);
                 while (i < txt.size() && isdigit((unsigned char) txt[i])) { i++; }
             }
-            for (int c = a; c <= b; c++) { r.push_back(c); }
+            for (int c = a; c <= b && c < GGML_MAX_N_THREADS; c++) { r.push_back(c); }
             while (i < txt.size() && !isdigit((unsigned char) txt[i])) { i++; }
         }
         return r;
@@ -1813,7 +1864,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         static const std::vector<int> pins = pin_cpus();
         if (!pins.empty() && (size_t) c->n_threads <= pins.size()) {
             for (int i = 0; i < c->n_threads; i++) {
-                tpp.cpumask[pins[(size_t) i]] = true;
+                if (pins[(size_t) i] >= 0 && pins[(size_t) i] < GGML_MAX_N_THREADS) {
+                    tpp.cpumask[pins[(size_t) i]] = true;
+                }
             }
             tpp.strict_cpu = true;
             if (!c->pin_reported) {
@@ -2050,7 +2103,7 @@ void dev_props(ggml_backend_dev_t dev, ggml_backend_dev_props * props) {
 }
 
 ggml_backend_t dev_init(ggml_backend_dev_t dev, const char *) {
-    static ggml_guid guid = { 0x53, 0x54, 0x52, 0x41, 0x54, 0x41, 0x2d, 0x54, 0x37, 0x2d, 0x70, 0x6c, 0x75, 0x67, 0x69, 0x6e };
+    static ggml_guid guid = { 0x6d, 0x6f, 0x65, 0x2d, 0x63, 0x61, 0x63, 0x68, 0x65, 0x2d, 0x70, 0x6c, 0x75, 0x67, 0x69, 0x6e };
     return new ggml_backend{ &guid, g_backend_i, dev, new moe_cache_backend_ctx() };
 }
 
