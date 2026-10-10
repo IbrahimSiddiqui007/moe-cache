@@ -110,7 +110,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 ```
 
 Each expert keeps its normal address inside one large reserved block of memory; moe-cache decides which experts have real memory behind them.
-It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp can run through its expert multiplication works.
+It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.cpp runs through its expert multiplication should work; the architectures that were actually tested are listed in [COMPATIBILITY](docs/COMPATIBILITY.md) and [RESULTS](docs/RESULTS.md).
 
 ## Known limitations
 
@@ -126,11 +126,11 @@ It plugs into **ggml**, not into llama.cpp's model code, so any model llama.cpp 
 
 **Is there a GUI?** `llama-server` already ships a web UI (`moe-cache-server --open`). For a fancier chat app, point [Open WebUI](https://github.com/open-webui/open-webui) at `http://localhost:8080/v1` (OpenAI-compatible API; we have not tested that combination ourselves).
 
-**Why not an own inference engine like Strata or Maya?** Short answer: they are single-model engines with a high hardware floor; moe-cache is a small layer that works with any MoE llama.cpp runs. The reasoning and our measurements: [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
+**Why not an own inference engine like Strata or Maya?** Short answer: they are single-model engines with a high hardware floor; moe-cache is a small layer for the MoE models llama.cpp runs (tested list in COMPATIBILITY). The reasoning and our measurements: [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
 
 ## Documentation
 
-[Quick start](docs/QUICKSTART.md) | [Benchmarks](docs/BENCHMARKS.md) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md)
+[Quick start](docs/QUICKSTART.md) | [Benchmarks](docs/BENCHMARKS.md) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md) | [Security and privacy](docs/SECURITY.md)
 
 ## Configuration (environment variables; `moe-cache-server` sets them for you)
 

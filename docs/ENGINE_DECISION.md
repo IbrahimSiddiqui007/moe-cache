@@ -25,7 +25,7 @@ llama.cpp/ggml plus their own CUDA/AMD kernels, with a hot-expert tier in VRAM, 
 
 ## What the plugin already delivers without an engine
 
-- 2x to 7x stock when the model does not fit in RAM (the biggest lever by far), identical output, works with any MoE llama.cpp supports (8 architectures tested).
+- 2x to 7x stock when the model does not fit in RAM (the biggest lever by far), identical output, works with any MoE llama.cpp supports (7 architectures tested, see RESULTS section 1).
 - Using the GPU well is worth +60 % (all experts on CPU 16.2 -> planner placement 25.9 tok/s) and is done by llama.cpp's own placement.
 
 ## Decision rule
@@ -44,3 +44,7 @@ The emulation ran on one machine with one model; the GPU tier has never been bui
 - Simulation on 22 recorded Qwen3.6 decode traces: at about 1 GiB of GPU expert memory (a 4 GB card) a profile-chosen static tier gives 1.13x over all experts on the CPU (whole-layer placement: 1.06x); a dynamic tier needs about 90 to 100 expert copies per token and loses (0.83x to 0.88x) once each copy costs 0.178 ms. The +20 % bar is not reached.
 - Identity probe (Granite 3B): computing the expert block on the GPU for short batches changes the generated tokens within 3 to 20 tokens, because GPU and CPU kernels round differently. A tier that mixes both cannot be token-identical to stock.
 - Decision: no GPU hot tier; GPU use stays with llama.cpp's own placement (`--n-cpu-moe`, chosen by the planner). Caveats: one model's traces, a cost model fitted on an emulation, no real 4 GB card.
+
+## Update (2026-10-10): the 4 GB result does not settle larger cards
+
+The simulation above is for a card with about 1 GiB free for experts. A later simulation for a 12 GB card (about 8 GiB of experts) gave about 2.1x over all experts on the CPU against about 1.7x for whole-layer placement, so about +22 %, which would pass the +20 % gate. That figure is a simulation on one model's traces, the whole-layer value at 8 GiB is extrapolated, the output would not be token-identical to stock, and a defect of the one-token GPU path (`MOE_CACHE_GPU_MIN_TOKENS=1` repeats one token) is still open. So: **not built, and not ruled out for cards with 12 GB or more.** The decision above stands for 4 to 8 GB cards.
