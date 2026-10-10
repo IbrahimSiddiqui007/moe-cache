@@ -75,6 +75,10 @@ To prepare a profile before you start (or use your own prompts):
 bin/moe-cache-learn /path/to/model.gguf --ram 20 --llama-server /path/to/llama-server [--prompts my_prompts.txt]
 ```
 
+## Measure it on your own model
+
+`bin/moe-cache-bench` runs stock llama.cpp and moe-cache on your model and prompts under a memory limit and checks the tokens are identical; the steps are in the README and in [BENCHMARKS.md](BENCHMARKS.md).
+
 ## What speed to expect
 
 Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM you will see about the same speed as stock (within a few percent);

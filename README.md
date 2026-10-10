@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.1.2%20alpha-orange">
+<img alt="status" src="https://img.shields.io/badge/status-v0.1.4%20alpha-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-7fe450e19%20(ggml%200.25.1)-green">
@@ -38,15 +38,31 @@ git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
 
 It prints the commands to run a model at the end. `install.sh` is new and has so far only been tried on Arch Linux with `--no-apt`; if it fails on your Ubuntu, please open an issue.
 
-## Benchmark GUI
+## Benchmark it on your own model and your own use case
+
+The benchmark tool ships with the plugin (`bin/moe-cache-bench`, python standard library only). It measures stock llama.cpp and moe-cache on **your** machine,
+with **your** model and **your** prompts, under a memory limit you choose, and checks that both produce the same tokens.
 
 ```bash
-bin/moe-cache-bench         # opens http://127.0.0.1:8765
+bin/moe-cache-bench            # starts the tool and opens http://127.0.0.1:8765
 ```
 
-Pick a model, tick stock llama.cpp and/or moe-cache, set memory limits, and press Start. You get speed graphs, a stock-vs-moe-cache identity check,
-a latency sweep (time to first token at several input lengths), deep metrics (SSD reads per token, page faults, CPU time, cache hit rate by layer, evictions, time breakdown, memory), your own prompts (with optional expected answers), perplexity/KL divergence (optional), saved results, and a shareable HTML report. Charts are interactive: hover for details, click the legend to hide a series. `bin/moe-cache-bench-watch` shows a running benchmark in a terminal. Python standard library only.
-Which benchmarks exist and what they mean: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+1. **Model**: give the path of your `.gguf` (the llama-server and plugin paths are filled in when found).
+2. **Memory limit (GB)**: the RAM you want to emulate for the model. A model larger than this limit is the case moe-cache is made for; set 2 or 3 limits (for example 12 and 24) to see the curve.
+3. **Modes**: tick stock and moe-cache; leave "both orders" on (it runs forward and reverse to cancel drift).
+4. **Your own prompts** (optional): paste prompts separated by a line with only `---`; add `EXPECT: word` lines to mark words the answer must contain. They are run on both modes and compared.
+5. Press **Start**. Watch it in the browser, or in a terminal with `bin/moe-cache-bench-watch`.
+6. Read the result: steady generation speed (mean of requests 2 to 4), time to first token, SSD read per token, cache hit rate, and PASS/FAIL for identical tokens. Runs that started hot or with background load are flagged and should be repeated.
+
+Command line, for a fixed comparable protocol (two placements, two limits, both orders; see [docs/TEST_PROTOCOL.md](docs/TEST_PROTOCOL.md)):
+
+```bash
+bin/moe-cache-bench --no-browser &
+bench/standard.py MODEL.gguf --limits 12,24 --profiles cpu,gpu
+```
+
+The shareable HTML report and JSON export contain no prompts, outputs or local paths; the unfiltered versions are for you only (see [docs/SECURITY.md](docs/SECURITY.md)).
+What the benchmarks mean and how to run the usual capability suites against the same server: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
 ## Quick start (Linux)
 

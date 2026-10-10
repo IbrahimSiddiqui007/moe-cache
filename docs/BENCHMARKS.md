@@ -4,6 +4,18 @@ moe-cache does not change what a model knows: the generated tokens are identical
 **speed and memory** (where moe-cache differs) and **identity / quality drift** (to prove that it does not differ). The usual capability
 benchmarks are listed too, because people ask for them; they can be run against the same server with an external harness.
 
+## 0. Quick recipe: measure your own use case
+
+1. `bin/moe-cache-bench` and open the page (it opens by itself; the page carries the access token, so use the page the tool opened, not a bookmark from an earlier run).
+2. Model: your GGUF. Limit: the memory you want to emulate. For a model that fits in RAM you will see about stock speed (a few percent either way); the gain is when the limit is smaller than the model.
+3. Paste your own prompts if the default four are not like your work (blocks separated by `---`, optional `EXPECT: word` lines).
+4. Start. The tool waits for the CPU to cool to 58 C and for background load to fall under its limit before each run, and flags a run that could not be clean. Repeat flagged runs.
+5. Open the report: speed per memory limit, first-token latency, SSD read per token, cache hit rate by layer. Identity must say PASS; if it says FAIL, do not trust the speed and please open an issue with the model name.
+6. Share the HTML report or the CSV: both are free of prompts, outputs and local paths.
+
+On a remote machine: `ssh -L 8765:127.0.0.1:8765 host`, then open `http://127.0.0.1:8765` locally (the tool only listens on loopback).
+For a comparable set of cells across models use `bench/standard.py` (see TEST_PROTOCOL.md).
+
 ## 1. Speed and resource benchmarks (built into moe-cache-bench)
 | Measure | What it tells you | How moe-cache-bench does it |
 |---|---|---|
