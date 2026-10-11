@@ -42,11 +42,13 @@ def build_context(repo, tokens):
             t = open(f, encoding="utf-8", errors="replace").read()
         except OSError:
             continue
+        if len(t) > 14000:                # one huge file must not use the whole budget: keep its beginning
+            t = t[:14000] + "\n... (file shortened)\n"
         chunk = f"\n=== file: {os.path.relpath(f, repo)} ===\n{t}\n"
+        if size + len(chunk) > tokens * 3.0:      # stay under the budget (3 characters per token is conservative for code)
+            break
         parts.append(chunk)
         size += len(chunk)
-        if size > tokens * 3.4:         # about 3.4 characters per token for code
-            break
     return parts
 
 
