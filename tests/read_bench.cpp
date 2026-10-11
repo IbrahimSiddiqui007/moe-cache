@@ -1,5 +1,7 @@
 // How fast can expert-sized O_DIRECT reads land in anonymous memory, and what do page faults and syscalls cost? (ideas 7 and 9 of docs/EXPERIMENTS.md)
 //   g++ -O2 -std=c++17 tests/read_bench.cpp -o /tmp/read_bench -luring -lpthread && /tmp/read_bench FILE SLICE_KIB THREADS SECONDS [BATCH]
+// CAUTION: on btrfs with compression (the author's /home) the "fresh" rows over-count by about 2x compared with the SSD's own counters
+// (/proc/diskstats). Confirm every number against the device counters before quoting it; the "reused" and "populate" rows matched them.
 // Random 4 KiB-aligned reads of SLICE_KIB each from FILE (use a large model file, it is read with O_DIRECT, the page cache is bypassed).
 //   pread   fresh   : madvise(DONTNEED) on the destination before each read (what the plugin's eviction does), then pread
 //   pread   reused  : the destination stays mapped

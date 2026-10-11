@@ -329,3 +329,33 @@ Token identity of the upstream cache itself: 3 of 4 prompts identical to the sam
 The stock-with-cache row moved a lot between rounds; a third round is needed before quoting it. The plugin's rows are stable.
 
 Kernel candidates (IQ2_XXS and IQ3_XXS dot products, `tests/kernel_variants.cpp`, one core, data in cache, library function and variants interleaved over 7 rounds, two runs, start 54-55 C): all variants are bit-identical to the library function. IQ2_XXS: no variant is faster (0.90-0.95x). IQ3_XXS: gather-based lookups 1.13-1.18x, the other variants 0.97-1.01x. Both kernels are limited by assembling table lookups, not by arithmetic.
+
+
+## 16. Warm start, read speed and page faults on Qwen3.8-Flash-Next IQ2_XS (2026-10-11)
+
+Setup: plugin built for API 3 on llama.cpp 23b0202a1, 24 GB hard limit, swap off, 3 expert layers on the GPU, 4 requests of 48 tokens, ABAB twice, every run started at <= 58 C with the machine idle. The profile was learned from `tools/learn_prompts.txt` (14 prompts, 60 tokens each); the test prompts are different.
+
+| Request | no profile (2 runs) | `MOE_CACHE_WARM` profile (2 runs) |
+|---|---|---|
+| 1st: tok/s | 6.1 / 7.4 | 15.0 / 14.5 |
+| 1st: prompt time | 1.8 s / 1.5 s | 0.7 s / 0.7 s |
+| 2nd: tok/s | 8.2 / 10.2 | 11.9 / 13.7 |
+| 3rd: tok/s | 11.0 / 10.8 | 12.9 / 12.7 |
+| 4th: tok/s | 11.8 / 12.6 | 13.4 / 12.6 |
+
+The profile removes the cold ramp of the first requests; the steady speed is the same.
+
+Major page faults of the server during one request (plugin, warm): 23, 8, 5 and 3 for prompts of 8-10 tokens. The n-gram table is not what makes the prompt phase take about 1 s (that is expert work), so prefetching it during prefill has nothing to gain.
+
+Read speed (`tests/read_bench.cpp`, O_DIRECT random reads from the 39 GB shard, 4 reader threads, numbers confirmed against the SSD's own read counters in `/proc/diskstats`; the benchmark's own "fresh page" figures over-count and are not quoted):
+
+| Case | Result |
+|---|---|
+| Device ceiling (WD SN560) | about 3.6-3.8 GB/s |
+| 2.1 MB slices, destination pages reused | 3.65 GB/s at the device |
+| 2.1 MB slices, destination pages freshly unmapped (what eviction does) | 2.9 GB/s at the device (about 20 % lower) |
+| same, pre-faulted with `MADV_POPULATE_WRITE` in the reading thread | 3.58 GB/s |
+| 0.48 MB slices, 4 threads: pread vs io_uring batches of 4 (pages reused) | 2.6 vs 3.4 GB/s; 1 thread: 1.0 vs 2.1 GB/s |
+| 2.1 MB and 7 MB slices | pread and io_uring both reach the device ceiling |
+
+Reading: for large slices (GLM-sized experts) the only loss is the fresh-page cost, which pre-faulting recovers; io_uring helps only for slices of about 0.5 MB or less, and Flash-Next is limited by CPU compute, not by reads, so neither changes its tok/s.

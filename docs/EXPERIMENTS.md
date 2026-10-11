@@ -29,6 +29,20 @@ Every idea that changes the generated tokens is opt-in and needs a quality measu
 | 11 | **GPU hot tier from VRAM left over** (opt-in, "same quality, not same tokens") | copies of the hottest experts in VRAM, computed on the GPU | 512 fine-grained experts may be more skewed than Qwen3.6; the earlier 4 GB result was +7 % over whole layers | **yes** | experiment 1 gives the skew; then `hotsim12.py` for the real VRAM left (about 1 GiB after 3 expert layers) | 3 days |
 | 12 | **Compressed RAM cache** | keep cold experts compressed in RAM, decompress on use | IQ2 data is close to incompressible, so probably useless | no | `zstd -3` on a 1 GB slice of shard 1, one command | 5 min |
 
+## Status (2026-10-11)
+| # | Result |
+|---|---|
+| 1 | Done: routing trace (section above). |
+| 2 | **Measured: first request 2.1-2.4x faster with a learned profile**, steady speed unchanged (RESULTS.md section 16). |
+| 3 | llama.cpp 23b0202a1 has an MTP graph for qwen4exp; the head is a separate file (`unsloth/Qwen3.8-Flash-Next-GGUF`, `MTP/mtp-...-Q4_K_M.gguf`, 2.79 GB); not downloaded yet, not tested. |
+| 4, 5, 11 | Not done on purpose (change tokens). |
+| 6 | **Dead**: 3-23 major faults per request. |
+| 7 | io_uring: same device ceiling; +30 % to 2x only for slices of 0.5 MB or less. No effect on Flash-Next (compute-bound). |
+| 8 | Not possible on the stock file layout (one expert's gate, up and down are three separate regions); would need a repacked copy. Slices of 2 MB and more already reach the device ceiling. |
+| 9 | Fresh pages cost about 20 % of read throughput; pre-faulting in the reader thread recovers it. Worth doing when a model is SSD-bound (GLM-sized experts), not for Flash-Next. |
+| 10 | Already in v0.2.0 (the executor computes ready experts first and waits for the others). |
+| 12 | Dead (zstd saves 2.6 %). |
+
 ## Order I would run them in
 1. Idea 12 (five minutes, may kill a whole branch of ideas), then idea 1 (data for 4, 5, 11 and for the cache policy).
 2. Ideas 2 and 3 (no change to tokens, cheap, directly useful for a "just run the model" user).
