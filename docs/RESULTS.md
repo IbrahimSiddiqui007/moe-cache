@@ -478,3 +478,36 @@ Flash-Next, all experts on the CPU side, 8 requests:
 
 With a 128k context (`-c 131072`, q8_0 KV cache) the compute buffer of a 2048-token micro-batch is 3.06 GiB on the GPU and does not fit an 8 GB card next to the model,
 so the server fails to start. The +70 % prompt-processing gain of section 17 applies to short contexts; at long contexts use the default `-ub 512` (or 1024).
+
+
+## 20. Long context, long sessions and prompt processing on Flash-Next (2026-10-11)
+
+Plugin on Flash-Next IQ2_XS, 24 GB hard limit, all experts on the CPU side (the only layout where a 128k KV cache fits next to the model on 8 GB), q8_0 KV cache,
+`-c 131072`, `bench/quality.py longctx` (a fact hidden in filler text at 10 / 50 / 90 % depth, asked at the end).
+
+| Test | Result |
+|---|---|
+| 8k nominal (6.4k tokens), 3 depths | 3 of 3 found; prefill 77-89 s (72-84 tok/s); decode 9.1-9.7 tok/s |
+| 32k nominal (25.5k tokens), 3 depths x 2 passes on one server for 75 min | **6 of 6 found**; prefill 459 s to 691 s (56 to 37 tok/s, settled at about 37); decode 7.4-7.9 tok/s |
+| 32k with the default 8 GiB `--cache-ram` | server **OOM-killed** by the 24 GB limit when the second long request started (llama-server saves the finished prompt into host RAM in one burst) |
+| Same with `--cache-ram 2048` and the plugin keeping that memory free | no kill, stable RSS about 21 GB |
+
+Prompt processing, 5,948-token prompt, same setup at 16k context, tok/s:
+
+| `-ub` | prefill | decode after the prompt (first request) |
+|---|---|---|
+| 512 | 87.0 / 90.4 | 8.8 / 8.7 |
+| 1024 | 111.9 | 8.6 |
+| 2048 | 140.5 | 8.8 |
+
+A prompt batch touches nearly every expert of every layer, so each micro-batch re-reads whatever the RAM cache does not hold; prefill time scales with the number of micro-batches.
+At 128k context a 2048-token micro-batch needs a 3.06 GiB compute buffer on the GPU (does not fit in 8 GB); 1024 should need about half (not measured).
+
+Scan-resistant loading of prompt batches (`MOE_CACHE_SCAN_TOKENS=32`, experts of prompt batches enter the cache at the cold end), two rounds:
+
+| | off | on |
+|---|---|---|
+| prefill | 87.0 / 90.4 | 68.9 / 64.7 (-25 %) |
+| first decode request after the prompt | 8.8 / 8.7 | 11.6 / 11.5 (+31 %) |
+
+A net loss for prompts (about 22 s more per 6k-token prompt for one faster request), so it is off by default (`MOE_CACHE_SCAN_TOKENS=N` to try).

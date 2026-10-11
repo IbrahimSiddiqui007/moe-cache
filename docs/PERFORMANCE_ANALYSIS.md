@@ -53,3 +53,10 @@ that answers, speed and memory stay stable over a long session.
 A 128k-context server under a 24 GB limit was OOM-killed when a *second* long request started: llama-server saves the finished prompt's state (KV cache and
 checkpoints) into host RAM (`--cache-ram`, 8 GiB by default) in one burst, and the plugin's RAM cache had been sized to "limit minus a 1 GiB margin". The plugin now
 adds `--cache-ram` to its margin, and `moe-cache-server` / the benchmark tool default it to 2 GiB.
+
+## Prompt processing is a streaming problem (measured 2026-10-11)
+
+With the model bigger than RAM, every micro-batch of a prompt passes over (almost) all experts of every layer, so prefill time is about
+`(prompt tokens / ub) x (bytes of experts not in RAM) / SSD speed`. Raising `-ub` from 512 to 2048 gave +58 % at a 6k prompt (87 to 140 tok/s). The ceiling is the GPU compute
+buffer, which grows with the context (3.06 GiB at `-ub 2048` and 128k), so the best `-ub` depends on how much context you run. Inserting prompt experts at the cold end of the
+cache (scan resistance) lost 25 % of prefill and is off by default. Remaining idea: choose `-ub` automatically from the free VRAM and the context size in the launcher.

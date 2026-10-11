@@ -426,6 +426,8 @@ struct state_t {
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
     std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
     bool cur_decode = false;                            // the group being prepared is a single-token (decode) step
+    bool cur_scan = false;                              // the group being prepared is a prompt batch: it scans (nearly) all experts of the layer
+    int  scan_tokens = 0;                               // MOE_CACHE_SCAN_TOKENS=N: batches of at least N tokens are loaded scan-resistant (default off: measured -25 % prefill)
     FILE * trace_f = nullptr;                           // MOE_CACHE_TRACE_IDS=file: record the experts picked in every decode step (int16 layer, int16 n, n x int16 expert)
     std::vector<uint64_t> layer_hits, layer_misses;     // per layer, updated under mu
     // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
@@ -773,6 +775,9 @@ struct state_t {
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
+        }
+        if (const char * v = getenv("MOE_CACHE_SCAN_TOKENS")) {
+            scan_tokens = atoi(v);
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHECK")) {
             exec_check = strcmp(v, "0") != 0;
@@ -1567,6 +1572,17 @@ struct state_t {
         n.prev = n.next = -1;
     }
 
+    // scan-resistant insertion: the expert becomes the first candidate for eviction, so a pass over the whole layer recycles its own slots
+    // instead of pushing out the experts that decode steps keep using
+    void push_lru(int s) {
+        node_t & n = nodes[s];
+        n.next = -1;
+        n.prev = lru;
+        if (lru >= 0) { nodes[lru].next = s; }
+        lru = s;
+        if (mru < 0) { mru = s; }
+    }
+
     void push_mru(int s) {
         node_t & n = nodes[s];
         n.prev = -1;
@@ -1692,7 +1708,7 @@ struct state_t {
                     n.resident = true;
                     n.epoch = epoch;
                     resident_bytes += ti.nb2;
-                    push_mru(s);
+                    if (cur_scan) { push_lru(s); } else { push_mru(s); }
                     { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                     pending_bytes += ti.nb2;
                     if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
@@ -1716,8 +1732,10 @@ struct state_t {
                         if (n.loading) { pf_late++; }
                     }
                     if (n.loading) { wait_list.push_back(s); }
-                    unlink(s);
-                    push_mru(s);
+                    if (!cur_scan) {          // a prompt batch uses everything: it does not make an expert "recently used"
+                        unlink(s);
+                        push_mru(s);
+                    }
                     n.epoch = epoch;
                     continue;
                 }
@@ -1737,7 +1755,7 @@ struct state_t {
                 n.resident = true;
                 n.epoch = epoch;
                 resident_bytes += ti.nb2;
-                push_mru(s);
+                if (cur_scan) { push_lru(s); } else { push_mru(s); }
                 { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                 pending_bytes += ti.nb2;
                 if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
@@ -2583,6 +2601,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
             const auto p0 = std::chrono::steady_clock::now();
             s.cur_decode = n_tok == 1;
+            s.cur_scan = s.scan_tokens > 0 && n_tok >= s.scan_tokens;
             if (s.l3_prefetch && n_tok == 1 && tidx.size() >= 2) {
                 // ranges of the experts this step will read in its second and later tensors (not yet touched by the kernel)
                 std::vector<std::pair<const char *, size_t>> ranges;
