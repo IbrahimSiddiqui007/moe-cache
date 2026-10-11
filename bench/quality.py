@@ -3,6 +3,7 @@
 
   bench/quality.py compare --ref URL --cand URL [--ref-key K] [--cand-key K] [--long 8000,32000] [--out report.json]
   bench/quality.py longctx --url URL [--key K] [--sizes 4000,16000,64000,120000]
+  bench/quality.py judge-calibrate --url URL                              (is this server a usable judge of "same meaning"? needs 9 of 10)
   bench/quality.py collect --url URL [--key K] --out answers.json       (one server at a time: when two models cannot be loaded together)
   bench/quality.py compare-files --ref ref.json --cand cand.json [--judge-url URL] [--judge-key K]
   bench/quality.py soak    --url URL [--key K] [--minutes 30] [--out soak.json]
@@ -228,6 +229,33 @@ def cmd_longctx(a):
     return 0 if not miss else 1
 
 
+CALIBRATION = [
+    # (question, answer A, answer B, should be SAME)
+    ("Why is the sky blue?", "Sunlight is scattered by air molecules and blue light scatters the most, so the sky looks blue.",
+     "The sky appears blue because shorter blue wavelengths are scattered much more strongly by the atmosphere than red ones.", True),
+    ("What causes the tides?", "The Moon's gravity pulls on the oceans and, to a lesser degree, the Sun's does too.",
+     "Tides come mainly from the gravitational attraction of the Moon (and the Sun) on Earth's water.", True),
+    ("What is 17 times 23?", "17 x 23 = 391.", "The product is 391.", True),
+    ("Who wrote Romeo and Juliet?", "William Shakespeare wrote it.", "It was written by Shakespeare around 1595.", True),
+    ("Why does Earth have seasons?", "Because the Earth's axis is tilted relative to its orbit.", "Seasons happen since the planet's rotation axis is inclined, changing how directly sunlight hits each hemisphere.", True),
+    ("Why is the sky blue?", "Because the ocean reflects its colour onto the sky.", "Air molecules scatter blue light more than red light.", False),
+    ("What is 17 times 23?", "17 x 23 = 381.", "The product is 391.", False),
+    ("Who wrote Romeo and Juliet?", "Christopher Marlowe wrote it.", "It was written by Shakespeare.", False),
+    ("Why does Earth have seasons?", "Because the Earth is closer to the Sun in summer.", "Because of the tilt of the Earth's axis.", False),
+    ("What causes the tides?", "Strong winds push the water back and forth.", "The Moon's gravity pulls on the oceans.", False),
+]
+
+
+def cmd_judge_calibrate(a):
+    ok = 0
+    for q, x, y, want in CALIBRATION:
+        got = judge(a.url, a.key, q, x, y)
+        ok += 1 if got == want else 0
+        print(f"{'ok ' if got == want else 'BAD'} expected {'SAME' if want else 'DIFFERENT':9} judge said {'SAME' if got else 'DIFFERENT':9} {q}")
+    print(f"\njudge accuracy on {len(CALIBRATION)} calibration pairs: {ok}/{len(CALIBRATION)} " + ("(usable)" if ok >= 9 else "(NOT reliable: do not trust 'same meaning' figures from this judge)"))
+    return 0 if ok >= 9 else 1
+
+
 def cmd_collect(a):
     out = {}
     for pid, cat, q, pats in BANK:
@@ -335,6 +363,8 @@ def main():
     c.add_argument("--max-drop", type=float, default=5.0); c.add_argument("--min-ref-accuracy", type=float, default=50.0); c.add_argument("--min-agree", type=float, default=80.0); c.add_argument("--out", default="")
     l = sub.add_parser("longctx")
     l.add_argument("--url", required=True); l.add_argument("--key", default=os.environ.get("KEY", "")); l.add_argument("--sizes", default="4000,16000,32000")
+    j = sub.add_parser("judge-calibrate")
+    j.add_argument("--url", required=True); j.add_argument("--key", default=os.environ.get("KEY", ""))
     k = sub.add_parser("collect")
     k.add_argument("--url", required=True); k.add_argument("--key", default=os.environ.get("KEY", "")); k.add_argument("--out", required=True); k.add_argument("--tokens", type=int, default=200)
     f = sub.add_parser("compare-files")
@@ -343,7 +373,7 @@ def main():
     s.add_argument("--url", required=True); s.add_argument("--key", default=os.environ.get("KEY", ""))
     s.add_argument("--minutes", type=float, default=30); s.add_argument("--probe-every", type=float, default=5); s.add_argument("--out", default="")
     a = ap.parse_args()
-    sys.exit({"compare": cmd_compare, "longctx": cmd_longctx, "soak": cmd_soak, "collect": cmd_collect, "compare-files": cmd_compare_files}[a.cmd](a))
+    sys.exit({"compare": cmd_compare, "longctx": cmd_longctx, "soak": cmd_soak, "collect": cmd_collect, "judge-calibrate": cmd_judge_calibrate, "compare-files": cmd_compare_files}[a.cmd](a))
 
 
 if __name__ == "__main__":

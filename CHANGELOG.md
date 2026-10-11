@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+- Opt-in **approximate routing** (`MOE_CACHE_ROUTE=skip|subst`, `MOE_CACHE_ROUTE_KEEP`): low-ranked picks that are not in RAM are dropped or replaced by a resident expert.
+  +10-12 % at a small cache on Flash-Next with no measured loss on the checkable prompts (RESULTS.md section 21). Off by default.
+- One-line capability report in the server log (`moe-cache: active: ...`): load method, executor and why it is off, kernels, GPU-cache mode.
+- Shared tuner (`bench/gguf_plan.py: tune`) for micro-batch, GPU cache or static layers; `moe-cache-server --ub auto`.
+- Fixes from the review: disk lookup table not counted as GPU weight in the benchmark planner, identity compares every repeat, manual `--moe-cache-mib` sets the plugin's
+  host-buffer mode, MB/MiB units, quality-harness false passes. New `bench/coding_session.py`, `bench/quality.py judge-calibrate`.
+
 ## 0.2.2 (2026-10-11)
 - **Plugin + llama.cpp's GPU expert cache** (`MOE_CACHE_GPU_CACHE=1` with `--moe-cache-mib N`, or `moe-cache-server --gpu-cache auto`): the plugin makes experts resident
   right before llama.cpp uploads them. Identical to stock + cache; +12 % over static GPU layers on Flash-Next (4 rounds).

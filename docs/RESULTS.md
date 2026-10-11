@@ -511,3 +511,33 @@ Scan-resistant loading of prompt batches (`MOE_CACHE_SCAN_TOKENS=32`, experts of
 | first decode request after the prompt | 8.8 / 8.7 | 11.6 / 11.5 (+31 %) |
 
 A net loss for prompts (about 22 s more per 6k-token prompt for one faster request), so it is off by default (`MOE_CACHE_SCAN_TOKENS=N` to try).
+
+
+## 21. Approximate routing (opt-in), SSD-bound setting (2026-10-11)
+
+What it is: with `MOE_CACHE_ROUTE=skip|subst` the executor looks at the two lowest-ranked picks of every token (the ones with the smallest router weights). If such an
+expert is not in RAM it is dropped (skip) or replaced by the most recently used resident expert of that layer (subst), so no read from the SSD is needed.
+Exact routing stays the default. Setting: Flash-Next IQ2_XS, 24 GB limit, RAM cache **6 GiB** (18 % of the experts, similar to a 100 GB model on 32 GB), 8 requests of 48 tokens.
+
+| | exact | skip | substitute |
+|---|---|---|---|
+| decode tok/s (mean of requests 4-8) | 6.6 | **7.4 (+12 %)** | **7.3 (+10 %)** |
+| low-ranked picks looked at / given up or replaced | n/a | 299,970 / 97,682 given up | 301,590 / 96,661 replaced |
+| RAM cache hit rate | 74.6 % | 79.1 % | n/a |
+| data read from the SSD (whole run) | 578 GB | 454 GB (-21 %) | n/a |
+
+Quality (28 prompts of `bench/quality.py`, answers compared with the exact run, `compare-files`):
+
+| | skip | substitute |
+|---|---|---|
+| checkable prompts answered correctly (26) | 26 (exact: 26) | 26 (exact: 26) |
+| new degenerate answers | 0 | 0 |
+| mean text similarity to the exact answers | 0.89 | 0.88 |
+| answers identical to the exact run | 17 of 30 | 20 of 30 |
+| judged "same meaning" by the model itself | 57 % | 67 % |
+
+The judge figures are **not reliable**: the judge (the 2-bit model itself) marked pairs with text similarity 0.95-0.98 as different. Use `bench/quality.py judge-calibrate`
+to check whether a server is a usable judge (9 of 10 known pairs). The result to rely on is the checkable-prompt accuracy and the absence of degenerate output.
+
+Conclusion: a 10-12 % speed-up on an SSD-bound setting for no measured loss on 26 factual / arithmetic / format prompts; open-ended answers change wording. Not enabled by default.
+Untested: models with a lower cache hit rate, long outputs, code generation beyond the 3 code prompts.

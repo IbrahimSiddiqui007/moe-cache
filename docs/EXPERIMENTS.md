@@ -35,7 +35,7 @@ Every idea that changes the generated tokens is opt-in and needs a quality measu
 | 1 | Done: routing trace (section above). |
 | 2 | **Measured: first request 2.1-2.4x faster with a learned profile**, steady speed unchanged (RESULTS.md section 16). |
 | 3 | **Measured: a loss.** MTP works (acceptance 45-73 %) but decodes 2.6x slower with this plugin (4.3 vs 11.4 tok/s), not token-identical (2/4 prompts), and needs the head's experts on the CPU on an 8 GB card. RESULTS.md section 18. |
-| 4, 5 | Not done on purpose (change what is computed). |
+| 4, 5 | **Measured (opt-in `MOE_CACHE_ROUTE=skip|subst`)**: +10-12 % at a 6 GiB cache on Flash-Next, 26/26 checkable answers correct, 21 % less SSD reading (RESULTS.md section 21). |
 | 11 | **Built** as plugin + llama.cpp's GPU cache (`MOE_CACHE_GPU_CACHE=1`, `moe-cache-server --gpu-cache auto`); identical to stock + cache; 0-19 % over plugin static on Flash-Next (RESULTS.md section 18). |
 | neurons | Probe: top 25 % of neurons carry about 90 % of the energy; exploiting it needs a predictor. Not pursued. |
 | 6 | **Dead**: 3-23 major faults per request. |

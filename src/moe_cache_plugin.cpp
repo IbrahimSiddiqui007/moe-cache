@@ -428,6 +428,13 @@ struct state_t {
     bool cur_decode = false;                            // the group being prepared is a single-token (decode) step
     bool cur_scan = false;                              // the group being prepared is a prompt batch: it scans (nearly) all experts of the layer
     int  scan_tokens = 0;                               // MOE_CACHE_SCAN_TOKENS=N: batches of at least N tokens are loaded scan-resistant (default off: measured -25 % prefill)
+    // approximate routing (MOE_CACHE_ROUTE=skip|subst, decode and small batches, executor only; off by default; quality-gated, see docs/EXPERIMENTS.md):
+    // the lowest-ranked picks of a token that are NOT in RAM are dropped (skip) or replaced by the most recently used resident expert of that layer (subst).
+    // Ranked picks are in order of the router's weights, so the experts given up are the ones that contribute least.
+    int  route_mode = 0;                                // 0 off, 1 skip, 2 subst
+    int  route_keep = -1;                               // MOE_CACHE_ROUTE_KEEP: picks always honoured (default: all but the last 2)
+    uint64_t route_skipped = 0, route_substituted = 0, route_considered = 0;
+    std::unordered_map<const ggml_tensor *, std::vector<int32_t>> route_ids;   // ids tensor -> effective expert per (token, pick); -1 = skipped
     FILE * trace_f = nullptr;                           // MOE_CACHE_TRACE_IDS=file: record the experts picked in every decode step (int16 layer, int16 n, n x int16 expert)
     std::vector<uint64_t> layer_hits, layer_misses;     // per layer, updated under mu
     // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
@@ -775,6 +782,12 @@ struct state_t {
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
+        }
+        if (const char * v = getenv("MOE_CACHE_ROUTE")) {
+            route_mode = strcmp(v, "skip") == 0 ? 1 : (strcmp(v, "subst") == 0 ? 2 : 0);
+        }
+        if (const char * v = getenv("MOE_CACHE_ROUTE_KEEP")) {
+            route_keep = atoi(v);
         }
         if (const char * v = getenv("MOE_CACHE_SCAN_TOKENS")) {
             scan_tokens = atoi(v);
@@ -1198,6 +1211,10 @@ struct state_t {
             if (exec_on) {
                 fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s\n", (unsigned long long) exec_ops,
                         exec_check ? (std::string(", checked ") + std::to_string(exec_checked.load()) + ", mismatches " + std::to_string(exec_mismatch.load())).c_str() : "");
+            }
+            if (route_mode) {
+                fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
+                        route_mode == 1 ? "skip" : "subst", (unsigned long long) route_considered, (unsigned long long) route_skipped, (unsigned long long) route_substituted);
             }
             fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu, repacked %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
@@ -2392,9 +2409,21 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     std::vector<exec_task_t> all;
     all.reserve((size_t) n_ids * (size_t) n_tok);
     std::vector<int> task_of((size_t) w->ne[2], -1);
+    const std::vector<int32_t> * routed = nullptr;
+    if (s.route_mode) {
+        auto rit = s.route_ids.find(ids);
+        if (rit != s.route_ids.end()) routed = &rit->second;
+    }
     for (int t = 0; t < n_tok; t++) {
         for (int slot = 0; slot < n_ids; slot++) {
-            const int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0] + (size_t) t * ids->nb[1]);
+            int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0] + (size_t) t * ids->nb[1]);
+            if (routed) {
+                e = (*routed)[(size_t) t * (size_t) n_ids + (size_t) slot];
+                if (e < 0) {            // given up: this pick contributes nothing
+                    memset((char *) nd->data + (size_t) slot * nd->nb[1] + (size_t) t * nd->nb[2], 0, (size_t) w->ne[1] * sizeof(float));
+                    continue;
+                }
+            }
             if (e < 0 || e >= w->ne[2]) {
                 fprintf(stderr, "moe-cache: expert id %d out of range\n", e);
                 abort();
@@ -2426,6 +2455,33 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     }
     s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32);
     s.exec_ops++;
+}
+
+// set by the AVX-512 kernel block further down (C linkage: independent of the namespace the kernels live in)
+extern "C" { int (*moe_cache_iq512_probe)(void) = nullptr; }
+
+// One line that says what is really active, and why not when something is off (several speed-ups depend on how the plugin was loaded).
+void print_capabilities(state_t & s) {
+    std::string o = "moe-cache: active:";
+    const bool preload = getenv("MOE_CACHE_PRELOAD") != nullptr;
+    o += std::string(" load=") + (preload ? "LD_PRELOAD" : "GGML_BACKEND_PATH");
+    o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
+    if (!s.exec_on) {
+        o += " executor=off(MOE_CACHE_EXEC=0)";
+    } else if (s.lookahead || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
+        o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.l3_prefetch ? "l3prefetch" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
+    } else {
+        o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") + ")";
+    }
+#if defined(__x86_64__) && defined(__linux__)
+    o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)" : preload ? "on(interposed)" : "executor only(not preloaded)");
+    o += std::string(" iq_avx512=") + (getenv("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
+#endif
+    o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
+    o += s.gpu_dev ? " long_prompt_gpu=on(>=" + std::to_string(s.gpu_min_tokens) + " tokens)" : " long_prompt_gpu=off(no GPU device)";
+    if (s.route_mode) o += std::string(" approx_route=") + (s.route_mode == 1 ? "skip" : "subst");
+    if (s.scan_tokens > 0) o += " scan_resistant=" + std::to_string(s.scan_tokens);
+    fprintf(stderr, "%s\n", o.c_str());
 }
 
 enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg) {
@@ -2491,6 +2547,7 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
     if (st == GGML_STATUS_SUCCESS) {
         st = exec_run_nodes(c, cg, batch);
     }
+    s.route_ids.clear();
     return st;
 }
 
@@ -2536,6 +2593,13 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     }
 
     s.graphs++;
+    {
+        static bool reported = false;
+        if (!reported) {
+            reported = true;
+            print_capabilities(s);
+        }
+    }
     if (!s.cache_on) {
         for (int i = 0; i < ggml_graph_n_nodes(cg); i++) {
             if (ggml_graph_node(cg, i)->op == GGML_OP_MUL_MAT_ID) {
@@ -2636,6 +2700,46 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 const ggml_type wt = s.tensors[(size_t) tidx[0]]->tensor->type;
                 exec_heavy = exec_heavy || wt == GGML_TYPE_IQ1_S || wt == GGML_TYPE_IQ1_M || wt == GGML_TYPE_IQ2_XXS || wt == GGML_TYPE_IQ2_XS ||
                              wt == GGML_TYPE_IQ2_S || wt == GGML_TYPE_IQ3_XXS || wt == GGML_TYPE_IQ3_S || wt == GGML_TYPE_Q2_0;
+            }
+            if (s.route_mode && exec_graph && n_tok <= EXEC_MAXCOL && !tidx.empty() && n_used >= 3) {
+                const tinfo_t & t0 = *s.tensors[(size_t) tidx[0]];
+                const int keep = s.route_keep >= 0 ? (int) std::min<int64_t>(s.route_keep, n_used) : (int) n_used - 2;
+                std::vector<int32_t> eff((size_t) (n_used * n_tok));
+                for (int64_t t = 0; t < n_tok; t++) {
+                    std::vector<char> taken((size_t) t0.n_expert, 0);
+                    for (int64_t u = 0; u < n_used; u++) {
+                        const int32_t e = *(const int32_t *) ((const char *) ids->data + u * ids->nb[0] + t * ids->nb[1]);
+                        eff[(size_t) (t * n_used + u)] = e;
+                        if (e >= 0 && e < (int32_t) taken.size()) taken[(size_t) e] = 1;
+                    }
+                    for (int64_t u = keep; u < n_used; u++) {
+                        const int32_t e = eff[(size_t) (t * n_used + u)];
+                        if (e < 0 || e >= (int32_t) t0.n_expert) continue;
+                        s.route_considered++;
+                        if (s.nodes[(size_t) (t0.node0 + e)].resident) continue;     // in RAM (or already being read): use it
+                        int32_t best = -1;
+                        if (s.route_mode == 2) {
+                            uint64_t best_epoch = 0;
+                            for (int32_t c = 0; c < (int32_t) t0.n_expert; c++) {
+                                const node_t & nd2 = s.nodes[(size_t) (t0.node0 + c)];
+                                if (!taken[(size_t) c] && nd2.resident && !nd2.loading && (best < 0 || (uint64_t) nd2.epoch > best_epoch)) {
+                                    best = c;
+                                    best_epoch = (uint64_t) nd2.epoch;
+                                }
+                            }
+                        }
+                        if (e < (int32_t) used.size() && used[(size_t) e] > 0) used[(size_t) e]--;
+                        eff[(size_t) (t * n_used + u)] = best;
+                        if (best >= 0) {
+                            taken[(size_t) best] = 1;
+                            if (best < (int32_t) used.size()) used[(size_t) best]++;
+                            s.route_substituted++;
+                        } else {
+                            s.route_skipped++;
+                        }
+                    }
+                }
+                s.route_ids[ids] = std::move(eff);
             }
             exec_jobs += s.prepare_group(tidx, used, exec_graph);
             if (s.lookahead && n_tok == 1) {
@@ -2988,6 +3092,9 @@ int iq512_mode() {
     return mode;
 }
 }  // namespace
+
+static int iq512_probe_trampoline() { return iq512_mode(); }
+static const int iq512_registered = (moe_cache_iq512_probe = &iq512_probe_trampoline, 0);
 
 extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_iq2_xxs_q8_K(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     static iq_dot_t orig = (iq_dot_t) dlsym(RTLD_NEXT, "ggml_vec_dot_iq2_xxs_q8_K");
