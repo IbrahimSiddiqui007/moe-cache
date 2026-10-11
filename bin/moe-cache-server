@@ -5,6 +5,8 @@
 # --gpu-cache off|auto|MIB  use llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache: the experts you use most are copied to free VRAM and
 #              computed on the GPU. auto = all VRAM the planner sees free minus --gpu-margin GiB (default 1.0; raise it with a large -ub). Not bit-identical to
 #              CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
+# --ub auto|N  micro-batch size (prompt processing speed: 512 -> 2048 was +58 % at a 6k prompt). auto picks the largest that fits in free VRAM next to the
+#              KV cache of --ctx (the GPU compute buffer grows with the context: 3 GiB at 2048 and 128k); with --gpu-cache the default stays at 1024
 # --ram      memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it.
 # MOE_CACHE_PYTHON  python with the gguf package for the planner (default python3)
 # --n-cpu-moe  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
@@ -14,9 +16,9 @@
 set -e
 umask 077   # the usage profile is private to this user
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; PNAME=""; GCACHE=off; GMARGIN=1.0; EXTRA=()
+MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; PNAME=""; GCACHE=off; GMARGIN=1.0; UBARG=auto; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
-  --ram) RAM=$2; shift 2;; --gpu-cache) GCACHE=$2; shift 2;; --gpu-margin) GMARGIN=$2; shift 2;; --profile) PNAME=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
+  --ram) RAM=$2; shift 2;; --ub) UBARG=$2; shift 2;; --gpu-cache) GCACHE=$2; shift 2;; --gpu-margin) GMARGIN=$2; shift 2;; --profile) PNAME=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
   --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --no-ecores) ECORES=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
   -h|--help) sed -n 2,6p "$0"; exit 0;; *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
 [ -f "$MODEL" ] || { echo "usage: moe-cache-server MODEL.gguf [options]  (model file not found: '$MODEL')"; exit 1; }
@@ -62,6 +64,26 @@ PYEOF
 )
   [ -n "$MASK" ] && PINARGS=(-C "$MASK" --cpu-strict 1) && echo "moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C $MASK); --no-pin to disable"
 fi
+# micro-batch size: measured GPU compute buffers (Qwen3.8-Flash-Next, q8_0 KV; MiB) by context and -ub, rounded up between measured contexts
+if [ "$UBARG" = auto ]; then
+  if printf '%s\n' "${EXTRA[@]}" | grep -q -- '^-ub$\|--ubatch-size'; then UBARG=""; else
+    P=("${MOE_CACHE_PYTHON:-python3}" "$HERE/planner/plan.py" "$MODEL" --ctx "$CTX" --json); [ -n "$RAM" ] && P+=(--ram-gib "$RAM"); [ -n "$VRAM" ] && P+=(--vram-gib "$VRAM")
+    UBARG=$("${P[@]}" 2>/dev/null | python3 -c '
+import sys, json
+d = json.load(sys.stdin); ctx = int(sys.argv[1]); cache = sys.argv[2] != "off"
+TAB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: 99999}, 131072: {512: 960, 1024: 1700, 2048: 3150}}
+key = next((k for k in sorted(TAB) if ctx <= k), None)
+if key is None:
+    print(512); sys.exit()
+layer_gib = d["experts"] * d["expert_MB"] / 1024.0
+base = d["predicted_vram_GiB"] - d["gpu_expert_layers"] * layer_gib            # fixed part of the planner estimate (includes about 0.55 GB of buffers)
+slack_mib = (d["free_vram_GiB"] - base) * 1024 + 550 - 400                      # room for the compute buffer after a 400 MiB reserve
+cap = 1024 if cache else 2048
+print(max([u for u in (512, 1024, 2048) if u <= cap and TAB[key][u] <= slack_mib] or [512]))
+' "$CTX" "$GCACHE" 2>/dev/null || true)
+  fi
+fi
+case "$UBARG" in ""|auto) ;; *[!0-9]*) echo "moe-cache: --ub must be auto or a number"; UBARG="";; *) EXTRA+=(-ub "$UBARG" -b 2048); echo "moe-cache: micro-batch -ub $UBARG (prompt processing; --ub N to change)";; esac
 if [ "$GCACHE" != off ] && [ "$NCMOE" != 0 ]; then
   GCMIB="$GCACHE"
   if [ "$GCACHE" = auto ]; then
