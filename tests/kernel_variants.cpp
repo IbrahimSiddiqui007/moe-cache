@@ -1,8 +1,8 @@
 // Candidate faster AVX2 / AVX-VNNI versions of the IQ2_XXS x Q8_K and IQ3_XXS x Q8_K dot products, checked bit-for-bit against the real
 // library function and timed A-B-A-B against it (one core, data in cache).
-//   g++ -O2 -std=c++17 -I<llama.cpp>/ggml/src tests/kernel_variants.cpp -o /tmp/kernel_variants -ldl
+//   g++ -O2 -std=c++17 -Isrc tests/kernel_variants.cpp -o /tmp/kernel_variants -ldl
 //   /tmp/kernel_variants <dir with libggml-base.so.0 and libggml-cpu.so.0> [check]
-// <llama.cpp>/ggml/src is only needed for ggml-common.h (block layouts and the grid tables); nothing from it is linked.
+// Block layouts and lookup tables come from src/ (no llama.cpp source tree needed). On CPUs with AVX-512 it also checks and times src/fast_iq_avx512.h.
 //
 // Why the results are identical: every variant does the same integer arithmetic (u8 grid x s8 activation -> s16 -> x scale -> s32; sums of
 // integers are exact in any order), and the float part is the same fused multiply-add per 256-weight block in the same order with the same
@@ -11,9 +11,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#define GGML_COMMON_DECL_CPP
-#define GGML_COMMON_IMPL_CPP
-#include "ggml-common.h"
+#include "fast_iq_avx512.h"
+using block_iq2_xxs = fastk512::block_iq2_xxs;
+using block_iq3_xxs = fastk512::block_iq3_xxs;
+using block_q8_K = fastk512::block_q8_K;
+#define QK_K 256
+#define iq2xxs_grid fastk::IQ2XXS_GRID
+#define iq3xxs_grid fastk::IQ3XXS_GRID
+#define ksigns_iq2xs fastk::KSIGNS_IQ2XS
 #include <algorithm>
 #include <chrono>
 #include <dlfcn.h>
@@ -131,6 +136,11 @@ static TGT void iq3xxs(int n, float * s, size_t, const void * vx, size_t, const 
     *s = 0.25f * hsum8(accumf);
 }
 
+static void w512_iq2(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq2_xxs(n, s, x, y); }
+static void w512_iq2v(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq2_xxs_vnni(n, s, x, y); }
+static void w512_iq3(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq3_xxs(n, s, x, y); }
+static void w512_iq3v(int n, float * s, size_t, const void * x, size_t, const void * y, size_t, int) { fastk512::dot_iq3_xxs_vnni(n, s, x, y); }
+
 struct traits_cpu { void (*from_float)(const float *, void *, int64_t); dot_fn vec_dot; int vec_dot_type; int64_t nrows; };
 struct Variant { const char * name; dot_fn fn; };
 
@@ -153,6 +163,18 @@ int main(int argc, char ** argv) {
         { "iq2_xxs", 16, { { "scalar-lookup+madd", iq2xxs<false, false> }, { "gather", iq2xxs<true, false> }, { "vnni", iq2xxs<false, true> }, { "gather+vnni", iq2xxs<true, true> } } },
         { "iq3_xxs", 18, { { "scalar-lookup+madd", iq3xxs<false, false> }, { "gather", iq3xxs<true, false> }, { "vnni", iq3xxs<false, true> }, { "gather+vnni", iq3xxs<true, true> } } },
     };
+    printf("cpu: avx2=%d avx_vnni=%d avx512(bw,vl,dq)=%d avx512_vnni=%d\n", (int) __builtin_cpu_supports("avx2"), (int) __builtin_cpu_supports("avxvnni"),
+           (int) fastk512::cpu_has_avx512(), (int) fastk512::cpu_has_avx512_vnni());
+    if (fastk512::cpu_has_avx512()) {
+        cases[0].v.push_back({ "avx512", w512_iq2 });
+        cases[1].v.push_back({ "avx512", w512_iq3 });
+        if (fastk512::cpu_has_avx512_vnni()) {
+            cases[0].v.push_back({ "avx512+vnni", w512_iq2v });
+            cases[1].v.push_back({ "avx512+vnni", w512_iq3v });
+        }
+    } else {
+        printf("no AVX-512 on this CPU: the AVX-512 variants are skipped\n");
+    }
     const int64_t n = 4096, nrows = 64;
     std::mt19937 rng(1);
     std::normal_distribution<float> nd(0.f, 1.f);
