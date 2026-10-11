@@ -1536,7 +1536,8 @@ struct state_t {
     }
 
     // make sure all experts used by the ops of one group (same ids tensor) are resident
-    void prepare_group(const std::vector<int> & tidx, const std::vector<int> & cnt, bool async = false) {
+    // returns the number of reads handed to the reader threads (async mode), otherwise 0
+    size_t prepare_group(const std::vector<int> & tidx, const std::vector<int> & cnt, bool async = false) {
         std::unique_lock<std::mutex> lk(mu);
         epoch++;
         std::vector<int> wait_list;       // experts a lookahead read is still filling
@@ -1678,6 +1679,7 @@ struct state_t {
         }
         if (async) {
             // hand the reads to the reader threads and return: the executor waits for each expert's flag when it needs it
+            const size_t njobs = jobs.size();
             if (!jobs.empty()) {
                 {
                     std::lock_guard<std::mutex> ql(rq_mu);
@@ -1687,7 +1689,7 @@ struct state_t {
                 }
                 rq_cv.notify_all();
             }
-            return;
+            return njobs;
         }
         flush_reads(jobs, max_nb2);
         for (int s : wait_list) {
@@ -1695,6 +1697,7 @@ struct state_t {
                 load_cv.wait(lk);
             }
         }
+        return 0;
     }
 
     // read the queued experts, then (auto mode) look at the real memory use again
@@ -2368,7 +2371,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     }
     struct group_t { int first; int last; int n_tok; };
     std::vector<group_t> groups_found;
-    const bool exec_graph = s.cache_on && exec_eligible(s, cg);
+    bool exec_graph = s.cache_on && exec_eligible(s, cg);
+    size_t exec_jobs = 0;          // reads queued for this graph
+    bool exec_heavy = false;       // weights whose dot product is compute-bound (IQ types, Q2_0)
     if (s.cache_on) {
         if (!s.preload_done) {
             s.preload();
@@ -2452,7 +2457,12 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                     fwrite(&e, sizeof(int16_t), 1, s.trace_f);
                 }
             }
-            s.prepare_group(tidx, used, exec_graph);
+            {
+                const ggml_type wt = s.tensors[(size_t) tidx[0]]->tensor->type;
+                exec_heavy = exec_heavy || wt == GGML_TYPE_IQ1_S || wt == GGML_TYPE_IQ1_M || wt == GGML_TYPE_IQ2_XXS || wt == GGML_TYPE_IQ2_XS ||
+                             wt == GGML_TYPE_IQ2_S || wt == GGML_TYPE_IQ3_XXS || wt == GGML_TYPE_IQ3_S || wt == GGML_TYPE_Q2_0;
+            }
+            exec_jobs += s.prepare_group(tidx, used, exec_graph);
             if (s.lookahead && n_tok == 1) {
                 const ggml_tensor * xin = node->src[1];
                 if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {
@@ -2472,6 +2482,13 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         }
     }
 
+    // everything is resident and the weights are bandwidth-bound (K-quants, legacy types): llama.cpp's own path is as fast and has less overhead
+    if (exec_graph && exec_jobs == 0 && !exec_heavy) {
+        exec_graph = false;
+        if (CPU().set_n_threads) {
+            CPU().set_n_threads(c->cpu, c->n_threads);
+        }
+    }
     if (exec_graph) {
         const auto e0 = std::chrono::steady_clock::now();
         const enum ggml_status est = exec_run_graph(c, s, cg);
