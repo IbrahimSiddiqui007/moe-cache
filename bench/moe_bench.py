@@ -585,6 +585,8 @@ def run_one(job, cfg, mode, limit, rep, tag):
             args += ["-C", m, "--cpu-strict", "1"]
     args += shlex.split(cfg.get("extra_args") or "")
     args = cap_prompt_cache(ls, args)
+    if mode == "plugin" and "--moe-cache-mib" in args:
+        envs["MOE_CACHE_GPU_CACHE"] = "1"       # llama.cpp's GPU expert cache needs the plugin's host-buffer mode (see docs/PERFORMANCE_ANALYSIS.md)
     cmd = prefix + (["env"] + [f"{k}={v}" for k, v in envs.items()] if envs else []) + args
     logp = DATA / f"server_{job.id}_{tag}.log"
     job.say(f"starting {mode} server (limit {limit} GB, experts on CPU layers: {ncm})")
@@ -765,14 +767,22 @@ def summarize(runs):
     sm["long"] = {k: mean(v) for k, v in sm["long"].items()}
     for k, sw in sm["sweep"].items():
         sm["sweep"][k] = {str(n): {"prompt_n": mean([x[0] for x in v]), "ttft_ms": mean([x[1] for x in v]), "out_tps": mean([x[2] for x in v]), "e2e_s": mean([x[3] for x in v])} for n, v in sorted(sw.items())}
+    # every stock/plugin pair of the same limit and repeat is compared (a second pass in reverse order counts too); a request that one side did not
+    # answer counts as different, so a short or failed run can no longer pass
     for lim in sorted({r["limit_gb"] for r in runs}, key=lambda x: x or 0):
-        a = next((r for r in runs if r["limit_gb"] == lim and r["mode"] == "stock" and r["requests"]), None)
-        b = next((r for r in runs if r["limit_gb"] == lim and r["mode"] == "plugin" and r["requests"]), None)
-        if a and b:
+        same = tot = 0
+        for rep in sorted({r["repeat"] for r in runs if r["limit_gb"] == lim}):
+            a = next((r for r in runs if r["limit_gb"] == lim and r["repeat"] == rep and r["mode"] == "stock" and r["requests"]), None)
+            b = next((r for r in runs if r["limit_gb"] == lim and r["repeat"] == rep and r["mode"] == "plugin" and r["requests"]), None)
+            if not (a and b):
+                continue
             ta = [q["tokens"] for q in a["requests"] if q["suite"] in ("speed", "custom", "sweep")]
             tb = [q["tokens"] for q in b["requests"] if q["suite"] in ("speed", "custom", "sweep")]
-            n = min(len(ta), len(tb))
-            sm["identity"][str(lim)] = [sum(1 for i in range(n) if ta[i] == tb[i]), n]
+            n = max(len(ta), len(tb))
+            same += sum(1 for i in range(min(len(ta), len(tb))) if ta[i] and ta[i] == tb[i])
+            tot += n
+        if tot:
+            sm["identity"][str(lim)] = [same, tot]
     return sm
 
 
@@ -1111,6 +1121,8 @@ def start_server(cfg):
         prof = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "moe-cache" / (Path(model).name + ".usage")
         prof.parent.mkdir(parents=True, exist_ok=True)
         envs["MOE_CACHE_PROFILE"] = str(prof)
+    if mode == "plugin" and "--moe-cache-mib" in xs:
+        envs["MOE_CACHE_GPU_CACHE"] = "1"       # also when the cache size was typed by hand
     prefix = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={limit}G", "-p", "MemorySwapMax=0"] if limit else []
     args = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", str(ncm), "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup",
             "--port", str(port), "--api-key-file", str(keyf)] + xs

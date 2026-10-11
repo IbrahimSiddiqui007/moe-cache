@@ -3,6 +3,8 @@
 
   bench/quality.py compare --ref URL --cand URL [--ref-key K] [--cand-key K] [--long 8000,32000] [--out report.json]
   bench/quality.py longctx --url URL [--key K] [--sizes 4000,16000,64000,120000]
+  bench/quality.py collect --url URL [--key K] --out answers.json       (one server at a time: when two models cannot be loaded together)
+  bench/quality.py compare-files --ref ref.json --cand cand.json [--judge-url URL] [--judge-key K]
   bench/quality.py soak    --url URL [--key K] [--minutes 30] [--out soak.json]
 
 URL is a running llama-server (for example started from the benchmark page's Serve card). The reference is the exact configuration (stock llama.cpp, or the
@@ -39,13 +41,13 @@ BANK = [
     ("sky", "explain", "Why is the sky blue? Explain in 2 to 3 sentences.", [r"scatter"]),
     ("tide", "explain", "What causes the tides on Earth? Explain in 2 to 3 sentences.", [r"moon|lunar|gravit"]),
     ("seasons", "explain", "Why does Earth have seasons? Explain in 2 to 3 sentences.", [r"tilt|axis|axial"]),
-    ("code1", "code", "Write a Python function is_palindrome(s) that returns True if s reads the same forwards and backwards. Only the code.", [r"def\s+is_palindrome", r"\[::-1\]|reversed|==\s*s\[::-1\]"]),
-    ("code2", "code", "Write a Python one-liner that returns the sum of the squares of the numbers in a list nums. Only the code.", [r"sum\(|reduce|\+\="]),
+    ("code1", "code", "Write a Python function is_palindrome(s) that returns True if s reads the same forwards and backwards. Only the code.", {"all": [r"def\s+is_palindrome", r"\[::-1\]|reversed\(|\.reverse\(|len\(s\)\s*//\s*2|while\s+\w+\s*<", r"return[^\n]*(==|!=|\band\b|\bnot\b)|==\s*\w+\[::-1\]|\bis_palindrome\("]}),
+    ("code2", "code", "Write a Python one-liner that returns the sum of the squares of the numbers in a list nums. Only the code.", {"all": [r"sum\(|reduce|\+\=", r"\*\*\s*2|\bx\s*\*\s*x\b|\bpow\("]}),
     ("code3", "code", "In Python, what does len([1, 2, 3][1:]) evaluate to? Answer with the number.", [r"\b2\b"]),
-    ("fmt1", "format", "List exactly three colours as a numbered list, nothing else.", [r"(?s)^\s*1[.)].*\n\s*2[.)].*\n\s*3[.)]"]),
+    ("fmt1", "format", "List exactly three colours as a numbered list, nothing else.", {"all": [r"(?s)^\s*1[.)].*\n\s*2[.)].*\n\s*3[.)]", r"\A(?!.*\n\s*4[.)])"]}),
     ("fmt2", "format", "Reply with only the word YES in capital letters.", [r"^\s*YES\s*[.!]?\s*$"]),
     ("fmt3", "format", "Write one sentence that contains the word 'lighthouse' and ends with a question mark.", [r"lighthouse.*\?\s*$"]),
-    ("sum1", "summarize", "Summarize in one sentence: 'The city council voted on Tuesday to extend the bus network to the eastern suburbs. The project will cost 40 million dollars and is expected to be finished by 2028. Opponents argued the money should go to road repair instead.'", [r"bus", r"east"]),
+    ("sum1", "summarize", "Summarize in one sentence: 'The city council voted on Tuesday to extend the bus network to the eastern suburbs. The project will cost 40 million dollars and is expected to be finished by 2028. Opponents argued the money should go to road repair instead.'", {"all": [r"\bbus", r"east"]}),
     ("sum2", "summarize", "Extract the date and the place from: 'The annual conference will take place on 14 March 2027 at the Grand Hall in Lisbon.' Reply as 'date; place'.", [r"14 march 2027.*lisbon|2027.*lisbon"]),
     ("open1", "open", "Give two reasons why exercise is good for health. Be brief.", None),
     ("open2", "open", "Explain what a hash table is to a beginner in three sentences.", None),
@@ -100,9 +102,14 @@ def ask(url, key, q, n=200):
 
 
 def passes(text, pats):
+    """pats: None (judge only), a list (any pattern matches) or {"all": [...]} (every pattern must match)."""
     if pats is None:
         return None
     t = text.strip()
+    if not t:
+        return False
+    if isinstance(pats, dict):
+        return all(re.search(p, t, re.I | re.S | re.M) for p in pats["all"])
     return any(re.search(p, t, re.I | re.S | re.M) for p in pats)
 
 
@@ -152,7 +159,11 @@ def cmd_compare(a):
         c = ask(a.cand, a.cand_key, q)
         row = {"id": pid, "cat": cat, "ref": r["text"], "cand": c["text"], "ref_ok": passes(r["text"], pats), "cand_ok": passes(c["text"], pats),
                "sim": round(difflib.SequenceMatcher(None, r["text"], c["text"]).ratio(), 3), "ref_deg": degenerate(r["text"]), "cand_deg": degenerate(c["text"])}
-        row["same"] = True if r["text"].strip() == c["text"].strip() else judge(a.ref, a.ref_key, q, r["text"], c["text"])
+        row["ref_err"], row["cand_err"] = bool(r.get("error")) or not r["text"].strip(), bool(c.get("error")) or not c["text"].strip()
+        if row["ref_err"] or row["cand_err"]:
+            row["same"] = False                      # an empty or failed answer is never "the same"
+        else:
+            row["same"] = True if r["text"].strip() == c["text"].strip() else judge(a.ref, a.ref_key, q, r["text"], c["text"])
         rows.append(row)
         print(f"{pid:8} ref={row['ref_ok']!s:5} cand={row['cand_ok']!s:5} same={row['same']!s:5} sim={row['sim']:.2f} {row['cand_deg']}", flush=True)
     chk = [r for r in rows if r["ref_ok"] is not None]
@@ -175,6 +186,14 @@ def cmd_compare(a):
     for r in longres:
         if r["ref_ok"] and not r["cand_ok"]:
             fails.append(f"long-context retrieval lost at {r['tokens']} tokens, depth {r['depth']}")
+    n_ref_err = sum(1 for r in rows if r["ref_err"])
+    n_cand_err = sum(1 for r in rows if r["cand_err"])
+    if n_ref_err > len(rows) // 5:
+        fails.append(f"the reference gave {n_ref_err} empty or failed answers of {len(rows)}: the comparison is not meaningful")
+    if n_cand_err > n_ref_err:
+        fails.append(f"the candidate gave {n_cand_err - n_ref_err} more empty or failed answers than the reference")
+    if ref_acc < a.min_ref_accuracy:
+        fails.append(f"the reference itself only scores {ref_acc:.1f} % (needs {a.min_ref_accuracy:.0f} %): the servers are not answering properly")
     if ref_acc - cand_acc > a.max_drop:
         fails.append(f"accuracy dropped {ref_acc - cand_acc:.1f} points (limit {a.max_drop})")
     if agree < a.min_agree:
@@ -207,6 +226,55 @@ def cmd_longctx(a):
     miss = [r for r in res if not r["ok"]]
     print(f"\nretrieval: {len(res) - len(miss)}/{len(res)} found")
     return 0 if not miss else 1
+
+
+def cmd_collect(a):
+    out = {}
+    for pid, cat, q, pats in BANK:
+        r = ask(a.url, a.key, q, a.tokens)
+        out[pid] = r["text"]
+        print(f"{pid:8} {len(r['text'])} chars", flush=True)
+    json.dump(out, open(a.out, "w"), indent=1)
+    return 0
+
+
+def cmd_compare_files(a):
+    ref, cand = json.load(open(a.ref)), json.load(open(a.cand))
+    rows, ref_ok, cand_ok, n_chk = [], 0, 0, 0
+    for pid, cat, q, pats in BANK:
+        r, c = ref.get(pid, ""), cand.get(pid, "")
+        same = None
+        if r.strip() == c.strip():
+            same = True
+        elif a.judge_url:
+            same = judge(a.judge_url, a.judge_key, q, r, c)
+        row = {"id": pid, "cat": cat, "ref_ok": passes(r, pats), "cand_ok": passes(c, pats), "sim": round(difflib.SequenceMatcher(None, r, c).ratio(), 3),
+               "same": same, "cand_deg": degenerate(c), "ref_deg": degenerate(r)}
+        rows.append(row)
+        if pats is not None:
+            n_chk += 1
+            ref_ok += 1 if row["ref_ok"] else 0
+            cand_ok += 1 if row["cand_ok"] else 0
+        print(f"{pid:8} ref={row['ref_ok']!s:5} cand={row['cand_ok']!s:5} same={same!s:5} sim={row['sim']:.2f} {row['cand_deg']}")
+    judged = [r for r in rows if r["same"] is not None]
+    print(f"\naccuracy: reference {100 * ref_ok / max(1, n_chk):.1f} %  candidate {100 * cand_ok / max(1, n_chk):.1f} % ({n_chk} checkable prompts)")
+    if judged:
+        print(f"same meaning: {100 * sum(1 for r in judged if r['same']) / len(judged):.1f} % of {len(judged)} judged/identical")
+    print(f"mean text similarity: {sum(r['sim'] for r in rows) / len(rows):.2f}   new degenerate answers: {sum(1 for r in rows if r['cand_deg'] and not r['ref_deg'])}")
+    fails = []
+    empty_ref = sum(1 for pid, *_ in BANK if not ref.get(pid, "").strip())
+    empty_cand = sum(1 for pid, *_ in BANK if not cand.get(pid, "").strip())
+    if empty_ref > len(BANK) // 5:
+        fails.append(f"{empty_ref} of {len(BANK)} reference answers are empty")
+    if empty_cand > empty_ref:
+        fails.append(f"{empty_cand - empty_ref} more empty candidate answers than reference answers")
+    ref_acc, cand_acc = 100 * ref_ok / max(1, n_chk), 100 * cand_ok / max(1, n_chk)
+    if ref_acc < 50:
+        fails.append(f"the reference scores only {ref_acc:.1f} %")
+    if ref_acc - cand_acc > 5:
+        fails.append(f"accuracy dropped {ref_acc - cand_acc:.1f} points")
+    print("VERDICT: " + ("PASS" if not fails else "FAIL: " + "; ".join(fails)))
+    return 0 if not fails else 1
 
 
 def server_rss_mb(url):
@@ -264,14 +332,18 @@ def main():
     c.add_argument("--ref", required=True); c.add_argument("--cand", required=True)
     c.add_argument("--ref-key", default=os.environ.get("REF_KEY", "")); c.add_argument("--cand-key", default=os.environ.get("CAND_KEY", ""))
     c.add_argument("--long", default="", help="comma separated context sizes in tokens for the retrieval test, e.g. 8000,32000")
-    c.add_argument("--max-drop", type=float, default=5.0); c.add_argument("--min-agree", type=float, default=80.0); c.add_argument("--out", default="")
+    c.add_argument("--max-drop", type=float, default=5.0); c.add_argument("--min-ref-accuracy", type=float, default=50.0); c.add_argument("--min-agree", type=float, default=80.0); c.add_argument("--out", default="")
     l = sub.add_parser("longctx")
     l.add_argument("--url", required=True); l.add_argument("--key", default=os.environ.get("KEY", "")); l.add_argument("--sizes", default="4000,16000,32000")
+    k = sub.add_parser("collect")
+    k.add_argument("--url", required=True); k.add_argument("--key", default=os.environ.get("KEY", "")); k.add_argument("--out", required=True); k.add_argument("--tokens", type=int, default=200)
+    f = sub.add_parser("compare-files")
+    f.add_argument("--ref", required=True); f.add_argument("--cand", required=True); f.add_argument("--judge-url", default=""); f.add_argument("--judge-key", default="")
     s = sub.add_parser("soak")
     s.add_argument("--url", required=True); s.add_argument("--key", default=os.environ.get("KEY", ""))
     s.add_argument("--minutes", type=float, default=30); s.add_argument("--probe-every", type=float, default=5); s.add_argument("--out", default="")
     a = ap.parse_args()
-    sys.exit({"compare": cmd_compare, "longctx": cmd_longctx, "soak": cmd_soak}[a.cmd](a))
+    sys.exit({"compare": cmd_compare, "longctx": cmd_longctx, "soak": cmd_soak, "collect": cmd_collect, "compare-files": cmd_compare_files}[a.cmd](a))
 
 
 if __name__ == "__main__":

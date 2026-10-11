@@ -67,17 +67,19 @@ def shards(path):
 
 def model_layout(path):
     """-> dict(n_layers, expert_bytes_per_layer, other_bytes, total_bytes)"""
-    layers, other = {}, 0
+    layers, other, table = {}, 0, 0
     for p in shards(path):
         for name, size in read_tensors(p):
             m = re.match(r"blk\.(\d+)\..*_exps\.(weight|scale)", name)
             if m:
                 layers[int(m.group(1))] = layers.get(int(m.group(1)), 0) + size
+            elif "per_layer_token_embd" in name:
+                table += size              # n-gram lookup table (qwen4exp): read from the file when needed, never on the GPU (same rule as planner/plan.py)
             else:
                 other += size
     n = (max(layers) + 1) if layers else 0
     per = sum(layers.values()) / len(layers) if layers else 0
-    return {"n_layers": n, "expert_bytes_per_layer": per, "other_bytes": other, "total_bytes": other + sum(layers.values())}
+    return {"n_layers": n, "expert_bytes_per_layer": per, "other_bytes": other, "table_bytes": table, "total_bytes": other + table + sum(layers.values())}
 
 
 def free_vram_bytes():
