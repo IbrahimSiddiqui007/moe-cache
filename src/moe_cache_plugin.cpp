@@ -671,6 +671,42 @@ struct state_t {
             if (const char * v = getenv("MOE_CACHE_MARGIN_GIB")) {
                 parse_gib("MOE_CACHE_MARGIN_GIB", v, margin);
             }
+            // llama-server keeps saved prompt states in host RAM (--cache-ram, MiB): that memory is outside this cache's control and arrives in bursts
+            // when a new request starts, so it is added to the margin (a 24 GB limit was OOM-killed at 128k context with the 8 GiB default)
+            if (!getenv("MOE_CACHE_MARGIN_GIB")) {
+                long cram = -1;
+                if (const char * v = getenv("LLAMA_ARG_CACHE_RAM")) {
+                    cram = atol(v);
+                }
+#ifdef __linux__
+                if (FILE * cf = fopen("/proc/self/cmdline", "rb")) {
+                    std::string cmd;
+                    char buf[4096];
+                    size_t nr;
+                    while ((nr = fread(buf, 1, sizeof(buf), cf)) > 0) {
+                        cmd.append(buf, nr);
+                    }
+                    fclose(cf);
+                    std::vector<std::string> argv_;
+                    for (size_t b = 0; b < cmd.size();) {
+                        const size_t e = cmd.find('\0', b);
+                        argv_.push_back(cmd.substr(b, e == std::string::npos ? std::string::npos : e - b));
+                        if (e == std::string::npos) break;
+                        b = e + 1;
+                    }
+                    for (size_t k = 0; k + 1 < argv_.size(); k++) {
+                        if (argv_[k] == "--cache-ram" || argv_[k] == "-cram") {
+                            cram = atol(argv_[k + 1].c_str());
+                        }
+                    }
+                }
+#endif
+                if (cram > 0) {
+                    const size_t extra = std::min<size_t>((size_t) cram << 20, limit_bytes / 3);
+                    margin += extra;
+                    fprintf(stderr, "moe-cache: llama-server's prompt cache (--cache-ram %ld MiB) is kept free: margin now %.2f GiB\n", cram, margin / 1073741824.0);
+                }
+            }
             if (!direct_env) {
                 // the model does not fit: SSD reads dominate, and reading straight into place (no bounce buffer, no page re-zeroing) was +22 % on gpt-oss-120b
                 size_t total = 0;

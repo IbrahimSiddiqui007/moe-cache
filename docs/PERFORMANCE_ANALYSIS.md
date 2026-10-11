@@ -47,3 +47,9 @@ unless said otherwise. "Measured" = a number from a clean run on this machine; "
 Flash-Next's KV cache is small: 60 MiB per 2,048 tokens in f16, so about 3.8 GiB at 128k (1.9 GiB with q8_0). On an 8 GB card that leaves little for a GPU expert cache,
 so a long context and a big cache compete for the same VRAM. `bench/quality.py longctx` measures retrieval and speed at growing lengths, and `soak` checks
 that answers, speed and memory stay stable over a long session.
+
+## Long sessions: memory accounting (found by testing, 2026-10-11)
+
+A 128k-context server under a 24 GB limit was OOM-killed when a *second* long request started: llama-server saves the finished prompt's state (KV cache and
+checkpoints) into host RAM (`--cache-ram`, 8 GiB by default) in one burst, and the plugin's RAM cache had been sized to "limit minus a 1 GiB margin". The plugin now
+adds `--cache-ram` to its margin, and `moe-cache-server` / the benchmark tool default it to 2 GiB.

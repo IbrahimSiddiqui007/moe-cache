@@ -80,6 +80,9 @@ print(int(max((d["free_vram_GiB"] - base - float(sys.argv[1])) * 1024, 0)))' "$G
     echo "moe-cache: GPU expert cache of $GCMIB MiB; all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"
   fi
 fi
+# llama-server saves finished prompts in host RAM (--cache-ram, 8 GiB by default). That memory competes with the expert cache and arrives in bursts, so it is
+# capped at 2 GiB here (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
+if "$LS" --help 2>/dev/null | grep -q -- '--cache-ram' && ! printf '%s\n' "${EXTRA[@]}" | grep -q -- '--cache-ram\|-cram'; then EXTRA+=(--cache-ram 2048); fi
 CMD=("$LS" -m "$MODEL" -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -fa on --load-mode mmap --no-warmup --port "$PORT" "${PINARGS[@]}" "${EXTRA[@]}")
 if [ "$NCMOE" = 0 ]; then echo "moe-cache: all experts fit in your GPU memory; the cache has nothing to manage for this model/context (profile $PROFILE; plugin loaded by $MOE_CACHE_METHOD)"
 else echo "moe-cache: experts of $NCMOE layers stay on the CPU and are managed by the cache; profile $PROFILE; plugin loaded by $MOE_CACHE_METHOD"; fi

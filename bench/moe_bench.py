@@ -331,6 +331,23 @@ def saved_model_dirs():
         return []
 
 
+
+_FLAG_CACHE = {}
+
+
+def server_has_flag(ls, flag):
+    k = (ls, flag)
+    if k not in _FLAG_CACHE:
+        _FLAG_CACHE[k] = flag in sh([ls, "--help"], 40)
+    return _FLAG_CACHE[k]
+
+
+def cap_prompt_cache(ls, args):
+    """llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default): that competes with the expert cache and arrives in bursts."""
+    if server_has_flag(ls, "--cache-ram") and not any(a in ("--cache-ram", "-cram") for a in args):
+        return list(args) + ["--cache-ram", "2048"]
+    return list(args)
+
 # ---------------------------------------------------------------- running servers
 def load_env(llama_server, lib):
     ld = sh(["ldd", llama_server])
@@ -567,6 +584,7 @@ def run_one(job, cfg, mode, limit, rep, tag):
         if m:
             args += ["-C", m, "--cpu-strict", "1"]
     args += shlex.split(cfg.get("extra_args") or "")
+    args = cap_prompt_cache(ls, args)
     cmd = prefix + (["env"] + [f"{k}={v}" for k, v in envs.items()] if envs else []) + args
     logp = DATA / f"server_{job.id}_{tag}.log"
     job.say(f"starting {mode} server (limit {limit} GB, experts on CPU layers: {ncm})")
@@ -1096,6 +1114,7 @@ def start_server(cfg):
     prefix = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={limit}G", "-p", "MemorySwapMax=0"] if limit else []
     args = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", str(ncm), "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup",
             "--port", str(port), "--api-key-file", str(keyf)] + xs
+    args = cap_prompt_cache(ls, args)
     cmd = prefix + (["env"] + [f"{k}={v}" for k, v in envs.items()] if envs else []) + args
     logp = DATA / f"server_serve_{sid}.log"
     with open(logp, "w") as lf:
