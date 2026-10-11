@@ -34,8 +34,10 @@ Every idea that changes the generated tokens is opt-in and needs a quality measu
 |---|---|
 | 1 | Done: routing trace (section above). |
 | 2 | **Measured: first request 2.1-2.4x faster with a learned profile**, steady speed unchanged (RESULTS.md section 16). |
-| 3 | llama.cpp 23b0202a1 has an MTP graph for qwen4exp; the head is a separate file (`unsloth/Qwen3.8-Flash-Next-GGUF`, `MTP/mtp-...-Q4_K_M.gguf`, 2.79 GB); not downloaded yet, not tested. |
-| 4, 5, 11 | Not done on purpose (change tokens). |
+| 3 | **Measured: a loss.** MTP works (acceptance 45-73 %) but decodes 2.6x slower with this plugin (4.3 vs 11.4 tok/s), not token-identical (2/4 prompts), and needs the head's experts on the CPU on an 8 GB card. RESULTS.md section 18. |
+| 4, 5 | Not done on purpose (change what is computed). |
+| 11 | **Built** as plugin + llama.cpp's GPU cache (`MOE_CACHE_GPU_CACHE=1`, `moe-cache-server --gpu-cache auto`); identical to stock + cache; 0-19 % over plugin static on Flash-Next (RESULTS.md section 18). |
+| neurons | Probe: top 25 % of neurons carry about 90 % of the energy; exploiting it needs a predictor. Not pursued. |
 | 6 | **Dead**: 3-23 major faults per request. |
 | 7 | io_uring: same device ceiling; +30 % to 2x only for slices of 0.5 MB or less. No effect on Flash-Next (compute-bound). |
 | 8 | Not possible on the stock file layout (one expert's gate, up and down are three separate regions); would need a repacked copy. Slices of 2 MB and more already reach the device ceiling. |

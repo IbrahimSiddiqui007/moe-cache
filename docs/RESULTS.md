@@ -395,3 +395,49 @@ Inputs: 42 MoE layers, 8 of 288 experts, about 8.5 G routed weights per token; U
 | Ryzen 7 7800X3D, RTX 4070, 32 GB DDR5-6000, PCIe 4 NVMe (assumed 5-6 GB/s) | 4-6.5 tok/s | 5.5-8 tok/s | CPU compute / SSD |
 
 Uncertainty about +-40 %. The first measurement on a real GLM file replaces these numbers.
+
+
+## 18. GPU expert cache with the plugin, quant comparison, MTP and neuron sparsity (2026-10-11, Qwen3.8-Flash-Next and Qwen3.6 / Qwen3-Coder)
+
+Setup as in section 15: llama.cpp 23b0202a1, plugin built for API 3, 24 GB hard limit (swap off), ctx 2048, 8 requests of 48 tokens, mean of requests 4-8, every run started at <= 58 C with the machine idle.
+
+### Plugin together with llama.cpp's GPU expert cache (`MOE_CACHE_GPU_CACHE=1`, `--moe-cache-mib 2200`)
+
+Token identity: plugin + cache equals stock + cache (same cache size), 4 prompts x 48 tokens, on Qwen3-Coder-30B (12 GB limit) and Flash-Next IQ2_XS (24 GB limit).
+
+| Flash-Next IQ2_XS, tok/s | round 1 | round 2 |
+|---|---|---|
+| plugin, 3 static GPU layers | 11.7 | 11.4 |
+| plugin + GPU cache 2200 MiB (all experts managed by the plugin) | 12.0 | 13.5 |
+| stock + GPU cache 2200 MiB | 4.9 | 4.0 |
+
+The GPU cache adds 0-19 % on top of the plugin here (the two rounds disagree; a third is needed before quoting a number); stock with the cache is 2.5-3x slower than the plugin with or without it, with a 10-18 s first-request stall.
+
+### Same model, two quantisations (plugin, static 3 GPU layers)
+
+| File | round 1 | round 2 | size |
+|---|---|---|---|
+| IQ2_XS (ISTA, mostly Q2_0 down projections, which have the fast kernel) | 12.3 | 12.65 | 68.0 GB |
+| UD-Q2_K_XL (unsloth) | 10.75 | 11.5 | 78.9 GB |
+
+The K-quant file is about 12 % slower: it is 16 % bigger, and its kernel advantage does not show on a model whose IQ file already uses the fast Q2_0 kernel. This does not answer the question for GLM-5.3-Flash (plain IQ2_XXS / IQ3_XXS, no fast kernel).
+
+### MTP speculative decoding (unsloth `MTP/mtp-...-Q4_K_M.gguf`, `--spec-type draft-mtp --spec-draft-n-max 3`)
+
+| Config | Result |
+|---|---|
+| 3 static GPU layers + MTP | does not start: the head's own MoE block needs 2.3 GiB of VRAM |
+| all experts on CPU + MTP, head on GPU | does not start: compute buffer for the MTP context does not fit |
+| 3 static GPU layers + MTP, head experts on CPU | does not start (556 MiB more than fits) |
+| all experts on CPU + MTP, head experts on CPU (`--spec-draft-cpu-moe`) | 4.3 / 4.3 tok/s vs 11.5 / 11.4 / 11.0 without MTP (-62 %) |
+
+Draft acceptance rose from 45 % to 73 %, mean accepted length about 3.1 tokens. Token identity MTP vs no MTP: 2 of 4 prompts identical (batched verification uses different float order). Likely reasons for the slowdown (not isolated): verification batches of 3-4 tokens bypass the executor, and expert math, not weight reads, is the limit on this CPU.
+
+### Neuron-level sparsity (`tests/sparsity_probe.cpp`, share of squared activation magnitude of an expert's intermediate vector in its largest p % of neurons)
+
+| Model | activations | top 5 % | top 10 % | top 25 % | top 50 % |
+|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B, decode | 60,200 | 0.568 | 0.709 | 0.890 | 0.980 |
+| Qwen3-Coder-30B-A3B, decode | 72,232 | 0.638 | 0.758 | 0.910 | 0.984 |
+
+Per layer the top-25 % share ranges from 0.86 to 0.98. Reading: skipping the weakest half of the neurons drops about 2 % of the energy (about 14 % relative error of that expert's output vector); skipping three quarters drops about 10 % (about 33 %). Gate and up must be computed before the activation is known, so without a trained predictor only the down projection (one third of the weights) can skip neurons. Not pursued.
