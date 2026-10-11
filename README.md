@@ -22,7 +22,7 @@ moe-cache manages the CPU-side experts itself:
 - keeps the **hot experts in RAM** and reads the rest from your SSD with large, parallel direct reads;
 - **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
 - **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
-- produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](docs/RESULTS.md); one model, Hunyuan, only with a short test);
+- produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](docs/RESULTS.md); the Hunyuan test was short only);
 - works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
 - runs long prompts on the GPU like stock llama.cpp does;
 - **expert executor** (on by default): while missing experts load from the SSD it already computes the ones in RAM, and on hybrid Intel CPUs it can use the efficiency cores too. Results are bit-identical (every output was compared byte for byte with llama.cpp's own on the test models);
@@ -30,15 +30,73 @@ moe-cache manages the CPU-side experts itself:
 
 If the model already fits in your RAM you get stock speed or better (on our hybrid-CPU laptop: +15 % over stock with default settings, the same as stock with hand-tuned CPU pinning, see [RESULTS](docs/RESULTS.md) section 11). It is for the case where it does not.
 
-## Fresh Ubuntu or Debian machine: one script
+## Get started
+
+**You need:** Linux on x86-64, a `llama-server` built with shared ggml libraries (tested with llama.cpp commit `7fe450e19`), and a MoE model as a `.gguf` file. A GPU is optional.
+Ollama user? The models in `ollama list` are plain GGUF files: the path is on the line starting with `FROM` in `ollama show NAME --modelfile`.
+
+### 1. Install (pick one)
+
+| | Best if | What you do |
+|---|---|---|
+| **A. Prebuilt** (2 minutes) | you already have a matching `llama-server` (Arch `llama.cpp-cuda`, a build from commit 7fe450e19) | download `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases), then `tar xzf` it and `cd` into the folder. Releases built by CI can be verified: `gh attestation verify FILE.tar.gz -R IbrahimSiddiqui007/moe-cache` |
+| **B. One script** (10 to 20 minutes) | fresh Ubuntu / Debian, nothing installed | `git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache && ./install.sh` (add `--vulkan` for AMD / Intel / NVIDIA through Vulkan). It builds the matching llama.cpp and the plugin and prints the next commands. It has only been tried on Arch with `--no-apt` so far: please report problems. |
+| **C. From source** | you want to build it yourself | `git clone ... && cd moe-cache && ./build.sh` (needs g++; finds `libggml-base.so` next to your llama-server, or set `GGML_LIB_DIR`) |
+
+### 2. Check your setup (changes nothing)
 
 ```bash
-git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
-./install.sh                # installs the build tools (sudo), builds the matching llama.cpp (about 10-20 minutes) and the plugin, runs the setup check
-./install.sh --vulkan       # same, plus the Vulkan backend (AMD / Intel / NVIDIA GPUs and integrated GPUs)
+bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server
+```
+Every line says OK, WARN or FAIL and what to do about it.
+
+### 3. Run your model
+
+```bash
+bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open
+```
+`--ram 12` is the memory (GB) it may use; leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page
+(the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
+
+### 4. Optional: prove it is correct and measure it on your machine
+
+```bash
+tests/identity.sh /path/to/model.gguf --llama-server /path/to/llama-server      # PASS = the same tokens as stock llama.cpp
+bin/moe-cache-bench                                                              # benchmark tool: see below
 ```
 
-It prints the commands to run a model at the end. `install.sh` is new and has so far only been tried on Arch Linux with `--no-apt`; if it fails on your Ubuntu, please open an issue.
+More detail, troubleshooting and the Vulkan build: [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
+## Results (measured, clean runs)
+
+| Situation | Stock llama.cpp | moe-cache |
+|---|---|---|
+| 48.5 GB model (Qwen3-Next-80B), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** |
+| Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** |
+| **gpt-oss-120b (63 GB, 2.6x the memory limit)**, 24 GB RAM, 2 expert layers on the GPU, one run each | 0.37 tok/s | **4.47 tok/s** |
+| Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
+| Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
+| Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s (older measurement) | **60 to 62 tok/s** |
+| Model fits in RAM (Qwen3.6, 28 GB, warm start) | 29.0 tok/s | 31.1 tok/s |
+| Same, with moe-cache's automatic CPU pinning (hybrid Intel CPU), no profile needed | 30.9 tok/s (36.0 if you pin stock by hand) | **35.5 tok/s** |
+| Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
+
+Conditions: "RAM" is a memory limit set with a cgroup on a 30 GB machine. The 80B model, the 20 GB case and gpt-oss-20b keep **all experts on the CPU** and use the GPU only for the rest of the model (about 2.6 GB). The Qwen3.6 rows put 6 layers of experts on the GPU (about 6 GB), KAT-Coder 7 layers. The "no GPU" row hides the GPU completely. The chart above lists the setup per row.
+
+**Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](docs/RESULTS.md), section 11.
+
+Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 30 GB RAM, RTX 4060 8 GB, NVMe SSD.
+
+## Hardware and OS support
+
+| Platform | Status |
+|---|---|
+| Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
+| Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested**, loaded the official way (`GGML_BACKEND_PATH`) |
+| Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
+| Linux + AMD GPU / AMD CPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
+| Windows | **Not supported yet.** The code has a Windows layer that compiles with mingw-w64 (`./build.sh --windows`) and passes its tests under Wine, but it has never run on real Windows with llama.cpp |
+| macOS | No |
 
 ## Benchmark it on your own model and your own use case
 
@@ -73,50 +131,6 @@ bench/run_matrix.py --ollama --dir ~/models --run     # runs it; writes results-
 
 What the benchmarks mean and how to run the usual capability suites against the same server: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
-## Quick start (Linux)
-
-```bash
-git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
-./build.sh                                   # needs g++ and the libggml-base.so that comes with your llama.cpp
-pip install gguf                             # for the automatic GPU/CPU split
-tests/identity.sh model.gguf --llama-server /path/to/llama-server     # PASS = same tokens as stock
-bin/moe-cache-server model.gguf --ram 12 --llama-server /path/to/llama-server --open
-```
-
-`moe-cache-server` plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the built-in web UI
-(the same address is an OpenAI-compatible API, so Open WebUI, editors and scripts connect to it). Full guide: [docs/QUICKSTART.md](docs/QUICKSTART.md).
-
-## Results (measured, clean runs)
-
-| Situation | Stock llama.cpp | moe-cache |
-|---|---|---|
-| 48.5 GB model (Qwen3-Next-80B), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** |
-| Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** |
-| **gpt-oss-120b (63 GB, 2.6x the memory limit)**, 24 GB RAM, 2 expert layers on the GPU, one run each | 0.37 tok/s | **4.47 tok/s** |
-| Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
-| Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
-| Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s (older measurement) | **60 to 62 tok/s** |
-| Model fits in RAM (Qwen3.6, 28 GB, warm start) | 29.0 tok/s | 31.1 tok/s |
-| Same, with moe-cache's automatic CPU pinning (hybrid Intel CPU), no profile needed | 30.9 tok/s (36.0 if you pin stock by hand) | **35.5 tok/s** |
-| Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
-
-Conditions: "RAM" is a memory limit set with a cgroup on a 30 GB machine. The 80B model, the 20 GB case and gpt-oss-20b keep **all experts on the CPU** and use the GPU only for the rest of the model (about 2.6 GB). The Qwen3.6 rows put 6 layers of experts on the GPU (about 6 GB), KAT-Coder 7 layers. The "no GPU" row hides the GPU completely. The chart above lists the setup per row.
-
-**Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](docs/RESULTS.md), section 11.
-
-Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 30 GB RAM, RTX 4060 8 GB, NVMe SSD.
-
-## Hardware and OS support
-
-| Platform | Status |
-|---|---|
-| Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
-| Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested**, loaded the official way (`GGML_BACKEND_PATH`) |
-| Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
-| Linux + AMD GPU / AMD CPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
-| Windows | **Not supported yet.** The code has a Windows layer that compiles with mingw-w64 (`./build.sh --windows`) and passes its tests under Wine, but it has never run on real Windows with llama.cpp |
-| macOS | No |
-
 ## How it works
 
 ```
@@ -129,9 +143,10 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
    |  CPU backend            |  everything else
    |  moe-cache backend  <-----+  the CPU-side expert matrix multiplications:
    +-------------------------+    1. look at which experts the router picked
-                                  2. make sure those experts are in RAM (read the missing ones from the SSD)
-                                  3. give back the memory of experts nobody needs (LRU)
-                                  4. run llama.cpp's own CPU kernels on them (so results are identical)
+                                  2. make sure those experts are in RAM (read the missing ones from the SSD, in the background)
+                                  3. compute the experts that are ready while the others still load (several threads, optionally efficiency cores)
+                                  4. give back the memory of experts nobody needs (LRU)
+                                  5. use llama.cpp's own dot-product functions, so every number is identical
 ```
 
 Each expert keeps its normal address inside one large reserved block of memory; moe-cache decides which experts have real memory behind them.

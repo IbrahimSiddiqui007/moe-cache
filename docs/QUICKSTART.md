@@ -1,5 +1,13 @@
 # Quick start (Linux)
 
+**The short version** (details below):
+
+```bash
+tar xzf moe-cache-vX.Y.Z-linux-x86_64.tar.gz && cd moe-cache-vX.Y.Z-linux-x86_64        # 1. get it (Releases page)
+bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server              # 2. check
+bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open   # 3. run
+```
+
 **Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
 
 You need: Linux, `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release), `g++`, `python3`, and a MoE model in GGUF format.
@@ -40,7 +48,7 @@ git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
 Then, for both options:
 
 ```bash
-pip install gguf                 # only needed for the automatic GPU/CPU split
+pip install gguf                 # optional: the planner has its own header reader and only falls back to it for older setups
 bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server     # checks your setup, changes nothing
 ```
 
@@ -83,6 +91,17 @@ bin/moe-cache-learn /path/to/model.gguf --ram 20 --llama-server /path/to/llama-s
 
 Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM you will see about the same speed as stock (within a few percent);
 if it does not fit, expect 2x to 7x stock. Example: a 48 GB model in a 20 GB memory limit ran at 9 tok/s instead of 1.3.
+
+## Which llama-server do I use?
+
+| Your situation | Use |
+|---|---|
+| Arch / CachyOS with the AUR package `llama.cpp-cuda` | `/usr/bin/llama-server` (this is what we test with) |
+| Anything else | build the matching commit with `./install.sh`, or section 0 above; official release binaries may differ from commit 7fe450e19 and then the plugin prints a version warning |
+
+## Update, uninstall
+
+Update: download the newer tarball (or `git pull && ./build.sh`). Uninstall: delete the folder; the only other files are profiles in `~/.cache/moe-cache/` and benchmark results in `~/.local/share/moe-cache-bench/`.
 
 ## Troubleshooting
 
