@@ -561,6 +561,29 @@ Findings:
 - About 1,020 tokens are re-processed on every follow-up, not only the new question (it is probably the checkpoint granularity of the hybrid model; not verified).
 - **An edit anywhere inside the context invalidated all of it** (0 tokens reused, 805 s): this model keeps recurrent state that cannot be cut back to an arbitrary position.
   For editing workflows the context should be ordered so that the changing part comes last.
-- Prefill ran at 24-25 tok/s, about 4x below the plugin-only 82-140 tok/s of section 20. A suspected cause is GPU-cache mode (large batches use llama.cpp's copy path); this
-  needs a gated A/B (same prompt, `--gpu-cache` on and off) before it is stated as a result.
+- Prefill ran at 24-25 tok/s, about 4x below the plugin-only 82-140 tok/s of section 20. The cause was found afterwards: the long-prompt GPU block could not allocate VRAM next to the
+  GPU expert cache and silently stayed on the CPU (section 23).
 - `bench/coding_session.py` printed "about 13,232 tokens" for the context: its estimate (3.4 characters per token) is off by 1.5x for this tokenizer on code (2.25 characters per token measured).
+
+## 23. Why prefill was 4x slower with the GPU cache, and the fix (2026-10-12, Flash-Next IQ2_XS, ctx 8192, `-ub 1024`)
+
+What was wrong: for prompts of 32 tokens or more the plugin uploads one whole layer of expert weights to the GPU and computes the expert block there
+(`gpu_segment`). With llama.cpp's GPU expert cache sized to fill the card, that upload (about 923 MiB per layer for this model: 704 MiB of weights plus the
+batch's intermediate results) did not fit. Two things happened: a failed allocation disabled the block for the rest of the session (the coding-session job, 24 tok/s),
+or the CUDA pool aborted the server (`cuMemCreate` out of memory, two crashes at 2459 MiB). The warning line is new.
+
+Fix: the plugin checks free VRAM before the upload and keeps the block on the CPU with a one-time message (no abort, no permanent disable); the tuner keeps
+`1.35 x layer + 160 MiB` free when it sizes the cache (Flash-Next, ctx 8192: 2911 -> 1800 MiB; at ctx 20000 the cache would be under 1.5 GiB, so it uses 3 static layers).
+
+Gated runs (start <= 65 C, 24 GB limit, swap 0, two prompts of about 3.7k tokens, then six 48-token requests; one run per row, first-to-last decode requests include the cache warming):
+
+| Server | Start C | Prefill tok/s | Decode tok/s (mean of last 4 of 6) | Long-prompt GPU blocks |
+|---|---|---|---|---|
+| cache off | 53 | 50.7 / 48.9 | 13.4 | 376 on the GPU |
+| cache 2459 MiB (old auto-like) | 54 | 24.1 / 24.2 | 15.6 | 0 on the GPU, 376 on the CPU for lack of memory |
+| cache 1800 MiB (new auto) | 55 | **55.8 / 59.6** | 14.8 | 376 on the GPU |
+| cache 2100 MiB, old plugin (step 1) | 55 | 54.9 / 58.6 | not measured | worked (about 1165 MiB free) |
+
+Reading: prefill is 2.3x faster than with the oversized cache; decode is about 5 % lower than with it and about 10 % above cache-off (single runs, +-5 %).
+Token identity with the new plugin vs stock + the same cache (`--moe-cache-mib 1800 -ub 1024`, `tests/identity.sh --long --tokens 24`): 2/2 identical, 188 GPU blocks, 0 fallbacks.
+Caveats: only 2 long prompts in the identity run; the second prefill prompt returned no text in every run (also with the cache off, unexplained, does not affect timing).

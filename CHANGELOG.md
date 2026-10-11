@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- **Fix: long-prompt processing with the GPU expert cache.** The plugin's long-prompt GPU block needs about one layer of free VRAM; with a full-size cache it silently
+  stayed on the CPU (prefill 24 tok/s) or aborted the server. The plugin now checks free VRAM and warns once; the tuner leaves room for the block
+  (Flash-Next: cache 1800 instead of 2459 MiB at ctx 8192; prefill 24 -> 56 tok/s, decode about -5 %). RESULTS.md section 23.
+
 ## 0.2.2 (2026-10-11)
 - Opt-in **approximate routing** (`MOE_CACHE_ROUTE=skip|subst`, `MOE_CACHE_ROUTE_KEEP`): low-ranked picks that are not in RAM are dropped or replaced by a resident expert.
   +10-12 % at a small cache on Flash-Next with no measured loss on the checkable prompts (RESULTS.md section 21). Off by default.

@@ -154,11 +154,16 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         buf = compute_buffer_mib(ctx, 1024) or 0
         room = free - fixed - buf * 1048576 - reserve_gb * 1e9
         why.append("GPU cache requested: micro-batch limited to 1024 (the cache gains more than a bigger batch)")
-    cache_mib = int(room // 1048576) if room > 0 else 0
+    # long prompts run their expert block on the GPU and upload one whole layer of experts for it: the cache must leave that room
+    # (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 24 tok/s)
+    # measured: the block needs 923 MiB for a 704 MiB layer at -ub 1024 (weights plus the batch's intermediate results), so 1.35x plus headroom
+    cache_room = room - (1.35 * lay["expert_bytes_per_layer"] + 160 * 1048576)
+    cache_mib = int(cache_room // 1048576) if cache_room > 0 else 0
     expert_total = lay["expert_bytes_per_layer"] * lay["n_layers"]
     if want_cache and cache_mib >= 1536 and cache_mib * 1048576 >= 0.04 * expert_total:
         n_cpu_moe = 999
-        why.append(f"GPU expert cache of {cache_mib} MiB ({100 * cache_mib * 1048576 / expert_total:.0f} % of the experts)")
+        why.append(f"GPU expert cache of {cache_mib} MiB ({100 * cache_mib * 1048576 / expert_total:.0f} % of the experts; "
+                   f"{int(1.35 * lay['expert_bytes_per_layer'] // 1048576) + 160} MiB kept free for the long-prompt GPU block)")
     else:
         cache_mib = 0
         gpu_layers = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0

@@ -421,7 +421,7 @@ struct state_t {
     std::atomic<uint64_t> repack_jobs{0};
     ggml_backend_dev_t gpu_dev = nullptr;               // first GPU backend device, used for long prompts
     int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
-    std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0};
+    std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory
     std::atomic<uint64_t> gpu_up_bytes{0};
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
     std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
@@ -1196,7 +1196,7 @@ struct state_t {
             fprintf(stderr, "moe-cache: pass-through graphs=%llu MUL_MAT_ID ops=%llu\n", (unsigned long long) graphs, (unsigned long long) ops);
         }
         if (cache_on && stats && gpu_dev) {
-            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (uploaded %.1f GB), fell back to the CPU %llu\n", (unsigned long long) gpu_segments, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks);
+            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
         }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
@@ -2216,6 +2216,31 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     ggml_set_output(gout);
     ggml_cgraph * g = ggml_new_graph(ctx);
     ggml_build_forward_expand(g, gout);
+    {
+        // a whole layer of expert weights is uploaded for this block: with a GPU expert cache next to it the card can be full.
+        // Check first and keep the block on the CPU instead of letting the allocation (or the CUDA pool) fail hard.
+        size_t need = 0;
+        for (auto & u : uploads) {
+            need += ggml_nbytes(u.second);
+        }
+        for (ggml_tensor * n : seg) {
+            need += ggml_nbytes(clone[n]);
+        }
+        const size_t held = ggml_gallocr_get_buffer_size(c->galloc, 0);       // already allocated for an earlier block: reused
+        const size_t extra = need > held ? need - held : 0;
+        size_t fr = 0, tot = 0;
+        ggml_backend_dev_memory(s.gpu_dev, &fr, &tot);
+        const size_t headroom = (size_t) 256 << 20;                              // pool buffers, graph, fragmentation
+        if (tot > 0 && fr < extra + headroom) {
+            if (s.gpu_nomem++ == 0) {
+                fprintf(stderr, "moe-cache: a long-prompt block needs %.0f MiB of GPU memory but only %.0f MiB are free: it stays on the CPU "
+                                "(a smaller --moe-cache-mib or --gpu-margin leaves room; about %.0f MiB per layer for this model)\n",
+                        (extra + headroom) / 1048576.0, fr / 1048576.0, need / 1048576.0);
+            }
+            ggml_free(ctx);
+            return false;
+        }
+    }
     if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
         ggml_free(ctx);
         c->gpu_failed = true;
