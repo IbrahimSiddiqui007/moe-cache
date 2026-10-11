@@ -1846,8 +1846,66 @@ size_t buft_align(ggml_backend_buffer_type_t) {
     return 64;
 }
 
+// MOE_CACHE_GPU_CACHE=1: llama.cpp's own GPU expert cache (--moe-cache-mib) only caches experts of layers whose weights sit in a host buffer and
+// uploads them by reading the weight memory. Our buffer then says "host", and the upload is intercepted (ggml_backend_tensor_set_async below) to
+// make the experts being read resident first.
+bool gpu_cache_mode() {
+    static const bool on = [] { const char * e = getenv("MOE_CACHE_GPU_CACHE"); return e && atoi(e) != 0; }();
+    return on;
+}
+
 bool buft_is_host(ggml_backend_buffer_type_t) {
-    return false;
+    return gpu_cache_mode();
+}
+
+// make the experts that cover [p, p+size) resident, if p points into one of our expert tensors
+void gpu_cache_ensure(const void * p, size_t size) {
+    if (size == 0) {
+        return;
+    }
+    state_t & s = S();
+    if (!s.cache_on) {
+        return;
+    }
+    struct range_t { uintptr_t a, b; int idx; };
+    static std::mutex rmu;
+    static std::vector<range_t> ranges;
+    static size_t built_for = (size_t) -1;
+    const uintptr_t a = (uintptr_t) p;
+    int idx = -1;
+    {
+        std::lock_guard<std::mutex> lk(rmu);
+        if (built_for != s.tensors.size()) {
+            ranges.clear();
+            for (size_t i = 0; i < s.tensors.size(); i++) {
+                const tinfo_t & ti = *s.tensors[i];
+                if (ti.data && ti.nb2 && ti.n_expert > 0) {
+                    ranges.push_back({ (uintptr_t) ti.data, (uintptr_t) ti.data + (size_t) ti.n_expert * ti.nb2, (int) i });
+                }
+            }
+            std::sort(ranges.begin(), ranges.end(), [](const range_t & x, const range_t & y) { return x.a < y.a; });
+            built_for = s.tensors.size();
+        }
+        auto it = std::upper_bound(ranges.begin(), ranges.end(), a, [](uintptr_t v, const range_t & r) { return v < r.a; });
+        if (it != ranges.begin()) {
+            --it;
+            if (a >= it->a && a < it->b) {
+                idx = it->idx;
+            }
+        }
+    }
+    if (idx < 0) {
+        return;
+    }
+    tinfo_t & ti = *s.tensors[(size_t) idx];
+    const size_t e0 = (a - (uintptr_t) ti.data) / ti.nb2;
+    size_t e1 = (a + size - 1 - (uintptr_t) ti.data) / ti.nb2;
+    e1 = std::min(e1, (size_t) ti.n_expert - 1);
+    std::vector<int> cnt((size_t) ti.n_expert, 0);
+    for (size_t e = e0; e <= e1; e++) {
+        cnt[e] = 1;
+    }
+    s.prepare_group(std::vector<int>{ idx }, cnt, false);
 }
 
 ggml_backend_dev_t g_dev = nullptr;
@@ -2788,5 +2846,21 @@ extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t
     }
     fprintf(stderr, "moe-cache: no Q2_0 dot product available\n");
     abort();
+}
+
+// ---- llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache: see gpu_cache_mode() ----
+// Its uploads read the expert bytes straight from the weight memory, where only the experts we hold in RAM exist. Make them resident first.
+extern "C" MOE_CACHE_EXPORT void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    typedef void (*fn_t)(ggml_backend_t, struct ggml_tensor *, const void *, size_t, size_t);
+    static fn_t orig = (fn_t) dlsym(RTLD_NEXT, "ggml_backend_tensor_set_async");
+    if (gpu_cache_mode()) {
+        gpu_cache_ensure(data, size);
+    }
+    if (orig) {
+        orig(backend, tensor, data, offset, size);
+    } else {
+        fprintf(stderr, "moe-cache: ggml_backend_tensor_set_async not found\n");
+        abort();
+    }
 }
 #endif
