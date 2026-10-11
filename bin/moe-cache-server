@@ -1,6 +1,7 @@
 #!/bin/bash
 # moe-cache-server: run llama-server with the expert-cache plugin.
 #   moe-cache-server MODEL.gguf [--ram GB] [--vram GB] [--ctx N] [--n-cpu-moe N] [--port P] [--llama-server PATH] [--load-method auto|preload|path] [--open] [--dry-run] [-- extra llama-server args]
+# --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 # --ram      memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it.
 # MOE_CACHE_PYTHON  python with the gguf package for the planner (default python3)
 # --n-cpu-moe  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
@@ -10,9 +11,9 @@
 set -e
 umask 077   # the usage profile is private to this user
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; EXTRA=()
+MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; PNAME=""; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
-  --ram) RAM=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
+  --ram) RAM=$2; shift 2;; --profile) PNAME=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
   --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --no-ecores) ECORES=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
   -h|--help) sed -n 2,6p "$0"; exit 0;; *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
 [ -f "$MODEL" ] || { echo "usage: moe-cache-server MODEL.gguf [options]  (model file not found: '$MODEL')"; exit 1; }
@@ -28,7 +29,8 @@ for ((i = 0; i < ${#EXTRA[@]}; i++)); do if [ "${EXTRA[$i]}" = --host ]; then HO
 case "$HOSTARG" in ""|127.*|localhost|::1) ;; *)
   printf '%s ' "${EXTRA[@]}" | grep -q -- '--api-key' || echo "WARNING: llama-server will listen on '$HOSTARG' without --api-key: anyone who can reach this machine can use the model and the web UI. Add --api-key KEY after the -- or bind to 127.0.0.1." >&2;;
 esac
-PROFILE="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").usage"
+case "$PNAME" in ""|*[!A-Za-z0-9_-]*) [ -z "$PNAME" ] || { echo "--profile NAME may only contain letters, digits, _ and -"; exit 1; };; esac
+PROFILE="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").${PNAME:+$PNAME.}usage"
 . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" "$METHOD"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL" MOE_CACHE_PROFILE="$PROFILE")
 [ -n "$RAM" ] && ENVV+=(MOE_CACHE_RAM_GIB="$RAM")

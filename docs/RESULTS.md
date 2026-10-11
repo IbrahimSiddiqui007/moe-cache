@@ -359,3 +359,39 @@ Read speed (`tests/read_bench.cpp`, O_DIRECT random reads from the 39 GB shard, 
 | 2.1 MB and 7 MB slices | pread and io_uring both reach the device ceiling |
 
 Reading: for large slices (GLM-sized experts) the only loss is the fresh-page cost, which pre-faulting recovers; io_uring helps only for slices of about 0.5 MB or less, and Flash-Next is limited by CPU compute, not by reads, so neither changes its tok/s.
+
+
+## 17. Settings sweep, prefill and pre-fault (2026-10-11, Qwen3.6-35B-A3B and Flash-Next, same machine and method as section 15)
+
+Stock llama.cpp 23b0202a1 with `--n-cpu-moe 99 --moe-cache-mib N` on Qwen3.6-35B (24 GB limit), single clean runs, decode tok/s (repeat runs of the same setting spread by about +-3 %):
+
+| Setting | tok/s |
+|---|---|
+| cache 3500 MiB | 37.6 |
+| cache 5000 MiB | 42.1 (44.1 in a repeat) |
+| cache 5500 MiB | 44.1 |
+| cache 6000 / 6500 MiB | out of GPU memory (8 GB card) |
+| 5000 MiB with `-t 6` / `-t 8` / `-t 12` | 43.7 / 43.4 / 44.2 (no effect) |
+| 5000 MiB with `-ctk q8_0 -ctv q8_0` | 43.5 (no effect) |
+
+Prompt processing, 2168-token prompt, second request, tok/s:
+
+| Setting | `-ub 512` (default) | `-ub 1024` | `-ub 2048` |
+|---|---|---|---|
+| cache 4000 MiB, all experts on the CPU side | 461 | 646 | **812** |
+| static 8 GPU layers (`--n-cpu-moe 32`) | 448 | n/a | 783 |
+
+A larger micro-batch means expert weights cross PCIe fewer times per prompt: about +70-76 % on this machine, at the cost of a bigger compute buffer in VRAM.
+
+Pre-fault of replacement pages (`MOE_CACHE_PREFAULT=1`, `MADV_POPULATE_WRITE` in the reader thread), Flash-Next, plugin, cold start, 6 requests, ABAB twice: mean of requests 4-6 was 12.7 / 12.9 tok/s without and 11.5 / 12.6 with it, first-request prompt time 1.5 s vs 1.7 s. No gain: Flash-Next is limited by CPU compute, not by reads. The option stays off by default; it is untested on an SSD-bound model.
+
+### Estimates for GLM-5.3-Flash (not measured: no model file on this machine)
+
+Inputs: 42 MoE layers, 8 of 288 experts, about 8.5 G routed weights per token; UD-IQ2_XXS file 101.8 GB, UD-Q2_K_XL 108.7 GB; per-core dot-product speed measured in section 15 and `tests/kernel_bench.cpp`; RAM cache of about 20 GB, hit rate assumed from the Flash-Next trace (about 80 % at a 20 % cache fraction); SSD 3.6 GB/s measured on the laptop.
+
+| Machine | UD-IQ2_XXS | UD-Q2_K_XL | Main limit |
+|---|---|---|---|
+| i7-13620H, RTX 4060 8 GB, 31 GB, SN560 | 3-5 tok/s | 4-6 tok/s | IQ types: CPU compute; K-quants: SSD |
+| Ryzen 7 7800X3D, RTX 4070, 32 GB DDR5-6000, PCIe 4 NVMe (assumed 5-6 GB/s) | 4-6.5 tok/s | 5.5-8 tok/s | CPU compute / SSD |
+
+Uncertainty about +-40 %. The first measurement on a real GLM file replaces these numbers.

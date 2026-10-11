@@ -1203,6 +1203,8 @@ struct state_t {
         char * buf = j.direct ? j.dst - shift : bounce;   // direct: the aligned read lands exactly around the expert
         // the pages must exist before they are written (Windows); one extra page covers kernels that read a little past the end
         plat::mem_commit(j.direct ? j.dst - shift : j.dst, (j.direct ? len : j.nb2) + PAGE);
+        static const bool prefault = [] { const char * e = getenv("MOE_CACHE_PREFAULT"); return e && atoi(e) != 0; }();
+        if (prefault && j.direct) plat::mem_prefault(j.dst - shift, len);   // the pages of an evicted slot are gone: fault them here, not inside the read
         // direct read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
         const bool inject_job = fault_every > 0 && (++fault_ctr % (uint64_t) fault_every) == 0;   // test switch: this read fails every direct attempt
         auto read_all = [&](const plat::file_t & rfd, bool inject) {
