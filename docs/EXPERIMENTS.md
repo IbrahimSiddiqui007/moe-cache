@@ -82,3 +82,10 @@ weight as the IQ2 weights and made up about 70 % of the expert math.
 
 One paired run each, not gated (desktop apps were using CPU), so read the ratio (about 1.5x), not the absolute numbers. How it is applied: the plugin exports
 `ggml_vec_dot_q2_0_q8_0`; with `LD_PRELOAD` the dynamic linker resolves libggml-cpu's function table to it. In `GGML_BACKEND_PATH` mode it is not used.
+
+
+## Measured (2026-10-11): kernels for the GLM-5.3-Flash types and upstream's expert cache
+
+- GLM-5.3-Flash UD-IQ2_XXS (header read, no download): gate/up IQ2_XXS (IQ2_S in one layer), down IQ3_XXS (IQ4_XS in three layers), 288 experts, 8 used, 42 MoE layers. Per-core dot-product speed on this CPU: IQ2_XXS 16.2, IQ3_XXS 12.5 G weights/s versus Q4_K 46 and Q2_K 50. By arithmetic alone that is roughly 5-6 tok/s of expert compute (estimate, not measured on the model).
+- AVX2 / AVX-VNNI rewrites of those two dot products: no gain for IQ2_XXS, 13-18 % for IQ3_XXS with gathers (not worth shipping: gathers are slow on some AMD CPUs). See RESULTS.md section 15.
+- Upstream's `--moe-cache-mib` is the "GPU hot tier" idea (idea 11) implemented in llama.cpp itself: +29 % on Qwen3.6-35B when the model fits in RAM. It does not work together with this plugin yet (see RESULTS.md section 15).

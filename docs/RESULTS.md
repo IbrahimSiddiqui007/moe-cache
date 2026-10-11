@@ -301,3 +301,31 @@ Second round, same configuration with the permuted-activation Q2_0 kernel (the e
 
 Identity 4/4 and 0 byte mismatches over 12,420 expert ops with `MOE_CACHE_EXEC_CHECK=1`. The same configuration measured 8.2 tok/s in a busier session: absolute values on this laptop move by about 30 % with
 desktop load and temperature, so compare only rows measured together.
+
+
+## 15. New llama.cpp pin (23b0202a1, ggml 0.26.0) and upstream's own MoE cache (2026-10-11)
+
+What changed: llama.cpp moved the buffer-type interface of ggml (backend API 2 -> 3). The plugin has one new build mode for it (`GGML_API=3 ./build.sh`) and refuses to load into a mismatching ggml. Upstream also merged `--moe-cache-mib` (PR 29887): an LRU cache of experts in GPU memory for layers whose experts stay in host RAM.
+
+Token identity vs stock, plugin built for API 3, 4 prompts x 48 tokens: Granite 3B 4/4, Granite 1B 4/4, OLMoE 4/4, Qwen3.6-35B (24 GB limit) 4/4, Flash-Next IQ2_XS (24 GB limit) 4/4.
+
+Decode speed, steady-state mean of requests 4-10 (48 tokens each), every run started at <= 58 C with the machine idle, ABAB order, two rounds:
+
+| Qwen3.6-35B-A3B, 24 GB limit, ctx 4096 | round 1 | round 2 |
+|---|---|---|
+| stock, 8 expert layers on the GPU (`--n-cpu-moe 32`) | 32.8 | 33.8 |
+| stock + `--moe-cache-mib 5000`, all experts on the CPU side | 42.9 | 43.0 |
+| plugin, 8 expert layers on the GPU | 38.8 | 39.4 |
+| plugin + `--moe-cache-mib 5000` | 29.6 | 28.4 (cache is disabled: the plugin's buffer is not a host buffer, so no layer is cached and no layer is on the GPU) |
+
+Token identity of the upstream cache itself: 3 of 4 prompts identical to the same model without it (one prompt diverges at token 8: experts computed on the GPU instead of the CPU give slightly different floats, so a greedy choice flips). It is a valid but not bit-identical result.
+
+| Flash-Next IQ2_XS, 24 GB limit, ctx 2048, same VRAM for experts in every row | round 1 | round 2 |
+|---|---|---|
+| stock, 3 expert layers on the GPU | 5.4 | 5.7 |
+| stock + `--moe-cache-mib 2200` | 7.8 | 11.5 (last two requests 8.3 and 13.4) |
+| plugin, 3 expert layers on the GPU | 12.0 | 12.2 |
+
+The stock-with-cache row moved a lot between rounds; a third round is needed before quoting it. The plugin's rows are stable.
+
+Kernel candidates (IQ2_XXS and IQ3_XXS dot products, `tests/kernel_variants.cpp`, one core, data in cache, library function and variants interleaved over 7 rounds, two runs, start 54-55 C): all variants are bit-identical to the library function. IQ2_XXS: no variant is faster (0.90-0.95x). IQ3_XXS: gather-based lookups 1.13-1.18x, the other variants 0.97-1.01x. Both kernels are limited by assembling table lookups, not by arithmetic.

@@ -11,7 +11,14 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 **Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
 
 You need: Linux, `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release), `g++`, `python3`, and a MoE model in GGUF format.
-The plugin was built and tested against **llama.cpp commit 7fe450e19 (ggml 0.25.1)**. Other versions may work; the plugin prints a warning if the version differs.
+The plugin is built and tested against two llama.cpp versions, and **a plugin build only works with the ggml backend API it was compiled for**:
+
+| llama.cpp | ggml | backend API | build the plugin with |
+|---|---|---|---|
+| commit `23b0202a1` (2026-10-10; GLM-5.3-Flash and its MTP support are in) | 0.26.0 | 3 | `GGML_API=3 ./build.sh` (add `BUILD_DIR=build-v3` to keep both builds) |
+| commit `7fe450e19` (2026-09-23; Arch `llama.cpp-cuda` 0.5.0-1) | 0.25.1 | 2 | `./build.sh` |
+
+Other versions may work; the plugin prints a warning if the version differs, and refuses to load (the model then loads normally) when it knows the API differs.
 Currently tested on: Linux, Intel CPU, NVIDIA GPU. Everything else is in `COMPATIBILITY.md`.
 
 ## 0. If your distro's llama.cpp is not usable: build the matching llama.cpp with Vulkan (about 20 minutes, once)
@@ -97,7 +104,7 @@ if it does not fit, expect 2x to 7x stock. Example: a 48 GB model in a 20 GB mem
 | Your situation | Use |
 |---|---|
 | Arch / CachyOS with the AUR package `llama.cpp-cuda` | `/usr/bin/llama-server` (this is what we test with) |
-| Anything else | build the matching commit with `./install.sh`, or section 0 above; official release binaries may differ from commit 7fe450e19 and then the plugin prints a version warning |
+| Anything else | build the matching commit with `./install.sh`, or section 0 above; official release binaries may differ from commits 7fe450e19 / 23b0202a1 and then the plugin prints a version warning |
 
 ## Update, uninstall
 

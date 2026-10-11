@@ -30,7 +30,9 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
 - `tests/platform_test.cpp` passes natively on Linux and, compiled for Windows, under Wine (reserve/commit/decommit, unbuffered reads at the end of a file, limits, file replacement).
 - **Never run on real Windows with llama.cpp**: no token-identity test, no speed numbers, and the launcher scripts are still bash. Treat it as a code port waiting for a tester.
 
-## Model architectures (llama.cpp commit 7fe450e19)
+## Model architectures
+
+Tested on llama.cpp commit `7fe450e19` (ggml 0.25.1) unless the table says otherwise. On commit `23b0202a1` (ggml 0.26.0, plugin built with `GGML_API=3`, 2026-10-11) token identity vs stock was re-checked, 4 prompts x 48 tokens, on: Granite 3.x MoE (3B, 1B), OLMoE 7B, Qwen3.6-35B-A3B and Qwen3.8-Flash-Next IQ2_XS (24 GB limit): all identical. Nothing else was re-run on that commit yet.
 
 | Architecture (example model) | Status |
 |---|---|

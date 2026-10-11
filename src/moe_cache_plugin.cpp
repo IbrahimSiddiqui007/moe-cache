@@ -69,8 +69,22 @@ static FILE * fopen_private(const char * path) {
 }
 
 #ifndef MOE_CACHE_TESTED_GGML
+#if GGML_BACKEND_API_VERSION >= 3
+#define MOE_CACHE_TESTED_GGML "0.26.0"
+#else
 #define MOE_CACHE_TESTED_GGML "0.25.1"
 #endif
+#endif
+
+// The backend API of the ggml this server runs, by version number (-1: unknown version). A plugin built for another API has a different
+// struct layout and would crash, so setup refuses it (the model then loads the normal way).
+static int moe_cache_api_of_ggml(const char * v) {
+    int maj = 0, min = 0;
+    if (sscanf(v, "%d.%d", &maj, &min) != 2) return -1;
+    if (maj == 0 && min <= 25) return 2;
+    if (maj == 0 && min == 26) return 3;
+    return -1;
+}
 
 #ifdef __linux__
 #include <signal.h>
@@ -531,6 +545,14 @@ struct state_t {
         if (getenv("MOE_CACHE_DISABLE")) {
             fail("MOE_CACHE_DISABLE is set");
             return;
+        }
+        {
+            const int api = moe_cache_api_of_ggml(ggml_version());
+            if (api > 0 && api != GGML_BACKEND_API_VERSION) {
+                fail("this plugin was built for ggml backend API " + std::to_string(GGML_BACKEND_API_VERSION) + " but the server uses ggml " + ggml_version() +
+                     " (API " + std::to_string(api) + "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
+                return;
+            }
         }
         if (!file) {
             fail("MOE_CACHE_GGUF is not set");
@@ -1833,9 +1855,15 @@ ggml_backend_buffer_type_t get_buft() {
         /* .iface = */ {
             /* .get_name       = */ buft_name,
             /* .alloc_buffer   = */ buft_alloc,
+#if GGML_BACKEND_API_VERSION >= 3
+            /* .alloc_buffer_n = */ nullptr,      // default: buft_alloc + linear allocator
+#endif
             /* .get_alignment  = */ buft_align,
             /* .get_max_size   = */ nullptr,
             /* .get_alloc_size = */ buft_alloc_size,
+#if GGML_BACKEND_API_VERSION >= 3
+            /* .get_alloc_size_n = */ nullptr,    // default: per-tensor buft_alloc_size
+#endif
             /* .is_host        = */ buft_is_host,
         },
         /* .device  = */ nullptr,
@@ -2723,6 +2751,12 @@ extern "C" MOE_CACHE_EXPORT void moe_cache_register(void) {
 // LD_PRELOAD loading (Linux builds that link their backends directly); on Windows the library is loaded through GGML_BACKEND_PATH
 __attribute__((constructor)) static void moe_cache_autoload() {
     if (getenv("MOE_CACHE_PRELOAD") && !getenv("MOE_CACHE_DISABLE")) {
+        const int api = moe_cache_api_of_ggml(ggml_version());
+        if (api > 0 && api != GGML_BACKEND_API_VERSION) {   // registering would hand the server a struct of the wrong layout
+            fprintf(stderr, "moe-cache: this plugin was built for ggml backend API %d but the server uses ggml %s (API %d): not loaded, the model loads the normal way. "
+                            "Use the plugin build that matches your llama.cpp (docs/QUICKSTART.md)\n", GGML_BACKEND_API_VERSION, ggml_version(), api);
+            return;
+        }
         moe_cache_register();
     }
 }

@@ -7,7 +7,10 @@
 #     --no-apt   do not install packages (you already have cmake, g++, git, python3-venv)
 # Takes about 10-20 minutes, almost all of it compiling llama.cpp. Needs about 3 GB of disk. Run it as a normal user (it asks for sudo only for apt).
 set -e
-LLAMA_SHA=7fe450e19305b828c199d602c23a8337aaa1f03b   # the llama.cpp commit moe-cache was built and tested against (ggml 0.25.1)
+# The llama.cpp commit moe-cache was built and tested against. Default: 7fe450e19 (ggml 0.25.1, backend API 2).
+# LLAMA_SHA=23b0202a1... (any full sha starting 23b0202a1, ggml 0.26.0, API 3: GLM-5.3-Flash and MTP support) selects the matching plugin build.
+LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
+case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
 MOE_CACHE_REF=v0.1.2                                  # tag of moe-cache used when this script is run without a moe-cache checkout
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 VULKAN=0; PREFIX="$HOME/moe-cache-setup"; JOBS=$(nproc); APT=1

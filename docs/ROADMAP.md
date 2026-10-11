@@ -26,7 +26,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 | Linux + Windows | Linux only tested. Windows code exists (platform layer, DLL build), never ran on real Windows. **Open: needs a Windows machine.** |
 | NVIDIA, AMD and Intel GPUs each tested | NVIDIA (CUDA, Vulkan) and Intel iGPU (Vulkan) tested; **AMD not tested** (a Ryzen mini PC is waiting). |
 | Compatibility list checked automatically per model | list exists (docs/COMPATIBILITY.md); `bench/run_matrix.py` runs identity + speed over a folder of models; not yet run by CI (needs models). |
-| Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; only llama.cpp 7fe450e19 is supported. **Open: bump the pinned commit (GLM-5.3 and its MTP landed upstream after it) and re-run the identity matrix.** |
+| Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; llama.cpp 7fe450e19 (API 2) and 23b0202a1 (API 3) are supported, each with its own plugin build. **Open: re-run the full identity matrix on 23b0202a1 (5 models done), run GLM-5.3-Flash on it (needs a model file), automate both builds in CI.** |
 | Continuous tests (identity + speed regression guard) | CI builds, syntax-checks and runs the kernel bit-exactness check (needs no model). Identity and speed need models and a GPU runner. **Open.** |
 | Documentation for contributors | CONTRIBUTING.md, TECHNIQUES.md, SECURITY.md exist. |
 | Safety: automatic fallback on a fault | read faults fall back to buffered reads; a wrong model file disables caching instead of aborting; an unrecoverable read still stops the server (never serves wrong data). |

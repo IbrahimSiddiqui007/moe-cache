@@ -7,7 +7,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 <img alt="status" src="https://img.shields.io/badge/status-v0.2.0%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
-<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-7fe450e19%20(ggml%200.25.1)-green">
+<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-23b0202a1%20(ggml%200.26.0)%20and%207fe450e19%20(0.25.1)-green">
 </p>
 
 <p align="center"><img src="docs/img/results.svg" alt="speed with and without moe-cache" width="860"></p>
@@ -32,7 +32,7 @@ If the model already fits in your RAM you get stock speed or better (on our hybr
 
 ## Get started
 
-**You need:** Linux on x86-64, a `llama-server` built with shared ggml libraries (tested with llama.cpp commit `7fe450e19`), and a MoE model as a `.gguf` file. A GPU is optional.
+**You need:** Linux on x86-64, a `llama-server` built with shared ggml libraries (tested with llama.cpp commits `23b0202a1` (ggml 0.26.0, backend API 3) and `7fe450e19` (ggml 0.25.1, API 2); each needs its own plugin build, see [docs/QUICKSTART.md](docs/QUICKSTART.md)), and a MoE model as a `.gguf` file. A GPU is optional.
 Ollama user? The models in `ollama list` are plain GGUF files: the path is on the line starting with `FROM` in `ollama show NAME --modelfile`.
 
 ### 1. Install (pick one)
@@ -156,7 +156,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 - Long prompts (32+ tokens per batch) run their expert blocks on the GPU, as stock llama.cpp does, so prompt processing is at stock speed when the model fits (DeepSeek-V2-Lite: 166 to 183 tok/s vs 166 to 188 stock) and much faster when memory is short.
 - It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier was evaluated and is not built, see [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
-- Needs a llama.cpp with shared ggml libraries; tested with commit `7fe450e19` (ggml 0.25.1). Linux only for now.
+- Needs a llama.cpp with shared ggml libraries; tested with commits `23b0202a1` (ggml 0.26.0) and `7fe450e19` (ggml 0.25.1). The plugin refuses to load into a ggml with a different backend API than it was built for (it prints why and the model loads normally). Linux only for now.
 
 ## FAQ
 
