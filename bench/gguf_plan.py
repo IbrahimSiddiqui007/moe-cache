@@ -100,6 +100,18 @@ def fit_n_cpu_moe(path, ctx=8192, reserve_gb=1.3, free=None):
     return lay["n_layers"] - gpu_layers, lay, free
 
 
+def gpu_cache_mib(path, ctx=8192, reserve_gb=1.3, free=None):
+    """VRAM (MiB) llama.cpp's GPU expert cache can use when no whole layer of experts is placed on the GPU: free VRAM minus the non-expert weights,
+    compute buffers, KV cache and a reserve. 0 when there is too little (or the free VRAM is unknown)."""
+    lay = model_layout(path)
+    free = free if free is not None else free_vram_bytes()
+    if not lay["n_layers"] or free is None:
+        return 0
+    fixed = lay["other_bytes"] + 0.55e9 + ctx * 40e3
+    room = free - fixed - reserve_gb * 1e9
+    return int(room // (1024 * 1024)) if room > 0.5e9 else 0
+
+
 if __name__ == "__main__":
     import sys
     for p in sys.argv[1:]:

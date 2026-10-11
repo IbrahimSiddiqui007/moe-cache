@@ -5,90 +5,124 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moe-cache bench</title>
 <style>
-:root{--bg:#fff;--fg:#1f2328;--muted:#656d76;--grid:#d0d7de;--card:#f6f8fa;--line:#d0d7de;--accent:#2f81f7;--ok:#1a7f37;--bad:#cf222e}
-@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--grid:#30363d;--card:#161b22;--line:#30363d;--accent:#58a6ff;--ok:#3fb950;--bad:#f85149}}
+:root{--bg:#fff;--fg:#1f2328;--muted:#656d76;--card:#f6f8fa;--line:#d0d7de;--accent:#2f81f7;--accent2:#8250df;--ok:#1a7f37;--bad:#cf222e;--warn:#9a6700;--chip:#eaeef2}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;--muted:#8b949e;--card:#161b22;--line:#30363d;--accent:#58a6ff;--accent2:#bc8cff;--ok:#3fb950;--bad:#f85149;--warn:#d29922;--chip:#21262d}}
 *{box-sizing:border-box}
 body{background:var(--bg);color:var(--fg);font-family:system-ui,Helvetica,Arial,sans-serif;margin:0;line-height:1.45}
-main{max-width:980px;margin:0 auto;padding:16px}
-h1{font-size:22px;margin:4px 0 2px}h2{font-size:16px;margin:0 0 10px}h3{font-size:14px;margin:14px 0 4px}
-.sub{color:var(--muted);margin:0 0 14px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:12px 0}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}
+header{position:sticky;top:0;z-index:5;background:var(--bg);border-bottom:1px solid var(--line)}
+.hwrap{max-width:1100px;margin:0 auto;padding:10px 16px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+.hwrap h1{font-size:18px;margin:0}
+nav{display:flex;gap:4px;flex-wrap:wrap;margin-left:auto}
+nav a{color:var(--fg);text-decoration:none;padding:5px 10px;border-radius:6px;font-size:14px}nav a:hover{background:var(--chip)}
+main{max-width:1100px;margin:0 auto;padding:8px 16px 40px}
+h2{font-size:16px;margin:0 0 10px}h3{font-size:14px;margin:14px 0 4px}
+.sub{color:var(--muted);margin:10px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin:14px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px}
 label{display:block;font-size:12px;color:var(--muted);margin:6px 0 2px}
 input[type=text],input[type=number],textarea,select{width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);font:inherit}
-textarea{min-height:110px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
-.row{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+textarea{min-height:100px;font-family:ui-monospace,Menlo,monospace;font-size:13px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
 .row label{display:inline-flex;gap:6px;align-items:center;color:var(--fg);font-size:14px;margin:4px 0}
-button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:9px 16px;font:inherit;cursor:pointer}
+button{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:8px 14px;font:inherit;cursor:pointer}
 button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button.small{padding:4px 9px;font-size:13px}
 button:disabled{opacity:.5;cursor:default}
-.muted{color:var(--muted)}.warn{color:var(--bad)}
+.muted{color:var(--muted)}.warn{color:var(--bad)}.ok{color:var(--ok)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{background:var(--chip);border-radius:12px;padding:2px 9px;font-size:12px;color:var(--fg)}
+.chip.moe{background:color-mix(in srgb,var(--accent2) 22%,transparent);color:var(--accent2)}
 .bar{height:10px;background:var(--line);border-radius:5px;overflow:hidden;margin:8px 0}.bar>div{height:100%;background:var(--accent);width:0%;transition:width .4s}
-pre.log{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;max-height:210px;overflow:auto;font-size:12px;white-space:pre-wrap}
+pre.log{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px;max-height:230px;overflow:auto;font-size:12px;white-space:pre-wrap}
 table{border-collapse:collapse;width:100%;margin:6px 0;font-size:14px}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left}
+.mtable{max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
+.mtable th{position:sticky;top:0;background:var(--card);z-index:1}
+.mtable tr.sel td{background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.mtable td.name{max-width:380px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 details{margin:6px 0}summary{cursor:pointer}pre{white-space:pre-wrap;background:var(--bg);padding:8px;border-radius:6px;border:1px solid var(--line)}
 a{color:var(--accent)}
 .chart{margin:10px 0;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:6px}.chart svg text{font-family:system-ui,sans-serif}
 code{background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var(--line);font-size:12px}
+.presets button{margin-right:6px}
+.srv{border:1px solid var(--line);border-radius:8px;padding:10px;margin:8px 0;background:var(--bg)}
+@media (max-width:640px){nav{display:none}}
 </style>
 </head>
 <body>
+<header><div class="hwrap"><h1>moe-cache bench</h1><span class="muted" id="chips"></span>
+<nav><a href="#models">Models</a><a href="#measure">Measure</a><a href="#run">Run</a><a href="#serve">Serve</a><a href="#saved">Results</a></nav></div></header>
 <main>
-<h1>moe-cache bench</h1>
-<p class="sub">Compare stock llama.cpp with moe-cache on your own machine: speed, identity, your own prompts. Everything runs locally.</p>
+<p class="sub">Compare stock llama.cpp with moe-cache on your own machine: speed, quality and your own prompts. Everything runs locally. It finds your models for you: pick as many as you like and run them one after another.</p>
 
-<div class="card" id="sys"><h2>This machine</h2><div id="sysinfo" class="muted">looking...</div></div>
-
-<div class="card">
-  <h2>1. Setup</h2>
-  <div class="grid">
-    <div><label>llama-server (the program to benchmark)</label><input type="text" id="llama_server"></div>
-    <div><label>moe-cache plugin library</label><input type="text" id="plugin_lib"></div>
+<div class="card" id="models">
+  <h2>1. Models <span class="muted" id="mcount"></span></h2>
+  <div class="row">
+    <input type="text" id="msearch" placeholder="search by name, architecture or quant" style="max-width:320px">
+    <label><input type="checkbox" id="moe_only" checked> MoE models only</label>
+    <select id="msource" style="max-width:170px"><option value="">all sources</option></select>
+    <button class="sec small" id="sel_moe">select all MoE</button>
+    <button class="sec small" id="sel_shown">select shown</button>
+    <button class="sec small" id="sel_none">clear</button>
+    <button class="sec small" id="rescan">rescan</button>
   </div>
-  <label>Model file (.gguf)</label><input type="text" id="model" placeholder="/path/to/model.gguf"><div id="modelinfo" class="muted"></div>
+  <div class="mtable" style="margin-top:8px"><table id="mtable"><thead><tr><th></th><th>name</th><th>from</th><th>size</th><th>architecture</th><th>experts</th><th>quant</th></tr></thead><tbody></tbody></table></div>
+  <div class="row" style="margin-top:8px"><input type="text" id="adddir" placeholder="add a folder with .gguf files, for example /mnt/models" style="max-width:420px"><button class="sec small" id="addbtn">add folder</button>
+    <span class="muted" id="roots"></span></div>
+  <details><summary>Use a file that is not in the list</summary>
+    <label>Model file (.gguf)</label><input type="text" id="model" placeholder="/path/to/model.gguf"><div id="modelinfo" class="muted"></div>
+  </details>
+  <div id="selinfo" class="muted" style="margin-top:6px"></div>
+</div>
+
+<div class="card" id="measure">
+  <h2>2. What to measure</h2>
+  <div class="presets"><span class="muted">presets:</span>
+    <button class="sec small" data-preset="quick">Quick (about 5 min per model)</button>
+    <button class="sec small" data-preset="standard">Standard</button>
+    <button class="sec small" data-preset="thorough">Thorough (both orders, long prompts, latency sweep)</button></div>
   <div class="row" style="margin-top:8px">
     <label><input type="checkbox" id="m_stock" checked> stock llama.cpp</label>
     <label><input type="checkbox" id="m_plugin" checked> with moe-cache</label>
   </div>
-  <div class="grid">
-    <div><label>Memory limits to test, GB (comma separated; each run is placed in its own limited cgroup)</label><input type="text" id="limits"></div>
-    <div><label>Context size</label><input type="number" id="ctx" value="8192"></div>
-    <div><label>Experts on the CPU: <b>all</b> = every layer (GPU only does attention), <b>fit</b> = as many layers on the GPU as fit in free VRAM, or a number of layers</label><input type="text" id="n_cpu_moe" value="auto"></div>
-    <div><label>Extra llama-server arguments (optional)</label><input type="text" id="extra_args" placeholder="--spec-type draft-mtp --spec-draft-n-max 2"></div>
-    <div><label>Extra moe-cache settings (optional, for the plugin runs)</label><input type="text" id="plugin_env" placeholder="MOE_CACHE_IO_THREADS=12 MOE_CACHE_CPU_PIN=off"></div>
-  </div>
-  <div class="row"><label id="pinlbl"><input type="checkbox" id="pin" checked> pin threads to the performance cores (hybrid Intel CPUs)</label></div>
-</div>
-
-<div class="card">
-  <h2>2. What to measure</h2>
   <div class="row">
-    <label><input type="checkbox" id="speed" checked> Speed: generation tok/s, first request vs steady</label>
+    <label><input type="checkbox" id="speed" checked> Speed (tok/s, first request vs steady)</label>
     <label>tokens per prompt <input type="number" id="speed_tokens" value="100" style="width:80px"></label>
     <label>prompts (1-4) <input type="number" id="speed_prompts" value="4" min="1" max="4" style="width:60px"></label>
   </div>
-  <div class="row"><label><input type="checkbox" id="long" checked> Prompt processing: one long prompt (about 2,000 tokens)</label></div>
-  <div class="row"><label>Latency sweep (time to first token and output speed at these input lengths, tokens; empty = skip) <input type="text" id="sweep" value="100,1000,4000" style="width:150px"></label></div>
-  <div class="muted">Identity (same tokens for stock and moe-cache) is checked automatically whenever both are selected. Deep metrics (SSD reads per token, page faults, CPU time, cache hit rate, evictions, time breakdown, memory) are recorded for every request.</div>
-  <h3>Your own prompts (optional)</h3>
-  <textarea id="custom" placeholder="Write one prompt, then a line with --- between prompts.&#10;Optional: a line 'EXPECT: word' makes the prompt pass only if the answer contains that word.&#10;&#10;What is the capital of France?&#10;EXPECT: Paris&#10;---&#10;Write a haiku about memory."></textarea>
-  <div class="row"><label>tokens per custom answer <input type="number" id="custom_tokens" value="100" style="width:80px"></label></div>
+  <div class="row"><label><input type="checkbox" id="long" checked> Prompt processing: one long prompt (about 2,000 tokens)</label>
+    <label>Latency sweep, input tokens (empty = skip) <input type="text" id="sweep" value="100,1000,4000" style="width:150px"></label></div>
+  <div class="muted">Identity (same tokens for stock and moe-cache) is checked automatically when both are selected. Deep metrics (SSD reads per token, page faults, cache hit rate, evictions, memory) are recorded for every request.</div>
+  <details><summary>Settings: memory limits, GPU placement, extra arguments</summary>
+    <div class="grid">
+      <div><label>llama-server (the program to benchmark)</label><input type="text" id="llama_server"></div>
+      <div><label>moe-cache plugin library (the build that matches your llama.cpp)</label><input type="text" id="plugin_lib"></div>
+      <div><label>Memory limits to test, GB (comma separated; each run gets its own limited cgroup)</label><input type="text" id="limits"></div>
+      <div><label>Context size</label><input type="number" id="ctx" value="8192"></div>
+      <div><label>Experts on the CPU: <b>all</b>, <b>fit</b> (as many layers on the GPU as fit) or a number of layers</label><input type="text" id="n_cpu_moe" value="auto"></div>
+      <div><label>Extra llama-server arguments (optional)</label><input type="text" id="extra_args" placeholder="--moe-cache-mib 2200 -ub 2048"></div>
+      <div><label>Extra moe-cache settings (optional)</label><input type="text" id="plugin_env" placeholder="MOE_CACHE_GPU_CACHE=1"></div>
+    </div>
+    <div class="row"><label id="pinlbl"><input type="checkbox" id="pin" checked> pin threads to the performance cores (hybrid Intel CPUs)</label>
+      <label><input type="checkbox" id="both_orders"> run twice, second time in reverse order (cancels heat drift)</label>
+      <label>start only below <input type="number" id="gate_temp" value="58" style="width:64px"> C</label>
+      <label>and background CPU below <input type="number" id="bg_max" value="25" style="width:64px"> %</label></div>
+  </details>
+  <details><summary>Your own prompts</summary>
+    <textarea id="custom" placeholder="Write one prompt, then a line with --- between prompts.&#10;Optional: a line 'EXPECT: word' makes the prompt pass only if the answer contains that word.&#10;&#10;What is the capital of France?&#10;EXPECT: Paris&#10;---&#10;Write a haiku about memory."></textarea>
+    <div class="row"><label>tokens per custom answer <input type="number" id="custom_tokens" value="100" style="width:80px"></label></div>
+  </details>
   <details><summary>Quality: perplexity and KL divergence (advanced, slow)</summary>
-    <p class="muted">Needs <code>llama-perplexity</code> next to llama-server and a plain text file (the llama.cpp convention is the Wikitext-2 test set). Stock records reference logits; moe-cache is compared against them (KL divergence 0 means identical).</p>
+    <p class="muted">Needs <code>llama-perplexity</code> next to llama-server and a plain text file (llama.cpp uses the Wikitext-2 test set). Stock records reference logits; moe-cache is compared against them (KL divergence 0 means identical).</p>
     <div class="grid"><div><label>Text file</label><input type="text" id="ppl_file"></div><div><label>Chunks of 512 tokens</label><input type="number" id="ppl_chunks" value="8"></div></div>
   </details>
-  <div class="row" style="margin-top:8px">
-    <label><input type="checkbox" id="both_orders"> run twice, second time in reverse order (cancels heat drift, doubles the time)</label>
-    <label>start only below <input type="number" id="gate_temp" value="58" style="width:64px"> C</label>
-    <label>and background CPU below <input type="number" id="bg_max" value="25" style="width:64px"> % of one core</label>
-  </div>
 </div>
 
-<div class="card">
+<div class="card" id="run">
   <h2>3. Run</h2>
   <div class="row"><button id="start">Start benchmark</button><button id="cancel" class="sec" disabled>Cancel</button><span id="status" class="muted"></span></div>
   <div class="bar"><div id="progress"></div></div>
   <pre class="log" id="log">Nothing running.</pre>
+  <div id="queueres" class="muted"></div>
 </div>
 
 <div class="card" id="resultcard" style="display:none">
@@ -98,28 +132,51 @@ code{background:var(--bg);padding:1px 5px;border-radius:4px;border:1px solid var
   <div id="charts"></div>
 </div>
 
-<div class="card">
-  <h2>Saved results</h2>
-  <div id="saved" class="muted">none yet</div>
+<div class="card" id="serve">
+  <h2>4. Serve a model (web UI, scripts, quality benchmarks)</h2>
+  <p class="muted">Starts a llama-server for one model and keeps it running, with or without moe-cache. No flags to remember: the memory limit, GPU placement and plugin loading are set up the same way as in the benchmark.</p>
+  <div class="grid">
+    <div><label>Model</label><select id="serve_model"></select></div>
+    <div><label>Engine</label><select id="serve_mode"><option value="plugin">moe-cache plugin</option><option value="stock">stock llama.cpp</option></select></div>
+    <div><label>Context size</label><input type="number" id="serve_ctx" value="8192"></div>
+    <div><label>Memory limit, GB (empty = automatic for big models)</label><input type="text" id="serve_limit"></div>
+    <div><label>Extra llama-server arguments</label><input type="text" id="serve_extra" placeholder="-ub 2048"></div>
+  </div>
+  <div class="row"><label><input type="checkbox" id="serve_gpucache"> use all free VRAM as a GPU expert cache (llama.cpp 23b0202a1 or newer, plugin only; sizes itself)</label>
+    <button id="serve_start">Start server</button></div>
+  <div id="serve_msg" class="muted"></div>
+  <div id="serves"></div>
+  <details open><summary>Run a quality benchmark against the server (MMLU-Pro, GSM8K, ...)</summary>
+    <pre id="lmeval">Start a server above to get a ready-made command.</pre>
+    <p class="muted">These benchmarks measure the model, not moe-cache: the scores should match stock within noise. Needs <code>pip install lm-eval</code>.</p>
+  </details>
 </div>
 
-<div class="card">
-  <h2>Other benchmarks (model quality)</h2>
-  <p class="muted">MMLU-Pro, GPQA, GSM8K, HumanEval and the other capability benchmarks measure the model, not moe-cache; the scores must match stock. Run them with lm-evaluation-harness against a running server:</p>
-  <pre id="lmeval">pip install lm-eval
-lm_eval --model local-completions --model_args base_url=http://localhost:8080/v1/completions,model=any,num_concurrent=1 --tasks gsm8k,hellaswag --limit 200</pre>
-  <p class="muted">Start the server with <code>moe-cache-server MODEL.gguf --ram 24</code> (moe-cache) or plain <code>llama-server -m MODEL.gguf</code> (stock). Full list: docs/BENCHMARKS.md.</p>
+<div class="card" id="saved">
+  <h2>Saved results</h2>
+  <div id="savedlist" class="muted">none yet</div>
 </div>
 </main>
 <script src="/charts.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-let job = null, timer = null;
+let job = null, timer = null, MODELS = [], SEL = new Set();
 const num = s => s.split(',').map(x => parseFloat(x)).filter(x => !isNaN(x) && x > 0);
 const TOKEN = "__BENCH_TOKEN__";
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function api(url, opt){ opt = opt || {}; opt.headers = Object.assign({'X-Bench-Token': TOKEN}, opt.headers || {}); return fetch(url, opt); }
 async function j(url, opt){ const r = await api(url, opt); return r.json(); }
+const post = (url, body) => api(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body || {})});
+
+const PRESETS = {
+  quick:    {speed:true, speed_tokens:64, speed_prompts:2, long:false, sweep:'', both_orders:false},
+  standard: {speed:true, speed_tokens:100, speed_prompts:4, long:true, sweep:'100,1000,4000', both_orders:false},
+  thorough: {speed:true, speed_tokens:128, speed_prompts:4, long:true, sweep:'100,1000,4000,8000', both_orders:true}
+};
+document.querySelectorAll('[data-preset]').forEach(b => b.onclick = () => {
+  const p = PRESETS[b.dataset.preset];
+  for (const [k, v] of Object.entries(p)) { const e = $(k); if (e.type === 'checkbox') e.checked = v; else e.value = v; }
+});
 
 async function init(){
   const c = await j('/api/config');
@@ -127,15 +184,16 @@ async function init(){
   $('limits').value = (c.limits || []).join(', ');
   for (const k of ['pin','speed','long','both_orders']) $(k).checked = !!c[k];
   $('m_stock').checked = c.modes.includes('stock'); $('m_plugin').checked = c.modes.includes('plugin');
-  sysinfo(); modelinfo(); saved();
+  (c.models || []).forEach(p => SEL.add(p));
+  sysinfo(); modelinfo(); saved(); loadModels(false); serves(); setInterval(serves, 3000);
   const running = await j('/api/jobs');
   if (running.length) { job = running[0].id; $('start').disabled = true; $('cancel').disabled = false; timer = setInterval(poll, 2000); poll(); }
 }
 async function sysinfo(){
   const s = await j('/api/system?ls=' + encodeURIComponent($('llama_server').value));
-  $('sysinfo').innerHTML = `${esc(s.cpu)} · ${+s.threads} threads${s.hybrid ? ' (hybrid cores)' : ''} · ${+s.ram_gb} GB RAM (${+s.ram_free_gb} GB free) · ` +
-    `${s.devices.length ? s.devices.map(esc).join(', ') : 'no GPU backend found in this llama-server'} · ${s.temp_c ? s.temp_c.toFixed(0) + ' C now' : ''}` +
-    (s.systemd_run ? '' : '<br><span class="warn">systemd-run not found: memory limits are not available</span>');
+  $('chips').innerHTML = `${esc(s.cpu)} · ${+s.threads} threads · ${+s.ram_gb} GB RAM (${+s.ram_free_gb} free) · ` +
+    `${s.devices.length ? s.devices.map(esc).join(', ') : 'no GPU backend in this llama-server'}${s.temp_c ? ' · ' + s.temp_c.toFixed(0) + ' C' : ''}` +
+    (s.systemd_run ? '' : ' · <span class="warn">no systemd-run: memory limits unavailable</span>');
   $('pinlbl').style.display = s.hybrid ? '' : 'none';
 }
 async function modelinfo(){
@@ -145,8 +203,52 @@ async function modelinfo(){
 }
 $('model').addEventListener('change', modelinfo); $('llama_server').addEventListener('change', sysinfo);
 
+async function loadModels(rescan){
+  $('mcount').textContent = 'scanning...';
+  const d = await j('/api/models' + (rescan ? '?rescan=1' : ''));
+  MODELS = d.models;
+  const srcs = [...new Set(MODELS.map(m => m.source))];
+  const cur = $('msource').value;
+  $('msource').innerHTML = '<option value="">all sources</option>' + srcs.map(s => `<option ${s === cur ? 'selected' : ''}>${esc(s)}</option>`).join('');
+  $('roots').textContent = d.roots.length ? 'looked in ' + d.roots.length + ' folders' : '';
+  renderModels(); fillServeModels();
+}
+function shown(){
+  const q = $('msearch').value.toLowerCase(), src = $('msource').value, moe = $('moe_only').checked;
+  return MODELS.filter(m => (!moe || m.moe) && (!src || m.source === src) && (!q || (m.name + ' ' + m.arch + ' ' + m.quant + ' ' + m.path).toLowerCase().includes(q)));
+}
+function renderModels(){
+  const l = shown();
+  $('mtable').querySelector('tbody').innerHTML = l.map((m, i) =>
+    `<tr class="${SEL.has(m.path) ? 'sel' : ''}"><td><input type="checkbox" data-p="${esc(m.path)}" ${SEL.has(m.path) ? 'checked' : ''}></td>` +
+    `<td class="name" title="${esc(m.path)}">${esc(m.name)}${m.moe ? ' <span class="chip moe">MoE</span>' : ''}</td><td>${esc(m.source)}</td><td>${+m.gb} GB</td>` +
+    `<td>${esc(m.arch)}</td><td>${m.experts ? m.experts + ' (top ' + m.used + ')' : '-'}</td><td>${esc(m.quant)}</td></tr>`).join('') ||
+    '<tr><td colspan="7" class="muted">no models found: add a folder below or type a path under "Use a file that is not in the list"</td></tr>';
+  $('mcount').textContent = `(${l.length} shown of ${MODELS.length} found)`;
+  selinfo();
+}
+function selinfo(){
+  const picked = [...SEL].filter(p => MODELS.some(m => m.path === p));
+  const gb = picked.reduce((a, p) => a + (MODELS.find(m => m.path === p).gb || 0), 0);
+  $('selinfo').textContent = picked.length ? `${picked.length} selected (${gb.toFixed(1)} GB of files)` : 'nothing selected: the file path under "Use a file that is not in the list" is used';
+}
+document.addEventListener('change', ev => { const t = ev.target; if (t.dataset && t.dataset.p !== undefined) { t.checked ? SEL.add(t.dataset.p) : SEL.delete(t.dataset.p); renderModels(); } });
+for (const id of ['msearch','moe_only','msource']) $(id).addEventListener('input', renderModels);
+$('sel_moe').onclick = () => { MODELS.filter(m => m.moe).forEach(m => SEL.add(m.path)); renderModels(); };
+$('sel_shown').onclick = () => { shown().forEach(m => SEL.add(m.path)); renderModels(); };
+$('sel_none').onclick = () => { SEL.clear(); renderModels(); };
+$('rescan').onclick = () => loadModels(true);
+$('addbtn').onclick = async () => {
+  const d = $('adddir').value.trim(); if (!d) return;
+  const r = await post('/api/model_dirs', {add: d});
+  if (!r.ok) { $('roots').innerHTML = '<span class="warn">not a folder</span>'; return; }
+  $('adddir').value = ''; loadModels(true);
+};
+
 function config(){
-  return { llama_server: $('llama_server').value.trim(), plugin_lib: $('plugin_lib').value.trim(), model: $('model').value.trim(),
+  const picked = [...SEL].filter(p => MODELS.some(m => m.path === p));
+  return { llama_server: $('llama_server').value.trim(), plugin_lib: $('plugin_lib').value.trim(),
+    model: picked[0] || $('model').value.trim(), models: picked,
     modes: [$('m_stock').checked ? 'stock' : null, $('m_plugin').checked ? 'plugin' : null].filter(Boolean), limits: num($('limits').value),
     ctx: +$('ctx').value, n_cpu_moe: $('n_cpu_moe').value.trim() || 'auto', pin: $('pin').checked, extra_args: $('extra_args').value, plugin_env: $('plugin_env').value,
     speed: $('speed').checked, sweep: $('sweep').value, sweep_tokens: 64, speed_tokens: +$('speed_tokens').value, speed_prompts: +$('speed_prompts').value, long: $('long').checked,
@@ -154,13 +256,13 @@ function config(){
     both_orders: $('both_orders').checked, gate_temp: +$('gate_temp').value, bg_max: +$('bg_max').value, gate_wait_s: 600 };
 }
 $('start').onclick = async () => {
-  const r = await api('/api/run', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(config())});
+  const r = await post('/api/run', config());
   const d = await r.json();
-  if (!r.ok) { $('log').textContent = 'Cannot start:\n- ' + d.errors.join('\n- '); return; }
-  job = d.id; $('start').disabled = true; $('cancel').disabled = false; $('resultcard').style.display = 'none';
+  if (!r.ok) { $('log').textContent = 'Cannot start:\n- ' + d.errors.join('\n- '); location.hash = '#run'; return; }
+  job = d.id; $('start').disabled = true; $('cancel').disabled = false; $('resultcard').style.display = 'none'; $('queueres').textContent = '';
   timer = setInterval(poll, 2000); poll();
 };
-$('cancel').onclick = async () => { if (job) await api(`/api/job/${job}/cancel`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); $('status').textContent = 'cancelling...'; };
+$('cancel').onclick = async () => { if (job) await post(`/api/job/${job}/cancel`); $('status').textContent = 'cancelling...'; };
 async function poll(){
   const s = await j('/api/job/' + job);
   $('log').textContent = s.log.join('\n') || '...'; $('log').scrollTop = 1e9;
@@ -168,6 +270,7 @@ async function poll(){
   $('status').textContent = `${s.state} · ${s.done}/${s.total}`;
   if (['done','failed','cancelled'].includes(s.state)) {
     clearInterval(timer); $('start').disabled = false; $('cancel').disabled = true;
+    if ((s.result_ids || []).length > 1) $('queueres').innerHTML = 'Finished models: ' + s.result_ids.map(id => `<a href="#" data-act="show" data-id="${esc(id)}">${esc(id.slice(16))}</a>`).join(' · ');
     if (s.result_id) show(s.result_id); saved();
   }
 }
@@ -182,13 +285,38 @@ async function show(id){
 }
 async function saved(){
   const l = await j('/api/results');
-  $('saved').innerHTML = l.length ? '<table><tr><th>when</th><th>model</th><th>stock tok/s</th><th>moe-cache tok/s</th><th></th></tr>' + l.map(r =>
+  $('savedlist').innerHTML = l.length ? '<table><tr><th>when</th><th>model</th><th>stock tok/s</th><th>moe-cache tok/s</th><th></th></tr>' + l.map(r =>
     `<tr><td>${esc(r.created)}</td><td>${esc(r.model)} (${+r.model_gb} GB)</td><td>${r.stock ? (+r.stock).toFixed(2) : '-'}</td><td>${r.plugin ? (+r.plugin).toFixed(2) : '-'}</td>` +
     `<td><a href="#" data-act="show" data-id="${esc(r.id)}">view</a> · <a href="#" data-act="del" data-id="${esc(r.id)}">delete</a></td></tr>`).join('') + '</table>' : 'none yet';
 }
 document.addEventListener('click', ev => { const a = ev.target.closest && ev.target.closest('a[data-act]'); if (!a) return; ev.preventDefault();
   if (a.dataset.act === 'show') show(a.dataset.id); else if (a.dataset.act === 'del') del(a.dataset.id); });
-async function del(id){ if (confirm('Delete this saved result?')) { await api(`/api/result/${id}/delete`, {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'}); saved(); } }
+async function del(id){ if (confirm('Delete this saved result?')) { await post(`/api/result/${id}/delete`); saved(); } }
+
+// ---- serve panel
+function fillServeModels(){
+  const cur = $('serve_model').value;
+  $('serve_model').innerHTML = MODELS.map(m => `<option value="${esc(m.path)}" ${m.path === cur ? 'selected' : ''}>${esc(m.name)} (${+m.gb} GB)</option>`).join('');
+}
+$('serve_start').onclick = async () => {
+  const body = { llama_server: $('llama_server').value.trim(), plugin_lib: $('plugin_lib').value.trim(), model: $('serve_model').value, mode: $('serve_mode').value,
+    ctx: +$('serve_ctx').value, extra_args: $('serve_extra').value, gpu_cache: $('serve_gpucache').checked && $('serve_mode').value === 'plugin' };
+  const lim = parseFloat($('serve_limit').value); if (lim > 0) body.limit_gb = lim;
+  const r = await post('/api/serve', body); const d = await r.json();
+  $('serve_msg').innerHTML = r.ok ? 'starting... (a big model takes a few minutes to load)' : '<span class="warn">' + (d.errors || [d.error]).map(esc).join('<br>') + '</span>';
+  serves();
+};
+async function serves(){
+  const l = await j('/api/serves');
+  const live = l.filter(s => s.state !== 'stopped');
+  $('serves').innerHTML = l.map(s => `<div class="srv"><b>${esc(s.model)}</b> · ${esc(s.mode)} · <span class="${s.state === 'ready' ? 'ok' : 'muted'}">${esc(s.state)}</span>` +
+    (s.gpu_cache_mib ? ` · GPU cache ${+s.gpu_cache_mib} MiB` : '') +
+    `<br><span class="muted">API / web UI:</span> <code>http://127.0.0.1:${+s.port}</code> <span class="muted">key:</span> <code>${esc(s.key)}</code> ` +
+    (s.state !== 'stopped' ? `<button class="sec small" data-stop="${esc(s.id)}">stop</button>` : '') + '</div>').join('');
+  const s = live.find(x => x.state === 'ready') || live[0];
+  if (s) $('lmeval').textContent = `export OPENAI_API_KEY=${s.key}\nlm_eval --model local-completions --model_args base_url=http://127.0.0.1:${s.port}/v1/completions,model=any,num_concurrent=1 --tasks gsm8k,hellaswag --limit 200`;
+}
+document.addEventListener('click', async ev => { const b = ev.target.closest && ev.target.closest('button[data-stop]'); if (!b) return; await post(`/api/serve/${b.dataset.stop}/stop`); serves(); });
 init();
 </script>
 </body>

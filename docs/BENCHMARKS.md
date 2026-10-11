@@ -86,3 +86,16 @@ The first group of rows (MMLU-Pro, GPQA, BBH, MuSR, IFEval, MATH level 5) is the
 Sources: Open LLM Leaderboard v2 task list and descriptions via the lm-evaluation-harness leaderboard README; HumanEval, GPQA and MMLU-Pro descriptions from
 the benchmark overviews found on [Athina](https://hub.athina.ai/blogs/top-10-llm-benchmarking-evals) and [Medium](https://medium.com/@dibyajyoti_20397/llm-benchmarks-simplified-from-mmlu-to-gpqa-7e88b6a83c0c);
 perplexity and KL-divergence usage from the llama.cpp [perplexity README](https://huggingface.co/OpenTransformer/llama.cpp-prismml/blob/main/tools/perplexity/README.md).
+
+
+## Finding your models, running many, and serving (since 0.2.2)
+
+`bin/moe-cache-bench` now looks for your models itself. It scans the Ollama store (`~/.ollama`, `/var/lib/ollama`, `$OLLAMA_MODELS`), the llama.cpp cache
+(`~/.cache/llama.cpp`), Hugging Face (`~/.cache/huggingface/hub`), LM Studio, `~/models`, `~/Downloads`, the folders in `MOE_CACHE_MODEL_DIRS`
+(colon separated) and any folder you add in the page. Draft heads (`mtp-*`) and vision projectors (`mmproj-*`) are left out, split models show once with the
+size of all parts. The list shows architecture, expert count, quant and size; **select all MoE** queues every MoE model, one after another, each with the
+same settings and its own saved result.
+
+The **Serve** card starts a llama-server for one model (stock or with the plugin, optionally with all free VRAM as llama.cpp's GPU expert cache) and shows
+the address, an API key and a ready-made `lm_eval` command, so quality benchmarks no longer need a separately started server. Servers started here are
+stopped when the page's server stops; at most two run at once.

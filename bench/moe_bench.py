@@ -8,7 +8,7 @@ and look at the results as graphs in a local web page. Python standard library o
 Every server run happens in its own memory-limited scope (systemd-run, swap off) so a model bigger than RAM can never take the desktop down.
 Results are saved in ~/.local/share/moe-cache-bench/results (override with MOE_BENCH_DATA).
 """
-import argparse, csv, glob, hmac, html, io, json, os, re, secrets, shlex, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request, webbrowser
+import argparse, csv, glob, hmac, struct, html, io, json, os, re, secrets, shlex, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -141,8 +141,8 @@ def find_llama_server():
 
 def default_config():
     tot, _ = mem_gb()
-    lib = str(REPO / "build/libggml-moe-cache.so")
-    return {"llama_server": find_llama_server(), "plugin_lib": lib if os.path.exists(lib) else "", "model": "", "modes": ["stock", "plugin"],
+    lib = next((str(REPO / d / "libggml-moe-cache.so") for d in ("build", "build-p3", "build-v3", "lib") if (REPO / d / "libggml-moe-cache.so").exists()), "")
+    return {"llama_server": find_llama_server(), "plugin_lib": lib, "model": "", "modes": ["stock", "plugin"],
             "limits": [max(4, int(tot * 0.8))], "ctx": 8192, "n_cpu_moe": "auto", "pin": True, "extra_args": "", "plugin_env": "",
             "speed": True, "speed_tokens": 100, "sweep": "100,1000,4000", "sweep_tokens": 64, "speed_prompts": 4, "long": True, "custom": "", "custom_tokens": 100,
             "ppl_file": "", "ppl_chunks": 8, "both_orders": False, "gate_temp": 58, "bg_max": 25, "gate_wait_s": 300}
@@ -156,6 +156,179 @@ def model_size_gb(path):
         return os.path.getsize(path) / 1e9
     except Exception:
         return 0.0
+
+
+
+# ---------------------------------------------------------------- model discovery
+FTYPE = {0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0", 9: "Q5_1", 10: "Q2_K", 11: "Q3_K_S", 12: "Q3_K_M", 13: "Q3_K_L",
+         14: "Q4_K_S", 15: "Q4_K_M", 16: "Q5_K_S", 17: "Q5_K_M", 18: "Q6_K", 19: "IQ2_XXS", 20: "IQ2_XS", 21: "Q2_K_S", 22: "IQ3_XS",
+         23: "IQ3_XXS", 24: "IQ1_S", 25: "IQ4_NL", 26: "IQ3_S", 27: "IQ3_M", 28: "IQ2_S", 29: "IQ2_M", 30: "IQ4_XS", 31: "IQ1_M", 32: "BF16"}
+_SC = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
+SKIP_DIRS = {".git", "node_modules", "__pycache__", "proc", "sys", "dev", "snap", ".cache/pip", "site-packages"}
+MODEL_DIRS_FILE = DATA / "model_dirs.json"
+META_CACHE_FILE = DATA / "model_meta_cache.json"
+_scan_lock = threading.Lock()
+_scan = {"models": [], "at": 0, "busy": False}
+
+
+def read_gguf_meta(path):
+    """Architecture, expert counts, layers and file type from the GGUF header. Reads only the first part of the file and stops at the tokenizer."""
+    want = {"general.architecture", "general.name", "general.file_type"}
+    out = {}
+    try:
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return None
+            struct.unpack("<I", f.read(4))
+            _nt, nkv = struct.unpack("<QQ", f.read(16))
+
+            def rd_str():
+                n, = struct.unpack("<Q", f.read(8))
+                if n > (1 << 20):
+                    raise ValueError("string too long")
+                return f.read(n).decode("utf-8", "replace")
+
+            for _ in range(min(nkv, 4000)):
+                k = rd_str()
+                t, = struct.unpack("<I", f.read(4))
+                if k.startswith("tokenizer."):
+                    break
+                if t in _SC:
+                    v, = struct.unpack(_SC[t], f.read(struct.calcsize(_SC[t])))
+                elif t == 8:
+                    v = rd_str()
+                elif t == 9:
+                    et, = struct.unpack("<I", f.read(4))
+                    c, = struct.unpack("<Q", f.read(8))
+                    if et in _SC:
+                        f.seek(struct.calcsize(_SC[et]) * c, 1)
+                    else:
+                        for _i in range(c):
+                            rd_str()
+                    continue
+                else:
+                    break
+                if k in want or re.search(r"\.(expert_count|expert_used_count|block_count|embedding_length|context_length)$", k):
+                    out[k] = v
+    except Exception:
+        return out or None
+    arch = out.get("general.architecture", "")
+    g = lambda suffix: next((v for k, v in out.items() if k.startswith(arch + ".") and k.endswith("." + suffix)), 0)
+    return {"arch": arch, "name": out.get("general.name", ""), "experts": int(g("expert_count") or 0), "used": int(g("expert_used_count") or 0),
+            "layers": int(g("block_count") or 0), "ctx_train": int(g("context_length") or 0),
+            "quant": FTYPE.get(out.get("general.file_type"), "") if "general.file_type" in out else ""}
+
+
+def _model_roots(extra):
+    home = Path.home()
+    roots = [home / "models", home / "Models", home / ".cache/llama.cpp", home / ".cache/huggingface/hub", home / ".lmstudio/models",
+             home / ".cache/lm-studio/models", home / "Downloads", Path.cwd(), REPO / "models"]
+    roots += [Path(x) for x in os.environ.get("MOE_CACHE_MODEL_DIRS", "").split(":") if x]
+    roots += [Path(x) for x in extra]
+    seen, out = set(), []
+    for r in roots:
+        try:
+            rr = r.resolve()
+        except OSError:
+            continue
+        if rr.is_dir() and rr not in seen:
+            seen.add(rr)
+            out.append(rr)
+    return out
+
+
+def _ollama_stores(extra_roots):
+    cands = [Path.home() / ".ollama/models", Path("/var/lib/ollama/.ollama/models"), Path("/usr/share/ollama/.ollama/models")]
+    cands += [Path(x) / "models" for x in (os.environ.get("OLLAMA_MODELS", ""),) if x] + ([Path(os.environ["OLLAMA_MODELS"])] if os.environ.get("OLLAMA_MODELS") else [])
+    for r in extra_roots:
+        if (r / "manifests").is_dir() and (r / "blobs").is_dir():
+            cands.append(r)
+    return [c for c in dict.fromkeys(cands) if (c / "manifests").is_dir() and (c / "blobs").is_dir()]
+
+
+def _first_shard(path):
+    m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", path.name)
+    return m is None or int(m.group(1)) == 1
+
+
+def discover_models(extra_dirs, rescan=False):
+    """Every GGUF the user is likely to have: their folders, llama.cpp / Hugging Face / LM Studio caches and the Ollama store."""
+    cache = {}
+    try:
+        cache = json.loads(META_CACHE_FILE.read_text())
+    except Exception:
+        pass
+    found, seen_real = [], set()
+
+    def add(path, source, name=None):
+        try:
+            real = os.path.realpath(path)
+            st = os.stat(real)
+        except OSError:
+            return
+        if real in seen_real or not is_gguf(real):
+            return
+        seen_real.add(real)
+        key = f"{real}:{st.st_size}:{int(st.st_mtime)}"
+        meta = cache.get(key) or read_gguf_meta(real) or {}
+        cache[key] = meta
+        if not meta.get("quant"):
+            qm = re.search(r"(IQ\d_[A-Z]+|Q\d_K_[A-Z]+|Q\d_K|Q\d_\d|MXFP4|BF16|F16)", Path(path).name.upper())
+            meta = dict(meta, quant=qm.group(1) if qm else "")
+        found.append({"path": str(path), "name": name or Path(path).stem, "source": source, "gb": round(model_size_gb(str(path)), 2),
+                      "moe": meta.get("experts", 0) > 1, **{k: meta.get(k, "" if k in ("arch", "name", "quant") else 0)
+                                                             for k in ("arch", "experts", "used", "layers", "quant")}})
+
+    roots = _model_roots(extra_dirs)
+    for store in _ollama_stores(roots):
+        try:
+            for mf in (store / "manifests").rglob("*"):
+                if not mf.is_file():
+                    continue
+                try:
+                    man = json.loads(mf.read_text())
+                except Exception:
+                    continue
+                for layer in man.get("layers", []):
+                    if layer.get("mediaType") == "application/vnd.ollama.image.model":
+                        blob = store / "blobs" / layer["digest"].replace(":", "-")
+                        parts = mf.relative_to(store / "manifests").parts
+                        add(blob, "Ollama", f"{parts[-2]}:{parts[-1]}" if len(parts) >= 2 else mf.name)
+        except OSError:
+            pass
+    count = 0
+    for root in roots:
+        base_depth = len(root.parts)
+        for dp, dns, fns in os.walk(root, followlinks=False):
+            dns[:] = [d for d in dns if d not in SKIP_DIRS and not d.startswith(".git") and len(Path(dp).parts) - base_depth < 7]
+            for fn in fns:
+                if not fn.lower().endswith(".gguf") or "mmproj" in fn.lower() or fn.lower().startswith("mtp-"):
+                    continue
+                pth = Path(dp) / fn
+                if not _first_shard(pth):
+                    continue
+                src = ("Hugging Face" if ".cache/huggingface" in str(pth) else "LM Studio" if "lmstudio" in str(pth).lower() or "lm-studio" in str(pth).lower()
+                       else "llama.cpp cache" if ".cache/llama.cpp" in str(pth) else "folder")
+                add(pth, src)
+                count += 1
+                if count > 600:
+                    break
+    # keep only entries seen now in the cache file so it does not grow without end
+    keep = {k: v for k, v in cache.items() if any(k.startswith(os.path.realpath(m["path"]) + ":") for m in found)}
+    try:
+        DATA.mkdir(parents=True, exist_ok=True)
+        META_CACHE_FILE.write_text(json.dumps(keep))
+    except OSError:
+        pass
+    found.sort(key=lambda m: (not m["moe"], m["name"].lower()))
+    return found, [str(r) for r in roots]
+
+
+def saved_model_dirs():
+    try:
+        return [d for d in json.loads(MODEL_DIRS_FILE.read_text()) if isinstance(d, str)]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------- running servers
@@ -233,6 +406,7 @@ def parse_custom(text):
 
 
 class Job:
+    result_ids = ()
     def __init__(self, jid, cfg):
         self.id, self.cfg = jid, cfg
         self.state, self.done, self.total = "queued", 0, 1
@@ -244,7 +418,7 @@ class Job:
         self.log = self.log[-400:]
 
     def public(self):
-        return {"id": self.id, "state": self.state, "done": self.done, "total": self.total, "log": self.log[-40:], "result_id": self.result_id, "error": self.error}
+        return {"id": self.id, "state": self.state, "done": self.done, "total": self.total, "log": self.log[-40:], "result_id": self.result_id, "result_ids": list(self.result_ids), "error": self.error}
 
 
 JOBS = {}
@@ -584,39 +758,58 @@ def summarize(runs):
     return sm
 
 
+def _run_model(job, cfg, offset, per_model_total):
+    """One model: every selected mode and limit, then the optional perplexity run. Returns the saved result id."""
+    modes = [m for m in ("stock", "plugin") if m in cfg["modes"]]
+    limits = cfg["limits"] or [None]
+    plan = []
+    for rep in range(2 if cfg["both_orders"] else 1):
+        for lim in limits:
+            for m in (modes if rep == 0 else modes[::-1]):
+                plan.append((m, lim, rep))
+    runs = []
+    for i, (m, lim, rep) in enumerate(plan):
+        if job.cancel:
+            break
+        job.say(f"[{Path(cfg['model']).name[:40]}] run {i + 1}/{len(plan)}: {m}, limit {lim} GB, repeat {rep + 1}")
+        try:
+            runs.append(run_one(job, cfg, m, lim, rep, f"{offset}_{i}"))
+        except Exception as e:
+            job.say(f"run failed: {e}")
+            if job.cancel:
+                break
+            runs.append({"mode": m, "limit_gb": lim, "repeat": rep, "requests": [], "suites": [], "error": str(e), "clean": False})
+        job.done = offset + i + 1
+    ppl = run_perplexity(job, cfg, runs) if (cfg["ppl_file"] and not job.cancel) else None
+    job.done = offset + per_model_total
+    rid = time.strftime("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9._-]", "_", Path(cfg["model"]).stem)[:40]
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    res = {"id": rid, "created": time.strftime("%Y-%m-%d %H:%M:%S"), "config": cfg, "system": system_info(cfg["llama_server"]),
+           "model_gb": round(model_size_gb(cfg["model"]), 2), "runs": runs, "summary": summarize([r for r in runs if r["requests"]]), "perplexity": ppl}
+    (RESULTS / f"{rid}.json").write_text(json.dumps(res))
+    return rid
+
+
 def run_job(job):
     cfg = job.cfg
     job.state = "running"
     try:
+        models = cfg.get("models") or [cfg["model"]]
         modes = [m for m in ("stock", "plugin") if m in cfg["modes"]]
-        limits = cfg["limits"] or [None]
-        plan = []
-        for rep in range(2 if cfg["both_orders"] else 1):
-            for lim in limits:
-                for m in (modes if rep == 0 else modes[::-1]):
-                    plan.append((m, lim, rep))
-        job.total = len(plan) + (1 if cfg["ppl_file"] else 0)
-        runs = []
-        for i, (m, lim, rep) in enumerate(plan):
+        per = len(modes) * len(cfg["limits"] or [None]) * (2 if cfg["both_orders"] else 1) + (1 if cfg["ppl_file"] else 0)
+        job.total = per * len(models)
+        job.result_ids = []
+        for k, model in enumerate(models):
             if job.cancel:
                 break
-            job.say(f"run {i + 1}/{len(plan)}: {m}, limit {lim} GB, repeat {rep + 1}")
+            c = dict(cfg, model=model, models=None)
+            job.say(f"model {k + 1}/{len(models)}: {Path(model).name}")
             try:
-                runs.append(run_one(job, cfg, m, lim, rep, f"{i}"))
+                job.result_ids.append(_run_model(job, c, k * per, per))
             except Exception as e:
-                job.say(f"run failed: {e}")
-                if job.cancel:
-                    break
-                runs.append({"mode": m, "limit_gb": lim, "repeat": rep, "requests": [], "suites": [], "error": str(e), "clean": False})
-            job.done = i + 1
-        ppl = run_perplexity(job, cfg, runs) if (cfg["ppl_file"] and not job.cancel) else None
+                job.say(f"model failed: {e}")
+        job.result_id = job.result_ids[-1] if job.result_ids else None
         job.done = job.total
-        rid = time.strftime("%Y%m%d-%H%M%S") + "-" + re.sub(r"[^A-Za-z0-9._-]", "_", Path(cfg["model"]).stem)[:40]
-        RESULTS.mkdir(parents=True, exist_ok=True)
-        res = {"id": rid, "created": time.strftime("%Y-%m-%d %H:%M:%S"), "config": cfg, "system": system_info(cfg["llama_server"]),
-               "model_gb": round(model_size_gb(cfg["model"]), 2), "runs": runs, "summary": summarize([r for r in runs if r["requests"]]), "perplexity": ppl}
-        (RESULTS / f"{rid}.json").write_text(json.dumps(res))
-        job.result_id = rid
         job.state = "cancelled" if job.cancel else "done"
     except Exception as e:
         job.state, job.error = "failed", str(e)
@@ -624,11 +817,18 @@ def run_job(job):
 
 
 def start_job(cfg):
+    models = [m for m in (cfg.get("models") or []) if m]
+    if models:
+        cfg["model"] = models[0]
+        cfg["models"] = models
     errs = validate_cfg(cfg)
+    for m in models[1:]:
+        if not is_gguf(m):
+            errs.append(f"not a GGUF file: {m}")
     if not cfg["modes"]:
         errs.append("pick stock, plugin or both")
     tot, av = mem_gb()
-    size = model_size_gb(cfg["model"]) if os.path.isfile(cfg["model"]) else 0
+    size = max([model_size_gb(m) for m in (models or [cfg["model"]]) if os.path.isfile(m)] or [0])
     if not cfg["limits"] and size > 0.5 * tot:
         errs.append("this model is large for your RAM: set a memory limit (GB) so a runaway server cannot take the desktop down")
     if cfg["limits"] and not shutil.which("systemd-run"):
@@ -805,6 +1005,105 @@ def validate_cfg(cfg):
     return errs
 
 
+
+# ---------------------------------------------------------------- managed servers (the "Serve" panel)
+SERVERS = {}
+
+
+class Served:
+    def __init__(self, sid, cfg, port, key, proc, logp):
+        self.id, self.cfg, self.port, self.key, self.proc, self.logp = sid, cfg, port, key, proc, logp
+        self.started = time.time()
+
+    def public(self):
+        up = self.proc.poll() is None
+        ready = False
+        if up:
+            try:
+                ready = urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1.5).status == 200
+            except Exception:
+                ready = False
+        return {"id": self.id, "model": Path(self.cfg["model"]).name, "mode": self.cfg["mode"], "port": self.port, "key": self.key,
+                "state": "ready" if ready else ("starting" if up else "stopped"), "since": int(time.time() - self.started),
+                "extra": self.cfg.get("extra_args", ""), "gpu_cache_mib": self.cfg.get("gpu_cache_mib", 0)}
+
+
+def start_server(cfg):
+    """Start one llama-server (stock or with the plugin) that stays up, for the user's own tools (web UI, lm-evaluation-harness, scripts)."""
+    errs = []
+    ls, model, mode = cfg.get("llama_server", ""), cfg.get("model", ""), cfg.get("mode", "plugin")
+    if not server_name_ok(ls):
+        errs.append("llama-server path must be an executable file named llama-server*")
+    if not is_gguf(model):
+        errs.append("model must be a GGUF file")
+    if mode not in ("stock", "plugin"):
+        errs.append("mode must be stock or plugin")
+    if mode == "plugin":
+        n = os.path.basename(cfg.get("plugin_lib", ""))
+        if not (re.fullmatch(r"(lib)?ggml-moe-cache[\w.-]*\.(so|dll)", n) and os.path.isfile(cfg.get("plugin_lib", ""))):
+            errs.append("plugin library must be the built ggml-moe-cache library")
+    try:
+        xs = shlex.split(cfg.get("extra_args") or "")
+    except ValueError:
+        xs = []
+        errs.append("extra arguments: unbalanced quotes")
+    for a in xs:
+        if a.split("=", 1)[0] in DENIED_FLAGS:
+            errs.append(f"extra arguments: {a.split('=')[0]} is not allowed here")
+    limit = cfg.get("limit_gb")
+    if limit and not shutil.which("systemd-run"):
+        errs.append("systemd-run not found: memory limits need systemd")
+    if sum(1 for s_ in SERVERS.values() if s_.proc.poll() is None) >= 2:
+        errs.append("two servers are already running: stop one first")
+    if errs:
+        return None, errs
+    ctx = int(cfg.get("ctx") or 8192)
+    size = model_size_gb(model)
+    tot, _ = mem_gb()
+    if not limit and size > 0.5 * tot:
+        limit = max(4, int(tot * 0.8))            # a model this big always gets a hard limit, so a runaway server cannot take the desktop down
+    ncm = cfg.get("n_cpu_moe", "auto")
+    gpu_cache = 0
+    if mode == "plugin" and cfg.get("gpu_cache") and not any(x == "--moe-cache-mib" for x in xs):
+        try:
+            sys.path.insert(0, str(HERE))
+            from gguf_plan import gpu_cache_mib
+            gpu_cache = gpu_cache_mib(model, ctx)
+        except Exception:
+            gpu_cache = 0
+    if gpu_cache >= 512:
+        ncm = 999
+        xs += ["--moe-cache-mib", str(gpu_cache)]
+    else:
+        gpu_cache = 0
+        ncm = planner_ncmoe({"model": model, "ctx": ctx}, limit) if ncm in ("auto", "fit") else (999 if ncm == "all" else int(ncm))
+    port = free_port()
+    sid = time.strftime("%H%M%S") + f"{len(SERVERS):02d}"
+    key = secrets.token_urlsafe(18)
+    keyf = DATA / f"key_serve_{sid}"
+    keyf.write_text(key)
+    keyf.chmod(0o600)
+    envs = {}
+    if mode == "plugin":
+        e, _method = load_env(ls, cfg["plugin_lib"])
+        envs.update(e)
+        envs.update(MOE_CACHE_SIZE_GIB="auto", MOE_CACHE_GGUF=model)
+        if gpu_cache:
+            envs["MOE_CACHE_GPU_CACHE"] = "1"
+        prof = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "moe-cache" / (Path(model).name + ".usage")
+        prof.parent.mkdir(parents=True, exist_ok=True)
+        envs["MOE_CACHE_PROFILE"] = str(prof)
+    prefix = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={limit}G", "-p", "MemorySwapMax=0"] if limit else []
+    args = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", str(ncm), "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup",
+            "--port", str(port), "--api-key-file", str(keyf)] + xs
+    cmd = prefix + (["env"] + [f"{k}={v}" for k, v in envs.items()] if envs else []) + args
+    logp = DATA / f"server_serve_{sid}.log"
+    with open(logp, "w") as lf:
+        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    SERVERS[sid] = Served(sid, dict(cfg, mode=mode, gpu_cache_mib=gpu_cache, extra_args=" ".join(xs)), port, key, proc, logp)
+    return SERVERS[sid], []
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -877,6 +1176,14 @@ class H(BaseHTTPRequestHandler):
                 path = urllib.request.unquote(self.path.split("path=", 1)[1].split("&")[0]) if "path=" in self.path else ""
                 ok = is_gguf(path)
                 return self.send(200, {"gb": round(model_size_gb(path), 2) if ok else 0, "exists": ok})
+            if p == "/api/models":
+                with _scan_lock:
+                    if "rescan=1" in self.path or not _scan["models"]:
+                        found, roots = discover_models(saved_model_dirs())
+                        _scan.update(models=found, roots=roots, at=int(time.time()))
+                    return self.send(200, {"models": _scan["models"], "roots": _scan.get("roots", []), "at": _scan["at"], "saved_dirs": saved_model_dirs()})
+            if p == "/api/serves":
+                return self.send(200, [sv.public() for sv in SERVERS.values()])
             if p == "/api/jobs":
                 return self.send(200, [j.public() for j in JOBS.values() if j.state in ("queued", "running")])
             if p == "/api/results":
@@ -917,6 +1224,27 @@ class H(BaseHTTPRequestHandler):
                 cfg["limits"] = [float(x) if float(x) != int(float(x)) else int(float(x)) for x in cfg.get("limits", [])]
                 job, errs = start_job(cfg)
                 return self.send(400 if errs else 200, {"errors": errs} if errs else {"id": job.id})
+            if p == "/api/model_dirs":
+                b = self.body()
+                dirs = saved_model_dirs()
+                d = os.path.abspath(os.path.expanduser(str(b.get("add") or b.get("remove") or "")))
+                if b.get("add"):
+                    if not os.path.isdir(d):
+                        return self.send(400, {"error": "not a folder"})
+                    if d not in dirs:
+                        dirs.append(d)
+                elif b.get("remove") and d in dirs:
+                    dirs.remove(d)
+                DATA.mkdir(parents=True, exist_ok=True)
+                MODEL_DIRS_FILE.write_text(json.dumps(dirs))
+                return self.send(200, {"saved_dirs": dirs})
+            if p == "/api/serve":
+                sv, errs = start_server(self.body())
+                return self.send(400 if errs else 200, {"errors": errs} if errs else sv.public())
+            m = re.match(r"/api/serve/(\w+)/stop$", p)
+            if m and m.group(1) in SERVERS:
+                stop_proc(SERVERS[m.group(1)].proc)
+                return self.send(200, {"ok": True})
             m = re.match(r"/api/job/(\w+)/cancel$", p)
             if m and m.group(1) in JOBS:
                 j = JOBS[m.group(1)]
@@ -966,6 +1294,9 @@ def main():
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
+        for sv in SERVERS.values():
+            if sv.proc.poll() is None:
+                sv.proc.terminate()
         for j in JOBS.values():
             j.cancel = True
             if j.proc and j.proc.poll() is None:
