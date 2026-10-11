@@ -271,10 +271,13 @@ static inline void cpu_relax() {
 #endif
 }
 
+constexpr int EXEC_MAXCOL = 8;   // tokens per step the executor takes (single-token decode and small batches such as speculative verification)
+
 struct exec_task_t {
     const char * w;        // first row of this expert's matrix
-    const char * col;      // quantised activation column
-    float *      dst;      // output (rows floats)
+    int          ncol = 0; // activation columns that use this expert (one per token that picked it)
+    const char * cols[EXEC_MAXCOL];   // quantised activation columns
+    float *      dsts[EXEC_MAXCOL];   // outputs (rows floats each)
     const uint8_t * flag;  // non-null: the expert is still being read while *flag is non-zero
     int64_t      rows;
 };
@@ -318,7 +321,10 @@ struct exec_pool_t {
                 }
             }
             for (int64_t r = r0; r < r1; r++) {
-                j->dot((int) j->ne00, &t.dst[r], 0, t.w + (size_t) r * j->nb01, 0, t.col, 0, 1);
+                const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
+                for (int k = 0; k < t.ncol; k++) {
+                    j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
+                }
             }
             j->done.fetch_add(1, std::memory_order_release);
         }
@@ -467,6 +473,7 @@ struct state_t {
     int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
     // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
     bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
+    bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
     int    exec_ecores = 0;                             // extra workers on efficiency cores
@@ -729,6 +736,7 @@ struct state_t {
         }
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
+            exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHECK")) {
             exec_check = strcmp(v, "0") != 0;
@@ -2231,10 +2239,10 @@ bool exec_eligible(state_t & s, ggml_cgraph * cg) {
             return false;
         }
         const ggml_type_traits_cpu * tt = cpu_traits(w->type);
-        if (!tt || !tt->vec_dot || !cpu_traits(tt->vec_dot_type) || ids->type != GGML_TYPE_I32 || ids->ne[1] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1) {
+        if (!tt || !tt->vec_dot || !cpu_traits(tt->vec_dot_type) || ids->type != GGML_TYPE_I32 || ids->ne[1] < 1 || ids->ne[1] > EXEC_MAXCOL || ids->ne[2] != 1 || ids->ne[3] != 1) {
             return false;
         }
-        if (a->type != GGML_TYPE_F32 || a->nb[0] != sizeof(float) || a->ne[2] != 1 || a->ne[3] != 1 || nd->type != GGML_TYPE_F32 || nd->nb[0] != sizeof(float)) {
+        if (a->type != GGML_TYPE_F32 || a->nb[0] != sizeof(float) || a->ne[2] != ids->ne[1] || a->ne[3] != 1 || nd->type != GGML_TYPE_F32 || nd->nb[0] != sizeof(float)) {
             return false;
         }
         if (w->nb[0] != ggml_type_size(w->type) || w->ne[2] <= 1 || tt->nrows != 1 || cpu_traits(tt->vec_dot_type)->from_float == nullptr) {
@@ -2282,57 +2290,81 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     const ggml_type_traits_cpu * tt = cpu_traits(w->type);
     const ggml_type vdt = tt->vec_dot_type;
     const int n_ids = (int) ids->ne[0];
+    const int n_tok = (int) ids->ne[1];
     const int64_t ne10 = a->ne[0], ne11 = a->ne[1];
     const size_t row_size = ggml_row_size(vdt, ne10);
     static thread_local std::vector<uint8_t> wbuf;
     static thread_local std::vector<uint8_t> pbuf;
-    const char * cols;
-    size_t col_stride;
+    const char * base;
+    size_t stride_i11, stride_tok;       // column (token t, activation row i11) = base + i11 * stride_i11 + t * stride_tok
     ggml_vec_dot_t dot = tt->vec_dot;
     bool permuted = false;
 #if defined(__x86_64__) && defined(__linux__)
     permuted = w->type == GGML_TYPE_Q2_0 && vdt == GGML_TYPE_Q8_0 && a->type == GGML_TYPE_F32 && ne10 % 64 == 0 && fast_kernels_enabled();
 #endif
     if (a->type == vdt) {
-        cols = (const char *) a->data;
-        col_stride = a->nb[1];
+        base = (const char *) a->data;
+        stride_i11 = a->nb[1];
+        stride_tok = a->nb[2];
     } else {
-        wbuf.resize((size_t) ne11 * row_size + 64);
+        wbuf.resize((size_t) ne11 * n_tok * row_size + 64);
         const ggml_from_float_t from_float = cpu_traits(vdt)->from_float;
-        for (int64_t i11 = 0; i11 < ne11; i11++) {
-            from_float((const float *) ((const char *) a->data + (size_t) i11 * a->nb[1]), wbuf.data() + (size_t) i11 * row_size, ne10);
+        for (int t = 0; t < n_tok; t++) {
+            for (int64_t i11 = 0; i11 < ne11; i11++) {
+                from_float((const float *) ((const char *) a->data + (size_t) i11 * a->nb[1] + (size_t) t * a->nb[2]),
+                           wbuf.data() + ((size_t) t * ne11 + i11) * row_size, ne10);
+            }
         }
-        cols = (const char *) wbuf.data();
-        col_stride = row_size;
+        base = (const char *) wbuf.data();
+        stride_i11 = row_size;
+        stride_tok = (size_t) ne11 * row_size;
 #if defined(__x86_64__) && defined(__linux__)
         if (permuted) {
             const size_t nbk = (size_t) (ne10 / 32);
-            pbuf.resize((size_t) ne11 * nbk * sizeof(fastk::block_q8_0_perm) + 64);
-            for (int64_t i11 = 0; i11 < ne11; i11++) {
-                fastk::permute_q8_0((const fastk::block_q8_0 *) (wbuf.data() + (size_t) i11 * row_size),
-                                    (fastk::block_q8_0_perm *) (pbuf.data() + (size_t) i11 * nbk * sizeof(fastk::block_q8_0_perm)), (int) nbk);
+            const size_t ncols = (size_t) ne11 * n_tok;
+            pbuf.resize(ncols * nbk * sizeof(fastk::block_q8_0_perm) + 64);
+            for (size_t c = 0; c < ncols; c++) {
+                fastk::permute_q8_0((const fastk::block_q8_0 *) (wbuf.data() + c * row_size),
+                                    (fastk::block_q8_0_perm *) (pbuf.data() + c * nbk * sizeof(fastk::block_q8_0_perm)), (int) nbk);
             }
-            cols = (const char *) pbuf.data();
-            col_stride = nbk * sizeof(fastk::block_q8_0_perm);
+            base = (const char *) pbuf.data();
+            stride_i11 = nbk * sizeof(fastk::block_q8_0_perm);
+            stride_tok = (size_t) ne11 * stride_i11;
             dot = q2_0_perm_dot;
         }
 #endif
     }
-    std::vector<exec_task_t> tasks;
-    tasks.reserve((size_t) n_ids);
-    std::vector<exec_task_t> late;
-    for (int slot = 0; slot < n_ids; slot++) {
-        const int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0]);
-        if (e < 0 || e >= w->ne[2]) {
-            fprintf(stderr, "moe-cache: expert id %d out of range\n", e);
-            abort();
+    // one task per expert: the tokens that picked it share its weight rows
+    std::vector<exec_task_t> all;
+    all.reserve((size_t) n_ids * (size_t) n_tok);
+    std::vector<int> task_of((size_t) w->ne[2], -1);
+    for (int t = 0; t < n_tok; t++) {
+        for (int slot = 0; slot < n_ids; slot++) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0] + (size_t) t * ids->nb[1]);
+            if (e < 0 || e >= w->ne[2]) {
+                fprintf(stderr, "moe-cache: expert id %d out of range\n", e);
+                abort();
+            }
+            int & ti_ = task_of[(size_t) e];
+            if (ti_ < 0) {
+                exec_task_t nt;
+                nt.w = (const char *) w->data + (size_t) e * w->nb[2];
+                nt.ncol = 0;
+                nt.flag = (const uint8_t *) &s.nodes[(size_t) (ti.node0 + e)].loading;
+                nt.rows = w->ne[1];
+                ti_ = (int) all.size();
+                all.push_back(nt);
+            }
+            exec_task_t & tk = all[(size_t) ti_];
+            tk.cols[tk.ncol] = base + (size_t) (slot % ne11) * stride_i11 + (size_t) t * stride_tok;
+            tk.dsts[tk.ncol] = (float *) ((char *) nd->data + (size_t) slot * nd->nb[1] + (size_t) t * nd->nb[2]);
+            tk.ncol++;
         }
-        exec_task_t t;
-        t.w = (const char *) w->data + (size_t) e * w->nb[2];
-        t.col = cols + (size_t) (slot % ne11) * col_stride;
-        t.dst = (float *) ((char *) nd->data + (size_t) slot * nd->nb[1]);
-        t.flag = (const uint8_t *) &s.nodes[(size_t) (ti.node0 + e)].loading;
-        t.rows = w->ne[1];
+    }
+    std::vector<exec_task_t> tasks;
+    tasks.reserve(all.size());
+    std::vector<exec_task_t> late;
+    for (const auto & t : all) {
         (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? late : tasks).push_back(t);   // experts already in RAM first
     }
     for (const auto & t : late) {
@@ -2571,7 +2603,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     }
 
     // everything is resident and the weights are bandwidth-bound (K-quants, legacy types): llama.cpp's own path is as fast and has less overhead
-    if (exec_graph && exec_jobs == 0 && !exec_heavy) {
+    if (exec_graph && exec_jobs == 0 && !exec_heavy && !s.exec_force) {
         exec_graph = false;
         if (CPU().set_n_threads) {
             CPU().set_n_threads(c->cpu, c->n_threads);

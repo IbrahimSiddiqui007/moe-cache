@@ -441,3 +441,35 @@ Draft acceptance rose from 45 % to 73 %, mean accepted length about 3.1 tokens. 
 | Qwen3-Coder-30B-A3B, decode | 72,232 | 0.638 | 0.758 | 0.910 | 0.984 |
 
 Per layer the top-25 % share ranges from 0.86 to 0.98. Reading: skipping the weakest half of the neurons drops about 2 % of the energy (about 14 % relative error of that expert's output vector); skipping three quarters drops about 10 % (about 33 %). Gate and up must be computed before the activation is known, so without a trained predictor only the down projection (one third of the weights) can skip neurons. Not pursued.
+
+
+## 19. Small-batch executor, GPU cache third and fourth round (2026-10-11)
+
+### Plugin + llama.cpp GPU cache, Flash-Next IQ2_XS, 24 GB limit, 10 requests of 48 tokens (mean of requests 4-10), all runs at <= 58 C and idle
+
+| Round | plugin, 3 static GPU layers | plugin + `--moe-cache-mib 2200` |
+|---|---|---|
+| 1 | 11.7 | 12.0 |
+| 2 | 11.4 | 13.5 |
+| 3 | 12.6 | 14.0 |
+| 4 | 12.1 | 14.1 |
+| mean | **11.95** | **13.4 (+12 %)** |
+
+Prompt time of the short prompts halves (about 1.1 s to 0.6 s).
+
+### Small-batch executor (up to 8 tokens per step; tokens that pick the same expert share its weight rows)
+
+Exactness: tokens identical to stock and 0 byte mismatches in every op compared with llama.cpp's own result, with batches forced to 1-4 tokens (`-ub 4`):
+OLMoE 9,894 ops, Granite 3B 19,830 ops, Flash-Next IQ2_XS 27,945 ops (Q2_0 fast kernel and IQ types). `MOE_CACHE_EXEC=2` forces the executor on for tests.
+
+Flash-Next, all experts on the CPU side, 8 requests:
+
+| | before (round 1 / 2 / 3) | new executor (round 1 / 2) |
+|---|---|---|
+| no MTP, tok/s | 11.55 / 11.36 / 11.0 | 12.4 / 11.9 |
+| no MTP, prompt time of short prompts | 1.1-1.4 s | 0.5-0.8 s |
+| MTP (head experts on CPU), tok/s | 4.3 / 4.3 | **9.5 / 10.7** (still 17 % below no MTP) |
+
+### Quality harness (`bench/quality.py`)
+
+`compare` (prompt bank with checkable answers, judge for same meaning, degeneration checks, optional long-context retrieval), `longctx` (needle retrieval at growing sizes, reports prefill and decode speed), `soak` (long session with periodic probes, tracks answers, tok/s and memory).
