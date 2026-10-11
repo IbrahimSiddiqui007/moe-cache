@@ -4,7 +4,7 @@ Version numbers describe how safe it is to hand the project to someone else.
 
 | Version | Meaning | What must be true |
 |---|---|---|
-| **v0.1** (now, alpha) | Works on the author's machine; others can build and try it on Linux | Plugin runs unmodified llama.cpp; token-identical to stock on every model tested; launcher, planner, identity test, quick start; honest compatibility page |
+| **v0.1** (done) | Works on the author's machine; others can build and try it on Linux | Plugin runs unmodified llama.cpp; token-identical to stock on every model tested; launcher, planner, identity test, quick start; honest compatibility page |
 | **v0.2** (friend-ready) | A friend with a similar Linux box can install it and it works first time | Prebuilt plugin for the common llama.cpp releases; setup check that says exactly what is wrong; tested on at least one AMD or Intel GPU through Vulkan and on CPU-only; first GitHub release |
 | **v0.2b** (done) | CPU-only parity | Repacks each expert on load exactly when stock would: CPU-only machines are bit-identical and as fast as stock |
 | **v0.2c** (done) | GPU-assisted prompt processing | Run the big expert multiplications of long prompts on the GPU from inside the plugin (restores stock's prompt speed when the model fits; building block of the GPU tier) |

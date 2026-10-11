@@ -48,8 +48,8 @@ SW=$(awk '/SwapTotal/ {printf "%.1f", $2/1048576}' /proc/meminfo); [ "${SW%.*}" 
 # python helper
 PY="${MOE_CACHE_PYTHON:-python3}"
 if command -v "$PY" >/dev/null; then
-  if "$PY" -c "import gguf" 2>/dev/null; then ok "python gguf" "installed (planner works)"; else warn "python gguf" "missing: pip install gguf (without it all experts stay on the CPU)"; fi
-else warn python "python3 not found (planner and tests need it)"; fi
+  if "$PY" -c "import gguf" 2>/dev/null; then ok "planner" "python gguf package found (the planner also has its own header reader)"; else ok "planner" "built-in GGUF header reader (the python gguf package is not needed)"; fi
+else warn python "python3 not found (the planner, the tests and the benchmark tool need it)"; fi
 [ -w "${XDG_CACHE_HOME:-$HOME/.cache}" ] && ok "profile dir" "${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache" || warn "profile dir" "cache directory not writable: profiles will not be saved"
 
 # model
