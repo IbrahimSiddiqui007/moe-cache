@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the release tarball: tools/make_release.sh VERSION   (e.g. 0.1.2). Output: dist/moe-cache-vVERSION-linux-x86_64.tar.gz + SHA256SUMS
+# Build the release tarball: tools/make_release.sh VERSION   (e.g. 0.1.2). Output: dist/moe-cache-vVERSION-linux-x86_64.tar.gz (llama.cpp 7fe450e19, ggml 0.25.1) and dist/moe-cache-vVERSION-ggml0.26-linux-x86_64.tar.gz (llama.cpp 23b0202a1, ggml 0.26.0) + SHA256SUMS
 # The tarball is always built from a clean export of the last commit (git archive HEAD), never from the working tree, so untracked or
 # uncommitted files cannot end up in a release. Uncommitted changes are ignored (a warning is printed).
 set -e
@@ -12,14 +12,19 @@ if [ -z "$MOE_CACHE_RELEASE_EXPORT" ]; then
   X="$(mktemp -d)"; trap 'rm -rf "$X"' EXIT
   git archive HEAD | tar -x -C "$X"
   MOE_CACHE_RELEASE_EXPORT=1 "$X/tools/make_release.sh" "$V"
-  mkdir -p dist; cp "$X"/dist/moe-cache-v"$V"-linux-x86_64.tar.gz "$X"/dist/SHA256SUMS dist/
+  mkdir -p dist; cp "$X"/dist/moe-cache-v"$V"*-linux-x86_64.tar.gz "$X"/dist/SHA256SUMS dist/
   echo "built from commit $(git rev-parse --short HEAD) -> dist/"; ( cd dist && cat SHA256SUMS )
   echo "note: SHA256SUMS detects corruption only. Releases built by the GitHub workflow also carry a build attestation (see docs/SECURITY.md)."
   exit 0
 fi
-./build.sh --portable
-N=moe-cache-v$V-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
-cp -r bin planner tests tools profiles docs bench LICENSE README.md build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
-rm -f dist/$N/tools/make_release.sh
-tar -C dist -czf dist/$N.tar.gz $N
-( cd dist && sha256sum $N.tar.gz > SHA256SUMS )
+# two builds: ggml 0.25.1 (backend API 2, llama.cpp 7fe450e19; the file name without suffix) and ggml 0.26.0 (API 3, llama.cpp 23b0202a1; suffix -ggml0.26)
+rm -f dist/SHA256SUMS
+for API in 2 3; do
+  if [ $API = 3 ]; then SUF=-ggml0.26; export GGML_API=3; else SUF=; unset GGML_API; fi
+  ./build.sh --portable
+  N=moe-cache-v$V$SUF-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
+  cp -r bin planner tests tools profiles docs bench LICENSE README.md build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
+  rm -f dist/$N/tools/make_release.sh
+  tar -C dist -czf dist/$N.tar.gz $N
+  ( cd dist && sha256sum $N.tar.gz >> SHA256SUMS )
+done
