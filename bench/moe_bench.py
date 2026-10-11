@@ -145,7 +145,7 @@ def default_config():
     return {"llama_server": find_llama_server(), "plugin_lib": lib, "model": "", "modes": ["stock", "plugin"],
             "limits": [max(4, int(tot * 0.8))], "ctx": 8192, "n_cpu_moe": "auto", "pin": True, "extra_args": "", "plugin_env": "",
             "speed": True, "speed_tokens": 100, "sweep": "100,1000,4000", "sweep_tokens": 64, "speed_prompts": 4, "long": True, "custom": "", "custom_tokens": 100,
-            "ppl_file": "", "ppl_chunks": 8, "both_orders": False, "gate_temp": 58, "bg_max": 25, "gate_wait_s": 300}
+            "ppl_file": "", "ppl_chunks": 8, "both_orders": False, "gate_temp": 65, "bg_max": 25, "gate_wait_s": 300}
 
 
 def model_size_gb(path):

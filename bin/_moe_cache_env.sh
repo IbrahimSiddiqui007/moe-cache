@@ -18,3 +18,26 @@ moe_cache_load_env() {
   esac
   MOE_CACHE_METHOD="$method"
 }
+
+# API of the ggml a llama-server uses, from the version of the libggml-base it loads (0.24-0.25 -> backend API 2, 0.26-0.27 -> API 3). Empty when unknown.
+moe_cache_ls_api() {
+  local lsp base v
+  lsp="$(command -v "$1" 2>/dev/null || echo "$1")"
+  base="$(ldd "$lsp" 2>/dev/null | awk '/libggml-base/ {print $3; exit}')"
+  [ -n "$base" ] || return 0
+  v="$(basename "$(readlink -f "$base")" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  case "$v" in 0.24.*|0.25.*) echo 2;; 0.26.*|0.27.*) echo 3;; esac
+}
+# API a plugin build was made for (the tag is a plain string inside the library); empty for builds from before 0.2.3
+moe_cache_lib_api() { grep -a -o 'moe-cache-api=[0-9]*' "$1" 2>/dev/null | head -1 | cut -d= -f2; }
+# moe_cache_pick_lib LLAMA_SERVER HERE: the plugin build in HERE/build*/ that matches the server's ggml, else the default build
+moe_cache_pick_lib() {
+  local want c
+  want="$(moe_cache_ls_api "$1")"
+  if [ -n "$want" ]; then
+    for c in "$2/build/libggml-moe-cache.so" "$2"/build-*/libggml-moe-cache.so; do
+      [ -f "$c" ] && [ "$(moe_cache_lib_api "$c")" = "$want" ] && { echo "$c"; return 0; }
+    done
+  fi
+  echo "$2/build/libggml-moe-cache.so"
+}

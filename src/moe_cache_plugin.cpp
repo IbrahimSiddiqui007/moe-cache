@@ -76,6 +76,11 @@ static FILE * fopen_private(const char * path) {
 #endif
 #endif
 
+// readable without loading the library (grep -a): lets the launcher pick the build that matches a llama-server's ggml
+#define MC_STR_(x) #x
+#define MC_STR(x) MC_STR_(x)
+extern "C" __attribute__((used)) const char moe_cache_api_tag[] = "moe-cache-api=" MC_STR(GGML_BACKEND_API_VERSION) ";";
+
 // The backend API of the ggml this server runs, by version number (-1: unknown version). A plugin built for another API has a different
 // struct layout and would crash, so setup refuses it (the model then loads the normal way).
 static int moe_cache_api_of_ggml(const char * v) {
@@ -494,6 +499,8 @@ struct state_t {
     std::deque<io_job_t> rq;
     bool   rq_stop = false;
     std::atomic<uint64_t> exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
+    // per weight type: wall time of the expert products (includes waiting for experts still loading), ops, expert bytes touched
+    std::atomic<uint64_t> exec_type_ns[64] = {}, exec_type_ops[64] = {}, exec_type_bytes[64] = {};
 
     // usage profile and warm start
     std::string profile_path;          // learn here and warm start from it
@@ -1211,6 +1218,14 @@ struct state_t {
             if (exec_on) {
                 fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s\n", (unsigned long long) exec_ops,
                         exec_check ? (std::string(", checked ") + std::to_string(exec_checked.load()) + ", mismatches " + std::to_string(exec_mismatch.load())).c_str() : "");
+            }
+            if (exec_on) {
+                for (int ty = 0; ty < 64; ty++) {
+                    if (exec_type_ops[ty]) {
+                        fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu time=%.2fs expert data=%.1f GB (%.2f GB/s incl. waits)\n", ggml_type_name((ggml_type) ty),
+                                (unsigned long long) exec_type_ops[ty], exec_type_ns[ty] / 1e9, exec_type_bytes[ty] / 1e9, exec_type_ns[ty] ? (double) exec_type_bytes[ty] / exec_type_ns[ty] : 0.0);
+                    }
+                }
             }
             if (route_mode) {
                 fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
@@ -2478,7 +2493,13 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     for (const auto & t : late) {
         tasks.push_back(t);
     }
+    const auto tp0 = std::chrono::steady_clock::now();
     s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32);
+    if ((unsigned) w->type < 64) {
+        s.exec_type_ns[w->type] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
+        s.exec_type_ops[w->type]++;
+        s.exec_type_bytes[w->type] += (uint64_t) tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
+    }
     s.exec_ops++;
 }
 

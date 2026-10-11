@@ -587,3 +587,83 @@ Gated runs (start <= 65 C, 24 GB limit, swap 0, two prompts of about 3.7k tokens
 Reading: prefill is 2.3x faster than with the oversized cache; decode is about 5 % lower than with it and about 10 % above cache-off (single runs, +-5 %).
 Token identity with the new plugin vs stock + the same cache (`--moe-cache-mib 1800 -ub 1024`, `tests/identity.sh --long --tokens 24`): 2/2 identical, 188 GPU blocks, 0 fallbacks.
 Caveats: only 2 long prompts in the identity run; the second prefill prompt returned no text in every run (also with the cache off, unexplained, does not affect timing).
+
+## 24. Prompt reuse, saved contexts, where decode time goes (2026-10-12, Flash-Next IQ2_XS, 24 GB limit, ctx 8192 / 4096)
+
+All runs gated (start <= 65 C), one run per row, plugin build with the section 23 fix.
+
+### 24.1 What llama-server re-processes on a follow-up (coding session, `bench/coding_session.py`, context of 5.4-5.9k tokens)
+| `-ub` | extra flags | cold prefill (s) | follow-up processed / reused | follow-up TTFT (s) | edit in the middle |
+|---|---|---|---|---|---|
+| 1024 | default | 86 | 1,018-1,026 / 4,902 | 15.7 | 1,043 processed, 4,902 reused (the edit happened to lie after the checkpoint) |
+| 256 | `-cms 256 -ctxcp 64` | 133 | 250-258 / 5,670 | 9.0 | **5,945 processed, 0 reused** |
+| 512 | warm-up in 4 growing sections (`--sections 4`) | 29 + 29 + 38 | 506-514 / 5,427 | 11.1 | **886 processed, 5,072 reused** |
+
+- The tail that is processed again on every follow-up is about one micro-batch (`-ub`): this hybrid model keeps one recurrent-state checkpoint per request, at the
+  prompt's end minus `-ub`. `--checkpoint-min-step` and `--ctx-checkpoints` did not add checkpoints inside a prompt.
+- An edit before that checkpoint reuses nothing (0 reused at `-ub 256`, 0 reused in the 20k-token run of section 22).
+- Warming the context in a few growing prefixes (each one a request with `n_predict` 1) puts a checkpoint near each prefix's end; the later edit then reuses everything
+  before the nearest checkpoint. Total warm-up time is the same as one cold prefill. `bench/coding_session.py --sections N` does this.
+- Smaller `-ub` makes follow-ups cheaper (258 vs 1,026 tokens) and the cold prefill slower (133 vs 86 s).
+
+### 24.2 Saving and restoring a context (llama-server `--slot-save-path`, `/slots/0?action=save|restore`)
+| Step | Result |
+|---|---|
+| first request, 2,722-token context | 56 s |
+| save | 0.15 s, 439 MB file |
+| restart the server, restore | 0.25 s, 2,761 tokens restored; the same question then processed 4 tokens |
+| generated text after restore vs the unsaved run | identical (192 characters) |
+`moe-cache-server --project NAME` keeps one folder per project, restores the saved state at start, and `bin/moe-cache-project save NAME` saves it.
+
+### 24.3 Where the expert time goes (executor counters, 12 prompts x 64 tokens, all experts on the CPU, cache 21 GiB)
+| Weight type | Ops | Time (s) | Share | Expert data (GB) |
+|---|---|---|---|---|
+| IQ2_S | 52,490 | 17.7 | 49 % | 285.7 |
+| Q2_0 | 37,053 | 12.1 | 33 % | 176.8 |
+| IQ2_XXS | 16,984 | 5.5 | 15 % | 74.1 |
+| IQ1_M | 4,632 | 1.45 | 4 % | 17.1 |
+Time includes waiting for experts that were still loading. IQ2_S has not been tried in the kernel-variant tests (only IQ2_XXS and IQ3_XXS were): it is the first candidate.
+
+### 24.4 Cache policy and next-layer prediction (offline replay of the same 769-token trace, `tools/trace_replay.py`; second half evaluated)
+| Cache (GiB) | LRU | 2Q | 25 % pinned + LRU | 50 % pinned | 75 % pinned |
+|---|---|---|---|---|---|
+| 4 | 68.4 % | 67.6 % | 68.0 % | 66.9 % | 62.9 % |
+| 8 | 83.3 % | 82.6 % | 83.1 % | 82.8 % | 82.7 % |
+| 12 | 91.5 % | 91.5 % | 91.5 % | 91.3 % | 91.4 % |
+| 16 | 95.5 % | 95.6 % | 95.3 % | 95.2 % | 95.3 % |
+| 19.5 | 97.2 % | 97.0 % | 97.2 % | 97.3 % | 97.3 % |
+Policy does not matter (at most 0.5 points apart from the 4 GiB pinned rows): LRU stays. Cheap next-layer predictors from the trace alone catch 36-57 % of the
+picks with 20 predictions per 10 picks. The plugin's own lookahead predictor (router weights of the next layer, `MOE_CACHE_LOOKAHEAD=1`) reached **68.1 % recall**
+(241,479 of 354,760 picks; 38,667 experts prefetched, 25,809 used, 9,413 wasted, 8,006 late), but decode with it was 9.2-10.6 tok/s against 11.8-13.6 without
+(same prompts, one run each, helper threads compete for the CPU). This is the number that sets the ceiling of a GPU-side prefetch (GPU_TIER_DESIGN.md step 2).
+Caveat: 12 short prompts, 769 decode tokens, cold start.
+
+## 25. Quality evidence: quantisations, thinking, approximate routing, code generation (2026-10-12, Flash-Next, 24 GB limit)
+
+Gated runs (start <= 65 C). Quality numbers are on small banks: read them as "no large difference found", not as proof of equality.
+
+### 25.1 The three quantisations on disk (all experts on the CPU, ctx 4096, `-ub 512`)
+| File | Size | Checkable prompts correct (of 26) | Perplexity (6 x 512 tokens of this repository's docs) | Collect wall time (30 prompts x 150 tokens) |
+|---|---|---|---|---|
+| IQ2_XS (ISTA) | 68.0 GB | 26 | 5.789 +- 0.381 | 319 s |
+| Q2_0 (ISTA) | 66.4 GB | 25 | 5.796 +- 0.381 | 314 s |
+| UD-Q2_K_XL (unsloth) | 78.9 GB | 26 | 5.775 +- 0.373 | 403 s |
+The perplexities are inside each other's error bars (6 chunks); mean text similarity of the open answers to IQ2_XS is 0.81 (Q2_0) and 0.75 (Q2_K_XL), no new degenerate answers.
+Decode speed with the plugin was 12.5 (IQ2_XS) vs 11.1 tok/s (Q2_K_XL) in section 18. Nothing measured here argues for the larger file on this machine.
+
+### 25.2 Thinking (IQ2_XS, same bank, chat template)
+| Setting | Wall time for the bank | Correct | Notes |
+|---|---|---|---|
+| default | 319 s | 26 / 26 | |
+| `--reasoning off` | 226 s (-29 %) | 25 / 26 | mean similarity 0.56 to the default answers |
+| `--reasoning-budget 256` | 314 s | 26 / 26 | answers identical: the 150-token answer cap in this bank never reaches the budget, so this row says nothing about the budget |
+
+### 25.3 Approximate routing against exact (KL divergence, 3 x 512 tokens, batch 8 so the executor handles every step, 6 GiB RAM cache)
+| | exact | skip | substitute |
+|---|---|---|---|
+| perplexity | 4.498 | 4.560 (+1.4 %) | 4.597 (+2.2 %) |
+| mean KL divergence to exact | 0 | 0.0253 +- 0.0018 | 0.0355 +- 0.0028 |
+| same top token as exact | 100 % | 93.6 % +- 0.9 | 93.1 % +- 0.9 |
+Code generation (10 small Python tasks run against assertions, `quality.py codegen`, thinking off, same 6 GiB cache): exact 10/10, skip 10/10, substitute 9/10 (`roman_to_int`).
+Together with section 21 (26/26 checkable prompts, +10-12 % speed) this is the first distribution-level number for the approximate modes: roughly one in fifteen
+top-1 tokens changes, and the loss in perplexity is 1-2 %. 3 chunks and 10 tasks are small; the perplexity text is technical English, not code or chat.

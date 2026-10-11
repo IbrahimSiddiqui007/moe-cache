@@ -4,6 +4,16 @@
 - **Fix: long-prompt processing with the GPU expert cache.** The plugin's long-prompt GPU block needs about one layer of free VRAM; with a full-size cache it silently
   stayed on the CPU (prefill 24 tok/s) or aborted the server. The plugin now checks free VRAM and warns once; the tuner leaves room for the block
   (Flash-Next: cache 1800 instead of 2459 MiB at ctx 8192; prefill 24 -> 56 tok/s, decode about -5 %). RESULTS.md section 23.
+- **Saved contexts**: `moe-cache-server --project NAME` (own usage profile plus restore of the saved prompt state at start) and `bin/moe-cache-project save|restore|list`.
+  Restoring a 2.7k-token context took 0.25 s instead of 56 s with identical output (RESULTS.md section 24.2).
+- `bench/coding_session.py --sections N` warms a context in growing prefixes so an edit in the middle reuses everything before the nearest checkpoint
+  (886 tokens processed instead of 5,945; section 24.1). The context builder now respects its token budget (about 2 characters per token).
+- The launcher picks the plugin build that matches the llama-server's ggml API (`build*/` next to each other) and warns on a mismatch; plugin builds carry a
+  readable `moe-cache-api=N` tag.
+- Executor counters by weight type with `MOE_CACHE_STATS=1` (time, ops, expert data per type).
+- `tools/wait_cool.sh` (the clean-run gate as one command); the benchmark tools' default start temperature is now 65 C.
+- `tools/trace_replay.py` (cache policies and next-layer prediction from a `MOE_CACHE_TRACE_IDS` recording); `bench/quality.py codegen` (10 small code tasks run against assertions).
+- RESULTS.md sections 24 (prompt reuse, saved contexts, kernel time by type, cache policy, predictor recall) and 25 (quantisations, thinking, KL divergence of the approximate modes).
 
 ## 0.2.2 (2026-10-11)
 - Opt-in **approximate routing** (`MOE_CACHE_ROUTE=skip|subst`, `MOE_CACHE_ROUTE_KEEP`): low-ranked picks that are not in RAM are dropped or replaced by a resident expert.

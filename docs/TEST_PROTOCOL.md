@@ -6,7 +6,7 @@ that goes into README or RESULTS from now on comes from this protocol (or says e
 ## What is fixed
 | Item | Value |
 |---|---|
-| Machine state | start at or below 58 C, background CPU below 25 % of one core (the tool waits for the CPU to cool and flags the run if not), nothing else heavy running |
+| Machine state | start at or below 65 C, background CPU below 25 % of one core (the tool waits for the CPU to cool and flags the run if not), nothing else heavy running |
 | Threads | pinned to the performance cores on hybrid Intel CPUs (the default) |
 | Context | 8192, flash attention on, KV cache f16 |
 | Workload | 4 fixed prompts, 100 generated tokens each, temperature 0, seed 42 |

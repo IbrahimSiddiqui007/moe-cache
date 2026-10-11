@@ -1,6 +1,6 @@
 #!/bin/bash
 # moe-cache-server: run llama-server with the expert-cache plugin.
-#   moe-cache-server MODEL.gguf [--ram GB] [--vram GB] [--ctx N] [--n-cpu-moe N] [--port P] [--llama-server PATH] [--load-method auto|preload|path] [--open] [--dry-run] [-- extra llama-server args]
+#   moe-cache-server MODEL.gguf [--project NAME] [--ram GB] [--vram GB] [--ctx N] [--n-cpu-moe N] [--port P] [--llama-server PATH] [--load-method auto|preload|path] [--open] [--dry-run] [-- extra llama-server args]
 # --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 # --gpu-cache off|auto|MIB  use llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache: the experts you use most are copied to free VRAM and
 #              computed on the GPU. auto = all VRAM the planner sees free minus --gpu-margin GiB (default 1.0; raise it with a large -ub). Not bit-identical to
@@ -16,13 +16,18 @@
 set -e
 umask 077   # the usage profile is private to this user
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; PNAME=""; GCACHE=off; GMARGIN=1.0; UBARG=auto; EXTRA=()
+MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; PNAME=""; PROJECT=""; GCACHE=off; GMARGIN=1.0; UBARG=auto; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
-  --ram) RAM=$2; shift 2;; --ub) UBARG=$2; shift 2;; --gpu-cache) GCACHE=$2; shift 2;; --gpu-margin) GMARGIN=$2; shift 2;; --profile) PNAME=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
+  --ram) RAM=$2; shift 2;; --ub) UBARG=$2; shift 2;; --gpu-cache) GCACHE=$2; shift 2;; --gpu-margin) GMARGIN=$2; shift 2;; --profile) PNAME=$2; shift 2;; --project) PROJECT=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
   --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --no-ecores) ECORES=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
   -h|--help) sed -n 2,6p "$0"; exit 0;; *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
 [ -f "$MODEL" ] || { echo "usage: moe-cache-server MODEL.gguf [options]  (model file not found: '$MODEL')"; exit 1; }
-LIB="${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}"
+. "$HERE/bin/_moe_cache_env.sh"
+LIB="${MOE_CACHE_LIB:-$(moe_cache_pick_lib "$LS" "$HERE")}"
+_WANT_API="$(moe_cache_ls_api "$LS")"; _HAVE_API="$(moe_cache_lib_api "$LIB")"
+if [ -n "$_WANT_API" ] && [ -n "$_HAVE_API" ] && [ "$_WANT_API" != "$_HAVE_API" ]; then
+  echo "moe-cache: WARNING: $LIB was built for ggml backend API $_HAVE_API but $LS uses API $_WANT_API: the plugin will refuse to load (build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)" >&2
+fi
 [ -f "$LIB" ] || { echo "plugin not built: run ./build.sh first (looked for $LIB)"; exit 1; }
 if [ -z "$NCMOE" ]; then
   P=("${MOE_CACHE_PYTHON:-python3}" "$HERE/planner/plan.py" "$MODEL" --ctx "$CTX" --json); [ -n "$RAM" ] && P+=(--ram-gib "$RAM"); [ -n "$VRAM" ] && P+=(--vram-gib "$VRAM")
@@ -35,6 +40,14 @@ case "$HOSTARG" in ""|127.*|localhost|::1) ;; *)
   printf '%s ' "${EXTRA[@]}" | grep -q -- '--api-key' || echo "WARNING: llama-server will listen on '$HOSTARG' without --api-key: anyone who can reach this machine can use the model and the web UI. Add --api-key KEY after the -- or bind to 127.0.0.1." >&2;;
 esac
 case "$PNAME" in ""|*[!A-Za-z0-9_-]*) [ -z "$PNAME" ] || { echo "--profile NAME may only contain letters, digits, _ and -"; exit 1; };; esac
+# --project NAME: one name for a kind of work: its own usage profile (--profile NAME) and a saved copy of the prompt state (KV cache) that is restored at
+# start, so a big shared context (a code base) does not have to be processed again after a restart. Save it with: bin/moe-cache-project save NAME
+if [ -n "$PROJECT" ]; then
+  case "$PROJECT" in *[!A-Za-z0-9_-]*) echo "--project NAME may only contain letters, digits, _ and -"; exit 1;; esac
+  [ -n "$PNAME" ] || PNAME=$PROJECT
+  SLOTDIR="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/slots/$PROJECT"; mkdir -p "$SLOTDIR"
+  EXTRA+=(--slot-save-path "$SLOTDIR")
+fi
 PROFILE="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/$(basename "$MODEL").${PNAME:+$PNAME.}usage"
 . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" "$METHOD"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL" MOE_CACHE_PROFILE="$PROFILE")
@@ -103,5 +116,8 @@ if [ "$NCMOE" = 0 ]; then echo "moe-cache: all experts fit in your GPU memory; t
 else echo "moe-cache: experts of $NCMOE layers stay on the CPU and are managed by the cache; profile $PROFILE; plugin loaded by $MOE_CACHE_METHOD"; fi
 echo "moe-cache: web UI and API will be at http://localhost:$PORT"
 if [ $DRY = 1 ]; then echo "env ${ENVV[*]} ${CMD[*]}"; exit 0; fi
+if [ -n "$PROJECT" ] && [ -f "$SLOTDIR/$PROJECT.bin" ]; then
+  ( for i in $(seq 900); do [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)" = 200 ] && { curl -s -X POST "http://localhost:$PORT/slots/0?action=restore" -H 'Content-Type: application/json' -d "{\"filename\":\"$PROJECT.bin\"}" > /dev/null && echo "moe-cache: restored the saved prompt state of project $PROJECT" >&2; break; }; sleep 1; done ) &
+fi
 if [ $OPEN = 1 ]; then ( for i in $(seq 600); do [ "$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PORT/health)" = 200 ] && { xdg-open "http://localhost:$PORT" >/dev/null 2>&1 || true; break; }; sleep 1; done ) & fi
 exec env "${ENVV[@]}" "${CMD[@]}"

@@ -176,7 +176,7 @@ def main():
         cfg = {"llama_server": a.llama_server, "plugin_lib": os.path.abspath(a.plugin_lib), "model": p, "modes": ["stock", "plugin"],
                "limits": [int(lim) if lim == int(lim) else lim], "ctx": a.ctx, "n_cpu_moe": "all" if prof == "cpu" else "fit", "pin": True,
                "speed": True, "speed_tokens": a.tokens, "speed_prompts": 4, "long": False, "sweep": "", "custom": "", "both_orders": True,
-               "gate_temp": 58, "gate_wait_s": 900, "bg_max": a.bg_max}
+               "gate_temp": 65, "gate_wait_s": 900, "bg_max": a.bg_max}
         print(f"[{k}/{len(plan)}] {n}  {prof}  {lim:g} GB ...", flush=True)
         try:
             jid = api(base, "/api/run", cfg)["id"]
@@ -209,7 +209,7 @@ def main():
                      f"{('%.1fx' % r['ratio']) if r['ratio'] else '-'} | {r['identity']} | {'yes' if r['clean'] else 'NO'} |")
     head = (f"Hardware: {sysinfo.get('cpu')}, {sysinfo.get('ram_gb')} GB RAM, {'; '.join(sysinfo.get('devices') or [])}. "
             f"Steady generation speed = mean of requests 2 to 4 (100 tokens each), context {a.ctx}, hard memory limit with swap off, "
-            f"start at or below 58 C, stock and moe-cache run in both orders. Rows marked 'Clean: NO' were not clean and should not be quoted.")
+            f"start at or below 65 C, stock and moe-cache run in both orders. Rows marked 'Clean: NO' were not clean and should not be quoted.")
     out = f"results-matrix-{stamp}.md"
     open(out, "w").write(head + "\n\n" + "\n".join(lines) + "\n")
     print("\n" + head + "\n\n" + "\n".join(lines))

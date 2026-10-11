@@ -36,16 +36,20 @@ def build_context(repo, tokens):
             for f in sorted(fn):
                 if f.endswith(exts):
                     files.append(os.path.join(dp, f))
+    budget = tokens * 2.0                 # characters; code is about 2.25 characters per token on the Flash-Next tokenizer (measured)
+    cap = int(min(14000, max(1500, budget / 4)))   # at least four files share the budget
     parts, size = [], 0
     for f in files:
         try:
             t = open(f, encoding="utf-8", errors="replace").read()
         except OSError:
             continue
-        if len(t) > 14000:                # one huge file must not use the whole budget: keep its beginning
-            t = t[:14000] + "\n... (file shortened)\n"
+        if len(t) > cap:                  # one huge file must not use the whole budget: keep its beginning
+            t = t[:cap] + "\n... (file shortened)\n"
         chunk = f"\n=== file: {os.path.relpath(f, repo)} ===\n{t}\n"
-        if size + len(chunk) > tokens * 3.0:      # stay under the budget (3 characters per token is conservative for code)
+        if size + len(chunk) > budget:
+            if budget - size > 500:       # fill the rest of the budget with the beginning of this file
+                parts.append(chunk[:int(budget - size)])
             break
         parts.append(chunk)
         size += len(chunk)
@@ -72,12 +76,19 @@ def main():
     ap.add_argument("--tokens", type=int, default=16000)
     ap.add_argument("--questions", type=int, default=6)
     ap.add_argument("--answer-tokens", type=int, default=64)
+    ap.add_argument("--sections", type=int, default=1, help="warm the context in N growing prefixes first: llama-server keeps one checkpoint per request (at its end minus -ub), so an edit "
+                    "later reuses everything before the nearest checkpoint instead of nothing")
     ap.add_argument("--out", default="")
     a = ap.parse_args()
     parts = build_context(a.repo, a.tokens)
     base = "You are reading a code base. Answer questions about it.\n" + "".join(parts) + "\n\n=== end of files ===\n"
-    print(f"context: {len(parts)} files, {len(base)} characters (about {len(base) // 3.4:.0f} tokens)")
+    print(f"context: {len(parts)} files, {len(base)} characters (about {len(base) / 2.25:.0f} tokens)")
     rows = []
+    head = "You are reading a code base. Answer questions about it.\n"
+    for k in range(1, a.sections):
+        idx = max(1, len(parts) * k // a.sections)
+        r = ask(a.url, a.key, head + "".join(parts[:idx]), 1)
+        print(f"warm-up {k}/{a.sections - 1}: {r['processed']} processed, {r['reused']} reused, {r['wall_s']} s")
     print(f"{'#':>2} {'what':<22} {'processed':>10} {'reused':>8} {'TTFT s':>8} {'tok/s':>7} {'wall s':>8}")
     for i in range(a.questions):
         q = QUESTIONS[i % len(QUESTIONS)]
@@ -94,7 +105,7 @@ def main():
     rows.append(r)
     print(f"{len(rows):>2} {r['what']:<22} {r['processed']:>10} {r['reused']:>8} {r['ttft_s']:>8} {r['decode_tps']:>7} {r['wall_s']:>8}")
     if a.out:
-        json.dump({"context_tokens_est": int(len(base) // 3.4), "requests": rows}, open(a.out, "w"), indent=1)
+        json.dump({"context_tokens_est": int(len(base) / 2.25), "requests": rows}, open(a.out, "w"), indent=1)
 
 
 if __name__ == "__main__":

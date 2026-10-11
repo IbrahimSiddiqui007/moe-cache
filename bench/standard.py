@@ -31,7 +31,7 @@ def main():
             for lim in [float(x) for x in a.limits.split(",")]:
                 cfg = {"llama_server": a.llama_server, "plugin_lib": os.path.abspath(a.plugin_lib), "model": model, "modes": ["stock", "plugin"], "limits": [int(lim) if lim == int(lim) else lim],
                        "ctx": a.ctx, "n_cpu_moe": "all" if prof == "cpu" else "fit", "pin": True, "speed": True, "speed_tokens": a.tokens, "speed_prompts": 4, "long": False,
-                       "sweep": "", "custom": "", "both_orders": True, "gate_temp": 58, "gate_wait_s": 900, "bg_max": a.bg_max}
+                       "sweep": "", "custom": "", "both_orders": True, "gate_temp": 65, "gate_wait_s": 900, "bg_max": a.bg_max}
                 jid = api(base, "/api/run", cfg)["id"]
                 while api(base, f"/api/job/{jid}")["state"] not in ("done", "failed", "cancelled"):
                     time.sleep(5)

@@ -9,7 +9,7 @@ benchmarks are listed too, because people ask for them; they can be run against 
 1. `bin/moe-cache-bench` and open the page (it opens by itself; the page carries the access token, so use the page the tool opened, not a bookmark from an earlier run).
 2. Model: your GGUF. Limit: the memory you want to emulate. For a model that fits in RAM you will see about stock speed (a few percent either way); the gain is when the limit is smaller than the model.
 3. Paste your own prompts if the default four are not like your work (blocks separated by `---`, optional `EXPECT: word` lines).
-4. Start. The tool waits for the CPU to cool to 58 C and for background load to fall under its limit before each run, and flags a run that could not be clean. Repeat flagged runs.
+4. Start. The tool waits for the CPU to cool to 65 C and for background load to fall under its limit before each run, and flags a run that could not be clean. Repeat flagged runs.
 5. Open the report: speed per memory limit, first-token latency, SSD read per token, cache hit rate by layer. Identity must say PASS; if it says FAIL, do not trust the speed and please open an issue with the model name.
 6. Share the HTML report or the CSV: both are free of prompts, outputs and local paths.
 

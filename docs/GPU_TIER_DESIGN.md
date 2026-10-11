@@ -47,3 +47,16 @@ Both estimates are arithmetic, not measurements.
 
 Main risks: the router weighting and the expert sum live in llama.cpp's graph after the matrix products, so a partial sum has to be reproduced exactly for identity;
 CUDA stream ownership next to llama.cpp's own streams; VRAM sharing with `--n-cpu-moe` layers and the KV cache.
+
+## Update 2026-10-12: measured inputs for step 2 (prefetch) and the order of work
+
+- **Predictor recall on Flash-Next** (plugin lookahead, router weights of the next layer, 12 prompts x 64 tokens): 68.1 % of the next layer's picks predicted
+  (241,479 of 354,760), 67 % of the prefetched experts were used (25,809 of 38,667), 8,006 arrived late. Cheap predictors from past picks alone reach 36-57 % with
+  about 28 % precision (RESULTS.md section 24.4). So a prefetch with the router-based predictor is in the range that makes the estimate (+25-45 %) plausible; the
+  cheap ones would double the upload traffic for a gain that is not there.
+- **Cache policy is not a lever**: LRU, 2Q and pinned+LRU are within 0.5 points (RESULTS.md section 24.4), so the tier can use plain LRU.
+- **VRAM is the constraint that came out of the prefill work** (RESULTS.md section 23): the long-prompt GPU block needs about one layer (923 MiB) free next to any GPU
+  expert cache. A plugin-owned bank must reserve that too, or give the memory back during prompt processing.
+- **Not started**: step 1 (bank + upload on miss) is only a baseline equal to llama.cpp's cache; the gain starts at step 2, which needs the router-based predictor
+  to run before llama.cpp's callback and a separate copy stream. That is days of work and a new exact-identity argument for the partial sum, so it was left as the
+  next large item rather than started inside a short window.

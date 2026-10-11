@@ -353,6 +353,61 @@ def cmd_soak(a):
     return 1 if bad else 0
 
 
+CODEGEN = [
+    ("fizzbuzz", "Write a Python function fizzbuzz(n) that returns a list of strings for 1..n: 'Fizz' for multiples of 3, 'Buzz' for 5, 'FizzBuzz' for both, else the number as a string.",
+     "assert fizzbuzz(5) == ['1','2','Fizz','4','Buzz']\nassert fizzbuzz(15)[-1] == 'FizzBuzz'\nassert fizzbuzz(0) == []"),
+    ("is_palindrome", "Write a Python function is_palindrome(s) that returns True if s reads the same forwards and backwards, ignoring case and non-alphanumeric characters.",
+     "assert is_palindrome('A man, a plan, a canal: Panama') is True\nassert is_palindrome('hello') is False\nassert is_palindrome('') is True"),
+    ("merge_intervals", "Write a Python function merge_intervals(iv) that takes a list of [start, end] lists and returns the merged, sorted list of non-overlapping [start, end] lists.",
+     "assert merge_intervals([[1,3],[2,6],[8,10],[15,18]]) == [[1,6],[8,10],[15,18]]\nassert merge_intervals([[1,4],[4,5]]) == [[1,5]]\nassert merge_intervals([]) == []"),
+    ("fib", "Write a Python function fib(n) returning the n-th Fibonacci number with fib(0)=0 and fib(1)=1, computed iteratively.",
+     "assert fib(0) == 0\nassert fib(1) == 1\nassert fib(10) == 55\nassert fib(50) == 12586269025"),
+    ("flatten", "Write a Python function flatten(x) that flattens an arbitrarily nested list of integers into a single flat list, preserving order.",
+     "assert flatten([1,[2,[3,4]],5]) == [1,2,3,4,5]\nassert flatten([]) == []\nassert flatten([[[]]]) == []"),
+    ("word_count", "Write a Python function word_count(text) that returns a dict mapping each lowercase word to how often it occurs; words are separated by whitespace and stripped of the characters .,!?",
+     "assert word_count('The cat. the DOG, the end!') == {'the': 3, 'cat': 1, 'dog': 1, 'end': 1}\nassert word_count('') == {}"),
+    ("rotate", "Write a Python function rotate(lst, k) that returns a new list rotated to the right by k positions (k may be larger than len(lst) or zero; empty list allowed).",
+     "assert rotate([1,2,3,4,5], 2) == [4,5,1,2,3]\nassert rotate([1,2,3], 7) == [3,1,2]\nassert rotate([], 3) == []\nassert rotate([1,2], 0) == [1,2]"),
+    ("is_prime", "Write a Python function is_prime(n) that returns True if the integer n is prime, False otherwise (n < 2 is not prime).",
+     "assert [x for x in range(20) if is_prime(x)] == [2,3,5,7,11,13,17,19]\nassert is_prime(7919) is True\nassert is_prime(7917) is False"),
+    ("roman_to_int", "Write a Python function roman_to_int(s) that converts a Roman numeral string (I V X L C D M, with subtractive pairs) to an integer.",
+     "assert roman_to_int('III') == 3\nassert roman_to_int('IV') == 4\nassert roman_to_int('MCMXCIV') == 1994\nassert roman_to_int('LVIII') == 58"),
+    ("balanced", "Write a Python function balanced(s) that returns True if the brackets ()[]{} in the string s are correctly nested and closed, ignoring all other characters.",
+     "assert balanced('([]{})') is True\nassert balanced('(]') is False\nassert balanced('((') is False\nassert balanced('a(b)c') is True\nassert balanced('') is True"),
+]
+
+
+def extract_code(text):
+    m = re.findall(r"```(?:python)?\s*\n(.*?)```", text, re.S)
+    return max(m, key=len) if m else ("" if "def " not in text else text[text.index("def "):])
+
+
+def run_code(code, tests, timeout=10):
+    import subprocess, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            r = subprocess.run([sys.executable, "-I", "-c", code + "\n\n" + tests], cwd=d, env={}, capture_output=True, text=True, timeout=timeout)
+            return r.returncode == 0, (r.stderr or "")[-200:]
+        except subprocess.TimeoutExpired:
+            return False, "timeout"
+
+
+def cmd_codegen(a):
+    """10 small Python tasks; the generated function is run against assertions. Prints pass count; --out saves the details."""
+    rows = []
+    for name, q, tests in CODEGEN:
+        r = ask(a.url, a.key, q + " Reply with one Python code block and nothing else.", a.tokens)
+        code = extract_code(r["text"])
+        ok, err = run_code(code, tests) if code else (False, "no code in the answer")
+        rows.append({"task": name, "pass": ok, "error": err, "chars": len(r["text"])})
+        print(f"{name:<16} {'PASS' if ok else 'FAIL'}  {err[:80].strip()}")
+    n = sum(r["pass"] for r in rows)
+    print(f"codegen: {n}/{len(rows)} pass")
+    if a.out:
+        json.dump({"pass": n, "total": len(rows), "rows": rows}, open(a.out, "w"), indent=1)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -369,11 +424,13 @@ def main():
     k.add_argument("--url", required=True); k.add_argument("--key", default=os.environ.get("KEY", "")); k.add_argument("--out", required=True); k.add_argument("--tokens", type=int, default=200)
     f = sub.add_parser("compare-files")
     f.add_argument("--ref", required=True); f.add_argument("--cand", required=True); f.add_argument("--judge-url", default=""); f.add_argument("--judge-key", default="")
+    g = sub.add_parser("codegen")
+    g.add_argument("--url", required=True); g.add_argument("--key", default=os.environ.get("KEY", "")); g.add_argument("--tokens", type=int, default=1200); g.add_argument("--out", default="")
     s = sub.add_parser("soak")
     s.add_argument("--url", required=True); s.add_argument("--key", default=os.environ.get("KEY", ""))
     s.add_argument("--minutes", type=float, default=30); s.add_argument("--probe-every", type=float, default=5); s.add_argument("--out", default="")
     a = ap.parse_args()
-    sys.exit({"compare": cmd_compare, "longctx": cmd_longctx, "soak": cmd_soak, "collect": cmd_collect, "judge-calibrate": cmd_judge_calibrate, "compare-files": cmd_compare_files}[a.cmd](a))
+    sys.exit({"compare": cmd_compare, "longctx": cmd_longctx, "soak": cmd_soak, "collect": cmd_collect, "judge-calibrate": cmd_judge_calibrate, "compare-files": cmd_compare_files, "codegen": cmd_codegen}[a.cmd](a))
 
 
 if __name__ == "__main__":
