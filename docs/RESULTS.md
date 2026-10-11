@@ -541,3 +541,26 @@ to check whether a server is a usable judge (9 of 10 known pairs). The result to
 
 Conclusion: a 10-12 % speed-up on an SSD-bound setting for no measured loss on 26 factual / arithmetic / format prompts; open-ended answers change wording. Not enabled by default.
 Untested: models with a lower cache hit rate, long outputs, code generation beyond the 3 code prompts.
+
+## 22. Coding-session benchmark: prompt reuse on a 20k-token context (2026-10-11, Flash-Next IQ2_XS)
+
+What it is: `bench/coding_session.py` puts the first four files of this repository (44,989 characters = **19,949 tokens**) in front of every request, asks five
+different questions, then edits the middle of the context and asks once more. All requests use `cache_prompt=true` and the same slot.
+Setting: `moe-cache-server --ctx 20000 --gpu-cache auto` (tuner: `-ub 1024`, llama.cpp GPU cache 2459 MiB, `--n-cpu-moe 999`, `--cache-ram 2048`), 24 GB limit, swap 0,
+KV f16, plugin warm-started from a learned profile, executor with 4 E-cores. llama.cpp 23b0202a1, plugin build with API 3.
+**Not a clean-gate measurement**: no temperature gate (package 74 C at the end), one run, so read the ratios, not the absolute numbers.
+
+| # | Request | Tokens processed | Tokens reused | Time to first token (s) | Decode tok/s | Wall (s) |
+|---|---|---|---|---|---|---|
+| 1 | first, cold | 19,949 | 0 | 785.0 | 9.2 | 791.8 |
+| 2-5 | same context, new question | 1,018-1,026 | 18,921 | 41.6-43.4 | 7.3-9.2 | 48.4-51.5 |
+| 6 | after an edit in the middle | **19,964** | **0** | 805.3 | 9.5 | 812.0 |
+
+Findings:
+- Reuse works for an unchanged prefix: a follow-up question costs about 50 s instead of 790 s.
+- About 1,020 tokens are re-processed on every follow-up, not only the new question (it is probably the checkpoint granularity of the hybrid model; not verified).
+- **An edit anywhere inside the context invalidated all of it** (0 tokens reused, 805 s): this model keeps recurrent state that cannot be cut back to an arbitrary position.
+  For editing workflows the context should be ordered so that the changing part comes last.
+- Prefill ran at 24-25 tok/s, about 4x below the plugin-only 82-140 tok/s of section 20. A suspected cause is GPU-cache mode (large batches use llama.cpp's copy path); this
+  needs a gated A/B (same prompt, `--gpu-cache` on and off) before it is stated as a result.
+- `bench/coding_session.py` printed "about 13,232 tokens" for the context: its estimate (3.4 characters per token) is off by 1.5x for this tokenizer on code (2.25 characters per token measured).
