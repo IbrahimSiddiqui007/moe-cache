@@ -64,36 +64,29 @@ PYEOF
 )
   [ -n "$MASK" ] && PINARGS=(-C "$MASK" --cpu-strict 1) && echo "moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C $MASK); --no-pin to disable"
 fi
-# micro-batch size: measured GPU compute buffers (Qwen3.8-Flash-Next, q8_0 KV; MiB) by context and -ub, rounded up between measured contexts
+# micro-batch size and GPU cache size: one shared tuner (bench/gguf_plan.py: tune) so the launcher and the benchmark tool decide the same way
+TUNE_JSON=""
+if [ "$UBARG" = auto ] || [ "$GCACHE" = auto ]; then
+  TUNE_JSON=$("${MOE_CACHE_PYTHON:-python3}" - "$MODEL" "$CTX" "$GCACHE" "$VRAM" "$HERE" <<'PY' 2>/dev/null || true
+import json, sys
+sys.path.insert(0, sys.argv[5] + "/bench")
+from gguf_plan import tune
+free = float(sys.argv[4]) * 1e9 if sys.argv[4] else None
+print(json.dumps(tune(sys.argv[1], int(sys.argv[2]), free=free, want_cache=sys.argv[3] != "off")))
+PY
+)
+fi
 if [ "$UBARG" = auto ]; then
   if printf '%s\n' "${EXTRA[@]}" | grep -q -- '^-ub$\|--ubatch-size'; then UBARG=""; else
-    P=("${MOE_CACHE_PYTHON:-python3}" "$HERE/planner/plan.py" "$MODEL" --ctx "$CTX" --json); [ -n "$RAM" ] && P+=(--ram-gib "$RAM"); [ -n "$VRAM" ] && P+=(--vram-gib "$VRAM")
-    UBARG=$("${P[@]}" 2>/dev/null | python3 -c '
-import sys, json
-d = json.load(sys.stdin); ctx = int(sys.argv[1]); cache = sys.argv[2] != "off"
-TAB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: 99999}, 131072: {512: 960, 1024: 1700, 2048: 3150}}
-key = next((k for k in sorted(TAB) if ctx <= k), None)
-if key is None:
-    print(512); sys.exit()
-layer_gib = d["experts"] * d["expert_MB"] * 1e6 / 2**30
-base = d["predicted_vram_GiB"] - d["gpu_expert_layers"] * layer_gib            # fixed part of the planner estimate (includes about 0.55 GB of buffers)
-slack_mib = (d["free_vram_GiB"] - base) * 1024 + 550 - 400                      # room for the compute buffer after a 400 MiB reserve
-cap = 1024 if cache else 2048
-print(max([u for u in (512, 1024, 2048) if u <= cap and TAB[key][u] <= slack_mib] or [512]))
-' "$CTX" "$GCACHE" 2>/dev/null || true)
+    UBARG=$(printf '%s' "$TUNE_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["ub"])' 2>/dev/null || true)
   fi
 fi
 case "$UBARG" in ""|auto) ;; *[!0-9]*) echo "moe-cache: --ub must be auto or a number"; UBARG="";; *) EXTRA+=(-ub "$UBARG" -b 2048); echo "moe-cache: micro-batch -ub $UBARG (prompt processing; --ub N to change)";; esac
 if [ "$GCACHE" != off ] && [ "$NCMOE" != 0 ]; then
   GCMIB="$GCACHE"
   if [ "$GCACHE" = auto ]; then
-    P=("${MOE_CACHE_PYTHON:-python3}" "$HERE/planner/plan.py" "$MODEL" --ctx "$CTX" --json); [ -n "$RAM" ] && P+=(--ram-gib "$RAM"); [ -n "$VRAM" ] && P+=(--vram-gib "$VRAM")
-    GCMIB=$("${P[@]}" 2>/dev/null | python3 -c '
-import sys, json
-d = json.load(sys.stdin)
-layer_gib = d["experts"] * d["expert_MB"] * 1e6 / 2**30
-base = d["predicted_vram_GiB"] - d["gpu_expert_layers"] * layer_gib      # everything except the experts the planner put on the GPU
-print(int(max((d["free_vram_GiB"] - base - float(sys.argv[1])) * 1024, 0)))' "$GMARGIN" 2>/dev/null || true)
+    GCMIB=$(printf '%s' "$TUNE_JSON" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d["gpu_cache_mib"] if d["gpu_cache_mib"] else "")' 2>/dev/null || true)
+    [ -n "$TUNE_JSON" ] && printf '%s' "$TUNE_JSON" | python3 -c 'import sys,json; [print("moe-cache: tuner: " + w) for w in json.load(sys.stdin)["why"]]' 2>/dev/null
   fi
   case "$GCMIB" in ""|*[!0-9]*) echo "moe-cache: --gpu-cache: could not work out a size (planner unavailable?), using the planner's static GPU layers"; GCMIB="";; esac
   if [ -n "$GCMIB" ] && [ "$GCMIB" -lt 512 ]; then echo "moe-cache: --gpu-cache: only $GCMIB MiB of VRAM would be left, using the planner's static GPU layers"; GCMIB=""; fi

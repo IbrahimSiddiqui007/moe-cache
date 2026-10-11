@@ -114,8 +114,64 @@ def gpu_cache_mib(path, ctx=8192, reserve_gb=1.3, free=None):
     return int(room // (1024 * 1024)) if room > 0.5e9 else 0
 
 
+# Measured GPU compute buffers (MiB) of Qwen3.8-Flash-Next with a q8_0 KV cache, by context (rounded up between points) and micro-batch size.
+# Other architectures differ somewhat; the numbers are the best available and the reserve below covers the usual spread.
+_COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: None}, 131072: {512: 960, 1024: 1700, 2048: 3150}}
+_PROMPT_GAIN = {512: 1.0, 1024: 1.26, 2048: 1.58}      # measured prefill speed-up of a bigger micro-batch (6k-token prompt)
+
+
+def compute_buffer_mib(ctx, ub):
+    key = next((k for k in sorted(_COMPUTE_MIB) if ctx <= k), None)
+    return _COMPUTE_MIB[key].get(ub) if key else None
+
+
+def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5):
+    """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left.
+
+    Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use and a list of reasons. Rules come from measurements
+    (docs/PERFORMANCE_ANALYSIS.md): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
+    compute buffer that grows with the context; the disk lookup table never counts as GPU weight.
+    """
+    lay = model_layout(path)
+    free = free if free is not None else free_vram_bytes()
+    why = []
+    if not lay["n_layers"] or free is None:
+        return {"n_cpu_moe": 999, "ub": 512, "gpu_cache_mib": 0, "why": ["no GPU memory information: all experts stay on the CPU, default micro-batch"]}
+    kv = ctx * 40e3 * (0.53 if kv_q8 else 1.0)
+    fixed = lay["other_bytes"] + kv
+    best = None
+    for ub in (2048, 1024, 512):
+        buf = compute_buffer_mib(ctx, ub)
+        if buf is None:
+            continue
+        room = free - fixed - buf * 1048576 - reserve_gb * 1e9
+        if room > 0 or ub == 512:
+            best = (ub, room)
+            break
+    ub, room = best if best else (512, free - fixed - 0.55e9 - reserve_gb * 1e9)
+    if want_cache and ub > 1024 and room > 0:
+        ub = 1024
+        buf = compute_buffer_mib(ctx, 1024) or 0
+        room = free - fixed - buf * 1048576 - reserve_gb * 1e9
+        why.append("GPU cache requested: micro-batch limited to 1024 (the cache gains more than a bigger batch)")
+    cache_mib = int(room // 1048576) if room > 0 else 0
+    expert_total = lay["expert_bytes_per_layer"] * lay["n_layers"]
+    if want_cache and cache_mib >= 1536 and cache_mib * 1048576 >= 0.04 * expert_total:
+        n_cpu_moe = 999
+        why.append(f"GPU expert cache of {cache_mib} MiB ({100 * cache_mib * 1048576 / expert_total:.0f} % of the experts)")
+    else:
+        cache_mib = 0
+        gpu_layers = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0
+        n_cpu_moe = lay["n_layers"] - gpu_layers
+        why.append(f"{gpu_layers} layers of experts stay on the GPU (a cache would be under 1.5 GiB or under 4 % of the experts)")
+    why.append(f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
+    return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576), "compute_mib": compute_buffer_mib(ctx, ub), "why": why}
+
+
 if __name__ == "__main__":
     import sys
     for p in sys.argv[1:]:
         n, lay, free = fit_n_cpu_moe(p)
+        t = tune(p)
+        print("  tuned:", {k: v for k, v in t.items() if k != "why"}, "; ".join(t["why"]))
         print(f"{os.path.basename(p)[:44]:<44} layers {lay['n_layers']:>3}  experts/layer {lay['expert_bytes_per_layer']/1e9:5.2f} GB  other {lay['other_bytes']/1e9:5.2f} GB  free VRAM {free/1e9 if free else 0:4.1f} GB -> --n-cpu-moe {n} ({lay['n_layers']-n} layers on GPU)")
