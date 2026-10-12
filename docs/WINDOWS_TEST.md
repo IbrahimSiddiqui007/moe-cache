@@ -1,0 +1,27 @@
+# Trying moe-cache on Windows (untested port: this is a test, not a supported install)
+
+State: the plugin has a Windows layer (`src/platform.h`) that cross-compiles with mingw-w64 and passes its platform tests under Wine. It has **never run on real
+Windows with llama.cpp**: no identity test, no speed numbers, no Windows launcher. Everything below is how to find out. If you only need to run models on Windows, use
+a stock llama.cpp release; the plugin only adds a RAM cache for models bigger than RAM.
+
+## What to run
+1. `tools/windows_test.ps1` (PowerShell). It starts an official `llama-server.exe` twice on the same GGUF (stock, then with the plugin DLL through `GGML_BACKEND_PATH`),
+   sends 4 prompts at temperature 0 and prints PASS / FAIL, decode speed, and the plugin's `moe-cache:` log lines.
+2. Use a model that **fits in RAM** for the first test (an 18 GB Qwen3-Coder 30B-A3B Q4_K_M on a 31 GB machine). Windows has no memory-limit scope in this script:
+   a model larger than RAM can freeze the machine.
+
+## How to install
+On Linux, before rebooting (the Windows disk is NTFS, the Linux disk is btrfs: Windows cannot read your Linux files):
+- Cross-compile (done already for the kit): `GGML_API=3 ./build.sh --windows` and `./build.sh --windows` (API 2); output `build/win/ggml-moe-cache.dll`.
+- Mount the Windows partition and copy the kit and one model to it (`lsblk -f` shows which partition is NTFS; if it says the volume is hibernated, boot Windows once
+  and shut down with "Shift + Shutdown" or disable Fast Startup).
+- In Windows: download an official llama.cpp release zip from https://github.com/ggml-org/llama.cpp/releases (the `win-cuda` build for an NVIDIA GPU, plus its
+  `cudart` zip) and unpack it. Pick the plugin DLL by API: **api3** for llama.cpp 23b0202a1 or newer ggml 0.26.x, **api2** for ggml 0.25.x. A newer llama.cpp may
+  have a newer backend API; the plugin then prints a clear message and the model loads normally without it.
+
+## How to run
+```
+powershell -ExecutionPolicy Bypass -File windows_test.ps1 -LlamaDir C:\llama -Model D:\moe-cache-kit\qwen3-coder-30b-q4km.gguf -Dll D:\moe-cache-kit\ggml-moe-cache-api3.dll
+```
+Send back: the printed result, `%TEMP%\moe-cache-test\plugin.err.txt`, and the llama.cpp release name. Failure modes to expect and report: the DLL fails to load
+(missing ggml symbol), the plugin refuses on API mismatch (message names both), the plugin loads but the identical-prompt count is below 4/4 (a bug).

@@ -28,7 +28,7 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
 - The operating-system code is in `src/platform.h` (Linux: `O_DIRECT`, `madvise`, `mmap`, cgroups; Windows: `FILE_FLAG_NO_BUFFERING` overlapped reads, `VirtualAlloc` reserve/commit/decommit, job-object and free-memory limits).
 - `./build.sh --windows` cross-compiles `ggml-moe-cache.dll` with mingw-w64 (load it with `GGML_BACKEND_PATH`; official Windows llama.cpp builds load their backends as DLLs).
 - `tests/platform_test.cpp` passes natively on Linux and, compiled for Windows, under Wine (reserve/commit/decommit, unbuffered reads at the end of a file, limits, file replacement).
-- **Never run on real Windows with llama.cpp**: no token-identity test, no speed numbers, and the launcher scripts are still bash. Treat it as a code port waiting for a tester.
+- **Never run on real Windows with llama.cpp**: no token-identity test, no speed numbers, and the launcher scripts are still bash. Treat it as a code port waiting for a tester; `docs/WINDOWS_TEST.md` and `tools/windows_test.ps1` are the test.
 
 ## Model architectures
 
