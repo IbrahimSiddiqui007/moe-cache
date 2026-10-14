@@ -60,3 +60,18 @@ CUDA stream ownership next to llama.cpp's own streams; VRAM sharing with `--n-cp
 - **Not started**: step 1 (bank + upload on miss) is only a baseline equal to llama.cpp's cache; the gain starts at step 2, which needs the router-based predictor
   to run before llama.cpp's callback and a separate copy stream. That is days of work and a new exact-identity argument for the partial sum, so it was left as the
   next large item rather than started inside a short window.
+
+## Update 2026-10-14: measured inputs for step 3 (hybrid hit/miss) on Flash-Next, 8 GB card
+
+`moe-cache-server --gpu-cache auto` (tuner: 1956 MiB), 24 GB limit, 8 requests x 48 tokens; llama.cpp's own counters (`-v`) and the plugin's executor counters.
+
+| Per decode token | Value |
+|---|---|
+| Time | about 79 ms (12.6 tok/s) |
+| GPU cache, decode batches (<= 8 tokens) | 104,110 hits, 98,203 misses: 51.5 % hit rate, about 4.9 of 10 picks per layer miss |
+| Uploaded | 135 GB over the run, about 320 MiB per token, about 33 ms at 9-11 GB/s |
+| CPU time per expert (executor, all experts on the CPU, 6 P-cores) | about 0.126 ms (57 ms for 450 experts per token) |
+
+Estimate for hybrid hit/miss (GPU computes the cached experts, the CPU computes the misses from RAM at the same time, nothing uploaded): GPU work without uploads
+about 46 ms per token, CPU share about 28 ms (4.9 misses x 48 layers x 0.126 ms) in parallel, so about 45-50 ms per token (about 20 tok/s, +55 %) before the cost of
+handing activations and partial sums between CPU and GPU at every layer; +25-40 % is the realistic target. Arithmetic, not a measurement.
