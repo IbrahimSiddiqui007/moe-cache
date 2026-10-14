@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.2.3.2%20beta-orange">
+<img alt="status" src="https://img.shields.io/badge/status-v0.2.3.3%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-23b0202a1%20(ggml%200.26.0)%20and%207fe450e19%20(0.25.1)-green">
@@ -179,6 +179,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 | `MOE_CACHE_FAST_KERNELS=0` | use llama.cpp's own Q2_0 kernel instead of the plugin's |
 | `MOE_CACHE_ROUTE=skip` (`moe-cache-server --fast`) | opt-in approximate routing: skip a low-ranked expert that is not in RAM. About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012; RESULTS section 31). Off by default |
 | `MOE_CACHE_HYBRID=MiB\|auto` (`moe-cache-server --hybrid`) | opt-in, experimental: a bank of the most used experts (from the usage profile) in free GPU memory computes those picks while the CPU computes the rest. Flash-Next on 8 GB: 13.1 -> 17.4 tok/s; KL 0.0043 vs exact (about 1 top token in 60 differs). Needs a usage profile (the first session has none). The bank adapts to the session (`MOE_CACHE_HYBRID_ADAPT=N,K`, default 8,16; 0 = keep the profile choice). For models whose experts are slow on the CPU (IQ / Q2_0 quants); with Q4_K-class models such as Qwen3.6 it is slower than `--gpu-cache` (8.7 vs 15.7 tok/s at 12 GB). Off by default |
+| `MOE_CACHE_COALESCE_MIB=N` | merge neighbouring expert reads of a long prompt into reads of up to N MiB (default 16; 0 = off). Flash-Next prefill +14-24 % |
 | `MOE_CACHE_HOST_RESERVE_MIB` | memory kept free for llama-server's prompt cache (`--cache-ram`); the launcher sets it |
 | `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
 

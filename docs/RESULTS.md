@@ -936,9 +936,41 @@ Each model: `tests/identity.sh` with a forced-eviction cache, the same with the 
 | Ling-mini-2.0 (bailingmoe2) | 4/4 | 4/4, 0 of 5,313 | KL 0 |
 | DeepSeek-V2-Lite 16B (deepseek2) | 4/4 | 4/4, 0 of 7,266 | KL 0 |
 | gpt-oss-20b MXFP4 (gpt-oss) | **0/4** -> **4/4 with the fix** | 4/4, 0 of 7,053 | KL 0 |
+| Qwen3-Next-80B-A3B Q4_K_M (qwen3next, 46 GB at 24 GB) | 4/4 (8 GiB cache) | 4/4, 0 of 14,100 | not run (stock would take hours at this limit) |
+| Hunyuan-A13B Q4_K_M (hunyuan-moe, 46 GB at 24 GB) | 4/4 (8 GiB cache) | 4/4, 0 of 8,940 | not run |
 
 **Second race (in releases v0.2.0-v0.2.3.2):** gpt-oss hands the gate, up and down products to the plugin in separate calls (bias operations in between).
 When the gate's experts are loaded in an executor graph, the up and down experts are read along with them in the background. For the next call those experts
 are "resident, still loading", so no read is queued, the executor steps aside (everything looks resident) and llama.cpp computed with experts that were
 still being filled. The output differed from stock at the first token of every prompt at a 1 GiB cache. With the executor forced on it never stepped aside,
 which is why the byte-checked run passed. Fix: before stepping aside, wait for the graph's experts. Models whose gate and up come in one call are not affected.
+
+## 37. OLMoE-1B-7B Q4_0 at a 3 GB limit: repacking (T23; 2026-10-15, clean-run gate, 8 x 48 tokens, all experts on the CPU side)
+
+| Run | Decode tok/s, mean of requests 4-8 | Cache | Hit rate |
+|---|---|---|---|
+| stock llama.cpp | 4.86 | - | - |
+| plugin, CPU repacking on (default) | **9.97** | 1.65 GiB | 73.3 % |
+| plugin, `--no-repack` | 8.77 | 1.25 GiB | 61.8 % |
+
+The older observation (repacking slower in a 3 GB OLMoE run) does not reproduce. The plugin repacked no experts in either run; the difference is the cache size the
+automatic sizing reaches.
+
+## 38. Prompt reads merged (T38; Flash-Next IQ2_XS, 8 GB card, 24 GB limit, ctx 8192, launcher default `--gpu-cache off`; 2026-10-15)
+
+Why the reads ran at about 2.5 GB/s: in a long prompt every missing expert tensor was its own read of about 0.46 MB, into freshly evicted pages; section 16 had
+measured 2.6 GB/s for 0.48 MB reads at 4 threads and the drive's ceiling (3.6 GB/s) only for reads of 2 MB and more. Neighbouring experts of a tensor are neighbours
+in the file and in memory, so the synchronous reads of a prompt are now merged into reads of up to 16 MiB (`MOE_CACHE_COALESCE_MIB`, default 16, 0 = off).
+Clean-run gate, one run per row, same prompts as section 32.
+
+| Run | Prefill tok/s (2.4k / 1.9k / 5.0k / 5.4k) | Waiting for reads | Read speed |
+|---|---|---|---|
+| merging off | 80.7 / 83.7 / 75.2 / 81.0 | 98 s for 245 GB | 2.5 GB/s |
+| **16 MiB** | **91.9 / 102.7 / 93.0 / 100.2** | 72 s for 244 GB | 3.4 GB/s |
+| 64 MiB | 85.5 / 89.9 / 82.2 / 86.6 | 75 s | 3.3 GB/s (fewer, larger jobs for the 6 readers) |
+| 16 MiB + pre-faulting the pages (`MOE_CACHE_PREFAULT=1`) | 82.1 / 90.2 / 80.6 / 86.4 | 72 s | no further gain |
+| **16 MiB as the new default** (launcher defaults only) | **90.5 / 99.2 / 90.2 / 98.2** | 73 s | 3.3 GB/s |
+
+Identity with merging active (DeepSeek-V2-Lite, 1 GiB cache, direct reads forced): long prompts 2/2 (25,486 reads merged), short prompts 4/4 (8,276 merged).
+Over the session the default prefill on Flash-Next went from 18 tok/s (section 32) to about 95 tok/s. The reads are now near the drive's limit; the next levers are
+the uploads (319 GB at about 6 GB/s, pinned memory) and fewer uploads per token (larger prompt chunks on bigger cards, BIGGER_MACHINES B13).

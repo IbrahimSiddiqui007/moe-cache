@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.2.3.3 (2026-10-15)
 - **Exactness fix (race, in releases v0.2.0-v0.2.3.2):** when gate, up and down come in separate calls (gpt-oss), the experts read in the background
   for the next call could be used by llama.cpp's own path before they were complete (the executor stepped aside because they looked resident).
   gpt-oss-20b at a 1 GiB cache: 0/4 -> 4/4 identical. RESULTS section 36 (also: 7 more models identical on llama.cpp 23b0202a1).
 - `MOE_CACHE_GPU_MIN_TOKENS=1` gave one repeated token (single-token batches on the GPU; Granite 3.1, T25); 1 is now treated as 2 with a warning.
-- `MOE_CACHE_COALESCE_MIB=N` (experimental, off): neighbouring expert reads of a long prompt merged into reads of up to N MiB.
+- **Prompt reads merged** (`MOE_CACHE_COALESCE_MIB`, default 16, 0 = off): neighbouring expert reads of a long prompt become one read of up to 16 MiB.
+  Flash-Next prompts read at 3.4 instead of 2.5 GB/s; prefill with the default launcher 74-81 -> 90-103 tok/s (RESULTS section 38).
 - **Prompt speed fix for the default launcher** (`--gpu-cache off`): static expert layers and `-ub` now come from one tuner decision that keeps room for the
   long-prompt GPU block at the chosen micro-batch (1.6x a layer at `-ub 2048`). Flash-Next on 8 GB: prefill 18 -> 64-76 tok/s (RESULTS section 35).
 - Launcher: `-b` follows a `-ub` above 2048 (it was fixed at 2048, which capped `--ub 4096`).

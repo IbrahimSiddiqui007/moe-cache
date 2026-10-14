@@ -490,7 +490,8 @@ struct state_t {
     std::atomic<uint64_t> sibling_loads{0};
     bool   lookahead = false;
     bool   prompt_prefetch = false;
-    size_t coalesce_bytes = 0;                          // MOE_CACHE_COALESCE_MIB=N: neighbouring expert reads merged up to N MiB (synchronous reads)
+    size_t coalesce_bytes = (size_t) 16 << 20;          // MOE_CACHE_COALESCE_MIB=N (default 16, 0 = off): neighbouring expert reads merged up to N MiB
+                                                        // (synchronous reads; Flash-Next prompts: 2.5 -> 3.4 GB/s, prefill +14-24 %)
     std::atomic<uint64_t> coalesced{0};                     // MOE_CACHE_PROMPT_PREFETCH=1: during long prompts read layer N+1's experts while layer N runs
     int    la_guess = 0;                                // experts looked at per layer (0 = the number used per token)
     int    la_cap = 2;                                  // at most this many experts not yet in RAM are prefetched per layer
@@ -575,7 +576,7 @@ struct state_t {
 
     state_t() {
         stats = getenv("MOE_CACHE_STATS") != nullptr;
-        fprintf(stderr, "moe-cache: plugin v0.2.3.2 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
+        fprintf(stderr, "moe-cache: plugin v0.2.3.3 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
         if (strcmp(ggml_version(), MOE_CACHE_TESTED_GGML) != 0) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only; if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML);
         }
