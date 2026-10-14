@@ -1,6 +1,6 @@
 # Token-identity gate on a GitHub runner (no GPU, no big model): builds llama.cpp CPU-only at each supported pin, builds the plugin for that pin,
 # downloads a small MoE (Granite 3.1 1B-A400M Q4_K_M, sha256-checked) and checks that stock and plugin produce identical tokens
-# with the cache forced to evict (0.2 GiB) and with the executor forced on and byte-checked.
+# with the cache forced to evict (0.2 GiB) and with the executor forced on and byte-checked (repacking off, or the executor steps aside).
 #   Actions tab -> identity -> Run workflow   (also runs weekly, Monday 05:00 UTC)
 name: identity
 
@@ -63,6 +63,7 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
+          IDENT_EXTRA: "--no-repack"      # CPU weight repacking would make the executor step aside (repacked weights); both servers get the flag
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
 
