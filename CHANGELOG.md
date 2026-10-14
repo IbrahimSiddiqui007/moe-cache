@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3.2 (2026-10-14)
 - `moe-cache-server --fast`: opt-in approximate routing (`MOE_CACHE_ROUTE=skip`), about +10-12 % when the model is much bigger than RAM, output no longer identical
   to stock. The default stays exact; the launcher suggests `--fast` when the model is more than twice the memory it may use.
 - The launcher tells the plugin how much memory llama-server's prompt cache needs (`MOE_CACHE_HOST_RESERVE_MIB`) instead of the plugin reading the command line
