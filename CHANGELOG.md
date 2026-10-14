@@ -10,6 +10,8 @@
 - The executor finds llama.cpp's CPU kernels in builds with separately loaded backends (official releases, Vulkan, Windows), where it used to switch itself off.
   Checked on a Vulkan build (llama.cpp 7fe450e19, `GGML_BACKEND_PATH`): executor on, Flash-Next 4/4 identical to stock (RESULTS section 27).
 - `tests/identity.sh`: `IDENT_KEEP=DIR` keeps both server logs and token files.
+- **Experimental `MOE_CACHE_HYBRID=MiB|auto`** (off by default, not token-identical): a GPU bank of the most used experts; the GPU computes the picks it holds while
+  the CPU executor computes the rest, in parallel, with nothing uploaded per token. Flash-Next on an 8 GB card: 13.1 -> 17.4 tok/s (RESULTS section 30). Quality not measured yet.
 - RESULTS section 26: GLM-5.3-Flash (101.8 GB) at 24 GB: 0.32 -> 1.7-1.9 tok/s, identical; 2.0-2.3 with `--fast`. docs/MULTI_DEVICE_DESIGN.md (design only).
 
 ## 0.2.3.2 (2026-10-14)

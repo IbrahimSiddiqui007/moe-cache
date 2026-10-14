@@ -465,6 +465,7 @@ struct state_t {
     std::atomic<uint64_t> repack_jobs{0};
     ggml_backend_dev_t gpu_dev = nullptr;               // first GPU backend device, used for long prompts
     int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
+    std::atomic<uint64_t> hyb_groups{0}, hyb_picks{0}, hyb_hits{0};   // MOE_CACHE_HYBRID: layers split between GPU bank and CPU, picks, picks served by the bank
     std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory
     std::atomic<uint64_t> gpu_up_bytes{0};
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
@@ -1247,6 +1248,10 @@ struct state_t {
         }
         if (!cache_on && stats) {
             fprintf(stderr, "moe-cache: pass-through graphs=%llu MUL_MAT_ID ops=%llu\n", (unsigned long long) graphs, (unsigned long long) ops);
+        }
+        if (cache_on && stats && hyb_groups) {
+            fprintf(stderr, "moe-cache: hybrid: %llu layer steps, %llu of %llu picks computed on the GPU from its bank (%.1f%%), the rest on the CPU\n",
+                    (unsigned long long) hyb_groups, (unsigned long long) hyb_hits, (unsigned long long) hyb_picks, hyb_picks ? 100.0 * hyb_hits / hyb_picks : 0.0);
         }
         if (cache_on && stats && gpu_dev) {
             fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
@@ -2171,6 +2176,11 @@ struct moe_cache_backend_ctx {
     ggml_gallocr_t     galloc = nullptr;
     bool               gpu_failed = false;
     bool               pin_reported = false;
+    // MOE_CACHE_HYBRID=MiB: a bank of the most used experts in GPU memory (from the usage profile); per weight tensor: bank tensor and slot of each expert
+    bool               hb_tried = false;
+    ggml_context *     hb_ctx = nullptr;
+    ggml_backend_buffer_t hb_buf = nullptr;
+    std::unordered_map<int, std::pair<ggml_tensor *, std::vector<int>>> hb;
 };
 
 const char * be_name(ggml_backend_t) {
@@ -2515,7 +2525,7 @@ bool stock_uses_tiled(const ggml_tensor * nd) {
     return false;
 }
 
-void exec_one_op(state_t & s, ggml_tensor * nd) {
+void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
     const ggml_type_traits_cpu * tt = cpu_traits(w->type);
@@ -2579,6 +2589,9 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     }
     for (int t = 0; t < n_tok; t++) {
         for (int slot = 0; slot < n_ids; slot++) {
+            if (skip && (*skip)[(size_t) t * (size_t) n_ids + (size_t) slot]) {   // computed elsewhere (hybrid: the GPU bank)
+                continue;
+            }
             int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0] + (size_t) t * ids->nb[1]);
             if (routed) {
                 e = (*routed)[(size_t) t * (size_t) n_ids + (size_t) slot];
@@ -2654,6 +2667,263 @@ void print_capabilities(state_t & s) {
     fprintf(stderr, "%s\n", o.c_str());
 }
 
+// ---- hybrid (MOE_CACHE_HYBRID=MiB, experimental, not token-identical): GPU computes the picks whose expert is in its bank, the CPU the rest, at the same time ----
+// The bank holds the most used experts of the usage profile (static for now). Nothing is uploaded per token: only the activation and the remapped ids go up,
+// the bank's partial outputs come back and replace those picks' columns of the down projection's output.
+bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
+    if (c->hb_tried) {
+        return c->hb_buf != nullptr;
+    }
+    c->hb_tried = true;
+    const char * env = getenv("MOE_CACHE_HYBRID");
+    size_t mib = env ? (strcmp(env, "auto") == 0 ? (size_t) -1 : (size_t) atoll(env)) : 0;
+    if (!mib || !s.gpu_dev || c->gpu_failed) {
+        return false;
+    }
+    {
+        // never more than the GPU has free, minus room for llama.cpp's own buffers that come later (auto = all of that)
+        size_t fr = 0, tot = 0;
+        ggml_backend_dev_memory(s.gpu_dev, &fr, &tot);
+        const size_t keep = (size_t) 600 << 20;
+        const size_t avail = fr > keep ? (fr - keep) >> 20 : 0;
+        if (mib > avail) {
+            mib = avail;
+        }
+        if (mib < 256) {
+            fprintf(stderr, "moe-cache: hybrid: only %zu MiB of GPU memory free, no bank\n", fr >> 20);
+            return false;
+        }
+    }
+    if (s.learned.n_exp == 0) {
+        fprintf(stderr, "moe-cache: hybrid: no usage profile (run moe-cache-learn or use the model once), so no bank\n");
+        return false;
+    }
+    if (!c->gpu) {
+        c->gpu = ggml_backend_dev_init(s.gpu_dev, nullptr);
+        if (!c->gpu) {
+            c->gpu_failed = true;
+            return false;
+        }
+        c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
+    }
+    std::map<int, size_t> layer_bytes;                        // all expert tensors of one layer, for one expert
+    for (const auto & tp : s.tensors) {
+        if (tp->layer >= 0 && !tp->repack && tp->tensor) {
+            layer_bytes[tp->layer] += tp->nb2;
+        }
+    }
+    std::vector<std::tuple<double, int, int>> cand;
+    for (const auto & lb : layer_bytes) {
+        for (int e = 0; e < s.learned.n_exp; e++) {
+            const double n = s.learned.at(lb.first, e);
+            if (n > 0) {
+                cand.emplace_back(n, lb.first, e);
+            }
+        }
+    }
+    std::sort(cand.begin(), cand.end(), [](const auto & x, const auto & y) { return std::get<0>(x) > std::get<0>(y); });
+    for (;; mib = mib * 85 / 100) {   // allocation failed: try again with 85 % until it fits or gets too small
+    if (mib < 256) {
+        fprintf(stderr, "moe-cache: hybrid: could not allocate a bank on the GPU\n");
+        return false;
+    }
+    std::map<int, std::vector<int>> chosen;
+    size_t used = 0, n_exp = 0;
+    const size_t budget = mib << 20;
+    for (const auto & cd : cand) {
+        const size_t b = layer_bytes[std::get<1>(cd)];
+        if (used + b > budget) {
+            continue;
+        }
+        chosen[std::get<1>(cd)].push_back(std::get<2>(cd));
+        used += b;
+        n_exp++;
+    }
+    if (c->hb_ctx) {
+        ggml_free(c->hb_ctx);
+        c->hb.clear();
+    }
+    ggml_init_params ip = { ggml_tensor_overhead() * (s.tensors.size() + 1), nullptr, true };
+    c->hb_ctx = ggml_init(ip);
+    for (size_t i = 0; i < s.tensors.size(); i++) {
+        const tinfo_t & ti = *s.tensors[i];
+        auto it = chosen.find(ti.layer);
+        if (it == chosen.end() || ti.repack || !ti.tensor) {
+            continue;
+        }
+        const ggml_tensor * t = ti.tensor;
+        ggml_tensor * bank = ggml_new_tensor_3d(c->hb_ctx, t->type, t->ne[0], t->ne[1], (int64_t) it->second.size());
+        std::vector<int> slot((size_t) ti.n_expert, -1);
+        for (size_t k = 0; k < it->second.size(); k++) {
+            if (it->second[k] < ti.n_expert) {
+                slot[(size_t) it->second[k]] = (int) k;
+            }
+        }
+        c->hb[(int) i] = { bank, slot };
+    }
+    c->hb_buf = ggml_backend_alloc_ctx_tensors(c->hb_ctx, c->gpu);
+    if (!c->hb_buf) {
+        continue;
+    }
+    for (auto & h : c->hb) {
+        const tinfo_t & ti = *s.tensors[(size_t) h.first];
+        ggml_tensor * bank = h.second.first;
+        for (size_t e = 0; e < h.second.second.size(); e++) {
+            const int sl = h.second.second[e];
+            if (sl < 0) {
+                continue;
+            }
+            const char * src = ti.data + e * ti.nb2;
+            gpu_cache_ensure(src, bank->nb[2]);
+            ggml_backend_tensor_set(bank, src, (size_t) sl * bank->nb[2], bank->nb[2]);
+        }
+    }
+    fprintf(stderr, "moe-cache: hybrid: GPU bank of %zu experts in %zu layers (%.0f MiB), chosen from the usage profile\n", n_exp, chosen.size(), used / 1048576.0);
+    return true;
+    }
+}
+
+// One expert block (gate, up, activation, down: MUL_MAT_ID / GLU nodes sharing the same ids) starting at node `first`. Returns false to leave it to the executor.
+bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int & last_out) {
+    const int n_all = ggml_graph_n_nodes(cg);
+    const ggml_tensor * ids = ggml_graph_node(cg, first)->src[2];
+    std::vector<ggml_tensor *> seg;
+    for (int j = first; j < n_all; j++) {
+        ggml_tensor * n = ggml_graph_node(cg, j);
+        if ((n->op == GGML_OP_MUL_MAT_ID && n->src[2] == ids) || n->op == GGML_OP_GLU) {
+            seg.push_back(n);
+        } else {
+            break;
+        }
+    }
+    while (!seg.empty() && seg.back()->op != GGML_OP_MUL_MAT_ID) {
+        seg.pop_back();
+    }
+    if (seg.size() < 2 || !ggml_is_contiguous(seg.back()) || seg.back()->type != GGML_TYPE_F32) {
+        return false;
+    }
+    const std::vector<int> * slot = nullptr;
+    for (ggml_tensor * n : seg) {
+        if (n->op != GGML_OP_MUL_MAT_ID) {
+            continue;
+        }
+        auto it = s.by_tensor.find(n->src[0]);
+        if (it == s.by_tensor.end() || !c->hb.count(it->second)) {
+            return false;
+        }
+        slot = &c->hb[it->second].second;
+    }
+    const int64_t n_used = ids->ne[0], n_tok = ids->ne[1];
+    std::vector<char> hit((size_t) (n_used * n_tok), 0);
+    std::vector<int32_t> rid((size_t) (n_used * n_tok), 0);
+    int64_t n_hit = 0;
+    for (int64_t t = 0; t < n_tok; t++) {
+        for (int64_t u = 0; u < n_used; u++) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + u * ids->nb[0] + t * ids->nb[1]);
+            const int sl = (e >= 0 && (size_t) e < slot->size()) ? (*slot)[(size_t) e] : -1;
+            if (sl >= 0) {
+                hit[(size_t) (t * n_used + u)] = 1;
+                rid[(size_t) (t * n_used + u)] = sl;
+                n_hit++;
+            }
+        }
+    }
+    if (n_hit == 0) {
+        return false;
+    }
+    // the GPU graph: same nodes, weights replaced by the bank, ids by the slots (misses point at slot 0; their columns are not used)
+    ggml_init_params ip = { ggml_tensor_overhead() * 4 * (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) {
+        return false;
+    }
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
+    std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
+    ggml_tensor * gids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n_tok);
+    ggml_set_input(gids);
+    for (ggml_tensor * n : seg) {
+        ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, n->ne);
+        nn->op = n->op;
+        memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
+        for (int k = 0; k < GGML_MAX_SRC; k++) {
+            const ggml_tensor * src = n->src[k];
+            if (!src) {
+                continue;
+            }
+            if (clone.count(src)) {
+                nn->src[k] = clone[src];
+            } else if (n->op == GGML_OP_MUL_MAT_ID && k == 0) {
+                nn->src[k] = c->hb[s.by_tensor.at(src)].first;
+            } else if (n->op == GGML_OP_MUL_MAT_ID && k == 2) {
+                nn->src[k] = gids;
+            } else {
+                ggml_tensor * nt = ggml_new_tensor(ctx, src->type, GGML_MAX_DIMS, src->ne);
+                ggml_set_input(nt);
+                clone[src] = nt;
+                uploads.emplace_back(src, nt);
+                nn->src[k] = nt;
+            }
+        }
+        clone[n] = nn;
+    }
+    ggml_tensor * gout = clone[seg.back()];
+    ggml_set_output(gout);
+    ggml_cgraph * g = ggml_new_graph(ctx);
+    ggml_build_forward_expand(g, gout);
+    if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
+        ggml_free(ctx);
+        return false;
+    }
+    ggml_backend_tensor_set(gids, rid.data(), 0, rid.size() * sizeof(int32_t));
+    std::vector<uint8_t> pack;
+    for (auto & up : uploads) {
+        const ggml_tensor * t = up.first;
+        if (ggml_is_contiguous(t)) {
+            ggml_backend_tensor_set(up.second, t->data, 0, ggml_nbytes(up.second));
+            continue;
+        }
+        const size_t es = ggml_type_size(t->type);
+        pack.assign(ggml_nbytes(up.second), 0);
+        size_t o = 0;
+        for (int64_t i3 = 0; i3 < t->ne[3]; i3++) for (int64_t i2 = 0; i2 < t->ne[2]; i2++) for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
+            memcpy(pack.data() + o, (const char *) t->data + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3], (size_t) t->ne[0] * es);
+            o += (size_t) t->ne[0] * es;
+        }
+        ggml_backend_tensor_set(up.second, pack.data(), 0, pack.size());
+    }
+    if (ggml_backend_graph_compute_async(c->gpu, g) != GGML_STATUS_SUCCESS) {
+        ggml_free(ctx);
+        return false;
+    }
+    // meanwhile the CPU computes the misses (the activation node runs for all picks; the hit picks' values are replaced below)
+    if (n_hit < n_used * n_tok) {
+        for (int j = 0; j < (int) seg.size(); j++) {
+            if (seg[(size_t) j]->op == GGML_OP_MUL_MAT_ID) {
+                exec_one_op(s, seg[(size_t) j], &hit);
+            } else {
+                exec_run_nodes(c, cg, std::vector<int>{ first + j });
+            }
+        }
+    }
+    ggml_backend_synchronize(c->gpu);
+    ggml_tensor * out = seg.back();
+    std::vector<float> res((size_t) ggml_nelements(out));
+    ggml_backend_tensor_get(gout, res.data(), 0, ggml_nbytes(gout));
+    for (int64_t t = 0; t < n_tok; t++) {
+        for (int64_t u = 0; u < n_used; u++) {
+            if (hit[(size_t) (t * n_used + u)]) {
+                memcpy((char *) out->data + u * out->nb[1] + t * out->nb[2], res.data() + (size_t) ((t * n_used + u) * out->ne[0]), (size_t) out->ne[0] * sizeof(float));
+            }
+        }
+    }
+    ggml_free(ctx);
+    s.hyb_groups++;
+    s.hyb_picks += (uint64_t) (n_used * n_tok);
+    s.hyb_hits += (uint64_t) n_hit;
+    last_out = first + (int) seg.size() - 1;
+    return true;
+}
+
 enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg) {
     if (!s.pool) {
         const int n = s.exec_threads > 0 ? s.exec_threads : std::max(1, c->n_threads);
@@ -2695,6 +2965,15 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
     enum ggml_status st = GGML_STATUS_SUCCESS;
     for (int i = 0; i < n && st == GGML_STATUS_SUCCESS; i++) {
         ggml_tensor * nd = ggml_graph_node(cg, i);
+        if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && hybrid_init(c, s)) {
+            st = exec_run_nodes(c, cg, batch);
+            batch.clear();
+            int last = i;
+            if (st == GGML_STATUS_SUCCESS && hybrid_group(c, s, cg, i, last)) {
+                i = last;
+                continue;
+            }
+        }
         if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && !stock_uses_tiled(nd)) {
             st = exec_run_nodes(c, cg, batch);
             batch.clear();

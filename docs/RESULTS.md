@@ -744,3 +744,21 @@ llama.cpp 23b0202a1, same arguments for both (`--n-cpu-moe 999 --moe-cache-mib 5
 - When the model fits, stock with a warm page cache is faster (42 vs 30-34 tok/s): after its margins the plugin's own cache gets 17.5 GiB and holds 90 % of what is
   used, while stock's page cache holds the whole 21.7 GB file. Use stock llama.cpp when the model fits (README "When to use something else").
 - When it does not fit (12 GB), the plugin is 2.9x stock.
+
+## 30. Hybrid hit/miss prototype: GPU bank + CPU executor in parallel (Flash-Next, 8 GB card; 2026-10-14)
+
+`MOE_CACHE_HYBRID=MiB|auto` (opt-in, experimental, not token-identical): a bank of the most used experts (from the usage profile) lives in GPU memory; for every
+decode layer the GPU computes the picks whose expert is in the bank while the executor computes the others on the CPU, then the bank's outputs replace those picks'
+columns. Nothing is uploaded per token except the activation and the ids. Same setup as section 28 (`--n-cpu-moe 999 --gpu-cache off`, 24 GB limit, 8 requests x 48 tokens,
+clean-run gate, one run per row); "same tokens" is against the `--gpu-cache auto` run of section 28.
+
+| Setup | Bank | Picks computed from the bank | Decode tok/s, mean of requests 4-8 | Same tokens |
+|---|---|---|---|---|
+| llama.cpp GPU cache (`--gpu-cache auto`, section 28) | - | - | 13.09 | - |
+| `MOE_CACHE_HYBRID=3000` | 2,175 experts, 2,999 MiB | 47.6 % | **16.81** | 7/8 |
+| `MOE_CACHE_HYBRID=4500` / `5500` | could not be allocated: all picks on the CPU | 0 % | 11.08 / 10.88 | 6/8 |
+| `MOE_CACHE_HYBRID=auto` (free GPU memory minus 600 MiB) | 1,828 experts, 2,519 MiB | 50.8 % | **17.40 (+33 %)** | 5/8 |
+
+- In line with the estimate from the measured costs (+25-40 %, GPU_TIER_DESIGN.md).
+- Not yet measured: quality (KL divergence / answer comparison), prompt processing (the bank takes the memory the long-prompt GPU block would use), a bank that adapts
+  to the session instead of the static profile choice, and other models.
