@@ -689,8 +689,10 @@ so no GPU expert cache fits: 1500 MiB failed to allocate), 4 prompts x 24 tokens
 
 - **About 5.5x stock**, token-identical, on a model 3.3x larger than the memory it may use.
 - Why the identity failed first: with the byte check on (`MOE_CACHE_EXEC_CHECK=1`) 3 of 12,348 executor ops differed from llama.cpp in the last bit, all in one 8-token prompt
-  batch of layer 17 (IQ2_XXS gate/up and IQ3_XXS down); single-token decode was exact. The cause inside the multi-token path is not found yet. The executor keeps taking up to 8 tokens by default
-  (owner's decision, 2026-10-14); `MOE_CACHE_EXEC_MAXCOL=1` makes GLM exact at no measurable cost. Stock vs stock was identical (noise floor PASS).
+  batch of layer 17 (IQ2_XXS gate/up and IQ3_XXS down); single-token decode was exact. Stock vs stock was identical (noise floor PASS). **Cause found:** in all 3 cases one expert was picked by all 8
+  tokens of the batch, and llama.cpp 23b0202a1 then uses its tiled routine (ggml-cpu/tiled, taken at 8 or more rows per expert), which sums in another order; recomputing
+  the value by hand with the one-row kernel matched the executor. The executor now leaves such ops to llama.cpp: 0 mismatches in 12,345 checked ops, 4/4 identical,
+  multi-token batches still on.
 - Where the time goes: cache hit rate 56 %, about 1.5 GB read from the SSD per token, about 2.6 GB/s of the drive's 3.6 GB/s. Decode is limited by SSD reads, which is why the
   kernel, more readers, efficiency cores and pre-faulting did not change the speed; only reading less (`--fast`: 21 % fewer bytes) did. The ceiling at this hit rate is about
   2.4 tok/s exact. More RAM (higher hit rate) is the lever: see the bigger-machine list.

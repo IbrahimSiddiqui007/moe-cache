@@ -529,8 +529,7 @@ struct state_t {
     bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
-    int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch the executor takes. Known issue: on GLM-5.3-Flash an 8-token batch
-                                                        // differed from stock in the last bit of 3 of 12,348 ops (cause not found, T34); MOE_CACHE_EXEC_MAXCOL=1 is exact there
+    int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes
     int    exec_ecores = 0;                             // extra workers on efficiency cores
     int    exec_readers = 4;
     std::unique_ptr<exec_pool_t> pool;
@@ -2497,6 +2496,25 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
     return st;
 }
 
+// llama.cpp (ggml 0.26) computes an expert with a separate tiled routine once it has 8 or more rows (tokens) in the batch (ggml-cpu/tiled, rows >= 8),
+// which adds up in another order than the one-row kernel. Such ops are left to llama.cpp so the result stays identical (found on GLM-5.3-Flash:
+// one expert picked by all 8 tokens of a prompt batch). Older ggml has no tiled routine; handing the op back is exact there too.
+bool stock_uses_tiled(const ggml_tensor * nd) {
+    const ggml_tensor * ids = nd->src[2];
+    if (ids->ne[1] < 8) {
+        return false;
+    }
+    std::unordered_map<int32_t, int> cnt;
+    for (int64_t t = 0; t < ids->ne[1]; t++) {
+        for (int64_t k = 0; k < ids->ne[0]; k++) {
+            if (++cnt[*(const int32_t *) ((const char *) ids->data + k * ids->nb[0] + t * ids->nb[1])] >= 8) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 void exec_one_op(state_t & s, ggml_tensor * nd) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
@@ -2677,7 +2695,7 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
     enum ggml_status st = GGML_STATUS_SUCCESS;
     for (int i = 0; i < n && st == GGML_STATUS_SUCCESS; i++) {
         ggml_tensor * nd = ggml_graph_node(cg, i);
-        if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
+        if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && !stock_uses_tiled(nd)) {
             st = exec_run_nodes(c, cg, batch);
             batch.clear();
             exec_one_op(s, nd);
@@ -2694,6 +2712,22 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
                         while (k + 1 < nb / sizeof(float) && x[k] == y[k]) { k++; }
                         fprintf(stderr, "moe-cache: executor mismatch %s: type %s, %lld tokens, %lld picks, first at float %zu: %.9g vs %.9g\n", nd->name,
                                 ggml_type_name(nd->src[0]->type), (long long) nd->ne[2], (long long) nd->src[2]->ne[0], k, x[k], y[k]);
+                        // recompute that one value by hand with llama.cpp's kernel: which side is the odd one out, and for which expert
+                        const ggml_tensor * w = nd->src[0], * a = nd->src[1], * idt = nd->src[2];
+                        const int64_t r = (int64_t) k % nd->ne[0], slot = ((int64_t) k / nd->ne[0]) % nd->ne[1], t = (int64_t) k / (nd->ne[0] * nd->ne[1]);
+                        const int32_t e = *(const int32_t *) ((const char *) idt->data + slot * idt->nb[0] + t * idt->nb[1]);
+                        const ggml_type_traits_cpu * tt = cpu_traits(w->type);
+                        std::vector<uint8_t> col(ggml_row_size(tt->vec_dot_type, a->ne[0]) + 64);
+                        const float * af = (const float *) ((const char *) a->data + (slot % a->ne[1]) * a->nb[1] + t * a->nb[2]);
+                        cpu_traits(tt->vec_dot_type)->from_float(af, col.data(), a->ne[0]);
+                        float v = 0;
+                        tt->vec_dot((int) w->ne[0], &v, 0, (const char *) w->data + (size_t) e * w->nb[2] + (size_t) r * w->nb[1], 0, col.data(), 0, 1);
+                        int same_e = 0;
+                        for (int64_t tt2 = 0; tt2 < idt->ne[1]; tt2++) for (int64_t s2 = 0; s2 < idt->ne[0]; s2++)
+                            same_e += *(const int32_t *) ((const char *) idt->data + s2 * idt->nb[0] + tt2 * idt->nb[1]) == e;
+                        fprintf(stderr, "moe-cache:   row %lld, pick %lld, token %lld, expert %d (picked %d times in this batch); by hand %.9g -> %s; activation type %s, ne1 %lld\n",
+                                (long long) r, (long long) slot, (long long) t, e, same_e, v, v == x[k] ? "matches the executor" : v == y[k] ? "matches stock" : "matches neither",
+                                ggml_type_name(a->type), (long long) a->ne[1]);
                     }
                     memcpy(nd->data, mine.data(), nb);
                 }

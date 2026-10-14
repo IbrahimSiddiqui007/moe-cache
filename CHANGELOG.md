@@ -1,8 +1,9 @@
 # Changelog
 
 ## Unreleased
-- **Known issue, GLM-5.3-Flash:** an 8-token prompt batch in the executor differed from llama.cpp in the last bit of 3 of 12,348 ops, which changed the first token of one
-  answer (3/4 identical). Cause not found yet. New switch `MOE_CACHE_EXEC_MAXCOL=N` (default 8); with `MOE_CACHE_EXEC_MAXCOL=1` GLM is 4/4 identical at the same speed.
+- **Exactness fix (GLM-5.3-Flash):** llama.cpp 23b0202a1 computes an expert with a separate tiled routine once 8 or more tokens of a batch picked it, and that adds up
+  in another order than the one-row kernel the executor uses. The executor now leaves exactly those ops to llama.cpp. Before: 3 of 12,348 ops differed in the last bit
+  and one answer changed at its first token (3/4); after: 0 mismatches, 4/4, multi-token batches still on. New switch `MOE_CACHE_EXEC_MAXCOL=N` (1-8, default 8).
 - `MOE_CACHE_EXEC_CHECK=1` now prints where the first mismatches are (weight type, tokens, first differing value).
 - Faster IQ3_XXS dot product in the executor (gather-based, bit-identical, 1.24x on the dot product; Intel CPUs only). GLM-5.3-Flash's down projections are IQ3_XXS.
 - The automatic cache size uses the smaller of the memory limit and what the machine has available (a 28 GB limit on a laptop with 25 GB free was OOM-killed).
