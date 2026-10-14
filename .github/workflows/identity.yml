@@ -1,0 +1,74 @@
+# Token-identity gate on a GitHub runner (no GPU, no big model): builds llama.cpp CPU-only at each supported pin, builds the plugin for that pin,
+# downloads a small MoE (Granite 3.1 1B-A400M Q4_K_M, sha256-checked) and checks that stock and plugin produce identical tokens
+# with the cache forced to evict (0.2 GiB) and with the executor forced on and byte-checked.
+#   Actions tab -> identity -> Run workflow   (also runs weekly, Monday 05:00 UTC)
+name: identity
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "ggml-0.25-api2", sha: "7fe450e19305b828c199d602c23a8337aaa1f03b", api: "2" }
+          - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3" }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
+
+      - name: llama.cpp at the pin (CPU only, shared libraries)
+        run: |
+          git init llama.cpp && cd llama.cpp
+          git remote add origin https://github.com/ggml-org/llama.cpp
+          git fetch --depth 1 origin "${{ matrix.sha }}"
+          git checkout --detach FETCH_HEAD
+          git log -1 --format='%H %s'
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
+                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+          cmake --build build --target llama-server -j "$(nproc)"
+
+      - name: Plugin for this pin
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          ./build.sh --portable
+          ls -la build/libggml-moe-cache.so
+
+      - name: Small MoE model
+        run: |
+          curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
+          echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+
+      - name: Identity, cache forced to evict (0.2 GiB)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_evict.txt
+
+      - name: Identity, executor forced on and byte-checked
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: identity-${{ matrix.name }}
+          path: identity_*.txt
