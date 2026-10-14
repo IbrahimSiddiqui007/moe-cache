@@ -696,3 +696,14 @@ so no GPU expert cache fits: 1500 MiB failed to allocate), 4 prompts x 24 tokens
   2.4 tok/s exact. More RAM (higher hit rate) is the lever: see the bigger-machine list.
 - IQ3_XXS takes about 80 % of the executor's expert time on this model; its new kernel pays only once the reads stop dominating.
 - A 28 GB cgroup limit was OOM-killed by the kernel at 26.3 GB because only about 25 GB was free with the desktop running; the plugin now caps its limit at what is available.
+
+## 27. Executor in a build with separately loaded backends (2026-10-14)
+
+llama.cpp 7fe450e19 built with Vulkan and loadable CPU backends (how official releases are built), plugin loaded with `GGML_BACKEND_PATH`, Qwen3.8-Flash-Next IQ2_XS,
+24 GB limit, all experts on the CPU side, 4 prompts x 24 tokens, not temperature-gated. The executor now finds llama.cpp's CPU kernels in the separately loaded
+`libggml-cpu-*.so` (before, it switched itself off in this kind of build).
+
+| | Identical to stock | Decode tok/s, requests 1-4 (cache warming up) |
+|---|---|---|
+| Stock (Vulkan build) | - | 1.43, 2.27, 3.00, 3.18 |
+| Plugin (executor on, Q2_0 and IQ3_XXS kernels inside the executor) | **4/4** | 2.74, 3.93, 6.28, 7.15 |

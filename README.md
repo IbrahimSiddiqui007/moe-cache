@@ -139,8 +139,8 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
   | Feature | `LD_PRELOAD` (llama.cpp that links its backends directly: distro packages, `./install.sh`) | `GGML_BACKEND_PATH` (backends as separate files: official releases, Vulkan builds, Windows) |
   |---|---|---|
   | RAM expert cache, SSD streaming, memory limit, warm start | yes | yes |
-  | Expert executor (computes ready experts while others load) | yes | **no** (the CPU backend's type table is not found; being fixed) |
-  | Fast Q2_0 kernel | yes | **no** |
+  | Expert executor (computes ready experts while others load) | yes | yes (since 0.2.3.3; tested on a Vulkan build) |
+  | Fast Q2_0 / IQ3_XXS kernels | yes | inside the executor only |
   | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | **no** |
 
   The `moe-cache: active: ...` line in the server log says which parts are on.

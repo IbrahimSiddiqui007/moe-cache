@@ -6,7 +6,8 @@
 - `MOE_CACHE_EXEC_CHECK=1` now prints where the first mismatches are (weight type, tokens, first differing value).
 - Faster IQ3_XXS dot product in the executor (gather-based, bit-identical, 1.24x on the dot product; Intel CPUs only). GLM-5.3-Flash's down projections are IQ3_XXS.
 - The automatic cache size uses the smaller of the memory limit and what the machine has available (a 28 GB limit on a laptop with 25 GB free was OOM-killed).
-- The executor finds llama.cpp's CPU kernels in builds with separately loaded backends (official releases, Vulkan, Windows), where it used to switch itself off (untested).
+- The executor finds llama.cpp's CPU kernels in builds with separately loaded backends (official releases, Vulkan, Windows), where it used to switch itself off.
+  Checked on a Vulkan build (llama.cpp 7fe450e19, `GGML_BACKEND_PATH`): executor on, Flash-Next 4/4 identical to stock (RESULTS section 27).
 - `tests/identity.sh`: `IDENT_KEEP=DIR` keeps both server logs and token files.
 - RESULTS section 26: GLM-5.3-Flash (101.8 GB) at 24 GB: 0.32 -> 1.7-1.9 tok/s, identical; 2.0-2.3 with `--fast`. docs/MULTI_DEVICE_DESIGN.md (design only).
 
