@@ -262,6 +262,26 @@ inline size_t mem_limit() {
     return lim;
 }
 
+// memory the system could still give out right now (Linux MemAvailable, Windows available physical memory); 0 if unknown
+inline size_t mem_available() {
+    size_t r = 0;
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) { r = (size_t) ms.ullAvailPhys; }
+#else
+    if (FILE * f = fopen("/proc/meminfo", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), f)) {
+            unsigned long long kb = 0;
+            if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1) { r = (size_t) kb * 1024; }
+        }
+        fclose(f);
+    }
+#endif
+    return r;
+}
+
 // private memory of this process (Linux RssAnon; Windows PrivateUsage, which counts committed pages: exactly the loaded experts)
 inline size_t rss_private() {
     size_t r = 0;

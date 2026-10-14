@@ -15,7 +15,8 @@ LS="${LLAMA_SERVER:-llama-server}"; NCMOE=999; RAM=""; N=100; PORT=8099; CTX=819
 while [ $# -gt 0 ]; do case "$1" in --llama-server) LS=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;; --ram) RAM=$2; shift 2;; --tokens) N=$2; shift 2;; --long) export IDENT_LONG=1; shift;; --ctx) CTX=$2; shift 2;; --np) NP=$2; shift 2;; --limit) LIMIT=$2; shift 2;; --fill) export IDENT_FILL=$2; shift 2;; --parallel) export IDENT_PAR=1; shift;; *) echo "unknown: $1"; exit 1;; esac; done
 [ -f "$MODEL" ] || { echo "usage: tests/identity.sh MODEL.gguf [options]"; exit 1; }
 PRE=(); [ -n "$LIMIT" ] && PRE=(systemd-run --user --scope -q -p MemoryMax=${LIMIT}G -p MemorySwapMax=0)
-TMP=$(mktemp -d); trap 'kill $SPID 2>/dev/null || true; rm -rf "$TMP"' EXIT
+# IDENT_KEEP=DIR keeps both server logs and token files there (speed, plugin messages) instead of deleting them
+TMP=$(mktemp -d); trap 'kill $SPID 2>/dev/null || true; [ -n "$IDENT_KEEP" ] && mkdir -p "$IDENT_KEEP" && cp "$TMP"/* "$IDENT_KEEP"/ 2>/dev/null; rm -rf "$TMP"' EXIT
 COMMON=(-m "$MODEL" ${DEVICE:+--device $DEVICE} -ngl 99 --n-cpu-moe "$NCMOE" -c "$CTX" -np "$NP" -fa on --load-mode mmap --no-warmup --port $PORT --seed 42)
 # IDENT_EXTRA="--moe-cache-mib 2000": more llama-server arguments for both servers (e.g. llama.cpp's GPU expert cache)
 # IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1 MOE_CACHE_AVX512=1": more environment for the plugin server only

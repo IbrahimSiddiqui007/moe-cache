@@ -50,9 +50,11 @@
 #endif
 #ifdef __linux__
 #include <dlfcn.h>
+#include <link.h>
 #endif
 #if defined(__x86_64__) && defined(__linux__)
 #include "fast_q2_0.h"
+#include "fast_iq3.h"
 #endif
 #ifdef __linux__
 #include <sched.h>
@@ -224,8 +226,12 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
 }
 
 // memory limit of this process and its private memory (see platform.h)
+// The limit is the smaller of the configured one (cgroup / job) and what the machine can really give: a 28 GB cgroup limit on a 31 GB laptop
+// with the desktop running (25 GB available) was OOM-killed by the kernel at 26.3 GB before the cgroup limit was reached.
 size_t read_mem_limit() {
-    return plat::mem_limit();
+    const size_t lim = plat::mem_limit();
+    const size_t avail = plat::mem_available();
+    return avail ? std::min(lim, avail + plat::rss_private()) : lim;
 }
 
 size_t read_rss_anon() {
@@ -523,6 +529,8 @@ struct state_t {
     bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
+    int    exec_maxcol = 1;                             // MOE_CACHE_EXEC_MAXCOL=N (up to 8): largest batch the executor takes. Default 1: on GLM-5.3-Flash an 8-token
+                                                        // batch differed from stock in the last bit of 3 of 12,348 ops (cause not found yet), which changed a token
     int    exec_ecores = 0;                             // extra workers on efficiency cores
     int    exec_readers = 4;
     std::unique_ptr<exec_pool_t> pool;
@@ -837,6 +845,9 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHECK")) {
             exec_check = strcmp(v, "0") != 0;
+        }
+        if (const char * v = getenv("MOE_CACHE_EXEC_MAXCOL")) {
+            exec_maxcol = std::max(1, std::min(EXEC_MAXCOL, atoi(v)));
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_THREADS")) {
             exec_threads = std::max(0, std::min(64, atoi(v)));
@@ -2340,20 +2351,75 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
 // ---- executor: decode-time expert matrix products run by the plugin itself ----
 // the CPU backend's type table, looked up at run time: builds that load their CPU backend as a separate library do not link it into the plugin
 typedef const struct ggml_type_traits_cpu * (*cpu_traits_fn_t)(enum ggml_type);
-const ggml_type_traits_cpu * cpu_traits(enum ggml_type t) {
+// Lookup order: linked into the process (LD_PRELOAD builds), the CPU backend's registry, then the CPU backend library that was loaded
+// separately (GGML_BACKEND_DL builds: official releases, Vulkan, Windows), whose variant (libggml-cpu-haswell.so, ...) exports the function.
+cpu_traits_fn_t find_cpu_traits_fn() {
+    cpu_traits_fn_t fn = nullptr;
 #ifdef __linux__
-    static cpu_traits_fn_t fn = (cpu_traits_fn_t) dlsym(RTLD_DEFAULT, "ggml_get_type_traits_cpu");
-    return fn ? fn(t) : nullptr;
-#else
-    (void) t;
-    return nullptr;
+    fn = (cpu_traits_fn_t) dlsym(RTLD_DEFAULT, "ggml_get_type_traits_cpu");
 #endif
+    if (!fn) {
+        if (ggml_backend_dev_t cd = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
+            fn = (cpu_traits_fn_t) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cd), "ggml_get_type_traits_cpu");
+        }
+    }
+#ifdef __linux__
+    if (!fn) {
+        std::vector<std::string> libs;
+        dl_iterate_phdr([](struct dl_phdr_info * info, size_t, void * data) {
+            const char * name = info->dlpi_name;
+            if (name && strstr(name, "libggml-cpu")) {
+                ((std::vector<std::string> *) data)->push_back(name);
+            }
+            return 0;
+        }, &libs);
+        for (const std::string & l : libs) {
+            if (void * h = dlopen(l.c_str(), RTLD_LAZY | RTLD_NOLOAD)) {
+                fn = (cpu_traits_fn_t) dlsym(h, "ggml_get_type_traits_cpu");
+                dlclose(h);   // RTLD_NOLOAD took a reference to an already loaded library; it stays loaded
+                if (fn) {
+                    break;
+                }
+            }
+        }
+    }
+#elif defined(_WIN32)
+    if (!fn) {
+        HMODULE mods[512];
+        DWORD need = 0;
+        if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &need)) {
+            for (DWORD i = 0; i < need / sizeof(HMODULE) && i < 512 && !fn; i++) {
+                char name[MAX_PATH];
+                if (GetModuleFileNameA(mods[i], name, MAX_PATH) && strstr(name, "ggml-cpu")) {
+                    fn = (cpu_traits_fn_t) (void *) GetProcAddress(mods[i], "ggml_get_type_traits_cpu");
+                }
+            }
+        }
+    }
+#endif
+    return fn;
+}
+const ggml_type_traits_cpu * cpu_traits(enum ggml_type t) {
+    static cpu_traits_fn_t fn = find_cpu_traits_fn();
+    return fn ? fn(t) : nullptr;
 }
 
 #if defined(__x86_64__) && defined(__linux__)
 // Q2_0 weights: the executor rearranges the quantised activation column once and uses the permuted-layout kernel (bit-identical, about 2x the other one)
 void q2_0_perm_dot(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     fastk::vec_dot_q2_0_perm_avx2(n, s, bs, vx, bx, vy, by, nrc);
+}
+// IQ3_XXS weights (GLM-5.3-Flash down projections): gather-based dot product, bit-identical, about 1.2x; Intel CPUs only (slow gathers on AMD Zen 2/3)
+ggml_vec_dot_t fast_iq3_dot() {
+    static const ggml_vec_dot_t fn = [] {
+        bool vnni = false;
+        const char * e = getenv("MOE_CACHE_FAST_KERNELS");
+        if ((e && strcmp(e, "0") == 0) || !fastk3::usable(vnni)) {
+            return (ggml_vec_dot_t) nullptr;
+        }
+        return vnni ? (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_vnni : (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_avx2;
+    }();
+    return fn;
 }
 bool fast_kernels_enabled() {
     static const bool on = [] {
@@ -2386,7 +2452,7 @@ bool exec_eligible(state_t & s, ggml_cgraph * cg) {
             return false;
         }
         const ggml_type_traits_cpu * tt = cpu_traits(w->type);
-        if (!tt || !tt->vec_dot || !cpu_traits(tt->vec_dot_type) || ids->type != GGML_TYPE_I32 || ids->ne[1] < 1 || ids->ne[1] > EXEC_MAXCOL || ids->ne[2] != 1 || ids->ne[3] != 1) {
+        if (!tt || !tt->vec_dot || !cpu_traits(tt->vec_dot_type) || ids->type != GGML_TYPE_I32 || ids->ne[1] < 1 || ids->ne[1] > s.exec_maxcol || ids->ne[2] != 1 || ids->ne[3] != 1) {
             return false;
         }
         if (a->type != GGML_TYPE_F32 || a->nb[0] != sizeof(float) || a->ne[2] != ids->ne[1] || a->ne[3] != 1 || nd->type != GGML_TYPE_F32 || nd->nb[0] != sizeof(float)) {
@@ -2448,6 +2514,9 @@ void exec_one_op(state_t & s, ggml_tensor * nd) {
     bool permuted = false;
 #if defined(__x86_64__) && defined(__linux__)
     permuted = w->type == GGML_TYPE_Q2_0 && vdt == GGML_TYPE_Q8_0 && a->type == GGML_TYPE_F32 && ne10 % 64 == 0 && fast_kernels_enabled();
+    if (w->type == GGML_TYPE_IQ3_XXS && vdt == GGML_TYPE_Q8_K && fast_iq3_dot()) {
+        dot = fast_iq3_dot();
+    }
 #endif
     if (a->type == vdt) {
         base = (const char *) a->data;
@@ -2557,6 +2626,7 @@ void print_capabilities(state_t & s) {
     }
 #if defined(__x86_64__) && defined(__linux__)
     o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)" : preload ? "on(interposed)" : "executor only(not preloaded)");
+    o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0, not Intel, or no AVX2)");
     o += std::string(" iq_avx512=") + (getenv("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
 #endif
     o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
@@ -2618,7 +2688,13 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
                 exec_run_nodes(c, cg, std::vector<int>{ i });
                 s.exec_checked++;
                 if (memcmp(mine.data(), nd->data, nb) != 0) {
-                    s.exec_mismatch++;
+                    if (++s.exec_mismatch <= 8) {   // say where: weight type, tokens in the batch, first differing value
+                        const float * x = (const float *) mine.data(), * y = (const float *) nd->data;
+                        size_t k = 0;
+                        while (k + 1 < nb / sizeof(float) && x[k] == y[k]) { k++; }
+                        fprintf(stderr, "moe-cache: executor mismatch %s: type %s, %lld tokens, %lld picks, first at float %zu: %.9g vs %.9g\n", nd->name,
+                                ggml_type_name(nd->src[0]->type), (long long) nd->ne[2], (long long) nd->src[2]->ne[0], k, x[k], y[k]);
+                    }
                     memcpy(nd->data, mine.data(), nb);
                 }
             }
@@ -2783,7 +2859,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 exec_heavy = exec_heavy || wt == GGML_TYPE_IQ1_S || wt == GGML_TYPE_IQ1_M || wt == GGML_TYPE_IQ2_XXS || wt == GGML_TYPE_IQ2_XS ||
                              wt == GGML_TYPE_IQ2_S || wt == GGML_TYPE_IQ3_XXS || wt == GGML_TYPE_IQ3_S || wt == GGML_TYPE_Q2_0;
             }
-            if (s.route_mode && exec_graph && n_tok <= EXEC_MAXCOL && !tidx.empty() && n_used >= 3) {
+            if (s.route_mode && exec_graph && n_tok <= s.exec_maxcol && !tidx.empty() && n_used >= 3) {
                 const tinfo_t & t0 = *s.tensors[(size_t) tidx[0]];
                 const int keep = s.route_keep >= 0 ? (int) std::min<int64_t>(s.route_keep, n_used) : (int) n_used - 2;
                 std::vector<int32_t> eff((size_t) (n_used * n_tok));

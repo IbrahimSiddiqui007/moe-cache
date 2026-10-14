@@ -669,3 +669,30 @@ Decode speed with the plugin was 12.5 (IQ2_XS) vs 11.1 tok/s (Q2_K_XL) in sectio
 Code generation (10 small Python tasks run against assertions, `quality.py codegen`, thinking off, same 6 GiB cache): exact 10/10, skip 10/10, substitute 9/10 (`roman_to_int`).
 Together with section 21 (26/26 checkable prompts, +10-12 % speed) this is the first distribution-level number for the approximate modes: roughly one in fifteen
 top-1 tokens changes, and the loss in perplexity is 1-2 %. 3 chunks and 10 tasks are small; the perplexity text is technical English, not code or chat.
+
+## 26. GLM-5.3-Flash UD-IQ2_XXS (101.8 GB) on the 31 GB / 8 GB laptop (2026-10-14)
+
+llama.cpp 23b0202a1, plugin built for API 3, 24 GB hard limit (swap off), ctx 4096, all experts on the CPU side (`--n-cpu-moe 999`; the non-expert part fills the 8 GB card,
+so no GPU expert cache fits: 1500 MiB failed to allocate), 4 prompts x 24 tokens, **not temperature-gated** (read ratios, not absolute values). One run per row.
+
+| Run | Identical to stock | Decode tok/s, requests 1-4 |
+|---|---|---|
+| Stock llama.cpp | - | 0.33, 0.30, 0.33, 0.32 |
+| Plugin 0.2.3.2 (executor takes up to 8-token batches) | **3/4** (one prompt differs at its first token) | 1.64, 1.91, 1.70, 1.79 |
+| Plugin, executor single-token only (`MOE_CACHE_EXEC_MAXCOL=1`, now the default) | **4/4** | 1.69, 1.93, 1.67, 1.70 |
+| + 4 efficiency cores | 4/4 | 1.74, 2.00, 1.66, 1.78 |
+| + faster IQ3_XXS kernel (1.24x on the dot product, bit-exact) | 4/4 | 1.69, 1.83, 1.66, 1.71 |
+| + 8 reader threads | 4/4 | 1.72, 1.92, 1.75, 1.80 |
+| + pre-faulting replacement pages | 4/4 | 1.80, 1.78, 1.68, 1.76 |
+| `--fast` (route skip) | 2/4 (approximate by design) | **2.11, 2.31, 2.03, 2.08** |
+| 28 GB limit (capped by the plugin to the 24.4 GB actually available) | 4/4 | 1.69, 2.04, 1.67, 1.78 |
+
+- **About 5.5x stock**, token-identical, on a model 3.3x larger than the memory it may use.
+- Why the identity failed first: with the byte check on (`MOE_CACHE_EXEC_CHECK=1`) 3 of 12,348 executor ops differed from llama.cpp in the last bit, all in one 8-token prompt
+  batch of layer 17 (IQ2_XXS gate/up and IQ3_XXS down); single-token decode was exact. The cause inside the multi-token path is not found yet, so the executor now takes
+  single tokens by default (`MOE_CACHE_EXEC_MAXCOL=8` restores the old behaviour; it costs nothing measurable here). Stock vs stock was identical (noise floor PASS).
+- Where the time goes: cache hit rate 56 %, about 1.5 GB read from the SSD per token, about 2.6 GB/s of the drive's 3.6 GB/s. Decode is limited by SSD reads, which is why the
+  kernel, more readers, efficiency cores and pre-faulting did not change the speed; only reading less (`--fast`: 21 % fewer bytes) did. The ceiling at this hit rate is about
+  2.4 tok/s exact. More RAM (higher hit rate) is the lever: see the bigger-machine list.
+- IQ3_XXS takes about 80 % of the executor's expert time on this model; its new kernel pays only once the reads stop dominating.
+- A 28 GB cgroup limit was OOM-killed by the kernel at 26.3 GB because only about 25 GB was free with the desktop running; the plugin now caps its limit at what is available.

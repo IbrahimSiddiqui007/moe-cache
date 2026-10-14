@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include "fast_iq_avx512.h"
+#include "fast_iq3.h"
 using block_iq2_xxs = fastk512::block_iq2_xxs;
 using block_iq3_xxs = fastk512::block_iq3_xxs;
 using block_q8_K = fastk512::block_q8_K;
@@ -161,7 +162,7 @@ int main(int argc, char ** argv) {
     struct Case { const char * name; int type; std::vector<Variant> v; };
     std::vector<Case> cases = {
         { "iq2_xxs", 16, { { "scalar-lookup+madd", iq2xxs<false, false> }, { "gather", iq2xxs<true, false> }, { "vnni", iq2xxs<false, true> }, { "gather+vnni", iq2xxs<true, true> } } },
-        { "iq3_xxs", 18, { { "scalar-lookup+madd", iq3xxs<false, false> }, { "gather", iq3xxs<true, false> }, { "vnni", iq3xxs<false, true> }, { "gather+vnni", iq3xxs<true, true> } } },
+        { "iq3_xxs", 18, { { "scalar-lookup+madd", iq3xxs<false, false> }, { "gather", iq3xxs<true, false> }, { "vnni", iq3xxs<false, true> }, { "gather+vnni", iq3xxs<true, true> }, { "plugin fast_iq3 vnni", fastk3::vec_dot_iq3_xxs_vnni }, { "plugin fast_iq3 avx2", fastk3::vec_dot_iq3_xxs_avx2 } } },
     };
     printf("cpu: avx2=%d avx_vnni=%d avx512(bw,vl,dq)=%d avx512_vnni=%d\n", (int) __builtin_cpu_supports("avx2"), (int) __builtin_cpu_supports("avxvnni"),
            (int) fastk512::cpu_has_avx512(), (int) fastk512::cpu_has_avx512_vnni());
