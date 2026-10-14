@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3.1 (2026-10-14)
 - **Fix: CPU weight repacking now follows llama-server's `--no-repack` / `-nr` / `LLAMA_ARG_REPACK=0`.** On CPU-only machines the plugin repacked expert weights even when the server
   was started without repacking, so its kernels added up in another order than stock and tokens differed late in the answer (found by the new CI job).
 - **CI: `identity` workflow** (GitHub runner, no GPU): llama.cpp built CPU-only at both pins, Granite 3.1 1B-A400M (sha256-checked), stock vs plugin with the cache forced
