@@ -36,5 +36,9 @@ python3 - "$TMP/stock.json" "$TMP/plugin.json" <<'PY'
 import json, sys
 a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
 ok = sum(x == y for x, y in zip(a, b))
+for i, (x, y) in enumerate(zip(a, b)):
+    if x != y:
+        d = next((k for k in range(min(len(x), len(y))) if x[k] != y[k]), min(len(x), len(y)))
+        print(f"prompt {i}: first different token at position {d} of {len(x)} (stock {x[d] if d < len(x) else None}, plugin {y[d] if d < len(y) else None})")
 print(f"identical prompts: {ok}/{len(a)}"); print("PASS" if ok == len(a) else "FAIL"); sys.exit(0 if ok == len(a) else 1)
 PY

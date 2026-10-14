@@ -16,6 +16,9 @@ jobs:
   identity:
     runs-on: ubuntu-22.04
     timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash          # bash -eo pipefail: a FAIL from identity.sh must fail the step even through tee
     strategy:
       fail-fast: false
       matrix:
