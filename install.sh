@@ -83,5 +83,5 @@ Done. Next steps (bash or zsh; for fish use: source $PREFIX/env.fish):
   moe-cache-check gpt-oss-20b.gguf
   $M/tests/identity.sh gpt-oss-20b.gguf --llama-server $BIN/llama-server     # PASS = same tokens as stock
   moe-cache-server gpt-oss-20b.gguf --ram 20 --open                          # chat UI at http://localhost:8080
-  $M/bin/moe-cache-bench                                                      # the benchmark GUI
+  # benchmark tool (separate repository): git clone https://github.com/IbrahimSiddiqui007/moe-cache-benchmark next to $M
 EOT

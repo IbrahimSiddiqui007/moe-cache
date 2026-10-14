@@ -23,7 +23,7 @@ for API in 2 3; do
   if [ $API = 3 ]; then SUF=-ggml0.26; export GGML_API=3; else SUF=; unset GGML_API; fi
   ./build.sh --portable
   N=moe-cache-v$V$SUF-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
-  cp -r bin planner tests tools profiles docs bench LICENSE README.md build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
+  cp -r bin planner tests tools profiles docs LICENSE README.md build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
   rm -f dist/$N/tools/make_release.sh
   tar -C dist -czf dist/$N.tar.gz $N
   ( cd dist && sha256sum $N.tar.gz >> SHA256SUMS )

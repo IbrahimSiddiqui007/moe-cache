@@ -92,12 +92,12 @@ bin/moe-cache-learn /path/to/model.gguf --ram 20 --llama-server /path/to/llama-s
 
 ## Measure it on your own model
 
-`bin/moe-cache-bench` runs stock llama.cpp and moe-cache on your model and prompts under a memory limit and checks the tokens are identical; the steps are in the README and in [BENCHMARKS.md](BENCHMARKS.md).
+The benchmark tool runs stock llama.cpp and moe-cache on your model and prompts under a memory limit and checks the tokens are identical. It is a separate repository: [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark).
 
 ## What speed to expect
 
-Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM you will see about the same speed as stock (within a few percent);
-if it does not fit, expect 2x to 7x stock. Example: a 48 GB model in a 20 GB memory limit ran at 9 tok/s instead of 1.3.
+Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (with `--moe-cache-mib` if you have a GPU): moe-cache adds nothing there.
+If it does not fit, we measured 2x to 12x stock (the table in the README). Example: a 48 GB model in a 20 GB memory limit ran at 9.3 tok/s instead of 1.3.
 
 ## Which llama-server do I use?
 

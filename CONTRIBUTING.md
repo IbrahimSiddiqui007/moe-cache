@@ -21,7 +21,7 @@ Models bigger than your RAM: add `--limit GB` (hard cgroup, swap off). Never run
 - Memory limits: `tests/limit.sh MODEL.gguf --limit GB` must PASS.
 
 ## Measuring
-Use `bin/moe-cache-bench` or `bench/standard.py`; runs that were not clean (hot CPU, background load) are flagged and must be repeated, not quoted. Differences below 10 % need paired runs in both orders. See docs/TEST_PROTOCOL.md.
+Use the benchmark tool ([moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark): `bin/moe-cache-bench` or `bench/standard.py`); runs that were not clean (hot CPU, background load) are flagged and must be repeated, not quoted. Differences below 10 % need paired runs in both orders. See docs/TEST_PROTOCOL.md.
 
 ## Workflow
 Work happens on the `experimental` branch and is promoted to `main` when identity and the checks above pass. Releases are tags (`vX.Y.Z`) on `main`; GitHub Actions builds and attests them.

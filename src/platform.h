@@ -130,13 +130,22 @@ inline void mem_release(void * p, size_t size) {
     munmap(p, size);
 #endif
 }
+// MOE_CACHE_GUARD=1 (tests only): evicted pages become PROT_NONE, so a read the plugin did not intercept crashes instead of seeing zeros.
+// Each protected range is its own mapping, so keep it to small models (vm.max_map_count, default 65530). Windows decommit already faults.
+inline bool mem_guard() {
+    static const bool on = [] { const char * e = getenv("MOE_CACHE_GUARD"); return e && strcmp(e, "0") != 0; }();
+    return on;
+}
 // p and size are rounded outwards to whole pages; committing an already committed page keeps its content
 inline void mem_commit(void * p, size_t size) {
 #ifdef _WIN32
     const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
     VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE);
 #else
-    (void) p; (void) size;
+    if (mem_guard()) {
+        const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
+        mprotect((void *) a, b - a, PROT_READ | PROT_WRITE);
+    }
 #endif
 }
 // Gives physical pages to a range before a read lands in it (Linux 5.14+: MADV_POPULATE_WRITE; otherwise and on Windows a no-op).
@@ -158,6 +167,9 @@ inline void mem_decommit(void * p, size_t size) {
     VirtualFree(p, size, MEM_DECOMMIT);
 #else
     madvise(p, size, MADV_DONTNEED);
+    if (mem_guard()) {
+        mprotect(p, size, PROT_NONE);
+    }
 #endif
 }
 inline void mem_hugepage(void * p, size_t size, bool on) {

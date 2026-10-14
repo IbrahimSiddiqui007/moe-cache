@@ -10,7 +10,8 @@ moe-cache talks to llama.cpp only through ggml's generic backend interface, so i
 | Vulkan on AMD / Intel Arc / NVIDIA | untested | expected to behave like the Intel iGPU case |
 | ROCm / HIP (AMD) | **untested** | generic ggml calls only; the llama.cpp GPU expert cache is backend-neutral upstream code |
 | SYCL (Intel Arc, Intel GPUs) | **untested** | same as above |
-| NPUs (AMD XDNA, Intel NPU) | not supported | no ggml backend for them that this project could verify |
+| Intel NPU (Core Ultra, Lunar Lake) | **untested** | llama.cpp has an OpenVINO backend (`-DGGML_OPENVINO=ON`, `GGML_OPENVINO_DEVICE=NPU`), labelled a preview. Its formats are FP16, Q8_0, Q4_0/Q4_1/Q4_K (Q5_K/Q6_K converted at load), so IQ2 / Q2_0 models such as Qwen3.8-Flash-Next cannot use it; a Q4_K MoE can. Not tried with this plugin |
+| AMD NPU (XDNA, Ryzen AI) | not supported | no ggml backend for it; AMD's own Ryzen AI software is separate |
 
 ## Build llama.cpp for your GPU (shared libraries, as moe-cache needs)
 

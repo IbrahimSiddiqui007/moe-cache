@@ -724,11 +724,14 @@ struct state_t {
             // when a new request starts, so it is added to the margin (a 24 GB limit was OOM-killed at 128k context with the 8 GiB default)
             if (!getenv("MOE_CACHE_MARGIN_GIB")) {
                 long cram = -1;
-                if (const char * v = getenv("LLAMA_ARG_CACHE_RAM")) {
+                const char * reserve = getenv("MOE_CACHE_HOST_RESERVE_MIB");   // set by moe-cache-server; the command line below is only a fallback
+                if (reserve) {
+                    cram = atol(reserve);
+                } else if (const char * v = getenv("LLAMA_ARG_CACHE_RAM")) {
                     cram = atol(v);
                 }
 #ifdef __linux__
-                if (FILE * cf = fopen("/proc/self/cmdline", "rb")) {
+                if (FILE * cf = reserve ? nullptr : fopen("/proc/self/cmdline", "rb")) {
                     std::string cmd;
                     char buf[4096];
                     size_t nr;

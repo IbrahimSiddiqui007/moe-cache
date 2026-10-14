@@ -23,12 +23,18 @@ moe-cache manages the CPU-side experts itself:
 - **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
 - **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
 - produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](docs/RESULTS.md); the Hunyuan test was short only);
-- works with speculative decoding (MTP), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
+- works with speculative decoding (MTP; it helps when the model or most of it fits: Qwen3.6 at 12 GB 21.7 -> 24.0 tok/s, but it was 17 % slower on Qwen3.8-Flash-Next with an 8 GB card), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
 - runs long prompts on the GPU like stock llama.cpp does;
 - **expert executor** (on by default): while missing experts load from the SSD it already computes the ones in RAM, and on hybrid Intel CPUs it can use the efficiency cores too. Results are bit-identical (every output was compared byte for byte with llama.cpp's own on the test models);
 - **faster Q2_0 kernel**: llama.cpp has no SIMD Q2_0 dot product on x86; the plugin supplies one (bit-identical, about 3x faster), which matters for models whose down projections are Q2_0 (for example Qwen3.8-Flash-Next).
 
-If the model already fits in your RAM you get stock speed or better (on our hybrid-CPU laptop: +15 % over stock with default settings, the same as stock with hand-tuned CPU pinning, see [RESULTS](docs/RESULTS.md) section 11). It is for the case where it does not.
+### When to use something else
+
+| Your situation | Best choice |
+|---|---|
+| The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). On Qwen3.6-35B at 24 GB it reached 43 tok/s against 39 for moe-cache with static GPU layers (RESULTS section 15). moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. |
+| You want **Qwen3.8-Flash-Next or Qwen3.6-35B as fast as possible** and have **12 GB+ VRAM and 32 GB+ RAM** | [Strata](https://github.com/Niko1221/Strata), an engine built for those models (its authors report 94 tok/s on an RTX 5070). |
+| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: 2x to 12x stock in our measurements (table below). |
 
 ## Get started
 
@@ -55,14 +61,13 @@ Every line says OK, WARN or FAIL and what to do about it.
 ```bash
 bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open
 ```
-`--ram 12` is the memory (GB) it may use; leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page
+`--ram 12` is the memory (GB) it may use; leave it out to use what is free. Add `--fast` for about +10 % on models much bigger than your RAM, at the cost of output that is no longer identical to stock (the launcher suggests it when it would help). The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page
 (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
 
 ### 4. Optional: prove it is correct and measure it on your machine
 
 ```bash
 tests/identity.sh /path/to/model.gguf --llama-server /path/to/llama-server      # PASS = the same tokens as stock llama.cpp
-bin/moe-cache-bench                                                              # benchmark tool: see below
 ```
 
 More detail, troubleshooting and the Vulkan build: [docs/QUICKSTART.md](docs/QUICKSTART.md).
@@ -77,6 +82,7 @@ More detail, troubleshooting and the Vulkan build: [docs/QUICKSTART.md](docs/QUI
 | Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
 | Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
 | Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s (older measurement) | **60 to 62 tok/s** |
+| **Qwen3.8-Flash-Next IQ2_XS (68 GB)**, 24 GB RAM, 8 GB GPU | 5.6 tok/s (3 expert layers on the GPU) | **12.0 tok/s** (same layers); **13.4** with llama.cpp's GPU expert cache |
 | Model fits in RAM (Qwen3.6, 28 GB, warm start) | 29.0 tok/s | 31.1 tok/s |
 | Same, with moe-cache's automatic CPU pinning (hybrid Intel CPU), no profile needed | 30.9 tok/s (36.0 if you pin stock by hand) | **35.5 tok/s** |
 | Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
@@ -92,7 +98,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 | Platform | Status |
 |---|---|
 | Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
-| Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested**, loaded the official way (`GGML_BACKEND_PATH`) |
+| Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested** on llama.cpp `7fe450e19` only, loaded the official way (`GGML_BACKEND_PATH`; see the feature table below) |
 | Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
 | Linux + AMD GPU / AMD CPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
 | Windows | **Not supported yet.** The code has a Windows layer that compiles with mingw-w64 (`./build.sh --windows`) and passes its tests under Wine, but it has never run on real Windows with llama.cpp |
@@ -100,36 +106,8 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 
 ## Benchmark it on your own model and your own use case
 
-The benchmark tool ships with the plugin (`bin/moe-cache-bench`, python standard library only). It measures stock llama.cpp and moe-cache on **your** machine,
-with **your** model and **your** prompts, under a memory limit you choose, and checks that both produce the same tokens.
-
-```bash
-bin/moe-cache-bench            # starts the tool and opens http://127.0.0.1:8765
-```
-
-1. **Model**: give the path of your `.gguf` (the llama-server and plugin paths are filled in when found).
-2. **Memory limit (GB)**: the RAM you want to emulate for the model. A model larger than this limit is the case moe-cache is made for; set 2 or 3 limits (for example 12 and 24) to see the curve.
-3. **Modes**: tick stock and moe-cache; leave "both orders" on (it runs forward and reverse to cancel drift).
-4. **Your own prompts** (optional): paste prompts separated by a line with only `---`; add `EXPECT: word` lines to mark words the answer must contain. They are run on both modes and compared.
-5. Press **Start**. Watch it in the browser, or in a terminal with `bin/moe-cache-bench-watch`.
-6. Read the result: steady generation speed (mean of requests 2 to 4), time to first token, SSD read per token, cache hit rate, and PASS/FAIL for identical tokens. Runs that started hot or with background load are flagged and should be repeated.
-
-Command line, for a fixed comparable protocol (two placements, two limits, both orders; see [docs/TEST_PROTOCOL.md](docs/TEST_PROTOCOL.md)):
-
-```bash
-bin/moe-cache-bench --no-browser &
-bench/standard.py MODEL.gguf --limits 12,24 --profiles cpu,gpu
-```
-
-The shareable HTML report and JSON export contain no prompts, outputs or local paths; the unfiltered versions are for you only (see [docs/SECURITY.md](docs/SECURITY.md)).
-Benchmark every model on your disk (all Ollama models and all GGUF files in a folder, both placements, several memory limits) and get a table to publish:
-
-```bash
-bench/run_matrix.py --ollama --dir ~/models           # prints the plan: models, cells, limits
-bench/run_matrix.py --ollama --dir ~/models --run     # runs it; writes results-matrix-DATE.md and .csv
-```
-
-What the benchmarks mean and how to run the usual capability suites against the same server: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+The benchmark tool (web page, standard protocol, many-model matrix, quality harness) now lives in its own repository: [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark).
+Clone it next to this folder (or set `MOE_CACHE_DIR`) and it finds the plugin and the planner by itself.
 
 ## How it works
 
@@ -156,11 +134,21 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 - Long prompts (32+ tokens per batch) run their expert blocks on the GPU, as stock llama.cpp does, so prompt processing is at stock speed when the model fits (DeepSeek-V2-Lite: 166 to 183 tok/s vs 166 to 188 stock) and much faster when memory is short.
 - It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier was evaluated and is not built, see [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
+- **Not every feature works with every llama.cpp build.** How the plugin is loaded depends on how llama.cpp was built (`moe-cache-server` picks it):
+
+  | Feature | `LD_PRELOAD` (llama.cpp that links its backends directly: distro packages, `./install.sh`) | `GGML_BACKEND_PATH` (backends as separate files: official releases, Vulkan builds, Windows) |
+  |---|---|---|
+  | RAM expert cache, SSD streaming, memory limit, warm start | yes | yes |
+  | Expert executor (computes ready experts while others load) | yes | **no** (the CPU backend's type table is not found; being fixed) |
+  | Fast Q2_0 kernel | yes | **no** |
+  | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | **no** |
+
+  The `moe-cache: active: ...` line in the server log says which parts are on.
 - Needs a llama.cpp with shared ggml libraries; tested with commits `23b0202a1` (ggml 0.26.0) and `7fe450e19` (ggml 0.25.1). The plugin refuses to load into a ggml with a different backend API than it was built for (it prints why and the model loads normally). Linux only for now.
 
 ## FAQ
 
-**Do I need this if my model fits in RAM?** No. It matches stock speed there (a few percent either way). The gain is when memory is short or the model is larger than your RAM. _work in progress though, I'm currently seeing different ways to improve speed and efficiency_
+**Do I need this if my model fits in RAM?** No. Use stock llama.cpp with `--moe-cache-mib` (see "When to use something else" above). The gain is when memory is short or the model is larger than your RAM. _work in progress though, I'm currently seeing different ways to improve speed and efficiency_
 
 **Why is it not faster when my model already fits in RAM?** Because there is nothing to fix: stock llama.cpp then runs from the page cache with the same kernels. On Qwen3.6-35B at 24 GB, decode needs about 0.5 GB of expert weights per token (8 experts x 32 CPU layers x 1.9 MB), which the memory bus delivers at about 35 GB/s, close to this laptop's measured maximum (40 GB/s), so it is bandwidth-bound for everyone (stock 40, moe-cache 40 tok/s). The speed-ups appear when memory is short (the same model at 12 GB: 10 to 23 tok/s), for models larger than RAM, and for models with slow kernels (Q2_0 and the IQ types, where the executor and the faster kernel help).
 
@@ -172,7 +160,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 ## Documentation
 
-[Quick start](docs/QUICKSTART.md) | [Benchmarks](docs/BENCHMARKS.md) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md) | [Security and privacy](docs/SECURITY.md)
+[Quick start](docs/QUICKSTART.md) | [Benchmarks](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md) | [Security and privacy](docs/SECURITY.md)
 
 ## Configuration (environment variables; `moe-cache-server` sets them for you)
 
@@ -189,6 +177,9 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 | `MOE_CACHE_EXEC_THREADS=N`, `MOE_CACHE_EXEC_READERS=N` | compute threads (default: what llama.cpp asks for) and background reader threads (default 4) |
 | `MOE_CACHE_EXEC_CHECK=1` | recompute every expert op the stock way and compare (slow; for testing) |
 | `MOE_CACHE_FAST_KERNELS=0` | use llama.cpp's own Q2_0 kernel instead of the plugin's |
+| `MOE_CACHE_ROUTE=skip` (`moe-cache-server --fast`) | opt-in approximate routing: skip a low-ranked expert that is not in RAM. About +10-12 % when the model is much bigger than RAM; about 1 token in 15 differs from stock (KL 0.025). Off by default |
+| `MOE_CACHE_HOST_RESERVE_MIB` | memory kept free for llama-server's prompt cache (`--cache-ram`); the launcher sets it |
+| `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
 
 ## Acknowledgements
 

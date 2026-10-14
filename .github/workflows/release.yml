@@ -27,7 +27,7 @@ jobs:
       - name: Check scripts
         run: |
           for f in install.sh build.sh bin/* tests/*.sh tools/*.sh; do bash -n "$f"; done
-          python3 -m py_compile planner/plan.py bench/moe_bench.py tests/ident.py
+          python3 -m py_compile planner/plan.py planner/gguf_plan.py tests/ident.py
 
       - name: Q2_0 kernel is bit-exact (no model needed)
         run: |

@@ -45,7 +45,7 @@ unless said otherwise. "Measured" = a number from a clean run on this machine; "
 ## 128k context (what the numbers say)
 
 Flash-Next's KV cache is small: 60 MiB per 2,048 tokens in f16, so about 3.8 GiB at 128k (1.9 GiB with q8_0). On an 8 GB card that leaves little for a GPU expert cache,
-so a long context and a big cache compete for the same VRAM. `bench/quality.py longctx` measures retrieval and speed at growing lengths, and `soak` checks
+so a long context and a big cache compete for the same VRAM. `bench/quality.py longctx` ([moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark)) measures retrieval and speed at growing lengths, and `soak` checks
 that answers, speed and memory stay stable over a long session.
 
 ## Long sessions: memory accounting (found by testing, 2026-10-11)

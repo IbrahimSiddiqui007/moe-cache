@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+- `moe-cache-server --fast`: opt-in approximate routing (`MOE_CACHE_ROUTE=skip`), about +10-12 % when the model is much bigger than RAM, output no longer identical
+  to stock. The default stays exact; the launcher suggests `--fast` when the model is more than twice the memory it may use.
+- The launcher tells the plugin how much memory llama-server's prompt cache needs (`MOE_CACHE_HOST_RESERVE_MIB`) instead of the plugin reading the command line
+  (kept as a fallback).
+- `MOE_CACHE_GUARD=1` (tests only): an evicted expert's pages become inaccessible, so a read the plugin did not intercept crashes instead of seeing zeros.
+- README: a "When to use something else" table (stock llama.cpp when the model fits, Strata for Flash-Next / Qwen3.6 on 12 GB+ VRAM and 32 GB+ RAM), a table of
+  which features need which loading method, the Flash-Next row, MTP and Vulkan claims qualified. QUICKSTART: 2x-12x instead of 2x-7x. BACKENDS: the OpenVINO NPU backend.
+- ROADMAP: llama.cpp version policy (API 3 first-class, API 2 bug fixes only, and when API 2 is dropped).
+- **The benchmark tool moved to its own repository**, [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) (`bin/moe-cache-bench`, `bench/*.py`, BENCHMARKS.md, TEST_PROTOCOL.md).
+  It finds moe-cache through `MOE_CACHE_DIR` or a folder next to it. The shared tuner moved from `bench/gguf_plan.py` to `planner/gguf_plan.py`.
+- ROADMAP: llama.cpp API 2 stays in maintenance mode (bug fixes only) although its drop condition is met.
+
 ## 0.2.3.1 (2026-10-14)
 - **Fix: CPU weight repacking now follows llama-server's `--no-repack` / `-nr` / `LLAMA_ARG_REPACK=0`.** On CPU-only machines the plugin repacked expert weights even when the server
   was started without repacking, so its kernels added up in another order than stock and tokens differed late in the answer (found by the new CI job).
