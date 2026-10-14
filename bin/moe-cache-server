@@ -35,6 +35,7 @@ if [ -n "$_WANT_API" ] && [ -n "$_HAVE_API" ] && [ "$_WANT_API" != "$_HAVE_API" 
   echo "moe-cache: WARNING: $LIB was built for ggml backend API $_HAVE_API but $LS uses API $_WANT_API: the plugin will refuse to load (build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)" >&2
 fi
 [ -f "$LIB" ] || { echo "plugin not built: run ./build.sh first (looked for $LIB)"; exit 1; }
+NCMOE_USER="$NCMOE"
 if [ -z "$NCMOE" ]; then
   P=("${MOE_CACHE_PYTHON:-python3}" "$HERE/planner/plan.py" "$MODEL" --ctx "$CTX" --json); [ -n "$RAM" ] && P+=(--ram-gib "$RAM"); [ -n "$VRAM" ] && P+=(--vram-gib "$VRAM")
   NCMOE=$("${P[@]}" 2>/dev/null | python3 -c 'import sys,json; print(json.load(sys.stdin)["n_cpu_moe"])' 2>/dev/null || true)
@@ -115,7 +116,13 @@ if [ "$UBARG" = auto ]; then
     UBARG=$(printf '%s' "$TUNE_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["ub"])' 2>/dev/null || true)
   fi
 fi
-case "$UBARG" in ""|auto) ;; *[!0-9]*) echo "moe-cache: --ub must be auto or a number"; UBARG="";; *) EXTRA+=(-ub "$UBARG" -b 2048); echo "moe-cache: micro-batch -ub $UBARG (prompt processing; --ub N to change)";; esac
+case "$UBARG" in ""|auto) ;; *[!0-9]*) echo "moe-cache: --ub must be auto or a number"; UBARG="";; *) EXTRA+=(-ub "$UBARG" -b "$(( UBARG > 2048 ? UBARG : 2048 ))"); echo "moe-cache: micro-batch -ub $UBARG (prompt processing; --ub N to change)";; esac
+# without a GPU cache, take the static expert layers from the same decision as the micro-batch (the planner alone assumes a small compute buffer
+# and fills the card, so the long-prompt GPU block found no room next to -ub 2048: Flash-Next prefill 18 instead of 50+ tok/s)
+if [ "$GCACHE" = off ] && [ -z "$NCMOE_USER" ] && [ "$NCMOE" != 0 ] && [ -n "$TUNE_JSON" ]; then
+  T_NC=$(printf '%s' "$TUNE_JSON" | python3 -c 'import sys,json; print(json.load(sys.stdin)["n_cpu_moe"])' 2>/dev/null || true)
+  case "$T_NC" in ""|*[!0-9]*) ;; *) NCMOE=$T_NC;; esac
+fi
 if [ "$GCACHE" != off ] && [ "$NCMOE" != 0 ]; then
   GCMIB="$GCACHE"
   if [ "$GCACHE" = auto ]; then
@@ -134,6 +141,9 @@ if [ $HYBRID = 1 ] && [ "$NCMOE" != 0 ]; then
   echo "moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)"
   [ -f "$PROFILE" ] || echo "moe-cache: --hybrid: no usage profile yet ($PROFILE): the bank is chosen from it, so this first session runs without one"
 fi
+# short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (uploading every layer for a 40-token prompt took 4-5 s, the CPU 3.3 s;
+# from about 100 tokens the GPU is faster). The exact default keeps llama.cpp's own threshold (32), so its results stay identical to stock.
+if { [ $HYBRID = 1 ] || [ $FAST = 1 ]; } && [ -z "${MOE_CACHE_GPU_MIN_TOKENS:-}" ]; then ENVV+=(MOE_CACHE_GPU_MIN_TOKENS=64); fi
 # llama-server saves finished prompts in host RAM (--cache-ram, 8 GiB by default). That memory competes with the expert cache and arrives in bursts, so it is
 # capped at 2 GiB here (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
 CRAM=""

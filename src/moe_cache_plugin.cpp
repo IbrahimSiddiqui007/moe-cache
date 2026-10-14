@@ -489,6 +489,7 @@ struct state_t {
     bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
     std::atomic<uint64_t> sibling_loads{0};
     bool   lookahead = false;
+    bool   prompt_prefetch = false;                     // MOE_CACHE_PROMPT_PREFETCH=1: during long prompts read layer N+1's experts while layer N runs
     int    la_guess = 0;                                // experts looked at per layer (0 = the number used per token)
     int    la_cap = 2;                                  // at most this many experts not yet in RAM are prefetched per layer
     bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
@@ -872,6 +873,9 @@ struct state_t {
         if (const char * tp = getenv("MOE_CACHE_TRACE_IDS")) {
             trace_f = fopen_private(tp);
         }
+        if (const char * v = getenv("MOE_CACHE_PROMPT_PREFETCH")) {
+            prompt_prefetch = strcmp(v, "0") != 0;
+        }
         if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
             lookahead = strcmp(v, "0") != 0;
             if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_GUESS")) {
@@ -893,6 +897,12 @@ struct state_t {
                 }
                 fprintf(stderr, "moe-cache: lookahead prefetch on (%d helper threads)\n", nt);
             }
+        }
+        if (prompt_prefetch && pf_threads.empty()) {
+            for (int i = 0; i < 4; i++) {
+                pf_threads.emplace_back([this] { pf_main(); });
+            }
+            fprintf(stderr, "moe-cache: prompt prefetch on (long prompts read the next layer's experts in the background)\n");
         }
 #ifdef __linux__
         if (getenv("MOE_CACHE_STATS_SIGNAL")) {
@@ -1066,7 +1076,10 @@ struct state_t {
     }
 
     // reserve cache room for the given experts of a layer (without evicting anything the current group needs) and read them in the background
-    void reserve_and_read(int layer, const std::vector<int> & guess) {
+    void reserve_and_read(int layer, const std::vector<int> & guess, int cap = -1) {
+        if (cap < 0) {
+            cap = la_cap;
+        }
         std::vector<std::pair<io_job_t, int>> todo;
         {
             std::lock_guard<std::mutex> lk(mu);
@@ -1082,7 +1095,7 @@ struct state_t {
                         continue;                 // out of range, or already in RAM: nothing to read
                     }
                 }
-                if (++fresh > la_cap) {
+                if (++fresh > cap) {
                     break;
                 }
                 for (int ti_i : lt->second) {
@@ -3405,6 +3418,17 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 s.route_ids[ids] = std::move(eff);
             }
             exec_jobs += s.prepare_group(tidx, used, exec_graph);
+            // long prompts use nearly every expert of every layer: start reading the next layer's experts now, while this layer is uploaded and computed
+            if (s.prompt_prefetch && n_tok >= s.gpu_min_tokens && (size_t) (n_tok * n_used) >= 2 * used.size()) {
+                const int layer = s.tensors[(size_t) tidx[0]]->layer;
+                if (layer >= 0) {
+                    std::vector<int> all(used.size());
+                    for (size_t e = 0; e < all.size(); e++) {
+                        all[e] = (int) e;
+                    }
+                    s.reserve_and_read(layer + 1, all, (int) all.size());
+                }
+            }
             if (s.lookahead && n_tok == 1) {
                 const ggml_tensor * xin = node->src[1];
                 if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {

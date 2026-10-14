@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- **Prompt speed fix for the default launcher** (`--gpu-cache off`): static expert layers and `-ub` now come from one tuner decision that keeps room for the
+  long-prompt GPU block at the chosen micro-batch (1.6x a layer at `-ub 2048`). Flash-Next on 8 GB: prefill 18 -> 64-76 tok/s (RESULTS section 35).
+- Launcher: `-b` follows a `-ub` above 2048 (it was fixed at 2048, which capped `--ub 4096`).
+- `--hybrid` and `--fast` keep prompt batches under 64 tokens on the CPU (`MOE_CACHE_GPU_MIN_TOKENS=64`): short chat prompts 4.6 -> 3.3 s to the first token.
+  The exact default keeps 32, as llama.cpp.
+- `MOE_CACHE_PROMPT_PREFETCH=1` (experimental, off): read the next layer's experts in the background during long prompts; no gain measured.
+- RESULTS section 34: the hybrid on GLM-5.3-Flash (bank too small on 8 GB) and on Qwen3.6 (slower than `--gpu-cache` for Q4_K experts).
 - **Exactness fix (race, batches of 8 tokens):** in executor graphs the expert reads are asynchronous; the ops handed back to llama.cpp (tiled case, entry below)
   did not wait for them and could read an expert that was still loading. They wait now. Seen as logit differences at batch 8 with evictions (KL 0.004-0.006, Flash-Next
   and Qwen3-Coder); never in a release (it came with the tiled hand-back). New `tests/kl_batch.sh` (llama-perplexity logits at batch 8, stock vs plugin, must be KL 0)

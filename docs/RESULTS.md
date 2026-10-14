@@ -866,3 +866,44 @@ Live, clean-run gate, one run per row:
   Tried offline and dropped: starting slot scores from the profile, a lasting profile prior (helps the matching case by 1 point, costs 5 points in the drifting one),
   fewer or rarer swaps, a higher minimum miss count; all trade the two cases against each other.
 - Upload cost is small: 2 experts per token (about 2.8 MB), 0.26-1.7 s per run in total.
+
+## 34. Hybrid on GLM-5.3-Flash and on Qwen3.6-35B at 12 GB (8 GB card; 2026-10-14)
+
+Clean-run gate, one run per row.
+
+| Model, limit | Run | Picks on the GPU | Decode tok/s | Identical to stock |
+|---|---|---|---|---|
+| GLM-5.3-Flash UD-IQ2_XXS, 24 GB, 4 x 24 tokens | plugin exact (learned a usage profile) | - | 1.72 / 1.89 / 1.78 / 1.90 | 4/4 |
+| same | `MOE_CACHE_HYBRID=auto` (only 716 MiB free next to the non-expert part: 99 experts) | 15.9 % | 1.84 / 2.06 / 2.00 / 2.03 | 2/4 |
+| Qwen3.6-35B-A3B Q4_K_M, 12 GB, 8 x 48 tokens | plugin + llama.cpp GPU cache 5000 MiB (section 29) | - | 15.7 (mean of 4-8) | - |
+| same | `MOE_CACHE_HYBRID=auto` (5,230 MiB bank, adaptive) | 55.2 % | **8.74** | - |
+
+- GLM: the bank is too small on 8 GB to matter, and decode is limited by SSD reads (57 % cache hits); a 12-16 GB card (BIGGER_MACHINES B12).
+- Qwen3.6 (Q4_K experts): the hybrid loses to llama.cpp's GPU cache by almost half. The CPU computes Q4_K fast and the experts are small, so the hybrid's per-layer
+  GPU round trip (graph, activation upload, sync, copy back, 40 layers per token) costs more than it saves. The hybrid helps models whose experts are slow on the CPU
+  (Flash-Next: IQ2_XS / Q2_0 with the plugin's executor); for Q4_K-class models keep `--gpu-cache`.
+
+## 35. Prompt speed and time to first token on the default path (Flash-Next IQ2_XS, 8 GB card, 24 GB limit, ctx 8192; 2026-10-14)
+
+Clean-run gate, one run per row; same prompts as section 32.
+
+| Run | Prefill tok/s (2k / 2k / 5k / 5.4k) | Note |
+|---|---|---|
+| launcher default (`--gpu-cache off`, `--ub auto` = 2048) before | 21.3 / 17.6 / 18.0 / 17.8 | the long-prompt block lacked 10 MiB (needs 1,107 MiB per layer at `-ub 2048`, 1.57x the layer) |
+| **same after the tuner fix** (static expert layers and `-ub` from one decision, block reserved per `-ub`) | **74.1 / 75.9 / 64.1 / 73.0** | about 4x for every default user |
+| `--hybrid --ub 4096` (with `-b 4096`; the launcher passed `-b 2048` before, which capped `-ub`) | 95.7 / 77.3 / 26.0 / 24.2 | +30 % on the first 2k prompt, but the 5k prompts ran out of GPU memory on 8 GB and fell back to the CPU: for 12-16 GB cards (BIGGER_MACHINES B13) |
+| `--hybrid`, next layer's experts read in the background during long prompts (`MOE_CACHE_PROMPT_PREFETCH=1`) | 52.9 / 75.4 / 65.5 / 70.5 | no gain: reader time moved to the helper threads (127 -> 41 s) but the wait did not shrink; off |
+
+Where the time goes (section 32's hybrid run, about 210 s of prompts): about 100 s waiting for 242 GB of expert reads (46 % of what the prompt touched was in RAM),
+54 s of GPU blocks (319 GB uploaded, about 6 GB/s), 21 s of CPU expert compute. Reads run at about 2 GB/s on a 3.6 GB/s drive: the next lever, not yet understood.
+
+Time to first token, launcher default, by the threshold above which a prompt batch runs on the GPU (`MOE_CACHE_GPU_MIN_TOKENS`):
+| Prompt tokens | 32 (default, as llama.cpp) | 128 | 512 |
+|---|---|---|---|
+| 36-37 | 5.17 / 4.02 s | **3.34 / 3.32 s** | 3.24 / 3.38 s |
+| 109-113 | **4.73 / 4.26 s** | 6.92 / 6.84 s | 7.50 / 6.50 s |
+| 180-186 | 5.86 / 5.53 s | 6.51 / 5.49 s | 12.35 / 12.27 s |
+| 414-473 | 9.23 / 13.98 s | 8.67 / 13.68 s | 26.0 / 31.4 s |
+
+The crossover is near 64 tokens. The exact default keeps 32 (stock llama.cpp also moves batches of 32+ tokens to the GPU, so the results stay identical);
+`--hybrid` and `--fast`, which are approximate anyway, now use 64 (short chat prompts about 4.6 -> 3.3 s).
