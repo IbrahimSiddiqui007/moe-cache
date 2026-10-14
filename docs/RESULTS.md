@@ -679,7 +679,7 @@ so no GPU expert cache fits: 1500 MiB failed to allocate), 4 prompts x 24 tokens
 |---|---|---|
 | Stock llama.cpp | - | 0.33, 0.30, 0.33, 0.32 |
 | Plugin 0.2.3.2 (executor takes up to 8-token batches) | **3/4** (one prompt differs at its first token) | 1.64, 1.91, 1.70, 1.79 |
-| Plugin, executor single-token only (`MOE_CACHE_EXEC_MAXCOL=1`, now the default) | **4/4** | 1.69, 1.93, 1.67, 1.70 |
+| Plugin, executor single-token only (`MOE_CACHE_EXEC_MAXCOL=1`) | **4/4** | 1.69, 1.93, 1.67, 1.70 |
 | + 4 efficiency cores | 4/4 | 1.74, 2.00, 1.66, 1.78 |
 | + faster IQ3_XXS kernel (1.24x on the dot product, bit-exact) | 4/4 | 1.69, 1.83, 1.66, 1.71 |
 | + 8 reader threads | 4/4 | 1.72, 1.92, 1.75, 1.80 |
@@ -689,8 +689,8 @@ so no GPU expert cache fits: 1500 MiB failed to allocate), 4 prompts x 24 tokens
 
 - **About 5.5x stock**, token-identical, on a model 3.3x larger than the memory it may use.
 - Why the identity failed first: with the byte check on (`MOE_CACHE_EXEC_CHECK=1`) 3 of 12,348 executor ops differed from llama.cpp in the last bit, all in one 8-token prompt
-  batch of layer 17 (IQ2_XXS gate/up and IQ3_XXS down); single-token decode was exact. The cause inside the multi-token path is not found yet, so the executor now takes
-  single tokens by default (`MOE_CACHE_EXEC_MAXCOL=8` restores the old behaviour; it costs nothing measurable here). Stock vs stock was identical (noise floor PASS).
+  batch of layer 17 (IQ2_XXS gate/up and IQ3_XXS down); single-token decode was exact. The cause inside the multi-token path is not found yet. The executor keeps taking up to 8 tokens by default
+  (owner's decision, 2026-10-14); `MOE_CACHE_EXEC_MAXCOL=1` makes GLM exact at no measurable cost. Stock vs stock was identical (noise floor PASS).
 - Where the time goes: cache hit rate 56 %, about 1.5 GB read from the SSD per token, about 2.6 GB/s of the drive's 3.6 GB/s. Decode is limited by SSD reads, which is why the
   kernel, more readers, efficiency cores and pre-faulting did not change the speed; only reading less (`--fast`: 21 % fewer bytes) did. The ceiling at this hit rate is about
   2.4 tok/s exact. More RAM (higher hit rate) is the lever: see the bigger-machine list.
@@ -707,3 +707,20 @@ llama.cpp 7fe450e19 built with Vulkan and loadable CPU backends (how official re
 |---|---|---|
 | Stock (Vulkan build) | - | 1.43, 2.27, 3.00, 3.18 |
 | Plugin (executor on, Q2_0 and IQ3_XXS kernels inside the executor) | **4/4** | 2.74, 3.93, 6.28, 7.15 |
+
+## 28. Flash-Next settings on the 8 GB card (2026-10-14)
+
+Qwen3.8-Flash-Next IQ2_XS, `moe-cache-server` (llama.cpp 23b0202a1, API 3 build), 24 GB limit, ctx 4096, 8 requests x 48 tokens, clean-run gate (<= 65 C) before each run,
+one run per row; request-to-request speed varies 8-14 tok/s, so differences under about 10 % are noise.
+
+| Setup | Decode tok/s, mean of requests 4-8 | Same tokens as row 1 |
+|---|---|---|
+| `--gpu-cache auto` (tuner: 1956 MiB, 1110 MiB kept free for long prompts) | 13.09 | - |
+| same with `--ub 512` (cache size unchanged: 1957 MiB) | 11.59 | 8/8 |
+| `--gpu-cache 2900` (no room kept for long prompts) | 12.25 | 8/8 |
+| `--gpu-cache off` (3 static GPU layers, executor + kernels on the CPU) | 12.36 | 6/8 (GPU vs CPU rounding) |
+
+- With the GPU expert cache, llama.cpp computes every expert on the GPU and uploads the ones it does not hold; the plugin's executor runs 0 ops (it only keeps experts in RAM).
+  So CPU kernels cannot speed this setup up; it is limited by PCIe uploads (about 285 MiB per token).
+- A faster IQ2_S kernel (gathers for the grid lookups, bit-exact) measured 0.99x the library function and was dropped.
+- What is left on this card: let the CPU compute the experts the GPU cache misses, in parallel, instead of uploading them (GPU_TIER_DESIGN.md step 3, MULTI_DEVICE_DESIGN.md).

@@ -529,8 +529,8 @@ struct state_t {
     bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
-    int    exec_maxcol = 1;                             // MOE_CACHE_EXEC_MAXCOL=N (up to 8): largest batch the executor takes. Default 1: on GLM-5.3-Flash an 8-token
-                                                        // batch differed from stock in the last bit of 3 of 12,348 ops (cause not found yet), which changed a token
+    int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch the executor takes. Known issue: on GLM-5.3-Flash an 8-token batch
+                                                        // differed from stock in the last bit of 3 of 12,348 ops (cause not found, T34); MOE_CACHE_EXEC_MAXCOL=1 is exact there
     int    exec_ecores = 0;                             // extra workers on efficiency cores
     int    exec_readers = 4;
     std::unique_ptr<exec_pool_t> pool;
