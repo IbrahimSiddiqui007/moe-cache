@@ -409,6 +409,39 @@ struct exec_pool_t {
     }
 };
 
+// true when the server was started with --no-repack / -nr (or LLAMA_ARG_REPACK=0): stock then runs the plain CPU kernels, so the plugin must not repack either
+// (repacked kernels add up in another order and the tokens would no longer match stock)
+static bool server_repack_disabled() {
+    if (const char * v = getenv("LLAMA_ARG_REPACK")) {
+        if (!strcmp(v, "0") || !strcasecmp(v, "false") || !strcasecmp(v, "off") || !strcasecmp(v, "no") || !strcasecmp(v, "disabled")) {
+            return true;
+        }
+    }
+#ifdef __linux__
+    if (FILE * cf = fopen("/proc/self/cmdline", "rb")) {
+        std::string cmd;
+        char buf[4096];
+        size_t nr;
+        while ((nr = fread(buf, 1, sizeof(buf), cf)) > 0) {
+            cmd.append(buf, nr);
+        }
+        fclose(cf);
+        for (size_t b = 0; b < cmd.size();) {
+            const size_t e = cmd.find('\0', b);
+            const std::string a = cmd.substr(b, e == std::string::npos ? std::string::npos : e - b);
+            if (a == "--no-repack" || a == "-nr") {
+                return true;
+            }
+            if (e == std::string::npos) {
+                break;
+            }
+            b = e + 1;
+        }
+    }
+#endif
+    return false;
+}
+
 struct state_t {
     bool   cache_on = false;
     bool   stats = false;
@@ -652,7 +685,7 @@ struct state_t {
                     const auto t = ggml_backend_dev_type(ggml_backend_dev_get(i));
                     gpu = gpu || t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU;
                 }
-                want = !gpu;
+                want = !gpu && !server_repack_disabled();
             }
             if (want) {
                 ggml_backend_dev_t cd = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);

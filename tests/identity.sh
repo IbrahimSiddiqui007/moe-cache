@@ -5,6 +5,7 @@
 # --limit GB runs both servers in their own memory-limited scope (systemd-run, swap off): use it for models bigger than your RAM, so a runaway
 #   server is killed alone instead of taking the desktop session down.
 # --np N starts the server with N slots; --parallel sends the prompts two at a time (use with --np 2).
+# IDENT_ALLOW_INACTIVE=1 skips the 'plugin was active' check (noise-floor run with MOE_CACHE_DISABLE=1).
 # --long uses long prompts (hundreds of tokens), which exercise the batched / GPU-assisted path.
 # Starts the stock server (no plugin), then the server with the plugin, on port 8099, and compares 4 prompts.
 set -e
@@ -27,7 +28,7 @@ echo "2/2 server with the plugin"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL"); [ -n "$RAM" ] && ENVV+=(MOE_CACHE_RAM_GIB="$RAM")
 [ -n "$IDENT_PLUGIN_ENV" ] && ENVV+=($IDENT_PLUGIN_ENV)
 "${PRE[@]}" env "${ENVV[@]}" "$LS" "${COMMON[@]}" > "$TMP/plugin.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/plugin.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
-if grep -q "moe-cache: .*plugin disabled" "$TMP/plugin.log" || ! grep -qE "moe-cache: (cache mode|pass-through mode)" "$TMP/plugin.log"; then
+if [ -z "$IDENT_ALLOW_INACTIVE" ] && { grep -q "moe-cache: .*plugin disabled" "$TMP/plugin.log" || ! grep -qE "moe-cache: (cache mode|pass-through mode)" "$TMP/plugin.log"; }; then
   echo "FAIL: the plugin was not active in the second run (no 'moe-cache: cache mode' line in the server log), so this comparison proves nothing."
   grep "moe-cache:" "$TMP/plugin.log" | tail -5; exit 2
 fi

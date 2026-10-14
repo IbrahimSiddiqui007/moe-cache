@@ -70,6 +70,24 @@ jobs:
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
 
+      - name: Noise floor - plugin loaded but disabled, no repacking (must equal stock; if it does not, the comparison itself is not deterministic)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          IDENT_EXTRA: "--no-repack"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_DISABLE=1"
+          IDENT_ALLOW_INACTIVE: "1"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_floor.txt || true
+
+      - name: Identity, cache enabled without eviction (2 GiB) and no repacking
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_EXTRA: "--no-repack"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=2"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_noevict.txt || true
+
       - name: Keep the logs
         if: always()
         uses: actions/upload-artifact@v4
