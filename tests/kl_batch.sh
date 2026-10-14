@@ -24,6 +24,7 @@ if ! grep -qE "moe-cache: (cache mode|pass-through mode)" "$TMP/plugin.txt"; the
 fi
 grep "moe-cache:" "$TMP/plugin.txt" | grep -E "executor ran|hit |active:" || true
 grep -E "Mean +KLD|Maximum KLD|Same top p" "$TMP/plugin.txt"
-# the base logits are stored rounded (16 bits), which leaves a maximum KLD of about 1e-4 between identical runs
-if grep -qE "Same top p: +100\.000" "$TMP/plugin.txt" && grep -qE "Mean +KLD: +-?0\.000000" "$TMP/plugin.txt"; then echo "PASS: same logits as stock at batch 8"; exit 0; fi
+# the base logits are stored rounded (16 bits), which leaves a maximum KLD of about 1e-4 and a mean of +-1e-6 between identical runs
+KLD=$(grep -m1 -oE "Mean +KLD: +-?[0-9.]+" "$TMP/plugin.txt" | grep -oE -- "-?[0-9.]+$")
+if grep -qE "Same top p: +100\.000" "$TMP/plugin.txt" && awk -v k="${KLD:-1}" 'BEGIN { exit !(k <= 1e-5 && k >= -1e-5) }'; then echo "PASS: same logits as stock at batch 8"; exit 0; fi
 echo "FAIL: the plugin's logits differ from stock at batch 8"; exit 1
