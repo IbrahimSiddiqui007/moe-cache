@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- `MOE_CACHE_GPU_MIN_TOKENS=1` gave one repeated token (single-token batches on the GPU; Granite 3.1, T25); 1 is now treated as 2 with a warning.
+- `MOE_CACHE_COALESCE_MIB=N` (experimental, off): neighbouring expert reads of a long prompt merged into reads of up to N MiB.
 - **Prompt speed fix for the default launcher** (`--gpu-cache off`): static expert layers and `-ub` now come from one tuner decision that keeps room for the
   long-prompt GPU block at the chosen micro-batch (1.6x a layer at `-ub 2048`). Flash-Next on 8 GB: prefill 18 -> 64-76 tok/s (RESULTS section 35).
 - Launcher: `-b` follows a `-ub` above 2048 (it was fixed at 2048, which capped `--ub 4096`).

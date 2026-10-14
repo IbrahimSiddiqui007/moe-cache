@@ -489,7 +489,9 @@ struct state_t {
     bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
     std::atomic<uint64_t> sibling_loads{0};
     bool   lookahead = false;
-    bool   prompt_prefetch = false;                     // MOE_CACHE_PROMPT_PREFETCH=1: during long prompts read layer N+1's experts while layer N runs
+    bool   prompt_prefetch = false;
+    size_t coalesce_bytes = 0;                          // MOE_CACHE_COALESCE_MIB=N: neighbouring expert reads merged up to N MiB (synchronous reads)
+    std::atomic<uint64_t> coalesced{0};                     // MOE_CACHE_PROMPT_PREFETCH=1: during long prompts read layer N+1's experts while layer N runs
     int    la_guess = 0;                                // experts looked at per layer (0 = the number used per token)
     int    la_cap = 2;                                  // at most this many experts not yet in RAM are prefetched per layer
     bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
@@ -677,6 +679,12 @@ struct state_t {
         direct_ok = direct_env && strcmp(direct_env, "0") != 0;
         if (const char * v = getenv("MOE_CACHE_GPU_MIN_TOKENS")) {
             gpu_min_tokens = atoi(v);
+            if (gpu_min_tokens == 1) {
+                // 1-token batches on the GPU produce one repeated token (Granite 3.1, T25; 2+ tokens are fine) and would upload whole layers for every
+                // decoded token anyway: the executor handles single tokens
+                fprintf(stderr, "moe-cache: MOE_CACHE_GPU_MIN_TOKENS=1 is not supported (wrong output for single-token batches): using 2\n");
+                gpu_min_tokens = 2;
+            }
         }
         for (size_t i = 0; i < ggml_backend_dev_count() && gpu_min_tokens > 0; i++) {
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
@@ -872,6 +880,9 @@ struct state_t {
         }
         if (const char * tp = getenv("MOE_CACHE_TRACE_IDS")) {
             trace_f = fopen_private(tp);
+        }
+        if (const char * v = getenv("MOE_CACHE_COALESCE_MIB")) {
+            coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;
         }
         if (const char * v = getenv("MOE_CACHE_PROMPT_PREFETCH")) {
             prompt_prefetch = strcmp(v, "0") != 0;
@@ -1277,6 +1288,9 @@ struct state_t {
             }
         }
         if (cache_on && stats && gpu_dev) {
+            if (coalesced) {
+                fprintf(stderr, "moe-cache: %llu expert reads merged into their neighbours (MOE_CACHE_COALESCE_MIB)\n", (unsigned long long) coalesced.load());
+            }
             fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
         }
         if (cache_on && stats) {
@@ -1895,6 +1909,29 @@ struct state_t {
     // read the queued experts, then (auto mode) look at the real memory use again
     void flush_reads(std::vector<io_job_t> & jobs, size_t max_nb2) {
         const bool did_reads = !jobs.empty();
+        if (coalesce_bytes && jobs.size() > 1) {
+            // long prompts need nearly every expert of a layer, and neighbouring experts of a tensor are neighbours in the file and in memory:
+            // one large read instead of many half-megabyte ones (the drive reaches its speed only with large or many parallel reads)
+            std::sort(jobs.begin(), jobs.end(), [](const io_job_t & a, const io_job_t & b) { return a.fdi != b.fdi ? a.fdi < b.fdi : a.off < b.off; });
+            std::vector<io_job_t> merged;
+            merged.reserve(jobs.size());
+            for (const auto & j : jobs) {
+                if (!merged.empty()) {
+                    io_job_t & m = merged.back();
+                    if (m.direct && j.direct && !m.rtensor && !j.rtensor && m.fdi == j.fdi && m.off + m.nb2 == j.off && m.dst + m.nb2 == j.dst &&
+                        m.nb2 + j.nb2 <= coalesce_bytes) {
+                        m.nb2 += j.nb2;
+                        coalesced++;
+                        continue;
+                    }
+                }
+                merged.push_back(j);
+            }
+            jobs.swap(merged);
+            for (const auto & j : jobs) {
+                max_nb2 = std::max(max_nb2, j.nb2);
+            }
+        }
         if (!jobs.empty()) {
             const auto r0 = std::chrono::steady_clock::now();
             do_reads(jobs, max_nb2);
