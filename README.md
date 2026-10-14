@@ -32,9 +32,9 @@ moe-cache manages the CPU-side experts itself:
 
 | Your situation | Best choice |
 |---|---|
-| The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). On Qwen3.6-35B at 24 GB it reached 43 tok/s against 39 for moe-cache with static GPU layers (RESULTS section 15). moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. |
+| The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). On Qwen3.6-35B (21.7 GB) at a 24 GB limit, both with the same 5000 MiB GPU cache: stock 42 tok/s, moe-cache 30-34 (RESULTS section 29). moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. |
 | You want **Qwen3.8-Flash-Next or Qwen3.6-35B as fast as possible** and have **12 GB+ VRAM and 32 GB+ RAM** | [Strata](https://github.com/Niko1221/Strata), an engine built for those models (its authors report 94 tok/s on an RTX 5070). |
-| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: 2x to 12x stock in our measurements (table below). |
+| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: 2x to 12x stock in our measurements (table below; the same Qwen3.6 at a 12 GB limit: 15.7 vs 5.5 tok/s). |
 
 ## Get started
 

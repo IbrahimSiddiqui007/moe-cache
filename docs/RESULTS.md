@@ -726,3 +726,21 @@ one run per row; request-to-request speed varies 8-14 tok/s, so differences unde
   So CPU kernels cannot speed this setup up; it is limited by PCIe uploads (about 285 MiB per token).
 - A faster IQ2_S kernel (gathers for the grid lookups, bit-exact) measured 0.99x the library function and was dropped.
 - What is left on this card: let the CPU compute the experts the GPU cache misses, in parallel, instead of uploading them (GPU_TIER_DESIGN.md step 3, MULTI_DEVICE_DESIGN.md).
+
+## 29. Fits in RAM vs not, with llama.cpp's GPU expert cache in both (Qwen3.6-35B-A3B Q4_K_M, 21.7 GB; 2026-10-14)
+
+llama.cpp 23b0202a1, same arguments for both (`--n-cpu-moe 999 --moe-cache-mib 5000 -ub 1024 -C 0x555 --cpu-strict 1 --cache-ram 2048`, ctx 4096), plugin with
+`MOE_CACHE_GPU_CACHE=1` and 4 efficiency cores; 8 requests x 48 tokens, clean-run gate before each run, order stock, plugin, plugin, stock, then 12 GB.
+
+| Limit | Run | Decode tok/s per request | Mean of requests 4-8 |
+|---|---|---|---|
+| 24 GB (fits) | stock | 30.6 38.0 40.7 39.3 47.1 45.7 40.0 39.7 | **42.3** |
+| 24 GB | plugin | 9.6 13.7 20.9 27.8 31.2 31.5 28.3 31.3 | 30.0 |
+| 24 GB | plugin | 9.8 14.0 22.2 31.7 34.9 35.8 32.2 36.3 | 34.2 |
+| 24 GB | stock (page cache emptied by the plugin runs: re-reads from the SSD) | 4.4 7.2 12.0 26.1 23.3 28.2 20.8 27.2 | 25.1 (not comparable) |
+| 12 GB (does not fit) | plugin | 11.8 11.8 11.9 11.5 22.0 18.2 12.4 14.4 | **15.7** |
+| 12 GB | stock | 4.4 4.6 5.1 4.5 7.5 6.6 4.3 4.7 | 5.5 |
+
+- When the model fits, stock with a warm page cache is faster (42 vs 30-34 tok/s): after its margins the plugin's own cache gets 17.5 GiB and holds 90 % of what is
+  used, while stock's page cache holds the whole 21.7 GB file. Use stock llama.cpp when the model fits (README "When to use something else").
+- When it does not fit (12 GB), the plugin is 2.9x stock.
