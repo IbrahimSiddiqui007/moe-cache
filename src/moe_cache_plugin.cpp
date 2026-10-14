@@ -2760,7 +2760,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                     }
                 }
                 s.pf_submit([ranges = std::move(ranges)] {
-                    static volatile uint64_t sink;
+                    [[maybe_unused]] static volatile uint64_t sink;
                     uint64_t acc = 0;
                     for (const auto & r : ranges) {
                         for (size_t off = 0; off + 8 <= r.second; off += 64) {

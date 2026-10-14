@@ -1,13 +1,14 @@
 # Token-identity gate on a GitHub runner (no GPU, no big model): builds llama.cpp CPU-only at each supported pin, builds the plugin for that pin,
 # downloads a small MoE (Granite 3.1 1B-A400M Q4_K_M, sha256-checked) and checks that stock and plugin produce identical tokens
 # with the cache forced to evict (0.2 GiB) and with the executor forced on and byte-checked (repacking off, or the executor steps aside).
-#   Actions tab -> identity -> Run workflow   (also runs weekly, Monday 05:00 UTC)
+#   Actions tab -> identity -> Run workflow   (also runs daily, 05:00 UTC). The "master" row builds llama.cpp's newest commit: an early warning
+#   when upstream changes something the plugin depends on (it may fail without the release being broken).
 name: identity
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 5 * * 1"
+    - cron: "0 5 * * *"
 
 permissions:
   contents: read
@@ -16,6 +17,7 @@ jobs:
   identity:
     runs-on: ubuntu-22.04
     timeout-minutes: 75
+    continue-on-error: ${{ matrix.name == 'master-api3' }}
     defaults:
       run:
         shell: bash          # bash -eo pipefail: a FAIL from identity.sh must fail the step even through tee
@@ -25,6 +27,7 @@ jobs:
         include:
           - { name: "ggml-0.25-api2", sha: "7fe450e19305b828c199d602c23a8337aaa1f03b", api: "2" }
           - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3" }
+          - { name: "master-api3", sha: "master", api: "3" }
     steps:
       - uses: actions/checkout@v4
 
@@ -42,9 +45,10 @@ jobs:
                 -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
           cmake --build build --target llama-server -j "$(nproc)"
 
-      - name: Plugin for this pin
+      - name: Plugin for this pin (warnings are errors)
         run: |
-          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; else H=third_party/ggml; fi
+          g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp
           ./build.sh --portable
           ls -la build/libggml-moe-cache.so
 
@@ -69,6 +73,15 @@ jobs:
           IDENT_EXTRA: "--no-repack"      # CPU weight repacking would make the executor step aside (repacked weights); both servers get the flag
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+
+      - name: Identity with guard mode (evicted pages inaccessible, so an unintercepted read crashes instead of reading zeros)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_EXTRA: "--no-repack"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_GUARD=1"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_guard.txt
 
       - name: Noise floor - plugin loaded but disabled, no repacking (must equal stock; if it does not, the comparison itself is not deterministic)
         env:
