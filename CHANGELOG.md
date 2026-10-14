@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- **Fix: CPU weight repacking now follows llama-server's `--no-repack` / `-nr` / `LLAMA_ARG_REPACK=0`.** On CPU-only machines the plugin repacked expert weights even when the server
+  was started without repacking, so its kernels added up in another order than stock and tokens differed late in the answer (found by the new CI job).
+- **CI: `identity` workflow** (GitHub runner, no GPU): llama.cpp built CPU-only at both pins, Granite 3.1 1B-A400M (sha256-checked), stock vs plugin with the cache forced
+  to evict (about 39k evictions), with the executor forced on and byte-checked (6,708 ops, 0 mismatches), a noise-floor run and a no-eviction run; 4/4 identical on API 2 and API 3.
+  `tests/identity.sh` now prints the first diverging token per prompt.
+
 ## 0.2.3 (2026-10-12)
 - **Fix: long-prompt processing with the GPU expert cache.** The plugin's long-prompt GPU block needs about one layer of free VRAM; with a full-size cache it silently
   stayed on the CPU (prefill 24 tok/s) or aborted the server. The plugin now checks free VRAM and warns once; the tuner leaves room for the block
