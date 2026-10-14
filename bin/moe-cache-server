@@ -2,7 +2,7 @@
 # moe-cache-server: run llama-server with the expert-cache plugin.
 #   moe-cache-server MODEL.gguf [--project NAME] [--ram GB] [--vram GB] [--ctx N] [--n-cpu-moe N] [--port P] [--llama-server PATH] [--load-method auto|preload|path] [--fast] [--open] [--dry-run] [-- extra llama-server args]
 # --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD.
-#              About +10-12 % when the model is much bigger than RAM; about 1 token in 15 differs from stock (KL 0.025, docs/RESULTS.md sections 21 and 25)
+#              About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31)
 # --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
 #              while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
 #              --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)

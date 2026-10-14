@@ -19,6 +19,10 @@
 - Hybrid: adaptive bank (`MOE_CACHE_HYBRID_ADAPT=N,K`, default 8,16, 0 = off): every N tokens up to K of the most missed experts replace the coldest expert of their
   layer's bank. Mixed-topic session: bank hits 20 -> 39 %, decode 13.1 -> 14.4 tok/s; when the profile already matches the prompts exactly it costs a little
   (51 -> 47 % hits, 17.6 -> 16.2 tok/s, one run). `tools/bank_replay.py` replays a `MOE_CACHE_TRACE_IDS` recording offline (RESULTS section 33).
+- Hybrid: the adaptive bank switches itself (`MOE_CACHE_HYBRID_DUEL=W`, default 32 tokens): it compares itself with what the profile's own bank would have
+  served and stops swapping (bringing profile experts back) while the profile does better. Matching profile 17.6 (fixed) -> 17.05 tok/s; drifting session
+  12.8 -> 14.9 tok/s (+16.5 %) (RESULTS section 33.1).
+- `--fast` quality re-measured without the race: KL 0.0053 at 24 GB, 0.0115 at 6 GiB (it was 0.025); about 1 top token in 40-50 differs.
 - **Exactness fix (GLM-5.3-Flash):** llama.cpp 23b0202a1 computes an expert with a separate tiled routine once 8 or more tokens of a batch picked it, and that adds up
   in another order than the one-row kernel the executor uses. The executor now leaves exactly those ops to llama.cpp. Before: 3 of 12,348 ops differed in the last bit
   and one answer changed at its first token (3/4); after: 0 mismatches, 4/4, multi-token batches still on. New switch `MOE_CACHE_EXEC_MAXCOL=N` (1-8, default 8).

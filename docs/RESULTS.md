@@ -793,6 +793,7 @@ New test `tests/kl_batch.sh` (logits at batch 8, stock vs plugin, must be KL 0) 
 | exact again (noise floor) | - | **0.000000** | - | 100 % | 1.000 |
 | `MOE_CACHE_HYBRID=auto`, bank chosen for this text (3,640 MiB, 2,651 experts) | 56.9 % | **0.0043 +- 0.0003** | 0.066 | 98.4 % | 1.0027 +- 0.0020 |
 | `--fast` (route skip; at 24 GB it gives up 3.2 % of the low-ranked picks) | - | 0.0053 +- 0.0003 | 0.088 | 98.1 % | 1.0026 +- 0.0021 |
+| `--fast` with a 6 GiB cache (gives up 31 % of the low-ranked picks) | - | 0.0115 +- 0.0006 | 0.167 | 97.5 % | 1.0034 +- 0.0030 |
 
 - The bank here is larger than in the server (3.6 vs 2.5 GB: perplexity at ctx 512 leaves more VRAM free) and was chosen from this text's own usage, so 57 % of the picks
   ran on the GPU (server: 51 %). With the chat profile only 14 % did; a bank that does not match the work does little, for speed and for quality.
@@ -802,7 +803,7 @@ New test `tests/kl_batch.sh` (logits at batch 8, stock vs plugin, must be KL 0) 
 - Yardsticks not run: llama.cpp's own GPU expert cache (`llama-perplexity --moe-cache-mib` at batch 8 stopped with `GGML_ASSERT(buffer)`; see 31.3) and two 2-bit quants
   of the same model (the Q2_0 / UD-Q2_K_XL copies are no longer on disk; on hold).
 - Section 25.3 (approximate routing, KL 0.025 / 0.036 at a 6 GiB cache) was measured at batch 8 with evictions, so the race above is in those numbers too (both in the
-  exact base and in the approximate runs). The 24 GB row here replaces it; the 6 GiB case is re-measured with T8.
+  exact base and in the approximate runs). The 24 GB and 6 GiB rows here replace it (6 GiB: 0.0115 instead of 0.025).
 
 ### 31.3 Answers and code (`moe-cache-server --hybrid`, launcher, 24 GB limit)
 Reference: the exact answers of section 25.1 (same model, same bank of prompts, 150 tokens). The hybrid server judged "same meaning" itself.
@@ -866,6 +867,18 @@ Live, clean-run gate, one run per row:
   Tried offline and dropped: starting slot scores from the profile, a lasting profile prior (helps the matching case by 1 point, costs 5 points in the drifting one),
   fewer or rarer swaps, a higher minimum miss count; all trade the two cases against each other.
 - Upload cost is small: 2 experts per token (about 2.8 MB), 0.26-1.7 s per run in total.
+
+### 33.1 The bank switches itself (shadow comparison, `MOE_CACHE_HYBRID_DUEL=W`, default 32)
+The plugin also counts what the profile's own bank would have served (a shadow, one table lookup per pick). Every swap round it compares the two over the last W tokens:
+while the shadow is ahead (the session matches the profile) it makes no new swaps and brings profile experts back; otherwise it keeps adapting.
+Replay: matching profile 48.2 % (fixed) / 46.7 % (adaptive) / **48.0 %** (with the shadow); drifting session 19.6 / 40.5 / **40.4 %**.
+
+| Live run (clean-run gate) | Fixed bank | Adaptive + shadow |
+|---|---|---|
+| 8 x 48 tokens, profile matching the prompts | 17.58 tok/s, 51.0 % hits (above) | **17.05**, 50.2 % (323 profile experts brought back) |
+| 30 mixed prompts, same profile snapshot for both | 12.77, 15.0 % | **14.88 (+16.5 %)**, 31.6 % |
+
+The loss in the matching case is now inside the noise (-3 %), the drifting gain stays; on by default whenever the hybrid is on.
 
 ## 34. Hybrid on GLM-5.3-Flash and on Qwen3.6-35B at 12 GB (8 GB card; 2026-10-14)
 

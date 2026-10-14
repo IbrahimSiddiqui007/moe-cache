@@ -467,7 +467,7 @@ struct state_t {
     int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
     std::atomic<uint64_t> hyb_groups{0}, hyb_picks{0}, hyb_hits{0};   // MOE_CACHE_HYBRID: layers split between GPU bank and CPU, picks, picks served by the bank
     std::atomic<uint64_t> hyb_drops{0}, hyb_reloads{0}, hyb_reload_ns{0};
-    std::atomic<uint64_t> hyb_swaps{0}, hyb_swap_ns{0};   // MOE_CACHE_HYBRID_ADAPT: experts swapped into the bank, time spent uploading them   // bank freed for a long prompt's GPU block, loaded again at the next decode step
+    std::atomic<uint64_t> hyb_swaps{0}, hyb_swap_ns{0}, hyb_reverts{0};   // MOE_CACHE_HYBRID_ADAPT: experts swapped into the bank, time spent uploading them   // bank freed for a long prompt's GPU block, loaded again at the next decode step
     std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory
     std::atomic<uint64_t> gpu_up_bytes{0};
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
@@ -1268,8 +1268,8 @@ struct state_t {
             fprintf(stderr, "moe-cache: hybrid: %llu layer steps, %llu of %llu picks computed on the GPU from its bank (%.1f%%), the rest on the CPU\n",
                     (unsigned long long) hyb_groups, (unsigned long long) hyb_hits, (unsigned long long) hyb_picks, hyb_picks ? 100.0 * hyb_hits / hyb_picks : 0.0);
             if (hyb_swaps) {
-                fprintf(stderr, "moe-cache: hybrid: %llu experts swapped into the bank while running (%.2f s uploading)\n",
-                        (unsigned long long) hyb_swaps, hyb_swap_ns / 1e9);
+                fprintf(stderr, "moe-cache: hybrid: %llu experts swapped into the bank while running (%llu of them profile experts brought back; %.2f s uploading)\n",
+                        (unsigned long long) hyb_swaps, (unsigned long long) hyb_reverts, hyb_swap_ns / 1e9);
             }
             if (hyb_drops) {
                 fprintf(stderr, "moe-cache: hybrid: bank freed %llu times for long prompts, loaded again %llu times (%.2f s in total)\n",
@@ -2211,7 +2211,13 @@ struct moe_cache_backend_ctx {
         std::vector<int>   slot_exp;   // expert held by each slot
         std::vector<float> score;      // decayed hits per slot
         std::vector<float> miss;       // misses per expert since the last swap
+        std::vector<char>  base;       // the experts the profile chose for this layer (the shadow bank)
     };
+    // MOE_CACHE_HYBRID_DUEL=W (default 32, 0 = off): count what the profile's own bank would have served (the shadow) next to the real bank over the last W
+    // tokens; while the shadow is ahead (the session matches the profile) no new swaps, and profile experts come back instead
+    int                duel_w = 32;
+    int                ha_cur = 0, hb_cur = 0;
+    std::deque<std::pair<int, int>> duel;
     std::map<int, hb_layer_t> hbl;
     int                hb_first = -1;          // first layer with a bank: one token has passed when it comes round again
     uint64_t           hb_tok = 0;
@@ -2771,6 +2777,11 @@ void hybrid_adapt_setup(moe_cache_backend_ctx * c, state_t & s) {
         c->ad_every = 0;
         return;
     }
+    if (const char * v = getenv("MOE_CACHE_HYBRID_DUEL")) {
+        c->duel_w = std::max(0, atoi(v));
+    }
+    c->duel.clear();
+    c->ha_cur = c->hb_cur = 0;
     for (auto & h : c->hb) {
         const tinfo_t & ti = *s.tensors[(size_t) h.first];
         auto & L = c->hbl[ti.layer];
@@ -2784,15 +2795,92 @@ void hybrid_adapt_setup(moe_cache_backend_ctx * c, state_t & s) {
             }
             L.score.assign(L.slot_exp.size(), 0.0f);
             L.miss.assign(h.second.second.size(), 0.0f);
+            L.base.assign(h.second.second.size(), 0);
+            for (size_t e = 0; e < h.second.second.size(); e++) {
+                L.base[e] = h.second.second[e] >= 0;
+            }
         }
     }
     c->hb_first = c->hbl.empty() ? -1 : c->hbl.begin()->first;
+}
+
+// upload expert e of this layer into bank slot sl (all its weight tensors) and update the slot maps
+void hybrid_put(moe_cache_backend_ctx * c, state_t & s, moe_cache_backend_ctx::hb_layer_t & L, int sl, int e) {
+    const int old = L.slot_exp[(size_t) sl];
+    for (int t : L.tidx) {
+        const tinfo_t & ti = *s.tensors[(size_t) t];
+        auto & h = c->hb[t];
+        const char * src = ti.data + (size_t) e * ti.nb2;
+        gpu_cache_ensure(src, h.first->nb[2]);
+        ggml_backend_tensor_set(h.first, src, (size_t) sl * h.first->nb[2], h.first->nb[2]);
+        if (old >= 0) {
+            h.second[(size_t) old] = -1;
+        }
+        h.second[(size_t) e] = sl;
+    }
+    L.slot_exp[(size_t) sl] = e;
 }
 
 // between two tokens (the GPU is idle): the most missed experts replace the coldest bank expert of their own layer when they were used more often
 void hybrid_adapt(moe_cache_backend_ctx * c, state_t & s) {
     const auto t0 = std::chrono::steady_clock::now();
     const float dec = powf(0.97f, (float) c->ad_every);
+    if (c->duel_w > 0) {
+        int sa = 0, sb = 0;
+        for (const auto & d : c->duel) {
+            sa += d.first;
+            sb += d.second;
+        }
+        if (sa < sb) {
+            // the profile's bank would have served more: bring profile experts back in place of adapted ones (lowest score first), no new swaps
+            int done = 0;
+            for (auto & lv : c->hbl) {
+                auto & L = lv.second;
+                for (float & sc : L.score) {
+                    sc *= dec;
+                }
+                std::fill(L.miss.begin(), L.miss.end(), 0.0f);
+                if (done >= c->ad_swaps) {
+                    continue;
+                }
+                std::vector<char> in(L.base.size(), 0);
+                for (int e : L.slot_exp) {
+                    if (e >= 0) {
+                        in[(size_t) e] = 1;
+                    }
+                }
+                std::vector<std::pair<double, int>> want;     // profile experts missing from the bank, most used first
+                for (size_t e = 0; e < L.base.size(); e++) {
+                    if (L.base[e] && !in[e]) {
+                        want.emplace_back(-s.learned.at(lv.first, (int) e), (int) e);
+                    }
+                }
+                std::sort(want.begin(), want.end());
+                for (const auto & w : want) {
+                    if (done >= c->ad_swaps) {
+                        break;
+                    }
+                    int cold = -1;
+                    for (size_t sl = 0; sl < L.slot_exp.size(); sl++) {
+                        const int e = L.slot_exp[sl];
+                        if (e >= 0 && !L.base[(size_t) e] && (cold < 0 || L.score[sl] < L.score[(size_t) cold])) {
+                            cold = (int) sl;
+                        }
+                    }
+                    if (cold < 0) {
+                        break;
+                    }
+                    hybrid_put(c, s, L, cold, w.second);
+                    L.score[(size_t) cold] = 0.0f;
+                    done++;
+                }
+            }
+            s.hyb_swaps += (uint64_t) done;
+            s.hyb_reverts += (uint64_t) done;
+            s.hyb_swap_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+            return;
+        }
+    }
     std::vector<std::tuple<float, int, int>> cand;          // misses, layer, expert
     for (auto & lv : c->hbl) {
         auto & L = lv.second;
@@ -2825,19 +2913,7 @@ void hybrid_adapt(moe_cache_backend_ctx * c, state_t & s) {
         if (cold < 0 || L.score[(size_t) cold] >= std::get<0>(cd)) {
             continue;
         }
-        const int old = L.slot_exp[(size_t) cold];
-        for (int t : L.tidx) {
-            const tinfo_t & ti = *s.tensors[(size_t) t];
-            auto & h = c->hb[t];
-            const char * src = ti.data + (size_t) e * ti.nb2;
-            gpu_cache_ensure(src, h.first->nb[2]);
-            ggml_backend_tensor_set(h.first, src, (size_t) cold * h.first->nb[2], h.first->nb[2]);
-            if (old >= 0) {
-                h.second[(size_t) old] = -1;
-            }
-            h.second[(size_t) e] = cold;
-        }
-        L.slot_exp[(size_t) cold] = e;
+        hybrid_put(c, s, L, cold, e);
         L.score[(size_t) cold] = std::get<0>(cd);
         done++;
     }
@@ -3005,8 +3081,17 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     const int layer = s.tensors[(size_t) s.by_tensor.at(seg[0]->src[0])]->layer;
     moe_cache_backend_ctx::hb_layer_t * L = nullptr;
     if (c->ad_every > 0) {
-        if (layer == c->hb_first && ++c->hb_tok % (uint64_t) c->ad_every == 0) {
-            hybrid_adapt(c, s);
+        if (layer == c->hb_first) {
+            if (c->duel_w > 0 && c->hb_tok > 0) {      // one token has passed: keep its real and shadow hits for the comparison
+                c->duel.emplace_back(c->ha_cur, c->hb_cur);
+                if ((int) c->duel.size() > c->duel_w) {
+                    c->duel.pop_front();
+                }
+            }
+            c->ha_cur = c->hb_cur = 0;
+            if (++c->hb_tok % (uint64_t) c->ad_every == 0) {
+                hybrid_adapt(c, s);
+            }
         }
         auto lt = c->hbl.find(layer);
         L = lt != c->hbl.end() ? &lt->second : nullptr;
@@ -3024,9 +3109,13 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
                 n_hit++;
                 if (L) {
                     L->score[(size_t) sl] += 1.0f;
+                    c->ha_cur++;
                 }
             } else if (L && e >= 0 && (size_t) e < L->miss.size()) {
                 L->miss[(size_t) e] += 1.0f;
+            }
+            if (L && e >= 0 && (size_t) e < L->base.size() && L->base[(size_t) e]) {
+                c->hb_cur++;
             }
         }
     }
