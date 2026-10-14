@@ -762,3 +762,107 @@ clean-run gate, one run per row); "same tokens" is against the `--gpu-cache auto
 - In line with the estimate from the measured costs (+25-40 %, GPU_TIER_DESIGN.md).
 - Not yet measured: quality (KL divergence / answer comparison), prompt processing (the bank takes the memory the long-prompt GPU block would use), a bank that adapts
   to the session instead of the static profile choice, and other models.
+
+## 31. Hybrid quality, and an exactness race at 8-token batches (Flash-Next IQ2_XS, 8 GB card, 24 GB limit; 2026-10-14)
+
+Method: `llama-perplexity` over 20 chunks x 512 tokens (chunks 1-10 prose from llama.cpp's docs, 11-20 C++ and Python from its sources), batch 8 (`-b 8 -ub 8`) so every
+step goes through the executor and the hybrid, `--n-cpu-moe 999 -ngl 99`, KL divergence against the exact plugin (exact = stock: section 26, identity tests).
+KL runs are quality runs, not speed runs (not temperature-gated).
+
+### 31.1 A race found on the way: exact runs were not repeatable at batch 8
+The first exact-vs-exact control gave mean KL 0.0038 (98.4 % same top token) instead of 0. Controls on Qwen3-Coder-30B-A3B Q4_K_M (fits in RAM; 3 chunks, batch 8):
+
+| Run | Mean KL vs stock | Same top token |
+|---|---|---|
+| stock vs stock | 0.000000 | 100 % |
+| plugin, model fits (no evictions, executor steps aside) | 0.000000 | 100 % |
+| plugin, 10 GB (evictions), executor off | 0.000000 | 100 % |
+| plugin, no evictions, executor forced on | 0.000000 | 100 % |
+| **plugin, 10 GB (evictions) + executor forced on** | **0.0063** | 98.2 % |
+| same, with the fix | 0.000000 | 100 % |
+
+Cause: in executor graphs the expert reads are asynchronous (the executor waits for each expert's flag itself). Since 804cd6f the executor hands ops back to llama.cpp
+when its tiled routine would run (8+ tokens of the batch on one expert); those ops did not wait, so llama.cpp could read an expert that was still being filled.
+The executor's byte check (`MOE_CACHE_EXEC_CHECK=1`) did not see it because its recompute runs after the executor has waited. Fix: wait for the op's experts before handing
+it back. Only `experimental` had it (no release); in the server it needs a batch of exactly 8 tokens (decode is 1 token), so it was rare there.
+New test `tests/kl_batch.sh` (logits at batch 8, stock vs plugin, must be KL 0) and a CI step running it with forced eviction and the forced executor.
+
+### 31.2 Hybrid vs exact (fixed plugin)
+| Run | Picks computed from the GPU bank | Mean KL vs exact | 99 % KL | Same top token | PPL ratio |
+|---|---|---|---|---|---|
+| exact again (noise floor) | - | **0.000000** | - | 100 % | 1.000 |
+| `MOE_CACHE_HYBRID=auto`, bank chosen for this text (3,640 MiB, 2,651 experts) | 56.9 % | **0.0043 +- 0.0003** | 0.066 | 98.4 % | 1.0027 +- 0.0020 |
+| `--fast` (route skip; at 24 GB it gives up 3.2 % of the low-ranked picks) | - | 0.0053 +- 0.0003 | 0.088 | 98.1 % | 1.0026 +- 0.0021 |
+
+- The bank here is larger than in the server (3.6 vs 2.5 GB: perplexity at ctx 512 leaves more VRAM free) and was chosen from this text's own usage, so 57 % of the picks
+  ran on the GPU (server: 51 %). With the chat profile only 14 % did; a bank that does not match the work does little, for speed and for quality.
+- Differences come from the GPU adding up in another order than the CPU (same reason llama.cpp's own GPU expert cache is not bit-identical). About 1 top token in 60
+  changes; the perplexity change is inside its error.
+- `--fast` at 24 GB (KL 0.0053) is much closer to exact than at a 6 GiB cache (0.025, section 25.3): it only skips experts that are not in RAM.
+- Yardsticks not run: llama.cpp's own GPU expert cache (`llama-perplexity --moe-cache-mib` at batch 8 stopped with `GGML_ASSERT(buffer)`; see 31.3) and two 2-bit quants
+  of the same model (the Q2_0 / UD-Q2_K_XL copies are no longer on disk; on hold).
+- Section 25.3 (approximate routing, KL 0.025 / 0.036 at a 6 GiB cache) was measured at batch 8 with evictions, so the race above is in those numbers too (both in the
+  exact base and in the approximate runs). The 24 GB row here replaces it; the 6 GiB case is re-measured with T8.
+
+### 31.3 Answers and code (`moe-cache-server --hybrid`, launcher, 24 GB limit)
+Reference: the exact answers of section 25.1 (same model, same bank of prompts, 150 tokens). The hybrid server judged "same meaning" itself.
+
+| | Exact | `--hybrid` |
+|---|---|---|
+| checkable prompts correct | 26 / 26 | **26 / 26** |
+| judged "same meaning" (2-bit model as the judge) | - | 21 / 30; read by hand: **30 / 30** (the 9 "different" ones are punctuation, rewording such as "looks" for "appears", or the 150-token cut falling elsewhere) |
+| mean text similarity / new degenerate answers | - | 0.91 / 0 |
+| code tasks, thinking off (as in 25.3) | 10 / 10 | **10 / 10** |
+| code tasks, thinking on (1,200 tokens) | not run | 9 / 10 (`word_count`: empty answer, the thinking used all tokens) |
+
+Verdict: the hybrid passes as an opt-in mode (KL below `--fast`, no lost answers); `moe-cache-server --hybrid` added.
+
+### 31.4 Plugin + llama.cpp's GPU expert cache in llama-perplexity at batch 8
+`llama-perplexity --moe-cache-mib 1000 -b 8` runs with stock llama.cpp but stops with `GGML_ASSERT(buffer)` (ggml-backend.cpp:273) at the first compute with the plugin
+(`MOE_CACHE_GPU_CACHE=1`), on Qwen3-Coder and Flash-Next. The server with the same setup works (section 28); `llama-perplexity` does a warm-up decode that the launcher
+switches off, which is the first suspect. Open.
+
+## 32. Prompt speed with the hybrid (Flash-Next IQ2_XS, 8 GB card, 24 GB limit, ctx 8192; 2026-10-14)
+
+Launcher defaults, clean-run gate (start 53-56 C), one short request first (as in a chat, so the hybrid bank is sized before any long prompt), then two prompts of
+about 2k and two of about 5k tokens (different text, no prompt cache).
+
+| Setup | Prefill tok/s | Long-prompt blocks on the GPU |
+|---|---|---|
+| `--gpu-cache auto` (`-ub 1024`, cache 1799 MiB) | 63.5 / 60.9 / 59.8 / 61.9 | 752 of 752 |
+| `--gpu-cache off` (`-ub 2048` from `--ub auto`) | 21.3 / 17.6 / 18.0 / 17.8 | 66 of 414: no room left for the block next to `-ub 2048` |
+| `--hybrid`, bank kept (section 30 code) | 17.9 / 17.4 / 16.8 / 17.3 | 0 of 423: the bank holds the memory |
+| **`--hybrid`, bank freed for the long prompt, loaded again when decoding starts** | **73.5 / 75.2 / 66.5 / 71.5** | 423 of 423 |
+
+- Freeing and reloading the 2.4 GB bank cost 0.96 s per long prompt (2.85-5.6 s over a 30-prompt session, including short chat prompts of about 35 tokens, where
+  running the block on the CPU would take longer than the reload).
+- `--gpu-cache off` with `--ub auto` is a launcher problem of its own (the tuner picks `-ub 2048` without keeping room for the long-prompt block): to fix.
+
+## 33. Adaptive hybrid bank (Flash-Next IQ2_XS, 8 GB card, 24 GB limit; 2026-10-14)
+
+`MOE_CACHE_HYBRID_ADAPT=N,K` (default 8,16 whenever the hybrid is on; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert
+of their own layer's bank, when they were used more often (decayed hit counts). Uploads happen between tokens, when the GPU is idle.
+
+Offline first (`tools/bank_replay.py`, trace of 6,542 decode tokens recorded during section 31.3, 1,827-expert bank, profile as before the session):
+| Policy | Picks served by the bank | Experts uploaded per token |
+|---|---|---|
+| fixed (profile) | 19.6 % | 0 |
+| best static bank for this trace | 38.1 % | 0 |
+| adaptive 8,16 (per-layer slots) | **40.5 %** | 2.0 |
+| adaptive 8,64 | 44.5 % | 8.0 |
+
+Live, clean-run gate, one run per row:
+| Run | Bank hit | Decode tok/s |
+|---|---|---|
+| 8 requests x 48 tokens, fixed bank (profile updated by today's runs) | 20.3 % | 14.91 (mean of 4-8) |
+| same, adaptive | 30.7 % | 15.21 |
+| 30 mixed-topic prompts x 96 tokens (quality bank), fixed bank | 20.2 % | 13.10 (mean of 6-30) |
+| same, adaptive | **39.3 %** | **14.43 (+10 %)** |
+| 8 requests x 48 tokens, fixed bank, profile as before today's runs (the one section 30 used) | 51.0 % | **17.58** (section 30: 17.40, so no regression) |
+| same, adaptive | 47.2 % | 16.24 |
+
+- When the session drifts from the profile (the normal case: the profile is the sum of past work) the adaptive bank doubles the bank's hits and gains 10 %.
+- When the profile already matches the prompts exactly (here: the profile was learned on these 8 benchmark prompts) the swaps cost 4 points of hits (replay: 1.5 points).
+  Tried offline and dropped: starting slot scores from the profile, a lasting profile prior (helps the matching case by 1 point, costs 5 points in the drifting one),
+  fewer or rarer swaps, a higher minimum miss count; all trade the two cases against each other.
+- Upload cost is small: 2 experts per token (about 2.8 MB), 0.26-1.7 s per run in total.

@@ -1,6 +1,7 @@
 # Token-identity gate on a GitHub runner (no GPU, no big model): builds llama.cpp CPU-only at each supported pin, builds the plugin for that pin,
 # downloads a small MoE (Granite 3.1 1B-A400M Q4_K_M, sha256-checked) and checks that stock and plugin produce identical tokens
-# with the cache forced to evict (0.2 GiB) and with the executor forced on and byte-checked (repacking off, or the executor steps aside).
+# with the cache forced to evict (0.2 GiB) and with the executor forced on and byte-checked (repacking off, or the executor steps aside),
+# and that llama-perplexity's logits at batch 8 are the same (KL divergence 0) with eviction and the executor together.
 #   Actions tab -> identity -> Run workflow   (also runs daily, 05:00 UTC). The "master" row builds llama.cpp's newest commit: an early warning
 #   when upstream changes something the plugin depends on (it may fail without the release being broken).
 name: identity
@@ -43,7 +44,7 @@ jobs:
           git log -1 --format='%H %s'
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
                 -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
-          cmake --build build --target llama-server -j "$(nproc)"
+          cmake --build build --target llama-server llama-perplexity -j "$(nproc)"
 
       - name: Plugin for this pin (warnings are errors)
         run: |
@@ -73,6 +74,15 @@ jobs:
           IDENT_EXTRA: "--no-repack"      # CPU weight repacking would make the executor step aside (repacked weights); both servers get the flag
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+
+      - name: Logits at batch 8 (KL divergence vs stock), cache forced to evict, executor forced on
+        env:
+          LLAMA_PERPLEXITY: ${{ github.workspace }}/llama.cpp/build/bin/llama-perplexity
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          KL_EXTRA: "--no-repack"
+          KL_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2"
+        run: tests/kl_batch.sh granite.gguf --chunks 4 | tee identity_kl_batch8.txt
 
       - name: Identity with guard mode (evicted pages inaccessible, so an unintercepted read crashes instead of reading zeros)
         env:

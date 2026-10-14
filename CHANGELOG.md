@@ -1,6 +1,17 @@
 # Changelog
 
 ## Unreleased
+- **Exactness fix (race, batches of 8 tokens):** in executor graphs the expert reads are asynchronous; the ops handed back to llama.cpp (tiled case, entry below)
+  did not wait for them and could read an expert that was still loading. They wait now. Seen as logit differences at batch 8 with evictions (KL 0.004-0.006, Flash-Next
+  and Qwen3-Coder); never in a release (it came with the tiled hand-back). New `tests/kl_batch.sh` (llama-perplexity logits at batch 8, stock vs plugin, must be KL 0)
+  and a CI step that runs it with forced eviction and the forced executor (RESULTS section 31).
+- **`moe-cache-server --hybrid`** (opt-in, experimental): sets `MOE_CACHE_HYBRID=auto`, keeps all experts on the CPU side and replaces `--gpu-cache`. Quality on Flash-Next:
+  KL 0.0043 vs exact with 57 % of the picks on the GPU, 98.4 % same top token (`--fast` at 24 GB: 0.0053); RESULTS section 31.
+- Hybrid: when a long prompt's GPU block needs the memory the bank holds, the bank is freed and loaded again when decoding starts. Prefill with `--hybrid`:
+  17 -> 66-75 tok/s (`--gpu-cache auto`: 60-64), about 1 s per long prompt for the reload (RESULTS section 32).
+- Hybrid: adaptive bank (`MOE_CACHE_HYBRID_ADAPT=N,K`, default 8,16, 0 = off): every N tokens up to K of the most missed experts replace the coldest expert of their
+  layer's bank. Mixed-topic session: bank hits 20 -> 39 %, decode 13.1 -> 14.4 tok/s; when the profile already matches the prompts exactly it costs a little
+  (51 -> 47 % hits, 17.6 -> 16.2 tok/s, one run). `tools/bank_replay.py` replays a `MOE_CACHE_TRACE_IDS` recording offline (RESULTS section 33).
 - **Exactness fix (GLM-5.3-Flash):** llama.cpp 23b0202a1 computes an expert with a separate tiled routine once 8 or more tokens of a batch picked it, and that adds up
   in another order than the one-row kernel the executor uses. The executor now leaves exactly those ops to llama.cpp. Before: 3 of 12,348 ops differed in the last bit
   and one answer changed at its first token (3/4); after: 0 mismatches, 4/4, multi-token batches still on. New switch `MOE_CACHE_EXEC_MAXCOL=N` (1-8, default 8).
@@ -11,7 +22,7 @@
   Checked on a Vulkan build (llama.cpp 7fe450e19, `GGML_BACKEND_PATH`): executor on, Flash-Next 4/4 identical to stock (RESULTS section 27).
 - `tests/identity.sh`: `IDENT_KEEP=DIR` keeps both server logs and token files.
 - **Experimental `MOE_CACHE_HYBRID=MiB|auto`** (off by default, not token-identical): a GPU bank of the most used experts; the GPU computes the picks it holds while
-  the CPU executor computes the rest, in parallel, with nothing uploaded per token. Flash-Next on an 8 GB card: 13.1 -> 17.4 tok/s (RESULTS section 30). Quality not measured yet.
+  the CPU executor computes the rest, in parallel, with nothing uploaded per token. Flash-Next on an 8 GB card: 13.1 -> 17.4 tok/s (RESULTS section 30).
 - RESULTS section 26: GLM-5.3-Flash (101.8 GB) at 24 GB: 0.32 -> 1.7-1.9 tok/s, identical; 2.0-2.3 with `--fast`. docs/MULTI_DEVICE_DESIGN.md (design only).
 
 ## 0.2.3.2 (2026-10-14)

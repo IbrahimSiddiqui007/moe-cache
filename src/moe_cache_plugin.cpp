@@ -466,6 +466,8 @@ struct state_t {
     ggml_backend_dev_t gpu_dev = nullptr;               // first GPU backend device, used for long prompts
     int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
     std::atomic<uint64_t> hyb_groups{0}, hyb_picks{0}, hyb_hits{0};   // MOE_CACHE_HYBRID: layers split between GPU bank and CPU, picks, picks served by the bank
+    std::atomic<uint64_t> hyb_drops{0}, hyb_reloads{0}, hyb_reload_ns{0};
+    std::atomic<uint64_t> hyb_swaps{0}, hyb_swap_ns{0};   // MOE_CACHE_HYBRID_ADAPT: experts swapped into the bank, time spent uploading them   // bank freed for a long prompt's GPU block, loaded again at the next decode step
     std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory
     std::atomic<uint64_t> gpu_up_bytes{0};
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
@@ -1252,6 +1254,14 @@ struct state_t {
         if (cache_on && stats && hyb_groups) {
             fprintf(stderr, "moe-cache: hybrid: %llu layer steps, %llu of %llu picks computed on the GPU from its bank (%.1f%%), the rest on the CPU\n",
                     (unsigned long long) hyb_groups, (unsigned long long) hyb_hits, (unsigned long long) hyb_picks, hyb_picks ? 100.0 * hyb_hits / hyb_picks : 0.0);
+            if (hyb_swaps) {
+                fprintf(stderr, "moe-cache: hybrid: %llu experts swapped into the bank while running (%.2f s uploading)\n",
+                        (unsigned long long) hyb_swaps, hyb_swap_ns / 1e9);
+            }
+            if (hyb_drops) {
+                fprintf(stderr, "moe-cache: hybrid: bank freed %llu times for long prompts, loaded again %llu times (%.2f s in total)\n",
+                        (unsigned long long) hyb_drops, (unsigned long long) hyb_reloads, hyb_reload_ns / 1e9);
+            }
         }
         if (cache_on && stats && gpu_dev) {
             fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
@@ -2180,6 +2190,19 @@ struct moe_cache_backend_ctx {
     bool               hb_tried = false;
     ggml_context *     hb_ctx = nullptr;
     ggml_backend_buffer_t hb_buf = nullptr;
+    bool               hb_dropped = false;   // the bank was freed so a long prompt's GPU block fits; it is loaded again at the next decode step
+    bool               seg_nomem = false;    // the last gpu_segment() call failed for lack of free GPU memory
+    // MOE_CACHE_HYBRID_ADAPT=N,K (default 8,16; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert of their layer's bank
+    struct hb_layer_t {
+        std::vector<int>   tidx;       // weight tensors of this layer that have a bank (gate, up, down)
+        std::vector<int>   slot_exp;   // expert held by each slot
+        std::vector<float> score;      // decayed hits per slot
+        std::vector<float> miss;       // misses per expert since the last swap
+    };
+    std::map<int, hb_layer_t> hbl;
+    int                hb_first = -1;          // first layer with a bank: one token has passed when it comes round again
+    uint64_t           hb_tok = 0;
+    int                ad_every = 8, ad_swaps = 16;
     std::unordered_map<int, std::pair<ggml_tensor *, std::vector<int>>> hb;
 };
 
@@ -2303,7 +2326,8 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         ggml_backend_dev_memory(s.gpu_dev, &fr, &tot);
         const size_t headroom = (size_t) 256 << 20;                              // pool buffers, graph, fragmentation
         if (tot > 0 && fr < extra + headroom) {
-            if (s.gpu_nomem++ == 0) {
+            c->seg_nomem = true;
+            if (!c->hb_buf && s.gpu_nomem++ == 0) {
                 fprintf(stderr, "moe-cache: a long-prompt block needs %.0f MiB of GPU memory but only %.0f MiB are free: it stays on the CPU "
                                 "(a smaller --moe-cache-mib or --gpu-margin leaves room; about %.0f MiB per layer for this model)\n",
                         (extra + headroom) / 1048576.0, fr / 1048576.0, need / 1048576.0);
@@ -2525,6 +2549,24 @@ bool stock_uses_tiled(const ggml_tensor * nd) {
     return false;
 }
 
+// In executor graphs the reads are asynchronous: the executor waits for each expert's flag itself. An op handed back to llama.cpp has to wait here first.
+void exec_wait_loaded(state_t & s, const ggml_tensor * nd) {
+    const ggml_tensor * ids = nd->src[2];
+    const tinfo_t & ti = *s.tensors[s.by_tensor.at(nd->src[0])];
+    for (int64_t t = 0; t < ids->ne[1]; t++) {
+        for (int64_t k = 0; k < ids->ne[0]; k++) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + k * ids->nb[0] + t * ids->nb[1]);
+            if (e < 0 || e >= ti.n_expert) {
+                continue;
+            }
+            const bool * f = &s.nodes[(size_t) (ti.node0 + e)].loading;
+            while (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
+                std::this_thread::yield();
+            }
+        }
+    }
+}
+
 void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
@@ -2670,8 +2712,152 @@ void print_capabilities(state_t & s) {
 // ---- hybrid (MOE_CACHE_HYBRID=MiB, experimental, not token-identical): GPU computes the picks whose expert is in its bank, the CPU the rest, at the same time ----
 // The bank holds the most used experts of the usage profile (static for now). Nothing is uploaded per token: only the activation and the remapped ids go up,
 // the bank's partial outputs come back and replace those picks' columns of the down projection's output.
+void hybrid_upload(moe_cache_backend_ctx * c, state_t & s) {
+    for (auto & h : c->hb) {
+        const tinfo_t & ti = *s.tensors[(size_t) h.first];
+        ggml_tensor * bank = h.second.first;
+        for (size_t e = 0; e < h.second.second.size(); e++) {
+            const int sl = h.second.second[e];
+            if (sl < 0) {
+                continue;
+            }
+            const char * src = ti.data + e * ti.nb2;
+            gpu_cache_ensure(src, bank->nb[2]);
+            ggml_backend_tensor_set(bank, src, (size_t) sl * bank->nb[2], bank->nb[2]);
+        }
+    }
+}
+
+void hybrid_drop(moe_cache_backend_ctx * c, state_t & s) {
+    ggml_backend_buffer_free(c->hb_buf);
+    c->hb_buf = nullptr;
+    c->hb_dropped = true;
+    for (auto & h : c->hb) {
+        h.second.first->data = nullptr;
+        h.second.first->buffer = nullptr;
+    }
+    if (s.hyb_drops++ == 0) {
+        fprintf(stderr, "moe-cache: hybrid: bank freed so a long prompt can use the GPU; it is loaded again when decoding starts\n");
+    }
+}
+
+bool hybrid_init(moe_cache_backend_ctx * c, state_t & s);
+
+void hybrid_adapt_setup(moe_cache_backend_ctx * c, state_t & s) {
+    c->hbl.clear();
+    c->hb_first = -1;
+    c->hb_tok = 0;
+    if (const char * v = getenv("MOE_CACHE_HYBRID_ADAPT")) {
+        c->ad_every = atoi(v);
+        const char * k = strchr(v, ',');
+        if (k) {
+            c->ad_swaps = atoi(k + 1);
+        }
+    }
+    if (c->ad_every <= 0 || c->ad_swaps <= 0) {
+        c->ad_every = 0;
+        return;
+    }
+    for (auto & h : c->hb) {
+        const tinfo_t & ti = *s.tensors[(size_t) h.first];
+        auto & L = c->hbl[ti.layer];
+        L.tidx.push_back(h.first);
+        if (L.slot_exp.empty()) {
+            L.slot_exp.assign((size_t) h.second.first->ne[2], -1);
+            for (size_t e = 0; e < h.second.second.size(); e++) {
+                if (h.second.second[e] >= 0) {
+                    L.slot_exp[(size_t) h.second.second[e]] = (int) e;
+                }
+            }
+            L.score.assign(L.slot_exp.size(), 0.0f);
+            L.miss.assign(h.second.second.size(), 0.0f);
+        }
+    }
+    c->hb_first = c->hbl.empty() ? -1 : c->hbl.begin()->first;
+}
+
+// between two tokens (the GPU is idle): the most missed experts replace the coldest bank expert of their own layer when they were used more often
+void hybrid_adapt(moe_cache_backend_ctx * c, state_t & s) {
+    const auto t0 = std::chrono::steady_clock::now();
+    const float dec = powf(0.97f, (float) c->ad_every);
+    std::vector<std::tuple<float, int, int>> cand;          // misses, layer, expert
+    for (auto & lv : c->hbl) {
+        auto & L = lv.second;
+        for (float & sc : L.score) {
+            sc *= dec;
+        }
+        for (size_t e = 0; e < L.miss.size(); e++) {
+            if (L.miss[e] >= 2.0f) {
+                cand.emplace_back(L.miss[e], lv.first, (int) e);
+            }
+        }
+    }
+    std::sort(cand.begin(), cand.end(), [](const auto & x, const auto & y) { return std::get<0>(x) > std::get<0>(y); });
+    int done = 0;
+    for (const auto & cd : cand) {
+        if (done >= c->ad_swaps) {
+            break;
+        }
+        auto & L = c->hbl[std::get<1>(cd)];
+        const int e = std::get<2>(cd);
+        int cold = -1;
+        float best = 0.0f;
+        for (size_t sl = 0; sl < L.slot_exp.size(); sl++) {
+            const float v = L.score[sl] + 0.001f * (float) s.learned.at(std::get<1>(cd), L.slot_exp[sl]);
+            if (cold < 0 || v < best) {
+                cold = (int) sl;
+                best = v;
+            }
+        }
+        if (cold < 0 || L.score[(size_t) cold] >= std::get<0>(cd)) {
+            continue;
+        }
+        const int old = L.slot_exp[(size_t) cold];
+        for (int t : L.tidx) {
+            const tinfo_t & ti = *s.tensors[(size_t) t];
+            auto & h = c->hb[t];
+            const char * src = ti.data + (size_t) e * ti.nb2;
+            gpu_cache_ensure(src, h.first->nb[2]);
+            ggml_backend_tensor_set(h.first, src, (size_t) cold * h.first->nb[2], h.first->nb[2]);
+            if (old >= 0) {
+                h.second[(size_t) old] = -1;
+            }
+            h.second[(size_t) e] = cold;
+        }
+        L.slot_exp[(size_t) cold] = e;
+        L.score[(size_t) cold] = std::get<0>(cd);
+        done++;
+    }
+    for (auto & lv : c->hbl) {
+        std::fill(lv.second.miss.begin(), lv.second.miss.end(), 0.0f);
+    }
+    s.hyb_swaps += (uint64_t) done;
+    s.hyb_swap_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+}
+
+// Same bank as before the long prompt: release the long-prompt block's GPU buffer first (it holds about one layer of experts), then upload the bank again.
+bool hybrid_reload(moe_cache_backend_ctx * c, state_t & s) {
+    const auto t0 = std::chrono::steady_clock::now();
+    c->hb_dropped = false;
+    ggml_gallocr_free(c->galloc);
+    c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
+    c->hb_buf = ggml_backend_alloc_ctx_tensors(c->hb_ctx, c->gpu);
+    if (!c->hb_buf) {
+        fprintf(stderr, "moe-cache: hybrid: the bank no longer fits after a long prompt: choosing a smaller one\n");
+        c->hb_tried = false;
+        return hybrid_init(c, s);
+    }
+    hybrid_upload(c, s);
+    s.hyb_reloads++;
+    s.hyb_reload_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t0).count();
+    return true;
+}
+
 bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
     if (c->hb_tried) {
+        if (!c->hb_buf && c->hb_dropped) {
+            return hybrid_reload(c, s);
+        }
         return c->hb_buf != nullptr;
     }
     c->hb_tried = true;
@@ -2765,19 +2951,8 @@ bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
     if (!c->hb_buf) {
         continue;
     }
-    for (auto & h : c->hb) {
-        const tinfo_t & ti = *s.tensors[(size_t) h.first];
-        ggml_tensor * bank = h.second.first;
-        for (size_t e = 0; e < h.second.second.size(); e++) {
-            const int sl = h.second.second[e];
-            if (sl < 0) {
-                continue;
-            }
-            const char * src = ti.data + e * ti.nb2;
-            gpu_cache_ensure(src, bank->nb[2]);
-            ggml_backend_tensor_set(bank, src, (size_t) sl * bank->nb[2], bank->nb[2]);
-        }
-    }
+    hybrid_upload(c, s);
+    hybrid_adapt_setup(c, s);
     fprintf(stderr, "moe-cache: hybrid: GPU bank of %zu experts in %zu layers (%.0f MiB), chosen from the usage profile\n", n_exp, chosen.size(), used / 1048576.0);
     return true;
     }
@@ -2814,6 +2989,15 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         slot = &c->hb[it->second].second;
     }
     const int64_t n_used = ids->ne[0], n_tok = ids->ne[1];
+    const int layer = s.tensors[(size_t) s.by_tensor.at(seg[0]->src[0])]->layer;
+    moe_cache_backend_ctx::hb_layer_t * L = nullptr;
+    if (c->ad_every > 0) {
+        if (layer == c->hb_first && ++c->hb_tok % (uint64_t) c->ad_every == 0) {
+            hybrid_adapt(c, s);
+        }
+        auto lt = c->hbl.find(layer);
+        L = lt != c->hbl.end() ? &lt->second : nullptr;
+    }
     std::vector<char> hit((size_t) (n_used * n_tok), 0);
     std::vector<int32_t> rid((size_t) (n_used * n_tok), 0);
     int64_t n_hit = 0;
@@ -2825,6 +3009,11 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
                 hit[(size_t) (t * n_used + u)] = 1;
                 rid[(size_t) (t * n_used + u)] = sl;
                 n_hit++;
+                if (L) {
+                    L->score[(size_t) sl] += 1.0f;
+                }
+            } else if (L && e >= 0 && (size_t) e < L->miss.size()) {
+                L->miss[(size_t) e] += 1.0f;
             }
         }
     }
@@ -3012,6 +3201,9 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
                 }
             }
         } else {
+            if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
+                exec_wait_loaded(s, nd);   // left to llama.cpp (tiled): its experts may still be filling (reads are asynchronous in executor graphs)
+            }
             batch.push_back(i);
         }
     }
@@ -3254,7 +3446,14 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 continue;
             }
             std::vector<ggml_tensor *> seg;
-            if (gpu_segment(c, s, cg, gr.first, gr.last, seg)) {
+            c->seg_nomem = false;
+            bool ok = gpu_segment(c, s, cg, gr.first, gr.last, seg);
+            if (!ok && c->seg_nomem && c->hb_buf) {
+                hybrid_drop(c, s);         // the hybrid bank holds the memory the long-prompt block needs: free it now, load it again at the next decode step
+                seg.clear();
+                ok = gpu_segment(c, s, cg, gr.first, gr.last, seg);
+            }
+            if (ok) {
                 for (ggml_tensor * n : seg) {
                     silenced.emplace_back(n, n->op);
                     n->op = GGML_OP_NONE;

@@ -3,6 +3,9 @@
 #   moe-cache-server MODEL.gguf [--project NAME] [--ram GB] [--vram GB] [--ctx N] [--n-cpu-moe N] [--port P] [--llama-server PATH] [--load-method auto|preload|path] [--fast] [--open] [--dry-run] [-- extra llama-server args]
 # --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD.
 #              About +10-12 % when the model is much bigger than RAM; about 1 token in 15 differs from stock (KL 0.025, docs/RESULTS.md sections 21 and 25)
+# --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
+#              while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
+#              --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
 # --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 # --gpu-cache off|auto|MIB  use llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache: the experts you use most are copied to free VRAM and
 #              computed on the GPU. auto = all VRAM the planner sees free minus --gpu-margin GiB (default 1.0; raise it with a large -ub). Not bit-identical to
@@ -18,11 +21,12 @@
 set -e
 umask 077   # the usage profile is private to this user
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; PNAME=""; PROJECT=""; GCACHE=off; GMARGIN=1.0; UBARG=auto; FAST=0; EXTRA=()
+MODEL=""; RAM=""; VRAM=""; CTX=8192; NCMOE=""; PORT=8080; LS="${LLAMA_SERVER:-llama-server}"; DRY=0; OPEN=0; METHOD=auto; PIN=1; ECORES=1; PNAME=""; PROJECT=""; GCACHE=off; GMARGIN=1.0; UBARG=auto; FAST=0; HYBRID=0; EXTRA=()
 while [ $# -gt 0 ]; do case "$1" in
   --ram) RAM=$2; shift 2;; --ub) UBARG=$2; shift 2;; --gpu-cache) GCACHE=$2; shift 2;; --gpu-margin) GMARGIN=$2; shift 2;; --profile) PNAME=$2; shift 2;; --project) PROJECT=$2; shift 2;; --vram) VRAM=$2; shift 2;; --ctx) CTX=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;;
-  --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --fast) FAST=1; shift;; --no-ecores) ECORES=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
+  --port) PORT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --dry-run) DRY=1; shift;; --no-pin) PIN=0; shift;; --fast) FAST=1; shift;; --hybrid) HYBRID=1; shift;; --no-ecores) ECORES=0; shift;; --open) OPEN=1; shift;; --load-method) METHOD=$2; shift 2;; --) shift; EXTRA=("$@"); break;;
   -h|--help) sed -n 2,6p "$0"; exit 0;; *) if [ -z "$MODEL" ]; then MODEL=$1; shift; else echo "unknown argument: $1"; exit 1; fi;; esac; done
+if [ $HYBRID = 1 ] && [ "$GCACHE" != off ]; then echo "moe-cache: --hybrid replaces --gpu-cache: the GPU memory goes to the hybrid bank"; GCACHE=off; fi
 [ -f "$MODEL" ] || { echo "usage: moe-cache-server MODEL.gguf [options]  (model file not found: '$MODEL')"; exit 1; }
 . "$HERE/bin/_moe_cache_env.sh"
 LIB="${MOE_CACHE_LIB:-$(moe_cache_pick_lib "$LS" "$HERE")}"
@@ -124,6 +128,11 @@ if [ "$GCACHE" != off ] && [ "$NCMOE" != 0 ]; then
     NCMOE=999; EXTRA+=(--moe-cache-mib "$GCMIB"); ENVV+=(MOE_CACHE_GPU_CACHE=1)
     echo "moe-cache: GPU expert cache of $GCMIB MiB; all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"
   fi
+fi
+if [ $HYBRID = 1 ] && [ "$NCMOE" != 0 ]; then
+  NCMOE=999; ENVV+=(MOE_CACHE_HYBRID="${MOE_CACHE_HYBRID:-auto}")
+  echo "moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)"
+  [ -f "$PROFILE" ] || echo "moe-cache: --hybrid: no usage profile yet ($PROFILE): the bank is chosen from it, so this first session runs without one"
 fi
 # llama-server saves finished prompts in host RAM (--cache-ram, 8 GiB by default). That memory competes with the expert cache and arrives in bursts, so it is
 # capped at 2 GiB here (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
