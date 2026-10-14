@@ -3580,6 +3580,15 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         if (CPU().set_n_threads) {
             CPU().set_n_threads(c->cpu, c->n_threads);
         }
+        // no reads were queued for this graph, but an earlier graph may still be filling these experts in the background (gate/up/down loaded together
+        // when they come in separate calls, e.g. gpt-oss): llama.cpp's own path must not read them before they are complete
+        const int n_all = ggml_graph_n_nodes(cg);
+        for (int i = 0; i < n_all; i++) {
+            const ggml_tensor * nd = ggml_graph_node(cg, i);
+            if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
+                exec_wait_loaded(s, nd);
+            }
+        }
     }
     if (exec_graph) {
         const auto e0 = std::chrono::steady_clock::now();

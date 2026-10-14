@@ -920,3 +920,25 @@ Time to first token, launcher default, by the threshold above which a prompt bat
 
 The crossover is near 64 tokens. The exact default keeps 32 (stock llama.cpp also moves batches of 32+ tokens to the GPU, so the results stay identical);
 `--hybrid` and `--fast`, which are approximate anyway, now use 64 (short chat prompts about 4.6 -> 3.3 s).
+
+## 36. Identity on llama.cpp 23b0202a1: six more models and a second race (2026-10-15, overnight; 24 GB hard limit)
+
+Each model: `tests/identity.sh` with a forced-eviction cache, the same with the executor forced on and byte-checked (`--no-repack`), and `tests/kl_batch.sh`
+(batch-8 logits). Plugin 4c0a5e9 (gpt-oss: also 68f63e3 + the fix below).
+
+| Model (architecture) | Identity, eviction | Executor forced + byte check | Batch-8 logits |
+|---|---|---|---|
+| Granite 3.1 1B-A400M (granitemoe) | 4/4 | 4/4, 0 of 6,708 ops differ | KL 0 |
+| OLMoE-1B-7B (olmoe) | 4/4 | 4/4, 0 of 4,476 | KL 0 |
+| SmallThinker-4BA0.6B (smallthinker) | 4/4 | 4/4, 0 of 8,940 | KL 0 |
+| Granite-4.0-H Tiny (granitehybrid) | 4/4 | 4/4, 0 of 11,742 | KL 0 |
+| LFM2-8B-A1B (lfm2moe) | 4/4 | 4/4, 0 of 6,402 | KL 0 |
+| Ling-mini-2.0 (bailingmoe2) | 4/4 | 4/4, 0 of 5,313 | KL 0 |
+| DeepSeek-V2-Lite 16B (deepseek2) | 4/4 | 4/4, 0 of 7,266 | KL 0 |
+| gpt-oss-20b MXFP4 (gpt-oss) | **0/4** -> **4/4 with the fix** | 4/4, 0 of 7,053 | KL 0 |
+
+**Second race (in releases v0.2.0-v0.2.3.2):** gpt-oss hands the gate, up and down products to the plugin in separate calls (bias operations in between).
+When the gate's experts are loaded in an executor graph, the up and down experts are read along with them in the background. For the next call those experts
+are "resident, still loading", so no read is queued, the executor steps aside (everything looks resident) and llama.cpp computed with experts that were
+still being filled. The output differed from stock at the first token of every prompt at a 1 GiB cache. With the executor forced on it never stepped aside,
+which is why the byte-checked run passed. Fix: before stepping aside, wait for the graph's experts. Models whose gate and up come in one call are not affected.
