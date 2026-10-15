@@ -38,6 +38,8 @@ struct state_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
+    // "all" for the default range (hi = 2^30 means no upper bound; the log printed "layers 0-1073741824", T7)
+    std::string layer_range() const { return lo == 0 && hi >= (1 << 30) ? std::string("all") : std::to_string(lo) + "-" + std::to_string(hi); }
     std::vector<plat::file_t> fds;              // one per GGUF file (split models have several)
     std::vector<std::string> shard_paths;
     std::vector<plat::file_t> fds_buf;          // buffered (no O_DIRECT) handles, opened only if a direct read keeps failing
@@ -191,7 +193,7 @@ struct state_t {
         const char * gib = getenv("MOE_CACHE_SIZE_GIB");
         const char * file = getenv("MOE_CACHE_GGUF");
         if (!gib) {
-            fprintf(stderr, "moe-cache: pass-through mode (no cache), layers %d-%d\n", lo, hi);
+            fprintf(stderr, "moe-cache: pass-through mode (no cache), layers %s\n", layer_range().c_str());
             return;
         }
         auto fail = [&](const std::string & m) {
@@ -277,10 +279,16 @@ struct state_t {
             }
         }
         for (size_t i = 0; i < ggml_backend_dev_count() && gpu_min_tokens > 0; i++) {
+            // a discrete GPU first, else an integrated one (ggml-vulkan reports APUs as IGPU; stock llama.cpp offloads to them too).
+            // Taking only GPU left the Vega 8 unused: prefill 363 vs stock 693 tok/s (mini PC, T7); with the iGPU 569-597
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
-            if (ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+            const auto t = ggml_backend_dev_type(d);
+            if (t == GGML_BACKEND_DEVICE_TYPE_GPU) {
                 gpu_dev = d;
                 break;
+            }
+            if (t == GGML_BACKEND_DEVICE_TYPE_IGPU && !gpu_dev) {
+                gpu_dev = d;
             }
         }
         {
@@ -426,7 +434,7 @@ struct state_t {
         for (int i = 0; i < n_io; i++) {
             workers.emplace_back([this, i] { worker_main(i + 1); });
         }
-        fprintf(stderr, "moe-cache: cache mode, %.2f GiB, %zu tensors in %s, layers %d-%d\n", budget / 1073741824.0, file_tensors.size(), file, lo, hi);
+        fprintf(stderr, "moe-cache: cache mode, %.2f GiB, %zu tensors in %s, layers %s\n", budget / 1073741824.0, file_tensors.size(), file, layer_range().c_str());
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound

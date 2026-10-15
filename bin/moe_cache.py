@@ -52,15 +52,29 @@ def load_env(ls, lib, method="auto"):
     raise SystemExit(f"unknown load method: {method} (use auto, preload or path)")
 
 
+GGML_API_OF = {(0, 24): "2", (0, 25): "2", (0, 26): "3", (0, 27): "3"}
+
+
 def ls_api(ls):
     """Backend API of the ggml this llama-server uses, from its libggml-base version (0.24-0.25 -> 2, 0.26-0.27 -> 3); None when unknown."""
+    if WINDOWS:
+        # no ldd there (the warning never fired on the Claw): ggml-base.dll next to llama-server.exe holds its version as a plain string ("0.27.0")
+        try:
+            data = open(os.path.join(os.path.dirname(which(ls)), "ggml-base.dll"), "rb").read()
+            for m in re.finditer(rb"\x00(\d+)\.(\d+)\.(\d+)\x00", data):
+                v = GGML_API_OF.get((int(m.group(1)), int(m.group(2))))
+                if v:
+                    return v
+        except OSError:
+            pass
+        return None
     for line in ldd(ls).splitlines():
         if "libggml-base" in line and "=>" in line:
             path = line.split("=>")[1].split()[0]
             m = re.search(r"(\d+)\.(\d+)\.(\d+)", os.path.basename(os.path.realpath(path)))
             if m:
                 v = (int(m.group(1)), int(m.group(2)))
-                return {(0, 24): "2", (0, 25): "2", (0, 26): "3", (0, 27): "3"}.get(v)
+                return GGML_API_OF.get(v)
     return None
 
 
@@ -250,13 +264,14 @@ def run_child(cmd, env, port=None, expect_plugin=False):
             _kill_with_parent_windows(p)
         except Exception as e:
             say(f"moe-cache: warning: could not tie llama-server to the launcher ({e})", err=True)
-    seen = {"plugin": False, "disabled": ""}
+    seen = {"plugin": False, "disabled": "", "last": "", "ready": False}
     def pump():
         out = sys.stderr.buffer
         for line in iter(p.stderr.readline, b""):
             out.write(line); out.flush()
             if b"moe-cache:" in line:
                 seen["plugin"] = True
+                seen["last"] = line.decode(errors="replace").strip()
                 if b"plugin disabled" in line or b"refus" in line:
                     seen["disabled"] = line.decode(errors="replace").strip()
     threading.Thread(target=pump, daemon=True).start()
@@ -266,6 +281,7 @@ def run_child(cmd, env, port=None, expect_plugin=False):
                 if p.poll() is not None:
                     return
                 if healthy(port):
+                    seen["ready"] = True
                     time.sleep(1)
                     if seen["disabled"]:
                         say(f"moe-cache: WARNING: the plugin loaded but disabled itself ({seen['disabled']}): llama-server runs stock", err=True)
@@ -282,9 +298,32 @@ def run_child(cmd, env, port=None, expect_plugin=False):
         signal.signal(signal.SIGTERM, stop)
     while True:
         try:
-            return p.wait()
+            rc = p.wait()
+            break
         except KeyboardInterrupt:      # the child got the same Ctrl-C; wait for it to finish
             continue
+    quiet = (rc & 0xFFFFFFFF) in (0xC000013A, 1) if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
+    if rc not in (0, None) and not quiet:
+        say("moe-cache: " + exit_reason(rc, seen["ready"] if (expect_plugin and port) else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
+    return rc
+
+
+def exit_reason(rc, ready):
+    """One line on why llama-server stopped (the Claw's cache-mode crash ended the launcher without a word: RESULTS 50)."""
+    when = "" if ready is None else (" after it was ready" if ready else " before it was ready")
+    if WINDOWS:
+        code = rc & 0xFFFFFFFF
+        names = {0xC0000005: "access violation", 0xC0000409: "stack buffer overrun / fast fail", 0xC000001D: "illegal instruction (CPU lacks an instruction set)",
+                 0xC0000135: "a DLL was not found", 0xC0000139: "a DLL entry point was not found", 0xC00000FD: "stack overflow", 0xC0000017: "out of memory"}
+        return f"llama-server exited{when} with code 0x{code:08X}" + (f" ({names[code]})" if code in names else "")
+    if rc < 0:
+        try:
+            nm = signal.Signals(-rc).name
+        except ValueError:
+            nm = f"signal {-rc}"
+        hint = " (killed: out of memory? check 'journalctl -k' or the cgroup limit)" if -rc == signal.SIGKILL else ""
+        return f"llama-server was stopped{when} by {nm}{hint}"
+    return f"llama-server exited{when} with code {rc}"
 
 
 # ---- server ----
@@ -341,6 +380,8 @@ def server(argv):
         say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load "
             "(build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)", err=True)
     if not os.path.isfile(lib):
+        if os.environ.get("MOE_CACHE_LIB"):
+            raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
         raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
@@ -348,10 +389,14 @@ def server(argv):
         p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
         if a.ram: p += ["--ram-gib", a.ram]
         if a.vram: p += ["--vram-gib", a.vram]
+        r = None
         try:
-            ncmoe = str(json.loads(subprocess.run(p, capture_output=True, text=True, timeout=300).stdout)["n_cpu_moe"])
-        except Exception:
-            say("planner unavailable (needs python3 and 'pip install gguf'); keeping all experts on the CPU"); ncmoe = "999"
+            r = subprocess.run(p, capture_output=True, text=True, timeout=300)
+            ncmoe = str(json.loads(r.stdout)["n_cpu_moe"])
+        except Exception as e:
+            # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
+            why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
+            say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and "--api-key" not in extra:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
@@ -376,6 +421,11 @@ def server(argv):
         size = None
     avail = mem_for_server(a.ram)
     stock = bool(size and avail and size + 1.5e9 <= avail and not (a.fast or a.hybrid or a.always_plugin))
+    if gcache != "off" and not stock and method == "path":
+        # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
+        say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
+            "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
+        gcache = "off"
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", a.ram))
@@ -487,7 +537,7 @@ def server(argv):
         if WINDOWS:   # PowerShell form, so it can be pasted there
             say("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
         else:
-            say("env " + " ".join(f"{k}={v}" for k, v in env) + " " + " ".join(cmd))
+            say(("env " + " ".join(f"{k}={v}" for k, v in env) + " " if env else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
         return 0
     api_key = arg_after(extra, "--api-key")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
@@ -665,7 +715,8 @@ def check(argv):
                 pass
             listed = "MOE_CACHE" in probe
             if listed:
-                ok("plugin loads", f"yes, via {method}")
+                ok("plugin loads", f"yes, via {method} (loaded and listed; the cache itself first runs with the first request: use tests/identity.sh "
+                   "or tools/windows_test.ps1 to see it compute)")
             else:
                 why = [l.strip() for l in probe.splitlines() if "load_backend" in l or "moe-cache:" in l][:3]
                 fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})" + ("; llama-server said: " + " | ".join(why) if why else "")
@@ -682,23 +733,23 @@ def check(argv):
     memav = cg = None
     if WINDOWS:
         t, av = win_memory()
-        memav = av / 2**30 if av else None
+        memav = av / 1e9 if av else None
     try:
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable"):
-                memav = int(line.split()[1]) / 1048576
+                memav = int(line.split()[1]) * 1024 / 1e9
         rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
         for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
             if os.access(f, os.R_OK):
                 v = open(f).read().strip()
                 if v != "max":
-                    cg = int(v) / 2**30
+                    cg = int(v) / 1e9
                     break
     except OSError:
         pass
     ok("memory", (f"--ram {a.ram} GB; " if a.ram else "") + (f"available {memav:.1f} GB" if memav else "available: unknown") + (f", cgroup limit {cg:.1f} GB" if cg else ""))
     try:
-        sw = next(int(l.split()[1]) / 1048576 for l in open("/proc/meminfo") if l.startswith("SwapTotal"))
+        sw = next(int(l.split()[1]) * 1024 / 1e9 for l in open("/proc/meminfo") if l.startswith("SwapTotal"))
         if sw >= 1:
             warn("swap", f"swap is on ({sw:.1f} GB): if memory runs out the system may swap (very slow) instead of killing the server")
     except (OSError, StopIteration):

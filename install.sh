@@ -72,6 +72,19 @@ PY="$PREFIX/venv/bin/python3"
   printf 'set -gx MOE_CACHE_PYTHON %q\n' "$PY"
   printf 'set -gx PATH %q $PATH\n' "$M/bin"
 } > "$PREFIX/env.fish"
+if [ $VULKAN = 1 ]; then
+  # Vulkan falls back to a software device (llvmpipe) when the user may not open the GPU's render node, e.g. on a headless server (T7)
+  DEVS="$("$BIN/llama-server" --list-devices 2>&1)"
+  if ! echo "$DEVS" | grep -q "Vulkan[0-9]" || echo "$DEVS" | grep -q -i "llvmpipe"; then
+    say "WARNING: llama-server does not list a real Vulkan GPU:"; echo "$DEVS" | sed -n '/Available devices/,$p'
+    for r in /dev/dri/renderD*; do
+      if [ -e "$r" ] && [ ! -r "$r" ]; then
+        echo "  $r is not readable by $(id -un): run  sudo usermod -aG render,video $(id -un)  and log in again"
+        break
+      fi
+    done
+  fi
+fi
 say "setup check"
 LLAMA_SERVER="$BIN/llama-server" MOE_CACHE_PYTHON="$PY" "$M/bin/moe-cache-check" --llama-server "$BIN/llama-server" || true
 cat <<EOT

@@ -22,6 +22,7 @@ using block_q8_K = fastk512::block_q8_K;
 #define ksigns_iq2xs fastk::KSIGNS_IQ2XS
 #include <algorithm>
 #include <chrono>
+#include <dirent.h>
 #include <dlfcn.h>
 #include <immintrin.h>
 #include <random>
@@ -151,6 +152,31 @@ int main(int argc, char ** argv) {
     init_signs();
     void * hb = dlopen((dir + "/libggml-base.so.0").c_str(), RTLD_NOW | RTLD_GLOBAL);
     void * hc = dlopen((dir + "/libggml-cpu.so.0").c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (!hc) {
+        hc = dlopen((dir + "/libggml-cpu.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
+    }
+    if (!hc) {
+        // GGML_CPU_ALL_VARIANTS builds (install.sh) have only libggml-cpu-<variant>.so: take the one ggml itself would pick (highest backend score)
+        std::string best;
+        int best_score = 0;
+        if (DIR * d = opendir(dir.c_str())) {
+            while (dirent * e = readdir(d)) {
+                const std::string f = e->d_name;
+                if (f.rfind("libggml-cpu-", 0) != 0 || f.find(".so") == std::string::npos) continue;
+                void * h = dlopen((dir + "/" + f).c_str(), RTLD_NOW | RTLD_LOCAL);
+                if (!h) continue;
+                auto score = (int (*)()) dlsym(h, "ggml_backend_score");
+                const int sc = score ? score() : 0;
+                if (sc > best_score) { best_score = sc; best = f; }
+                dlclose(h);
+            }
+            closedir(d);
+        }
+        if (!best.empty()) {
+            hc = dlopen((dir + "/" + best).c_str(), RTLD_NOW | RTLD_LOCAL);
+            printf("cpu library: %s (variant chosen by score)\n", best.c_str());
+        }
+    }
     if (!hb || !hc) { fprintf(stderr, "cannot load libggml-base / libggml-cpu from %s\n", dir.c_str()); return 2; }
     auto row_size = (size_t (*)(int, int64_t)) dlsym(hb, "ggml_row_size");
     auto q_init = (void (*)(int)) dlsym(hb, "ggml_quantize_init");

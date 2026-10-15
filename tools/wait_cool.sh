@@ -4,6 +4,10 @@
 MAX=${1:-65}; TMO=${2:-3600}; ok=0; end=$((SECONDS + TMO))
 temp() {
   local t; t=$(sensors 2>/dev/null | grep -m1 -E "Package id 0|Tctl|Tdie" | grep -o '+[0-9]*' | head -1 | tr -d +)
+  # without lm-sensors: the CPU's hwmon sensor (AMD k10temp / zenpower, Intel coretemp; AMD machines often have no thermal_zone, T7), then thermal zones
+  if [ -z "$t" ]; then for h in /sys/class/hwmon/hwmon*; do
+    case "$(cat "$h/name" 2>/dev/null)" in k10temp|zenpower|coretemp) [ -r "$h/temp1_input" ] && { t=$(( $(cat "$h/temp1_input") / 1000 )); break; };; esac
+  done; fi
   if [ -z "$t" ]; then for z in /sys/class/thermal/thermal_zone*/temp; do [ -r "$z" ] && { t=$(( $(cat "$z") / 1000 )); break; }; done; fi
   echo "${t:-99}"
 }

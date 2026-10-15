@@ -97,7 +97,9 @@ def free_vram_bytes():
             tot = int(open(d + "/mem_info_vram_total").read()); used = int(open(d + "/mem_info_vram_used").read())
         except Exception:
             continue
-        if tot >= 2**30 and (best is None or tot > best[0]):   # integrated GPUs share system RAM and are not counted
+        # mem_info_vram_total is dedicated VRAM: on an integrated GPU (APU) the BIOS carve-out, which the OS cannot use, so it is counted. GTT (system
+        # RAM the GPU may borrow) is never counted. Under 1 GiB (e.g. a 512 MiB carve-out) no expert layer fits next to the buffers: skipped
+        if tot >= 2**30 and (best is None or tot > best[0]):
             best = (tot, tot - used)
     return best[1] if best else None
 

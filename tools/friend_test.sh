@@ -63,7 +63,13 @@ if [ -n "$MODEL" ]; then
     say "-- stock vs plugin"
     run "$HERE/tests/identity.sh" "$MODEL" --tokens 32 | tail -4
     say "-- stock + llama.cpp GPU expert cache vs plugin + the same cache (needs a GPU backend)"
-    IDENT_EXTRA="--moe-cache-mib 1000" IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1" run "$HERE/tests/identity.sh" "$MODEL" --tokens 32 | tail -4
+    . "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "$LIB" auto 2>/dev/null
+    if [ "${MOE_CACHE_METHOD:-}" = path ]; then
+      # the plugin can feed llama.cpp's GPU cache only when preloaded (LD_PRELOAD); loaded as a file it refuses the mode (T7)
+      say "skipped: this llama-server loads its backends as files (GGML_BACKEND_PATH), where the plugin does not support llama.cpp's GPU expert cache"
+    else
+      IDENT_EXTRA="--moe-cache-mib 1000" IDENT_PLUGIN_ENV="MOE_CACHE_GPU_CACHE=1" run "$HERE/tests/identity.sh" "$MODEL" --tokens 32 | tail -4
+    fi
     if grep -q -E 'avx512(f|bw)' /proc/cpuinfo; then
       say "-- stock vs plugin with the AVX-512 IQ kernels (only useful for IQ2_XXS / IQ3_XXS models)"
       IDENT_PLUGIN_ENV="MOE_CACHE_AVX512=1" run "$HERE/tests/identity.sh" "$MODEL" --tokens 32 | tail -4

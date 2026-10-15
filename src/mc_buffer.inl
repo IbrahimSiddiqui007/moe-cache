@@ -8,7 +8,37 @@ namespace {
 struct moe_cache_buffer_ctx {
     void * base;
     size_t size;
+    std::vector<uint8_t> committed;   // Windows, cache mode: one flag per 64 KiB chunk already committed (see buf_init_tensor)
+    std::mutex cmu;
 };
+
+// In cache mode the buffer is reserved address space only. On Linux untouched pages appear zero-filled on first touch; on Windows a reserved page
+// faults on any access until it is committed. Expert tensors get their pages from the reads; every other tensor in the buffer (the scheduler's
+// compute buffer: node outputs that ggml's kernels write through tensor->data, with no buffer call) is committed here, once per 64 KiB chunk.
+// Found on the MSI Claw (RESULTS 50): cache mode crashed in the first graph with an access violation inside the compute buffer.
+void buf_commit_once(moe_cache_buffer_ctx * c, const void * p, size_t size) {
+    if (!plat::is_windows || size == 0) {
+        return;
+    }
+    constexpr size_t CH = 64 * 1024;
+    const uintptr_t base = (uintptr_t) c->base;
+    const uintptr_t a = (uintptr_t) p;
+    if (a < base || a + size > base + c->size) {
+        return;
+    }
+    const size_t c0 = (a - base) / CH, c1 = (a + size - 1 - base) / CH;
+    std::lock_guard<std::mutex> lk(c->cmu);
+    if (c->committed.empty()) {
+        c->committed.assign(c->size / CH + 1, 0);
+    }
+    for (size_t i = c0; i <= c1; i++) {
+        if (!c->committed[i]) {
+            const size_t len = std::min(CH, c->size - i * CH);
+            plat::mem_commit((char *) c->base + i * CH, len);
+            c->committed[i] = 1;
+        }
+    }
+}
 
 const char * buft_name(ggml_backend_buffer_type_t) {
     return "MOE_CACHE";
@@ -64,7 +94,10 @@ bool is_expert_tensor(const ggml_tensor * t) {
     return S().cache_on && S().direct_ok && t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0;
 }
 
-ggml_status buf_init_tensor(ggml_backend_buffer_t, ggml_tensor * t) {
+ggml_status buf_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * t) {
+    if (S().cache_on && !(t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0)) {
+        buf_commit_once((moe_cache_buffer_ctx *) buffer->context, t->data, ggml_nbytes(t));
+    }
     if (is_expert_tensor(t)) {
         auto ft = S().file_tensors.find(t->name);
         if (ft != S().file_tensors.end()) {
@@ -103,7 +136,7 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     if (!S().cache_on) {
         plat::mem_commit(p, size);   // pass-through mode: the weights are copied in, all pages are needed
     }
-    return ggml_backend_buffer_init(buft, g_buf_i, new moe_cache_buffer_ctx{ p, size }, size);
+    return ggml_backend_buffer_init(buft, g_buf_i, new moe_cache_buffer_ctx{ p, size, {}, {} }, size);
 }
 
 size_t buft_align(ggml_backend_buffer_type_t) {
@@ -112,9 +145,22 @@ size_t buft_align(ggml_backend_buffer_type_t) {
 
 // MOE_CACHE_GPU_CACHE=1: llama.cpp's own GPU expert cache (--moe-cache-mib) only caches experts of layers whose weights sit in a host buffer and
 // uploads them by reading the weight memory. Our buffer then says "host", and the upload is intercepted (ggml_backend_tensor_set_async below) to
-// make the experts being read resident first.
+// make the experts being read resident first. That interception is symbol interposition, which only works when the plugin is preloaded
+// (LD_PRELOAD + MOE_CACHE_PRELOAD=1); loaded through GGML_BACKEND_PATH (install.sh, Vulkan, official and all Windows builds) the hook never runs
+// and the GPU would upload experts that are not in RAM: wrong tokens (found on the mini PC, T7: 0/4 identical). So the mode is refused there.
 bool gpu_cache_mode() {
-    static const bool on = [] { const char * e = getenv("MOE_CACHE_GPU_CACHE"); return e && atoi(e) != 0; }();
+    static const bool on = [] {
+        const char * e = getenv("MOE_CACHE_GPU_CACHE");
+        if (!(e && atoi(e) != 0)) {
+            return false;
+        }
+        if (!getenv("MOE_CACHE_PRELOAD")) {
+            fprintf(stderr, "moe-cache: MOE_CACHE_GPU_CACHE=1 ignored: it needs LD_PRELOAD loading (MOE_CACHE_PRELOAD=1); "
+                            "this plugin was loaded through GGML_BACKEND_PATH, where the GPU would read experts that are not loaded\n");
+            return false;
+        }
+        return true;
+    }();
     return on;
 }
 

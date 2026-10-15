@@ -124,7 +124,8 @@ def smi(q):
     try: return float(subprocess.check_output(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"], stderr=subprocess.DEVNULL).decode().split()[0]) * 2**20
     except Exception: return None
 def amd_free():
-    """free VRAM of the AMD GPU with the most VRAM (amdgpu sysfs); None when there is none. Integrated GPUs share system RAM and are not counted."""
+    """free VRAM of the AMD GPU with the most VRAM (amdgpu sysfs); None when there is none. An integrated GPU's BIOS carve-out counts (dedicated, the OS
+    cannot use it; e.g. 3 GiB on the Vega 8 of the T7 mini PC); GTT (borrowed system RAM) never does; under 1 GiB of VRAM is skipped."""
     best = None
     for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
         try:
