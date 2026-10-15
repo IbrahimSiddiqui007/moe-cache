@@ -1025,3 +1025,25 @@ The prediction is right 54 % of the time on GLM (2 guesses per layer: 64 % of th
 ones save on a drive that is the bottleneck: no reliable gain (the two baseline runs differ by 6 %). With MTP (section 40) and read merging (decode reads are
 single experts) also out, GLM on this laptop stays at about 1.8-1.9 tok/s exact and 2.0-2.3 with `--fast`; more RAM (BIGGER_MACHINES B6) is the lever.
 `MOE_CACHE_LOOKAHEAD=2` stays as an experimental switch (exact).
+
+## 42. Section 2 re-measured, and the executor slowing down K-quant models (T26; Qwen3.6-35B-A3B Q4_K_M, `--n-cpu-moe 34`, ctx 32768; 2026-10-15)
+
+llama.cpp 23b0202a1, plugin with automatic sizing, clean-run gate, 8 x 48 tokens, mean of requests 4-8. MTP: `--spec-type draft-mtp --spec-draft-n-max 2`
+(83 % of the drafts accepted).
+
+| Limit | Run | tok/s | Section 2 (llama.cpp 7fe450e19, before the executor) |
+|---|---|---|---|
+| 28 GB | stock | 32.19 | 29.0-30.7 |
+| 28 GB | plugin | 31.64 | 31.1-32.3 |
+| 28 GB | stock + MTP | 28.31 (still warming up: the page cache was emptied by the plugin run before it) | 39.5 |
+| 28 GB | plugin + MTP | 36.47 | 38.2 |
+| 12 GB | stock + MTP | 8.38 | 8.8 |
+| 12 GB | plugin + MTP | 13.64 | 24.0 |
+| 12 GB | plugin | **7.82** | 23.5 (section 2b) |
+| 12 GB | plugin, executor off (`MOE_CACHE_EXEC=0`) | 17.16 | |
+| 12 GB | **plugin with the fix below** | **16.61** (identical to stock 4/4) | |
+
+The executor (0.2.0 and later) was slower than llama.cpp for Q4_K experts: it stepped aside only when every expert of a step was already in RAM, so at
+12 GB (9 % misses) it computed every step with the generic one-row kernel instead of llama.cpp's faster ones. Graphs whose expert weights are not compute-bound
+(anything but IQ types and Q2_0) now go llama.cpp's own way from the start (`MOE_CACHE_EXEC=2` still forces the executor). Flash-Next (IQ2_XS / Q2_0) keeps the
+executor: 12.95 vs 12.28 tok/s, unchanged. Releases 0.2.0-0.2.3.3 have the slow-down for K-quant models that do not fit in RAM.

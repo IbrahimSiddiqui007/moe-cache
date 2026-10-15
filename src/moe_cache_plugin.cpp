@@ -3432,6 +3432,24 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     struct group_t { int first; int last; int n_tok; };
     std::vector<group_t> groups_found;
     bool exec_graph = s.cache_on && exec_eligible(s, cg);
+    if (exec_graph && !s.exec_force) {
+        // the executor only pays for weights whose dot product is compute-bound (IQ types, Q2_0: our kernels and parallel reads win); for K-quants
+        // and legacy types llama.cpp's own (repacked) kernels are faster even while some experts still have to be read
+        // (Qwen3.6-35B Q4_K_M at 12 GB: 7.8 tok/s with the executor, 17.2 without)
+        bool heavy = false;
+        const int n_all = ggml_graph_n_nodes(cg);
+        for (int i = 0; i < n_all && !heavy; i++) {
+            const ggml_tensor * nd = ggml_graph_node(cg, i);
+            if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
+                const ggml_type wt = nd->src[0]->type;
+                heavy = wt == GGML_TYPE_IQ1_S || wt == GGML_TYPE_IQ1_M || wt == GGML_TYPE_IQ2_XXS || wt == GGML_TYPE_IQ2_XS || wt == GGML_TYPE_IQ2_S ||
+                        wt == GGML_TYPE_IQ3_XXS || wt == GGML_TYPE_IQ3_S || wt == GGML_TYPE_Q2_0;
+            }
+        }
+        if (!heavy) {
+            exec_graph = false;
+        }
+    }
     size_t exec_jobs = 0;          // reads queued for this graph
     bool exec_heavy = false;       // weights whose dot product is compute-bound (IQ types, Q2_0)
     if (s.cache_on) {

@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- **Speed fix for K-quant models that do not fit in RAM** (in releases 0.2.0-0.2.3.3): the executor only takes graphs whose expert weights are IQ types or
+  Q2_0; K-quants and legacy types go llama.cpp's own way, whose kernels are faster. Qwen3.6-35B Q4_K_M at 12 GB: 7.8 -> 16.6 tok/s, identical to stock.
+- `MOE_CACHE_LOOKAHEAD=2` (experimental): the lookahead prefetch together with the executor (exact; no reliable gain on GLM-5.3-Flash, RESULTS 41).
 - `MOE_CACHE_TEST_READ_DELAY_US=N` (tests only): background expert reads start N us late, so a code path that does not wait for an expert still loading
   reads stale data every time instead of only by bad luck. Checked on gpt-oss-20b: the build without the T45 fix fails 0/4, the fixed build passes 4/4.
 - The plugin's Q2_0 kernels step aside when llama.cpp has its own (llama.cpp master, ggml-org/llama.cpp#30447: 96 ns per 2560-weight dot vs the plugin's
