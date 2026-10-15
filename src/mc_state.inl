@@ -850,8 +850,16 @@ struct state_t {
             for (size_t i = 0; i < layer_misses.size(); i++) { j += (i ? "," : "") + std::to_string(layer_misses[i]); }
             j += "]}";
         }
-        fprintf(stderr, "moe-cache-stats %s\n", j.c_str());
+        j = "moe-cache-stats " + j + "\n";
+#ifdef _WIN32
+        // one write, so llama-server's own log lines (another C runtime, same file) cannot land inside the JSON (seen in the Windows CI)
+        DWORD wr = 0;
         fflush(stderr);
+        WriteFile(GetStdHandle(STD_ERROR_HANDLE), j.data(), (DWORD) j.size(), &wr, nullptr);
+#else
+        fputs(j.c_str(), stderr);
+        fflush(stderr);
+#endif
     }
 
     ~state_t() {

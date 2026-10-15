@@ -50,8 +50,12 @@ function Run-One([string]$label, [bool]$plugin) {
   $cache = [bool](Select-String -Path $log -Pattern "moe-cache: cache mode" -SimpleMatch -Quiet)
   $disabled = [bool](Select-String -Path $log -Pattern "plugin disabled" -SimpleMatch -Quiet)
   $stats = (Select-String -Path $log -Pattern "moe-cache-stats {" -SimpleMatch | Select-Object -Last 1 | ForEach-Object {
-    $j = $_.Line.Substring($_.Line.IndexOf("{")) | ConvertFrom-Json
-    "hits $($j.hits), misses $($j.misses), read $([math]::Round($j.read_bytes / 1MB)) MiB, evictions $($j.evictions), executor ops $($j.exec_ops), checked $($j.exec_checked), mismatches $($j.exec_mismatch)" })
+    $l = $_.Line; $f = @{}
+    foreach ($k in "hits", "misses", "read_bytes", "evictions", "exec_ops", "exec_checked", "exec_mismatch") {
+      if ($l -match ('"' + $k + '":(\d+)')) { $f[$k] = [int64]$Matches[1] } else { $f[$k] = "?" }
+    }
+    $rd = if ($f.read_bytes -is [int64]) { [math]::Round($f.read_bytes / 1MB) } else { "?" }
+    "hits $($f.hits), misses $($f.misses), read $rd MiB, evictions $($f.evictions), executor ops $($f.exec_ops), checked $($f.exec_checked), mismatches $($f.exec_mismatch)" })
   return @{ texts = $texts; tps = $tps; active = $active; cache = $cache; disabled = $disabled; stats = $stats }
 }
 
