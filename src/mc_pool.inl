@@ -80,12 +80,16 @@ struct exec_pool_t {
         for (int i = 0; i < n_workers; i++) {
             const int cpu = i < (int) cpus.size() ? cpus[(size_t) i] : -1;
             th.emplace_back([this, cpu] {
-#ifdef __linux__
+#if defined(__linux__)
                 if (cpu >= 0 && cpu < CPU_SETSIZE) {
                     cpu_set_t set;
                     CPU_ZERO(&set);
                     CPU_SET(cpu, &set);
                     sched_setaffinity(0, sizeof(set), &set);
+                }
+#elif defined(_WIN32)
+                if (cpu >= 0 && cpu < 64) {
+                    SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR) 1 << cpu);   // processor group 0 only
                 }
 #endif
                 uint32_t seen = gen.load(std::memory_order_acquire);

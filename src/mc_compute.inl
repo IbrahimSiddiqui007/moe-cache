@@ -31,6 +31,19 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
                 }
             }
         }
+#else
+        // no sysfs: the launcher passes the efficiency cores as a mask (Windows: GetLogicalProcessorInformationEx, lowest efficiency class)
+        if (s.exec_ecores > 0) {
+            if (const char * m = getenv("MOE_CACHE_ECORE_MASK")) {
+                for (int cpu : mask_cpus(m)) {
+                    if (extra >= s.exec_ecores) {
+                        break;
+                    }
+                    cpus.push_back(cpu);
+                    extra++;
+                }
+            }
+        }
 #endif
         s.pool.reset(new exec_pool_t());
         s.pool->start(cpus, (int) cpus.size());

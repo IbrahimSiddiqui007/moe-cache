@@ -61,5 +61,19 @@ for v in ("2", "4", "8"):
 lo, hi = ncmoe(dry("--vram", "8", "--gpu-margin", "0.2")), ncmoe(dry("--vram", "8", "--gpu-margin", "3"))
 check(lo is not None and hi is not None and hi >= lo, f"launcher --gpu-margin 3 keeps at least as many CPU expert layers ({hi}) as 0.2 ({lo})")
 
+# Windows core pinning (WINPIN): the launcher's parser of GetLogicalProcessorInformationEx records, on synthetic records (no Windows needed)
+import importlib.util, struct  # noqa: E402
+_sp = importlib.util.spec_from_file_location("moe_cache_launcher", os.path.join(HERE, "bin", "moe_cache.py"))
+L = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(L)
+def core(eff, mask, group=0):
+    r = bytearray(48); struct.pack_into("<II", r, 0, 0, 48); r[9] = eff; struct.pack_into("<H", r, 30, 1); struct.pack_into("<QH", r, 32, mask, group)
+    return bytes(r)
+lunar = b"".join([core(1, 1 << i) for i in range(4)] + [core(0, 1 << i) for i in range(4, 8)])           # 4 P + 4 LPE, no hyper-threading
+check(L.hybrid_masks(L.parse_core_records(lunar)) == (0xF, [4, 5, 6, 7]), "WINPIN: Lunar Lake 4P+4E -> -C 0xf, efficiency CPUs 4-7")
+raptor = b"".join([core(1, 3 << (2 * i)) for i in range(6)] + [core(0, 1 << i) for i in range(12, 16)])    # 6 P with HT + 4 E
+check(L.hybrid_masks(L.parse_core_records(raptor)) == (0x555, [12, 13, 14, 15]), "WINPIN: Raptor Lake 6P(HT)+4E -> -C 0x555 (one thread per P core)")
+check(L.hybrid_masks(L.parse_core_records(b"".join(core(0, 1 << i) for i in range(8)))) is None, "WINPIN: one efficiency class -> no pinning")
+check(L.parse_core_records(core(1, 1, group=1)) == [], "WINPIN: processor group 1 is ignored")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

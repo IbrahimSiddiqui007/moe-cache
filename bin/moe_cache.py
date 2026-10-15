@@ -130,6 +130,54 @@ def win_memory():
     return None, None
 
 
+def parse_core_records(buf):
+    """Cores from a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: [(efficiency_class, [logical CPUs])], processor group 0 only.
+    Record layout: DWORD Relationship, DWORD Size, then PROCESSOR_RELATIONSHIP: BYTE Flags, BYTE EfficiencyClass, BYTE Reserved[20],
+    WORD GroupCount, GROUP_AFFINITY GroupMask[] at offset 32 (KAFFINITY Mask, WORD Group, WORD Reserved[3])."""
+    import struct
+    cores, off = [], 0
+    while off + 48 <= len(buf):
+        rel, size = struct.unpack_from("<II", buf, off)
+        if size < 48:
+            break
+        if rel == 0:
+            eff = buf[off + 9]
+            mask, group = struct.unpack_from("<QH", buf, off + 32)
+            if group == 0:
+                cores.append((eff, [i for i in range(64) if mask >> i & 1]))
+        off += size
+    return cores
+
+
+def hybrid_masks(cores):
+    """(performance-core mask with one thread per core, efficiency CPUs) when the cores have more than one efficiency class, else None.
+    Windows gives the performance cores the HIGHER efficiency class."""
+    classes = {e for e, _ in cores}
+    if len(classes) < 2:
+        return None
+    top = max(classes)
+    pmask = sum(1 << cpus[0] for e, cpus in cores if e == top and cpus)
+    ecpus = sorted(c for e, cpus in cores if e != top for c in cpus)
+    return pmask, ecpus
+
+
+def win_cores():
+    """[(efficiency_class, [logical CPUs])] on Windows, [] elsewhere or on failure (Claw finding 5: Windows had no core pinning)."""
+    if not WINDOWS:
+        return []
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        n = ctypes.c_uint32(0)
+        k.GetLogicalProcessorInformationEx(0, None, ctypes.byref(n))
+        buf = ctypes.create_string_buffer(n.value)
+        if not k.GetLogicalProcessorInformationEx(0, buf, ctypes.byref(n)):
+            return []
+        return parse_core_records(buf.raw[:n.value])
+    except Exception:
+        return []
+
+
 def mem_total():
     if WINDOWS:
         return win_memory()[0]
@@ -450,6 +498,17 @@ def server(argv):
             env.append(("MOE_CACHE_EXEC_ECORES", str(ne)))
             say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     pinargs = []
+    hm = hybrid_masks(win_cores()) if WINDOWS else None
+    if hm and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
+        pmask, ecpus = hm
+        if not a.no_pin:
+            pinargs = ["-C", hex(pmask), "--cpu-strict", "1"]
+            env.append(("MOE_CACHE_CPU_MASK", hex(pmask)))
+            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {hex(pmask)}); --no-pin to disable")
+        ne = min(len(ecpus), 4)
+        if ne and not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES"):
+            env += [("MOE_CACHE_EXEC_ECORES", str(ne)), ("MOE_CACHE_ECORE_MASK", hex(sum(1 << c for c in ecpus)))]
+            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     if not a.no_pin and os.access("/sys/devices/cpu_core/cpus", os.R_OK) and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
         try:
             cores = parse_cpus(open("/sys/devices/cpu_core/cpus").read())

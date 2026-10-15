@@ -35,26 +35,37 @@ cpu_api_t & CPU() {
 // CPUs to pin the plugin's compute threads to, best first: one thread per performance core, then their hyper-threading siblings.
 // Only on hybrid Intel CPUs (performance + efficiency cores), where a worker on an efficiency core or on a busy sibling slows every layer.
 // MOE_CACHE_CPU_PIN=off disables it; MOE_CACHE_CPU_MASK=hex picks the CPUs yourself (bit i = CPU i).
+// CPUs set in a hex mask such as "0x555" or "f0" (llama.cpp's -C format), lowest first
+std::vector<int> mask_cpus(const char * m) {
+    std::vector<int> out;
+    if (m[0] == '0' && (m[1] | 32) == 'x') {
+        m += 2;
+    }
+    const size_t n = strlen(m);
+    for (size_t i = 0; i < n; i++) {
+        const char ch = m[n - 1 - i];
+        const int v = ch >= '0' && ch <= '9' ? ch - '0' : (ch | 32) >= 'a' && (ch | 32) <= 'f' ? (ch | 32) - 'a' + 10 : 0;
+        for (int b = 0; b < 4; b++) {
+            if ((v & (1 << b)) && i * 4 + b < GGML_MAX_N_THREADS) {   // cpumask has GGML_MAX_N_THREADS entries
+                out.push_back((int) (i * 4 + b));
+            }
+        }
+    }
+    return out;
+}
+
+// CPUs for the executor's threads, best first. MOE_CACHE_CPU_MASK (hex) wins; the launcher sets it on Windows from the cores' efficiency class
+// (Claw finding 5: Windows had no pinning); on Linux the performance cores of a hybrid Intel CPU come from sysfs.
 std::vector<int> pin_cpus() {
     std::vector<int> out;
-#ifdef __linux__
     const char * off = getenv("MOE_CACHE_CPU_PIN");
     if (off && strcmp(off, "off") == 0) {
         return out;
     }
     if (const char * m = getenv("MOE_CACHE_CPU_MASK")) {
-        const size_t n = strlen(m);
-        for (size_t i = 0; i < n; i++) {
-            const char ch = m[n - 1 - i];
-            const int v = ch >= '0' && ch <= '9' ? ch - '0' : (ch | 32) >= 'a' && (ch | 32) <= 'f' ? (ch | 32) - 'a' + 10 : 0;
-            for (int b = 0; b < 4; b++) {
-                if ((v & (1 << b)) && i * 4 + b < GGML_MAX_N_THREADS) {   // cpumask has GGML_MAX_N_THREADS entries
-                    out.push_back((int) (i * 4 + b));
-                }
-            }
-        }
-        return out;
+        return mask_cpus(m);
     }
+#ifdef __linux__
     auto parse = [](const std::string & txt) {
         std::vector<int> r;
         size_t i = 0;
