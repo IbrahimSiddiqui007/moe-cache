@@ -84,6 +84,25 @@ jobs:
           KL_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2"
         run: tests/kl_batch.sh granite.gguf --chunks 4 | tee identity_kl_batch8.txt
 
+      - name: Tiny gpt-oss model (separate gate/up/down calls; random weights, converted with this llama.cpp's own script)
+        run: |
+          python3 -m pip install -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
+          python3 -m pip install -q -e llama.cpp/gguf-py
+          R=yujiepan/gpt-oss-tiny-random; REV=125415b0a24f15c96362749dd2c49e2c1db0e22c; mkdir -p tiny-gptoss
+          for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json chat_template.jinja; do
+            curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
+          done
+          python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss.gguf --outtype f16
+          ls -la tiny-gptoss.gguf
+
+      - name: Identity on gpt-oss with background reads delayed (catches a missing wait for experts still loading, T45)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.01 MOE_CACHE_TEST_READ_DELAY_US=2000"
+        run: tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_delay.txt
+
       - name: Identity with guard mode (evicted pages inaccessible, so an unintercepted read crashes instead of reading zeros)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
