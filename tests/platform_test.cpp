@@ -21,6 +21,15 @@ int main() {
     p[100] = 7; plat::mem_commit(p + 100, 10); CHECK(p[100] == 7);   // committing again keeps the content
     plat::mem_release(p, 64 * MB);
 
+    // a commit that runs past the end of the reservation must still commit the pages inside it (Windows: one VirtualAlloc call fails as a whole;
+    // the last expert of a buffer plus the extra page did exactly that and the next write crashed, RESULTS 50)
+    char * q = (char *) plat::mem_reserve(64 * 1024);
+    CHECK(q != nullptr);
+    plat::mem_commit(q + 60 * 1024, 8192);
+    q[60 * 1024] = 5; q[64 * 1024 - 1] = 6;
+    CHECK(q[60 * 1024] == 5 && q[64 * 1024 - 1] == 6);
+    plat::mem_release(q, 64 * 1024);
+
     // aligned buffer + unbuffered read at an offset
     std::string path = "moe_cache_platform_test.bin";
     { FILE * f = fopen(path.c_str(), "wb"); std::vector<unsigned char> d(MB); for (size_t i = 0; i < d.size(); i++) d[i] = (unsigned char) (i * 31 + 7); fwrite(d.data(), 1, d.size(), f); fclose(f); }

@@ -140,7 +140,20 @@ inline bool mem_guard() {
 inline void mem_commit(void * p, size_t size) {
 #ifdef _WIN32
     const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
-    VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE);
+    if (!VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
+        // one call fails as a whole when the range runs past the end of its reservation (e.g. the extra page after the last expert of a buffer):
+        // then nothing was committed and the next write faulted (Windows CI, RESULTS 50). Commit page by page, as far as the reservation goes.
+        static bool told = false;
+        if (!told) {
+            told = true;
+            fprintf(stderr, "moe-cache: note: commit of %zu bytes failed (Windows error %lu), committing page by page\n", (size_t) (b - a), (unsigned long) GetLastError());
+        }
+        for (uintptr_t q = a; q < b; q += 4096) {
+            if (!VirtualAlloc((void *) q, 4096, MEM_COMMIT, PAGE_READWRITE)) {
+                break;      // past the reservation: the rest is not ours
+            }
+        }
+    }
 #else
     if (mem_guard()) {
         const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
