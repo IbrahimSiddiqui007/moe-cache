@@ -1137,3 +1137,14 @@ Reading: for long prompts llama.cpp already sends the expert work to the GPU, so
 stock prompt speed is close to moe-cache's on the first prompt; moe-cache gains on later prompts (its cache is warm) and above all in decode. On Flash-Next
 (68 GB at 24 GB) moe-cache's prompt speed is 1.4x stock. The moe-cache Flash-Next run of this session failed (the 5-6k prompts exceed ctx 4096 in that run),
 so its row uses section 38's numbers, same launcher settings at ctx 8192.
+
+## 47. Long contexts, moe-cache only (owner's choice: no stock runs; 2026-10-15 evening, 24 GB limit, launcher command lines, clean-run gate)
+
+| Model, context | Placement chosen by the launcher | Decode tok/s (8 x 48, mean of 4-8, paired) | Prefill |
+|---|---|---|---|
+| Flash-Next IQ2_XS, ctx 32768 | 0 of 48 expert layers on the GPU (the 32k buffers leave no room), `-ub 2048` | 12.46, 11.35 (4k context: 12.28, 12.66) | 29,564-token prompt at **38.4 tok/s** (12.8 min); decode right after it 8.1-11.2 |
+| GLM-5.3-Flash UD-IQ2_XXS, ctx 16384 | 0 of 46 expert layers on the GPU, `-ub 512` | 1.89, 1.94 (4k context: ~1.75) | 10,453-token prompt at **5.7 tok/s** (30.6 min) |
+
+Reading: decode does not get slower with the longer context on either model. Prefill does: Flash-Next 38 tok/s on a 30k prompt against ~95 on 2-5k prompts
+(attention over the whole prompt, and no expert layers fit on the GPU at 32k); GLM re-reads most of its ~95 GB of experts from the SSD for every 512-token
+chunk, so its long prompts run at under 6 tok/s. Ideas I3 (keep a share of the cache across chunks) and B13 (bigger chunks on a bigger card) target this.
