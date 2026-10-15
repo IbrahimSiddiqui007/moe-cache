@@ -8,6 +8,11 @@
 - Launcher (found on the MSI Claw): llama-server now dies with the launcher (Windows job object, Linux parent-death signal; a closed or killed launcher
   left it running on its port), and when the plugin was meant to load but llama-server comes up without any `moe-cache:` line, the launcher says so
   loudly (it reported the plugin as loaded while llama-server silently ran stock).
+- **Windows** (first real run, MSI Claw, llama.cpp b11669, RESULTS 49): the DLL did not load; `build.sh --windows` now imports the backend registry from
+  `ggml.dll` (not `ggml-base.dll`) and links the MinGW threads runtime statically. Launcher on Windows: memory from GlobalMemoryStatusEx (no /proc there),
+  the tuner's "no VRAM information" no longer overrides the planner (integrated GPUs), `check` says why the plugin did not load, the dry-run line is
+  PowerShell syntax, the URL is 127.0.0.1 (Windows tried ::1 first), "profile dir will be created" instead of a false warning. `windows_test.ps1` names a
+  missing DLL dependency instead of pointing at the API.
 - CI: sanitizer workflow (ThreadSanitizer / AddressSanitizer, `.github/workflows/sanitize.yml`, push to branch `sanitize` to run); long-prompt identity step.
 
 ## 0.2.3.5 (2026-10-15)

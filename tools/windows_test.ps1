@@ -50,7 +50,12 @@ function Run-One([string]$label, [bool]$plugin) {
 Write-Host "1/2 stock server"; $a = Run-One "stock" $false
 Write-Host "2/2 server with the plugin"; $b = Run-One "plugin" $true
 Write-Host "---- plugin log lines (must show that the plugin loaded):"; Write-Host $b.active
-if (-not $b.active) { Write-Host "FAIL: no 'moe-cache:' line in the plugin run, the DLL was not loaded (check API: $out\plugin.err.txt)"; exit 2 }
+if (-not $b.active) {
+  $lf = Select-String -Path (Join-Path $out "plugin.err.txt") -Pattern "failed to load" -SimpleMatch | Select-Object -First 1 | ForEach-Object { $_.Line }
+  if ($lf) { Write-Host "FAIL: llama.cpp could not load the DLL ($lf). An empty reason on Windows usually means a missing dependency DLL; check with: dumpbin /dependents (or objdump -p) on the DLL" }
+  else { Write-Host "FAIL: no 'moe-cache:' line in the plugin run, the DLL was not loaded (wrong ggml API? see $out\plugin.err.txt)" }
+  exit 2
+}
 if ($b.disabled -or -not $b.cache) { Write-Host "FAIL: the plugin loaded but the cache was not on (no 'moe-cache: cache mode' line, or 'plugin disabled'): this run proves nothing"; exit 2 }
 if ($b.stats) { Write-Host "cache: $($b.stats)" }
 if (-not ($a.texts | Where-Object { $_.Length -gt 0 })) { Write-Host "FAIL: every stock answer is empty, so the comparison exercised no decoding"; exit 2 }

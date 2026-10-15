@@ -15,7 +15,7 @@ llama.cpp build uses (CUDA, ROCm/HIP, Vulkan, SYCL, ...). That makes it independ
 | Linux + Vulkan, AMD GPU | Expected to work (same Vulkan path, same host-buffer behaviour as the tested devices), **not tested on AMD hardware** | the path AMD cards without ROCm support use |
 | Linux + AMD GPU via ROCm/HIP | Expected to work, **untested** | |
 | Linux + Intel GPU (SYCL or Vulkan) | **Untested** | Intel iGPU available on the development machine for testing |
-| Windows (any CPU/GPU) | **Not supported yet** (code written, never run on Windows) | see "Windows status" below |
+| Windows (any CPU/GPU) | **Not supported yet**: first real run 2026-10-15 (MSI Claw, llama.cpp b11669): the launcher works; the DLL did not load because of two build bugs, fixed in 0b7bbaa, rerun pending | see "Windows status" below, RESULTS 49 |
 | macOS / Apple Silicon | Not supported | uses Linux memory APIs; unified memory changes the problem |
 
 ## Repacking (why CPU-only needed extra work)
@@ -26,6 +26,9 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
 ## Windows status
 
 - The operating-system code is in `src/platform.h` (Linux: `O_DIRECT`, `madvise`, `mmap`, cgroups; Windows: `FILE_FLAG_NO_BUFFERING` overlapped reads, `VirtualAlloc` reserve/commit/decommit, job-object and free-memory limits).
+- First run on real Windows (2026-10-15, MSI Claw 8 AI+, official llama.cpp b11669 Vulkan, ggml 0.27.0): the plugin DLL did not load: it imported
+  `libwinpthread-1.dll` (not on Windows) and took 4 backend-registry functions from `ggml-base.dll` instead of `ggml.dll`. Both fixed in `build.sh --windows`
+  (0b7bbaa); the identity test is to be rerun. The Python launcher works there (check, dry run, real start, chat).
 - `./build.sh --windows` cross-compiles `ggml-moe-cache.dll` with mingw-w64 (load it with `GGML_BACKEND_PATH`; official Windows llama.cpp builds load their backends as DLLs).
 - `tests/platform_test.cpp` passes natively on Linux and, compiled for Windows, under Wine (reserve/commit/decommit, unbuffered reads at the end of a file, limits, file replacement).
 - **Never run on real Windows with llama.cpp**: no token-identity test, no speed numbers, and the launcher scripts are still bash. Treat it as a code port waiting for a tester; `docs/WINDOWS_TEST.md` and `tools/windows_test.ps1` are the test.

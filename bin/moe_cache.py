@@ -98,7 +98,27 @@ def model_parts(model):
     return [model]
 
 
+def win_memory():
+    """(total, available) bytes on Windows (GlobalMemoryStatusEx); (None, None) elsewhere or on failure."""
+    if not WINDOWS:
+        return None, None
+    try:
+        import ctypes
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32), ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64), ("ullTotalVirtual", ctypes.c_uint64),
+                        ("ullAvailVirtual", ctypes.c_uint64), ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+        m = MS(); m.dwLength = ctypes.sizeof(MS)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            return float(m.ullTotalPhys), float(m.ullAvailPhys)
+    except Exception:
+        pass
+    return None, None
+
+
 def mem_total():
+    if WINDOWS:
+        return win_memory()[0]
     try:
         for line in open("/proc/meminfo"):
             if line.startswith("MemTotal:"):
@@ -112,6 +132,8 @@ def mem_for_server(ram_gb):
     """Bytes the server may use: --ram (GB), else the cgroup limit, else available RAM; None when unknown."""
     if ram_gb:
         return float(ram_gb) * 1e9
+    if WINDOWS:
+        return win_memory()[1]      # found on the MSI Claw: /proc does not exist there, so stock-vs-plugin could not be decided without --ram
     try:
         rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
         for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
@@ -409,7 +431,8 @@ def server(argv):
             say(f"moe-cache: micro-batch -ub {ub} (prompt processing; --ub N to change)")
     # without a GPU cache, take the static expert layers from the same decision as the micro-batch (the planner alone assumes a small compute
     # buffer and fills the card, so the long-prompt GPU block found no room next to -ub 2048: Flash-Next prefill 18 instead of 50+ tok/s)
-    if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned:
+    no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))   # e.g. an integrated GPU: keep the planner's answer
+    if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned and not no_vram:
         ncmoe = str(tuned["n_cpu_moe"])
     if gcache != "off" and ncmoe != "0":
         gcmib = gcache
@@ -459,16 +482,19 @@ def server(argv):
         say(f"moe-cache: all experts fit in your GPU memory; the cache has nothing to manage for this model/context (profile {profile}; plugin loaded by {method})")
     else:
         say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")
-    say(f"moe-cache: web UI and API will be at http://localhost:{port}")
+    say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     if a.dry_run:
-        say("env " + " ".join(f"{k}={v}" for k, v in env) + " " + " ".join(cmd))
+        if WINDOWS:   # PowerShell form, so it can be pasted there
+            say("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+        else:
+            say("env " + " ".join(f"{k}={v}" for k, v in env) + " " + " ".join(cmd))
         return 0
     api_key = arg_after(extra, "--api-key")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
                 if healthy(port, api_key):
-                    st, body = http(f"http://localhost:{port}/slots/0?action=restore", {"filename": a.project + ".bin"}, api_key, timeout=600)
+                    st, body = http(f"http://127.0.0.1:{port}/slots/0?action=restore", {"filename": a.project + ".bin"}, api_key, timeout=600)
                     if st == 200:
                         say(f"moe-cache: restored the saved prompt state of project {a.project}", err=True)
                     else:
@@ -481,7 +507,7 @@ def server(argv):
             for _ in range(600):
                 if healthy(port, api_key):
                     import webbrowser
-                    webbrowser.open(f"http://localhost:{port}")
+                    webbrowser.open(f"http://127.0.0.1:{port}")
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
@@ -631,15 +657,19 @@ def check(argv):
         ok("plugin", lib)
         if lsp:
             load, method = load_env(lsp, lib)
+            probe = ""
             try:
                 out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60, env=dict(os.environ, **dict(load)))
-                listed = "MOE_CACHE" in out.stdout + out.stderr
+                probe = out.stdout + out.stderr
             except Exception:
-                listed = False
+                pass
+            listed = "MOE_CACHE" in probe
             if listed:
                 ok("plugin loads", f"yes, via {method}")
             else:
-                fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})")
+                why = [l.strip() for l in probe.splitlines() if "load_backend" in l or "moe-cache:" in l][:3]
+                fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})" + ("; llama-server said: " + " | ".join(why) if why else "")
+                     + ("; on Windows an empty 'failed to load' reason usually means a missing DLL dependency or a DLL built for another ggml" if WINDOWS else ""))
             try:
                 out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60)
                 devs = [l.strip() for l in (out.stdout + out.stderr).splitlines() if re.match(r"^ +(CUDA|Vulkan|ROCm|HIP|SYCL|Metal)[0-9]*:", l)]
@@ -650,6 +680,9 @@ def check(argv):
             else:
                 warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower)")
     memav = cg = None
+    if WINDOWS:
+        t, av = win_memory()
+        memav = av / 2**30 if av else None
     try:
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable"):
@@ -675,15 +708,18 @@ def check(argv):
         ok("planner", "python gguf package found (the planner also has its own header reader)")
     except ImportError:
         ok("planner", "built-in GGUF header reader (the python gguf package is not needed)")
-    if os.access(os.path.dirname(CACHE_DIR), os.W_OK) or os.access(CACHE_DIR, os.W_OK):
-        ok("profile dir", CACHE_DIR)
+    d = CACHE_DIR
+    while d and not os.path.exists(d) and os.path.dirname(d) != d:
+        d = os.path.dirname(d)
+    if os.access(d, os.W_OK):
+        ok("profile dir", CACHE_DIR + ("" if os.path.isdir(CACHE_DIR) else " (will be created)"))
     else:
         warn("profile dir", "cache directory not writable: profiles will not be saved")
     if a.model:
         if not os.access(a.model, os.R_OK):
             fail("model", f"cannot read '{a.model}'")
         else:
-            size = sum(os.path.getsize(p) for p in model_parts(a.model)) / 2**30
+            size = sum(os.path.getsize(p) for p in model_parts(a.model)) / 1e9
             head = open(a.model, "rb").read(4 << 20)
             if head[:4] == b"GGUF":
                 ok("model", f"GGUF, {size:.1f} GB")

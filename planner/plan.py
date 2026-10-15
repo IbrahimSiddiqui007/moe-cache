@@ -147,6 +147,13 @@ else:
     n_gpu = max(0, min(n_main, int(room // per_layer))); note = "" if room > 0 else "GPU too small even for the core weights: use fewer layers on GPU (-ngl) or a smaller context"
 ncmoe = n_main - n_gpu
 def mem_avail():
+    if os.name == "nt":      # Windows has no /proc (found on the MSI Claw): GlobalMemoryStatusEx
+        import ctypes
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32)] + [(n, ctypes.c_uint64) for n in
+                        ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile", "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]
+        m = MS(); m.dwLength = ctypes.sizeof(MS)
+        return m.ullAvailPhys if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else 8 * GIB
     for l in open("/proc/meminfo"):
         if l.startswith("MemAvailable"): return int(l.split()[1]) * 1024
 ram = a.ram_gib * GIB if a.ram_gib else mem_avail()

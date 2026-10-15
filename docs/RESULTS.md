@@ -1171,3 +1171,34 @@ the comparison is paired. X8 (the same idea, October) lost 25 % before prompt re
 GLM-5.3-Flash UD-IQ2_XXS (24 GB, ctx 8192, `-ub 512`, one 2.2k-token prompt, one run each): off 6.0 tok/s, 25.8 % hits, 453 GB read; **on 6.5 tok/s, 37.5 % hits,
 384 GB read**. Smaller gain than Flash-Next (the cache holds only ~20 of GLM's ~95 GB of experts, so less survives between chunks); +8 % is inside the
 run-to-run noise, the 15 % fewer reads are not. Not slower, so the default stays on for GLM too.
+
+## 49. First run on real Windows, and the iGPU experiments E1/E2 (MSI Claw 8 AI+, 2026-10-15; from the Claw session's report, handover/claw_results.md)
+
+Machine: Core Ultra 7 258V (4P + 4LPE), Arc 140V iGPU, 32 GB, Windows 11. llama.cpp official release b11669 (Vulkan, ggml 0.27.0). Test model OLMoE-1B-7B Q4_0;
+for E1/E2 requantized with `--pure` to each type (speed only).
+
+**T5 (identity test): not reached.** The plugin DLL did not load (`load_backend: failed to load ...dll:` with an empty reason): it imported
+`libwinpthread-1.dll` (a MinGW runtime not present on Windows) and bound `ggml_backend_dev_by_type / dev_count / dev_get / register` to `ggml-base.dll`
+although Windows exports them from `ggml.dll`. Fixed in `build.sh --windows` (0b7bbaa: two import libraries, static winpthread); rerun pending.
+Stock decode on this machine (experts on the CPU, attention on the iGPU): 45-46 tok/s.
+
+**Launcher on Windows:** check, dry run, real start and a chat request work (stock mode: the model fits). Found and fixed the same day: a killed launcher left
+llama-server running (job object now), a plugin that did not load was reported as loaded (warning now), no memory detection without /proc (GlobalMemoryStatusEx
+now), the tuner's "no VRAM information" answer overrode the planner, `check` gave no reason for a load failure. Open: no core pinning on Windows.
+
+**E1 (iGPU kernel speed and handoff): no stop rule hit.** Whole-token decode, tok/s:
+
+| Type | CPU (best of 4 / 8 threads) | iGPU (Vulkan) | iGPU / CPU |
+|---|---|---|---|
+| IQ2_S (true iq2_s) | 52.4 | 43.6 | 0.83x (the Vulkan iq2_s kernel is 1.9x slower than iq2_xs for the same shape) |
+| IQ2_XS | 43.0 | 71.5 | 1.66x |
+| IQ2_XXS | 52.6 | 87.1 | 1.66x |
+| IQ3_XXS | 43.1 | 91.1 | 2.11x |
+| Q2_0 | 55.7 | 156.9 | 2.82x |
+
+One CPU/iGPU handoff costs about 0.2 ms (at most 0.46-0.64 ms), far from the feared 3 ms. But llama.cpp's own per-layer split (experts on the CPU, the rest
+on the iGPU: 34 handoffs per token) is slower than the CPU alone for every type: a scheduler must not do a round trip per layer (SCHEDULER_DESIGN.md).
+Side finding: for a model that fits in RAM, experts on the iGPU (`-ngl 99` without `--n-cpu-moe`) are 1.7-2.8x faster than on the CPU on this machine.
+
+**E2 (both busy at once): no stop rule hit.** The busy iGPU costs the CPU 12-28 %, the busy CPU costs the iGPU 1-30 %; both together give 1.08-1.46x the
+faster one alone (two whole-model streams; a per-layer split of one token will gain less, which E3/E4 measure).
