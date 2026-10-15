@@ -22,18 +22,24 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: mingw-w64 (posix threads, as on the development machine)
+      - name: mingw-w64 (UCRT when available, the C runtime of official llama.cpp and of the kit; else posix/msvcrt)
         run: |
-          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
-          x86_64-w64-mingw32-g++ --version | head -1
-      - name: Plugin DLL (API 3) and the platform test, warnings are errors
+          sudo apt-get update -q
+          if sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
+            echo "MINGW_CXX=x86_64-w64-mingw32ucrt-g++" >> "$GITHUB_ENV"
+          else
+            sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+            echo "MINGW_CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
+          fi
+      - name: Plugin DLL (API 3, with debug info for crash offsets; same code) and the platform test, warnings are errors
         run: |
-          x86_64-w64-mingw32-g++ -std=c++17 -Wall -Werror -Wno-unused-function -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src -fsyntax-only src/moe_cache_plugin.cpp
-          GGML_API=3 ./build.sh --windows
+          $MINGW_CXX --version | head -1
+          $MINGW_CXX -std=c++17 -Wall -Werror -Wno-unused-function -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src -fsyntax-only src/moe_cache_plugin.cpp
+          GGML_API=3 MOE_CACHE_CXXFLAGS="-g" ./build.sh --windows
           x86_64-w64-mingw32-objdump -p build/win/ggml-moe-cache.dll | grep "DLL Name" | tee build/win/imports_dlls.txt
           # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
           ! grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32" build/win/imports_dlls.txt
-          x86_64-w64-mingw32-g++ -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
+          $MINGW_CXX -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
       - uses: actions/upload-artifact@v4
         with:
           name: win-dll
@@ -85,6 +91,14 @@ jobs:
           if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
           python -c "import importlib.util as u, sys; sys.argv=['x']; s=u.spec_from_file_location('m','bin/moe_cache.py'); m=u.module_from_spec(s); s.loader.exec_module(m); c=m.win_cores(); print('cores (efficiency class, cpus):', c); print('hybrid masks:', m.hybrid_masks(c)); print('ggml API of the server:', m.ls_api(r'$ls')); sys.exit(0 if c else 1)"
 
+      - name: Crash dumps on (Windows Error Reporting LocalDumps for llama-server.exe)
+        run: |
+          New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\dumps" | Out-Null
+          $k = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\llama-server.exe"
+          New-Item -Force $k | Out-Null
+          New-ItemProperty -Force $k -Name DumpFolder -PropertyType ExpandString -Value "$env:GITHUB_WORKSPACE\dumps" | Out-Null
+          New-ItemProperty -Force $k -Name DumpType -PropertyType DWord -Value 1 | Out-Null
+
       - name: Identity, cache on and forced to evict (0.2 GiB)
         run: |
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
@@ -96,12 +110,25 @@ jobs:
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (executor) failed ($LASTEXITCODE)" }
 
+      - name: On failure - crash event and the faulting stack (map plugin offsets with x86_64-w64-mingw32-addr2line -e ggml-moe-cache.dll)
+        if: failure()
+        run: |
+          Get-WinEvent -FilterHashtable @{ LogName = "Application"; ProviderName = "Application Error" } -MaxEvents 3 -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.TimeCreated; $_.Message; "----" }
+          $cdb = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\Debuggers\x64\cdb.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          foreach ($d in (Get-ChildItem "$env:GITHUB_WORKSPACE\dumps" -Filter *.dmp -ErrorAction SilentlyContinue | Select-Object -First 2)) {
+            "dump: $($d.Name)"
+            if ($cdb) { & $cdb.FullName -z $d.FullName -c ".ecxr; r; kn 40; lmv m ggml*; q" 2>&1 | Select-Object -Last 120 } else { "cdb not found" }
+          }
+
       - name: Collect the logs (windows_test.ps1 writes them to %TEMP%\moe-cache-test)
         if: always()
         run: |
           New-Item -ItemType Directory -Force logs | Out-Null
           Copy-Item "$env:TEMP\moe-cache-test\*.txt" logs -ErrorAction SilentlyContinue
           Copy-Item launcher_*.txt logs -ErrorAction SilentlyContinue
+          Copy-Item "$env:GITHUB_WORKSPACE\dumps\*.dmp" logs -ErrorAction SilentlyContinue
+          Copy-Item "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" logs
           Get-ChildItem logs | ForEach-Object { $_.Name }
 
       - name: Keep the logs

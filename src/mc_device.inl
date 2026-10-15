@@ -140,6 +140,10 @@ const ggml_backend_reg_i g_reg_i = {
 }
 
 extern "C" MOE_CACHE_EXPORT ggml_backend_reg_t ggml_backend_init(void) {
+#ifdef _WIN32
+    // the DLL has its own C runtime state; unbuffered, so our lines reach the log even when the process dies right after (a crash in CI left none)
+    setvbuf(stderr, nullptr, _IONBF, 0);
+#endif
     static ggml_backend_reg reg = { GGML_BACKEND_API_VERSION, g_reg_i, nullptr };
     return &reg;
 }
