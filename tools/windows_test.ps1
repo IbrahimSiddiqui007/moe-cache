@@ -4,11 +4,12 @@
 # -Model    : a GGUF that FITS IN RAM for the first test (Windows has no memory-limit scope here: a model bigger than RAM can freeze the machine)
 # -Dll      : ggml-moe-cache-api2.dll (llama.cpp 7fe450e19 / ggml 0.25.x) or ggml-moe-cache-api3.dll (llama.cpp 23b0202a1 and newer ggml 0.26.x)
 # -CacheGiB : expert cache size for the plugin run (default 0.5: far below the model, so experts are evicted and read again; "auto" sizes it from RAM)
+# -Extra    : more llama-server arguments for both runs, e.g. "--no-repack" (CPU-only machines: repacked weights switch the expert executor off)
 param(
   [Parameter(Mandatory = $true)][string]$LlamaDir,
   [Parameter(Mandatory = $true)][string]$Model,
   [Parameter(Mandatory = $true)][string]$Dll,
-  [int]$Port = 8099, [int]$Tokens = 32, [int]$Ctx = 4096, [int]$NCpuMoe = 999, [string]$CacheGiB = "0.5"
+  [int]$Port = 8099, [int]$Tokens = 32, [int]$Ctx = 4096, [int]$NCpuMoe = 999, [string]$CacheGiB = "0.5", [string]$Extra = ""
 )
 $ErrorActionPreference = "Stop"
 $srv = Join-Path $LlamaDir "llama-server.exe"
@@ -25,6 +26,7 @@ function Run-One([string]$label, [bool]$plugin) {
   if ($plugin) { $env:GGML_BACKEND_PATH = (Resolve-Path $Dll).Path; $env:MOE_CACHE_GGUF = (Resolve-Path $Model).Path; $env:MOE_CACHE_STATS = "1"; $env:MOE_CACHE_SIZE_GIB = $CacheGiB }
   else { foreach ($v in "GGML_BACKEND_PATH", "MOE_CACHE_GGUF", "MOE_CACHE_STATS", "MOE_CACHE_SIZE_GIB") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue } }
   $sargs = @("-m", $Model, "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
+  if ($Extra) { $sargs += ($Extra -split " " | Where-Object { $_ }) }
   $p = Start-Process -FilePath $srv -ArgumentList $sargs -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
   $up = $false
   for ($i = 0; $i -lt 600; $i++) {

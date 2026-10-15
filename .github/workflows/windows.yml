@@ -104,11 +104,16 @@ jobs:
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 failed ($LASTEXITCODE)" }
 
-      - name: Identity, executor forced on and byte-checked
+      - name: Identity, executor forced on and byte-checked (no repacking on both servers, else the executor steps aside)
         run: |
           $env:MOE_CACHE_EXEC = "2"; $env:MOE_CACHE_EXEC_CHECK = "1"
-          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048 -Extra "--no-repack"
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (executor) failed ($LASTEXITCODE)" }
+          $log = "$env:TEMP\moe-cache-test\plugin.err.txt"
+          Select-String $log -Pattern "executor=|checked|mismatch" | ForEach-Object { $_.Line }
+          if (-not (Select-String $log -Pattern "executor=on" -Quiet)) { throw "the executor did not run" }
+          $m = Select-String $log -Pattern "checked (\d+), mismatches (\d+)" | Select-Object -Last 1
+          if (-not $m -or [int64]$m.Matches[0].Groups[1].Value -eq 0 -or [int64]$m.Matches[0].Groups[2].Value -ne 0) { throw "executor byte check: none checked or mismatches ($($m.Line))" }
 
       - name: On failure - crash event and the faulting stack (map plugin offsets with x86_64-w64-mingw32-addr2line -e ggml-moe-cache.dll)
         if: failure()
