@@ -1106,3 +1106,19 @@ and 2048 MiB above: at 12 GB that is **22.6 vs 6.9 tok/s stock (3.3x)**.
 |---|---|
 | stock (page cache dropped first) | 5.31, 5.06 |
 | moe-cache | 12.28, 12.66 (2.4x) |
+
+## 45. Qwen3.5-122B-A10B at three bit widths (T27; unsloth UD quants, 24 GB limit, 8 GB GPU, launcher defaults, 2026-10-15)
+
+llama.cpp 23b0202a1, plugin from 02121c6 (`build-light`), command lines from the launcher (`moe-cache-server --ram 24 --ctx 4096 [--fast] --dry-run`: 1 of 48 expert
+layers on the GPU, `-ub 2048`), clean-run gate, stock runs with the same arguments after the model was dropped from the page cache. Identity: `tests/identity.sh
+--limit 24 --tokens 24` (4 prompts, stock vs plugin). moe-cache and `--fast`: 8 x 48 tokens, mean of requests 4-8, paired. **Stock: 3 x 24 tokens, mean of
+requests 2-3** (8 x 48 would take ~16 min per run at under 2 tok/s), one run: a steady-state mean like the others, but not the same requests.
+
+| Quant (file) | Identity | Stock tok/s | moe-cache tok/s | `--fast` tok/s |
+|---|---|---|---|---|
+| UD-IQ2_XXS (36.6 GB) | 4/4 | 1.89 | **7.70, 7.73 (4.1x)** | 8.71, 9.23 (+16 %) |
+| UD-IQ3_XXS (44.7 GB) | 4/4 | 1.10 | **5.64, 5.78 (5.2x)** | 6.86, 6.70 (+19 %) |
+| UD-IQ4_XS (60.2 GB, 3 shards) | 4/4 | 0.91 | **3.82, 3.50 (4.0x)** | 4.23, 4.70 (+22 %) |
+
+Each step up in width means more expert bytes per token (8 of 256 experts in each of 48 layers: about 1.0 / 1.25 / 1.7 GB per token) and a smaller share of the
+model in 24 GB, so speed falls with file size; the gap to stock stays 4-5x because stock reads its misses through small page faults.

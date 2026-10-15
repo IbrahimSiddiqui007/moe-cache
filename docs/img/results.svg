@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="860" height="560" viewBox="0 0 860 560" font-family="Helvetica,Arial,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="640" viewBox="0 0 860 640" font-family="Helvetica,Arial,sans-serif">
 <text x="20" y="32" font-size="20" font-weight="bold" fill="#808080">Generation speed, tokens per second (higher is better)</text>
 <rect x="20" y="44" width="14" height="14" fill="#9aa0a6"/><text x="40" y="56" font-size="13" fill="#808080">stock llama.cpp</text>
 <rect x="170" y="44" width="14" height="14" fill="#2f81f7"/><text x="190" y="56" font-size="13" fill="#808080">with moe-cache (same tokens as stock)</text>
@@ -17,30 +17,37 @@
 <rect x="372" y="186" width="110.7" height="18" rx="3" fill="#2f81f7"/><text x="490.7" y="200" font-size="13" font-weight="bold" fill="#808080">12.5</text>
 <rect x="372" y="208" width="155.9" height="18" rx="3" fill="#8ab4f8"/><text x="535.9" y="222" font-size="13" fill="#808080">17.6 --hybrid</text>
 <text x="840" y="194" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">2.4x</text>
-<text x="20" y="266" font-size="14" fill="#808080">gpt-oss-120b (63 GB) in 24 GB RAM</text>
-<text x="20" y="283" font-size="11" fill="#808080">GPU: 2 expert layers + rest, 6.0 GB in use, ctx 8k</text>
-<text x="20" y="298" font-size="10" fill="#808080">§12b, §12d v0.1 (one run each)</text>
-<rect x="372" y="244" width="3.3" height="18" rx="3" fill="#9aa0a6"/><text x="383.3" y="258" font-size="13" fill="#808080">0.37</text>
-<rect x="372" y="266" width="39.6" height="18" rx="3" fill="#2f81f7"/><text x="419.6" y="280" font-size="13" font-weight="bold" fill="#808080">4.47</text>
-<text x="840" y="274" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">12.1x</text>
-<text x="20" y="330" font-size="14" fill="#808080">Qwen3-Next-80B (48.5 GB) in 24 GB RAM</text>
-<text x="20" y="347" font-size="11" fill="#808080">GPU: 0 expert layers + rest 2.6 GB, ctx 8k</text>
-<text x="20" y="362" font-size="10" fill="#808080">§6 v0.1</text>
-<rect x="372" y="308" width="20.4" height="18" rx="3" fill="#9aa0a6"/><text x="400.4" y="322" font-size="13" fill="#808080">2.3</text>
-<rect x="372" y="330" width="93.9" height="18" rx="3" fill="#2f81f7"/><text x="473.9" y="344" font-size="13" font-weight="bold" fill="#808080">10.6</text>
-<text x="840" y="338" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">4.6x</text>
-<text x="20" y="394" font-size="14" fill="#808080">Qwen3.6-35B (21.7 GB) in 12 GB RAM</text>
-<text x="20" y="411" font-size="11" fill="#808080">GPU: 6 expert layers 2.9 GB + rest 1.7 GB, ctx 32k</text>
-<text x="20" y="426" font-size="10" fill="#808080">§44 v0.2.3.4</text>
-<rect x="372" y="372" width="61.1" height="18" rx="3" fill="#9aa0a6"/><text x="441.1" y="386" font-size="13" fill="#808080">6.9</text>
-<rect x="372" y="394" width="200.2" height="18" rx="3" fill="#2f81f7"/><text x="580.2" y="408" font-size="13" font-weight="bold" fill="#808080">22.6</text>
-<text x="840" y="402" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">3.3x</text>
-<text x="20" y="458" font-size="14" fill="#808080">Qwen3.6-35B (21.7 GB), fits in 24 GB RAM</text>
-<text x="20" y="475" font-size="11" fill="#808080">GPU: expert cache 4.9 GB + rest 1.7 GB, ctx 4k</text>
-<text x="20" y="490" font-size="10" fill="#808080">§44 v0.2.3.4</text>
-<rect x="372" y="436" width="380.0" height="18" rx="3" fill="#9aa0a6"/><text x="760.0" y="450" font-size="13" fill="#808080">42.9</text>
-<rect x="372" y="458" width="324.2" height="18" rx="3" fill="#2f81f7"/><text x="704.2" y="472" font-size="13" font-weight="bold" fill="#808080">36.6</text>
-<text x="840" y="466" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">0.9x</text>
-<text x="20" y="512" font-size="12" fill="#808080">Clean runs on one laptop (i7-13620H, RTX 4060 8 GB, NVMe), paired where marked in docs/RESULTS.md (section, version).</text>
-<text x="20" y="532" font-size="12" fill="#808080">"N GB RAM" = memory limit set with a cgroup on a 31 GB machine; the model file is evicted from the page cache before limited stock runs.</text>
+<text x="20" y="266" font-size="14" fill="#808080">Qwen3.5-122B IQ2_XXS (36.6 GB) in 24 GB RAM</text>
+<text x="20" y="283" font-size="11" fill="#808080">GPU: 1 expert layer 0.7 GB + rest 4.3 GB, ctx 4k</text>
+<text x="20" y="298" font-size="10" fill="#808080">§45 v0.2.3.4 (stock: shorter requests)</text>
+<rect x="372" y="244" width="16.7" height="18" rx="3" fill="#9aa0a6"/><text x="396.7" y="258" font-size="13" fill="#808080">1.89</text>
+<rect x="372" y="266" width="68.4" height="18" rx="3" fill="#2f81f7"/><text x="448.4" y="280" font-size="13" font-weight="bold" fill="#808080">7.72</text>
+<rect x="372" y="288" width="79.5" height="18" rx="3" fill="#8ab4f8"/><text x="459.5" y="302" font-size="13" fill="#808080">8.97 --fast</text>
+<text x="840" y="274" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">4.1x</text>
+<text x="20" y="346" font-size="14" fill="#808080">gpt-oss-120b (63 GB) in 24 GB RAM</text>
+<text x="20" y="363" font-size="11" fill="#808080">GPU: 2 expert layers + rest, 6.0 GB in use, ctx 8k</text>
+<text x="20" y="378" font-size="10" fill="#808080">§12b, §12d v0.1 (one run each)</text>
+<rect x="372" y="324" width="3.3" height="18" rx="3" fill="#9aa0a6"/><text x="383.3" y="338" font-size="13" fill="#808080">0.37</text>
+<rect x="372" y="346" width="39.6" height="18" rx="3" fill="#2f81f7"/><text x="419.6" y="360" font-size="13" font-weight="bold" fill="#808080">4.47</text>
+<text x="840" y="354" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">12.1x</text>
+<text x="20" y="410" font-size="14" fill="#808080">Qwen3-Next-80B (48.5 GB) in 24 GB RAM</text>
+<text x="20" y="427" font-size="11" fill="#808080">GPU: 0 expert layers + rest 2.6 GB, ctx 8k</text>
+<text x="20" y="442" font-size="10" fill="#808080">§6 v0.1</text>
+<rect x="372" y="388" width="20.4" height="18" rx="3" fill="#9aa0a6"/><text x="400.4" y="402" font-size="13" fill="#808080">2.3</text>
+<rect x="372" y="410" width="93.9" height="18" rx="3" fill="#2f81f7"/><text x="473.9" y="424" font-size="13" font-weight="bold" fill="#808080">10.6</text>
+<text x="840" y="418" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">4.6x</text>
+<text x="20" y="474" font-size="14" fill="#808080">Qwen3.6-35B (21.7 GB) in 12 GB RAM</text>
+<text x="20" y="491" font-size="11" fill="#808080">GPU: 6 expert layers 2.9 GB + rest 1.7 GB, ctx 32k</text>
+<text x="20" y="506" font-size="10" fill="#808080">§44 v0.2.3.4</text>
+<rect x="372" y="452" width="61.1" height="18" rx="3" fill="#9aa0a6"/><text x="441.1" y="466" font-size="13" fill="#808080">6.9</text>
+<rect x="372" y="474" width="200.2" height="18" rx="3" fill="#2f81f7"/><text x="580.2" y="488" font-size="13" font-weight="bold" fill="#808080">22.6</text>
+<text x="840" y="482" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">3.3x</text>
+<text x="20" y="538" font-size="14" fill="#808080">Qwen3.6-35B (21.7 GB), fits in 24 GB RAM</text>
+<text x="20" y="555" font-size="11" fill="#808080">GPU: expert cache 4.9 GB + rest 1.7 GB, ctx 4k</text>
+<text x="20" y="570" font-size="10" fill="#808080">§44 v0.2.3.4</text>
+<rect x="372" y="516" width="380.0" height="18" rx="3" fill="#9aa0a6"/><text x="760.0" y="530" font-size="13" fill="#808080">42.9</text>
+<rect x="372" y="538" width="324.2" height="18" rx="3" fill="#2f81f7"/><text x="704.2" y="552" font-size="13" font-weight="bold" fill="#808080">36.6</text>
+<text x="840" y="546" font-size="13" font-weight="bold" text-anchor="end" fill="#808080">0.9x</text>
+<text x="20" y="592" font-size="12" fill="#808080">Clean runs on one laptop (i7-13620H, RTX 4060 8 GB, NVMe), paired where marked in docs/RESULTS.md (section, version).</text>
+<text x="20" y="612" font-size="12" fill="#808080">"N GB RAM" = memory limit set with a cgroup on a 31 GB machine; the model file is evicted from the page cache before limited stock runs.</text>
 </svg>

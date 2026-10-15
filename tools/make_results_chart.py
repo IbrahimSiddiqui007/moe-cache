@@ -8,6 +8,7 @@ import os
 ROWS = [
     ("GLM-5.3-Flash (102 GB) in 24 GB RAM", "GPU: 0 expert layers + rest 6.7 GB, ctx 4k", 0.32, 1.75, "§26 v0.2.3.2", (2.13, "--fast")),
     ("Qwen3.8-Flash-Next (68 GB) in 24 GB RAM", "GPU: 2 expert layers 1.5 GB + rest 3.8 GB, ctx 4k", 5.2, 12.5, "§44 v0.2.3.4", (17.6, "--hybrid")),
+    ("Qwen3.5-122B IQ2_XXS (36.6 GB) in 24 GB RAM", "GPU: 1 expert layer 0.7 GB + rest 4.3 GB, ctx 4k", 1.89, 7.72, "§45 v0.2.3.4 (stock: shorter requests)", (8.97, "--fast")),
     ("gpt-oss-120b (63 GB) in 24 GB RAM", "GPU: 2 expert layers + rest, 6.0 GB in use, ctx 8k", 0.37, 4.47, "§12b, §12d v0.1 (one run each)", None),
     ("Qwen3-Next-80B (48.5 GB) in 24 GB RAM", "GPU: 0 expert layers + rest 2.6 GB, ctx 8k", 2.3, 10.6, "§6 v0.1", None),
     ("Qwen3.6-35B (21.7 GB) in 12 GB RAM", "GPU: 6 expert layers 2.9 GB + rest 1.7 GB, ctx 32k", 6.9, 22.6, "§44 v0.2.3.4", None),
