@@ -513,6 +513,7 @@ Scan-resistant loading of prompt batches (`MOE_CACHE_SCAN_TOKENS=32`, experts of
 | first decode request after the prompt | 8.8 / 8.7 | 11.6 / 11.5 (+31 %) |
 
 A net loss for prompts (about 22 s more per 6k-token prompt for one faster request), so it is off by default (`MOE_CACHE_SCAN_TOKENS=N` to try).
+**Superseded (2026-10-15, section 48):** with prompt reads merged (section 38) and a 512-token threshold it now wins: Flash-Next prefill +27 %, SSD reads -58 %; on by default since then.
 
 
 ## 21. Approximate routing (opt-in), SSD-bound setting (2026-10-11)

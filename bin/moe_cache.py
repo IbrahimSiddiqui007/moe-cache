@@ -270,13 +270,21 @@ def server(argv):
         extra += ["--slot-save-path", slotdir]
     profile = os.path.join(CACHE_DIR, os.path.basename(model) + "." + (pname + "." if pname else "") + "usage")
     load, method = load_env(ls, lib, a.load_method)
+    # the model fits in the memory the server may use: stock llama-server is faster (its page cache holds the whole file and stays warm across
+    # restarts; Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast and --hybrid need the plugin, so they keep it.
+    try:
+        size = sum(os.path.getsize(p) for p in model_parts(model))
+    except OSError:
+        size = None
+    avail = mem_for_server(a.ram)
+    stock = bool(size and avail and size + 1.5e9 <= avail and not (a.fast or a.hybrid or a.always_plugin))
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", a.ram))
     if a.fast:
         env.append(("MOE_CACHE_ROUTE", "skip"))
         say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
-    else:
+    elif not stock:
         # suggest --fast only where it pays: the model is much bigger than the memory it may use
         try:
             size = sum(os.path.getsize(p) for p in model_parts(model))
@@ -285,7 +293,7 @@ def server(argv):
                 say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts for about +10 % (changes some tokens; off by default)")
         except Exception:
             pass
-    if not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and os.access("/sys/devices/cpu_atom/cpus", os.R_OK):
+    if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and os.access("/sys/devices/cpu_atom/cpus", os.R_OK):
         try:
             ne = min(len(parse_cpus(open("/sys/devices/cpu_atom/cpus").read())), 4)
         except Exception:
@@ -339,7 +347,7 @@ def server(argv):
             say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
         if gcmib:
             ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
-            say(f"moe-cache: GPU expert cache of {gcmib} MiB; all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU")
+            say(f"moe-cache: GPU expert cache of {gcmib} MiB; " + ("llama.cpp keeps the hottest experts on the GPU" if stock else "all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"))
     if a.hybrid and ncmoe != "0":
         ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))
         say("moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)")
@@ -363,14 +371,7 @@ def server(argv):
             pass
     if cram is not None and re.fullmatch(r"[0-9-]+", cram):
         env.append(("MOE_CACHE_HOST_RESERVE_MIB", cram))     # told to the plugin directly instead of it parsing our command line
-    # the model fits in the memory the server may use: stock llama-server is faster (its page cache holds the whole file and stays warm across
-    # restarts; Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast and --hybrid need the plugin, so they keep it.
-    try:
-        size = sum(os.path.getsize(p) for p in model_parts(model))
-    except OSError:
-        size = None
-    avail = mem_for_server(a.ram)
-    if size and avail and size + 1.5e9 <= avail and not (a.fast or a.hybrid or a.always_plugin):
+    if stock:
         say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
             "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]

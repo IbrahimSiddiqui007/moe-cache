@@ -211,9 +211,8 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
     const char * base;
     size_t stride_i11, stride_tok;       // column (token t, activation row i11) = base + i11 * stride_i11 + t * stride_tok
     ggml_vec_dot_t dot = tt->vec_dot;
-    bool permuted = false;
 #if defined(__x86_64__) && defined(__linux__)
-    permuted = w->type == GGML_TYPE_Q2_0 && vdt == GGML_TYPE_Q8_0 && a->type == GGML_TYPE_F32 && ne10 % 64 == 0 && fast_kernels_enabled();
+    const bool permuted = w->type == GGML_TYPE_Q2_0 && vdt == GGML_TYPE_Q8_0 && a->type == GGML_TYPE_F32 && ne10 % 64 == 0 && fast_kernels_enabled();
     if (w->type == GGML_TYPE_IQ3_XXS && vdt == GGML_TYPE_Q8_K && fast_iq3_dot()) {
         dot = fast_iq3_dot();
     }
