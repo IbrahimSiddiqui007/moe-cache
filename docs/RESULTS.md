@@ -993,3 +993,16 @@ gate, one run per row. All drafted runs gave the same tokens as the run without 
 - Keep every speculative draft at 7 tokens or fewer with this plugin: the verify batch (draft + 1) must fit the executor's 8 tokens; at 9 every verify step
   falls back to llama.cpp's own path (-28 %). Long drafts (above 31 tokens) go to the long-prompt GPU block and collapse when a draft is rejected.
 - Option for code-edit work: `moe-cache-server MODEL -- --spec-type ngram-mod --spec-ngram-mod-n-max 7` (exact, small gain). Not a default.
+
+## 40. GLM-5.3-Flash with its own MTP layer (T46; UD-IQ2_XXS, 24 GB limit, 8 GB card, clean-run gate, 4 x 24 tokens; 2026-10-15)
+
+The GGUF carries one next-token layer (`blk.45.nextn.*`); llama.cpp 23b0202a1 loads it with `--spec-type draft-mtp`.
+
+| Run | Decode tok/s per request | Drafts accepted | Identical to stock |
+|---|---|---|---|
+| no drafting | 1.79 / 1.88 / 1.76 / 1.80 | - | 4/4 |
+| `--spec-draft-n-max 2` | 1.24 / 1.46 / 1.31 / 1.30 | 48 % | 3/4 |
+| `--spec-draft-n-max 3` | 1.24 / 1.16 / 1.44 / 1.38 | 39-46 % | 2/4 |
+
+About -25 %: fewer than half the drafts are accepted, and every verify step reads the experts of all its tokens on a model that is limited by SSD reads.
+(Verified tokens can differ from one-token decoding because the batch shape changes the GPU part's rounding, as with stock llama.cpp.) Dropped.
