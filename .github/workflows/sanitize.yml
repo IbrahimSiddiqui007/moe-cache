@@ -1,0 +1,88 @@
+# Sanitizer runs (idea I9, 2026-10-15): llama.cpp and the plugin built with ThreadSanitizer, then with AddressSanitizer, on the hardest identity setups
+# (forced eviction, executor forced on, background reads delayed). A sanitizer report that names plugin code fails the job; reports only inside llama.cpp
+# are printed but do not fail it (not ours to fix). Manual and weekly: it is slow (instrumented builds).
+name: sanitize
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        san: [thread, address]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Packages
+        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+
+      - name: llama.cpp 23b0202a1 with the ${{ matrix.san }} sanitizer (CPU only, shared libraries)
+        run: |
+          S=$(echo ${{ matrix.san }} | tr a-z A-Z)
+          git init llama.cpp && cd llama.cpp
+          git remote add origin https://github.com/ggml-org/llama.cpp
+          git fetch --depth 1 origin 23b0202a189c44a54625aadcb37a946dd1d6278d
+          git checkout --detach FETCH_HEAD
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
+                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DGGML_OPENMP=OFF \
+                -DLLAMA_SANITIZE_$S=ON -DGGML_SANITIZE_$S=ON
+          cmake --build build --target llama-server -j "$(nproc)"
+
+      - name: Plugin with the same sanitizer
+        run: |
+          export GGML_API=3
+          MOE_CACHE_CXXFLAGS="-fsanitize=${{ matrix.san }} -g -fno-omit-frame-pointer" ./build.sh --portable
+          ls -la build/libggml-moe-cache.so
+
+      - name: Small MoE model
+        run: |
+          curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
+          echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+
+      - name: Identity under the sanitizer (eviction, executor forced, reads delayed)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_KEEP: ident_san
+          IDENT_EXTRA: "--no-repack"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_TEST_READ_DELAY_US=500"
+          TSAN_OPTIONS: "halt_on_error=0 report_signal_unsafe=0 second_deadlock_stack=1"
+          ASAN_OPTIONS: "detect_leaks=0 halt_on_error=0"
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_san.txt || true
+          echo "---- sanitizer reports in the plugin server log:"
+          grep -c -E "WARNING: ThreadSanitizer|ERROR: AddressSanitizer" ident_san/plugin.log || true
+          # a report fails the job only when one of its stack frames is plugin code
+          python3 - ident_san/plugin.log <<'PY'
+          import re, sys
+          txt = open(sys.argv[1], errors="replace").read()
+          reports = re.split(r"(?=WARNING: ThreadSanitizer|==\d+==ERROR: AddressSanitizer)", txt)[1:]
+          ours = [r for r in reports if re.search(r"mc_[a-z]+\.inl|moe_cache_plugin\.cpp|platform\.h|libggml-moe-cache", r[:6000])]
+          print(f"{len(reports)} sanitizer reports, {len(ours)} in plugin code")
+          for r in ours[:5]:
+              print(r[:3000]); print("....")
+          sys.exit(1 if ours else 0)
+          PY
+          grep -q "PASS" identity_san.txt || { echo "FAIL: not identical under the sanitizer"; exit 1; }
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sanitize-${{ matrix.san }}
+          path: |
+            identity_san.txt
+            ident_san/plugin.log
