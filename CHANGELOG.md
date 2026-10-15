@@ -31,6 +31,8 @@
 - The long-prompt GPU path uses an integrated GPU when there is no discrete one (Vega 8 via Vulkan: prompt 363 -> 569-597 tok/s).
 - **Core pinning on Windows** (Claw finding 5): on hybrid CPUs the launcher pins llama-server to the performance cores and gives the executor
   efficiency-core workers, from the cores' efficiency class, as on Linux. Not yet run on real Windows.
+- **`moe-cache-check MODEL --run`**: also starts llama-server with the plugin and a 0.25 GiB cache for one short request and reports whether the
+  cache really computed, or why the server stopped (idea I26; the plain check said "plugin loads: yes" on the Claw while cache mode crashed).
 - Launcher: says why llama-server stopped (exit code or signal, e.g. `0xC0000005 (access violation)`, and the last plugin line); planner errors give the
   real reason; the API mismatch warning works on Windows; a missing `MOE_CACHE_LIB` file is named; `check` uses GB throughout; the stock dry run has no
   empty `env`.

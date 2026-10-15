@@ -55,7 +55,8 @@ Ollama user? The models in `ollama list` are plain GGUF files: the path is on th
 ```bash
 bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server
 ```
-Every line says OK, WARN or FAIL and what to do about it.
+Every line says OK, WARN or FAIL and what to do about it. Add `--run` to also start llama-server with the plugin for one short request (about a
+minute): "cache runs: yes" means the cache really computed on your machine.
 
 ### 3. Run your model
 
