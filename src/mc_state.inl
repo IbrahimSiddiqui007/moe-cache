@@ -30,6 +30,21 @@ static bool server_repack_disabled() {
             b = e + 1;
         }
     }
+#elif defined(_WIN32)
+    // no /proc: split the process command line (double quotes group, as the C runtime does for argv); the plugin repacked although llama-server
+    // had --no-repack, so CPU-only output differed from stock (Windows CI executor step: 1/4 identical)
+    const char * c = GetCommandLineA();
+    while (c && *c) {
+        while (*c == ' ' || *c == '\t') { c++; }
+        std::string a;
+        bool q = false;
+        for (; *c && (q || (*c != ' ' && *c != '\t')); c++) {
+            if (*c == '"') { q = !q; } else { a += *c; }
+        }
+        if (a == "--no-repack" || a == "-nr") {
+            return true;
+        }
+    }
 #endif
     return false;
 }
@@ -512,6 +527,17 @@ struct state_t {
                 std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1 && !g_stats_stop) { print_snapshot(); } }).detach();
             }
         }
+#elif defined(_WIN32)
+        // no signals: setting the named event Local\moe-cache-stats-<pid> prints one snapshot (tools/windows_test.ps1 does it before stopping the
+        // server, which on Windows is killed, so the summary at exit never appears)
+        if (getenv("MOE_CACHE_STATS_SIGNAL")) {
+            char name[64];
+            snprintf(name, sizeof(name), "Local\\moe-cache-stats-%lu", plat::process_id());
+            g_stats_event = CreateEventA(nullptr, FALSE, FALSE, name);
+            if (g_stats_event) {
+                std::thread([this] { while (WaitForSingleObject(g_stats_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) { print_snapshot(); } }).detach();
+            }
+        }
 #endif
     }
 
@@ -816,6 +842,8 @@ struct state_t {
                      (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
                      (unsigned long long) small_mapped, (unsigned long long) small_over);
             j = b;
+            j += ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
+                 ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load());
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
             j += "],\"layer_misses\":[";
@@ -840,6 +868,11 @@ struct state_t {
         g_stats_stop = true;
         if (g_stats_pipe[1] >= 0) {
             close(g_stats_pipe[1]);          // wakes the snapshot thread, which then exits
+        }
+#elif defined(_WIN32)
+        g_stats_stop = true;
+        if (g_stats_event) {
+            SetEvent(g_stats_event);         // wakes the snapshot thread, which then exits
         }
 #endif
         if (trace_f) {

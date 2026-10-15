@@ -5,6 +5,11 @@ namespace {
 
 #ifdef __linux__
 int g_stats_pipe[2] = { -1, -1 };
+#endif
+#ifdef _WIN32
+HANDLE g_stats_event = nullptr;            // MOE_CACHE_STATS_SIGNAL on Windows: named event that asks for one snapshot
+#endif
+#if defined(__linux__) || defined(_WIN32)
 std::atomic<bool> g_stats_stop{false};   // set when the state is destroyed: the snapshot thread then stops without touching it
 #endif
 constexpr size_t PAGE = 4096;

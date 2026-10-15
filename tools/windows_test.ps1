@@ -23,8 +23,8 @@ $out = Join-Path $env:TEMP "moe-cache-test"; New-Item -ItemType Directory -Force
 function Run-One([string]$label, [bool]$plugin) {
   $log = Join-Path $out "$label.err.txt"; $std = Join-Path $out "$label.out.txt"
   # MOE_CACHE_SIZE_GIB turns the cache on: without it the plugin only passes the weights through and the test would prove nothing
-  if ($plugin) { $env:GGML_BACKEND_PATH = (Resolve-Path $Dll).Path; $env:MOE_CACHE_GGUF = (Resolve-Path $Model).Path; $env:MOE_CACHE_STATS = "1"; $env:MOE_CACHE_SIZE_GIB = $CacheGiB }
-  else { foreach ($v in "GGML_BACKEND_PATH", "MOE_CACHE_GGUF", "MOE_CACHE_STATS", "MOE_CACHE_SIZE_GIB") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue } }
+  if ($plugin) { $env:GGML_BACKEND_PATH = (Resolve-Path $Dll).Path; $env:MOE_CACHE_GGUF = (Resolve-Path $Model).Path; $env:MOE_CACHE_STATS = "1"; $env:MOE_CACHE_STATS_SIGNAL = "1"; $env:MOE_CACHE_SIZE_GIB = $CacheGiB }
+  else { foreach ($v in "GGML_BACKEND_PATH", "MOE_CACHE_GGUF", "MOE_CACHE_STATS", "MOE_CACHE_STATS_SIGNAL", "MOE_CACHE_SIZE_GIB") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue } }
   $sargs = @("-m", $Model, "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
   if ($Extra) { $sargs += ($Extra -split " " | Where-Object { $_ }) }
   $p = Start-Process -FilePath $srv -ArgumentList $sargs -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
@@ -41,11 +41,17 @@ function Run-One([string]$label, [bool]$plugin) {
     $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/completion" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 3600
     $texts += $r.content; $tps += [math]::Round($r.timings.predicted_per_second, 2)
   }
+  if ($plugin) {
+    # the server is killed below, so the plugin's summary at exit never appears: ask for a snapshot first (named event, see src/mc_state.inl)
+    try { $ev = [System.Threading.EventWaitHandle]::OpenExisting("Local\moe-cache-stats-$($p.Id)"); [void]$ev.Set(); Start-Sleep -Seconds 2 } catch {}
+  }
   Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 3
   $active = (Select-String -Path $log -Pattern "moe-cache:" -SimpleMatch | Select-Object -First 6 | ForEach-Object { $_.Line }) -join "`n"
   $cache = [bool](Select-String -Path $log -Pattern "moe-cache: cache mode" -SimpleMatch -Quiet)
   $disabled = [bool](Select-String -Path $log -Pattern "plugin disabled" -SimpleMatch -Quiet)
-  $stats = (Select-String -Path $log -Pattern "moe-cache: graphs=" -SimpleMatch | Select-Object -Last 1 | ForEach-Object { $_.Line })
+  $stats = (Select-String -Path $log -Pattern "moe-cache-stats {" -SimpleMatch | Select-Object -Last 1 | ForEach-Object {
+    $j = $_.Line.Substring($_.Line.IndexOf("{")) | ConvertFrom-Json
+    "hits $($j.hits), misses $($j.misses), read $([math]::Round($j.read_bytes / 1MB)) MiB, evictions $($j.evictions), executor ops $($j.exec_ops), checked $($j.exec_checked), mismatches $($j.exec_mismatch)" })
   return @{ texts = $texts; tps = $tps; active = $active; cache = $cache; disabled = $disabled; stats = $stats }
 }
 
