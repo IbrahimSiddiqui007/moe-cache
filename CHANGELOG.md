@@ -9,6 +9,7 @@
   `MOE_CACHE_SCAN_TOKENS` (-25 % prefill), `MOE_CACHE_PREFAULT` (no gain), `MOE_CACHE_PROMPT_PREFETCH` (no gain). Setting them now does nothing.
 - The plugin source is split into ten parts (`src/mc_*.inl`: common, pool, state, buffer, backend, exec, hybrid, compute, device, interpose), included
   by `src/moe_cache_plugin.cpp` in order: still one translation unit, so build commands do not change; the compiled code is byte-identical (`.text` and `.rodata`).
+- RESULTS 43: quant yardstick for `--fast` (T8): the Q2_0 file of Flash-Next is KL 0.243 from IQ2_XS (88.9 % same top token); `--fast` is 0.005-0.012.
 - **Python launcher** (T15): `bin/moe_cache.py server|check|learn|project`, standard library only, also for Windows (plugin loaded with `GGML_BACKEND_PATH`).
   The bash scripts `bin/moe-cache-*` now call it; same command lines (`--dry-run` identical to the bash launcher in 10 flag combinations on Flash-Next and
   GLM). Fixed on the way: `--gpu-margin` was ignored (now passed to the tuner; GiB; default unchanged), `--vram` meant GiB for the planner but GB for the tuner

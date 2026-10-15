@@ -1051,3 +1051,19 @@ executor: 12.95 vs 12.28 tok/s, unchanged. Releases 0.2.0-0.2.3.3 have the slow-
 Limits of this section (audit 2026-10-15): the 28 GB stock + MTP row was still warming up and is not a comparison. The fix is an isolated executor result
 (7.82 -> 16.61 at 12 GB, same build otherwise); 16.61 is still below section 2b's 23.5 (another llama.cpp and plugin version, cache settings that differ),
 and plugin + MTP was not re-measured with the fix, so the gap to the historic 24.0 is not explained yet. One run per row.
+
+## 43. Quant yardstick for `--fast`: two 2-bit quants of the same model (T8; Flash-Next, 24 GB limit, 2026-10-15)
+
+`llama-perplexity` with `--kl-divergence` against the same base file as section 31 (exact Flash-Next IQ2_XS, 20 chunks x 512 tokens of prose and code,
+batch 8 so the executor handles every step). The second run is the exact Q2_0 file of the same model (ISTA-DASLab GSQ-RCO, shard 1 sha256-checked; shard 2 is
+byte-identical to the IQ2_XS one). Plugin built from 847296a (byte check of every expert tensor against the file passed), 126,699 expert ops by the executor.
+KL runs are deterministic in exact mode (a rerun of the base gave KL 0), so one run per row.
+
+| Compared with exact IQ2_XS | Mean KLD | Same top token | PPL (base 1.970) |
+|---|---|---|---|
+| `--fast` at a 24 GB limit (section 31) | 0.0053 | 98.1 % | |
+| `--fast` at a 6 GiB cache (section 31) | 0.0115 | 97.5 % | |
+| **Q2_0 file of the same model, exact** | **0.2434 ± 0.0101** | **88.9 %** | 2.031 (+3.1 %) |
+
+Reading: choosing between two 2-bit files of the same model moves the next-token distribution 21-46x more than `--fast` does. `--fast`'s change is small next to
+what users already accept when they pick a quantisation. Not measured: the UD-Q2_K_XL file (not on disk), and quality on answers for Q2_0 (KL and PPL only).
