@@ -58,6 +58,17 @@ jobs:
           curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
           echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
 
+      - name: Launcher (bin/moe_cache.py) - dry run and check, the bash wrappers call it
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+        run: |
+          python3 -m py_compile bin/moe_cache.py
+          bin/moe-cache-server granite.gguf --ram 4 --fast --dry-run | tee launcher_dry.txt
+          grep -qE "^env .*MOE_CACHE_SIZE_GIB=auto .*MOE_CACHE_ROUTE=skip .*llama-server -m granite.gguf .*--n-cpu-moe" launcher_dry.txt
+          bin/moe-cache-check granite.gguf | tee launcher_check.txt
+          grep -q "plugin loads .*yes" launcher_check.txt
+
       - name: Identity, cache forced to evict (0.2 GiB)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
@@ -147,8 +158,9 @@ jobs:
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
           # routing on with every pick kept (exact): an explicit routing mode keeps the executor for K-quant/legacy weights, so its graphs
-          # load siblings in the background and then step aside to llama.cpp while those loads are still running
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
+          # load siblings in the background and then step aside to llama.cpp while those loads are still running. 8 MiB: a gate call's experts
+          # plus their up/down siblings (~2.6 MB at ~213 KB each) must fit, else the siblings are skipped and the next call reads instead of stepping aside
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
           IDENT_EXTRA: "--no-repack"
           IDENT_KEEP: ident_gptoss_q8
         run: |
@@ -160,7 +172,7 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build-mutant/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
           IDENT_EXTRA: "--no-repack"
         run: |
           if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
