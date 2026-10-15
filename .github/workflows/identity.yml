@@ -88,8 +88,9 @@ jobs:
         run: |
           python3 -m pip install -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
           python3 -m pip install -q -e llama.cpp/gguf-py
-          R=yujiepan/gpt-oss-tiny-random; REV=125415b0a24f15c96362749dd2c49e2c1db0e22c; mkdir -p tiny-gptoss
-          for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json chat_template.jinja; do
+          # a random-weight model with an untied output layer (llama.cpp's gpt-oss loader needs output.weight; the 41 MB tiny models tie it)
+          R=tengomucho/tiny-random-gpt-oss; REV=2109d1ee033bb4191af6dd950fda542c9c351dc8; mkdir -p tiny-gptoss
+          for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json; do
             curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
           done
           python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss.gguf --outtype f16
