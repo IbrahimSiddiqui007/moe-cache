@@ -13,9 +13,16 @@ if [ "${GGML_API:-2}" = 3 ]; then HDR=third_party/ggml-v3; fi
 if [ "$1" = "--windows" ]; then
   M=x86_64-w64-mingw32; mkdir -p build/win
   $M-g++ -O2 -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src -c src/moe_cache_plugin.cpp -o build/win/plugin.o
-  ( echo "LIBRARY ggml-base.dll"; echo EXPORTS; $M-nm -u build/win/plugin.o | awk '$1=="U" && ($2 ~ /^ggml_/ || $2 ~ /^gguf_/) {print $2}' | sort -u ) > build/win/ggml-base.def
+  # ggml's functions live in two DLLs: the backend registry (ggml-backend-reg.cpp) in ggml.dll, everything else in ggml-base.dll. Importing all of
+  # them from ggml-base.dll made Windows refuse to load the plugin (found on the MSI Claw, 2026-10-15). Same 16 names in ggml 0.25.1 and 0.26.0.
+  REG=" ggml_backend_dev_by_name ggml_backend_dev_by_type ggml_backend_dev_count ggml_backend_dev_get ggml_backend_device_register ggml_backend_init_best ggml_backend_init_by_name ggml_backend_init_by_type ggml_backend_load ggml_backend_load_all ggml_backend_load_all_from_path ggml_backend_reg_by_name ggml_backend_reg_count ggml_backend_reg_get ggml_backend_register ggml_backend_unload "
+  $M-nm -u build/win/plugin.o | awk '$1=="U" && ($2 ~ /^ggml_/ || $2 ~ /^gguf_/) {print $2}' | sort -u > build/win/imports.txt
+  ( echo "LIBRARY ggml-base.dll"; echo EXPORTS; while read -r f; do case "$REG" in *" $f "*) ;; *) echo "$f";; esac; done < build/win/imports.txt ) > build/win/ggml-base.def
+  ( echo "LIBRARY ggml.dll"; echo EXPORTS; while read -r f; do case "$REG" in *" $f "*) echo "$f";; esac; done < build/win/imports.txt ) > build/win/ggml.def
   $M-dlltool -d build/win/ggml-base.def -l build/win/libggml-base.dll.a -D ggml-base.dll
-  $M-g++ -shared -o build/win/ggml-moe-cache.dll build/win/plugin.o -Lbuild/win -lggml-base -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols
+  $M-dlltool -d build/win/ggml.def -l build/win/libggml.dll.a -D ggml.dll
+  # -static links the mingw threads runtime in: a DLL that needs libwinpthread-1.dll does not load on a normal Windows machine (found on the Claw)
+  $M-g++ -shared -o build/win/ggml-moe-cache.dll build/win/plugin.o build/win/libggml-base.dll.a build/win/libggml.dll.a -static -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols
   echo "built build/win/ggml-moe-cache.dll (not tested on real Windows)"
   exit 0
 fi
