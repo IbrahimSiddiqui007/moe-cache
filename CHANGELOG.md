@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3.4 (2026-10-15)
 - **Speed fix for K-quant models that do not fit in RAM** (in releases 0.2.0-0.2.3.3): the executor only takes graphs whose expert weights are IQ types or
   Q2_0; K-quants and legacy types go llama.cpp's own way, whose kernels are faster. Qwen3.6-35B Q4_K_M at 12 GB: 7.8 -> 16.6 tok/s, identical to stock.
 - `MOE_CACHE_LOOKAHEAD=2` (experimental): the lookahead prefetch together with the executor (exact; no reliable gain on GLM-5.3-Flash, RESULTS 41).
