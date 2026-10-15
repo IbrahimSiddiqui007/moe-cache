@@ -16,7 +16,7 @@ llama.cpp build uses (CUDA, ROCm/HIP, Vulkan, SYCL, ...). That makes it independ
 | Linux + Vulkan, AMD discrete GPU | Expected to work (same Vulkan path as the tested devices), **not tested on AMD hardware** | the path AMD cards without ROCm support use |
 | Linux + AMD GPU via ROCm/HIP | Expected to work, **untested** | |
 | Linux + Intel GPU (SYCL or Vulkan) | **Untested** | Intel iGPU available on the development machine for testing |
-| Windows (any CPU/GPU) | **Not supported yet**: round 1 (2026-10-15, MSI Claw, b11669): the DLL did not load (two build bugs, fixed 0b7bbaa). Round 2 (2026-10-16): the DLL loads, ggml 0.27.0 accepts it, but cache mode crashed in the first graph (uncommitted compute buffer, fixed cffa6f9); round 3 pending | see "Windows status" below, RESULTS 49-50. Pass-through mode ran fine. `--gpu-cache` is not available on Windows (needs LD_PRELOAD) |
+| Windows (any CPU/GPU) | **Experimental**: identity 4/4 with the cache on and forced eviction on a GitHub Windows runner (official b11669 CPU release, 2026-10-16, after three Windows-only bugs were fixed: cffa6f9, 87dd800, 150c8fe); executor byte-checked, 0 mismatches. On real hardware: MSI Claw rounds 1-2 found the bugs; round 3 (Vulkan iGPU) pending; no speed numbers with the plugin yet | see "Windows status" below, RESULTS 49-50. Pass-through mode ran fine. `--gpu-cache` is not available on Windows (needs LD_PRELOAD) |
 | macOS / Apple Silicon | Not supported | uses Linux memory APIs; unified memory changes the problem |
 
 ## Repacking (why CPU-only needed extra work)
@@ -32,11 +32,15 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
   (0b7bbaa); the identity test is to be rerun. The Python launcher works there (check, dry run, real start, chat).
 - Round 2 (2026-10-16): the DLL loads and ggml 0.27.0 accepts it; pass-through mode runs, cache mode crashed at the first graph with an access violation
   in the plugin's compute buffer (reserved, never committed: Windows faults on such pages, Linux hands out zero pages). Fixed in cffa6f9; round 3 pending.
+- Windows CI (`.github/workflows/windows.yml`, 2026-10-16): DLL cross-built as `build.sh --windows`, official b11669 CPU release, `windows_test.ps1`.
+  It found a second commit bug (a commit range past the end of a reservation committed nothing; fixed 87dd800) and a third (`--no-repack` was not
+  seen by the plugin on Windows; fixed 150c8fe), then passed 4/4 with forced eviction and 4/4 with the executor forced on (6,765 ops byte-checked,
+  0 mismatches). `moe-cache-check MODEL --run` passes there too.
 - Not available on Windows: `--gpu-cache` / `MOE_CACHE_GPU_CACHE=1` (needs LD_PRELOAD symbol interposition), the file-mapped fallback for a cache smaller
   than one op (loads over the size instead). Core pinning: implemented from the cores' efficiency class (f7721a6), not yet run there.
 - `./build.sh --windows` cross-compiles `ggml-moe-cache.dll` with mingw-w64 (load it with `GGML_BACKEND_PATH`; official Windows llama.cpp builds load their backends as DLLs).
 - `tests/platform_test.cpp` passes natively on Linux and, compiled for Windows, under Wine (reserve/commit/decommit, unbuffered reads at the end of a file, limits, file replacement).
-- **No passing identity test on real Windows yet**, no speed numbers with the plugin; the Python launcher (`bin/moe_cache.py`) runs there, the bash wrappers do not. Treat it as a code port waiting for a tester; `docs/WINDOWS_TEST.md` and `tools/windows_test.ps1` are the test.
+- Identity passes on a Windows CI runner (CPU); **not yet on real hardware with a GPU**, no speed numbers with the plugin; the Python launcher (`bin/moe_cache.py`) runs there, the bash wrappers do not. Treat it as a code port waiting for a tester; `docs/WINDOWS_TEST.md` and `tools/windows_test.ps1` are the test.
 
 ## Model architectures
 
