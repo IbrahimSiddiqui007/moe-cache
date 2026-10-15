@@ -93,7 +93,7 @@ jobs:
           for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json; do
             curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
           done
-          python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss.gguf --outtype f16
+          python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss.gguf --outtype q8_0
           ls -la tiny-gptoss.gguf
           # does stock llama-server load it? (show its log either way)
           timeout 60 llama.cpp/build/bin/llama-server -m tiny-gptoss.gguf -c 2048 --port 8097 > tiny_srv.log 2>&1 || true
@@ -109,6 +109,8 @@ jobs:
           IDENT_KEEP: ident_gptoss
         run: |
           tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_delay.txt || { tail -40 ident_gptoss/stock.log ident_gptoss/plugin.log 2>/dev/null; exit 1; }
+          # the race lives in the executor's step-aside path: a run where the executor did nothing proves nothing
+          grep -qE "executor ran [1-9]" identity_gptoss_delay.txt || { echo "FAIL: the executor ran 0 ops, so this test did not reach the step-aside path"; exit 1; }
 
       - name: Identity with guard mode (evicted pages inaccessible, so an unintercepted read crashes instead of reading zeros)
         env:
