@@ -1166,3 +1166,7 @@ cyclic pass over 64 GB of experts through a ~20 GB cache keeps nothing between m
 Mean prefill: off 72.7, **on 92.4 tok/s (+27 %)**; SSD reads -58 %. Output cannot change (only which expert is evicted differs; CI runs a long-prompt
 identity step with it on). Now the default. The off runs are lower than section 38's 90-103 (another cache state at the start of this build's runs);
 the comparison is paired. X8 (the same idea, October) lost 25 % before prompt reads were merged (T38).
+
+GLM-5.3-Flash UD-IQ2_XXS (24 GB, ctx 8192, `-ub 512`, one 2.2k-token prompt, one run each): off 6.0 tok/s, 25.8 % hits, 453 GB read; **on 6.5 tok/s, 37.5 % hits,
+384 GB read**. Smaller gain than Flash-Next (the cache holds only ~20 of GLM's ~95 GB of experts, so less survives between chunks); +8 % is inside the
+run-to-run noise, the 15 % fewer reads are not. Not slower, so the default stays on for GLM too.
