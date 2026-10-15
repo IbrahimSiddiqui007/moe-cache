@@ -1,18 +1,3 @@
-#!/bin/bash
-# moe-cache-project: save or restore the prompt state (KV cache of slot 0) of a running moe-cache-server started with --project NAME.
-#   moe-cache-project save NAME [--url http://127.0.0.1:8080]   after loading the big context once (one request is enough)
-#   moe-cache-project restore NAME [--url URL]                  load it into a running server (the launcher does this at start when the file exists)
-#   moe-cache-project list
-# The state is only valid for the same model file and the same -c / cache type settings; restoring a state from another setup is refused by llama-server.
-set -e
-CMD=$1; NAME=$2; URL=http://127.0.0.1:8080
-shift 2 2>/dev/null || true
-while [ $# -gt 0 ]; do case "$1" in --url) URL=$2; shift 2;; *) echo "unknown argument: $1"; exit 1;; esac; done
-DIR="${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache/slots"
-case "$CMD" in
-  list) ls -la "$DIR"/*/*.bin 2>/dev/null || echo "no saved projects";;
-  save|restore)
-    case "$NAME" in ""|*[!A-Za-z0-9_-]*) echo "usage: moe-cache-project save|restore NAME [--url URL]"; exit 1;; esac
-    curl -s -X POST "$URL/slots/0?action=$CMD" -H 'Content-Type: application/json' -d "{\"filename\":\"$NAME.bin\"}"; echo;;
-  *) echo "usage: moe-cache-project save|restore|list NAME [--url URL]"; exit 1;;
-esac
+#!/bin/sh
+# moe-cache-project: the launcher is bin/moe_cache.py (Python, also runs on Windows: python moe_cache.py project ...). Options: moe-cache-project --help
+exec "${MOE_CACHE_PYTHON:-python3}" "$(dirname "$0")/moe_cache.py" project "$@"

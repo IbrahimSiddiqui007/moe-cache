@@ -9,6 +9,12 @@
   `MOE_CACHE_SCAN_TOKENS` (-25 % prefill), `MOE_CACHE_PREFAULT` (no gain), `MOE_CACHE_PROMPT_PREFETCH` (no gain). Setting them now does nothing.
 - The plugin source is split into ten parts (`src/mc_*.inl`: common, pool, state, buffer, backend, exec, hybrid, compute, device, interpose), included
   by `src/moe_cache_plugin.cpp` in order: still one translation unit, so build commands do not change; the compiled code is byte-identical (`.text` and `.rodata`).
+- **Python launcher** (T15): `bin/moe_cache.py server|check|learn|project`, standard library only, also for Windows (plugin loaded with `GGML_BACKEND_PATH`).
+  The bash scripts `bin/moe-cache-*` now call it; same command lines (`--dry-run` identical to the bash launcher in 10 flag combinations on Flash-Next and
+  GLM). Fixed on the way: `--gpu-margin` was ignored (now passed to the tuner; GiB; default unchanged), `--vram` meant GiB for the planner but GB for the tuner
+  (now GiB for both), `moe-cache-learn` refuses an occupied port and fails when its server stops or no new profile appears, project save/restore report
+  HTTP errors and accept `--api-key`, the check counts every shard of a split model and knows 23b0202a1, and among several plugin builds for the same API the
+  newest is used (it was the first by name, which picked old test builds). CI runs a launcher dry run and the check.
 - Fixes from the static audit of 2026-10-15 (handover/STATIC_AUDIT_20261015_1324.md):
   - **`--fast` and `--hybrid` were silently inactive on K-quant models in 0.2.3.4** (the K-quant speed filter switched the executor off, and both modes
     live in it; output stayed exact). An explicitly requested mode now keeps the executor.

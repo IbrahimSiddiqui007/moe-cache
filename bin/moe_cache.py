@@ -1,0 +1,606 @@
+#!/usr/bin/env python3
+"""moe-cache launcher (Linux and Windows; Python 3.8+, standard library only).
+
+  moe_cache.py server  MODEL.gguf [options] [-- extra llama-server args]   run llama-server with the expert-cache plugin
+  moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
+  moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
+  moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
+
+`moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
+"""
+import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WINDOWS = os.name == "nt"
+CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def say(msg, err=False):
+    print(msg, file=sys.stderr if err else sys.stdout, flush=True)
+
+
+def which(prog):
+    return shutil.which(prog) or prog
+
+
+# ---- how a llama-server loads the plugin ----
+
+def ldd(path):
+    if WINDOWS:
+        return ""
+    try:
+        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return ""
+
+
+def load_env(ls, lib, method="auto"):
+    """Environment that makes this llama-server load the plugin, and the method used.
+    preload: llama-server links its backends directly (distro packages): LD_PRELOAD.  path: backends are separate files (official releases): GGML_BACKEND_PATH."""
+    deps = ldd(ls)
+    if not WINDOWS and "libggml-base" not in deps:
+        say(f"warning: {which(ls)} does not use shared ggml libraries, the plugin cannot be loaded into it (build llama.cpp with BUILD_SHARED_LIBS=ON)", err=True)
+    if method == "auto":
+        method = "preload" if (not WINDOWS and "libggml-cpu" in deps) else "path"
+    if method == "preload":
+        if WINDOWS:
+            raise SystemExit("--load-method preload does not exist on Windows (use path)")
+        return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], method
+    if method == "path":
+        return [("GGML_BACKEND_PATH", lib)], method
+    raise SystemExit(f"unknown load method: {method} (use auto, preload or path)")
+
+
+def ls_api(ls):
+    """Backend API of the ggml this llama-server uses, from its libggml-base version (0.24-0.25 -> 2, 0.26-0.27 -> 3); None when unknown."""
+    for line in ldd(ls).splitlines():
+        if "libggml-base" in line and "=>" in line:
+            path = line.split("=>")[1].split()[0]
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)", os.path.basename(os.path.realpath(path)))
+            if m:
+                v = (int(m.group(1)), int(m.group(2)))
+                return {(0, 24): "2", (0, 25): "2", (0, 26): "3", (0, 27): "3"}.get(v)
+    return None
+
+
+def lib_api(lib):
+    """API a plugin build was made for (a plain string inside the library); None for builds from before 0.2.3."""
+    try:
+        m = re.search(rb"moe-cache-api=(\d+)", open(lib, "rb").read())
+        return m.group(1).decode() if m else None
+    except OSError:
+        return None
+
+
+def default_lib():
+    return os.path.join(HERE, "build", "win", "ggml-moe-cache.dll") if WINDOWS else os.path.join(HERE, "build", "libggml-moe-cache.so")
+
+
+def pick_lib(ls):
+    """The plugin build in build*/ that matches the server's ggml, else the default build."""
+    want = ls_api(ls)
+    if want:
+        if os.path.isfile(default_lib()) and lib_api(default_lib()) == want:
+            return default_lib()
+        # several builds for this API (old test builds, too): the newest one, which is the most likely to match the code
+        found = [c for c in glob.glob(os.path.join(HERE, "build-*", "libggml-moe-cache.so")) if lib_api(c) == want]
+        if found:
+            return max(found, key=os.path.getmtime)
+    return default_lib()
+
+
+# ---- small helpers ----
+
+def model_parts(model):
+    if re.search(r"-\d{5}-of-\d{5}\.gguf$", model):
+        return glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", model))
+    return [model]
+
+
+def mem_total():
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemTotal:"):
+                return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    return None
+
+
+def parse_cpus(text):
+    out = []
+    for part in text.strip().split(","):
+        if "-" in part:
+            a, b = part.split("-")
+            out += range(int(a), int(b) + 1)
+        elif part:
+            out.append(int(part))
+    return out
+
+
+def arg_after(args, *names):
+    v = None
+    for i, a in enumerate(args):
+        if a in names and i + 1 < len(args):
+            v = args[i + 1]
+    return v
+
+
+def http(url, body=None, api_key=None, timeout=10):
+    """(status, text) of a request; status 0 when the server cannot be reached."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = "Bearer " + api_key
+    req = urllib.request.Request(url, json.dumps(body).encode() if body is not None else None, headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+    except Exception:
+        return 0, ""
+
+
+def healthy(port, api_key=None):
+    return http(f"http://127.0.0.1:{port}/health", api_key=api_key, timeout=2)[0] == 200
+
+
+def port_busy(port):
+    with socket.socket() as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def python_cmd():
+    return os.environ.get("MOE_CACHE_PYTHON") or sys.executable or "python3"
+
+
+def run_child(cmd, env):
+    """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code."""
+    p = subprocess.Popen(cmd, env=env)
+    def stop(sig, frame):
+        p.terminate()
+    if not WINDOWS:
+        signal.signal(signal.SIGTERM, stop)
+    while True:
+        try:
+            return p.wait()
+        except KeyboardInterrupt:      # the child got the same Ctrl-C; wait for it to finish
+            continue
+
+
+# ---- server ----
+
+SERVER_HELP = """\
+--fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD.
+           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31)
+--hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
+           while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
+           --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
+--profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
+--project NAME  its own profile plus a saved prompt state (KV cache) restored at start; save it with: moe_cache.py project save NAME
+--gpu-cache off|auto|MIB  llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
+           Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
+--gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
+--ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
+--ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it.
+--vram GiB GPU memory to plan with (default: what the GPU reports free)
+--n-cpu-moe N  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
+--no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
+--no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
+MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
+
+
+def server(argv):
+    ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
+                                 epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("model")
+    ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram"); ap.add_argument("--vram")
+    ap.add_argument("--ctx", type=int, default=8192); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
+    ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
+    ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
+    ap.add_argument("--fast", action="store_true"); ap.add_argument("--hybrid", action="store_true")
+    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true")
+    ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
+    extra = []
+    if "--" in argv:
+        i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
+    a = ap.parse_args(argv)
+    if not WINDOWS:
+        os.umask(0o077)       # the usage profile is private to this user
+    ls, model, ctx, port = a.llama_server, a.model, a.ctx, a.port
+    gcache = a.gpu_cache
+    if a.hybrid and gcache != "off":
+        say("moe-cache: --hybrid replaces --gpu-cache: the GPU memory goes to the hybrid bank"); gcache = "off"
+    if not os.path.isfile(model):
+        raise SystemExit(f"usage: moe-cache-server MODEL.gguf [options]  (model file not found: '{model}')")
+    lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(ls)
+    want, have = ls_api(ls), lib_api(lib)
+    if want and have and want != have:
+        say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load "
+            "(build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)", err=True)
+    if not os.path.isfile(lib):
+        raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    ncmoe_user = a.n_cpu_moe
+    ncmoe = a.n_cpu_moe
+    if ncmoe is None:
+        p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
+        if a.ram: p += ["--ram-gib", a.ram]
+        if a.vram: p += ["--vram-gib", a.vram]
+        try:
+            ncmoe = str(json.loads(subprocess.run(p, capture_output=True, text=True, timeout=300).stdout)["n_cpu_moe"])
+        except Exception:
+            say("planner unavailable (needs python3 and 'pip install gguf'); keeping all experts on the CPU"); ncmoe = "999"
+    host = arg_after(extra, "--host") or ""
+    if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and "--api-key" not in extra:
+        say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
+            "Add --api-key KEY after the -- or bind to 127.0.0.1.", err=True)
+    pname = a.profile or ""
+    if pname and not NAME_RE.match(pname):
+        raise SystemExit("--profile NAME may only contain letters, digits, _ and -")
+    slotdir = None
+    if a.project:
+        if not NAME_RE.match(a.project):
+            raise SystemExit("--project NAME may only contain letters, digits, _ and -")
+        pname = pname or a.project
+        slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
+        extra += ["--slot-save-path", slotdir]
+    profile = os.path.join(CACHE_DIR, os.path.basename(model) + "." + (pname + "." if pname else "") + "usage")
+    load, method = load_env(ls, lib, a.load_method)
+    env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
+    if a.ram:
+        env.append(("MOE_CACHE_RAM_GIB", a.ram))
+    if a.fast:
+        env.append(("MOE_CACHE_ROUTE", "skip"))
+        say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
+    else:
+        # suggest --fast only where it pays: the model is much bigger than the memory it may use
+        try:
+            size = sum(os.path.getsize(p) for p in model_parts(model))
+            lim = float(a.ram) * 1e9 if a.ram else mem_total()
+            if lim and size > 2 * lim:
+                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts for about +10 % (changes some tokens; off by default)")
+        except Exception:
+            pass
+    if not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and os.access("/sys/devices/cpu_atom/cpus", os.R_OK):
+        try:
+            ne = min(len(parse_cpus(open("/sys/devices/cpu_atom/cpus").read())), 4)
+        except Exception:
+            ne = 0
+        if ne > 0:
+            env.append(("MOE_CACHE_EXEC_ECORES", str(ne)))
+            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
+    pinargs = []
+    if not a.no_pin and os.access("/sys/devices/cpu_core/cpus", os.R_OK) and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
+        try:
+            cores = parse_cpus(open("/sys/devices/cpu_core/cpus").read())
+            prim = [c for c in cores if min(parse_cpus(open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read())) == c]
+            mask = hex(sum(1 << c for c in prim))
+            pinargs = ["-C", mask, "--cpu-strict", "1"]
+            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
+        except Exception:
+            pass
+    # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
+    tuned = None
+    if a.ub == "auto" or gcache == "auto":
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import tune
+            free = float(a.vram) * 2**30 if a.vram else None          # GiB, the same unit as the planner's --vram-gib
+            kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
+            tuned = tune(model, ctx, free=free, want_cache=gcache != "off", **kw)
+        except Exception:
+            tuned = None
+    ub = a.ub
+    if ub == "auto":
+        ub = "" if any(x in ("-ub", "--ubatch-size") for x in extra) else (str(tuned["ub"]) if tuned else "")
+    if ub and ub != "auto":
+        if not ub.isdigit():
+            say("moe-cache: --ub must be auto or a number")
+        else:
+            extra += ["-ub", ub, "-b", str(max(int(ub), 2048))]
+            say(f"moe-cache: micro-batch -ub {ub} (prompt processing; --ub N to change)")
+    # without a GPU cache, take the static expert layers from the same decision as the micro-batch (the planner alone assumes a small compute
+    # buffer and fills the card, so the long-prompt GPU block found no room next to -ub 2048: Flash-Next prefill 18 instead of 50+ tok/s)
+    if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned:
+        ncmoe = str(tuned["n_cpu_moe"])
+    if gcache != "off" and ncmoe != "0":
+        gcmib = gcache
+        if gcache == "auto":
+            gcmib = str(tuned["gpu_cache_mib"]) if tuned and tuned["gpu_cache_mib"] else ""
+            for w in (tuned or {}).get("why", []):
+                say("moe-cache: tuner: " + w)
+        if not gcmib.isdigit():
+            say("moe-cache: --gpu-cache: could not work out a size (planner unavailable?), using the planner's static GPU layers"); gcmib = ""
+        if gcmib and int(gcmib) < 512:
+            say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
+        if gcmib:
+            ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
+            say(f"moe-cache: GPU expert cache of {gcmib} MiB; all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU")
+    if a.hybrid and ncmoe != "0":
+        ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))
+        say("moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)")
+        if not os.path.isfile(profile):
+            say(f"moe-cache: --hybrid: no usage profile yet ({profile}): the bank is chosen from it, so this first session runs without one")
+    # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
+    if (a.hybrid or a.fast) and not os.environ.get("MOE_CACHE_GPU_MIN_TOKENS"):
+        env.append(("MOE_CACHE_GPU_MIN_TOKENS", "64"))
+    # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
+    # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
+    cram = arg_after(extra, "--cache-ram", "-cram")
+    if cram is None:
+        try:
+            if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout:
+                extra += ["--cache-ram", "2048"]; cram = "2048"
+        except Exception:
+            pass
+    if cram is not None and re.fullmatch(r"[0-9-]+", cram):
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", cram))     # told to the plugin directly instead of it parsing our command line
+    cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
+    if ncmoe == "0":
+        say(f"moe-cache: all experts fit in your GPU memory; the cache has nothing to manage for this model/context (profile {profile}; plugin loaded by {method})")
+    else:
+        say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")
+    say(f"moe-cache: web UI and API will be at http://localhost:{port}")
+    if a.dry_run:
+        say("env " + " ".join(f"{k}={v}" for k, v in env) + " " + " ".join(cmd))
+        return 0
+    api_key = arg_after(extra, "--api-key")
+    if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
+        def restore():
+            for _ in range(900):
+                if healthy(port, api_key):
+                    st, body = http(f"http://localhost:{port}/slots/0?action=restore", {"filename": a.project + ".bin"}, api_key, timeout=600)
+                    if st == 200:
+                        say(f"moe-cache: restored the saved prompt state of project {a.project}", err=True)
+                    else:
+                        say(f"moe-cache: could not restore project {a.project} (HTTP {st}): {body[:200]}", err=True)
+                    return
+                time.sleep(1)
+        threading.Thread(target=restore, daemon=True).start()
+    if a.open:
+        def opener():
+            for _ in range(600):
+                if healthy(port, api_key):
+                    import webbrowser
+                    webbrowser.open(f"http://localhost:{port}")
+                    return
+                time.sleep(1)
+        threading.Thread(target=opener, daemon=True).start()
+    return run_child(cmd, dict(os.environ, **dict(env)))
+
+
+# ---- learn ----
+
+def learn(argv):
+    ap = argparse.ArgumentParser(prog="moe_cache.py learn", description="build a warm-start profile by running a set of prompts through the model with the plugin; "
+                                 "moe-cache-server loads it automatically (same default path)")
+    ap.add_argument("model"); ap.add_argument("--name", default=""); ap.add_argument("--ram", default="20"); ap.add_argument("--n-cpu-moe", default="999")
+    ap.add_argument("--tokens", type=int, default=150); ap.add_argument("--prompts", default=os.path.join(HERE, "tools", "learn_prompts.txt"))
+    ap.add_argument("--out"); ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server")); ap.add_argument("--port", type=int, default=8097)
+    ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
+    a = ap.parse_args(argv)
+    if not WINDOWS:
+        os.umask(0o077)
+    if not os.path.isfile(a.model):
+        raise SystemExit("usage: moe-cache-learn MODEL.gguf [options]")
+    lib = os.environ.get("MOE_CACHE_LIB") or default_lib()
+    if not os.path.isfile(lib):
+        raise SystemExit("plugin not built: run ./build.sh first")
+    if a.name and not NAME_RE.match(a.name):
+        raise SystemExit("--name may only contain letters, digits, _ and -")
+    out = a.out or os.path.join(CACHE_DIR, os.path.basename(a.model) + "." + (a.name + "." if a.name else "") + "usage")
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    if port_busy(a.port):
+        raise SystemExit(f"port {a.port} is already in use (another server?): stop it or pass --port, so the prompts go to the right server")
+    prompts = [l.strip() for l in open(a.prompts, encoding="utf-8") if l.strip()]
+    before = os.path.getmtime(out) if os.path.isfile(out) else None
+    import tempfile
+    logf = tempfile.NamedTemporaryFile(prefix="moe-cache-learn.", suffix=".log", delete=False)
+    say(f"learning from {len(prompts)} prompts, {a.tokens} tokens each; profile -> {out}")
+    load, _ = load_env(a.llama_server, lib, a.load_method)
+    env = dict(os.environ, **dict(load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_RAM_GIB", a.ram), ("MOE_CACHE_GGUF", a.model), ("MOE_CACHE_PROFILE", out)]))
+    cmd = [a.llama_server, "-m", a.model, "-ngl", "99", "--n-cpu-moe", a.n_cpu_moe, "-c", "4096", "-fa", "on", "--load-mode", "mmap", "--no-warmup",
+           "--port", str(a.port), "--seed", "42"]
+    p = subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT)
+    try:
+        for _ in range(300):
+            if p.poll() is not None:
+                raise SystemExit(f"llama-server stopped before it was ready (exit {p.returncode}); log: {logf.name}")
+            if healthy(a.port):
+                break
+            time.sleep(2)
+        else:
+            raise SystemExit(f"llama-server did not become ready; log: {logf.name}")
+        for i, q in enumerate(prompts, 1):
+            if p.poll() is not None:
+                raise SystemExit(f"llama-server stopped during prompt {i} (exit {p.returncode}); log: {logf.name}")
+            st, body = http(f"http://127.0.0.1:{a.port}/completion", {"prompt": q, "n_predict": a.tokens, "temperature": 0, "seed": 42, "cache_prompt": False}, timeout=3000)
+            if st != 200:
+                raise SystemExit(f"prompt {i}: HTTP {st}: {body[:200]}; log: {logf.name}")
+            say(f"  prompt {i}/{len(prompts)} done")
+    finally:
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                p.kill()
+    if not os.path.isfile(out) or (before is not None and os.path.getmtime(out) <= before):
+        raise SystemExit(f"no new profile was written to {out} (server log: {logf.name})")
+    say(f"done: moe-cache-server will warm-start from {out} ({os.path.getsize(out)} bytes; server log: {logf.name})")
+    return 0
+
+
+# ---- project ----
+
+def project(argv):
+    ap = argparse.ArgumentParser(prog="moe_cache.py project", description="save or restore the prompt state (KV cache of slot 0) of a server started with --project NAME. "
+                                 "The state is only valid for the same model file and the same -c / cache type settings.")
+    ap.add_argument("cmd", choices=["save", "restore", "list"]); ap.add_argument("name", nargs="?")
+    ap.add_argument("--url", default="http://127.0.0.1:8080"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
+    a = ap.parse_args(argv)
+    d = os.path.join(CACHE_DIR, "slots")
+    if a.cmd == "list":
+        files = sorted(glob.glob(os.path.join(d, "*", "*.bin")))
+        for f in files:
+            say(f"{os.path.getsize(f) / 1e6:10.1f} MB  {time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(f)))}  {f}")
+        if not files:
+            say("no saved projects")
+        return 0
+    if not a.name or not NAME_RE.match(a.name):
+        raise SystemExit("usage: moe-cache-project save|restore NAME [--url URL] [--api-key KEY]")
+    st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, a.api_key, timeout=600)
+    say(body.strip())
+    if st != 200:
+        raise SystemExit(f"{a.cmd} failed: HTTP {st}" if st else f"{a.cmd} failed: no server at {a.url}")
+    return 0
+
+
+# ---- check ----
+
+def check(argv):
+    ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
+    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server")); ap.add_argument("--ram")
+    a = ap.parse_args(argv)
+    n = {"fail": 0, "warn": 0}
+    def ok(k, m): say(f"  [ OK ] {k:<22} {m}")
+    def warn(k, m): say(f"  [WARN] {k:<22} {m}"); n["warn"] += 1
+    def fail(k, m): say(f"  [FAIL] {k:<22} {m}"); n["fail"] += 1
+    say("moe-cache check")
+    import platform
+    if sys.platform.startswith("linux"):
+        ok("system", "Linux " + platform.release())
+    elif WINDOWS:
+        warn("system", f"Windows {platform.release()}: experimental (never identity-tested on real Windows yet)")
+    else:
+        fail("system", f"{platform.system()}: only Linux (and experimental Windows) are supported")
+    if platform.machine().lower() in ("x86_64", "amd64"):
+        ok("cpu", "x86-64")
+    else:
+        warn("cpu", f"{platform.machine()}: only x86-64 was tested")
+    if os.access("/sys/devices/cpu_core/cpus", os.R_OK):
+        ok("cpu pinning", f"hybrid Intel CPU (performance cores {open('/sys/devices/cpu_core/cpus').read().strip()}): threads are pinned to the performance cores automatically (about +15 %)")
+    elif not WINDOWS:
+        ok("cpu pinning", "not a hybrid Intel CPU: no pinning needed")
+    lsp = shutil.which(a.llama_server)
+    if not lsp:
+        fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
+    else:
+        try:
+            v = subprocess.run([lsp, "--version"], capture_output=True, text=True, timeout=30)
+            m = re.search(r"commit [0-9a-f]+", v.stdout + v.stderr)
+        except Exception:
+            m = None
+        ver = m.group(0) if m else ""
+        ok("llama-server", f"{lsp} ({ver or 'version unknown'})")
+        if re.search(r"7fe450e|23b0202", ver):
+            ok("ggml version", f"matches a tested commit ({ver})")
+        else:
+            warn("ggml version", "tested with 7fe450e19 (API 2) and 23b0202a1 (API 3); other versions usually load but may not (the plugin warns at start)")
+        if not WINDOWS:
+            if "libggml-base" in ldd(lsp):
+                ok("shared ggml", "libggml-base is a shared library")
+            else:
+                fail("shared ggml", "this llama-server has ggml built in; the plugin cannot be loaded (use a build with BUILD_SHARED_LIBS=ON)")
+    lib = os.environ.get("MOE_CACHE_LIB") or (pick_lib(lsp) if lsp else default_lib())
+    if not os.path.isfile(lib):
+        if shutil.which("g++"):
+            warn("plugin", "not built yet: run ./build.sh (g++ found)")
+        else:
+            fail("plugin", "not built and no g++ found; use the prebuilt release or install g++")
+    else:
+        ok("plugin", lib)
+        if lsp:
+            load, method = load_env(lsp, lib)
+            try:
+                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60, env=dict(os.environ, **dict(load)))
+                listed = "MOE_CACHE" in out.stdout + out.stderr
+            except Exception:
+                listed = False
+            if listed:
+                ok("plugin loads", f"yes, via {method}")
+            else:
+                fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})")
+            try:
+                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60)
+                devs = [l.strip() for l in (out.stdout + out.stderr).splitlines() if re.match(r"^ +(CUDA|Vulkan|ROCm|HIP|SYCL|Metal)[0-9]*:", l)]
+            except Exception:
+                devs = []
+            if devs:
+                ok("gpu", devs[0])
+            else:
+                warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower)")
+    memav = cg = None
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable"):
+                memav = int(line.split()[1]) / 1048576
+        rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
+        for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
+            if os.access(f, os.R_OK):
+                v = open(f).read().strip()
+                if v != "max":
+                    cg = int(v) / 2**30
+                    break
+    except OSError:
+        pass
+    ok("memory", (f"--ram {a.ram} GB; " if a.ram else "") + (f"available {memav:.1f} GB" if memav else "available: unknown") + (f", cgroup limit {cg:.1f} GB" if cg else ""))
+    try:
+        sw = next(int(l.split()[1]) / 1048576 for l in open("/proc/meminfo") if l.startswith("SwapTotal"))
+        if sw >= 1:
+            warn("swap", f"swap is on ({sw:.1f} GB): if memory runs out the system may swap (very slow) instead of killing the server")
+    except (OSError, StopIteration):
+        pass
+    try:
+        import gguf  # noqa: F401
+        ok("planner", "python gguf package found (the planner also has its own header reader)")
+    except ImportError:
+        ok("planner", "built-in GGUF header reader (the python gguf package is not needed)")
+    if os.access(os.path.dirname(CACHE_DIR), os.W_OK) or os.access(CACHE_DIR, os.W_OK):
+        ok("profile dir", CACHE_DIR)
+    else:
+        warn("profile dir", "cache directory not writable: profiles will not be saved")
+    if a.model:
+        if not os.access(a.model, os.R_OK):
+            fail("model", f"cannot read '{a.model}'")
+        else:
+            size = sum(os.path.getsize(p) for p in model_parts(a.model)) / 2**30
+            head = open(a.model, "rb").read(4 << 20)
+            if head[:4] == b"GGUF":
+                ok("model", f"GGUF, {size:.1f} GB")
+            else:
+                fail("model", "not a GGUF file")
+            if b"expert_count" in head:
+                ok("MoE model", "has experts (expert_count found)")
+            else:
+                warn("MoE model", "no expert_count in the header: this may not be a MoE model, moe-cache will not help")
+            if not WINDOWS:
+                try:
+                    os.close(os.open(a.model, os.O_RDONLY | os.O_DIRECT))
+                    ok("direct reads", "O_DIRECT works on this file system")
+                except OSError:
+                    fail("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): put the model on a normal disk")
+            lim = float(a.ram) if a.ram else (cg or memav)
+            if lim and size > lim:
+                ok("fit", f"model ({size:.1f} GB) is larger than the memory limit ({lim:.1f} GB): this is where moe-cache helps most")
+            elif lim:
+                warn("fit", f"model ({size:.1f} GB) fits in {lim:.1f} GB: you get about stock speed, the gain is when memory is short")
+    else:
+        say("  (give a model path to also check the model: moe-cache-check MODEL.gguf)")
+    say(f"summary: {n['fail']} failed, {n['warn']} warnings")
+    return 1 if n["fail"] else 0
+
+
+def main():
+    cmds = {"server": server, "check": check, "learn": learn, "project": project}
+    if len(sys.argv) < 2 or sys.argv[1] not in cmds:
+        say(__doc__.strip())
+        return 0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 1
+    return cmds[sys.argv[1]](sys.argv[2:]) or 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

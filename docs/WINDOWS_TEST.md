@@ -25,3 +25,14 @@ powershell -ExecutionPolicy Bypass -File windows_test.ps1 -LlamaDir C:\llama -Mo
 ```
 Send back: the printed result, `%TEMP%\moe-cache-test\plugin.err.txt`, and the llama.cpp release name. Failure modes to expect and report: the DLL fails to load
 (missing ggml symbol), the plugin refuses on API mismatch (message names both), the plugin loads but the identical-prompt count is below 4/4 (a bug).
+The test turns the cache on at 0.5 GiB (`-CacheGiB`), far below the model, so experts are evicted and read again; it fails if the log has no
+`moe-cache: cache mode` line (before 2026-10-15 it ran the plugin in pass-through mode and a PASS proved little).
+
+## Launcher on Windows (T15, untested on real Windows)
+The launcher is Python (`bin/moe_cache.py`, standard library only), so it runs on Windows too; there the plugin is always loaded with `GGML_BACKEND_PATH`:
+```
+set MOE_CACHE_LIB=D:\moe-cache-kit\ggml-moe-cache-api3.dll
+python moe-cache\bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --ram 16 --open
+python moe-cache\bin\moe_cache.py check D:\models\model.gguf --llama-server C:\llama\llama-server.exe
+```
+Add `--dry-run` to see the command without starting it. CPU pinning and efficiency-core detection are Linux only.
