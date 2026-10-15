@@ -715,7 +715,10 @@ def project(argv):
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
     ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server")); ap.add_argument("--ram")
+    ap.add_argument("--run", action="store_true", help="also start llama-server with the plugin and a small cache for one short request (about a minute): "
+                    "proves the cache really computes on this machine")
     a = ap.parse_args(argv)
+    run_load = None
     n = {"fail": 0, "warn": 0}
     def ok(k, m): say(f"  [ OK ] {k:<22} {m}")
     def warn(k, m): say(f"  [WARN] {k:<22} {m}"); n["warn"] += 1
@@ -725,7 +728,7 @@ def check(argv):
     if sys.platform.startswith("linux"):
         ok("system", "Linux " + platform.release())
     elif WINDOWS:
-        warn("system", f"Windows {platform.release()}: experimental (never identity-tested on real Windows yet)")
+        warn("system", f"Windows {platform.release()}: experimental (identity-tested in CI on a Windows runner; use --run to try the cache here)")
     else:
         fail("system", f"{platform.system()}: only Linux (and experimental Windows) are supported")
     if platform.machine().lower() in ("x86_64", "amd64"):
@@ -774,8 +777,9 @@ def check(argv):
                 pass
             listed = "MOE_CACHE" in probe
             if listed:
-                ok("plugin loads", f"yes, via {method} (loaded and listed; the cache itself first runs with the first request: use tests/identity.sh "
-                   "or tools/windows_test.ps1 to see it compute)")
+                run_load = load
+                ok("plugin loads", f"yes, via {method}" + ("" if a.run else " (loaded and listed; the cache itself first runs with the first request: "
+                   "add --run to try it)"))
             else:
                 why = [l.strip() for l in probe.splitlines() if "load_backend" in l or "moe-cache:" in l][:3]
                 fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})" + ("; llama-server said: " + " | ".join(why) if why else "")
@@ -852,8 +856,66 @@ def check(argv):
                 warn("fit", f"model ({size:.1f} GB) fits in {lim:.1f} GB: you get about stock speed, the gain is when memory is short")
     else:
         say("  (give a model path to also check the model: moe-cache-check MODEL.gguf)")
+    if a.run:
+        if not (a.model and run_load and lsp):
+            fail("cache runs", "needs a model, a llama-server and a plugin that loads (see above)")
+        else:
+            r = run_check(lsp, a.model, run_load)
+            (ok if r[0] else fail)("cache runs", r[1])
     say(f"summary: {n['fail']} failed, {n['warn']} warnings")
     return 1 if n["fail"] else 0
+
+
+def run_check(lsp, model, load, port=8097):
+    """Start llama-server with the plugin in cache mode (0.25 GiB cache, experts on the CPU, the rest on the CPU too, small context) for one 8-token
+    request (idea I26: the Claw's check said "plugin loads: yes" while cache mode crashed at the first request). (passed, message)."""
+    if port_busy(port):
+        return False, f"port {port} is in use: stop what runs there and try again"
+    env = dict(os.environ, **dict(load), MOE_CACHE_SIZE_GIB="0.25", MOE_CACHE_GGUF=model, MOE_CACHE_STATS="1")
+    env.pop("MOE_CACHE_PROFILE", None)
+    cmd = [lsp, "-m", model, "-ngl", "0", "--n-cpu-moe", "999", "-c", "512", "--no-warmup", "--port", str(port), "-np", "1"]
+    kw = {"env": env, "stdout": subprocess.DEVNULL, "stderr": subprocess.PIPE}
+    if sys.platform.startswith("linux"):
+        kw["preexec_fn"] = _die_with_parent_linux
+    p = subprocess.Popen(cmd, **kw)
+    if WINDOWS:
+        try:
+            _kill_with_parent_windows(p)
+        except Exception:
+            pass
+    lines = []
+    threading.Thread(target=lambda: [lines.append(l.decode(errors="replace").rstrip()) for l in iter(p.stderr.readline, b"")], daemon=True).start()
+    try:
+        ready = False
+        for _ in range(600):
+            if p.poll() is not None:
+                break
+            if healthy(port):
+                ready = True
+                break
+            time.sleep(1)
+        st, body = (http(f"http://127.0.0.1:{port}/completion", {"prompt": "The capital of France is", "n_predict": 8, "temperature": 0}, timeout=600)
+                    if ready else (0, ""))
+        time.sleep(1)
+        mc = [l for l in lines if "moe-cache:" in l]
+        if p.poll() is not None:
+            return False, exit_reason(p.returncode, ready) + (f"; last plugin line: {mc[-1]}" if mc else "")
+        if not any("cache mode" in l for l in mc):
+            return False, "the server ran but the plugin's cache was not on (no 'moe-cache: cache mode' line): " + (mc[-1] if mc else "no plugin lines at all")
+        if st != 200:
+            return False, f"the request failed (HTTP {st})"
+        try:
+            text = json.loads(body).get("content", "")
+        except ValueError:
+            text = ""
+        return True, f"yes: one request in cache mode with a 0.25 GiB cache, answer {text.strip()[:40]!r}"
+    finally:
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                p.kill()
 
 
 def main():

@@ -66,8 +66,9 @@ jobs:
           python3 -m py_compile bin/moe_cache.py
           bin/moe-cache-server granite.gguf --ram 4 --fast --dry-run | tee launcher_dry.txt
           grep -qE "^env .*MOE_CACHE_SIZE_GIB=auto .*MOE_CACHE_ROUTE=skip .*llama-server -m granite.gguf .*--n-cpu-moe" launcher_dry.txt
-          bin/moe-cache-check granite.gguf | tee launcher_check.txt
+          bin/moe-cache-check granite.gguf --run | tee launcher_check.txt
           grep -q "plugin loads .*yes" launcher_check.txt
+          grep -q "cache runs .*yes: one request in cache mode" launcher_check.txt     # I26: the cache really computed
           # --gpu-cache with the plugin loaded as a file (GGML_BACKEND_PATH) would give wrong tokens: the launcher must drop it (T7, B1)
           bin/moe-cache-server granite.gguf --ram 4 --always-plugin --load-method path --gpu-cache 1000 --dry-run 2>&1 | tee launcher_gcache_path.txt
           grep -q "gpu-cache needs a llama-server that links its backends directly" launcher_gcache_path.txt

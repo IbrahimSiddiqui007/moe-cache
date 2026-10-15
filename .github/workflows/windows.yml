@@ -84,8 +84,9 @@ jobs:
         run: |
           $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
           $ls = "$env:LLAMA_DIR\llama-server.exe"
-          python bin/moe_cache.py check granite.gguf --llama-server $ls | Tee-Object launcher_check.txt
+          python bin/moe_cache.py check granite.gguf --llama-server $ls --run | Tee-Object launcher_check.txt
           if (-not (Select-String launcher_check.txt -Pattern "plugin loads .*yes" -Quiet)) { throw "check: the plugin does not load" }
+          if (-not (Select-String launcher_check.txt -Pattern "cache runs .*yes" -Quiet)) { throw "check --run: the cache did not compute" }
           python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 4 --always-plugin --gpu-cache 1000 --dry-run 2>&1 | Tee-Object launcher_dry.txt
           if (-not (Select-String launcher_dry.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { throw "dry run: no GGML_BACKEND_PATH" }
           if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
