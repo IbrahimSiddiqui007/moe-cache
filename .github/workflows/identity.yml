@@ -184,6 +184,37 @@ jobs:
           grep -qE "^identical prompts: [0-3]/4" identity_gptoss_mutant.txt || { echo "FAIL: the mutant failed for another reason (no token comparison)"; exit 1; }
           echo "OK: the mutant fails as it should"
 
+      - name: Mutation checks - builds without the executor's flag wait / the tiled hand-back wait must FAIL their tests (I10)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          LLAMA_PERPLEXITY: ${{ github.workspace }}/llama.cpp/build/bin/llama-perplexity
+          MOE_CACHE_STATS: "1"
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT BUILD_DIR=build-mut-exec ./build.sh --portable
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_TILED_WAIT BUILD_DIR=build-mut-tiled ./build.sh --portable
+          # 1: executor graphs on the Q2_0 tiny gpt-oss with reads delayed 2 ms (same settings as the Q2_0 step above)
+          if MOE_CACHE_LIB=$PWD/build-mut-exec/libggml-moe-cache.so IDENT_EXTRA="--no-repack" IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000" \
+             tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_mut_exec.txt; then
+            echo "FAIL: the mutant without the executor's flag wait passed"; exit 1; fi
+          grep -qE "^identical prompts: [0-3]/4" identity_mut_exec.txt || { echo "FAIL: the exec mutant failed for another reason"; exit 1; }
+          echo "OK: exec-wait mutant fails"
+          # 2: batch-8 logits with forced eviction, executor forced, reads delayed (the tiled hand-back reads experts still loading without the wait)
+          if MOE_CACHE_LIB=$PWD/build-mut-tiled/libggml-moe-cache.so KL_EXTRA="--no-repack" KL_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_TEST_READ_DELAY_US=2000" \
+             tests/kl_batch.sh granite.gguf --chunks 4 | tee identity_mut_tiled.txt; then
+            echo "FAIL: the mutant without the tiled hand-back wait passed"; exit 1; fi
+          grep -q "FAIL: the plugin's logits differ" identity_mut_tiled.txt || { echo "FAIL: the tiled mutant failed for another reason"; exit 1; }
+          echo "OK: tiled-wait mutant fails"
+
+      - name: Logits at batch 8 with reads delayed (the real build must still give stock's logits; pairs with the tiled mutant above)
+        env:
+          LLAMA_PERPLEXITY: ${{ github.workspace }}/llama.cpp/build/bin/llama-perplexity
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          KL_EXTRA: "--no-repack"
+          KL_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_TEST_READ_DELAY_US=2000"
+        run: tests/kl_batch.sh granite.gguf --chunks 4 | tee identity_kl_batch8_delay.txt
+
       - name: Identity with guard mode (evicted pages inaccessible, so an unintercepted read crashes instead of reading zeros)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server

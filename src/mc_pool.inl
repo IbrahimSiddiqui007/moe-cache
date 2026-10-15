@@ -59,11 +59,13 @@ struct exec_pool_t {
             const exec_task_t & t = j->tasks[c / j->nch];
             const int64_t r0 = (int64_t) (c % j->nch) * j->chunk;
             const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
+#ifndef MOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT     // CI only: a build without this wait must fail the delayed-read Q2_0 gpt-oss step
             if (t.flag) {
                 while (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE)) {
                     cpu_relax();
                 }
             }
+#endif
             for (int64_t r = r0; r < r1; r++) {
                 const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
                 for (int k = 0; k < t.ncol; k++) {

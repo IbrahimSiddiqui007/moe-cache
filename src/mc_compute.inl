@@ -91,9 +91,11 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
                 }
             }
         } else {
+#ifndef MOE_CACHE_TEST_MUTANT_NO_TILED_WAIT    // CI only: a build without this wait must fail the delayed-read batch-8 KL step (T39)
             if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
                 exec_wait_loaded(s, nd);   // left to llama.cpp (tiled): its experts may still be filling (reads are asynchronous in executor graphs)
             }
+#endif
             batch.push_back(i);
         }
     }
