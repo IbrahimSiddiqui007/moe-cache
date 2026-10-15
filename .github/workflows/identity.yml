@@ -94,6 +94,10 @@ jobs:
           done
           python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss.gguf --outtype f16
           ls -la tiny-gptoss.gguf
+          # does stock llama-server load it? (show its log either way)
+          timeout 60 llama.cpp/build/bin/llama-server -m tiny-gptoss.gguf -c 2048 --port 8097 > tiny_srv.log 2>&1 || true
+          grep -iE "error|failed|unknown|invalid|exception|model loaded|listening" tiny_srv.log | head -20 || true
+          tail -15 tiny_srv.log
 
       - name: Identity on gpt-oss with background reads delayed (catches a missing wait for experts still loading, T45)
         env:
