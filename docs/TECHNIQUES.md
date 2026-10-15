@@ -20,8 +20,8 @@ Audit of 2026-10-10. "Default" is what is in the code, not what the docs say. Nu
 | CPU pinning (hybrid Intel) | on | one thread per performance core | +15 to +22 % | only Intel hybrid CPUs; strict pinning hurts when other heavy processes run | keep |
 | Planner placement | with the launcher | chooses `--n-cpu-moe` from free VRAM | +60 % over all-on-CPU (16.2 to 25.9) | NVIDIA and AMD discrete GPUs only | keep |
 | Lookahead prefetch | off | predicts next layer's experts from router weights | -25 %, -12 %, -74 % on three models | wasted reads on SSD-bound models | off, code stays |
-| L3 helper thread | off | pulls later tensors of a group into L3 | -19 % | contention | off |
-| Huge pages | off | `MADV_HUGEPAGE` on the arena | no gain | none | off |
+| L3 helper thread | removed (2026-10-15) | pulled later tensors of a group into L3 | -19 % | contention | removed |
+| Huge pages | removed (2026-10-15) | `MADV_HUGEPAGE` on the arena | no gain | none | removed |
 | n-gram speculative decoding | not used | llama.cpp feature | flat to -25 % on MoE | verifying several tokens wakes extra experts | do not use |
 | CPU+GPU bandwidth aggregation | not built | | shared memory bus: no add | | closed |
 | GPU hot tier | not built | | simulation +7 % at 4 GB, about +22 % at 12 GB, not token-identical | open defect in the one-token GPU path | deferred |

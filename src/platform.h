@@ -148,19 +148,6 @@ inline void mem_commit(void * p, size_t size) {
     }
 #endif
 }
-// Gives physical pages to a range before a read lands in it (Linux 5.14+: MADV_POPULATE_WRITE; otherwise and on Windows a no-op).
-// Faulting the pages here, in the reading thread, keeps the page faults out of the O_DIRECT read. Errors are ignored: the read still works.
-inline void mem_prefault(void * p, size_t size) {
-#if defined(__linux__)
-#ifndef MADV_POPULATE_WRITE
-#define MADV_POPULATE_WRITE 23
-#endif
-    const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
-    madvise((void *) a, b - a, MADV_POPULATE_WRITE);
-#else
-    (void) p; (void) size;
-#endif
-}
 // p and size must be page aligned
 inline void mem_decommit(void * p, size_t size) {
 #ifdef _WIN32
@@ -185,13 +172,6 @@ inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) 
 #else
     (void) p; (void) size; (void) f; (void) off;
     return false;
-#endif
-}
-inline void mem_hugepage(void * p, size_t size, bool on) {
-#if defined(__linux__)
-    madvise(p, size, on ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);
-#else
-    (void) p; (void) size; (void) on;
 #endif
 }
 inline void * aligned_alloc_page(size_t size) {

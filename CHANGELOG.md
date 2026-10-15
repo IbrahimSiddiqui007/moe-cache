@@ -5,6 +5,8 @@
   that do not fit are mapped straight from the model file, the way stock llama.cpp loads them (file cache, reclaimable, so the size still holds), or, where
   that is not possible (executor's background reads, repacked weights, Windows), loaded over the size for that step. One warning, and a count in the
   summary line. Two CI steps run with a 1 MiB cache (mapping with guard mode on; executor forced on) and must be 4/4 identical.
+- Removed five switches whose experiments lost (all were off by default): `MOE_CACHE_L3PREFETCH` (-19 %), `MOE_CACHE_THP` (no gain),
+  `MOE_CACHE_SCAN_TOKENS` (-25 % prefill), `MOE_CACHE_PREFAULT` (no gain), `MOE_CACHE_PROMPT_PREFETCH` (no gain). Setting them now does nothing.
 
 ## 0.2.3.4 (2026-10-15)
 - **Speed fix for K-quant models that do not fit in RAM** (in releases 0.2.0-0.2.3.3): the executor only takes graphs whose expert weights are IQ types or

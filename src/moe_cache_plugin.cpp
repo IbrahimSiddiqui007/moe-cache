@@ -475,8 +475,6 @@ struct state_t {
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
     std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
     bool cur_decode = false;                            // the group being prepared is a single-token (decode) step
-    bool cur_scan = false;                              // the group being prepared is a prompt batch: it scans (nearly) all experts of the layer
-    int  scan_tokens = 0;                               // MOE_CACHE_SCAN_TOKENS=N: batches of at least N tokens are loaded scan-resistant (default off: measured -25 % prefill)
     // approximate routing (MOE_CACHE_ROUTE=skip|subst, decode and small batches, executor only; off by default; quality-gated, see docs/EXPERIMENTS.md):
     // the lowest-ranked picks of a token that are NOT in RAM are dropped (skip) or replaced by the most recently used resident expert of that layer (subst).
     // Ranked picks are in order of the router's weights, so the experts given up are the ones that contribute least.
@@ -487,17 +485,15 @@ struct state_t {
     FILE * trace_f = nullptr;                           // MOE_CACHE_TRACE_IDS=file: record the experts picked in every decode step (int16 layer, int16 n, n x int16 expert)
     std::vector<uint64_t> layer_hits, layer_misses;     // per layer, updated under mu
     // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
-    bool   l3_prefetch = false;                         // MOE_CACHE_L3PREFETCH=1: a helper thread pulls the later tensors of a group into the L3 cache while the first ones compute
     bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
     std::atomic<uint64_t> sibling_loads{0};
     uint64_t small_mapped = 0, small_over = 0;          // cache smaller than one op: experts mapped from the file (stock way) / loaded over the budget
     bool   small_warned = false;
     bool   lookahead = false;
     bool   la_exec = false;                             // MOE_CACHE_LOOKAHEAD=2: lookahead together with the executor (it waits on the same loading flags)
-    bool   prompt_prefetch = false;
     size_t coalesce_bytes = (size_t) 16 << 20;          // MOE_CACHE_COALESCE_MIB=N (default 16, 0 = off): neighbouring expert reads merged up to N MiB
                                                         // (synchronous reads; Flash-Next prompts: 2.5 -> 3.4 GB/s, prefill +14-24 %)
-    std::atomic<uint64_t> coalesced{0};                     // MOE_CACHE_PROMPT_PREFETCH=1: during long prompts read layer N+1's experts while layer N runs
+    std::atomic<uint64_t> coalesced{0};                 // expert reads merged into the previous one
     int    la_guess = 0;                                // experts looked at per layer (0 = the number used per token)
     int    la_cap = 2;                                  // at most this many experts not yet in RAM are prefetched per layer
     bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
@@ -528,7 +524,6 @@ struct state_t {
     uint64_t tune_shrinks = 0, tune_grows = 0;
     size_t resident_bytes = 0;
     uint64_t epoch = 0;
-    int    thp = -1;                 // -1 default, 0 never, 1 madvise(HUGEPAGE)
     std::unordered_map<std::string, std::pair<size_t, size_t>> file_tensors;
     std::vector<std::unique_ptr<tinfo_t>> tensors;
     std::unordered_map<const ggml_tensor *, int> by_tensor;
@@ -584,9 +579,6 @@ struct state_t {
         fprintf(stderr, "moe-cache: plugin v0.2.3.4 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
         if (strcmp(ggml_version(), MOE_CACHE_TESTED_GGML) != 0) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only; if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML);
-        }
-        if (const char * v = getenv("MOE_CACHE_THP")) {
-            thp = atoi(v);
         }
         if (const char * v = getenv("MOE_CACHE_PROFILE")) {
             profile_path = v;
@@ -846,13 +838,6 @@ struct state_t {
             workers.emplace_back([this, i] { worker_main(i + 1); });
         }
         fprintf(stderr, "moe-cache: cache mode, %.2f GiB, %zu tensors in %s, layers %d-%d\n", budget / 1073741824.0, file_tensors.size(), file, lo, hi);
-        if (const char * l3 = getenv("MOE_CACHE_L3PREFETCH")) {
-            l3_prefetch = strcmp(l3, "0") != 0;
-            if (l3_prefetch && pf_threads.empty()) {
-                pf_threads.emplace_back([this] { pf_main(); });
-                fprintf(stderr, "moe-cache: L3 prefetch helper thread on\n");
-            }
-        }
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
@@ -862,9 +847,6 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE_KEEP")) {
             route_keep = atoi(v);
-        }
-        if (const char * v = getenv("MOE_CACHE_SCAN_TOKENS")) {
-            scan_tokens = atoi(v);
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHECK")) {
             exec_check = strcmp(v, "0") != 0;
@@ -896,9 +878,6 @@ struct state_t {
         if (const char * v = getenv("MOE_CACHE_COALESCE_MIB")) {
             coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;
         }
-        if (const char * v = getenv("MOE_CACHE_PROMPT_PREFETCH")) {
-            prompt_prefetch = strcmp(v, "0") != 0;
-        }
         if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
             lookahead = strcmp(v, "0") != 0;
             la_exec = strcmp(v, "2") == 0;
@@ -921,12 +900,6 @@ struct state_t {
                 }
                 fprintf(stderr, "moe-cache: lookahead prefetch on (%d helper threads)\n", nt);
             }
-        }
-        if (prompt_prefetch && pf_threads.empty()) {
-            for (int i = 0; i < 4; i++) {
-                pf_threads.emplace_back([this] { pf_main(); });
-            }
-            fprintf(stderr, "moe-cache: prompt prefetch on (long prompts read the next layer's experts in the background)\n");
         }
 #ifdef __linux__
         if (getenv("MOE_CACHE_STATS_SIGNAL")) {
@@ -1395,8 +1368,6 @@ struct state_t {
         char * buf = j.direct ? j.dst - shift : bounce;   // direct: the aligned read lands exactly around the expert
         // the pages must exist before they are written (Windows); one extra page covers kernels that read a little past the end
         plat::mem_commit(j.direct ? j.dst - shift : j.dst, (j.direct ? len : j.nb2) + PAGE);
-        static const bool prefault = [] { const char * e = getenv("MOE_CACHE_PREFAULT"); return e && atoi(e) != 0; }();
-        if (prefault && j.direct) plat::mem_prefault(j.dst - shift, len);   // the pages of an evicted slot are gone: fault them here, not inside the read
         // direct read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
         const bool inject_job = fault_every > 0 && (++fault_ctr % (uint64_t) fault_every) == 0;   // test switch: this read fails every direct attempt
         auto read_all = [&](const plat::file_t & rfd, bool inject) {
@@ -1521,11 +1492,6 @@ struct state_t {
         sscanf(t->name, "blk.%d.", &ti->layer);
         ti->node0 = (int) nodes.size();
         nodes.resize(nodes.size() + (size_t) t->ne[2]);
-        if (thp >= 0) {
-            const uintptr_t a = (uintptr_t) ti->data / PAGE * PAGE;
-            const uintptr_t b = ((uintptr_t) ti->data + ggml_nbytes(t) + PAGE - 1) / PAGE * PAGE;
-            plat::mem_hugepage((void *) a, b - a, thp != 0);
-        }
         const int idx = (int) tensors.size();
         if (ti->layer >= 0) {
             layer_tensors[ti->layer].push_back(idx);
@@ -1715,17 +1681,6 @@ struct state_t {
         n.prev = n.next = -1;
     }
 
-    // scan-resistant insertion: the expert becomes the first candidate for eviction, so a pass over the whole layer recycles its own slots
-    // instead of pushing out the experts that decode steps keep using
-    void push_lru(int s) {
-        node_t & n = nodes[s];
-        n.next = -1;
-        n.prev = lru;
-        if (lru >= 0) { nodes[lru].next = s; }
-        lru = s;
-        if (mru < 0) { mru = s; }
-    }
-
     void push_mru(int s) {
         node_t & n = nodes[s];
         n.prev = -1;
@@ -1878,7 +1833,7 @@ struct state_t {
                     n.resident = true;
                     n.epoch = epoch;
                     resident_bytes += ti.nb2;
-                    if (cur_scan) { push_lru(s); } else { push_mru(s); }
+                    push_mru(s);
                     { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                     pending_bytes += ti.nb2;
                     if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
@@ -1902,10 +1857,8 @@ struct state_t {
                         if (n.loading) { pf_late++; }
                     }
                     if (n.loading) { wait_list.push_back(s); }
-                    if (!cur_scan) {          // a prompt batch uses everything: it does not make an expert "recently used"
-                        unlink(s);
-                        push_mru(s);
-                    }
+                    unlink(s);
+                    push_mru(s);
                     n.epoch = epoch;
                     continue;
                 }
@@ -1943,7 +1896,7 @@ struct state_t {
                 n.resident = true;
                 n.epoch = epoch;
                 resident_bytes += ti.nb2;
-                if (cur_scan) { push_lru(s); } else { push_mru(s); }
+                push_mru(s);
                 { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                 pending_bytes += ti.nb2;
                 if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
@@ -2597,7 +2550,7 @@ bool exec_view_op(ggml_op op) {
 
 // true when every expert op of the graph is a single-token decode step that the executor can reproduce exactly
 bool exec_eligible(state_t & s, ggml_cgraph * cg) {
-    if (!s.exec_on || (s.lookahead && !s.la_exec) || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
+    if (!s.exec_on || (s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
         return false;
     }
     const int n = ggml_graph_n_nodes(cg);
@@ -2820,8 +2773,8 @@ void print_capabilities(state_t & s) {
     o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
     if (!s.exec_on) {
         o += " executor=off(MOE_CACHE_EXEC=0)";
-    } else if ((s.lookahead && !s.la_exec) || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
-        o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.l3_prefetch ? "l3prefetch" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
+    } else if ((s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
+        o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
     } else {
         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") + ")";
     }
@@ -2834,7 +2787,6 @@ void print_capabilities(state_t & s) {
     o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
     o += s.gpu_dev ? " long_prompt_gpu=on(>=" + std::to_string(s.gpu_min_tokens) + " tokens)" : " long_prompt_gpu=off(no GPU device)";
     if (s.route_mode) o += std::string(" approx_route=") + (s.route_mode == 1 ? "skip" : "subst");
-    if (s.scan_tokens > 0) o += " scan_resistant=" + std::to_string(s.scan_tokens);
     fprintf(stderr, "%s\n", o.c_str());
 }
 
@@ -3558,29 +3510,6 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
             const auto p0 = std::chrono::steady_clock::now();
             s.cur_decode = n_tok == 1;
-            s.cur_scan = s.scan_tokens > 0 && n_tok >= s.scan_tokens;
-            if (s.l3_prefetch && n_tok == 1 && tidx.size() >= 2) {
-                // ranges of the experts this step will read in its second and later tensors (not yet touched by the kernel)
-                std::vector<std::pair<const char *, size_t>> ranges;
-                for (size_t q = 1; q < tidx.size(); q++) {
-                    const tinfo_t & ti = *s.tensors[tidx[q]];
-                    for (size_t e = 0; e < used.size() && e < (size_t) ti.n_expert; e++) {
-                        if (used[e]) {
-                            ranges.push_back({ ti.data + e * ti.nb2, ti.nb2 });
-                        }
-                    }
-                }
-                s.pf_submit([ranges = std::move(ranges)] {
-                    [[maybe_unused]] static volatile uint64_t sink;
-                    uint64_t acc = 0;
-                    for (const auto & r : ranges) {
-                        for (size_t off = 0; off + 8 <= r.second; off += 64) {
-                            acc += *(const volatile uint64_t *) (r.first + off);   // a real load: a prefetch hint can be dropped on a TLB miss
-                        }
-                    }
-                    sink = acc;
-                });
-            }
             if (s.trace_f && n_tok == 1) {
                 int16_t hdr[2] = { (int16_t) s.tensors[tidx[0]]->layer, (int16_t) n_used };
                 fwrite(hdr, sizeof(int16_t), 2, s.trace_f);
@@ -3635,17 +3564,6 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 s.route_ids[ids] = std::move(eff);
             }
             exec_jobs += s.prepare_group(tidx, used, exec_graph);
-            // long prompts use nearly every expert of every layer: start reading the next layer's experts now, while this layer is uploaded and computed
-            if (s.prompt_prefetch && n_tok >= s.gpu_min_tokens && (size_t) (n_tok * n_used) >= 2 * used.size()) {
-                const int layer = s.tensors[(size_t) tidx[0]]->layer;
-                if (layer >= 0) {
-                    std::vector<int> all(used.size());
-                    for (size_t e = 0; e < all.size(); e++) {
-                        all[e] = (int) e;
-                    }
-                    s.reserve_and_read(layer + 1, all, (int) all.size());
-                }
-            }
             if (s.lookahead && n_tok == 1) {
                 const ggml_tensor * xin = node->src[1];
                 if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {
