@@ -53,7 +53,7 @@ All uploaded: about 0.75 ms. All on the CPU: about 0.6 ms. Split 3 CPU / 2 dGPU 
 | E1 | iGPU kernel speed for expert-sized IQ2_S / IQ2_XXS / IQ3_XXS / Q2_0 matrix-vector products, and one submit-and-wait | MSI Claw (Arc 140V), then the laptop (UHD) | iGPU under ~20 % of the CPU, or a handoff near 3 ms |
 | E2 | CPU kernel speed alone vs with the iGPU busy | Claw, laptop | the CPU loses more than the iGPU adds |
 | E3 | Whole expert layers on the iGPU with `-ot` (no code) | Claw | no gain over the same layers on the CPU |
-| E4 | The scheduler above inside the plugin (dGPU hits, CPU / iGPU / dGPU-upload for misses) | Claw, laptop | quality check fails, or gain under 10 % |
+| E4 | The scheduler above inside the plugin (dGPU hits, CPU / iGPU / dGPU-upload for misses); implementation plan: SCHEDULER_DESIGN.md | Claw, laptop | quality check fails, or gain under 10 % |
 | E5 | NPU through OpenVINO with a Q4_K MoE, prompts first | Claw | slower than the CPU |
 
 Related: GPU_TIER_DESIGN.md (the dGPU half, frozen as its own project; its hybrid hit/miss part is E4), ENGINE_DECISION.md.
