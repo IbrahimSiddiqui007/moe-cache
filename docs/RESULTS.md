@@ -1122,3 +1122,18 @@ requests 2-3** (8 x 48 would take ~16 min per run at under 2 tok/s), one run: a 
 
 Each step up in width means more expert bytes per token (8 of 256 experts in each of 48 layers: about 1.0 / 1.25 / 1.7 GB per token) and a smaller share of the
 model in 24 GB, so speed falls with file size; the gap to stock stays 4-5x because stock reads its misses through small page faults.
+
+## 46. Prompt processing, stock vs moe-cache (2026-10-15 evening; launcher command lines, clean-run gate, page cache dropped before stock runs)
+
+`work/zoo/prefill_req.py` (one short request, then prompts of ~2.4k / 1.9k / 5.0k / 5.4k tokens, cache_prompt off, then 4 decode requests); stock runs used
+`prefill_req_short.py` (the short request and the first 2.4k prompt only: stock decode is slow). One run each.
+
+| Model, limit | Stock prefill (2.4k prompt) | moe-cache prefill (2.4k / 1.9k / 5.0k / 5.4k) | Decode after the prompts, stock / moe-cache |
+|---|---|---|---|
+| Qwen3.6-35B Q4_K_M, 12 GB (ctx 8192) | 132.8 tok/s | 136.5 / **202.8** / 186.1 / **205.5** tok/s | 3.31 / 18.6-25.1 tok/s |
+| Qwen3.8-Flash-Next IQ2_XS, 24 GB | 65.9 tok/s (ctx 4096) | 90.5-91.9 / 99.2 / 90.2 / 98.2 tok/s (section 38, v0.2.3.3, ctx 8192) | 2.13 / ~12 tok/s |
+
+Reading: for long prompts llama.cpp already sends the expert work to the GPU, so on a model whose experts fit in RAM most of the time (Qwen3.6 at 12 GB)
+stock prompt speed is close to moe-cache's on the first prompt; moe-cache gains on later prompts (its cache is warm) and above all in decode. On Flash-Next
+(68 GB at 24 GB) moe-cache's prompt speed is 1.4x stock. The moe-cache Flash-Next run of this session failed (the 5-6k prompts exceed ctx 4096 in that run),
+so its row uses section 38's numbers, same launcher settings at ctx 8192.

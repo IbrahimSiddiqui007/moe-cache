@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3.5 (2026-10-15)
 - **No abort when the cache is smaller than one op** (a fixed `MOE_CACHE_SIZE_GIB` below the experts one step needs; `auto` never gets there): the experts
   that do not fit are mapped straight from the model file, the way stock llama.cpp loads them (file cache, reclaimable, so the size still holds), or, where
   that is not possible (executor's background reads, repacked weights, Windows), loaded over the size for that step. One warning, and a count in the

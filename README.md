@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.2.3.4%20beta-orange">
+<img alt="status" src="https://img.shields.io/badge/status-v0.2.3.5%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-23b0202a1%20(ggml%200.26.0)%20and%207fe450e19%20(0.25.1)-green">
@@ -80,15 +80,24 @@ Re-measured on 2026-10-15 with the current code where the model is still on the 
 | Situation | Stock llama.cpp | moe-cache | Measured with |
 |---|---|---|---|
 | **GLM-5.3-Flash (102 GB, 4x the memory limit)**, 24 GB RAM, 8 GB GPU | 0.32 tok/s | **1.75 tok/s** exact, 2.1 with `--fast` | v0.2.3.2 (§26) |
-| **Qwen3.8-Flash-Next IQ2_XS (68 GB)**, 24 GB RAM, 8 GB GPU, launcher defaults | 5.2 tok/s | **12.5 tok/s**; 13.1 with `--gpu-cache auto`; 17.6 with `--hybrid` (approximate) | v0.2.3.4+ (§44, §28, §31) |
-| Same model, prompt processing (2-5k token prompts) | - | **90 to 100 tok/s** | v0.2.3.3 (§38) |
-| **Qwen3.5-122B-A10B**, 24 GB RAM, 8 GB GPU, launcher defaults: IQ2_XXS (36.6 GB) / IQ3_XXS (44.7 GB) / IQ4_XS (60.2 GB) | 1.89 / 1.10 / 0.91 tok/s | **7.7 / 5.7 / 3.7 tok/s** (4-5x, same tokens); 9.0 / 6.8 / 4.5 with `--fast` | v0.2.3.4+ (§45) |
+| **Qwen3.8-Flash-Next IQ2_XS (68 GB)**, 24 GB RAM, 8 GB GPU, launcher defaults | 5.2 tok/s | **12.5 tok/s**; 13.1 with `--gpu-cache auto`; 17.6 with `--hybrid` (approximate) | v0.2.3.5 (§44, §28, §31) |
+| **Qwen3.5-122B-A10B**, 24 GB RAM, 8 GB GPU, launcher defaults: IQ2_XXS (36.6 GB) / IQ3_XXS (44.7 GB) / IQ4_XS (60.2 GB) | 1.89 / 1.10 / 0.91 tok/s | **7.7 / 5.7 / 3.7 tok/s** (4-5x, same tokens); 9.0 / 6.8 / 4.5 with `--fast` | v0.2.3.5 (§45) |
 | **gpt-oss-120b (63 GB)**, 24 GB RAM, 2 expert layers on the GPU, ctx 8k, one run each | 0.37 tok/s | **4.47 tok/s** | v0.1 (§12b, §12d) |
 | Qwen3-Next-80B (48.5 GB), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** | v0.1 (§6) |
 | Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** | v0.1 (§6) |
-| Qwen3.6-35B (21.7 GB), 12 GB RAM, 6 expert layers on the GPU | 6.9 tok/s | **22.6 tok/s** | v0.2.3.4+ (§44) |
+| Qwen3.6-35B (21.7 GB), 12 GB RAM, 6 expert layers on the GPU | 6.9 tok/s | **22.6 tok/s** | v0.2.3.5 (§44) |
 | Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** | v0.1 (§5) |
-| **Model fits in RAM** (Qwen3.6-35B, 24 GB, warm) | **42.9 tok/s** | 36.6 tok/s | v0.2.3.4+ (§44): the launcher now runs stock llama.cpp here |
+| **Model fits in RAM** (Qwen3.6-35B, 24 GB, warm) | **42.9 tok/s** | 36.6 tok/s | v0.2.3.5 (§44): the launcher now runs stock llama.cpp here |
+
+### Prompt processing (prefill)
+
+| Model, memory limit | Stock llama.cpp | moe-cache | Measured with |
+|---|---|---|---|
+| Qwen3.6-35B (21.7 GB), 12 GB RAM, 2-5k token prompts | 132.8 tok/s (2.4k prompt) | **136.5 tok/s** first prompt, **186 to 206 tok/s** on the next ones | v0.2.3.5 (§46) |
+| Qwen3.8-Flash-Next IQ2_XS (68 GB), 24 GB RAM, 2-5k token prompts | 65.9 tok/s (2.4k prompt) | **90 to 103 tok/s** | stock v0.2.3.5 (§46), moe-cache v0.2.3.3 (§38) |
+
+For long prompts llama.cpp already computes the experts on the GPU, so the prefill gain is smaller than the decode gain; it grows with how far the model
+exceeds RAM. Bigger prompt chunks on a 12-16 GB card are the next step (BIGGER_MACHINES B13).
 
 Conditions: "RAM" is a memory limit set with a cgroup on a 31 GB machine; before every limited stock run the model file is dropped from the page cache (otherwise
 stock can read it from cache that does not count against the limit and looks up to 4.6x faster than it is, RESULTS 44). One run per row unless the section says paired.
