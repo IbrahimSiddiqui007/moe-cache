@@ -105,7 +105,7 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.01 MOE_CACHE_TEST_READ_DELAY_US=2000"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000"
           IDENT_KEEP: ident_gptoss
         run: |
           tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_delay.txt || { tail -40 ident_gptoss/stock.log ident_gptoss/plugin.log 2>/dev/null; exit 1; }
