@@ -108,6 +108,25 @@ def mem_total():
     return None
 
 
+def mem_for_server(ram_gb):
+    """Bytes the server may use: --ram (GB), else the cgroup limit, else available RAM; None when unknown."""
+    if ram_gb:
+        return float(ram_gb) * 1e9
+    try:
+        rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
+        for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
+            if os.access(f, os.R_OK):
+                v = open(f).read().strip()
+                if v != "max":
+                    return float(v)
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable"):
+                return int(line.split()[1]) * 1024.0
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def parse_cpus(text):
     out = []
     for part in text.strip().split(","):
@@ -188,6 +207,7 @@ SERVER_HELP = """\
 --vram GiB GPU memory to plan with (default: what the GPU reports free)
 --n-cpu-moe N  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
 --no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
+--always-plugin  use the plugin even when the model fits in the memory the server may use (by default stock llama-server runs then: faster, RESULTS 44)
 --no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
@@ -204,6 +224,7 @@ def server(argv):
     ap.add_argument("--fast", action="store_true"); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--always-plugin", action="store_true")
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
@@ -333,13 +354,31 @@ def server(argv):
     if cram is None:
         try:
             if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout:
-                extra += ["--cache-ram", "2048"]; cram = "2048"
+                # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
+                # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
+                lim = mem_for_server(a.ram)
+                cram = "0" if lim and lim < 16e9 else "2048"
+                extra += ["--cache-ram", cram]
         except Exception:
             pass
     if cram is not None and re.fullmatch(r"[0-9-]+", cram):
         env.append(("MOE_CACHE_HOST_RESERVE_MIB", cram))     # told to the plugin directly instead of it parsing our command line
+    # the model fits in the memory the server may use: stock llama-server is faster (its page cache holds the whole file and stays warm across
+    # restarts; Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast and --hybrid need the plugin, so they keep it.
+    try:
+        size = sum(os.path.getsize(p) for p in model_parts(model))
+    except OSError:
+        size = None
+    avail = mem_for_server(a.ram)
+    if size and avail and size + 1.5e9 <= avail and not (a.fast or a.hybrid or a.always_plugin):
+        say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
+            "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
+        env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
+        method = "none (stock)"
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
-    if ncmoe == "0":
+    if method == "none (stock)":
+        pass
+    elif ncmoe == "0":
         say(f"moe-cache: all experts fit in your GPU memory; the cache has nothing to manage for this model/context (profile {profile}; plugin loaded by {method})")
     else:
         say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")

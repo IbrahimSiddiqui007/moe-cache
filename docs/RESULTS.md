@@ -1067,3 +1067,42 @@ KL runs are deterministic in exact mode (a rerun of the base gave KL 0), so one 
 
 Reading: choosing between two 2-bit files of the same model moves the next-token distribution 21-46x more than `--fast` does. `--fast`'s change is small next to
 what users already accept when they pick a quantisation. Not measured: the UD-Q2_K_XL file (not on disk), and quality on answers for Q2_0 (KL and PPL only).
+
+## 44. Re-measured for the README (2026-10-15 afternoon; llama.cpp 23b0202a1, plugin from 02121c6, clean-run gate, 8 x 48 tokens, mean of requests 4-8)
+
+**A measurement trap, fixed:** a memory-limited stock run can read the model from page cache that an earlier run left behind and that is charged to another
+cgroup, so it does not count against the limit (stock Qwen3.6 "at 12 GB" ran at 31.8-32.2 tok/s that way). Every limited stock run below first drops the
+model's pages from the page cache (`posix_fadvise(DONTNEED)`, work/zoo/evict_cache.py). The Qwen3.5-122B download ran in the background (~37 MB/s) during
+the Qwen3.6 and Flash-Next runs.
+
+### 44.1 Qwen3.6-35B-A3B Q4_K_M fits in RAM (24 GB limit, ctx 4096, all experts on the CPU side + llama.cpp GPU cache 5000 MiB, as section 29)
+
+| Run | tok/s | Note |
+|---|---|---|
+| plugin, cold (no profile) | 33.41, 33.41, 33.24 | executor ran 0 ops (K-quant fix works); cache 17.5 GiB, 90.5 % hits, still filling |
+| plugin, warm start from a profile | 36.70, 36.54 | 96.8 % hits |
+| stock, page cache warm | 42.89 (section 29: 42.3) | the whole 21.7 GB file in the page cache |
+
+When the model fits, stock is faster even against a warm plugin (the plugin's cache gets 17.5 GiB after its margins; stock's page cache holds everything and
+stays warm across restarts). **The launcher now runs stock llama-server when the model fits** (file + 1.5 GB <= the memory the server may use).
+
+### 44.2 Qwen3.6-35B-A3B at 12 GB (`--n-cpu-moe 34`, ctx 32768, as sections 2 / 42): the drop from 23.5 explained (audit E02)
+
+| Run | tok/s | Note |
+|---|---|---|
+| plugin, `--cache-ram 2048` (launcher default until today) | 16.37, 17.50 | cache 5.5 -> 7.5 GiB, 91.4 % hits |
+| plugin + MTP (`--spec-type draft-mtp --spec-draft-n-max 2`) | 18.69, 18.47 | MTP now +10 % (it lost with the old K-quant executor) |
+| plugin, `--cache-ram 0` (no prompt-cache reserve) | **22.18, 23.03** | cache 7.5 -> 10.3 GiB, 95.5 % hits: back at section 2b's 23.5 |
+| plugin, `--cache-ram 512` | 18.92, 19.54 | still -15 % against 0 |
+| stock, page cache dropped first | 7.00, 6.81 | section 2 (older llama.cpp): 10.2 |
+
+The prompt-cache reserve (2 GiB, added in 0.2.2 against an out-of-memory crash at 128k) took a large share of a 12 GB limit; even 512 MiB costs 15 %.
+The launcher now passes `--cache-ram 0` below 16 GB (a single chat reuses its slot; only switching between conversations loses the host prompt cache)
+and 2048 MiB above: at 12 GB that is **22.6 vs 6.9 tok/s stock (3.3x)**.
+
+### 44.3 Qwen3.8-Flash-Next IQ2_XS at 24 GB (8 GB GPU, ctx 4096, launcher defaults: `--n-cpu-moe 46 -ub 2048 --cache-ram 2048`; stock with the same arguments)
+
+| Run | tok/s |
+|---|---|
+| stock (page cache dropped first) | 5.31, 5.06 |
+| moe-cache | 12.28, 12.66 (2.4x) |

@@ -75,24 +75,28 @@ More detail, troubleshooting and the Vulkan build: [docs/QUICKSTART.md](docs/QUI
 
 ## Results (measured, clean runs)
 
-| Situation | Stock llama.cpp | moe-cache |
-|---|---|---|
-| 48.5 GB model (Qwen3-Next-80B), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** |
-| Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** |
-| **gpt-oss-120b (63 GB, 2.6x the memory limit)**, 24 GB RAM, 2 expert layers on the GPU, one run each | 0.37 tok/s | **4.47 tok/s** |
-| Qwen3.6-35B, 12 GB RAM | 10.2 tok/s | **23.6 tok/s** |
-| Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** |
-| Long prompt (2.6k tokens), 12 GB RAM, prompt speed | 6 to 8 tok/s (older measurement) | **60 to 62 tok/s** |
-| **Qwen3.8-Flash-Next IQ2_XS (68 GB)**, 24 GB RAM, 8 GB GPU | 5.6 tok/s (3 expert layers on the GPU) | **12.0 tok/s** (same layers); **13.4** with llama.cpp's GPU expert cache |
-| Model fits in RAM (Qwen3.6, 28 GB, warm start) | 29.0 tok/s | 31.1 tok/s |
-| Same, with moe-cache's automatic CPU pinning (hybrid Intel CPU), no profile needed | 30.9 tok/s (36.0 if you pin stock by hand) | **35.5 tok/s** |
-| Model fits in RAM (KAT-Coder-35B, with its profile) | 32.3 tok/s | 31.8 tok/s |
+Re-measured on 2026-10-15 with the current code where the model is still on the test machine (RESULTS section 44); older rows say which version they come from.
 
-Conditions: "RAM" is a memory limit set with a cgroup on a 30 GB machine. The 80B model, the 20 GB case and gpt-oss-20b keep **all experts on the CPU** and use the GPU only for the rest of the model (about 2.6 GB). The Qwen3.6 rows put 6 layers of experts on the GPU (about 6 GB), KAT-Coder 7 layers. The "no GPU" row hides the GPU completely. The chart above lists the setup per row.
+| Situation | Stock llama.cpp | moe-cache | Measured with |
+|---|---|---|---|
+| **GLM-5.3-Flash (102 GB, 4x the memory limit)**, 24 GB RAM, 8 GB GPU | 0.32 tok/s | **1.75 tok/s** exact, 2.1 with `--fast` | v0.2.3.2 (§26) |
+| **Qwen3.8-Flash-Next IQ2_XS (68 GB)**, 24 GB RAM, 8 GB GPU, launcher defaults | 5.2 tok/s | **12.5 tok/s**; 13.1 with `--gpu-cache auto`; 17.6 with `--hybrid` (approximate) | v0.2.3.4+ (§44, §28, §31) |
+| Same model, prompt processing (2-5k token prompts) | - | **90 to 100 tok/s** | v0.2.3.3 (§38) |
+| **gpt-oss-120b (63 GB)**, 24 GB RAM, 2 expert layers on the GPU, one run each | 0.37 tok/s | **4.47 tok/s** | v0.1 (§12) |
+| Qwen3-Next-80B (48.5 GB), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** | v0.1 (§6) |
+| Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** | v0.1 (§6) |
+| Qwen3.6-35B (21.7 GB), 12 GB RAM, 6 expert layers on the GPU | 6.9 tok/s | **22.6 tok/s** | v0.2.3.4+ (§44) |
+| Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** | v0.1 (§5) |
+| **Model fits in RAM** (Qwen3.6-35B, 24 GB, warm) | **42.9 tok/s** | 36.6 tok/s | v0.2.3.4+ (§44): the launcher now runs stock llama.cpp here |
+
+Conditions: "RAM" is a memory limit set with a cgroup on a 31 GB machine; before every limited stock run the model file is dropped from the page cache (otherwise
+stock can read it from cache that does not count against the limit and looks up to 4.6x faster than it is, RESULTS 44). One run per row unless the section says paired.
+When the model fits in the memory llama-server may use, stock llama.cpp is faster (its page cache holds the whole file and stays warm across restarts), so
+`moe-cache-server` starts stock llama-server then and says so.
 
 **Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](docs/RESULTS.md), section 11.
 
-Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 30 GB RAM, RTX 4060 8 GB, NVMe SSD.
+Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD.
 
 ## Hardware and OS support
 

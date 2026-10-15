@@ -9,6 +9,12 @@
   `MOE_CACHE_SCAN_TOKENS` (-25 % prefill), `MOE_CACHE_PREFAULT` (no gain), `MOE_CACHE_PROMPT_PREFETCH` (no gain). Setting them now does nothing.
 - The plugin source is split into ten parts (`src/mc_*.inl`: common, pool, state, buffer, backend, exec, hybrid, compute, device, interpose), included
   by `src/moe_cache_plugin.cpp` in order: still one translation unit, so build commands do not change; the compiled code is byte-identical (`.text` and `.rodata`).
+- **Launcher: stock llama-server when the model fits** in the memory the server may use (file + 1.5 GB <= `--ram`, the cgroup limit or available RAM):
+  stock keeps the whole file in the page cache, warm across restarts (Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold tok/s, RESULTS 44).
+  `--fast` and `--hybrid` keep the plugin; `--always-plugin` forces it.
+- **Launcher: no prompt-cache reserve below 16 GB** (`--cache-ram 0` instead of 2048): the 2 GiB reserve took a large share of the expert cache at small
+  limits (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0, stock 6.9; this was the unexplained drop from RESULTS 2b's 23.5, audit
+  E02). A single chat keeps reusing its slot; only switching between conversations loses the host prompt cache. Pass `--cache-ram` to choose.
 - RESULTS 43: quant yardstick for `--fast` (T8): the Q2_0 file of Flash-Next is KL 0.243 from IQ2_XS (88.9 % same top token); `--fast` is 0.005-0.012.
 - **Python launcher** (T15): `bin/moe_cache.py server|check|learn|project`, standard library only, also for Windows (plugin loaded with `GGML_BACKEND_PATH`).
   The bash scripts `bin/moe-cache-*` now call it; same command lines (`--dry-run` identical to the bash launcher in 10 flag combinations on Flash-Next and
