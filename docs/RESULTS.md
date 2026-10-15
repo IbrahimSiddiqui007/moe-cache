@@ -1215,7 +1215,27 @@ Cause: in cache mode every buffer of the plugin's buffer type is reserved addres
 range appears zero-filled on first touch, so the compute buffer just worked; on Windows a `MEM_RESERVE` page faults until `MEM_COMMIT`, and ggml's kernels
 write node outputs through `tensor->data` without any buffer call. Linux tests cannot see it (guard mode only protects evicted expert pages).
 Fix (cffa6f9): `buf_init_tensor` commits every non-expert tensor's range, once per 64 KiB chunk (a per-buffer flag array, so the per-token graph
-allocation costs a few lookups, not ~900 `VirtualAlloc` calls). Rerun pending (Claw round 3).
+allocation costs a few lookups, not ~900 `VirtualAlloc` calls).
+
+**Windows CI (idea I8, new `.github/workflows/windows.yml`) found the second half the same night.** A GitHub Windows runner with the official b11669
+CPU release still crashed at the first request after cffa6f9. From the runner's crash dump (minidump read with a small script; return addresses mapped
+with addr2line on the CI's debug-info DLL): the plugin's reader thread (`do_reads` -> CPU repack `set_tensor` -> memcpy of one `block_q4_Kx8`) wrote
+into a reserved page. `read_job` commits each expert plus one extra page; for the last expert of a buffer that range runs past the end of the
+reservation, and `VirtualAlloc(MEM_COMMIT)` then fails as a whole (error 487, `ERROR_INVALID_ADDRESS`) and commits nothing. Fix (87dd800):
+`mem_commit` falls back to page-by-page commits up to the end of the reservation. Next run:
+
+| Windows CI step (Server 2025 runner, b11669 CPU, Granite 1B, 0.2 GiB cache, 24 tokens) | Result |
+|---|---|
+| platform layer natively | all checks pass, including the new commit-past-the-end case (also under Wine, which reports error 487 too) |
+| launcher `check` / dry run / core detection | plugin loads; `--gpu-cache` dropped on path loading; 2 cores, one efficiency class: no pinning; API 3 read from `ggml-base.dll` |
+| identity, cache forced to evict | **4/4 PASS** (first passing identity test on Windows with the cache on): 35,811 evictions, 11.1 GB re-read; the one-time "commit failed (error 487)" note appears, confirming the cause |
+| identity, executor forced on and byte-checked (`--no-repack` on both servers) | first try 1/4: a third Windows bug, the plugin did not see `--no-repack` (it read `/proc/self/cmdline` only) and repacked while stock did not. Fixed (`GetCommandLineA`); then **4/4 PASS, 6,765 executor ops checked against the stock kernels, 0 mismatches** |
+
+To read the counters on Windows (where the test kills the server, so the summary at exit never appears), `MOE_CACHE_STATS_SIGNAL=1` now also works
+there: setting the named event `Local\moe-cache-stats-<pid>` prints one `moe-cache-stats {json}` line (Linux: SIGUSR1), now with executor counters.
+
+Plugin decode in that step is ~4 tok/s against stock's ~70: a 0.2 GiB cache for a 0.8 GB model re-reads experts all the time on a CI disk (a stress
+setting for correctness, not a speed test).
 
 Launcher rechecks on the Claw: the launcher's death now ends llama-server (job object), a plugin that does not load is reported, `check` and the dry run
 read Windows memory, the dry run is PowerShell. Fixed after this round: the launcher now names the exit code when llama-server crashes

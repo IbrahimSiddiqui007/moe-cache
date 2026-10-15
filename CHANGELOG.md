@@ -15,7 +15,15 @@
   missing DLL dependency instead of pointing at the API.
 - **Windows: cache mode no longer crashes in the first graph** (MSI Claw round 2, RESULTS 50): the plugin's buffers are reserved address space only, and
   on Windows a reserved page faults until committed; the scheduler's compute buffer was never committed. Non-expert tensors are now committed when they
-  are placed (once per 64 KiB chunk). Linux was never affected (untouched pages appear on first touch there).
+  are placed (once per 64 KiB chunk), and a commit range that runs past the end of its reservation (the last expert of a buffer plus one page)
+  now commits the pages inside instead of nothing (found by the new Windows CI from a crash dump). Linux was never affected (untouched pages appear
+  on first touch there).
+- Windows: `--no-repack` on llama-server is now seen by the plugin (it repacked anyway on CPU-only machines, so its output differed from stock's).
+  `MOE_CACHE_STATS_SIGNAL=1` works on Windows (named event `Local\moe-cache-stats-<pid>`); the snapshot includes executor counters.
+- **CI on Windows** (`.github/workflows/windows.yml`): the DLL cross-built as `build.sh --windows`, the official llama.cpp b11669 CPU release,
+  `windows_test.ps1` with forced eviction (4/4) and with the executor forced on and byte-checked, the platform tests natively, and the launcher.
+  The sanitizer workflow's ThreadSanitizer job now runs (plugin loaded by path into a GGML_BACKEND_DL build): 4/4, no reports in plugin code.
+  The identity workflow also runs the official loading method (GGML_BACKEND_PATH into a GGML_BACKEND_DL build).
 - **`--gpu-cache` is refused where it gave wrong tokens** (mini PC, T7): with the plugin loaded through `GGML_BACKEND_PATH` (install.sh, Vulkan, official
   and all Windows builds) the hook that loads experts before llama.cpp's GPU cache uploads them cannot run. The plugin now ignores
   `MOE_CACHE_GPU_CACHE=1` there with a message, and the launcher falls back to static GPU expert layers. Builds that link their backends (LD_PRELOAD)

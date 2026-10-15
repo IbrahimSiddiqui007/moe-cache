@@ -117,7 +117,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 | Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
 | Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB 1.23x stock (no expert layer fits on a 3 GiB iGPU); RESULTS 50 |
 | Linux + AMD discrete GPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
-| Windows | **Not supported yet.** Two test rounds on an MSI Claw (2026-10-15/16): the launcher works and the DLL now loads; cache mode crashed at the first graph (fixed, retest pending). See docs/COMPATIBILITY.md |
+| Windows | **Experimental.** Identical to stock with the cache on in CI on a Windows runner (official llama.cpp CPU release) since 2026-10-16, after three Windows-only bugs found on an MSI Claw and in that CI were fixed; not yet confirmed on real hardware with a GPU. See docs/COMPATIBILITY.md |
 | macOS | No |
 
 ## Benchmark it on your own model and your own use case
@@ -187,6 +187,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 | `MOE_CACHE_GGUF` | model file (split models: the first part) |
 | `MOE_CACHE_PROFILE` / `MOE_CACHE_WARM` | learn expert usage here and warm-start from it / warm start only |
 | `MOE_CACHE_STATS=1` | print hit rate, reads and evictions at exit |
+| `MOE_CACHE_STATS_SIGNAL=1` | print one `moe-cache-stats {json}` line of the running counters on request: Linux `kill -USR1 <pid>`, Windows set the named event `Local\moe-cache-stats-<pid>` |
 | `MOE_CACHE_DISABLE=1` | load nothing: the server behaves exactly like stock |
 | `MOE_CACHE_EXEC=0` | switch the expert executor off (default on) |
 | `MOE_CACHE_EXEC_ECORES=N` | let the executor use N efficiency cores as well (the launcher sets up to 4 on hybrid Intel CPUs; `--no-ecores` to disable) |
