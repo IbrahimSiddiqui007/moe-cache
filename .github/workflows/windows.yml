@@ -1,0 +1,112 @@
+# Windows identity test on a GitHub Windows runner (idea I8, 2026-10-16): the plugin DLL cross-built with mingw-w64 exactly as `./build.sh --windows`,
+# loaded into an official llama.cpp Windows release (CPU build) through GGML_BACKEND_PATH, compared token by token with stock by tools/windows_test.ps1
+# with the cache on and forced to evict. Would have caught both Windows-only bugs the MSI Claw found (DLL imports, uncommitted compute buffer).
+# Also: src/platform.h tests natively, and the launcher (check, dry run, core detection) on real Windows. Manual and nightly, like identity.yml.
+name: windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows-ci]    # run it on any commit: git push origin <commit>:refs/heads/windows-ci
+  schedule:
+    - cron: "30 3 * * *"
+
+permissions:
+  contents: read
+
+env:
+  LLAMA_RELEASE: b11669       # the release the MSI Claw used (ggml 0.27.0, backend API 3)
+
+jobs:
+  dll:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: mingw-w64 (posix threads, as on the development machine)
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+          x86_64-w64-mingw32-g++ --version | head -1
+      - name: Plugin DLL (API 3) and the platform test, warnings are errors
+        run: |
+          x86_64-w64-mingw32-g++ -std=c++17 -Wall -Werror -Wno-unused-function -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src -fsyntax-only src/moe_cache_plugin.cpp
+          GGML_API=3 ./build.sh --windows
+          x86_64-w64-mingw32-objdump -p build/win/ggml-moe-cache.dll | grep "DLL Name" | tee build/win/imports_dlls.txt
+          # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
+          ! grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32" build/win/imports_dlls.txt
+          x86_64-w64-mingw32-g++ -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-dll
+          path: |
+            build/win/ggml-moe-cache.dll
+            build/win/platform_test.exe
+
+  windows:
+    needs: dll
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: win-dll
+          path: dll
+
+      - name: Platform layer natively (reserve / commit / decommit, unbuffered reads, limits)
+        run: |
+          Push-Location $env:RUNNER_TEMP
+          & "$env:GITHUB_WORKSPACE\dll\platform_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw "platform_test failed" }
+          Pop-Location
+
+      - name: Official llama.cpp release (CPU) and the small MoE model
+        run: |
+          $zip = "llama-$env:LLAMA_RELEASE-bin-win-cpu-x64.zip"
+          Invoke-WebRequest -UseBasicParsing "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/$zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath llama
+          $srv = Get-ChildItem -Recurse llama -Filter llama-server.exe | Select-Object -First 1
+          "LLAMA_DIR=$($srv.DirectoryName)" | Out-File -Append $env:GITHUB_ENV
+          Get-ChildItem $srv.DirectoryName -Filter "ggml*.dll" | ForEach-Object { $_.Name }
+          Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
+          $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
+
+      - name: Launcher on Windows (check, dry run, core detection for pinning)
+        run: |
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
+          $ls = "$env:LLAMA_DIR\llama-server.exe"
+          python bin/moe_cache.py check granite.gguf --llama-server $ls | Tee-Object launcher_check.txt
+          if (-not (Select-String launcher_check.txt -Pattern "plugin loads .*yes" -Quiet)) { throw "check: the plugin does not load" }
+          python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 4 --always-plugin --gpu-cache 1000 --dry-run 2>&1 | Tee-Object launcher_dry.txt
+          if (-not (Select-String launcher_dry.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { throw "dry run: no GGML_BACKEND_PATH" }
+          if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
+          python -c "import importlib.util as u, sys; sys.argv=['x']; s=u.spec_from_file_location('m','bin/moe_cache.py'); m=u.module_from_spec(s); s.loader.exec_module(m); c=m.win_cores(); print('cores (efficiency class, cpus):', c); print('hybrid masks:', m.hybrid_masks(c)); print('ggml API of the server:', m.ls_api(r'$ls')); sys.exit(0 if c else 1)"
+
+      - name: Identity, cache on and forced to evict (0.2 GiB)
+        run: |
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
+          if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 failed ($LASTEXITCODE)" }
+
+      - name: Identity, executor forced on and byte-checked
+        run: |
+          $env:MOE_CACHE_EXEC = "2"; $env:MOE_CACHE_EXEC_CHECK = "1"
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
+          if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (executor) failed ($LASTEXITCODE)" }
+
+      - name: Collect the logs (windows_test.ps1 writes them to %TEMP%\moe-cache-test)
+        if: always()
+        run: |
+          New-Item -ItemType Directory -Force logs | Out-Null
+          Copy-Item "$env:TEMP\moe-cache-test\*.txt" logs -ErrorAction SilentlyContinue
+          Copy-Item launcher_*.txt logs -ErrorAction SilentlyContinue
+          Get-ChildItem logs | ForEach-Object { $_.Name }
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-logs
+          path: logs
