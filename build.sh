@@ -19,12 +19,13 @@ if [ "$1" = "--windows" ]; then
   echo "built build/win/ggml-moe-cache.dll (not tested on real Windows)"
   exit 0
 fi
+# MOE_CACHE_CXXFLAGS: extra compiler flags (CI uses it for a test-only mutant build)
 HARDEN="-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -fstack-protector-strong"   # same on every compiler, not only on distros that turn it on
 LDHARDEN="-Wl,-z,relro,-z,now"
 if [ "$1" = "--portable" ]; then
   mkdir -p $OUT
   gcc -O2 -fPIC -std=gnu99 -U_GNU_SOURCE -c src/compat_glibc.c -o $OUT/compat_glibc.o 2>/dev/null || gcc -O2 -fPIC -std=c99 -c src/compat_glibc.c -o $OUT/compat_glibc.o
-  g++ -O2 $HARDEN -fPIC -shared -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src src/moe_cache_plugin.cpp $OUT/compat_glibc.o \
+  g++ -O2 $HARDEN ${MOE_CACHE_CXXFLAGS:-} -fPIC -shared -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src src/moe_cache_plugin.cpp $OUT/compat_glibc.o \
       -o $OUT/libggml-moe-cache.so -lpthread -ldl -Wl,-z,undefs -Wl,--as-needed $LDHARDEN
   echo "built portable $OUT/libggml-moe-cache.so"
   exit 0
@@ -40,5 +41,5 @@ fi
 BASE="$(ls "$LIBS"/libggml-base.so "$LIBS"/libggml-base.so.* 2>/dev/null | head -1)"
 mkdir -p $OUT
 echo "using libggml-base from $LIBS"
-g++ -O2 $HARDEN -fPIC -shared -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src src/moe_cache_plugin.cpp -o $OUT/libggml-moe-cache.so -lpthread -ldl "$BASE" -Wl,-rpath,"$LIBS" $LDHARDEN
+g++ -O2 $HARDEN ${MOE_CACHE_CXXFLAGS:-} -fPIC -shared -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src src/moe_cache_plugin.cpp -o $OUT/libggml-moe-cache.so -lpthread -ldl "$BASE" -Wl,-rpath,"$LIBS" $LDHARDEN
 echo "built $OUT/libggml-moe-cache.so"

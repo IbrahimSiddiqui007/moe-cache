@@ -189,6 +189,13 @@ inline void aligned_free_page(void * p) {
     free(p);
 #endif
 }
+inline unsigned long process_id() {
+#ifdef _WIN32
+    return (unsigned long) GetCurrentProcessId();
+#else
+    return (unsigned long) getpid();
+#endif
+}
 inline void sleep_ms(int ms) {
 #ifdef _WIN32
     Sleep((DWORD) ms);

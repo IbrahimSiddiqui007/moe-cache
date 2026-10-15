@@ -62,13 +62,20 @@ def run(toks, start, bank, every=0, swaps=0, prof=None, decay=0.97, per_layer=Tr
             if len(win_a) > duel:
                 win_a.popleft(); win_b.popleft()
         if every and (t + 1) % every == 0 and duel and sum(win_a) < sum(win_b):
-            # the profile bank is ahead: bring back profile experts in place of adapted ones that did worse, no new swaps
-            for k in sorted(base - bank, key=lambda k: -prof.get(k, 0.0))[:swaps]:
-                pool = [b for b in bank - base if b[0] == k[0]]
-                if not pool:
-                    continue
-                o_ = min(pool, key=lambda b: score[b])
-                bank.discard(o_); del score[o_]; bank.add(k); score[k] = 0.0; uploads += 1
+            # the profile bank is ahead: bring back profile experts in place of adapted ones that did worse, no new swaps.
+            # As the plugin (hybrid_adapt): scores decay here too, layers are visited in order, at most `swaps` in all
+            for k in score:
+                score[k] *= decay ** every
+            done = 0
+            for layer in sorted({k[0] for k in base}):
+                for k in sorted((k for k in base - bank if k[0] == layer), key=lambda k: -prof.get(k, 0.0)):
+                    if done >= swaps:
+                        break
+                    pool = [b for b in bank - base if b[0] == layer]
+                    if not pool:
+                        break
+                    o_ = min(pool, key=lambda b: score[b])
+                    bank.discard(o_); del score[o_]; bank.add(k); score[k] = 0.0; uploads += 1; done += 1
             missed.clear()
             continue
         if every and (t + 1) % every == 0:
@@ -86,7 +93,9 @@ def run(toks, start, bank, every=0, swaps=0, prof=None, decay=0.97, per_layer=Tr
                     continue
                 val = lambda b: score[b] + (prior * prof.get(b, 0.0) / ptok / (1.0 - decay) if prior else 0.001 * prof.get(b, 0.0))
                 o_ = min(pool, key=val)
-                if val(o_) >= m + (prior * prof.get(k, 0.0) / ptok / (1.0 - decay) if prior else 0.0):     # no gain: the coldest bank expert was used at least as often
+                # no gain: the coldest bank expert was used at least as often. Without --prior this is the plugin's rule (the profile only breaks
+                # ties when picking the slot; the comparison uses the raw score). --prior is a replay-only experiment, not in the plugin
+                if (val(o_) >= m + prior * prof.get(k, 0.0) / ptok / (1.0 - decay)) if prior else (score[o_] >= m):
                     continue
                 bank.discard(o_); del score[o_]
                 bank.add(k); score[k] = float(m)

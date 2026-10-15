@@ -118,15 +118,17 @@ jobs:
             curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
           done
           python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss-f16.gguf --outtype f16
-          # Q2_0: the executor only takes IQ / Q2_0 expert weights, so only then does the test reach its step-aside path
+          # Q2_0: the executor takes IQ / Q2_0 expert weights by default (its own waits for experts still loading)
           llama.cpp/build/bin/llama-quantize tiny-gptoss-f16.gguf tiny-gptoss.gguf Q2_0
-          ls -la tiny-gptoss.gguf
+          # Q8_0: a bandwidth-bound type, so the executor hands fully resident graphs back to llama.cpp (the step-aside path and its wait)
+          llama.cpp/build/bin/llama-quantize tiny-gptoss-f16.gguf tiny-gptoss-q8.gguf Q8_0
+          ls -la tiny-gptoss.gguf tiny-gptoss-q8.gguf
           # does stock llama-server load it? (show its log either way)
           timeout 60 llama.cpp/build/bin/llama-server -m tiny-gptoss.gguf -c 2048 --port 8097 > tiny_srv.log 2>&1 || true
           grep -iE "error|failed|unknown|invalid|exception|model loaded|listening" tiny_srv.log | head -20 || true
           tail -15 tiny_srv.log
 
-      - name: Identity on gpt-oss with background reads delayed (catches a missing wait for experts still loading, T45)
+      - name: Identity on gpt-oss (Q2_0, executor graphs) with background reads delayed (catches a missing wait in the executor's own path)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
@@ -136,8 +138,38 @@ jobs:
           IDENT_KEEP: ident_gptoss
         run: |
           tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_delay.txt || { tail -40 ident_gptoss/stock.log ident_gptoss/plugin.log 2>/dev/null; exit 1; }
-          # the race lives in the executor's step-aside path: a run where the executor did nothing proves nothing
-          grep -qE "executor ran [1-9]" identity_gptoss_delay.txt || { echo "FAIL: the executor ran 0 ops, so this test did not reach the step-aside path"; exit 1; }
+          # a run where the executor did nothing proves nothing (this step does not reach the step-aside branch: Q2_0 graphs never step aside; next step)
+          grep -qE "executor ran [1-9]" identity_gptoss_delay.txt || { echo "FAIL: the executor ran 0 ops"; exit 1; }
+
+      - name: Identity on gpt-oss (Q8_0) with reads delayed - the executor steps aside and must wait for experts still loading (T45)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          # routing on with every pick kept (exact): an explicit routing mode keeps the executor for K-quant/legacy weights, so its graphs
+          # load siblings in the background and then step aside to llama.cpp while those loads are still running
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
+          IDENT_EXTRA: "--no-repack"
+          IDENT_KEEP: ident_gptoss_q8
+        run: |
+          tests/identity.sh tiny-gptoss-q8.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_q8.txt || { tail -40 ident_gptoss_q8/plugin.log; exit 1; }
+          grep -E "stepped aside \(all resident\) in [1-9][0-9]* graphs; [1-9][0-9]* of them waited" ident_gptoss_q8/plugin.log || { echo "FAIL: the step-aside wait was never needed, so this step proves nothing"; exit 1; }
+
+      - name: Mutation check - a plugin built without the step-aside wait must FAIL the previous step
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build-mutant/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
+          IDENT_EXTRA: "--no-repack"
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_STEPASIDE_WAIT BUILD_DIR=build-mutant ./build.sh --portable
+          if tests/identity.sh tiny-gptoss-q8.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_mutant.txt; then
+            echo "FAIL: the mutant without the wait passed, so the step above does not cover it"; exit 1
+          fi
+          grep -qE "^identical prompts: [0-3]/4" identity_gptoss_mutant.txt || { echo "FAIL: the mutant failed for another reason (no token comparison)"; exit 1; }
+          echo "OK: the mutant fails as it should"
 
       - name: Identity with guard mode (evicted pages inaccessible, so an unintercepted read crashes instead of reading zeros)
         env:
@@ -155,7 +187,7 @@ jobs:
           IDENT_EXTRA: "--no-repack"
           IDENT_PLUGIN_ENV: "MOE_CACHE_DISABLE=1"
           IDENT_ALLOW_INACTIVE: "1"
-        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_floor.txt || true
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_floor.txt
 
       - name: Identity, cache enabled without eviction (2 GiB) and no repacking
         env:
@@ -164,7 +196,7 @@ jobs:
           MOE_CACHE_STATS: "1"
           IDENT_EXTRA: "--no-repack"
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=2"
-        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_noevict.txt || true
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_noevict.txt
 
       - name: Keep the logs
         if: always()

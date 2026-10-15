@@ -142,6 +142,12 @@ void be_free(ggml_backend_t backend) {
     if (c->galloc) {
         ggml_gallocr_free(c->galloc);
     }
+    if (c->hb_buf) {                  // hybrid bank (GPU memory): freed before its backend
+        ggml_backend_buffer_free(c->hb_buf);
+    }
+    if (c->hb_ctx) {
+        ggml_free(c->hb_ctx);
+    }
     if (c->gpu) {
         ggml_backend_free(c->gpu);
     }

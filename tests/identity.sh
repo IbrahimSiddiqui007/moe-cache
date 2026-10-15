@@ -34,9 +34,14 @@ if [ -z "$IDENT_ALLOW_INACTIVE" ] && { grep -q "moe-cache: .*plugin disabled" "$
   grep "moe-cache:" "$TMP/plugin.log" | tail -5; exit 2
 fi
 [ -n "$MOE_CACHE_STATS" ] && grep "moe-cache:" "$TMP/plugin.log" | tail -6
-python3 - "$TMP/stock.json" "$TMP/plugin.json" <<'PY'
+python3 - "$TMP/stock.json" "$TMP/plugin.json" "$N" <<'PY'
 import json, sys
 a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
+# answers that end at once (end-of-text as the first token) compare equal without exercising any decoding: demand some real output
+need = min(8, int(sys.argv[3]))
+print(f"generated tokens per prompt (stock): {[len(x) for x in a]}")
+if not a or max(len(x) for x in a) < need:
+    print(f"FAIL: no prompt produced {need} or more tokens, so this comparison exercised (almost) no decoding"); sys.exit(1)
 ok = sum(x == y for x, y in zip(a, b))
 for i, (x, y) in enumerate(zip(a, b)):
     if x != y:

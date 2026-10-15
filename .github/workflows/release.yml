@@ -28,6 +28,10 @@ jobs:
         run: |
           for f in install.sh build.sh bin/* tests/*.sh tools/*.sh; do bash -n "$f"; done
           python3 -m py_compile planner/plan.py planner/gguf_plan.py tests/ident.py
+          # a tagged release must not install an older moe-cache when install.sh is run on its own
+          if [ "${GITHUB_REF_TYPE}" = tag ]; then
+            grep -q "MOE_CACHE_REF:-${GITHUB_REF_NAME}}" install.sh || { echo "install.sh MOE_CACHE_REF does not match ${GITHUB_REF_NAME}: bump it with the version"; exit 1; }
+          fi
 
       - name: Q2_0 kernel is bit-exact (no model needed)
         run: |

@@ -163,7 +163,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     struct group_t { int first; int last; int n_tok; };
     std::vector<group_t> groups_found;
     bool exec_graph = s.cache_on && exec_eligible(s, cg);
-    if (exec_graph && !s.exec_force) {
+    // --fast (routing) and --hybrid live in the executor path: when asked for explicitly they keep it, whatever the weight type
+    static const bool hybrid_asked = [] { const char * e = getenv("MOE_CACHE_HYBRID"); return e && strcmp(e, "0") != 0; }();
+    if (exec_graph && !s.exec_force && !s.route_mode && !hybrid_asked) {
         // the executor only pays for weights whose dot product is compute-bound (IQ types, Q2_0: our kernels and parallel reads win); for K-quants
         // and legacy types llama.cpp's own (repacked) kernels are faster even while some experts still have to be read
         // (Qwen3.6-35B Q4_K_M at 12 GB: 7.8 tok/s with the executor, 17.2 without)
@@ -317,11 +319,16 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         }
         // no reads were queued for this graph, but an earlier graph may still be filling these experts in the background (gate/up/down loaded together
         // when they come in separate calls, e.g. gpt-oss): llama.cpp's own path must not read them before they are complete
+        s.stepaside_graphs++;
         const int n_all = ggml_graph_n_nodes(cg);
         for (int i = 0; i < n_all; i++) {
             const ggml_tensor * nd = ggml_graph_node(cg, i);
             if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
-                exec_wait_loaded(s, nd);
+#ifndef MOE_CACHE_TEST_MUTANT_NO_STEPASIDE_WAIT     // CI only: a build without this wait must fail the delayed-read gpt-oss step (proves the step covers it)
+                if (exec_wait_loaded(s, nd)) {
+                    s.stepaside_waits++;
+                }
+#endif
             }
         }
     }

@@ -9,6 +9,20 @@
   `MOE_CACHE_SCAN_TOKENS` (-25 % prefill), `MOE_CACHE_PREFAULT` (no gain), `MOE_CACHE_PROMPT_PREFETCH` (no gain). Setting them now does nothing.
 - The plugin source is split into ten parts (`src/mc_*.inl`: common, pool, state, buffer, backend, exec, hybrid, compute, device, interpose), included
   by `src/moe_cache_plugin.cpp` in order: still one translation unit, so build commands do not change; the compiled code is byte-identical (`.text` and `.rodata`).
+- Fixes from the static audit of 2026-10-15 (handover/STATIC_AUDIT_20261015_1324.md):
+  - **`--fast` and `--hybrid` were silently inactive on K-quant models in 0.2.3.4** (the K-quant speed filter switched the executor off, and both modes
+    live in it; output stayed exact). An explicitly requested mode now keeps the executor.
+  - Lookahead (`MOE_CACHE_LOOKAHEAD`) set and cleared the "still loading" flag with plain stores while the executor reads it without the lock: atomic now.
+  - The hybrid bank's GPU memory is freed with the backend; a freed model's experts are forgotten (no later eviction touches memory that was released).
+  - Experts are checked byte for byte (first 4 KiB) against `MOE_CACHE_GGUF`, not only by name and size: another model with the same layout no longer
+    gets the wrong weights (that tensor loads the normal way, with a warning).
+  - Generic reads of expert memory (`get_tensor`) load the expert first; the executor pool cannot let a late worker read a job slot being refilled.
+  - Profiles are written to a per-process temporary file and only replace the old one when every write succeeded.
+  - The tuner also finds AMD GPU memory (it overrode the planner's AMD answer with "no GPU"). `install.sh` installs the newest release (it pinned
+    v0.1.2); the release workflow checks that. `tools/windows_test.ps1` now turns the cache on (`-CacheGiB`, default 0.5) and fails when it is not on.
+  - Tests: `identity.sh` fails when no prompt produced at least 8 tokens; two CI identity steps that could not fail now gate; the T45 test now reaches
+    the step-aside wait (Q8_0 copy of the tiny gpt-oss, routing on with every pick kept, so output stays exact) and a mutation build without that wait
+    must fail it. `tools/bank_replay.py` follows the live bank policy. RESULTS 41/42 wording qualified.
 
 ## 0.2.3.4 (2026-10-15)
 - **Speed fix for K-quant models that do not fit in RAM** (in releases 0.2.0-0.2.3.3): the executor only takes graphs whose expert weights are IQ types or

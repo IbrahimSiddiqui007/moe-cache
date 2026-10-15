@@ -176,7 +176,9 @@ bool stock_uses_tiled(const ggml_tensor * nd) {
 }
 
 // In executor graphs the reads are asynchronous: the executor waits for each expert's flag itself. An op handed back to llama.cpp has to wait here first.
-void exec_wait_loaded(state_t & s, const ggml_tensor * nd) {
+// wait until every expert this op uses is complete; returns true when at least one was still loading
+bool exec_wait_loaded(state_t & s, const ggml_tensor * nd) {
+    bool waited = false;
     const ggml_tensor * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(nd->src[0])];
     for (int64_t t = 0; t < ids->ne[1]; t++) {
@@ -187,10 +189,12 @@ void exec_wait_loaded(state_t & s, const ggml_tensor * nd) {
             }
             const bool * f = &s.nodes[(size_t) (ti.node0 + e)].loading;
             while (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
+                waited = true;
                 std::this_thread::yield();
             }
         }
     }
+    return waited;
 }
 
 void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {

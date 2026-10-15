@@ -83,11 +83,23 @@ def model_layout(path):
 
 
 def free_vram_bytes():
+    """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
     try:
         out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout.split(",")
         return (float(out[0]) - float(out[1])) * 1048576
     except Exception:
-        return None
+        pass
+    best = None
+    for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
+        try:
+            if open(d + "/vendor").read().strip() != "0x1002":
+                continue
+            tot = int(open(d + "/mem_info_vram_total").read()); used = int(open(d + "/mem_info_vram_used").read())
+        except Exception:
+            continue
+        if tot >= 2**30 and (best is None or tot > best[0]):   # integrated GPUs share system RAM and are not counted
+            best = (tot, tot - used)
+    return best[1] if best else None
 
 
 def fit_n_cpu_moe(path, ctx=8192, reserve_gb=1.3, free=None):

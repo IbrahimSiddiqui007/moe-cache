@@ -3,11 +3,12 @@
 # -LlamaDir : folder with llama-server.exe (an official release zip, CUDA build if you have an NVIDIA GPU)
 # -Model    : a GGUF that FITS IN RAM for the first test (Windows has no memory-limit scope here: a model bigger than RAM can freeze the machine)
 # -Dll      : ggml-moe-cache-api2.dll (llama.cpp 7fe450e19 / ggml 0.25.x) or ggml-moe-cache-api3.dll (llama.cpp 23b0202a1 and newer ggml 0.26.x)
+# -CacheGiB : expert cache size for the plugin run (default 0.5: far below the model, so experts are evicted and read again; "auto" sizes it from RAM)
 param(
   [Parameter(Mandatory = $true)][string]$LlamaDir,
   [Parameter(Mandatory = $true)][string]$Model,
   [Parameter(Mandatory = $true)][string]$Dll,
-  [int]$Port = 8099, [int]$Tokens = 32, [int]$Ctx = 4096, [int]$NCpuMoe = 999
+  [int]$Port = 8099, [int]$Tokens = 32, [int]$Ctx = 4096, [int]$NCpuMoe = 999, [string]$CacheGiB = "0.5"
 )
 $ErrorActionPreference = "Stop"
 $srv = Join-Path $LlamaDir "llama-server.exe"
@@ -20,10 +21,11 @@ $out = Join-Path $env:TEMP "moe-cache-test"; New-Item -ItemType Directory -Force
 
 function Run-One([string]$label, [bool]$plugin) {
   $log = Join-Path $out "$label.err.txt"; $std = Join-Path $out "$label.out.txt"
-  if ($plugin) { $env:GGML_BACKEND_PATH = (Resolve-Path $Dll).Path; $env:MOE_CACHE_GGUF = (Resolve-Path $Model).Path; $env:MOE_CACHE_STATS = "1" }
-  else { Remove-Item Env:GGML_BACKEND_PATH -ErrorAction SilentlyContinue; Remove-Item Env:MOE_CACHE_GGUF -ErrorAction SilentlyContinue; Remove-Item Env:MOE_CACHE_STATS -ErrorAction SilentlyContinue }
-  $args = @("-m", $Model, "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
-  $p = Start-Process -FilePath $srv -ArgumentList $args -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
+  # MOE_CACHE_SIZE_GIB turns the cache on: without it the plugin only passes the weights through and the test would prove nothing
+  if ($plugin) { $env:GGML_BACKEND_PATH = (Resolve-Path $Dll).Path; $env:MOE_CACHE_GGUF = (Resolve-Path $Model).Path; $env:MOE_CACHE_STATS = "1"; $env:MOE_CACHE_SIZE_GIB = $CacheGiB }
+  else { foreach ($v in "GGML_BACKEND_PATH", "MOE_CACHE_GGUF", "MOE_CACHE_STATS", "MOE_CACHE_SIZE_GIB") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue } }
+  $sargs = @("-m", $Model, "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
+  $p = Start-Process -FilePath $srv -ArgumentList $sargs -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
   $up = $false
   for ($i = 0; $i -lt 600; $i++) {
     if ($p.HasExited) { break }
@@ -39,13 +41,19 @@ function Run-One([string]$label, [bool]$plugin) {
   }
   Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 3
   $active = (Select-String -Path $log -Pattern "moe-cache:" -SimpleMatch | Select-Object -First 6 | ForEach-Object { $_.Line }) -join "`n"
-  return @{ texts = $texts; tps = $tps; active = $active }
+  $cache = [bool](Select-String -Path $log -Pattern "moe-cache: cache mode" -SimpleMatch -Quiet)
+  $disabled = [bool](Select-String -Path $log -Pattern "plugin disabled" -SimpleMatch -Quiet)
+  $stats = (Select-String -Path $log -Pattern "moe-cache: graphs=" -SimpleMatch | Select-Object -Last 1 | ForEach-Object { $_.Line })
+  return @{ texts = $texts; tps = $tps; active = $active; cache = $cache; disabled = $disabled; stats = $stats }
 }
 
 Write-Host "1/2 stock server"; $a = Run-One "stock" $false
 Write-Host "2/2 server with the plugin"; $b = Run-One "plugin" $true
 Write-Host "---- plugin log lines (must show that the plugin loaded):"; Write-Host $b.active
 if (-not $b.active) { Write-Host "FAIL: no 'moe-cache:' line in the plugin run, the DLL was not loaded (check API: $out\plugin.err.txt)"; exit 2 }
+if ($b.disabled -or -not $b.cache) { Write-Host "FAIL: the plugin loaded but the cache was not on (no 'moe-cache: cache mode' line, or 'plugin disabled'): this run proves nothing"; exit 2 }
+if ($b.stats) { Write-Host "cache: $($b.stats)" }
+if (-not ($a.texts | Where-Object { $_.Length -gt 0 })) { Write-Host "FAIL: every stock answer is empty, so the comparison exercised no decoding"; exit 2 }
 $same = 0; for ($i = 0; $i -lt $prompts.Count; $i++) { if ($a.texts[$i] -ceq $b.texts[$i]) { $same++ } }
 Write-Host ("decode tok/s stock : " + ($a.tps -join ", ")); Write-Host ("decode tok/s plugin: " + ($b.tps -join ", "))
 Write-Host "identical prompts: $same/$($prompts.Count)"

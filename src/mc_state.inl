@@ -131,6 +131,7 @@ struct state_t {
     std::deque<io_job_t> rq;
     bool   rq_stop = false;
     std::atomic<uint64_t> exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
+    uint64_t stepaside_graphs = 0, stepaside_waits = 0;   // executor graphs handed back to llama.cpp with everything resident / of them, graphs that had to wait for a load
     // per weight type: wall time of the expert products (includes waiting for experts still loading), ops, expert bytes touched
     std::atomic<uint64_t> exec_type_ns[64] = {}, exec_type_ops[64] = {}, exec_type_bytes[64] = {};
 
@@ -707,7 +708,7 @@ struct state_t {
                     }
                     node_t & n = nodes[s];
                     n.resident = true;
-                    n.loading = true;
+                    __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE);      // the executor reads this flag without the lock
                     n.prefetched = true;
                     n.epoch = epoch;
                     resident_bytes += ti.nb2;
@@ -734,7 +735,7 @@ struct state_t {
                 read_job(j, bounce);
                 {
                     std::lock_guard<std::mutex> lk(mu);
-                    nodes[s].loading = false;
+                    __atomic_store_n(&nodes[s].loading, false, __ATOMIC_RELEASE);   // publishes the expert's bytes to the executor (reads without mu)
                 }
                 load_cv.notify_all();
             });
@@ -883,6 +884,8 @@ struct state_t {
             if (exec_on) {
                 fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s\n", (unsigned long long) exec_ops,
                         exec_check ? (std::string(", checked ") + std::to_string(exec_checked.load()) + ", mismatches " + std::to_string(exec_mismatch.load())).c_str() : "");
+                fprintf(stderr, "moe-cache: executor stepped aside (all resident) in %llu graphs; %llu of them waited for experts still loading\n",
+                        (unsigned long long) stepaside_graphs, (unsigned long long) stepaside_waits);
             }
             if (exec_on) {
                 for (int ty = 0; ty < 64; ty++) {
@@ -1044,16 +1047,64 @@ struct state_t {
     }
 
     // ---- registration (at load time) ----
-    int register_tensor(const ggml_tensor * t) {
+    // a buffer of ours is being freed (model unloaded): forget every expert inside it, so nothing later reads, evicts (madvise) or counts memory that
+    // may by then belong to someone else. Waits for background reads into that range first. A model loaded afterwards registers afresh.
+    void forget_range(const char * base, size_t size) {
+        std::unique_lock<std::mutex> lk(mu);
+        for (size_t i = 0; i < tensors.size(); i++) {
+            tinfo_t & ti = *tensors[i];
+            if (!ti.data || ti.data < base || ti.data >= base + size) {
+                continue;
+            }
+            for (int64_t e = 0; e < ti.n_expert; e++) {
+                node_t & n = nodes[(size_t) (ti.node0 + e)];
+                while (__atomic_load_n(&n.loading, __ATOMIC_ACQUIRE)) {
+                    load_cv.wait(lk);
+                }
+                if (n.resident) {
+                    unlink(ti.node0 + (int) e);
+                    n.resident = false;
+                    resident_bytes -= ti.nb2;
+                }
+                n.mapped = false;
+            }
+            for (auto it = by_tensor.begin(); it != by_tensor.end();) {
+                it = it->second == (int) i ? by_tensor.erase(it) : std::next(it);
+            }
+            ti.n_expert = 0;          // the entry stays (indices are stable) but owns nothing
+            ti.data = nullptr;
+        }
+    }
+
+    // data: the bytes llama.cpp is loading for this tensor (its own copy of the model). Name and size alone do not prove that MOE_CACHE_GGUF is the
+    // same model (another quantisation or fine-tune can have the same layout), so the first bytes are compared with the file as well
+    bool same_bytes_in_file(const std::string & name, size_t off, const void * data, size_t size) {
+        auto sh = file_shard.find(name);
+        const plat::file_t f = buffered_file(sh != file_shard.end() ? sh->second : 0);
+        char buf[4096];
+        const size_t n = std::min(size, sizeof(buf));
+        size_t done = 0;
+        while (done < n) {
+            const ptrdiff_t got = plat::file_pread(f, buf + done, n - done, (uint64_t) (off + done));
+            if (got <= 0) {
+                return false;
+            }
+            done += (size_t) got;
+        }
+        return memcmp(buf, data, n) == 0;
+    }
+
+    int register_tensor(const ggml_tensor * t, const void * data) {
         auto it = by_tensor.find(t);
         if (it != by_tensor.end()) {
             return it->second;
         }
         auto ft = file_tensors.find(t->name);
-        if (ft == file_tensors.end() || t->ne[2] <= 1 || ft->second.second != t->nb[2] * (size_t) t->ne[2]) {
+        if (ft == file_tensors.end() || t->ne[2] <= 1 || ft->second.second != t->nb[2] * (size_t) t->ne[2] ||
+            !same_bytes_in_file(t->name, ft->second.first, data, ft->second.second)) {
             // not the model MOE_CACHE_GGUF describes: keep this tensor as plain memory (the stock way) instead of stopping the server
             if (unmatched++ == 0) {
-                fprintf(stderr, "moe-cache: tensor %s is not in the GGUF or has another size: it is loaded normally and not cached (is MOE_CACHE_GGUF the model you loaded?)\n", t->name);
+                fprintf(stderr, "moe-cache: tensor %s is not in the GGUF, has another size or other bytes: it is loaded normally and not cached (is MOE_CACHE_GGUF the model you loaded?)\n", t->name);
             }
             return -1;
         }
@@ -1116,18 +1167,24 @@ struct state_t {
             }
             plat::make_dir(dir.c_str());
         }
-        const std::string tmp = profile_path + ".tmp";
+        // one temporary file per process (two servers may share a profile), and the old profile is only replaced by a complete one
+        const std::string tmp = profile_path + "." + std::to_string(plat::process_id()) + ".tmp";
         FILE * f = fopen_private(tmp.c_str());
         if (!f) {
             fprintf(stderr, "moe-cache: cannot write profile %s\n", tmp.c_str());
             return;
         }
         const int32_t h[2] = { nl, ne };
-        fwrite("XUSE", 1, 4, f);
-        fwrite(h, sizeof(int32_t), 2, f);
-        fwrite(out.data(), sizeof(float), out.size(), f);
-        fwrite(&fingerprint, 8, 1, f);
-        fclose(f);
+        bool ok = fwrite("XUSE", 1, 4, f) == 4;
+        ok = ok && fwrite(h, sizeof(int32_t), 2, f) == 2;
+        ok = ok && fwrite(out.data(), sizeof(float), out.size(), f) == out.size();
+        ok = ok && fwrite(&fingerprint, 8, 1, f) == 1;
+        ok = (fclose(f) == 0) && ok;
+        if (!ok) {
+            fprintf(stderr, "moe-cache: writing the profile failed (disk full?); the old profile %s is kept\n", profile_path.c_str());
+            std::remove(tmp.c_str());
+            return;
+        }
         plat::replace_file(tmp.c_str(), profile_path.c_str());
     }
 

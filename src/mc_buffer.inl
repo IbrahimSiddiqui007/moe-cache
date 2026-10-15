@@ -16,6 +16,9 @@ const char * buft_name(ggml_backend_buffer_type_t) {
 
 void buf_free(ggml_backend_buffer_t buffer) {
     auto * c = (moe_cache_buffer_ctx *) buffer->context;
+    if (S().cache_on) {
+        S().forget_range((const char *) c->base, c->size);
+    }
     plat::mem_release(c->base, c->size);
     delete c;
 }
@@ -33,7 +36,7 @@ void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t o
     state_t & s = S();
     if (s.cache_on && t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0 && off == 0 && size == ggml_nbytes(t)) {
         std::lock_guard<std::mutex> lk(s.mu);
-        if (s.register_tensor(t) >= 0) {
+        if (s.register_tensor(t, data) >= 0) {
             return;
         }
     }
@@ -41,7 +44,10 @@ void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t o
     memcpy((char *) t->data + off, data, size);
 }
 
+void gpu_cache_ensure(const void * p, size_t size);
+
 void buf_get(ggml_backend_buffer_t, const ggml_tensor * t, void * data, size_t off, size_t size) {
+    gpu_cache_ensure((const char *) t->data + off, size);     // expert bytes: load them first (an evicted expert has no data in place)
     memcpy(data, (const char *) t->data + off, size);
 }
 
@@ -156,6 +162,9 @@ void gpu_cache_ensure(const void * p, size_t size) {
         return;
     }
     tinfo_t & ti = *s.tensors[(size_t) idx];
+    if (!ti.data || ti.n_expert <= 0) {
+        return;          // forgotten (its buffer was freed): the range table above is rebuilt only when tensors are added
+    }
     const size_t e0 = (a - (uintptr_t) ti.data) / ti.nb2;
     size_t e1 = (a + size - 1 - (uintptr_t) ti.data) / ti.nb2;
     e1 = std::min(e1, (size_t) ti.n_expert - 1);
