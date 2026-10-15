@@ -37,10 +37,16 @@ jobs:
           git remote add origin https://github.com/ggml-org/llama.cpp
           git fetch --depth 1 origin 23b0202a189c44a54625aadcb37a946dd1d6278d
           git checkout --detach FETCH_HEAD
+          # TSan: backends as files (GGML_BACKEND_DL=ON) so the plugin is dlopen'ed after start-up through GGML_BACKEND_PATH. Preloaded, the server
+          # segfaulted at start with an empty log, also with libtsan preloaded first (likely cause: the portable plugin does not link libggml-base, so its
+          # constructor can run before the TSan-built ggml libraries are initialised). ASan works preloaded and keeps that setup.
+          DL=OFF; TARGETS=llama-server
+          if [ ${{ matrix.san }} = thread ]; then DL=ON; TARGETS="llama-server ggml-cpu"; fi
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
-                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DGGML_OPENMP=OFF \
+                -DGGML_BACKEND_DL=$DL -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DGGML_OPENMP=OFF \
                 -DLLAMA_SANITIZE_$S=ON -DGGML_SANITIZE_$S=ON
-          cmake --build build --target llama-server -j "$(nproc)"
+          cmake --build build --target $TARGETS -j "$(nproc)"
+          ls build/bin
 
       - name: Plugin with the same sanitizer
         run: |
@@ -66,9 +72,13 @@ jobs:
         run: |
           # LD_PRELOAD loads the plugin before the executable's own libraries, so its sanitizer runtime must be preloaded first (else the plugin's
           # instrumented start-up code runs before the runtime exists: segfault with an empty log, first run of this workflow)
-          RT=$(gcc -print-file-name=lib$([ ${{ matrix.san }} = thread ] && echo tsan || echo asan).so)
-          export MOE_CACHE_LIB="$RT:$MOE_CACHE_LIB"
-          echo "preload: $MOE_CACHE_LIB"
+          if [ ${{ matrix.san }} = thread ]; then
+            export METHOD=path          # see the build step: dlopen after start-up instead of LD_PRELOAD
+          else
+            RT=$(gcc -print-file-name=libasan.so)
+            export MOE_CACHE_LIB="$RT:$MOE_CACHE_LIB"
+          fi
+          echo "plugin: $MOE_CACHE_LIB (method ${METHOD:-auto})"
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_san.txt || true
           echo "---- sanitizer reports in the plugin server log:"
           grep -c -E "WARNING: ThreadSanitizer|ERROR: AddressSanitizer" ident_san/plugin.log || true
