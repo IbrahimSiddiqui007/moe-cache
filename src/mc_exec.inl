@@ -1,0 +1,338 @@
+// moe-cache plugin part: executor: decode-time expert matrix products run by the plugin.
+// Included by moe_cache_plugin.cpp (one translation unit); not compiled on its own.
+
+namespace {
+
+// ---- executor: decode-time expert matrix products run by the plugin itself ----
+// the CPU backend's type table, looked up at run time: builds that load their CPU backend as a separate library do not link it into the plugin
+typedef const struct ggml_type_traits_cpu * (*cpu_traits_fn_t)(enum ggml_type);
+// Lookup order: linked into the process (LD_PRELOAD builds), the CPU backend's registry, then the CPU backend library that was loaded
+// separately (GGML_BACKEND_DL builds: official releases, Vulkan, Windows), whose variant (libggml-cpu-haswell.so, ...) exports the function.
+cpu_traits_fn_t find_cpu_traits_fn() {
+    cpu_traits_fn_t fn = nullptr;
+#ifdef __linux__
+    fn = (cpu_traits_fn_t) dlsym(RTLD_DEFAULT, "ggml_get_type_traits_cpu");
+#endif
+    if (!fn) {
+        if (ggml_backend_dev_t cd = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
+            fn = (cpu_traits_fn_t) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cd), "ggml_get_type_traits_cpu");
+        }
+    }
+#ifdef __linux__
+    if (!fn) {
+        std::vector<std::string> libs;
+        dl_iterate_phdr([](struct dl_phdr_info * info, size_t, void * data) {
+            const char * name = info->dlpi_name;
+            if (name && strstr(name, "libggml-cpu")) {
+                ((std::vector<std::string> *) data)->push_back(name);
+            }
+            return 0;
+        }, &libs);
+        for (const std::string & l : libs) {
+            if (void * h = dlopen(l.c_str(), RTLD_LAZY | RTLD_NOLOAD)) {
+                fn = (cpu_traits_fn_t) dlsym(h, "ggml_get_type_traits_cpu");
+                dlclose(h);   // RTLD_NOLOAD took a reference to an already loaded library; it stays loaded
+                if (fn) {
+                    break;
+                }
+            }
+        }
+    }
+#elif defined(_WIN32)
+    if (!fn) {
+        HMODULE mods[512];
+        DWORD need = 0;
+        if (EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &need)) {
+            for (DWORD i = 0; i < need / sizeof(HMODULE) && i < 512 && !fn; i++) {
+                char name[MAX_PATH];
+                if (GetModuleFileNameA(mods[i], name, MAX_PATH) && strstr(name, "ggml-cpu")) {
+                    fn = (cpu_traits_fn_t) (void *) GetProcAddress(mods[i], "ggml_get_type_traits_cpu");
+                }
+            }
+        }
+    }
+#endif
+    return fn;
+}
+const ggml_type_traits_cpu * cpu_traits(enum ggml_type t) {
+    static cpu_traits_fn_t fn = find_cpu_traits_fn();
+    return fn ? fn(t) : nullptr;
+}
+
+#if defined(__x86_64__) && defined(__linux__)
+// Q2_0 weights: the executor rearranges the quantised activation column once and uses the permuted-layout kernel (bit-identical, about 2x the other one)
+void q2_0_perm_dot(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
+    fastk::vec_dot_q2_0_perm_avx2(n, s, bs, vx, bx, vy, by, nrc);
+}
+// IQ3_XXS weights (GLM-5.3-Flash down projections): gather-based dot product, bit-identical, about 1.2x; Intel CPUs only (slow gathers on AMD Zen 2/3)
+ggml_vec_dot_t fast_iq3_dot() {
+    static const ggml_vec_dot_t fn = [] {
+        bool vnni = false;
+        const char * e = getenv("MOE_CACHE_FAST_KERNELS");
+        if ((e && strcmp(e, "0") == 0) || !fastk3::usable(vnni)) {
+            return (ggml_vec_dot_t) nullptr;
+        }
+        return vnni ? (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_vnni : (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_avx2;
+    }();
+    return fn;
+}
+}   // namespace (the check is defined next to the interposed Q2_0 function, outside it)
+bool q2_0_library_is_plain();
+namespace {
+bool fast_kernels_enabled() {
+    static const bool on = [] {
+        const char * e = getenv("MOE_CACHE_FAST_KERNELS");
+        return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") &&
+               q2_0_library_is_plain();
+    }();
+    return on;
+}
+#endif
+
+bool exec_view_op(ggml_op op) {
+    return op == GGML_OP_NONE || op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE;
+}
+
+// true when every expert op of the graph is a single-token decode step that the executor can reproduce exactly
+bool exec_eligible(state_t & s, ggml_cgraph * cg) {
+    if (!s.exec_on || (s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
+        return false;
+    }
+    const int n = ggml_graph_n_nodes(cg);
+    int seen = 0;
+    for (int i = 0; i < n; i++) {
+        const ggml_tensor * nd = ggml_graph_node(cg, i);
+        if (nd->op != GGML_OP_MUL_MAT_ID) {
+            continue;
+        }
+        const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
+        auto it = s.by_tensor.find(w);
+        if (it == s.by_tensor.end() || s.tensors[it->second]->repack) {
+            return false;
+        }
+        const ggml_type_traits_cpu * tt = cpu_traits(w->type);
+        if (!tt || !tt->vec_dot || !cpu_traits(tt->vec_dot_type) || ids->type != GGML_TYPE_I32 || ids->ne[1] < 1 || ids->ne[1] > s.exec_maxcol || ids->ne[2] != 1 || ids->ne[3] != 1) {
+            return false;
+        }
+        if (a->type != GGML_TYPE_F32 || a->nb[0] != sizeof(float) || a->ne[2] != ids->ne[1] || a->ne[3] != 1 || nd->type != GGML_TYPE_F32 || nd->nb[0] != sizeof(float)) {
+            return false;
+        }
+        if (w->nb[0] != ggml_type_size(w->type) || w->ne[2] <= 1 || tt->nrows != 1 || cpu_traits(tt->vec_dot_type)->from_float == nullptr) {
+            if (!(a->type == tt->vec_dot_type)) {
+                return false;
+            }
+        }
+        seen++;
+    }
+    return seen > 0;
+}
+
+// computes exactly the listed nodes with the CPU backend (all other nodes are switched to NONE for the call)
+enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, const std::vector<int> & which) {
+    bool real = false;
+    for (int i : which) {
+        real = real || !exec_view_op(ggml_graph_node(cg, i)->op);
+    }
+    if (!real) {
+        return GGML_STATUS_SUCCESS;
+    }
+    const int n = ggml_graph_n_nodes(cg);
+    std::vector<char> keep((size_t) n, 0);
+    for (int i : which) {
+        keep[(size_t) i] = 1;
+    }
+    std::vector<std::pair<ggml_tensor *, ggml_op>> saved;
+    for (int i = 0; i < n; i++) {
+        ggml_tensor * nd = ggml_graph_node(cg, i);
+        if (!keep[(size_t) i] && nd->op != GGML_OP_NONE) {
+            saved.emplace_back(nd, nd->op);
+            nd->op = GGML_OP_NONE;
+        }
+    }
+    const enum ggml_status st = ggml_backend_graph_compute(c->cpu, cg);
+    for (auto & sv : saved) {
+        sv.first->op = sv.second;
+    }
+    return st;
+}
+
+// llama.cpp (ggml 0.26) computes an expert with a separate tiled routine once it has 8 or more rows (tokens) in the batch (ggml-cpu/tiled, rows >= 8),
+// which adds up in another order than the one-row kernel. Such ops are left to llama.cpp so the result stays identical (found on GLM-5.3-Flash:
+// one expert picked by all 8 tokens of a prompt batch). Older ggml has no tiled routine; handing the op back is exact there too.
+bool stock_uses_tiled(const ggml_tensor * nd) {
+    const ggml_tensor * ids = nd->src[2];
+    if (ids->ne[1] < 8) {
+        return false;
+    }
+    std::unordered_map<int32_t, int> cnt;
+    for (int64_t t = 0; t < ids->ne[1]; t++) {
+        for (int64_t k = 0; k < ids->ne[0]; k++) {
+            if (++cnt[*(const int32_t *) ((const char *) ids->data + k * ids->nb[0] + t * ids->nb[1])] >= 8) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// In executor graphs the reads are asynchronous: the executor waits for each expert's flag itself. An op handed back to llama.cpp has to wait here first.
+void exec_wait_loaded(state_t & s, const ggml_tensor * nd) {
+    const ggml_tensor * ids = nd->src[2];
+    const tinfo_t & ti = *s.tensors[s.by_tensor.at(nd->src[0])];
+    for (int64_t t = 0; t < ids->ne[1]; t++) {
+        for (int64_t k = 0; k < ids->ne[0]; k++) {
+            const int32_t e = *(const int32_t *) ((const char *) ids->data + k * ids->nb[0] + t * ids->nb[1]);
+            if (e < 0 || e >= ti.n_expert) {
+                continue;
+            }
+            const bool * f = &s.nodes[(size_t) (ti.node0 + e)].loading;
+            while (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
+                std::this_thread::yield();
+            }
+        }
+    }
+}
+
+void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {
+    const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
+    const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
+    const ggml_type_traits_cpu * tt = cpu_traits(w->type);
+    const ggml_type vdt = tt->vec_dot_type;
+    const int n_ids = (int) ids->ne[0];
+    const int n_tok = (int) ids->ne[1];
+    const int64_t ne10 = a->ne[0], ne11 = a->ne[1];
+    const size_t row_size = ggml_row_size(vdt, ne10);
+    static thread_local std::vector<uint8_t> wbuf;
+    static thread_local std::vector<uint8_t> pbuf;
+    const char * base;
+    size_t stride_i11, stride_tok;       // column (token t, activation row i11) = base + i11 * stride_i11 + t * stride_tok
+    ggml_vec_dot_t dot = tt->vec_dot;
+    bool permuted = false;
+#if defined(__x86_64__) && defined(__linux__)
+    permuted = w->type == GGML_TYPE_Q2_0 && vdt == GGML_TYPE_Q8_0 && a->type == GGML_TYPE_F32 && ne10 % 64 == 0 && fast_kernels_enabled();
+    if (w->type == GGML_TYPE_IQ3_XXS && vdt == GGML_TYPE_Q8_K && fast_iq3_dot()) {
+        dot = fast_iq3_dot();
+    }
+#endif
+    if (a->type == vdt) {
+        base = (const char *) a->data;
+        stride_i11 = a->nb[1];
+        stride_tok = a->nb[2];
+    } else {
+        wbuf.resize((size_t) ne11 * n_tok * row_size + 64);
+        const ggml_from_float_t from_float = cpu_traits(vdt)->from_float;
+        for (int t = 0; t < n_tok; t++) {
+            for (int64_t i11 = 0; i11 < ne11; i11++) {
+                from_float((const float *) ((const char *) a->data + (size_t) i11 * a->nb[1] + (size_t) t * a->nb[2]),
+                           wbuf.data() + ((size_t) t * ne11 + i11) * row_size, ne10);
+            }
+        }
+        base = (const char *) wbuf.data();
+        stride_i11 = row_size;
+        stride_tok = (size_t) ne11 * row_size;
+#if defined(__x86_64__) && defined(__linux__)
+        if (permuted) {
+            const size_t nbk = (size_t) (ne10 / 32);
+            const size_t ncols = (size_t) ne11 * n_tok;
+            pbuf.resize(ncols * nbk * sizeof(fastk::block_q8_0_perm) + 64);
+            for (size_t c = 0; c < ncols; c++) {
+                fastk::permute_q8_0((const fastk::block_q8_0 *) (wbuf.data() + c * row_size),
+                                    (fastk::block_q8_0_perm *) (pbuf.data() + c * nbk * sizeof(fastk::block_q8_0_perm)), (int) nbk);
+            }
+            base = (const char *) pbuf.data();
+            stride_i11 = nbk * sizeof(fastk::block_q8_0_perm);
+            stride_tok = (size_t) ne11 * stride_i11;
+            dot = q2_0_perm_dot;
+        }
+#endif
+    }
+    // one task per expert: the tokens that picked it share its weight rows
+    std::vector<exec_task_t> all;
+    all.reserve((size_t) n_ids * (size_t) n_tok);
+    std::vector<int> task_of((size_t) w->ne[2], -1);
+    const std::vector<int32_t> * routed = nullptr;
+    if (s.route_mode) {
+        auto rit = s.route_ids.find(ids);
+        if (rit != s.route_ids.end()) routed = &rit->second;
+    }
+    for (int t = 0; t < n_tok; t++) {
+        for (int slot = 0; slot < n_ids; slot++) {
+            if (skip && (*skip)[(size_t) t * (size_t) n_ids + (size_t) slot]) {   // computed elsewhere (hybrid: the GPU bank)
+                continue;
+            }
+            int32_t e = *(const int32_t *) ((const char *) ids->data + (size_t) slot * ids->nb[0] + (size_t) t * ids->nb[1]);
+            if (routed) {
+                e = (*routed)[(size_t) t * (size_t) n_ids + (size_t) slot];
+                if (e < 0) {            // given up: this pick contributes nothing
+                    memset((char *) nd->data + (size_t) slot * nd->nb[1] + (size_t) t * nd->nb[2], 0, (size_t) w->ne[1] * sizeof(float));
+                    continue;
+                }
+            }
+            if (e < 0 || e >= w->ne[2]) {
+                fprintf(stderr, "moe-cache: expert id %d out of range\n", e);
+                abort();
+            }
+            int & ti_ = task_of[(size_t) e];
+            if (ti_ < 0) {
+                exec_task_t nt;
+                nt.w = (const char *) w->data + (size_t) e * w->nb[2];
+                nt.ncol = 0;
+                nt.flag = (const uint8_t *) &s.nodes[(size_t) (ti.node0 + e)].loading;
+                nt.rows = w->ne[1];
+                ti_ = (int) all.size();
+                all.push_back(nt);
+            }
+            exec_task_t & tk = all[(size_t) ti_];
+            tk.cols[tk.ncol] = base + (size_t) (slot % ne11) * stride_i11 + (size_t) t * stride_tok;
+            tk.dsts[tk.ncol] = (float *) ((char *) nd->data + (size_t) slot * nd->nb[1] + (size_t) t * nd->nb[2]);
+            tk.ncol++;
+        }
+    }
+    std::vector<exec_task_t> tasks;
+    tasks.reserve(all.size());
+    std::vector<exec_task_t> late;
+    for (const auto & t : all) {
+        (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? late : tasks).push_back(t);   // experts already in RAM first
+    }
+    for (const auto & t : late) {
+        tasks.push_back(t);
+    }
+    const auto tp0 = std::chrono::steady_clock::now();
+    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32);
+    if ((unsigned) w->type < 64) {
+        s.exec_type_ns[w->type] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
+        s.exec_type_ops[w->type]++;
+        s.exec_type_bytes[w->type] += (uint64_t) tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
+    }
+    s.exec_ops++;
+}
+
+// set by the AVX-512 kernel block further down (C linkage: independent of the namespace the kernels live in)
+extern "C" { int (*moe_cache_iq512_probe)(void) = nullptr; }
+
+// One line that says what is really active, and why not when something is off (several speed-ups depend on how the plugin was loaded).
+void print_capabilities(state_t & s) {
+    std::string o = "moe-cache: active:";
+    const bool preload = getenv("MOE_CACHE_PRELOAD") != nullptr;
+    o += std::string(" load=") + (preload ? "LD_PRELOAD" : "GGML_BACKEND_PATH");
+    o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
+    if (!s.exec_on) {
+        o += " executor=off(MOE_CACHE_EXEC=0)";
+    } else if ((s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
+        o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
+    } else {
+        o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") + ")";
+    }
+#if defined(__x86_64__) && defined(__linux__)
+    o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? (q2_0_library_is_plain() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)" : "off(llama.cpp's own is faster)")
+                                                               : preload ? "on(interposed)" : "executor only(not preloaded)");
+    o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0, not Intel, or no AVX2)");
+    o += std::string(" iq_avx512=") + (getenv("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
+#endif
+    o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
+    o += s.gpu_dev ? " long_prompt_gpu=on(>=" + std::to_string(s.gpu_min_tokens) + " tokens)" : " long_prompt_gpu=off(no GPU device)";
+    if (s.route_mode) o += std::string(" approx_route=") + (s.route_mode == 1 ? "skip" : "subst");
+    fprintf(stderr, "%s\n", o.c_str());
+}
+
+}  // namespace

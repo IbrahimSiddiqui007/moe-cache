@@ -12,7 +12,7 @@ while [ $# -gt 0 ]; do case "$1" in --chunks) CHUNKS=$2; shift 2;; --limit) LIMI
 [ -f "$MODEL" ] || { echo "usage: tests/kl_batch.sh MODEL.gguf [--chunks N] [--limit GB]"; exit 1; }
 PRE=(); [ -n "$LIMIT" ] && PRE=(systemd-run --user --scope -q -p MemoryMax=${LIMIT}G -p MemorySwapMax=0)
 TMP=$(mktemp -d); trap '[ -n "$KL_KEEP" ] && mkdir -p "$KL_KEEP" && cp "$TMP"/*.txt "$KL_KEEP"/ 2>/dev/null; rm -rf "$TMP"' EXIT
-cat "$HERE"/README.md "$HERE"/docs/*.md "$HERE"/src/moe_cache_plugin.cpp > "$TMP/text.txt"     # prose and code, more than enough tokens
+cat "$HERE"/README.md "$HERE"/docs/*.md "$HERE"/src/moe_cache_plugin.cpp "$HERE"/src/mc_*.inl > "$TMP/text.txt"     # prose and code, more than enough tokens
 COMMON=(-m "$MODEL" -f "$TMP/text.txt" -c 512 --chunks "$CHUNKS" -b 8 -ub 8 -ngl 99 --n-cpu-moe 999 --kl-divergence-base "$TMP/base.kld")
 [ -n "$KL_EXTRA" ] && COMMON+=($KL_EXTRA)
 echo "1/2 stock"; "${PRE[@]}" "$P" "${COMMON[@]}" > "$TMP/stock.txt" 2>&1

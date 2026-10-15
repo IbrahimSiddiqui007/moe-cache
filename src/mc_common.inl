@@ -1,0 +1,179 @@
+// moe-cache plugin part: helpers, expert/tensor records, usage profiles, memory limits, read jobs.
+// Included by moe_cache_plugin.cpp (one translation unit); not compiled on its own.
+
+namespace {
+
+#ifdef __linux__
+int g_stats_pipe[2] = { -1, -1 };
+std::atomic<bool> g_stats_stop{false};   // set when the state is destroyed: the snapshot thread then stops without touching it
+#endif
+constexpr size_t PAGE = 4096;
+
+// GiB value from an environment variable: finite, not negative, at most 1 PiB; anything else is ignored with a message
+bool parse_gib(const char * name, const char * txt, size_t & out) {
+    char * end = nullptr;
+    const double v = strtod(txt, &end);
+    if (end == txt || !std::isfinite(v) || v < 0.0 || v > 1048576.0) {
+        fprintf(stderr, "moe-cache: ignoring %s=%s (expected a number of GiB, 0 to 1048576)\n", name, txt);
+        return false;
+    }
+    out = (size_t) (v * 1073741824.0);
+    return true;
+}
+
+size_t round_up(size_t x, size_t a = PAGE) {
+    return (x + a - 1) / a * a;
+}
+
+struct node_t {
+    int      prev = -1;
+    int      next = -1;
+    uint64_t epoch = 0;
+    bool     resident = false;
+    bool     loading = false;      // a lookahead read is still filling this expert
+    bool     prefetched = false;   // loaded ahead of time and not used yet
+    bool     mapped = false;       // not resident, but its range maps the model file (cache smaller than one op, see map_from_file)
+};
+
+struct tinfo_t {
+    std::string name;
+    size_t  file_off = 0;
+    size_t  nb2 = 0;
+    int64_t n_expert = 0;
+    char *  data = nullptr;   // the tensor's own address: expert e lives at data + e * nb2
+    int     node0 = 0;        // index of expert 0 in the global node table
+    int     layer = -1;       // from the tensor name blk.N.
+    int     fdi = 0;          // model file index (split GGUF)
+    bool    direct = false;   // can be read straight into place
+    bool    repack = false;   // stored in llama.cpp's repacked CPU layout (faster CPU kernels)
+    ggml_tensor * tensor = nullptr;
+};
+
+struct usage_t {
+    int n_layers = 0;
+    int n_exp = 0;
+    std::vector<double> c;
+    double at(int l, int e) const {
+        return (l >= 0 && l < n_layers && e >= 0 && e < n_exp) ? c[(size_t) l * n_exp + e] : 0.0;
+    }
+};
+
+// file "XUSE", int32 layers, int32 experts, float counts[layers*experts], optional uint64 model fingerprint; or old int16 pairs (layer, expert), most used first
+bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
+    constexpr size_t MAX_CELLS = (size_t) 32 << 20;   // far above any real model (48 layers x 512 experts = 24k)
+    FILE * f = fopen(path, "rb");
+    if (!f) {
+        return false;
+    }
+    if (fp) {
+        *fp = 0;
+    }
+    fseek(f, 0, SEEK_END);
+    const long fsz = ftell(f);
+    rewind(f);
+    char magic[4];
+    if (fsz >= 4 && fread(magic, 1, 4, f) == 4 && memcmp(magic, "XUSE", 4) == 0) {
+        int32_t nl = 0, ne = 0;
+        if (fread(&nl, 4, 1, f) != 1 || fread(&ne, 4, 1, f) != 1 || nl <= 0 || ne <= 0 || nl > 4096 || ne > 65536 ||
+            (size_t) nl * (size_t) ne > MAX_CELLS || (size_t) fsz < 12 + (size_t) nl * (size_t) ne * sizeof(float)) {   // the file must really hold the counts it announces
+            fclose(f);
+            return false;
+        }
+        std::vector<float> tmp((size_t) nl * ne);
+        const bool ok = fread(tmp.data(), sizeof(float), tmp.size(), f) == tmp.size();
+        uint64_t trailer = 0;
+        if (ok && fp && fread(&trailer, 8, 1, f) == 1) {
+            *fp = trailer;
+        }
+        fclose(f);
+        if (!ok) {
+            return false;
+        }
+        u.n_layers = nl;
+        u.n_exp = ne;
+        u.c.assign(tmp.begin(), tmp.end());
+        return true;
+    }
+    // old format: int16 pairs (layer, expert), most used first
+    if (fsz <= 0 || fsz % 4 != 0 || (size_t) fsz > ((size_t) 64 << 20)) {
+        fclose(f);
+        return false;
+    }
+    rewind(f);
+    std::vector<int16_t> pairs;
+    int16_t v;
+    while (fread(&v, sizeof(v), 1, f) == 1) {
+        if (v < 0) {                  // a negative index would write outside the table
+            fclose(f);
+            return false;
+        }
+        pairs.push_back(v);
+    }
+    fclose(f);
+    const size_t n = pairs.size() / 2;
+    if (n == 0) {
+        return false;
+    }
+    int ml = 0, me = 0;
+    for (size_t i = 0; i < n; i++) {
+        ml = std::max<int>(ml, pairs[2 * i] + 1);
+        me = std::max<int>(me, pairs[2 * i + 1] + 1);
+    }
+    if ((size_t) ml * (size_t) me > MAX_CELLS) {
+        return false;
+    }
+    u.n_layers = ml;
+    u.n_exp = me;
+    u.c.assign((size_t) ml * me, 0.0);
+    for (size_t i = 0; i < n; i++) {
+        u.c[(size_t) pairs[2 * i] * me + pairs[2 * i + 1]] = (double) (n - i);
+    }
+    return true;
+}
+
+// memory limit of this process and its private memory (see platform.h)
+// The limit is the smaller of the configured one (cgroup / job) and what the machine can really give: a 28 GB cgroup limit on a 31 GB laptop
+// with the desktop running (25 GB available) was OOM-killed by the kernel at 26.3 GB before the cgroup limit was reached.
+size_t read_mem_limit() {
+    const size_t lim = plat::mem_limit();
+    const size_t avail = plat::mem_available();
+    return avail ? std::min(lim, avail + plat::rss_private()) : lim;
+}
+
+size_t read_rss_anon() {
+    return plat::rss_private();
+}
+
+// router dot product: eight independent sums so the compiler can vectorise without -ffast-math; AVX2 version picked at run time
+#if defined(__linux__) && defined(__x86_64__)
+__attribute__((target_clones("avx2,fma", "default")))
+#endif
+float dot_f32(const float * a, const float * b, size_t n) {
+    float acc[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
+    size_t i = 0;
+    for (; i + 8 <= n; i += 8) {
+        for (int k = 0; k < 8; k++) {
+            acc[k] += a[i + k] * b[i + k];
+        }
+    }
+    float sum = 0.0f;
+    for (; i < n; i++) {
+        sum += a[i] * b[i];
+    }
+    for (int k = 0; k < 8; k++) {
+        sum += acc[k];
+    }
+    return sum;
+}
+
+struct io_job_t {
+    char * dst;
+    size_t off;
+    size_t nb2;
+    int    fdi;      // which model file (split GGUF)
+    bool   direct;   // memory address matches the file offset (mod 4096): read straight into place
+    const ggml_tensor * rtensor = nullptr;   // set: repack this expert while loading it
+    int    node = -1;        // index in the node table (asynchronous loads clear its "loading" flag when done)
+};
+
+}  // namespace
