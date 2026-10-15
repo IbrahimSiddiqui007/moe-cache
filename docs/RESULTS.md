@@ -1006,3 +1006,22 @@ The GGUF carries one next-token layer (`blk.45.nextn.*`); llama.cpp 23b0202a1 lo
 
 About -25 %: fewer than half the drafts are accepted, and every verify step reads the experts of all its tokens on a model that is limited by SSD reads.
 (Verified tokens can differ from one-token decoding because the batch shape changes the GPU part's rounding, as with stock llama.cpp.) Dropped.
+
+## 41. GLM-5.3-Flash decode reads: the drive is idle, not slow (T47; 24 GB limit, clean-run gate, 4 x 24 tokens; 2026-10-15)
+
+During decode the 4 reader threads are busy about half the time (161 s of reader time in 81 s): the experts of a layer can only be read once its router has
+chosen them, so reads come in bursts with gaps between layers. Filling the gaps needs reads for the next layer before it routes (a guess):
+
+| Run | Decode tok/s per request | Mean | Identical |
+|---|---|---|---|
+| executor, no lookahead | 1.79 / 1.88 / 1.76 / 1.80 | 1.81 | 4/4 |
+| lookahead, executor off (`MOE_CACHE_LOOKAHEAD=1`, the old behaviour) | 1.80 / 1.88 / 1.76 / 1.79 | 1.81 | 4/4 |
+| lookahead + executor (`MOE_CACHE_LOOKAHEAD=2`, new), 2 guesses per layer | 1.92 / 1.94 / 1.90 / 1.98 | 1.94 | 4/4 |
+| same, 4 guesses per layer | 1.79 / 1.87 / 1.85 / 1.85 | 1.84 | 4/4 |
+| executor, no lookahead (again) | 1.82 / 2.00 / 1.88 / 1.98 | 1.92 | 4/4 |
+| lookahead + executor (again) | 1.83 / 1.36 / 1.86 / 1.95 | 1.75 | 4/4 |
+
+The prediction is right 54 % of the time on GLM (2 guesses per layer: 64 % of the prefetched experts used), but the wasted reads cost as much as the useful
+ones save on a drive that is the bottleneck: no reliable gain (the two baseline runs differ by 6 %). With MTP (section 40) and read merging (decode reads are
+single experts) also out, GLM on this laptop stays at about 1.8-1.9 tok/s exact and 2.0-2.3 with `--fast`; more RAM (BIGGER_MACHINES B6) is the lever.
+`MOE_CACHE_LOOKAHEAD=2` stays as an experimental switch (exact).

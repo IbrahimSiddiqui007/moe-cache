@@ -490,6 +490,7 @@ struct state_t {
     bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
     std::atomic<uint64_t> sibling_loads{0};
     bool   lookahead = false;
+    bool   la_exec = false;                             // MOE_CACHE_LOOKAHEAD=2: lookahead together with the executor (it waits on the same loading flags)
     bool   prompt_prefetch = false;
     size_t coalesce_bytes = (size_t) 16 << 20;          // MOE_CACHE_COALESCE_MIB=N (default 16, 0 = off): neighbouring expert reads merged up to N MiB
                                                         // (synchronous reads; Flash-Next prompts: 2.5 -> 3.4 GB/s, prefill +14-24 %)
@@ -897,6 +898,7 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
             lookahead = strcmp(v, "0") != 0;
+            la_exec = strcmp(v, "2") == 0;
             if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_GUESS")) {
                 la_guess = atoi(g);
             }
@@ -2542,7 +2544,7 @@ bool exec_view_op(ggml_op op) {
 
 // true when every expert op of the graph is a single-token decode step that the executor can reproduce exactly
 bool exec_eligible(state_t & s, ggml_cgraph * cg) {
-    if (!s.exec_on || s.lookahead || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
+    if (!s.exec_on || (s.lookahead && !s.la_exec) || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
         return false;
     }
     const int n = ggml_graph_n_nodes(cg);
@@ -2765,7 +2767,7 @@ void print_capabilities(state_t & s) {
     o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
     if (!s.exec_on) {
         o += " executor=off(MOE_CACHE_EXEC=0)";
-    } else if (s.lookahead || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
+    } else if ((s.lookahead && !s.la_exec) || s.l3_prefetch || s.repack_tag || s.gpu_min_tokens == 1) {
         o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.l3_prefetch ? "l3prefetch" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
     } else {
         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") + ")";
