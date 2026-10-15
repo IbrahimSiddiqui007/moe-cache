@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- The plugin's Q2_0 kernels step aside when llama.cpp has its own (llama.cpp master, ggml-org/llama.cpp#30447: 96 ns per 2560-weight dot vs the plugin's
+  126-238 ns, and adding up in another order). Checked once at start by comparing the library's function with the plain C loop; on 23b0202a1 nothing changes.
+- The prompt-cache reserve line says where the number came from (launcher, `LLAMA_ARG_CACHE_RAM` or the command line).
+
 ## 0.2.3.3 (2026-10-15)
 - **Exactness fix (race, in releases v0.2.0-v0.2.3.2):** when gate, up and down come in separate calls (gpt-oss), the experts read in the background
   for the next call could be used by llama.cpp's own path before they were complete (the executor stepped aside because they looked resident).

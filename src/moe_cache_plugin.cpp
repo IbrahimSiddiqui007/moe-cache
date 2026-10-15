@@ -744,11 +744,14 @@ struct state_t {
             // when a new request starts, so it is added to the margin (a 24 GB limit was OOM-killed at 128k context with the 8 GiB default)
             if (!getenv("MOE_CACHE_MARGIN_GIB")) {
                 long cram = -1;
+                const char * from = "the command line";
                 const char * reserve = getenv("MOE_CACHE_HOST_RESERVE_MIB");   // set by moe-cache-server; the command line below is only a fallback
                 if (reserve) {
                     cram = atol(reserve);
+                    from = "moe-cache-server (MOE_CACHE_HOST_RESERVE_MIB)";
                 } else if (const char * v = getenv("LLAMA_ARG_CACHE_RAM")) {
                     cram = atol(v);
+                    from = "LLAMA_ARG_CACHE_RAM";
                 }
 #ifdef __linux__
                 if (FILE * cf = reserve ? nullptr : fopen("/proc/self/cmdline", "rb")) {
@@ -776,7 +779,7 @@ struct state_t {
                 if (cram > 0) {
                     const size_t extra = std::min<size_t>((size_t) cram << 20, limit_bytes / 3);
                     margin += extra;
-                    fprintf(stderr, "moe-cache: llama-server's prompt cache (--cache-ram %ld MiB) is kept free: margin now %.2f GiB\n", cram, margin / 1073741824.0);
+                    fprintf(stderr, "moe-cache: llama-server's prompt cache (--cache-ram %ld MiB, from %s) is kept free: margin now %.2f GiB\n", cram, from, margin / 1073741824.0);
                 }
             }
             if (!direct_env) {
@@ -2511,10 +2514,14 @@ ggml_vec_dot_t fast_iq3_dot() {
     }();
     return fn;
 }
+}   // namespace (the check is defined next to the interposed Q2_0 function, outside it)
+bool q2_0_library_is_plain();
+namespace {
 bool fast_kernels_enabled() {
     static const bool on = [] {
         const char * e = getenv("MOE_CACHE_FAST_KERNELS");
-        return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
+        return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") &&
+               q2_0_library_is_plain();
     }();
     return on;
 }
@@ -2755,7 +2762,8 @@ void print_capabilities(state_t & s) {
         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") + ")";
     }
 #if defined(__x86_64__) && defined(__linux__)
-    o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)" : preload ? "on(interposed)" : "executor only(not preloaded)");
+    o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? (q2_0_library_is_plain() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)" : "off(llama.cpp's own is faster)")
+                                                               : preload ? "on(interposed)" : "executor only(not preloaded)");
     o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0, not Intel, or no AVX2)");
     o += std::string(" iq_avx512=") + (getenv("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
 #endif
@@ -3845,17 +3853,60 @@ __attribute__((constructor)) static void moe_cache_autoload() {
 
 #if defined(__x86_64__) && defined(__linux__)
 // ---- faster Q2_0 kernel (bit-identical to llama.cpp's) ----
-// llama.cpp has no SIMD version of the Q2_0 x Q8_0 dot product on x86: it runs a plain C loop. This definition replaces it when the
+// llama.cpp up to 23b0202a1 has no SIMD version of the Q2_0 x Q8_0 dot product on x86: it runs a plain C loop. This definition replaces it when the
 // plugin is preloaded (LD_PRELOAD), because the function table of libggml-cpu is filled by symbol name. Results are bit-identical
 // (tests/kernel_check.cpp compares them with the real library function). MOE_CACHE_FAST_KERNELS=0 switches it off.
 #include <dlfcn.h>
 #include "fast_q2_0.h"
+extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc);
+
+// llama.cpp got its own SIMD Q2_0 kernel (master, ggml-org/llama.cpp#30447): it is faster than ours (96 vs 126-238 ns per 2560-weight dot) and adds up
+// in another order, so replacing it would make Q2_0 models slower and no longer identical to stock. Compare the library's function with the plain C
+// loop (which our kernels reproduce bit for bit) once; any difference means the library has its own kernel, and ours stay out.
+bool q2_0_library_is_plain() {
+    static const bool plain = [] {
+        typedef void (*fn_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+        fn_t lib = (fn_t) dlsym(RTLD_NEXT, "ggml_vec_dot_q2_0_q8_0");             // preloaded: llama.cpp's own symbol behind ours
+        if (!lib || lib == (fn_t) &ggml_vec_dot_q2_0_q8_0) {
+            const ggml_type_traits_cpu * tt = cpu_traits(GGML_TYPE_Q2_0);         // loaded as a backend: the library's table is not replaced
+            lib = tt && (fn_t) tt->vec_dot != (fn_t) &ggml_vec_dot_q2_0_q8_0 ? (fn_t) tt->vec_dot : nullptr;
+        }
+        if (!lib) {
+            return true;                  // nothing to compare with: keep the measured behaviour of the supported versions
+        }
+        const int n = 64 * 40;
+        std::vector<fastk::block_q2_0> x((size_t) n / 64);
+        std::vector<fastk::block_q8_0> y((size_t) n / 32);
+        uint32_t r = 12345;
+        auto rnd = [&]() { r = r * 1664525u + 1013904223u; return r >> 8; };
+        for (int trial = 0; trial < 64; trial++) {
+            for (auto & b : x) {
+                b.d = (uint16_t) (0x2000 + rnd() % 0x2000);
+                for (auto & q : b.qs) q = (uint8_t) rnd();
+            }
+            for (auto & b : y) {
+                b.d = (uint16_t) (0x2000 + rnd() % 0x2000);
+                for (auto & q : b.qs) q = (int8_t) (rnd() % 255 - 127);
+            }
+            float a = 0.0f, b = 0.0f;
+            lib(n, &a, 0, x.data(), 0, y.data(), 0, 1);
+            fastk::vec_dot_q2_0_q8_0_avx2<true>(n, &b, x.data(), y.data());
+            if (memcmp(&a, &b, sizeof(float)) != 0) {
+                fprintf(stderr, "moe-cache: this llama.cpp has its own Q2_0 kernel (results differ from the plain C loop): using it instead of the plugin's\n");
+                return false;
+            }
+        }
+        return true;
+    }();
+    return plain;
+}
+
 extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     typedef void (*fn_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
     static fn_t orig = (fn_t) dlsym(RTLD_NEXT, "ggml_vec_dot_q2_0_q8_0");
     static const bool fast = [] {
         const char * e = getenv("MOE_CACHE_FAST_KERNELS");
-        return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
+        return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && q2_0_library_is_plain();
     }();
     if (fast && nrc == 1 && n > 0 && n % 64 == 0) {
         fastk::vec_dot_q2_0_q8_0_avx2<true>(n, s, vx, vy);
