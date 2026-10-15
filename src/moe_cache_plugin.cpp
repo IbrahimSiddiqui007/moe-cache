@@ -127,6 +127,7 @@ struct node_t {
     bool     resident = false;
     bool     loading = false;      // a lookahead read is still filling this expert
     bool     prefetched = false;   // loaded ahead of time and not used yet
+    bool     mapped = false;       // not resident, but its range maps the model file (cache smaller than one op, see map_from_file)
 };
 
 struct tinfo_t {
@@ -489,6 +490,8 @@ struct state_t {
     bool   l3_prefetch = false;                         // MOE_CACHE_L3PREFETCH=1: a helper thread pulls the later tensors of a group into the L3 cache while the first ones compute
     bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
     std::atomic<uint64_t> sibling_loads{0};
+    uint64_t small_mapped = 0, small_over = 0;          // cache smaller than one op: experts mapped from the file (stock way) / loaded over the budget
+    bool   small_warned = false;
     bool   lookahead = false;
     bool   la_exec = false;                             // MOE_CACHE_LOOKAHEAD=2: lookahead together with the executor (it waits on the same loading flags)
     bool   prompt_prefetch = false;
@@ -1230,14 +1233,15 @@ struct state_t {
             char b[1600];
             snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,"
                      "\"resident_bytes\":%llu,\"budget\":%llu,\"ns_prep\":%llu,\"ns_read\":%llu,\"ns_cpu\":%llu,\"ns_total\":%llu,\"graphs\":%llu,"
-                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu",
+                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu",
                      (unsigned long long) hits, (unsigned long long) misses, (unsigned long long) hits_dec, (unsigned long long) misses_dec, (unsigned long long) bytes,
                      (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) resident_bytes, (unsigned long long) budget,
                      (unsigned long long) ns_prep, (unsigned long long) ns_read, (unsigned long long) ns_cpu, (unsigned long long) ns_total, (unsigned long long) graphs,
                      (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs, (unsigned long long) gpu_segments,
                      (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
                      (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
-                     (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads);
+                     (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
+                     (unsigned long long) small_mapped, (unsigned long long) small_over);
             j = b;
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
@@ -1333,6 +1337,10 @@ struct state_t {
             if (route_mode) {
                 fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
                         route_mode == 1 ? "skip" : "subst", (unsigned long long) route_considered, (unsigned long long) route_skipped, (unsigned long long) route_substituted);
+            }
+            if (small_mapped || small_over) {
+                fprintf(stderr, "moe-cache: cache smaller than one op: %llu experts mapped from the model file, %llu loaded over the cache size\n",
+                        (unsigned long long) small_mapped, (unsigned long long) small_over);
             }
             fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu, repacked %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
@@ -1750,8 +1758,35 @@ struct state_t {
         }
         unlink(s);
         nodes[s].resident = false;
+        nodes[s].mapped = false;       // the pages were given back (guard mode: made inaccessible); a later fallback maps them again
         resident_bytes -= ti.nb2;
         evictions++;
+    }
+
+    // cache smaller than one op: map expert e of ti straight from the model file over its own address (copy-on-write file pages, the way stock
+    // llama.cpp's mmap loading sees it). The expert stays non-resident (outside the budget and the LRU); when it is needed again and fits, it is
+    // read into the cache the normal way (the read lands in private copies of these pages). Only for experts stored as in the file (not repacked)
+    // whose address matches the file offset modulo the page size (ti.direct). Called with mu held (lk).
+    bool map_from_file(const tinfo_t & ti, int64_t e, std::unique_lock<std::mutex> & lk) {
+        if (!ti.direct) {
+            return false;
+        }
+        // the pages at both ends are shared with the neighbour experts: no background read may be filling them while the mapping replaces them
+        for (;;) {
+            bool busy = false;
+            for (int64_t k = std::max<int64_t>(0, e - 1); k <= std::min<int64_t>(ti.n_expert - 1, e + 1); k++) {
+                busy = busy || nodes[(size_t) (ti.node0 + k)].loading;
+            }
+            if (!busy) {
+                break;
+            }
+            load_cv.wait(lk);
+        }
+        const uintptr_t start = (uintptr_t) ti.data + (size_t) e * ti.nb2;
+        const uintptr_t a = start / PAGE * PAGE;
+        const uintptr_t b = round_up(start + ti.nb2);
+        const uint64_t off = ti.file_off + (size_t) e * ti.nb2 - (start - a);
+        return plat::mem_map_file((void *) a, b - a, buffered_file(ti.fdi), off);
     }
 
     // make sure all experts used by the ops of one group (same ids tensor) are resident
@@ -1876,16 +1911,34 @@ struct state_t {
                 }
                 misses++;
                 if (cur_decode) { misses_dec++; }
+                bool fits = true;
                 while (resident_bytes + ti.nb2 > budget) {
                     int v = lru;
                     for (int k = 0; k < 100000 && v >= 0 && (nodes[v].epoch == epoch || nodes[v].loading); k++) {
                         v = nodes[v].prev;
                     }
                     if (v < 0 || nodes[v].epoch == epoch || nodes[v].loading) {
-                        fprintf(stderr, "moe-cache: cache too small for one op, raise MOE_CACHE_SIZE_GIB\n");
-                        abort();
+                        fits = false;      // everything left is needed by this op: the cache is smaller than one op (fixed MOE_CACHE_SIZE_GIB)
+                        break;
                     }
                     evict(v);
+                }
+                if (!fits) {
+                    // fall back instead of aborting: map the expert from the model file, as stock llama.cpp does (file cache, reclaimable, the
+                    // budget holds); where that is not possible (background reads, repacked or unaligned experts, Windows), load it over the budget
+                    if (!small_warned) {
+                        small_warned = true;
+                        fprintf(stderr, "moe-cache: warning: the cache (%.2f GiB) is smaller than the experts of one op; experts that do not fit are %s. "
+                                        "Raise MOE_CACHE_SIZE_GIB (or use auto) for full speed\n", budget / 1073741824.0,
+                                !async && ti.direct ? "mapped from the model file (the stock way)" : "loaded over the cache size for that step");
+                    }
+                    if (!async && (n.mapped || map_from_file(ti, e, lk))) {
+                        n.mapped = true;
+                        n.epoch = epoch;
+                        small_mapped++;
+                        continue;
+                    }
+                    small_over++;
                 }
                 n.resident = true;
                 n.epoch = epoch;

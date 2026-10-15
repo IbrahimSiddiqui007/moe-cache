@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+- **No abort when the cache is smaller than one op** (a fixed `MOE_CACHE_SIZE_GIB` below the experts one step needs; `auto` never gets there): the experts
+  that do not fit are mapped straight from the model file, the way stock llama.cpp loads them (file cache, reclaimable, so the size still holds), or, where
+  that is not possible (executor's background reads, repacked weights, Windows), loaded over the size for that step. One warning, and a count in the
+  summary line. Two CI steps run with a 1 MiB cache (mapping with guard mode on; executor forced on) and must be 4/4 identical.
+
 ## 0.2.3.4 (2026-10-15)
 - **Speed fix for K-quant models that do not fit in RAM** (in releases 0.2.0-0.2.3.3): the executor only takes graphs whose expert weights are IQ types or
   Q2_0; K-quants and legacy types go llama.cpp's own way, whose kernels are faster. Qwen3.6-35B Q4_K_M at 12 GB: 7.8 -> 16.6 tok/s, identical to stock.

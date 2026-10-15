@@ -172,6 +172,21 @@ inline void mem_decommit(void * p, size_t size) {
     }
 #endif
 }
+// Maps the file range [off, off + size) over p (copy-on-write, the way llama.cpp's own mmap loading sees the weights): the pages come from the
+// system's file cache, which the system can reclaim. p and off must be page aligned and equal modulo the page size. Linux only; false elsewhere.
+inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) {
+#if defined(__linux__)
+    void * r = mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, f.fd, (off_t) off);
+    if (r == MAP_FAILED) {
+        return false;
+    }
+    madvise(p, size, MADV_WILLNEED);
+    return true;
+#else
+    (void) p; (void) size; (void) f; (void) off;
+    return false;
+#endif
+}
 inline void mem_hugepage(void * p, size_t size, bool on) {
 #if defined(__linux__)
     madvise(p, size, on ? MADV_HUGEPAGE : MADV_NOHUGEPAGE);

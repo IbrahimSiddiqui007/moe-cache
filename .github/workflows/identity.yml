@@ -75,6 +75,30 @@ jobs:
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
 
+      - name: Cache smaller than one op (1 MiB) - experts mapped from the model file instead of aborting, guard mode on
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_KEEP: ident_small_map
+          IDENT_EXTRA: "--no-repack"      # mapping needs experts stored as in the file
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.001 MOE_CACHE_DIRECT=1 MOE_CACHE_GUARD=1"
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_small_map.txt
+          grep -E "cache smaller than one op: [1-9][0-9]* experts mapped" ident_small_map/plugin.log
+
+      - name: Cache smaller than one op (1 MiB), executor forced on - experts loaded over the cache size instead of aborting
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_KEEP: ident_small_over
+          IDENT_EXTRA: "--no-repack"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.001 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_small_over.txt
+          grep -E "experts mapped from the model file, [1-9][0-9]* loaded over" ident_small_over/plugin.log
+
       - name: Logits at batch 8 (KL divergence vs stock), cache forced to evict, executor forced on
         env:
           LLAMA_PERPLEXITY: ${{ github.workspace }}/llama.cpp/build/bin/llama-perplexity
@@ -147,4 +171,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: identity-${{ matrix.name }}
-          path: identity_*.txt
+          path: |
+            identity_*.txt
+            ident_small_*/plugin.log
