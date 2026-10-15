@@ -5,6 +5,8 @@ name: sanitize
 
 on:
   workflow_dispatch:
+  push:
+    branches: [sanitize]      # run it on any commit: git push origin <commit>:refs/heads/sanitize (workflow_dispatch needs the file on main first)
   schedule:
     - cron: "0 6 * * 1"
 
