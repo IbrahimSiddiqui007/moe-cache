@@ -115,8 +115,9 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 | Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
 | Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested** on llama.cpp `7fe450e19` only, loaded the official way (`GGML_BACKEND_PATH`; see the feature table below) |
 | Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
-| Linux + AMD GPU / AMD CPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
-| Windows | **Not supported yet.** The code has a Windows layer that compiles with mingw-w64 (`./build.sh --windows`) and passes its tests under Wine, but it has never run on real Windows with llama.cpp |
+| Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB 1.23x stock (no expert layer fits on a 3 GiB iGPU); RESULTS 50 |
+| Linux + AMD discrete GPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
+| Windows | **Not supported yet.** Two test rounds on an MSI Claw (2026-10-15/16): the launcher works and the DLL now loads; cache mode crashed at the first graph (fixed, retest pending). See docs/COMPATIBILITY.md |
 | macOS | No |
 
 ## Benchmark it on your own model and your own use case
@@ -151,12 +152,12 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 - It does not manage the GPU; which layers' experts sit in VRAM is chosen once at start by the planner. A GPU expert tier was evaluated and is not built, see [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
 - **Not every feature works with every llama.cpp build.** How the plugin is loaded depends on how llama.cpp was built (`moe-cache-server` picks it):
 
-  | Feature | `LD_PRELOAD` (llama.cpp that links its backends directly: distro packages, `./install.sh`) | `GGML_BACKEND_PATH` (backends as separate files: official releases, Vulkan builds, Windows) |
+  | Feature | `LD_PRELOAD` (llama.cpp that links its backends directly: distro packages, your own CUDA build) | `GGML_BACKEND_PATH` (backends as separate files: official releases, `./install.sh`, Vulkan builds, Windows) |
   |---|---|---|
   | RAM expert cache, SSD streaming, memory limit, warm start | yes | yes |
   | Expert executor (computes ready experts while others load) | yes | yes (since 0.2.3.3; tested on a Vulkan build) |
   | Fast Q2_0 / IQ3_XXS kernels | yes | inside the executor only |
-  | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | **no** |
+  | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | **no** (refused since cffa6f9: it gave wrong tokens; the launcher uses static GPU expert layers instead) |
 
   The `moe-cache: active: ...` line in the server log says which parts are on.
 - Needs a llama.cpp with shared ggml libraries; tested with commits `23b0202a1` (ggml 0.26.0) and `7fe450e19` (ggml 0.25.1). The plugin refuses to load into a ggml with a different backend API than it was built for (it prints why and the model loads normally). Linux only for now.

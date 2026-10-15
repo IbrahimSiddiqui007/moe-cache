@@ -8,14 +8,15 @@ llama.cpp build uses (CUDA, ROCm/HIP, Vulkan, SYCL, ...). That makes it independ
 | Platform | Status | Notes |
 |---|---|---|
 | Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** | all results in `RESULTS.md` |
-| Linux + AMD CPU (x86-64) | Expected to work, **untested** | the plugin uses llama.cpp's own CPU kernels, nothing Intel-specific; needs the AVX2 CPU variant like llama.cpp itself |
+| Linux + AMD CPU (x86-64) | **Tested** (Ryzen 7 5800H, Zen 3, 2026-10-16): identity 4/4 with forced eviction, executor byte-checked (0 mismatches); Qwen3.6 at 12 GB 1.23x stock | the plugin uses llama.cpp's own CPU kernels, nothing Intel-specific; needs the AVX2 CPU variant like llama.cpp itself (RESULTS 50) |
 | Linux, CPU only (no GPU usable by llama.cpp) | **Tested**: identity 4/4 and the same speed as stock | stock llama.cpp repacks CPU expert weights when no GPU is present; the plugin does the same per expert (`MOE_CACHE_REPACK=auto`). With a memory limit smaller than the model: 3.1 -> 9.9 tok/s (Qwen3.6, 12 GB, stock needs `--no-repack`). |
 | Linux + Vulkan, Intel integrated GPU | **Tested**: identity 4/4 (Granite), plugin active (3,549 expert loads, 97 % hits) | llama.cpp built from the same commit with `GGML_VULKAN=ON GGML_BACKEND_DL=ON GGML_CPU_ALL_VARIANTS=ON` (how official releases are built); loaded with `GGML_BACKEND_PATH` |
 | Linux + Vulkan, NVIDIA GPU | **Tested**: identity 4/4 | same build |
-| Linux + Vulkan, AMD GPU | Expected to work (same Vulkan path, same host-buffer behaviour as the tested devices), **not tested on AMD hardware** | the path AMD cards without ROCm support use |
+| Linux + Vulkan, AMD integrated GPU | **Tested** (Vega 8, RADV, 3 GiB carve-out, 2026-10-16): identity 4/4 (Granite with eviction, Qwen3.6 at 12 GB) | `install.sh --vulkan`; the user must be in the `render` group (install.sh now warns). `--gpu-cache` is not available with this loading method (it gave wrong tokens before the fix, RESULTS 50 B1); the long-prompt GPU path uses the iGPU since cffa6f9 |
+| Linux + Vulkan, AMD discrete GPU | Expected to work (same Vulkan path as the tested devices), **not tested on AMD hardware** | the path AMD cards without ROCm support use |
 | Linux + AMD GPU via ROCm/HIP | Expected to work, **untested** | |
 | Linux + Intel GPU (SYCL or Vulkan) | **Untested** | Intel iGPU available on the development machine for testing |
-| Windows (any CPU/GPU) | **Not supported yet**: first real run 2026-10-15 (MSI Claw, llama.cpp b11669): the launcher works; the DLL did not load because of two build bugs, fixed in 0b7bbaa, rerun pending | see "Windows status" below, RESULTS 49 |
+| Windows (any CPU/GPU) | **Not supported yet**: round 1 (2026-10-15, MSI Claw, b11669): the DLL did not load (two build bugs, fixed 0b7bbaa). Round 2 (2026-10-16): the DLL loads, ggml 0.27.0 accepts it, but cache mode crashed in the first graph (uncommitted compute buffer, fixed cffa6f9); round 3 pending | see "Windows status" below, RESULTS 49-50. Pass-through mode ran fine. `--gpu-cache` is not available on Windows (needs LD_PRELOAD) |
 | macOS / Apple Silicon | Not supported | uses Linux memory APIs; unified memory changes the problem |
 
 ## Repacking (why CPU-only needed extra work)
@@ -29,9 +30,13 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
 - First run on real Windows (2026-10-15, MSI Claw 8 AI+, official llama.cpp b11669 Vulkan, ggml 0.27.0): the plugin DLL did not load: it imported
   `libwinpthread-1.dll` (not on Windows) and took 4 backend-registry functions from `ggml-base.dll` instead of `ggml.dll`. Both fixed in `build.sh --windows`
   (0b7bbaa); the identity test is to be rerun. The Python launcher works there (check, dry run, real start, chat).
+- Round 2 (2026-10-16): the DLL loads and ggml 0.27.0 accepts it; pass-through mode runs, cache mode crashed at the first graph with an access violation
+  in the plugin's compute buffer (reserved, never committed: Windows faults on such pages, Linux hands out zero pages). Fixed in cffa6f9; round 3 pending.
+- Not available on Windows: `--gpu-cache` / `MOE_CACHE_GPU_CACHE=1` (needs LD_PRELOAD symbol interposition), the file-mapped fallback for a cache smaller
+  than one op (loads over the size instead). Core pinning: implemented from the cores' efficiency class (f7721a6), not yet run there.
 - `./build.sh --windows` cross-compiles `ggml-moe-cache.dll` with mingw-w64 (load it with `GGML_BACKEND_PATH`; official Windows llama.cpp builds load their backends as DLLs).
 - `tests/platform_test.cpp` passes natively on Linux and, compiled for Windows, under Wine (reserve/commit/decommit, unbuffered reads at the end of a file, limits, file replacement).
-- **Never run on real Windows with llama.cpp**: no token-identity test, no speed numbers, and the launcher scripts are still bash. Treat it as a code port waiting for a tester; `docs/WINDOWS_TEST.md` and `tools/windows_test.ps1` are the test.
+- **No passing identity test on real Windows yet**, no speed numbers with the plugin; the Python launcher (`bin/moe_cache.py`) runs there, the bash wrappers do not. Treat it as a code port waiting for a tester; `docs/WINDOWS_TEST.md` and `tools/windows_test.ps1` are the test.
 
 ## Model architectures
 

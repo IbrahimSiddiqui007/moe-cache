@@ -82,18 +82,29 @@ jobs:
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_evict.txt
 
-      - name: Path loading (GGML_BACKEND_PATH) with MOE_CACHE_GPU_CACHE=1 - the plugin must refuse that mode (it gave wrong tokens there, T7) and stay identical
+      - name: llama.cpp built the way install.sh, official releases and Windows are (backends as files, CPU variants) - 0.26 row only
+        if: matrix.name == 'ggml-0.26-api3'
+        run: |
+          cmake -S llama.cpp -B llama.cpp/build-dl -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF \
+                -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+          cmake --build llama.cpp/build-dl --target llama-server ggml-cpu-haswell -j "$(nproc)"   # AVX2: every GitHub runner has it; one variant is enough
+          ls llama.cpp/build-dl/bin/ | grep -E "ggml-cpu|llama-server"
+
+      - name: Path loading (GGML_BACKEND_PATH, the official way), cache forced to evict, with MOE_CACHE_GPU_CACHE=1 - the plugin must refuse that mode (wrong tokens there before, T7)
+        if: matrix.name == 'ggml-0.26-api3'
         env:
-          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build-dl/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
           METHOD: path
           IDENT_KEEP: ident_small_path
+          IDENT_EXTRA: "--no-repack"
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_GPU_CACHE=1"
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_path_gcache.txt
-          grep "moe-cache:" ident_small_path/plugin.log | head -5
+          grep "moe-cache:" ident_small_path/plugin.log | head -6
           grep -q "MOE_CACHE_GPU_CACHE=1 ignored" ident_small_path/plugin.log
-          grep -q "gpu_cache_host_buffer=off" ident_small_path/plugin.log
+          grep -q "load=GGML_BACKEND_PATH .*gpu_cache_host_buffer=off" ident_small_path/plugin.log
 
       - name: Identity on long prompts (prompt batches of 512+ tokens load scan-resistant by default, I3)
         env:

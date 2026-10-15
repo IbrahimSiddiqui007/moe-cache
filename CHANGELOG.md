@@ -13,6 +13,21 @@
   the tuner's "no VRAM information" no longer overrides the planner (integrated GPUs), `check` says why the plugin did not load, the dry-run line is
   PowerShell syntax, the URL is 127.0.0.1 (Windows tried ::1 first), "profile dir will be created" instead of a false warning. `windows_test.ps1` names a
   missing DLL dependency instead of pointing at the API.
+- **Windows: cache mode no longer crashes in the first graph** (MSI Claw round 2, RESULTS 50): the plugin's buffers are reserved address space only, and
+  on Windows a reserved page faults until committed; the scheduler's compute buffer was never committed. Non-expert tensors are now committed when they
+  are placed (once per 64 KiB chunk). Linux was never affected (untouched pages appear on first touch there).
+- **`--gpu-cache` is refused where it gave wrong tokens** (mini PC, T7): with the plugin loaded through `GGML_BACKEND_PATH` (install.sh, Vulkan, official
+  and all Windows builds) the hook that loads experts before llama.cpp's GPU cache uploads them cannot run. The plugin now ignores
+  `MOE_CACHE_GPU_CACHE=1` there with a message, and the launcher falls back to static GPU expert layers. Builds that link their backends (LD_PRELOAD)
+  are unchanged.
+- The long-prompt GPU path uses an integrated GPU when there is no discrete one (Vega 8 via Vulkan: prompt 363 -> 569-597 tok/s).
+- **Core pinning on Windows** (Claw finding 5): on hybrid CPUs the launcher pins llama-server to the performance cores and gives the executor
+  efficiency-core workers, from the cores' efficiency class, as on Linux. Not yet run on real Windows.
+- Launcher: says why llama-server stopped (exit code or signal, e.g. `0xC0000005 (access violation)`, and the last plugin line); planner errors give the
+  real reason; the API mismatch warning works on Windows; a missing `MOE_CACHE_LIB` file is named; `check` uses GB throughout; the stock dry run has no
+  empty `env`.
+- Tools: `install.sh --vulkan` warns when Vulkan sees no real GPU (with the `render` group hint); `wait_cool.sh` works without lm-sensors on AMD;
+  the friend test's kernel check finds `libggml-cpu-<variant>.so` and skips the GPU-cache case where it cannot work; the log says `layers all`.
 - CI: sanitizer workflow (ThreadSanitizer / AddressSanitizer, `.github/workflows/sanitize.yml`, push to branch `sanitize` to run); long-prompt identity step.
 
 ## 0.2.3.5 (2026-10-15)

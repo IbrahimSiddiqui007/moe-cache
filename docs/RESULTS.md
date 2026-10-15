@@ -1202,3 +1202,53 @@ Side finding: for a model that fits in RAM, experts on the iGPU (`-ngl 99` witho
 
 **E2 (both busy at once): no stop rule hit.** The busy iGPU costs the CPU 12-28 %, the busy CPU costs the iGPU 1-30 %; both together give 1.08-1.46x the
 faster one alone (two whole-model streams; a per-layer split of one token will gain less, which E3/E4 measure).
+
+## 50. Windows round 2 (MSI Claw) and the first AMD machine (mini PC, T7) (2026-10-16; from handover/claw_results.md "Round 2" and handover/moe-cache-t7/)
+
+**MSI Claw, round 2 (rebuilt kit, llama.cpp b11669 = ggml 0.27.0, OLMoE Q4_0).** Both DLL fixes of section 49 work: no `libwinpthread-1.dll` import,
+the four registry functions bind to `ggml.dll`, `LoadLibrary` succeeds, and ggml 0.27.0 accepts the API 3 plugin (the API 2 DLL is refused by ggml with
+"incompatible API version", as it should be). **T5 still failed, on a new, Windows-only bug:** llama-server died in the first graph in every cache-mode
+variant (with and without Vulkan, executor, direct reads, repacking, mmap, or a cache that holds the whole model) and never in pass-through mode.
+The Claw session caught it with a small ctypes debugger: a write by an ggml-cpu OpenMP worker into a page that was reserved but not committed, 4.13 MiB
+into a 52.12 MiB range, which is exactly the size of the plugin's compute buffer (`sched_reserve: MOE_CACHE compute buffer size = 52.12 MiB`).
+Cause: in cache mode every buffer of the plugin's buffer type is reserved address space only. On Linux an untouched page of an `mmap(MAP_NORESERVE)`
+range appears zero-filled on first touch, so the compute buffer just worked; on Windows a `MEM_RESERVE` page faults until `MEM_COMMIT`, and ggml's kernels
+write node outputs through `tensor->data` without any buffer call. Linux tests cannot see it (guard mode only protects evicted expert pages).
+Fix (cffa6f9): `buf_init_tensor` commits every non-expert tensor's range, once per 64 KiB chunk (a per-buffer flag array, so the per-token graph
+allocation costs a few lookups, not ~900 `VirtualAlloc` calls). Rerun pending (Claw round 3).
+
+Launcher rechecks on the Claw: the launcher's death now ends llama-server (job object), a plugin that does not load is reported, `check` and the dry run
+read Windows memory, the dry run is PowerShell. Fixed after this round: the launcher now names the exit code when llama-server crashes
+(`0xC0000005 (access violation)` and the last plugin line instead of silence), planner errors give the real reason (not "pip install gguf"), the
+API pre-warning works on Windows (version string in `ggml-base.dll`), a missing `MOE_CACHE_LIB` is named as such, `check` prints GB throughout and says
+the cache first runs at the first request. Core pinning on Windows (Claw finding 5) is implemented (f7721a6, efficiency class from
+`GetLogicalProcessorInformationEx` -> `-C` mask) and not yet run on Windows.
+
+**Mini PC (T7): Ryzen 7 5800H (Zen 3, AVX2), Vega 8 iGPU (3 GiB carve-out) via Vulkan (RADV), 32 GB DDR4, Ubuntu 26.04, llama.cpp 23b0202a1
+built by `install.sh --vulkan`; plugin from 022c674 plus the fixes below.** The first AMD CPU and the first AMD GPU.
+
+| Test | Result |
+|---|---|
+| `moe-cache-check` (Granite 1B) | 0 failed, 2 warnings (swap on; model fits) |
+| friend test, stock vs plugin | 4/4 |
+| identity, Granite, forced eviction (0.2 GiB): CPU only / Vega 8 / executor forced + byte-checked | 4/4 / 4/4 / 4/4, 0 mismatches in 6,708 expert ops (q4_K, q6_K) |
+| identity, Qwen3.6-35B-A3B Q4_K_M at a 12 GB limit, Vega 8 | 4/4 (cache grew to 10.5 GiB; no eviction in that short test) |
+| launcher start, chat, stop (Granite) | fine; the AMD VRAM path (audit A13) reads the 3 GiB carve-out and ignores the 14.9 GB GTT |
+| decode, Qwen3.6 at 12 GB, paired (stock / mc / mc / stock), cool machine, page cache dropped | stock 8.12 / 9.08, moe-cache 10.76 / 10.43 tok/s: **1.23x** |
+
+No expert layer fits on the 3 GiB iGPU next to the other weights and buffers, so this is the no-GPU case. moe-cache's 10.6 tok/s is close to the laptop's
+no-GPU 9.9 (section 44), but stock is much faster here than on the laptop (8.6 vs 3.1 tok/s at the same limit); why (SSD, readahead, the DDR4 / Zen 3
+caches) was not investigated. The two stock runs differ by 12 %, so read +23 % as roughly +15 to +30 %.
+
+Bugs found there (all fixed in cffa6f9):
+
+| # | Bug | Effect | Fix |
+|---|---|---|---|
+| B1 | `MOE_CACHE_GPU_CACHE=1` (`--gpu-cache`) with the plugin loaded through `GGML_BACKEND_PATH` | **wrong tokens** (0/4 identical, one token repeated): the hook that loads experts before llama.cpp's GPU cache uploads them is symbol interposition, which only works with LD_PRELOAD; nothing warned | the plugin refuses the mode unless preloaded; the launcher drops `--gpu-cache` on path loading; the friend test skips that case; two CI checks. Affects every install.sh / Vulkan / official / Windows build |
+| B2 | the long-prompt GPU path accepted only `GPU` devices; ggml-vulkan reports APUs as `IGPU` | plugin prefill 363 vs stock 632-703 tok/s | discrete GPU first, else the iGPU: 569-597 tok/s, identity 2/2 |
+| F2 | friend-test kernel check opened `libggml-cpu.so.0`; `GGML_CPU_ALL_VARIANTS` builds have only `libggml-cpu-<variant>.so` | section 2 always failed on install.sh builds | picks the variant with the highest backend score, as ggml does (checked on the laptop: `alderlake`, all bit-exact) |
+| F3 | `install.sh --vulkan` on a headless server without the `render` group | Vulkan silently saw only llvmpipe | warning after the build, with the `usermod -aG render,video` hint |
+| F5 | `wait_cool.sh` without lm-sensors on AMD (no thermal zones, k10temp in hwmon only) | read 99 C forever | reads k10temp / zenpower / coretemp from hwmon |
+
+Machine notes (not moe-cache bugs): the `render` group was missing for Vulkan; a KDE bluedevil / obexd D-Bus loop kept the idle load near 2 (fixed for that
+session by unloading bluedevil); a NoMachine desktop session alone kept the load at 2.6 and 75 C, above the clean-run gate.
