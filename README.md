@@ -8,6 +8,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-23b0202a1%20(ggml%200.26.0)%20and%207fe450e19%20(0.25.1)-green">
+<a href="https://ko-fi.com/ibrumm"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white"></a>
 </p>
 
 <p align="center"><img src="docs/img/results.svg" alt="speed with and without moe-cache" width="860"></p>
@@ -182,6 +183,10 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 | `MOE_CACHE_COALESCE_MIB=N` | merge neighbouring expert reads of a long prompt into reads of up to N MiB (default 16; 0 = off). Flash-Next prefill +14-24 % |
 | `MOE_CACHE_HOST_RESERVE_MIB` | memory kept free for llama-server's prompt cache (`--cache-ram`); the launcher sets it |
 | `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
+
+## Support
+
+moe-cache is built and tested in my spare time on my own machines. If it saves you a RAM upgrade, you can support it on [Ko-fi](https://ko-fi.com/ibrumm).
 
 ## Acknowledgements
 
