@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- **Long prompts keep part of the cache** (`MOE_CACHE_SCAN_TOKENS`, default 512, 0 = off; idea I3): prompt batches of 512+ tokens load experts at the
+  evict-first end of the cache, so what was cached before the prompt survives from chunk to chunk (with plain LRU a prompt bigger than the cache kept
+  nothing). Flash-Next at 24 GB, paired: prefill 72.7 -> 92.4 tok/s (+27 %), cache hits during prompts 44 % -> 78 %, SSD reads 242 -> 103 GB; decode
+  unchanged; output unchanged (only the eviction order differs). The same idea lost in October (X8, -25 %) before reads were merged. RESULTS 48.
+- CI: sanitizer workflow (ThreadSanitizer / AddressSanitizer, `.github/workflows/sanitize.yml`, push to branch `sanitize` to run); long-prompt identity step.
+
 ## 0.2.3.5 (2026-10-15)
 - **No abort when the cache is smaller than one op** (a fixed `MOE_CACHE_SIZE_GIB` below the experts one step needs; `auto` never gets there): the experts
   that do not fit are mapped straight from the model file, the way stock llama.cpp loads them (file cache, reclaimable, so the size still holds), or, where

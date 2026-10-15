@@ -72,6 +72,9 @@ struct state_t {
     // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
     bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
     std::atomic<uint64_t> sibling_loads{0};
+    bool   cur_scan = false;                            // the group being prepared is a long prompt batch (MOE_CACHE_SCAN_TOKENS)
+    int    scan_tokens = 512;                           // MOE_CACHE_SCAN_TOKENS=N (default 512, 0 = off; I3, RESULTS 48): batches of N+ tokens load experts at the evict-first end, so the experts
+                                                        // cached before the prompt survive from chunk to chunk (with LRU a cyclic scan bigger than the cache keeps nothing)
     uint64_t small_mapped = 0, small_over = 0;          // cache smaller than one op: experts mapped from the file (stock way) / loaded over the budget
     bool   small_warned = false;
     bool   lookahead = false;
@@ -433,6 +436,9 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE_KEEP")) {
             route_keep = atoi(v);
+        }
+        if (const char * v = getenv("MOE_CACHE_SCAN_TOKENS")) {
+            scan_tokens = std::max(0, atoi(v));
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHECK")) {
             exec_check = strcmp(v, "0") != 0;
@@ -1323,6 +1329,16 @@ struct state_t {
         n.prev = n.next = -1;
     }
 
+    // evict-first insertion: a long prompt's experts recycle their own slots instead of pushing out what was cached before (MOE_CACHE_SCAN_TOKENS)
+    void push_lru(int s) {
+        node_t & n = nodes[s];
+        n.next = -1;
+        n.prev = lru;
+        if (lru >= 0) { nodes[lru].next = s; }
+        lru = s;
+        if (mru < 0) { mru = s; }
+    }
+
     void push_mru(int s) {
         node_t & n = nodes[s];
         n.prev = -1;
@@ -1475,7 +1491,7 @@ struct state_t {
                     n.resident = true;
                     n.epoch = epoch;
                     resident_bytes += ti.nb2;
-                    push_mru(s);
+                    if (cur_scan) { push_lru(s); } else { push_mru(s); }
                     { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                     pending_bytes += ti.nb2;
                     if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
@@ -1499,8 +1515,10 @@ struct state_t {
                         if (n.loading) { pf_late++; }
                     }
                     if (n.loading) { wait_list.push_back(s); }
-                    unlink(s);
-                    push_mru(s);
+                    if (!cur_scan) {          // a long prompt uses (nearly) everything: it does not make an expert "recently used"
+                        unlink(s);
+                        push_mru(s);
+                    }
                     n.epoch = epoch;
                     continue;
                 }
@@ -1538,7 +1556,7 @@ struct state_t {
                 n.resident = true;
                 n.epoch = epoch;
                 resident_bytes += ti.nb2;
-                push_mru(s);
+                if (cur_scan) { push_lru(s); } else { push_mru(s); }
                 { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                 pending_bytes += ti.nb2;
                 if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {

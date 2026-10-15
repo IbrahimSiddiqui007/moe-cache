@@ -1148,3 +1148,21 @@ so its row uses section 38's numbers, same launcher settings at ctx 8192.
 Reading: decode does not get slower with the longer context on either model. Prefill does: Flash-Next 38 tok/s on a 30k prompt against ~95 on 2-5k prompts
 (attention over the whole prompt, and no expert layers fit on the GPU at 32k); GLM re-reads most of its ~95 GB of experts from the SSD for every 512-token
 chunk, so its long prompts run at under 6 tok/s. Ideas I3 (keep a share of the cache across chunks) and B13 (bigger chunks on a bigger card) target this.
+
+## 48. Long prompts keep part of the cache (idea I3, scan-resistant loading; Flash-Next IQ2_XS, 24 GB, launcher defaults, ctx 8192, 2026-10-15 ~21:00)
+
+`MOE_CACHE_SCAN_TOKENS=512`: experts loaded by prompt batches of 512+ tokens go to the evict-first end of the LRU list and hits do not move experts to the
+front, so a prompt that needs more experts than the cache holds recycles its own slots instead of evicting everything cached before it. With plain LRU a
+cyclic pass over 64 GB of experts through a ~20 GB cache keeps nothing between micro-batches. Paired runs, `pf_run.sh` (prompts of 2.4k / 1.9k / 5.0k /
+5.4k tokens, then 4 decode requests), same build (`build-i3`), order off, on, on, off:
+
+| Run | Prefill tok/s | Cache hit rate | Read from SSD | Decode after |
+|---|---|---|---|---|
+| off a | 55.6 / 78.0 / 69.9 / 75.2 | 43.7 % | 241.8 GB | 7.9-10.2 |
+| on a | 72.8 / 98.1 / 81.7 / 106.1 | 78.0 % | 102.8 GB | 8.7-12.5 |
+| on b | 85.9 / 103.4 / 88.7 / 102.0 | 78.1 % | 102.5 GB | 8.1-10.6 |
+| off b | 74.8 / 73.8 / 74.5 / 79.7 | 43.8 % | 241.8 GB | 8.8-11.2 |
+
+Mean prefill: off 72.7, **on 92.4 tok/s (+27 %)**; SSD reads -58 %. Output cannot change (only which expert is evicted differs; CI runs a long-prompt
+identity step with it on). Now the default. The off runs are lower than section 38's 90-103 (another cache state at the start of this build's runs);
+the comparison is paired. X8 (the same idea, October) lost 25 % before prompt reads were merged (T38).
