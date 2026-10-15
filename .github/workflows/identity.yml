@@ -68,6 +68,7 @@ jobs:
           grep -qE "^env .*MOE_CACHE_SIZE_GIB=auto .*MOE_CACHE_ROUTE=skip .*llama-server -m granite.gguf .*--n-cpu-moe" launcher_dry.txt
           bin/moe-cache-check granite.gguf | tee launcher_check.txt
           grep -q "plugin loads .*yes" launcher_check.txt
+          python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
 
       - name: Identity, cache forced to evict (0.2 GiB)
         env:
