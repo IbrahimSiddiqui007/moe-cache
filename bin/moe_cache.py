@@ -175,9 +175,85 @@ def python_cmd():
     return os.environ.get("MOE_CACHE_PYTHON") or sys.executable or "python3"
 
 
-def run_child(cmd, env):
-    """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code."""
-    p = subprocess.Popen(cmd, env=env)
+_JOB = None   # Windows job object: kept open for the launcher's lifetime; closing it (the launcher exits or is killed) kills llama-server
+
+
+def _kill_with_parent_windows(p):
+    """Put the child in a job object that kills it when the launcher's handle closes (the launcher exits, is closed or killed).
+    Found on the MSI Claw (2026-10-15): without it a killed launcher left llama-server running on its port."""
+    global _JOB
+    import ctypes
+    from ctypes import wintypes
+    class BASIC(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+    class IOC(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_uint64) for n in ("ReadOps", "WriteOps", "OtherOps", "ReadBytes", "WriteBytes", "OtherBytes")]
+    class EXT(ctypes.Structure):
+        _fields_ = [("Basic", BASIC), ("Io", IOC), ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    job = k32.CreateJobObjectW(None, None)
+    info = EXT()
+    info.Basic.LimitFlags = 0x2000           # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    ok = job and k32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info)) and \
+        k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(int(p._handle)))
+    if ok:
+        _JOB = job
+    else:
+        say("moe-cache: warning: could not tie llama-server to the launcher (closing this window may leave it running)", err=True)
+
+
+def _die_with_parent_linux():
+    """preexec_fn: the child gets SIGTERM when the launcher dies, even if the launcher is killed with SIGKILL."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)    # PR_SET_PDEATHSIG
+    except Exception:
+        pass
+
+
+def run_child(cmd, env, port=None, expect_plugin=False):
+    """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code.
+    The child dies with the launcher. Its log is passed through; when the plugin was meant to load and the server becomes ready without a single
+    'moe-cache:' line, a warning says it is running stock (found on the MSI Claw, 2026-10-15: the plugin failed to load and nothing said so)."""
+    kw = {"env": env, "stderr": subprocess.PIPE}
+    if sys.platform.startswith("linux"):
+        kw["preexec_fn"] = _die_with_parent_linux
+    p = subprocess.Popen(cmd, **kw)
+    if WINDOWS:
+        try:
+            _kill_with_parent_windows(p)
+        except Exception as e:
+            say(f"moe-cache: warning: could not tie llama-server to the launcher ({e})", err=True)
+    seen = {"plugin": False, "disabled": ""}
+    def pump():
+        out = sys.stderr.buffer
+        for line in iter(p.stderr.readline, b""):
+            out.write(line); out.flush()
+            if b"moe-cache:" in line:
+                seen["plugin"] = True
+                if b"plugin disabled" in line or b"refus" in line:
+                    seen["disabled"] = line.decode(errors="replace").strip()
+    threading.Thread(target=pump, daemon=True).start()
+    if expect_plugin and port:
+        def check():
+            for _ in range(900):
+                if p.poll() is not None:
+                    return
+                if healthy(port):
+                    time.sleep(1)
+                    if seen["disabled"]:
+                        say(f"moe-cache: WARNING: the plugin loaded but disabled itself ({seen['disabled']}): llama-server runs stock", err=True)
+                    elif not seen["plugin"]:
+                        say("moe-cache: WARNING: the plugin did not load: llama-server is running stock llama.cpp. Likely causes: the plugin library "
+                            "does not match this llama-server's ggml version (API 2 vs 3), a wrong MOE_CACHE_LIB path, or (preload method) a llama-server "
+                            "without shared ggml libraries. Run: moe_cache.py check MODEL --llama-server ...", err=True)
+                    return
+                time.sleep(1)
+        threading.Thread(target=check, daemon=True).start()
     def stop(sig, frame):
         p.terminate()
     if not WINDOWS:
@@ -409,7 +485,7 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
-    return run_child(cmd, dict(os.environ, **dict(env)))
+    return run_child(cmd, dict(os.environ, **dict(env)), port=port, expect_plugin=method != "none (stock)")
 
 
 # ---- learn ----

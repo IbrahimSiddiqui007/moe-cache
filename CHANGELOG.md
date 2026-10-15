@@ -5,6 +5,9 @@
   evict-first end of the cache, so what was cached before the prompt survives from chunk to chunk (with plain LRU a prompt bigger than the cache kept
   nothing). Flash-Next at 24 GB, paired: prefill 72.7 -> 92.4 tok/s (+27 %), cache hits during prompts 44 % -> 78 %, SSD reads 242 -> 103 GB; decode
   unchanged; output unchanged (only the eviction order differs). The same idea lost in October (X8, -25 %) before reads were merged. RESULTS 48.
+- Launcher (found on the MSI Claw): llama-server now dies with the launcher (Windows job object, Linux parent-death signal; a closed or killed launcher
+  left it running on its port), and when the plugin was meant to load but llama-server comes up without any `moe-cache:` line, the launcher says so
+  loudly (it reported the plugin as loaded while llama-server silently ran stock).
 - CI: sanitizer workflow (ThreadSanitizer / AddressSanitizer, `.github/workflows/sanitize.yml`, push to branch `sanitize` to run); long-prompt identity step.
 
 ## 0.2.3.5 (2026-10-15)
