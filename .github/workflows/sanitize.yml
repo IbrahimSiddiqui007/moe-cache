@@ -64,6 +64,11 @@ jobs:
           TSAN_OPTIONS: "halt_on_error=0 report_signal_unsafe=0 second_deadlock_stack=1"
           ASAN_OPTIONS: "detect_leaks=0 halt_on_error=0"
         run: |
+          # LD_PRELOAD loads the plugin before the executable's own libraries, so its sanitizer runtime must be preloaded first (else the plugin's
+          # instrumented start-up code runs before the runtime exists: segfault with an empty log, first run of this workflow)
+          RT=$(gcc -print-file-name=lib$([ ${{ matrix.san }} = thread ] && echo tsan || echo asan).so)
+          export MOE_CACHE_LIB="$RT:$MOE_CACHE_LIB"
+          echo "preload: $MOE_CACHE_LIB"
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_san.txt || true
           echo "---- sanitizer reports in the plugin server log:"
           grep -c -E "WARNING: ThreadSanitizer|ERROR: AddressSanitizer" ident_san/plugin.log || true
