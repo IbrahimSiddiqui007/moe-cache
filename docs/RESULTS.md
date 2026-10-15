@@ -974,3 +974,22 @@ Clean-run gate, one run per row, same prompts as section 32.
 Identity with merging active (DeepSeek-V2-Lite, 1 GiB cache, direct reads forced): long prompts 2/2 (25,486 reads merged), short prompts 4/4 (8,276 merged).
 Over the session the default prefill on Flash-Next went from 18 tok/s (section 32) to about 95 tok/s. The reads are now near the drive's limit; the next levers are
 the uploads (319 GB at about 6 GB/s, pinned memory) and fewer uploads per token (larger prompt chunks on bigger cards, BIGGER_MACHINES B13).
+
+## 39. Prompt-lookup drafting on code edits (T17; Flash-Next IQ2_XS, 8 GB card, 24 GB limit, launcher defaults; 2026-10-15)
+
+4 requests, each a ~120-line Python file plus a small edit ("rename `tune` everywhere ... reply with the complete file"), thinking skipped, 320 tokens, clean-run
+gate, one run per row. All drafted runs gave the same tokens as the run without drafting (4/4).
+
+| Drafting (`-- --spec-type ...`) | Decode tok/s per edit | Mean | Drafts accepted |
+|---|---|---|---|
+| off | 11.00 / 11.88 / 8.19 / 10.10 | 10.29 | - |
+| `ngram-mod` (drafts of about 55-59 tokens) | 12.17 / 12.69 / 12.53 / 6.78 | 11.04 | 100 / 100 / 100 / 57 % |
+| `ngram-mod --spec-ngram-mod-n-max 8` (9-token verify batches) | 7.19 / 7.46 / 7.33 / 7.65 | 7.41 | 100 / 100 / 100 / 88 % |
+| **`ngram-mod --spec-ngram-mod-n-max 7`** (8-token verify batches) | 11.56 / 14.38 / 8.99 / 9.35 | **11.07** | 100 / 100 / 100 / 90 % |
+| `ngram-map-k` | 5.86 / 8.86 / 7.87 / 3.62 | 6.55 | 86 % |
+
+- The gain is small (+8 %, single runs, at the noise level) even with every draft accepted: a verify step of 8 tokens wakes the experts of all 8, so it costs
+  much more than one ordinary step (the reason the n-gram test of section 15 lost on Qwen3.6).
+- Keep every speculative draft at 7 tokens or fewer with this plugin: the verify batch (draft + 1) must fit the executor's 8 tokens; at 9 every verify step
+  falls back to llama.cpp's own path (-28 %). Long drafts (above 31 tokens) go to the long-prompt GPU block and collapse when a draft is rejected.
+- Option for code-edit work: `moe-cache-server MODEL -- --spec-type ngram-mod --spec-ngram-mod-n-max 7` (exact, small gain). Not a default.
