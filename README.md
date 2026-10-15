@@ -82,7 +82,7 @@ Re-measured on 2026-10-15 with the current code where the model is still on the 
 | **GLM-5.3-Flash (102 GB, 4x the memory limit)**, 24 GB RAM, 8 GB GPU | 0.32 tok/s | **1.75 tok/s** exact, 2.1 with `--fast` | v0.2.3.2 (§26) |
 | **Qwen3.8-Flash-Next IQ2_XS (68 GB)**, 24 GB RAM, 8 GB GPU, launcher defaults | 5.2 tok/s | **12.5 tok/s**; 13.1 with `--gpu-cache auto`; 17.6 with `--hybrid` (approximate) | v0.2.3.4+ (§44, §28, §31) |
 | Same model, prompt processing (2-5k token prompts) | - | **90 to 100 tok/s** | v0.2.3.3 (§38) |
-| **gpt-oss-120b (63 GB)**, 24 GB RAM, 2 expert layers on the GPU, one run each | 0.37 tok/s | **4.47 tok/s** | v0.1 (§12) |
+| **gpt-oss-120b (63 GB)**, 24 GB RAM, 2 expert layers on the GPU, ctx 8k, one run each | 0.37 tok/s | **4.47 tok/s** | v0.1 (§12b, §12d) |
 | Qwen3-Next-80B (48.5 GB), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** | v0.1 (§6) |
 | Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** | v0.1 (§6) |
 | Qwen3.6-35B (21.7 GB), 12 GB RAM, 6 expert layers on the GPU | 6.9 tok/s | **22.6 tok/s** | v0.2.3.4+ (§44) |
