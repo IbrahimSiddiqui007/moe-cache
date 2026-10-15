@@ -456,6 +456,7 @@ struct state_t {
     std::vector<std::string> shard_paths;
     std::vector<plat::file_t> fds_buf;          // buffered (no O_DIRECT) handles, opened only if a direct read keeps failing
     std::mutex fds_buf_mu;
+    int    test_read_delay_us = 0;              // MOE_CACHE_TEST_READ_DELAY_US=N: test switch, background expert reads start N us late
     int    fault_every = 0;                     // MOE_CACHE_FAULT_EVERY=N: test switch, every Nth expert read fails all its direct attempts
     std::atomic<uint64_t> fault_ctr{0}, read_fallbacks{0};
     std::unordered_map<std::string, int> file_shard;
@@ -675,6 +676,9 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_FAULT_EVERY")) {
             fault_every = atoi(v);
+        }
+        if (const char * v = getenv("MOE_CACHE_TEST_READ_DELAY_US")) {
+            test_read_delay_us = std::max(0, atoi(v));
         }
         const char * direct_env = getenv("MOE_CACHE_DIRECT");   // 1 / 0 forces it; unset = on when the model does not fit (decided below)
         direct_ok = direct_env && strcmp(direct_env, "0") != 0;
@@ -957,6 +961,11 @@ struct state_t {
                     abort();
                 }
                 bounce_size = need;
+            }
+            if (test_read_delay_us > 0) {
+                // test switch: the expert stays "loading" with its bytes not yet there for a while, so any path that does not wait for the
+                // loading flag reads stale data every time instead of only when the timing is unlucky (CI regression test for T39/T45)
+                std::this_thread::sleep_for(std::chrono::microseconds(test_read_delay_us));
             }
             const auto r0 = std::chrono::steady_clock::now();
             read_job(j, bounce);

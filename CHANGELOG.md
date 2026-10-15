@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- `MOE_CACHE_TEST_READ_DELAY_US=N` (tests only): background expert reads start N us late, so a code path that does not wait for an expert still loading
+  reads stale data every time instead of only by bad luck. Checked on gpt-oss-20b: the build without the T45 fix fails 0/4, the fixed build passes 4/4.
 - The plugin's Q2_0 kernels step aside when llama.cpp has its own (llama.cpp master, ggml-org/llama.cpp#30447: 96 ns per 2560-weight dot vs the plugin's
   126-238 ns, and adding up in another order). Checked once at start by comparing the library's function with the plain C loop; on 23b0202a1 nothing changes.
 - The prompt-cache reserve line says where the number came from (launcher, `LLAMA_ARG_CACHE_RAM` or the command line).
