@@ -1603,10 +1603,11 @@ ran the long prompt without a crash (table above).
 | Windows job-object memory limit (WP3) on the PC | untested |
 | HIP build | needs AMD's HIP SDK |
 
-## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; Flash-Next and 122B done, GLM to come)
+## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; complete: Flash-Next, 122B, GLM)
 
-Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). Cells marked
-"-" are not measured yet; quote only the filled tables.
+Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). WP2 is done
+for the three big models; the plugin stats runs and `--fast` / `--hybrid` rows are not measured (cells marked "-"). The owner's Claude app was open
+during the series, so these numbers are still not a perfectly quiet-machine result.
 
 | Item | Value |
 |---|---|
@@ -1614,7 +1615,7 @@ Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open
 | llama.cpp | b11669 (ggml 0.27.0), official Vulkan zip |
 | Plugin | DLL built from 2dccf17 (CI build; includes the long-prompt crash fix) |
 | Layout | launcher defaults: all experts on the CPU (`--n-cpu-moe 48`), `--ctx-checkpoints 0` for Flash-Next |
-| Owner's apps | closed (the list of what was still running is not recorded) |
+| Owner's apps | mostly closed; the owner's Claude app was still open, so the numbers are marked preliminary in that one respect (what else ran is not recorded) |
 
 **Method.**
 - Script `pc_series.ps1 -Flush "fileA;fileB;..."`: before every run it reads the other model files (70-99 GB in total, more than the 31 GB of RAM) from the SSD,
@@ -1658,15 +1659,22 @@ Reading: **decode plugin about 6.5 tok/s against stock about 11-14 (half)**; **p
 gap stays with a fair cold start for both, so it is not only stock's warm file cache (the explanation offered in section 54 does not hold for this
 model). The cause is not known yet; the stats run (cache budget, hit rate, SSD reads) is still to do.
 
-### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards)
+### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards) (cold start each run: file cache flushed by reading Flash-Next's 68 GB)
+
+Three decode requests per run, launcher default (all experts on the CPU), DLL 2dccf17. No crash in either plugin run.
 
 | Run | decode tok/s | prefill tok/s |
 |---|---|---|
-| stock A | - | - |
-| plugin A | - | - |
-| plugin B | - | - |
-| stock B | - | - |
-| plugin stats run (cache budget, hit rate, GB read; the shrink warning, if it fires) | - | - |
+| stock A | 1.38 / 3.70 / 1.70 | 15.3 |
+| plugin A | 1.18 / 1.05 / 1.03 | 44.4 |
+| plugin B | 1.07 / 1.01 / 1.03 | 45.1 |
+| stock B | 1.21 / 3.60 / 1.65 | 14.9 |
+| plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+Reading: **prefill 2.9-3.0x stock** (44-45 vs 15). **Decode: plugin about 1.05 tok/s in every request against stock 1.2-3.7**; stock's second request is about 3.6x
+the plugin's (3.6-3.7 vs 1.0-1.2: a short answer that stays in the experts stock has cached), the other two are close to it. The plugin's cache was squeezed to about 3.7 GiB by the AMD
+driver's RAM cost (the shrink warning fired, ideas I37 / I40), so it reads from the SSD for most picks. The model is 102 GB on a 32 GB machine, so both
+sides are bound by reading; the plugin's decode is not better here.
 
 ### Against section 54
 
@@ -1674,7 +1682,9 @@ model). The cause is not known yet; the stats run (cache budget, hit rate, SSD r
 |---|---|---|
 | Flash-Next | 14-16 / 12-13.5 tok/s; prefill about 2x | 12.1-16.1 / 12.2 tok/s; prefill 2.2x |
 | Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | 11-14 / 6.1-7.0 tok/s; prefill 1.5-1.6x |
-| GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | - |
+| GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | 1.2-3.7 / 1.05 tok/s; prefill 2.9-3.0x |
 
-What to conclude (to be written from the numbers): whether the plugin's first-session decode gap (idea I38, unbuffered reads) survives a cold file cache
-for stock too; whether the shrink on GLM (idea I37) still happens with the apps closed.
+What the clean series shows: (1) with a cold file cache for both, the plugin's first-session decode gap (idea I38) is gone on Flash-Next (12.3 vs stock 12.1-16.1)
+but not on 122B (about half of stock), so unbuffered reads alone do not explain it; (2) prefill is 2.2x (Flash-Next), 1.5-1.6x (122B) and 2.9-3.0x (GLM) stock on
+this machine; (3) on GLM the shrink from the AMD driver's RAM cost still happens (cache about 3.7 GiB), as in section 54. Open: the 122B decode diagnosis with
+stats (`handover` note 122B_DIAG_PLAN) and the budget idea I40.
