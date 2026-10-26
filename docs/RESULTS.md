@@ -1572,7 +1572,16 @@ Plugin prefill 1.4-1.5x stock; decode half of stock or less, most likely stock's
 | plugin A | crashed (one decode request done: 1.14 tok/s) | - |
 | plugin B | crashed | - |
 
-Stock B and a plugin rerun with the fixed DLL: to be confirmed (not run yet).
+After the fix (2dccf17, CI-built DLL), same layout:
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock B | 1.60 / 3.61 / 1.34 | 14.7 |
+| plugin A, fixed DLL | **no crash**; 1.09 / 1.05 / 0.99 | 42.5 (2.9x stock) |
+| plugin B, fixed DLL | to be confirmed | to be confirmed |
+
+Decode is below stock here (stock's file cache is warm, idea I38). The new shrink warning fired: the cache fell 15.3 -> 3.8 GiB because the rest of
+llama-server used 15.0 GiB even with all experts on the CPU (GLM's non-expert parts on the GPU; idea I37).
 
 ### GLM-5.3-Flash: crash in the long-prompt GPU block, fixed (2dccf17)
 
@@ -1580,15 +1589,15 @@ Both plugin runs above died at the long prompt with an access violation in `VCRU
 9.09 GiB at start). Cause: `gpu_segment` uploaded the
 whole expert tensor when at least 90 % of a layer's experts were used, including evicted ones. On Windows an evicted expert is decommitted memory
 (access violation); on Linux it is zeros (never used, harmless). Now it packs unless every expert is used, and a whole-tensor upload
-(`MOE_CACHE_GPU_PACK=0`) first checks that all experts are in RAM, else the block stays on the CPU. Linux behaviour is unchanged. Fix not yet confirmed
-on the PC with the rebuilt DLL.
+(`MOE_CACHE_GPU_PACK=0`) first checks that all experts are in RAM, else the block stays on the CPU. Linux behaviour is unchanged. Confirmed on the PC with the CI-built DLL: plugin A
+ran the long prompt without a crash (table above).
 
 ### Not measured yet
 
 | Item | State |
 |---|---|
 | 122B decode diagnosis with stats | to do |
-| GLM: stock B, plugin rerun with the fixed DLL | to be confirmed |
+| GLM: plugin B with the fixed DLL | to be confirmed |
 | `--fast`, `--hybrid` rows of WP2 | not run |
 | Clean timings (apps closed, file cache cleared as admin) | owner to free the machine |
 | Windows job-object memory limit (WP3) on the PC | untested |
