@@ -76,9 +76,18 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 
 ## 6. Known limits
 
-- **Speed is not established.** Preliminary numbers on the test PC (apps open, Windows file cache warm for stock): with all experts on the CPU the plugin's decode was about
-  equal to stock on a 24 GB-class model and prefill about 1.5-2x stock; on the 36.6 GB Qwen3.5-122B decode was half of stock or less (diagnosis pending). Treat the plugin on Windows as
-  a way to run models bigger than RAM with exact output, not as a speed-up yet.
+- **Speed on the test PC** (RESULTS 55: apps closed, Windows' file cache flushed before every run, stock-plugin-plugin-stock order, all experts on the CPU):
+
+  | Model | Decode: stock vs plugin | Prefill (about 3.5k-token prompt) |
+  |---|---|---|
+  | Flash-Next IQ2_XS (64 GB) | stock 12.1-16.1, plugin about 12.2 tok/s (about equal) | **2.2x** (120 vs 53-57 tok/s) |
+  | Qwen3.5-122B UD-IQ2_XXS (36.6 GB) | stock about 11-14, plugin about 6.5 tok/s (**about half**; cause under diagnosis) | **1.5-1.6x** (128 vs 80-87) |
+  | GLM-5.3-Flash UD-IQ2_XXS (102 GB) | plugin lower than stock (the AMD driver's RAM cost squeezes the cache) | about **2.9x**; **numbers to be confirmed** (the clean GLM runs are still going) |
+
+  What it means for you on Windows with an AMD card: the plugin's gain is **prompt processing** (long prompts, coding agents that send 5-20k tokens per turn): the first turn and follow-ups
+  after a big tool result come back 1.5-3x sooner, and the output is exact. **Decode is limited by RAM** (the AMD driver takes system RAM for VRAM in use, so the cache is small):
+  on models far bigger than RAM expect decode equal to or below stock, not above. If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself).
+  One desktop only; Linux numbers are in the README.
 - The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
   not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.
 - `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers.
