@@ -28,7 +28,11 @@ Ctrl-C stops the page and any server it started.
 | `X-Frame-Options: DENY` and `Content-Security-Policy` with `frame-ancestors 'none'` | clickjacking (another site framing the page) |
 | only listed models can be planned or started; numbers are range-checked; the API key goes to the launcher in `LLAMA_API_KEY`, never on a command line, and is masked in what the page shows | misuse of the API |
 
-llama-server itself (port 8080) has no API key unless you set one: any program of any user on this machine can use it while it runs.
+llama-server itself (port 8080): in **Agent mode** it gets the launcher's stable per-user API key (the owner's decision C,
+handover/DECISION_LLAMA_SERVER_KEY_20261026.md); the page asks the launcher for it (`moe_cache.py key`), uses it for its own calls, writes it into
+the agent's config with **Connect**, and shows **API key in use: ••••last 4** with a **Copy key** button (the key itself is fetched only for the
+copy; never in an address, the log or the status). llama-server's own chat page asks for the key once per browser: paste it there. A key typed in
+Settings wins over the launcher's. Plain chat servers have no key unless you type one.
 
 ## The four panels
 

@@ -115,6 +115,7 @@ srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 import os
 print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x for x in sys.argv), bool(os.environ.get("LLAMA_API_KEY"))), flush=True)
+print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
 print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
@@ -131,6 +132,8 @@ while True:
     time.sleep(1)
 ''')
 ui.LAUNCHER = [sys.executable, fake]
+AUTO_KEY = "auto-key-ABCDEFGH"
+ui.KEY_CMD = [sys.executable, "-c", f"print('{AUTO_KEY}')"]           # the launcher's `key` command (option C), faked
 
 TOKEN = "test-token-123"
 srv = ui.make_server(0, "llama-server", token=TOKEN)
@@ -235,6 +238,10 @@ w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
       f"the shrink warning is lifted out of the log, once, counted, without llama-server's prefix ({w})")
 check("sekrit" not in json.dumps(status), "the API key is not in the status")
+check(status.get("api_key") == {"in_use": True, "source": "typed on this page", "ends": "-123"}, f"API key in use, masked, typed on the page ({status.get('api_key')})")
+st, body = req("/api/key")
+check(st == 200 and json.loads(body)["key"] == "sekrit-123", "Copy key: /api/key gives the key in use")
+check(req("/api/key", headers={"X-MoeCache-Token": None})[0] == 403, "Copy key: not without the page token")
 lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check("fake: argv has the key: False, LLAMA_API_KEY set: True" in lg, "4: the API key reaches the launcher in LLAMA_API_KEY, not in its argv")
 check(not any("sekrit" in l for l in lg), "4: and is not in the log")
@@ -285,6 +292,33 @@ deadline = time.time() + 30
 while time.time() < deadline and status["state"] not in ("stopped", "exited"):
     status = json.loads(req("/api/status")[1]); time.sleep(0.3)
 check(status["state"] == "stopped", f"POST /api/stop stops it ({status['state']}, exit code {status['rc']})")
+check(req("/api/key")[0] == 400, "Copy key: nothing once the server stopped")
+# option C: agent mode without a typed key uses the launcher's stable key (KEY_CMD), for /slots, the benchmark and connect
+check(ui.launcher_key() == AUTO_KEY, "launcher_key reads the key the launcher prints")
+saved_cmd = ui.KEY_CMD
+for bad in ([sys.executable, "-c", "import sys; sys.exit(3)"], [sys.executable, "-c", "print('two words')"], [os.path.join(TMP, "missing")]):
+    ui.KEY_CMD = bad
+    check(ui.launcher_key() is None, f"no key when the command fails or prints something else ({os.path.basename(bad[-1])[:30]})")
+ui.KEY_CMD = saved_cmd
+with socket.socket() as so:
+    so.bind(("127.0.0.1", 0)); port2 = so.getsockname()[1]
+st, body = req("/api/start", {"model": small["path"], "port": port2, "ram": "1", "agent": True})
+deadline = time.time() + 30
+while time.time() < deadline:
+    status = json.loads(req("/api/status")[1])
+    if status["state"] == "ready" and status["log_seq"] > 5:
+        break
+    time.sleep(0.3)
+check(status.get("api_key", {}).get("source", "").startswith("the launcher's agent key") and status["api_key"]["ends"] == "EFGH", f"agent mode, no typed key: the launcher's key ({status.get('api_key')})")
+lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
+check("fake: agent snippet apiKey KEY" in lg and not any(AUTO_KEY in l for l in lg), "the key is masked in the log")
+check(AUTO_KEY not in json.dumps(status) and json.loads(req("/api/key")[1])["key"] == AUTO_KEY, "not in the status; Copy key gets it")
+st, body = req("/api/connect", {"agent": "opencode", "write": True})
+check(st == 200 and AUTO_KEY in open(cfg).read() and AUTO_KEY not in body, "Connect OpenCode writes the launcher's key into the config, never shows it")
+req("/api/stop", {})
+deadline = time.time() + 30
+while time.time() < deadline and json.loads(req("/api/status")[1])["state"] not in ("stopped", "exited"):
+    time.sleep(0.3)
 srv.shutdown()
 
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)
