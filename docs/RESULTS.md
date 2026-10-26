@@ -1671,8 +1671,8 @@ Three decode requests per run, launcher default (all experts on the CPU), DLL 2d
 | stock B | 1.21 / 3.60 / 1.65 | 14.9 |
 | plugin stats run (cache budget, hit rate, GB read) | - | - |
 
-Reading: **prefill 2.9-3.0x stock** (44-45 vs 15). **Decode: plugin about 1.05 tok/s in every request against stock 1.2-3.7**; stock's second request is about 3.6x
-the plugin's (3.6-3.7 vs 1.0-1.2: a short answer that stays in the experts stock has cached), the other two are close to it. The plugin's cache was squeezed to about 3.7 GiB by the AMD
+Reading: **prefill 2.9-3.0x stock** (44-45 vs 15). **Decode: plugin about 1.05 tok/s in every request against stock 1.2-3.7**; stock's second request is about 3.5x
+the plugin's (3.6-3.7 vs 1.0-1.2; the cause of that one fast request is not known), the other two are within about 1.0-1.7x of it. The plugin's cache was squeezed to about 3.7 GiB by the AMD
 driver's RAM cost (the shrink warning fired, ideas I37 / I40), so it reads from the SSD for most picks. The model is 102 GB on a 32 GB machine, so both
 sides are bound by reading; the plugin's decode is not better here.
 
