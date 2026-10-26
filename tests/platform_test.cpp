@@ -48,6 +48,31 @@ int main(int argc, char ** argv) {
     CHECK(got == 0);
     plat::aligned_free_page(buf);
 
+#ifdef _WIN32
+    // I37: views of a model file are taken out of the working set, private memory is not (the plugin's cache must stay)
+    {
+        HANDLE fh = CreateFileW(plat::widen(path.c_str()).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        HANDLE mh = fh != INVALID_HANDLE_VALUE ? CreateFileMappingW(fh, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
+        const unsigned char * v = mh ? (const unsigned char *) MapViewOfFile(mh, FILE_MAP_READ, 0, 0, 0) : nullptr;
+        CHECK(v != nullptr);
+        char * priv = (char *) plat::aligned_alloc_page(MB);
+        memset(priv, 3, MB);
+        unsigned sum = 0;
+        for (size_t i = 0; v && i < MB; i += 4096) { sum += v[i]; }
+        size_t views = 0;
+        const size_t freed = plat::trim_file_pages({ path }, &views);
+        printf("note: %zu view(s), %zu KiB released (checksum %u)\n", views, freed / 1024, sum);
+        CHECK(views == 1);
+        PSAPI_WORKING_SET_EX_INFORMATION wi;
+        memset(&wi, 0, sizeof(wi));
+        wi.VirtualAddress = priv;
+        CHECK(QueryWorkingSetEx(GetCurrentProcess(), &wi, sizeof(wi)) && wi.VirtualAttributes.Valid);   // private page still resident
+        plat::aligned_free_page(priv);
+        if (v) { UnmapViewOfFile(v); }
+        if (mh) { CloseHandle(mh); }
+        if (fh != INVALID_HANDLE_VALUE) { CloseHandle(fh); }
+    }
+#endif
     // limits and accounting
     CHECK(plat::mem_limit() > 100 * MB);
     CHECK(plat::rss_private() > 0);

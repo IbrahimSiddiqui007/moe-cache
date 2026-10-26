@@ -440,6 +440,58 @@ inline size_t rss_private() {
     return r;
 }
 
+// Windows: take the pages of this process's views of the given files out of its working set (VirtualUnlock on a range that is not locked does
+// exactly that; the pages stay in the standby list, so a later touch is a soft fault). Only views mapped from these files are touched, never private
+// memory. Returns the working-set bytes released; *views = how many mapped views matched. Elsewhere: 0.
+// Why (I37, PC 2026-10-27): llama.cpp's Windows loader reads the GPU tensors through its mapping of the model file and never unmaps those pages,
+// so ~13 GB of model file stayed in llama-server's working set (counted as in use) after loading; the plugin's cache then got that much less.
+inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * views) {
+    *views = 0;
+#ifdef _WIN32
+    std::vector<std::wstring> names;
+    for (const std::string & p : paths) {
+        std::wstring w = widen(p.c_str());
+        const size_t sl = w.find_last_of(L"\\/");
+        w = sl == std::wstring::npos ? w : w.substr(sl + 1);
+        for (auto & ch : w) { ch = (wchar_t) towlower(ch); }
+        names.push_back(w);
+    }
+    PROCESS_MEMORY_COUNTERS pmc;
+    memset(&pmc, 0, sizeof(pmc));
+    GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+    const size_t ws0 = (size_t) pmc.WorkingSetSize;
+    MEMORY_BASIC_INFORMATION mbi;
+    const char * q = nullptr;
+    while (VirtualQuery(q, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_MAPPED) {
+            wchar_t fn[2048];
+            const DWORD n = GetMappedFileNameW(GetCurrentProcess(), mbi.BaseAddress, fn, 2048);
+            if (n > 0 && n < 2048) {
+                std::wstring f(fn, n);
+                const size_t sl = f.find_last_of(L"\\/");
+                f = sl == std::wstring::npos ? f : f.substr(sl + 1);
+                for (auto & ch : f) { ch = (wchar_t) towlower(ch); }
+                if (std::find(names.begin(), names.end(), f) != names.end()) {
+                    VirtualUnlock(mbi.BaseAddress, mbi.RegionSize);   // fails with ERROR_NOT_LOCKED, and releases the pages: intended
+                    (*views)++;
+                }
+            }
+        }
+        const char * next = (const char *) mbi.BaseAddress + mbi.RegionSize;
+        if (next <= q) {
+            break;
+        }
+        q = next;
+    }
+    memset(&pmc, 0, sizeof(pmc));
+    GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+    return ws0 > (size_t) pmc.WorkingSetSize ? ws0 - (size_t) pmc.WorkingSetSize : 0;
+#else
+    (void) paths;
+    return 0;
+#endif
+}
+
 // ---- small file helpers (UTF-8 paths) ----
 inline void make_dir(const char * path) {
 #ifdef _WIN32

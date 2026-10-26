@@ -247,6 +247,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     bool exec_heavy = false;       // weights whose dot product is compute-bound (IQ types, Q2_0)
     if (s.cache_on) {
         if (!s.preload_done) {
+#ifdef _WIN32
+            s.release_model_pages();
+#endif
             s.preload();
         }
         s.begin_graph();       // the experts of every group below stay protected until the next graph

@@ -121,6 +121,30 @@ struct state_t {
     uint64_t protect_epoch = UINT64_MAX;
     uint64_t cpu_check_reloads = 0;                     // experts cpu_path_check() had to load again (should stay 0)
     bool in_use(const node_t & n) const { return n.loading || n.epoch == epoch || n.epoch >= protect_epoch; }
+#ifdef _WIN32
+    // once, at the first graph (llama.cpp has uploaded every tensor) and before the warm start fills the cache: release the model-file pages
+    // llama.cpp's loader left in the working set (I37), then size the auto budget again from what is available now
+    void release_model_pages() {
+        size_t views = 0;
+        const size_t freed = plat::trim_file_pages(shard_paths, &views);
+        if (views) {
+            fprintf(stderr, "moe-cache: released %.2f GiB of model-file pages from the working set (Windows, %zu mapped views)\n", freed / 1073741824.0, views);
+        }
+        if (auto_mode && !getenv("MOE_CACHE_RAM_GIB")) {
+            const size_t lim = read_mem_limit();
+            std::lock_guard<std::mutex> lk(mu);
+            if (lim > limit_bytes + ((size_t) 256 << 20) || lim + ((size_t) 256 << 20) < limit_bytes) {
+                limit_bytes = lim;
+                const size_t guess = (size_t) 7 << 29;   // as at start: 3.5 GiB for everything that is not expert cache, until measured
+                budget = limit_bytes > margin + guess + ((size_t) 1 << 30) ? limit_bytes - margin - guess : (size_t) 1 << 30;
+                if (max_budget) {
+                    budget = std::min(budget, max_budget);
+                }
+                fprintf(stderr, "moe-cache: memory limit now %.2f GiB, start budget %.2f GiB\n", limit_bytes / 1073741824.0, budget / 1073741824.0);
+            }
+        }
+    }
+#endif
     void begin_graph() {
         std::lock_guard<std::mutex> lk(mu);
         protect_epoch = epoch + 1;
