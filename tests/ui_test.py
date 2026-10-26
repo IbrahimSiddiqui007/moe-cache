@@ -109,7 +109,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         q = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         assert self.path == "/completion" and q["temperature"] == 0 and q["seed"] == 42 and q["cache_prompt"] is False
-        t = {"predicted_n": q["n_predict"], "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
+        t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
         self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -223,7 +223,7 @@ while time.time() < deadline:
         break
     time.sleep(0.3)
 r = b.get("result", {})
-check(b["state"] == "done" and r.get("decode_tokens") == "256/256" and float(r["decode_mean"]) > 0, f"two decode runs of 256 tokens ({b.get('error') or r.get('decode_1')} / {r.get('decode_2')})")
+check(b["state"] == "done" and r.get("decode_tokens") == "256/256" and float(r["decode_mean"]) > 0, f"two decode runs of 256 tokens even when the model would stop early (ignore_eos) ({b.get('error') or r.get('decode_1')} / {r.get('decode_2')})")
 check(3000 <= int(r.get("prefill_tokens") or 0) <= 4500 and r.get("prefill") == "300.0", f"one prefill of about 3.5k tokens ({r.get('prefill_tokens')})")
 check(r.get("mode") == "moe-cache exact" and r.get("model") == "Small-MoE-Q4_K_M.gguf" and "sekrit" not in r.get("command", ""), "the row names model and mode, no key")
 rows = json.loads(req("/api/bench")[1])["rows"]

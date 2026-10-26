@@ -30,7 +30,7 @@ Ctrl-C stops the page and any server it started. The page listens on 127.0.0.1 o
 
 ## Quick benchmark
 
-For the running server: one warm-up request, two replies of 256 tokens to prompts that do not end early, and one prompt of about 3.5k tokens
+For the running server: one warm-up request, two replies of 256 tokens (`ignore_eos`, so a model that finishes early is still timed over 256 tokens), and one prompt of about 3.5k tokens
 (greedy, fixed seed, no prompt reuse; the method of the speed runs in RESULTS 54-55). It shows decode tok/s (both runs and the mean), prefill tok/s
 and, with the plugin, the cache hit rate during the two replies, and appends one row to `~/.cache/moe-cache/bench.csv` (Windows:
 `%USERPROFILE%\.cache\moe-cache\bench.csv`) with the model, mode, RAM budget, GPU and the launcher command. To compare stock and moe-cache on your

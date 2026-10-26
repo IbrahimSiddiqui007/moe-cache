@@ -79,7 +79,7 @@ try:
         r = b.get("result", {})
         print(f"  quick benchmark: {b.get('state')} {b.get('error', '')} decode {r.get('decode_1')} / {r.get('decode_2')} tok/s ({r.get('decode_tokens')} tokens), "
               f"prefill {r.get('prefill_tokens')} tokens at {r.get('prefill')} tok/s, hit rate {r.get('hit_rate')}, {time.time() - t3:.0f} s")
-        check(b.get("state") == "done" and float(r.get("decode_mean") or 0) > 0 and int(r.get("prefill_tokens") or 0) > 2000,
+        check(b.get("state") == "done" and float(r.get("decode_mean") or 0) > 0 and int(r.get("prefill_tokens") or 0) > 2000 and r.get("decode_tokens") == "256/256",
               "quick benchmark: two decode runs and a long prefill")
         check(r.get("hit_rate") not in (None, ""), "quick benchmark: the cache hit rate over the decode runs (plugin snapshot)")
     req("/api/stop", {})

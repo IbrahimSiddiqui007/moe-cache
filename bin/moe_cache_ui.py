@@ -752,10 +752,11 @@ class Runner:
         self.bench = {"state": "running", "step": "warm-up", "started": time.time()}
         threading.Thread(target=self.run_bench, args=(self.p,), daemon=True).start()
 
-    def complete(self, prompt, n):
-        """One /completion as pc_speed.ps1 asks it: greedy, fixed seed, no prompt reuse, so stock and moe-cache runs compare."""
+    def complete(self, prompt, n, ignore_eos=False):
+        """One /completion as pc_speed.ps1 asks it: greedy, fixed seed, no prompt reuse, so stock and moe-cache runs compare. The decode runs also
+        set ignore_eos: a model that finishes its answer early would otherwise time fewer tokens (Granite in CI stopped at 149 of 256)."""
         port = int(self.settings.get("port") or 8080)
-        st, body = mc.http(f"http://127.0.0.1:{port}/completion", {"prompt": prompt, "n_predict": n, "temperature": 0, "seed": 42, "cache_prompt": False},
+        st, body = mc.http(f"http://127.0.0.1:{port}/completion", dict({"prompt": prompt, "n_predict": n, "temperature": 0, "seed": 42, "cache_prompt": False}, **({"ignore_eos": True} if ignore_eos else {})),
                            api_key=self.settings.get("api_key"), timeout=1800)
         if st != 200:
             raise RuntimeError(f"HTTP {st}: {body[:200]}" if st else "the server did not answer")
@@ -782,7 +783,7 @@ class Runner:
             dec, ntok = [], []
             for i, q in enumerate(BENCH_PROMPTS[1:3]):
                 b["step"] = f"decode {i + 1} of 2 (256 tokens)"
-                t = self.complete(q, 256)
+                t = self.complete(q, 256, ignore_eos=True)
                 dec.append(t["predicted_per_second"]); ntok.append(t.get("predicted_n"))
             c1 = self.cache_counts()
             b["step"] = "prefill (about 3.5k tokens)"
