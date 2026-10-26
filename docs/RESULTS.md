@@ -1562,7 +1562,7 @@ pc_series.ps1 and rerun.
 | stock B | 11.46 / 13.56 / 12.64 | 86.9 |
 | extra stock runs (first series) | 10.46-14.29 / 10.89-13.93 | 83.5 / 73.3 |
 
-Plugin prefill 1.4-1.5x stock; decode half of stock or less, most likely stock's warm Windows file cache (idea I38). The 122B diagnosis with stats is still to do.
+Plugin prefill 1.4-1.5x stock; decode half of stock or less, possibly stock's warm Windows file cache (idea I38); the clean run in section 55 shows the gap stays with a cold cache, so that explanation is not enough. The 122B diagnosis with stats is still to do.
 
 ### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards), new default, ABBA (PRELIMINARY, incomplete)
 
@@ -1603,7 +1603,7 @@ ran the long prompt without a crash (table above).
 | Windows job-object memory limit (WP3) on the PC | untested |
 | HIP build | needs AMD's HIP SDK |
 
-## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; Flash-Next done, 122B and GLM to come)
+## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; Flash-Next and 122B done, GLM to come)
 
 Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). Cells marked
 "-" are not measured yet; quote only the filled tables.
@@ -1642,15 +1642,21 @@ plugin's, its slowest equals it. **Prefill 2.2x stock** (120 vs 53-57). Both agr
 prefill about 2x), now with a cold file cache for every run: the plugin's first-session gap seen there (5 tok/s) did not appear (plugin A 12.3).
 Note: the runner's `speed.log` failed to open ("Stream was not readable", a log-file lock); the numbers above are from the runner's captured output.
 
-### Qwen3.5-122B UD-IQ2_XXS (36.6 GB)
+### Qwen3.5-122B UD-IQ2_XXS (36.6 GB) (clean run: apps closed, other model files read before every run)
+
+Three decode requests per run, launcher default (all experts on the CPU), DLL 2dccf17.
 
 | Run | decode tok/s | prefill tok/s |
 |---|---|---|
-| stock A | - | - |
-| plugin A | - | - |
-| plugin B | - | - |
-| stock B | - | - |
+| stock A | 11.12 / 13.64 / 14.22 | 80.0 |
+| plugin A | 6.61 / 6.54 / 7.04 | 129.3 |
+| plugin B | 6.08 / 6.09 / 6.57 | 127.7 |
+| stock B | 10.60 / 13.65 / 14.03 | 86.8 |
 | plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+Reading: **decode plugin about 6.5 tok/s against stock about 11-14 (half)**; **prefill 1.5-1.6x stock** (128-129 vs 80-87). Unlike Flash-Next, the decode
+gap stays with a fair cold start for both, so it is not only stock's warm file cache (the explanation offered in section 54 does not hold for this
+model). The cause is not known yet; the stats run (cache budget, hit rate, SSD reads) is still to do.
 
 ### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards)
 
@@ -1667,7 +1673,7 @@ Note: the runner's `speed.log` failed to open ("Stream was not readable", a log-
 | Model | Section 54 (PRELIMINARY): stock / plugin decode, plugin prefill vs stock | Section 55 (clean) |
 |---|---|---|
 | Flash-Next | 14-16 / 12-13.5 tok/s; prefill about 2x | 12.1-16.1 / 12.2 tok/s; prefill 2.2x |
-| Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | - |
+| Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | 11-14 / 6.1-7.0 tok/s; prefill 1.5-1.6x |
 | GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | - |
 
 What to conclude (to be written from the numbers): whether the plugin's first-session decode gap (idea I38, unbuffered reads) survives a cold file cache
