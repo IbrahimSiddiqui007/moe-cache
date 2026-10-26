@@ -53,6 +53,8 @@ struct state_t {
     int  route_keep = -1;                               // MOE_CACHE_ROUTE_KEEP: picks always honoured (default: all but the last route_drop)
     int  route_drop = 2;                                // MOE_CACHE_ROUTE_DROP: lowest-ranked picks that may be skipped (--fast=2: 4)
     uint64_t route_skipped = 0, route_substituted = 0, route_considered = 0;
+    double route_weight = 0;                            // MOE_CACHE_ROUTE_WEIGHT=share (idea I14): skip a non-resident pick whose share of the token's picked router weight is below this (implies ROUTE=skip); 0 = off
+    uint64_t route_w_groups = 0, route_w_unavail = 0;   // groups where the weights were read / where they were not on the host yet (no skipping there)
     std::unordered_map<const ggml_tensor *, std::vector<int32_t>> route_ids;   // ids tensor -> effective expert per (token, pick); -1 = skipped
     FILE * trace_f = nullptr;                           // MOE_CACHE_TRACE_IDS=file: record the experts picked in every decode step (int16 layer, int16 n, n x int16 expert)
     std::vector<uint64_t> layer_hits, layer_misses;     // per layer, updated under mu
@@ -413,6 +415,12 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE_KEEP")) {
             route_keep = atoi(v);
+        }
+        if (const char * v = getenv("MOE_CACHE_ROUTE_WEIGHT")) {
+            route_weight = std::max(0.0, atof(v));
+            if (route_weight > 0 && route_mode == 0) {
+                route_mode = 1;                           // weight-based skipping is a form of ROUTE=skip
+            }
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE_DROP")) {
             route_drop = std::max(0, atoi(v));

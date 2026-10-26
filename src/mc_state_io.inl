@@ -429,6 +429,10 @@
             if (route_mode) {
                 fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
                         route_mode == 1 ? "skip" : "subst", (unsigned long long) route_considered, (unsigned long long) route_skipped, (unsigned long long) route_substituted);
+                if (route_weight > 0) {
+                    fprintf(stderr, "moe-cache: routing by weight (share < %.3f): router weights read on the host in %llu groups, not available in %llu (no skipping there)\n",
+                            route_weight, (unsigned long long) route_w_groups, (unsigned long long) route_w_unavail);
+                }
             }
             if (small_mapped || small_over) {
                 fprintf(stderr, "moe-cache: cache smaller than one op: %llu experts mapped from the model file, %llu loaded over the cache size\n",

@@ -272,7 +272,66 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 // MOE_CACHE_ROUTE_DROP (default 2; --fast=2 sets 4, RESULTS 53): the lowest-ranked picks that may be skipped; at least half are always honoured
                 const int keep = s.route_keep >= 0 ? (int) std::min<int64_t>(s.route_keep, n_used) : (int) std::max<int64_t>(n_used - s.route_drop, (n_used + 1) / 2);
                 std::vector<int32_t> eff((size_t) (n_used * n_tok));
+                // idea I14 (MOE_CACHE_ROUTE_WEIGHT): decide by the router weight instead of the rank. The weights are the other operand of the GGML_OP_MUL that
+                // multiplies this group's last (down) MUL_MAT_ID output (build_moe_ffn: experts = mul(experts, weights), weights = get_rows(probs, ids) [normalised]);
+                // they are usable here only when that tensor (or what it views) is an input of this split with data on the host, not a node still to be computed.
+                const float * rw = nullptr; size_t rw_nb1 = 0, rw_nb2 = 0;
+                if (s.route_weight > 0) {
+                    const ggml_tensor * dn = ggml_graph_node(cg, groups_found.back().last);
+                    const ggml_tensor * wt = nullptr;
+                    for (int j = groups_found.back().last + 1; j < n_nodes && !wt; j++) {
+                        const ggml_tensor * m = ggml_graph_node(cg, j);
+                        if (m->op == GGML_OP_MUL && (m->src[0] == dn || m->src[1] == dn)) {
+                            wt = m->src[0] == dn ? m->src[1] : m->src[0];
+                        }
+                    }
+                    if (wt && wt->type == GGML_TYPE_F32 && wt->ne[0] == 1 && wt->ne[1] == n_used && wt->ne[2] == n_tok && wt->nb[0] == sizeof(float)) {
+                        const ggml_tensor * root = wt;
+                        while (root->view_src) {
+                            root = root->view_src;
+                        }
+                        bool computed_here = false;       // produced by a node of this very graph: its data is not there yet
+                        for (int j = 0; j < n_nodes && !computed_here; j++) {
+                            const ggml_tensor * m = ggml_graph_node(cg, j);
+                            computed_here = m == root;       // a view (reshape) of an input is itself a node but computes nothing: only the underlying tensor counts
+                        }
+                        if (!computed_here && root->data && root->buffer && ggml_backend_buffer_is_host(root->buffer) && wt->data) {
+                            rw = (const float *) wt->data; rw_nb1 = wt->nb[1]; rw_nb2 = wt->nb[2];
+                        }
+                    }
+                    if (rw) { s.route_w_groups++; } else { s.route_w_unavail++; }
+                }
                 for (int64_t t = 0; t < n_tok; t++) {
+                    if (s.route_weight > 0) {
+                        // by weight: skip non-resident picks whose share of the token's picked weight is below the threshold, lowest weight first, never more
+                        // than half of the picks; without weights on the host nothing is skipped (exact)
+                        std::vector<std::pair<float, int64_t>> cand;
+                        double tot = 0;
+                        for (int64_t u = 0; u < n_used; u++) {
+                            const int32_t e = *(const int32_t *) ((const char *) ids->data + u * ids->nb[0] + t * ids->nb[1]);
+                            eff[(size_t) (t * n_used + u)] = e;
+                            if (rw) {
+                                const float wv = *(const float *) ((const char *) rw + (size_t) u * rw_nb1 + (size_t) t * rw_nb2);
+                                tot += wv > 0 ? wv : 0;
+                                if (e >= 0 && e < (int32_t) t0.n_expert) {
+                                    s.route_considered++;
+                                    if (!s.nodes[(size_t) (t0.node0 + e)].resident) cand.emplace_back(wv, u);
+                                }
+                            }
+                        }
+                        std::sort(cand.begin(), cand.end());
+                        int budget_skip = (int) (n_used - (n_used + 1) / 2);
+                        for (const auto & cw : cand) {
+                            if (budget_skip <= 0 || tot <= 0 || cw.first >= s.route_weight * tot) break;
+                            const int32_t e = eff[(size_t) (t * n_used + cw.second)];
+                            if (e < (int32_t) used.size() && used[(size_t) e] > 0) used[(size_t) e]--;
+                            eff[(size_t) (t * n_used + cw.second)] = -1;
+                            s.route_skipped++;
+                            budget_skip--;
+                        }
+                        continue;
+                    }
+
                     std::vector<char> taken((size_t) t0.n_expert, 0);
                     for (int64_t u = 0; u < n_used; u++) {
                         const int32_t e = *(const int32_t *) ((const char *) ids->data + u * ids->nb[0] + t * ids->nb[1]);
