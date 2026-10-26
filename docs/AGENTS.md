@@ -17,6 +17,31 @@ python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write 
 | prints the base URL and both config blocks once the server is ready | |
 | `--api-key KEY` | required when other machines can reach the server |
 
+## Using the agents with a GUI
+
+Both agents come with a graphical front end. The steps are the same everywhere: start the server in agent mode, write the agent's config, open the GUI.
+
+```bash
+bin/moe-cache-server MODEL.gguf --agent                # Windows: python bin\moe_cache.py server MODEL.gguf --agent --llama-server C:\llama\llama-server.exe
+bin/moe-cache-server connect hermes --write            # and/or: connect opencode --write   (Windows: python bin\moe_cache.py connect ...)
+```
+
+| | Linux | Windows (signed desktop apps) |
+|---|---|---|
+| Hermes Agent | `hermes dashboard`: web UI at http://127.0.0.1:9119 (`--port`, `--host`, `--no-open`, `--stop`, `--status`). `hermes desktop` builds and starts the native (Electron) app | Hermes Desktop: `Hermes-Setup.exe` from hermes-agent.nousresearch.com, a Tauri setup app that has to be run by hand. Installs to `%LOCALAPPDATA%\hermes`, the CLI is `%LOCALAPPDATA%\hermes\bin\hermes.exe` |
+| OpenCode | `opencode web`: starts the server and opens the browser UI (`--port`, `--hostname`, default 127.0.0.1) | OpenCode Desktop: opencode.ai/download, the `windows-x64` NSIS installer, per-user install in `%LOCALAPPDATA%\Programs\opencodedesktop`; needs Edge WebView2 |
+
+The Linux commands were checked against `hermes --help` and `opencode --help` (2026-10-26); they were not started against a moe-cache server for this page.
+
+**How each is pointed at moe-cache** (read from `connect()` in `bin/moe_cache.py`):
+
+| Agent | What `connect ... --write` does | Windows | Do the GUIs read it? |
+|---|---|---|---|
+| Hermes | runs `hermes config set` for `model.provider=custom`, `model.base_url`, `model.default`, `model.context_length`, `model.api_key`. It looks for `hermes` on `PATH` and fails if it is not there | The Hermes Desktop installer puts the CLI in `%LOCALAPPDATA%\hermes\bin`: add that directory to `PATH` (or run the command from it) so `connect` finds it. Which file `hermes config set` writes there: **not yet verified** | The dashboard and `hermes desktop` are front ends of the same Hermes install, so they should use the same config. **Not yet verified**, nor that Hermes Desktop uses the same one |
+| OpenCode | merges a `moe-cache` provider into `opencode.json` and sets `model` to `moe-cache/NAME`; the old file is kept as `.bak`. Default file: `$XDG_CONFIG_HOME/opencode/opencode.json`, else `~/.config/opencode/opencode.json`; `--config PATH` writes another one | `%USERPROFILE%\.config\opencode\opencode.json` (the launcher does not use `%APPDATA%`). Whether OpenCode Desktop reads that file: **not yet verified**; if it does not, pass `--config` with the file it uses, or paste the block that `connect opencode` (without `--write`) prints into the app's provider settings | `opencode web` reads the same global config as the terminal UI (**not yet verified** here). The Desktop app: see the Windows column |
+
+If a GUI does not show the model, add the provider by hand in its settings: type OpenAI-compatible, base URL `http://127.0.0.1:8080/v1` (your `--port`), model name = the file name, context 65536, API key `none` (or your `--api-key`). `connect` without `--write` prints these values. Keep the server on `127.0.0.1` unless you set `--api-key`.
+
 ## What makes agents fast or slow
 
 An agent's first turn is the expensive one. llama-server keeps each conversation in its own slot (4 slots sharing the context), so later turns only
