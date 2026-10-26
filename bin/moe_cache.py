@@ -131,6 +131,59 @@ def win_memory():
     return None, None
 
 
+def win_dedicated_vram():
+    """{adapter name: dedicated VRAM bytes} from the Windows registry (display adapter class); {} elsewhere or on failure."""
+    out = {}
+    if not WINDOWS:
+        return out
+    try:
+        import winreg
+        base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as k:
+            for i in range(winreg.QueryInfoKey(k)[0]):
+                sub = winreg.EnumKey(k, i)
+                if not sub.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(k, sub) as d:
+                        name = str(winreg.QueryValueEx(d, "DriverDesc")[0]).strip()
+                        mem = winreg.QueryValueEx(d, "HardwareInformation.qwMemorySize")[0]
+                        out[name] = mem if isinstance(mem, int) else int.from_bytes(bytes(mem), "little")
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return out
+
+
+def pick_gpu(listing):
+    """(device, name, free MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
+    llama.cpp skips an integrated GPU when a discrete one exists, but --list-devices lists both (on a Ryzen 7000 desktop the built-in Radeon
+    comes first and reports shared RAM as its memory). Windows: the adapter with the most dedicated VRAM in the registry wins; else the most free memory."""
+    devs = re.findall(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+?) \((\d+) MiB, (\d+) MiB free\)", listing, re.M)
+    if not devs:
+        m = re.search(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+)$", listing, re.M)     # a device line without memory figures
+        return (m.group(1), m.group(2).strip(), 0) if m else None
+    ded = win_dedicated_vram()
+    d = max(devs, key=lambda x: (ded.get(x[1].strip(), -1), int(x[3])))
+    return d[0], d[1].strip(), int(d[3])
+
+
+def nvidia_reports():
+    """True when nvidia-smi exists and reports at least one GPU's free memory."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+        return out.returncode == 0 and out.stdout.strip()[:1].isdigit()
+    except Exception:
+        return False
+
+def list_devices(ls):
+    try:
+        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, timeout=60)
+        return out.stdout + out.stderr
+    except Exception:
+        return ""
+
 def parse_core_records(buf):
     """Cores from a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: [(efficiency_class, [logical CPUs])], processor group 0 only.
     Record layout: DWORD Relationship, DWORD Size, then PROCESSOR_RELATIONSHIP: BYTE Flags, BYTE EfficiencyClass, BYTE Reserved[20],
@@ -462,6 +515,13 @@ def server(argv):
         if os.environ.get("MOE_CACHE_LIB"):
             raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
         raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    if WINDOWS and not a.vram and not nvidia_reports():
+        # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
+        # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
+        g = pick_gpu(list_devices(ls))
+        if g and g[2] > 0:
+            a.vram = f"{g[2] / 1024:.2f}"
+            say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
     if ncmoe is None:
@@ -1041,13 +1101,9 @@ def check(argv):
                 why = [l.strip() for l in probe.splitlines() if "load_backend" in l or "moe-cache:" in l][:3]
                 fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})" + ("; llama-server said: " + " | ".join(why) if why else "")
                      + ("; on Windows an empty 'failed to load' reason usually means a missing DLL dependency or a DLL built for another ggml" if WINDOWS else ""))
-            try:
-                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60)
-                devs = [l.strip() for l in (out.stdout + out.stderr).splitlines() if re.match(r"^ +(CUDA|Vulkan|ROCm|HIP|SYCL|Metal)[0-9]*:", l)]
-            except Exception:
-                devs = []
-            if devs:
-                ok("gpu", devs[0])
+            g = pick_gpu(list_devices(lsp))
+            if g:
+                ok("gpu", f"{g[0]}: {g[1]}" + (f", {g[2]} MiB free" if g[2] else ""))
             else:
                 warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower)")
     memav = cg = None
