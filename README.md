@@ -69,6 +69,10 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 For coding agents (OpenCode, Hermes Agent) add `--agent` (65k context, tool calls, warm sessions), then `python3 bin/moe_cache.py connect opencode --write`
 (or `hermes`): see [docs/AGENTS.md](docs/AGENTS.md).
 
+**Or use the control page** (new, step 1): `bin/moe-cache-server --ui` (Windows: `python bin\moe_cache.py ui`) opens http://127.0.0.1:8070, which
+lists the models in `~/models` (and folders you add), says for each whether it fits in RAM, needs the cache or fits on the GPU and why, starts and
+stops it, and shows live tok/s, cache hit rate, SSD reads, RAM, VRAM and the chat. See [docs/GUI.md](docs/GUI.md).
+
 ### 4. Optional: prove it is correct and measure it on your machine
 
 ```bash
@@ -181,7 +185,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 ## Documentation
 
-[Quick start](docs/QUICKSTART.md) | [Coding agents](docs/AGENTS.md) | [Benchmarks](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md) | [Security and privacy](docs/SECURITY.md)
+[Quick start](docs/QUICKSTART.md) | [Coding agents](docs/AGENTS.md) | [Control page](docs/GUI.md) | [Benchmarks](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) | [Results](docs/RESULTS.md) | [Compatibility](docs/COMPATIBILITY.md) | [Roadmap](docs/ROADMAP.md) | [Engine decision](docs/ENGINE_DECISION.md) | [Security and privacy](docs/SECURITY.md)
 
 ## Configuration (environment variables; `moe-cache-server` sets them for you)
 

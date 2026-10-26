@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- **Control page, step 1** (GUI1; `moe-cache-server --ui`, or `moe_cache.py ui`; [docs/GUI.md](docs/GUI.md)): a local page at
+  http://127.0.0.1:8070, standard-library Python on Linux and Windows. Lists the GGUF models in `~/models` (`C:\models` on Windows), added folders and
+  Ollama's store with the planner's verdict and its reasons (fits in RAM: stock / does not fit: moe-cache / all experts on the GPU; idea I33), starts
+  and stops the server through the launcher, and shows live tok/s, cache hit rate, SSD reads, RAM and VRAM, llama-server's chat page and the log.
+  `tests/ui_test.py` checks it without a model (CI on Linux and Windows).
 - **Long prompts keep part of the cache** (`MOE_CACHE_SCAN_TOKENS`, default 512, 0 = off; idea I3): prompt batches of 512+ tokens load experts at the
   evict-first end of the cache, so what was cached before the prompt survives from chunk to chunk (with plain LRU a prompt bigger than the cache kept
   nothing). Flash-Next at 24 GB, paired: prefill 72.7 -> 92.4 tok/s (+27 %), cache hits during prompts 44 % -> 78 %, SSD reads 242 -> 103 GB; decode
