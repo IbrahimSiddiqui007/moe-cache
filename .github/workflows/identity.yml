@@ -74,6 +74,7 @@ jobs:
           grep -q "gpu-cache needs a llama-server that links its backends directly" launcher_gcache_path.txt
           ! grep -q "moe-cache-mib" launcher_gcache_path.txt
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
+          python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
 
       - name: Identity, cache forced to evict (0.2 GiB)
         env:

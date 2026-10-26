@@ -6,6 +6,7 @@
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode [--url URL] [--write]               point Hermes Agent or OpenCode at a running server (start it with --agent)
+  moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
@@ -1294,6 +1295,9 @@ def run_check(lsp, model, load, port=8097):
 
 def main():
     cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect}
+    if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
+        from moe_cache_ui import ui
+        return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         say(__doc__.strip())
         return 0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 1
