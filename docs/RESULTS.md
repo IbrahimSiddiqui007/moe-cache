@@ -1719,24 +1719,38 @@ hardware-accelerated GPU scheduling off, the HIP SDK, Linux/RADV on the second S
 
 ### Qwen3.5-122B decode: why the plugin is at half of stock (plan: shared note `122B_DIAG_PLAN.md`)
 
-Clean-run numbers are in section 55 (plugin about 6.5 vs stock about 11-14 tok/s). Stats run: 256-token decode, JSON before and after (`MOE_CACHE_STATS_SIGNAL=1`, named event).
+Clean-run numbers are in section 55 (plugin about 6.5 vs stock about 11-14 tok/s). Stats run: plugin, cold start, one 256-token request; counters read
+before and after (`MOE_CACHE_STATS_SIGNAL=1`, named event) and subtracted. PRELIMINARY (the owner's Claude app was open).
 
-| Measurement | Value |
-|---|---|
-| Cache budget at start / end, `shrinks` | - |
-| Decode hit rate (`hits_dec` / (`hits_dec` + `misses_dec`)) | - |
-| `read_bytes` per token | - |
-| `ns_read`, `ns_prep`, `ns_cpu` as a share of `ns_total` | - |
-| `exec_ops` per token | - |
+| Measurement | Default (executor on) | `MOE_CACHE_EXEC=0` |
+|---|---|---|
+| Decode speed | 7.02 tok/s | 5.84 tok/s |
+| Cache budget at start -> end, `shrinks` | 16.89 -> 13.6 GiB, 5 | 13.2 GiB at the end |
+| Decode hit rate | 87.3 % | 86.7 % |
+| `read_bytes` | 35.9 GB (about 140 MB per token) | - |
+| `ns_read` (summed over the 4 readers) | 67.1 s | - |
+| `ns_cpu` (includes waiting for loads) / `ns_prep` / `ns_total` | 26.7 s / 3.9 s / 30.6 s | - |
+| `exec_ops` | 36,864 (144 per token) | - |
 
 | Run (122B, plugin) | decode tok/s |
 |---|---|
-| default | - |
-| `MOE_CACHE_EXEC=0` | - |
+| default | 7.02 |
+| `MOE_CACHE_EXEC=0` | 5.84 |
+| more readers (`MOE_CACHE_EXEC_READERS` 8 / 16), lookahead | - |
 | `MOE_CACHE_SIZE_GIB=14` (smaller cache by hand) | - |
 | `--ram 18` | - |
 
-Conclusion: -
+Reading, against the three causes in the plan:
+- **Executor overhead (cause 3): no.** Turning the executor off is slower (5.84), and `ns_prep` is only 3.9 s of the 30.6 s.
+- **A collapsed cache (cause 1): only partly.** The budget fell from 16.9 to 13.6 GiB (5 shrinks), well short of Flash-Next's or GLM's squeeze, but the decode hit rate is
+  only 87 %, so about 49 of the 384 picks per token miss.
+- **Cost of the misses (cause 2): the likely main cost.** About 140 MB per token has to be read. With 4 readers at about 2.1 GB/s that is at least
+  65 ms per token, which is the gap to stock (about 75 ms per token in total). Stock serves the same misses from Windows' warm file cache. Flash-Next has about 3x fewer active bytes per
+  token, so its reads hide behind compute.
+- The plugin's dot products are not the problem (the same zen4 functions as stock, 32-row chunks over 16 threads, from the code reading in the shared note
+  `qwen122b_windows_gap.md`). Still to test: more readers and lookahead (above), and buffered reads (I38).
+
+Conclusion (preliminary): the 122B gap is read cost for a 12-13 % miss rate through unbuffered reads, not compute.
 
 ### I40: all experts on the CPU vs a RAM-budgeted number of GPU expert layers (Windows + AMD)
 
@@ -1744,12 +1758,16 @@ Branch `claude/i40-amd-ram-budget`: the launcher plans with (available RAM - cac
 
 | Model | Layout | GPU expert layers | Plugin decode tok/s | Stock decode tok/s | Cache budget at the end |
 |---|---|---|---|---|---|
-| Flash-Next | all on CPU (today) | 0 | - | - | - |
-| Flash-Next | RAM budget | - | - | - | - |
+| Flash-Next | all on CPU (today), A | 0 | 12.94 / 12.91 (prefill 121.5) | - | - |
+| Flash-Next | RAM budget (I40), A | - | 8.55 / 10.55 (prefill 129.3) | - | - |
+| Flash-Next | RAM budget (I40), B | - | 8.66 / 10.57 (prefill 127.9) | - | - |
+| Flash-Next | all on CPU (today), B | 0 | pending | - | - |
 | Qwen3.5-122B | all on CPU | 0 | - | - | - |
 | Qwen3.5-122B | RAM budget | - | - | - | - |
 | GLM-5.3-Flash | all on CPU | 0 | - | - | - |
 | GLM-5.3-Flash | RAM budget | - | - | - | - |
+
+Flash-Next so far (plugin, cold start each run, ABBA, two decode requests per run, PRELIMINARY): the RAM-budgeted layout decodes about 25 % slower than all experts on the CPU (about 9.6 vs 12.9 tok/s) and prefills about 5-6 % faster (128-129 vs 121.5), with the second B run still to come. So far the RAM budget does not pay on Flash-Next on this machine.
 
 ### I38: buffered reads (cold and warm file cache)
 
