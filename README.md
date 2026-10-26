@@ -63,7 +63,7 @@ minute): "cache runs: yes" means the cache really computed on your machine.
 ```bash
 bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open
 ```
-`--ram 12` is the memory (GB) it may use; leave it out to use what is free. Add `--fast` for about +10 % on models much bigger than your RAM, at the cost of output that is no longer identical to stock (the launcher suggests it when it would help). The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page
+`--ram 12` is the memory (GB) it may use; leave it out to use what is free. Add `--fast` for about +10 % on models much bigger than your RAM, at the cost of output that is no longer identical to stock (the launcher suggests it when it would help); `--fast=2` is a stronger level for memory far below the model size (Flash-Next at 12 GB: +43 % over `--fast`, same answers in different words). The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page
 (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
 
 For coding agents (OpenCode, Hermes Agent) add `--agent` (65k context, tool calls, warm sessions), then `python3 bin/moe_cache.py connect opencode --write`

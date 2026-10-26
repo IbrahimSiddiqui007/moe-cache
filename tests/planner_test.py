@@ -84,6 +84,7 @@ check("--slot-save-path" not in dry("--agent", "--no-warm"), "--agent --no-warm:
 check("--jinja" not in dry(), "no --agent: the command is unchanged (no --jinja added)")
 check("-ctk q8_0 -ctv q8_0" in dry("--fast") and "-ctk" not in dry(), "--fast adds a q8_0 KV cache (I6); the exact default does not")
 check(dry("--fast", "--", "-ctk", "f16").count("-ctk") == 1, "--fast keeps a -ctk given after the --")
+check("MOE_CACHE_ROUTE_DROP=4" in dry("--fast=2") and "MOE_CACHE_ROUTE_DROP" not in dry("--fast"), "--fast=2 sets MOE_CACHE_ROUTE_DROP=4, --fast does not")
 snip = L.agent_snippets(8099, "m1", 65536, None)
 check("base_url: http://127.0.0.1:8099/v1" in snip and '"baseURL": "http://127.0.0.1:8099/v1"' in snip and "context_length: 65536" in snip,
       "agent snippets: Hermes and OpenCode blocks name the base URL and the context")

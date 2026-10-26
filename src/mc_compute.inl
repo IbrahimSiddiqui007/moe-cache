@@ -269,7 +269,8 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
             if (s.route_mode && exec_graph && n_tok <= s.exec_maxcol && !tidx.empty() && n_used >= 3) {
                 const tinfo_t & t0 = *s.tensors[(size_t) tidx[0]];
-                const int keep = s.route_keep >= 0 ? (int) std::min<int64_t>(s.route_keep, n_used) : (int) n_used - 2;
+                // MOE_CACHE_ROUTE_DROP (default 2; --fast=2 sets 4, RESULTS 53): the lowest-ranked picks that may be skipped; at least half are always honoured
+                const int keep = s.route_keep >= 0 ? (int) std::min<int64_t>(s.route_keep, n_used) : (int) std::max<int64_t>(n_used - s.route_drop, (n_used + 1) / 2);
                 std::vector<int32_t> eff((size_t) (n_used * n_tok));
                 for (int64_t t = 0; t < n_tok; t++) {
                     std::vector<char> taken((size_t) t0.n_expert, 0);

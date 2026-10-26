@@ -1411,3 +1411,10 @@ same top token 98.2 %** (today's `--fast` routing alone: 0.0115; yardstick 0.243
 micro-batch needs: in agent mode (ctx 65536) the tuner now picks `-ub 1024` instead of 512 for Flash-Next. Fit check, Flash-Next, `--agent`, 23 GB
 limit, one run each (prefill_req.py): exact 49.6 / 48.0 / 52.2 / 52.3 tok/s on 2.4k / 1.9k / 5.0k / 5.4k prompts; `--fast` 69.5 / 80.7 / 81.5 / 78.8
 (about +55 %); no block fell back to the CPU, no out-of-memory; decode 8.2-11.6 vs 8.2-10.8. A `-ctk` / `-ctv` given after `--` wins.
+
+**`--fast=2` shipped (opt-in, I15).** `MOE_CACHE_ROUTE_DROP` (default 2) sets how many of the lowest-ranked picks may be skipped when not in RAM;
+`--fast=2` sets 4 with at least half the picks always kept (Flash-Next: keep 6 of 10; 8-pick models: keep 4). Answer comparison, Flash-Next, 12 GB,
+6 questions at temperature 0 (arithmetic, code, explanation, time arithmetic, TCP/UDP, translation): `--fast` matched exact word for word on 5 of 6
+(TCP/UDP reworded, same points); `--fast=2` matched word for word on 2, and on the other 4 gave the same results and points in different wording
+(17 x 23 = 391 with one step fewer, the same Fibonacci code with a shorter error message, the sky answer naming Rayleigh scattering). All 18 answers
+correct. Picks given up in that session: 20,439 (`--fast`) and 43,367 (`--fast=2`).

@@ -394,6 +394,8 @@ def exit_reason(rc, ready):
 SERVER_HELP = """\
 --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
            also a q8_0 KV cache (half the KV memory; KL 0.0045 on its own, RESULTS 53).
+--fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
+           Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31)
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
@@ -433,7 +435,7 @@ def server(argv):
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
-    ap.add_argument("--fast", action="store_true"); ap.add_argument("--hybrid", action="store_true")
+    ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2"]); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
@@ -545,7 +547,12 @@ def server(argv):
         extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
     if a.fast:
         env.append(("MOE_CACHE_ROUTE", "skip"))
-        say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
+        if a.fast == "2":
+            env.append(("MOE_CACHE_ROUTE_DROP", "4"))
+            say("moe-cache: --fast=2: up to 4 low-ranked experts per token that are not in RAM are skipped (for memory much smaller than the model: "
+                "Flash-Next at 12 GB +43 %; about 1 top token in 28 differs from stock, KL 0.022; RESULTS 53)")
+        else:
+            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
     elif not stock:
         # suggest --fast only where it pays: the model is much bigger than the memory it may use
         try:

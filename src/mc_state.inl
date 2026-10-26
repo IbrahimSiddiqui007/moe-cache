@@ -81,7 +81,8 @@ struct state_t {
     // the lowest-ranked picks of a token that are NOT in RAM are dropped (skip) or replaced by the most recently used resident expert of that layer (subst).
     // Ranked picks are in order of the router's weights, so the experts given up are the ones that contribute least.
     int  route_mode = 0;                                // 0 off, 1 skip, 2 subst
-    int  route_keep = -1;                               // MOE_CACHE_ROUTE_KEEP: picks always honoured (default: all but the last 2)
+    int  route_keep = -1;                               // MOE_CACHE_ROUTE_KEEP: picks always honoured (default: all but the last route_drop)
+    int  route_drop = 2;                                // MOE_CACHE_ROUTE_DROP: lowest-ranked picks that may be skipped (--fast=2: 4)
     uint64_t route_skipped = 0, route_substituted = 0, route_considered = 0;
     std::unordered_map<const ggml_tensor *, std::vector<int32_t>> route_ids;   // ids tensor -> effective expert per (token, pick); -1 = skipped
     FILE * trace_f = nullptr;                           // MOE_CACHE_TRACE_IDS=file: record the experts picked in every decode step (int16 layer, int16 n, n x int16 expert)
@@ -459,6 +460,9 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE_KEEP")) {
             route_keep = atoi(v);
+        }
+        if (const char * v = getenv("MOE_CACHE_ROUTE_DROP")) {
+            route_drop = std::max(0, atoi(v));
         }
         if (const char * v = getenv("MOE_CACHE_SCAN_TOKENS")) {
             scan_tokens = std::max(0, atoi(v));
