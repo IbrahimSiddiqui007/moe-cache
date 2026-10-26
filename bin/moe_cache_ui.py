@@ -149,27 +149,50 @@ def vram_now():
     return best
 
 
-_GPU = {"done": False, "gpu": None}
+_GPU = {"done": False, "gpu": None, "watched": 0.0}
 
 
-def detect_windows_gpu(ls):
-    """Windows without nvidia-smi: the launcher's own way (llama-server --list-devices + the registry). Slow (starts llama-server), so done once."""
-    try:
-        if WINDOWS and not mc.nvidia_reports():
-            g = mc.pick_gpu(mc.list_devices(ls))
-            ded = mc.win_dedicated_vram().get(g[1]) if g else None
-            if g and not (ded is not None and ded < GIB):          # an integrated GPU plans without VRAM, as the launcher does
-                _GPU["gpu"] = {"name": g[1], "free": g[2] * 2**20}
-    finally:
+def windows_gpu_once(ls):
+    """Windows without nvidia-smi (AMD, Intel): the GPU the launcher picks (llama-server --list-devices, discrete before integrated) with its
+    free memory, and its total dedicated VRAM from the registry. {name, free, total, integrated} or None."""
+    g = mc.pick_gpu(mc.list_devices(ls))
+    if not g:
+        return None
+    ded = mc.win_dedicated_vram().get(g[1])
+    integrated = ded is not None and ded < GIB       # the launcher plans without VRAM there: Vulkan's "free" is shared system RAM
+    return {"name": g[1] + (" (integrated: shares RAM)" if integrated else ""), "free": g[2] * 2**20 if g[2] else None,
+            "total": float(ded) if ded and not integrated else None, "integrated": integrated}
+
+
+def watch_windows_gpu(ls, every=10.0):
+    """Keeps _GPU current on Windows without nvidia-smi. Asking llama-server --list-devices takes a second or two, so: every 10 s, and only
+    while the page is open (a status request in the last 30 s)."""
+    if not WINDOWS or mc.nvidia_reports():
         _GPU["done"] = True
+        return
+    while True:
+        try:
+            _GPU["gpu"] = windows_gpu_once(ls)
+        except Exception:
+            pass
+        _GPU["done"] = True
+        time.sleep(every)
+        while time.time() - _GPU["watched"] > 30:
+            time.sleep(1)
 
 
 def system_info():
     tot, avail = ram_now()
     v = vram_now()
-    free_vram = (v["total"] - v["used"]) if v else (_GPU["gpu"]["free"] if _GPU["gpu"] else None)
+    w = _GPU["gpu"] if not v else None
+    if v:
+        free_vram, total = v["total"] - v["used"], v["total"]
+    elif w:
+        free_vram, total = w["free"], w["total"]
+    else:
+        free_vram = total = None
     return {"os": "Windows" if WINDOWS else sys.platform, "ram_total": tot, "ram_avail": avail, "server_may_use": mc.mem_for_server(None),
-            "gpu": (v or _GPU["gpu"] or {}).get("name"), "vram_total": v["total"] if v else None, "vram_free": free_vram,
+            "gpu": (v or w or {}).get("name"), "vram_total": total, "vram_free": free_vram, "gpu_integrated": bool(w and w.get("integrated")),
             "gpu_detecting": WINDOWS and not _GPU["done"]}
 
 
@@ -397,6 +420,9 @@ def proc_rss(pid):
     return None
 
 
+# lines the page lifts out of the log: the launcher's and the plugin's warnings (e.g. the cache shrank because llama-server grew), the plugin
+# disabling itself, and why llama-server stopped
+WARN_RE = re.compile(r"(?i)moe-cache: (warning|.*plugin disabled|.*refus|llama-server (exited|was stopped))|^WARNING|^error: |\binvalid argument\b")
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) tokens.*?([\d.]+) tokens per second")
 
 
@@ -422,6 +448,7 @@ class Runner:
         self.pid = None
         self.rss = None
         self.profile = None
+        self.warnings = []                 # [{"line", "count", "t"}]
 
     # -- control --
     def start(self, s):
@@ -497,6 +524,8 @@ class Runner:
                     pass
                 continue
             self.add_line(line)
+            if WARN_RE.search(line):
+                self.add_warning(line)
             m = TIMING_RE.search(line)
             if m:
                 key = "prefill" if m.group(1) == "prompt eval" else "decode"
@@ -515,6 +544,14 @@ class Runner:
             self.rc = rc
             self.state = "stopped" if self.state == "stopping" or rc in (0, -signal.SIGTERM, 143, 1 if WINDOWS else 0) else "exited"
             self.add_line(f"ui: the server ended (exit code {rc})")
+
+    def add_warning(self, line):
+        text = re.sub(r"^[\d.]+ [A-Z] ", "", line).strip()          # llama-server's time and level prefix
+        for w in self.warnings:
+            if w["line"] == text:
+                w["count"] += 1; w["t"] = time.time()
+                return
+        self.warnings = (self.warnings + [{"line": text, "count": 1, "t": time.time()}])[-10:]
 
     def take_snapshot(self, s):
         now = time.time()
@@ -571,7 +608,7 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "system": system_info()}
+                "history": list(self.hist), "warnings": self.warnings, "system": system_info()}
 
 
 # ---- the page server ----
@@ -656,6 +693,7 @@ class Handler(BaseHTTPRequestHandler):
                 s = self.settings(q)
                 return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
             if u.path == "/api/status":
+                _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
@@ -694,13 +732,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True})
             if self.path == "/api/connect":
                 agent = body.get("agent")
-                if agent not in ("opencode", "hermes") or self.runner.state != "ready":
-                    raise ValueError("start a server with Agent mode first; agents: opencode, hermes")
-                st = self.runner.status()
-                cmd = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "connect", agent, "--url", st["url"], "--write"]
-                env = dict(os.environ, LLAMA_API_KEY=self.runner.settings.get("api_key") or "")
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
-                return self.send(200, {"rc": r.returncode, "output": (r.stdout + r.stderr).strip()})
+                if agent not in ("opencode", "hermes"):
+                    raise ValueError("agents: opencode, hermes")
+                if self.runner.state != "ready":
+                    raise ValueError("start a server first (with Agent mode on)")
+                return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.settings.get("api_key") or "", bool(body.get("write"))))
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:
@@ -728,6 +764,31 @@ class Handler(BaseHTTPRequestHandler):
         return s
 
 
+def connect_agent(agent, url, api_key, write):
+    """`moe_cache.py connect AGENT --url URL [--write]` for the running server. The key goes in the environment (LLAMA_API_KEY), never on a
+    command line. Returns {rc, output, file, written}: for OpenCode with write, the config file and the provider block now in it."""
+    cmd = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "connect", agent, "--url", url] + (["--write"] if write else [])
+    env = dict(os.environ, LLAMA_API_KEY=api_key, PYTHONIOENCODING="utf-8")
+    if not api_key:
+        env.pop("LLAMA_API_KEY", None)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    out = {"rc": r.returncode, "output": (r.stdout + r.stderr).strip(), "file": None, "written": None}
+    m = re.search(r"; config (.+?\.json)", out["output"])
+    if write and r.returncode == 0 and m:
+        out["file"] = m.group(1)
+        try:
+            data = json.load(open(m.group(1), encoding="utf-8"))
+            block = {"model": data.get("model"), "provider": {"moe-cache": data.get("provider", {}).get("moe-cache")}}
+            if api_key and block["provider"]["moe-cache"]:
+                block["provider"]["moe-cache"].get("options", {})["apiKey"] = "(your key)"
+            out["written"] = json.dumps(block, indent=2)
+        except Exception as e:
+            out["written"] = f"(could not read it back: {e})"
+    if api_key:
+        out["output"] = out["output"].replace(api_key, "(your key)")
+    return out
+
+
 def make_server(port=8070, ls=None):
     store = Store(ls or os.environ.get("LLAMA_SERVER", "llama-server"))
     h = type("H", (Handler,), {"store": store, "runner": Runner()})
@@ -747,7 +808,7 @@ def ui(argv):
     except OSError as e:
         raise SystemExit(f"moe-cache: cannot listen on 127.0.0.1:{a.ui_port} ({e}): --ui-port N to pick another port")
     if WINDOWS:
-        threading.Thread(target=detect_windows_gpu, args=(a.llama_server,), daemon=True).start()
+        threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}"
     mc.say(f"moe-cache: control page at {url} (this machine only; Ctrl-C stops it and any server it started)")
     if not a.no_browser:
