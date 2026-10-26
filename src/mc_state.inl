@@ -89,6 +89,11 @@ struct state_t {
     std::atomic<uint64_t> pf_issued{0}, pf_used{0}, pf_wasted{0}, pf_late{0}, pf_pred_total{0}, pf_pred_hit{0}, pf_skipped{0};
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
+#ifdef _WIN32
+    bool   win_buffered = false;                // MOE_CACHE_WIN_BUFFERED=1: model files opened without FILE_FLAG_NO_BUFFERING (see the constructor)
+#else
+    static constexpr bool win_buffered = false;
+#endif
     size_t budget = 0;
     size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
     bool shrink_warned = false;
@@ -200,6 +205,19 @@ struct state_t {
             fail("MOE_CACHE_GGUF is not set");
             return;
         }
+#ifdef _WIN32
+        // MOE_CACHE_WIN_BUFFERED=1 (opt-in, Windows only; idea I38): read the experts through the Windows file cache instead of FILE_FLAG_NO_BUFFERING.
+        // Unbuffered reads never warm the file cache, so every start reads the SSD, while stock llama-server (mmap) starts warm from it (Flash-Next on
+        // a 32 GB PC: 3-5 tok/s first session vs 13-16 warm stock). Same aligned offsets and lengths, so the same bytes. An expert then sits twice in
+        // RAM (cache + file cache), but the file-cache copy moves to the standby list, which Windows counts as available and gives back on demand:
+        // the budget (available + this process's private memory) does not shrink for it.
+        if (const char * v = getenv("MOE_CACHE_WIN_BUFFERED")) {
+            win_buffered = strcmp(v, "0") != 0;
+        }
+        if (win_buffered) {
+            fprintf(stderr, "moe-cache: MOE_CACHE_WIN_BUFFERED: experts are read through the Windows file cache\n");
+        }
+#endif
         // split models: name-00001-of-0000N.gguf -> open all parts
         std::vector<std::string> shards = { file };
         {
@@ -236,9 +254,9 @@ struct state_t {
                 file_shard[nm] = (int) si;
             }
             gguf_free(g);
-            const plat::file_t f = plat::file_open(shards[si].c_str(), true);
+            const plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered);
             if (!f.ok()) {
-                fail("cannot open " + shards[si] + " with O_DIRECT");
+                fail("cannot open " + shards[si] + (win_buffered ? std::string() : std::string(" with O_DIRECT")));
                 return;
             }
             fds.push_back(f);
@@ -353,7 +371,11 @@ struct state_t {
                 size_t total = 0;
                 for (const auto & sp : shard_paths) {
                     std::error_code ec;
+#ifdef _WIN32
+                    total += (size_t) std::filesystem::file_size(std::filesystem::path(plat::widen(sp.c_str())), ec);   // a std::string path is ANSI there
+#else
                     total += (size_t) std::filesystem::file_size(sp, ec);
+#endif
                 }
                 direct_ok = total > limit_bytes * 0.85;
             }
