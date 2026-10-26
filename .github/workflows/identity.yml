@@ -82,6 +82,12 @@ jobs:
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
         run: python3 tests/ui_live.py granite.gguf --llama-server "$LLAMA_SERVER"
 
+      - name: API key and CORS (option C; agent mode needs the stored key, a plain server allows only localhost origins)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+        run: python3 tests/key_live.py granite.gguf --llama-server "$LLAMA_SERVER" | tee key_live.txt
+
       - name: Identity, cache forced to evict (0.2 GiB)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
@@ -294,4 +300,5 @@ jobs:
           name: identity-${{ matrix.name }}
           path: |
             identity_*.txt
+            key_live*
             ident_small_*/plugin.log
