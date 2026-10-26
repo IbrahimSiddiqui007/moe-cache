@@ -1602,3 +1602,65 @@ ran the long prompt without a crash (table above).
 | Clean timings (apps closed, file cache cleared as admin) | owner to free the machine |
 | Windows job-object memory limit (WP3) on the PC | untested |
 | HIP build | needs AMD's HIP SDK |
+
+## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; SKELETON, numbers to come)
+
+Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). Nothing
+below is measured yet: every cell marked "-" is filled when the series ends. Do not quote this section until then.
+
+| Item | Value |
+|---|---|
+| Machine | Windows 11, Ryzen 9 7950X, RX 9070 XT 16 GB (driver 32.0.23034.4), 32 GB DDR5; same as section 54 |
+| llama.cpp | b11669 (ggml 0.27.0), official Vulkan zip |
+| Plugin | DLL built from 2dccf17 (CI build; includes the long-prompt crash fix) |
+| Layout | launcher defaults: all experts on the CPU (`--n-cpu-moe 48`), `--ctx-checkpoints 0` for Flash-Next |
+| Owner's apps | closed (to be confirmed in the final text; list what was still running) |
+
+**Method.**
+- Script `pc_series.ps1 -Flush "fileA;fileB;..."`: before every run it reads the other model files (70-99 GB in total, more than the 31 GB of RAM) from the SSD,
+  so Windows' file cache no longer holds the model under test. This replaces dropping the cache with RAMMap, which needs admin rights. Check afterwards that
+  the first stock run is not faster than its repeat for a reason other than the cache (to be filled).
+- Order ABBA (stock, plugin, plugin, stock), each run a fresh llama-server started by PID and stopped by PID.
+- `pc_speed.ps1` per run: warm-up, 3 decode requests of 256 tokens (a request that ends at once is ignored), 1 prefill request of about 3.5k tokens.
+- Stats run per model for the plugin (cache budget, hit rate, SSD reads), to explain decode where it differs from stock.
+
+### Flash-Next IQ2_XS (64 GB)
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | - | - |
+| plugin A | - | - |
+| plugin B | - | - |
+| stock B | - | - |
+| plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+### Qwen3.5-122B UD-IQ2_XXS (36.6 GB)
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | - | - |
+| plugin A | - | - |
+| plugin B | - | - |
+| stock B | - | - |
+| plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards)
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | - | - |
+| plugin A | - | - |
+| plugin B | - | - |
+| stock B | - | - |
+| plugin stats run (cache budget, hit rate, GB read; the shrink warning, if it fires) | - | - |
+
+### Against section 54
+
+| Model | Section 54 (PRELIMINARY): stock / plugin decode, plugin prefill vs stock | Section 55 (clean) |
+|---|---|---|
+| Flash-Next | 14-16 / 12-13.5 tok/s; prefill about 2x | - |
+| Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | - |
+| GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | - |
+
+What to conclude (to be written from the numbers): whether the plugin's first-session decode gap (idea I38, unbuffered reads) survives a cold file cache
+for stock too; whether the shrink on GLM (idea I37) still happens with the apps closed.
