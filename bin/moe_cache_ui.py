@@ -389,6 +389,8 @@ def server_args(s):
         a.append("--hybrid")
     if s.get("agent"):
         a.append("--agent")
+        if s.get("no_warm"):
+            a.append("--no-warm")          # neither restores nor saves agent conversations
     if s.get("llama_server"):
         a += ["--llama-server", s["llama_server"]]
     return a + ["--", "--metrics"]          # the API key goes to the launcher in LLAMA_API_KEY (child_env), never on a command line
@@ -531,17 +533,122 @@ def proc_rss(pid):
 # lines the page lifts out of the log: the launcher's and the plugin's warnings (e.g. the cache shrank because llama-server grew), the plugin
 # disabling itself, and why llama-server stopped
 WARN_RE = re.compile(r"(?i)moe-cache: (warning|.*plugin disabled|.*refus|llama-server (exited|was stopped))|^WARNING|^error: |\binvalid argument\b")
+# ---- agent sessions: the conversations the launcher's warm keeper saved (moe_cache.warm_keeper) ----
+# One file per slot: slots/agent/<model alias>-c<ctx>[-<K type>-<V type>]-s<slot>.bin, written by llama-server's slot save (state file: 'ggsq' magic,
+# version, token count, tokens, KV state) with the context checkpoints appended to the same file. The launcher restores the two largest files of
+# the same model and settings at start; a half-written save is <name>.new.bin.
+SESSION_RE = re.compile(r"^(?P<tag>.+)-s(?P<slot>\d+)\.bin$")
+TAG_RE = re.compile(r"^(?P<model>.+?)-c(?P<ctx>\d+)(?:-(?P<kv>.+))?$")
+AGENT_WORDS = [("opencode", "OpenCode"), ("hermes", "Hermes"), ("claude code", "Claude Code"), ("aider", "Aider"), ("cline", "Cline"),
+               ("continue.dev", "Continue"), ("roo code", "Roo Code"), ("goose", "Goose")]
+
+
+def slot_dir():
+    return os.path.join(mc.CACHE_DIR, "slots", "agent")
+
+
+def session_tag(s):
+    """The tag the launcher gives this server's saved conversations (moe_cache.server: alias, context, KV types; --fast stores the KV as q8_0)."""
+    alias = re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(s.get("model") or ""))
+    ctx = int(s.get("ctx") or (65536 if s.get("agent") else 8192))
+    kv = "-q8_0-q8_0" if s.get("mode") == "fast" else ""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-c{ctx}{kv}").rstrip("-_")
+
+
+def session_tokens(path, n_ids=0):
+    """(token count, the first n_ids token ids) from a slot file's header; (None, []) when it is not one."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            magic, _, n = struct.unpack("<III", f.read(12))
+            if magic != 0x67677371:                    # 'ggsq' (LLAMA_FILE_MAGIC_GGSQ)
+                return None, []
+            data = f.read(4 * min(n, n_ids))
+            k = len(data) // 4                      # a truncated file gives what it has
+            ids = list(struct.unpack(f"<{k}i", data[:4 * k])) if k else []
+            return n, ids
+    except (OSError, struct.error):
+        return None, []
+
+
+def guess_agent(text):
+    t = (text or "").lower()
+    for w, name in AGENT_WORDS:
+        if w in t:
+            return name
+    return None
+
+
 def warm_files():
-    """Saved agent conversations the launcher restores at the next start (~/.cache/moe-cache/slots/agent/<model>-c<ctx>-s<slot>.bin)."""
+    """Saved agent conversations (newest first), with what the file names and headers say."""
     out = []
-    for f in glob.glob(os.path.join(mc.CACHE_DIR, "slots", "agent", "*-s*.bin")):
-        if f.endswith(".new.bin"):
+    for f in glob.glob(os.path.join(slot_dir(), "*-s*.bin")):
+        name = os.path.basename(f)
+        m = SESSION_RE.match(name)
+        if not m or name.endswith(".new.bin"):
             continue
+        t = TAG_RE.match(m.group("tag"))
         try:
-            out.append({"name": os.path.basename(f), "size": os.path.getsize(f), "t": os.path.getmtime(f)})
+            st = os.stat(f)
         except OSError:
-            pass
-    return sorted(out, key=lambda x: -x["t"])[:10]
+            continue
+        out.append({"name": name, "size": st.st_size, "t": st.st_mtime, "slot": int(m.group("slot")), "tag": m.group("tag"),
+                    "model": t.group("model") if t else m.group("tag"), "ctx": int(t.group("ctx")) if t else None,
+                    "kv": t.group("kv") if t and t.group("kv") else "f16", "tokens": session_tokens(f)[0]})
+    return sorted(out, key=lambda x: -x["t"])
+
+
+def move_to_trash(path):
+    """Move a file to the platform's Trash / Recycle Bin and return where it went; raises when that is not possible (never a hard delete)."""
+    path = os.path.abspath(path)
+    if WINDOWS:
+        from ctypes import wintypes
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR), ("pTo", wintypes.LPCWSTR),
+                        ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL), ("hNameMappings", ctypes.c_void_p),
+                        ("lpszProgressTitle", wintypes.LPCWSTR)]
+        # FO_DELETE with FOF_ALLOWUNDO = Recycle Bin; FOF_WANTNUKEWARNING asks the user before Windows would delete for good (e.g. bin too small)
+        buf = ctypes.create_unicode_buffer(path + "\0")           # a list of paths ends with two NULs
+        op = SHFILEOPSTRUCTW(None, 3, ctypes.cast(buf, wintypes.LPCWSTR), None, 0x40 | 0x10 | 0x4 | 0x400 | 0x4000, False, None, None)
+        rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        if rc != 0 or op.fAnyOperationsAborted or os.path.exists(path):
+            raise OSError(f"the Recycle Bin did not take it (code {rc})")
+        return "the Recycle Bin"
+    gio = shutil_which("gio")
+    if gio:
+        r = subprocess.run([gio, "trash", path], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0 and not os.path.exists(path):
+            return "the Trash"
+    # the freedesktop.org Trash in the user's home (same file system as ~/.cache in the usual set-up): info file first, then a rename
+    if sys.platform == "darwin":
+        raise OSError("moving to the Trash is not supported on this system yet")
+    import datetime, errno
+    trash = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"), "Trash")
+    os.makedirs(os.path.join(trash, "files"), exist_ok=True); os.makedirs(os.path.join(trash, "info"), exist_ok=True)
+    base, n = os.path.basename(path), 0
+    while True:
+        name = base if n == 0 else f"{base}.{n}"
+        info = os.path.join(trash, "info", name + ".trashinfo")
+        try:
+            fd = os.open(info, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            n += 1
+    with os.fdopen(fd, "w") as f:
+        f.write(f"[Trash Info]\nPath={urllib.parse.quote(path)}\nDeletionDate={datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    try:
+        os.rename(path, os.path.join(trash, "files", name))
+    except OSError as e:
+        os.unlink(info)
+        if e.errno == errno.EXDEV:
+            raise OSError("the Trash is on another drive: move or delete the file yourself") from e
+        raise
+    return "the Trash"
+
+
+def shutil_which(prog):
+    import shutil
+    return shutil.which(prog)
 
 
 # ---- quick benchmark: the method of windows-kit/pc_speed.ps1 (RESULTS 54/55), for the running server ----
@@ -611,6 +718,7 @@ class Runner:
         self.deciding = True
         self.bench = {"state": "idle"}
         self.auto_key = None               # the launcher's key (agent mode, no key typed on the page)
+        self.agent_guess = {}              # (file, mtime) -> agent name guessed from the conversation's start
 
     # -- control --
     def start(self, s):
@@ -654,6 +762,44 @@ class Runner:
         ready.set()
         self.poll(p)
         p.wait()
+
+    def sessions(self):
+        """The saved agent conversations, which of them this server restored at start, a guess of the agent, and the server's live slots."""
+        files = warm_files()
+        s = self.settings
+        running = self.state == "ready" and s.get("agent")
+        tag = session_tag(s) if s.get("model") else None
+        restored_slots = {int(m.group(1)) for e in self.warm for m in [re.search(r"restored .* into slot (\d+)", e["line"])] if m}
+        failed = {m.group(1) for e in self.warm for m in [re.search(r"could not restore (\S+)", e["line"])] if m}
+        port = int(s.get("port") or 8080)
+        for f in files:
+            f["this_server"] = bool(tag) and f["tag"] == tag
+            f["restored"] = f["this_server"] and self.state in ("starting", "ready") and f["slot"] in restored_slots
+            f["restore_failed"] = f["name"] in failed
+            f["agent"] = None
+            if running and f["this_server"]:
+                ck = (f["name"], f["t"])
+                if ck not in self.agent_guess:
+                    _, ids = session_tokens(os.path.join(slot_dir(), f["name"]), 600)
+                    st, body = mc.http(f"http://127.0.0.1:{port}/detokenize", {"tokens": ids}, api_key=self.key(), timeout=10) if ids else (0, "")
+                    try:
+                        self.agent_guess[ck] = guess_agent(json.loads(body).get("content")) if st == 200 else None
+                    except ValueError:
+                        self.agent_guess[ck] = None
+                f["agent"] = self.agent_guess[ck]
+        live = None
+        if self.state == "ready":
+            st, body = mc.http(f"http://127.0.0.1:{port}/slots", api_key=self.key(), timeout=3)
+            if st == 200:
+                try:
+                    live = [{"id": x.get("id"), "tokens": x.get("n_prompt_tokens"), "processing": bool(x.get("is_processing")), "n_ctx": x.get("n_ctx")}
+                            for x in json.loads(body)]
+                except (ValueError, AttributeError):
+                    live = None
+            elif st in (401, 403):
+                live = "no access (API key)"
+        return {"dir": slot_dir(), "files": files, "live": live, "tag": tag, "agent_mode": bool(s.get("agent")), "no_warm": bool(s.get("no_warm")),
+                "running": self.state in ("starting", "ready")}
 
     def key(self):
         """The key llama-server needs: the one typed on the page, else the launcher's agent key, else None."""
@@ -858,7 +1004,7 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "api_key": self.key_info(), "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
+                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "api_key": self.key_info(), "warm": {"events": self.warm},
                 "system": system_info()}
 
 
@@ -996,6 +1142,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, self.runner.status())
             if u.path == "/api/bench":
                 return self.send(200, {"csv": BENCH_CSV, "rows": read_bench_rows()})
+            if u.path == "/api/sessions":
+                return self.send(200, self.runner.sessions())
             if u.path == "/api/key":                       # for the Copy button only (token-protected, not cached)
                 if self.runner.state not in ("starting", "ready") or not self.runner.key():
                     raise ValueError("no API key in use")
@@ -1044,6 +1192,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/command":
                 s = self.settings(body)
                 return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
+            if self.path == "/api/sessions/trash":
+                name = str(body.get("name") or "")
+                f = next((x for x in warm_files() if x["name"] == name), None)
+                if not f:
+                    raise ValueError("no such saved session (refresh)")
+                where = move_to_trash(os.path.join(slot_dir(), name))
+                self.runner.add_line(f"ui: moved the saved agent session {name} to {where}")
+                return self.send(200, {"ok": True, "where": where, "running_note": "the running server keeps it in memory and may save it again"
+                                       if self.runner.state == "ready" and f.get("tag") == session_tag(self.runner.settings) else ""})
             if self.path == "/api/bench":
                 self.runner.start_bench()
                 return self.send(200, self.runner.bench)
@@ -1072,7 +1229,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def settings(self, d):
         s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("exact", "fast", "hybrid") else "exact",
-             "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+             "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
         for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),
                                       ("ctx", 512, 1048576, int, "context"), ("port", 1, 65535, int, "port")):
             x = number(d.get(k), lo, hi, conv, what)

@@ -103,11 +103,14 @@ port = int(sys.argv[sys.argv.index("--port") + 1])
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
-        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False}], "/v1/models": {"data": [{"id": "fake-moe"}]},
+        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False, "n_prompt_tokens": 4100, "n_ctx": 8192}], "/v1/models": {"data": [{"id": "fake-moe"}]},
                 "/props": {"default_generation_settings": {"n_ctx": 65536}}}.get(self.path)
         self.send_response(200 if body is not None else 404); self.end_headers(); self.wfile.write(json.dumps(body).encode())
     def do_POST(self):
         q = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/detokenize":
+            body = {"content": "You are opencode, an interactive CLI tool" if q["tokens"][:3] == [11, 22, 33] else "Hello"}
+            self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(body).encode()); return
         assert self.path == "/completion" and q["temperature"] == 0 and q["seed"] == 42 and q["cache_prompt"] is False
         t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
         self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
@@ -122,6 +125,7 @@ print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=Tru
 time.sleep(0.5)
 print("prompt eval time =     100.00 ms /    50 tokens (    2.00 ms per token,   500.00 tokens per second)", flush=True)
 print("       eval time =    1000.00 ms /    25 tokens (   40.00 ms per token,    25.00 tokens per second)", flush=True)
+print("moe-cache: warm session: restored a saved agent conversation (4096 tokens) into slot 0 in 1.0 s", flush=True)
 print("moe-cache: warm session: saved slot 0 (4096 tokens, 120 MB) in 0.5 s", flush=True)
 for _ in range(2):
     print("0.01.002.003 W moe-cache: warning: the expert cache shrank from 10.0 to 8.0 GiB because the rest of llama-server now uses 3.0 GiB", flush=True)
@@ -246,11 +250,48 @@ lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check("fake: argv has the key: False, LLAMA_API_KEY set: True" in lg, "4: the API key reaches the launcher in LLAMA_API_KEY, not in its argv")
 check(not any("sekrit" in l for l in lg), "4: and is not in the log")
 os.makedirs(os.path.join(ui.mc.CACHE_DIR, "slots", "agent"), exist_ok=True)
-open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.bin"), "wb").write(b"x" * 1000)
-open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.new.bin"), "wb").write(b"x")
+# agent sessions: the launcher's slot files (header 'ggsq', version, token count, tokens), restored ones, agent guess, live slots, Trash
+import struct
+sd = ui.slot_dir(); os.makedirs(sd, exist_ok=True)
+def slot_file(name, n, first, pad=1000):
+    with open(os.path.join(sd, name), "wb") as f:
+        f.write(struct.pack("<III", 0x67677371, 4, n) + struct.pack(f"<{len(first)}i", *first) + b"\0" * pad)
+tag = ui.session_tag({"model": small["path"], "ctx": 8192, "agent": True})
+check(tag == "Small-MoE-Q4_K_M-c8192" and ui.session_tag({"model": "/m/Big-00001-of-00002.gguf", "agent": True, "mode": "fast"}) == "Big-c65536-q8_0-q8_0",
+      f"the launcher's tag for saved sessions (alias, context, q8_0 KV with --fast) ({tag})")
+slot_file(tag + "-s0.bin", 4096, [11, 22, 33]); slot_file(tag + "-s1.bin", 2500, [5, 6, 7])
+slot_file("Other-Model-c65536-s0.bin", 9000, [1, 2]); slot_file(tag + "-s2.new.bin", 10, [1])
+open(os.path.join(sd, "notes.bin"), "wb").write(b"x"); open(os.path.join(sd, "Weird-c8192-s3.bin"), "wb").write(b"not a slot file")
 warm = json.loads(req("/api/status")[1])["warm"]
-check([e["line"] for e in warm["events"]] == ["saved slot 0 (4096 tokens, 120 MB) in 0.5 s"], f"warm-session events from the launcher's log ({warm['events']})")
-check([f["name"] for f in warm["files"]] == ["fake-moe-c65536-s0.bin"] and warm["files"][0]["size"] == 1000, "saved conversations listed, half-written ones not")
+check([e["line"] for e in warm["events"]] == ["restored a saved agent conversation (4096 tokens) into slot 0 in 1.0 s", "saved slot 0 (4096 tokens, 120 MB) in 0.5 s"],
+      f"warm-session events from the launcher's log ({warm['events']})")
+st, body = req("/api/sessions")
+ss = json.loads(body)
+byname = {f["name"]: f for f in ss["files"]}
+check(st == 200 and set(byname) == {tag + "-s0.bin", tag + "-s1.bin", "Other-Model-c65536-s0.bin", "Weird-c8192-s3.bin"}, f"saved sessions listed, half-written and foreign names not ({sorted(byname)})")
+f0 = byname[tag + "-s0.bin"]
+check(f0["tokens"] == 4096 and f0["slot"] == 0 and f0["ctx"] == 8192 and f0["model"] == "Small-MoE-Q4_K_M" and byname["Weird-c8192-s3.bin"]["tokens"] is None,
+      "token count from the file header; model, context and slot from the name")
+check(f0["restored"] and not byname[tag + "-s1.bin"]["restored"] and not byname["Other-Model-c65536-s0.bin"]["this_server"], "restored at start: slot 0 of this server's tag only")
+check(f0["agent"] == "OpenCode" and byname[tag + "-s1.bin"]["agent"] is None and byname["Other-Model-c65536-s0.bin"]["agent"] is None,
+      "agent guessed from the conversation's start (detokenized by the running server), only for this model")
+check(ss["live"] == [{"id": 0, "tokens": 4100, "processing": False, "n_ctx": 8192}], f"live slots through /slots with the key ({ss['live']})")
+# Trash: the platform's own (Windows: Recycle Bin); on Linux and others a freedesktop Trash under a temporary XDG_DATA_HOME, never the real one
+if os.name != "nt":
+    os.environ["XDG_DATA_HOME"] = os.path.join(TMP, "data"); ui.shutil_which = lambda prog: None
+st, body = req("/api/sessions/trash", {"name": tag + "-s1.bin"})
+j = json.loads(body)
+check(st == 200 and not os.path.exists(os.path.join(sd, tag + "-s1.bin")), f"Move to Trash: the file leaves the folder ({j.get('where') or j})")
+if os.name != "nt":
+    tf = os.path.join(TMP, "data", "Trash")
+    info = open(os.path.join(tf, "info", tag + "-s1.bin.trashinfo")).read()
+    check(os.path.isfile(os.path.join(tf, "files", tag + "-s1.bin")) and "Path=" in info and "DeletionDate=" in info, "in the Trash with its .trashinfo (restorable)")
+    slot_file(tag + "-s1.bin", 10, [1]); req("/api/sessions/trash", {"name": tag + "-s1.bin"})
+    check(os.path.isfile(os.path.join(tf, "files", tag + "-s1.bin.1")), "a second file of the same name gets its own Trash name")
+check(req("/api/sessions/trash", {"name": "../ui.json"})[0] == 400 and req("/api/sessions/trash", {"name": "notes.bin"})[0] == 400, "only listed session files can be moved")
+check(req("/api/sessions/trash", {"name": tag + "-s0.bin"}, headers={"X-MoeCache-Token": None})[0] == 403, "not without the page token")
+check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-1] == "--no-warm" and "--no-warm" not in ui.server_args({"model": "m.gguf", "no_warm": True}),
+      "Don't restore: --no-warm (agent mode only)")
 
 # connect buttons: preview, then write (into the temporary XDG_CONFIG_HOME)
 st, body = req("/api/connect", {"agent": "opencode", "write": False})

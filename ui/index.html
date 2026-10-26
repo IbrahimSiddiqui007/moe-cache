@@ -89,6 +89,7 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <div class="hint" id="modehint"></div>
     <div class="row" style="margin-top:8px">
       <label style="margin:0"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
+      <label style="margin:0"><input type="checkbox" id="nowarm"> Don't restore saved agent sessions <span class="small">(--no-warm: nothing is saved either)</span></label>
     </div>
     <div class="row">
       <div><label>Port</label><input type="number" id="port" value="8080" min="1" max="65535"></div>
@@ -124,7 +125,7 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
   <section id="p-chat">
     <div class="tabs"><button data-t="chat" class="on">Chat</button><button data-t="agents">Agents</button><button data-t="log">Log</button></div>
     <div id="t-chat"><div class="small" id="chatnote">Start a model: llama-server's own chat page appears here.</div><iframe id="chat" hidden title="llama-server chat"></iframe></div>
-    <div id="t-agents" hidden></div>
+    <div id="t-agents" hidden><div id="agentsmain"></div><div id="sessions"></div></div>
     <div id="t-log" hidden><pre id="log"></pre></div>
   </section>
 </div>
@@ -144,7 +145,7 @@ async function api(path, body) {
 }
 function settings() {
   return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.mode,
-           agent: $("agent").checked, port: $("port").value, api_key: $("apikey").value };
+           agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, port: $("port").value, api_key: $("apikey").value };
 }
 function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent].join("|"); }
 function seg(id, key, cb) {
@@ -167,7 +168,7 @@ async function loadSystem() {
     S.inited = true;
     $("ram").value = last.ram || 0;
     $("vram").value = last.vram || 0;      // auto: the planner and the launcher read the free VRAM at start (a running server would lower it here)
-    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent;
+    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm;
     if (last.model) S.sel = last.model;
   }
   paintRanges();
@@ -298,14 +299,37 @@ async function poll() {
     if (atEnd) el.scrollTop = el.scrollHeight;
   }
 }
-function warmHtml(st) {
-  if (!st.agent) return "";
-  const w = st.warm || {}, ev = w.events || [], files = w.files || [];
-  const t = x => new Date(x * 1000).toLocaleTimeString();
-  return `<div class="small" style="margin-top:10px"><b>Warm sessions</b>: long agent conversations are saved when idle and restored at the next start.</div>` +
-    (ev.length ? `<ul class="why">${ev.map(e => `<li>${t(e.t)} ${esc(e.line)}</li>`).join("")}</ul>` : `<div class="hint">nothing saved or restored in this run yet</div>`) +
-    (files.length ? `<table style="margin-top:4px"><tr><th>Saved conversation</th><th class="num">Size</th><th>Saved</th></tr>${files.map(f =>
-      `<tr><td><code>${esc(f.name)}</code></td><td class="num">${fmtGB(f.size)}</td><td>${new Date(f.t * 1000).toLocaleString()}</td></tr>`).join("")}</table>` : "");
+let sessionsBusy = false;
+async function loadSessions() {
+  if (sessionsBusy) return; sessionsBusy = true;
+  try { paintSessions(await api("/api/sessions")); } catch (e) { $("sessions").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  finally { sessionsBusy = false; }
+}
+function paintSessions(j) {
+  const st = S.status || {}, ev = (st.warm || {}).events || [];
+  const t = x => new Date(x * 1000).toLocaleString();
+  const state = f => f.restored ? `<span class="stock">restored at start</span>` : f.restore_failed ? `<span class="error">restore failed</span>` :
+    !j.running ? "saved" : f.this_server ? "for this server's model and settings" : `<span class="small">another model or setting</span>`;
+  let h = `<h2 style="margin-top:14px">Agent sessions</h2><div class="hint">In Agent mode the launcher saves each long conversation when it is idle (one file per slot, its
+    context checkpoints included) and restores the two largest of the same model and settings at the next start, so an agent continues where it
+    stopped. Folder: <code>${esc(j.dir)}</code>.${j.no_warm ? " <b>This server was started with --no-warm: nothing is restored or saved.</b>" : ""}</div>`;
+  if (ev.length) h += `<ul class="why">${ev.map(e => `<li>${new Date(e.t * 1000).toLocaleTimeString()} ${esc(e.line)}</li>`).join("")}</ul>`;
+  if (Array.isArray(j.live) && j.live.length)
+    h += `<div class="small" style="margin-top:6px">Live slots of this server: ${j.live.map(x => `slot ${x.id}: ${x.tokens ?? 0} tokens${x.processing ? " (working)" : ""}`).join(" · ")}</div>`;
+  else if (typeof j.live == "string") h += `<div class="small err">Live slots: ${esc(j.live)}</div>`;
+  h += j.files.length ? `<table style="margin-top:6px"><tr><th>Saved conversation</th><th class="num">Slot</th><th class="num">Tokens</th><th class="num">Size</th>
+      <th>Saved</th><th>Agent</th><th>State</th><th></th></tr>` + j.files.map(f => `<tr><td>${esc(f.model)} <span class="small">ctx ${esc(f.ctx ?? "?")}, KV ${esc(f.kv)}</span></td>
+      <td class="num">${f.slot}</td><td class="num">${f.tokens != null ? f.tokens.toLocaleString() : "?"}</td><td class="num">${f.size >= 1e9 ? fmtGB(f.size) : (f.size / 1e6).toFixed(0) + " MB"}</td><td>${t(f.t)}</td>
+      <td>${f.agent ? esc(f.agent) : '<span class="small">' + (f.this_server && st.state == "ready" ? "unknown" : "known while its model runs") + "</span>"}</td>
+      <td>${state(f)}</td><td><button data-trash="${esc(f.name)}">Move to Trash</button></td></tr>`).join("") + "</table>"
+    : `<div class="hint">No saved agent conversations.</div>`;
+  h += `<div class="hint">To start without them: tick "Don't restore saved agent sessions" in Settings (or move a file to the Trash; it is never deleted for good here).</div><div id="trashmsg" class="small"></div>`;
+  $("sessions").innerHTML = h;
+  $("sessions").querySelectorAll("button[data-trash]").forEach(b => b.onclick = async () => {
+    if (!confirm(`Move the saved conversation ${b.dataset.trash} to the Trash? The agent then starts this conversation from scratch next time.`)) return;
+    try { const r = await api("/api/sessions/trash", { name: b.dataset.trash }); await loadSessions(); $("trashmsg").textContent = `Moved to ${r.where}.` + (r.running_note ? " Note: " + r.running_note + "." : ""); }
+    catch (e) { $("trashmsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+  });
 }
 const BENCH_COLS = [["time", "When"], ["model", "Model"], ["mode", "Mode"], ["ram_gb", "RAM GB"], ["decode_mean", "Decode tok/s"], ["prefill", "Prefill tok/s"], ["hit_rate", "Hit rate"]];
 function benchTable(rows, model) {
@@ -326,7 +350,7 @@ async function paintBench(st) {
   $("benchres").innerHTML = `<div class="small" style="margin-top:6px">This run, and earlier runs from the CSV (same model in full colour), newest last:</div>` + benchTable(j.rows.slice(-8), model);
 }
 function paintAgents(st) {
-  const el = $("t-agents");
+  const el = $("agentsmain");
   const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {}), JSON.stringify(st.api_key || {})].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
   if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on: this tab then shows what to give OpenCode, Hermes or any OpenAI-compatible client.</div>`; return; }
@@ -338,7 +362,7 @@ function paintAgents(st) {
       <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)${(st.api_key || {}).in_use ? "; includes the server's API key" : ""}</div></td></tr>
      <tr><th>Hermes</th><td><button data-a="hermes">Preview</button> <button data-a="hermes" data-w="1" class="primary">Connect Hermes</button>
       <div class="hint">runs "hermes config set" for the provider, URL, model and context${(st.api_key || {}).in_use ? " and the API key" : ""} (needs hermes on the PATH)</div></td></tr></table>
-     <div id="connres"></div>` + warmHtml(st);
+     <div id="connres"></div>`;
   el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
     const o = $("connres"), w = !!b.dataset.w;
     o.innerHTML = `<pre>${w ? "writing" : "asking"} (moe_cache.py connect ${esc(b.dataset.a)}${w ? " --write" : ""})…</pre>`;
@@ -379,6 +403,7 @@ document.querySelector(".tabs").onclick = e => {
   const t = e.target.dataset.t; if (!t) return;
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t == t));
   ["chat", "agents", "log"].forEach(x => $("t-" + x).hidden = x != t);
+  if (t == "agents") loadSessions();
 };
 (async () => {
   await loadSystem();
@@ -386,6 +411,7 @@ document.querySelector(".tabs").onclick = e => {
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; document.querySelectorAll("#ctx button").forEach(b => b.classList.toggle("on", b.dataset.v == 65536)); settingsChanged(); } };
   await loadModels(false);
   poll(); setInterval(poll, 1000);
+  setInterval(() => { if (!$("t-agents").hidden) loadSessions(); }, 10000);
   setInterval(() => { if (!S.status.state || S.status.state == "idle") loadSystem(); }, 10000);
 })();
 </script>
