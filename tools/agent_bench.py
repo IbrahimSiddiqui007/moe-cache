@@ -249,6 +249,27 @@ def _send(url, e, a, res):
     c.close()
 
 
+def _key_for(url):
+    """No key given: when the server answers 401/403 without one, use moe-cache's stored per-user key (agent mode and --project servers
+    require it), the same rule as `moe_cache.py connect`; '' otherwise."""
+    u = urllib.parse.urlparse(url)
+    try:
+        c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=5); c.request("GET", "/v1/models"); st = c.getresponse().status; c.close()
+    except OSError:
+        return ""
+    if st not in (401, 403):
+        return ""
+    kf = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache", "api.key")
+    try:
+        with open(kf, encoding="utf-8") as f:
+            k = f.read().strip()
+        print(f"the server wants an API key: using moe-cache's stored key ({kf})", flush=True)
+        return k
+    except OSError:
+        print(f"the server answers {st} without an API key and {kf} does not exist: pass --api-key", flush=True)
+        return ""
+
+
 def replay(a):
     with open(a.session, encoding="utf-8") as f:
         s = json.load(f)
@@ -269,6 +290,8 @@ def replay(a):
             except OSError:
                 pass
             time.sleep(1)
+    if not a.api_key:
+        a.api_key = _key_for(a.url)
     T0 = time.perf_counter()
 
     # t_start must exist before dependants read it: set it before signalling
@@ -420,7 +443,8 @@ def main():
     p.add_argument("--label", default="")
     p.add_argument("--json", default="", help="write the per-request rows and the summary here")
     p.add_argument("--model", default="", help="model name to send (default: as recorded; llama-server ignores it with one model)")
-    p.add_argument("--api-key", default="")
+    p.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY", ""),
+                   help="API key (default: LLAMA_API_KEY; else moe-cache's stored key when the server asks for one)")
     p.add_argument("--gap-scale", type=float, default=1.0, help="scale the recorded pauses (0 = none)")
     p.add_argument("--no-cap", action="store_true", help="do not cap generation at the recorded number of tokens")
     p.add_argument("--all-requests", action="store_true", help="also replay non-completion requests (GET /v1/models ...)")
