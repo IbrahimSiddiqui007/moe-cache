@@ -16,6 +16,7 @@ python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write 
 | warm sessions (`--no-warm` turns them off) | every idle conversation of 2k+ tokens is saved to disk (with its checkpoints) 20 s after it changes, one file per slot; the two longest are restored at the next start, so each agent finds its own |
 | prints the base URL and both config blocks once the server is ready | |
 | `--api-key KEY` | required when other machines can reach the server |
+| (Windows + AMD GPU + Flash-Next only) `--ctx-checkpoints 0` instead of 8 | saving a checkpoint crashes AMD's Windows Vulkan driver (RESULTS 54); the cost is that edited history is processed again instead of resuming from a checkpoint; Qwen3.6 keeps its checkpoints. Not yet measured with an agent on Windows |
 
 ## Using the agents with a GUI
 

@@ -6,7 +6,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 <p align="center">
 <img alt="status" src="https://img.shields.io/badge/status-v0.2.3.5%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
-<img alt="platform" src="https://img.shields.io/badge/platform-Linux-lightgrey">
+<img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-23b0202a1%20(ggml%200.26.0)%20and%207fe450e19%20(0.25.1)-green">
 <a href="https://ko-fi.com/ibrumm"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white"></a>
 </p>
@@ -39,7 +39,7 @@ moe-cache manages the CPU-side experts itself:
 
 ## Get started
 
-**You need:** Linux on x86-64, a `llama-server` built with shared ggml libraries (tested with llama.cpp commits `23b0202a1` (ggml 0.26.0, backend API 3) and `7fe450e19` (ggml 0.25.1, API 2); each needs its own plugin build, see [docs/QUICKSTART.md](docs/QUICKSTART.md)), and a MoE model as a `.gguf` file. A GPU is optional.
+**You need:** Linux on x86-64 (Windows 11 is experimental: [docs/WINDOWS_TEST.md](docs/WINDOWS_TEST.md)), a `llama-server` built with shared ggml libraries (tested with llama.cpp commits `23b0202a1` (ggml 0.26.0, backend API 3) and `7fe450e19` (ggml 0.25.1, API 2); each needs its own plugin build, see [docs/QUICKSTART.md](docs/QUICKSTART.md)), and a MoE model as a `.gguf` file. A GPU is optional.
 Ollama user? The models in `ollama list` are plain GGUF files: the path is on the line starting with `FROM` in `ollama show NAME --modelfile`.
 
 ### 1. Install (pick one)
@@ -115,7 +115,7 @@ When the model fits in the memory llama-server may use, stock llama.cpp is faste
 
 **Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](docs/RESULTS.md), section 11.
 
-Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements: Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD.
+Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements above: Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54, preliminary).
 
 ## Hardware and OS support
 
@@ -125,8 +125,8 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 | Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested** on llama.cpp `7fe450e19` only, loaded the official way (`GGML_BACKEND_PATH`; see the feature table below) |
 | Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
 | Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB 1.23x stock (no expert layer fits on a 3 GiB iGPU); RESULTS 50 |
-| Linux + AMD discrete GPU | Expected to work (same Vulkan path), **not tested on AMD hardware yet** |
-| Windows | **Experimental.** Identical to stock with the cache on in CI on a Windows runner (official llama.cpp CPU release) since 2026-10-16, after three Windows-only bugs found on an MSI Claw and in that CI were fixed; not yet confirmed on real hardware with a GPU. See docs/COMPATIBILITY.md |
+| Linux + AMD discrete GPU | **Tested by a user** (GitHub issue #1: RX 9070 XT + Ryzen 7 7700, Linux, Vulkan): identity PASS, Flash-Next 15.9 -> 18.8 tok/s. Not yet run by the developer on Linux |
+| Windows | **Experimental.** Identical to stock with the cache on in CI on a Windows runner (official llama.cpp CPU release) since 2026-10-16, and on real hardware with a GPU since 2026-10-26: Windows 11 desktop, Ryzen 9 7950X + RX 9070 XT, Vulkan, identity 4/4 on four models (RESULTS 54). Speeds there are **preliminary** (apps open, file cache not cleared): Flash-Next decode about equal to stock, prefill about 2x. On AMD's Windows driver the launcher keeps all experts on the CPU for models bigger than RAM (VRAM in use also costs system RAM) and turns off context checkpoints for Flash-Next (they crash the driver). See docs/COMPATIBILITY.md |
 | macOS | No |
 
 ## Benchmark it on your own model and your own use case
@@ -204,8 +204,9 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 | `MOE_CACHE_EXEC_CHECK=1` | recompute every expert op the stock way and compare (slow; for testing) |
 | `MOE_CACHE_FAST_KERNELS=0` | use llama.cpp's own Q2_0 kernel instead of the plugin's |
 | `MOE_CACHE_IQ3_KERNEL=1` / `=0` | use the plugin's IQ3_XXS gather kernel (bit-identical) on any AVX2 CPU / turn it off; off by default on AMD, where gathers are slow (Zen 4: about 0.6x llama.cpp's own function) |
-| `MOE_CACHE_ROUTE=skip` (`moe-cache-server --fast`) | opt-in approximate routing: skip a low-ranked expert that is not in RAM. About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012; RESULTS section 31). Off by default |
+| `MOE_CACHE_ROUTE=skip` (`moe-cache-server --fast`; `--fast` also sets a q8_0 KV cache, KL 0.0045 alone) | opt-in approximate routing: skip a low-ranked expert that is not in RAM. About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012; RESULTS section 31). Off by default |
 | `MOE_CACHE_HYBRID=MiB\|auto` (`moe-cache-server --hybrid`) | opt-in, experimental: a bank of the most used experts (from the usage profile) in free GPU memory computes those picks while the CPU computes the rest. Flash-Next on 8 GB: 13.1 -> 17.4 tok/s; KL 0.0043 vs exact (about 1 top token in 60 differs). Needs a usage profile (the first session has none). The bank adapts to the session (`MOE_CACHE_HYBRID_ADAPT=N,K`, default 8,16; 0 = keep the profile choice). For models whose experts are slow on the CPU (IQ / Q2_0 quants); with Q4_K-class models such as Qwen3.6 it is slower than `--gpu-cache` (8.7 vs 15.7 tok/s at 12 GB). Off by default |
+| `MOE_CACHE_ROUTE_DROP=N`, `MOE_CACHE_ROUTE_KEEP=N` | with `ROUTE=skip`: how many of the lowest-ranked picks may be skipped (default 2; `--fast=2` sets 4, with at least half of the picks always kept) |
 | `MOE_CACHE_COALESCE_MIB=N` | merge neighbouring expert reads of a long prompt into reads of up to N MiB (default 16; 0 = off). Flash-Next prefill +14-24 % |
 | `MOE_CACHE_SCAN_TOKENS=N` | prompt batches of N+ tokens load experts at the evict-first end, so the cache from before a long prompt survives it (default 512; 0 = off). Flash-Next prefill +27 % |
 | starter profiles (`moe-cache-server --no-starter` to skip) | with no usage profile yet, the launcher starts from the shipped one for the model family (`profiles/`): first request 2.1x faster on Flash-Next (RESULTS 53) |

@@ -2,7 +2,7 @@
 
 State: the plugin has a Windows layer (`src/platform.h`) that cross-compiles with mingw-w64 and passes its platform tests under Wine. It has run on real Windows:
 the MSI Claw (Vulkan iGPU, rounds 1-2 found bugs) and, on 2026-10-26, a Windows 11 desktop (Ryzen 9 7950X + RX 9070 XT, llama.cpp b11669 Vulkan): identity 4/4 on four
-models and the Python launcher (check, server, chat) works; see `COMPATIBILITY.md`. There are no speed numbers with the plugin yet. Everything below is how to repeat the
+models and the Python launcher (check, server, chat) works; see `COMPATIBILITY.md`. Speed numbers with the plugin on the desktop are preliminary (RESULTS 54). Everything below is how to repeat the
 test. If you only need to run models on Windows, use a stock llama.cpp release; the plugin only adds a RAM cache for models bigger than RAM.
 
 ## What to run
