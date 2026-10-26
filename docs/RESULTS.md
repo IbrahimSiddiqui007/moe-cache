@@ -1761,13 +1761,24 @@ Branch `claude/i40-amd-ram-budget`: the launcher plans with (available RAM - cac
 | Flash-Next | all on CPU (today), A | 0 | 12.94 / 12.91 (prefill 121.5) | - | - |
 | Flash-Next | RAM budget (I40), A | - | 8.55 / 10.55 (prefill 129.3) | - | - |
 | Flash-Next | RAM budget (I40), B | - | 8.66 / 10.57 (prefill 127.9) | - | - |
-| Flash-Next | all on CPU (today), B | 0 | pending | - | - |
-| Qwen3.5-122B | all on CPU | 0 | - | - | - |
-| Qwen3.5-122B | RAM budget | - | - | - | - |
+| Flash-Next | all on CPU (today), B | 0 | 12.70 / 12.68 (prefill 120.9) | - | - |
+| Qwen3.5-122B | all on CPU (today), A | 0 | 5.85 / 5.86 / 6.41 (prefill 125.6) | - | - |
+| Qwen3.5-122B | RAM budget (I40), A | - | 3.99 / 4.20 / 4.24 (prefill 135.8) | - | - |
+| Qwen3.5-122B | RAM budget (I40), B | - | 4.15 / 4.29 / 4.20 (prefill 134.7) | - | - |
+| Qwen3.5-122B | all on CPU (today), B | 0 | 5.64 / 5.79 / 6.37 (prefill 126.3) | - | - |
 | GLM-5.3-Flash | all on CPU | 0 | - | - | - |
 | GLM-5.3-Flash | RAM budget | - | - | - | - |
 
-Flash-Next so far (plugin, cold start each run, ABBA, two decode requests per run, PRELIMINARY): the RAM-budgeted layout decodes about 25 % slower than all experts on the CPU (about 9.6 vs 12.9 tok/s) and prefills about 5-6 % faster (128-129 vs 121.5), with the second B run still to come. So far the RAM budget does not pay on Flash-Next on this machine.
+Plugin, cold start each run, ABBA (all-CPU A, I40 A, I40 B, all-CPU B), PRELIMINARY (the owner's Claude app was open):
+
+| Model | Decode, all on CPU (mean) | Decode, RAM budget (mean) | Change | Prefill, all on CPU / RAM budget | Change |
+|---|---|---|---|---|---|
+| Flash-Next | 12.81 tok/s | 9.58 tok/s | **-25 %** | 121.2 / 128.6 tok/s | +6 % |
+| Qwen3.5-122B | 5.99 tok/s | 4.18 tok/s | **-30 %** | 126.0 / 135.3 tok/s | +7 % |
+| GLM-5.3-Flash | - | - | - | - | - |
+
+**Verdict: I40 KILLED.** Giving GPU expert layers back by a RAM budget costs 25-30 % of decode for 6-7 % more prefill on both models; the all-CPU default stays.
+Branch `claude/i40-amd-ram-budget` is not merged. (Both orders of each pair agree, so this is not a drift effect; the GPU-layer counts the budget chose are not recorded here.)
 
 ### I38: buffered reads (cold and warm file cache)
 
