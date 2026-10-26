@@ -185,6 +185,17 @@ def win_driver_version(name):
     return ""
 
 
+def amd_vram_budget(avail_bytes, expert_bytes, free_vram_gib, ratio=1.1):
+    """-> (VRAM budget in GiB the planner may plan with, RAM cache floor in GiB) for Windows + AMD Vulkan and a model bigger than RAM (idea I40).
+    On AMD's Windows driver every GiB of VRAM that llama-server uses also takes about `ratio` GB of system RAM (I37: 12.0-12.5 GiB of GPU -> 13.5-14.6 GB of
+    RAM, so 1.1), RAM the expert cache needs. The cache stays effective while it keeps a floor of max(8 GiB, 25 % of the expert bytes); what is left of the
+    available RAM, divided by `ratio`, is the most VRAM llama-server may use in total (attention weights, KV and compute buffers included: the
+    tuner subtracts those itself, so the budget is passed as the free VRAM and only what remains becomes GPU expert layers). Never above the real free VRAM."""
+    floor = max(8.0, 0.25 * expert_bytes / 2**30)
+    budget = max(0.0, (avail_bytes / 2**30 - floor) / ratio)
+    return min(free_vram_gib, budget), floor
+
+
 def pick_gpu(listing):
     """(device, name, free MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
     llama.cpp skips an integrated GPU when a discrete one exists, but --list-devices lists both (on a Ryzen 7000 desktop the built-in Radeon
@@ -627,11 +638,24 @@ def server(argv):
         # expert layers on the GPU took 14.9 GB of RAM), so for a model bigger than RAM, GPU expert layers starve the page cache / expert cache:
         # Flash-Next decode stock 11-14 -> 14-16 tok/s, plugin 3 -> 12-13.5 tok/s with all experts on the CPU (the GPU keeps attention and long prompts)
         try:
+            ratio = float(os.environ.get("MOE_CACHE_AMD_RAM_PER_VRAM", "1.1"))      # GB of RAM taken per GiB of VRAM used; <= 0 turns the rule off
             mem = mem_for_server(a.ram)
-            if mem and sum(os.path.getsize(f) for f in model_parts(model)) > mem:
-                ncmoe = ncmoe_user = "999"      # also keeps the tuner (below) from moving expert layers back to the GPU
-                say("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (on this driver VRAM also uses system RAM; "
-                    "--n-cpu-moe N to override)")
+            size_now = sum(os.path.getsize(f) for f in model_parts(model))
+            if ratio > 0 and mem and size_now > mem:
+                sys.path.insert(0, os.path.join(HERE, "planner"))
+                from gguf_plan import model_layout
+                lay = model_layout(model)
+                exp_bytes = lay["expert_bytes_per_layer"] * lay["n_layers"]
+                if a.vram and exp_bytes:
+                    budget, floor = amd_vram_budget(mem, exp_bytes, float(a.vram), ratio)
+                    say(f"moe-cache: AMD GPU on Windows and a model bigger than RAM: VRAM in use also takes system RAM here (~{ratio:g} GB per GiB). "
+                        f"RAM {mem / 2**30:.1f} GiB - cache floor {floor:.1f} GiB -> at most {budget:.1f} GiB of VRAM for llama-server "
+                        f"(GPU reports {float(a.vram):.1f} GiB free); --vram GiB / --n-cpu-moe N / MOE_CACHE_AMD_RAM_PER_VRAM to override")
+                    a.vram = f"{budget:.2f}"
+                else:
+                    ncmoe = ncmoe_user = "999"      # no VRAM figure to budget with: keep every expert on the CPU (db8e634)
+                    say("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (on this driver VRAM also uses system RAM; "
+                        "--n-cpu-moe N to override)")
         except Exception:
             pass
     if ncmoe is None:

@@ -91,6 +91,14 @@ L.WINDOWS = _oldw
 if _oldm is None: sys.modules.pop("winreg", None)
 else: sys.modules["winreg"] = _oldm
 
+# AMD Windows VRAM budget (I40): VRAM in use also takes ~1.1 GB of RAM each; the cache keeps max(8 GiB, 25 % of the expert bytes)
+G = 2**30
+b, fl = L.amd_vram_budget(25 * G, 60 * G, 15.0); check(abs(fl - 15.0) < 1e-9 and abs(b - 10 / 1.1) < 1e-6, f"amd_vram_budget: 25 GiB RAM, 60 GiB experts -> floor {fl:.1f}, budget {b:.2f} GiB")
+b, fl = L.amd_vram_budget(10 * G, 16 * G, 15.0); check(abs(fl - 8.0) < 1e-9 and abs(b - 2 / 1.1) < 1e-6, f"amd_vram_budget: small model keeps the 8 GiB floor ({b:.2f} GiB)")
+b, fl = L.amd_vram_budget(6 * G, 60 * G, 15.0); check(b == 0.0, "amd_vram_budget: RAM below the floor -> no GPU experts (budget 0)")
+b, fl = L.amd_vram_budget(60 * G, 60 * G, 3.0); check(b == 3.0, "amd_vram_budget: never above the real free VRAM")
+b, fl = L.amd_vram_budget(25 * G, 60 * G, 15.0, ratio=2.0); check(abs(b - 5.0) < 1e-9, "amd_vram_budget: a larger RAM-per-VRAM ratio shrinks the budget")
+
 def core(eff, mask, group=0):
     r = bytearray(48); struct.pack_into("<II", r, 0, 0, 48); r[9] = eff; struct.pack_into("<H", r, 30, 1); struct.pack_into("<QH", r, 32, mask, group)
     return bytes(r)
