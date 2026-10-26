@@ -58,6 +58,9 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
 #log .u { color:var(--accent); }
 .err { color:var(--bad); }
 .hint { color:var(--muted); font-size:12px; margin-top:4px; }
+#warnings { margin-top:8px; border:1px solid var(--warn); border-radius:6px; padding:6px 8px; }
+#warnings div { color:var(--warn); font-size:12px; word-break:break-word; }
+#warnings div + div { margin-top:4px; }
 </style>
 </head>
 <body>
@@ -110,6 +113,7 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <div style="margin-top:4px"><code id="cmd"></code></div>
     <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
     <pre id="dry" hidden></pre>
+    <div id="warnings" hidden></div>
     <div class="err" id="err"></div>
   </section>
   <section id="p-chat">
@@ -247,7 +251,8 @@ async function poll() {
   if (c.resident != null) { $("s-ram").textContent = `${fmtGB(c.resident)} / ${fmtGB(c.budget)}`; $("s-ram-l").textContent = "expert cache used / budget"; }
   else { $("s-ram").textContent = st.server_rss != null ? fmtGB(st.server_rss) : fmtGB(sy.ram_total - sy.ram_avail); $("s-ram-l").textContent = st.server_rss != null ? `llama-server RAM (${fmtGB(sy.ram_avail)} free)` : "RAM used (system)"; }
   $("s-vram").textContent = sy.vram_total ? `${fmtGiB(sy.vram_total - sy.vram_free)} / ${fmtGiB(sy.vram_total)}` : "–";
-  $("s-vram-l").textContent = sy.gpu ? "VRAM used · " + sy.gpu : "VRAM (no GPU found)";
+  $("s-vram-l").textContent = sy.gpu ? (sy.vram_total ? "VRAM used · " : sy.vram_free != null ? "VRAM free · " : "") + sy.gpu : sy.gpu_detecting ? "VRAM (looking for the GPU…)" : "VRAM (no GPU found)";
+  if (!sy.vram_total && sy.vram_free != null) $("s-vram").textContent = fmtGiB(sy.vram_free);
   $("s-mode").textContent = st.mode || (running ? "deciding…" : "–");
   $("cmd").textContent = st.command || "";
   chart("c-tps", st.history.map(h => [h[0], h[1]]), 0, "--accent");
@@ -256,6 +261,12 @@ async function poll() {
   if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>`; }
   else { ifr.hidden = true; ifr.dataset.u = ""; ifr.removeAttribute("src"); $("chatnote").textContent = running ? "Loading the model…" : "Start a model: llama-server's own chat page appears here."; }
   paintAgents(st);
+  const wk = JSON.stringify(st.warnings || []);
+  if ($("warnings").dataset.k != wk) {
+    $("warnings").dataset.k = wk;
+    $("warnings").hidden = !(st.warnings || []).length;
+    $("warnings").innerHTML = (st.warnings || []).map(w => `<div>⚠ ${esc(w.line)}${w.count > 1 ? ` <span class="small">(${w.count}×)</span>` : ""}</div>`).join("");
+  }
   if (st.log_seq > S.logSeq) {
     const j = await api("/api/log?since=" + S.logSeq);
     const el = $("log"), atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
@@ -276,12 +287,20 @@ function paintAgents(st) {
   const name = (st.model || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
   el.innerHTML = `<table><tr><th>Base URL</th><td><code>${esc(st.url)}/v1</code></td></tr><tr><th>Model</th><td><code>${esc(name)}</code></td></tr>
     <tr><th>Context</th><td>${esc(st.ctx || (st.agent ? 65536 : 8192))}</td></tr></table>` +
-    (st.agent ? `<div class="row" style="margin-top:8px"><button data-a="opencode">Connect OpenCode</button><button data-a="hermes">Connect Hermes</button></div><pre id="connout" hidden></pre>
-      <div class="hint">Writes the agent's config file (moe_cache.py connect … --write). Warm sessions: kept by the launcher in Agent mode.</div>`
-     : `<div class="hint">Agent mode is off for this server: tool calls may not work. Stop, tick Agent mode and start again.</div>`);
+    (st.agent ? "" : `<div class="hint">Agent mode is off for this server: tool calls may not work, and Hermes needs a 64k context. Stop, tick Agent mode and start again.</div>`) +
+    `<table style="margin-top:8px"><tr><th>OpenCode</th><td><button data-a="opencode">Preview</button> <button data-a="opencode" data-w="1" class="primary">Connect OpenCode</button>
+      <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)</div></td></tr>
+     <tr><th>Hermes</th><td><button data-a="hermes">Preview</button> <button data-a="hermes" data-w="1" class="primary">Connect Hermes</button>
+      <div class="hint">runs "hermes config set" for the provider, URL, model and context (needs hermes on the PATH)</div></td></tr></table>
+     <div id="connres"></div>`;
   el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
-    const o = $("connout"); o.hidden = false; o.textContent = "…";
-    try { const j = await api("/api/connect", { agent: b.dataset.a }); o.textContent = j.output || ("exit " + j.rc); } catch (e) { o.textContent = e.message; }
+    const o = $("connres"), w = !!b.dataset.w;
+    o.innerHTML = `<pre>${w ? "writing" : "asking"} (moe_cache.py connect ${esc(b.dataset.a)}${w ? " --write" : ""})…</pre>`;
+    try {
+      const j = await api("/api/connect", { agent: b.dataset.a, write: w });
+      o.innerHTML = `<div class="${j.rc ? "err" : "small"}" style="margin-top:6px">${j.rc ? "Failed" : w ? "Done" : "What would be written"} (exit ${j.rc}):</div><pre>${esc(j.output)}</pre>` +
+        (j.file ? `<div class="small" style="margin-top:6px">Now in <code>${esc(j.file)}</code>:</div><pre>${esc(j.written || "")}</pre>` : "");
+    } catch (e) { o.innerHTML = `<pre class="err">${esc(e.message)}</pre>`; }
   });
 }
 

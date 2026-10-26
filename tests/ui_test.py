@@ -7,6 +7,7 @@ import json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.re
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-ui-test-")
 os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")          # before the import: the launcher reads it once
+os.environ["XDG_CONFIG_HOME"] = os.path.join(TMP, "config")        # 'connect opencode --write' writes here, not into the real config
 sys.path.insert(0, os.path.join(HERE, "bin"))
 import moe_cache_ui as ui  # noqa: E402
 
@@ -84,7 +85,8 @@ port = int(sys.argv[sys.argv.index("--port") + 1])
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
-        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False}]}.get(self.path)
+        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False}], "/v1/models": {"data": [{"id": "fake-moe"}]},
+                "/props": {"default_generation_settings": {"n_ctx": 65536}}}.get(self.path)
         self.send_response(200 if body is not None else 404); self.end_headers(); self.wfile.write(json.dumps(body).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -92,6 +94,8 @@ print("moe-cache: experts of 38 layers stay on the CPU and are managed by the ca
 time.sleep(0.5)
 print("prompt eval time =     100.00 ms /    50 tokens (    2.00 ms per token,   500.00 tokens per second)", flush=True)
 print("       eval time =    1000.00 ms /    25 tokens (   40.00 ms per token,    25.00 tokens per second)", flush=True)
+for _ in range(2):
+    print("0.01.002.003 W moe-cache: warning: the expert cache shrank from 10.0 to 8.0 GiB because the rest of llama-server now uses 3.0 GiB", flush=True)
 print('moe-cache-stats {"hits":90,"misses":10,"read_bytes":0,"resident_bytes":6000000000,"budget":7000000000}', flush=True)
 time.sleep(1.0)
 print('moe-cache-stats {"hits":170,"misses":30,"read_bytes":50000000,"resident_bytes":6500000000,"budget":7000000000}', flush=True)
@@ -133,7 +137,7 @@ check(srv.server_address[0] == "127.0.0.1", "listens on 127.0.0.1 only")
 
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
-st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact"})
+st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact", "agent": True, "api_key": "sekrit-123"})
 check(st == 200, f"POST /api/start ({body[:120]})")
 st, _ = req("/api/start", {"model": small["path"], "port": port + 1})
 check(st == 400, "a second start while one runs is refused")
@@ -151,6 +155,27 @@ check(abs((c.get("hit_rate") or 0) - 0.8) < 1e-9, f"recent hit rate from two sna
 check(abs((c.get("hit_rate_total") or 0) - 0.85) < 1e-9 and c.get("budget") == 7e9, "total hit rate and the cache budget")
 check((c.get("read_mbs") or 0) > 0, f"SSD reads MB/s from read_bytes ({c.get('read_mbs')})")
 check(f"--port {port}" in status.get("command", ""), "the status shows the launcher command")
+w = status.get("warnings", [])
+check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
+      f"the shrink warning is lifted out of the log, once, counted, without llama-server's prefix ({w})")
+check("sekrit" not in json.dumps(status), "the API key is not in the status")
+
+# connect buttons: preview, then write (into the temporary XDG_CONFIG_HOME)
+st, body = req("/api/connect", {"agent": "opencode", "write": False})
+j = json.loads(body)
+check(st == 200 and j["rc"] == 0 and "fake-moe" in j["output"] and not os.path.exists(os.path.join(TMP, "config", "opencode", "opencode.json")),
+      "Preview OpenCode: shows the block, writes nothing")
+st, body = req("/api/connect", {"agent": "opencode", "write": True})
+j = json.loads(body)
+cfg = os.path.join(TMP, "config", "opencode", "opencode.json")
+check(st == 200 and j["rc"] == 0 and j["file"] == cfg and os.path.isfile(cfg), f"Connect OpenCode writes {cfg} ({j['output'][-120:]})")
+check('"moe-cache/fake-moe"' in (j["written"] or "") and f"127.0.0.1:{port}/v1" in j["written"], "and shows the provider block now in the file")
+check("sekrit" not in body and "sekrit-123" in open(cfg).read(), "the key is written to the file but never shown on the page")
+st, body = req("/api/connect", {"agent": "hermes", "write": False})
+check(st == 200 and "hermes config set" in json.loads(body)["output"], "Preview Hermes: the 'hermes config set' commands")
+st, _ = req("/api/connect", {"agent": "bash"})
+check(st == 400, "only opencode and hermes")
+
 lines = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check(any("eval time" in l for l in lines) and not any(l.startswith("moe-cache-stats") for l in lines), "the log has the server lines, not the stats lines")
 st, _ = req("/api/stop", {})
@@ -159,6 +184,22 @@ while time.time() < deadline and status["state"] not in ("stopped", "exited"):
     status = json.loads(req("/api/status")[1]); time.sleep(0.3)
 check(status["state"] == "stopped", f"POST /api/stop stops it ({status['state']}, exit code {status['rc']})")
 srv.shutdown()
+
+# Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)
+mc = ui.mc
+saved = mc.pick_gpu, mc.list_devices, mc.win_dedicated_vram
+mc.list_devices = lambda ls: "listing"
+mc.pick_gpu = lambda listing: ("Vulkan1", "AMD Radeon RX 7900 XT", 18000)
+mc.win_dedicated_vram = lambda: {"AMD Radeon RX 7900 XT": 20 * 2**30, "AMD Radeon(TM) Graphics": 512 * 2**20}
+g = ui.windows_gpu_once("llama-server")
+check(g == {"name": "AMD Radeon RX 7900 XT", "free": 18000 * 2**20, "total": 20.0 * 2**30, "integrated": False}, f"discrete AMD GPU: free and total ({g})")
+mc.pick_gpu = lambda listing: ("Vulkan0", "AMD Radeon(TM) Graphics", 16000)
+g = ui.windows_gpu_once("llama-server")
+check(g["integrated"] and g["total"] is None and "integrated" in g["name"], "integrated GPU: marked, no dedicated total")
+mc.pick_gpu, mc.list_devices, mc.win_dedicated_vram = saved
+ui.vram_now, ui._GPU["gpu"] = (lambda: None), {"name": "AMD Radeon RX 7900 XT", "free": 15 * 2**30, "total": 20.0 * 2**30, "integrated": False}
+si = ui.system_info()
+check(si["gpu"] == "AMD Radeon RX 7900 XT" and si["vram_free"] == 15 * 2**30 and si["vram_total"] == 20 * 2**30, "the status uses it when nvidia-smi and sysfs have nothing")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)
