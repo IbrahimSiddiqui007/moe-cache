@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, json, os, re, signal, subprocess, sys, threading, time, urllib.parse
+import argparse, collections, csv, ctypes, glob, json, math, secrets, os, re, signal, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -391,27 +391,31 @@ def server_args(s):
         a.append("--agent")
     if s.get("llama_server"):
         a += ["--llama-server", s["llama_server"]]
-    if s.get("api_key"):
-        a += ["--api-key", s["api_key"]]
-    return a + ["--", "--metrics"]
+    return a + ["--", "--metrics"]          # the API key goes to the launcher in LLAMA_API_KEY (child_env), never on a command line
 
 
 def shown_command(s):
-    a = server_args(dict(s, api_key="KEY" if s.get("api_key") else ""))
-    return " ".join(('"' + x + '"') if " " in x else x for x in ["moe-cache-server"] + a)
+    return (("LLAMA_API_KEY=KEY " if s.get("api_key") else "")
+            + " ".join(('"' + x + '"') if " " in x else x for x in ["moe-cache-server"] + server_args(s)))
 
 
 def dry_run(s):
     a = server_args(s)
     a.insert(a.index("--"), "--dry-run")          # a launcher option: after the -- it would go to llama-server
-    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, timeout=300, env=child_env())
-    return [l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, timeout=300, env=child_env(s.get("api_key")))
+    key = s.get("api_key")
+    return [l.replace(key, "KEY") if key else l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
 
 
 # ---- the running server ----
 
-def child_env():
-    return dict(os.environ, MOE_CACHE_STATS_SIGNAL="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+def child_env(api_key=None):
+    """The launcher's environment: stats on request, unbuffered UTF-8 output, and the API key (the launcher's --api-key default is LLAMA_API_KEY)."""
+    env = dict(os.environ, MOE_CACHE_STATS_SIGNAL="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+    env.pop("LLAMA_API_KEY", None)
+    if api_key:
+        env["LLAMA_API_KEY"] = api_key
+    return env
 
 
 def child_pid(pid):
@@ -551,7 +555,13 @@ def append_bench_row(row):
         w = csv.DictWriter(f, fieldnames=BENCH_FIELDS, extrasaction="ignore")
         if new:
             w.writeheader()
-        w.writerow(row)
+        w.writerow({k: csv_safe(v) for k, v in row.items()})
+
+
+def csv_safe(v):
+    """A cell a spreadsheet would run as a formula (=, +, -, @, tab, CR first; e.g. from a model file name) gets a leading apostrophe."""
+    v = "" if v is None else str(v)
+    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r", "\uff20", "\uff1d", "\uff0b", "\uff0d") else v
 
 
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) tokens.*?([\d.]+) tokens per second")
@@ -606,7 +616,7 @@ class Runner:
 
     def life(self, s, got, ready):
         try:
-            kw = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "env": child_env()}
+            kw = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "env": child_env(s.get("api_key"))}
             if sys.platform.startswith("linux"):
                 kw["preexec_fn"] = mc._die_with_parent_linux
             p = self.p = got["p"] = subprocess.Popen(LAUNCHER + server_args(s), **kw)
@@ -848,22 +858,55 @@ class Store:
         return self.models
 
 
+# what the page may do: its own scripts and requests, llama-server's chat page in the frame, never be framed itself (clickjacking)
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+       "frame-src http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
+MAX_BODY = 64 * 1024
+
+
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
+    token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in a cookie
     server_version = "moe-cache-ui"
+    timeout = 30                # a client that sends nothing does not hold a thread forever
 
     def log_message(self, *a):
         pass
 
-    def allowed(self):
-        """Only pages from this server: the Host must be ours (no DNS rebinding) and a foreign Origin is refused (no cross-site requests)."""
+    def allowed(self, navigation=False):
+        """Only pages from this server: the Host must be ours (no DNS rebinding), a foreign Origin is refused and the browser must say the request
+        comes from this page (Sec-Fetch-Site same-origin, or 'none' for opening the page itself from the address bar or the launcher)."""
         port = self.server.server_address[1]
         ok = {f"127.0.0.1:{port}", f"localhost:{port}"}
         if self.headers.get("Host") not in ok:
             return False
         o = self.headers.get("Origin")
-        return o is None or o in {"http://" + h for h in ok}
+        if o is not None and o not in {"http://" + h for h in ok}:
+            return False
+        site = self.headers.get("Sec-Fetch-Site")
+        return site is None or site == "same-origin" or (navigation and site == "none")
+
+    def cookie_name(self):
+        return f"moe_cache_ui_{self.server.server_address[1]}"       # cookies are not per port: the name is
+
+    def has_token(self):
+        """The per-run token, from the page's cookie or an X-MoeCache-Token header (scripts, tests): other users of a shared machine can reach
+        127.0.0.1 too, but not this token (it is printed for and opened by the user who started the page)."""
+        t = self.headers.get("X-MoeCache-Token")
+        if not t:
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == self.cookie_name():
+                    t = v
+        return bool(t) and secrets.compare_digest(t, self.token)
+
+    def end_headers(self):
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        super().end_headers()
 
     def send(self, code, body, ctype="application/json"):
         if not isinstance(body, (bytes, str)):
@@ -878,13 +921,27 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if not self.allowed():
-            return self.send(403, {"error": "forbidden"})
         u = urllib.parse.urlparse(self.path)
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query).items()}
+        if not self.allowed(navigation=u.path in ("/", "/index.html")):
+            return self.send(403, {"error": "forbidden"})
+        if u.path in ("/", "/index.html"):
+            if q.get("t") and secrets.compare_digest(q["t"], self.token):
+                # the launcher's link: keep the token in a cookie only this page sends, and drop it from the address bar
+                self.send_response(303)
+                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not self.has_token():
+                return self.send(403, "<!doctype html><meta charset=utf-8><title>moe-cache</title><p style='font:15px system-ui;margin:2em'>Open the "
+                                 "address the launcher printed (it ends in <code>?t=…</code>): this page only answers the user who started it.</p>",
+                                 "text/html")
+            return self.send(200, open(PAGE, "rb").read(), "text/html")
+        if not self.has_token():
+            return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
-            if u.path in ("/", "/index.html"):
-                return self.send(200, open(PAGE, "rb").read(), "text/html")
             if u.path == "/api/system":
                 return self.send(200, dict(system_info(), folders=self.store.folders(), last=self.store.saved.get("last", {}),
                                            llama_server=self.store.ls, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
@@ -892,15 +949,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
                 m = self.known(q.get("model"))
+                ps = self.settings(dict(q, model=m))             # the same checks as Start (numbers in range, no nan / inf)
+                q = {"ram": str(ps["ram"]) if "ram" in ps else "", "vram": str(ps["vram"]) if "vram" in ps else "", "ctx": str(ps.get("ctx", 8192)),
+                     "mode": ps["mode"], "agent": "1" if ps["agent"] else ""}
                 key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"))
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
                                                                              q.get("agent") in ("1", "true")))
                 return self.send(200, hit[1])
-            if u.path == "/api/command":
-                s = self.settings(q)
-                return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
@@ -916,10 +973,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self.allowed() or not (self.headers.get("Content-Type") or "").startswith("application/json"):
+        if not self.allowed() or not (self.headers.get("Content-Type") or "").startswith("application/json") or not self.has_token():
             return self.send(403, {"error": "forbidden"})
         try:
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if not 0 <= n <= MAX_BODY:
+            self.close_connection = True
+            return self.send(413, {"error": "request too large"})
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("a JSON object is expected")
             if self.path == "/api/folders":
                 f = os.path.abspath(os.path.expanduser(str(body.get("add") or body.get("remove") or "")))
                 lst = self.store.saved.setdefault("folders", [])
@@ -938,6 +1004,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.save()
                 self.runner.start(s)
                 return self.send(200, self.runner.status())
+            if self.path == "/api/command":
+                s = self.settings(body)
+                return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
             if self.path == "/api/bench":
                 self.runner.start_bench()
                 return self.send(200, self.runner.bench)
@@ -967,15 +1036,27 @@ class Handler(BaseHTTPRequestHandler):
     def settings(self, d):
         s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("exact", "fast", "hybrid") else "exact",
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
-        for k, conv in (("ram", float), ("vram", float), ("ctx", int), ("port", int)):
-            v = d.get(k)
-            if v not in (None, ""):
-                s[k] = conv(v)
-        if not 1 <= s.get("port", 8080) <= 65535 or s.get("ctx", 8192) < 512:
-            raise ValueError("bad port or context")
+        for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),
+                                      ("ctx", 512, 1048576, int, "context"), ("port", 1, 65535, int, "port")):
+            x = number(d.get(k), lo, hi, conv, what)
+            if x is not None:
+                s[k] = x
         if s.get("api_key") and not re.fullmatch(r"[\x21-\x7e]{1,200}", s["api_key"]):
             raise ValueError("the API key may only contain visible ASCII characters")
         return s
+
+
+def number(v, lo, hi, conv=float, what="value"):
+    """A finite number in [lo, hi] (no nan / inf), or None for empty."""
+    if v in (None, ""):
+        return None
+    try:
+        x = conv(float(v)) if conv is int else conv(v)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{what}: not a number")
+    if not (isinstance(x, (int, float)) and math.isfinite(x) and lo <= x <= hi):
+        raise ValueError(f"{what} must be between {lo} and {hi}")
+    return x
 
 
 def connect_agent(agent, url, api_key, write):
@@ -1003,9 +1084,9 @@ def connect_agent(agent, url, api_key, write):
     return out
 
 
-def make_server(port=8070, ls=None):
+def make_server(port=8070, ls=None, token=None):
     store = Store(ls or os.environ.get("LLAMA_SERVER", "llama-server"))
-    h = type("H", (Handler,), {"store": store, "runner": Runner()})
+    h = type("H", (Handler,), {"store": store, "runner": Runner(), "token": token or secrets.token_urlsafe(24)})
     srv = ThreadingHTTPServer(("127.0.0.1", port), h)
     srv.daemon_threads = True
     return srv
@@ -1023,8 +1104,8 @@ def ui(argv):
         raise SystemExit(f"moe-cache: cannot listen on 127.0.0.1:{a.ui_port} ({e}): --ui-port N to pick another port")
     if WINDOWS:
         threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
-    url = f"http://127.0.0.1:{srv.server_address[1]}"
-    mc.say(f"moe-cache: control page at {url} (this machine only; Ctrl-C stops it and any server it started)")
+    url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
+    mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if not a.no_browser:
         import webbrowser
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()

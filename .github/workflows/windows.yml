@@ -127,13 +127,24 @@ jobs:
           Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
           $p = Start-Process cmd -ArgumentList "/c","bin\moe-cache-ui.bat","--no-browser","--ui-port","8078" -RedirectStandardOutput ui_bat.out -RedirectStandardError ui_bat.err -PassThru -NoNewWindow
           $sys = $null
-          for ($i = 0; $i -lt 60; $i++) { try { $sys = Invoke-RestMethod http://127.0.0.1:8078/api/system; break } catch { Start-Sleep 1 } }
+          $tok = $null
+          for ($i = 0; $i -lt 60 -and -not $tok; $i++) { Start-Sleep 1; $m = Select-String ui_bat.out -Pattern '\?t=([A-Za-z0-9_-]+)' -ErrorAction SilentlyContinue; if ($m) { $tok = $m.Matches[0].Groups[1].Value } }
+          for ($i = 0; $i -lt 30 -and $tok; $i++) { try { $sys = Invoke-RestMethod http://127.0.0.1:8078/api/system -Headers @{ "X-MoeCache-Token" = $tok }; break } catch { Start-Sleep 1 } }
           taskkill /T /F /PID $p.Id | Out-Null
           Get-Content ui_bat.out, ui_bat.err
           if (-not $sys) { throw "the page did not come up" }
           "plugin: $($sys.plugin)"; "llama-server: $($sys.llama_server)"
           if (-not ($sys.plugin -like "*build\win-api3\ggml-moe-cache.dll")) { throw "the .bat did not find the DLL in build\win-api3" }
           if ($sys.llama_server -ne $env:LLAMA_SERVER) { throw "the page does not use LLAMA_SERVER" }
+          # --shortcut from a folder with a single quote in its name (the PowerShell string must stay intact)
+          $d = Join-Path $env:RUNNER_TEMP "o'brien kit"; New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item bin\moe-cache-ui.bat $d
+          cmd /c "`"$d\moe-cache-ui.bat`" --shortcut"
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) "moe-cache.lnk"
+          $t = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+          "shortcut -> $t"
+          if ($t -ne (Join-Path $d "moe-cache-ui.bat")) { throw "--shortcut: wrong target ($t)" }
+          Remove-Item $lnk
 
       - name: Crash dumps on (Windows Error Reporting LocalDumps for llama-server.exe)
         run: |

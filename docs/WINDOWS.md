@@ -49,7 +49,7 @@ What the `.bat` finds by itself (set the variable to override):
 | Plugin (`MOE_CACHE_LIB`) | `ggml-moe-cache-api3.dll`, then `ggml-moe-cache.dll`, next to the `.bat` or one folder up (the kit), then `build\win-api3\`, `build\win\` |
 | llama-server (`LLAMA_SERVER`) | on the `PATH`, then `C:\llama\llama-server.exe` |
 
-It prints what it found; the same is in the page header's tooltip. Without the `.bat`: `python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe`.
+It prints what it found and the page's address (with a per-run token: only you can use the page); the same is in the page header's tooltip. Without the `.bat`: `python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe`.
 Options for both: `--ui-port N`, `--no-browser`. Details: [GUI](GUI.md).
 
 ## 4. Coding agents

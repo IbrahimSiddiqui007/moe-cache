@@ -354,8 +354,7 @@ $("bench").onclick = async () => { try { await api("/api/bench", {}); poll(); } 
 $("copycmd").onclick = () => navigator.clipboard && navigator.clipboard.writeText($("cmd").textContent);
 $("showcmd").onclick = async () => {
   const d = $("dry"); d.hidden = false; d.textContent = "asking the launcher (--dry-run)…";
-  const s = settings(); delete s.api_key;     // never in a URL
-  try { const j = await api(`/api/command?` + new URLSearchParams(s)); d.textContent = j.lines.join("\n"); } catch (e) { d.textContent = e.message; }
+  try { const j = await api("/api/command", settings()); d.textContent = j.lines.join("\n"); } catch (e) { d.textContent = e.message; }
 };
 $("models").onclick = e => { const tr = e.target.closest("tr.m"); if (tr) { S.sel = S.models[+tr.dataset.i].path; paintModels(); planAll(); $("dry").hidden = true; } };
 $("addfolder").onclick = async () => {

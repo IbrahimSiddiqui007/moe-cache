@@ -16,8 +16,19 @@ On Windows: double-click `bin\moe-cache-ui.bat` (it finds Python, the plugin DLL
 | `--llama-server PATH` | the llama-server to start (default: `$LLAMA_SERVER`, else `llama-server` on the PATH) |
 | `--no-browser` | do not open the browser |
 
-Ctrl-C stops the page and any server it started. The page listens on 127.0.0.1 only and refuses requests from other web sites (foreign
-`Host` or `Origin`, non-JSON posts), because it can start programs.
+Ctrl-C stops the page and any server it started.
+
+**Safety.** The page can start programs, so it answers only its own user and its own page:
+
+| Protection | Against |
+|---|---|
+| listens on 127.0.0.1 only | other machines |
+| a random token per run: the address the launcher prints and opens ends in `?t=…`; the page moves it into an HttpOnly, SameSite=Strict cookie and every `/api` call needs it (scripts: header `X-MoeCache-Token`) | other users of a shared machine, who can reach 127.0.0.1 too |
+| `Host` must be 127.0.0.1 / localhost, a foreign `Origin` and `Sec-Fetch-Site` other than same-origin are refused, posts must be JSON (at most 64 KiB) | web sites in your browser (cross-site requests, DNS rebinding) |
+| `X-Frame-Options: DENY` and `Content-Security-Policy` with `frame-ancestors 'none'` | clickjacking (another site framing the page) |
+| only listed models can be planned or started; numbers are range-checked; the API key goes to the launcher in `LLAMA_API_KEY`, never on a command line, and is masked in what the page shows | misuse of the API |
+
+llama-server itself (port 8080) has no API key unless you set one: any program of any user on this machine can use it while it runs.
 
 ## The four panels
 

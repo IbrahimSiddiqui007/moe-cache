@@ -2,7 +2,7 @@
 """Control page (GUI1, bin/moe_cache_ui.py) without a model: fake GGUF files, a mocked planner and a fake launcher that answers /health and
 prints the lines llama-server and the plugin print (timings, 'moe-cache-stats {json}'). Linux and Windows; standard library only.
    python3 tests/ui_test.py"""
-import json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.request
+import http.client, json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-ui-test-")
@@ -113,6 +113,8 @@ class H(BaseHTTPRequestHandler):
         self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
+import os
+print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x for x in sys.argv), bool(os.environ.get("LLAMA_API_KEY"))), flush=True)
 print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
@@ -130,12 +132,14 @@ while True:
 ''')
 ui.LAUNCHER = [sys.executable, fake]
 
-srv = ui.make_server(0, "llama-server")
+TOKEN = "test-token-123"
+srv = ui.make_server(0, "llama-server", token=TOKEN)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 base = f"http://127.0.0.1:{srv.server_address[1]}"
 
 def req(path, body=None, headers=None):
-    h = dict(headers or {})
+    h = dict({"X-MoeCache-Token": TOKEN}, **(headers or {}))
+    h = {k: v for k, v in h.items() if v is not None}
     if body is not None:
         h.setdefault("Content-Type", "application/json")
     r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None, h)
@@ -147,6 +151,47 @@ def req(path, body=None, headers=None):
 
 st, page = req("/")
 check(st == 200 and "<title>moe-cache</title>" in page and "/api/status" in page, "GET / serves the page")
+
+# ---- security review (2026-10-26): frame protection, per-run token, Sec-Fetch-Site, body cap, ranges, CSV ----
+def raw(method, path, headers=None, body=None):
+    c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    c.request(method, path, body=body, headers=headers or {})
+    r = c.getresponse(); data = r.read(); c.close()
+    return r.status, r.getheader, data.decode(errors="replace")
+st, hdr, _ = raw("GET", "/?t=" + TOKEN)
+cookie = hdr("Set-Cookie") or ""
+check(st == 303 and hdr("Location") == "/" and cookie.startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "HttpOnly" in cookie and "SameSite=Strict" in cookie,
+      f"the launcher's link sets an HttpOnly, SameSite=Strict cookie and drops the token from the address ({st}, {cookie})")
+st, hdr, page = raw("GET", "/", {"Cookie": cookie.split(";")[0]})
+check(st == 200 and "<title>moe-cache</title>" in page, "the page loads with the cookie")
+check(hdr("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in (hdr("Content-Security-Policy") or "") and "frame-src http://127.0.0.1:*" in hdr("Content-Security-Policy"),
+      "1: no framing (X-Frame-Options DENY, CSP frame-ancestors 'none'); the chat frame may load 127.0.0.1")
+st, hdr, _ = raw("GET", "/api/status")
+check(st == 403 and hdr("X-Frame-Options") == "DENY", "1: the headers are on errors too")
+st, _, page = raw("GET", "/")
+check(st == 403 and "?t=" in page, "2: the page without the token: 403 and how to open it")
+check(req("/api/status", headers={"X-MoeCache-Token": None})[0] == 403, "2: /api without the token: 403")
+check(req("/api/status", headers={"X-MoeCache-Token": "wrong"})[0] == 403, "2: /api with a wrong token: 403")
+check(req("/api/stop", {}, headers={"X-MoeCache-Token": None})[0] == 403, "2: POST without the token: 403")
+check(raw("GET", "/?t=wrong")[0] == 403, "2: a wrong token in the link: 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: GET with Sec-Fetch-Site cross-site: 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "same-site"})[0] == 403, "3: GET from another port of 127.0.0.1 (same-site): 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "none"})[0] == 403, "3: an API call typed into the address bar (none): 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200, "3: same-origin: allowed")
+check(req("/api/stop", {}, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: POST cross-site: 403")
+check(req("/api/status", headers={"Origin": "http://attacker.example"})[0] == 403, "3: GET with a foreign Origin: 403")
+check(raw("GET", "/", {"Sec-Fetch-Site": "none", "Cookie": cookie.split(";")[0]})[0] == 200, "3: opening the page itself (none) works")
+st, _, _ = raw("POST", "/api/folders", {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN, "Content-Length": str(70000)}, b"x" * 70000)
+check(st == 413, f"5: a body over 64 KiB is refused ({st})")
+check(ui.Handler.timeout == 30, "5: a handler timeout is set")
+for bad in ({"ram": "nan"}, {"ram": "inf"}, {"vram": "-1"}, {"ctx": "2000000"}, {"ctx": "1e400"}, {"port": "70000"}):
+    st, body = req("/api/start", dict({"model": small["path"]}, **bad))
+    check(st == 400, f"7: {bad} refused ({body[:80]})")
+st, _ = req("/api/plan?model=" + urllib.request.quote(small["path"]) + "&ram=nan")
+check(st == 400, "7: the plan checks the same ranges")
+check([ui.csv_safe(x) for x in ("=cmd|' /C calc'!A0", "+1", "-2", "@SUM(1)", "\uff20x", "Qwen.gguf", 12.5)] ==
+      ["'=cmd|' /C calc'!A0", "'+1", "'-2", "'@SUM(1)", "'\uff20x", "Qwen.gguf", "12.5"], "9: CSV cells that would run as formulas get an apostrophe")
+check(req("/api/command?model=x")[0] == 404, "4: /api/command is POST only")
 st, body = req("/api/models")
 check(st == 200 and len(json.loads(body)["models"]) == 2, "GET /api/models")
 st, body = req("/api/plan?model=" + urllib.request.quote(small["path"]) + "&ram=1&ctx=8192&mode=exact")
@@ -190,6 +235,9 @@ w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
       f"the shrink warning is lifted out of the log, once, counted, without llama-server's prefix ({w})")
 check("sekrit" not in json.dumps(status), "the API key is not in the status")
+lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
+check("fake: argv has the key: False, LLAMA_API_KEY set: True" in lg, "4: the API key reaches the launcher in LLAMA_API_KEY, not in its argv")
+check(not any("sekrit" in l for l in lg), "4: and is not in the log")
 os.makedirs(os.path.join(ui.mc.CACHE_DIR, "slots", "agent"), exist_ok=True)
 open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.bin"), "wb").write(b"x" * 1000)
 open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.new.bin"), "wb").write(b"x")

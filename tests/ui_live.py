@@ -4,7 +4,7 @@ model through the page with a RAM budget small enough that the launcher keeps th
 live numbers, runs the quick benchmark (hit rate from the stats snapshot: SIGUSR1 on Linux, a named event on Windows), and stops it through the page.
    python3 tests/ui_live.py MODEL.gguf --llama-server PATH [--ram GB] [--ui-port 8075] [--port 8076]
 The plugin is found the launcher's way (MOE_CACHE_LIB or the build folder). Standard library only."""
-import argparse, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ap = argparse.ArgumentParser()
@@ -20,8 +20,10 @@ def check(ok, what):
     if not ok:
         fails.append(what)
 
+TOKEN = {"t": ""}
 def req(path, body=None, timeout=120, base=UI):
-    r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None, {"Content-Type": "application/json"})
+    r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None,
+                               {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN["t"]})
     try:
         with urllib.request.urlopen(r, timeout=timeout) as x:
             return x.status, json.loads(x.read())
@@ -33,12 +35,13 @@ log = open("ui_live_page.log", "w")
 page = subprocess.Popen([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "ui", "--no-browser", "--ui-port", str(a.ui_port),
                          "--llama-server", a.llama_server], stdout=log, stderr=subprocess.STDOUT, env=env)
 try:
-    for _ in range(60):
-        try:
-            if req("/api/status", timeout=2)[0] == 200:
-                break
-        except Exception:
-            time.sleep(0.5)
+    for _ in range(120):               # the page prints its address with the per-run token
+        m = re.search(r"\?t=([A-Za-z0-9_-]+)", open("ui_live_page.log", encoding="utf-8", errors="replace").read())
+        if m:
+            TOKEN["t"] = m.group(1)
+            break
+        time.sleep(0.5)
+    check(bool(TOKEN["t"]), "the page printed its address with the token")
     st, j = req("/api/folders", {"add": os.path.dirname(model)})
     check(st == 200 and any(m["path"] == model for m in j["models"]), f"the page lists the model after adding its folder ({st})")
     st, plan = req("/api/plan?" + urllib.parse.urlencode({"model": model, "ram": a.ram, "ctx": 4096, "mode": "exact"}), timeout=300)
