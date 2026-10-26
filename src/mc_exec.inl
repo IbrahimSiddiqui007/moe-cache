@@ -6,6 +6,9 @@ namespace {
 // ---- executor: decode-time expert matrix products run by the plugin itself ----
 // the CPU backend's type table, looked up at run time: builds that load their CPU backend as a separate library do not link it into the plugin
 typedef const struct ggml_type_traits_cpu * (*cpu_traits_fn_t)(enum ggml_type);
+#ifdef _WIN32
+std::string g_cpu_traits_from = "none";   // which module the executor's dot products come from (shown in the "active:" line)
+#endif
 // Lookup order: linked into the process (LD_PRELOAD builds), the CPU backend's registry, then the CPU backend library that was loaded
 // separately (GGML_BACKEND_DL builds: official releases, Vulkan, Windows), whose variant (libggml-cpu-haswell.so, ...) exports the function.
 cpu_traits_fn_t find_cpu_traits_fn() {
@@ -16,6 +19,11 @@ cpu_traits_fn_t find_cpu_traits_fn() {
     if (!fn) {
         if (ggml_backend_dev_t cd = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU)) {
             fn = (cpu_traits_fn_t) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cd), "ggml_get_type_traits_cpu");
+#ifdef _WIN32
+            if (fn) {
+                g_cpu_traits_from = "CPU backend registry";
+            }
+#endif
         }
     }
 #ifdef __linux__
@@ -47,6 +55,10 @@ cpu_traits_fn_t find_cpu_traits_fn() {
                 char name[MAX_PATH];
                 if (GetModuleFileNameA(mods[i], name, MAX_PATH) && strstr(name, "ggml-cpu")) {
                     fn = (cpu_traits_fn_t) (void *) GetProcAddress(mods[i], "ggml_get_type_traits_cpu");
+                    if (fn) {
+                        const char * b = std::max(strrchr(name, '\\'), strrchr(name, '/'));
+                        g_cpu_traits_from = b ? b + 1 : name;   // e.g. ggml-cpu-zen4.dll: the same kernels stock llama.cpp runs
+                    }
                 }
             }
         }
@@ -333,6 +345,10 @@ void print_capabilities(state_t & s) {
                                                                : preload ? "on(interposed)" : "executor only(not preloaded)");
     o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0 or MOE_CACHE_IQ3_KERNEL=0, no AVX2, or not Intel: MOE_CACHE_IQ3_KERNEL=1 forces it on)");
     o += std::string(" iq_avx512=") + (getenv("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
+#endif
+#ifdef _WIN32
+    cpu_traits(GGML_TYPE_F32);   // resolves the lookup once
+    o += " cpu_kernels=" + g_cpu_traits_from;
 #endif
     o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
     o += s.gpu_dev ? " long_prompt_gpu=on(>=" + std::to_string(s.gpu_min_tokens) + " tokens)" : " long_prompt_gpu=off(no GPU device)";
