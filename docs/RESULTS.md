@@ -1885,7 +1885,7 @@ Kill rule R3: hybrid under +10 % decode over exact. Verdict: -
 
 ### Task 4b: Hermes Agent on Windows through moe-cache (with the API key), and WP3 (`--ram` job memory limit)
 
-OpenCode is only installed as a desktop app on the PC (no CLI); installing the CLI through npm needs the owner's OK, so OpenCode is not tested on Windows.
+OpenCode was first only installed as a desktop app on the PC (no CLI); the owner then installed the CLI (v2.1.4, npm), so both agents were tested (rows below).
 
 | Check | Result |
 |---|---|
@@ -1893,6 +1893,8 @@ OpenCode is only installed as a desktop app on the PC (no CLI); installing the C
 | A request without the key gets 401, with `moe_cache.py key` as Bearer 200 | yes: 401 / 200 |
 | `connect hermes --write` finds the stored key (Hermes config on Windows) | yes: the key reached Hermes Agent v0.22.5's `config.yaml` (not printed); the owner's Hermes config was restored afterwards |
 | Hermes one-shot task (edit a scratch file): first turn tokens / time, whole session | task done correctly in 81 s (whole session); first-turn tokens not recorded |
+| OpenCode CLI v2.1.4 through moe-cache (`server qwen3.6 --agent --ram 20 --always-plugin`, `connect opencode --write`: `%USERPROFILE%\.config\opencode\opencode.json` with the API key; the owner's file was restored afterwards) | `opencode run` task "fix add() in calc.py" done correctly in 114 s (whole session); first prompt 8,728 tokens at 124.5 tok/s; decode 7.0-9.5 tok/s |
+| Launching OpenCode from a script on Windows | start `opencode.cmd`, not the npm `opencode.ps1` shim (`Start-Process` cannot run a .ps1) |
 | Warm session after a restart: first turn tokens / time | - |
 | Flash-Next with `--ctx-checkpoints 0`: cost for an agent that edits history | - |
 | WP3: `--ram 20` sets a job memory limit; the log line; the server stays under it | log line "Windows job memory limit 20.0 GB on llama-server"; the cache was sized from it (start budget 12.5 GiB, margin 4 GiB). "Stays under it" under load: not measured |
