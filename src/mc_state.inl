@@ -74,6 +74,9 @@ struct state_t {
     bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
     size_t max_nb2_all = 0;                             // largest expert slice, for the helper threads' bounce buffers
     std::vector<std::thread> pf_threads;
+#ifdef _WIN32
+    std::thread stats_th, save_th;                       // event threads (MOE_CACHE_STATS_SIGNAL, profile save on request): joined in the destructor
+#endif
     std::mutex pf_mu;
     std::condition_variable pf_cv;
     std::deque<std::function<void()>> pf_q;
@@ -515,7 +518,7 @@ struct state_t {
             snprintf(name, sizeof(name), "Local\\moe-cache-stats-%lu", plat::process_id());
             g_stats_event = CreateEventA(nullptr, FALSE, FALSE, name);
             if (g_stats_event) {
-                std::thread([this] { while (WaitForSingleObject(g_stats_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) { print_snapshot(); } }).detach();
+                stats_th = std::thread([this] { while (WaitForSingleObject(g_stats_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) { print_snapshot(); } });
             }
         }
         // Windows stops a server by killing it, so the profile save in the destructor never runs: the launcher sets this event first
@@ -525,12 +528,13 @@ struct state_t {
             snprintf(name, sizeof(name), "Local\\moe-cache-save-%lu", plat::process_id());
             g_save_event = CreateEventA(nullptr, FALSE, FALSE, name);
             if (g_save_event) {
-                std::thread([this] {
+                save_th = std::thread([this] {
                     while (WaitForSingleObject(g_save_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) {
-                        save_profile();
-                        fprintf(stderr, "moe-cache: usage profile saved (on request)\n");
+                        if (save_profile()) {
+                            fprintf(stderr, "moe-cache: usage profile saved (on request)\n");
+                        }
                     }
-                }).detach();
+                });
             }
         }
 #endif

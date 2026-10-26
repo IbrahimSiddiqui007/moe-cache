@@ -72,7 +72,7 @@ int main(int argc, char ** argv) {
     plat::make_dir(ev.c_str());
     const std::string jf = ev + "/p", jt = ev + "/p.tmp";
     { FILE * f = plat::fopen_utf8(jt.c_str(), "wb"); CHECK(f != nullptr); if (f) { fputs("utf8", f); fclose(f); } }
-    plat::replace_file(jt.c_str(), jf.c_str());
+    CHECK(plat::replace_file(jt.c_str(), jf.c_str()));
     { char b[8] = { 0 }; FILE * f = plat::fopen_utf8(jf.c_str(), "rb"); CHECK(f != nullptr); if (f) { size_t n = fread(b, 1, 7, f); (void) n; fclose(f); } CHECK(strcmp(b, "utf8") == 0); }
     { plat::file_t g = plat::file_open(jf.c_str(), false); CHECK(g.ok()); char b[8] = { 0 }; CHECK(g.ok() && plat::file_pread(g, b, 4, 0) == 4 && memcmp(b, "utf8", 4) == 0);
 #ifdef _WIN32

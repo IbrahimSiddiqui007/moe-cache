@@ -421,16 +421,26 @@ inline void make_dir(const char * path) {
     mkdir(path, 0700);
 #endif
 }
-// rename tmp over dst (replaces an existing file on both systems)
-inline void replace_file(const char * tmp, const char * dst) {
+// rename tmp over dst (replaces an existing file on both systems); false (with a message) if it could not
+inline bool replace_file(const char * tmp, const char * dst) {
 #ifdef _WIN32
     if (!MoveFileExW(widen(tmp).c_str(), widen(dst).c_str(), MOVEFILE_REPLACE_EXISTING)) {     // e.g. a virus scanner holding dst open
         fprintf(stderr, "moe-cache: cannot replace %s (Windows error %lu); the new data is in %s\n", dst, (unsigned long) GetLastError(), tmp);
+        return false;
     }
 #else
     if (rename(tmp, dst) != 0) {
         fprintf(stderr, "moe-cache: cannot replace %s (%s); the new data is in %s\n", dst, strerror(errno), tmp);
+        return false;
     }
+#endif
+    return true;
+}
+inline void remove_file(const char * path) {
+#ifdef _WIN32
+    _wremove(widen(path).c_str());
+#else
+    std::remove(path);
 #endif
 }
 

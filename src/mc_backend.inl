@@ -237,10 +237,15 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     pack_used.push_back((int32_t) e);
                 }
             }
-            // pack unless every expert is used: the whole-tensor upload also reads the experts this block does not use, which may be evicted
+            // Windows: pack unless every expert is used: the whole-tensor upload also reads the experts this block does not use, which may be evicted
             // (desktop PC 2026-10-26, GLM-5.3-Flash with a 4.6 GiB cache: on Windows an evicted expert is decommitted memory and the upload's copy
-            // crashed with an access violation; on Linux it reads zeros, harmless because they are unused). At 100 % use it is the same single copy.
+            // crashed with an access violation; on Linux it reads zeros, harmless because they are unused, so Linux keeps the
+            // 90 % rule). At 100 % use it is the same single copy.
+#ifdef _WIN32
             if (!ok || pack_used.size() == (size_t) n_as) {
+#else
+            if (!ok || pack_used.size() * 10 >= (size_t) n_as * 9) {     // (almost) every expert used: nothing to gain (evicted experts read as zeros)
+#endif
                 pack_used.clear();
             }
         }
@@ -320,8 +325,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             return false;
         }
     }
+#ifdef _WIN32
     // a whole expert tensor is uploaded (no packing: MOE_CACHE_GPU_PACK=0, or ids the packing cannot handle): all of its experts must be in RAM,
-    // else the copy reads evicted memory (an access violation on Windows, zeros on Linux): keep such a block on the CPU
+    // else the copy reads decommitted memory (an access violation): keep such a block on the CPU. Linux reads zeros there, unused and harmless,
+    // so the check (which would send such blocks to the CPU for nothing) is Windows only.
     for (const auto & u : uploads) {
         if (pack_weights.count(u.first)) {
             continue;
@@ -344,6 +351,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
         }
     }
+#endif
     if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
         ggml_free(ctx);
         c->gpu_failed = true;

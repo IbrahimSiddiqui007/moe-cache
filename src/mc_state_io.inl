@@ -358,6 +358,21 @@
         if (g_save_event) {
             SetEvent(g_save_event);          // wakes the save thread, which then exits
         }
+        // joined, not detached: neither may run on after this state (and its mutex) is gone; then the events can be closed
+        if (stats_th.joinable()) {
+            stats_th.join();
+        }
+        if (save_th.joinable()) {
+            save_th.join();
+        }
+        if (g_stats_event) {
+            CloseHandle(g_stats_event);
+            g_stats_event = nullptr;
+        }
+        if (g_save_event) {
+            CloseHandle(g_save_event);
+            g_save_event = nullptr;
+        }
 #endif
         if (trace_f) {
             fclose(trace_f);

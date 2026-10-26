@@ -91,9 +91,10 @@
         return idx;
     }
 
-    void save_profile() {
+    // true when the profile file was written
+    bool save_profile() {
         if (profile_path.empty() || session.empty()) {
-            return;
+            return false;
         }
         std::lock_guard<std::mutex> lk(mu);
         int nl = std::max<int>(learned.n_layers, (int) session.size());
@@ -125,7 +126,7 @@
         FILE * f = fopen_private(tmp.c_str());
         if (!f) {
             fprintf(stderr, "moe-cache: cannot write profile %s\n", tmp.c_str());
-            return;
+            return false;
         }
         const int32_t h[2] = { nl, ne };
         bool ok = fwrite("XUSE", 1, 4, f) == 4;
@@ -135,10 +136,10 @@
         ok = (fclose(f) == 0) && ok;
         if (!ok) {
             fprintf(stderr, "moe-cache: writing the profile failed (disk full?); the old profile %s is kept\n", profile_path.c_str());
-            std::remove(tmp.c_str());
-            return;
+            plat::remove_file(tmp.c_str());
+            return false;
         }
-        plat::replace_file(tmp.c_str(), profile_path.c_str());
+        return plat::replace_file(tmp.c_str(), profile_path.c_str());
     }
 
     // warm start: read the most used experts of the profile into place, most used last (so it is the most recently used)
