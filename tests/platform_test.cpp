@@ -6,7 +6,7 @@
 static int fails = 0;
 #define CHECK(c) do { if (!(c)) { printf("FAIL line %d: %s\n", __LINE__, #c); fails++; } else { printf("ok   %s\n", #c); } } while (0)
 
-int main() {
+int main(int argc, char ** argv) {
     const size_t MB = 1 << 20;
     // reserve, commit, write, decommit, commit again (content must be gone or zero, never an old value after decommit on Windows)
     char * p = (char *) plat::mem_reserve(64 * MB);
@@ -58,6 +58,34 @@ int main() {
     plat::replace_file("moe_cache_pt_dir/a.tmp", "moe_cache_pt_dir/a");
     { char b[8] = { 0 }; FILE * f = fopen("moe_cache_pt_dir/a", "rb"); size_t n = fread(b, 1, 7, f); (void) n; fclose(f); CHECK(strcmp(b, "new") == 0); }
     remove("moe_cache_pt_dir/a"); remove(path.c_str());
+
+    // non-ASCII paths (C:\Users\José\...): the environment gives UTF-8, and every file helper takes it (Windows converts to UTF-16 at the call)
+    const char * jose = "moe_cache_pt_dir/Jos\xc3\xa9 \xe6\xa8\xa1\xe5\x9e\x8b";        // "José 模型": not representable in one ANSI code page
+#ifdef _WIN32
+    SetEnvironmentVariableW(L"MOE_CACHE_PT_PATH", plat::widen(jose).c_str());
+#else
+    setenv("MOE_CACHE_PT_PATH", jose, 1);
+#endif
+    std::string ev;
+    CHECK(plat::env_utf8("MOE_CACHE_PT_PATH", ev) && ev == jose);
+    CHECK(!plat::env_utf8("MOE_CACHE_PT_UNSET_VARIABLE", ev));
+    plat::make_dir(ev.c_str());
+    const std::string jf = ev + "/p", jt = ev + "/p.tmp";
+    { FILE * f = plat::fopen_utf8(jt.c_str(), "wb"); CHECK(f != nullptr); if (f) { fputs("utf8", f); fclose(f); } }
+    plat::replace_file(jt.c_str(), jf.c_str());
+    { char b[8] = { 0 }; FILE * f = plat::fopen_utf8(jf.c_str(), "rb"); CHECK(f != nullptr); if (f) { size_t n = fread(b, 1, 7, f); (void) n; fclose(f); } CHECK(strcmp(b, "utf8") == 0); }
+    { plat::file_t g = plat::file_open(jf.c_str(), false); CHECK(g.ok()); char b[8] = { 0 }; CHECK(g.ok() && plat::file_pread(g, b, 4, 0) == 4 && memcmp(b, "utf8", 4) == 0);
+#ifdef _WIN32
+      if (g.ok()) { CloseHandle(g.h); } }
+    _wremove(plat::widen(jf.c_str()).c_str()); _wrmdir(plat::widen(ev.c_str()).c_str());
+#else
+      if (g.ok()) { close(g.fd); } }
+    remove(jf.c_str()); rmdir(ev.c_str());
+#endif
+
+    // the process's own command line (the plugin looks for --no-repack and --cache-ram in llama-server's)
+    const std::vector<std::string> cl = plat::command_line();
+    CHECK(cl.size() == (size_t) argc && cl[0] == argv[0] && (argc < 2 || cl[1] == argv[1]));
     printf(fails ? "FAILED: %d\n" : "ALL OK\n", fails);
     return fails ? 1 : 0;
 }

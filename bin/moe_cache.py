@@ -190,8 +190,9 @@ def list_devices(ls):
     except Exception:
         return ""
 
-def parse_core_records(buf):
-    """Cores from a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: [(efficiency_class, [logical CPUs])], processor group 0 only.
+def parse_core_records(buf, groups=None):
+    """Cores from a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: [(efficiency_class, [logical CPUs])], processor group 0 only
+    (masks, llama.cpp's -C included, address group 0; the groups seen are added to the set `groups` when one is given).
     Record layout: DWORD Relationship, DWORD Size, then PROCESSOR_RELATIONSHIP: BYTE Flags, BYTE EfficiencyClass, BYTE Reserved[20],
     WORD GroupCount, GROUP_AFFINITY GroupMask[] at offset 32 (KAFFINITY Mask, WORD Group, WORD Reserved[3])."""
     import struct
@@ -203,6 +204,8 @@ def parse_core_records(buf):
         if rel == 0:
             eff = buf[off + 9]
             mask, group = struct.unpack_from("<QH", buf, off + 32)
+            if groups is not None:
+                groups.add(group)
             if group == 0:
                 cores.append((eff, [i for i in range(64) if mask >> i & 1]))
         off += size
@@ -221,8 +224,12 @@ def hybrid_masks(cores):
     return pmask, ecpus
 
 
+WIN_GROUPS_NOTE = "more than 64 logical CPUs (several Windows processor groups): no core pinning (masks reach group 0 only)"
+
+
 def win_cores():
-    """[(efficiency_class, [logical CPUs])] on Windows, [] elsewhere or on failure (Claw finding 5: Windows had no core pinning)."""
+    """[(efficiency_class, [logical CPUs])] on Windows, [] elsewhere or on failure (Claw finding 5: Windows had no core pinning).
+    [] too with more than 64 logical CPUs (several processor groups): a mask reaches group 0 only, so pinning would leave the other groups idle."""
     if not WINDOWS:
         return []
     try:
@@ -233,7 +240,10 @@ def win_cores():
         buf = ctypes.create_string_buffer(n.value)
         if not k.GetLogicalProcessorInformationEx(0, buf, ctypes.byref(n)):
             return []
-        return parse_core_records(buf.raw[:n.value])
+        groups = set()
+        cores = parse_core_records(buf.raw[:n.value], groups)
+        win_cores.groups = len(groups)
+        return [] if len(groups) > 1 else cores
     except Exception:
         return []
 
@@ -708,6 +718,8 @@ def server(argv):
             say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     pinargs = []
     hm = hybrid_masks(win_cores()) if WINDOWS else None
+    if getattr(win_cores, "groups", 1) > 1 and not a.no_pin:
+        say("moe-cache: " + WIN_GROUPS_NOTE)
     if hm and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
         pmask, ecpus = hm
         if not a.no_pin:
@@ -1142,6 +1154,8 @@ def check(argv):
             hm = None
         if hm:
             ok("cpu pinning", "hybrid CPU: threads are pinned to the performance cores automatically")
+        elif getattr(win_cores, "groups", 1) > 1:
+            ok("cpu pinning", WIN_GROUPS_NOTE)
         else:
             ok("cpu pinning", "no hybrid cores: no pinning")
     lsp = shutil.which(a.llama_server)

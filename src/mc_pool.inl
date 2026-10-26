@@ -77,6 +77,11 @@ struct exec_pool_t {
     }
 
     void start(const std::vector<int> & cpus, int n_workers) {
+#if defined(_WIN32)
+        if (std::any_of(cpus.begin(), cpus.end(), [](int c) { return c >= 64; })) {
+            fprintf(stderr, "moe-cache: note: CPUs 64 and above in the mask are not pinned (Windows processor group 0 only); their threads run unpinned\n");
+        }
+#endif
         for (int i = 0; i < n_workers; i++) {
             const int cpu = i < (int) cpus.size() ? cpus[(size_t) i] : -1;
             th.emplace_back([this, cpu] {

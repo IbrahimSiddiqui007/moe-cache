@@ -76,6 +76,21 @@
                 }
             }
         }
+#elif defined(_WIN32)
+        // no sysfs: the launcher passes the efficiency cores as a mask (GetLogicalProcessorInformationEx, lowest efficiency class; processor group 0)
+        if (la_ecores) {
+            if (const char * m = getenv("MOE_CACHE_ECORE_MASK")) {
+                DWORD_PTR set = 0;
+                for (int c : mask_cpus(m)) {
+                    if (c < 64) {
+                        set |= (DWORD_PTR) 1 << c;
+                    }
+                }
+                if (set) {
+                    SetThreadAffinityMask(GetCurrentThread(), set);
+                }
+            }
+        }
 #endif
         for (;;) {
             std::function<void()> fn;

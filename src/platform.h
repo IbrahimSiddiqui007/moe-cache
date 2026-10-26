@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 #include <algorithm>
 
 #ifdef _WIN32
@@ -59,15 +60,102 @@ inline std::string last_error() {
 #endif
 }
 
+// ---- text: paths are UTF-8 everywhere in the plugin (ggml's gguf reader takes UTF-8 too); Windows converts at the system call ----
+#ifdef _WIN32
+inline std::wstring widen(const char * s) {
+    const int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    std::wstring w((size_t) std::max(n, 1), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, &w[0], n);
+    w.resize(wcslen(w.c_str()));
+    return w;
+}
+inline std::string narrow(const wchar_t * w) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    std::string s((size_t) std::max(n, 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], n, nullptr, nullptr);
+    s.resize(strlen(s.c_str()));
+    return s;
+}
+#endif
+
+// environment variable as UTF-8, false if unset. Use it for paths: Windows getenv() gives the ANSI code page, so MOE_CACHE_GGUF=C:\Users\José\...
+// reached the UTF-8 file functions mangled and the model did not open. Linux: getenv.
+inline bool env_utf8(const char * name, std::string & out) {
+#ifdef _WIN32
+    const std::wstring wn = widen(name);
+    const DWORD n = GetEnvironmentVariableW(wn.c_str(), nullptr, 0);
+    if (n == 0) {
+        return false;
+    }
+    std::vector<wchar_t> b(n + 1, L'\0');
+    GetEnvironmentVariableW(wn.c_str(), b.data(), n + 1);
+    out = narrow(b.data());
+    return true;
+#else
+    const char * v = getenv(name);
+    if (!v) {
+        return false;
+    }
+    out = v;
+    return true;
+#endif
+}
+
+// this process's command line (UTF-8 words): Linux /proc/self/cmdline; Windows GetCommandLineW split at blanks, double quotes group (as the C runtime
+// does for argv; backslash escapes are not needed for the flags the plugin looks for); empty elsewhere
+inline std::vector<std::string> command_line() {
+    std::vector<std::string> out;
+#if defined(__linux__)
+    if (FILE * cf = fopen("/proc/self/cmdline", "rb")) {
+        std::string cmd;
+        char buf[4096];
+        size_t nr;
+        while ((nr = fread(buf, 1, sizeof(buf), cf)) > 0) {
+            cmd.append(buf, nr);
+        }
+        fclose(cf);
+        for (size_t b = 0; b < cmd.size();) {
+            const size_t e = cmd.find('\0', b);
+            out.push_back(cmd.substr(b, e == std::string::npos ? std::string::npos : e - b));
+            if (e == std::string::npos) {
+                break;
+            }
+            b = e + 1;
+        }
+    }
+#elif defined(_WIN32)
+    const wchar_t * c = GetCommandLineW();
+    while (c && *c) {
+        while (*c == L' ' || *c == L'\t') { c++; }
+        if (!*c) {
+            break;
+        }
+        std::wstring a;
+        bool q = false;
+        for (; *c && (q || (*c != L' ' && *c != L'\t')); c++) {
+            if (*c == L'"') { q = !q; } else { a += *c; }
+        }
+        out.push_back(narrow(a.c_str()));
+    }
+#endif
+    return out;
+}
+
+// fopen with a UTF-8 path (Windows: _wfopen)
+inline FILE * fopen_utf8(const char * path, const char * mode) {
+#ifdef _WIN32
+    return _wfopen(widen(path).c_str(), widen(mode).c_str());
+#else
+    return fopen(path, mode);
+#endif
+}
+
 // ---- files ----
 // direct = bypass the OS page cache (O_DIRECT / FILE_FLAG_NO_BUFFERING). Offsets, lengths and buffers must then be 4096-aligned.
 inline file_t file_open(const char * path, bool direct) {
     file_t f;
 #ifdef _WIN32
-    int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, nullptr, 0);
-    std::wstring w((size_t) std::max(n, 1), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, path, -1, &w[0], n);
-    f.h = CreateFileW(w.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+    f.h = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                       FILE_FLAG_OVERLAPPED | (direct ? FILE_FLAG_NO_BUFFERING : 0), nullptr);
 #else
     f.fd = open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
@@ -325,10 +413,10 @@ inline size_t rss_private() {
     return r;
 }
 
-// ---- small file helpers ----
+// ---- small file helpers (UTF-8 paths) ----
 inline void make_dir(const char * path) {
 #ifdef _WIN32
-    _mkdir(path);
+    _wmkdir(widen(path).c_str());
 #else
     mkdir(path, 0700);
 #endif
@@ -336,7 +424,7 @@ inline void make_dir(const char * path) {
 // rename tmp over dst (replaces an existing file on both systems)
 inline void replace_file(const char * tmp, const char * dst) {
 #ifdef _WIN32
-    if (!MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {     // e.g. a virus scanner holding dst open
+    if (!MoveFileExW(widen(tmp).c_str(), widen(dst).c_str(), MOVEFILE_REPLACE_EXISTING)) {     // e.g. a virus scanner holding dst open
         fprintf(stderr, "moe-cache: cannot replace %s (Windows error %lu); the new data is in %s\n", dst, (unsigned long) GetLastError(), tmp);
     }
 #else
