@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Control page, step 2: Connect OpenCode / Hermes with a preview and what was written; live VRAM on Windows with AMD/Intel GPUs (the launcher's
+  GPU pick + registry); warnings from the log (cache shrank, plugin disabled, why llama-server stopped) on the page; measured speeds from RESULTS next
+  to the verdict for the models measured before; quant from the GGUF header (Ollama); warm-session state in the Agents tab; `bin\moe-cache-ui.cmd`
+  for Windows; `tests/ui_live.py` runs the page with Granite in CI (Linux and Windows).
 - **Control page, step 1** (GUI1; `moe-cache-server --ui`, or `moe_cache.py ui`; [docs/GUI.md](docs/GUI.md)): a local page at
   http://127.0.0.1:8070, standard-library Python on Linux and Windows. Lists the GGUF models in `~/models` (`C:\models` on Windows), added folders and
   Ollama's store with the planner's verdict and its reasons (fits in RAM: stock / does not fit: moe-cache / all experts on the GPU; idea I33), starts

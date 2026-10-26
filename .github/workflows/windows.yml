@@ -113,6 +113,12 @@ jobs:
           if (-not (Select-String launcher_real.err -Pattern "cache mode" -SimpleMatch -Quiet)) { throw "the plugin's cache was not on" }
           if (-not (Select-String "$env:RUNNER_TEMP\opencode.json" -Pattern '"tool_call": true' -SimpleMatch -Quiet)) { throw "connect opencode wrote no model entry" }
 
+      - name: Control page with the model (GUI1; start, one request, live hit rate via the named event, stop through the page)
+        run: |
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
+          python tests/ui_live.py granite.gguf --llama-server "$env:LLAMA_DIR\llama-server.exe"
+          if ($LASTEXITCODE -ne 0) { throw "control page with the model failed" }
+
       - name: Crash dumps on (Windows Error Reporting LocalDumps for llama-server.exe)
         run: |
           New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\dumps" | Out-Null

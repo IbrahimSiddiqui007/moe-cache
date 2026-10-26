@@ -36,6 +36,24 @@ big = next(m for m in found if m["name"].startswith("Big"))
 small = next(m for m in found if m["name"].startswith("Small"))
 check(big["size"] == 5000 and big["quant"] == "UD-IQ2_XXS" and small["quant"] == "Q4_K_M", "sizes add up over the parts; quant from the name")
 
+# ---- quant from the header (Ollama's blobs have no name) and measured speeds by model family ----
+import struct
+def gguf_header(path, kv):
+    with open(path, "wb") as f:
+        f.write(b"GGUF" + struct.pack("<IQQ", 3, 0, len(kv)))
+        for k, v in kv:
+            f.write(struct.pack("<Q", len(k)) + k.encode())
+            if isinstance(v, str):
+                f.write(struct.pack("<IQ", 8, len(v)) + v.encode())
+            else:
+                f.write(struct.pack("<II", 4, v))
+blob = os.path.join(TMP, "sha256-0123")
+gguf_header(blob, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 41), ("qwen35moe.expert_count", 256), ("general.file_type", 15)])
+check(ui.header_quant(blob) == "Q4_K_M", f"quant from general.file_type ({ui.header_quant(blob)})")
+m = ui.measured(blob, 21.7e9)
+check(len(m) == 3 and "22.6" in m[1] and "RESULTS 44" in m[1], "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M)")
+check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the same family")
+
 # ---- the plan and its reasons (planner mocked) ----
 PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe": 40, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0,
         "free_vram_GiB": 7.5, "note": ""}
@@ -94,6 +112,7 @@ print("moe-cache: experts of 38 layers stay on the CPU and are managed by the ca
 time.sleep(0.5)
 print("prompt eval time =     100.00 ms /    50 tokens (    2.00 ms per token,   500.00 tokens per second)", flush=True)
 print("       eval time =    1000.00 ms /    25 tokens (   40.00 ms per token,    25.00 tokens per second)", flush=True)
+print("moe-cache: warm session: saved slot 0 (4096 tokens, 120 MB) in 0.5 s", flush=True)
 for _ in range(2):
     print("0.01.002.003 W moe-cache: warning: the expert cache shrank from 10.0 to 8.0 GiB because the rest of llama-server now uses 3.0 GiB", flush=True)
 print('moe-cache-stats {"hits":90,"misses":10,"read_bytes":0,"resident_bytes":6000000000,"budget":7000000000}', flush=True)
@@ -159,6 +178,12 @@ w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
       f"the shrink warning is lifted out of the log, once, counted, without llama-server's prefix ({w})")
 check("sekrit" not in json.dumps(status), "the API key is not in the status")
+os.makedirs(os.path.join(ui.mc.CACHE_DIR, "slots", "agent"), exist_ok=True)
+open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.bin"), "wb").write(b"x" * 1000)
+open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.new.bin"), "wb").write(b"x")
+warm = json.loads(req("/api/status")[1])["warm"]
+check([e["line"] for e in warm["events"]] == ["saved slot 0 (4096 tokens, 120 MB) in 0.5 s"], f"warm-session events from the launcher's log ({warm['events']})")
+check([f["name"] for f in warm["files"]] == ["fake-moe-c65536-s0.bin"] and warm["files"][0]["size"] == 1000, "saved conversations listed, half-written ones not")
 
 # connect buttons: preview, then write (into the temporary XDG_CONFIG_HOME)
 st, body = req("/api/connect", {"agent": "opencode", "write": False})
