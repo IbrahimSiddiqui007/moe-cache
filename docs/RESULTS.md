@@ -1334,3 +1334,22 @@ fixed), saves of slot 1 (4,131 tokens, 546 MB, 0.2 s) and slot 2 (7,729 tokens, 
 next session picked its own slot by prompt similarity: first request 1,028 tokens in 9.0 s (OpenCode, cold 7,438 in ~45 s) and 1,028 in 6.2 s (Hermes,
 cold 3,687 in 23 s); whole sessions 79 -> 46 s and 54 -> 35 s; all four files fixed.
 
+
+**Flash-Next as an agent model (64 GB IQ2_XS, 23 GB hard limit, `--agent --ram 22`: ctx 65536, `-ub 512`, all 48 expert layers on the CPU side),
+OpenCode, warm-session cycle:** session A (cold) first turn 7,461 tokens in 186 s (40 tok/s), whole session 242 s, file fixed; saved 7,752 tokens with 7
+checkpoints (1,183 MB, 1.5 s); after a restart and restore (0.7 s) session B's first turn processed 516 tokens in 47 s (in parallel with OpenCode's
+610-token title request; both pay whole-layer uploads), whole session **112 s instead of 242 s**, file fixed. An 89-token follow-up took 6.7 s.
+At 64k context the 8 GB card only fits `-ub 512` next to the KV cache, so prefill is 40 tok/s instead of 93-135 at ctx 8192.
+
+**I4 (the long-prompt block uploads only the experts its tokens use), now the default:** before, every batch of 32+ tokens uploaded each layer's whole
+expert tensors to the GPU, as stock llama.cpp does. Now the used experts are packed into a smaller tensor and the ids renumbered (src/mc_backend.inl,
+`MOE_CACHE_GPU_PACK=0` turns it off). Identity on Qwen3.6 (plugin vs stock, 16 GB limit): 4/4 identical at ~74-token prompts (146-174 of 256 experts
+uploaded) and ~147-token prompts (157-198 of 256). Speed, Qwen3.6 `--ram 14`, ctx 8192, prompts without prompt cache, clean-run gate, off/on/on/off:
+
+| Prompt | packing off | packing on | |
+|---|---|---|---|
+| ~70 tokens (3 prompts) | 1,621 / 1,631 / 1,634 ms; 1,611 / 1,613 / 1,625 ms | 896 / 896 / 908 ms; 903 / 906 / 923 ms | **1.8x** |
+| ~170 tokens (3 prompts) | 1,729 / 1,744 / 1,762 ms; 1,720 / 1,722 / 1,753 ms | 1,112 / 1,098 / 1,141 ms; 1,133 / 1,108 / 1,144 ms | **1.55x** |
+
+This is the agent follow-up case (tool results of 30-300 tokens) and it is faster than stock llama.cpp, which uploads whole layers. Batches that use
+90 % or more of the experts upload the whole tensor as before.

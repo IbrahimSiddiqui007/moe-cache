@@ -33,7 +33,8 @@ with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
 | Hermes Agent (file tools only), turn 1 / turn 2 | 3,687 / 76 | 23.0 s / 2.9 s |
 | whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | 78 s / 30 s / 39 s / 55 s |
 
-Details: [RESULTS.md section 51](RESULTS.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens in 186 s; after a restart with the warm session the whole OpenCode
+session takes 112 s instead of 242 s. Details: [RESULTS.md sections 51-52](RESULTS.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
 model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.

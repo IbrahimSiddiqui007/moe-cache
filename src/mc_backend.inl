@@ -220,6 +220,64 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     if (!ctx) {
         return false;
     }
+    // idea I4 (on by default; MOE_CACHE_GPU_PACK=0 turns it off): upload only the experts this block's tokens use. Short prompts (agent follow-up turns of 33-300 tokens) touch
+    // a part of the experts, but the whole layer was uploaded (Qwen3.6: a 79-token turn took 3.4 s, all of it uploads). The used experts are packed
+    // into a smaller weight tensor and the ids renumbered; each output still comes from the same expert matrix and the same input row.
+    // Identical to stock (identity 4/4 at 74 and 147-token prompts, Qwen3.6); 70-token prompts 1.62 -> 0.90 s, 170-token 1.74 -> 1.12 s (RESULTS 52).
+    static const bool pack_env = !getenv("MOE_CACHE_GPU_PACK") || atoi(getenv("MOE_CACHE_GPU_PACK")) > 0;
+    const ggml_tensor * pack_ids = nullptr;
+    std::vector<int32_t> pack_used, pack_map;
+    if (pack_env) {
+        bool ok = true;
+        int64_t n_as = -1;
+        for (ggml_tensor * n : seg) {
+            if (n->op != GGML_OP_MUL_MAT_ID) {
+                continue;
+            }
+            ok = ok && (!pack_ids || pack_ids == n->src[2]) && ggml_is_contiguous(n->src[0]) && (n_as < 0 || n_as == n->src[0]->ne[2]);
+            pack_ids = n->src[2];
+            n_as = n->src[0]->ne[2];
+        }
+        if (ok && pack_ids && pack_ids->type == GGML_TYPE_I32 && pack_ids->data && pack_ids->ne[2] == 1 && pack_ids->ne[3] == 1 && n_as > 0) {
+            pack_map.assign((size_t) n_as, -1);
+            for (int64_t i1 = 0; ok && i1 < pack_ids->ne[1]; i1++) {
+                for (int64_t i0 = 0; i0 < pack_ids->ne[0]; i0++) {
+                    const int32_t v = *(const int32_t *) ((const char *) pack_ids->data + i0 * pack_ids->nb[0] + i1 * pack_ids->nb[1]);
+                    if (v < 0 || v >= n_as) {
+                        ok = false;
+                        break;
+                    }
+                    pack_map[(size_t) v] = 0;
+                }
+            }
+            for (int64_t e = 0; ok && e < n_as; e++) {
+                if (pack_map[(size_t) e] == 0) {
+                    pack_map[(size_t) e] = (int32_t) pack_used.size();
+                    pack_used.push_back((int32_t) e);
+                }
+            }
+            if (!ok || pack_used.size() * 10 >= (size_t) n_as * 9) {     // (almost) every expert used: nothing to gain
+                pack_used.clear();
+            }
+        }
+        if (pack_used.empty()) {
+            pack_ids = nullptr;
+        } else {
+            static std::atomic<int> said{0};
+            if (said++ < 3) {
+                fprintf(stderr, "moe-cache: long-prompt block for %lld tokens: uploading only the %zu of %lld experts it uses\n",
+                        (long long) pack_ids->ne[1], pack_used.size(), (long long) n_as);
+            }
+        }
+    }
+    std::unordered_set<const ggml_tensor *> pack_weights;
+    if (pack_ids) {
+        for (ggml_tensor * n : seg) {
+            if (n->op == GGML_OP_MUL_MAT_ID) {
+                pack_weights.insert(n->src[0]);
+            }
+        }
+    }
     std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
     std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
     auto ext = [&](const ggml_tensor * t) {
@@ -227,7 +285,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         if (it != clone.end()) {
             return it->second;
         }
-        ggml_tensor * nt = ggml_new_tensor(ctx, t->type, GGML_MAX_DIMS, t->ne);
+        int64_t ne[GGML_MAX_DIMS] = { t->ne[0], t->ne[1], t->ne[2], t->ne[3] };
+        if (pack_weights.count(t)) {
+            ne[2] = (int64_t) pack_used.size();
+        }
+        ggml_tensor * nt = ggml_new_tensor(ctx, t->type, GGML_MAX_DIMS, ne);
         ggml_set_input(nt);
         clone[t] = nt;
         uploads.emplace_back(t, nt);
@@ -286,6 +348,30 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     for (auto & u : uploads) {
         const ggml_tensor * t = u.first;
         ggml_tensor * d = u.second;
+        if (pack_weights.count(t)) {
+            // the used experts, in runs of neighbours, into their packed places
+            const size_t nb2 = t->nb[2];
+            for (size_t k = 0; k < pack_used.size();) {
+                size_t r = 1;
+                while (k + r < pack_used.size() && pack_used[k + r] == pack_used[k] + (int32_t) r) {
+                    r++;
+                }
+                ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, k * nb2, r * nb2);
+                k += r;
+            }
+            s.gpu_up_bytes += pack_used.size() * nb2;
+            continue;
+        }
+        if (t == pack_ids) {
+            std::vector<int32_t> ids((size_t) (t->ne[0] * t->ne[1]));
+            for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
+                for (int64_t i0 = 0; i0 < t->ne[0]; i0++) {
+                    ids[(size_t) (i1 * t->ne[0] + i0)] = pack_map[(size_t) *(const int32_t *) ((const char *) t->data + i0 * t->nb[0] + i1 * t->nb[1])];
+                }
+            }
+            ggml_backend_tensor_set(d, ids.data(), 0, ids.size() * sizeof(int32_t));
+            continue;
+        }
         if (ggml_is_contiguous(t)) {
             ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
             s.gpu_up_bytes += ggml_nbytes(d);
