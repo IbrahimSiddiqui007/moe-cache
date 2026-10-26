@@ -246,9 +246,19 @@
             const size_t over = rss - target + ((size_t) 64 << 20);
             size_t nb = have > over ? have - over : 0;
             nb = std::min(std::max(nb, min_budget), budget);
+            budget_peak = std::max(budget_peak, budget);
             if (nb < budget) {
                 budget = nb;
                 tune_shrinks++;
+                if (!shrink_warned && budget < budget_peak / 2) {
+                    // desktop PC 2026-10-26: AMD's Windows driver took ~15 GB of RAM for 12 GiB of GPU layers and the cache fell from 14 to 2 GiB
+                    // without a word; the user only saw a slow server
+                    shrink_warned = true;
+                    const double other = (double) (rss > have ? rss - have : 0) / 1073741824.0;
+                    fprintf(stderr, "moe-cache: warning: the expert cache shrank from %.1f to %.1f GiB because the rest of llama-server now uses %.1f GiB "
+                            "(limit %.1f GiB): expect many SSD reads. Fewer layers on the GPU (--n-cpu-moe), a smaller context or closing other programs "
+                            "leaves it more room\n", budget_peak / 1073741824.0, budget / 1073741824.0, other, limit_bytes / 1073741824.0);
+                }
             }
             while (resident_bytes > budget) {
                 int v = lru;

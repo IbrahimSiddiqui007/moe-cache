@@ -256,7 +256,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     pack_used.push_back((int32_t) e);
                 }
             }
-            if (!ok || pack_used.size() * 10 >= (size_t) n_as * 9) {     // (almost) every expert used: nothing to gain
+            // pack unless every expert is used: the whole-tensor upload also reads the experts this block does not use, which may be evicted
+            // (desktop PC 2026-10-26, GLM-5.3-Flash with a 4.6 GiB cache: on Windows an evicted expert is decommitted memory and the upload's copy
+            // crashed with an access violation; on Linux it reads zeros, harmless because they are unused). At 100 % use it is the same single copy.
+            if (!ok || pack_used.size() == (size_t) n_as) {
                 pack_used.clear();
             }
         }
@@ -334,6 +337,30 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
             ggml_free(ctx);
             return false;
+        }
+    }
+    // a whole expert tensor is uploaded (no packing: MOE_CACHE_GPU_PACK=0, or ids the packing cannot handle): all of its experts must be in RAM,
+    // else the copy reads evicted memory (an access violation on Windows, zeros on Linux): keep such a block on the CPU
+    for (const auto & u : uploads) {
+        if (pack_weights.count(u.first)) {
+            continue;
+        }
+        const auto it = s.by_tensor.find(u.first);
+        if (it == s.by_tensor.end()) {
+            continue;
+        }
+        const tinfo_t & ti = *s.tensors[it->second];
+        std::lock_guard<std::mutex> lk(s.mu);
+        for (int64_t e = 0; e < ti.n_expert; e++) {
+            const auto & nd = s.nodes[(size_t) ti.node0 + (size_t) e];
+            if (!(nd.resident && !nd.loading) && !nd.mapped) {
+                static std::atomic<int> said_nr{0};
+                if (said_nr++ == 0) {
+                    fprintf(stderr, "moe-cache: a long-prompt block would upload whole expert tensors with experts not in RAM: it stays on the CPU\n");
+                }
+                ggml_free(ctx);
+                return false;
+            }
         }
     }
     if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
