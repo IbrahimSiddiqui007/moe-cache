@@ -6,6 +6,7 @@
 //   bounce           : unbuffered read into a reused buffer, memcpy into fresh committed pages (the plugin's bounce-buffer path)
 //   commit only      : decommit + commit + write the pages, no read (the cost of fresh pages alone)
 //   buffered fresh   : like "unbuffered fresh" through the file cache (fast only for data the cache already holds: say which run it is)
+//   async QD (Windows): one thread keeps 1/4/16/32 unbuffered reads in flight on one overlapped handle
 //   x86_64-w64-mingw32-g++ -std=c++17 -O2 -Isrc tests/win_read_bench.cpp -o win_read_bench.exe -static
 //   win_read_bench.exe MODEL.gguf 1024 4 10        (Linux: g++ -std=c++17 -O2 -Isrc tests/win_read_bench.cpp -o /tmp/wrb -lpthread)
 #include "platform.h"
@@ -110,6 +111,61 @@ int main(int argc, char ** argv) {
         fflush(stdout);
     }
 #ifdef _WIN32
+    // one thread, QD unbuffered reads in flight on one overlapped handle (the way a driver benchmark loads the drive): if this scales with QD while
+    // more threads did not, the limit is in how threads issue I/O; if it stays at the same ops/s, it is the storage driver, a filter or the device
+    {
+        plat::file_t f = plat::file_open(path, true);
+        const uint64_t nslots = (fsz - SPAN) / 4096;
+        std::mt19937_64 rng(99);
+        for (int qd : { 1, 4, 16, 32 }) {
+            std::vector<OVERLAPPED> ov((size_t) qd);
+            std::vector<HANDLE> ev((size_t) qd);
+            std::vector<char *> buf((size_t) qd);
+            auto issue = [&](int i) {
+                const uint64_t off = (rng() % nslots) * 4096;
+                memset(&ov[(size_t) i], 0, sizeof(OVERLAPPED));
+                ov[(size_t) i].Offset = (DWORD) (off & 0xffffffffu);
+                ov[(size_t) i].OffsetHigh = (DWORD) (off >> 32);
+                ov[(size_t) i].hEvent = ev[(size_t) i];
+                ResetEvent(ev[(size_t) i]);
+                if (!ReadFile(f.h, buf[(size_t) i], (DWORD) SL, nullptr, &ov[(size_t) i]) && GetLastError() != ERROR_IO_PENDING) {
+                    fprintf(stderr, "read failed: %s\n", plat::last_error().c_str());
+                    exit(1);
+                }
+            };
+            for (int i = 0; i < qd; i++) {
+                ev[(size_t) i] = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+                buf[(size_t) i] = (char *) plat::aligned_alloc_page(SPAN);
+                issue(i);
+            }
+            uint64_t ops = 0;
+            const auto t0 = std::chrono::steady_clock::now();
+            for (;;) {
+                const DWORD w = WaitForMultipleObjects((DWORD) qd, ev.data(), FALSE, INFINITE);
+                const int i = (int) (w - WAIT_OBJECT_0);
+                DWORD got = 0;
+                if (i < 0 || i >= qd || !GetOverlappedResult(f.h, &ov[(size_t) i], &got, FALSE) || got != SL) {
+                    fprintf(stderr, "async read failed: %s\n", plat::last_error().c_str());
+                    exit(1);
+                }
+                ops++;
+                if (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() >= SEC) {
+                    break;
+                }
+                issue(i);
+            }
+            const double sec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            for (int i = 0; i < qd; i++) {          // let the reads still in flight finish before their buffers go
+                DWORD got = 0;
+                GetOverlappedResult(f.h, &ov[(size_t) i], &got, TRUE);
+                CloseHandle(ev[(size_t) i]);
+                plat::aligned_free_page(buf[(size_t) i]);
+            }
+            printf("async 1 thread QD%-2d  %6.2f GB/s  %8.0f ops/s\n", qd, ops * (double) SL / sec / 1e9, ops / sec);
+            fflush(stdout);
+        }
+        CloseHandle(f.h);
+    }
     CloseHandle(probe.h);
 #else
     close(probe.fd);
