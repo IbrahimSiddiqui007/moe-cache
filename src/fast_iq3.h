@@ -74,11 +74,13 @@ FASTK3 inline void dot_iq3_xxs_avx2(int n, float * s, const void * vx, const voi
 inline void vec_dot_iq3_xxs_vnni(int n, float * s, size_t, const void * vx, size_t, const void * vy, size_t, int) { dot_iq3_xxs_vnni(n, s, vx, vy); }
 inline void vec_dot_iq3_xxs_avx2(int n, float * s, size_t, const void * vx, size_t, const void * vy, size_t, int) { dot_iq3_xxs_avx2(n, s, vx, vy); }
 
-// Intel CPU with AVX2 + FMA + F16C (and AVX-VNNI for the faster version); MOE_CACHE_FAST_KERNELS=0 turns it off with the other kernels
-inline bool usable(bool & vnni) {
+// Intel CPU with AVX2 + FMA + F16C (and AVX-VNNI for the faster version); MOE_CACHE_FAST_KERNELS=0 turns it off with the other kernels.
+// any_vendor (MOE_CACHE_IQ3_KERNEL=1) drops the Intel check: the result is bit-identical anyway, only the speed on AMD is unmeasured (Zen 4 gathers
+// are much faster than Zen 2/3's; GitHub issue #1, idea I36).
+inline bool usable(bool & vnni, bool any_vendor = false) {
     __builtin_cpu_init();
     vnni = __builtin_cpu_supports("avxvnni");
-    return __builtin_cpu_is("intel") && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
+    return (any_vendor || __builtin_cpu_is("intel")) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
 }
 
 }  // namespace fastk3

@@ -64,12 +64,14 @@ const ggml_type_traits_cpu * cpu_traits(enum ggml_type t) {
 void q2_0_perm_dot(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     fastk::vec_dot_q2_0_perm_avx2(n, s, bs, vx, bx, vy, by, nrc);
 }
-// IQ3_XXS weights (GLM-5.3-Flash down projections): gather-based dot product, bit-identical, about 1.2x; Intel CPUs only (slow gathers on AMD Zen 2/3)
+// IQ3_XXS weights (GLM-5.3-Flash down projections): gather-based dot product, bit-identical, about 1.2x; Intel CPUs only by default (slow gathers
+// on AMD Zen 2/3); MOE_CACHE_IQ3_KERNEL=1 uses it on any AVX2 CPU (to measure Zen 4/5), =0 turns it off
 ggml_vec_dot_t fast_iq3_dot() {
     static const ggml_vec_dot_t fn = [] {
         bool vnni = false;
         const char * e = getenv("MOE_CACHE_FAST_KERNELS");
-        if ((e && strcmp(e, "0") == 0) || !fastk3::usable(vnni)) {
+        const char * k = getenv("MOE_CACHE_IQ3_KERNEL");
+        if ((e && strcmp(e, "0") == 0) || (k && strcmp(k, "0") == 0) || !fastk3::usable(vnni, k && strcmp(k, "1") == 0)) {
             return (ggml_vec_dot_t) nullptr;
         }
         return vnni ? (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_vnni : (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_avx2;
@@ -329,7 +331,7 @@ void print_capabilities(state_t & s) {
 #if defined(__x86_64__) && defined(__linux__)
     o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? (q2_0_library_is_plain() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)" : "off(llama.cpp's own is faster)")
                                                                : preload ? "on(interposed)" : "executor only(not preloaded)");
-    o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0, not Intel, or no AVX2)");
+    o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0 or MOE_CACHE_IQ3_KERNEL=0, no AVX2, or not Intel: MOE_CACHE_IQ3_KERNEL=1 forces it on)");
     o += std::string(" iq_avx512=") + (getenv("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
 #endif
     o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
