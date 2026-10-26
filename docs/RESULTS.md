@@ -1785,12 +1785,31 @@ Plugin, cold start each run, ABBA (all-CPU A, I40 A, I40 B, all-CPU B), PRELIMIN
 **Verdict: I40 KILLED.** Giving GPU expert layers back by a RAM budget costs 25-30 % of decode for 6-7 % more prefill on both models; the all-CPU default stays.
 Branch `claude/i40-amd-ram-budget` is not merged. (Both orders of each pair agree, so this is not a drift effect; the GPU-layer counts the budget chose are not recorded here.)
 
+### Disk reads on Windows (`win_read_bench`, CI build c852720; PRELIMINARY)
+
+Qwen3.5-122B file on the PC's NVMe drive (Sabrent, C:, `stornvme` driver, BitLocker off, file neither sparse nor compressed). **Windows Defender real-time protection
+was ON** during these runs (the owner turned it off afterwards; re-test pending). The "x N" is the benchmark's parallelism setting. "Unbuffered" is what the plugin does
+today (`FILE_FLAG_NO_BUFFERING`, overlapped); "buffered" goes through the file cache.
+
+| Read size x N | Unbuffered GB/s (ops/s) | Other unbuffered variants | Buffered GB/s |
+|---|---|---|---|
+| 1 MiB x 4 | 3.02 (2,878) fresh buffers | reused 3.21; bounce buffer 3.11; commit only 15.5 | 3.96 |
+| 1 MiB x 16 | 1.67 (1,597) | - | 8.54 |
+| 256 KiB x 4 | 0.69 (2,630) | - | 3.23 |
+| 256 KiB x 8 | 0.68 (2,609) | - | 6.82 |
+| 128 KiB x 8 | 0.38 (2,893) | - | 3.59 |
+
+Reading: unbuffered reads are capped at about 2,600-2,900 operations per second whatever the size or the number of threads, so smaller reads and more threads
+do not help (they get slower in GB/s). Fresh and reused buffers give the same rate, which rules out page commit as the cost. The plugin already opens its files
+with `FILE_FLAG_OVERLAPPED`. Suspects, not yet tested: Defender's file-system filter on each unbuffered operation (re-test with real-time protection off), and the
+drive running at a queue depth of one per thread (a queue-depth benchmark is pending). Buffered reads are faster on every row here, up to 8.5 GB/s.
+
 ### I38: buffered reads (cold and warm file cache)
 
 | Condition | First-session decode tok/s | Second-session decode tok/s |
 |---|---|---|
-| Unbuffered reads (today), cold cache | - | - |
-| Buffered reads, cold cache | - | - |
+| Unbuffered reads (today), cold cache | 5.89 (hit rate 83.2 %, read 47.1 GB, cache budget 10.8 GiB) | - |
+| Buffered reads, cold cache | - (the run was cut off: the PC went offline) | - |
 | Unbuffered reads, warm cache | - | - |
 | Buffered reads, warm cache | - | - |
 
