@@ -455,10 +455,28 @@ def _die_with_parent_linux():
         pass
 
 
+AMD_CHECKPOINT_FIXED = "32.0.32015.7029"       # first AMD Windows display driver known to survive a Flash-Next context checkpoint (I44, 2026-10-27)
+
+
+def driver_older(ver, fixed=AMD_CHECKPOINT_FIXED):
+    """True when the dotted driver version `ver` is older than `fixed` (compared as integers, missing parts count as 0). An unknown or unparseable
+    version counts as older: the workaround is the safe side."""
+    try:
+        a = [int(x) for x in ver.strip().split(".")]
+        f = [int(x) for x in fixed.split(".")]
+    except (ValueError, AttributeError):
+        return True
+    if not a:
+        return True
+    n = max(len(a), len(f))
+    return a + [0] * (n - len(a)) < f + [0] * (n - len(f))
+
+
 def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
     """["--ctx-checkpoints", "0"] for Flash-Next (qwen4exp) on an AMD GPU through Vulkan on Windows, else []. Desktop PC 2026-10-26: llama-server
     (stock too) crashes in AMD's Windows Vulkan driver (amdvlk64.dll, access violation) when it saves a context checkpoint at the end of a Flash-Next
-    prompt; --ctx-checkpoints 0 avoids it (Qwen3.6 / 3.5-122B are not affected, nor is Linux/RADV)."""
+    prompt; --ctx-checkpoints 0 avoids it (Qwen3.6 / 3.5-122B are not affected, nor is Linux/RADV). Driver 32.0.32015.7029 (2026-10-27) does not crash: the
+    workaround applies only to older drivers, and to an unknown version (safe side)."""
     if not (WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])):
         return []
     if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is not None:
@@ -471,8 +489,11 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
     except Exception:
         return []
     ver = win_driver_version(gpu[1])
+    if ver and not driver_older(ver):
+        say(f"moe-cache: AMD driver {ver} is {AMD_CHECKPOINT_FIXED} or newer: context checkpoints stay on (older drivers crash when saving one for this model)")
+        return []
     say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver"
-        + (f" {ver}" if ver else "") + " here)"
+        + (f" {ver}" if ver else " (version unknown)") + f" here; AMD driver {AMD_CHECKPOINT_FIXED} or newer fixes it)"
         + ("; agents: the model cannot go back to an earlier point of a conversation, so edited history is processed again (Qwen3.6 keeps checkpoints)"
            if agent else ""))
     return ["--ctx-checkpoints", "0"]

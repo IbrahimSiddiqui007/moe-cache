@@ -85,6 +85,10 @@ L.WINDOWS = True; sys.modules["winreg"] = _fake
 check(L.win_driver_version("AMD Radeon RX 9070 XT") == "32.0.23034.4", "win_driver_version: the discrete adapter's DriverVersion")
 check(L.win_driver_version("AMD Radeon(TM) Graphics") == "31.0.1.1", "win_driver_version: the integrated adapter's own version")
 check(L.win_driver_version("No such GPU") == "", "win_driver_version: unknown adapter gives ''")
+check(L.driver_older("32.0.23034.4") and not L.driver_older("32.0.32015.7029") and not L.driver_older("32.0.32015.7030") and not L.driver_older("32.1.0.1")
+      and L.driver_older("31.0.99999.9") and L.driver_older("32.0.32015.7028"), "driver_older: dotted integers compared (32.0.23034.4 old, 32.0.32015.7029 fixed)")
+check(L.driver_older("") and L.driver_older("abc") and L.driver_older(None), "driver_older: unknown version counts as older (workaround stays)")
+check(not L.driver_older("32.0.32015.7029.1") and not L.driver_older("33"), "driver_older: longer and shorter version strings")
 L.WINDOWS = False
 check(L.win_driver_version("AMD Radeon RX 9070 XT") == "", "win_driver_version: '' off Windows")
 L.WINDOWS = _oldw
