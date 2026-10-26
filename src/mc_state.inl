@@ -542,6 +542,21 @@ struct state_t {
                 std::thread([this] { while (WaitForSingleObject(g_stats_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) { print_snapshot(); } }).detach();
             }
         }
+        // Windows stops a server by killing it, so the profile save in the destructor never runs: the launcher sets this event first
+        // (learn, server exit); without it only the save every 100,000 groups is kept
+        {
+            char name[64];
+            snprintf(name, sizeof(name), "Local\\moe-cache-save-%lu", plat::process_id());
+            g_save_event = CreateEventA(nullptr, FALSE, FALSE, name);
+            if (g_save_event) {
+                std::thread([this] {
+                    while (WaitForSingleObject(g_save_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) {
+                        save_profile();
+                        fprintf(stderr, "moe-cache: usage profile saved (on request)\n");
+                    }
+                }).detach();
+            }
+        }
 #endif
     }
 

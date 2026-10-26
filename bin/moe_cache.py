@@ -367,6 +367,49 @@ def _die_with_parent_linux():
         pass
 
 
+def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
+    """["--ctx-checkpoints", "0"] for Flash-Next (qwen4exp) on an AMD GPU through Vulkan on Windows, else []. Desktop PC 2026-10-26: llama-server
+    (stock too) crashes in AMD's Windows Vulkan driver (amdvlk64.dll, access violation) when it saves a context checkpoint at the end of a Flash-Next
+    prompt; --ctx-checkpoints 0 avoids it (Qwen3.6 / 3.5-122B are not affected, nor is Linux/RADV)."""
+    if not (WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])):
+        return []
+    if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is not None:
+        return []
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import model_key
+        if not (model_key(model) or "").startswith("qwen4exp"):
+            return []
+    except Exception:
+        return []
+    say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver here)"
+        + ("; agents: the model cannot go back to an earlier point of a conversation, so edited history is processed again (Qwen3.6 keeps checkpoints)"
+           if agent else ""))
+    return ["--ctx-checkpoints", "0"]
+
+def win_request_save(pid, path, timeout=60.0):
+    """Windows: ask the plugin inside llama-server `pid` to save its usage profile now (named event Local\\moe-cache-save-<pid>; a server on
+    Windows is killed, so the save at exit never runs) and wait up to `timeout` s for `path` to change. True when it changed."""
+    if not WINDOWS:
+        return False
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenEventW(0x0002, False, f"Local\\moe-cache-save-{pid}")     # EVENT_MODIFY_STATE
+        if not h:
+            return False
+        before = os.path.getmtime(path) if path and os.path.isfile(path) else None
+        k.SetEvent(h)
+        k.CloseHandle(h)
+        t = time.time()
+        while time.time() - t < timeout:
+            if path and os.path.isfile(path) and (before is None or os.path.getmtime(path) > before):
+                return True
+            time.sleep(0.25)
+    except Exception:
+        pass
+    return False
+
 def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
     """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code.
     The child dies with the launcher. Its log is passed through; when the plugin was meant to load and the server becomes ready without a single
@@ -380,6 +423,13 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
             _kill_with_parent_windows(p, mem_limit)
         except Exception as e:
             say(f"moe-cache: warning: could not tie llama-server to the launcher ({e})", err=True)
+    if WINDOWS and env.get("MOE_CACHE_PROFILE"):
+        def save_now_and_then():      # closing the console window kills llama-server: keep at most 10 minutes of learning unsaved
+            while p.poll() is None:
+                time.sleep(600)
+                if p.poll() is None:
+                    win_request_save(p.pid, env["MOE_CACHE_PROFILE"], timeout=0)
+        threading.Thread(target=save_now_and_then, daemon=True).start()
     seen = {"plugin": False, "disabled": "", "last": "", "ready": False}
     def pump():
         out = sys.stderr.buffer
@@ -520,6 +570,12 @@ def server(argv):
         # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
         # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
         g = gpu
+        ded = win_dedicated_vram().get(g[1]) if g else None
+        if g and ded is not None and ded < 2**30:
+            # an integrated GPU (the Claw's Arc 140V, Ryzen APUs): Vulkan's "free" is shared system RAM, which the cache also counts;
+            # plan with the dedicated carve-out only, as Linux does (planner/plan.py amd_free)
+            say(f"moe-cache: GPU {g[1]} ({g[0]}) is integrated ({ded / 2**20:.0f} MiB of its own memory): planning without dedicated VRAM")
+            g = None
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
@@ -539,18 +595,7 @@ def server(argv):
             say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
     if a.api_key and "--api-key" not in extra:
         extra += ["--api-key", a.api_key]
-    if (WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])
-            and arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None):
-        try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
-            from gguf_plan import model_key
-            if (model_key(model) or "").startswith("qwen4exp"):
-                # desktop PC, 2026-10-26: llama-server (stock too) crashes in AMD's Windows Vulkan driver (amdvlk64.dll, access violation) when it
-                # saves a context checkpoint at the end of a Flash-Next prompt; --ctx-checkpoints 0 avoids it (Qwen3.6 / 3.5-122B are not affected)
-                extra += ["--ctx-checkpoints", "0"]
-                say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver here)")
-        except Exception:
-            pass
+    extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias = None
     slotdir = None
     if a.agent:
@@ -985,6 +1030,7 @@ def learn(argv):
     env = dict(os.environ, **dict(load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_RAM_GIB", a.ram), ("MOE_CACHE_GGUF", a.model), ("MOE_CACHE_PROFILE", out)]))
     cmd = [a.llama_server, "-m", a.model, "-ngl", "99", "--n-cpu-moe", a.n_cpu_moe, "-c", "4096", "-fa", "on", "--load-mode", "mmap", "--no-warmup",
            "--port", str(a.port), "--seed", "42"]
+    cmd += amd_windows_checkpoint_args(pick_gpu(list_devices(a.llama_server)) if WINDOWS else None, a.model, cmd)
     p = subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT)
     try:
         for _ in range(300):
@@ -1004,6 +1050,8 @@ def learn(argv):
             say(f"  prompt {i}/{len(prompts)} done")
     finally:
         if p.poll() is None:
+            if WINDOWS and not win_request_save(p.pid, out):     # terminate() is TerminateProcess there: the plugin's save at exit never runs
+                say("moe-cache: warning: the plugin did not confirm a profile save before the stop", err=True)
             p.terminate()
             try:
                 p.wait(timeout=120)

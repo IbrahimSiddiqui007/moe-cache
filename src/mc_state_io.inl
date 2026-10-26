@@ -340,6 +340,9 @@
         if (g_stats_event) {
             SetEvent(g_stats_event);         // wakes the snapshot thread, which then exits
         }
+        if (g_save_event) {
+            SetEvent(g_save_event);          // wakes the save thread, which then exits
+        }
 #endif
         if (trace_f) {
             fclose(trace_f);

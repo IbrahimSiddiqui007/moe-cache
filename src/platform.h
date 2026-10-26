@@ -336,7 +336,9 @@ inline void make_dir(const char * path) {
 // rename tmp over dst (replaces an existing file on both systems)
 inline void replace_file(const char * tmp, const char * dst) {
 #ifdef _WIN32
-    MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING);
+    if (!MoveFileExA(tmp, dst, MOVEFILE_REPLACE_EXISTING)) {     // e.g. a virus scanner holding dst open
+        fprintf(stderr, "moe-cache: cannot replace %s (Windows error %lu); the new data is in %s\n", dst, (unsigned long) GetLastError(), tmp);
+    }
 #else
     if (rename(tmp, dst) != 0) {
         fprintf(stderr, "moe-cache: cannot replace %s (%s); the new data is in %s\n", dst, strerror(errno), tmp);
