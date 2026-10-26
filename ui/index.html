@@ -29,6 +29,7 @@ th { color:var(--muted); font-weight:500; font-size:12px; }
 .small { font-size:12px; color:var(--muted); }
 ul.why { margin:6px 0 0; padding-left:18px; }
 ul.why li { margin:2px 0; }
+ul.why li.win { color:var(--gpu); }
 label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
 input[type=text], input[type=number], input[type=password] { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); }
 input[type=range] { width:100%; }
@@ -113,6 +114,7 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <div style="margin-top:4px"><code id="cmd"></code></div>
     <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
     <pre id="dry" hidden></pre>
+    <details id="decisions" hidden style="margin-top:8px"><summary class="small">What the launcher decided</summary><ul class="why"></ul></details>
     <div id="warnings" hidden></div>
     <div class="err" id="err"></div>
   </section>
@@ -141,7 +143,7 @@ function settings() {
   return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.mode,
            agent: $("agent").checked, port: $("port").value, api_key: $("apikey").value };
 }
-function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode].join("|"); }
+function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent].join("|"); }
 function seg(id, key, cb) {
   const el = $(id);
   const paint = () => el.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v == S[key]));
@@ -154,6 +156,7 @@ const MODEHINT = { exact: "Output identical to stock llama-server (default).", f
 async function loadSystem() {
   S.sys = await api("/api/system");
   const s = S.sys, last = s.last || {};
+  $("sys").title = "llama-server: " + s.llama_server + "\nplugin: " + s.plugin;
   $("sys").textContent = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "");
   $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
   $("vram").max = Math.max(1, Math.ceil((s.vram_total || s.vram_free || 8 * 2 ** 30) / 2 ** 30));
@@ -195,7 +198,7 @@ function paintPlan() {
   const m = S.models.find(x => x.path == S.sel);
   if (!m) { $("plan").innerHTML = ""; return; }
   if (!p) { $("plan").innerHTML = `<b>${esc(m.name)}</b> <span class="small">planning…</span>`; return; }
-  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` +
+  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
     (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on the test laptop (i7-13620H, RTX 4060 8 GB; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
 }
 let planning = false;
@@ -207,7 +210,7 @@ async function planAll() {
       const k = planKey(path);
       if (S.plans[k]) continue;
       const s = settings();
-      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}`); }
+      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}&agent=${s.agent ? 1 : 0}`); }
       catch (e) { S.plans[k] = { kind: "error", verdict: "error", reasons: [e.message] }; }
       paintModels();
     }
@@ -262,6 +265,13 @@ async function poll() {
   if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>`; }
   else { ifr.hidden = true; ifr.dataset.u = ""; ifr.removeAttribute("src"); $("chatnote").textContent = running ? "Loading the model…" : "Start a model: llama-server's own chat page appears here."; }
   paintAgents(st);
+  const dk = JSON.stringify(st.decisions || []), de = $("decisions");
+  if (de.dataset.k != dk) {
+    de.dataset.k = dk; de.hidden = !(st.decisions || []).length;
+    const win = l => /AMD GPU on Windows|Windows job memory limit|integrated|--list-devices|context checkpoints/.test(l);
+    de.querySelector("ul").innerHTML = (st.decisions || []).map(l => `<li${win(l) ? ' class="win"' : ""}>${esc(l)}</li>`).join("");
+    if ((st.decisions || []).some(win)) de.open = true;
+  }
   const wk = JSON.stringify(st.warnings || []);
   if ($("warnings").dataset.k != wk) {
     $("warnings").dataset.k = wk;

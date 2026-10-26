@@ -190,7 +190,7 @@ def windows_gpu_once(ls):
     ded = mc.win_dedicated_vram().get(g[1])
     integrated = ded is not None and ded < GIB       # the launcher plans without VRAM there: Vulkan's "free" is shared system RAM
     return {"name": g[1] + (" (integrated: shares RAM)" if integrated else ""), "free": g[2] * 2**20 if g[2] else None,
-            "total": float(ded) if ded and not integrated else None, "integrated": integrated}
+            "total": float(ded) if ded and not integrated else None, "integrated": integrated, "device": g[0], "adapter": g[1]}
 
 
 def watch_windows_gpu(ls, every=10.0):
@@ -278,10 +278,39 @@ def gb(x):
     return f"{x / 1e9:.1f} GB"
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact"):
+def windows_amd_rules(gpu, path, size, avail, agent=False, windows=WINDOWS):
+    """The launcher's Windows + AMD rules that apply to this model, as (all experts on the CPU?, [reasons in the launcher's words]).
+    gpu: {device, adapter} as windows_gpu_once finds it. Same conditions as moe_cache.server(); the checkpoint rule is the launcher's own function."""
+    if not (windows and gpu and str(gpu.get("device", "")).startswith("Vulkan") and re.search(r"AMD|Radeon", gpu.get("adapter", ""))):
+        return False, []
+    reasons, cpu_only = [], False
+    if avail and size > avail:
+        cpu_only = True
+        reasons.append("Windows + AMD: all experts stay on the CPU (on AMD's Windows Vulkan driver VRAM in use also costs system RAM, so GPU expert layers "
+                       "starve the cache when the model is bigger than RAM; Flash-Next 3 -> 12-13.5 tok/s; --n-cpu-moe N overrides)")
+    import contextlib, io
+    buf, was = io.StringIO(), mc.WINDOWS
+    try:
+        mc.WINDOWS = True                        # the function checks it; here the caller already decided this is Windows
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            args = mc.amd_windows_checkpoint_args((gpu["device"], gpu["adapter"], 0), path, [], agent=agent)
+    except Exception:
+        args = []
+    finally:
+        mc.WINDOWS = was
+    if args:
+        reasons.append("Windows + AMD: " + buf.getvalue().strip().replace("moe-cache: ", "", 1))
+    return cpu_only, reasons
+
+
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units)."""
     size = size_of(path)
     avail = mc.mem_for_server(ram)
+    gpu = _GPU["gpu"] if WINDOWS else None
+    if vram is None and gpu and gpu.get("free") and not gpu.get("integrated"):
+        vram = f"{gpu['free'] / GIB:.2f}"          # as the launcher: on Windows without nvidia-smi it passes the free VRAM it found to the planner
+    amd_cpu_only, amd_reasons = windows_amd_rules(gpu, path, size, avail, agent, windows=WINDOWS)
     stock_fits = bool(size and avail and size + HEADROOM <= avail)
     out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size)}
     R = out["reasons"]
@@ -304,6 +333,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact"):
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))
     ncmoe = tuned["n_cpu_moe"] if tuned and not no_vram else plan["n_cpu_moe"]       # the launcher's choice with --gpu-cache off, --ub auto
     layers = plan["layers"]
+    if amd_cpu_only:
+        ncmoe = layers
     gpu_layers = max(0, layers - min(ncmoe, layers))
     out["numbers"] = {"layers": layers, "gpu_expert_layers": gpu_layers, "n_cpu_moe": ncmoe, "cache_GiB": plan["cache_GiB"],
                       "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": tuned["ub"] if tuned else None,
@@ -336,8 +367,9 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact"):
         lim = float(ram) * 1e9 if ram else mc.mem_total()
         if mode == "exact" and lim and size > 2 * lim:
             R.append(f"the model is {size / lim:.1f}x the memory: --fast would add about +10 % (changes some tokens; off by default)")
+    R.extend(amd_reasons)
     for w in (tuned or {}).get("why", []):
-        if not no_vram:
+        if not no_vram and not amd_cpu_only:
             R.append("tuner: " + w)
     if plan.get("note"):
         R.append("planner: " + plan["note"])
@@ -519,6 +551,8 @@ class Runner:
         self.profile = None
         self.warnings = []                 # [{"line", "count", "t"}]
         self.warm = []                     # the launcher's "warm session:" lines (agent mode: saved / restored conversations)
+        self.decisions = []                # what the launcher decided before starting llama-server (its "moe-cache: ..." lines up to the URL line)
+        self.deciding = True
 
     # -- control --
     def start(self, s):
@@ -594,6 +628,11 @@ class Runner:
                     pass
                 continue
             self.add_line(line)
+            if self.deciding and line.startswith("moe-cache: "):
+                if "web UI and API will be at" in line:
+                    self.deciding = False
+                elif not WARN_RE.search(line):
+                    self.decisions.append(line[len("moe-cache: "):])
             if "moe-cache: warm session:" in line:
                 self.warm = (self.warm + [{"t": time.time(), "line": line.split("warm session:", 1)[1].strip()}])[-8:]
             if WARN_RE.search(line):
@@ -680,7 +719,7 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "warnings": self.warnings, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
+                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
                 "system": system_info()}
 
 
@@ -752,15 +791,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, open(PAGE, "rb").read(), "text/html")
             if u.path == "/api/system":
                 return self.send(200, dict(system_info(), folders=self.store.folders(), last=self.store.saved.get("last", {}),
-                                           llama_server=self.store.ls))
+                                           llama_server=self.store.ls, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
                 m = self.known(q.get("model"))
-                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"))
+                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"))
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
-                    hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact"))
+                    hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
+                                                                             q.get("agent") in ("1", "true")))
                 return self.send(200, hit[1])
             if u.path == "/api/command":
                 s = self.settings(q)

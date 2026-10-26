@@ -32,13 +32,25 @@ python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llam
 "Windows experimental" and, on a llama.cpp other than b11669, "ggml version". `server` prints the command (add `--dry-run` to only print it); `--open`
 opens llama-server's chat page. The model also works with any OpenAI-compatible client at `http://127.0.0.1:8080/v1`.
 
-## 3. The control page (GUI)
+## 3. The control page (GUI): one click
+
+Double-click **`bin\moe-cache-ui.bat`**. It opens http://127.0.0.1:8070 (this machine only): your models with the planner's verdict and why, start/stop,
+live speed, cache hit rate, SSD reads, RAM and VRAM, the chat, and Connect buttons for OpenCode and Hermes. To get it in the Start menu, run once:
 
 ```
-python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe
+bin\moe-cache-ui.bat --shortcut
 ```
 
-Serves a page at http://127.0.0.1:8070 (this machine only): your models with the planner's verdict, start/stop, live speed, cache hit rate, SSD reads, RAM and VRAM.
+What the `.bat` finds by itself (set the variable to override):
+
+| Piece | Looked for, in this order |
+|---|---|
+| Python | `MOE_CACHE_PYTHON`, the `py` launcher, a `python.exe` that really runs (the one Windows ships without Python only opens the Store) |
+| Plugin (`MOE_CACHE_LIB`) | `ggml-moe-cache-api3.dll`, then `ggml-moe-cache.dll`, next to the `.bat` or one folder up (the kit), then `build\win-api3\`, `build\win\` |
+| llama-server (`LLAMA_SERVER`) | on the `PATH`, then `C:\llama\llama-server.exe` |
+
+It prints what it found; the same is in the page header's tooltip. Without the `.bat`: `python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe`.
+Options for both: `--ui-port N`, `--no-browser`. Details: [GUI](GUI.md).
 
 ## 4. Coding agents
 
@@ -50,6 +62,8 @@ python bin\moe_cache.py connect opencode --write        # or: connect hermes --w
 Details, and the desktop apps: [AGENTS](AGENTS.md). Note for Flash-Next below.
 
 ## 5. What the launcher does for you on Windows with an AMD or Intel GPU
+
+The control page shows these too: in the plan before you start ("Windows + AMD: ...", with the reason) and, once started, under "What the launcher decided".
 
 | Automatic | Why |
 |---|---|

@@ -69,7 +69,7 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 For coding agents (OpenCode, Hermes Agent) add `--agent` (65k context, tool calls, warm sessions), then `python3 bin/moe_cache.py connect opencode --write`
 (or `hermes`): see [docs/AGENTS.md](docs/AGENTS.md).
 
-**Or use the control page** (new, step 1): `bin/moe-cache-server --ui` (Windows: double-click `bin\moe-cache-ui.cmd`) opens http://127.0.0.1:8070, which
+**Or use the control page** (new, step 1): `bin/moe-cache-server --ui` (Windows: double-click `bin\moe-cache-ui.bat`) opens http://127.0.0.1:8070, which
 lists the models in `~/models` (and folders you add), says for each whether it fits in RAM, needs the cache or fits on the GPU and why, starts and
 stops it, and shows live tok/s, cache hit rate, SSD reads, RAM, VRAM and the chat. See [docs/GUI.md](docs/GUI.md).
 
