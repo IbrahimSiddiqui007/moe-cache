@@ -104,6 +104,7 @@ struct state_t {
     static constexpr bool win_buffered = false, win_random = false;
 #endif
     size_t budget = 0;
+    bool   commit_warned = false;      // Windows: the commit-limit warning was printed (tune())
     size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
     bool shrink_warned = false;
     bool   auto_mode = false;          // MOE_CACHE_SIZE_GIB=auto: size the cache from the real memory limit

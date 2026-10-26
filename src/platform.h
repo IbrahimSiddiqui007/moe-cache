@@ -412,10 +412,24 @@ inline size_t mem_available() {
     return r;
 }
 
-// private memory of this process (Linux RssAnon; Windows PrivateUsage, which counts committed pages: exactly the loaded experts)
+// private memory of this process in RAM (Linux RssAnon; Windows the private working set).
+// Windows used PrivateUsage (commit charge) before: with GPU layers llama-server's commit stays ~15 GB even when its working set is empty and
+// the system has the RAM free (AMD driver allocations are charged, not resident; PC, Flash-Next, 12 GPU expert layers), so the cache was
+// shrunk from 18.4 to 6.5 GiB for memory that was not in use. The commit limit is watched separately (commit_available()).
 inline size_t rss_private() {
     size_t r = 0;
 #ifdef _WIN32
+    struct {    // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809+; older systems reject its size and the counters below are used)
+        DWORD  cb, PageFaultCount;
+        SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage,
+               PagefileUsage, PeakPagefileUsage, PrivateUsage, PrivateWorkingSetSize;
+        ULONG64 SharedCommitUsage;
+    } ex2;
+    memset(&ex2, 0, sizeof(ex2));
+    ex2.cb = sizeof(ex2);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &ex2, sizeof(ex2)) && ex2.PrivateWorkingSetSize > 0) {
+        return (size_t) ex2.PrivateWorkingSetSize;
+    }
     PROCESS_MEMORY_COUNTERS_EX pmc;
     memset(&pmc, 0, sizeof(pmc));
     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &pmc, sizeof(pmc))) {
@@ -490,6 +504,18 @@ inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * v
     (void) paths;
     return 0;
 #endif
+}
+
+// commit the system can still give out (Windows: commit limit minus commit charge, ullAvailPageFile); SIZE_MAX elsewhere (Linux overcommits)
+inline size_t commit_available() {
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        return (size_t) ms.ullAvailPageFile;
+    }
+#endif
+    return SIZE_MAX;
 }
 
 // ---- small file helpers (UTF-8 paths) ----
