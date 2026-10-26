@@ -263,7 +263,7 @@
             }
             while (resident_bytes > budget) {
                 int v = lru;
-                while (v >= 0 && (nodes[v].epoch == epoch || nodes[v].loading)) {
+                while (v >= 0 && in_use(nodes[v])) {
                     v = nodes[v].prev;
                 }
                 if (v < 0) {

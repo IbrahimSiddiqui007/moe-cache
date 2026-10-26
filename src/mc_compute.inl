@@ -3,6 +3,51 @@
 
 namespace {
 
+// Last check before llama.cpp's own kernels read the experts: every expert a MUL_MAT_ID of this graph uses must be complete and in RAM. Waits for
+// experts still being read; an expert that is not in RAM at all (should never happen: eviction protects the whole graph) is loaded again with a
+// one-time message instead of being read as decommitted memory (Windows: access violation, PC 2026-10-27) or zeros (Linux: wrong output).
+void cpu_path_check(state_t & s, ggml_cgraph * cg) {
+    const int n_all = ggml_graph_n_nodes(cg);
+    for (int i = 0; i < n_all; i++) {
+        ggml_tensor * nd = ggml_graph_node(cg, i);
+        if (nd->op != GGML_OP_MUL_MAT_ID) {
+            continue;            // also the ops the GPU block took over (switched to NONE)
+        }
+        const auto it = s.by_tensor.find(nd->src[0]);
+        if (it == s.by_tensor.end()) {
+            continue;
+        }
+        exec_wait_loaded(s, nd);
+        const tinfo_t & ti = *s.tensors[(size_t) it->second];
+        const ggml_tensor * ids = nd->src[2];
+        std::vector<int> cnt((size_t) ti.n_expert, 0);
+        int missing = 0;
+        {
+            std::lock_guard<std::mutex> lk(s.mu);
+            for (int64_t t = 0; t < ids->ne[1]; t++) {
+                for (int64_t k = 0; k < ids->ne[0]; k++) {
+                    const int32_t e = *(const int32_t *) ((const char *) ids->data + k * ids->nb[0] + t * ids->nb[1]);
+                    if (e < 0 || e >= ti.n_expert) {
+                        continue;
+                    }
+                    cnt[(size_t) e] = 1;
+                    const node_t & n = s.nodes[(size_t) (ti.node0 + e)];
+                    missing += (n.resident || n.mapped) ? 0 : 1;
+                }
+            }
+        }
+        if (missing) {
+            static std::atomic<int> said{0};
+            if (said++ == 0) {
+                fprintf(stderr, "moe-cache: internal: %d expert(s) of %s (%lld tokens) were not in RAM when llama.cpp was about to read them; loaded again "
+                        "(output stays correct; please report this line)\n", missing, nd->src[0]->name, (long long) ids->ne[1]);
+            }
+            s.cpu_check_reloads++;
+            s.prepare_group(std::vector<int>{ it->second }, cnt, false);
+        }
+    }
+}
+
 enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg) {
     if (!s.pool) {
         const int n = s.exec_threads > 0 ? s.exec_threads : std::max(1, c->n_threads);
@@ -204,6 +249,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         if (!s.preload_done) {
             s.preload();
         }
+        s.begin_graph();       // the experts of every group below stay protected until the next graph
         const int n_nodes = ggml_graph_n_nodes(cg);
         std::vector<char> done((size_t) n_nodes, 0);
         for (int i = 0; i < n_nodes; i++) {
@@ -397,6 +443,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 node->src[0]->buffer = s.repack_tag;
             }
         }
+    }
+    if (s.cache_on) {
+        cpu_path_check(s, cg);
     }
     const auto c0 = std::chrono::steady_clock::now();
     const enum ggml_status st = ggml_backend_graph_compute(c->cpu, cg);

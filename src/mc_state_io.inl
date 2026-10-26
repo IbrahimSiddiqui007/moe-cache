@@ -207,7 +207,7 @@
                     }
                     while (resident_bytes + ti.nb2 > budget) {
                         int v = lru;
-                        while (v >= 0 && (nodes[v].epoch == epoch || nodes[v].loading)) {
+                        while (v >= 0 && in_use(nodes[v])) {
                             v = nodes[v].prev;
                         }
                         if (v < 0) {
@@ -448,6 +448,9 @@
             if (small_mapped || small_over) {
                 fprintf(stderr, "moe-cache: cache smaller than one op: %llu experts mapped from the model file, %llu loaded over the cache size\n",
                         (unsigned long long) small_mapped, (unsigned long long) small_over);
+            }
+            if (cpu_check_reloads) {
+                fprintf(stderr, "moe-cache: internal: %llu experts were loaded again right before llama.cpp's kernels (please report)\n", (unsigned long long) cpu_check_reloads);
             }
             fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu, repacked %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs);
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);

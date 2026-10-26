@@ -155,10 +155,10 @@
                     sibling_loads++;
                     while (resident_bytes + ti.nb2 > budget) {
                         int v = lru;
-                        for (int k = 0; k < 100000 && v >= 0 && (nodes[v].epoch == epoch || nodes[v].loading); k++) {
+                        for (int k = 0; k < 100000 && v >= 0 && in_use(nodes[v]); k++) {
                             v = nodes[v].prev;
                         }
-                        if (v < 0 || nodes[v].epoch == epoch || nodes[v].loading) {
+                        if (v < 0 || in_use(nodes[v])) {
                             break;     // no room without evicting what this group needs: leave it to the sibling's own call
                         }
                         evict(v);
@@ -205,10 +205,10 @@
                 bool fits = true;
                 while (resident_bytes + ti.nb2 > budget) {
                     int v = lru;
-                    for (int k = 0; k < 100000 && v >= 0 && (nodes[v].epoch == epoch || nodes[v].loading); k++) {
+                    for (int k = 0; k < 100000 && v >= 0 && in_use(nodes[v]); k++) {
                         v = nodes[v].prev;
                     }
-                    if (v < 0 || nodes[v].epoch == epoch || nodes[v].loading) {
+                    if (v < 0 || in_use(nodes[v])) {
                         fits = false;      // everything left is needed by this op: the cache is smaller than one op (fixed MOE_CACHE_SIZE_GIB)
                         break;
                     }

@@ -18,6 +18,11 @@ static bool server_repack_disabled() {
     return false;
 }
 
+struct state_t;
+#ifdef _WIN32
+void install_crash_report(state_t * s);
+#endif
+
 struct state_t {
     bool   cache_on = false;
     bool   stats = false;
@@ -110,6 +115,16 @@ struct state_t {
     uint64_t tune_shrinks = 0, tune_grows = 0;
     size_t resident_bytes = 0;
     uint64_t epoch = 0;
+    // experts with epoch >= protect_epoch are used by the graph being prepared/computed: no eviction may take them. All groups of a graph are
+    // prepared before any is computed, so protecting only the current group (epoch == epoch) let a later group (or tune() shrinking the budget)
+    // evict an earlier group's experts before llama.cpp read them: decommitted memory on Windows (access violation, PC 2026-10-27), zeros on Linux
+    uint64_t protect_epoch = UINT64_MAX;
+    uint64_t cpu_check_reloads = 0;                     // experts cpu_path_check() had to load again (should stay 0)
+    bool in_use(const node_t & n) const { return n.loading || n.epoch == epoch || n.epoch >= protect_epoch; }
+    void begin_graph() {
+        std::lock_guard<std::mutex> lk(mu);
+        protect_epoch = epoch + 1;
+    }
     std::unordered_map<std::string, std::pair<size_t, size_t>> file_tensors;
     std::vector<std::unique_ptr<tinfo_t>> tensors;
     std::unordered_map<const ggml_tensor *, int> by_tensor;
@@ -542,6 +557,9 @@ struct state_t {
                 });
             }
         }
+        if (cache_on) {
+            install_crash_report(this);
+        }
 #endif
     }
 
@@ -555,5 +573,76 @@ state_t & S() {
     static state_t s;
     return s;
 }
+
+#ifdef _WIN32
+// Windows crash report: on an access violation, one stderr line with the faulting code (module+offset) and data address and, when the address is
+// inside an expert tensor, which expert and its cache state. The Windows event log gives only the module offset (PC 2026-10-27: 0xC0000005 in
+// ggml-cpu-zen4.dll at a prompt of 11-16 tokens), which cannot tell an evicted expert from anything else. A first-chance handler reports faults in
+// expert memory (before anyone else sees them), the unhandled-exception filter any crash; both pass the exception on unchanged.
+state_t * g_crash_state = nullptr;
+std::atomic<int> g_crash_said{0};
+LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter = nullptr;
+
+bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
+    const EXCEPTION_RECORD * er = ep ? ep->ExceptionRecord : nullptr;
+    state_t * s = g_crash_state;
+    if (!er || !s || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) {
+        return false;
+    }
+    const uintptr_t addr = (uintptr_t) er->ExceptionInformation[1];
+    const tinfo_t * hit = nullptr;
+    for (const auto & t : s->tensors) {
+        if (t && addr >= (uintptr_t) t->data && addr < (uintptr_t) t->data + t->nb2 * (size_t) t->n_expert + PAGE) {
+            hit = t.get();
+            break;
+        }
+    }
+    if ((experts_only && !hit) || g_crash_said.exchange(1) != 0) {
+        return false;
+    }
+    const uintptr_t pc = (uintptr_t) er->ExceptionAddress;
+    HMODULE mod = nullptr;
+    char mname[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) pc, &mod)) {
+        GetModuleFileNameA(mod, mname, MAX_PATH);
+    }
+    const char * base = std::max(strrchr(mname, '\\'), strrchr(mname, '/'));
+    base = base ? base + 1 : mname;
+    const ULONG_PTR kind = er->ExceptionInformation[0];
+    char buf[1024];
+    int n = snprintf(buf, sizeof(buf), "moe-cache: crash: access violation at %s+0x%llx, %s address 0x%llx", base,
+                     (unsigned long long) (pc - (uintptr_t) mod), kind == 0 ? "reading" : kind == 1 ? "writing" : "executing", (unsigned long long) addr);
+    if (hit) {
+        const size_t rel = addr - (uintptr_t) hit->data;
+        const int64_t e = std::min<int64_t>((int64_t) (rel / hit->nb2), hit->n_expert - 1);
+        const node_t & nd = s->nodes[(size_t) (hit->node0 + e)];
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
+                      "cache %.2f of %.2f GiB, %llu evictions", hit->name.c_str(), (long long) e, rel - (size_t) e * hit->nb2, hit->nb2, (int) nd.resident,
+                      (int) nd.loading, (int) nd.mapped, (unsigned long long) nd.epoch, (unsigned long long) s->epoch,
+                      (unsigned long long) (s->protect_epoch == UINT64_MAX ? 0 : s->protect_epoch), s->resident_bytes / 1073741824.0,
+                      s->budget / 1073741824.0, (unsigned long long) s->evictions);
+    } else {
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " (not in the expert cache)");
+    }
+    n = std::min<int>(n, (int) sizeof(buf) - 2);
+    buf[n++] = '\n';
+    DWORD w = 0;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), buf, (DWORD) n, &w, nullptr);   // no stdio: the crashing thread may hold its lock
+    return true;
+}
+LONG WINAPI crash_veh(EXCEPTION_POINTERS * ep) {
+    crash_report(ep, true);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+LONG WINAPI crash_filter(EXCEPTION_POINTERS * ep) {
+    crash_report(ep, false);
+    return g_prev_filter ? g_prev_filter(ep) : EXCEPTION_CONTINUE_SEARCH;
+}
+void install_crash_report(state_t * s) {
+    g_crash_state = s;
+    AddVectoredExceptionHandler(0, crash_veh);
+    g_prev_filter = SetUnhandledExceptionFilter(crash_filter);
+}
+#endif
 
 }  // namespace
