@@ -86,6 +86,19 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 - The bash wrappers (`moe-cache-server` ...) do not run on Windows: use `python bin\moe_cache.py <command>`.
 - A GLM-class model (102 GB) crashed the plugin in the long-prompt GPU path on the test PC; a fix is committed and still to be confirmed on the PC.
 
-## 7. Repeat the identity test
+## 7. Fair stock-vs-plugin timings: empty the file cache first
+
+Stock llama-server reads the model through Windows' file cache, so a run after another run of the same model finds it in RAM; the plugin's unbuffered reads never use that cache.
+Timing stock after a warm-up and the plugin on a cold start compares two different things (on the test PC the plugin's first session ran at 3-5 tok/s against 14-16 for warm stock).
+Before **every** timed run (stock and plugin alike) push the model out of the cache by reading other big files:
+
+```
+powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target D:\models\model.gguf -Other D:\models\other1.gguf,E:\old-models
+```
+
+It reads other files (files of 100 MB or more in a folder, searched recursively) for 1.15x the machine's RAM, skips the target, and prints GB read and seconds (about 100 GB in 40 s on the test PC).
+No admin rights; it only reads, never writes or deletes. It needs other big files totalling more than your RAM: if they are fewer it says so and exits with 1. For an ABBA series call it between runs.
+
+## 8. Repeat the identity test
 
 `tools\windows_test.ps1`, see [WINDOWS_TEST](WINDOWS_TEST.md).
