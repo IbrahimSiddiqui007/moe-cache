@@ -74,6 +74,8 @@ raptor = b"".join([core(1, 3 << (2 * i)) for i in range(6)] + [core(0, 1 << i) f
 check(L.hybrid_masks(L.parse_core_records(raptor)) == (0x555, [12, 13, 14, 15]), "WINPIN: Raptor Lake 6P(HT)+4E -> -C 0x555 (one thread per P core)")
 check(L.hybrid_masks(L.parse_core_records(b"".join(core(0, 1 << i) for i in range(8)))) is None, "WINPIN: one efficiency class -> no pinning")
 check(L.parse_core_records(core(1, 1, group=1)) == [], "WINPIN: processor group 1 is ignored")
+_g = set(); L.parse_core_records(lunar + core(1, 1, group=1), _g)
+check(_g == {0, 1}, "WINPIN: the processor groups seen are reported (more than one: the launcher does not pin)")
 
 # agent mode (AG1, I29): what --agent adds to the llama-server command, and the config snippets
 ag = dry("--agent")

@@ -9,43 +9,12 @@ static bool server_repack_disabled() {
             return true;
         }
     }
-#ifdef __linux__
-    if (FILE * cf = fopen("/proc/self/cmdline", "rb")) {
-        std::string cmd;
-        char buf[4096];
-        size_t nr;
-        while ((nr = fread(buf, 1, sizeof(buf), cf)) > 0) {
-            cmd.append(buf, nr);
-        }
-        fclose(cf);
-        for (size_t b = 0; b < cmd.size();) {
-            const size_t e = cmd.find('\0', b);
-            const std::string a = cmd.substr(b, e == std::string::npos ? std::string::npos : e - b);
-            if (a == "--no-repack" || a == "-nr") {
-                return true;
-            }
-            if (e == std::string::npos) {
-                break;
-            }
-            b = e + 1;
-        }
-    }
-#elif defined(_WIN32)
-    // no /proc: split the process command line (double quotes group, as the C runtime does for argv); the plugin repacked although llama-server
-    // had --no-repack, so CPU-only output differed from stock (Windows CI executor step: 1/4 identical)
-    const char * c = GetCommandLineA();
-    while (c && *c) {
-        while (*c == ' ' || *c == '\t') { c++; }
-        std::string a;
-        bool q = false;
-        for (; *c && (q || (*c != ' ' && *c != '\t')); c++) {
-            if (*c == '"') { q = !q; } else { a += *c; }
-        }
+    // Windows: the plugin repacked although llama-server had --no-repack, so CPU-only output differed from stock (Windows CI executor step: 1/4 identical)
+    for (const std::string & a : plat::command_line()) {
         if (a == "--no-repack" || a == "-nr") {
             return true;
         }
     }
-#endif
     return false;
 }
 
@@ -189,12 +158,8 @@ struct state_t {
         if (strcmp(ggml_version(), MOE_CACHE_TESTED_GGML) != 0) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only; if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML);
         }
-        if (const char * v = getenv("MOE_CACHE_PROFILE")) {
-            profile_path = v;
-        }
-        if (const char * v = getenv("MOE_CACHE_WARM")) {
-            warm_path = v;
-        }
+        plat::env_utf8("MOE_CACHE_PROFILE", profile_path);     // paths: UTF-8 (Windows getenv gives the ANSI code page)
+        plat::env_utf8("MOE_CACHE_WARM", warm_path);
         if (const char * v = getenv("MOE_CACHE_PRELOAD_FRAC")) {
             preload_frac = atof(v);
         }
@@ -209,7 +174,8 @@ struct state_t {
             }
         }
         const char * gib = getenv("MOE_CACHE_SIZE_GIB");
-        const char * file = getenv("MOE_CACHE_GGUF");
+        std::string file_s;
+        const char * file = plat::env_utf8("MOE_CACHE_GGUF", file_s) ? file_s.c_str() : nullptr;
         if (!gib) {
             fprintf(stderr, "moe-cache: pass-through mode (no cache), layers %s\n", layer_range().c_str());
             return;
@@ -368,29 +334,14 @@ struct state_t {
                     cram = atol(v);
                     from = "LLAMA_ARG_CACHE_RAM";
                 }
-#ifdef __linux__
-                if (FILE * cf = reserve ? nullptr : fopen("/proc/self/cmdline", "rb")) {
-                    std::string cmd;
-                    char buf[4096];
-                    size_t nr;
-                    while ((nr = fread(buf, 1, sizeof(buf), cf)) > 0) {
-                        cmd.append(buf, nr);
-                    }
-                    fclose(cf);
-                    std::vector<std::string> argv_;
-                    for (size_t b = 0; b < cmd.size();) {
-                        const size_t e = cmd.find('\0', b);
-                        argv_.push_back(cmd.substr(b, e == std::string::npos ? std::string::npos : e - b));
-                        if (e == std::string::npos) break;
-                        b = e + 1;
-                    }
+                if (!reserve) {
+                    const std::vector<std::string> argv_ = plat::command_line();
                     for (size_t k = 0; k + 1 < argv_.size(); k++) {
                         if (argv_[k] == "--cache-ram" || argv_[k] == "-cram") {
                             cram = atol(argv_[k + 1].c_str());
                         }
                     }
                 }
-#endif
                 if (cram > 0) {
                     const size_t extra = std::min<size_t>((size_t) cram << 20, limit_bytes / 3);
                     margin += extra;
@@ -493,8 +444,9 @@ struct state_t {
         if (const char * sb = getenv("MOE_CACHE_SIBLINGS")) {
             siblings = strcmp(sb, "0") != 0;
         }
-        if (const char * tp = getenv("MOE_CACHE_TRACE_IDS")) {
-            trace_f = fopen_private(tp);
+        std::string trace_path;
+        if (plat::env_utf8("MOE_CACHE_TRACE_IDS", trace_path)) {
+            trace_f = fopen_private(trace_path.c_str());
         }
         if (const char * v = getenv("MOE_CACHE_COALESCE_MIB")) {
             coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;

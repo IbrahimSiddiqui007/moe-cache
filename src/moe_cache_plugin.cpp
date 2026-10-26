@@ -63,7 +63,7 @@
 // trace and profile files show what the user ran: create them readable by the owner only
 static FILE * fopen_private(const char * path) {
 #ifdef _WIN32
-    return fopen(path, "wb");
+    return plat::fopen_utf8(path, "wb");
 #else
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0600);   // never follows a symlink someone put there
     return fd < 0 ? nullptr : fdopen(fd, "wb");
