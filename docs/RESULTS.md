@@ -1603,10 +1603,10 @@ ran the long prompt without a crash (table above).
 | Windows job-object memory limit (WP3) on the PC | untested |
 | HIP build | needs AMD's HIP SDK |
 
-## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; SKELETON, numbers to come)
+## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; Flash-Next done, 122B and GLM to come)
 
-Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). Nothing
-below is measured yet: every cell marked "-" is filled when the series ends. Do not quote this section until then.
+Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). Cells marked
+"-" are not measured yet; quote only the filled tables.
 
 | Item | Value |
 |---|---|
@@ -1624,15 +1624,23 @@ below is measured yet: every cell marked "-" is filled when the series ends. Do 
 - `pc_speed.ps1` per run: warm-up, 3 decode requests of 256 tokens (a request that ends at once is ignored), 1 prefill request of about 3.5k tokens.
 - Stats run per model for the plugin (cache budget, hit rate, SSD reads), to explain decode where it differs from stock.
 
-### Flash-Next IQ2_XS (64 GB)
+### Flash-Next IQ2_XS (64 GB) (clean run: apps closed, 99 GB of other model files read in 41 s before every run)
+
+Launcher default on Windows + AMD (all experts on the CPU), DLL 2dccf17. Two decode requests per run counted; the first decode request of every run
+is a prompt that ends at once (0.00) and is excluded.
 
 | Run | decode tok/s | prefill tok/s |
 |---|---|---|
-| stock A | - | - |
-| plugin A | - | - |
-| plugin B | - | - |
-| stock B | - | - |
+| stock A | 12.13 / 14.94 | 53.0 |
+| plugin A | 12.30 / 12.34 | 120.3 |
+| plugin B | 12.16 / 12.17 | 119.7 |
+| stock B | 13.92 / 16.05 | 56.6 |
 | plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+Reading: **plugin decode about 12.2 tok/s in all four requests (very steady) against stock 12.1-16.1**; stock's faster requests are 20-30 % above the
+plugin's, its slowest equals it. **Prefill 2.2x stock** (120 vs 53-57). Both agree with the preliminary numbers in section 54 (decode about equal,
+prefill about 2x), now with a cold file cache for every run: the plugin's first-session gap seen there (5 tok/s) did not appear (plugin A 12.3).
+Note: the runner's `speed.log` failed to open ("Stream was not readable", a log-file lock); the numbers above are from the runner's captured output.
 
 ### Qwen3.5-122B UD-IQ2_XXS (36.6 GB)
 
@@ -1658,7 +1666,7 @@ below is measured yet: every cell marked "-" is filled when the series ends. Do 
 
 | Model | Section 54 (PRELIMINARY): stock / plugin decode, plugin prefill vs stock | Section 55 (clean) |
 |---|---|---|
-| Flash-Next | 14-16 / 12-13.5 tok/s; prefill about 2x | - |
+| Flash-Next | 14-16 / 12-13.5 tok/s; prefill about 2x | 12.1-16.1 / 12.2 tok/s; prefill 2.2x |
 | Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | - |
 | GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | - |
 
