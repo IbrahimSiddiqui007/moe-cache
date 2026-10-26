@@ -2,6 +2,8 @@
 // library function and timed A-B-A-B against it (one core, data in cache).
 //   g++ -O2 -std=c++17 -Isrc tests/kernel_variants.cpp -o /tmp/kernel_variants -ldl
 //   /tmp/kernel_variants <dir with libggml-base.so.0 and libggml-cpu.so.0> [check]
+// Windows (cross-built: x86_64-w64-mingw32-g++ -O2 -std=c++17 -Isrc tests/kernel_variants.cpp -o kernel_variants.exe -static):
+//   kernel_variants.exe <llama.cpp release folder with ggml-base.dll and ggml-cpu-*.dll> [check]
 // Block layouts and lookup tables come from src/ (no llama.cpp source tree needed). On CPUs with AVX-512 it also checks and times src/fast_iq_avx512.h.
 //
 // Why the results are identical: every variant does the same integer arithmetic (u8 grid x s8 activation -> s16 -> x scale -> s32; sums of
@@ -23,7 +25,31 @@ using block_q8_K = fastk512::block_q8_K;
 #include <algorithm>
 #include <chrono>
 #include <dirent.h>
+#include <algorithm>
+#include <string>
+#ifdef _WIN32
+#include <windows.h>     // same calls as on Linux, mapped to LoadLibrary / GetProcAddress
+#define RTLD_NOW 0
+#define RTLD_GLOBAL 0
+#define RTLD_LOCAL 0
+static void * dlopen(const char * f, int) {   // LOAD_WITH_ALTERED_SEARCH_PATH (finds ggml-base.dll next to ggml-cpu-*.dll) needs backslashes
+    std::string p = f;
+    std::replace(p.begin(), p.end(), '/', '\\');
+    return (void *) LoadLibraryExA(p.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+}
+static void * dlsym(void * h, const char * n) { return h ? (void *) GetProcAddress((HMODULE) h, n) : nullptr; }
+static void dlclose(void * h) { FreeLibrary((HMODULE) h); }
+#define LIB_BASE "ggml-base.dll"
+#define LIB_CPU "ggml-cpu.dll"
+#define LIB_CPU_PREFIX "ggml-cpu-"
+#define LIB_EXT ".dll"
+#else
 #include <dlfcn.h>
+#define LIB_BASE "libggml-base.so.0"
+#define LIB_CPU "libggml-cpu.so.0"
+#define LIB_CPU_PREFIX "libggml-cpu-"
+#define LIB_EXT ".so"
+#endif
 #include <immintrin.h>
 #include <random>
 #include <string>
@@ -147,11 +173,12 @@ struct traits_cpu { void (*from_float)(const float *, void *, int64_t); dot_fn v
 struct Variant { const char * name; dot_fn fn; };
 
 int main(int argc, char ** argv) {
+    setvbuf(stdout, nullptr, _IOLBF, 0);   // a crash still shows how far it got (pipes are fully buffered otherwise)
     std::string dir = argc > 1 ? argv[1] : ".";
     const bool check_only = argc > 2 && std::string(argv[2]) == "check";
     init_signs();
-    void * hb = dlopen((dir + "/libggml-base.so.0").c_str(), RTLD_NOW | RTLD_GLOBAL);
-    void * hc = dlopen((dir + "/libggml-cpu.so.0").c_str(), RTLD_NOW | RTLD_GLOBAL);
+    void * hb = dlopen((dir + "/" LIB_BASE).c_str(), RTLD_NOW | RTLD_GLOBAL);
+    void * hc = dlopen((dir + "/" LIB_CPU).c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (!hc) {
         hc = dlopen((dir + "/libggml-cpu.so").c_str(), RTLD_NOW | RTLD_GLOBAL);
     }
@@ -162,7 +189,7 @@ int main(int argc, char ** argv) {
         if (DIR * d = opendir(dir.c_str())) {
             while (dirent * e = readdir(d)) {
                 const std::string f = e->d_name;
-                if (f.rfind("libggml-cpu-", 0) != 0 || f.find(".so") == std::string::npos) continue;
+                if (f.rfind(LIB_CPU_PREFIX, 0) != 0 || f.find(LIB_EXT) == std::string::npos) continue;
                 void * h = dlopen((dir + "/" + f).c_str(), RTLD_NOW | RTLD_LOCAL);
                 if (!h) continue;
                 auto score = (int (*)()) dlsym(h, "ggml_backend_score");
@@ -192,6 +219,12 @@ int main(int argc, char ** argv) {
     };
     printf("cpu: avx2=%d avx_vnni=%d avx512(bw,vl,dq)=%d avx512_vnni=%d\n", (int) __builtin_cpu_supports("avx2"), (int) __builtin_cpu_supports("avxvnni"),
            (int) fastk512::cpu_has_avx512(), (int) fastk512::cpu_has_avx512_vnni());
+    if (!__builtin_cpu_supports("avxvnni")) {   // AMD Zen 4 has AVX-512 VNNI but not the AVX (VEX) form: those variants would crash
+        for (auto & c : cases) {
+            c.v.erase(std::remove_if(c.v.begin(), c.v.end(), [](const Variant & x) { return strstr(x.name, "vnni") != nullptr; }), c.v.end());
+        }
+        printf("no AVX-VNNI on this CPU: the AVX-VNNI variants are skipped\n");
+    }
     if (fastk512::cpu_has_avx512()) {
         cases[0].v.push_back({ "avx512", w512_iq2 });
         cases[1].v.push_back({ "avx512", w512_iq3 });
