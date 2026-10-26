@@ -3,7 +3,7 @@
 #   GGML_LIB_DIR   directory with libggml-base.so (default: searched in common places and next to llama-server)
 #   --portable     build a library for the prebuilt release: no link to libggml-base (symbols come from the llama-server that loads it) and no glibc 2.38 symbols.
 #   --windows      cross-compile ggml-moe-cache.dll with mingw-w64 (x86_64-w64-mingw32-g++, dlltool). Load it with GGML_BACKEND_PATH.
-#                  Output: build/win/ (API 2) or build/win-api3/ (GGML_API=3), or BUILD_DIR. Tested on Windows 11 + AMD (llama.cpp b11669, API 3) and on the MSI Claw.
+#                  Output: build/win/ or BUILD_DIR (e.g. BUILD_DIR=build/win-api3 GGML_API=3 keeps an API 2 and an API 3 DLL side by side). Tested on Windows 11 + AMD (llama.cpp b11669, API 3) and on the MSI Claw.
 # The ggml headers are included in third_party/, so no llama.cpp source is needed. They match ggml 0.25.1 (llama.cpp commit 7fe450e19).
 #   GGML_API=3     build against the ggml 0.26 headers (backend API 3, llama.cpp commit 23b0202a1) instead of 0.25.1 (API 2)
 #   BUILD_DIR      output directory (default build; use another one to keep an API 2 and an API 3 build side by side)
@@ -13,7 +13,7 @@ HDR=third_party/ggml; OUT="${BUILD_DIR:-build}"
 if [ "${GGML_API:-2}" = 3 ]; then HDR=third_party/ggml-v3; fi
 if [ "$1" = "--windows" ]; then
   # MINGW_CXX: the compiler (default x86_64-w64-mingw32-g++; a UCRT one such as x86_64-w64-mingw32ucrt-g++ matches official llama.cpp's C runtime)
-  W="${BUILD_DIR:-build/win}"; [ "${GGML_API:-2}" = 3 ] && W="${BUILD_DIR:-build/win-api3}"; M=x86_64-w64-mingw32; CXX="${MINGW_CXX:-$M-g++}"; mkdir -p "$W"
+  W="${BUILD_DIR:-build/win}"; M=x86_64-w64-mingw32; CXX="${MINGW_CXX:-$M-g++}"; mkdir -p "$W"
   $CXX -O2 ${MOE_CACHE_CXXFLAGS:-} -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src -c src/moe_cache_plugin.cpp -o $W/plugin.o
   # ggml's functions live in two DLLs: the backend registry (ggml-backend-reg.cpp) in ggml.dll, everything else in ggml-base.dll. Importing all of
   # them from ggml-base.dll made Windows refuse to load the plugin (found on the MSI Claw, 2026-10-15). Same 16 names in ggml 0.25.1 and 0.26.0.
