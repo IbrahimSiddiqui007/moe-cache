@@ -65,7 +65,7 @@ void q2_0_perm_dot(int n, float * s, size_t bs, const void * vx, size_t bx, cons
     fastk::vec_dot_q2_0_perm_avx2(n, s, bs, vx, bx, vy, by, nrc);
 }
 // IQ3_XXS weights (GLM-5.3-Flash down projections): gather-based dot product, bit-identical, about 1.2x; Intel CPUs only by default (slow gathers
-// on AMD Zen 2/3); MOE_CACHE_IQ3_KERNEL=1 uses it on any AVX2 CPU (to measure Zen 4/5), =0 turns it off
+// on AMD Zen 2/3, and 0.58-0.64x on a Zen 4 7950X); MOE_CACHE_IQ3_KERNEL=1 uses it on any AVX2 CPU, =0 turns it off
 ggml_vec_dot_t fast_iq3_dot() {
     static const ggml_vec_dot_t fn = [] {
         bool vnni = false;
