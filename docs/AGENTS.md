@@ -80,9 +80,9 @@ python3 tools/agent_bench.py record --upstream http://127.0.0.1:8080 --port 8199
 
 The replay generates greedily and stops at the recorded number of tokens, so stock llama-server and moe-cache (exact) produce the same tokens and the
 same prompt reuse. Follow-up turns re-send the agent's original assistant message, which the server processes again if the model now writes something
-else (a few hundred tokens per turn). Recording replaces the home folder, user and host names. Start the server fresh for a cold first turn (with
+else (a few hundred tokens per turn). Recording replaces the home folder, user and host names. Agent-mode servers want the per-user API key: the replay sends `LLAMA_API_KEY`, or the launcher's stored key when the server asks for one (`--api-key` to give another). Start the server fresh for a cold first turn (with
 `--agent`, also give it an empty `--slot-save-path` after `--`, or it restores the last warm session). Measured on the laptop, stock vs moe-cache:
-[RESULTS.md section 54](RESULTS.md).
+[RESULTS.md section 56](RESULTS.md).
 
 ## Agent notes
 

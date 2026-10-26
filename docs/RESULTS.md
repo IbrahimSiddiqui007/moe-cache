@@ -1678,3 +1678,65 @@ model). The cause is not known yet; the stats run (cache budget, hit rate, SSD r
 
 What to conclude (to be written from the numbers): whether the plugin's first-session decode gap (idea I38, unbuffered reads) survives a cold file cache
 for stock too; whether the shrink on GLM (idea I37) still happens with the apps closed.
+
+## 56. Agent-shaped benchmark (idea I30): replayed OpenCode and Hermes sessions, stock vs moe-cache (2026-10-26 evening, laptop)
+
+What agents wait for is the first token of each turn and the whole task, not decode tok/s. `tools/agent_bench.py` recorded two real sessions through a
+proxy and replays them (same request bodies, same overlap, same pauses; greedy, capped at the recorded token counts); `tools/agent_bench_pair.sh` runs
+the pairs. Recordings (`tests/agent_sessions/`, made with moe-cache `--agent` on Qwen3.6): **OpenCode 1.19.4** "the tests in test_stats.py fail: run
+them, fix stats.py, run them again" (5 requests, first prompt 7.45k tokens, tests pass) and **Hermes Agent v0.22.5** (`-t file`) "fix median() and
+add docstrings, then stop" (7 requests incl. its title request, first prompt 3.7k tokens, file fixed).
+
+| Item | Value |
+|---|---|
+| Machine | laptop, i7-13620H, RTX 4060 8 GB, 31 GB RAM; llama.cpp 23b0202a1; plugin build-light (v0.2.3.5) |
+| moe-cache | `moe-cache-server MODEL --agent --ram R -- --alias A --slot-save-path EMPTY_DIR` (context 65536, 4 slots, checkpoints, jinja; usage profile from earlier use) |
+| stock | the same llama-server command the launcher prints for `--agent --dry-run`, without the plugin (Qwen3.6: `--n-cpu-moe 38 -ub 1024`; Flash-Next: `--n-cpu-moe 48 -ub 512`) |
+| Limit | hard cgroup limit, no swap: Qwen3.6 16 GB (`--ram 14`), Flash-Next 23 GB (`--ram 22`) |
+| Per run | model dropped from the page cache and **checked** (mmap + mincore: 0.00 GB), fresh server, /health + 15 s, clean-run gate (`wait_cool.sh 65`), OpenCode replay then Hermes replay on the same server, stop |
+| Same work | prompt tokens processed and tokens generated were identical per request in every run on both sides (exact output) |
+
+**Qwen3.6-35B-A3B Q4_K_M (21.7 GB), 16 GB limit, 3 runs per side, order stock, mc, mc, stock, mc, stock (min / median of the runs):**
+
+| Session | Side | First-turn TTFT (s) | Follow-up TTFT, median per run (s) | Whole task (s) | Decode median (tok/s) |
+|---|---|---|---|---|---|
+| OpenCode | stock | 49.7 / 62.4 | 7.1 / 7.5 | 176.9 / 182.7 | 8.3-9.9 |
+| OpenCode | moe-cache | **44.8 / 48.9** | **4.6 / 4.8** | **105.4 / 111.6 (1.64x)** | 14.8-15.8 |
+| Hermes (second session on the server) | stock | 165.5 / 244.5 | 22.7 / 31.4 | 476.5 / 623.5 | 3.5-5.2 |
+| Hermes (second session on the server) | moe-cache | **23.0 / 27.5** | **5.7 / 6.2** | **124.1 / 127.0 (4.9x)** | 10.0-14.8 |
+
+Single runs: OpenCode task stock 183.1 / 176.9 / 182.7 s, moe-cache 113.6 / 105.4 / 111.6 s; Hermes stock 476.5 / 623.5 / 686.7 s, moe-cache
+124.1 / 171.3 / 127.0 s (the 171 s run decoded at 10.0 instead of 12.6-14.8 tok/s; cause not found). No out-of-memory kill in any run; stock hit
+the cgroup ceiling 554-655 k times per run, moe-cache 37-87 k.
+
+**Flash-Next IQ2_XS (68 GB), 23 GB limit, one pair only (PRELIMINARY: stopped at the owner's request, see the idle-spin bug below):**
+
+| Session | stock (run 1) | moe-cache (run 2) |
+|---|---|---|
+| OpenCode: first-turn TTFT / follow-up median / task | 263.4 s / 34.6 s / 817.2 s (decode 2.05 tok/s) | **173.1 s / 8.5 s / 277.6 s (2.9x)** (9.3 tok/s) |
+| Hermes: first-turn TTFT / follow-up median / task | 914.4 s / 103.8 s / 2063.5 s (1.81 tok/s) | **82.7 s / 13.4 s / 270.9 s (7.6x)** (7.4 tok/s) |
+
+The moe-cache run started after a failed clean-run gate (74 C, load 9 after 30 min) because of the bug below, so it ran hot: if anything its numbers
+are low. Runs 3-4 were not done.
+
+Findings:
+- **The first turn is the agent's biggest wait, and moe-cache shortens it less than everything else.** On Qwen3.6 the OpenCode first turn (7.45k
+  tokens) is 49 vs 62 s: long prompts already go to the GPU in stock llama.cpp (section 46). Follow-up turns (100-800 new tokens each) are where the
+  gap opens: 4.8 vs 7.5 s per turn (median) (the I4 packed upload, section 52), plus decode at 1.7x.
+- **Stock gets much worse for the second session on the same server; moe-cache does not.** Hermes after OpenCode: stock first turn 165-255 s for a
+  3.7k prompt (OpenCode's 7.45k took 50-65 s), decode 3.5-5 tok/s: the first conversation's KV checkpoints (host RAM) shrink the room left for the
+  memory-mapped model, so stock faults more. moe-cache's cache sits in its own budget and keeps 23-31 s. That is the agent case: one server, several
+  sessions in a row.
+- **Measurement trap (new): page-cache eviction silently fails on the ollama blob** `/var/lib/ollama/.../sha256-d372de8e...` (21.7 GB stays cached
+  after `posix_fadvise(DONTNEED)`, no visible process maps it; on files I own eviction works). A first set of 4 runs on that blob let stock read
+  ~5.6 GB outside its cgroup (stock scope charged 16.1 GB file pages) and was discarded; the runs above use a byte-identical copy in work/zoo/qwen36/
+  under the same file name. Earlier limited stock runs on that blob may be optimistic for stock. The pair script now checks residency and stops.
+- **Plugin bug found: an idle Flash-Next moe-cache server burns ~720 % CPU** (9-10 executor threads at 65-90 % each, mostly futex_wait) for 30+ min
+  with no request; the warm start is not it (9.85 GiB in 4.0 s). Qwen3.6 servers idle normally. Logs kept for the robustness session
+  (work/agents/i30/fn/server-2-mc.log, server-3-mc.log).
+- A recorded Hermes session with file tools only ran into a loop (the task was done by request ~15, then ~85 identical 177-token tool calls trying to
+  verify, until the 25 min timeout); it is kept out of the benchmark (work/agents/i30/rec/old/hermes_loop.json). The prompt now tells it to stop after
+  editing.
+- Follow-up turns process 100-250 tokens more than in the recording (the replay re-sends the agent's original assistant message; the model now
+  writes something else at temperature 0); the same on both sides. The warm-session keeper logged no save or restore during any run (it saves after
+  20 s idle; each server was stopped sooner).
