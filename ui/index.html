@@ -156,7 +156,7 @@ async function loadSystem() {
   if (!S.inited) {
     S.inited = true;
     $("ram").value = last.ram || 0;
-    $("vram").value = last.vram || (s.vram_free ? Math.floor(s.vram_free / 2 ** 29) / 2 : 0);
+    $("vram").value = last.vram || 0;      // auto: the planner and the launcher read the free VRAM at start (a running server would lower it here)
     if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent;
     if (last.model) S.sel = last.model;
   }
@@ -164,7 +164,7 @@ async function loadSystem() {
 }
 function paintRanges() {
   $("ramv").textContent = $("ram").value > 0 ? $("ram").value + " GB" : `auto (${fmtGB(S.sys.server_may_use)} now)`;
-  $("vramv").textContent = $("vram").value > 0 ? $("vram").value + " GiB" : "auto (detected)";
+  $("vramv").textContent = $("vram").value > 0 ? $("vram").value + " GiB" : `auto (${S.sys.vram_free != null ? fmtGiB(S.sys.vram_free) + " free now" : "detected at start"})`;
   $("modehint").textContent = MODEHINT[S.mode];
 }
 async function loadModels(fresh) {
