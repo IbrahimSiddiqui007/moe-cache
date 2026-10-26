@@ -633,7 +633,7 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     const char * base = std::max(strrchr(mname, '\\'), strrchr(mname, '/'));
     base = base ? base + 1 : mname;
     const ULONG_PTR kind = er->ExceptionInformation[0];
-    char buf[1024];
+    char buf[4096];
     int n = snprintf(buf, sizeof(buf), "moe-cache: crash: access violation at %s+0x%llx, %s address 0x%llx", base,
                      (unsigned long long) (pc - (uintptr_t) mod), kind == 0 ? "reading" : kind == 1 ? "writing" : "executing", (unsigned long long) addr);
     if (hit) {
@@ -647,6 +647,53 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
                       s->budget / 1073741824.0, (unsigned long long) s->evictions);
     } else {
         n += snprintf(buf + n, sizeof(buf) - (size_t) n, " (not in the expert cache)");
+    }
+    // was the plugin handing a graph to the CPU backend? If so, its nodes without data (a NULL base + offset write points there)
+    if (ggml_cgraph * g = g_cpu_graph.load()) {
+        const int nn = ggml_graph_n_nodes(g);
+        int nulls = 0;
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
+        for (int i = 0; i < nn && n < (int) sizeof(buf) - 200; i++) {
+            const ggml_tensor * t = ggml_graph_node(g, i);
+            const bool null_src = (t->src[0] && !t->src[0]->data) || (t->src[1] && !t->src[1]->data);
+            if (t->op != GGML_OP_NONE && (!t->data || null_src) && nulls++ < 8) {
+                n += snprintf(buf + n, sizeof(buf) - (size_t) n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
+                              t->data, t->src[0] ? t->src[0]->data : nullptr, t->src[1] ? t->src[1]->data : nullptr,
+                              (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2]);
+            }
+        }
+        if (!nulls) {
+            n += snprintf(buf + n, sizeof(buf) - (size_t) n, "; no node or source without data");
+        }
+    } else {
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
+    }
+    // stack of the faulting thread, module+offset per frame (x64 unwind tables)
+    {
+        CONTEXT ctx = *ep->ContextRecord;
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: stack");
+        for (int f = 0; f < 20 && ctx.Rip && n < (int) sizeof(buf) - 120; f++) {
+            HMODULE fm = nullptr;
+            char fname[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) ctx.Rip, &fm)) {
+                GetModuleFileNameA(fm, fname, MAX_PATH);
+            }
+            const char * fb = std::max(strrchr(fname, '\\'), strrchr(fname, '/'));
+            n += snprintf(buf + n, sizeof(buf) - (size_t) n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
+            DWORD64 image = 0;
+            PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &image, nullptr);
+            if (rf) {
+                void * hd = nullptr;
+                DWORD64 est = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, rf, &ctx, &hd, &est, nullptr);
+            } else {
+                if (IsBadReadPtr((const void *) (uintptr_t) ctx.Rsp, 8)) {
+                    break;
+                }
+                ctx.Rip = *(const DWORD64 *) (uintptr_t) ctx.Rsp;     // leaf function: the return address is on top of the stack
+                ctx.Rsp += 8;
+            }
+        }
     }
     n = std::min<int>(n, (int) sizeof(buf) - 2);
     buf[n++] = '\n';

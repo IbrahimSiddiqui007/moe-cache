@@ -163,7 +163,13 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
             nd->op = GGML_OP_NONE;
         }
     }
+#ifdef _WIN32
+    g_cpu_graph = cg;
+#endif
     const enum ggml_status st = ggml_backend_graph_compute(c->cpu, cg);
+#ifdef _WIN32
+    g_cpu_graph = nullptr;
+#endif
     for (auto & sv : saved) {
         sv.first->op = sv.second;
     }

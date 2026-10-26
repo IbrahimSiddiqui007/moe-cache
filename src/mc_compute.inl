@@ -451,7 +451,13 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         cpu_path_check(s, cg);
     }
     const auto c0 = std::chrono::steady_clock::now();
+#ifdef _WIN32
+    g_cpu_graph = cg;
+#endif
     const enum ggml_status st = ggml_backend_graph_compute(c->cpu, cg);
+#ifdef _WIN32
+    g_cpu_graph = nullptr;
+#endif
     for (auto & tg : tagged) {
         tg.first->buffer = tg.second;
     }

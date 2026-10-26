@@ -10,6 +10,9 @@ int g_stats_pipe[2] = { -1, -1 };
 HANDLE g_stats_event = nullptr;            // MOE_CACHE_STATS_SIGNAL on Windows: named event that asks for one snapshot
 HANDLE g_save_event = nullptr;             // Windows: named event Local\moe-cache-save-<pid> that asks for a profile save (the server is killed, not stopped)
 #endif
+#ifdef _WIN32
+std::atomic<ggml_cgraph *> g_cpu_graph{nullptr};   // the graph the plugin is handing to the CPU backend right now (crash report)
+#endif
 #if defined(__linux__) || defined(_WIN32)
 std::atomic<bool> g_stats_stop{false};   // set when the state is destroyed: the snapshot thread then stops without touching it
 #endif
