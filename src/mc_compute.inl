@@ -295,7 +295,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                             const ggml_tensor * m = ggml_graph_node(cg, j);
                             computed_here = m == root;       // a view (reshape) of an input is itself a node but computes nothing: only the underlying tensor counts
                         }
-                        if (!computed_here && root->data && root->buffer && ggml_backend_buffer_is_host(root->buffer) && wt->data) {
+                        if (!computed_here && root->data && root->buffer && wt->buffer && ggml_backend_buffer_is_host(wt->buffer) && wt->data) {
                             rw = (const float *) wt->data; rw_nb1 = wt->nb[1]; rw_nb2 = wt->nb[2];
                         }
                     }
@@ -311,11 +311,12 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                             const int32_t e = *(const int32_t *) ((const char *) ids->data + u * ids->nb[0] + t * ids->nb[1]);
                             eff[(size_t) (t * n_used + u)] = e;
                             if (rw) {
-                                const float wv = *(const float *) ((const char *) rw + (size_t) u * rw_nb1 + (size_t) t * rw_nb2);
-                                tot += wv > 0 ? wv : 0;
-                                if (e >= 0 && e < (int32_t) t0.n_expert) {
-                                    s.route_considered++;
-                                    if (!s.nodes[(size_t) (t0.node0 + e)].resident) cand.emplace_back(wv, u);
+                                float wv = *(const float *) ((const char *) rw + (size_t) u * rw_nb1 + (size_t) t * rw_nb2);
+                                if (!(wv >= 0)) wv = 0;               // NaN or negative: counts as no weight (and sorts first, so it is skipped first)
+                                tot += wv;
+                                if (e >= 0 && e < (int32_t) t0.n_expert && !s.nodes[(size_t) (t0.node0 + e)].resident) {
+                                    s.route_considered++;             // only picks that could be skipped
+                                    cand.emplace_back(wv, u);
                                 }
                             }
                         }

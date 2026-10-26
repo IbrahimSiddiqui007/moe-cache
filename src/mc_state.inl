@@ -421,6 +421,10 @@ struct state_t {
             if (route_weight > 0 && route_mode == 0) {
                 route_mode = 1;                           // weight-based skipping is a form of ROUTE=skip
             }
+            if (route_weight > 0 && route_mode == 2) {
+                fprintf(stderr, "moe-cache: warning: MOE_CACHE_ROUTE_WEIGHT skips picks; it does not substitute (MOE_CACHE_ROUTE=subst is ignored for it). "
+                                "MOE_CACHE_ROUTE_DROP / _KEEP do not apply to it either: at most half of a token's picks are skipped\n");
+            }
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE_DROP")) {
             route_drop = std::max(0, atoi(v));
