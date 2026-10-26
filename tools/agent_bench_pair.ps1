@@ -106,7 +106,7 @@ foreach ($kind in $kinds) {
                $su.followup_ttft_median_s, $su.followup_ttft_sum_s, $su.prompt_processed, $su.prompt_reused, $su.generated, $su.decode_tps_median, $su.errors
         Add-Csv $row; Log "  csv: $row"
       } catch { Log "  (could not read $json : $_)" }
-    } else { Log "  (no result file for $s: the replay failed, see $txt)" }
+    } else { Log "  (no result file for ${s}: the replay failed, see ${txt})" }
   }
   Stop-Tree $p
   Start-Sleep 5
