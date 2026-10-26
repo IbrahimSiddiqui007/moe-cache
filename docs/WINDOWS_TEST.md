@@ -1,5 +1,7 @@
 # Trying moe-cache on Windows (experimental: tested, not a supported install)
 
+**Quick start for using it: [WINDOWS.md](WINDOWS.md).** This page is the identity test.
+
 State: the plugin has a Windows layer (`src/platform.h`) that cross-compiles with mingw-w64 and passes its platform tests under Wine. It has run on real Windows:
 the MSI Claw (Vulkan iGPU, rounds 1-2 found bugs) and, on 2026-10-26, a Windows 11 desktop (Ryzen 9 7950X + RX 9070 XT, llama.cpp b11669 Vulkan): identity 4/4 on four
 models and the Python launcher (check, server, chat) works; see `COMPATIBILITY.md`. There are no speed numbers with the plugin yet. Everything below is how to repeat the
