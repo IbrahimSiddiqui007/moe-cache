@@ -1353,3 +1353,20 @@ uploaded) and ~147-token prompts (157-198 of 256). Speed, Qwen3.6 `--ram 14`, ct
 
 This is the agent follow-up case (tool results of 30-300 tokens) and it is faster than stock llama.cpp, which uploads whole layers. Batches that use
 90 % or more of the experts upload the whole tensor as before.
+
+**I15 (stronger `--fast` levels), quality: kill check passed.** `kl_run.sh` (llama-perplexity, 20 x 512 tokens prose + code, Flash-Next, fixed 6 GiB cache,
+16 GB limit, against the exact base.kld), `MOE_CACHE_ROUTE=skip` with `MOE_CACHE_ROUTE_KEEP` = picks always honoured (Flash-Next uses 10 per token):
+
+| Setting | Mean KL | Same top token | Low-ranked picks given up |
+|---|---|---|---|
+| keep 8 (today's `--fast`, section 43) | 0.0115 | 97.5 % | 304,442 of 972,990 |
+| keep 7 | 0.0166 +- 0.0009 | 97.0 % | 436,008 of 1,459,485 |
+| keep 6 | 0.0224 +- 0.0011 | 96.4 % | 558,383 of 1,945,980 |
+| yardstick: Flash-Next Q2_0 vs IQ2_XS | 0.243 | 88.9 % | - |
+
+Keep 6 still sits 11x below the quant-to-quant difference while giving up 83 % more SSD reads than keep 8. Speed: below.
+
+**I15 speed: no gain at 24 GB.** Flash-Next, 24 GB limit, launcher `--fast` (auto cache ~15 GiB), 8 x 48 tokens, clean-run gate, order 8, 7, 6, 6, 7, 8:
+keep 8 14.57 / 16.08 tok/s, keep 7 15.10 / 13.72, keep 6 15.13 / 15.25 (all inside the +-10 % band). With 97 % hits only 4-10 k picks per run were
+given up (42-85 k looked at), so there is little left to skip; the levels can only pay where the cache is much smaller than the model (12 GB and
+below): not made an option.
