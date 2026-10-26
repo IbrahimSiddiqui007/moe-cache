@@ -310,6 +310,11 @@ st, _ = req("/api/connect", {"agent": "bash"})
 check(st == 400, "only opencode and hermes")
 
 # quick benchmark: warm-up, 2 x 256 decode, one ~3.5k-token prefill (pc_speed.ps1's method), saved to the CSV in the profile dir
+# an older bench.csv (before the start/load/flush columns) is upgraded, its rows kept
+old_csv = os.path.join(ui.mc.CACHE_DIR, "bench.csv")
+os.makedirs(os.path.dirname(old_csv), exist_ok=True)
+with open(old_csv, "w", newline="", encoding="utf-8") as f:
+    f.write("time,model,decode_mean,prefill\n2026-10-20 10:00,Old.gguf,9.50,100.0\n")
 st, body = req("/api/bench", {})
 check(st == 200 and json.loads(body)["state"] == "running", "POST /api/bench starts the benchmark")
 deadline = time.time() + 30
@@ -323,11 +328,55 @@ check(b["state"] == "done" and r.get("decode_tokens") == "256/256" and float(r["
 check(3000 <= int(r.get("prefill_tokens") or 0) <= 4500 and r.get("prefill") == "300.0", f"one prefill of about 3.5k tokens ({r.get('prefill_tokens')})")
 check(r.get("mode") == "moe-cache exact" and r.get("model") == "Small-MoE-Q4_K_M.gguf" and "sekrit" not in r.get("command", ""), "the row names model and mode, no key")
 rows = json.loads(req("/api/bench")[1])["rows"]
-check(len(rows) == 1 and rows[0]["decode_mean"] == r["decode_mean"] and os.path.isfile(os.path.join(ui.mc.CACHE_DIR, "bench.csv")),
+check(len(rows) == 2 and rows[0]["model"] == "Old.gguf" and rows[0]["start"] == "warm" and os.path.isfile(old_csv + ".bak")
+      and open(old_csv, encoding="utf-8").readline().strip() == ",".join(ui.BENCH_FIELDS), "an older bench.csv gets the new columns, its rows kept, a .bak copy")
+check(rows[-1]["decode_mean"] == r["decode_mean"] and rows[-1]["start"] == "warm" and rows[-1]["load_s"] == "" and os.path.isfile(os.path.join(ui.mc.CACHE_DIR, "bench.csv")),
       "appended to bench.csv in the profile dir and read back")
 
 lines = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check(any("eval time" in l for l in lines) and not any(l.startswith("moe-cache-stats") for l in lines), "the log has the server lines, not the stats lines")
+# cold start (fair): stop, flush the model from the file cache (mocked here), start again, measure; recorded as "cold"
+flushed = []
+real_flush, ui.flush_model_cache = ui.flush_model_cache, (lambda model, other: flushed.append((model, list(other))) or (True, "fake flush"))
+st, _ = req("/api/bench", {"cold": True, "other": [os.path.join(TMP, "nowhere")]})
+check(st == 400, "cold start: a folder that does not exist is refused")
+runner = srv.RequestHandlerClass.runner
+pid_before = runner.p.pid
+st, body = req("/api/bench", {"cold": True, "other": [models]})
+check(st == 200, f"cold-start benchmark starts ({body[:100]})")
+deadline = time.time() + 60
+while time.time() < deadline:
+    b = json.loads(req("/api/status")[1])["bench"]
+    if b["state"] not in ("running",):
+        break
+    time.sleep(0.3)
+r = b.get("result", {})
+check(b["state"] == "done" and r.get("start") == "cold" and r.get("flush") == "fake flush" and r.get("load_s", "") != "", f"cold run recorded: start cold, flush line, load time ({b.get('error') or r.get('load_s')})")
+check(flushed == [(small["path"], [models])] and runner.p.pid != pid_before and runner.state == "ready", "the server was stopped, the model flushed, the server started again")
+check(json.loads(req("/api/bench")[1])["rows"][-1]["start"] == "cold", "cold / warm in the CSV")
+ui.flush_model_cache = real_flush
+cs = ui.cold_start_support()
+check(cs["available"] == (sys.platform.startswith("linux") or os.name == "nt"), f"cold start offered on Linux and Windows ({cs})")
+if sys.platform.startswith("linux"):
+    import mmap
+    fp = os.path.join(TMP, "flush-me.gguf")
+    with open(fp, "wb") as f:
+        f.write(os.urandom(8 << 20)); f.flush(); os.fsync(f.fileno())
+    ok, line = ui.flush_model_cache(fp, [])
+    check((ok and "after 0 %" in line) or (not ok and "kept the model in memory" in line), f"Linux flush: dropped, or honestly not on tmpfs ({line})")
+    with open(fp, "rb") as f:
+        m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        ok, line = ui.flush_model_cache(fp, [])
+        m.close()
+    check(not ok and "another program uses this model file" in line, "Linux flush: refused while a process maps the model (it would slow that program down)")
+if os.name == "nt":
+    # the real tools\win_flush_cache.ps1: a small "other" folder cannot cover the RAM, so it reads it all and says the flush is partial
+    od = os.path.join(TMP, "other-big"); os.makedirs(od, exist_ok=True)
+    open(os.path.join(od, "filler.bin"), "wb").write(os.urandom(1 << 20))
+    tp = os.path.join(TMP, "target.gguf"); open(tp, "wb").write(b"GGUF" + b"\0" * 1000)
+    ok, line = ui.flush_model_cache(tp, [od])
+    check(not ok and "flushed file cache" in line, f"Windows flush: runs win_flush_cache.ps1 and reports a partial flush honestly ({line[:160]})")
+
 st, _ = req("/api/stop", {})
 deadline = time.time() + 30
 while time.time() < deadline and status["state"] not in ("stopped", "exited"):

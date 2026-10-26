@@ -60,8 +60,19 @@ For the running server: one warm-up request, two replies of 256 tokens (`ignore_
 and, with the plugin, the cache hit rate during the two replies, and appends one row to `~/.cache/moe-cache/bench.csv` (Windows:
 `%USERPROFILE%\.cache\moe-cache\bench.csv`) with the model, mode, RAM budget, GPU and the launcher command. To compare stock and moe-cache on your
 machine: run it once with a RAM budget the model fits in (the launcher runs stock) and once with a smaller one or `--fast` (the plugin), then read
-both rows in the table under the button. A model bigger than the memory runs stock very slowly: on Linux give the stock run a memory limit and
-start from a cold file cache, as the README's "Conditions" say, or the stock number is too good.
+both rows in the table under the button.
+
+**Cold start (fair).** A model read once stays in the operating system's file cache, which makes stock llama-server look faster on the next start
+than on a first one (the plugin reads experts unbuffered and gains less from it). Tick **Cold start** and the benchmark first stops the server,
+pushes the model out of the file cache, starts it again with the same settings (the time until it is ready is recorded) and then measures; the
+CSV row says `cold` or `warm` and how the flush went.
+
+| System | How | Notes |
+|---|---|---|
+| Linux | `posix_fadvise(DONTNEED)` on the model's files, no root needed; it reports the cached share before and after (mincore) | refuses while another program maps the model (it would slow that program down); a file on tmpfs cannot be dropped and is reported as such |
+| Windows | `tools\win_flush_cache.ps1`: reads other big files (more than the RAM in total) so the cache drops the model; reads only, writes nothing | pick the folders with the other files (default: your model folders; the model itself is skipped); too little data is reported as a partial flush |
+
+For a fair stock number on Linux also run it under a memory limit when the model is bigger than the RAM, as the README's "Conditions" say.
 
 ## Where the verdict comes from
 

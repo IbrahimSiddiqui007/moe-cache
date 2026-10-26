@@ -117,6 +117,10 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
     <pre id="dry" hidden></pre>
     <div class="row" style="margin-top:10px; justify-content:flex-start"><button id="bench">Quick benchmark</button><span class="small" id="benchstate">warm-up, 2 replies of 256 tokens, one 3.5k-token prompt (about 1-3 minutes); saved to a CSV so you can compare stock and moe-cache runs</span></div>
+    <div class="row small" id="coldrow" style="margin-top:4px; justify-content:flex-start">
+      <label style="margin:0"><input type="checkbox" id="cold"> Cold start (fair): stop, push the model out of the file cache, start again, then measure</label>
+      <span id="coldhow"></span></div>
+    <div class="row small" id="otherrow" hidden style="justify-content:flex-start"><span>Other big files to read (folders, separated by ;):</span><input type="text" id="other" style="flex:1"></div>
     <div id="benchres"></div>
     <details id="decisions" hidden style="margin-top:8px"><summary class="small">What the launcher decided</summary><ul class="why"></ul></details>
     <div id="warnings" hidden></div>
@@ -172,6 +176,11 @@ async function loadSystem() {
     if (last.model) S.sel = last.model;
   }
   paintRanges();
+  const cs = s.cold_start || {};
+  $("cold").disabled = !cs.available;
+  $("coldhow").textContent = cs.available ? "(" + cs.method + ")" : "(not available: " + (cs.why || "?") + ")";
+  $("otherrow").hidden = !cs.needs_other;
+  if (cs.needs_other && !$("other").value) $("other").value = (s.folders || []).join("; ");
 }
 function paintRanges() {
   $("ramv").textContent = $("ram").value > 0 ? $("ram").value + " GB" : `auto (${fmtGB(S.sys.server_may_use)} now)`;
@@ -331,7 +340,7 @@ function paintSessions(j) {
     catch (e) { $("trashmsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
   });
 }
-const BENCH_COLS = [["time", "When"], ["model", "Model"], ["mode", "Mode"], ["ram_gb", "RAM GB"], ["decode_mean", "Decode tok/s"], ["prefill", "Prefill tok/s"], ["hit_rate", "Hit rate"]];
+const BENCH_COLS = [["time", "When"], ["model", "Model"], ["mode", "Mode"], ["start", "Start"], ["ram_gb", "RAM GB"], ["decode_mean", "Decode tok/s"], ["prefill", "Prefill tok/s"], ["hit_rate", "Hit rate"]];
 function benchTable(rows, model) {
   return `<table style="margin-top:6px"><tr>${BENCH_COLS.map(c => `<th${c[0] == "decode_mean" || c[0] == "prefill" ? ' class="num"' : ""}>${c[1]}</th>`).join("")}</tr>` +
     rows.map(r => `<tr${r.model == model ? "" : ' class="small"'}>${BENCH_COLS.map(([k]) => `<td${k == "decode_mean" || k == "prefill" ? ' class="num"' : ""}>${esc(
@@ -344,7 +353,8 @@ async function paintBench(st) {
   if (b.state == "running") { $("benchstate").textContent = "running: " + b.step + "…"; return; }
   if (b.state == "failed") { $("benchstate").innerHTML = `<span class="err">benchmark failed: ${esc(b.error)}</span>`; return; }
   if (b.state != "done") return;
-  $("benchstate").textContent = "done" + (b.csv ? " · saved to " + b.csv : b.csv_error ? " · not saved: " + b.csv_error : "");
+  $("benchstate").textContent = "done" + (b.cold ? " (cold start: " + (b.result || {}).flush + ", ready in " + (b.result || {}).load_s + " s)" : "") +
+    (b.csv ? " · saved to " + b.csv : b.csv_error ? " · not saved: " + b.csv_error : "");
   const j = await api("/api/bench");
   const model = (b.result || {}).model;
   $("benchres").innerHTML = `<div class="small" style="margin-top:6px">This run, and earlier runs from the CSV (same model in full colour), newest last:</div>` + benchTable(j.rows.slice(-8), model);
@@ -379,7 +389,11 @@ $("start").onclick = async () => {
   try { await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll(); } catch (e) { $("err").textContent = e.message; }
 };
 $("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
-$("bench").onclick = async () => { try { await api("/api/bench", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
+$("bench").onclick = async () => {
+  const cold = $("cold").checked && !$("cold").disabled;
+  const other = $("other").value.split(";").map(x => x.trim()).filter(Boolean);
+  try { await api("/api/bench", { cold, other }); poll(); } catch (e) { $("err").textContent = e.message; }
+};
 $("copykey").onclick = async () => {
   try {
     const j = await api("/api/key");             // fetched only now, never kept in the page or shown

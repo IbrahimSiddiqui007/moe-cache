@@ -660,7 +660,7 @@ BENCH_PARA = ("The history of computing spans centuries, from mechanical calcula
               "circuits and the microprocessors in every phone. ")
 BENCH_LONG = "Summarise the following text in five bullet points.\n" + BENCH_PARA * 95          # about 3.5k tokens
 BENCH_FIELDS = ["time", "model", "size_gb", "mode", "ram_gb", "vram_gib", "ctx", "gpu", "os", "decode_1", "decode_2", "decode_mean", "decode_tokens",
-                "prefill_tokens", "prefill", "hit_rate", "warmup_s", "command"]
+                "prefill_tokens", "prefill", "hit_rate", "warmup_s", "command", "start", "load_s", "flush"]
 
 
 def read_bench_rows(limit=20):
@@ -673,12 +673,123 @@ def read_bench_rows(limit=20):
 
 def append_bench_row(row):
     os.makedirs(os.path.dirname(BENCH_CSV), exist_ok=True)
+    migrate_bench_csv()
     new = not os.path.isfile(BENCH_CSV)
     with open(BENCH_CSV, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=BENCH_FIELDS, extrasaction="ignore")
         if new:
             w.writeheader()
         w.writerow({k: csv_safe(v) for k, v in row.items()})
+
+
+def migrate_bench_csv():
+    """An older bench.csv (fewer columns) gets the current header; its rows are kept (old file saved as bench.csv.bak first)."""
+    try:
+        with open(BENCH_CSV, newline="", encoding="utf-8") as f:
+            rd = csv.reader(f)
+            head = next(rd, None)
+    except OSError:
+        return
+    if head is None or head == BENCH_FIELDS:
+        return
+    import shutil
+    shutil.copy2(BENCH_CSV, BENCH_CSV + ".bak")
+    with open(BENCH_CSV, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    with open(BENCH_CSV + ".tmp", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=BENCH_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(dict({k: "" for k in BENCH_FIELDS}, **{k: v for k, v in r.items() if k in BENCH_FIELDS}, start=r.get("start") or "warm"))
+    os.replace(BENCH_CSV + ".tmp", BENCH_CSV)
+
+
+# ---- cold start for a fair benchmark: the model out of the OS file cache before the server starts again ----
+# Stock llama-server reads the model through the file cache (a warm cache from an earlier run makes it look faster than a first start); the
+# plugin reads experts unbuffered. Linux: posix_fadvise(DONTNEED) drops a file's clean cached pages without root (pages another process maps
+# stay, so it refuses then). Windows: tools/win_flush_cache.ps1 only READS other big files until the cache no longer holds the model.
+WIN_FLUSH = os.path.join(HERE, "tools", "win_flush_cache.ps1")
+
+
+def cold_start_support():
+    if WINDOWS:
+        ps = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        ok = os.path.isfile(WIN_FLUSH) and os.path.isfile(ps)
+        return {"available": ok, "method": "reads other big files (tools\\win_flush_cache.ps1) so Windows' file cache drops the model; nothing is written",
+                "needs_other": True, "why": "" if ok else "tools\\win_flush_cache.ps1 or PowerShell not found"}
+    if hasattr(os, "posix_fadvise") and sys.platform.startswith("linux"):
+        return {"available": True, "method": "drops the model's pages from the page cache (posix_fadvise, no root needed)", "needs_other": False, "why": ""}
+    return {"available": False, "method": "", "needs_other": False, "why": "not available on this system"}
+
+
+def mapped_by(path):
+    """PIDs (of this user's processes) that map this file now; Linux only, [] elsewhere."""
+    out, real = [], os.path.realpath(path)
+    for d in glob.glob("/proc/[0-9]*/maps"):
+        try:
+            with open(d, encoding="utf-8", errors="replace") as f:
+                if any(line.rstrip("\n").endswith(" " + real) or line.rstrip("\n").endswith("\t" + real) for line in f):
+                    out.append(int(d.split("/")[2]))
+        except OSError:
+            pass
+    return out
+
+
+def cached_fraction(path):
+    """Share of the file's pages in the page cache (Linux mincore); None when it cannot be measured."""
+    try:
+        import mmap
+        libc = ctypes.CDLL(None, use_errno=True)
+        size = os.path.getsize(path)
+        if not size:
+            return 0.0
+        page = mmap.PAGESIZE
+        with open(path, "rb") as f:
+            m = mmap.mmap(f.fileno(), size, access=mmap.ACCESS_COPY)       # private: nothing can reach the file
+            try:
+                addr = ctypes.addressof(ctypes.c_char.from_buffer(m))
+                n = (size + page - 1) // page
+                vec = (ctypes.c_ubyte * n)()
+                if libc.mincore(ctypes.c_void_p(addr), ctypes.c_size_t(size), vec) != 0:
+                    return None
+                return sum(v & 1 for v in vec) / n
+            finally:
+                del addr
+                m.close()
+    except Exception:
+        return None
+
+
+def flush_model_cache(model, other):
+    """Push the model (all its parts) out of the OS file cache. Returns (ok, one line on what happened)."""
+    parts = mc.model_parts(model)
+    if WINDOWS:
+        ps = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        folders = [o for o in other if o and os.path.exists(o)]
+        if not folders:
+            return False, "no folder with other big files to read (set one under Cold start)"
+        r = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", WIN_FLUSH, "-Target"] + parts + ["-Other"] + folders,
+                           capture_output=True, text=True, timeout=3600)
+        out = " ".join(l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip())
+        return r.returncode == 0, out or f"win_flush_cache.ps1 exit code {r.returncode}"
+    users = sorted({pid for p in parts for pid in mapped_by(p)})
+    if users:
+        return False, f"another program uses this model file right now (PID {', '.join(map(str, users))}): not flushed, so it is not slowed down"
+    before = [cached_fraction(p) for p in parts]
+    for p in parts:
+        fd = os.open(p, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    after = [cached_fraction(p) for p in parts]
+    def pct(xs):
+        xs = [x for x in xs if x is not None]
+        return f"{100 * sum(xs) / len(xs):.0f} %" if xs else "?"
+    left = [x for x in after if x is not None]
+    if left and sum(left) / len(left) > 0.5:      # e.g. a file on tmpfs, which lives in the cache
+        return False, f"the file system kept the model in memory (cached before {pct(before)}, after {pct(after)})"
+    return True, f"dropped the model from the page cache (cached before {pct(before)}, after {pct(after)})"
 
 
 def csv_safe(v):
@@ -933,13 +1044,33 @@ class Runner:
             time.sleep(1)
 
     # -- quick benchmark --
-    def start_bench(self):
+    def start_bench(self, cold=False, other=None):
         if self.state != "ready":
             raise ValueError("start a model first")
         if self.bench.get("state") == "running":
             raise ValueError("a benchmark is already running")
-        self.bench = {"state": "running", "step": "warm-up", "started": time.time()}
-        threading.Thread(target=self.run_bench, args=(self.p,), daemon=True).start()
+        if cold and not cold_start_support()["available"]:
+            raise ValueError("cold start: " + cold_start_support()["why"])
+        self.bench = {"state": "running", "step": "warm-up", "started": time.time(), "cold": bool(cold)}
+        threading.Thread(target=self.run_bench, args=(self.p, cold, list(other or [])), daemon=True).start()
+
+    def cold_restart(self, b, other):
+        """Stop the server, push the model out of the file cache, start it again with the same settings; returns (seconds to ready, flush line)."""
+        s = dict(self.settings)
+        b["step"] = "cold start: stopping the server"
+        self.stop()
+        b["step"] = "cold start: pushing the model out of the file cache"
+        ok, line = flush_model_cache(s["model"], other)
+        b["flush"] = line
+        b["step"] = "cold start: starting the server again"
+        t0 = time.time()
+        self.start(s)
+        self.bench = b                          # start() resets the runner; the benchmark goes on
+        while self.state == "starting" and time.time() - t0 < 1800:
+            time.sleep(0.5)
+        if self.state != "ready":
+            raise RuntimeError(f"the server did not come back ({self.state})")
+        return time.time() - t0, ("" if ok else "partial: ") + line
 
     def complete(self, prompt, n, ignore_eos=False):
         """One /completion as pc_speed.ps1 asks it: greedy, fixed seed, no prompt reuse, so stock and moe-cache runs compare. The decode runs also
@@ -962,9 +1093,14 @@ class Runner:
                 break
         return (self.snap[1].get("hits", 0), self.snap[1].get("misses", 0)) if self.snap else None
 
-    def run_bench(self, p):
+    def run_bench(self, p, cold=False, other=()):
         b = self.bench
+        load_s, flush = None, ""
         try:
+            if cold:
+                load_s, flush = self.cold_restart(b, other)
+                p = self.p
+                b["step"] = "warm-up"
             t0 = time.time()
             self.complete(BENCH_PROMPTS[0], 32)
             warm = time.time() - t0
@@ -986,7 +1122,8 @@ class Runner:
                    "gpu": sy.get("gpu") or "none", "os": sy.get("os"), "decode_1": f"{dec[0]:.2f}", "decode_2": f"{dec[1]:.2f}",
                    "decode_mean": f"{sum(dec) / len(dec):.2f}", "decode_tokens": "/".join(str(n) for n in ntok), "prefill_tokens": pf.get("prompt_n"),
                    "prefill": f"{pf['prompt_per_second']:.1f}", "hit_rate": f"{hr:.3f}" if hr is not None else "", "warmup_s": f"{warm:.1f}",
-                   "command": shown_command(s)}
+                   "command": shown_command(s), "start": "cold" if cold else "warm", "load_s": f"{load_s:.0f}" if load_s is not None else "",
+                   "flush": flush}
             try:
                 append_bench_row(row)
                 b["csv"] = BENCH_CSV
@@ -1122,7 +1259,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
             if u.path == "/api/system":
-                return self.send(200, dict(system_info(), folders=self.store.folders(), last=self.store.saved.get("last", {}),
+                return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}),
                                            llama_server=self.store.ls, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
@@ -1202,7 +1339,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True, "where": where, "running_note": "the running server keeps it in memory and may save it again"
                                        if self.runner.state == "ready" and f.get("tag") == session_tag(self.runner.settings) else ""})
             if self.path == "/api/bench":
-                self.runner.start_bench()
+                other = body.get("other") or []
+                if not isinstance(other, list) or len(other) > 20 or not all(isinstance(x, str) and len(x) < 1000 for x in other):
+                    raise ValueError("other: a list of folders")
+                other = [os.path.abspath(os.path.expanduser(x)) for x in other if x.strip()]
+                for x in other:
+                    if not os.path.exists(x):
+                        raise ValueError(f"no such folder or file: {x}")
+                self.runner.start_bench(cold=bool(body.get("cold")), other=other or self.store.folders())
                 return self.send(200, self.runner.bench)
             if self.path == "/api/stop":
                 threading.Thread(target=self.runner.stop, daemon=True).start()
