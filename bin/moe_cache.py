@@ -586,6 +586,18 @@ def server(argv):
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
+    if (ncmoe is None and WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])):
+        # desktop PC 2026-10-26 (RX 9070 XT, AMD's Windows Vulkan driver): VRAM in use costs about as much system RAM (llama-server with 12 GiB of
+        # expert layers on the GPU took 14.9 GB of RAM), so for a model bigger than RAM, GPU expert layers starve the page cache / expert cache:
+        # Flash-Next decode stock 11-14 -> 14-16 tok/s, plugin 3 -> 12-13.5 tok/s with all experts on the CPU (the GPU keeps attention and long prompts)
+        try:
+            mem = mem_for_server(a.ram)
+            if mem and sum(os.path.getsize(f) for f in model_parts(model)) > mem:
+                ncmoe = ncmoe_user = "999"      # also keeps the tuner (below) from moving expert layers back to the GPU
+                say("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (on this driver VRAM also uses system RAM; "
+                    "--n-cpu-moe N to override)")
+        except Exception:
+            pass
     if ncmoe is None:
         p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
         if a.ram: p += ["--ram-gib", a.ram]
