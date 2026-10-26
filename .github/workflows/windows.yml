@@ -102,7 +102,8 @@ jobs:
           $ok = $false
           for ($i = 0; $i -lt 300; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8090/health).StatusCode -eq 200) { $ok = $true; break } } catch {} ; Start-Sleep 1 }
           $body = '{"model":"granite","messages":[{"role":"user","content":"Say hi"}],"max_tokens":8,"temperature":0}'
-          if ($ok) { (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body http://127.0.0.1:8090/v1/chat/completions).Content }
+          $key = (python bin/moe_cache.py key).Trim()      # agent mode needs the stable per-user key (decision C)
+          if ($ok) { (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Headers @{ Authorization = "Bearer $key" } -Body $body http://127.0.0.1:8090/v1/chat/completions).Content }
           python bin/moe_cache.py connect opencode --url http://127.0.0.1:8090 --write --config "$env:RUNNER_TEMP\opencode.json"
           Get-Content "$env:RUNNER_TEMP\opencode.json"
           Stop-Process -Id $p.Id
