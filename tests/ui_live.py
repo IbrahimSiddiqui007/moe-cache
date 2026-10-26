@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Control page with a real model (GUI1 draft, step 2; CI on Granite, Linux and Windows): starts `moe_cache.py ui`, adds the model's folder, starts the
 model through the page with a RAM budget small enough that the launcher keeps the plugin, sends one request, checks that the page shows the plugin's
-live numbers (hit rate from the stats snapshot: SIGUSR1 on Linux, a named event on Windows), and stops it through the page.
+live numbers, runs the quick benchmark (hit rate from the stats snapshot: SIGUSR1 on Linux, a named event on Windows), and stops it through the page.
    python3 tests/ui_live.py MODEL.gguf --llama-server PATH [--ram GB] [--ui-port 8075] [--port 8076]
 The plugin is found the launcher's way (MOE_CACHE_LIB or the build folder). Standard library only."""
 import argparse, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
@@ -69,6 +69,19 @@ try:
         check(s["last"].get("decode_tps", 0) > 0, "decode tok/s from the timing lines")
         check(c.get("hit_rate_total") is not None and c.get("budget"), "hit rate and cache budget from the plugin's stats snapshot")
         check(s.get("server_rss"), "llama-server's RAM")
+        st, b = req("/api/bench", {})
+        t3 = time.time()
+        while st == 200 and time.time() - t3 < 600:
+            b = req("/api/status")[1]["bench"]
+            if b["state"] != "running":
+                break
+            time.sleep(1)
+        r = b.get("result", {})
+        print(f"  quick benchmark: {b.get('state')} {b.get('error', '')} decode {r.get('decode_1')} / {r.get('decode_2')} tok/s ({r.get('decode_tokens')} tokens), "
+              f"prefill {r.get('prefill_tokens')} tokens at {r.get('prefill')} tok/s, hit rate {r.get('hit_rate')}, {time.time() - t3:.0f} s")
+        check(b.get("state") == "done" and float(r.get("decode_mean") or 0) > 0 and int(r.get("prefill_tokens") or 0) > 2000,
+              "quick benchmark: two decode runs and a long prefill")
+        check(r.get("hit_rate") not in (None, ""), "quick benchmark: the cache hit rate over the decode runs (plugin snapshot)")
     req("/api/stop", {})
     t2 = time.time()
     while time.time() - t2 < 120:

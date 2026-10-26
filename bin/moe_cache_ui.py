@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, ctypes, glob, json, os, re, signal, subprocess, sys, threading, time, urllib.parse
+import argparse, collections, csv, ctypes, glob, json, os, re, signal, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -524,6 +524,36 @@ def warm_files():
     return sorted(out, key=lambda x: -x["t"])[:10]
 
 
+# ---- quick benchmark: the method of windows-kit/pc_speed.ps1 (RESULTS 54/55), for the running server ----
+BENCH_CSV = os.path.join(mc.CACHE_DIR, "bench.csv")
+BENCH_PROMPTS = ["Write a short story about a lighthouse keeper who finds a message in a bottle.",
+                 "Explain how a CPU cache works, with an example of a cache miss.",
+                 "Describe the water cycle step by step for a ten-year-old."]
+BENCH_PARA = ("The history of computing spans centuries, from mechanical calculators and punched cards to vacuum tubes, transistors, integrated "
+              "circuits and the microprocessors in every phone. ")
+BENCH_LONG = "Summarise the following text in five bullet points.\n" + BENCH_PARA * 95          # about 3.5k tokens
+BENCH_FIELDS = ["time", "model", "size_gb", "mode", "ram_gb", "vram_gib", "ctx", "gpu", "os", "decode_1", "decode_2", "decode_mean", "decode_tokens",
+                "prefill_tokens", "prefill", "hit_rate", "warmup_s", "command"]
+
+
+def read_bench_rows(limit=20):
+    try:
+        with open(BENCH_CSV, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))[-limit:]
+    except OSError:
+        return []
+
+
+def append_bench_row(row):
+    os.makedirs(os.path.dirname(BENCH_CSV), exist_ok=True)
+    new = not os.path.isfile(BENCH_CSV)
+    with open(BENCH_CSV, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=BENCH_FIELDS, extrasaction="ignore")
+        if new:
+            w.writeheader()
+        w.writerow(row)
+
+
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) tokens.*?([\d.]+) tokens per second")
 
 
@@ -553,6 +583,7 @@ class Runner:
         self.warm = []                     # the launcher's "warm session:" lines (agent mode: saved / restored conversations)
         self.decisions = []                # what the launcher decided before starting llama-server (its "moe-cache: ..." lines up to the URL line)
         self.deciding = True
+        self.bench = {"state": "idle"}
 
     # -- control --
     def start(self, s):
@@ -712,6 +743,70 @@ class Runner:
             self.hist.append([round(time.time(), 1), self.live_tps, self.cache.get("hit_rate")])
             time.sleep(1)
 
+    # -- quick benchmark --
+    def start_bench(self):
+        if self.state != "ready":
+            raise ValueError("start a model first")
+        if self.bench.get("state") == "running":
+            raise ValueError("a benchmark is already running")
+        self.bench = {"state": "running", "step": "warm-up", "started": time.time()}
+        threading.Thread(target=self.run_bench, args=(self.p,), daemon=True).start()
+
+    def complete(self, prompt, n):
+        """One /completion as pc_speed.ps1 asks it: greedy, fixed seed, no prompt reuse, so stock and moe-cache runs compare."""
+        port = int(self.settings.get("port") or 8080)
+        st, body = mc.http(f"http://127.0.0.1:{port}/completion", {"prompt": prompt, "n_predict": n, "temperature": 0, "seed": 42, "cache_prompt": False},
+                           api_key=self.settings.get("api_key"), timeout=1800)
+        if st != 200:
+            raise RuntimeError(f"HTTP {st}: {body[:200]}" if st else "the server did not answer")
+        return json.loads(body)["timings"]
+
+    def cache_counts(self):
+        """(hits, misses) right now: asks the plugin for a fresh snapshot; None in stock mode."""
+        if not self.pid or not ask_snapshot(self.pid):
+            return None
+        before = self.snap
+        for _ in range(20):
+            time.sleep(0.1)
+            if self.snap is not before:
+                break
+        return (self.snap[1].get("hits", 0), self.snap[1].get("misses", 0)) if self.snap else None
+
+    def run_bench(self, p):
+        b = self.bench
+        try:
+            t0 = time.time()
+            self.complete(BENCH_PROMPTS[0], 32)
+            warm = time.time() - t0
+            c0 = self.cache_counts()
+            dec, ntok = [], []
+            for i, q in enumerate(BENCH_PROMPTS[1:3]):
+                b["step"] = f"decode {i + 1} of 2 (256 tokens)"
+                t = self.complete(q, 256)
+                dec.append(t["predicted_per_second"]); ntok.append(t.get("predicted_n"))
+            c1 = self.cache_counts()
+            b["step"] = "prefill (about 3.5k tokens)"
+            pf = self.complete(BENCH_LONG, 16)
+            hr = None
+            if c0 and c1 and (c1[0] - c0[0]) + (c1[1] - c0[1]) > 0:
+                hr = (c1[0] - c0[0]) / ((c1[0] - c0[0]) + (c1[1] - c0[1]))
+            s, sy = self.settings, system_info()
+            row = {"time": time.strftime("%Y-%m-%d %H:%M"), "model": os.path.basename(s.get("model", "")), "size_gb": f"{size_of(s.get('model', '')) / 1e9:.1f}",
+                   "mode": self.mode or "?", "ram_gb": s.get("ram") or "auto", "vram_gib": s.get("vram") or "auto", "ctx": s.get("ctx") or 8192,
+                   "gpu": sy.get("gpu") or "none", "os": sy.get("os"), "decode_1": f"{dec[0]:.2f}", "decode_2": f"{dec[1]:.2f}",
+                   "decode_mean": f"{sum(dec) / len(dec):.2f}", "decode_tokens": "/".join(str(n) for n in ntok), "prefill_tokens": pf.get("prompt_n"),
+                   "prefill": f"{pf['prompt_per_second']:.1f}", "hit_rate": f"{hr:.3f}" if hr is not None else "", "warmup_s": f"{warm:.1f}",
+                   "command": shown_command(s)}
+            try:
+                append_bench_row(row)
+                b["csv"] = BENCH_CSV
+            except OSError as e:
+                b["csv_error"] = str(e)
+            b.update(state="done", result=row, step="")
+            self.add_line(f"ui: quick benchmark: decode {row['decode_1']} / {row['decode_2']} tok/s, prefill {row['prefill_tokens']} tokens at {row['prefill']} tok/s")
+        except Exception as e:
+            b.update(state="failed", error=str(e) if p.poll() is None else "the server stopped during the benchmark", step="")
+
     def status(self):
         s = self.settings
         port = int(s.get("port") or 8080)
@@ -719,7 +814,7 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
+                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
                 "system": system_info()}
 
 
@@ -808,6 +903,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
+            if u.path == "/api/bench":
+                return self.send(200, {"csv": BENCH_CSV, "rows": read_bench_rows()})
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
                 return self.send(200, {"lines": [[n, l] for n, l in list(self.runner.log) if n > since]})
@@ -840,6 +937,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.save()
                 self.runner.start(s)
                 return self.send(200, self.runner.status())
+            if self.path == "/api/bench":
+                self.runner.start_bench()
+                return self.send(200, self.runner.bench)
             if self.path == "/api/stop":
                 threading.Thread(target=self.runner.stop, daemon=True).start()
                 return self.send(200, {"ok": True})

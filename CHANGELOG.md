@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Control page: **Quick benchmark** for the running server (warm-up, 2 x 256-token replies, one ~3.5k-token prompt; decode, prefill and the
+  cache hit rate), appended to `~/.cache/moe-cache/bench.csv` and shown next to earlier runs, so stock and moe-cache can be compared on your machine.
 - Control page, step 2: Connect OpenCode / Hermes with a preview and what was written; live VRAM on Windows with AMD/Intel GPUs (the launcher's
   GPU pick + registry); warnings from the log (cache shrank, plugin disabled, why llama-server stopped) on the page; measured speeds from RESULTS next
   to the verdict for the models measured before; quant from the GGUF header (Ollama); warm-session state in the Agents tab; `bin\moe-cache-ui.bat`

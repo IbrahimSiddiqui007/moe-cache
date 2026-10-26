@@ -106,6 +106,11 @@ class H(BaseHTTPRequestHandler):
         body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False}], "/v1/models": {"data": [{"id": "fake-moe"}]},
                 "/props": {"default_generation_settings": {"n_ctx": 65536}}}.get(self.path)
         self.send_response(200 if body is not None else 404); self.end_headers(); self.wfile.write(json.dumps(body).encode())
+    def do_POST(self):
+        q = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        assert self.path == "/completion" and q["temperature"] == 0 and q["seed"] == 42 and q["cache_prompt"] is False
+        t = {"predicted_n": q["n_predict"], "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
+        self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
@@ -158,6 +163,8 @@ check(srv.server_address[0] == "127.0.0.1", "listens on 127.0.0.1 only")
 
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+st, _ = req("/api/bench", {})
+check(st == 400, "no benchmark without a running model")
 st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact", "agent": True, "api_key": "sekrit-123"})
 check(st == 200, f"POST /api/start ({body[:120]})")
 st, _ = req("/api/start", {"model": small["path"], "port": port + 1})
@@ -205,6 +212,23 @@ st, body = req("/api/connect", {"agent": "hermes", "write": False})
 check(st == 200 and "hermes config set" in json.loads(body)["output"], "Preview Hermes: the 'hermes config set' commands")
 st, _ = req("/api/connect", {"agent": "bash"})
 check(st == 400, "only opencode and hermes")
+
+# quick benchmark: warm-up, 2 x 256 decode, one ~3.5k-token prefill (pc_speed.ps1's method), saved to the CSV in the profile dir
+st, body = req("/api/bench", {})
+check(st == 200 and json.loads(body)["state"] == "running", "POST /api/bench starts the benchmark")
+deadline = time.time() + 30
+while time.time() < deadline:
+    b = json.loads(req("/api/status")[1])["bench"]
+    if b["state"] != "running":
+        break
+    time.sleep(0.3)
+r = b.get("result", {})
+check(b["state"] == "done" and r.get("decode_tokens") == "256/256" and float(r["decode_mean"]) > 0, f"two decode runs of 256 tokens ({b.get('error') or r.get('decode_1')} / {r.get('decode_2')})")
+check(3000 <= int(r.get("prefill_tokens") or 0) <= 4500 and r.get("prefill") == "300.0", f"one prefill of about 3.5k tokens ({r.get('prefill_tokens')})")
+check(r.get("mode") == "moe-cache exact" and r.get("model") == "Small-MoE-Q4_K_M.gguf" and "sekrit" not in r.get("command", ""), "the row names model and mode, no key")
+rows = json.loads(req("/api/bench")[1])["rows"]
+check(len(rows) == 1 and rows[0]["decode_mean"] == r["decode_mean"] and os.path.isfile(os.path.join(ui.mc.CACHE_DIR, "bench.csv")),
+      "appended to bench.csv in the profile dir and read back")
 
 lines = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check(any("eval time" in l for l in lines) and not any(l.startswith("moe-cache-stats") for l in lines), "the log has the server lines, not the stats lines")

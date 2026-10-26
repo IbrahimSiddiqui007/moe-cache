@@ -114,6 +114,8 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <div style="margin-top:4px"><code id="cmd"></code></div>
     <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
     <pre id="dry" hidden></pre>
+    <div class="row" style="margin-top:10px; justify-content:flex-start"><button id="bench">Quick benchmark</button><span class="small" id="benchstate">warm-up, 2 replies of 256 tokens, one 3.5k-token prompt (about 1-3 minutes); saved to a CSV so you can compare stock and moe-cache runs</span></div>
+    <div id="benchres"></div>
     <details id="decisions" hidden style="margin-top:8px"><summary class="small">What the launcher decided</summary><ul class="why"></ul></details>
     <div id="warnings" hidden></div>
     <div class="err" id="err"></div>
@@ -265,6 +267,7 @@ async function poll() {
   if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>`; }
   else { ifr.hidden = true; ifr.dataset.u = ""; ifr.removeAttribute("src"); $("chatnote").textContent = running ? "Loading the model…" : "Start a model: llama-server's own chat page appears here."; }
   paintAgents(st);
+  paintBench(st);
   const dk = JSON.stringify(st.decisions || []), de = $("decisions");
   if (de.dataset.k != dk) {
     de.dataset.k = dk; de.hidden = !(st.decisions || []).length;
@@ -299,6 +302,24 @@ function warmHtml(st) {
     (files.length ? `<table style="margin-top:4px"><tr><th>Saved conversation</th><th class="num">Size</th><th>Saved</th></tr>${files.map(f =>
       `<tr><td><code>${esc(f.name)}</code></td><td class="num">${fmtGB(f.size)}</td><td>${new Date(f.t * 1000).toLocaleString()}</td></tr>`).join("")}</table>` : "");
 }
+const BENCH_COLS = [["time", "When"], ["model", "Model"], ["mode", "Mode"], ["ram_gb", "RAM GB"], ["decode_mean", "Decode tok/s"], ["prefill", "Prefill tok/s"], ["hit_rate", "Hit rate"]];
+function benchTable(rows, model) {
+  return `<table style="margin-top:6px"><tr>${BENCH_COLS.map(c => `<th${c[0] == "decode_mean" || c[0] == "prefill" ? ' class="num"' : ""}>${c[1]}</th>`).join("")}</tr>` +
+    rows.map(r => `<tr${r.model == model ? "" : ' class="small"'}>${BENCH_COLS.map(([k]) => `<td${k == "decode_mean" || k == "prefill" ? ' class="num"' : ""}>${esc(
+      k == "hit_rate" ? (r[k] ? (r[k] * 100).toFixed(1) + " %" : "–") : k == "decode_mean" ? `${r[k]} (${r.decode_1} / ${r.decode_2})` : k == "model" ? r[k].replace(/(-\d{5}-of-\d{5})?\.gguf$/, "") : r[k] ?? "")}</td>`).join("")}</tr>`).join("") + "</table>";
+}
+async function paintBench(st) {
+  const b = st.bench || {}, key = [b.state, b.step, st.state].join("|");
+  $("bench").disabled = st.state != "ready" || b.state == "running";
+  if ($("benchres").dataset.k == key) return; $("benchres").dataset.k = key;
+  if (b.state == "running") { $("benchstate").textContent = "running: " + b.step + "…"; return; }
+  if (b.state == "failed") { $("benchstate").innerHTML = `<span class="err">benchmark failed: ${esc(b.error)}</span>`; return; }
+  if (b.state != "done") return;
+  $("benchstate").textContent = "done" + (b.csv ? " · saved to " + b.csv : b.csv_error ? " · not saved: " + b.csv_error : "");
+  const j = await api("/api/bench");
+  const model = (b.result || {}).model;
+  $("benchres").innerHTML = `<div class="small" style="margin-top:6px">This run, and earlier runs from the CSV (same model in full colour), newest last:</div>` + benchTable(j.rows.slice(-8), model);
+}
 function paintAgents(st) {
   const el = $("t-agents");
   const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {})].join("|");
@@ -329,6 +350,7 @@ $("start").onclick = async () => {
   try { await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll(); } catch (e) { $("err").textContent = e.message; }
 };
 $("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
+$("bench").onclick = async () => { try { await api("/api/bench", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
 $("copycmd").onclick = () => navigator.clipboard && navigator.clipboard.writeText($("cmd").textContent);
 $("showcmd").onclick = async () => {
   const d = $("dry"); d.hidden = false; d.textContent = "asking the launcher (--dry-run)…";
