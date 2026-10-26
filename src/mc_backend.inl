@@ -279,6 +279,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         c->gpu_failed = true;
         return false;
     }
+    // idea I2 kill check (MOE_CACHE_SEG_TIMES=1): upload vs compute time per block; overlap can only pay if compute is a real share of the block
+    static const bool seg_times = getenv("MOE_CACHE_SEG_TIMES") != nullptr;
+    const auto t_up0 = std::chrono::steady_clock::now();
     std::vector<uint8_t> pack;
     for (auto & u : uploads) {
         const ggml_tensor * t = u.first;
@@ -306,15 +309,33 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             ggml_backend_tensor_set(d, pack.data(), 0, ggml_nbytes(d));
         }
     }
+    if (seg_times) {
+        ggml_backend_synchronize(c->gpu);
+    }
+    const auto t_c0 = std::chrono::steady_clock::now();
     const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
     ggml_backend_synchronize(c->gpu);
     if (st != GGML_STATUS_SUCCESS) {
         ggml_free(ctx);
         return false;
     }
+    const auto t_g0 = std::chrono::steady_clock::now();
     ggml_backend_tensor_get(gout, out->data, 0, ggml_nbytes(out));
     ggml_free(ctx);
     s.gpu_segments++;
+    if (seg_times) {
+        static double up_ms = 0, comp_ms = 0, get_ms = 0;
+        static uint64_t n = 0;
+        const auto t_end = std::chrono::steady_clock::now();
+        up_ms += std::chrono::duration<double, std::milli>(t_c0 - t_up0).count();
+        comp_ms += std::chrono::duration<double, std::milli>(t_g0 - t_c0).count();
+        get_ms += std::chrono::duration<double, std::milli>(t_end - t_g0).count();
+        if ((++n & 63) == 0) {
+            const double tot = up_ms + comp_ms + get_ms;
+            fprintf(stderr, "moe-cache: long-prompt blocks: %llu, upload %.0f ms (%.0f %%), compute %.0f ms (%.0f %%), read back %.0f ms\n", (unsigned long long) n,
+                    up_ms, 100 * up_ms / tot, comp_ms, 100 * comp_ms / tot, get_ms);
+        }
+    }
     return true;
 }
 

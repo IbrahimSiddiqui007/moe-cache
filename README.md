@@ -99,6 +99,7 @@ Re-measured on 2026-10-15 with the current code where the model is still on the 
 |---|---|---|---|
 | Qwen3.6-35B (21.7 GB), 12 GB RAM, 2-5k token prompts | 132.8 tok/s (2.4k prompt) | **136.5 tok/s** first prompt, **186 to 206 tok/s** on the next ones | v0.2.3.5 (§46) |
 | Qwen3.8-Flash-Next IQ2_XS (68 GB), 24 GB RAM, 2-5k token prompts | 65.9 tok/s (2.4k prompt) | **90 to 103 tok/s** | stock v0.2.3.5 (§46), moe-cache v0.2.3.3 (§38) |
+| Qwen3.8-Flash-Next IQ2_XS (68 GB), 24 GB RAM, context 8192, 2-6k token prompts | - | **93 to 135 tok/s** (two runs) | experimental 2026-10-26, with the tuner fix (§52) |
 
 For long prompts llama.cpp already computes the experts on the GPU, so the prefill gain is smaller than the decode gain; it grows with how far the model
 exceeds RAM. Bigger prompt chunks on a 12-16 GB card are the next step (BIGGER_MACHINES B13).

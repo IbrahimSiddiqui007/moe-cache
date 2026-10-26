@@ -12,8 +12,8 @@ python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write 
 | context 65536 (unless `--ctx`) | agents send 5-20k tokens of tools and instructions before the conversation starts; Hermes Agent refuses less than 64,000 |
 | `--jinja` | tool calls use the model's own chat template (already the default in current llama.cpp) |
 | `--alias NAME` (the file name) | the name agents see in `/v1/models`; pass `-- --alias other` to choose it |
-| at most 8 context checkpoints per slot, 512 MiB kept free for them | models with recurrent layers (Qwen3-Next, Qwen3.5/3.6) keep a copy of that state per checkpoint in RAM (about 60 MiB each on Qwen3.6-35B), outside the expert cache |
-| warm sessions (`--no-warm` turns them off) | the longest idle conversation is saved to disk (with its checkpoints) 20 s after it changes and restored into slot 0 at the next start |
+| at most 8 context checkpoints per slot, 1 GiB kept free for them and for restored conversations | models with recurrent layers (Qwen3-Next, Qwen3.5/3.6) keep a copy of that state per checkpoint in RAM (about 60 MiB each on Qwen3.6-35B), outside the expert cache |
+| warm sessions (`--no-warm` turns them off) | every idle conversation of 2k+ tokens is saved to disk (with its checkpoints) 20 s after it changes, one file per slot; the two longest are restored at the next start, so each agent finds its own |
 | prints the base URL and both config blocks once the server is ready | |
 | `--api-key KEY` | required when other machines can reach the server |
 
@@ -29,7 +29,12 @@ with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
 | session 1, turn 1 (OpenCode's tools and instructions) | 7,438 | 45.6 s (163 tok/s) |
 | session 1, turns 2-3 | 79 / 20 | 3.4 s / 0.8 s |
 | session 2 (same server), turn 1 | 29 | 0.7 s |
-| whole session 1 / session 2 | | 78 s / 30 s |
+| after a server restart, warm session restored (0.2 s), turn 1 | 1,028 | 8.5 s |
+| Hermes Agent (file tools only), turn 1 / turn 2 | 3,687 / 76 | 23.0 s / 2.9 s |
+| whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | 78 s / 30 s / 39 s / 55 s |
+
+Details: [RESULTS.md section 51](RESULTS.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.
 

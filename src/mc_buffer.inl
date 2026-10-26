@@ -218,6 +218,24 @@ void gpu_cache_ensure(const void * p, size_t size) {
     for (size_t e = e0; e <= e1; e++) {
         cnt[e] = 1;
     }
+    // idea I28 kill check (MOE_CACHE_GPU_ENSURE_STATS=1): how many of the experts llama.cpp's GPU cache uploads are not in RAM at that moment.
+    // Near zero would let a build that loads the plugin by path (Windows, official releases) keep --gpu-cache with a cheap fallback.
+    static const bool ens_stats = getenv("MOE_CACHE_GPU_ENSURE_STATS") != nullptr;
+    if (ens_stats) {
+        static std::atomic<uint64_t> calls{0}, wanted{0}, absent{0};
+        uint64_t miss = 0;
+        {
+            std::lock_guard<std::mutex> lk(s.mu);
+            for (size_t e = e0; e <= e1; e++) {
+                miss += s.nodes[ti.node0 + (int) e].resident ? 0 : 1;
+            }
+        }
+        const uint64_t c = ++calls, w = (wanted += e1 - e0 + 1), m = (absent += miss);
+        if ((c & 1023) == 0) {
+            fprintf(stderr, "moe-cache: gpu-cache uploads: %llu calls, %llu experts, %llu not in RAM (%.2f %%)\n", (unsigned long long) c,
+                    (unsigned long long) w, (unsigned long long) m, w ? 100.0 * m / w : 0.0);
+        }
+    }
     s.prepare_group(std::vector<int>{ idx }, cnt, false);
 }
 

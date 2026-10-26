@@ -77,7 +77,7 @@ check(L.parse_core_records(core(1, 1, group=1)) == [], "WINPIN: processor group 
 
 # agent mode (AG1, I29): what --agent adds to the llama-server command, and the config snippets
 ag = dry("--agent")
-for want in ("-c 65536", "--jinja", "--ctx-checkpoints 8", "--alias ", "--slot-save-path ", "MOE_CACHE_HOST_RESERVE_MIB=512"):
+for want in ("-c 65536", "--jinja", "--ctx-checkpoints 8", "--alias ", "--slot-save-path ", "MOE_CACHE_HOST_RESERVE_MIB=1024"):
     check(want in ag, f"--agent: the command has '{want}'")
 check("-c 32768" in dry("--agent", "--ctx", "32768"), "--agent --ctx 32768 keeps the given context")
 check("--slot-save-path" not in dry("--agent", "--no-warm"), "--agent --no-warm: no warm-session slot directory")

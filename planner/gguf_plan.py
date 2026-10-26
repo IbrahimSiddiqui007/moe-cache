@@ -157,8 +157,10 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     # all leave that room (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 18-24 tok/s instead
     # of 50-60). The block needs 923 MiB for a 704 MiB layer at -ub 1024 (weights plus the batch's intermediate results), so 1.35x plus headroom
     # (measured at -ub 2048: 1107 MiB for the same layer, 1.57x: the batch's intermediate results grow with the micro-batch)
+    # plus the 256 MiB the plugin itself requires free before it allocates a block (gpu_segment's headroom check): without it the reserve had 24 MiB of
+    # slack on Flash-Next at -ub 2048, and at ctx 8192 the block found 423 MiB free where it needed 455, so prompts fell back to the CPU (~20 tok/s)
     def block_for(u):
-        return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + 160 * 1048576) if lay["expert_bytes_per_layer"] else 0
+        return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
     best = None
     for ub in (2048, 1024, 512):
         buf = compute_buffer_mib(ctx, ub)
@@ -183,7 +185,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     if want_cache and cache_mib >= 1536 and cache_mib * 1048576 >= 0.04 * expert_total:
         n_cpu_moe = 999
         why.append(f"GPU expert cache of {cache_mib} MiB ({100 * cache_mib * 1048576 / expert_total:.0f} % of the experts; "
-                   f"{int(1.35 * lay['expert_bytes_per_layer'] // 1048576) + 160} MiB kept free for the long-prompt GPU block)")
+                   f"{int(block // 1048576)} MiB kept free for the long-prompt GPU block)")
     else:
         cache_mib = 0
         gpu_layers = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0

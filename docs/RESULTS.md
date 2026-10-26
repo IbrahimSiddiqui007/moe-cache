@@ -1272,3 +1272,65 @@ Bugs found there (all fixed in cffa6f9):
 
 Machine notes (not moe-cache bugs): the `render` group was missing for Vulkan; a KDE bluedevil / obexd D-Bus loop kept the idle load near 2 (fixed for that
 session by unloading bluedevil); a NoMachine desktop session alone kept the load at 2.6 and 75 C, above the clean-run gate.
+
+## 51. Coding agents on moe-cache: OpenCode and Hermes Agent, agent mode and warm sessions (2026-10-26, laptop)
+
+Setup: RTX 4060 8 GB, Qwen3.6-35B-A3B Q4_K_M (21.7 GB) under a hard 16 GB cgroup limit (no swap), launcher `--agent --ram 14` (plugin, 9 GiB cache,
+38 layers of experts on the CPU, `-ub 1024`, context 65536, 4 slots sharing it), llama.cpp 23b0202a1. OpenCode 1.19.4 and Hermes Agent v0.22.5 in
+one-shot mode, task "fix the bug in ./calc.py". Not a timed benchmark (the agents run in parallel with the server): the numbers are llama-server's
+own per-request timings.
+
+| Session | First request: new prompt tokens / time | Later turns | Whole session | Result |
+|---|---|---|---|---|
+| OpenCode 1, cold server | 7,438 / 45.6 s (163 tok/s) | 79 / 3.4 s, 20 / 0.8 s (prefix reused) | 78 s | file fixed |
+| OpenCode 2, same server | **29 / 0.7 s** (preamble reused from the checkpoint at the last user message) | 80 / 3.4 s, 20 / 0.8 s | 30 s | file fixed |
+| OpenCode A, cold (warm-session cycle) | 7,438 / 44.6 s | - | - | model asked for /calc.py (root), auto-rejected; preamble still processed |
+| OpenCode B, after a server restart with the saved conversation restored (0.2 s) | **1,028 / 8.5 s** (rolled back to the checkpoint 4 + n_ubatch tokens before A's prompt end) | 90 / 3.5 s | 39 s | file fixed |
+| Hermes, file tools only | 3,687 / 23.0 s | 76 / 2.9 s, 264 / 4.7 s | 55 s | file fixed |
+
+Findings:
+- Tool calls work through the plugin with the models' own templates (`--jinja`, the default at this commit); one raw tool call: correct name and
+  arguments, 17 tok/s.
+- The first turn is what agents wait for; llama-server already reuses every later turn and, for a new session on the same server, the preamble.
+  Warm sessions (idea I29) carry that across restarts: 5.3x faster first turn. One saved file per model and context: the last agent used wins
+  (Hermes's 4,113-token conversation replaced OpenCode's 7,497).
+- Hybrid models keep up to 8 checkpoints per slot here (about 60 MiB each on Qwen3.6); the plugin's measured-memory tuner absorbs them, with
+  512 MiB kept free. Hard limit never reached; no out-of-memory events.
+- OpenCode's parallel title request runs in another slot without disturbing the main one, but both decode slower while they overlap (8-11 tok/s
+  instead of 17).
+- `opencode run` waits on an open stdin (a script must give it `< /dev/null`).
+
+## 52. Long-prompt block fell back to the CPU at context 8192 (tuner fix), Flash-Next prefill at 8192 (PF8K), kill checks I2 / I28 / B1 (2026-10-26, laptop)
+
+**Bug found and fixed:** with the launcher's defaults at `--ctx 8192` (no GPU cache: `-ub 2048`, 2 expert layers on the GPU) the long-prompt GPU block
+found 423 MiB of VRAM free where it needed 455 MiB (`moe-cache: a long-prompt block needs ...: it stays on the CPU`), so most blocks ran on the CPU and
+Flash-Next prefill fell to about 20 tok/s. Cause: the tuner kept 1.6 x 704 + 160 MiB free for the block, but the plugin also requires 256 MiB of
+headroom before it allocates one (gpu_segment), leaving 24 MiB of slack that CUDA's own buffers at ctx 8192 used up. Fix (planner/gguf_plan.py): the
+block reserve includes those 256 MiB. Effect: one expert layer fewer on the GPU (`--n-cpu-moe 47` instead of 46 on Flash-Next at 4k/8k context).
+
+| Flash-Next IQ2_XS, 24 GB limit, ctx 8192, launcher defaults after the fix, clean-run gate | 2.4k prompt | 1.9k prompt | 5.0k prompt | 5.4k prompt | decode (4 x 48) |
+|---|---|---|---|---|---|
+| run a | 100.5 | 131.4 | 123.9 | 134.9 | 11.8, 10.0, 11.7, 12.0 |
+| run b | 93.2 | 115.8 | 105.7 | 112.6 | 11.1, 9.2, 11.3, 11.9 |
+
+No block stayed on the CPU in either run. Runs a and b differ by about 12 % (the known +-10 % band); decode at ctx 8192 is 9-12 tok/s (12.4-13 at
+ctx 4096, section 44).
+
+**I2 (overlap upload with compute in the long-prompt block): killed on the laptop.** Timers (`MOE_CACHE_SEG_TIMES=1`), 128 blocks at -ub 2048: upload
+70 %, compute 21 %, read back 9 % of block time. Under the 25 % line: overlap could hide at most ~21 % of block time. Re-check on a PCIe 5 card.
+
+**I28 (`--gpu-cache` with path loading): cheap exact fallback killed.** Flash-Next, 22 GB, `--gpu-cache auto` (2047 MiB), 8 x 48 tokens, counter
+`MOE_CACHE_GPU_ENSURE_STATS=1`: 13,140 of 289,053 experts that llama.cpp's GPU cache uploaded (4.55 %) were not in RAM, equal to the plugin's miss rate
+(95.5 % hits; every pick goes through the GPU cache in this mode). A "resident-or-skip" fallback would skip 4.6 % of picks (approximate). Decode 13.30
+tok/s at 22 GB. Exact `--gpu-cache` for Windows / official builds needs an upstream hook.
+
+**B1 (plugin-owned GPU tier) simulation gate at 12-14 GiB: passed against whole layers, marginal against an LRU cache.** work/hottier/hotsim12.py with
+12/14 GiB, Qwen3.6 traces (22 sessions), the simulator's cost model for both sides: at 12 GiB a warm LRU tier (admit >= 2, <= 4 copies per token) 2.64x
+all-CPU, whole layers 1.73x (+53 %; about +19 % after the model's 28 % under-rating of whole layers seen at 8 GiB), plain LRU (admit >= 3) 2.31x
+(+14 %). llama.cpp's own GPU cache is close to plain LRU, so its measured curve on a 16 GB card (BIGGER_MACHINES / R1) decides B1.
+
+**I34 (one warm file per slot, the two longest restored into their own slots), Qwen3.6, 16 GB limit:** OpenCode then Hermes on one server (both files
+fixed), saves of slot 1 (4,131 tokens, 546 MB, 0.2 s) and slot 2 (7,729 tokens, 685 MB, 1.0 s), restart, both restored (0.3 s, 0.2 s), each agent's
+next session picked its own slot by prompt similarity: first request 1,028 tokens in 9.0 s (OpenCode, cold 7,438 in ~45 s) and 1,028 in 6.2 s (Hermes,
+cold 3,687 in 23 s); whole sessions 79 -> 46 s and 54 -> 35 s; all four files fixed.
+

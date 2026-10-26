@@ -413,10 +413,10 @@ SERVER_HELP = """\
 --agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
            (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
            turns is llama-server's own: each slot keeps its conversation, and models with recurrent layers (Qwen3-Next, Qwen3.5/3.6) roll back to a
-           checkpoint made at the last user message and just before the end of each prompt (at most 8 per slot here, 512 MiB kept free for them).
+           checkpoint made at the last user message and just before the end of each prompt (at most 8 per slot here; 1 GiB kept free for them and for restored conversations).
            moe_cache.py connect hermes|opencode [--write] sets the agent up for a running server
-           Warm sessions (idea I29): the longest idle conversation (2k+ tokens, with its checkpoints) is saved to disk 20 s after it changes and
-           restored at the next start, so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
+           Warm sessions (ideas I29, I34): every idle conversation of 2k+ tokens (with its checkpoints) is saved to disk 20 s after it changes,
+           one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
 --api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
@@ -624,9 +624,9 @@ def server(argv):
         except Exception:
             pass
     if cram is not None and re.fullmatch(r"[0-9-]+", cram):
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (512 if a.agent else 0))))
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
     elif a.agent:
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", "512"))     # told to the plugin directly instead of it parsing our command line
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", "1024"))     # told to the plugin directly instead of it parsing our command line
     if stock:
         say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
             "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
@@ -688,27 +688,30 @@ def server(argv):
     return run_child(cmd, dict(os.environ, **dict(env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
 
 
-def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2048):
-    """Idea I29: restore the saved conversation into slot 0 at start; afterwards save the longest idle slot (with its context checkpoints) once it has
-    been unchanged for idle_polls polls. Saves go to a temporary name first, so a stop during a save never leaves a broken file."""
+def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2048, keep=2):
+    """Ideas I29 / I34: at start, restore the saved conversations (one file per slot, at most `keep`, longest first) into the slots they came from; afterwards
+    save every idle slot of min_tokens or more (with its context checkpoints) once it has been unchanged for idle_polls polls. Each agent keeps
+    its own slot (llama-server picks the slot whose prompt matches best), so Hermes and OpenCode both start warm after a restart. Saves go to a
+    temporary name first, so a stop during a save never leaves a broken file. When the shared KV pool fills, llama-server clears idle slots itself."""
     url = f"http://127.0.0.1:{port}"
-    fname, tmp = tag + ".bin", tag + ".new.bin"
     for _ in range(3600):
         if healthy(port, api_key):
             break
         time.sleep(1)
     else:
         return
-    if os.path.isfile(os.path.join(slotdir, fname)):
+    files = [f for f in glob.glob(os.path.join(slotdir, tag + "-s*.bin")) if re.search(r"-s(\d+)\.bin$", f) and not f.endswith(".new.bin")]
+    for f in sorted(files, key=os.path.getsize, reverse=True)[:keep]:
+        to = int(re.search(r"-s(\d+)\.bin$", f).group(1))      # back into the slot it came from, so later saves replace this file
         t0 = time.time()
-        st, body = http(f"{url}/slots/0?action=restore", {"filename": fname}, api_key, timeout=600)
+        st, body = http(f"{url}/slots/{to}?action=restore", {"filename": os.path.basename(f)}, api_key, timeout=600)
         try:
             n = json.loads(body).get("n_restored") if st == 200 else None
         except ValueError:
             n = None
-        say(f"moe-cache: warm session: restored the last agent conversation ({n} tokens) into slot 0 in {time.time() - t0:.1f} s" if st == 200
-            else f"moe-cache: warm session: could not restore {fname} (HTTP {st}): {body[:160]}", err=True)
-    saved, seen = None, {}
+        say(f"moe-cache: warm session: restored a saved agent conversation ({n} tokens) into slot {to} in {time.time() - t0:.1f} s" if st == 200
+            else f"moe-cache: warm session: could not restore {os.path.basename(f)} (HTTP {st}): {body[:160]}", err=True)
+    saved, seen = {}, {}
     while True:
         time.sleep(poll)
         st, body = http(f"{url}/slots", api_key=api_key)
@@ -720,27 +723,30 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             slots = json.loads(body)
         except ValueError:
             continue
-        idle = [x for x in slots if not x.get("is_processing") and (x.get("n_prompt_tokens") or 0) >= min_tokens]
-        if any(x.get("is_processing") for x in slots) or not idle:
+        if any(x.get("is_processing") for x in slots):
             seen = {}
             continue
-        best = max(idle, key=lambda x: x.get("n_prompt_tokens") or 0)
-        key = (best["id"], best.get("id_task"), best.get("n_prompt_tokens"))
-        seen[key] = seen.get(key, 0) + 1
-        if key == saved or seen[key] < idle_polls:
-            continue
-        t0 = time.time()
-        st, body = http(f"{url}/slots/{best['id']}?action=save", {"filename": tmp}, api_key, timeout=600)
-        if st == 200:
+        for x in slots:
+            if (x.get("n_prompt_tokens") or 0) < min_tokens:
+                continue
+            sid = x["id"]
+            key = (x.get("id_task"), x.get("n_prompt_tokens"))
+            seen[(sid, key)] = seen.get((sid, key), 0) + 1
+            if saved.get(sid) == key or seen[(sid, key)] < idle_polls:
+                continue
+            fname, tmp = f"{tag}-s{sid}.bin", f"{tag}-s{sid}.new.bin"
+            t0 = time.time()
+            st, body = http(f"{url}/slots/{sid}?action=save", {"filename": tmp}, api_key, timeout=600)
+            saved[sid] = key
+            if st != 200:
+                say(f"moe-cache: warm session: save failed (HTTP {st}): {body[:160]}", err=True)
+                continue
             try:
                 os.replace(os.path.join(slotdir, tmp), os.path.join(slotdir, fname))
-                saved = key
-                say(f"moe-cache: warm session: saved slot {best['id']} ({best.get('n_prompt_tokens')} tokens, "
+                say(f"moe-cache: warm session: saved slot {sid} ({x.get('n_prompt_tokens')} tokens, "
                     f"{os.path.getsize(os.path.join(slotdir, fname)) / 1e6:.0f} MB) in {time.time() - t0:.1f} s", err=True)
             except OSError as e:
-                say(f"moe-cache: warm session: save failed ({e})", err=True); saved = key
-        else:
-            say(f"moe-cache: warm session: save failed (HTTP {st}): {body[:160]}", err=True); saved = key
+                say(f"moe-cache: warm session: save failed ({e})", err=True)
 
 
 def server_info(url, api_key=None):
