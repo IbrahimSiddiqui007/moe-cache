@@ -1732,13 +1732,18 @@ before and after (`MOE_CACHE_STATS_SIGNAL=1`, named event) and subtracted. PRELI
 | `ns_cpu` (includes waiting for loads) / `ns_prep` / `ns_total` | 26.7 s / 3.9 s / 30.6 s | - |
 | `exec_ops` | 36,864 (144 per token) | - |
 
-| Run (122B, plugin) | decode tok/s |
-|---|---|
-| default | 7.02 |
-| `MOE_CACHE_EXEC=0` | 5.84 |
-| more readers (`MOE_CACHE_EXEC_READERS` 8 / 16), lookahead | - |
-| `MOE_CACHE_SIZE_GIB=14` (smaller cache by hand) | - |
-| `--ram 18` | - |
+Second series, same model and request, cache budget about 11 GiB (a smaller cache than the run above; PRELIMINARY):
+
+| Run (122B, plugin, cold) | decode tok/s | decode hit rate | read | `ns_read` |
+|---|---|---|---|---|
+| default (4 readers) | 5.97 | 84.2 % | 44.3 GB | 85 s |
+| `MOE_CACHE_EXEC_READERS=8` | 5.86 | 83.9 % | 45.3 GB | 120 s |
+| `MOE_CACHE_EXEC_READERS=16` | 5.81 | 83.7 % | 45.7 GB | 135 s |
+| `MOE_CACHE_LOOKAHEAD=2` | 6.35 | 93.1 % | 54.5 GB | 58 s |
+| `MOE_CACHE_SIZE_GIB=14`, `--ram 18` | - | - | - | - |
+
+More readers do not help: they only queue (random reads of about 1 MB, unbuffered, deliver about 1.2 GB/s, against about 2.4 GB/s for sequential reads), and `ns_read` grows
+with the number of readers. Lookahead gives +6 % decode for 23 % more bytes read. The lever that is left is the cache size (I38, buffered reads: next).
 
 Reading, against the three causes in the plan:
 - **Executor overhead (cause 3): no.** Turning the executor off is slower (5.84), and `ns_prep` is only 3.9 s of the 30.6 s.
@@ -1750,7 +1755,7 @@ Reading, against the three causes in the plan:
 - The plugin's dot products are not the problem (the same zen4 functions as stock, 32-row chunks over 16 threads, from the code reading in the shared note
   `qwen122b_windows_gap.md`). Still to test: more readers and lookahead (above), and buffered reads (I38).
 
-Conclusion (preliminary): the 122B gap is read cost for a 12-13 % miss rate through unbuffered reads, not compute.
+Conclusion (preliminary): the 122B gap is read cost for a 12-16 % miss rate through unbuffered reads, not compute; more readers do not help, a bigger cache (or cheaper reads, I38) would.
 
 ### I40: all experts on the CPU vs a RAM-budgeted number of GPU expert layers (Windows + AMD)
 
@@ -1847,13 +1852,15 @@ Kill rule R3: hybrid under +10 % decode over exact. Verdict: -
 
 ### Task 4b: Hermes Agent on Windows through moe-cache (with the API key), and WP3 (`--ram` job memory limit)
 
+OpenCode is only installed as a desktop app on the PC (no CLI); installing the CLI through npm needs the owner's OK, so OpenCode is not tested on Windows.
+
 | Check | Result |
 |---|---|
-| `--agent` server starts on the PC; the launcher prints that a key is in use and where it is stored | - |
-| A request without the key gets 401, with `moe_cache.py key` as Bearer 200 | - |
-| `connect hermes --write` finds the stored key (Hermes config on Windows) | - |
-| Hermes one-shot task ("fix the bug in calc.py"): first turn tokens / time, whole session | - |
+| `--agent` server starts on the PC (`moe_cache.py server qwen3.6 --agent --ram 20 --always-plugin`); the launcher prints that a key is in use and where it is stored | yes |
+| A request without the key gets 401, with `moe_cache.py key` as Bearer 200 | yes: 401 / 200 |
+| `connect hermes --write` finds the stored key (Hermes config on Windows) | yes: the key reached Hermes Agent v0.22.5's `config.yaml` (not printed); the owner's Hermes config was restored afterwards |
+| Hermes one-shot task (edit a scratch file): first turn tokens / time, whole session | task done correctly in 81 s (whole session); first-turn tokens not recorded |
 | Warm session after a restart: first turn tokens / time | - |
 | Flash-Next with `--ctx-checkpoints 0`: cost for an agent that edits history | - |
-| WP3: `--ram 20` sets a job memory limit; the log line; the server stays under it | - |
+| WP3: `--ram 20` sets a job memory limit; the log line; the server stays under it | log line "Windows job memory limit 20.0 GB on llama-server"; the cache was sized from it (start budget 12.5 GiB, margin 4 GiB). "Stays under it" under load: not measured |
 | WP3: a run that hits the limit behaves like the Linux `--ram` (message, no crash) | - |
