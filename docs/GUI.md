@@ -28,7 +28,11 @@ Ctrl-C stops the page and any server it started.
 | `X-Frame-Options: DENY` and `Content-Security-Policy` with `frame-ancestors 'none'` | clickjacking (another site framing the page) |
 | only listed models can be planned or started; numbers are range-checked; the API key goes to the launcher in `LLAMA_API_KEY`, never on a command line, and is masked in what the page shows | misuse of the API |
 
-llama-server itself (port 8080) has no API key unless you set one: any program of any user on this machine can use it while it runs.
+llama-server itself (port 8080): in **Agent mode** it gets the launcher's stable per-user API key (the owner's decision C,
+handover/DECISION_LLAMA_SERVER_KEY_20261026.md); the page asks the launcher for it (`moe_cache.py key`), uses it for its own calls, writes it into
+the agent's config with **Connect**, and shows **API key in use: ••••last 4** with a **Copy key** button (the key itself is fetched only for the
+copy; never in an address, the log or the status). llama-server's own chat page asks for the key once per browser: paste it there. A key typed in
+Settings wins over the launcher's. Plain chat servers have no key unless you type one.
 
 ## The four panels
 
@@ -37,7 +41,17 @@ llama-server itself (port 8080) has no API key unless you set one: any program o
 | **1 Model** | every `.gguf` in the model folders (`~/models`, on Windows also `C:\models`, plus folders you add; and Ollama's model store when present), with size, quant (from the file name, else from the GGUF header) and the planner's verdict: **fits in RAM: stock llama-server**, **does not fit: moe-cache exact**, **all experts fit on the GPU**; the selected model lists the reasons (on Windows with an AMD GPU also the launcher's AMD rules: all experts on the CPU for a model bigger than RAM, `--ctx-checkpoints 0` for Flash-Next) and, for the models measured before, the measured speeds on the test laptop (stock and moe-cache, with the RESULTS section) | pick a model, add a folder, rescan |
 | **2 Settings** | RAM budget (`--ram`, empty = available RAM), VRAM the planner may use (`--vram`, detected), context 8k / 32k / 64k, mode **Exact** (default, identical output) / **Fast** (`--fast`) / **Hybrid** (`--hybrid`, experimental), **Agent mode** (`--agent`), port, API key | |
 | **3 Status** | decode tok/s (live while a reply is generated, else the last request), prefill tok/s of the last request, cache hit rate (last 2 s), SSD reads MB/s, expert cache used / budget (or llama-server's RAM when it runs stock), VRAM used, the mode the launcher chose, the launcher command; 2-minute charts of tok/s and hit rate; **What the launcher decided** (its own lines before it started llama-server: stock or plugin, GPU layers, micro-batch, pinning, and on Windows the GPU it found, the job memory limit and the AMD rules, highlighted); **warnings** from the log (e.g. the expert cache shrank because llama-server grew, the plugin disabled itself, why llama-server stopped), each once with a count | **Start**, **Stop**, copy the command, show the full llama-server command (`--dry-run`), **Quick benchmark** |
-| **4 Chat / Agents / Log** | **Chat**: llama-server's own chat page in a frame; **Agents**: base URL, model name and context; per agent **Preview** (what would be written) and **Connect OpenCode / Hermes** (`moe_cache.py connect … --write`), which then shows the file and the block now in it (the API key is passed in the environment and never shown); in Agent mode also the **warm sessions**: conversations the launcher saved or restored in this run and the saved files it restores at the next start; **Log**: the last 500 lines, plugin lines highlighted | |
+| **4 Chat / Agents / Log** | **Chat**: llama-server's own chat page in a frame; **Agents**: base URL, model name and context; per agent **Preview** (what would be written) and **Connect OpenCode / Hermes** (`moe_cache.py connect … --write`), which then shows the file and the block now in it (the API key is passed in the environment and never shown); and **Agent sessions** (below); **Log**: the last 500 lines, plugin lines highlighted | |
+
+## Agent sessions
+
+In Agent mode the launcher saves every long conversation when it is idle (one file per slot in `~/.cache/moe-cache/slots/agent/`, named
+`<model>-c<context>[-<KV types>]-s<slot>.bin`, its context checkpoints in the same file) and restores the two largest of the same model and
+settings at the next start. The Agents tab lists them all: model, context, KV type, slot, tokens (read from the file's header), size, when it was
+saved, which agent it belongs to (guessed from the start of the conversation while its model runs: OpenCode, Hermes, ...), and whether this server
+restored it at start; plus the server's live slots (through `/slots`, with the API key). **Move to Trash** sends a saved conversation to the
+Trash / Recycle Bin (never a hard delete; the running server may save it again from memory). **Don't restore saved agent sessions** in Settings
+starts the server with `--no-warm` (then nothing is restored or saved).
 
 ## Quick benchmark
 
@@ -46,8 +60,19 @@ For the running server: one warm-up request, two replies of 256 tokens (`ignore_
 and, with the plugin, the cache hit rate during the two replies, and appends one row to `~/.cache/moe-cache/bench.csv` (Windows:
 `%USERPROFILE%\.cache\moe-cache\bench.csv`) with the model, mode, RAM budget, GPU and the launcher command. To compare stock and moe-cache on your
 machine: run it once with a RAM budget the model fits in (the launcher runs stock) and once with a smaller one or `--fast` (the plugin), then read
-both rows in the table under the button. A model bigger than the memory runs stock very slowly: on Linux give the stock run a memory limit and
-start from a cold file cache, as the README's "Conditions" say, or the stock number is too good.
+both rows in the table under the button.
+
+**Cold start (fair).** A model read once stays in the operating system's file cache, which makes stock llama-server look faster on the next start
+than on a first one (the plugin reads experts unbuffered and gains less from it). Tick **Cold start** and the benchmark first stops the server,
+pushes the model out of the file cache, starts it again with the same settings (the time until it is ready is recorded) and then measures; the
+CSV row says `cold` or `warm` and how the flush went.
+
+| System | How | Notes |
+|---|---|---|
+| Linux | `posix_fadvise(DONTNEED)` on the model's files, no root needed; it reports the cached share before and after (mincore) | refuses while another program maps the model (it would slow that program down); a file on tmpfs cannot be dropped and is reported as such |
+| Windows | `tools\win_flush_cache.ps1`: reads other big files (more than the RAM in total) so the cache drops the model; reads only, writes nothing | pick the folders with the other files (default: your model folders; the model itself is skipped); too little data is reported as a partial flush |
+
+For a fair stock number on Linux also run it under a memory limit when the model is bigger than the RAM, as the README's "Conditions" say.
 
 ## Where the verdict comes from
 
