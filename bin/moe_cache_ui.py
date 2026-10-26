@@ -49,6 +49,35 @@ def quant_of(name):
     return m[-1].upper() if m else ""
 
 
+# llama.cpp's llama_ftype numbers (general.file_type) -> the usual quant names
+FILE_TYPES = {0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0", 9: "Q5_1", 10: "Q2_K", 11: "Q3_K_S", 12: "Q3_K_M", 13: "Q3_K_L",
+              14: "Q4_K_S", 15: "Q4_K_M", 16: "Q5_K_S", 17: "Q5_K_M", 18: "Q6_K", 19: "IQ2_XXS", 20: "IQ2_XS", 21: "Q2_K_S", 22: "IQ3_XS",
+              23: "IQ3_XXS", 24: "IQ1_S", 25: "IQ4_NL", 26: "IQ3_S", 27: "IQ3_M", 28: "IQ2_S", 29: "IQ2_M", 30: "IQ4_XS", 31: "IQ1_M", 32: "BF16",
+              36: "TQ1_0", 37: "TQ2_0", 38: "MXFP4_MOE"}
+
+
+def header_quant(path):
+    """The quant named in the GGUF header (general.file_type), for files whose name says nothing (Ollama's blobs); "" when unknown."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        import struct
+        from gguf_plan import _read_str, _skip_value, _FMT
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return ""
+            f.read(4)
+            _, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                key = _read_str(f)
+                t = struct.unpack("<I", f.read(4))[0]
+                if key == "general.file_type" and t in (4, 5):
+                    return FILE_TYPES.get(struct.unpack(_FMT[t], f.read(4))[0], "")
+                _skip_value(f, t)
+    except Exception:
+        pass
+    return ""
+
+
 def size_of(path):
     try:
         return sum(os.path.getsize(p) for p in mc.model_parts(path))
@@ -91,7 +120,7 @@ def scan_ollama(root):
                 if os.path.isfile(p):
                     parts = man.replace(os.sep, "/").split("/")
                     name = parts[-2] + ":" + parts[-1]
-                    out.append({"path": p, "name": name, "size": os.path.getsize(p), "quant": "", "source": "Ollama (" + root + ")"})
+                    out.append({"path": p, "name": name, "size": os.path.getsize(p), "quant": header_quant(p), "source": "Ollama (" + root + ")"})
     return out
 
 
@@ -218,6 +247,33 @@ def run_tuner(path, ctx, vram, kv_q8):
     return tune(path, ctx, free=float(vram) * GIB if vram else None, want_cache=False, kv_q8=kv_q8)
 
 
+# Measured decode speeds from README "Results" / docs/RESULTS.md, all on the test laptop (i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD), by model
+# family (gguf_plan.model_key) and file size (GB, so each quant has its own row). (RAM GB, setting, stock tok/s, moe-cache tok/s, where)
+MEASURED = {
+    ("qwen35moe-41x256", 21.7): [(24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44: the launcher runs stock here"),
+                                 (12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (12, "no GPU", 3.1, 9.9, "RESULTS 5")],
+    ("qwen4exp-48x512", 68.0): [(24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31")],
+    ("qwen35moe-48x256", 36.6): [(24, "8 GB GPU", 1.89, 7.7, "RESULTS 45; 9.0 with --fast")],
+    ("qwen35moe-48x256", 44.7): [(24, "8 GB GPU", 1.10, 5.7, "RESULTS 45; 6.8 with --fast")],
+    ("qwen35moe-48x256", 60.2): [(24, "8 GB GPU", 0.91, 3.7, "RESULTS 45; 4.5 with --fast")],
+    ("glm5-next-46x288", 101.8): [(24, "8 GB GPU", 0.32, 1.75, "RESULTS 26; 2.1 with --fast")],
+}
+
+
+def measured(path, size):
+    """Lines like 'test laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import model_key
+        key = model_key(path)
+    except Exception:
+        return []
+    for (k, gbs), rows in MEASURED.items():
+        if k == key and abs(size / 1e9 - gbs) <= 0.03 * gbs:
+            return [f"{ram} GB RAM, {what}: stock {st} tok/s, moe-cache {mc_} tok/s ({src})" for ram, what, st, mc_, src in rows]
+    return []
+
+
 def gb(x):
     return f"{x / 1e9:.1f} GB"
 
@@ -227,7 +283,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact"):
     size = size_of(path)
     avail = mc.mem_for_server(ram)
     stock_fits = bool(size and avail and size + HEADROOM <= avail)
-    out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}}
+    out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size)}
     R = out["reasons"]
     if avail:
         R.append(f"model {gb(size)} {'+' if stock_fits else 'plus'} {HEADROOM / 1e9:.1f} GB headroom "
@@ -423,6 +479,19 @@ def proc_rss(pid):
 # lines the page lifts out of the log: the launcher's and the plugin's warnings (e.g. the cache shrank because llama-server grew), the plugin
 # disabling itself, and why llama-server stopped
 WARN_RE = re.compile(r"(?i)moe-cache: (warning|.*plugin disabled|.*refus|llama-server (exited|was stopped))|^WARNING|^error: |\binvalid argument\b")
+def warm_files():
+    """Saved agent conversations the launcher restores at the next start (~/.cache/moe-cache/slots/agent/<model>-c<ctx>-s<slot>.bin)."""
+    out = []
+    for f in glob.glob(os.path.join(mc.CACHE_DIR, "slots", "agent", "*-s*.bin")):
+        if f.endswith(".new.bin"):
+            continue
+        try:
+            out.append({"name": os.path.basename(f), "size": os.path.getsize(f), "t": os.path.getmtime(f)})
+        except OSError:
+            pass
+    return sorted(out, key=lambda x: -x["t"])[:10]
+
+
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) tokens.*?([\d.]+) tokens per second")
 
 
@@ -449,6 +518,7 @@ class Runner:
         self.rss = None
         self.profile = None
         self.warnings = []                 # [{"line", "count", "t"}]
+        self.warm = []                     # the launcher's "warm session:" lines (agent mode: saved / restored conversations)
 
     # -- control --
     def start(self, s):
@@ -524,6 +594,8 @@ class Runner:
                     pass
                 continue
             self.add_line(line)
+            if "moe-cache: warm session:" in line:
+                self.warm = (self.warm + [{"t": time.time(), "line": line.split("warm session:", 1)[1].strip()}])[-8:]
             if WARN_RE.search(line):
                 self.add_warning(line)
             m = TIMING_RE.search(line)
@@ -608,7 +680,8 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "warnings": self.warnings, "system": system_info()}
+                "history": list(self.hist), "warnings": self.warnings, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
+                "system": system_info()}
 
 
 # ---- the page server ----

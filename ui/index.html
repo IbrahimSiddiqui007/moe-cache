@@ -195,7 +195,8 @@ function paintPlan() {
   const m = S.models.find(x => x.path == S.sel);
   if (!m) { $("plan").innerHTML = ""; return; }
   if (!p) { $("plan").innerHTML = `<b>${esc(m.name)}</b> <span class="small">planning…</span>`; return; }
-  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>`;
+  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` +
+    (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on the test laptop (i7-13620H, RTX 4060 8 GB; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
 }
 let planning = false;
 async function planAll() {
@@ -279,9 +280,18 @@ async function poll() {
     if (atEnd) el.scrollTop = el.scrollHeight;
   }
 }
+function warmHtml(st) {
+  if (!st.agent) return "";
+  const w = st.warm || {}, ev = w.events || [], files = w.files || [];
+  const t = x => new Date(x * 1000).toLocaleTimeString();
+  return `<div class="small" style="margin-top:10px"><b>Warm sessions</b>: long agent conversations are saved when idle and restored at the next start.</div>` +
+    (ev.length ? `<ul class="why">${ev.map(e => `<li>${t(e.t)} ${esc(e.line)}</li>`).join("")}</ul>` : `<div class="hint">nothing saved or restored in this run yet</div>`) +
+    (files.length ? `<table style="margin-top:4px"><tr><th>Saved conversation</th><th class="num">Size</th><th>Saved</th></tr>${files.map(f =>
+      `<tr><td><code>${esc(f.name)}</code></td><td class="num">${fmtGB(f.size)}</td><td>${new Date(f.t * 1000).toLocaleString()}</td></tr>`).join("")}</table>` : "");
+}
 function paintAgents(st) {
   const el = $("t-agents");
-  const key = [st.state, st.url, st.agent].join("|");
+  const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {})].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
   if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on: this tab then shows what to give OpenCode, Hermes or any OpenAI-compatible client.</div>`; return; }
   const name = (st.model || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
@@ -292,7 +302,7 @@ function paintAgents(st) {
       <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)</div></td></tr>
      <tr><th>Hermes</th><td><button data-a="hermes">Preview</button> <button data-a="hermes" data-w="1" class="primary">Connect Hermes</button>
       <div class="hint">runs "hermes config set" for the provider, URL, model and context (needs hermes on the PATH)</div></td></tr></table>
-     <div id="connres"></div>`;
+     <div id="connres"></div>` + warmHtml(st);
   el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
     const o = $("connres"), w = !!b.dataset.w;
     o.innerHTML = `<pre>${w ? "writing" : "asking"} (moe_cache.py connect ${esc(b.dataset.a)}${w ? " --write" : ""})…</pre>`;
