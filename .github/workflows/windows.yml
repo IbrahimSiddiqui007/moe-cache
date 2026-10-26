@@ -104,7 +104,9 @@ jobs:
           $ok = $false
           for ($i = 0; $i -lt 300; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8090/health).StatusCode -eq 200) { $ok = $true; break } } catch {} ; Start-Sleep 1 }
           $body = '{"model":"granite","messages":[{"role":"user","content":"Say hi"}],"max_tokens":8,"temperature":0}'
-          if ($ok) { (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body http://127.0.0.1:8090/v1/chat/completions).Content }
+          $key = (python bin/moe_cache.py key | Out-String).Trim()     # agent mode servers need the per-user key (option C, b6dce47)
+          if (-not $key) { throw "agent mode server but moe_cache.py key printed nothing" }
+          if ($ok) { (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Headers @{ Authorization = "Bearer $key" } -Body $body http://127.0.0.1:8090/v1/chat/completions).Content }
           python bin/moe_cache.py connect opencode --url http://127.0.0.1:8090 --write --config "$env:RUNNER_TEMP\opencode.json"
           Get-Content "$env:RUNNER_TEMP\opencode.json"
           Stop-Process -Id $p.Id
@@ -129,13 +131,24 @@ jobs:
           Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
           $p = Start-Process cmd -ArgumentList "/c","bin\moe-cache-ui.bat","--no-browser","--ui-port","8078" -RedirectStandardOutput ui_bat.out -RedirectStandardError ui_bat.err -PassThru -NoNewWindow
           $sys = $null
-          for ($i = 0; $i -lt 60; $i++) { try { $sys = Invoke-RestMethod http://127.0.0.1:8078/api/system; break } catch { Start-Sleep 1 } }
+          $tok = $null
+          for ($i = 0; $i -lt 60 -and -not $tok; $i++) { Start-Sleep 1; $m = Select-String ui_bat.out -Pattern '\?t=([A-Za-z0-9_-]+)' -ErrorAction SilentlyContinue; if ($m) { $tok = $m.Matches[0].Groups[1].Value } }
+          for ($i = 0; $i -lt 30 -and $tok; $i++) { try { $sys = Invoke-RestMethod http://127.0.0.1:8078/api/system -Headers @{ "X-MoeCache-Token" = $tok }; break } catch { Start-Sleep 1 } }
           taskkill /T /F /PID $p.Id | Out-Null
           Get-Content ui_bat.out, ui_bat.err
           if (-not $sys) { throw "the page did not come up" }
           "plugin: $($sys.plugin)"; "llama-server: $($sys.llama_server)"
           if (-not ($sys.plugin -like "*build\win-api3\ggml-moe-cache.dll")) { throw "the .bat did not find the DLL in build\win-api3" }
           if ($sys.llama_server -ne $env:LLAMA_SERVER) { throw "the page does not use LLAMA_SERVER" }
+          # --shortcut from a folder with a single quote in its name (the PowerShell string must stay intact)
+          $d = Join-Path $env:RUNNER_TEMP "o'brien kit"; New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item bin\moe-cache-ui.bat $d
+          cmd /c "`"$d\moe-cache-ui.bat`" --shortcut"
+          $lnk = Join-Path ([Environment]::GetFolderPath('Programs')) "moe-cache.lnk"
+          $t = (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath
+          "shortcut -> $t"
+          if ($t -ne (Join-Path $d "moe-cache-ui.bat")) { throw "--shortcut: wrong target ($t)" }
+          Remove-Item $lnk
 
       - name: Crash dumps on (Windows Error Reporting LocalDumps for llama-server.exe)
         run: |

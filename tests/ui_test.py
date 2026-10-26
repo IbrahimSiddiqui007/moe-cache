@@ -2,7 +2,7 @@
 """Control page (GUI1, bin/moe_cache_ui.py) without a model: fake GGUF files, a mocked planner and a fake launcher that answers /health and
 prints the lines llama-server and the plugin print (timings, 'moe-cache-stats {json}'). Linux and Windows; standard library only.
    python3 tests/ui_test.py"""
-import json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.request
+import http.client, json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.request
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-ui-test-")
@@ -103,17 +103,29 @@ port = int(sys.argv[sys.argv.index("--port") + 1])
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
-        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False}], "/v1/models": {"data": [{"id": "fake-moe"}]},
+        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False, "n_prompt_tokens": 4100, "n_ctx": 8192}], "/v1/models": {"data": [{"id": "fake-moe"}]},
                 "/props": {"default_generation_settings": {"n_ctx": 65536}}}.get(self.path)
         self.send_response(200 if body is not None else 404); self.end_headers(); self.wfile.write(json.dumps(body).encode())
+    def do_POST(self):
+        q = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/detokenize":
+            body = {"content": "You are opencode, an interactive CLI tool" if q["tokens"][:3] == [11, 22, 33] else "Hello"}
+            self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(body).encode()); return
+        assert self.path == "/completion" and q["temperature"] == 0 and q["seed"] == 42 and q["cache_prompt"] is False
+        t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
+        self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
+import os
+print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x for x in sys.argv), bool(os.environ.get("LLAMA_API_KEY"))), flush=True)
+print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
 print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
 print("prompt eval time =     100.00 ms /    50 tokens (    2.00 ms per token,   500.00 tokens per second)", flush=True)
 print("       eval time =    1000.00 ms /    25 tokens (   40.00 ms per token,    25.00 tokens per second)", flush=True)
+print("moe-cache: warm session: restored a saved agent conversation (4096 tokens) into slot 0 in 1.0 s", flush=True)
 print("moe-cache: warm session: saved slot 0 (4096 tokens, 120 MB) in 0.5 s", flush=True)
 for _ in range(2):
     print("0.01.002.003 W moe-cache: warning: the expert cache shrank from 10.0 to 8.0 GiB because the rest of llama-server now uses 3.0 GiB", flush=True)
@@ -124,13 +136,17 @@ while True:
     time.sleep(1)
 ''')
 ui.LAUNCHER = [sys.executable, fake]
+AUTO_KEY = "auto-key-ABCDEFGH"
+ui.KEY_CMD = [sys.executable, "-c", f"print('{AUTO_KEY}')"]           # the launcher's `key` command (option C), faked
 
-srv = ui.make_server(0, "llama-server")
+TOKEN = "test-token-123"
+srv = ui.make_server(0, "llama-server", token=TOKEN)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 base = f"http://127.0.0.1:{srv.server_address[1]}"
 
 def req(path, body=None, headers=None):
-    h = dict(headers or {})
+    h = dict({"X-MoeCache-Token": TOKEN}, **(headers or {}))
+    h = {k: v for k, v in h.items() if v is not None}
     if body is not None:
         h.setdefault("Content-Type", "application/json")
     r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None, h)
@@ -142,6 +158,47 @@ def req(path, body=None, headers=None):
 
 st, page = req("/")
 check(st == 200 and "<title>moe-cache</title>" in page and "/api/status" in page, "GET / serves the page")
+
+# ---- security review (2026-10-26): frame protection, per-run token, Sec-Fetch-Site, body cap, ranges, CSV ----
+def raw(method, path, headers=None, body=None):
+    c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+    c.request(method, path, body=body, headers=headers or {})
+    r = c.getresponse(); data = r.read(); c.close()
+    return r.status, r.getheader, data.decode(errors="replace")
+st, hdr, _ = raw("GET", "/?t=" + TOKEN)
+cookie = hdr("Set-Cookie") or ""
+check(st == 303 and hdr("Location") == "/" and cookie.startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "HttpOnly" in cookie and "SameSite=Strict" in cookie,
+      f"the launcher's link sets an HttpOnly, SameSite=Strict cookie and drops the token from the address ({st}, {cookie})")
+st, hdr, page = raw("GET", "/", {"Cookie": cookie.split(";")[0]})
+check(st == 200 and "<title>moe-cache</title>" in page, "the page loads with the cookie")
+check(hdr("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in (hdr("Content-Security-Policy") or "") and "frame-src http://127.0.0.1:*" in hdr("Content-Security-Policy"),
+      "1: no framing (X-Frame-Options DENY, CSP frame-ancestors 'none'); the chat frame may load 127.0.0.1")
+st, hdr, _ = raw("GET", "/api/status")
+check(st == 403 and hdr("X-Frame-Options") == "DENY", "1: the headers are on errors too")
+st, _, page = raw("GET", "/")
+check(st == 403 and "?t=" in page, "2: the page without the token: 403 and how to open it")
+check(req("/api/status", headers={"X-MoeCache-Token": None})[0] == 403, "2: /api without the token: 403")
+check(req("/api/status", headers={"X-MoeCache-Token": "wrong"})[0] == 403, "2: /api with a wrong token: 403")
+check(req("/api/stop", {}, headers={"X-MoeCache-Token": None})[0] == 403, "2: POST without the token: 403")
+check(raw("GET", "/?t=wrong")[0] == 403, "2: a wrong token in the link: 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: GET with Sec-Fetch-Site cross-site: 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "same-site"})[0] == 403, "3: GET from another port of 127.0.0.1 (same-site): 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "none"})[0] == 403, "3: an API call typed into the address bar (none): 403")
+check(req("/api/status", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200, "3: same-origin: allowed")
+check(req("/api/stop", {}, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: POST cross-site: 403")
+check(req("/api/status", headers={"Origin": "http://attacker.example"})[0] == 403, "3: GET with a foreign Origin: 403")
+check(raw("GET", "/", {"Sec-Fetch-Site": "none", "Cookie": cookie.split(";")[0]})[0] == 200, "3: opening the page itself (none) works")
+st, _, _ = raw("POST", "/api/folders", {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN, "Content-Length": str(70000)}, b"x" * 70000)
+check(st == 413, f"5: a body over 64 KiB is refused ({st})")
+check(ui.Handler.timeout == 30, "5: a handler timeout is set")
+for bad in ({"ram": "nan"}, {"ram": "inf"}, {"vram": "-1"}, {"ctx": "2000000"}, {"ctx": "1e400"}, {"port": "70000"}):
+    st, body = req("/api/start", dict({"model": small["path"]}, **bad))
+    check(st == 400, f"7: {bad} refused ({body[:80]})")
+st, _ = req("/api/plan?model=" + urllib.request.quote(small["path"]) + "&ram=nan")
+check(st == 400, "7: the plan checks the same ranges")
+check([ui.csv_safe(x) for x in ("=cmd|' /C calc'!A0", "+1", "-2", "@SUM(1)", "\uff20x", "Qwen.gguf", 12.5)] ==
+      ["'=cmd|' /C calc'!A0", "'+1", "'-2", "'@SUM(1)", "'\uff20x", "Qwen.gguf", "12.5"], "9: CSV cells that would run as formulas get an apostrophe")
+check(req("/api/command?model=x")[0] == 404, "4: /api/command is POST only")
 st, body = req("/api/models")
 check(st == 200 and len(json.loads(body)["models"]) == 2, "GET /api/models")
 st, body = req("/api/plan?model=" + urllib.request.quote(small["path"]) + "&ram=1&ctx=8192&mode=exact")
@@ -158,6 +215,8 @@ check(srv.server_address[0] == "127.0.0.1", "listens on 127.0.0.1 only")
 
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
+st, _ = req("/api/bench", {})
+check(st == 400, "no benchmark without a running model")
 st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact", "agent": True, "api_key": "sekrit-123"})
 check(st == 200, f"POST /api/start ({body[:120]})")
 st, _ = req("/api/start", {"model": small["path"], "port": port + 1})
@@ -183,12 +242,75 @@ w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
       f"the shrink warning is lifted out of the log, once, counted, without llama-server's prefix ({w})")
 check("sekrit" not in json.dumps(status), "the API key is not in the status")
+check(status.get("api_key") == {"in_use": True, "source": "typed on this page", "ends": "-123"}, f"API key in use, masked, typed on the page ({status.get('api_key')})")
+st, body = req("/api/key")
+check(st == 200 and json.loads(body)["key"] == "sekrit-123", "Copy key: /api/key gives the key in use")
+check(req("/api/key", headers={"X-MoeCache-Token": None})[0] == 403, "Copy key: not without the page token")
+lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
+check("fake: argv has the key: False, LLAMA_API_KEY set: True" in lg, "4: the API key reaches the launcher in LLAMA_API_KEY, not in its argv")
+check(not any("sekrit" in l for l in lg), "4: and is not in the log")
 os.makedirs(os.path.join(ui.mc.CACHE_DIR, "slots", "agent"), exist_ok=True)
-open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.bin"), "wb").write(b"x" * 1000)
-open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.new.bin"), "wb").write(b"x")
+# agent sessions: the launcher's slot files (header 'ggsq', version, token count, tokens), restored ones, agent guess, live slots, Trash
+import struct
+sd = ui.slot_dir(); os.makedirs(sd, exist_ok=True)
+def slot_file(name, n, first, pad=1000):
+    with open(os.path.join(sd, name), "wb") as f:
+        f.write(struct.pack("<III", 0x67677371, 4, n) + struct.pack(f"<{len(first)}i", *first) + b"\0" * pad)
+tag = ui.session_tag({"model": small["path"], "ctx": 8192, "agent": True})
+check(tag == "Small-MoE-Q4_K_M-c8192" and ui.session_tag({"model": "/m/Big-00001-of-00002.gguf", "agent": True, "mode": "fast"}) == "Big-c65536-q8_0-q8_0",
+      f"the launcher's tag for saved sessions (alias, context, q8_0 KV with --fast) ({tag})")
+slot_file(tag + "-s0.bin", 4096, [11, 22, 33]); slot_file(tag + "-s1.bin", 2500, [5, 6, 7])
+slot_file("Other-Model-c65536-s0.bin", 9000, [1, 2]); slot_file(tag + "-s2.new.bin", 10, [1])
+open(os.path.join(sd, "notes.bin"), "wb").write(b"x"); open(os.path.join(sd, "Weird-c8192-s3.bin"), "wb").write(b"not a slot file")
 warm = json.loads(req("/api/status")[1])["warm"]
-check([e["line"] for e in warm["events"]] == ["saved slot 0 (4096 tokens, 120 MB) in 0.5 s"], f"warm-session events from the launcher's log ({warm['events']})")
-check([f["name"] for f in warm["files"]] == ["fake-moe-c65536-s0.bin"] and warm["files"][0]["size"] == 1000, "saved conversations listed, half-written ones not")
+check([e["line"] for e in warm["events"]] == ["restored a saved agent conversation (4096 tokens) into slot 0 in 1.0 s", "saved slot 0 (4096 tokens, 120 MB) in 0.5 s"],
+      f"warm-session events from the launcher's log ({warm['events']})")
+st, body = req("/api/sessions")
+ss = json.loads(body)
+byname = {f["name"]: f for f in ss["files"]}
+check(st == 200 and set(byname) == {tag + "-s0.bin", tag + "-s1.bin", "Other-Model-c65536-s0.bin", "Weird-c8192-s3.bin"}, f"saved sessions listed, half-written and foreign names not ({sorted(byname)})")
+f0 = byname[tag + "-s0.bin"]
+check(f0["tokens"] == 4096 and f0["slot"] == 0 and f0["ctx"] == 8192 and f0["model"] == "Small-MoE-Q4_K_M" and byname["Weird-c8192-s3.bin"]["tokens"] is None,
+      "token count from the file header; model, context and slot from the name")
+check(f0["restored"] and not byname[tag + "-s1.bin"]["restored"] and not byname["Other-Model-c65536-s0.bin"]["this_server"], "restored at start: slot 0 of this server's tag only")
+check(f0["agent"] == "OpenCode" and byname[tag + "-s1.bin"]["agent"] is None and byname["Other-Model-c65536-s0.bin"]["agent"] is None,
+      "agent guessed from the conversation's start (detokenized by the running server), only for this model")
+check(ss["live"] == [{"id": 0, "tokens": 4100, "processing": False, "n_ctx": 8192}], f"live slots through /slots with the key ({ss['live']})")
+# Trash: the platform's own (Windows: Recycle Bin); on Linux and others a freedesktop Trash under a temporary XDG_DATA_HOME, never the real one
+if os.name != "nt":
+    os.environ["XDG_DATA_HOME"] = os.path.join(TMP, "data"); ui.shutil_which = lambda prog: None
+st, body = req("/api/sessions/trash", {"name": tag + "-s1.bin"})
+j = json.loads(body)
+check(st == 200 and not os.path.exists(os.path.join(sd, tag + "-s1.bin")), f"Move to Trash: the file leaves the folder ({j.get('where') or j})")
+if os.name != "nt":
+    tf = os.path.join(TMP, "data", "Trash")
+    info = open(os.path.join(tf, "info", tag + "-s1.bin.trashinfo")).read()
+    check(os.path.isfile(os.path.join(tf, "files", tag + "-s1.bin")) and "Path=" in info and "DeletionDate=" in info, "in the Trash with its .trashinfo (restorable)")
+    slot_file(tag + "-s1.bin", 10, [1]); req("/api/sessions/trash", {"name": tag + "-s1.bin"})
+    check(os.path.isfile(os.path.join(tf, "files", tag + "-s1.bin.1")), "a second file of the same name gets its own Trash name")
+check(req("/api/sessions/trash", {"name": "../ui.json"})[0] == 400 and req("/api/sessions/trash", {"name": "notes.bin"})[0] == 400, "only listed session files can be moved")
+check(req("/api/sessions/trash", {"name": tag + "-s0.bin"}, headers={"X-MoeCache-Token": None})[0] == 403, "not without the page token")
+check(ui.server_args({"model": "m.gguf", "agent": True})[3:5] == ["--ctx", "65536"] and ui.server_args({"model": "m.gguf"})[3:5] == ["--ctx", "8192"],
+      "Agent mode without a chosen context: 65536, as the launcher's --agent (the page passed 8192 before)")
+if sys.platform.startswith("linux"):
+    # the launcher runs short helpers before llama-server (planner, `llama-server --help`): the stats go to the child that serves (--port)
+    import subprocess as sp
+    par = sp.Popen([sys.executable, "-c", "import subprocess as s, sys, time; a = s.Popen([sys.executable, '-c', 'import time; time.sleep(30)', '--help']); "
+                    "b = s.Popen([sys.executable, '-c', 'import time; time.sleep(30)', '--port', '1']); time.sleep(30)"])
+    found = None
+    for _ in range(50):
+        found = ui.child_pid(par.pid)
+        if found:
+            break
+        time.sleep(0.1)
+    kids = open(f"/proc/{par.pid}/task/{par.pid}/children").read().split()
+    check(found is not None and b"--port" in open(f"/proc/{found}/cmdline", "rb").read() and len(kids) == 2, f"child_pid picks the serving child, not a helper ({found}, children {kids})")
+    check(ui.alive(found) and not ui.alive(999999999), "alive() tells a running process from a gone one")
+    for k in kids:
+        os.kill(int(k), 15)
+    par.kill(); par.wait()
+check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-1] == "--no-warm" and "--no-warm" not in ui.server_args({"model": "m.gguf", "no_warm": True}),
+      "Don't restore: --no-warm (agent mode only)")
 
 # connect buttons: preview, then write (into the temporary XDG_CONFIG_HOME)
 st, body = req("/api/connect", {"agent": "opencode", "write": False})
@@ -206,13 +328,106 @@ check(st == 200 and "hermes config set" in json.loads(body)["output"], "Preview 
 st, _ = req("/api/connect", {"agent": "bash"})
 check(st == 400, "only opencode and hermes")
 
+# quick benchmark: warm-up, 2 x 256 decode, one ~3.5k-token prefill (pc_speed.ps1's method), saved to the CSV in the profile dir
+# an older bench.csv (before the start/load/flush columns) is upgraded, its rows kept
+old_csv = os.path.join(ui.mc.CACHE_DIR, "bench.csv")
+os.makedirs(os.path.dirname(old_csv), exist_ok=True)
+with open(old_csv, "w", newline="", encoding="utf-8") as f:
+    f.write("time,model,decode_mean,prefill\n2026-10-20 10:00,Old.gguf,9.50,100.0\n")
+st, body = req("/api/bench", {})
+check(st == 200 and json.loads(body)["state"] == "running", "POST /api/bench starts the benchmark")
+deadline = time.time() + 30
+while time.time() < deadline:
+    b = json.loads(req("/api/status")[1])["bench"]
+    if b["state"] != "running":
+        break
+    time.sleep(0.3)
+r = b.get("result", {})
+check(b["state"] == "done" and r.get("decode_tokens") == "256/256" and float(r["decode_mean"]) > 0, f"two decode runs of 256 tokens even when the model would stop early (ignore_eos) ({b.get('error') or r.get('decode_1')} / {r.get('decode_2')})")
+check(3000 <= int(r.get("prefill_tokens") or 0) <= 4500 and r.get("prefill") == "300.0", f"one prefill of about 3.5k tokens ({r.get('prefill_tokens')})")
+check(r.get("mode") == "moe-cache exact" and r.get("model") == "Small-MoE-Q4_K_M.gguf" and "sekrit" not in r.get("command", ""), "the row names model and mode, no key")
+rows = json.loads(req("/api/bench")[1])["rows"]
+check(len(rows) == 2 and rows[0]["model"] == "Old.gguf" and rows[0]["start"] == "warm" and os.path.isfile(old_csv + ".bak")
+      and open(old_csv, encoding="utf-8").readline().strip() == ",".join(ui.BENCH_FIELDS), "an older bench.csv gets the new columns, its rows kept, a .bak copy")
+check(rows[-1]["decode_mean"] == r["decode_mean"] and rows[-1]["start"] == "warm" and rows[-1]["load_s"] == "" and os.path.isfile(os.path.join(ui.mc.CACHE_DIR, "bench.csv")),
+      "appended to bench.csv in the profile dir and read back")
+
 lines = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check(any("eval time" in l for l in lines) and not any(l.startswith("moe-cache-stats") for l in lines), "the log has the server lines, not the stats lines")
+# cold start (fair): stop, flush the model from the file cache (mocked here), start again, measure; recorded as "cold"
+flushed = []
+real_flush, ui.flush_model_cache = ui.flush_model_cache, (lambda model, other: flushed.append((model, list(other))) or (True, "fake flush"))
+st, _ = req("/api/bench", {"cold": True, "other": [os.path.join(TMP, "nowhere")]})
+check(st == 400, "cold start: a folder that does not exist is refused")
+runner = srv.RequestHandlerClass.runner
+pid_before = runner.p.pid
+st, body = req("/api/bench", {"cold": True, "other": [models]})
+check(st == 200, f"cold-start benchmark starts ({body[:100]})")
+deadline = time.time() + 60
+while time.time() < deadline:
+    b = json.loads(req("/api/status")[1])["bench"]
+    if b["state"] not in ("running",):
+        break
+    time.sleep(0.3)
+r = b.get("result", {})
+check(b["state"] == "done" and r.get("start") == "cold" and r.get("flush") == "fake flush" and r.get("load_s", "") != "", f"cold run recorded: start cold, flush line, load time ({b.get('error') or r.get('load_s')})")
+check(flushed == [(small["path"], [models])] and runner.p.pid != pid_before and runner.state == "ready", "the server was stopped, the model flushed, the server started again")
+check(json.loads(req("/api/bench")[1])["rows"][-1]["start"] == "cold", "cold / warm in the CSV")
+ui.flush_model_cache = real_flush
+cs = ui.cold_start_support()
+check(cs["available"] == (sys.platform.startswith("linux") or os.name == "nt"), f"cold start offered on Linux and Windows ({cs})")
+if sys.platform.startswith("linux"):
+    import mmap
+    fp = os.path.join(TMP, "flush-me.gguf")
+    with open(fp, "wb") as f:
+        f.write(os.urandom(8 << 20)); f.flush(); os.fsync(f.fileno())
+    ok, line = ui.flush_model_cache(fp, [])
+    check((ok and "after 0 %" in line) or (not ok and "kept the model in memory" in line), f"Linux flush: dropped, or honestly not on tmpfs ({line})")
+    with open(fp, "rb") as f:
+        m = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        ok, line = ui.flush_model_cache(fp, [])
+        m.close()
+    check(not ok and "another program uses this model file" in line, "Linux flush: refused while a process maps the model (it would slow that program down)")
+if os.name == "nt":
+    # the real tools\win_flush_cache.ps1: a small "other" folder cannot cover the RAM, so it reads it all and says the flush is partial
+    od = os.path.join(TMP, "other-big"); os.makedirs(od, exist_ok=True)
+    open(os.path.join(od, "filler.bin"), "wb").write(os.urandom(1 << 20))
+    tp = os.path.join(TMP, "target.gguf"); open(tp, "wb").write(b"GGUF" + b"\0" * 1000)
+    ok, line = ui.flush_model_cache(tp, [od])
+    check(not ok and "flushed file cache" in line, f"Windows flush: runs win_flush_cache.ps1 and reports a partial flush honestly ({line[:160]})")
+
 st, _ = req("/api/stop", {})
 deadline = time.time() + 30
 while time.time() < deadline and status["state"] not in ("stopped", "exited"):
     status = json.loads(req("/api/status")[1]); time.sleep(0.3)
 check(status["state"] == "stopped", f"POST /api/stop stops it ({status['state']}, exit code {status['rc']})")
+check(req("/api/key")[0] == 400, "Copy key: nothing once the server stopped")
+# option C: agent mode without a typed key uses the launcher's stable key (KEY_CMD), for /slots, the benchmark and connect
+check(ui.launcher_key() == AUTO_KEY, "launcher_key reads the key the launcher prints")
+saved_cmd = ui.KEY_CMD
+for bad in ([sys.executable, "-c", "import sys; sys.exit(3)"], [sys.executable, "-c", "print('two words')"], [os.path.join(TMP, "missing")]):
+    ui.KEY_CMD = bad
+    check(ui.launcher_key() is None, f"no key when the command fails or prints something else ({os.path.basename(bad[-1])[:30]})")
+ui.KEY_CMD = saved_cmd
+with socket.socket() as so:
+    so.bind(("127.0.0.1", 0)); port2 = so.getsockname()[1]
+st, body = req("/api/start", {"model": small["path"], "port": port2, "ram": "1", "agent": True})
+deadline = time.time() + 30
+while time.time() < deadline:
+    status = json.loads(req("/api/status")[1])
+    if status["state"] == "ready" and status["log_seq"] > 5:
+        break
+    time.sleep(0.3)
+check(status.get("api_key", {}).get("source", "").startswith("the launcher's agent key") and status["api_key"]["ends"] == "EFGH", f"agent mode, no typed key: the launcher's key ({status.get('api_key')})")
+lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
+check("fake: agent snippet apiKey KEY" in lg and not any(AUTO_KEY in l for l in lg), "the key is masked in the log")
+check(AUTO_KEY not in json.dumps(status) and json.loads(req("/api/key")[1])["key"] == AUTO_KEY, "not in the status; Copy key gets it")
+st, body = req("/api/connect", {"agent": "opencode", "write": True})
+check(st == 200 and AUTO_KEY in open(cfg).read() and AUTO_KEY not in body, "Connect OpenCode writes the launcher's key into the config, never shows it")
+req("/api/stop", {})
+deadline = time.time() + 30
+while time.time() < deadline and json.loads(req("/api/status")[1])["state"] not in ("stopped", "exited"):
+    time.sleep(0.3)
 srv.shutdown()
 
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)

@@ -49,7 +49,7 @@ What the `.bat` finds by itself (set the variable to override):
 | Plugin (`MOE_CACHE_LIB`) | `ggml-moe-cache-api3.dll`, then `ggml-moe-cache.dll`, next to the `.bat` or one folder up (the kit), then `build\win-api3\`, `build\win\` |
 | llama-server (`LLAMA_SERVER`) | on the `PATH`, then `C:\llama\llama-server.exe` |
 
-It prints what it found; the same is in the page header's tooltip. Without the `.bat`: `python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe`.
+It prints what it found and the page's address (with a per-run token: only you can use the page); the same is in the page header's tooltip. Without the `.bat`: `python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe`.
 Options for both: `--ui-port N`, `--no-browser`. Details: [GUI](GUI.md).
 
 ## 4. Coding agents
@@ -69,22 +69,48 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 |---|---|
 | Finds the discrete GPU (the planner only knew nvidia-smi and Linux sysfs): reads `llama-server --list-devices` and takes the adapter with the most dedicated VRAM in the registry | otherwise it saw no GPU and kept every expert layer on the CPU; `check` named the built-in iGPU |
 | With an AMD GPU and a model **bigger than RAM**: all experts stay on the CPU (`--n-cpu-moe` = all) | on AMD's Windows driver, VRAM in use costs about as much system RAM, so GPU expert layers left the cache ~3 GiB and decode fell to a quarter of stock. Override with `--n-cpu-moe N` |
-| Flash-Next (`qwen4exp`) on an AMD Vulkan GPU: `--ctx-checkpoints 0`, with a message | saving a context checkpoint of its recurrent state crashes AMD's Windows Vulkan driver (`amdvlk64.dll` 32.0.23034.4, access violation); stock llama-server crashes the same way, so it is not the plugin. Cost: a conversation cannot jump back to an earlier point (plain continuation still reuses the cache); this matters for agents |
+| Flash-Next (`qwen4exp`) on an AMD Vulkan GPU with a driver older than 32.0.32015.7029 (or an unknown version): `--ctx-checkpoints 0`, with a message | saving a context checkpoint of its recurrent state crashes AMD's Windows Vulkan driver (`amdvlk64.dll` 32.0.23034.4, access violation); stock llama-server crashes the same way, so it is not the plugin. Cost: a conversation cannot jump back to an earlier point (plain continuation still reuses the cache); this matters for agents. **Driver 32.0.32015.7029 (Adrenalin, 2026-10-27) does not crash** (stock llama-server, checkpoints on, chat answered, no crash in the event log), so from that version on the launcher leaves checkpoints on and says so; the launcher reads the version from the registry (`DriverVersion` of the chosen adapter) |
 | `--ram N` becomes a job memory limit on llama-server | the Windows counterpart of the Linux memory limit; logged as "Windows job memory limit" |
 | Pins threads to the performance cores of a hybrid CPU | none needed on the 7950X (`check` says "no hybrid cores: no pinning") |
 | The log line "commit ... failed (Windows error 487), committing page by page" | a handled case, not an error |
 
 ## 6. Known limits
 
-- **Speed is not established.** Preliminary numbers on the test PC (apps open, Windows file cache warm for stock): with all experts on the CPU the plugin's decode was about
-  equal to stock on a 24 GB-class model and prefill about 1.5-2x stock; on the 36.6 GB Qwen3.5-122B decode was half of stock or less (diagnosis pending). Treat the plugin on Windows as
-  a way to run models bigger than RAM with exact output, not as a speed-up yet.
+- **Speed on the test PC** (RESULTS 55: apps closed, Windows' file cache flushed before every run, stock-plugin-plugin-stock order, all experts on the CPU):
+
+  | Model | Decode: stock vs plugin | Prefill (about 3.5k-token prompt) |
+  |---|---|---|
+  | Flash-Next IQ2_XS (64 GB) | stock 12.1-16.1, plugin about 12.2 tok/s (about equal) | **2.2x** (120 vs 53-57 tok/s) |
+  | Qwen3.5-122B UD-IQ2_XXS (36.6 GB) | stock about 11-14, plugin about 6.5 tok/s (**about half**; cause under diagnosis) | **1.5-1.6x** (128 vs 80-87) |
+  | GLM-5.3-Flash UD-IQ2_XXS (102 GB) | plugin lower than stock (the AMD driver's RAM cost squeezes the cache) | about **2.9x**; **numbers to be confirmed** (the clean GLM runs are still going) |
+
+  What it means for you on Windows with an AMD card: the plugin's gain is **prompt processing** (long prompts, coding agents that send 5-20k tokens per turn): the first turn and follow-ups
+  after a big tool result come back 1.5-3x sooner, and the output is exact. **Decode is limited by RAM** (the AMD driver takes system RAM for VRAM in use, so the cache is small):
+  on models far bigger than RAM expect decode equal to or below stock, not above. If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself).
+  One desktop only; Linux numbers are in the README.
 - The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
   not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.
 - `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers.
 - HIP / ROCm: needs AMD's HIP SDK, untested. Intel GPUs on Windows: untested.
 - The bash wrappers (`moe-cache-server` ...) do not run on Windows: use `python bin\moe_cache.py <command>`.
 - A GLM-class model (102 GB) crashed the plugin in the long-prompt GPU path on the test PC; a fix is committed and still to be confirmed on the PC.
+
+### Windows + AMD: where the RAM goes, and suggestions that do not help
+
+On AMD's Windows driver, VRAM in use also takes system RAM: about 1.1 GB per GiB, inside the driver and Windows' video memory manager, not in llama.cpp or
+the plugin (RESULTS 56, I37: `GGML_VK_MEMORY_LOGGER=1` shows 13.1 GiB of device memory and 169 MiB of host memory, yet 13.5 GB of system RAM gone). The
+`GGML_VK_*` switches tried there did not change it. The plugin sees less free RAM, so its cache is smaller and it reads more from the SSD.
+
+| Suggestion often made | What it does here |
+|---|---|
+| `--no-mmap` | loads the whole model into RAM: impossible for a model bigger than RAM, and it does not touch the driver's copy |
+| `--mlock` | pins memory so Windows cannot page it out: less RAM for everything else, the driver's copy stays |
+| `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). moe-cache's cache size follows `--ram` (or `MOE_CACHE_SIZE_GIB`); forcing it above the free RAM makes Windows page to disk |
+| "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ...") |
+| q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM and so the driver's RAM copy of it, but only the KV part (with all experts on the CPU, the GPU holds attention and KV); it is approximate (KL 0.0045, RESULTS 53), so it is part of `--fast`, not the default; the saving on this desktop is being measured (RESULTS 56, R11) |
+| WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |
+
+Still to try (owner's machine): a newer Adrenalin driver, hardware-accelerated GPU scheduling off, the HIP SDK, Linux/RADV on the same PC (RESULTS 56, I37).
 
 ## 7. Fair stock-vs-plugin timings: empty the file cache first
 

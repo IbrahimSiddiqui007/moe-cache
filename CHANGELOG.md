@@ -64,6 +64,15 @@
 - Windows speed numbers are from one desktop; plugin decode is about equal to stock there (models bigger than RAM), prefill 1.5-2.2x. Intel GPUs on Windows: untested.
 
 ### Details of earlier entries in this section
+
+### Control page: security review and Quick benchmark
+- Control page, security review: a per-run token (in the address the launcher opens, then an HttpOnly SameSite=Strict cookie; required on every
+  `/api` call), `X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`, `Sec-Fetch-Site` and `Origin` checked on GET too, request bodies capped at
+  64 KiB and a handler timeout, numbers range-checked (no nan / inf), the API key passed to the launcher in `LLAMA_API_KEY` (not argv),
+  `/api/command` is POST, CSV cells that would run as formulas are quoted, `moe-cache-ui.bat` starts programs by full path from its own folder and
+  escapes `'` in `--shortcut`.
+- Control page: **Quick benchmark** for the running server (warm-up, 2 x 256-token replies, one ~3.5k-token prompt; decode, prefill and the
+  cache hit rate), appended to `~/.cache/moe-cache/bench.csv` and shown next to earlier runs, so stock and moe-cache can be compared on your machine.
 - Control page, step 2: Connect OpenCode / Hermes with a preview and what was written; live VRAM on Windows with AMD/Intel GPUs (the launcher's
   GPU pick + registry); warnings from the log (cache shrank, plugin disabled, why llama-server stopped) on the page; measured speeds from RESULTS next
   to the verdict for the models measured before; quant from the GGUF header (Ollama); warm-session state in the Agents tab; `bin\moe-cache-ui.bat`

@@ -1562,7 +1562,7 @@ pc_series.ps1 and rerun.
 | stock B | 11.46 / 13.56 / 12.64 | 86.9 |
 | extra stock runs (first series) | 10.46-14.29 / 10.89-13.93 | 83.5 / 73.3 |
 
-Plugin prefill 1.4-1.5x stock; decode half of stock or less, most likely stock's warm Windows file cache (idea I38). The 122B diagnosis with stats is still to do.
+Plugin prefill 1.4-1.5x stock; decode half of stock or less, possibly stock's warm Windows file cache (idea I38); the clean run in section 55 shows the gap stays with a cold cache, so that explanation is not enough. The 122B diagnosis with stats is still to do.
 
 ### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards), new default, ABBA (PRELIMINARY, incomplete)
 
@@ -1603,10 +1603,11 @@ ran the long prompt without a crash (table above).
 | Windows job-object memory limit (WP3) on the PC | untested |
 | HIP build | needs AMD's HIP SDK |
 
-## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; Flash-Next done, 122B and GLM to come)
+## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; complete: Flash-Next, 122B, GLM)
 
-Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). Cells marked
-"-" are not measured yet; quote only the filled tables.
+Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). WP2 is done
+for the three big models; the plugin stats runs and `--fast` / `--hybrid` rows are not measured (cells marked "-"). The owner's Claude app was open
+during the series, so these numbers are still not a perfectly quiet-machine result.
 
 | Item | Value |
 |---|---|
@@ -1614,7 +1615,7 @@ Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open
 | llama.cpp | b11669 (ggml 0.27.0), official Vulkan zip |
 | Plugin | DLL built from 2dccf17 (CI build; includes the long-prompt crash fix) |
 | Layout | launcher defaults: all experts on the CPU (`--n-cpu-moe 48`), `--ctx-checkpoints 0` for Flash-Next |
-| Owner's apps | closed (the list of what was still running is not recorded) |
+| Owner's apps | mostly closed; the owner's Claude app was still open, so the numbers are marked preliminary in that one respect (what else ran is not recorded) |
 
 **Method.**
 - Script `pc_series.ps1 -Flush "fileA;fileB;..."`: before every run it reads the other model files (70-99 GB in total, more than the 31 GB of RAM) from the SSD,
@@ -1642,33 +1643,308 @@ plugin's, its slowest equals it. **Prefill 2.2x stock** (120 vs 53-57). Both agr
 prefill about 2x), now with a cold file cache for every run: the plugin's first-session gap seen there (5 tok/s) did not appear (plugin A 12.3).
 Note: the runner's `speed.log` failed to open ("Stream was not readable", a log-file lock); the numbers above are from the runner's captured output.
 
-### Qwen3.5-122B UD-IQ2_XXS (36.6 GB)
+### Qwen3.5-122B UD-IQ2_XXS (36.6 GB) (clean run: apps closed, other model files read before every run)
+
+Three decode requests per run, launcher default (all experts on the CPU), DLL 2dccf17.
 
 | Run | decode tok/s | prefill tok/s |
 |---|---|---|
-| stock A | - | - |
-| plugin A | - | - |
-| plugin B | - | - |
-| stock B | - | - |
+| stock A | 11.12 / 13.64 / 14.22 | 80.0 |
+| plugin A | 6.61 / 6.54 / 7.04 | 129.3 |
+| plugin B | 6.08 / 6.09 / 6.57 | 127.7 |
+| stock B | 10.60 / 13.65 / 14.03 | 86.8 |
 | plugin stats run (cache budget, hit rate, GB read) | - | - |
 
-### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards)
+Reading: **decode plugin about 6.5 tok/s against stock about 11-14 (half)**; **prefill 1.5-1.6x stock** (128-129 vs 80-87). Unlike Flash-Next, the decode
+gap stays with a fair cold start for both, so it is not only stock's warm file cache (the explanation offered in section 54 does not hold for this
+model). The cause is not known yet; the stats run (cache budget, hit rate, SSD reads) is still to do.
+
+### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards) (cold start each run: file cache flushed by reading Flash-Next's 68 GB)
+
+Three decode requests per run, launcher default (all experts on the CPU), DLL 2dccf17. No crash in either plugin run.
 
 | Run | decode tok/s | prefill tok/s |
 |---|---|---|
-| stock A | - | - |
-| plugin A | - | - |
-| plugin B | - | - |
-| stock B | - | - |
-| plugin stats run (cache budget, hit rate, GB read; the shrink warning, if it fires) | - | - |
+| stock A | 1.38 / 3.70 / 1.70 | 15.3 |
+| plugin A | 1.18 / 1.05 / 1.03 | 44.4 |
+| plugin B | 1.07 / 1.01 / 1.03 | 45.1 |
+| stock B | 1.21 / 3.60 / 1.65 | 14.9 |
+| plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+Reading: **prefill 2.9-3.0x stock** (44-45 vs 15). **Decode: plugin about 1.05 tok/s in every request against stock 1.2-3.7**; stock's second request is about 3.5x
+the plugin's (3.6-3.7 vs 1.0-1.2; the cause of that one fast request is not known), the other two are within about 1.0-1.7x of it. The plugin's cache was squeezed to about 3.7 GiB by the AMD
+driver's RAM cost (the shrink warning fired, ideas I37 / I40), so it reads from the SSD for most picks. The model is 102 GB on a 32 GB machine, so both
+sides are bound by reading; the plugin's decode is not better here.
 
 ### Against section 54
 
 | Model | Section 54 (PRELIMINARY): stock / plugin decode, plugin prefill vs stock | Section 55 (clean) |
 |---|---|---|
 | Flash-Next | 14-16 / 12-13.5 tok/s; prefill about 2x | 12.1-16.1 / 12.2 tok/s; prefill 2.2x |
-| Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | - |
-| GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | - |
+| Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | 11-14 / 6.1-7.0 tok/s; prefill 1.5-1.6x |
+| GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | 1.2-3.7 / 1.05 tok/s; prefill 2.9-3.0x |
+
+What the clean series shows: (1) with a cold file cache for both, the plugin's first-session decode gap (idea I38) is gone on Flash-Next (12.3 vs stock 12.1-16.1)
+but not on 122B (about half of stock), so unbuffered reads alone do not explain it; (2) prefill is 2.2x (Flash-Next), 1.5-1.6x (122B) and 2.9-3.0x (GLM) stock on
+this machine; (3) on GLM the shrink from the AMD driver's RAM cost still happens (cache about 3.7 GiB), as in section 54. Open: the 122B decode diagnosis with
+stats (`handover` note 122B_DIAG_PLAN) and the budget idea I40.
+
+## 56. Windows desktop experiments (2026-10-26/27; SKELETON: known facts filled, empty cells "-" are not measured yet)
+
+Machine, llama.cpp and DLL as in sections 54-55 (Ryzen 9 7950X, RX 9070 XT 16 GB, driver 32.0.23034.4, 32 GB RAM; llama.cpp b11669 Vulkan). Scripts are in
+`windows-kit/` (`pc_runlib.ps1`, `pc_prefill_lib.ps1`, `pc_r*.ps1`). Every speed is PRELIMINARY until the section says otherwise; quote only filled tables.
+
+### I37: VRAM in use costs system RAM on AMD's Windows driver; the llama.cpp switches do not help
+
+Stock llama-server, Flash-Next, 12 expert layers on the GPU, startup only; system-wide available memory before vs after:
+
+| Setting | system RAM taken | private memory | GPU dedicated |
+|---|---|---|---|
+| baseline | 13.5 GB | 15.3 GiB | 12.0 GiB |
+| `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1` | 14.3 GB | 15.6 GiB | 12.5 GiB |
+| `GGML_VK_VISIBLE_DEVICES=1` (built-in Radeon hidden) | 14.4 GB | 15.3 GiB | 12.0 GiB |
+| `GGML_VK_ENABLE_MEMORY_PRIORITY=1` | 14.6 GB | 15.3 GiB | 12.0 GiB |
+| host-visible off + built-in Radeon hidden | 14.3 GB | 15.6 GiB | 12.5 GiB |
+
+With `GGML_VK_MEMORY_LOGGER=1`, ggml-vulkan allocates 13.13 GiB of device memory and only 169 MiB of host memory, so the 13.5-14.6 GB of system RAM (about 1.1 GB
+per GiB of VRAM) is taken inside AMD's driver / Windows' video memory manager, not by llama.cpp or the plugin. Not tried yet: a newer Adrenalin driver,
+hardware-accelerated GPU scheduling off, the HIP SDK, Linux/RADV on the second SSD (owner's choices).
+
+| Option | Result |
+|---|---|
+| Newer Adrenalin than 32.0.23034.4 | - |
+| Hardware-accelerated GPU scheduling off | - |
+| HIP build (needs the HIP SDK) | - |
+| Linux / RADV (second SSD) | - |
+
+### Qwen3.5-122B decode: why the plugin is at half of stock (plan: shared note `122B_DIAG_PLAN.md`)
+
+Clean-run numbers are in section 55 (plugin about 6.5 vs stock about 11-14 tok/s). Stats run: plugin, cold start, one 256-token request; counters read
+before and after (`MOE_CACHE_STATS_SIGNAL=1`, named event) and subtracted. PRELIMINARY (the owner's Claude app was open).
+
+| Measurement | Default (executor on) | `MOE_CACHE_EXEC=0` |
+|---|---|---|
+| Decode speed | 7.02 tok/s | 5.84 tok/s |
+| Cache budget at start -> end, `shrinks` | 16.89 -> 13.6 GiB, 5 | 13.2 GiB at the end |
+| Decode hit rate | 87.3 % | 86.7 % |
+| `read_bytes` | 35.9 GB (about 140 MB per token) | - |
+| `ns_read` (summed over the 4 readers) | 67.1 s | - |
+| `ns_cpu` (includes waiting for loads) / `ns_prep` / `ns_total` | 26.7 s / 3.9 s / 30.6 s | - |
+| `exec_ops` | 36,864 (144 per token) | - |
+
+Second series, same model and request, cache budget about 11 GiB (a smaller cache than the run above; PRELIMINARY):
+
+| Run (122B, plugin, cold) | decode tok/s | decode hit rate | read | `ns_read` |
+|---|---|---|---|---|
+| default (4 readers) | 5.97 | 84.2 % | 44.3 GB | 85 s |
+| `MOE_CACHE_EXEC_READERS=8` | 5.86 | 83.9 % | 45.3 GB | 120 s |
+| `MOE_CACHE_EXEC_READERS=16` | 5.81 | 83.7 % | 45.7 GB | 135 s |
+| `MOE_CACHE_LOOKAHEAD=2` | 6.35 | 93.1 % | 54.5 GB | 58 s |
+| `MOE_CACHE_SIZE_GIB=14`, `--ram 18` | - | - | - | - |
+
+More readers do not help: they only queue (random reads of about 1 MB, unbuffered, deliver about 1.2 GB/s, against about 2.4 GB/s for sequential reads), and `ns_read` grows
+with the number of readers. Lookahead gives +6 % decode for 23 % more bytes read. The lever that is left is the cache size (I38, buffered reads: next).
+
+Reading, against the three causes in the plan:
+- **Executor overhead (cause 3): no.** Turning the executor off is slower (5.84), and `ns_prep` is only 3.9 s of the 30.6 s.
+- **A collapsed cache (cause 1): only partly.** The budget fell from 16.9 to 13.6 GiB (5 shrinks), well short of Flash-Next's or GLM's squeeze, but the decode hit rate is
+  only 87 %, so about 49 of the 384 picks per token miss.
+- **Cost of the misses (cause 2): the likely main cost.** About 140 MB per token has to be read. With 4 readers at about 2.1 GB/s that is at least
+  65 ms per token, which is the gap to stock (about 75 ms per token in total). Stock serves the same misses from Windows' warm file cache. Flash-Next has about 3x fewer active bytes per
+  token, so its reads hide behind compute.
+- The plugin's dot products are not the problem (the same zen4 functions as stock, 32-row chunks over 16 threads, from the code reading in the shared note
+  `qwen122b_windows_gap.md`). Still to test: more readers and lookahead (above), and buffered reads (I38).
+
+Conclusion (preliminary): the 122B gap is read cost for a 12-16 % miss rate through unbuffered reads, not compute; more readers do not help, a bigger cache (or cheaper reads, I38) would.
+
+### I40: all experts on the CPU vs a RAM-budgeted number of GPU expert layers (Windows + AMD)
+
+Branch `claude/i40-amd-ram-budget`: the launcher plans with (available RAM - cache floor) / 1.1 as the VRAM budget instead of keeping every expert on the CPU.
+
+| Model | Layout | GPU expert layers | Plugin decode tok/s | Stock decode tok/s | Cache budget at the end |
+|---|---|---|---|---|---|
+| Flash-Next | all on CPU (today), A | 0 | 12.94 / 12.91 (prefill 121.5) | - | - |
+| Flash-Next | RAM budget (I40), A | - | 8.55 / 10.55 (prefill 129.3) | - | - |
+| Flash-Next | RAM budget (I40), B | - | 8.66 / 10.57 (prefill 127.9) | - | - |
+| Flash-Next | all on CPU (today), B | 0 | 12.70 / 12.68 (prefill 120.9) | - | - |
+| Qwen3.5-122B | all on CPU (today), A | 0 | 5.85 / 5.86 / 6.41 (prefill 125.6) | - | - |
+| Qwen3.5-122B | RAM budget (I40), A | - | 3.99 / 4.20 / 4.24 (prefill 135.8) | - | - |
+| Qwen3.5-122B | RAM budget (I40), B | - | 4.15 / 4.29 / 4.20 (prefill 134.7) | - | - |
+| Qwen3.5-122B | all on CPU (today), B | 0 | 5.64 / 5.79 / 6.37 (prefill 126.3) | - | - |
+| GLM-5.3-Flash | all on CPU | 0 | - | - | - |
+| GLM-5.3-Flash | RAM budget | - | - | - | - |
+
+Plugin, cold start each run, ABBA (all-CPU A, I40 A, I40 B, all-CPU B), PRELIMINARY (the owner's Claude app was open):
+
+| Model | Decode, all on CPU (mean) | Decode, RAM budget (mean) | Change | Prefill, all on CPU / RAM budget | Change |
+|---|---|---|---|---|---|
+| Flash-Next | 12.81 tok/s | 9.58 tok/s | **-25 %** | 121.2 / 128.6 tok/s | +6 % |
+| Qwen3.5-122B | 5.99 tok/s | 4.18 tok/s | **-30 %** | 126.0 / 135.3 tok/s | +7 % |
+| GLM-5.3-Flash | - | - | - | - | - |
+
+**Verdict: I40 KILLED.** Giving GPU expert layers back by a RAM budget costs 25-30 % of decode for 6-7 % more prefill on both models; the all-CPU default stays.
+Branch `claude/i40-amd-ram-budget` is not merged. (Both orders of each pair agree, so this is not a drift effect; the GPU-layer counts the budget chose are not recorded here.)
+
+### Disk reads on Windows (`win_read_bench`, CI build c852720; PRELIMINARY)
+
+Qwen3.5-122B file on the PC's NVMe drive (Sabrent, C:, `stornvme` driver, BitLocker off, file neither sparse nor compressed). **Windows Defender real-time protection
+was ON** during these runs (the owner turned it off afterwards; re-test pending). The "x N" is the benchmark's parallelism setting. "Unbuffered" is what the plugin does
+today (`FILE_FLAG_NO_BUFFERING`, overlapped); "buffered" goes through the file cache.
+
+| Read size x N | Unbuffered GB/s (ops/s) | Other unbuffered variants | Buffered GB/s |
+|---|---|---|---|
+| 1 MiB x 4 | 3.02 (2,878) fresh buffers | reused 3.21; bounce buffer 3.11; commit only 15.5 | 3.96 |
+| 1 MiB x 16 | 1.67 (1,597) | - | 8.54 |
+| 256 KiB x 4 | 0.69 (2,630) | - | 3.23 |
+| 256 KiB x 8 | 0.68 (2,609) | - | 6.82 |
+| 128 KiB x 8 | 0.38 (2,893) | - | 3.59 |
+
+Reading: unbuffered reads are capped at about 2,600-2,900 operations per second whatever the size or the number of threads, so smaller reads and more threads
+do not help (they get slower in GB/s). Fresh and reused buffers give the same rate, which rules out page commit as the cost. The plugin already opens its files
+with `FILE_FLAG_OVERLAPPED`. Suspects, not yet tested: Defender's file-system filter on each unbuffered operation (re-test with real-time protection off), and the
+drive running at a queue depth of one per thread (a queue-depth benchmark is pending). Buffered reads are faster on every row here, up to 8.5 GB/s.
+
+### I38: buffered reads (cold and warm file cache)
+
+| Condition | First-session decode tok/s | Second-session decode tok/s |
+|---|---|---|
+| Unbuffered reads (today), cold cache | 5.89 (hit rate 83.2 %, read 47.1 GB, cache budget 10.8 GiB) | - |
+| Buffered reads, cold cache | - (the run was cut off: the PC went offline) | - |
+| Unbuffered reads, warm cache | - | - |
+| Buffered reads, warm cache | - | - |
+
+### R2: `-ub` at long context (Flash-Next, `--ctx 65536`; `pc_r2_ub_long.ps1`)
+
+Prefill tok/s for a ~15k and a ~30k-token prompt. Kill rule: `-ub` 2048 within 10 % of 1024.
+
+| `-ub` | 15k stock | 15k plugin | 30k stock | 30k plugin |
+|---|---|---|---|---|
+| 512 | - | - | - | - |
+| 1024 | - | - | - | - |
+| 2048 | - | - | - | - |
+
+Verdict: -
+
+### R5: bigger prompt chunks (Qwen3.6, stock, same `--n-cpu-moe`; `pc_r5_ub_stock.ps1`)
+
+Prefill tok/s. Kill rule: `-ub` 4096 within 10 % of 2048.
+
+| `-ub` | ~2k prompt | ~8k prompt | ~32k prompt |
+|---|---|---|---|
+| 2048 | - | - | - |
+| 4096 | - | - | - |
+| 8192 | - | - | - |
+
+Verdict: -
+
+### R11: VRAM freed by a q8_0 KV cache at 64k context (Flash-Next, plugin; `pc_r11_kv_vram.ps1`)
+
+GPU dedicated memory of llama-server in GiB (the quality side, KL 0.0045 for q8_0 KV alone, is section 53).
+
+| Variant | idle | after a ~2k prompt | after a ~20k prompt | adapter after 20k | 20k prefill tok/s |
+|---|---|---|---|---|---|
+| A: f16 KV, `-ub 512` | - | - | - | - | - |
+| B: q8_0 KV, `-ub 512` | - | - | - | - | - |
+| C: `--fast` (q8_0 KV, tuner's `-ub`) | - | - | - | - | - |
+
+VRAM freed by q8_0 KV (A - B): -
+
+### R7 (MTP head on the GPU; `pc_r7_mtp.ps1`) and R3 (`--hybrid` on Flash-Next; `pc_r3_hybrid.ps1`)
+
+| R7: Qwen3.6, 8 runs (palindrome) | decode tok/s | prefill tok/s | draft accepted / drafted |
+|---|---|---|---|
+| stock | - | - | - |
+| stock + MTP | - | - | - |
+| plugin | - | - | - |
+| plugin + MTP | - | - | - |
+
+Kill rule R7: no gain from MTP on stock AND on the plugin. Verdict: -
+
+| R3: Flash-Next | decode tok/s | prefill tok/s | cache budget at the end |
+|---|---|---|---|
+| exact (plugin default) | - | - | - |
+| `--fast` | - | - | - |
+| `--hybrid` 6 GB bank | - | - | - |
+| `--hybrid` 10 GB bank | - | - | - |
+
+Kill rule R3: hybrid under +10 % decode over exact. Verdict: -
+
+### Task 4b: Hermes Agent on Windows through moe-cache (with the API key), and WP3 (`--ram` job memory limit)
+
+OpenCode is only installed as a desktop app on the PC (no CLI); installing the CLI through npm needs the owner's OK, so OpenCode is not tested on Windows.
+
+| Check | Result |
+|---|---|
+| `--agent` server starts on the PC (`moe_cache.py server qwen3.6 --agent --ram 20 --always-plugin`); the launcher prints that a key is in use and where it is stored | yes |
+| A request without the key gets 401, with `moe_cache.py key` as Bearer 200 | yes: 401 / 200 |
+| `connect hermes --write` finds the stored key (Hermes config on Windows) | yes: the key reached Hermes Agent v0.22.5's `config.yaml` (not printed); the owner's Hermes config was restored afterwards |
+| Hermes one-shot task (edit a scratch file): first turn tokens / time, whole session | task done correctly in 81 s (whole session); first-turn tokens not recorded |
+| Warm session after a restart: first turn tokens / time | - |
+| Flash-Next with `--ctx-checkpoints 0`: cost for an agent that edits history | - |
+| WP3: `--ram 20` sets a job memory limit; the log line; the server stays under it | log line "Windows job memory limit 20.0 GB on llama-server"; the cache was sized from it (start budget 12.5 GiB, margin 4 GiB). "Stays under it" under load: not measured |
+| WP3: a run that hits the limit behaves like the Linux `--ram` (message, no crash) | - |
 
 What to conclude (to be written from the numbers): whether the plugin's first-session decode gap (idea I38, unbuffered reads) survives a cold file cache
 for stock too; whether the shrink on GLM (idea I37) still happens with the apps closed.
+
+## 57. Agent-shaped benchmark (idea I30): replayed OpenCode and Hermes sessions, stock vs moe-cache (2026-10-26 evening, laptop)
+
+What agents wait for is the first token of each turn and the whole task, not decode tok/s. `tools/agent_bench.py` recorded two real sessions through a
+proxy and replays them (same request bodies, same overlap, same pauses; greedy, capped at the recorded token counts); `tools/agent_bench_pair.sh` runs
+the pairs. Recordings (`tests/agent_sessions/`, made with moe-cache `--agent` on Qwen3.6): **OpenCode 1.19.4** "the tests in test_stats.py fail: run
+them, fix stats.py, run them again" (5 requests, first prompt 7.45k tokens, tests pass) and **Hermes Agent v0.22.5** (`-t file`) "fix median() and
+add docstrings, then stop" (7 requests incl. its title request, first prompt 3.7k tokens, file fixed).
+
+| Item | Value |
+|---|---|
+| Machine | laptop, i7-13620H, RTX 4060 8 GB, 31 GB RAM; llama.cpp 23b0202a1; plugin build-light (v0.2.3.5) |
+| moe-cache | `moe-cache-server MODEL --agent --ram R -- --alias A --slot-save-path EMPTY_DIR` (context 65536, 4 slots, checkpoints, jinja; usage profile from earlier use) |
+| stock | the same llama-server command the launcher prints for `--agent --dry-run`, without the plugin (Qwen3.6: `--n-cpu-moe 38 -ub 1024`; Flash-Next: `--n-cpu-moe 48 -ub 512`) |
+| Limit | hard cgroup limit, no swap: Qwen3.6 16 GB (`--ram 14`), Flash-Next 23 GB (`--ram 22`) |
+| Per run | model dropped from the page cache and **checked** (mmap + mincore: 0.00 GB), fresh server, /health + 15 s, clean-run gate (`wait_cool.sh 65`), OpenCode replay then Hermes replay on the same server, stop |
+| Same work | prompt tokens processed and tokens generated were identical per request in every run on both sides (exact output) |
+
+**Qwen3.6-35B-A3B Q4_K_M (21.7 GB), 16 GB limit, 3 runs per side, order stock, mc, mc, stock, mc, stock (min / median of the runs):**
+
+| Session | Side | First-turn TTFT (s) | Follow-up TTFT, median per run (s) | Whole task (s) | Decode median (tok/s) |
+|---|---|---|---|---|---|
+| OpenCode | stock | 49.7 / 62.4 | 7.1 / 7.5 | 176.9 / 182.7 | 8.3-9.9 |
+| OpenCode | moe-cache | **44.8 / 48.9** | **4.6 / 4.8** | **105.4 / 111.6 (1.64x)** | 14.8-15.8 |
+| Hermes (second session on the server) | stock | 165.5 / 244.5 | 22.7 / 31.4 | 476.5 / 623.5 | 3.5-5.2 |
+| Hermes (second session on the server) | moe-cache | **23.0 / 27.5** | **5.7 / 6.2** | **124.1 / 127.0 (4.9x)** | 10.0-14.8 |
+
+Single runs: OpenCode task stock 183.1 / 176.9 / 182.7 s, moe-cache 113.6 / 105.4 / 111.6 s; Hermes stock 476.5 / 623.5 / 686.7 s, moe-cache
+124.1 / 171.3 / 127.0 s (the 171 s run decoded at 10.0 instead of 12.6-14.8 tok/s; cause not found). No out-of-memory kill in any run; stock hit
+the cgroup ceiling 554-655 k times per run, moe-cache 37-87 k.
+
+**Flash-Next IQ2_XS (68 GB), 23 GB limit, one pair only (PRELIMINARY: stopped at the owner's request, see the idle-spin bug below):**
+
+| Session | stock (run 1) | moe-cache (run 2) |
+|---|---|---|
+| OpenCode: first-turn TTFT / follow-up median / task | 263.4 s / 34.6 s / 817.2 s (decode 2.05 tok/s) | **173.1 s / 8.5 s / 277.6 s (2.9x)** (9.3 tok/s) |
+| Hermes: first-turn TTFT / follow-up median / task | 914.4 s / 103.8 s / 2063.5 s (1.81 tok/s) | **82.7 s / 13.4 s / 270.9 s (7.6x)** (7.4 tok/s) |
+
+The moe-cache run started after a failed clean-run gate (74 C, load 9 after 30 min) because of the bug below, so it ran hot: if anything its numbers
+are low. Runs 3-4 were not done.
+
+Findings:
+- **The first turn is the agent's biggest wait, and moe-cache shortens it less than everything else.** On Qwen3.6 the OpenCode first turn (7.45k
+  tokens) is 49 vs 62 s: long prompts already go to the GPU in stock llama.cpp (section 46). Follow-up turns (100-800 new tokens each) are where the
+  gap opens: 4.8 vs 7.5 s per turn (median) (the I4 packed upload, section 52), plus decode at 1.7x.
+- **Stock gets much worse for the second session on the same server; moe-cache does not.** Hermes after OpenCode: stock first turn 165-255 s for a
+  3.7k prompt (OpenCode's 7.45k took 50-65 s), decode 3.5-5 tok/s: the first conversation's KV checkpoints (host RAM) shrink the room left for the
+  memory-mapped model, so stock faults more. moe-cache's cache sits in its own budget and keeps 23-31 s. That is the agent case: one server, several
+  sessions in a row.
+- **Measurement trap (new): page-cache eviction silently fails on the ollama blob** `/var/lib/ollama/.../sha256-d372de8e...` (21.7 GB stays cached
+  after `posix_fadvise(DONTNEED)`, no visible process maps it; on files I own eviction works). A first set of 4 runs on that blob let stock read
+  ~5.6 GB outside its cgroup (stock scope charged 16.1 GB file pages) and was discarded; the runs above use a byte-identical copy in work/zoo/qwen36/
+  under the same file name. Earlier limited stock runs on that blob may be optimistic for stock. The pair script now checks residency and stops.
+- **Plugin bug found: an idle Flash-Next moe-cache server burns ~720 % CPU** (9-10 executor threads at 65-90 % each, mostly futex_wait) for 30+ min
+  with no request; the warm start is not it (9.85 GiB in 4.0 s). Qwen3.6 servers idle normally. Logs kept for the robustness session
+  (work/agents/i30/fn/server-2-mc.log, server-3-mc.log).
+- A recorded Hermes session with file tools only ran into a loop (the task was done by request ~15, then ~85 identical 177-token tool calls trying to
+  verify, until the 25 min timeout); it is kept out of the benchmark (work/agents/i30/rec/old/hermes_loop.json). The prompt now tells it to stop after
+  editing.
+- Follow-up turns process 100-250 tokens more than in the recording (the replay re-sends the agent's original assistant message; the model now
+  writes something else at temperature 0); the same on both sides. The warm-session keeper logged no save or restore during any run (it saves after
+  20 s idle; each server was stopped sooner).

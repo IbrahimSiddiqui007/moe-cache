@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, ctypes, glob, json, os, re, signal, subprocess, sys, threading, time, urllib.parse
+import argparse, collections, csv, ctypes, glob, json, math, secrets, os, re, signal, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -378,7 +378,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
 
 def server_args(s):
     """moe_cache.py server arguments for the page's settings."""
-    a = [s["model"], "--port", str(int(s.get("port") or 8080)), "--ctx", str(int(s.get("ctx") or 8192))]
+    a = [s["model"], "--port", str(int(s.get("port") or 8080)), "--ctx", str(int(s.get("ctx") or (65536 if s.get("agent") else 8192)))]
     if s.get("ram"):
         a += ["--ram", str(float(s["ram"]))]
     if s.get("vram"):
@@ -389,29 +389,51 @@ def server_args(s):
         a.append("--hybrid")
     if s.get("agent"):
         a.append("--agent")
+        if s.get("no_warm"):
+            a.append("--no-warm")          # neither restores nor saves agent conversations
     if s.get("llama_server"):
         a += ["--llama-server", s["llama_server"]]
-    if s.get("api_key"):
-        a += ["--api-key", s["api_key"]]
-    return a + ["--", "--metrics"]
+    return a + ["--", "--metrics"]          # the API key goes to the launcher in LLAMA_API_KEY (child_env), never on a command line
 
 
 def shown_command(s):
-    a = server_args(dict(s, api_key="KEY" if s.get("api_key") else ""))
-    return " ".join(('"' + x + '"') if " " in x else x for x in ["moe-cache-server"] + a)
+    return (("LLAMA_API_KEY=KEY " if s.get("api_key") else "")
+            + " ".join(('"' + x + '"') if " " in x else x for x in ["moe-cache-server"] + server_args(s)))
 
 
 def dry_run(s):
     a = server_args(s)
     a.insert(a.index("--"), "--dry-run")          # a launcher option: after the -- it would go to llama-server
-    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, timeout=300, env=child_env())
-    return [l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, timeout=300, env=child_env(s.get("api_key")))
+    key = s.get("api_key")
+    return [l.replace(key, "KEY") if key else l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
 
 
 # ---- the running server ----
 
-def child_env():
-    return dict(os.environ, MOE_CACHE_STATS_SIGNAL="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+# Owner's decision C (handover/DECISION_LLAMA_SERVER_KEY_20261026.md): agent servers get a stable per-user random key from the launcher.
+# The page asks the launcher for it (stdout: the key alone, exit 0), keeps it in memory, sends it in headers and to `connect` through the
+# environment; never in a URL, a log line or the status JSON (the page fetches it from /api/key only for the Copy button).
+KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]
+
+
+def launcher_key():
+    """The launcher's key for agent servers; None when this launcher has none (before option C) or the command fails."""
+    try:
+        r = subprocess.run(KEY_CMD, capture_output=True, text=True, timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    except Exception:
+        return None
+    k = r.stdout.strip()
+    return k if r.returncode == 0 and re.fullmatch(r"[\x21-\x7e]{8,200}", k) else None
+
+
+def child_env(api_key=None):
+    """The launcher's environment: stats on request, unbuffered UTF-8 output, and the API key (the launcher's --api-key default is LLAMA_API_KEY)."""
+    env = dict(os.environ, MOE_CACHE_STATS_SIGNAL="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+    env.pop("LLAMA_API_KEY", None)
+    if api_key:
+        env["LLAMA_API_KEY"] = api_key
+    return env
 
 
 def child_pid(pid):
@@ -438,14 +460,44 @@ def child_pid(pid):
             return found
         except Exception:
             return None
+    # the launcher also runs short helpers first (planner/plan.py, `llama-server --help`): take the child that serves (--port on its command line)
     try:
         for t in os.listdir(f"/proc/{pid}/task"):
-            kids = open(f"/proc/{pid}/task/{t}/children").read().split()
-            if kids:
-                return int(kids[0])
+            for k in open(f"/proc/{pid}/task/{t}/children").read().split():
+                try:
+                    if b"\0--port\0" in open(f"/proc/{k}/cmdline", "rb").read():
+                        return int(k)
+                except OSError:
+                    pass
     except (OSError, ValueError):
         pass
     return None
+
+
+def alive(pid):
+    if not pid:
+        return False
+    if WINDOWS:
+        try:
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, pid)
+            if not h:
+                return False
+            code = ctypes.c_ulong()
+            ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+            k.CloseHandle(h)
+            return bool(ok) and code.value == 259          # STILL_ACTIVE
+        except Exception:
+            return False
+    return os.path.isdir(f"/proc/{pid}") or _kill0(pid)
+
+
+def _kill0(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def catches_usr1(pid):
@@ -511,17 +563,269 @@ def proc_rss(pid):
 # lines the page lifts out of the log: the launcher's and the plugin's warnings (e.g. the cache shrank because llama-server grew), the plugin
 # disabling itself, and why llama-server stopped
 WARN_RE = re.compile(r"(?i)moe-cache: (warning|.*plugin disabled|.*refus|llama-server (exited|was stopped))|^WARNING|^error: |\binvalid argument\b")
+# ---- agent sessions: the conversations the launcher's warm keeper saved (moe_cache.warm_keeper) ----
+# One file per slot: slots/agent/<model alias>-c<ctx>[-<K type>-<V type>]-s<slot>.bin, written by llama-server's slot save (state file: 'ggsq' magic,
+# version, token count, tokens, KV state) with the context checkpoints appended to the same file. The launcher restores the two largest files of
+# the same model and settings at start; a half-written save is <name>.new.bin.
+SESSION_RE = re.compile(r"^(?P<tag>.+)-s(?P<slot>\d+)\.bin$")
+TAG_RE = re.compile(r"^(?P<model>.+?)-c(?P<ctx>\d+)(?:-(?P<kv>.+))?$")
+AGENT_WORDS = [("opencode", "OpenCode"), ("hermes", "Hermes"), ("claude code", "Claude Code"), ("aider", "Aider"), ("cline", "Cline"),
+               ("continue.dev", "Continue"), ("roo code", "Roo Code"), ("goose", "Goose")]
+
+
+def slot_dir():
+    return os.path.join(mc.CACHE_DIR, "slots", "agent")
+
+
+def session_tag(s):
+    """The tag the launcher gives this server's saved conversations (moe_cache.server: alias, context, KV types; --fast stores the KV as q8_0)."""
+    alias = re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(s.get("model") or ""))
+    ctx = int(s.get("ctx") or (65536 if s.get("agent") else 8192))
+    kv = "-q8_0-q8_0" if s.get("mode") == "fast" else ""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-c{ctx}{kv}").rstrip("-_")
+
+
+def session_tokens(path, n_ids=0):
+    """(token count, the first n_ids token ids) from a slot file's header; (None, []) when it is not one."""
+    import struct
+    try:
+        with open(path, "rb") as f:
+            magic, _, n = struct.unpack("<III", f.read(12))
+            if magic != 0x67677371:                    # 'ggsq' (LLAMA_FILE_MAGIC_GGSQ)
+                return None, []
+            data = f.read(4 * min(n, n_ids))
+            k = len(data) // 4                      # a truncated file gives what it has
+            ids = list(struct.unpack(f"<{k}i", data[:4 * k])) if k else []
+            return n, ids
+    except (OSError, struct.error):
+        return None, []
+
+
+def guess_agent(text):
+    t = (text or "").lower()
+    for w, name in AGENT_WORDS:
+        if w in t:
+            return name
+    return None
+
+
 def warm_files():
-    """Saved agent conversations the launcher restores at the next start (~/.cache/moe-cache/slots/agent/<model>-c<ctx>-s<slot>.bin)."""
+    """Saved agent conversations (newest first), with what the file names and headers say."""
     out = []
-    for f in glob.glob(os.path.join(mc.CACHE_DIR, "slots", "agent", "*-s*.bin")):
-        if f.endswith(".new.bin"):
+    for f in glob.glob(os.path.join(slot_dir(), "*-s*.bin")):
+        name = os.path.basename(f)
+        m = SESSION_RE.match(name)
+        if not m or name.endswith(".new.bin"):
             continue
+        t = TAG_RE.match(m.group("tag"))
         try:
-            out.append({"name": os.path.basename(f), "size": os.path.getsize(f), "t": os.path.getmtime(f)})
+            st = os.stat(f)
+        except OSError:
+            continue
+        out.append({"name": name, "size": st.st_size, "t": st.st_mtime, "slot": int(m.group("slot")), "tag": m.group("tag"),
+                    "model": t.group("model") if t else m.group("tag"), "ctx": int(t.group("ctx")) if t else None,
+                    "kv": t.group("kv") if t and t.group("kv") else "f16", "tokens": session_tokens(f)[0]})
+    return sorted(out, key=lambda x: -x["t"])
+
+
+def move_to_trash(path):
+    """Move a file to the platform's Trash / Recycle Bin and return where it went; raises when that is not possible (never a hard delete)."""
+    path = os.path.abspath(path)
+    if WINDOWS:
+        from ctypes import wintypes
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR), ("pTo", wintypes.LPCWSTR),
+                        ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL), ("hNameMappings", ctypes.c_void_p),
+                        ("lpszProgressTitle", wintypes.LPCWSTR)]
+        # FO_DELETE with FOF_ALLOWUNDO = Recycle Bin; FOF_WANTNUKEWARNING asks the user before Windows would delete for good (e.g. bin too small)
+        buf = ctypes.create_unicode_buffer(path + "\0")           # a list of paths ends with two NULs
+        op = SHFILEOPSTRUCTW(None, 3, ctypes.cast(buf, wintypes.LPCWSTR), None, 0x40 | 0x10 | 0x4 | 0x400 | 0x4000, False, None, None)
+        rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+        if rc != 0 or op.fAnyOperationsAborted or os.path.exists(path):
+            raise OSError(f"the Recycle Bin did not take it (code {rc})")
+        return "the Recycle Bin"
+    gio = shutil_which("gio")
+    if gio:
+        r = subprocess.run([gio, "trash", path], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0 and not os.path.exists(path):
+            return "the Trash"
+    # the freedesktop.org Trash in the user's home (same file system as ~/.cache in the usual set-up): info file first, then a rename
+    if sys.platform == "darwin":
+        raise OSError("moving to the Trash is not supported on this system yet")
+    import datetime, errno
+    trash = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share"), "Trash")
+    os.makedirs(os.path.join(trash, "files"), exist_ok=True); os.makedirs(os.path.join(trash, "info"), exist_ok=True)
+    base, n = os.path.basename(path), 0
+    while True:
+        name = base if n == 0 else f"{base}.{n}"
+        info = os.path.join(trash, "info", name + ".trashinfo")
+        try:
+            fd = os.open(info, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            break
+        except FileExistsError:
+            n += 1
+    with os.fdopen(fd, "w") as f:
+        f.write(f"[Trash Info]\nPath={urllib.parse.quote(path)}\nDeletionDate={datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')}\n")
+    try:
+        os.rename(path, os.path.join(trash, "files", name))
+    except OSError as e:
+        os.unlink(info)
+        if e.errno == errno.EXDEV:
+            raise OSError("the Trash is on another drive: move or delete the file yourself") from e
+        raise
+    return "the Trash"
+
+
+def shutil_which(prog):
+    import shutil
+    return shutil.which(prog)
+
+
+# ---- quick benchmark: the method of windows-kit/pc_speed.ps1 (RESULTS 54/55), for the running server ----
+BENCH_CSV = os.path.join(mc.CACHE_DIR, "bench.csv")
+BENCH_PROMPTS = ["Write a short story about a lighthouse keeper who finds a message in a bottle.",
+                 "Explain how a CPU cache works, with an example of a cache miss.",
+                 "Describe the water cycle step by step for a ten-year-old."]
+BENCH_PARA = ("The history of computing spans centuries, from mechanical calculators and punched cards to vacuum tubes, transistors, integrated "
+              "circuits and the microprocessors in every phone. ")
+BENCH_LONG = "Summarise the following text in five bullet points.\n" + BENCH_PARA * 95          # about 3.5k tokens
+BENCH_FIELDS = ["time", "model", "size_gb", "mode", "ram_gb", "vram_gib", "ctx", "gpu", "os", "decode_1", "decode_2", "decode_mean", "decode_tokens",
+                "prefill_tokens", "prefill", "hit_rate", "warmup_s", "command", "start", "load_s", "flush"]
+
+
+def read_bench_rows(limit=20):
+    try:
+        with open(BENCH_CSV, newline="", encoding="utf-8") as f:
+            return list(csv.DictReader(f))[-limit:]
+    except OSError:
+        return []
+
+
+def append_bench_row(row):
+    os.makedirs(os.path.dirname(BENCH_CSV), exist_ok=True)
+    migrate_bench_csv()
+    new = not os.path.isfile(BENCH_CSV)
+    with open(BENCH_CSV, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=BENCH_FIELDS, extrasaction="ignore")
+        if new:
+            w.writeheader()
+        w.writerow({k: csv_safe(v) for k, v in row.items()})
+
+
+def migrate_bench_csv():
+    """An older bench.csv (fewer columns) gets the current header; its rows are kept (old file saved as bench.csv.bak first)."""
+    try:
+        with open(BENCH_CSV, newline="", encoding="utf-8") as f:
+            rd = csv.reader(f)
+            head = next(rd, None)
+    except OSError:
+        return
+    if head is None or head == BENCH_FIELDS:
+        return
+    import shutil
+    shutil.copy2(BENCH_CSV, BENCH_CSV + ".bak")
+    with open(BENCH_CSV, newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    with open(BENCH_CSV + ".tmp", "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=BENCH_FIELDS, extrasaction="ignore")
+        w.writeheader()
+        for r in rows:
+            w.writerow(dict({k: "" for k in BENCH_FIELDS}, **{k: v for k, v in r.items() if k in BENCH_FIELDS}, start=r.get("start") or "warm"))
+    os.replace(BENCH_CSV + ".tmp", BENCH_CSV)
+
+
+# ---- cold start for a fair benchmark: the model out of the OS file cache before the server starts again ----
+# Stock llama-server reads the model through the file cache (a warm cache from an earlier run makes it look faster than a first start); the
+# plugin reads experts unbuffered. Linux: posix_fadvise(DONTNEED) drops a file's clean cached pages without root (pages another process maps
+# stay, so it refuses then). Windows: tools/win_flush_cache.ps1 only READS other big files until the cache no longer holds the model.
+WIN_FLUSH = os.path.join(HERE, "tools", "win_flush_cache.ps1")
+
+
+def cold_start_support():
+    if WINDOWS:
+        ps = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        ok = os.path.isfile(WIN_FLUSH) and os.path.isfile(ps)
+        return {"available": ok, "method": "reads other big files (tools\\win_flush_cache.ps1) so Windows' file cache drops the model; nothing is written",
+                "needs_other": True, "why": "" if ok else "tools\\win_flush_cache.ps1 or PowerShell not found"}
+    if hasattr(os, "posix_fadvise") and sys.platform.startswith("linux"):
+        return {"available": True, "method": "drops the model's pages from the page cache (posix_fadvise, no root needed)", "needs_other": False, "why": ""}
+    return {"available": False, "method": "", "needs_other": False, "why": "not available on this system"}
+
+
+def mapped_by(path):
+    """PIDs (of this user's processes) that map this file now; Linux only, [] elsewhere."""
+    out, real = [], os.path.realpath(path)
+    for d in glob.glob("/proc/[0-9]*/maps"):
+        try:
+            with open(d, encoding="utf-8", errors="replace") as f:
+                if any(line.rstrip("\n").endswith(" " + real) or line.rstrip("\n").endswith("\t" + real) for line in f):
+                    out.append(int(d.split("/")[2]))
         except OSError:
             pass
-    return sorted(out, key=lambda x: -x["t"])[:10]
+    return out
+
+
+def cached_fraction(path):
+    """Share of the file's pages in the page cache (Linux mincore); None when it cannot be measured."""
+    try:
+        import mmap
+        libc = ctypes.CDLL(None, use_errno=True)
+        size = os.path.getsize(path)
+        if not size:
+            return 0.0
+        page = mmap.PAGESIZE
+        with open(path, "rb") as f:
+            m = mmap.mmap(f.fileno(), size, access=mmap.ACCESS_COPY)       # private: nothing can reach the file
+            try:
+                addr = ctypes.addressof(ctypes.c_char.from_buffer(m))
+                n = (size + page - 1) // page
+                vec = (ctypes.c_ubyte * n)()
+                if libc.mincore(ctypes.c_void_p(addr), ctypes.c_size_t(size), vec) != 0:
+                    return None
+                return sum(v & 1 for v in vec) / n
+            finally:
+                del addr
+                m.close()
+    except Exception:
+        return None
+
+
+def flush_model_cache(model, other):
+    """Push the model (all its parts) out of the OS file cache. Returns (ok, one line on what happened)."""
+    parts = mc.model_parts(model)
+    if WINDOWS:
+        ps = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+        folders = [o for o in other if o and os.path.exists(o)]
+        if not folders:
+            return False, "no folder with other big files to read (set one under Cold start)"
+        r = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", WIN_FLUSH, "-Target"] + parts + ["-Other"] + folders,
+                           capture_output=True, text=True, timeout=3600)
+        out = " ".join(l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip())
+        return r.returncode == 0, out or f"win_flush_cache.ps1 exit code {r.returncode}"
+    users = sorted({pid for p in parts for pid in mapped_by(p)})
+    if users:
+        return False, f"another program uses this model file right now (PID {', '.join(map(str, users))}): not flushed, so it is not slowed down"
+    before = [cached_fraction(p) for p in parts]
+    for p in parts:
+        fd = os.open(p, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+    after = [cached_fraction(p) for p in parts]
+    def pct(xs):
+        xs = [x for x in xs if x is not None]
+        return f"{100 * sum(xs) / len(xs):.0f} %" if xs else "?"
+    left = [x for x in after if x is not None]
+    if left and sum(left) / len(left) > 0.5:      # e.g. a file on tmpfs, which lives in the cache
+        return False, f"the file system kept the model in memory (cached before {pct(before)}, after {pct(after)})"
+    return True, f"dropped the model from the page cache (cached before {pct(before)}, after {pct(after)})"
+
+
+def csv_safe(v):
+    """A cell a spreadsheet would run as a formula (=, +, -, @, tab, CR first; e.g. from a model file name) gets a leading apostrophe."""
+    v = "" if v is None else str(v)
+    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r", "\uff20", "\uff1d", "\uff0b", "\uff0d") else v
 
 
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) tokens.*?([\d.]+) tokens per second")
@@ -553,6 +857,9 @@ class Runner:
         self.warm = []                     # the launcher's "warm session:" lines (agent mode: saved / restored conversations)
         self.decisions = []                # what the launcher decided before starting llama-server (its "moe-cache: ..." lines up to the URL line)
         self.deciding = True
+        self.bench = {"state": "idle"}
+        self.auto_key = None               # the launcher's key (agent mode, no key typed on the page)
+        self.agent_guess = {}              # (file, mtime) -> agent name guessed from the conversation's start
 
     # -- control --
     def start(self, s):
@@ -575,7 +882,7 @@ class Runner:
 
     def life(self, s, got, ready):
         try:
-            kw = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "env": child_env()}
+            kw = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "env": child_env(s.get("api_key"))}
             if sys.platform.startswith("linux"):
                 kw["preexec_fn"] = mc._die_with_parent_linux
             p = self.p = got["p"] = subprocess.Popen(LAUNCHER + server_args(s), **kw)
@@ -589,11 +896,62 @@ class Runner:
             except Exception:
                 pass
         self.state, self.started = "starting", time.time()
-        self.add_line("ui: " + shown_command(s))
+        if s.get("agent") and not s.get("api_key"):
+            self.auto_key = launcher_key()
+        self.add_line("ui: " + shown_command(s) + (" (API key: the launcher's agent key)" if self.auto_key else ""))
         threading.Thread(target=self.read, args=(p,), daemon=True).start()
         ready.set()
         self.poll(p)
         p.wait()
+
+    def sessions(self):
+        """The saved agent conversations, which of them this server restored at start, a guess of the agent, and the server's live slots."""
+        files = warm_files()
+        s = self.settings
+        running = self.state == "ready" and s.get("agent")
+        tag = session_tag(s) if s.get("model") else None
+        restored_slots = {int(m.group(1)) for e in self.warm for m in [re.search(r"restored .* into slot (\d+)", e["line"])] if m}
+        failed = {m.group(1) for e in self.warm for m in [re.search(r"could not restore (\S+)", e["line"])] if m}
+        port = int(s.get("port") or 8080)
+        for f in files:
+            f["this_server"] = bool(tag) and f["tag"] == tag
+            f["restored"] = f["this_server"] and self.state in ("starting", "ready") and f["slot"] in restored_slots
+            f["restore_failed"] = f["name"] in failed
+            f["agent"] = None
+            if running and f["this_server"]:
+                ck = (f["name"], f["t"])
+                if ck not in self.agent_guess:
+                    _, ids = session_tokens(os.path.join(slot_dir(), f["name"]), 600)
+                    st, body = mc.http(f"http://127.0.0.1:{port}/detokenize", {"tokens": ids}, api_key=self.key(), timeout=10) if ids else (0, "")
+                    try:
+                        self.agent_guess[ck] = guess_agent(json.loads(body).get("content")) if st == 200 else None
+                    except ValueError:
+                        self.agent_guess[ck] = None
+                f["agent"] = self.agent_guess[ck]
+        live = None
+        if self.state == "ready":
+            st, body = mc.http(f"http://127.0.0.1:{port}/slots", api_key=self.key(), timeout=3)
+            if st == 200:
+                try:
+                    live = [{"id": x.get("id"), "tokens": x.get("n_prompt_tokens"), "processing": bool(x.get("is_processing")), "n_ctx": x.get("n_ctx")}
+                            for x in json.loads(body)]
+                except (ValueError, AttributeError):
+                    live = None
+            elif st in (401, 403):
+                live = "no access (API key)"
+        return {"dir": slot_dir(), "files": files, "live": live, "tag": tag, "agent_mode": bool(s.get("agent")), "no_warm": bool(s.get("no_warm")),
+                "running": self.state in ("starting", "ready")}
+
+    def key(self):
+        """The key llama-server needs: the one typed on the page, else the launcher's agent key, else None."""
+        return self.settings.get("api_key") or self.auto_key
+
+    def key_info(self):
+        k = self.key()
+        if not k:
+            return {"in_use": False}
+        return {"in_use": True, "source": "typed on this page" if self.settings.get("api_key") else "the launcher's agent key (stable for your user)",
+                "ends": k[-4:]}
 
     def stop(self):
         p = self.p
@@ -621,6 +979,9 @@ class Runner:
     def read(self, p):
         for raw in iter(p.stdout.readline, b""):
             line = raw.decode("utf-8", errors="replace").rstrip()
+            k = self.key()
+            if k and k in line:
+                line = line.replace(k, "KEY")                  # e.g. the launcher's agent snippets print it
             if line.startswith("moe-cache-stats "):
                 try:
                     self.take_snapshot(json.loads(line[len("moe-cache-stats "):]))
@@ -679,7 +1040,7 @@ class Runner:
         self.cache = c
 
     def poll(self, p):
-        api_key = self.settings.get("api_key")
+        api_key = self.key()
         port = int(self.settings.get("port") or 8080)
         n_prev, t_prev, tick = None, None, 0
         while p.poll() is None:
@@ -688,7 +1049,8 @@ class Runner:
                 self.state = "ready"
                 if not self.mode:
                     self.mode = "llama-server"
-            self.pid = self.pid or child_pid(p.pid)
+            if self.state == "ready" and not alive(self.pid):     # found once it serves, so not one of the launcher's short helpers
+                self.pid = child_pid(p.pid)
             self.rss = proc_rss(self.pid) if self.pid else None
             if self.state == "ready":
                 st, body = mc.http(f"http://127.0.0.1:{port}/slots", api_key=api_key, timeout=2)
@@ -712,6 +1074,97 @@ class Runner:
             self.hist.append([round(time.time(), 1), self.live_tps, self.cache.get("hit_rate")])
             time.sleep(1)
 
+    # -- quick benchmark --
+    def start_bench(self, cold=False, other=None):
+        if self.state != "ready":
+            raise ValueError("start a model first")
+        if self.bench.get("state") == "running":
+            raise ValueError("a benchmark is already running")
+        if cold and not cold_start_support()["available"]:
+            raise ValueError("cold start: " + cold_start_support()["why"])
+        self.bench = {"state": "running", "step": "warm-up", "started": time.time(), "cold": bool(cold)}
+        threading.Thread(target=self.run_bench, args=(self.p, cold, list(other or [])), daemon=True).start()
+
+    def cold_restart(self, b, other):
+        """Stop the server, push the model out of the file cache, start it again with the same settings; returns (seconds to ready, flush line)."""
+        s = dict(self.settings)
+        b["step"] = "cold start: stopping the server"
+        self.stop()
+        b["step"] = "cold start: pushing the model out of the file cache"
+        ok, line = flush_model_cache(s["model"], other)
+        b["flush"] = line
+        b["step"] = "cold start: starting the server again"
+        t0 = time.time()
+        self.start(s)
+        self.bench = b                          # start() resets the runner; the benchmark goes on
+        while self.state == "starting" and time.time() - t0 < 1800:
+            time.sleep(0.5)
+        if self.state != "ready":
+            raise RuntimeError(f"the server did not come back ({self.state})")
+        return time.time() - t0, ("" if ok else "partial: ") + line
+
+    def complete(self, prompt, n, ignore_eos=False):
+        """One /completion as pc_speed.ps1 asks it: greedy, fixed seed, no prompt reuse, so stock and moe-cache runs compare. The decode runs also
+        set ignore_eos: a model that finishes its answer early would otherwise time fewer tokens (Granite in CI stopped at 149 of 256)."""
+        port = int(self.settings.get("port") or 8080)
+        st, body = mc.http(f"http://127.0.0.1:{port}/completion", dict({"prompt": prompt, "n_predict": n, "temperature": 0, "seed": 42, "cache_prompt": False}, **({"ignore_eos": True} if ignore_eos else {})),
+                           api_key=self.key(), timeout=1800)
+        if st != 200:
+            raise RuntimeError(f"HTTP {st}: {body[:200]}" if st else "the server did not answer")
+        return json.loads(body)["timings"]
+
+    def cache_counts(self):
+        """(hits, misses) right now: asks the plugin for a fresh snapshot; None in stock mode."""
+        if not self.pid or not ask_snapshot(self.pid):
+            return None
+        before = self.snap
+        for _ in range(20):
+            time.sleep(0.1)
+            if self.snap is not before:
+                break
+        return (self.snap[1].get("hits", 0), self.snap[1].get("misses", 0)) if self.snap else None
+
+    def run_bench(self, p, cold=False, other=()):
+        b = self.bench
+        load_s, flush = None, ""
+        try:
+            if cold:
+                load_s, flush = self.cold_restart(b, other)
+                p = self.p
+                b["step"] = "warm-up"
+            t0 = time.time()
+            self.complete(BENCH_PROMPTS[0], 32)
+            warm = time.time() - t0
+            c0 = self.cache_counts()
+            dec, ntok = [], []
+            for i, q in enumerate(BENCH_PROMPTS[1:3]):
+                b["step"] = f"decode {i + 1} of 2 (256 tokens)"
+                t = self.complete(q, 256, ignore_eos=True)
+                dec.append(t["predicted_per_second"]); ntok.append(t.get("predicted_n"))
+            c1 = self.cache_counts()
+            b["step"] = "prefill (about 3.5k tokens)"
+            pf = self.complete(BENCH_LONG, 16)
+            hr = None
+            if c0 and c1 and (c1[0] - c0[0]) + (c1[1] - c0[1]) > 0:
+                hr = (c1[0] - c0[0]) / ((c1[0] - c0[0]) + (c1[1] - c0[1]))
+            s, sy = self.settings, system_info()
+            row = {"time": time.strftime("%Y-%m-%d %H:%M"), "model": os.path.basename(s.get("model", "")), "size_gb": f"{size_of(s.get('model', '')) / 1e9:.1f}",
+                   "mode": self.mode or "?", "ram_gb": s.get("ram") or "auto", "vram_gib": s.get("vram") or "auto", "ctx": s.get("ctx") or 8192,
+                   "gpu": sy.get("gpu") or "none", "os": sy.get("os"), "decode_1": f"{dec[0]:.2f}", "decode_2": f"{dec[1]:.2f}",
+                   "decode_mean": f"{sum(dec) / len(dec):.2f}", "decode_tokens": "/".join(str(n) for n in ntok), "prefill_tokens": pf.get("prompt_n"),
+                   "prefill": f"{pf['prompt_per_second']:.1f}", "hit_rate": f"{hr:.3f}" if hr is not None else "", "warmup_s": f"{warm:.1f}",
+                   "command": shown_command(s), "start": "cold" if cold else "warm", "load_s": f"{load_s:.0f}" if load_s is not None else "",
+                   "flush": flush}
+            try:
+                append_bench_row(row)
+                b["csv"] = BENCH_CSV
+            except OSError as e:
+                b["csv_error"] = str(e)
+            b.update(state="done", result=row, step="")
+            self.add_line(f"ui: quick benchmark: decode {row['decode_1']} / {row['decode_2']} tok/s, prefill {row['prefill_tokens']} tokens at {row['prefill']} tok/s")
+        except Exception as e:
+            b.update(state="failed", error=str(e) if p.poll() is None else "the server stopped during the benchmark", step="")
+
     def status(self):
         s = self.settings
         port = int(s.get("port") or 8080)
@@ -719,7 +1172,7 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
+                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "api_key": self.key_info(), "warm": {"events": self.warm},
                 "system": system_info()}
 
 
@@ -752,22 +1205,55 @@ class Store:
         return self.models
 
 
+# what the page may do: its own scripts and requests, llama-server's chat page in the frame, never be framed itself (clickjacking)
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+       "frame-src http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
+MAX_BODY = 64 * 1024
+
+
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
+    token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in a cookie
     server_version = "moe-cache-ui"
+    timeout = 30                # a client that sends nothing does not hold a thread forever
 
     def log_message(self, *a):
         pass
 
-    def allowed(self):
-        """Only pages from this server: the Host must be ours (no DNS rebinding) and a foreign Origin is refused (no cross-site requests)."""
+    def allowed(self, navigation=False):
+        """Only pages from this server: the Host must be ours (no DNS rebinding), a foreign Origin is refused and the browser must say the request
+        comes from this page (Sec-Fetch-Site same-origin, or 'none' for opening the page itself from the address bar or the launcher)."""
         port = self.server.server_address[1]
         ok = {f"127.0.0.1:{port}", f"localhost:{port}"}
         if self.headers.get("Host") not in ok:
             return False
         o = self.headers.get("Origin")
-        return o is None or o in {"http://" + h for h in ok}
+        if o is not None and o not in {"http://" + h for h in ok}:
+            return False
+        site = self.headers.get("Sec-Fetch-Site")
+        return site is None or site == "same-origin" or (navigation and site == "none")
+
+    def cookie_name(self):
+        return f"moe_cache_ui_{self.server.server_address[1]}"       # cookies are not per port: the name is
+
+    def has_token(self):
+        """The per-run token, from the page's cookie or an X-MoeCache-Token header (scripts, tests): other users of a shared machine can reach
+        127.0.0.1 too, but not this token (it is printed for and opened by the user who started the page)."""
+        t = self.headers.get("X-MoeCache-Token")
+        if not t:
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == self.cookie_name():
+                    t = v
+        return bool(t) and secrets.compare_digest(t, self.token)
+
+    def end_headers(self):
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Content-Security-Policy", CSP)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        super().end_headers()
 
     def send(self, code, body, ctype="application/json"):
         if not isinstance(body, (bytes, str)):
@@ -782,32 +1268,54 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if not self.allowed():
-            return self.send(403, {"error": "forbidden"})
         u = urllib.parse.urlparse(self.path)
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query).items()}
+        if not self.allowed(navigation=u.path in ("/", "/index.html")):
+            return self.send(403, {"error": "forbidden"})
+        if u.path in ("/", "/index.html"):
+            if q.get("t") and secrets.compare_digest(q["t"], self.token):
+                # the launcher's link: keep the token in a cookie only this page sends, and drop it from the address bar
+                self.send_response(303)
+                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
+                self.send_header("Location", "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            if not self.has_token():
+                return self.send(403, "<!doctype html><meta charset=utf-8><title>moe-cache</title><p style='font:15px system-ui;margin:2em'>Open the "
+                                 "address the launcher printed (it ends in <code>?t=…</code>): this page only answers the user who started it.</p>",
+                                 "text/html")
+            return self.send(200, open(PAGE, "rb").read(), "text/html")
+        if not self.has_token():
+            return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
-            if u.path in ("/", "/index.html"):
-                return self.send(200, open(PAGE, "rb").read(), "text/html")
             if u.path == "/api/system":
-                return self.send(200, dict(system_info(), folders=self.store.folders(), last=self.store.saved.get("last", {}),
+                return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}),
                                            llama_server=self.store.ls, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
                 m = self.known(q.get("model"))
+                ps = self.settings(dict(q, model=m))             # the same checks as Start (numbers in range, no nan / inf)
+                q = {"ram": str(ps["ram"]) if "ram" in ps else "", "vram": str(ps["vram"]) if "vram" in ps else "", "ctx": str(ps.get("ctx", 8192)),
+                     "mode": ps["mode"], "agent": "1" if ps["agent"] else ""}
                 key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"))
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
                                                                              q.get("agent") in ("1", "true")))
                 return self.send(200, hit[1])
-            if u.path == "/api/command":
-                s = self.settings(q)
-                return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
+            if u.path == "/api/bench":
+                return self.send(200, {"csv": BENCH_CSV, "rows": read_bench_rows()})
+            if u.path == "/api/sessions":
+                return self.send(200, self.runner.sessions())
+            if u.path == "/api/key":                       # for the Copy button only (token-protected, not cached)
+                if self.runner.state not in ("starting", "ready") or not self.runner.key():
+                    raise ValueError("no API key in use")
+                return self.send(200, {"key": self.runner.key()})
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
                 return self.send(200, {"lines": [[n, l] for n, l in list(self.runner.log) if n > since]})
@@ -818,10 +1326,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self.allowed() or not (self.headers.get("Content-Type") or "").startswith("application/json"):
+        if not self.allowed() or not (self.headers.get("Content-Type") or "").startswith("application/json") or not self.has_token():
             return self.send(403, {"error": "forbidden"})
         try:
-            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if not 0 <= n <= MAX_BODY:
+            self.close_connection = True
+            return self.send(413, {"error": "request too large"})
+        try:
+            body = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("a JSON object is expected")
             if self.path == "/api/folders":
                 f = os.path.abspath(os.path.expanduser(str(body.get("add") or body.get("remove") or "")))
                 lst = self.store.saved.setdefault("folders", [])
@@ -840,6 +1357,28 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.save()
                 self.runner.start(s)
                 return self.send(200, self.runner.status())
+            if self.path == "/api/command":
+                s = self.settings(body)
+                return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
+            if self.path == "/api/sessions/trash":
+                name = str(body.get("name") or "")
+                f = next((x for x in warm_files() if x["name"] == name), None)
+                if not f:
+                    raise ValueError("no such saved session (refresh)")
+                where = move_to_trash(os.path.join(slot_dir(), name))
+                self.runner.add_line(f"ui: moved the saved agent session {name} to {where}")
+                return self.send(200, {"ok": True, "where": where, "running_note": "the running server keeps it in memory and may save it again"
+                                       if self.runner.state == "ready" and f.get("tag") == session_tag(self.runner.settings) else ""})
+            if self.path == "/api/bench":
+                other = body.get("other") or []
+                if not isinstance(other, list) or len(other) > 20 or not all(isinstance(x, str) and len(x) < 1000 for x in other):
+                    raise ValueError("other: a list of folders")
+                other = [os.path.abspath(os.path.expanduser(x)) for x in other if x.strip()]
+                for x in other:
+                    if not os.path.exists(x):
+                        raise ValueError(f"no such folder or file: {x}")
+                self.runner.start_bench(cold=bool(body.get("cold")), other=other or self.store.folders())
+                return self.send(200, self.runner.bench)
             if self.path == "/api/stop":
                 threading.Thread(target=self.runner.stop, daemon=True).start()
                 return self.send(200, {"ok": True})
@@ -849,7 +1388,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("agents: opencode, hermes")
                 if self.runner.state != "ready":
                     raise ValueError("start a server first (with Agent mode on)")
-                return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.settings.get("api_key") or "", bool(body.get("write"))))
+                return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.key() or "", bool(body.get("write"))))
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:
@@ -865,16 +1404,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def settings(self, d):
         s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("exact", "fast", "hybrid") else "exact",
-             "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
-        for k, conv in (("ram", float), ("vram", float), ("ctx", int), ("port", int)):
-            v = d.get(k)
-            if v not in (None, ""):
-                s[k] = conv(v)
-        if not 1 <= s.get("port", 8080) <= 65535 or s.get("ctx", 8192) < 512:
-            raise ValueError("bad port or context")
+             "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+        for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),
+                                      ("ctx", 512, 1048576, int, "context"), ("port", 1, 65535, int, "port")):
+            x = number(d.get(k), lo, hi, conv, what)
+            if x is not None:
+                s[k] = x
         if s.get("api_key") and not re.fullmatch(r"[\x21-\x7e]{1,200}", s["api_key"]):
             raise ValueError("the API key may only contain visible ASCII characters")
         return s
+
+
+def number(v, lo, hi, conv=float, what="value"):
+    """A finite number in [lo, hi] (no nan / inf), or None for empty."""
+    if v in (None, ""):
+        return None
+    try:
+        x = conv(float(v)) if conv is int else conv(v)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"{what}: not a number")
+    if not (isinstance(x, (int, float)) and math.isfinite(x) and lo <= x <= hi):
+        raise ValueError(f"{what} must be between {lo} and {hi}")
+    return x
 
 
 def connect_agent(agent, url, api_key, write):
@@ -902,9 +1453,9 @@ def connect_agent(agent, url, api_key, write):
     return out
 
 
-def make_server(port=8070, ls=None):
+def make_server(port=8070, ls=None, token=None):
     store = Store(ls or os.environ.get("LLAMA_SERVER", "llama-server"))
-    h = type("H", (Handler,), {"store": store, "runner": Runner()})
+    h = type("H", (Handler,), {"store": store, "runner": Runner(), "token": token or secrets.token_urlsafe(24)})
     srv = ThreadingHTTPServer(("127.0.0.1", port), h)
     srv.daemon_threads = True
     return srv
@@ -922,8 +1473,8 @@ def ui(argv):
         raise SystemExit(f"moe-cache: cannot listen on 127.0.0.1:{a.ui_port} ({e}): --ui-port N to pick another port")
     if WINDOWS:
         threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
-    url = f"http://127.0.0.1:{srv.server_address[1]}"
-    mc.say(f"moe-cache: control page at {url} (this machine only; Ctrl-C stops it and any server it started)")
+    url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
+    mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if not a.no_browser:
         import webbrowser
         threading.Timer(0.5, webbrowser.open, args=(url,)).start()
