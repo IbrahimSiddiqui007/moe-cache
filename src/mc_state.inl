@@ -94,8 +94,9 @@ struct state_t {
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
 #ifdef _WIN32
     bool   win_buffered = false;                // MOE_CACHE_WIN_BUFFERED=1: model files opened without FILE_FLAG_NO_BUFFERING (see the constructor)
+    bool   win_random = false;                  // MOE_CACHE_WIN_BUFFERED=2: and with FILE_FLAG_RANDOM_ACCESS
 #else
-    static constexpr bool win_buffered = false;
+    static constexpr bool win_buffered = false, win_random = false;
 #endif
     size_t budget = 0;
     size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
@@ -214,11 +215,15 @@ struct state_t {
         // a 32 GB PC: 3-5 tok/s first session vs 13-16 warm stock). Same aligned offsets and lengths, so the same bytes. An expert then sits twice in
         // RAM (cache + file cache), but the file-cache copy moves to the standby list, which Windows counts as available and gives back on demand:
         // the budget (available + this process's private memory) does not shrink for it.
+        // =2: also FILE_FLAG_RANDOM_ACCESS (no read-ahead around each expert; A/B switch)
         if (const char * v = getenv("MOE_CACHE_WIN_BUFFERED")) {
             win_buffered = strcmp(v, "0") != 0;
+            win_random = strcmp(v, "2") == 0;
         }
         if (win_buffered) {
-            fprintf(stderr, "moe-cache: MOE_CACHE_WIN_BUFFERED: experts are read through the Windows file cache\n");
+            plat::count_file_cache() = true;
+            fprintf(stderr, "moe-cache: MOE_CACHE_WIN_BUFFERED: experts are read through the Windows file cache%s; its %.2f GiB in memory count as available\n",
+                    win_random ? " (random access, no read-ahead)" : "", plat::file_cache_ws() / 1073741824.0);
         }
 #endif
         // split models: name-00001-of-0000N.gguf -> open all parts
@@ -257,7 +262,7 @@ struct state_t {
                 file_shard[nm] = (int) si;
             }
             gguf_free(g);
-            const plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered);
+            const plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
             if (!f.ok()) {
                 fail("cannot open " + shards[si] + (win_buffered ? std::string() : std::string(" with O_DIRECT")));
                 return;

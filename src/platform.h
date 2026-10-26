@@ -152,11 +152,12 @@ inline FILE * fopen_utf8(const char * path, const char * mode) {
 
 // ---- files ----
 // direct = bypass the OS page cache (O_DIRECT / FILE_FLAG_NO_BUFFERING). Offsets, lengths and buffers must then be 4096-aligned.
-inline file_t file_open(const char * path, bool direct) {
+// random = Windows, buffered: FILE_FLAG_RANDOM_ACCESS (no read-ahead around each read); ignored elsewhere
+inline file_t file_open(const char * path, bool direct, bool random = false) {
     file_t f;
 #ifdef _WIN32
     f.h = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                      FILE_FLAG_OVERLAPPED | (direct ? FILE_FLAG_NO_BUFFERING : 0), nullptr);
+                      FILE_FLAG_OVERLAPPED | (direct ? FILE_FLAG_NO_BUFFERING : 0) | (!direct && random ? FILE_FLAG_RANDOM_ACCESS : 0), nullptr);
 #else
     f.fd = open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
 #endif
@@ -306,6 +307,32 @@ inline void sleep_ms(int ms) {
 }
 
 // ---- memory accounting ----
+// Windows: bytes in the system file cache working set: file data read through the cache that Windows keeps mapped. It trims it to the standby
+// list as soon as memory is needed, so it is as good as available, but GlobalMemoryStatusEx counts it as in use. 0 elsewhere or if unknown.
+inline size_t file_cache_ws() {
+#ifdef _WIN32
+    struct {    // SYSTEM_FILECACHE_INFORMATION (NtQuerySystemInformation class 21)
+        SIZE_T CurrentSize, PeakSize;
+        ULONG  PageFaultCount;
+        SIZE_T MinimumWorkingSet, MaximumWorkingSet, CurrentSizeIncludingTransitionInPages, PeakSizeIncludingTransitionInPages;
+        ULONG  TransitionRePurposeCount, Flags;
+    } info;
+    typedef LONG (WINAPI * nqsi_t)(int, void *, ULONG, ULONG *);
+    static const nqsi_t fn = (nqsi_t) (void *) GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation");   // no import: looked up
+    memset(&info, 0, sizeof(info));
+    if (fn && fn(21, &info, (ULONG) sizeof(info), nullptr) == 0) {
+        return (size_t) info.CurrentSize;
+    }
+#endif
+    return 0;
+}
+// set by the plugin when it reads the model through the Windows file cache (MOE_CACHE_WIN_BUFFERED): that cache is then counted as available,
+// else a warm start found the model's cached pages "in use" and started with a smaller budget (PC, Qwen3.5-122B: 9.1 instead of 12 GiB)
+inline bool & count_file_cache() {
+    static bool on = false;
+    return on;
+}
+
 // memory this process may use: Linux = smallest cgroup memory.max on the path, else MemAvailable; Windows = job limit, else available physical memory
 inline size_t mem_limit() {
     size_t lim = (size_t) -1;
@@ -319,7 +346,7 @@ inline size_t mem_limit() {
     if (lim == (size_t) -1) {
         MEMORYSTATUSEX ms;
         ms.dwLength = sizeof(ms);
-        if (GlobalMemoryStatusEx(&ms)) { lim = (size_t) ms.ullAvailPhys; }
+        if (GlobalMemoryStatusEx(&ms)) { lim = (size_t) ms.ullAvailPhys + (count_file_cache() ? file_cache_ws() : 0); }
     }
 #else
     std::string path;
@@ -371,7 +398,7 @@ inline size_t mem_available() {
 #ifdef _WIN32
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
-    if (GlobalMemoryStatusEx(&ms)) { r = (size_t) ms.ullAvailPhys; }
+    if (GlobalMemoryStatusEx(&ms)) { r = (size_t) ms.ullAvailPhys + (count_file_cache() ? file_cache_ws() : 0); }
 #else
     if (FILE * f = fopen("/proc/meminfo", "r")) {
         char line[256];
