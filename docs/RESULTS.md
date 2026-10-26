@@ -1405,3 +1405,9 @@ equal with the single-file build (225,330 bytes of code). The Windows cross-buil
 (24.6 KB per token, 1.50 GiB at 64k) plus indexer keys (~0.19 GiB) plus the recurrent state of 36 layers (~117 MB per slot, 0.44 GiB for 4 slots):
 2.13 GiB against the tuner's 2.44 GiB. The ~0.3 GiB gap is far from the ~0.7 GiB that `-ub 1024` at 64k needs. (Qwen3.6: ~0.8 GiB gap, worth about
 one expert layer, not the micro-batch step.)
+
+**I6 (`--fast` also uses a q8_0 KV cache): done.** Quality of the q8_0 KV cache alone (kl_run.sh, Flash-Next, 6 GiB, exact routing): **KL 0.0045,
+same top token 98.2 %** (today's `--fast` routing alone: 0.0115; yardstick 0.243). It halves the KV memory, which at agent contexts is what a bigger
+micro-batch needs: in agent mode (ctx 65536) the tuner now picks `-ub 1024` instead of 512 for Flash-Next. Fit check, Flash-Next, `--agent`, 23 GB
+limit, one run each (prefill_req.py): exact 49.6 / 48.0 / 52.2 / 52.3 tok/s on 2.4k / 1.9k / 5.0k / 5.4k prompts; `--fast` 69.5 / 80.7 / 81.5 / 78.8
+(about +55 %); no block fell back to the CPU, no out-of-memory; decode 8.2-11.6 vs 8.2-10.8. A `-ctk` / `-ctv` given after `--` wins.

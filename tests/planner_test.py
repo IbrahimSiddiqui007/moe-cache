@@ -82,6 +82,8 @@ for want in ("-c 65536", "--jinja", "--ctx-checkpoints 8", "--alias ", "--slot-s
 check("-c 32768" in dry("--agent", "--ctx", "32768"), "--agent --ctx 32768 keeps the given context")
 check("--slot-save-path" not in dry("--agent", "--no-warm"), "--agent --no-warm: no warm-session slot directory")
 check("--jinja" not in dry(), "no --agent: the command is unchanged (no --jinja added)")
+check("-ctk q8_0 -ctv q8_0" in dry("--fast") and "-ctk" not in dry(), "--fast adds a q8_0 KV cache (I6); the exact default does not")
+check(dry("--fast", "--", "-ctk", "f16").count("-ctk") == 1, "--fast keeps a -ctk given after the --")
 snip = L.agent_snippets(8099, "m1", 65536, None)
 check("base_url: http://127.0.0.1:8099/v1" in snip and '"baseURL": "http://127.0.0.1:8099/v1"' in snip and "context_length: 65536" in snip,
       "agent snippets: Hermes and OpenCode blocks name the base URL and the context")

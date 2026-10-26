@@ -392,7 +392,8 @@ def exit_reason(rc, ready):
 # ---- server ----
 
 SERVER_HELP = """\
---fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD.
+--fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
+           also a q8_0 KV cache (half the KV memory; KL 0.0045 on its own, RESULTS 53).
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31)
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
@@ -537,6 +538,11 @@ def server(argv):
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", a.ram))
+    # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
+    # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
+    kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
+    if kv_q8:
+        extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
     if a.fast:
         env.append(("MOE_CACHE_ROUTE", "skip"))
         say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
@@ -586,7 +592,7 @@ def server(argv):
             from gguf_plan import tune
             free = float(a.vram) * 2**30 if a.vram else None          # GiB, the same unit as the planner's --vram-gib
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
-            tuned = tune(model, ctx, free=free, want_cache=gcache != "off", **kw)
+            tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
         except Exception:
             tuned = None
     ub = a.ub
