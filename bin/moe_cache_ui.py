@@ -409,6 +409,22 @@ def dry_run(s):
 
 # ---- the running server ----
 
+# Owner's decision C (handover/DECISION_LLAMA_SERVER_KEY_20261026.md): agent servers get a stable per-user random key from the launcher.
+# The page asks the launcher for it (stdout: the key alone, exit 0), keeps it in memory, sends it in headers and to `connect` through the
+# environment; never in a URL, a log line or the status JSON (the page fetches it from /api/key only for the Copy button).
+KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]
+
+
+def launcher_key():
+    """The launcher's key for agent servers; None when this launcher has none (before option C) or the command fails."""
+    try:
+        r = subprocess.run(KEY_CMD, capture_output=True, text=True, timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+    except Exception:
+        return None
+    k = r.stdout.strip()
+    return k if r.returncode == 0 and re.fullmatch(r"[\x21-\x7e]{8,200}", k) else None
+
+
 def child_env(api_key=None):
     """The launcher's environment: stats on request, unbuffered UTF-8 output, and the API key (the launcher's --api-key default is LLAMA_API_KEY)."""
     env = dict(os.environ, MOE_CACHE_STATS_SIGNAL="1", PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
@@ -594,6 +610,7 @@ class Runner:
         self.decisions = []                # what the launcher decided before starting llama-server (its "moe-cache: ..." lines up to the URL line)
         self.deciding = True
         self.bench = {"state": "idle"}
+        self.auto_key = None               # the launcher's key (agent mode, no key typed on the page)
 
     # -- control --
     def start(self, s):
@@ -630,11 +647,24 @@ class Runner:
             except Exception:
                 pass
         self.state, self.started = "starting", time.time()
-        self.add_line("ui: " + shown_command(s))
+        if s.get("agent") and not s.get("api_key"):
+            self.auto_key = launcher_key()
+        self.add_line("ui: " + shown_command(s) + (" (API key: the launcher's agent key)" if self.auto_key else ""))
         threading.Thread(target=self.read, args=(p,), daemon=True).start()
         ready.set()
         self.poll(p)
         p.wait()
+
+    def key(self):
+        """The key llama-server needs: the one typed on the page, else the launcher's agent key, else None."""
+        return self.settings.get("api_key") or self.auto_key
+
+    def key_info(self):
+        k = self.key()
+        if not k:
+            return {"in_use": False}
+        return {"in_use": True, "source": "typed on this page" if self.settings.get("api_key") else "the launcher's agent key (stable for your user)",
+                "ends": k[-4:]}
 
     def stop(self):
         p = self.p
@@ -662,6 +692,9 @@ class Runner:
     def read(self, p):
         for raw in iter(p.stdout.readline, b""):
             line = raw.decode("utf-8", errors="replace").rstrip()
+            k = self.key()
+            if k and k in line:
+                line = line.replace(k, "KEY")                  # e.g. the launcher's agent snippets print it
             if line.startswith("moe-cache-stats "):
                 try:
                     self.take_snapshot(json.loads(line[len("moe-cache-stats "):]))
@@ -720,7 +753,7 @@ class Runner:
         self.cache = c
 
     def poll(self, p):
-        api_key = self.settings.get("api_key")
+        api_key = self.key()
         port = int(self.settings.get("port") or 8080)
         n_prev, t_prev, tick = None, None, 0
         while p.poll() is None:
@@ -767,7 +800,7 @@ class Runner:
         set ignore_eos: a model that finishes its answer early would otherwise time fewer tokens (Granite in CI stopped at 149 of 256)."""
         port = int(self.settings.get("port") or 8080)
         st, body = mc.http(f"http://127.0.0.1:{port}/completion", dict({"prompt": prompt, "n_predict": n, "temperature": 0, "seed": 42, "cache_prompt": False}, **({"ignore_eos": True} if ignore_eos else {})),
-                           api_key=self.settings.get("api_key"), timeout=1800)
+                           api_key=self.key(), timeout=1800)
         if st != 200:
             raise RuntimeError(f"HTTP {st}: {body[:200]}" if st else "the server did not answer")
         return json.loads(body)["timings"]
@@ -825,7 +858,7 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
+                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "api_key": self.key_info(), "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
                 "system": system_info()}
 
 
@@ -963,6 +996,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, self.runner.status())
             if u.path == "/api/bench":
                 return self.send(200, {"csv": BENCH_CSV, "rows": read_bench_rows()})
+            if u.path == "/api/key":                       # for the Copy button only (token-protected, not cached)
+                if self.runner.state not in ("starting", "ready") or not self.runner.key():
+                    raise ValueError("no API key in use")
+                return self.send(200, {"key": self.runner.key()})
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
                 return self.send(200, {"lines": [[n, l] for n, l in list(self.runner.log) if n > since]})
@@ -1019,7 +1056,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("agents: opencode, hermes")
                 if self.runner.state != "ready":
                     raise ValueError("start a server first (with Agent mode on)")
-                return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.settings.get("api_key") or "", bool(body.get("write"))))
+                return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.key() or "", bool(body.get("write"))))
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:

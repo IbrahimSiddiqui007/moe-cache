@@ -111,6 +111,7 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     </div>
     <div class="row"><div><span class="small">tok/s, last 2 minutes</span><canvas id="c-tps"></canvas></div><div><span class="small">hit rate, last 2 minutes</span><canvas id="c-hit"></canvas></div></div>
     <div class="small" style="margin-top:8px">Mode: <b id="s-mode">–</b></div>
+    <div class="row small" id="keyrow" hidden style="margin-top:4px; justify-content:flex-start"><span>API key in use: <code id="keyends"></code> <span id="keysrc"></span></span><button id="copykey">Copy key</button><span id="keymsg"></span></div>
     <div style="margin-top:4px"><code id="cmd"></code></div>
     <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
     <pre id="dry" hidden></pre>
@@ -264,9 +265,13 @@ async function poll() {
   chart("c-tps", st.history.map(h => [h[0], h[1]]), 0, "--accent");
   chart("c-hit", st.history.map(h => [h[0], h[2]]), 1, "--ok", true);
   const ifr = $("chat");
-  if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>`; }
+  if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>` +
+    ((st.api_key || {}).in_use ? ` · this server needs its API key: the chat asks for it once (per browser), use <b>Copy key</b> above and paste it there` : ""); }
   else { ifr.hidden = true; ifr.dataset.u = ""; ifr.removeAttribute("src"); $("chatnote").textContent = running ? "Loading the model…" : "Start a model: llama-server's own chat page appears here."; }
   paintAgents(st);
+  const k = st.api_key || {};
+  $("keyrow").hidden = !k.in_use || !(st.state == "starting" || st.state == "ready");
+  if (k.in_use) { $("keyends").textContent = "••••" + k.ends; $("keysrc").textContent = "(" + k.source + ")"; }
   paintBench(st);
   const dk = JSON.stringify(st.decisions || []), de = $("decisions");
   if (de.dataset.k != dk) {
@@ -322,7 +327,7 @@ async function paintBench(st) {
 }
 function paintAgents(st) {
   const el = $("t-agents");
-  const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {})].join("|");
+  const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {}), JSON.stringify(st.api_key || {})].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
   if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on: this tab then shows what to give OpenCode, Hermes or any OpenAI-compatible client.</div>`; return; }
   const name = (st.model || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
@@ -330,9 +335,9 @@ function paintAgents(st) {
     <tr><th>Context</th><td>${esc(st.ctx || (st.agent ? 65536 : 8192))}</td></tr></table>` +
     (st.agent ? "" : `<div class="hint">Agent mode is off for this server: tool calls may not work, and Hermes needs a 64k context. Stop, tick Agent mode and start again.</div>`) +
     `<table style="margin-top:8px"><tr><th>OpenCode</th><td><button data-a="opencode">Preview</button> <button data-a="opencode" data-w="1" class="primary">Connect OpenCode</button>
-      <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)</div></td></tr>
+      <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)${(st.api_key || {}).in_use ? "; includes the server's API key" : ""}</div></td></tr>
      <tr><th>Hermes</th><td><button data-a="hermes">Preview</button> <button data-a="hermes" data-w="1" class="primary">Connect Hermes</button>
-      <div class="hint">runs "hermes config set" for the provider, URL, model and context (needs hermes on the PATH)</div></td></tr></table>
+      <div class="hint">runs "hermes config set" for the provider, URL, model and context${(st.api_key || {}).in_use ? " and the API key" : ""} (needs hermes on the PATH)</div></td></tr></table>
      <div id="connres"></div>` + warmHtml(st);
   el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
     const o = $("connres"), w = !!b.dataset.w;
@@ -351,6 +356,14 @@ $("start").onclick = async () => {
 };
 $("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
 $("bench").onclick = async () => { try { await api("/api/bench", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
+$("copykey").onclick = async () => {
+  try {
+    const j = await api("/api/key");             // fetched only now, never kept in the page or shown
+    await navigator.clipboard.writeText(j.key);
+    $("keymsg").textContent = "copied";
+  } catch (e) { $("keymsg").textContent = "could not copy: " + e.message; }
+  setTimeout(() => $("keymsg").textContent = "", 3000);
+};
 $("copycmd").onclick = () => navigator.clipboard && navigator.clipboard.writeText($("cmd").textContent);
 $("showcmd").onclick = async () => {
   const d = $("dry"); d.hidden = false; d.textContent = "asking the launcher (--dry-run)…";
