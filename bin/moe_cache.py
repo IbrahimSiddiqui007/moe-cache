@@ -515,10 +515,11 @@ def server(argv):
         if os.environ.get("MOE_CACHE_LIB"):
             raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
         raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    gpu = pick_gpu(list_devices(ls)) if WINDOWS else None
     if WINDOWS and not a.vram and not nvidia_reports():
         # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
         # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
-        g = pick_gpu(list_devices(ls))
+        g = gpu
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
@@ -538,6 +539,18 @@ def server(argv):
             say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
     if a.api_key and "--api-key" not in extra:
         extra += ["--api-key", a.api_key]
+    if (WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])
+            and arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None):
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import model_key
+            if (model_key(model) or "").startswith("qwen4exp"):
+                # desktop PC, 2026-10-26: llama-server (stock too) crashes in AMD's Windows Vulkan driver (amdvlk64.dll, access violation) when it
+                # saves a context checkpoint at the end of a Flash-Next prompt; --ctx-checkpoints 0 avoids it (Qwen3.6 / 3.5-122B are not affected)
+                extra += ["--ctx-checkpoints", "0"]
+                say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver here)")
+        except Exception:
+            pass
     alias = None
     slotdir = None
     if a.agent:
