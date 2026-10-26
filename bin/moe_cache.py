@@ -99,7 +99,12 @@ def pick_lib(ls):
         if os.path.isfile(default_lib()) and lib_api(default_lib()) == want:
             return default_lib()
         # several builds for this API (old test builds, too): the newest one, which is the most likely to match the code
-        found = [c for c in glob.glob(os.path.join(HERE, "build-*", "libggml-moe-cache.so")) if lib_api(c) == want]
+        if WINDOWS:   # build.sh --windows: build/win (API 2), build/win-api3 or BUILD_DIR; the windows-kit has ggml-moe-cache-api2.dll / -api3.dll next to moe_cache.py
+            pats = [os.path.join(HERE, "build", "win*", "ggml-moe-cache*.dll"), os.path.join(HERE, "build-*", "ggml-moe-cache*.dll"),
+                    os.path.join(HERE, "ggml-moe-cache*.dll"), os.path.join(HERE, "..", "ggml-moe-cache*.dll")]
+        else:
+            pats = [os.path.join(HERE, "build-*", "libggml-moe-cache.so")]
+        found = [c for pat in pats for c in glob.glob(pat) if lib_api(c) == want]
         if found:
             return max(found, key=os.path.getmtime)
     return default_lib()
@@ -505,7 +510,7 @@ SERVER_HELP = """\
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
 --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 --project NAME  its own profile plus a saved prompt state (KV cache) restored at start; save it with: moe_cache.py project save NAME
---gpu-cache off|auto|MIB  llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
+--gpu-cache off|auto|MIB  (Linux, preload method only) llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
            Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
@@ -1012,9 +1017,9 @@ def learn(argv):
         os.umask(0o077)
     if not os.path.isfile(a.model):
         raise SystemExit("usage: moe-cache-learn MODEL.gguf [options]")
-    lib = os.environ.get("MOE_CACHE_LIB") or default_lib()
+    lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(a.llama_server)
     if not os.path.isfile(lib):
-        raise SystemExit("plugin not built: run ./build.sh first")
+        raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     if a.name and not NAME_RE.match(a.name):
         raise SystemExit("--name may only contain letters, digits, _ and -")
     out = a.out or os.path.join(CACHE_DIR, os.path.basename(a.model) + "." + (a.name + "." if a.name else "") + "usage")
@@ -1117,21 +1122,31 @@ def check(argv):
         ok("cpu pinning", f"hybrid Intel CPU (performance cores {open('/sys/devices/cpu_core/cpus').read().strip()}): threads are pinned to the performance cores automatically (about +15 %)")
     elif not WINDOWS:
         ok("cpu pinning", "not a hybrid Intel CPU: no pinning needed")
+    else:
+        try:
+            hm = hybrid_masks(win_cores())
+        except Exception:
+            hm = None
+        if hm:
+            ok("cpu pinning", "hybrid CPU: threads are pinned to the performance cores automatically")
+        else:
+            ok("cpu pinning", "no hybrid cores: no pinning")
     lsp = shutil.which(a.llama_server)
     if not lsp:
         fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
     else:
         try:
             v = subprocess.run([lsp, "--version"], capture_output=True, text=True, timeout=30)
-            m = re.search(r"commit [0-9a-f]+", v.stdout + v.stderr)
+            vtxt = v.stdout + v.stderr
+            m = re.search(r"commit [0-9a-f]+", vtxt)
         except Exception:
-            m = None
+            m = None; vtxt = ""
         ver = m.group(0) if m else ""
         ok("llama-server", f"{lsp} ({ver or 'version unknown'})")
-        if re.search(r"7fe450e|23b0202", ver):
-            ok("ggml version", f"matches a tested commit ({ver})")
+        if re.search(r"7fe450e|23b0202", ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
+            ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
-            warn("ggml version", "tested with 7fe450e19 (API 2) and 23b0202a1 (API 3); other versions usually load but may not (the plugin warns at start)")
+            warn("ggml version", "tested with 7fe450e19 (API 2) and 23b0202a1 (API 3)" + (", and on Windows with b11669 (ggml 0.27.0, 620d2225c)" if WINDOWS else "") + "; other versions usually load but may not (the plugin warns at start)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):
                 ok("shared ggml", "libggml-base is a shared library")
