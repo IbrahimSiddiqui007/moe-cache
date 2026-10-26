@@ -92,6 +92,25 @@ jobs:
           if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
           python -c "import importlib.util as u, sys; sys.argv=['x']; s=u.spec_from_file_location('m','bin/moe_cache.py'); m=u.module_from_spec(s); s.loader.exec_module(m); c=m.win_cores(); print('cores (efficiency class, cpus):', c); print('hybrid masks:', m.hybrid_masks(c)); print('ggml API of the server:', m.ls_api(r'$ls')); sys.exit(0 if c else 1)"
 
+      - name: Launcher real start with --ram (Windows job memory limit, WP3) and --agent (tool call, connect)
+        run: |
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
+          $ls = "$env:LLAMA_DIR\llama-server.exe"
+          $p = Start-Process python -ArgumentList "bin/moe_cache.py","server","granite.gguf","--llama-server",$ls,"--ram","3","--always-plugin","--agent","--ctx","4096","--port","8090" -RedirectStandardError launcher_real.err -RedirectStandardOutput launcher_real.out -PassThru -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 300; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8090/health).StatusCode -eq 200) { $ok = $true; break } } catch {} ; Start-Sleep 1 }
+          $body = '{"model":"granite","messages":[{"role":"user","content":"Say hi"}],"max_tokens":8,"temperature":0}'
+          if ($ok) { (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body http://127.0.0.1:8090/v1/chat/completions).Content }
+          python bin/moe_cache.py connect opencode --url http://127.0.0.1:8090 --write --config "$env:RUNNER_TEMP\opencode.json"
+          Get-Content "$env:RUNNER_TEMP\opencode.json"
+          Stop-Process -Id $p.Id
+          Start-Sleep 3
+          Get-Content launcher_real.err | Select-String "moe-cache:" | Select-Object -First 30
+          if (-not $ok) { throw "the launcher's server never became ready" }
+          if (-not (Select-String launcher_real.err -Pattern "Windows job memory limit 3.0 GB" -SimpleMatch -Quiet)) { throw "--ram did not set a job memory limit" }
+          if (-not (Select-String launcher_real.err -Pattern "cache mode" -SimpleMatch -Quiet)) { throw "the plugin's cache was not on" }
+          if (-not (Select-String "$env:RUNNER_TEMP\opencode.json" -Pattern '"tool_call": true' -SimpleMatch -Quiet)) { throw "connect opencode wrote no model entry" }
+
       - name: Crash dumps on (Windows Error Reporting LocalDumps for llama-server.exe)
         run: |
           New-Item -ItemType Directory -Force "$env:GITHUB_WORKSPACE\dumps" | Out-Null

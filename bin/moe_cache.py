@@ -5,6 +5,7 @@
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
+  moe_cache.py connect hermes|opencode [--url URL] [--write]               point Hermes Agent or OpenCode at a running server (start it with --agent)
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
@@ -262,9 +263,12 @@ def python_cmd():
 _JOB = None   # Windows job object: kept open for the launcher's lifetime; closing it (the launcher exits or is killed) kills llama-server
 
 
-def _kill_with_parent_windows(p):
+def _kill_with_parent_windows(p, mem_limit=None):
     """Put the child in a job object that kills it when the launcher's handle closes (the launcher exits, is closed or killed).
-    Found on the MSI Claw (2026-10-15): without it a killed launcher left llama-server running on its port."""
+    Found on the MSI Claw (2026-10-15): without it a killed launcher left llama-server running on its port.
+    mem_limit (bytes, task WP3): also cap the job's committed memory, the Windows counterpart of the cgroup limit used on Linux. It counts the plugin's
+    cache and llama-server's own allocations; it does not count the file cache behind a memory-mapped model, so stock llama-server is never limited
+    by it (compare stock and the plugin on Windows with a model bigger than the real RAM instead). Returns the limit read back, or None."""
     global _JOB
     import ctypes
     from ctypes import wintypes
@@ -282,12 +286,23 @@ def _kill_with_parent_windows(p):
     job = k32.CreateJobObjectW(None, None)
     info = EXT()
     info.Basic.LimitFlags = 0x2000           # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if mem_limit:
+        info.Basic.LimitFlags |= 0x200       # JOB_OBJECT_LIMIT_JOB_MEMORY
+        info.JobMemoryLimit = int(mem_limit)
     ok = job and k32.SetInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(info), ctypes.sizeof(info)) and \
         k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(int(p._handle)))
     if ok:
         _JOB = job
     else:
         say("moe-cache: warning: could not tie llama-server to the launcher (closing this window may leave it running)", err=True)
+        return None
+    if mem_limit:
+        back = EXT()
+        if k32.QueryInformationJobObject(wintypes.HANDLE(job), 9, ctypes.byref(back), ctypes.sizeof(back), None) and back.Basic.LimitFlags & 0x200:
+            say(f"moe-cache: Windows job memory limit {back.JobMemoryLimit / 1e9:.1f} GB on llama-server (--ram; the model's file cache is not counted)", err=True)
+            return back.JobMemoryLimit
+        say("moe-cache: warning: the Windows job memory limit could not be set; the cache still sizes itself to --ram", err=True)
+    return None
 
 
 def _die_with_parent_linux():
@@ -299,7 +314,7 @@ def _die_with_parent_linux():
         pass
 
 
-def run_child(cmd, env, port=None, expect_plugin=False):
+def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
     """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code.
     The child dies with the launcher. Its log is passed through; when the plugin was meant to load and the server becomes ready without a single
     'moe-cache:' line, a warning says it is running stock (found on the MSI Claw, 2026-10-15: the plugin failed to load and nothing said so)."""
@@ -309,7 +324,7 @@ def run_child(cmd, env, port=None, expect_plugin=False):
     p = subprocess.Popen(cmd, **kw)
     if WINDOWS:
         try:
-            _kill_with_parent_windows(p)
+            _kill_with_parent_windows(p, mem_limit)
         except Exception as e:
             say(f"moe-cache: warning: could not tie llama-server to the launcher ({e})", err=True)
     seen = {"plugin": False, "disabled": "", "last": "", "ready": False}
@@ -388,12 +403,22 @@ SERVER_HELP = """\
            Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
---ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it.
+--ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it. On Windows it is also set as a
+           job memory limit on llama-server when the plugin runs (the counterpart of a Linux cgroup; it does not count the model's file cache)
 --vram GiB GPU memory to plan with (default: what the GPU reports free)
 --n-cpu-moe N  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
 --no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
 --always-plugin  use the plugin even when the model fits in the memory the server may use (by default stock llama-server runs then: faster, RESULTS 44)
 --no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
+--agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
+           (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
+           turns is llama-server's own: each slot keeps its conversation, and models with recurrent layers (Qwen3-Next, Qwen3.5/3.6) roll back to a
+           checkpoint made at the last user message and just before the end of each prompt (at most 8 per slot here, 512 MiB kept free for them).
+           moe_cache.py connect hermes|opencode [--write] sets the agent up for a running server
+           Warm sessions (idea I29): the longest idle conversation (2k+ tokens, with its checkpoints) is saved to disk 20 s after it changes and
+           restored at the next start, so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
+           7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
+--api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
 
@@ -402,7 +427,7 @@ def server(argv):
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model")
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram"); ap.add_argument("--vram")
-    ap.add_argument("--ctx", type=int, default=8192); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
@@ -410,13 +435,15 @@ def server(argv):
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
+    ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
     a = ap.parse_args(argv)
     if not WINDOWS:
         os.umask(0o077)       # the usage profile is private to this user
-    ls, model, ctx, port = a.llama_server, a.model, a.ctx, a.port
+    ls, model, port = a.llama_server, a.model, a.port
+    ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
     gcache = a.gpu_cache
     if a.hybrid and gcache != "off":
         say("moe-cache: --hybrid replaces --gpu-cache: the GPU memory goes to the hybrid bank"); gcache = "off"
@@ -445,6 +472,26 @@ def server(argv):
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
             why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
             say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
+    if a.api_key and "--api-key" not in extra:
+        extra += ["--api-key", a.api_key]
+    alias = None
+    slotdir = None
+    if a.agent:
+        if not any(x in ("--jinja", "--no-jinja") for x in extra):
+            extra.append("--jinja")         # the default in current llama.cpp; explicit for older builds (tool calls need the model's own template)
+        if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None:
+            # models with recurrent layers keep a copy of that state per checkpoint in host RAM (about 60 MiB on Qwen3.6-35B), outside the cache's budget
+            extra += ["--ctx-checkpoints", "8"]
+        alias = arg_after(extra, "-a", "--alias")
+        if alias is None:
+            alias = re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(model))
+            extra += ["--alias", alias]
+        if not a.no_warm and not a.project:
+            if arg_after(extra, "--slot-save-path") is None:
+                slotdir = os.path.join(CACHE_DIR, "slots", "agent"); os.makedirs(slotdir, exist_ok=True)
+                extra += ["--slot-save-path", slotdir]
+            else:
+                slotdir = arg_after(extra, "--slot-save-path")
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and "--api-key" not in extra:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
@@ -452,7 +499,6 @@ def server(argv):
     pname = a.profile or ""
     if pname and not NAME_RE.match(pname):
         raise SystemExit("--profile NAME may only contain letters, digits, _ and -")
-    slotdir = None
     if a.project:
         if not NAME_RE.match(a.project):
             raise SystemExit("--project NAME may only contain letters, digits, _ and -")
@@ -578,7 +624,9 @@ def server(argv):
         except Exception:
             pass
     if cram is not None and re.fullmatch(r"[0-9-]+", cram):
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", cram))     # told to the plugin directly instead of it parsing our command line
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (512 if a.agent else 0))))
+    elif a.agent:
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", "512"))     # told to the plugin directly instead of it parsing our command line
     if stock:
         say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
             "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
@@ -592,7 +640,12 @@ def server(argv):
     else:
         say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
+    # Windows has no cgroups: --ram becomes a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
+    # model lives in the file cache, which job limits do not count), so it is left off there.
+    win_limit = float(a.ram) * 1e9 if (WINDOWS and a.ram and method != "none (stock)") else None
     if a.dry_run:
+        if win_limit:
+            say(f"moe-cache: (would set a Windows job memory limit of {win_limit / 1e9:.1f} GB on llama-server)")
         if WINDOWS:   # PowerShell form, so it can be pasted there
             say("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
         else:
@@ -611,6 +664,18 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=restore, daemon=True).start()
+    if a.agent and not a.no_warm and not a.project and slotdir:
+        # a saved state is only valid for the same model file, context and KV settings: all of them go into the name
+        tag = re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-c{ctx}-" + "-".join(x for x in (arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) if x))
+        threading.Thread(target=warm_keeper, args=(port, api_key, slotdir, tag.rstrip("-_")), daemon=True).start()
+    if a.agent:
+        def snippets():
+            for _ in range(1800):
+                if healthy(port, api_key):
+                    say(agent_snippets(port, alias, ctx, api_key, host), err=True)
+                    return
+                time.sleep(1)
+        threading.Thread(target=snippets, daemon=True).start()
     if a.open:
         def opener():
             for _ in range(600):
@@ -620,7 +685,166 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
-    return run_child(cmd, dict(os.environ, **dict(env)), port=port, expect_plugin=method != "none (stock)")
+    return run_child(cmd, dict(os.environ, **dict(env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
+
+
+def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2048):
+    """Idea I29: restore the saved conversation into slot 0 at start; afterwards save the longest idle slot (with its context checkpoints) once it has
+    been unchanged for idle_polls polls. Saves go to a temporary name first, so a stop during a save never leaves a broken file."""
+    url = f"http://127.0.0.1:{port}"
+    fname, tmp = tag + ".bin", tag + ".new.bin"
+    for _ in range(3600):
+        if healthy(port, api_key):
+            break
+        time.sleep(1)
+    else:
+        return
+    if os.path.isfile(os.path.join(slotdir, fname)):
+        t0 = time.time()
+        st, body = http(f"{url}/slots/0?action=restore", {"filename": fname}, api_key, timeout=600)
+        try:
+            n = json.loads(body).get("n_restored") if st == 200 else None
+        except ValueError:
+            n = None
+        say(f"moe-cache: warm session: restored the last agent conversation ({n} tokens) into slot 0 in {time.time() - t0:.1f} s" if st == 200
+            else f"moe-cache: warm session: could not restore {fname} (HTTP {st}): {body[:160]}", err=True)
+    saved, seen = None, {}
+    while True:
+        time.sleep(poll)
+        st, body = http(f"{url}/slots", api_key=api_key)
+        if st != 200:
+            if st == 0 and not healthy(port, api_key):
+                return       # the server is gone
+            continue
+        try:
+            slots = json.loads(body)
+        except ValueError:
+            continue
+        idle = [x for x in slots if not x.get("is_processing") and (x.get("n_prompt_tokens") or 0) >= min_tokens]
+        if any(x.get("is_processing") for x in slots) or not idle:
+            seen = {}
+            continue
+        best = max(idle, key=lambda x: x.get("n_prompt_tokens") or 0)
+        key = (best["id"], best.get("id_task"), best.get("n_prompt_tokens"))
+        seen[key] = seen.get(key, 0) + 1
+        if key == saved or seen[key] < idle_polls:
+            continue
+        t0 = time.time()
+        st, body = http(f"{url}/slots/{best['id']}?action=save", {"filename": tmp}, api_key, timeout=600)
+        if st == 200:
+            try:
+                os.replace(os.path.join(slotdir, tmp), os.path.join(slotdir, fname))
+                saved = key
+                say(f"moe-cache: warm session: saved slot {best['id']} ({best.get('n_prompt_tokens')} tokens, "
+                    f"{os.path.getsize(os.path.join(slotdir, fname)) / 1e6:.0f} MB) in {time.time() - t0:.1f} s", err=True)
+            except OSError as e:
+                say(f"moe-cache: warm session: save failed ({e})", err=True); saved = key
+        else:
+            say(f"moe-cache: warm session: save failed (HTTP {st}): {body[:160]}", err=True); saved = key
+
+
+def server_info(url, api_key=None):
+    """(model name, context) of a running llama-server, from /v1/models and /props; (None, None) when it cannot be reached."""
+    st, body = http(url.rstrip("/") + "/v1/models", api_key=api_key)
+    if st != 200:
+        return None, None
+    try:
+        name = json.loads(body)["data"][0]["id"]
+    except (ValueError, KeyError, IndexError):
+        name = None
+    ctx = None
+    st, body = http(url.rstrip("/") + "/props", api_key=api_key)
+    if st == 200:
+        try:
+            ctx = int(json.loads(body)["default_generation_settings"]["n_ctx"])
+        except (ValueError, KeyError, TypeError):
+            pass
+    return name, ctx
+
+
+def connect(argv):
+    ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
+                                 "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
+    ap.add_argument("agent", choices=["hermes", "opencode"]); ap.add_argument("--url", default="http://127.0.0.1:8080")
+    ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
+    ap.add_argument("--config", help="opencode.json to merge into (default: ~/.config/opencode/opencode.json)")
+    a = ap.parse_args(argv)
+    name, ctx = server_info(a.url, a.api_key)
+    if not name:
+        raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent)")
+    ctx = ctx or 65536
+    base = a.url.rstrip("/") + "/v1"
+    if a.agent == "hermes":
+        if ctx < 64000:
+            say(f"moe-cache: warning: the server's context is {ctx}; Hermes Agent refuses less than 64000 (restart with --agent or --ctx 65536)", err=True)
+        sets = [("model.provider", "custom"), ("model.base_url", base), ("model.default", name), ("model.context_length", str(ctx)),
+                ("model.api_key", a.api_key or "none")]
+        if not a.write:
+            say(agent_snippets(None, name, ctx, a.api_key, base=base, only="hermes"))
+            say("apply with: " + " && ".join(f"hermes config set {k} {v}" for k, v in sets))
+            return 0
+        h = shutil.which("hermes")
+        if not h:
+            raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
+        for k, v in sets:
+            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, timeout=60)
+            if r.returncode:
+                raise SystemExit(f"hermes config set {k} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+        say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
+        return 0
+    cfg = a.config or os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode", "opencode.json")
+    entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache", "options": dict({"baseURL": base}, **({"apiKey": a.api_key} if a.api_key else {})),
+             "models": {name: {"name": name, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}}}}
+    if not a.write:
+        say(agent_snippets(None, name, ctx, a.api_key, base=base, only="opencode"))
+        say(f"apply with: moe_cache.py connect opencode --write  (merges into {cfg})")
+        return 0
+    data = {"$schema": "https://opencode.ai/config.json"}
+    if os.path.isfile(cfg):
+        try:
+            data = json.load(open(cfg, encoding="utf-8"))
+        except ValueError:
+            raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
+        shutil.copy2(cfg, cfg + ".bak")
+    data.setdefault("provider", {})["moe-cache"] = entry
+    data["model"] = f"moe-cache/{name}"
+    os.makedirs(os.path.dirname(cfg), exist_ok=True)
+    with open(cfg + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(cfg + ".tmp", cfg)
+    say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
+    return 0
+
+
+def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None):
+    """What an agent needs to use this server: the OpenAI-compatible base URL, the model name and the context, as config blocks for Hermes Agent
+    (~/.hermes/config.yaml) and OpenCode (opencode.json)."""
+    if base is None:
+        h = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
+        base = f"http://{h}:{port}/v1"
+    key = api_key or "none"
+    out = min(32768, max(4096, ctx // 4))     # room left for the answer
+    head = ["moe-cache: agent mode ready. OpenAI-compatible endpoint:",
+            f"  base URL {base}   model {model}   context {ctx}   API key {'(set)' if api_key else 'none'}"]
+    hermes = [
+        "  Hermes Agent, ~/.hermes/config.yaml:",
+        "    model:",
+        "      provider: custom",
+        f"      base_url: {base}",
+        f"      default: {model}",
+        f"      context_length: {ctx}",
+        f"      api_key: {key}"]
+    opencode = [
+        "  OpenCode, opencode.json:",
+        '    {"$schema": "https://opencode.ai/config.json", "provider": {"moe-cache": {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache",',
+        f'      "options": {{"baseURL": "{base}"' + (f', "apiKey": "{api_key}"' if api_key else "") + '},',
+        f'      "models": {{"{model}": {{"name": "{model}", "tool_call": true, "limit": {{"context": {ctx}, "output": {out}}}}}}}}}}},',
+        f'     "model": "moe-cache/{model}"}}']
+    if only == "hermes":
+        return "\n".join(hermes)
+    if only == "opencode":
+        return "\n".join(opencode)
+    return "\n".join(head + hermes + opencode + ["  or let the launcher write them: moe_cache.py connect hermes|opencode --write" + (f" --url http://127.0.0.1:{port}" if port and port != 8080 else "")])
 
 
 # ---- learn ----
@@ -919,7 +1143,7 @@ def run_check(lsp, model, load, port=8097):
 
 
 def main():
-    cmds = {"server": server, "check": check, "learn": learn, "project": project}
+    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect}
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         say(__doc__.strip())
         return 0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 1

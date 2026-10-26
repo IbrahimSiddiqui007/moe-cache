@@ -75,5 +75,16 @@ check(L.hybrid_masks(L.parse_core_records(raptor)) == (0x555, [12, 13, 14, 15]),
 check(L.hybrid_masks(L.parse_core_records(b"".join(core(0, 1 << i) for i in range(8)))) is None, "WINPIN: one efficiency class -> no pinning")
 check(L.parse_core_records(core(1, 1, group=1)) == [], "WINPIN: processor group 1 is ignored")
 
+# agent mode (AG1, I29): what --agent adds to the llama-server command, and the config snippets
+ag = dry("--agent")
+for want in ("-c 65536", "--jinja", "--ctx-checkpoints 8", "--alias ", "--slot-save-path ", "MOE_CACHE_HOST_RESERVE_MIB=512"):
+    check(want in ag, f"--agent: the command has '{want}'")
+check("-c 32768" in dry("--agent", "--ctx", "32768"), "--agent --ctx 32768 keeps the given context")
+check("--slot-save-path" not in dry("--agent", "--no-warm"), "--agent --no-warm: no warm-session slot directory")
+check("--jinja" not in dry(), "no --agent: the command is unchanged (no --jinja added)")
+snip = L.agent_snippets(8099, "m1", 65536, None)
+check("base_url: http://127.0.0.1:8099/v1" in snip and '"baseURL": "http://127.0.0.1:8099/v1"' in snip and "context_length: 65536" in snip,
+      "agent snippets: Hermes and OpenCode blocks name the base URL and the context")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)
