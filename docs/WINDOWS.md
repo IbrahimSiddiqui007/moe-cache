@@ -95,6 +95,23 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 - The bash wrappers (`moe-cache-server` ...) do not run on Windows: use `python bin\moe_cache.py <command>`.
 - A GLM-class model (102 GB) crashed the plugin in the long-prompt GPU path on the test PC; a fix is committed and still to be confirmed on the PC.
 
+### Windows + AMD: where the RAM goes, and suggestions that do not help
+
+On AMD's Windows driver, VRAM in use also takes system RAM: about 1.1 GB per GiB, inside the driver and Windows' video memory manager, not in llama.cpp or
+the plugin (RESULTS 56, I37: `GGML_VK_MEMORY_LOGGER=1` shows 13.1 GiB of device memory and 169 MiB of host memory, yet 13.5 GB of system RAM gone). The
+`GGML_VK_*` switches tried there did not change it. The plugin sees less free RAM, so its cache is smaller and it reads more from the SSD.
+
+| Suggestion often made | What it does here |
+|---|---|
+| `--no-mmap` | loads the whole model into RAM: impossible for a model bigger than RAM, and it does not touch the driver's copy |
+| `--mlock` | pins memory so Windows cannot page it out: less RAM for everything else, the driver's copy stays |
+| `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). moe-cache's cache size follows `--ram` (or `MOE_CACHE_SIZE_GIB`); forcing it above the free RAM makes Windows page to disk |
+| "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ...") |
+| q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM and so the driver's RAM copy of it, but only the KV part (with all experts on the CPU, the GPU holds attention and KV); it is approximate (KL 0.0045, RESULTS 53), so it is part of `--fast`, not the default; the saving on this desktop is being measured (RESULTS 56, R11) |
+| WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |
+
+Still to try (owner's machine): a newer Adrenalin driver, hardware-accelerated GPU scheduling off, the HIP SDK, Linux/RADV on the same PC (RESULTS 56, I37).
+
 ## 7. Fair stock-vs-plugin timings: empty the file cache first
 
 Stock llama-server reads the model through Windows' file cache, so a run after another run of the same model finds it in RAM; the plugin's unbuffered reads never use that cache.
