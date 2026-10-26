@@ -7,6 +7,7 @@ import json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.re
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-ui-test-")
 os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")          # before the import: the launcher reads it once
+os.environ["XDG_CONFIG_HOME"] = os.path.join(TMP, "config")        # 'connect opencode --write' writes here, not into the real config
 sys.path.insert(0, os.path.join(HERE, "bin"))
 import moe_cache_ui as ui  # noqa: E402
 
@@ -34,6 +35,24 @@ check(names == ["Big-UD-IQ2_XXS", "Small-MoE-Q4_K_M"], f"model list: split model
 big = next(m for m in found if m["name"].startswith("Big"))
 small = next(m for m in found if m["name"].startswith("Small"))
 check(big["size"] == 5000 and big["quant"] == "UD-IQ2_XXS" and small["quant"] == "Q4_K_M", "sizes add up over the parts; quant from the name")
+
+# ---- quant from the header (Ollama's blobs have no name) and measured speeds by model family ----
+import struct
+def gguf_header(path, kv):
+    with open(path, "wb") as f:
+        f.write(b"GGUF" + struct.pack("<IQQ", 3, 0, len(kv)))
+        for k, v in kv:
+            f.write(struct.pack("<Q", len(k)) + k.encode())
+            if isinstance(v, str):
+                f.write(struct.pack("<IQ", 8, len(v)) + v.encode())
+            else:
+                f.write(struct.pack("<II", 4, v))
+blob = os.path.join(TMP, "sha256-0123")
+gguf_header(blob, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 41), ("qwen35moe.expert_count", 256), ("general.file_type", 15)])
+check(ui.header_quant(blob) == "Q4_K_M", f"quant from general.file_type ({ui.header_quant(blob)})")
+m = ui.measured(blob, 21.7e9)
+check(len(m) == 3 and "22.6" in m[1] and "RESULTS 44" in m[1], "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M)")
+check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the same family")
 
 # ---- the plan and its reasons (planner mocked) ----
 PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe": 40, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0,
@@ -84,14 +103,20 @@ port = int(sys.argv[sys.argv.index("--port") + 1])
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
-        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False}]}.get(self.path)
+        body = {"/health": {"status": "ok"}, "/slots": [{"id": 0, "is_processing": False}], "/v1/models": {"data": [{"id": "fake-moe"}]},
+                "/props": {"default_generation_settings": {"n_ctx": 65536}}}.get(self.path)
         self.send_response(200 if body is not None else 404); self.end_headers(); self.wfile.write(json.dumps(body).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
+print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
+print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
 print("prompt eval time =     100.00 ms /    50 tokens (    2.00 ms per token,   500.00 tokens per second)", flush=True)
 print("       eval time =    1000.00 ms /    25 tokens (   40.00 ms per token,    25.00 tokens per second)", flush=True)
+print("moe-cache: warm session: saved slot 0 (4096 tokens, 120 MB) in 0.5 s", flush=True)
+for _ in range(2):
+    print("0.01.002.003 W moe-cache: warning: the expert cache shrank from 10.0 to 8.0 GiB because the rest of llama-server now uses 3.0 GiB", flush=True)
 print('moe-cache-stats {"hits":90,"misses":10,"read_bytes":0,"resident_bytes":6000000000,"budget":7000000000}', flush=True)
 time.sleep(1.0)
 print('moe-cache-stats {"hits":170,"misses":30,"read_bytes":50000000,"resident_bytes":6500000000,"budget":7000000000}', flush=True)
@@ -133,7 +158,7 @@ check(srv.server_address[0] == "127.0.0.1", "listens on 127.0.0.1 only")
 
 with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
-st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact"})
+st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact", "agent": True, "api_key": "sekrit-123"})
 check(st == 200, f"POST /api/start ({body[:120]})")
 st, _ = req("/api/start", {"model": small["path"], "port": port + 1})
 check(st == 400, "a second start while one runs is refused")
@@ -151,6 +176,36 @@ check(abs((c.get("hit_rate") or 0) - 0.8) < 1e-9, f"recent hit rate from two sna
 check(abs((c.get("hit_rate_total") or 0) - 0.85) < 1e-9 and c.get("budget") == 7e9, "total hit rate and the cache budget")
 check((c.get("read_mbs") or 0) > 0, f"SSD reads MB/s from read_bytes ({c.get('read_mbs')})")
 check(f"--port {port}" in status.get("command", ""), "the status shows the launcher command")
+d = status.get("decisions", [])
+check(len(d) == 2 and d[0].startswith("AMD GPU on Windows") and d[1].startswith("experts of 38 layers"),
+      f"what the launcher decided, up to its URL line, without the prefix ({d})")
+w = status.get("warnings", [])
+check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
+      f"the shrink warning is lifted out of the log, once, counted, without llama-server's prefix ({w})")
+check("sekrit" not in json.dumps(status), "the API key is not in the status")
+os.makedirs(os.path.join(ui.mc.CACHE_DIR, "slots", "agent"), exist_ok=True)
+open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.bin"), "wb").write(b"x" * 1000)
+open(os.path.join(ui.mc.CACHE_DIR, "slots", "agent", "fake-moe-c65536-s0.new.bin"), "wb").write(b"x")
+warm = json.loads(req("/api/status")[1])["warm"]
+check([e["line"] for e in warm["events"]] == ["saved slot 0 (4096 tokens, 120 MB) in 0.5 s"], f"warm-session events from the launcher's log ({warm['events']})")
+check([f["name"] for f in warm["files"]] == ["fake-moe-c65536-s0.bin"] and warm["files"][0]["size"] == 1000, "saved conversations listed, half-written ones not")
+
+# connect buttons: preview, then write (into the temporary XDG_CONFIG_HOME)
+st, body = req("/api/connect", {"agent": "opencode", "write": False})
+j = json.loads(body)
+check(st == 200 and j["rc"] == 0 and "fake-moe" in j["output"] and not os.path.exists(os.path.join(TMP, "config", "opencode", "opencode.json")),
+      "Preview OpenCode: shows the block, writes nothing")
+st, body = req("/api/connect", {"agent": "opencode", "write": True})
+j = json.loads(body)
+cfg = os.path.join(TMP, "config", "opencode", "opencode.json")
+check(st == 200 and j["rc"] == 0 and j["file"] == cfg and os.path.isfile(cfg), f"Connect OpenCode writes {cfg} ({j['output'][-120:]})")
+check('"moe-cache/fake-moe"' in (j["written"] or "") and f"127.0.0.1:{port}/v1" in j["written"], "and shows the provider block now in the file")
+check("sekrit" not in body and "sekrit-123" in open(cfg).read(), "the key is written to the file but never shown on the page")
+st, body = req("/api/connect", {"agent": "hermes", "write": False})
+check(st == 200 and "hermes config set" in json.loads(body)["output"], "Preview Hermes: the 'hermes config set' commands")
+st, _ = req("/api/connect", {"agent": "bash"})
+check(st == 400, "only opencode and hermes")
+
 lines = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check(any("eval time" in l for l in lines) and not any(l.startswith("moe-cache-stats") for l in lines), "the log has the server lines, not the stats lines")
 st, _ = req("/api/stop", {})
@@ -159,6 +214,43 @@ while time.time() < deadline and status["state"] not in ("stopped", "exited"):
     status = json.loads(req("/api/status")[1]); time.sleep(0.3)
 check(status["state"] == "stopped", f"POST /api/stop stops it ({status['state']}, exit code {status['rc']})")
 srv.shutdown()
+
+# Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)
+mc = ui.mc
+saved = mc.pick_gpu, mc.list_devices, mc.win_dedicated_vram
+mc.list_devices = lambda ls: "listing"
+mc.pick_gpu = lambda listing: ("Vulkan1", "AMD Radeon RX 7900 XT", 18000)
+mc.win_dedicated_vram = lambda: {"AMD Radeon RX 7900 XT": 20 * 2**30, "AMD Radeon(TM) Graphics": 512 * 2**20}
+g = ui.windows_gpu_once("llama-server")
+check(g == {"name": "AMD Radeon RX 7900 XT", "free": 18000 * 2**20, "total": 20.0 * 2**30, "integrated": False, "device": "Vulkan1",
+            "adapter": "AMD Radeon RX 7900 XT"}, f"discrete AMD GPU: free and total ({g})")
+mc.pick_gpu = lambda listing: ("Vulkan0", "AMD Radeon(TM) Graphics", 16000)
+g = ui.windows_gpu_once("llama-server")
+check(g["integrated"] and g["total"] is None and "integrated" in g["name"], "integrated GPU: marked, no dedicated total")
+mc.pick_gpu, mc.list_devices, mc.win_dedicated_vram = saved
+ui.vram_now, ui._GPU["gpu"] = (lambda: None), {"name": "AMD Radeon RX 7900 XT", "free": 15 * 2**30, "total": 20.0 * 2**30, "integrated": False}
+si = ui.system_info()
+check(si["gpu"] == "AMD Radeon RX 7900 XT" and si["vram_free"] == 15 * 2**30 and si["vram_total"] == 20 * 2**30, "the status uses it when nvidia-smi and sysfs have nothing")
+
+# Windows + AMD rules in the plan, in the launcher's words (the checkpoint rule is the launcher's own function)
+fn = os.path.join(TMP, "Flash-Next-IQ2_XS.gguf")
+gguf_header(fn, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512)])
+amd = {"device": "Vulkan0", "adapter": "AMD Radeon RX 9070 XT"}
+cpu_only, rs = ui.windows_amd_rules(amd, fn, 68e9, 30e9, agent=True, windows=True)
+check(cpu_only and len(rs) == 2 and "all experts stay on the CPU" in rs[0] and "--ctx-checkpoints 0" in rs[1] and "agents:" in rs[1],
+      f"Flash-Next bigger than RAM on an AMD GPU: experts on the CPU, checkpoints off ({rs})")
+check(ui.mc.WINDOWS == (os.name == "nt"), "the launcher's WINDOWS flag is put back")
+cpu_only, rs = ui.windows_amd_rules(amd, blob, 21.7e9, 30e9, windows=True)
+check(not cpu_only and rs == [], "Qwen3.6 that fits: no AMD rule")
+check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 4060"}, fn, 68e9, 30e9, windows=True) == (False, []), "NVIDIA: no AMD rule")
+check(ui.windows_amd_rules(amd, fn, 68e9, 30e9, windows=False) == (False, []), "Linux: no AMD rule")
+ui.WINDOWS, ui._GPU["gpu"] = True, dict(amd, free=15 * 2**30, integrated=False)
+ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
+real_size, ui.size_of = ui.size_of, (lambda path: 68e9)
+p = ui.plan_model(fn, ram="24")
+ui.WINDOWS, ui.size_of = os.name == "nt", real_size
+check(p["numbers"]["gpu_expert_layers"] == 0 and p["numbers"]["free_vram_GiB"] == 15.0 and any(r.startswith("Windows + AMD: all experts") for r in p["reasons"]),
+      "plan on Windows + AMD: the free VRAM found goes to the planner, the rule keeps the experts on the CPU, and says why")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

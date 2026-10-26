@@ -1313,7 +1313,7 @@ block reserve includes those 256 MiB. Effect: one expert layer fewer on the GPU 
 | run a | 100.5 | 131.4 | 123.9 | 134.9 | 11.8, 10.0, 11.7, 12.0 |
 | run b | 93.2 | 115.8 | 105.7 | 112.6 | 11.1, 9.2, 11.3, 11.9 |
 
-No block stayed on the CPU in either run. Runs a and b differ by about 12 % (the known +-10 % band); decode at ctx 8192 is 9-12 tok/s (12.4-13 at
+No block stayed on the CPU in either run. Runs a and b differ by about 15 % on average (8 / 13 / 17 / 20 % per prompt: partly outside the usual +-10 % band); decode at ctx 8192 is 9-12 tok/s (12.4-13 at
 ctx 4096, section 44).
 
 **I2 (overlap upload with compute in the long-prompt block): killed on the laptop.** Timers (`MOE_CACHE_SEG_TIMES=1`), 128 blocks at -ub 2048: upload
@@ -1351,7 +1351,7 @@ uploaded) and ~147-token prompts (157-198 of 256). Speed, Qwen3.6 `--ram 14`, ct
 | ~70 tokens (3 prompts) | 1,621 / 1,631 / 1,634 ms; 1,611 / 1,613 / 1,625 ms | 896 / 896 / 908 ms; 903 / 906 / 923 ms | **1.8x** |
 | ~170 tokens (3 prompts) | 1,729 / 1,744 / 1,762 ms; 1,720 / 1,722 / 1,753 ms | 1,112 / 1,098 / 1,141 ms; 1,133 / 1,108 / 1,144 ms | **1.55x** |
 
-This is the agent follow-up case (tool results of 30-300 tokens) and it is faster than stock llama.cpp, which uploads whole layers. Batches that use
+This is the agent follow-up case (tool results of 30-300 tokens). Stock llama.cpp uploads whole layers here, so it should gain the same way, but stock was not timed in this test. Batches that use
 90 % or more of the experts upload the whole tensor as before.
 
 **I15 (stronger `--fast` levels), quality: kill check passed.** `kl_run.sh` (llama-perplexity, 20 x 512 tokens prose + code, Flash-Next, fixed 6 GiB cache,
@@ -1423,7 +1423,7 @@ correct. Picks given up in that session: 20,439 (`--fast`) and 43,367 (`--fast=2
 
 First real run on the owner's new desktop, driven over SSH. **Every speed here is PRELIMINARY**: the owner's apps were open (Dia, Claude, ChatGPT,
 Discord: 18.6 GB of working sets, 14.2 GB of RAM free at the start), and Windows' file cache could not be cleared (needs admin rights, RAMMap).
-Clean reruns are still to do. Identity and bit-exact results do not depend on that and are final.
+Clean reruns: Flash-Next is done in section 55 (file cache flushed without admin rights); 122B and GLM follow. Identity and bit-exact results do not depend on any of this and are final.
 
 | Item | Value |
 |---|---|
@@ -1508,9 +1508,9 @@ Speed against llama.cpp's own zen4 function, **PRELIMINARY** (apps open, downloa
 | iq3_xxs gather / plugin AVX2 kernel (I36) | 0.56x / 0.58x | 0.70x / 0.64x |
 | iq3_xxs AVX-512 / AVX-512+VNNI | 0.60x / 0.61x | 0.77x / 0.76x |
 
-Every gather-based kernel is 0.56-0.77x on Zen 4 (gathers are slow there, as the original Intel-only note said). Decisions: **I36 stays off on AMD
+Every gather-based and every AVX-512 kernel is 0.56-0.77x on Zen 4 (gathers are slow there, as the original Intel-only note said). Decisions: **I36 stays off on AMD
 by default** (`MOE_CACHE_IQ3_KERNEL=1` kept for testing; 8659920); **R12 (AVX-512 kernels) killed on Zen 4** (kill rule: slower than AVX2). A quiet-machine
-rerun would refine the numbers, not flip them. The AVX-512 kernels are also Linux-only (interposition), so using them would have needed a change in
+rerun is unlikely to flip them (every ratio is well under 1.0 in both runs). The AVX-512 kernels are also Linux-only (interposition), so using them would have needed a change in
 the executor.
 
 ### WP2: Flash-Next IQ2_XS speed, stock vs plugin (PRELIMINARY: apps open, Windows file cache warm for stock)
@@ -1531,12 +1531,12 @@ Two layouts: the old launcher default (36 CPU expert layers, 12 on the GPU) and 
 | new default, plugin stats run (warm profile, 256 tokens) | **13.52** | - |
 
 Stats run, new default: cache 13.3 GiB (start budget 16.05), decode hit rate 95.6 %, 8.2 GB read for 256 tokens. Reading the table:
-**decode about equal to stock (12-13.5 vs 14-16), prefill about 2x stock (105-120 vs 45-57)**. Plugin A's 5 tok/s is the first session after a cold start:
+**decode a little below stock (plugin 12-13.5 after the first session vs stock 14-16), prefill about 2x stock (105-120 vs 45-57)**. Plugin A's 5 tok/s is the first session after a cold start:
 the plugin reads the file unbuffered, while stock ran with Windows' file cache already warm from earlier runs (idea I38).
 
 ### The finding: on AMD's Windows driver, VRAM in use costs system RAM (launcher rule, db8e634)
 
-Why the plugin decoded 3-4x slower than stock with 12 expert layers on the GPU:
+Why the plugin decoded about 4x slower than stock with 12 expert layers on the GPU:
 
 | Measurement | Value |
 |---|---|
@@ -1544,8 +1544,8 @@ Why the plugin decoded 3-4x slower than stock with 12 expert layers on the GPU:
 | Stock llama-server alone, private memory | 15.3 GiB with 12 expert layers on the GPU, 6.8 GiB with none |
 | System-wide available memory when stock starts | 22.8 -> 7.9 GB (-14.9 GB) while the GPU holds 12.0 GiB dedicated |
 
-So the tuner's shrink was right: the VRAM in use is also taken from system RAM, and the planner over-committed (12 GPU expert layers = ~12 GB of
-VRAM and ~12 GB of RAM, leaving the cache ~3 GiB). Launcher rule: **Windows + AMD GPU + a model bigger than RAM: keep all experts on the CPU.** Stock
+So the tuner's shrink was right: the VRAM in use is also taken from system RAM, and the planner over-committed (12 GPU expert layers = 12.0 GiB of
+VRAM and ~14.9 GB of RAM, leaving the cache ~3 GiB). Launcher rule: **Windows + AMD GPU + a model bigger than RAM: keep all experts on the CPU.** Stock
 gains from it too (11-14 -> 14-16 tok/s). The plugin now also prints one warning when its cache shrinks below half of its peak, with how much the rest
 of llama-server uses (2dccf17); on the PC it had fallen 14 -> 2 GiB without a word. Untested: allocation switches, Smart Access Memory off, HIP (idea I37).
 
@@ -1572,7 +1572,16 @@ Plugin prefill 1.4-1.5x stock; decode half of stock or less, most likely stock's
 | plugin A | crashed (one decode request done: 1.14 tok/s) | - |
 | plugin B | crashed | - |
 
-Stock B and a plugin rerun with the fixed DLL: to be confirmed (not run yet).
+After the fix (2dccf17, CI-built DLL), same layout:
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock B | 1.60 / 3.61 / 1.34 | 14.7 |
+| plugin A, fixed DLL | **no crash**; 1.09 / 1.05 / 0.99 | 42.5 (2.9x stock) |
+| plugin B, fixed DLL | to be confirmed | to be confirmed |
+
+Decode is below stock here (stock's file cache is warm, idea I38). The new shrink warning fired: the cache fell 15.3 -> 3.8 GiB because the rest of
+llama-server used 15.0 GiB even with all experts on the CPU (GLM's non-expert parts on the GPU; idea I37).
 
 ### GLM-5.3-Flash: crash in the long-prompt GPU block, fixed (2dccf17)
 
@@ -1580,16 +1589,86 @@ Both plugin runs above died at the long prompt with an access violation in `VCRU
 9.09 GiB at start). Cause: `gpu_segment` uploaded the
 whole expert tensor when at least 90 % of a layer's experts were used, including evicted ones. On Windows an evicted expert is decommitted memory
 (access violation); on Linux it is zeros (never used, harmless). Now it packs unless every expert is used, and a whole-tensor upload
-(`MOE_CACHE_GPU_PACK=0`) first checks that all experts are in RAM, else the block stays on the CPU. Linux behaviour is unchanged. Fix not yet confirmed
-on the PC with the rebuilt DLL.
+(`MOE_CACHE_GPU_PACK=0`) first checks that all experts are in RAM, else the block stays on the CPU. Linux behaviour is unchanged. Confirmed on the PC with the CI-built DLL: plugin A
+ran the long prompt without a crash (table above).
 
 ### Not measured yet
 
 | Item | State |
 |---|---|
 | 122B decode diagnosis with stats | to do |
-| GLM: stock B, plugin rerun with the fixed DLL | to be confirmed |
+| GLM: plugin B with the fixed DLL | to be confirmed |
 | `--fast`, `--hybrid` rows of WP2 | not run |
-| Clean timings (apps closed, file cache cleared as admin) | owner to free the machine |
+| Clean timings (apps closed, file cache flushed) | Flash-Next done (section 55); 122B and GLM running |
 | Windows job-object memory limit (WP3) on the PC | untested |
 | HIP build | needs AMD's HIP SDK |
+
+## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; Flash-Next done, 122B and GLM to come)
+
+Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). Cells marked
+"-" are not measured yet; quote only the filled tables.
+
+| Item | Value |
+|---|---|
+| Machine | Windows 11, Ryzen 9 7950X, RX 9070 XT 16 GB (driver 32.0.23034.4), 32 GB DDR5; same as section 54 |
+| llama.cpp | b11669 (ggml 0.27.0), official Vulkan zip |
+| Plugin | DLL built from 2dccf17 (CI build; includes the long-prompt crash fix) |
+| Layout | launcher defaults: all experts on the CPU (`--n-cpu-moe 48`), `--ctx-checkpoints 0` for Flash-Next |
+| Owner's apps | closed (the list of what was still running is not recorded) |
+
+**Method.**
+- Script `pc_series.ps1 -Flush "fileA;fileB;..."`: before every run it reads the other model files (70-99 GB in total, more than the 31 GB of RAM) from the SSD,
+  so Windows' file cache no longer holds the model under test. This replaces dropping the cache with RAMMap, which needs admin rights. Check afterwards that
+  the first stock run is not faster than its repeat for a reason other than the cache (to be filled).
+- Order ABBA (stock, plugin, plugin, stock), each run a fresh llama-server started by PID and stopped by PID.
+- `pc_speed.ps1` per run: warm-up, 3 decode requests of 256 tokens (a request that ends at once is ignored), 1 prefill request of about 3.5k tokens.
+- Stats run per model for the plugin (cache budget, hit rate, SSD reads), to explain decode where it differs from stock.
+
+### Flash-Next IQ2_XS (64 GB) (clean run: apps closed, 99 GB of other model files read in 41 s before every run)
+
+Launcher default on Windows + AMD (all experts on the CPU), DLL 2dccf17. Two decode requests per run counted; the first decode request of every run
+is a prompt that ends at once (0.00) and is excluded.
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | 12.13 / 14.94 | 53.0 |
+| plugin A | 12.30 / 12.34 | 120.3 |
+| plugin B | 12.16 / 12.17 | 119.7 |
+| stock B | 13.92 / 16.05 | 56.6 |
+| plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+Reading: **plugin decode about 12.2 tok/s in all four requests (very steady) against stock 12.1-16.1**; stock's faster requests are 20-30 % above the
+plugin's, its slowest equals it. **Prefill 2.2x stock** (120 vs 53-57). Both agree with the preliminary numbers in section 54 (decode a little below stock,
+prefill about 2x), now with a cold file cache for every run: the plugin's first-session gap seen there (5 tok/s) did not appear (plugin A 12.3).
+Note: the runner's `speed.log` failed to open ("Stream was not readable", a log-file lock); the numbers above are from the runner's captured output.
+
+### Qwen3.5-122B UD-IQ2_XXS (36.6 GB)
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | - | - |
+| plugin A | - | - |
+| plugin B | - | - |
+| stock B | - | - |
+| plugin stats run (cache budget, hit rate, GB read) | - | - |
+
+### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards)
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | - | - |
+| plugin A | - | - |
+| plugin B | - | - |
+| stock B | - | - |
+| plugin stats run (cache budget, hit rate, GB read; the shrink warning, if it fires) | - | - |
+
+### Against section 54
+
+| Model | Section 54 (PRELIMINARY): stock / plugin decode, plugin prefill vs stock | Section 55 (clean) |
+|---|---|---|
+| Flash-Next | 14-16 / 12-13.5 tok/s; prefill about 2x | 12.1-16.1 / 12.2 tok/s; prefill 2.2x |
+| Qwen3.5-122B | 11-14 / 3-7 tok/s; prefill 1.4-1.5x | - |
+| GLM-5.3-Flash | 1.3-3.6 / 1.0-1.1 tok/s; prefill 2.9x | - |
+
+What to conclude (to be written from the numbers): whether the plugin's first-session decode gap (idea I38, unbuffered reads) survives a cold file cache
+for stock too; whether the shrink on GLM (idea I37) still happens with the apps closed.

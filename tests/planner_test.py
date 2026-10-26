@@ -65,6 +65,32 @@ check(lo is not None and hi is not None and hi >= lo, f"launcher --gpu-margin 3 
 import importlib.util, struct  # noqa: E402
 _sp = importlib.util.spec_from_file_location("moe_cache_launcher", os.path.join(HERE, "bin", "moe_cache.py"))
 L = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(L)
+# AMD driver version for the checkpoint message (I44): fake winreg with two display adapters
+import types  # noqa: E402
+_keys = {"": ["0000", "0001", "Properties"], "0000": {"DriverDesc": "AMD Radeon(TM) Graphics", "DriverVersion": "31.0.1.1"},
+         "0001": {"DriverDesc": "AMD Radeon RX 9070 XT", "DriverVersion": "32.0.23034.4"}}
+class _K:
+    def __init__(self, n): self.n = n
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+def _open(parent, sub):
+    n = sub if sub in _keys else ""
+    return _K(n)
+def _query(k, v):
+    if k.n not in _keys or not isinstance(_keys[k.n], dict) or v not in _keys[k.n]: raise OSError
+    return (_keys[k.n][v], 1)
+_fake = types.SimpleNamespace(HKEY_LOCAL_MACHINE=0, OpenKey=_open, QueryInfoKey=lambda k: (3, 0, 0), EnumKey=lambda k, i: _keys[""][i], QueryValueEx=_query)
+_oldw, _oldm = L.WINDOWS, sys.modules.get("winreg")
+L.WINDOWS = True; sys.modules["winreg"] = _fake
+check(L.win_driver_version("AMD Radeon RX 9070 XT") == "32.0.23034.4", "win_driver_version: the discrete adapter's DriverVersion")
+check(L.win_driver_version("AMD Radeon(TM) Graphics") == "31.0.1.1", "win_driver_version: the integrated adapter's own version")
+check(L.win_driver_version("No such GPU") == "", "win_driver_version: unknown adapter gives ''")
+L.WINDOWS = False
+check(L.win_driver_version("AMD Radeon RX 9070 XT") == "", "win_driver_version: '' off Windows")
+L.WINDOWS = _oldw
+if _oldm is None: sys.modules.pop("winreg", None)
+else: sys.modules["winreg"] = _oldm
+
 def core(eff, mask, group=0):
     r = bytearray(48); struct.pack_into("<II", r, 0, 0, 48); r[9] = eff; struct.pack_into("<H", r, 30, 1); struct.pack_into("<QH", r, 32, mask, group)
     return bytes(r)

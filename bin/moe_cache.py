@@ -162,6 +162,29 @@ def win_dedicated_vram():
     return out
 
 
+def win_driver_version(name):
+    """DriverVersion (e.g. "32.0.23034.4") of the display adapter called `name` in the Windows registry; "" elsewhere, when not found or on failure."""
+    if not WINDOWS:
+        return ""
+    try:
+        import winreg
+        base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as k:
+            for i in range(winreg.QueryInfoKey(k)[0]):
+                sub = winreg.EnumKey(k, i)
+                if not sub.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(k, sub) as d:
+                        if str(winreg.QueryValueEx(d, "DriverDesc")[0]).strip() == name:
+                            return str(winreg.QueryValueEx(d, "DriverVersion")[0]).strip()
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return ""
+
+
 def pick_gpu(listing):
     """(device, name, free MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
     llama.cpp skips an integrated GPU when a discrete one exists, but --list-devices lists both (on a Ryzen 7000 desktop the built-in Radeon
@@ -398,7 +421,9 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
             return []
     except Exception:
         return []
-    say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver here)"
+    ver = win_driver_version(gpu[1])
+    say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver"
+        + (f" {ver}" if ver else "") + " here)"
         + ("; agents: the model cannot go back to an earlier point of a conversation, so edited history is processed again (Qwen3.6 keeps checkpoints)"
            if agent else ""))
     return ["--ctx-checkpoints", "0"]
@@ -513,9 +538,9 @@ def exit_reason(rc, ready):
 SERVER_HELP = """\
 --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
            also a q8_0 KV cache (half the KV memory; KL 0.0045 on its own, RESULTS 53).
+           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31).
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
-           Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB
-           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31)
+           Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)

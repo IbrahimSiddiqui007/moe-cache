@@ -7,7 +7,8 @@ It is served by the launcher itself: Python's standard library only, no installs
 bin/moe-cache-server --ui
 ```
 
-On Windows: `python bin\moe_cache.py ui`. The page opens at **http://127.0.0.1:8070**.
+On Windows: double-click `bin\moe-cache-ui.bat` (it finds Python, the plugin DLL and llama-server; `--shortcut` adds it to the Start menu; see
+[WINDOWS](WINDOWS.md)), or `python bin\moe_cache.py ui`. The page opens at **http://127.0.0.1:8070**.
 
 | Option | Meaning |
 |---|---|
@@ -22,10 +23,10 @@ Ctrl-C stops the page and any server it started. The page listens on 127.0.0.1 o
 
 | Panel | Shows | Controls |
 |---|---|---|
-| **1 Model** | every `.gguf` in the model folders (`~/models`, on Windows also `C:\models`, plus folders you add; and Ollama's model store when present), with size, quant and the planner's verdict: **fits in RAM: stock llama-server**, **does not fit: moe-cache exact**, **all experts fit on the GPU**; the selected model lists the reasons | pick a model, add a folder, rescan |
+| **1 Model** | every `.gguf` in the model folders (`~/models`, on Windows also `C:\models`, plus folders you add; and Ollama's model store when present), with size, quant (from the file name, else from the GGUF header) and the planner's verdict: **fits in RAM: stock llama-server**, **does not fit: moe-cache exact**, **all experts fit on the GPU**; the selected model lists the reasons (on Windows with an AMD GPU also the launcher's AMD rules: all experts on the CPU for a model bigger than RAM, `--ctx-checkpoints 0` for Flash-Next) and, for the models measured before, the measured speeds on the test laptop (stock and moe-cache, with the RESULTS section) | pick a model, add a folder, rescan |
 | **2 Settings** | RAM budget (`--ram`, empty = available RAM), VRAM the planner may use (`--vram`, detected), context 8k / 32k / 64k, mode **Exact** (default, identical output) / **Fast** (`--fast`) / **Hybrid** (`--hybrid`, experimental), **Agent mode** (`--agent`), port, API key | |
-| **3 Status** | decode tok/s (live while a reply is generated, else the last request), prefill tok/s of the last request, cache hit rate (last 2 s), SSD reads MB/s, expert cache used / budget (or llama-server's RAM when it runs stock), VRAM used, the mode the launcher chose, the launcher command; 2-minute charts of tok/s and hit rate | **Start**, **Stop**, copy the command, show the full llama-server command (`--dry-run`) |
-| **4 Chat / Agents / Log** | **Chat**: llama-server's own chat page in a frame; **Agents**: base URL, model name and context, **Connect OpenCode / Hermes** (`moe_cache.py connect … --write`); **Log**: the last 500 lines, plugin lines highlighted | |
+| **3 Status** | decode tok/s (live while a reply is generated, else the last request), prefill tok/s of the last request, cache hit rate (last 2 s), SSD reads MB/s, expert cache used / budget (or llama-server's RAM when it runs stock), VRAM used, the mode the launcher chose, the launcher command; 2-minute charts of tok/s and hit rate; **What the launcher decided** (its own lines before it started llama-server: stock or plugin, GPU layers, micro-batch, pinning, and on Windows the GPU it found, the job memory limit and the AMD rules, highlighted); **warnings** from the log (e.g. the expert cache shrank because llama-server grew, the plugin disabled itself, why llama-server stopped), each once with a count | **Start**, **Stop**, copy the command, show the full llama-server command (`--dry-run`) |
+| **4 Chat / Agents / Log** | **Chat**: llama-server's own chat page in a frame; **Agents**: base URL, model name and context; per agent **Preview** (what would be written) and **Connect OpenCode / Hermes** (`moe_cache.py connect … --write`), which then shows the file and the block now in it (the API key is passed in the environment and never shown); in Agent mode also the **warm sessions**: conversations the launcher saved or restored in this run and the saved files it restores at the next start; **Log**: the last 500 lines, plugin lines highlighted | |
 
 ## Where the verdict comes from
 
@@ -41,7 +42,17 @@ The page starts `moe_cache.py server` with `MOE_CACHE_STATS_SIGNAL=1` and `--met
 (Linux: SIGUSR1, sent only when llama-server has the plugin's handler installed; Windows: the named event `Local\moe-cache-stats-<pid>`).
 Speed comes from llama-server's `/slots` (tokens decoded so far) and its timing lines. No change to the plugin or to llama.cpp.
 
-## Not in step 1
+VRAM: `nvidia-smi` for NVIDIA cards, sysfs for AMD on Linux. On Windows with an AMD or Intel GPU the page uses the launcher's own way: the GPU
+llama.cpp will use from `llama-server --list-devices` (discrete before integrated) and its dedicated VRAM from the registry, asked every 10 seconds
+while the page is open. An integrated GPU is marked as sharing RAM and shows free memory only.
 
-Expected tok/s per known model next to the verdict, model downloads, several servers at once, remote access, a native window. See
+## Tests
+
+`tests/ui_test.py` needs no model (fake models, mocked planner, a fake server). `tests/ui_live.py MODEL.gguf --llama-server PATH` drives the real
+page with a real model: start with a RAM budget just under the stock rule (so the plugin runs), one request, the live hit rate, stop. CI runs both
+on Granite, on Linux and on Windows.
+
+## Not yet
+
+Model downloads, several servers at once, remote access, a native window. See
 `handover/GUI1_DESIGN_DRAFT_20261026.md` and the ideas ledger (GUI1, I21, I33).

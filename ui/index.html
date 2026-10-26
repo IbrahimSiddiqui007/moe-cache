@@ -29,6 +29,7 @@ th { color:var(--muted); font-weight:500; font-size:12px; }
 .small { font-size:12px; color:var(--muted); }
 ul.why { margin:6px 0 0; padding-left:18px; }
 ul.why li { margin:2px 0; }
+ul.why li.win { color:var(--gpu); }
 label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
 input[type=text], input[type=number], input[type=password] { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); }
 input[type=range] { width:100%; }
@@ -58,6 +59,9 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
 #log .u { color:var(--accent); }
 .err { color:var(--bad); }
 .hint { color:var(--muted); font-size:12px; margin-top:4px; }
+#warnings { margin-top:8px; border:1px solid var(--warn); border-radius:6px; padding:6px 8px; }
+#warnings div { color:var(--warn); font-size:12px; word-break:break-word; }
+#warnings div + div { margin-top:4px; }
 </style>
 </head>
 <body>
@@ -110,6 +114,8 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <div style="margin-top:4px"><code id="cmd"></code></div>
     <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
     <pre id="dry" hidden></pre>
+    <details id="decisions" hidden style="margin-top:8px"><summary class="small">What the launcher decided</summary><ul class="why"></ul></details>
+    <div id="warnings" hidden></div>
     <div class="err" id="err"></div>
   </section>
   <section id="p-chat">
@@ -137,7 +143,7 @@ function settings() {
   return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.mode,
            agent: $("agent").checked, port: $("port").value, api_key: $("apikey").value };
 }
-function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode].join("|"); }
+function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent].join("|"); }
 function seg(id, key, cb) {
   const el = $(id);
   const paint = () => el.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v == S[key]));
@@ -150,6 +156,7 @@ const MODEHINT = { exact: "Output identical to stock llama-server (default).", f
 async function loadSystem() {
   S.sys = await api("/api/system");
   const s = S.sys, last = s.last || {};
+  $("sys").title = "llama-server: " + s.llama_server + "\nplugin: " + s.plugin;
   $("sys").textContent = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "");
   $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
   $("vram").max = Math.max(1, Math.ceil((s.vram_total || s.vram_free || 8 * 2 ** 30) / 2 ** 30));
@@ -191,7 +198,8 @@ function paintPlan() {
   const m = S.models.find(x => x.path == S.sel);
   if (!m) { $("plan").innerHTML = ""; return; }
   if (!p) { $("plan").innerHTML = `<b>${esc(m.name)}</b> <span class="small">planning…</span>`; return; }
-  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li>${esc(r)}</li>`).join("")}</ul>`;
+  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
+    (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on the test laptop (i7-13620H, RTX 4060 8 GB; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
 }
 let planning = false;
 async function planAll() {
@@ -202,7 +210,7 @@ async function planAll() {
       const k = planKey(path);
       if (S.plans[k]) continue;
       const s = settings();
-      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}`); }
+      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}&agent=${s.agent ? 1 : 0}`); }
       catch (e) { S.plans[k] = { kind: "error", verdict: "error", reasons: [e.message] }; }
       paintModels();
     }
@@ -247,7 +255,8 @@ async function poll() {
   if (c.resident != null) { $("s-ram").textContent = `${fmtGB(c.resident)} / ${fmtGB(c.budget)}`; $("s-ram-l").textContent = "expert cache used / budget"; }
   else { $("s-ram").textContent = st.server_rss != null ? fmtGB(st.server_rss) : fmtGB(sy.ram_total - sy.ram_avail); $("s-ram-l").textContent = st.server_rss != null ? `llama-server RAM (${fmtGB(sy.ram_avail)} free)` : "RAM used (system)"; }
   $("s-vram").textContent = sy.vram_total ? `${fmtGiB(sy.vram_total - sy.vram_free)} / ${fmtGiB(sy.vram_total)}` : "–";
-  $("s-vram-l").textContent = sy.gpu ? "VRAM used · " + sy.gpu : "VRAM (no GPU found)";
+  $("s-vram-l").textContent = sy.gpu ? (sy.vram_total ? "VRAM used · " : sy.vram_free != null ? "VRAM free · " : "") + sy.gpu : sy.gpu_detecting ? "VRAM (looking for the GPU…)" : "VRAM (no GPU found)";
+  if (!sy.vram_total && sy.vram_free != null) $("s-vram").textContent = fmtGiB(sy.vram_free);
   $("s-mode").textContent = st.mode || (running ? "deciding…" : "–");
   $("cmd").textContent = st.command || "";
   chart("c-tps", st.history.map(h => [h[0], h[1]]), 0, "--accent");
@@ -256,6 +265,19 @@ async function poll() {
   if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>`; }
   else { ifr.hidden = true; ifr.dataset.u = ""; ifr.removeAttribute("src"); $("chatnote").textContent = running ? "Loading the model…" : "Start a model: llama-server's own chat page appears here."; }
   paintAgents(st);
+  const dk = JSON.stringify(st.decisions || []), de = $("decisions");
+  if (de.dataset.k != dk) {
+    de.dataset.k = dk; de.hidden = !(st.decisions || []).length;
+    const win = l => /AMD GPU on Windows|Windows job memory limit|integrated|--list-devices|context checkpoints/.test(l);
+    de.querySelector("ul").innerHTML = (st.decisions || []).map(l => `<li${win(l) ? ' class="win"' : ""}>${esc(l)}</li>`).join("");
+    if ((st.decisions || []).some(win)) de.open = true;
+  }
+  const wk = JSON.stringify(st.warnings || []);
+  if ($("warnings").dataset.k != wk) {
+    $("warnings").dataset.k = wk;
+    $("warnings").hidden = !(st.warnings || []).length;
+    $("warnings").innerHTML = (st.warnings || []).map(w => `<div>⚠ ${esc(w.line)}${w.count > 1 ? ` <span class="small">(${w.count}×)</span>` : ""}</div>`).join("");
+  }
   if (st.log_seq > S.logSeq) {
     const j = await api("/api/log?since=" + S.logSeq);
     const el = $("log"), atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
@@ -268,20 +290,37 @@ async function poll() {
     if (atEnd) el.scrollTop = el.scrollHeight;
   }
 }
+function warmHtml(st) {
+  if (!st.agent) return "";
+  const w = st.warm || {}, ev = w.events || [], files = w.files || [];
+  const t = x => new Date(x * 1000).toLocaleTimeString();
+  return `<div class="small" style="margin-top:10px"><b>Warm sessions</b>: long agent conversations are saved when idle and restored at the next start.</div>` +
+    (ev.length ? `<ul class="why">${ev.map(e => `<li>${t(e.t)} ${esc(e.line)}</li>`).join("")}</ul>` : `<div class="hint">nothing saved or restored in this run yet</div>`) +
+    (files.length ? `<table style="margin-top:4px"><tr><th>Saved conversation</th><th class="num">Size</th><th>Saved</th></tr>${files.map(f =>
+      `<tr><td><code>${esc(f.name)}</code></td><td class="num">${fmtGB(f.size)}</td><td>${new Date(f.t * 1000).toLocaleString()}</td></tr>`).join("")}</table>` : "");
+}
 function paintAgents(st) {
   const el = $("t-agents");
-  const key = [st.state, st.url, st.agent].join("|");
+  const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {})].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
   if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on: this tab then shows what to give OpenCode, Hermes or any OpenAI-compatible client.</div>`; return; }
   const name = (st.model || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
   el.innerHTML = `<table><tr><th>Base URL</th><td><code>${esc(st.url)}/v1</code></td></tr><tr><th>Model</th><td><code>${esc(name)}</code></td></tr>
     <tr><th>Context</th><td>${esc(st.ctx || (st.agent ? 65536 : 8192))}</td></tr></table>` +
-    (st.agent ? `<div class="row" style="margin-top:8px"><button data-a="opencode">Connect OpenCode</button><button data-a="hermes">Connect Hermes</button></div><pre id="connout" hidden></pre>
-      <div class="hint">Writes the agent's config file (moe_cache.py connect … --write). Warm sessions: kept by the launcher in Agent mode.</div>`
-     : `<div class="hint">Agent mode is off for this server: tool calls may not work. Stop, tick Agent mode and start again.</div>`);
+    (st.agent ? "" : `<div class="hint">Agent mode is off for this server: tool calls may not work, and Hermes needs a 64k context. Stop, tick Agent mode and start again.</div>`) +
+    `<table style="margin-top:8px"><tr><th>OpenCode</th><td><button data-a="opencode">Preview</button> <button data-a="opencode" data-w="1" class="primary">Connect OpenCode</button>
+      <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)</div></td></tr>
+     <tr><th>Hermes</th><td><button data-a="hermes">Preview</button> <button data-a="hermes" data-w="1" class="primary">Connect Hermes</button>
+      <div class="hint">runs "hermes config set" for the provider, URL, model and context (needs hermes on the PATH)</div></td></tr></table>
+     <div id="connres"></div>` + warmHtml(st);
   el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
-    const o = $("connout"); o.hidden = false; o.textContent = "…";
-    try { const j = await api("/api/connect", { agent: b.dataset.a }); o.textContent = j.output || ("exit " + j.rc); } catch (e) { o.textContent = e.message; }
+    const o = $("connres"), w = !!b.dataset.w;
+    o.innerHTML = `<pre>${w ? "writing" : "asking"} (moe_cache.py connect ${esc(b.dataset.a)}${w ? " --write" : ""})…</pre>`;
+    try {
+      const j = await api("/api/connect", { agent: b.dataset.a, write: w });
+      o.innerHTML = `<div class="${j.rc ? "err" : "small"}" style="margin-top:6px">${j.rc ? "Failed" : w ? "Done" : "What would be written"} (exit ${j.rc}):</div><pre>${esc(j.output)}</pre>` +
+        (j.file ? `<div class="small" style="margin-top:6px">Now in <code>${esc(j.file)}</code>:</div><pre>${esc(j.written || "")}</pre>` : "");
+    } catch (e) { o.innerHTML = `<pre class="err">${esc(e.message)}</pre>`; }
   });
 }
 

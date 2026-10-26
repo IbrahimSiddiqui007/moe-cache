@@ -49,6 +49,35 @@ def quant_of(name):
     return m[-1].upper() if m else ""
 
 
+# llama.cpp's llama_ftype numbers (general.file_type) -> the usual quant names
+FILE_TYPES = {0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0", 9: "Q5_1", 10: "Q2_K", 11: "Q3_K_S", 12: "Q3_K_M", 13: "Q3_K_L",
+              14: "Q4_K_S", 15: "Q4_K_M", 16: "Q5_K_S", 17: "Q5_K_M", 18: "Q6_K", 19: "IQ2_XXS", 20: "IQ2_XS", 21: "Q2_K_S", 22: "IQ3_XS",
+              23: "IQ3_XXS", 24: "IQ1_S", 25: "IQ4_NL", 26: "IQ3_S", 27: "IQ3_M", 28: "IQ2_S", 29: "IQ2_M", 30: "IQ4_XS", 31: "IQ1_M", 32: "BF16",
+              36: "TQ1_0", 37: "TQ2_0", 38: "MXFP4_MOE"}
+
+
+def header_quant(path):
+    """The quant named in the GGUF header (general.file_type), for files whose name says nothing (Ollama's blobs); "" when unknown."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        import struct
+        from gguf_plan import _read_str, _skip_value, _FMT
+        with open(path, "rb") as f:
+            if f.read(4) != b"GGUF":
+                return ""
+            f.read(4)
+            _, n_kv = struct.unpack("<QQ", f.read(16))
+            for _ in range(n_kv):
+                key = _read_str(f)
+                t = struct.unpack("<I", f.read(4))[0]
+                if key == "general.file_type" and t in (4, 5):
+                    return FILE_TYPES.get(struct.unpack(_FMT[t], f.read(4))[0], "")
+                _skip_value(f, t)
+    except Exception:
+        pass
+    return ""
+
+
 def size_of(path):
     try:
         return sum(os.path.getsize(p) for p in mc.model_parts(path))
@@ -91,7 +120,7 @@ def scan_ollama(root):
                 if os.path.isfile(p):
                     parts = man.replace(os.sep, "/").split("/")
                     name = parts[-2] + ":" + parts[-1]
-                    out.append({"path": p, "name": name, "size": os.path.getsize(p), "quant": "", "source": "Ollama (" + root + ")"})
+                    out.append({"path": p, "name": name, "size": os.path.getsize(p), "quant": header_quant(p), "source": "Ollama (" + root + ")"})
     return out
 
 
@@ -149,27 +178,50 @@ def vram_now():
     return best
 
 
-_GPU = {"done": False, "gpu": None}
+_GPU = {"done": False, "gpu": None, "watched": 0.0}
 
 
-def detect_windows_gpu(ls):
-    """Windows without nvidia-smi: the launcher's own way (llama-server --list-devices + the registry). Slow (starts llama-server), so done once."""
-    try:
-        if WINDOWS and not mc.nvidia_reports():
-            g = mc.pick_gpu(mc.list_devices(ls))
-            ded = mc.win_dedicated_vram().get(g[1]) if g else None
-            if g and not (ded is not None and ded < GIB):          # an integrated GPU plans without VRAM, as the launcher does
-                _GPU["gpu"] = {"name": g[1], "free": g[2] * 2**20}
-    finally:
+def windows_gpu_once(ls):
+    """Windows without nvidia-smi (AMD, Intel): the GPU the launcher picks (llama-server --list-devices, discrete before integrated) with its
+    free memory, and its total dedicated VRAM from the registry. {name, free, total, integrated} or None."""
+    g = mc.pick_gpu(mc.list_devices(ls))
+    if not g:
+        return None
+    ded = mc.win_dedicated_vram().get(g[1])
+    integrated = ded is not None and ded < GIB       # the launcher plans without VRAM there: Vulkan's "free" is shared system RAM
+    return {"name": g[1] + (" (integrated: shares RAM)" if integrated else ""), "free": g[2] * 2**20 if g[2] else None,
+            "total": float(ded) if ded and not integrated else None, "integrated": integrated, "device": g[0], "adapter": g[1]}
+
+
+def watch_windows_gpu(ls, every=10.0):
+    """Keeps _GPU current on Windows without nvidia-smi. Asking llama-server --list-devices takes a second or two, so: every 10 s, and only
+    while the page is open (a status request in the last 30 s)."""
+    if not WINDOWS or mc.nvidia_reports():
         _GPU["done"] = True
+        return
+    while True:
+        try:
+            _GPU["gpu"] = windows_gpu_once(ls)
+        except Exception:
+            pass
+        _GPU["done"] = True
+        time.sleep(every)
+        while time.time() - _GPU["watched"] > 30:
+            time.sleep(1)
 
 
 def system_info():
     tot, avail = ram_now()
     v = vram_now()
-    free_vram = (v["total"] - v["used"]) if v else (_GPU["gpu"]["free"] if _GPU["gpu"] else None)
+    w = _GPU["gpu"] if not v else None
+    if v:
+        free_vram, total = v["total"] - v["used"], v["total"]
+    elif w:
+        free_vram, total = w["free"], w["total"]
+    else:
+        free_vram = total = None
     return {"os": "Windows" if WINDOWS else sys.platform, "ram_total": tot, "ram_avail": avail, "server_may_use": mc.mem_for_server(None),
-            "gpu": (v or _GPU["gpu"] or {}).get("name"), "vram_total": v["total"] if v else None, "vram_free": free_vram,
+            "gpu": (v or w or {}).get("name"), "vram_total": total, "vram_free": free_vram, "gpu_integrated": bool(w and w.get("integrated")),
             "gpu_detecting": WINDOWS and not _GPU["done"]}
 
 
@@ -195,16 +247,72 @@ def run_tuner(path, ctx, vram, kv_q8):
     return tune(path, ctx, free=float(vram) * GIB if vram else None, want_cache=False, kv_q8=kv_q8)
 
 
+# Measured decode speeds from README "Results" / docs/RESULTS.md, all on the test laptop (i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD), by model
+# family (gguf_plan.model_key) and file size (GB, so each quant has its own row). (RAM GB, setting, stock tok/s, moe-cache tok/s, where)
+MEASURED = {
+    ("qwen35moe-41x256", 21.7): [(24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44: the launcher runs stock here"),
+                                 (12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (12, "no GPU", 3.1, 9.9, "RESULTS 5")],
+    ("qwen4exp-48x512", 68.0): [(24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31")],
+    ("qwen35moe-48x256", 36.6): [(24, "8 GB GPU", 1.89, 7.7, "RESULTS 45; 9.0 with --fast")],
+    ("qwen35moe-48x256", 44.7): [(24, "8 GB GPU", 1.10, 5.7, "RESULTS 45; 6.8 with --fast")],
+    ("qwen35moe-48x256", 60.2): [(24, "8 GB GPU", 0.91, 3.7, "RESULTS 45; 4.5 with --fast")],
+    ("glm5-next-46x288", 101.8): [(24, "8 GB GPU", 0.32, 1.75, "RESULTS 26; 2.1 with --fast")],
+}
+
+
+def measured(path, size):
+    """Lines like 'test laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import model_key
+        key = model_key(path)
+    except Exception:
+        return []
+    for (k, gbs), rows in MEASURED.items():
+        if k == key and abs(size / 1e9 - gbs) <= 0.03 * gbs:
+            return [f"{ram} GB RAM, {what}: stock {st} tok/s, moe-cache {mc_} tok/s ({src})" for ram, what, st, mc_, src in rows]
+    return []
+
+
 def gb(x):
     return f"{x / 1e9:.1f} GB"
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact"):
+def windows_amd_rules(gpu, path, size, avail, agent=False, windows=WINDOWS):
+    """The launcher's Windows + AMD rules that apply to this model, as (all experts on the CPU?, [reasons in the launcher's words]).
+    gpu: {device, adapter} as windows_gpu_once finds it. Same conditions as moe_cache.server(); the checkpoint rule is the launcher's own function."""
+    if not (windows and gpu and str(gpu.get("device", "")).startswith("Vulkan") and re.search(r"AMD|Radeon", gpu.get("adapter", ""))):
+        return False, []
+    reasons, cpu_only = [], False
+    if avail and size > avail:
+        cpu_only = True
+        reasons.append("Windows + AMD: all experts stay on the CPU (on AMD's Windows Vulkan driver VRAM in use also costs system RAM, so GPU expert layers "
+                       "starve the cache when the model is bigger than RAM; Flash-Next 3 -> 12-13.5 tok/s; --n-cpu-moe N overrides)")
+    import contextlib, io
+    buf, was = io.StringIO(), mc.WINDOWS
+    try:
+        mc.WINDOWS = True                        # the function checks it; here the caller already decided this is Windows
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            args = mc.amd_windows_checkpoint_args((gpu["device"], gpu["adapter"], 0), path, [], agent=agent)
+    except Exception:
+        args = []
+    finally:
+        mc.WINDOWS = was
+    if args:
+        reasons.append("Windows + AMD: " + buf.getvalue().strip().replace("moe-cache: ", "", 1))
+    return cpu_only, reasons
+
+
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units)."""
     size = size_of(path)
     avail = mc.mem_for_server(ram)
+    gpu = _GPU["gpu"] if WINDOWS else None
+    if vram is None and gpu and gpu.get("free") and not gpu.get("integrated"):
+        vram = f"{gpu['free'] / GIB:.2f}"          # as the launcher: on Windows without nvidia-smi it passes the free VRAM it found to the planner
+    amd_cpu_only, amd_reasons = windows_amd_rules(gpu, path, size, avail, agent, windows=WINDOWS)
     stock_fits = bool(size and avail and size + HEADROOM <= avail)
-    out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}}
+    out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size)}
     R = out["reasons"]
     if avail:
         R.append(f"model {gb(size)} {'+' if stock_fits else 'plus'} {HEADROOM / 1e9:.1f} GB headroom "
@@ -225,6 +333,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact"):
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))
     ncmoe = tuned["n_cpu_moe"] if tuned and not no_vram else plan["n_cpu_moe"]       # the launcher's choice with --gpu-cache off, --ub auto
     layers = plan["layers"]
+    if amd_cpu_only:
+        ncmoe = layers
     gpu_layers = max(0, layers - min(ncmoe, layers))
     out["numbers"] = {"layers": layers, "gpu_expert_layers": gpu_layers, "n_cpu_moe": ncmoe, "cache_GiB": plan["cache_GiB"],
                       "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": tuned["ub"] if tuned else None,
@@ -257,8 +367,9 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact"):
         lim = float(ram) * 1e9 if ram else mc.mem_total()
         if mode == "exact" and lim and size > 2 * lim:
             R.append(f"the model is {size / lim:.1f}x the memory: --fast would add about +10 % (changes some tokens; off by default)")
+    R.extend(amd_reasons)
     for w in (tuned or {}).get("why", []):
-        if not no_vram:
+        if not no_vram and not amd_cpu_only:
             R.append("tuner: " + w)
     if plan.get("note"):
         R.append("planner: " + plan["note"])
@@ -397,6 +508,22 @@ def proc_rss(pid):
     return None
 
 
+# lines the page lifts out of the log: the launcher's and the plugin's warnings (e.g. the cache shrank because llama-server grew), the plugin
+# disabling itself, and why llama-server stopped
+WARN_RE = re.compile(r"(?i)moe-cache: (warning|.*plugin disabled|.*refus|llama-server (exited|was stopped))|^WARNING|^error: |\binvalid argument\b")
+def warm_files():
+    """Saved agent conversations the launcher restores at the next start (~/.cache/moe-cache/slots/agent/<model>-c<ctx>-s<slot>.bin)."""
+    out = []
+    for f in glob.glob(os.path.join(mc.CACHE_DIR, "slots", "agent", "*-s*.bin")):
+        if f.endswith(".new.bin"):
+            continue
+        try:
+            out.append({"name": os.path.basename(f), "size": os.path.getsize(f), "t": os.path.getmtime(f)})
+        except OSError:
+            pass
+    return sorted(out, key=lambda x: -x["t"])[:10]
+
+
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) tokens.*?([\d.]+) tokens per second")
 
 
@@ -422,6 +549,10 @@ class Runner:
         self.pid = None
         self.rss = None
         self.profile = None
+        self.warnings = []                 # [{"line", "count", "t"}]
+        self.warm = []                     # the launcher's "warm session:" lines (agent mode: saved / restored conversations)
+        self.decisions = []                # what the launcher decided before starting llama-server (its "moe-cache: ..." lines up to the URL line)
+        self.deciding = True
 
     # -- control --
     def start(self, s):
@@ -497,6 +628,15 @@ class Runner:
                     pass
                 continue
             self.add_line(line)
+            if self.deciding and line.startswith("moe-cache: "):
+                if "web UI and API will be at" in line:
+                    self.deciding = False
+                elif not WARN_RE.search(line):
+                    self.decisions.append(line[len("moe-cache: "):])
+            if "moe-cache: warm session:" in line:
+                self.warm = (self.warm + [{"t": time.time(), "line": line.split("warm session:", 1)[1].strip()}])[-8:]
+            if WARN_RE.search(line):
+                self.add_warning(line)
             m = TIMING_RE.search(line)
             if m:
                 key = "prefill" if m.group(1) == "prompt eval" else "decode"
@@ -515,6 +655,14 @@ class Runner:
             self.rc = rc
             self.state = "stopped" if self.state == "stopping" or rc in (0, -signal.SIGTERM, 143, 1 if WINDOWS else 0) else "exited"
             self.add_line(f"ui: the server ended (exit code {rc})")
+
+    def add_warning(self, line):
+        text = re.sub(r"^[\d.]+ [A-Z] ", "", line).strip()          # llama-server's time and level prefix
+        for w in self.warnings:
+            if w["line"] == text:
+                w["count"] += 1; w["t"] = time.time()
+                return
+        self.warnings = (self.warnings + [{"line": text, "count": 1, "t": time.time()}])[-10:]
 
     def take_snapshot(self, s):
         now = time.time()
@@ -571,7 +719,8 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "system": system_info()}
+                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "warm": {"events": self.warm, "files": warm_files() if s.get("agent") else []},
+                "system": system_info()}
 
 
 # ---- the page server ----
@@ -642,20 +791,22 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, open(PAGE, "rb").read(), "text/html")
             if u.path == "/api/system":
                 return self.send(200, dict(system_info(), folders=self.store.folders(), last=self.store.saved.get("last", {}),
-                                           llama_server=self.store.ls))
+                                           llama_server=self.store.ls, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
                 m = self.known(q.get("model"))
-                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"))
+                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"))
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
-                    hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact"))
+                    hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
+                                                                             q.get("agent") in ("1", "true")))
                 return self.send(200, hit[1])
             if u.path == "/api/command":
                 s = self.settings(q)
                 return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
             if u.path == "/api/status":
+                _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
@@ -694,13 +845,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True})
             if self.path == "/api/connect":
                 agent = body.get("agent")
-                if agent not in ("opencode", "hermes") or self.runner.state != "ready":
-                    raise ValueError("start a server with Agent mode first; agents: opencode, hermes")
-                st = self.runner.status()
-                cmd = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "connect", agent, "--url", st["url"], "--write"]
-                env = dict(os.environ, LLAMA_API_KEY=self.runner.settings.get("api_key") or "")
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
-                return self.send(200, {"rc": r.returncode, "output": (r.stdout + r.stderr).strip()})
+                if agent not in ("opencode", "hermes"):
+                    raise ValueError("agents: opencode, hermes")
+                if self.runner.state != "ready":
+                    raise ValueError("start a server first (with Agent mode on)")
+                return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.settings.get("api_key") or "", bool(body.get("write"))))
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:
@@ -728,6 +877,31 @@ class Handler(BaseHTTPRequestHandler):
         return s
 
 
+def connect_agent(agent, url, api_key, write):
+    """`moe_cache.py connect AGENT --url URL [--write]` for the running server. The key goes in the environment (LLAMA_API_KEY), never on a
+    command line. Returns {rc, output, file, written}: for OpenCode with write, the config file and the provider block now in it."""
+    cmd = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "connect", agent, "--url", url] + (["--write"] if write else [])
+    env = dict(os.environ, LLAMA_API_KEY=api_key, PYTHONIOENCODING="utf-8")
+    if not api_key:
+        env.pop("LLAMA_API_KEY", None)
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    out = {"rc": r.returncode, "output": (r.stdout + r.stderr).strip(), "file": None, "written": None}
+    m = re.search(r"; config (.+?\.json)", out["output"])
+    if write and r.returncode == 0 and m:
+        out["file"] = m.group(1)
+        try:
+            data = json.load(open(m.group(1), encoding="utf-8"))
+            block = {"model": data.get("model"), "provider": {"moe-cache": data.get("provider", {}).get("moe-cache")}}
+            if api_key and block["provider"]["moe-cache"]:
+                block["provider"]["moe-cache"].get("options", {})["apiKey"] = "(your key)"
+            out["written"] = json.dumps(block, indent=2)
+        except Exception as e:
+            out["written"] = f"(could not read it back: {e})"
+    if api_key:
+        out["output"] = out["output"].replace(api_key, "(your key)")
+    return out
+
+
 def make_server(port=8070, ls=None):
     store = Store(ls or os.environ.get("LLAMA_SERVER", "llama-server"))
     h = type("H", (Handler,), {"store": store, "runner": Runner()})
@@ -747,7 +921,7 @@ def ui(argv):
     except OSError as e:
         raise SystemExit(f"moe-cache: cannot listen on 127.0.0.1:{a.ui_port} ({e}): --ui-port N to pick another port")
     if WINDOWS:
-        threading.Thread(target=detect_windows_gpu, args=(a.llama_server,), daemon=True).start()
+        threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}"
     mc.say(f"moe-cache: control page at {url} (this machine only; Ctrl-C stops it and any server it started)")
     if not a.no_browser:
