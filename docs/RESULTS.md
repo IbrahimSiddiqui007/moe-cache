@@ -1418,3 +1418,151 @@ limit, one run each (prefill_req.py): exact 49.6 / 48.0 / 52.2 / 52.3 tok/s on 2
 (TCP/UDP reworded, same points); `--fast=2` matched word for word on 2, and on the other 4 gave the same results and points in different wording
 (17 x 23 = 391 with one step fewer, the same Fibonacci code with a shorter error message, the sky answer naming Rayleigh scattering). All 18 answers
 correct. Picks given up in that session: 20,439 (`--fast`) and 43,367 (`--fast=2`).
+
+## 54. Windows 11 desktop: Ryzen 9 7950X + RX 9070 XT (2026-10-26; from the PC session, windows-kit/pc_results.md)
+
+First real run on the owner's new desktop, driven over SSH. **Every speed here is PRELIMINARY**: the owner's apps were open (Dia, Claude, ChatGPT,
+Discord: 18.6 GB of working sets, 14.2 GB of RAM free at the start), and Windows' file cache could not be cleared (needs admin rights, RAMMap).
+Clean reruns are still to do. Identity and bit-exact results do not depend on that and are final.
+
+| Item | Value |
+|---|---|
+| Machine | Windows 11, Ryzen 9 7950X (AVX-512, built-in Radeon iGPU), RX 9070 XT 16 GB (driver 32.0.23034.4), 32 GB DDR5 (31.1 GB visible) |
+| llama.cpp | b11669 (ggml 0.27.0, commit 620d2225c), official Vulkan zip |
+| Plugin | DLL cross-built from ff73ec1 (API 3); source clone at e36344b |
+| Models | Flash-Next IQ2_XS 64 GB, GLM-5.3-Flash 95 GB, Qwen3.5-122B UD-IQ2_XXS 36.6 GB, Qwen3.6 Q4_K_M 21.7 GB, Granite 1B (all 8 downloads verified, ~208 GB in 61 min) |
+| Vulkan devices | Vulkan0 = built-in Radeon (reports 16,204 MiB shared), Vulkan1 = RX 9070 XT; llama.cpp uses only Vulkan1 |
+| HIP zip (rocm-10.0) | lists no device; has `amdhip64_7.dll` and `ggml-hip.dll` but no hipBLAS / rocBLAS: probably needs AMD's HIP SDK (ideas R13 / I31, later) |
+| Stale NVIDIA driver | `nvidia-smi.exe` and an RTX 4060 Laptop entry in the registry (Windows install carried over from the laptop); harmless, but it fooled the launcher (below) |
+
+### WP1: identity (final)
+
+| Test | Result |
+|---|---|
+| Granite 1B, cache 0.5 GiB (evicting) | **PASS 4/4**; 10,105 evictions, 3.6 GB re-read |
+| Granite, `MOE_CACHE_EXEC=2` + `EXEC_CHECK=1` | **PASS 4/4**; executor ops 9,069, checked 9,069, **0 mismatches** |
+| Qwen3.6 Q4_K_M, cache 4 GiB | **PASS 4/4**; 35,265 evictions, 25.7 GB re-read (executor steps aside on K-quants: expected) |
+| Qwen3.5-122B UD-IQ2_XXS (bigger than RAM), cache 4 GiB | **PASS 4/4**; 75,951 evictions, 67.9 GB re-read, executor ops 19,134 |
+| `check --run` on Qwen3.6 | 0 failed, 2 warnings (Windows experimental, ggml version); GPU = RX 9070 XT; "cache runs: yes" |
+| Launcher real start + chat, Flash-Next | ready after 32 s, correct answer (below) |
+
+Known note in the logs: "commit ... failed (Windows error 487), committing page by page" is the handled case from earlier Windows runs.
+On the 122B run `MOE_CACHE_AVX512=1` did nothing: the plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only
+(`__linux__` guards; AVX-512 and Q2_0 work by symbol interposition = LD_PRELOAD, which Windows does not have). Speeds in the identity runs are not
+measurements (forced small cache, downloads running).
+
+### Bug found: the planner saw no GPU on Windows with an AMD card (fixed in e36344b)
+
+The planner read free VRAM from nvidia-smi or Linux sysfs only. On Windows with an AMD or Intel card it saw no GPU and kept every expert layer on
+the CPU; `check` named the first listed device (the iGPU). Fix: when nvidia-smi reports no GPU, the launcher reads `llama-server --list-devices` and
+picks the adapter with the most dedicated VRAM in the registry (9070 XT 17.1 GB vs iGPU 0.5 GB). Dry-run, Qwen3.6:
+
+| | before | after |
+|---|---|---|
+| GPU | none | RX 9070 XT (Vulkan1), 15.07 GiB free |
+| expert layers on the CPU | 40 / 40 | 18 / 40 |
+| `-ub` | 512 | 2048 |
+
+### Crash: AMD's Windows Vulkan driver dies when llama-server saves a context checkpoint of Flash-Next (launcher workaround, 7a1b86f)
+
+First launcher start on Flash-Next: ready after 36 s, then llama-server died at the end of the first prompt (access violation 0xc0000005 in
+`amdvlk64.dll`). Narrowed down with **stock** llama-server (no plugin), one request each, Flash-Next IQ2_XS on the 9070 XT:
+
+| Stock llama-server | Result |
+|---|---|
+| launcher's arguments (`--n-cpu-moe 36 -ub 2048 -c 8192 --cache-ram 2048`) | crash |
+| same with `-ub 512` | crash |
+| all experts on the CPU (`--n-cpu-moe 999`) | crash |
+| `-fa off` | crash |
+| `GGML_VK_DISABLE_COOPMAT=1` / `..._COOPMAT2=1` | crash |
+| `-ngl 0` (CPU only) | works |
+| `llama-bench` pp64 / tg8 (no server, no checkpoints) | works (6.9 / 2.95 tok/s) |
+| `-np 1 --ctx-checkpoints 0 -c 2048` | works |
+| **`--ctx-checkpoints 0` alone** (`-c 8192`, 4 slots) | **works** |
+
+So saving a checkpoint of Flash-Next's recurrent state crashes the driver. It is not moe-cache (stock crashes the same way), not seen with Qwen3.6
+or Qwen3.5-122B (also hybrid) on the same machine, nor on Linux / RADV. Launcher: Windows + AMD Vulkan GPU + Flash-Next family gets
+`--ctx-checkpoints 0` with a message (`learn` and agent mode use the same helper, b1fc10b). Cost: a hybrid model cannot jump back to an earlier point
+of a conversation (plain continuation still reuses the cache); matters for agents (Task 4b checks it). With the workaround, launcher + plugin: ready
+after 32 s, 36 CPU expert layers, warm start 8.49 GiB in 8.1 s; first cold request 145 tokens, correct answer, **2.64 tok/s (PRELIMINARY)**.
+For an upstream report: driver 32.0.23034.4, llama.cpp b11669 (620d2225c), the table above.
+
+### Kernels on a real AVX-512 CPU (WP4, check mode; kernel_variants built for Windows, 88adca5)
+
+Library picked: `ggml-cpu-zen4.dll`. AVX-VNNI variants are skipped on CPUs without AVX-VNNI (they crashed with an illegal instruction: Zen 4 has
+AVX-512 VNNI, not the VEX form). Bit-exact check, 5,120 dots each:
+
+| Kernel | Result |
+|---|---|
+| iq2_xxs AVX-512 / AVX-512+VNNI (written earlier without an AVX-512 machine) | **bit-exact, 0 mismatches / 0 mismatches** |
+| iq3_xxs AVX-512 / AVX-512+VNNI | **bit-exact, 0 / 0** |
+| iq3_xxs plugin gather kernel, AVX2 (I36) | **bit-exact, 0** |
+| iq2_xxs / iq3_xxs gather, scalar-lookup | bit-exact |
+
+Speed against llama.cpp's own zen4 function, **PRELIMINARY** (apps open, downloads running; one core, data in cache, two runs):
+
+| Kernel | run 1 | run 2 |
+|---|---|---|
+| iq2_xxs gather | 0.64x | 0.59x |
+| iq2_xxs AVX-512 / AVX-512+VNNI | 0.64x / 0.72x | 0.73x / 0.61x |
+| iq3_xxs gather / plugin AVX2 kernel (I36) | 0.56x / 0.58x | 0.70x / 0.64x |
+| iq3_xxs AVX-512 / AVX-512+VNNI | 0.60x / 0.61x | 0.77x / 0.76x |
+
+Every gather-based kernel is 0.56-0.77x on Zen 4 (gathers are slow there, as the original Intel-only note said). Decisions: **I36 stays off on AMD
+by default** (`MOE_CACHE_IQ3_KERNEL=1` kept for testing; 8659920); **R12 (AVX-512 kernels) killed on Zen 4** (kill rule: slower than AVX2). A quiet-machine
+rerun would refine the numbers, not flip them. The AVX-512 kernels are also Linux-only (interposition), so using them would have needed a change in
+the executor.
+
+### WP2: Flash-Next IQ2_XS speed, stock vs plugin (PRELIMINARY: apps open, Windows file cache warm for stock)
+
+Script `pc_speed.ps1`: warm-up, 3 decode requests of 256 tokens (a request that ends at once, 0.00, is ignored), 1 prefill of 3,533 tokens. Order ABBA.
+Two layouts: the old launcher default (36 CPU expert layers, 12 on the GPU) and the new default (all 48 on the CPU, `--n-cpu-moe 48`).
+
+| Layout / run | decode tok/s | prefill tok/s |
+|---|---|---|
+| old default, stock A | 10.98 / 13.10 | 62.4 |
+| old default, plugin A | 2.87 / 3.03 | 85.1 |
+| old default, plugin B | 2.78 / 3.05 | 82.4 |
+| old default, stock B | 11.53 / 13.98 | 66.3 |
+| new default, stock A | 13.60 / 15.42 | 44.9 |
+| new default, plugin A (first session) | 4.92 / 5.60 | 105.3 |
+| new default, plugin B | 12.16 / 12.16 | 120.0 |
+| new default, stock B | 13.91 / 16.26 | 56.8 |
+| new default, plugin stats run (warm profile, 256 tokens) | **13.52** | - |
+
+Stats run, new default: cache 13.3 GiB (start budget 16.05), decode hit rate 95.6 %, 8.2 GB read for 256 tokens. Reading the table:
+**decode about equal to stock (12-13.5 vs 14-16), prefill about 2x stock (105-120 vs 45-57)**. Plugin A's 5 tok/s is the first session after a cold start:
+the plugin reads the file unbuffered, while stock ran with Windows' file cache already warm from earlier runs (idea I38).
+
+### The finding: on AMD's Windows driver, VRAM in use costs system RAM (launcher rule, db8e634)
+
+Why the plugin decoded 3-4x slower than stock with 12 expert layers on the GPU:
+
+| Measurement | Value |
+|---|---|
+| Plugin cache budget during the run | started 14.13 GiB, fell to 2.1-3.0 GiB; hit rate 56 %; 26 GB read from the SSD for 64 tokens; read time 44.8 s vs compute 12.4 s |
+| Stock llama-server alone, private memory | 15.3 GiB with 12 expert layers on the GPU, 6.8 GiB with none |
+| System-wide available memory when stock starts | 22.8 -> 7.9 GB (-14.9 GB) while the GPU holds 12.0 GiB dedicated |
+
+So the tuner's shrink was right: the VRAM in use is also taken from system RAM, and the planner over-committed (12 GPU expert layers = ~12 GB of
+VRAM and ~12 GB of RAM, leaving the cache ~3 GiB). Launcher rule: **Windows + AMD GPU + a model bigger than RAM: keep all experts on the CPU.** Stock
+gains from it too (11-14 -> 14-16 tok/s). The plugin now also prints one warning when its cache shrinks below half of its peak, with how much the rest
+of llama-server uses (2dccf17); on the PC it had fallen 14 -> 2 GiB without a word. Untested: allocation switches, Smart Access Memory off, HIP (idea I37).
+
+### GLM-5.3-Flash: crash in the long-prompt GPU block, fixed (2dccf17)
+
+On the first long prompt with a 4.6 GiB cache, llama-server died with an access violation in the upload copy. Cause: `gpu_segment` uploaded the
+whole expert tensor when at least 90 % of a layer's experts were used, including evicted ones. On Windows an evicted expert is decommitted memory
+(access violation); on Linux it is zeros (never used, harmless). Now it packs unless every expert is used, and a whole-tensor upload
+(`MOE_CACHE_GPU_PACK=0`) first checks that all experts are in RAM, else the block stays on the CPU. Linux behaviour is unchanged.
+
+### Not measured yet
+
+| Item | State |
+|---|---|
+| Qwen3.5-122B speed, stock vs plugin | not yet in the PC notes |
+| GLM-5.3-Flash speed | not yet (the crash above came first) |
+| `--fast`, `--hybrid` rows of WP2 | not run |
+| Clean timings (apps closed, file cache cleared as admin) | owner to free the machine |
+| Windows job-object memory limit (WP3) on the PC | untested |
+| HIP build | needs AMD's HIP SDK |
