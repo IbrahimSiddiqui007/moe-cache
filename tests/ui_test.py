@@ -290,6 +290,25 @@ if os.name != "nt":
     check(os.path.isfile(os.path.join(tf, "files", tag + "-s1.bin.1")), "a second file of the same name gets its own Trash name")
 check(req("/api/sessions/trash", {"name": "../ui.json"})[0] == 400 and req("/api/sessions/trash", {"name": "notes.bin"})[0] == 400, "only listed session files can be moved")
 check(req("/api/sessions/trash", {"name": tag + "-s0.bin"}, headers={"X-MoeCache-Token": None})[0] == 403, "not without the page token")
+check(ui.server_args({"model": "m.gguf", "agent": True})[3:5] == ["--ctx", "65536"] and ui.server_args({"model": "m.gguf"})[3:5] == ["--ctx", "8192"],
+      "Agent mode without a chosen context: 65536, as the launcher's --agent (the page passed 8192 before)")
+if sys.platform.startswith("linux"):
+    # the launcher runs short helpers before llama-server (planner, `llama-server --help`): the stats go to the child that serves (--port)
+    import subprocess as sp
+    par = sp.Popen([sys.executable, "-c", "import subprocess as s, sys, time; a = s.Popen([sys.executable, '-c', 'import time; time.sleep(30)', '--help']); "
+                    "b = s.Popen([sys.executable, '-c', 'import time; time.sleep(30)', '--port', '1']); time.sleep(30)"])
+    found = None
+    for _ in range(50):
+        found = ui.child_pid(par.pid)
+        if found:
+            break
+        time.sleep(0.1)
+    kids = open(f"/proc/{par.pid}/task/{par.pid}/children").read().split()
+    check(found is not None and b"--port" in open(f"/proc/{found}/cmdline", "rb").read() and len(kids) == 2, f"child_pid picks the serving child, not a helper ({found}, children {kids})")
+    check(ui.alive(found) and not ui.alive(999999999), "alive() tells a running process from a gone one")
+    for k in kids:
+        os.kill(int(k), 15)
+    par.kill(); par.wait()
 check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-1] == "--no-warm" and "--no-warm" not in ui.server_args({"model": "m.gguf", "no_warm": True}),
       "Don't restore: --no-warm (agent mode only)")
 

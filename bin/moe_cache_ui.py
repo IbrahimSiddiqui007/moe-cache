@@ -378,7 +378,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
 
 def server_args(s):
     """moe_cache.py server arguments for the page's settings."""
-    a = [s["model"], "--port", str(int(s.get("port") or 8080)), "--ctx", str(int(s.get("ctx") or 8192))]
+    a = [s["model"], "--port", str(int(s.get("port") or 8080)), "--ctx", str(int(s.get("ctx") or (65536 if s.get("agent") else 8192)))]
     if s.get("ram"):
         a += ["--ram", str(float(s["ram"]))]
     if s.get("vram"):
@@ -460,14 +460,44 @@ def child_pid(pid):
             return found
         except Exception:
             return None
+    # the launcher also runs short helpers first (planner/plan.py, `llama-server --help`): take the child that serves (--port on its command line)
     try:
         for t in os.listdir(f"/proc/{pid}/task"):
-            kids = open(f"/proc/{pid}/task/{t}/children").read().split()
-            if kids:
-                return int(kids[0])
+            for k in open(f"/proc/{pid}/task/{t}/children").read().split():
+                try:
+                    if b"\0--port\0" in open(f"/proc/{k}/cmdline", "rb").read():
+                        return int(k)
+                except OSError:
+                    pass
     except (OSError, ValueError):
         pass
     return None
+
+
+def alive(pid):
+    if not pid:
+        return False
+    if WINDOWS:
+        try:
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, pid)
+            if not h:
+                return False
+            code = ctypes.c_ulong()
+            ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+            k.CloseHandle(h)
+            return bool(ok) and code.value == 259          # STILL_ACTIVE
+        except Exception:
+            return False
+    return os.path.isdir(f"/proc/{pid}") or _kill0(pid)
+
+
+def _kill0(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def catches_usr1(pid):
@@ -1019,7 +1049,8 @@ class Runner:
                 self.state = "ready"
                 if not self.mode:
                     self.mode = "llama-server"
-            self.pid = self.pid or child_pid(p.pid)
+            if self.state == "ready" and not alive(self.pid):     # found once it serves, so not one of the launcher's short helpers
+                self.pid = child_pid(p.pid)
             self.rss = proc_rss(self.pid) if self.pid else None
             if self.state == "ready":
                 st, body = mc.http(f"http://127.0.0.1:{port}/slots", api_key=api_key, timeout=2)
