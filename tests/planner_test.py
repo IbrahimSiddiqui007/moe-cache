@@ -86,5 +86,15 @@ snip = L.agent_snippets(8099, "m1", 65536, None)
 check("base_url: http://127.0.0.1:8099/v1" in snip and '"baseURL": "http://127.0.0.1:8099/v1"' in snip and "context_length: 65536" in snip,
       "agent snippets: Hermes and OpenCode blocks name the base URL and the context")
 
+# starter profiles (I18): every shipped profile is a valid XUSE file without a fingerprint, named <arch>-<layers>x<experts>
+import glob as _glob, re  # noqa: E402
+k = gguf_plan.model_key(model)
+check(k is not None and re.fullmatch(r"[A-Za-z0-9_.-]+-\d+x\d+", k or "") is not None, f"model_key: '{k}' has the form arch-LAYERSxEXPERTS")
+for sp in _glob.glob(os.path.join(HERE, "profiles", "*-*x*.usage")):
+    d = open(sp, "rb").read()
+    n_l, n_e = struct.unpack("<ii", d[4:12])
+    check(d[:4] == b"XUSE" and len(d) == 12 + 4 * n_l * n_e and str(n_e) == sp.rsplit("x", 1)[1].split(".")[0],
+          f"starter profile {os.path.basename(sp)}: XUSE, {n_l} x {n_e}, no fingerprint")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

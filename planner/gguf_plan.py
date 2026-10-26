@@ -27,6 +27,29 @@ def _skip_value(f, t):
         raise ValueError(f"unknown GGUF value type {t}")
 
 
+def model_key(path):
+    """'<architecture>-<layers>x<experts>' from the GGUF header (e.g. 'qwen4exp-48x512'): names the shipped starter usage profile for a model family,
+    shared by all quants of it; None when the header lacks these keys."""
+    meta = {}
+    with open(path, "rb") as f:
+        if f.read(4) != b"GGUF":
+            return None
+        f.read(4)
+        _, n_kv = struct.unpack("<QQ", f.read(16))
+        for _ in range(n_kv):
+            key = _read_str(f)
+            t = struct.unpack("<I", f.read(4))[0]
+            if key == "general.architecture" and t == 8:
+                meta["arch"] = _read_str(f)
+            elif (key.endswith(".block_count") or key.endswith(".expert_count")) and t in (4, 5, 10, 11):
+                meta[key.rsplit(".", 1)[1]] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
+            else:
+                _skip_value(f, t)
+    if not all(k in meta for k in ("arch", "block_count", "expert_count")):
+        return None
+    return f"{meta['arch']}-{meta['block_count']}x{meta['expert_count']}"
+
+
 def read_tensors(path):
     """-> [(name, size_bytes)] for the tensors stored in this one file."""
     with open(path, "rb") as f:

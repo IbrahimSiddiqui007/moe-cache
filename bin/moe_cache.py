@@ -418,6 +418,7 @@ SERVER_HELP = """\
            Warm sessions (ideas I29, I34): every idle conversation of 2k+ tokens (with its checkpoints) is saved to disk 20 s after it changes,
            one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
+--no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
@@ -435,7 +436,7 @@ def server(argv):
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
-    ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
+    ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
@@ -506,6 +507,19 @@ def server(argv):
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
         extra += ["--slot-save-path", slotdir]
     profile = os.path.join(CACHE_DIR, os.path.basename(model) + "." + (pname + "." if pname else "") + "usage")
+    if not os.path.isfile(profile) and not a.no_starter and not a.dry_run:
+        # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import model_key
+            key = model_key(model)
+            starter = os.path.join(HERE, "profiles", key + ".usage") if key else None
+            if starter and os.path.isfile(starter):
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                shutil.copyfile(starter, profile)
+                say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
+        except Exception as e:
+            say(f"moe-cache: could not use a starter profile ({e})", err=True)
     load, method = load_env(ls, lib, a.load_method)
     # the model fits in the memory the server may use: stock llama-server is faster (its page cache holds the whole file and stays warm across
     # restarts; Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast and --hybrid need the plugin, so they keep it.

@@ -1370,3 +1370,38 @@ Keep 6 still sits 11x below the quant-to-quant difference while giving up 83 % m
 keep 8 14.57 / 16.08 tok/s, keep 7 15.10 / 13.72, keep 6 15.13 / 15.25 (all inside the +-10 % band). With 97 % hits only 4-10 k picks per run were
 given up (42-85 k looked at), so there is little left to skip; the levels can only pay where the cache is much smaller than the model (12 GB and
 below): not made an option.
+
+## 53. Laptop ideas under a day (2026-10-26 afternoon): I15 at 12 GB, I18 starter profiles, I11 split, I35 by calculation
+
+**I15 at 12 GB: the stronger `--fast` levels pay where the cache is small.** Flash-Next, 12 GB limit, launcher `--fast`, 8 x 48 tokens, clean-run gate,
+order 8, 7, 6, 6, 7, 8 (runs drifted downward over time; keep 6 beats keep 8 in both halves):
+
+| `MOE_CACHE_ROUTE_KEEP` | run 1 | run 2 | mean | picks given up | hit rate |
+|---|---|---|---|---|---|
+| 8 (today's `--fast`) | 10.30 | 8.79 | 9.55 | 9.5 k of 42.3 k | 90.7 % |
+| 7 | 11.59 | 10.00 | 10.80 | 14.5 k of 63.5 k | 92.2 % |
+| 6 | 13.09 | 14.28 | **13.69 (+43 %)** | 18.9 k of 84.6 k | 94 % |
+
+With KL 0.0224 for keep 6 (section 52; yardstick 0.243) a stronger opt-in level for small memory looks worth it; not shipped: needs an answer
+comparison and the owner's OK (a new approximate option).
+
+**I18 starter usage profiles: first request 2.1x faster.** `profiles/<arch>-<layers>x<experts>.usage` (written by tools/make_starter_profile.py
+without the model fingerprint, so every quant of a family can use it): qwen4exp-48x512 (Flash-Next), glm5-next-46x288 (GLM-5.3-Flash),
+qwen35moe-48x256 (Qwen3.5-122B), qwen35moe-41x256 (Qwen3.6). The launcher copies the matching one to the user's profile path when there is none
+(`--no-starter` to skip). Flash-Next, 24 GB, fresh profile name, launcher real start, order cold, starter, starter, cold, clean-run gate:
+
+| Run | first request | mean of requests 4-8 |
+|---|---|---|
+| cold (no profile) | 5.96, 6.18 | 10.78, 10.98 |
+| starter profile | **13.70, 11.81** | 14.35, 11.98 |
+
+The starter came from the developer's own sessions; the test prompts (speed_req.py) are different text.
+
+**I11 split of state_t: done, compiled code byte-identical.** src/mc_state.inl now holds the settings and fields; the methods continue in
+mc_state_io.inl, mc_state_profile.inl and mc_state_lru.inl, included inside the class body. `.text` and `.rodata` of the built plugin compare
+equal with the single-file build (225,330 bytes of code). The Windows cross-build compiles.
+
+**I35 (real KV size in the tuner): killed by calculation.** From the GGUF shapes: Flash-Next has attention in 12 of 48 layers, K and V of 512 each
+(24.6 KB per token, 1.50 GiB at 64k) plus indexer keys (~0.19 GiB) plus the recurrent state of 36 layers (~117 MB per slot, 0.44 GiB for 4 slots):
+2.13 GiB against the tuner's 2.44 GiB. The ~0.3 GiB gap is far from the ~0.7 GiB that `-ub 1024` at 64k needs. (Qwen3.6: ~0.8 GiB gap, worth about
+one expert layer, not the micro-batch step.)
