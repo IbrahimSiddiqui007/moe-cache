@@ -1549,19 +1549,46 @@ VRAM and ~12 GB of RAM, leaving the cache ~3 GiB). Launcher rule: **Windows + AM
 gains from it too (11-14 -> 14-16 tok/s). The plugin now also prints one warning when its cache shrinks below half of its peak, with how much the rest
 of llama-server uses (2dccf17); on the PC it had fallen 14 -> 2 GiB without a word. Untested: allocation switches, Smart Access Memory off, HIP (idea I37).
 
+### Qwen3.5-122B UD-IQ2_XXS (36.6 GB), new default (all experts on the CPU), ABBA (PRELIMINARY)
+
+Three decode requests per run. A first series lost both plugin runs to a script bug (`powershell -File` drops an empty `-Extra ""`); fixed in
+pc_series.ps1 and rerun.
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | 11.52 / 13.15 / 14.46 | 82.4 |
+| plugin A (first session) | 3.35 / 3.32 / 3.44 | 114.1 |
+| plugin B | 6.05 / 6.07 / 6.73 | 128.6 |
+| stock B | 11.46 / 13.56 / 12.64 | 86.9 |
+| extra stock runs (first series) | 10.46-14.29 / 10.89-13.93 | 83.5 / 73.3 |
+
+Plugin prefill 1.4-1.5x stock; decode half of stock or less, most likely stock's warm Windows file cache (idea I38). The 122B diagnosis with stats is still to do.
+
+### GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards), new default, ABBA (PRELIMINARY, incomplete)
+
+| Run | decode tok/s | prefill tok/s |
+|---|---|---|
+| stock A | 1.55 / 3.35 / 1.44 | 14.9 |
+| plugin A | crashed (one decode request done: 1.14 tok/s) | - |
+| plugin B | crashed | - |
+
+Stock B and a plugin rerun with the fixed DLL: to be confirmed (not run yet).
+
 ### GLM-5.3-Flash: crash in the long-prompt GPU block, fixed (2dccf17)
 
-On the first long prompt with a 4.6 GiB cache, llama-server died with an access violation in the upload copy. Cause: `gpu_segment` uploaded the
+Both plugin runs above died at the long prompt with an access violation in `VCRUNTIME140.dll` (cache 4.59 GiB; the memory limit was only
+9.09 GiB at start). Cause: `gpu_segment` uploaded the
 whole expert tensor when at least 90 % of a layer's experts were used, including evicted ones. On Windows an evicted expert is decommitted memory
 (access violation); on Linux it is zeros (never used, harmless). Now it packs unless every expert is used, and a whole-tensor upload
-(`MOE_CACHE_GPU_PACK=0`) first checks that all experts are in RAM, else the block stays on the CPU. Linux behaviour is unchanged.
+(`MOE_CACHE_GPU_PACK=0`) first checks that all experts are in RAM, else the block stays on the CPU. Linux behaviour is unchanged. Fix not yet confirmed
+on the PC with the rebuilt DLL.
 
 ### Not measured yet
 
 | Item | State |
 |---|---|
-| Qwen3.5-122B speed, stock vs plugin | not yet in the PC notes |
-| GLM-5.3-Flash speed | not yet (the crash above came first) |
+| 122B decode diagnosis with stats | to do |
+| GLM: stock B, plugin rerun with the fixed DLL | to be confirmed |
 | `--fast`, `--hybrid` rows of WP2 | not run |
 | Clean timings (apps closed, file cache cleared as admin) | owner to free the machine |
 | Windows job-object memory limit (WP3) on the PC | untested |
