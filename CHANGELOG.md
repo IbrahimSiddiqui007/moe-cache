@@ -1,6 +1,69 @@
 # Changelog
 
-## Unreleased
+## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
+
+### Windows and AMD
+- **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
+  Granite, Qwen3.6 and Qwen3.5-122B (bigger than RAM); executor byte check 0 mismatches; Flash-Next through the launcher and a chat. Steps:
+  [docs/WINDOWS.md](docs/WINDOWS.md); status in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Windows stays **experimental**.
+- Launcher finds the GPU on Windows with AMD and Intel cards (the planner knew only nvidia-smi and Linux sysfs, so it saw no GPU and kept every expert on
+  the CPU): it reads `llama-server --list-devices` and picks the adapter with the most dedicated VRAM in the registry, not the first listed (the iGPU).
+- **AMD GPU on Windows + a model bigger than RAM: all experts stay on the CPU.** VRAM in use costs about as much system RAM on AMD's Windows driver (12 GiB of
+  GPU expert layers took 14.9 GB of RAM and shrank the plugin's cache from 14 to 2-3 GiB; decode fell to a quarter). Stock llama-server also decodes faster this
+  way. `--n-cpu-moe N` overrides.
+- **Flash-Next (`qwen4exp`) on an AMD Vulkan GPU under Windows: `--ctx-checkpoints 0`.** Saving a context checkpoint crashes `amdvlk64.dll` (stock llama-server
+  too); the launcher turns checkpoints off with a message that names the driver version. `learn` does the same. Price: a conversation cannot jump back to an earlier point.
+- **Fixed: Windows crash in the long-prompt GPU block** (GLM-5.3-Flash, 102 GB, desktop): the block uploaded whole expert tensors including evicted
+  (decommitted) experts. Evicted experts are never uploaded now; confirmed on the PC (RESULTS 54). The launcher warns when the cache shrinks below half.
+- Windows robustness: UTF-8 (non-ASCII) paths, `--cache-ram` from the command line, efficiency-core lookahead workers with the AVX2 router dot, processor-group note.
+  Profile saves work on Windows; `replace_file` reports errors; an iGPU-only machine reports its VRAM.
+- `check` on Windows reports the pinning result and knows llama.cpp b11669; `build.sh --windows` honors `BUILD_DIR` (an API 2 and an API 3 DLL side by side) and the
+  launcher finds the DLL that matches the server's ggml, also in `build\win*` and the kit's `ggml-moe-cache-api2.dll` / `-api3.dll`; `learn` picks the library the way `server` does.
+- `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
+- `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
+
+### Agent mode, Hermes Agent and OpenCode
+- **`--agent`** (RESULTS 51): context 65536, `--jinja` tool calls, stable `--alias`, at most 8 context checkpoints per slot with a 1 GiB reserve, config blocks printed
+  when ready; `--api-key` for other machines. **`connect hermes|opencode [--write]`** writes the agent's config (Hermes through `hermes config set`, OpenCode by merging
+  `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/AGENTS.md),
+  including their GUIs on Linux and Windows).
+- **Warm agent sessions**: every idle conversation of 2k+ tokens is saved with its checkpoints, one file per slot, and the two longest are restored at the next start
+  (first turn after a restart 9.0 s / 6.2 s instead of ~45 s / 23 s; `--no-warm` turns it off). RESULTS 51-52.
+- **Long prompts upload only the experts they use** (I4, `MOE_CACHE_GPU_PACK=0` turns it off; exact): ~70-token prompts 1.62 -> 0.90 s, ~170 tokens 1.74 -> 1.12 s,
+  which is what agent follow-up turns look like. RESULTS 52.
+- Tuner: the long-prompt block reserve includes the plugin's 256 MiB headroom; at `--ctx 8192` Flash-Next prompts no longer fall back to the CPU (prefill ~20 -> 93-135 tok/s). RESULTS 52.
+- Agent benchmark numbers (laptop, Qwen3.6, 16 GB): OpenCode task 154-183 s stock vs 97-114 s with moe-cache; Hermes 476-646 s stock vs 116 s. (Preliminary; I30.)
+
+### Control page (GUI)
+- `moe-cache-server --ui` or `python bin\moe_cache.py ui`: a local page at http://127.0.0.1:8070 on Linux and Windows. Models with the planner's verdict and reasons, start and stop,
+  live tok/s, hit rate, SSD reads, RAM and VRAM (also for AMD/Intel on Windows), the log, llama-server's chat page; Connect OpenCode / Hermes buttons with a preview;
+  warnings read from the log; measured speeds from RESULTS next to the verdict; warm-session state. `bin\moe-cache-ui.bat` starts it with one click on Windows. See [docs/GUI.md](docs/GUI.md).
+  The VRAM setting defaults to auto (it used the free VRAM of the moment the page loaded).
+
+### `--fast`, profiles and speed
+- **`--fast` also uses a q8_0 KV cache** (KL 0.0045 alone); in agent mode Flash-Next gets `-ub 1024` (prefill ~50 -> ~78 tok/s).
+- **`--fast=2`**: a stronger opt-in level for memory far below the model (`MOE_CACHE_ROUTE_DROP` 4): Flash-Next at 12 GB 13.7 vs 9.6 tok/s, KL 0.022, same answers on 6
+  questions; no gain at 24 GB. RESULTS 52-53.
+- **Starter usage profiles** (`profiles/`, `--no-starter` to skip) for Flash-Next, GLM-5.3-Flash, Qwen3.5-122B and Qwen3.6: first request 5.96/6.18 -> 13.70/11.81 tok/s on Flash-Next.
+- Long prompts keep part of the cache (I3, below): Flash-Next prefill +27 %.
+- Windows, clean run (RESULTS 55, Flash-Next, all experts on the CPU, file cache flushed before every run): plugin decode ~12.2 tok/s steady vs stock 12.1-16.1, prefill 2.2x stock (120 vs 53-57).
+  The 122B and GLM tables of that section are still being filled.
+
+### Kernels
+- `MOE_CACHE_IQ3_KERNEL=1` forces the bit-identical IQ3_XXS gather kernel on any AVX2 CPU, `=0` turns it off (GitHub issue #1: RX 9070 XT + Ryzen 7 7700 on Linux,
+  Flash-Next 15.9 -> 18.8 tok/s). **Measured on a Zen 4 7950X: it is 0.58-0.64x of llama.cpp's own function, and the AVX-512 kernels (bit-exact) 0.60-0.77x, so the gate
+  stays Intel-only by default.** The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are Linux-only (they need `LD_PRELOAD`).
+- `state_t` methods split into three include files (`.text` and `.rodata` unchanged).
+
+### Known limits
+- **AMD Windows driver: VRAM costs system RAM** (none of llama.cpp's Vulkan switches change it; the memory is taken inside the driver), so the launcher keeps experts on the CPU there
+  and leaves a 16 GB card mostly idle for experts. A newer Adrenalin driver, hardware-accelerated GPU scheduling or the HIP SDK might change it: untested.
+- **Flash-Next on AMD under Windows runs without context checkpoints** (driver crash, above).
+- **HIP / ROCm release on Windows**: lists no device without AMD's HIP SDK; untested.
+- **The plugin's CPU kernels are Linux-only**; on Windows the executor uses llama.cpp's own kernels. `--gpu-cache` is not available on Windows (needs `LD_PRELOAD`).
+- Windows speed numbers are from one desktop; plugin decode is about equal to stock there (models bigger than RAM), prefill 1.5-2.2x. Intel GPUs on Windows: untested.
+
+### Details of earlier entries in this section
 - Control page, step 2: Connect OpenCode / Hermes with a preview and what was written; live VRAM on Windows with AMD/Intel GPUs (the launcher's
   GPU pick + registry); warnings from the log (cache shrank, plugin disabled, why llama-server stopped) on the page; measured speeds from RESULTS next
   to the verdict for the models measured before; quant from the GGUF header (Ollama); warm-session state in the Agents tab; `bin\moe-cache-ui.bat`
