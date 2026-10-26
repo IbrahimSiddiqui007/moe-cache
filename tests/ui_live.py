@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Control page with a real model (GUI1 draft, step 2; CI on Granite, Linux and Windows): starts `moe_cache.py ui`, adds the model's folder, starts the
 model through the page with a RAM budget small enough that the launcher keeps the plugin, sends one request, checks that the page shows the plugin's
-live numbers (hit rate from the stats snapshot: SIGUSR1 on Linux, a named event on Windows), and stops it through the page.
+live numbers, runs the quick benchmark (hit rate from the stats snapshot: SIGUSR1 on Linux, a named event on Windows), and stops it through the page.
    python3 tests/ui_live.py MODEL.gguf --llama-server PATH [--ram GB] [--ui-port 8075] [--port 8076]
 The plugin is found the launcher's way (MOE_CACHE_LIB or the build folder). Standard library only."""
-import argparse, json, os, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, tempfile, time, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ap = argparse.ArgumentParser()
@@ -20,8 +20,10 @@ def check(ok, what):
     if not ok:
         fails.append(what)
 
+TOKEN = {"t": ""}
 def req(path, body=None, timeout=120, base=UI):
-    r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None, {"Content-Type": "application/json"})
+    r = urllib.request.Request(base + path, json.dumps(body).encode() if body is not None else None,
+                               {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN["t"]})
     try:
         with urllib.request.urlopen(r, timeout=timeout) as x:
             return x.status, json.loads(x.read())
@@ -33,12 +35,13 @@ log = open("ui_live_page.log", "w")
 page = subprocess.Popen([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "ui", "--no-browser", "--ui-port", str(a.ui_port),
                          "--llama-server", a.llama_server], stdout=log, stderr=subprocess.STDOUT, env=env)
 try:
-    for _ in range(60):
-        try:
-            if req("/api/status", timeout=2)[0] == 200:
-                break
-        except Exception:
-            time.sleep(0.5)
+    for _ in range(120):               # the page prints its address with the per-run token
+        m = re.search(r"\?t=([A-Za-z0-9_-]+)", open("ui_live_page.log", encoding="utf-8", errors="replace").read())
+        if m:
+            TOKEN["t"] = m.group(1)
+            break
+        time.sleep(0.5)
+    check(bool(TOKEN["t"]), "the page printed its address with the token")
     st, j = req("/api/folders", {"add": os.path.dirname(model)})
     check(st == 200 and any(m["path"] == model for m in j["models"]), f"the page lists the model after adding its folder ({st})")
     st, plan = req("/api/plan?" + urllib.parse.urlencode({"model": model, "ram": a.ram, "ctx": 4096, "mode": "exact"}), timeout=300)
@@ -69,6 +72,19 @@ try:
         check(s["last"].get("decode_tps", 0) > 0, "decode tok/s from the timing lines")
         check(c.get("hit_rate_total") is not None and c.get("budget"), "hit rate and cache budget from the plugin's stats snapshot")
         check(s.get("server_rss"), "llama-server's RAM")
+        st, b = req("/api/bench", {})
+        t3 = time.time()
+        while st == 200 and time.time() - t3 < 600:
+            b = req("/api/status")[1]["bench"]
+            if b["state"] != "running":
+                break
+            time.sleep(1)
+        r = b.get("result", {})
+        print(f"  quick benchmark: {b.get('state')} {b.get('error', '')} decode {r.get('decode_1')} / {r.get('decode_2')} tok/s ({r.get('decode_tokens')} tokens), "
+              f"prefill {r.get('prefill_tokens')} tokens at {r.get('prefill')} tok/s, hit rate {r.get('hit_rate')}, {time.time() - t3:.0f} s")
+        check(b.get("state") == "done" and float(r.get("decode_mean") or 0) > 0 and int(r.get("prefill_tokens") or 0) > 2000 and r.get("decode_tokens") == "256/256",
+              "quick benchmark: two decode runs and a long prefill")
+        check(r.get("hit_rate") not in (None, ""), "quick benchmark: the cache hit rate over the decode runs (plugin snapshot)")
     req("/api/stop", {})
     t2 = time.time()
     while time.time() - t2 < 120:
