@@ -1694,9 +1694,24 @@ stats (`handover` note 122B_DIAG_PLAN) and the budget idea I40.
 Machine, llama.cpp and DLL as in sections 54-55 (Ryzen 9 7950X, RX 9070 XT 16 GB, driver 32.0.23034.4, 32 GB RAM; llama.cpp b11669 Vulkan). Scripts are in
 `windows-kit/` (`pc_runlib.ps1`, `pc_prefill_lib.ps1`, `pc_r*.ps1`). Every speed is PRELIMINARY until the section says otherwise; quote only filled tables.
 
-### I37: VRAM in use costs system RAM on AMD's Windows driver; the llama.cpp switches do not help
+### I37: VRAM in use "costs" system RAM on Windows: it is llama.cpp's file mapping, not the AMD driver
 
-Stock llama-server, Flash-Next, 12 expert layers on the GPU, startup only; system-wide available memory before vs after:
+**Resolved 2026-10-27.** The first measurements (below) looked like the AMD driver taking RAM for VRAM. A trim test on the new driver 32.0.32015.7029 (owner's apps
+closed) shows the RAM is the model file's pages in llama-server's working set. Stock llama-server, Flash-Next, 12 GPU expert layers, b11669:
+
+| Moment | RAM taken (system-wide Available drop) | llama-server working set | private memory | GPU dedicated |
+|---|---|---|---|---|
+| after load | 13.3 GB | 12.8 GiB | 15.3 GiB | 13.2 GiB |
+| after `EmptyWorkingSet` on its PID | 0.6 GB | 0.0 | - | 13.2 GiB (unchanged) |
+| after one 16-token request | 5.3 GB (the CPU experts it read) | - | - | 13.2 GiB |
+
+The request still answered correctly after the trim. Cause (code reading of b11669, `handover/I37_MMAP_FINDING_20261027.md`): llama.cpp uploads GPU tensors straight from the
+file mapping and, on Windows, never unmaps it afterwards (`unmap_fragment` is a no-op there), so those file pages stay in the working set, and Windows'
+"Available" counter excludes working-set pages (Linux's MemAvailable counts them). The 13.5-14.9 GB seen earlier on driver 32.0.23034.4 fit the same cause. `--load-mode none`
+is worse for stock (private memory 40 GB, 23.8 GB taken: it copies the CPU experts). The upstream angle is a llama.cpp Windows loader issue (the owner writes it), not an AMD report.
+Fix in progress in the plugin: trim once after load, before the warm start. After it works, the RAM-budget layout of I40 (killed below on the old accounting) is worth a rerun.
+
+First measurements (driver 32.0.23034.4; system RAM taken at startup, 12 expert layers on the GPU) — these only showed that the llama.cpp Vulkan switches change nothing:
 
 | Setting | system RAM taken | private memory | GPU dedicated |
 |---|---|---|---|
@@ -1706,16 +1721,15 @@ Stock llama-server, Flash-Next, 12 expert layers on the GPU, startup only; syste
 | `GGML_VK_ENABLE_MEMORY_PRIORITY=1` | 14.6 GB | 15.3 GiB | 12.0 GiB |
 | host-visible off + built-in Radeon hidden | 14.3 GB | 15.6 GiB | 12.5 GiB |
 
-With `GGML_VK_MEMORY_LOGGER=1`, ggml-vulkan allocates 13.13 GiB of device memory and only 169 MiB of host memory, so the 13.5-14.6 GB of system RAM (about 1.1 GB
-per GiB of VRAM) is taken inside AMD's driver / Windows' video memory manager, not by llama.cpp or the plugin. Not tried yet: a newer Adrenalin driver,
-hardware-accelerated GPU scheduling off, the HIP SDK, Linux/RADV on the second SSD (owner's choices).
+With `GGML_VK_MEMORY_LOGGER=1` ggml-vulkan allocates 13.13 GiB of device memory and only 169 MiB of host memory (consistent with the mapping explanation: the RAM is not driver memory).
 
 | Option | Result |
 |---|---|
-| Newer Adrenalin than 32.0.23034.4 | - |
-| Hardware-accelerated GPU scheduling off | - |
-| HIP build (needs the HIP SDK) | - |
-| Linux / RADV (second SSD) | - |
+| Newer Adrenalin than 32.0.23034.4 (32.0.32015.7029) | RAM taken unchanged (13.3 GB): not the driver; it does fix the Flash-Next checkpoint crash (I44) |
+| Trim the working set after load (`EmptyWorkingSet`) | RAM taken 0.6 GB, GPU memory unchanged: confirmed |
+| Hardware-accelerated GPU scheduling off, HIP build, Linux / RADV | not needed any more |
+
+Earlier text in sections 54-55 and the I40 rows that say "VRAM costs RAM on AMD's Windows driver" describe the symptom correctly; the cause is the file mapping.
 
 ### Qwen3.5-122B decode: why the plugin is at half of stock (plan: shared note `122B_DIAG_PLAN.md`)
 
