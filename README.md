@@ -165,7 +165,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
   |---|---|---|
   | RAM expert cache, SSD streaming, memory limit, warm start | yes | yes |
   | Expert executor (computes ready experts while others load) | yes | yes (since 0.2.3.3; tested on a Vulkan build) |
-  | Fast Q2_0 / IQ3_XXS kernels | yes | inside the executor only |
+  | Fast Q2_0 / IQ3_XXS kernels | yes | inside the executor only (Linux; the Windows build has none of the plugin's own CPU kernels) |
   | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | **no** (refused since cffa6f9: it gave wrong tokens; the launcher uses static GPU expert layers instead) |
 
   The `moe-cache: active: ...` line in the server log says which parts are on.
