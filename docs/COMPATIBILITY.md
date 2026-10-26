@@ -57,3 +57,11 @@ Tested on llama.cpp commit `7fe450e19` (ggml 0.25.1) unless the table says other
 Q2_0 (Qwen3.8-Flash-Next) runs through a faster plugin kernel in preload mode, checked bit-identical against llama.cpp's (see TECHNIQUES.md).
 
 Quantisation types seen working: Q4_K, Q6_K, Q5_0, Q8_0, MXFP4, IQ4_XS, IQ2_XS and the Q2_0 type of Qwen3.8-Flash-Next. Files with experts below about 4.25 bits are not possible for models whose expert rows are not a multiple of 256 (gpt-oss).
+
+## Clients and agents (OpenAI-compatible API through llama-server)
+
+| Client | Status |
+|---|---|
+| OpenCode 1.19.4 | **Tested on Linux** (2026-10-26): `--agent` + `connect opencode --write`; tool calls, file edits, warm sessions after a restart (Qwen3.6, Flash-Next). Windows: not yet |
+| Hermes Agent v0.22.5 | **Tested on Linux** (2026-10-26): `--agent` + `connect hermes --write`; file tools, warm sessions. Needs a context of at least 64,000 (`--agent` sets 65536). Windows: not yet |
+| llama-server's web UI, Open WebUI, editors | work as with stock llama-server (same API) |
