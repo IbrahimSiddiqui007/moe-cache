@@ -11,20 +11,40 @@ the agent runs its tools. Decode tok/s says little about that; time to first tok
           time to first token, prompt tokens processed and reused, decode tok/s; then the whole task time
           python3 tools/agent_bench.py replay session.json --url http://127.0.0.1:8080 [--json out.json] [--label stock]
   show    prints a recorded session or a saved replay result (--json files)
+  table   puts saved replay results side by side: python3 tools/agent_bench.py table out/*.json
 
 Replay notes: generation is greedy (temperature 0, fixed seed) and capped at the recorded number of tokens, so two exact servers (stock and
 moe-cache) produce the same tokens. The bodies hold the conversation as recorded, so each follow-up re-sends the agent's original assistant message;
 if the model now writes something else, the server re-processes that message (counted in "processed"). Pauses are the agent's own time between a
 response and its next request (tool runs, its own bookkeeping) and are kept as recorded.
 """
-import argparse, getpass, http.client, http.server, json, os, socket, statistics, sys, threading, time, urllib.parse
+import argparse, getpass, http.client, http.server, json, os, re, socket, statistics, sys, threading, time, urllib.parse
 
 # ---------------------------------------------------------------- record
 
-def _scrub(text, subs):
-    for a, b in subs:
-        text = text.replace(a, b)
-    return text
+def _scrub_subs():
+    """Patterns for recorded files that may be shared: the home folder (as a path, either slash direction) and the user and host names
+    (whole words only). Applied to parsed JSON string values, so escaped backslashes in Windows paths are matched too."""
+    home = os.path.expanduser("~").rstrip("\\/")
+    parts = [x for x in re.split(r"[\\/]+", home) if x]
+    lead = r"[\\/]" if home[:1] in "\\/" else ""
+    pats = [(re.compile(lead + r"[\\/]".join(map(re.escape, parts)) + r"(?![\w])", re.I), "/home/user")]
+    for n, r in ((getpass.getuser(), "user"), (socket.gethostname(), "host")):
+        if n and len(n) >= 3:
+            pats.append((re.compile(r"(?<![\w])" + re.escape(n) + r"(?![\w])", re.I), r))
+    return pats
+
+
+def _scrub(v, pats):
+    if isinstance(v, str):
+        for rx, r in pats:
+            v = rx.sub(r, v)
+        return v
+    if isinstance(v, list):
+        return [_scrub(x, pats) for x in v]
+    if isinstance(v, dict):
+        return {k: _scrub(x, pats) for k, x in v.items()}
+    return v
 
 
 def _sse_summary(raw):
@@ -49,16 +69,10 @@ def _sse_summary(raw):
 
 def record(a):
     up = urllib.parse.urlparse(a.upstream)
-    subs = []
-    if not a.no_scrub:   # recorded files may be shared: replace the home folder, user and host names (token counts change by a few)
-        home = os.path.expanduser("~")
-        subs = [(home, "/home/user"), (home.replace("\\", "/"), "/home/user")]
-        for n in {getpass.getuser(), socket.gethostname()}:
-            if n and len(n) >= 3:
-                subs.append((n, "user" if n == getpass.getuser() else "host"))
-    t0 = time.time()
+    subs = [] if a.no_scrub else _scrub_subs()   # recorded files may be shared (token counts change by a few)
+    t0 = time.perf_counter()
     reqs, lock = [], threading.Lock()
-    last = [time.time()]
+    last = [time.perf_counter()]
 
     class H(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -69,7 +83,7 @@ def record(a):
         def _fwd(self, method):
             n = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(n) if n else b""
-            ts = time.time()
+            ts = time.perf_counter()
             hdr = {k: v for k, v in self.headers.items() if k.lower() not in ("host", "content-length", "connection", "accept-encoding")}
             c = http.client.HTTPConnection(up.hostname, up.port or 80, timeout=3600)
             c.request(method, self.path, body=body, headers=hdr)
@@ -88,19 +102,19 @@ def record(a):
                     b = r.read1(65536) if hasattr(r, "read1") else r.read(65536)
                     if not b:
                         break
-                    first = first or time.time()
+                    first = first or time.perf_counter()
                     data += b
                     self.wfile.write(b"%x\r\n%s\r\n" % (len(b), b)); self.wfile.flush()
                 self.wfile.write(b"0\r\n\r\n"); self.wfile.flush()
             else:
-                data = r.read(); first = time.time()
+                data = r.read(); first = time.perf_counter()
                 self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
-            te = time.time()
+            te = time.perf_counter()
             c.close()
             e = {"method": method, "path": self.path, "t_start": round(ts - t0, 3), "t_end": round(te - t0, 3), "status": r.status}
             if body:
                 try:
-                    e["body"] = json.loads(_scrub(body.decode("utf-8"), subs))
+                    e["body"] = _scrub(json.loads(body.decode("utf-8")), subs)
                 except ValueError:
                     e["body_raw"] = _scrub(body.decode("utf-8", "replace"), subs)
             if self.path.split("?")[0].endswith("/chat/completions") or self.path.split("?")[0].endswith("/completions"):
@@ -113,7 +127,7 @@ def record(a):
                 rec["t_first_byte"] = round((first or te) - t0, 3)
                 e["recorded"] = rec
             with lock:
-                reqs.append(e); last[0] = time.time()
+                reqs.append(e); last[0] = time.perf_counter()
                 tm = (e.get("recorded") or {}).get("timings") or {}
                 print(f"  {len(reqs):3d}  {method} {self.path}  {e['t_start']:7.1f}-{e['t_end']:7.1f} s"
                       + (f"  prompt {tm.get('prompt_n')} new + {tm.get('cache_n')} reused, {tm.get('predicted_n')} generated" if tm else ""), flush=True)
@@ -127,7 +141,7 @@ def record(a):
         def _run(self, method):
             try:
                 self._fwd(method)
-            except (BrokenPipeError, ConnectionResetError):   # the agent hung up (its own timeout): that request is not recorded
+            except ConnectionError:   # the agent hung up (its own timeout; ConnectionAbortedError on Windows): that request is not recorded
                 print(f"  {method} {self.path}: the client closed the connection; not recorded", flush=True)
                 self.close_connection = True
 
@@ -138,7 +152,7 @@ def record(a):
     try:
         while True:
             time.sleep(0.5)
-            if a.idle and reqs and time.time() - last[0] > a.idle:
+            if a.idle and reqs and time.perf_counter() - last[0] > a.idle:
                 break
             if a.stop_file and os.path.exists(a.stop_file):
                 break
@@ -187,6 +201,7 @@ def _send(url, e, a, res):
             b["stream"] = True
             b["stream_options"] = {"include_usage": True}
             b["temperature"] = 0.0; b["seed"] = 42; b.pop("top_p", None)
+            b["cache_prompt"] = True   # llama-server's default; explicit so a server with another default still reuses the prefix
             if a.model:
                 b["model"] = a.model
             rec_n = ((e["recorded"].get("timings") or {}).get("predicted_n") or (e["recorded"].get("usage") or {}).get("completion_tokens"))
@@ -220,7 +235,7 @@ def _send(url, e, a, res):
             for ch in j.get("choices") or []:
                 dl = ch.get("delta") or {}
                 if first is None and (dl.get("content") or dl.get("reasoning_content") or dl.get("tool_calls")):
-                    first = time.time()
+                    first = time.perf_counter()
             if j.get("timings"):
                 tim = j["timings"]
             if j.get("usage"):
@@ -230,7 +245,7 @@ def _send(url, e, a, res):
         res["usage"] = usage
     except Exception as ex:   # a failed request is reported, the replay goes on
         res["error"] = f"{type(ex).__name__}: {ex}"
-    res["t_end"] = time.time()
+    res["t_end"] = time.perf_counter()
     c.close()
 
 
@@ -254,21 +269,26 @@ def replay(a):
             except OSError:
                 pass
             time.sleep(1)
-    T0 = time.time()
+    T0 = time.perf_counter()
 
     # t_start must exist before dependants read it: set it before signalling
     def run_wrapped(i):
         dep, kind, delay = sched[i]
         if dep is not None:
             (started if kind == "start" else done)[dep].wait()
-            base = res[dep]["t_start"] if kind == "start" else res[dep]["t_end"]
-            w = base + delay * a.gap_scale - time.time()
+            base = res[dep].get("t_start" if kind == "start" else "t_end", time.perf_counter())
+            w = base + delay * a.gap_scale - time.perf_counter()
             if w > 0:
                 time.sleep(w)
-        res[i]["t_start"] = time.time()
+        res[i]["t_start"] = time.perf_counter()
         started[i].set()
-        _send(a.url, reqs[i], a, res[i])
-        done[i].set()
+        try:
+            _send(a.url, reqs[i], a, res[i])
+        except Exception as ex:
+            res[i]["error"] = f"{type(ex).__name__}: {ex}"
+        finally:
+            res[i].setdefault("t_end", time.perf_counter())
+            done[i].set()
         r = res[i]; tm = r.get("timings") or {}
         ttft = f"{r['t_first'] - r['t_start']:.2f}" if r.get("t_first") else "-"
         tps = f"{tm['predicted_per_second']:.1f}" if tm.get("predicted_per_second") else "-"
@@ -280,7 +300,7 @@ def replay(a):
         t.start()
     for t in ths:
         t.join()
-    T1 = time.time()
+    T1 = time.perf_counter()
     rows = []
     for i, (e, r) in enumerate(zip(reqs, res)):
         tm = r.get("timings") or {}
@@ -289,8 +309,21 @@ def replay(a):
                      "prompt_ms": tm.get("prompt_ms"), "predicted_n": tm.get("predicted_n"), "predicted_per_second": tm.get("predicted_per_second"),
                      "recorded_prompt_n": ((e["recorded"].get("timings") or {}).get("prompt_n") if "recorded" in e else None),
                      "recorded_cache_n": ((e["recorded"].get("timings") or {}).get("cache_n") if "recorded" in e else None),
+                     "recorded_predicted_n": ((e["recorded"].get("timings") or {}).get("predicted_n") if "recorded" in e else None),
                      "status": r.get("status"), "error": r.get("error")})
     summ = summarize(rows, T1 - T0, sum(d for _, _, d in sched))
+    warn = []
+    for r in rows:
+        if r["prompt_n"] is None and not r["error"]:
+            warn.append(f"request {r['i']}: no timings in the response (not llama-server, or an old one): prompt and decode columns are empty")
+        elif r["recorded_prompt_n"] is not None and r["prompt_n"] is not None and r["prompt_n"] > 2 * r["recorded_prompt_n"] + 256:
+            warn.append(f"request {r['i']}: {r['prompt_n']} prompt tokens processed, {r['recorded_prompt_n']} in the recording "
+                        "(the server reused less: other slot, other template, or the re-sent assistant message differs)")
+        if r["recorded_predicted_n"] and r["predicted_n"] is not None and r["predicted_n"] < r["recorded_predicted_n"]:
+            warn.append(f"request {r['i']}: generated {r['predicted_n']} of the recorded {r['recorded_predicted_n']} tokens (the model stopped earlier)")
+    summ["warnings"] = warn
+    for w in warn:
+        print("  warning: " + w, flush=True)
     out = {"session": a.session, "name": s.get("name"), "label": a.label, "url": a.url, "date": time.strftime("%Y-%m-%d %H:%M:%S"), "summary": summ, "rows": rows}
     print_summary(out)
     if a.json:
@@ -346,6 +379,28 @@ def show(a):
                  f"{tm.get('predicted_n')} generated" if tm else ""))
 
 
+def table(a):
+    """One row per saved replay result: label, session, first-turn TTFT, follow-up TTFT, task time."""
+    print("| run | session | first TTFT (s) | follow-up TTFT median / sum (s) | task (s) | prompt processed / reused | decode median (tok/s) |")
+    print("|---|---|---|---|---|---|---|")
+    groups = {}
+    for fn in a.files:
+        with open(fn, encoding="utf-8") as f:
+            o = json.load(f)
+        s = o["summary"]
+        sess = (o.get("name") or "").split(":")[0]
+        print(f"| {o.get('label') or fn} | {sess} | {s['first_ttft_s']:.1f} | {s['followup_ttft_median_s']:.1f} / "
+              f"{s['followup_ttft_sum_s']:.1f} | {s['task_s']:.1f} | {s['prompt_processed']} / {s['prompt_reused']} | {s['decode_tps_median']} |")
+        groups.setdefault((sess, (o.get("label") or fn).split()[0]), []).append(s)
+    # several runs per side (label "stock run 1", "mc run 2", ...): min and median of each, so one slow run does not decide
+    if any(len(v) > 1 for v in groups.values()):
+        print("\n| session | side | runs | first TTFT min / median (s) | follow-up TTFT median, min / median (s) | task min / median (s) |")
+        print("|---|---|---|---|---|---|")
+        for (sess, side), v in groups.items():
+            mm = lambda k: f"{min(x[k] for x in v):.1f} / {statistics.median(x[k] for x in v):.1f}"
+            print(f"| {sess} | {side} | {len(v)} | {mm('first_ttft_s')} | {mm('followup_ttft_median_s')} | {mm('task_s')} |")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -373,11 +428,15 @@ def main():
     p.add_argument("--wait-health", type=int, default=0, help="wait up to N seconds for /health first")
     w = sp.add_parser("show", help="print a recorded session or a replay result")
     w.add_argument("file")
+    t = sp.add_parser("table", help="saved replay results (--json files) side by side")
+    t.add_argument("files", nargs="+")
     a = ap.parse_args()
     if a.cmd == "record":
         record(a)
     elif a.cmd == "replay":
         sys.exit(replay(a))
+    elif a.cmd == "table":
+        table(a)
     else:
         show(a)
 
