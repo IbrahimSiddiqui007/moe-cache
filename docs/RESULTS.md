@@ -1688,3 +1688,143 @@ What the clean series shows: (1) with a cold file cache for both, the plugin's f
 but not on 122B (about half of stock), so unbuffered reads alone do not explain it; (2) prefill is 2.2x (Flash-Next), 1.5-1.6x (122B) and 2.9-3.0x (GLM) stock on
 this machine; (3) on GLM the shrink from the AMD driver's RAM cost still happens (cache about 3.7 GiB), as in section 54. Open: the 122B decode diagnosis with
 stats (`handover` note 122B_DIAG_PLAN) and the budget idea I40.
+
+## 56. Windows desktop experiments (2026-10-26/27; SKELETON: known facts filled, empty cells "-" are not measured yet)
+
+Machine, llama.cpp and DLL as in sections 54-55 (Ryzen 9 7950X, RX 9070 XT 16 GB, driver 32.0.23034.4, 32 GB RAM; llama.cpp b11669 Vulkan). Scripts are in
+`windows-kit/` (`pc_runlib.ps1`, `pc_prefill_lib.ps1`, `pc_r*.ps1`). Every speed is PRELIMINARY until the section says otherwise; quote only filled tables.
+
+### I37: VRAM in use costs system RAM on AMD's Windows driver; the llama.cpp switches do not help
+
+Stock llama-server, Flash-Next, 12 expert layers on the GPU, startup only; system-wide available memory before vs after:
+
+| Setting | system RAM taken | private memory | GPU dedicated |
+|---|---|---|---|
+| baseline | 13.5 GB | 15.3 GiB | 12.0 GiB |
+| `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1` | 14.3 GB | 15.6 GiB | 12.5 GiB |
+| `GGML_VK_VISIBLE_DEVICES=1` (built-in Radeon hidden) | 14.4 GB | 15.3 GiB | 12.0 GiB |
+| `GGML_VK_ENABLE_MEMORY_PRIORITY=1` | 14.6 GB | 15.3 GiB | 12.0 GiB |
+| host-visible off + built-in Radeon hidden | 14.3 GB | 15.6 GiB | 12.5 GiB |
+
+With `GGML_VK_MEMORY_LOGGER=1`, ggml-vulkan allocates 13.13 GiB of device memory and only 169 MiB of host memory, so the 13.5-14.6 GB of system RAM (about 1.1 GB
+per GiB of VRAM) is taken inside AMD's driver / Windows' video memory manager, not by llama.cpp or the plugin. Not tried yet: a newer Adrenalin driver,
+hardware-accelerated GPU scheduling off, the HIP SDK, Linux/RADV on the second SSD (owner's choices).
+
+| Option | Result |
+|---|---|
+| Newer Adrenalin than 32.0.23034.4 | - |
+| Hardware-accelerated GPU scheduling off | - |
+| HIP build (needs the HIP SDK) | - |
+| Linux / RADV (second SSD) | - |
+
+### Qwen3.5-122B decode: why the plugin is at half of stock (plan: shared note `122B_DIAG_PLAN.md`)
+
+Clean-run numbers are in section 55 (plugin about 6.5 vs stock about 11-14 tok/s). Stats run: 256-token decode, JSON before and after (`MOE_CACHE_STATS_SIGNAL=1`, named event).
+
+| Measurement | Value |
+|---|---|
+| Cache budget at start / end, `shrinks` | - |
+| Decode hit rate (`hits_dec` / (`hits_dec` + `misses_dec`)) | - |
+| `read_bytes` per token | - |
+| `ns_read`, `ns_prep`, `ns_cpu` as a share of `ns_total` | - |
+| `exec_ops` per token | - |
+
+| Run (122B, plugin) | decode tok/s |
+|---|---|
+| default | - |
+| `MOE_CACHE_EXEC=0` | - |
+| `MOE_CACHE_SIZE_GIB=14` (smaller cache by hand) | - |
+| `--ram 18` | - |
+
+Conclusion: -
+
+### I40: all experts on the CPU vs a RAM-budgeted number of GPU expert layers (Windows + AMD)
+
+Branch `claude/i40-amd-ram-budget`: the launcher plans with (available RAM - cache floor) / 1.1 as the VRAM budget instead of keeping every expert on the CPU.
+
+| Model | Layout | GPU expert layers | Plugin decode tok/s | Stock decode tok/s | Cache budget at the end |
+|---|---|---|---|---|---|
+| Flash-Next | all on CPU (today) | 0 | - | - | - |
+| Flash-Next | RAM budget | - | - | - | - |
+| Qwen3.5-122B | all on CPU | 0 | - | - | - |
+| Qwen3.5-122B | RAM budget | - | - | - | - |
+| GLM-5.3-Flash | all on CPU | 0 | - | - | - |
+| GLM-5.3-Flash | RAM budget | - | - | - | - |
+
+### I38: buffered reads (cold and warm file cache)
+
+| Condition | First-session decode tok/s | Second-session decode tok/s |
+|---|---|---|
+| Unbuffered reads (today), cold cache | - | - |
+| Buffered reads, cold cache | - | - |
+| Unbuffered reads, warm cache | - | - |
+| Buffered reads, warm cache | - | - |
+
+### R2: `-ub` at long context (Flash-Next, `--ctx 65536`; `pc_r2_ub_long.ps1`)
+
+Prefill tok/s for a ~15k and a ~30k-token prompt. Kill rule: `-ub` 2048 within 10 % of 1024.
+
+| `-ub` | 15k stock | 15k plugin | 30k stock | 30k plugin |
+|---|---|---|---|---|
+| 512 | - | - | - | - |
+| 1024 | - | - | - | - |
+| 2048 | - | - | - | - |
+
+Verdict: -
+
+### R5: bigger prompt chunks (Qwen3.6, stock, same `--n-cpu-moe`; `pc_r5_ub_stock.ps1`)
+
+Prefill tok/s. Kill rule: `-ub` 4096 within 10 % of 2048.
+
+| `-ub` | ~2k prompt | ~8k prompt | ~32k prompt |
+|---|---|---|---|
+| 2048 | - | - | - |
+| 4096 | - | - | - |
+| 8192 | - | - | - |
+
+Verdict: -
+
+### R11: VRAM freed by a q8_0 KV cache at 64k context (Flash-Next, plugin; `pc_r11_kv_vram.ps1`)
+
+GPU dedicated memory of llama-server in GiB (the quality side, KL 0.0045 for q8_0 KV alone, is section 53).
+
+| Variant | idle | after a ~2k prompt | after a ~20k prompt | adapter after 20k | 20k prefill tok/s |
+|---|---|---|---|---|---|
+| A: f16 KV, `-ub 512` | - | - | - | - | - |
+| B: q8_0 KV, `-ub 512` | - | - | - | - | - |
+| C: `--fast` (q8_0 KV, tuner's `-ub`) | - | - | - | - | - |
+
+VRAM freed by q8_0 KV (A - B): -
+
+### R7 (MTP head on the GPU; `pc_r7_mtp.ps1`) and R3 (`--hybrid` on Flash-Next; `pc_r3_hybrid.ps1`)
+
+| R7: Qwen3.6, 8 runs (palindrome) | decode tok/s | prefill tok/s | draft accepted / drafted |
+|---|---|---|---|
+| stock | - | - | - |
+| stock + MTP | - | - | - |
+| plugin | - | - | - |
+| plugin + MTP | - | - | - |
+
+Kill rule R7: no gain from MTP on stock AND on the plugin. Verdict: -
+
+| R3: Flash-Next | decode tok/s | prefill tok/s | cache budget at the end |
+|---|---|---|---|
+| exact (plugin default) | - | - | - |
+| `--fast` | - | - | - |
+| `--hybrid` 6 GB bank | - | - | - |
+| `--hybrid` 10 GB bank | - | - | - |
+
+Kill rule R3: hybrid under +10 % decode over exact. Verdict: -
+
+### Task 4b: Hermes Agent on Windows through moe-cache (with the API key), and WP3 (`--ram` job memory limit)
+
+| Check | Result |
+|---|---|
+| `--agent` server starts on the PC; the launcher prints that a key is in use and where it is stored | - |
+| A request without the key gets 401, with `moe_cache.py key` as Bearer 200 | - |
+| `connect hermes --write` finds the stored key (Hermes config on Windows) | - |
+| Hermes one-shot task ("fix the bug in calc.py"): first turn tokens / time, whole session | - |
+| Warm session after a restart: first turn tokens / time | - |
+| Flash-Next with `--ctx-checkpoints 0`: cost for an agent that edits history | - |
+| WP3: `--ram 20` sets a job memory limit; the log line; the server stays under it | - |
+| WP3: a run that hits the limit behaves like the Linux `--ram` (message, no crash) | - |
