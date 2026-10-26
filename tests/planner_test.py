@@ -91,6 +91,25 @@ L.WINDOWS = _oldw
 if _oldm is None: sys.modules.pop("winreg", None)
 else: sys.modules["winreg"] = _oldm
 
+# API key (option C): stable per-user key, 0600, not on the command line, hidden in the launcher's printout, CORS allow-list as environment
+import tempfile  # noqa: E402
+_kd = tempfile.mkdtemp()
+L.CACHE_DIR = _kd; L.KEY_FILE = os.path.join(_kd, "sub", "api.key")
+check(L.stored_key() == "", "api key: none until created")
+k1 = L.stored_key(create=True); k2 = L.stored_key(create=True)
+check(len(k1) >= 30 and k1 == k2 and L.stored_key() == k1, "api key: created once, stable, urlsafe")
+if os.name != "nt":
+    check(oct(os.stat(L.KEY_FILE).st_mode & 0o777) == "0o600", "api key: file mode 0600")
+x = ["-c", "8192", "--api-key", "SECRET", "--alias", "m"]
+check(L.take_api_key_from_args(x) == "SECRET" and x == ["-c", "8192", "--alias", "m"], "api key: --api-key KEY removed from llama-server's arguments")
+x = ["--api-key=S2", "-c", "1"]
+check(L.take_api_key_from_args(x) == "S2" and x == ["-c", "1"], "api key: --api-key=KEY form removed too")
+check(L.take_api_key_from_args(["-c", "1"]) is None, "api key: none given -> None")
+check(L.key_for("http://127.0.0.1:1", "given") == "given", "api key: an explicit key wins (no request made)")
+snip = L.agent_snippets(8080, "m", 65536, "TOPSECRET", hide_key=True)
+check("TOPSECRET" not in snip and "bin/moe_cache.py key" in snip, "api key: the launcher's agent printout does not show the key")
+check("TOPSECRET" in L.agent_snippets(None, "m", 65536, "TOPSECRET", base="http://x/v1", only="hermes"), "api key: connect's own printout still has the key")
+
 def core(eff, mask, group=0):
     r = bytearray(48); struct.pack_into("<II", r, 0, 0, 48); r[9] = eff; struct.pack_into("<H", r, 30, 1); struct.pack_into("<QH", r, 32, mask, group)
     return bytes(r)

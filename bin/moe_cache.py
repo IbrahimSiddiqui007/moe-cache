@@ -6,6 +6,7 @@
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode [--url URL] [--write]               point Hermes Agent or OpenCode at a running server (start it with --agent)
+  moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
@@ -338,6 +339,54 @@ def http(url, body=None, api_key=None, timeout=10):
         return 0, ""
 
 
+KEY_FILE = os.path.join(CACHE_DIR, "api.key")
+
+
+def stored_key(create=False):
+    """The stable per-user API key kept in the cache folder (mode 0600 on Linux; on Windows the user profile is private); "" when there is none yet.
+    create=True makes one on first use (secrets.token_urlsafe(24)). Agent mode and --project servers use it, so a web page in the browser cannot
+    use or read the server's slots and conversations (RESULTS/SECURITY: DECISION_LLAMA_SERVER_KEY, option C)."""
+    try:
+        k = open(KEY_FILE).read().strip()
+        if k:
+            return k
+    except OSError:
+        pass
+    if not create:
+        return ""
+    import secrets
+    k = secrets.token_urlsafe(24)
+    os.makedirs(os.path.dirname(KEY_FILE), mode=0o700, exist_ok=True)
+    try:
+        fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:                      # another launcher made it in the meantime: use that one
+        return open(KEY_FILE).read().strip() or k
+    with os.fdopen(fd, "w") as f:
+        f.write(k + "\n")
+    return k
+
+
+def key_for(url, given=None):
+    """The key to send to the server at `url`: the given one, else (only when the server answers 401/403 without a key) the stored one."""
+    if given:
+        return given
+    st = http(url.rstrip("/") + "/v1/models", timeout=3)[0]
+    return stored_key() if st in (401, 403) else None
+
+
+def take_api_key_from_args(extra):
+    """Remove a user-given `--api-key KEY` from llama-server's arguments (it would show in the process list) and return KEY, else None."""
+    for i, x in enumerate(extra):
+        if x == "--api-key" and i + 1 < len(extra):
+            k = extra[i + 1]
+            del extra[i:i + 2]
+            return k
+        if x.startswith("--api-key="):
+            del extra[i]
+            return x.split("=", 1)[1]
+    return None
+
+
 def healthy(port, api_key=None):
     return http(f"http://127.0.0.1:{port}/health", api_key=api_key, timeout=2)[0] == 200
 
@@ -646,8 +695,19 @@ def server(argv):
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
             why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
             say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
-    if a.api_key and "--api-key" not in extra:
-        extra += ["--api-key", a.api_key]
+    # API key (DECISION_LLAMA_SERVER_KEY, option C): a key given on our command line or after `--` goes to llama-server through the environment
+    # (LLAMA_API_KEY), not its argument list; agent mode and --project always get the stable per-user key. Plain chat servers get none, but a CORS
+    # allow-list so a normal web page cannot read their answers.
+    api_key = take_api_key_from_args(extra) or a.api_key
+    if not api_key and (a.agent or a.project):
+        api_key = stored_key(create=True)
+        say(f"moe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in {KEY_FILE} "
+            "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
+    key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
+    if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
+        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
+        # Passed as the environment variable so a llama-server without the flag just ignores it
+        key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias = None
     slotdir = None
@@ -668,7 +728,7 @@ def server(argv):
             else:
                 slotdir = arg_after(extra, "--slot-save-path")
     host = arg_after(extra, "--host") or ""
-    if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and "--api-key" not in extra:
+    if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
             "Add --api-key KEY after the -- or bind to 127.0.0.1.", err=True)
     pname = a.profile or ""
@@ -846,12 +906,12 @@ def server(argv):
     if a.dry_run:
         if win_limit:
             say(f"moe-cache: (would set a Windows job memory limit of {win_limit / 1e9:.1f} GB on llama-server)")
+        shown = [(k, "(hidden)" if k == "LLAMA_API_KEY" else v) for k, v in env + key_env]     # never print the key
         if WINDOWS:   # PowerShell form, so it can be pasted there
-            say("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+            say("".join(f'$env:{k}="{v}"; ' for k, v in shown) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
         else:
-            say(("env " + " ".join(f"{k}={v}" for k, v in env) + " " if env else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
+            say(("env " + " ".join(f"{k}={v}" for k, v in shown) + " " if shown else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
         return 0
-    api_key = arg_after(extra, "--api-key")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
@@ -872,7 +932,7 @@ def server(argv):
         def snippets():
             for _ in range(1800):
                 if healthy(port, api_key):
-                    say(agent_snippets(port, alias, ctx, api_key, host), err=True)
+                    say(agent_snippets(port, alias, ctx, api_key, host, hide_key=True), err=True)
                     return
                 time.sleep(1)
         threading.Thread(target=snippets, daemon=True).start()
@@ -885,7 +945,7 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
-    return run_child(cmd, dict(os.environ, **dict(env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
+    return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
 
 
 def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2048, keep=2):
@@ -975,6 +1035,7 @@ def connect(argv):
     ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
     ap.add_argument("--config", help="opencode.json to merge into (default: ~/.config/opencode/opencode.json)")
     a = ap.parse_args(argv)
+    a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
     if not name:
         raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent)")
@@ -1022,12 +1083,14 @@ def connect(argv):
     return 0
 
 
-def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None):
+def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None, hide_key=False):
     """What an agent needs to use this server: the OpenAI-compatible base URL, the model name and the context, as config blocks for Hermes Agent
     (~/.hermes/config.yaml) and OpenCode (opencode.json)."""
     if base is None:
         h = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
         base = f"http://{h}:{port}/v1"
+    if api_key and hide_key:      # the launcher's own printout goes to terminals and logs: point at the key instead of showing it
+        api_key = "<your API key: python3 bin/moe_cache.py key>"
     key = api_key or "none"
     out = min(32768, max(4096, ctx // 4))     # room left for the answer
     head = ["moe-cache: agent mode ready. OpenAI-compatible endpoint:",
@@ -1136,7 +1199,7 @@ def project(argv):
         return 0
     if not a.name or not NAME_RE.match(a.name):
         raise SystemExit("usage: moe-cache-project save|restore NAME [--url URL] [--api-key KEY]")
-    st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, a.api_key, timeout=600)
+    st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, key_for(a.url, a.api_key), timeout=600)
     say(body.strip())
     if st != 200:
         raise SystemExit(f"{a.cmd} failed: HTTP {st}" if st else f"{a.cmd} failed: no server at {a.url}")
@@ -1359,8 +1422,17 @@ def run_check(lsp, model, load, port=8097):
                 p.kill()
 
 
+def key_cmd(argv):
+    """moe_cache.py key: print the stable API key of agent / project servers (made on first use); the file is KEY_FILE."""
+    ap = argparse.ArgumentParser(prog="moe_cache.py key", description="print the API key that agent mode and --project servers use")
+    ap.add_argument("--path", action="store_true", help="print where the key is stored instead of the key")
+    a = ap.parse_args(argv)
+    print(KEY_FILE if a.path else stored_key(create=True))
+    return 0
+
+
 def main():
-    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect}
+    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
