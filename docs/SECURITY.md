@@ -6,7 +6,7 @@ moe-cache is a plugin that runs inside `llama-server` plus a few helper scripts.
 | Component | Network | Notes |
 |---|---|---|
 | Plugin (`libggml-moe-cache.so`) | none | no sockets, no HTTP; reads your model file and a few small files named below |
-| `moe-cache-server` | the `llama-server` it starts listens on `127.0.0.1` only | a non-loopback `--host` without `--api-key` prints a warning |
+| `moe-cache-server` | the `llama-server` it starts listens on `127.0.0.1` only | a non-loopback `--host` without `--api-key` prints a warning. Agent mode (`--agent`) and `--project` always use an API key (stable random key in `~/.cache/moe-cache/api.key`, mode 0600, passed by environment, `moe_cache.py key` prints it) because they keep conversations on disk and llama-server lets any web page call a local server by default (CORS echo, no Host check). Every server the launcher starts also gets `LLAMA_ARG_CORS_ORIGINS=localhost`, so normal websites cannot read answers; this does not stop DNS rebinding, only a key does. A user-given `--api-key` is moved from the command line to the environment (not visible in the process list) |
 | `moe-cache-bench` (GUI, now in [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark)) | `127.0.0.1:8765` only | every API call needs a per-run token that is embedded in the page the server serves; Host, Origin and Sec-Fetch-Site are checked; run settings are validated (program name, library name, `MOE_CACHE_*` variables only, no file-writing or network flags); the servers it starts use a key file |
 | `install.sh` | git and pip over HTTPS | llama.cpp is pinned to a commit hash, the python `gguf` package to a version |
 

@@ -1,8 +1,11 @@
-# Trying moe-cache on Windows (untested port: this is a test, not a supported install)
+# Trying moe-cache on Windows (experimental: tested, not a supported install)
 
-State: the plugin has a Windows layer (`src/platform.h`) that cross-compiles with mingw-w64 and passes its platform tests under Wine. It has **never run on real
-Windows with llama.cpp**: no identity test, no speed numbers, no Windows launcher. Everything below is how to find out. If you only need to run models on Windows, use
-a stock llama.cpp release; the plugin only adds a RAM cache for models bigger than RAM.
+**Quick start for using it: [WINDOWS.md](WINDOWS.md).** This page is the identity test.
+
+State: the plugin has a Windows layer (`src/platform.h`) that cross-compiles with mingw-w64 and passes its platform tests under Wine. It has run on real Windows:
+the MSI Claw (Vulkan iGPU, rounds 1-2 found bugs) and, on 2026-10-26, a Windows 11 desktop (Ryzen 9 7950X + RX 9070 XT, llama.cpp b11669 Vulkan): identity 4/4 on four
+models and the Python launcher (check, server, chat) works; see `COMPATIBILITY.md`. Speed numbers with the plugin on the desktop are preliminary (RESULTS 54). Everything below is how to repeat the
+test. If you only need to run models on Windows, use a stock llama.cpp release; the plugin only adds a RAM cache for models bigger than RAM.
 
 ## What to run
 1. `tools/windows_test.ps1` (PowerShell). It starts an official `llama-server.exe` twice on the same GGUF (stock, then with the plugin DLL through `GGML_BACKEND_PATH`),
@@ -28,11 +31,15 @@ Send back: the printed result, `%TEMP%\moe-cache-test\plugin.err.txt`, and the l
 The test turns the cache on at 0.5 GiB (`-CacheGiB`), far below the model, so experts are evicted and read again; it fails if the log has no
 `moe-cache: cache mode` line (before 2026-10-15 it ran the plugin in pass-through mode and a PASS proved little).
 
-## Launcher on Windows (T15, untested on real Windows)
+## Launcher on Windows (T15, tested on the desktop above)
 The launcher is Python (`bin/moe_cache.py`, standard library only), so it runs on Windows too; there the plugin is always loaded with `GGML_BACKEND_PATH`:
 ```
 set MOE_CACHE_LIB=D:\moe-cache-kit\ggml-moe-cache-api3.dll
 python moe-cache\bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --ram 16 --open
 python moe-cache\bin\moe_cache.py check D:\models\model.gguf --llama-server C:\llama\llama-server.exe
 ```
-Add `--dry-run` to see the command without starting it. CPU pinning and efficiency-core detection are Linux only.
+Add `--dry-run` to see the command without starting it. The launcher pins threads to the performance cores of a hybrid CPU on Windows too (`win_cores()`;
+`check` reports "no hybrid cores: no pinning" on a plain CPU such as the 7950X). It finds an AMD or Intel GPU through the registry/`--list-devices`, not only NVIDIA,
+and on an AMD Vulkan GPU it turns llama.cpp's context checkpoints off for Flash-Next (qwen4exp): the AMD Windows driver crashes when one is saved.
+`build.sh --windows` writes `build/win/` or `$BUILD_DIR` (`BUILD_DIR=build/win-api3 GGML_API=3 ./build.sh --windows` keeps both APIs side by side); the launcher picks the DLL that matches the server's ggml
+(it also finds the kit's `ggml-moe-cache-api2.dll` / `-api3.dll` next to `moe_cache.py`).

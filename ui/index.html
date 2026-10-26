@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moe-cache</title>
+<style>
+:root { --bg:#f6f7f9; --panel:#fff; --line:#dde1e6; --text:#1d232b; --muted:#5f6b78; --accent:#2f6fde; --ok:#1f8a4c; --warn:#b26a00; --bad:#c23b3b; --gpu:#7a4fd0; --code:#eef1f5; }
+@media (prefers-color-scheme: dark) { :root { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; } }
+* { box-sizing:border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+header h1 { font-size:16px; margin:0; }
+header .sys { color:var(--muted); font-size:13px; }
+main { display:grid; grid-template-columns:minmax(360px, 5fr) 7fr; gap:12px; padding:12px 16px; }
+@media (max-width: 1100px) { main { grid-template-columns:1fr; } }
+section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
+section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+.col { display:flex; flex-direction:column; gap:12px; min-width:0; }
+table { width:100%; border-collapse:collapse; }
+td, th { padding:5px 6px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:500; font-size:12px; }
+#models tr.m { cursor:pointer; }
+#models tr.m:hover { background:var(--code); }
+#models tr.sel { background:color-mix(in srgb, var(--accent) 14%, transparent); }
+.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:12px; border:1px solid currentColor; margin-top:3px; }
+.stock { color:var(--ok); } .cache { color:var(--warn); } .gpu { color:var(--gpu); } .error { color:var(--bad); } .wait { color:var(--muted); }
+.small { font-size:12px; color:var(--muted); }
+ul.why { margin:6px 0 0; padding-left:18px; }
+ul.why li { margin:2px 0; }
+ul.why li.win { color:var(--gpu); }
+label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
+input[type=text], input[type=number], input[type=password] { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); }
+input[type=range] { width:100%; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.row > * { flex:1; min-width:0; }
+.row > button { flex:0 0 auto; }
+.seg { display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.seg button { flex:1; border:0; border-radius:0; background:transparent; color:var(--text); padding:5px 6px; }
+.seg button.on { background:var(--accent); color:#fff; }
+button { white-space:nowrap; flex:0 0 auto; padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:var(--code); color:var(--text); cursor:pointer; font:inherit; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
+button:disabled { opacity:.5; cursor:default; }
+code, pre { background:var(--code); border-radius:4px; font:12px/1.4 ui-monospace, Consolas, monospace; }
+code { padding:1px 4px; word-break:break-all; }
+pre { padding:8px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:6px 0 0; }
+.stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin:8px 0; }
+.stat { border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
+.stat b { display:block; font-size:20px; font-variant-numeric:tabular-nums; }
+.stat span { color:var(--muted); font-size:12px; }
+canvas { width:100%; height:60px; display:block; }
+.tabs { display:flex; gap:4px; margin-bottom:8px; }
+.tabs button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6px; background:#fff; }
+#log { height:560px; overflow:auto; margin:0; }
+#log .p { color:var(--warn); }
+#log .u { color:var(--accent); }
+.err { color:var(--bad); }
+.hint { color:var(--muted); font-size:12px; margin-top:4px; }
+#warnings { margin-top:8px; border:1px solid var(--warn); border-radius:6px; padding:6px 8px; }
+#warnings div { color:var(--warn); font-size:12px; word-break:break-word; }
+#warnings div + div { margin-top:4px; }
+</style>
+</head>
+<body>
+<header><h1>moe-cache</h1><span class="sys" id="sys">…</span></header>
+<main>
+<div class="col">
+  <section id="p-model">
+    <h2>1 · Model</h2>
+    <table id="models"><thead><tr><th>Model and verdict</th><th class="num">Size</th><th>Quant</th></tr></thead><tbody></tbody></table>
+    <div id="nomodels" class="small" hidden></div>
+    <div id="plan" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:10px"><input type="text" id="folder" placeholder="add a folder with .gguf files"><button id="addfolder">Add folder</button><button id="rescan">Rescan</button></div>
+    <div class="small" id="folders"></div>
+  </section>
+  <section id="p-settings">
+    <h2>2 · Settings</h2>
+    <label>RAM budget: <b id="ramv"></b> <span class="small">(empty = what is available when it starts)</span></label>
+    <input type="range" id="ram" min="0" max="64" step="1">
+    <label>VRAM: <b id="vramv"></b> <span class="small">(free VRAM the planner may use)</span></label>
+    <input type="range" id="vram" min="0" max="24" step="0.5">
+    <label>Context</label>
+    <div class="seg" id="ctx"><button data-v="8192">8k</button><button data-v="32768">32k</button><button data-v="65536">64k</button></div>
+    <label>Mode</label>
+    <div class="seg" id="mode"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <div class="hint" id="modehint"></div>
+    <div class="row" style="margin-top:8px">
+      <label style="margin:0"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
+    </div>
+    <div class="row">
+      <div><label>Port</label><input type="number" id="port" value="8080" min="1" max="65535"></div>
+      <div><label>API key <span class="small">(optional)</span></label><input type="password" id="apikey" autocomplete="off"></div>
+    </div>
+  </section>
+</div>
+<div class="col">
+  <section id="p-status">
+    <h2>3 · Status</h2>
+    <div class="row"><div><b id="state">idle</b> <span class="small" id="statemodel"></span></div>
+      <button class="primary" id="start">Start</button><button class="danger" id="stop" disabled>Stop</button></div>
+    <div class="stats">
+      <div class="stat"><b id="s-dec">–</b><span>decode tok/s</span></div>
+      <div class="stat"><b id="s-pre">–</b><span>prefill tok/s (last request)</span></div>
+      <div class="stat"><b id="s-hit">–</b><span>cache hit rate</span></div>
+      <div class="stat"><b id="s-read">–</b><span>SSD reads MB/s</span></div>
+      <div class="stat"><b id="s-ram">–</b><span id="s-ram-l">RAM used / budget</span></div>
+      <div class="stat"><b id="s-vram">–</b><span id="s-vram-l">VRAM used</span></div>
+    </div>
+    <div class="row"><div><span class="small">tok/s, last 2 minutes</span><canvas id="c-tps"></canvas></div><div><span class="small">hit rate, last 2 minutes</span><canvas id="c-hit"></canvas></div></div>
+    <div class="small" style="margin-top:8px">Mode: <b id="s-mode">–</b></div>
+    <div style="margin-top:4px"><code id="cmd"></code></div>
+    <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
+    <pre id="dry" hidden></pre>
+    <div class="row" style="margin-top:10px; justify-content:flex-start"><button id="bench">Quick benchmark</button><span class="small" id="benchstate">warm-up, 2 replies of 256 tokens, one 3.5k-token prompt (about 1-3 minutes); saved to a CSV so you can compare stock and moe-cache runs</span></div>
+    <div id="benchres"></div>
+    <details id="decisions" hidden style="margin-top:8px"><summary class="small">What the launcher decided</summary><ul class="why"></ul></details>
+    <div id="warnings" hidden></div>
+    <div class="err" id="err"></div>
+  </section>
+  <section id="p-chat">
+    <div class="tabs"><button data-t="chat" class="on">Chat</button><button data-t="agents">Agents</button><button data-t="log">Log</button></div>
+    <div id="t-chat"><div class="small" id="chatnote">Start a model: llama-server's own chat page appears here.</div><iframe id="chat" hidden title="llama-server chat"></iframe></div>
+    <div id="t-agents" hidden></div>
+    <div id="t-log" hidden><pre id="log"></pre></div>
+  </section>
+</div>
+</main>
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const S = { models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", plans: {}, logSeq: 0, status: {}, tab: "chat" };
+const fmtGB = b => b == null ? "–" : (b / 1e9).toFixed(1) + " GB";
+const fmtGiB = b => b == null ? "–" : (b / 2 ** 30).toFixed(1) + " GiB";
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.status);
+  return j;
+}
+function settings() {
+  return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.mode,
+           agent: $("agent").checked, port: $("port").value, api_key: $("apikey").value };
+}
+function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent].join("|"); }
+function seg(id, key, cb) {
+  const el = $(id);
+  const paint = () => el.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v == S[key]));
+  el.addEventListener("click", e => { if (e.target.dataset.v) { S[key] = isNaN(+e.target.dataset.v) ? e.target.dataset.v : +e.target.dataset.v; paint(); cb && cb(); } });
+  paint(); return paint;
+}
+const MODEHINT = { exact: "Output identical to stock llama-server (default).", fast: "--fast: skips rarely needed experts that are not in RAM: about +10 %, about 1 token in 40-50 differs.",
+                   hybrid: "--hybrid (experimental): most used experts computed on the GPU, the rest on the CPU; output differs from stock." };
+
+async function loadSystem() {
+  S.sys = await api("/api/system");
+  const s = S.sys, last = s.last || {};
+  $("sys").title = "llama-server: " + s.llama_server + "\nplugin: " + s.plugin;
+  $("sys").textContent = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "");
+  $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
+  $("vram").max = Math.max(1, Math.ceil((s.vram_total || s.vram_free || 8 * 2 ** 30) / 2 ** 30));
+  if (!S.inited) {
+    S.inited = true;
+    $("ram").value = last.ram || 0;
+    $("vram").value = last.vram || 0;      // auto: the planner and the launcher read the free VRAM at start (a running server would lower it here)
+    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent;
+    if (last.model) S.sel = last.model;
+  }
+  paintRanges();
+}
+function paintRanges() {
+  $("ramv").textContent = $("ram").value > 0 ? $("ram").value + " GB" : `auto (${fmtGB(S.sys.server_may_use)} now)`;
+  $("vramv").textContent = $("vram").value > 0 ? $("vram").value + " GiB" : `auto (${S.sys.vram_free != null ? fmtGiB(S.sys.vram_free) + " free now" : "detected at start"})`;
+  $("modehint").textContent = MODEHINT[S.mode];
+}
+async function loadModels(fresh) {
+  const j = await api("/api/models" + (fresh ? "?fresh=1" : ""));
+  S.models = j.models;
+  $("folders").innerHTML = "Folders: " + j.folders.map(f => `<code>${esc(f)}</code>`).join(" ") + " and Ollama's model store when present.";
+  if (!S.models.find(m => m.path == S.sel)) S.sel = S.models.length ? S.models[0].path : null;
+  paintModels(); planAll();
+}
+function verdictBadge(p) {
+  if (!p) return `<span class="badge wait">planning…</span>`;
+  return `<span class="badge ${p.kind || "error"}">${esc(p.verdict || "?")}</span>`;
+}
+function paintModels() {
+  const tb = $("models").tBodies[0];
+  $("nomodels").hidden = S.models.length > 0;
+  $("nomodels").textContent = "No .gguf models found in the folders below: add a folder.";
+  tb.innerHTML = S.models.map((m, i) => `<tr class="m${m.path == S.sel ? " sel" : ""}" data-i="${i}"><td>${esc(m.name)} <span class="small">${esc(m.source)}</span><br>${verdictBadge(S.plans[planKey(m.path)])}</td>
+    <td class="num">${fmtGB(m.size)}</td><td>${esc(m.quant)}</td></tr>`).join("");
+  paintPlan();
+}
+function paintPlan() {
+  const p = S.sel && S.plans[planKey(S.sel)];
+  const m = S.models.find(x => x.path == S.sel);
+  if (!m) { $("plan").innerHTML = ""; return; }
+  if (!p) { $("plan").innerHTML = `<b>${esc(m.name)}</b> <span class="small">planning…</span>`; return; }
+  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
+    (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on the test laptop (i7-13620H, RTX 4060 8 GB; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
+}
+let planning = false;
+async function planAll() {
+  if (planning) return; planning = true;
+  try {
+    const order = S.models.map(m => m.path).sort((a, b) => (b == S.sel) - (a == S.sel));
+    for (const path of order) {
+      const k = planKey(path);
+      if (S.plans[k]) continue;
+      const s = settings();
+      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}&agent=${s.agent ? 1 : 0}`); }
+      catch (e) { S.plans[k] = { kind: "error", verdict: "error", reasons: [e.message] }; }
+      paintModels();
+    }
+  } finally { planning = false; }
+  if (S.models.some(m => !S.plans[planKey(m.path)])) planAll();
+}
+function settingsChanged() { paintRanges(); paintModels(); planAll(); $("dry").hidden = true; }
+
+function chart(id, pts, max, color, pct) {
+  const c = $(id), dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  c.width = w * dpr; c.height = h * dpr;
+  const g = c.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  g.strokeStyle = css.getPropertyValue("--line"); g.beginPath(); g.moveTo(0, h - .5); g.lineTo(w, h - .5); g.stroke();
+  const vals = pts.map(p => p[1]).filter(v => v != null);
+  if (!vals.length) return;
+  const top = max || Math.max(...vals) * 1.15 || 1, now = Date.now() / 1000;
+  g.strokeStyle = css.getPropertyValue(color); g.lineWidth = 1.5; g.beginPath();
+  let on = false;
+  for (const [t, v] of pts) {
+    if (v == null) { on = false; continue; }
+    const x = w - (now - t) / 120 * w, y = h - 2 - v / top * (h - 6);
+    on ? g.lineTo(x, y) : g.moveTo(x, y); on = true;
+  }
+  g.stroke();
+  g.fillStyle = css.getPropertyValue("--muted"); g.font = "11px system-ui"; g.fillText(pct ? "100 %" : top.toFixed(0), 4, 11);
+}
+async function poll() {
+  let st;
+  try { st = await api("/api/status"); } catch (e) { $("state").textContent = "page server not reachable"; return; }
+  S.status = st;
+  const running = st.state == "starting" || st.state == "ready" || st.state == "stopping";
+  $("state").textContent = { idle: "idle", starting: "starting…", ready: "running", stopping: "stopping…", stopped: "stopped", exited: "ended (see Log)" }[st.state] || st.state;
+  $("state").className = st.state == "ready" ? "stock" : st.state == "exited" ? "error" : "";
+  $("statemodel").textContent = st.model ? st.model.split(/[\\/]/).pop() + (st.state == "ready" ? ` · ${st.url}` : "") : "";
+  $("start").disabled = running || !S.sel; $("stop").disabled = !running || st.state == "stopping";
+  const c = st.cache || {}, l = st.last || {}, sy = st.system || {};
+  $("s-dec").textContent = st.live_tps != null ? st.live_tps.toFixed(1) : l.decode_tps != null ? l.decode_tps.toFixed(1) : "–";
+  $("s-pre").textContent = l.prefill_tps != null ? l.prefill_tps.toFixed(0) : "–";
+  $("s-hit").textContent = c.hit_rate != null ? (c.hit_rate * 100).toFixed(1) + " %" : c.hit_rate_total != null ? (c.hit_rate_total * 100).toFixed(1) + " %" : "–";
+  $("s-read").textContent = c.read_mbs != null ? c.read_mbs.toFixed(0) : "–";
+  if (c.resident != null) { $("s-ram").textContent = `${fmtGB(c.resident)} / ${fmtGB(c.budget)}`; $("s-ram-l").textContent = "expert cache used / budget"; }
+  else { $("s-ram").textContent = st.server_rss != null ? fmtGB(st.server_rss) : fmtGB(sy.ram_total - sy.ram_avail); $("s-ram-l").textContent = st.server_rss != null ? `llama-server RAM (${fmtGB(sy.ram_avail)} free)` : "RAM used (system)"; }
+  $("s-vram").textContent = sy.vram_total ? `${fmtGiB(sy.vram_total - sy.vram_free)} / ${fmtGiB(sy.vram_total)}` : "–";
+  $("s-vram-l").textContent = sy.gpu ? (sy.vram_total ? "VRAM used · " : sy.vram_free != null ? "VRAM free · " : "") + sy.gpu : sy.gpu_detecting ? "VRAM (looking for the GPU…)" : "VRAM (no GPU found)";
+  if (!sy.vram_total && sy.vram_free != null) $("s-vram").textContent = fmtGiB(sy.vram_free);
+  $("s-mode").textContent = st.mode || (running ? "deciding…" : "–");
+  $("cmd").textContent = st.command || "";
+  chart("c-tps", st.history.map(h => [h[0], h[1]]), 0, "--accent");
+  chart("c-hit", st.history.map(h => [h[0], h[2]]), 1, "--ok", true);
+  const ifr = $("chat");
+  if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>`; }
+  else { ifr.hidden = true; ifr.dataset.u = ""; ifr.removeAttribute("src"); $("chatnote").textContent = running ? "Loading the model…" : "Start a model: llama-server's own chat page appears here."; }
+  paintAgents(st);
+  paintBench(st);
+  const dk = JSON.stringify(st.decisions || []), de = $("decisions");
+  if (de.dataset.k != dk) {
+    de.dataset.k = dk; de.hidden = !(st.decisions || []).length;
+    const win = l => /AMD GPU on Windows|Windows job memory limit|integrated|--list-devices|context checkpoints/.test(l);
+    de.querySelector("ul").innerHTML = (st.decisions || []).map(l => `<li${win(l) ? ' class="win"' : ""}>${esc(l)}</li>`).join("");
+    if ((st.decisions || []).some(win)) de.open = true;
+  }
+  const wk = JSON.stringify(st.warnings || []);
+  if ($("warnings").dataset.k != wk) {
+    $("warnings").dataset.k = wk;
+    $("warnings").hidden = !(st.warnings || []).length;
+    $("warnings").innerHTML = (st.warnings || []).map(w => `<div>⚠ ${esc(w.line)}${w.count > 1 ? ` <span class="small">(${w.count}×)</span>` : ""}</div>`).join("");
+  }
+  if (st.log_seq > S.logSeq) {
+    const j = await api("/api/log?since=" + S.logSeq);
+    const el = $("log"), atEnd = el.scrollTop + el.clientHeight >= el.scrollHeight - 20;
+    for (const [n, line] of j.lines) {
+      const d = document.createElement("div");
+      d.textContent = line; if (/moe-cache/.test(line)) d.className = "p"; if (line.startsWith("ui:")) d.className = "u";
+      el.appendChild(d); S.logSeq = n;
+    }
+    while (el.childNodes.length > 500) el.removeChild(el.firstChild);
+    if (atEnd) el.scrollTop = el.scrollHeight;
+  }
+}
+function warmHtml(st) {
+  if (!st.agent) return "";
+  const w = st.warm || {}, ev = w.events || [], files = w.files || [];
+  const t = x => new Date(x * 1000).toLocaleTimeString();
+  return `<div class="small" style="margin-top:10px"><b>Warm sessions</b>: long agent conversations are saved when idle and restored at the next start.</div>` +
+    (ev.length ? `<ul class="why">${ev.map(e => `<li>${t(e.t)} ${esc(e.line)}</li>`).join("")}</ul>` : `<div class="hint">nothing saved or restored in this run yet</div>`) +
+    (files.length ? `<table style="margin-top:4px"><tr><th>Saved conversation</th><th class="num">Size</th><th>Saved</th></tr>${files.map(f =>
+      `<tr><td><code>${esc(f.name)}</code></td><td class="num">${fmtGB(f.size)}</td><td>${new Date(f.t * 1000).toLocaleString()}</td></tr>`).join("")}</table>` : "");
+}
+const BENCH_COLS = [["time", "When"], ["model", "Model"], ["mode", "Mode"], ["ram_gb", "RAM GB"], ["decode_mean", "Decode tok/s"], ["prefill", "Prefill tok/s"], ["hit_rate", "Hit rate"]];
+function benchTable(rows, model) {
+  return `<table style="margin-top:6px"><tr>${BENCH_COLS.map(c => `<th${c[0] == "decode_mean" || c[0] == "prefill" ? ' class="num"' : ""}>${c[1]}</th>`).join("")}</tr>` +
+    rows.map(r => `<tr${r.model == model ? "" : ' class="small"'}>${BENCH_COLS.map(([k]) => `<td${k == "decode_mean" || k == "prefill" ? ' class="num"' : ""}>${esc(
+      k == "hit_rate" ? (r[k] ? (r[k] * 100).toFixed(1) + " %" : "–") : k == "decode_mean" ? `${r[k]} (${r.decode_1} / ${r.decode_2})` : k == "model" ? r[k].replace(/(-\d{5}-of-\d{5})?\.gguf$/, "") : r[k] ?? "")}</td>`).join("")}</tr>`).join("") + "</table>";
+}
+async function paintBench(st) {
+  const b = st.bench || {}, key = [b.state, b.step, st.state].join("|");
+  $("bench").disabled = st.state != "ready" || b.state == "running";
+  if ($("benchres").dataset.k == key) return; $("benchres").dataset.k = key;
+  if (b.state == "running") { $("benchstate").textContent = "running: " + b.step + "…"; return; }
+  if (b.state == "failed") { $("benchstate").innerHTML = `<span class="err">benchmark failed: ${esc(b.error)}</span>`; return; }
+  if (b.state != "done") return;
+  $("benchstate").textContent = "done" + (b.csv ? " · saved to " + b.csv : b.csv_error ? " · not saved: " + b.csv_error : "");
+  const j = await api("/api/bench");
+  const model = (b.result || {}).model;
+  $("benchres").innerHTML = `<div class="small" style="margin-top:6px">This run, and earlier runs from the CSV (same model in full colour), newest last:</div>` + benchTable(j.rows.slice(-8), model);
+}
+function paintAgents(st) {
+  const el = $("t-agents");
+  const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {})].join("|");
+  if (el.dataset.k == key) return; el.dataset.k = key;
+  if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on: this tab then shows what to give OpenCode, Hermes or any OpenAI-compatible client.</div>`; return; }
+  const name = (st.model || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
+  el.innerHTML = `<table><tr><th>Base URL</th><td><code>${esc(st.url)}/v1</code></td></tr><tr><th>Model</th><td><code>${esc(name)}</code></td></tr>
+    <tr><th>Context</th><td>${esc(st.ctx || (st.agent ? 65536 : 8192))}</td></tr></table>` +
+    (st.agent ? "" : `<div class="hint">Agent mode is off for this server: tool calls may not work, and Hermes needs a 64k context. Stop, tick Agent mode and start again.</div>`) +
+    `<table style="margin-top:8px"><tr><th>OpenCode</th><td><button data-a="opencode">Preview</button> <button data-a="opencode" data-w="1" class="primary">Connect OpenCode</button>
+      <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)</div></td></tr>
+     <tr><th>Hermes</th><td><button data-a="hermes">Preview</button> <button data-a="hermes" data-w="1" class="primary">Connect Hermes</button>
+      <div class="hint">runs "hermes config set" for the provider, URL, model and context (needs hermes on the PATH)</div></td></tr></table>
+     <div id="connres"></div>` + warmHtml(st);
+  el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
+    const o = $("connres"), w = !!b.dataset.w;
+    o.innerHTML = `<pre>${w ? "writing" : "asking"} (moe_cache.py connect ${esc(b.dataset.a)}${w ? " --write" : ""})…</pre>`;
+    try {
+      const j = await api("/api/connect", { agent: b.dataset.a, write: w });
+      o.innerHTML = `<div class="${j.rc ? "err" : "small"}" style="margin-top:6px">${j.rc ? "Failed" : w ? "Done" : "What would be written"} (exit ${j.rc}):</div><pre>${esc(j.output)}</pre>` +
+        (j.file ? `<div class="small" style="margin-top:6px">Now in <code>${esc(j.file)}</code>:</div><pre>${esc(j.written || "")}</pre>` : "");
+    } catch (e) { o.innerHTML = `<pre class="err">${esc(e.message)}</pre>`; }
+  });
+}
+
+$("start").onclick = async () => {
+  $("err").textContent = "";
+  try { await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll(); } catch (e) { $("err").textContent = e.message; }
+};
+$("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
+$("bench").onclick = async () => { try { await api("/api/bench", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
+$("copycmd").onclick = () => navigator.clipboard && navigator.clipboard.writeText($("cmd").textContent);
+$("showcmd").onclick = async () => {
+  const d = $("dry"); d.hidden = false; d.textContent = "asking the launcher (--dry-run)…";
+  try { const j = await api("/api/command", settings()); d.textContent = j.lines.join("\n"); } catch (e) { d.textContent = e.message; }
+};
+$("models").onclick = e => { const tr = e.target.closest("tr.m"); if (tr) { S.sel = S.models[+tr.dataset.i].path; paintModels(); planAll(); $("dry").hidden = true; } };
+$("addfolder").onclick = async () => {
+  try { await api("/api/folders", { add: $("folder").value }); $("folder").value = ""; loadModels(true); } catch (e) { $("err").textContent = e.message; }
+};
+$("rescan").onclick = () => { S.plans = {}; loadSystem().then(() => loadModels(true)); };
+["ram", "vram"].forEach(id => { $(id).oninput = paintRanges; $(id).onchange = settingsChanged; });
+document.querySelector(".tabs").onclick = e => {
+  const t = e.target.dataset.t; if (!t) return;
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t == t));
+  ["chat", "agents", "log"].forEach(x => $("t-" + x).hidden = x != t);
+};
+(async () => {
+  await loadSystem();
+  seg("ctx", "ctx", settingsChanged); seg("mode", "mode", settingsChanged);
+  $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; document.querySelectorAll("#ctx button").forEach(b => b.classList.toggle("on", b.dataset.v == 65536)); settingsChanged(); } };
+  await loadModels(false);
+  poll(); setInterval(poll, 1000);
+  setInterval(() => { if (!S.status.state || S.status.state == "idle") loadSystem(); }, 10000);
+})();
+</script>
+</body>
+</html>

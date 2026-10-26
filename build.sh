@@ -2,7 +2,8 @@
 # Build the plugin. It needs a C++17 compiler and the directory that contains libggml-base.so (it comes with your llama.cpp install).
 #   GGML_LIB_DIR   directory with libggml-base.so (default: searched in common places and next to llama-server)
 #   --portable     build a library for the prebuilt release: no link to libggml-base (symbols come from the llama-server that loads it) and no glibc 2.38 symbols.
-#   --windows      cross-compile ggml-moe-cache.dll with mingw-w64 (x86_64-w64-mingw32-g++, dlltool). Load it with GGML_BACKEND_PATH. UNTESTED on real Windows.
+#   --windows      cross-compile ggml-moe-cache.dll with mingw-w64 (x86_64-w64-mingw32-g++, dlltool). Load it with GGML_BACKEND_PATH.
+#                  Output: build/win/ or BUILD_DIR (e.g. BUILD_DIR=build/win-api3 GGML_API=3 keeps an API 2 and an API 3 DLL side by side). Tested on Windows 11 + AMD (llama.cpp b11669, API 3) and on the MSI Claw.
 # The ggml headers are included in third_party/, so no llama.cpp source is needed. They match ggml 0.25.1 (llama.cpp commit 7fe450e19).
 #   GGML_API=3     build against the ggml 0.26 headers (backend API 3, llama.cpp commit 23b0202a1) instead of 0.25.1 (API 2)
 #   BUILD_DIR      output directory (default build; use another one to keep an API 2 and an API 3 build side by side)
@@ -12,19 +13,19 @@ HDR=third_party/ggml; OUT="${BUILD_DIR:-build}"
 if [ "${GGML_API:-2}" = 3 ]; then HDR=third_party/ggml-v3; fi
 if [ "$1" = "--windows" ]; then
   # MINGW_CXX: the compiler (default x86_64-w64-mingw32-g++; a UCRT one such as x86_64-w64-mingw32ucrt-g++ matches official llama.cpp's C runtime)
-  M=x86_64-w64-mingw32; CXX="${MINGW_CXX:-$M-g++}"; mkdir -p build/win
-  $CXX -O2 ${MOE_CACHE_CXXFLAGS:-} -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src -c src/moe_cache_plugin.cpp -o build/win/plugin.o
+  W="${BUILD_DIR:-build/win}"; M=x86_64-w64-mingw32; CXX="${MINGW_CXX:-$M-g++}"; mkdir -p "$W"
+  $CXX -O2 ${MOE_CACHE_CXXFLAGS:-} -std=c++17 -Wall -Wno-unused-function -I$HDR/include -I$HDR/src -c src/moe_cache_plugin.cpp -o $W/plugin.o
   # ggml's functions live in two DLLs: the backend registry (ggml-backend-reg.cpp) in ggml.dll, everything else in ggml-base.dll. Importing all of
   # them from ggml-base.dll made Windows refuse to load the plugin (found on the MSI Claw, 2026-10-15). Same 16 names in ggml 0.25.1 and 0.26.0.
   REG=" ggml_backend_dev_by_name ggml_backend_dev_by_type ggml_backend_dev_count ggml_backend_dev_get ggml_backend_device_register ggml_backend_init_best ggml_backend_init_by_name ggml_backend_init_by_type ggml_backend_load ggml_backend_load_all ggml_backend_load_all_from_path ggml_backend_reg_by_name ggml_backend_reg_count ggml_backend_reg_get ggml_backend_register ggml_backend_unload "
-  $M-nm -u build/win/plugin.o | awk '$1=="U" && ($2 ~ /^ggml_/ || $2 ~ /^gguf_/) {print $2}' | sort -u > build/win/imports.txt
-  ( echo "LIBRARY ggml-base.dll"; echo EXPORTS; while read -r f; do case "$REG" in *" $f "*) ;; *) echo "$f";; esac; done < build/win/imports.txt ) > build/win/ggml-base.def
-  ( echo "LIBRARY ggml.dll"; echo EXPORTS; while read -r f; do case "$REG" in *" $f "*) echo "$f";; esac; done < build/win/imports.txt ) > build/win/ggml.def
-  $M-dlltool -d build/win/ggml-base.def -l build/win/libggml-base.dll.a -D ggml-base.dll
-  $M-dlltool -d build/win/ggml.def -l build/win/libggml.dll.a -D ggml.dll
+  $M-nm -u $W/plugin.o | awk '$1=="U" && ($2 ~ /^ggml_/ || $2 ~ /^gguf_/) {print $2}' | sort -u > $W/imports.txt
+  ( echo "LIBRARY ggml-base.dll"; echo EXPORTS; while read -r f; do case "$REG" in *" $f "*) ;; *) echo "$f";; esac; done < $W/imports.txt ) > $W/ggml-base.def
+  ( echo "LIBRARY ggml.dll"; echo EXPORTS; while read -r f; do case "$REG" in *" $f "*) echo "$f";; esac; done < $W/imports.txt ) > $W/ggml.def
+  $M-dlltool -d $W/ggml-base.def -l $W/libggml-base.dll.a -D ggml-base.dll
+  $M-dlltool -d $W/ggml.def -l $W/libggml.dll.a -D ggml.dll
   # -static links the mingw threads runtime in: a DLL that needs libwinpthread-1.dll does not load on a normal Windows machine (found on the Claw)
-  $CXX -shared ${MOE_CACHE_CXXFLAGS:-} -o build/win/ggml-moe-cache.dll build/win/plugin.o build/win/libggml-base.dll.a build/win/libggml.dll.a -static -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols
-  echo "built build/win/ggml-moe-cache.dll (not tested on real Windows)"
+  $CXX -shared ${MOE_CACHE_CXXFLAGS:-} -o $W/ggml-moe-cache.dll $W/plugin.o $W/libggml-base.dll.a $W/libggml.dll.a -static -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols
+  echo "built $W/ggml-moe-cache.dll (tested on Windows 11 + AMD, llama.cpp b11669)"
   exit 0
 fi
 # MOE_CACHE_CXXFLAGS: extra compiler flags (CI uses it for a test-only mutant build)

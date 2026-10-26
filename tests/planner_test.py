@@ -65,6 +65,51 @@ check(lo is not None and hi is not None and hi >= lo, f"launcher --gpu-margin 3 
 import importlib.util, struct  # noqa: E402
 _sp = importlib.util.spec_from_file_location("moe_cache_launcher", os.path.join(HERE, "bin", "moe_cache.py"))
 L = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(L)
+# AMD driver version for the checkpoint message (I44): fake winreg with two display adapters
+import types  # noqa: E402
+_keys = {"": ["0000", "0001", "Properties"], "0000": {"DriverDesc": "AMD Radeon(TM) Graphics", "DriverVersion": "31.0.1.1"},
+         "0001": {"DriverDesc": "AMD Radeon RX 9070 XT", "DriverVersion": "32.0.23034.4"}}
+class _K:
+    def __init__(self, n): self.n = n
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+def _open(parent, sub):
+    n = sub if sub in _keys else ""
+    return _K(n)
+def _query(k, v):
+    if k.n not in _keys or not isinstance(_keys[k.n], dict) or v not in _keys[k.n]: raise OSError
+    return (_keys[k.n][v], 1)
+_fake = types.SimpleNamespace(HKEY_LOCAL_MACHINE=0, OpenKey=_open, QueryInfoKey=lambda k: (3, 0, 0), EnumKey=lambda k, i: _keys[""][i], QueryValueEx=_query)
+_oldw, _oldm = L.WINDOWS, sys.modules.get("winreg")
+L.WINDOWS = True; sys.modules["winreg"] = _fake
+check(L.win_driver_version("AMD Radeon RX 9070 XT") == "32.0.23034.4", "win_driver_version: the discrete adapter's DriverVersion")
+check(L.win_driver_version("AMD Radeon(TM) Graphics") == "31.0.1.1", "win_driver_version: the integrated adapter's own version")
+check(L.win_driver_version("No such GPU") == "", "win_driver_version: unknown adapter gives ''")
+L.WINDOWS = False
+check(L.win_driver_version("AMD Radeon RX 9070 XT") == "", "win_driver_version: '' off Windows")
+L.WINDOWS = _oldw
+if _oldm is None: sys.modules.pop("winreg", None)
+else: sys.modules["winreg"] = _oldm
+
+# API key (option C): stable per-user key, 0600, not on the command line, hidden in the launcher's printout, CORS allow-list as environment
+import tempfile  # noqa: E402
+_kd = tempfile.mkdtemp()
+L.CACHE_DIR = _kd; L.KEY_FILE = os.path.join(_kd, "sub", "api.key")
+check(L.stored_key() == "", "api key: none until created")
+k1 = L.stored_key(create=True); k2 = L.stored_key(create=True)
+check(len(k1) >= 30 and k1 == k2 and L.stored_key() == k1, "api key: created once, stable, urlsafe")
+if os.name != "nt":
+    check(oct(os.stat(L.KEY_FILE).st_mode & 0o777) == "0o600", "api key: file mode 0600")
+x = ["-c", "8192", "--api-key", "SECRET", "--alias", "m"]
+check(L.take_api_key_from_args(x) == "SECRET" and x == ["-c", "8192", "--alias", "m"], "api key: --api-key KEY removed from llama-server's arguments")
+x = ["--api-key=S2", "-c", "1"]
+check(L.take_api_key_from_args(x) == "S2" and x == ["-c", "1"], "api key: --api-key=KEY form removed too")
+check(L.take_api_key_from_args(["-c", "1"]) is None, "api key: none given -> None")
+check(L.key_for("http://127.0.0.1:1", "given") == "given", "api key: an explicit key wins (no request made)")
+snip = L.agent_snippets(8080, "m", 65536, "TOPSECRET", hide_key=True)
+check("TOPSECRET" not in snip and "bin/moe_cache.py key" in snip, "api key: the launcher's agent printout does not show the key")
+check("TOPSECRET" in L.agent_snippets(None, "m", 65536, "TOPSECRET", base="http://x/v1", only="hermes"), "api key: connect's own printout still has the key")
+
 def core(eff, mask, group=0):
     r = bytearray(48); struct.pack_into("<II", r, 0, 0, 48); r[9] = eff; struct.pack_into("<H", r, 30, 1); struct.pack_into("<QH", r, 32, mask, group)
     return bytes(r)
@@ -74,6 +119,8 @@ raptor = b"".join([core(1, 3 << (2 * i)) for i in range(6)] + [core(0, 1 << i) f
 check(L.hybrid_masks(L.parse_core_records(raptor)) == (0x555, [12, 13, 14, 15]), "WINPIN: Raptor Lake 6P(HT)+4E -> -C 0x555 (one thread per P core)")
 check(L.hybrid_masks(L.parse_core_records(b"".join(core(0, 1 << i) for i in range(8)))) is None, "WINPIN: one efficiency class -> no pinning")
 check(L.parse_core_records(core(1, 1, group=1)) == [], "WINPIN: processor group 1 is ignored")
+_g = set(); L.parse_core_records(lunar + core(1, 1, group=1), _g)
+check(_g == {0, 1}, "WINPIN: the processor groups seen are reported (more than one: the launcher does not pin)")
 
 # agent mode (AG1, I29): what --agent adds to the llama-server command, and the config snippets
 ag = dry("--agent")

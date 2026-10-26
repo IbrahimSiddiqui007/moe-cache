@@ -8,7 +8,7 @@ Version numbers describe how safe it is to hand the project to someone else.
 | **v0.2** (friend-ready) | A friend with a similar Linux box can install it and it works first time | Prebuilt plugin for the common llama.cpp releases; setup check that says exactly what is wrong; tested on at least one AMD or Intel GPU through Vulkan and on CPU-only; first GitHub release |
 | **v0.2b** (done) | CPU-only parity | Repacks each expert on load exactly when stock would: CPU-only machines are bit-identical and as fast as stock |
 | **v0.2c** (done) | GPU-assisted prompt processing | Run the big expert multiplications of long prompts on the GPU from inside the plugin (restores stock's prompt speed when the model fits; building block of the GPU tier) |
-| **v0.3** | Windows (code written and cross-compiled, platform layer tested under Wine; not tested on real Windows, no Windows launcher yet) | Windows port of the memory and file code; tested with official Windows llama.cpp builds; `GGML_BACKEND_PATH` loading |
+| **v0.3** | Windows (cross-compiled, tested under Wine, in CI and on real Windows hardware; the Python launcher runs there) | Windows port of the memory and file code; tested with official Windows llama.cpp builds; `GGML_BACKEND_PATH` loading |
 | **v0.4** | Safety and polish | Automatic fallback to stock behavior on a fault; long-context and multi-user tests; small setup helper (pick model, RAM, GPU split) |
 | **v1.0** | Something to rely on | Linux + Windows; NVIDIA, AMD and Intel GPUs each tested; a compatibility list that is checked automatically per model; versioned releases tracking llama.cpp releases; continuous tests (identity + a speed regression guard); documentation for contributors |
 
@@ -32,8 +32,8 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 
 | v1.0 requirement | State |
 |---|---|
-| Linux + Windows | Linux only tested. Windows code exists (platform layer, DLL build), never ran on real Windows. **Open: needs a Windows machine.** |
-| NVIDIA, AMD and Intel GPUs each tested | NVIDIA (CUDA, Vulkan) and Intel iGPU (Vulkan) tested; **AMD not tested** (a Ryzen mini PC is waiting). |
+| Linux + Windows | Linux tested. Windows: identity 4/4 on real hardware (MSI Claw bugs fixed; Windows 11 desktop Ryzen 9 7950X + RX 9070 XT, 2026-10-26, RESULTS 54) and in CI; speeds there are preliminary. **Open: clean speed run, MSI Claw round 3.** |
+| NVIDIA, AMD and Intel GPUs each tested | NVIDIA (CUDA, Vulkan), Intel iGPU (Vulkan), AMD iGPU (Vega 8, Linux) and AMD discrete (RX 9070 XT: a user on Linux, issue #1; the developer on Windows, RESULTS 54) tested. |
 | Compatibility list checked automatically per model | list exists (docs/COMPATIBILITY.md); `bench/run_matrix.py` in [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) runs identity + speed over a folder of models; not yet run by CI (needs models). |
 | Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; llama.cpp 7fe450e19 (API 2) and 23b0202a1 (API 3) are supported, each with its own plugin build. **Open: re-run the full identity matrix on 23b0202a1 (5 models done), run GLM-5.3-Flash on it (needs a model file), automate both builds in CI.** |
 | Continuous tests (identity + speed regression guard) | CI builds, syntax-checks and runs the kernel bit-exactness check (needs no model). Identity and speed need models and a GPU runner. **Open.** |
@@ -41,4 +41,4 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 | Safety: automatic fallback on a fault | read faults fall back to buffered reads; a wrong model file disables caching instead of aborting; an unrecoverable read still stops the server (never serves wrong data). |
 | Sanitizer runs | whole plugin under ASan + UBSan with the executor, forced evictions and byte checking: clean. |
 
-Summary: not v1.0. The remaining gaps are hardware coverage (Windows, AMD), a moving llama.cpp pin, and CI that can run models. Version 0.2.3.5 is feature-complete for the Linux NVIDIA/CPU case.
+Summary: not v1.0. The remaining gaps are clean Windows speed numbers, a Linux run on the AMD desktop, a moving llama.cpp pin, and CI that can run models. Version 0.2.3.5 is feature-complete for the Linux NVIDIA/CPU case.

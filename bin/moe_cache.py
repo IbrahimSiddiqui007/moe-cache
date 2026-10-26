@@ -6,6 +6,8 @@
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode [--url URL] [--write]               point Hermes Agent or OpenCode at a running server (start it with --agent)
+  moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
+  moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
@@ -99,7 +101,12 @@ def pick_lib(ls):
         if os.path.isfile(default_lib()) and lib_api(default_lib()) == want:
             return default_lib()
         # several builds for this API (old test builds, too): the newest one, which is the most likely to match the code
-        found = [c for c in glob.glob(os.path.join(HERE, "build-*", "libggml-moe-cache.so")) if lib_api(c) == want]
+        if WINDOWS:   # build.sh --windows: build/win (API 2), build/win-api3 or BUILD_DIR; the windows-kit has ggml-moe-cache-api2.dll / -api3.dll next to moe_cache.py
+            pats = [os.path.join(HERE, "build", "win*", "ggml-moe-cache*.dll"), os.path.join(HERE, "build-*", "ggml-moe-cache*.dll"),
+                    os.path.join(HERE, "ggml-moe-cache*.dll"), os.path.join(HERE, "..", "ggml-moe-cache*.dll")]
+        else:
+            pats = [os.path.join(HERE, "build-*", "libggml-moe-cache.so")]
+        found = [c for pat in pats for c in glob.glob(pat) if lib_api(c) == want]
         if found:
             return max(found, key=os.path.getmtime)
     return default_lib()
@@ -156,6 +163,29 @@ def win_dedicated_vram():
     return out
 
 
+def win_driver_version(name):
+    """DriverVersion (e.g. "32.0.23034.4") of the display adapter called `name` in the Windows registry; "" elsewhere, when not found or on failure."""
+    if not WINDOWS:
+        return ""
+    try:
+        import winreg
+        base = r"SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as k:
+            for i in range(winreg.QueryInfoKey(k)[0]):
+                sub = winreg.EnumKey(k, i)
+                if not sub.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(k, sub) as d:
+                        if str(winreg.QueryValueEx(d, "DriverDesc")[0]).strip() == name:
+                            return str(winreg.QueryValueEx(d, "DriverVersion")[0]).strip()
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    return ""
+
+
 def pick_gpu(listing):
     """(device, name, free MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
     llama.cpp skips an integrated GPU when a discrete one exists, but --list-devices lists both (on a Ryzen 7000 desktop the built-in Radeon
@@ -184,8 +214,9 @@ def list_devices(ls):
     except Exception:
         return ""
 
-def parse_core_records(buf):
-    """Cores from a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: [(efficiency_class, [logical CPUs])], processor group 0 only.
+def parse_core_records(buf, groups=None):
+    """Cores from a GetLogicalProcessorInformationEx(RelationProcessorCore) buffer: [(efficiency_class, [logical CPUs])], processor group 0 only
+    (masks, llama.cpp's -C included, address group 0; the groups seen are added to the set `groups` when one is given).
     Record layout: DWORD Relationship, DWORD Size, then PROCESSOR_RELATIONSHIP: BYTE Flags, BYTE EfficiencyClass, BYTE Reserved[20],
     WORD GroupCount, GROUP_AFFINITY GroupMask[] at offset 32 (KAFFINITY Mask, WORD Group, WORD Reserved[3])."""
     import struct
@@ -197,6 +228,8 @@ def parse_core_records(buf):
         if rel == 0:
             eff = buf[off + 9]
             mask, group = struct.unpack_from("<QH", buf, off + 32)
+            if groups is not None:
+                groups.add(group)
             if group == 0:
                 cores.append((eff, [i for i in range(64) if mask >> i & 1]))
         off += size
@@ -215,8 +248,12 @@ def hybrid_masks(cores):
     return pmask, ecpus
 
 
+WIN_GROUPS_NOTE = "more than 64 logical CPUs (several Windows processor groups): no core pinning (masks reach group 0 only)"
+
+
 def win_cores():
-    """[(efficiency_class, [logical CPUs])] on Windows, [] elsewhere or on failure (Claw finding 5: Windows had no core pinning)."""
+    """[(efficiency_class, [logical CPUs])] on Windows, [] elsewhere or on failure (Claw finding 5: Windows had no core pinning).
+    [] too with more than 64 logical CPUs (several processor groups): a mask reaches group 0 only, so pinning would leave the other groups idle."""
     if not WINDOWS:
         return []
     try:
@@ -227,7 +264,10 @@ def win_cores():
         buf = ctypes.create_string_buffer(n.value)
         if not k.GetLogicalProcessorInformationEx(0, buf, ctypes.byref(n)):
             return []
-        return parse_core_records(buf.raw[:n.value])
+        groups = set()
+        cores = parse_core_records(buf.raw[:n.value], groups)
+        win_cores.groups = len(groups)
+        return [] if len(groups) > 1 else cores
     except Exception:
         return []
 
@@ -297,6 +337,54 @@ def http(url, body=None, api_key=None, timeout=10):
         return e.code, e.read().decode(errors="replace")
     except Exception:
         return 0, ""
+
+
+KEY_FILE = os.path.join(CACHE_DIR, "api.key")
+
+
+def stored_key(create=False):
+    """The stable per-user API key kept in the cache folder (mode 0600 on Linux; on Windows the user profile is private); "" when there is none yet.
+    create=True makes one on first use (secrets.token_urlsafe(24)). Agent mode and --project servers use it, so a web page in the browser cannot
+    use or read the server's slots and conversations (RESULTS/SECURITY: DECISION_LLAMA_SERVER_KEY, option C)."""
+    try:
+        k = open(KEY_FILE).read().strip()
+        if k:
+            return k
+    except OSError:
+        pass
+    if not create:
+        return ""
+    import secrets
+    k = secrets.token_urlsafe(24)
+    os.makedirs(os.path.dirname(KEY_FILE), mode=0o700, exist_ok=True)
+    try:
+        fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:                      # another launcher made it in the meantime: use that one
+        return open(KEY_FILE).read().strip() or k
+    with os.fdopen(fd, "w") as f:
+        f.write(k + "\n")
+    return k
+
+
+def key_for(url, given=None):
+    """The key to send to the server at `url`: the given one, else (only when the server answers 401/403 without a key) the stored one."""
+    if given:
+        return given
+    st = http(url.rstrip("/") + "/v1/models", timeout=3)[0]
+    return stored_key() if st in (401, 403) else None
+
+
+def take_api_key_from_args(extra):
+    """Remove a user-given `--api-key KEY` from llama-server's arguments (it would show in the process list) and return KEY, else None."""
+    for i, x in enumerate(extra):
+        if x == "--api-key" and i + 1 < len(extra):
+            k = extra[i + 1]
+            del extra[i:i + 2]
+            return k
+        if x.startswith("--api-key="):
+            del extra[i]
+            return x.split("=", 1)[1]
+    return None
 
 
 def healthy(port, api_key=None):
@@ -382,7 +470,9 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
             return []
     except Exception:
         return []
-    say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver here)"
+    ver = win_driver_version(gpu[1])
+    say("moe-cache: AMD GPU on Windows + this model: context checkpoints off (--ctx-checkpoints 0; they crash AMD's Vulkan driver"
+        + (f" {ver}" if ver else "") + " here)"
         + ("; agents: the model cannot go back to an earlier point of a conversation, so edited history is processed again (Qwen3.6 keeps checkpoints)"
            if agent else ""))
     return ["--ctx-checkpoints", "0"]
@@ -497,15 +587,15 @@ def exit_reason(rc, ready):
 SERVER_HELP = """\
 --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
            also a q8_0 KV cache (half the KV memory; KL 0.0045 on its own, RESULTS 53).
+           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31).
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
-           Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB
-           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31)
+           Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
 --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 --project NAME  its own profile plus a saved prompt state (KV cache) restored at start; save it with: moe_cache.py project save NAME
---gpu-cache off|auto|MIB  llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
+--gpu-cache off|auto|MIB  (Linux, preload method only) llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
            Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
@@ -581,6 +671,18 @@ def server(argv):
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
+    if (ncmoe is None and WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])):
+        # desktop PC 2026-10-26 (RX 9070 XT, AMD's Windows Vulkan driver): VRAM in use costs about as much system RAM (llama-server with 12 GiB of
+        # expert layers on the GPU took 14.9 GB of RAM), so for a model bigger than RAM, GPU expert layers starve the page cache / expert cache:
+        # Flash-Next decode stock 11-14 -> 14-16 tok/s, plugin 3 -> 12-13.5 tok/s with all experts on the CPU (the GPU keeps attention and long prompts)
+        try:
+            mem = mem_for_server(a.ram)
+            if mem and sum(os.path.getsize(f) for f in model_parts(model)) > mem:
+                ncmoe = ncmoe_user = "999"      # also keeps the tuner (below) from moving expert layers back to the GPU
+                say("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (on this driver VRAM also uses system RAM; "
+                    "--n-cpu-moe N to override)")
+        except Exception:
+            pass
     if ncmoe is None:
         p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
         if a.ram: p += ["--ram-gib", a.ram]
@@ -593,8 +695,19 @@ def server(argv):
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
             why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
             say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
-    if a.api_key and "--api-key" not in extra:
-        extra += ["--api-key", a.api_key]
+    # API key (DECISION_LLAMA_SERVER_KEY, option C): a key given on our command line or after `--` goes to llama-server through the environment
+    # (LLAMA_API_KEY), not its argument list; agent mode and --project always get the stable per-user key. Plain chat servers get none, but a CORS
+    # allow-list so a normal web page cannot read their answers.
+    api_key = take_api_key_from_args(extra) or a.api_key
+    if not api_key and (a.agent or a.project):
+        api_key = stored_key(create=True)
+        say(f"moe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in {KEY_FILE} "
+            "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
+    key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
+    if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
+        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
+        # Passed as the environment variable so a llama-server without the flag just ignores it
+        key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias = None
     slotdir = None
@@ -615,7 +728,7 @@ def server(argv):
             else:
                 slotdir = arg_after(extra, "--slot-save-path")
     host = arg_after(extra, "--host") or ""
-    if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and "--api-key" not in extra:
+    if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
             "Add --api-key KEY after the -- or bind to 127.0.0.1.", err=True)
     pname = a.profile or ""
@@ -690,6 +803,8 @@ def server(argv):
             say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     pinargs = []
     hm = hybrid_masks(win_cores()) if WINDOWS else None
+    if getattr(win_cores, "groups", 1) > 1 and not a.no_pin:
+        say("moe-cache: " + WIN_GROUPS_NOTE)
     if hm and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
         pmask, ecpus = hm
         if not a.no_pin:
@@ -791,12 +906,12 @@ def server(argv):
     if a.dry_run:
         if win_limit:
             say(f"moe-cache: (would set a Windows job memory limit of {win_limit / 1e9:.1f} GB on llama-server)")
+        shown = [(k, "(hidden)" if k == "LLAMA_API_KEY" else v) for k, v in env + key_env]     # never print the key
         if WINDOWS:   # PowerShell form, so it can be pasted there
-            say("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+            say("".join(f'$env:{k}="{v}"; ' for k, v in shown) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
         else:
-            say(("env " + " ".join(f"{k}={v}" for k, v in env) + " " if env else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
+            say(("env " + " ".join(f"{k}={v}" for k, v in shown) + " " if shown else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
         return 0
-    api_key = arg_after(extra, "--api-key")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
@@ -817,7 +932,7 @@ def server(argv):
         def snippets():
             for _ in range(1800):
                 if healthy(port, api_key):
-                    say(agent_snippets(port, alias, ctx, api_key, host), err=True)
+                    say(agent_snippets(port, alias, ctx, api_key, host, hide_key=True), err=True)
                     return
                 time.sleep(1)
         threading.Thread(target=snippets, daemon=True).start()
@@ -830,7 +945,7 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
-    return run_child(cmd, dict(os.environ, **dict(env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
+    return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
 
 
 def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2048, keep=2):
@@ -920,6 +1035,7 @@ def connect(argv):
     ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
     ap.add_argument("--config", help="opencode.json to merge into (default: ~/.config/opencode/opencode.json)")
     a = ap.parse_args(argv)
+    a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
     if not name:
         raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent)")
@@ -967,12 +1083,14 @@ def connect(argv):
     return 0
 
 
-def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None):
+def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None, hide_key=False):
     """What an agent needs to use this server: the OpenAI-compatible base URL, the model name and the context, as config blocks for Hermes Agent
     (~/.hermes/config.yaml) and OpenCode (opencode.json)."""
     if base is None:
         h = "127.0.0.1" if host in ("", "0.0.0.0", "::") else host
         base = f"http://{h}:{port}/v1"
+    if api_key and hide_key:      # the launcher's own printout goes to terminals and logs: point at the key instead of showing it
+        api_key = "<your API key: python3 bin/moe_cache.py key>"
     key = api_key or "none"
     out = min(32768, max(4096, ctx // 4))     # room left for the answer
     head = ["moe-cache: agent mode ready. OpenAI-compatible endpoint:",
@@ -1012,9 +1130,9 @@ def learn(argv):
         os.umask(0o077)
     if not os.path.isfile(a.model):
         raise SystemExit("usage: moe-cache-learn MODEL.gguf [options]")
-    lib = os.environ.get("MOE_CACHE_LIB") or default_lib()
+    lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(a.llama_server)
     if not os.path.isfile(lib):
-        raise SystemExit("plugin not built: run ./build.sh first")
+        raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     if a.name and not NAME_RE.match(a.name):
         raise SystemExit("--name may only contain letters, digits, _ and -")
     out = a.out or os.path.join(CACHE_DIR, os.path.basename(a.model) + "." + (a.name + "." if a.name else "") + "usage")
@@ -1081,7 +1199,7 @@ def project(argv):
         return 0
     if not a.name or not NAME_RE.match(a.name):
         raise SystemExit("usage: moe-cache-project save|restore NAME [--url URL] [--api-key KEY]")
-    st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, a.api_key, timeout=600)
+    st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, key_for(a.url, a.api_key), timeout=600)
     say(body.strip())
     if st != 200:
         raise SystemExit(f"{a.cmd} failed: HTTP {st}" if st else f"{a.cmd} failed: no server at {a.url}")
@@ -1117,21 +1235,33 @@ def check(argv):
         ok("cpu pinning", f"hybrid Intel CPU (performance cores {open('/sys/devices/cpu_core/cpus').read().strip()}): threads are pinned to the performance cores automatically (about +15 %)")
     elif not WINDOWS:
         ok("cpu pinning", "not a hybrid Intel CPU: no pinning needed")
+    else:
+        try:
+            hm = hybrid_masks(win_cores())
+        except Exception:
+            hm = None
+        if hm:
+            ok("cpu pinning", "hybrid CPU: threads are pinned to the performance cores automatically")
+        elif getattr(win_cores, "groups", 1) > 1:
+            ok("cpu pinning", WIN_GROUPS_NOTE)
+        else:
+            ok("cpu pinning", "no hybrid cores: no pinning")
     lsp = shutil.which(a.llama_server)
     if not lsp:
         fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
     else:
         try:
             v = subprocess.run([lsp, "--version"], capture_output=True, text=True, timeout=30)
-            m = re.search(r"commit [0-9a-f]+", v.stdout + v.stderr)
+            vtxt = v.stdout + v.stderr
+            m = re.search(r"commit [0-9a-f]+", vtxt)
         except Exception:
-            m = None
+            m = None; vtxt = ""
         ver = m.group(0) if m else ""
         ok("llama-server", f"{lsp} ({ver or 'version unknown'})")
-        if re.search(r"7fe450e|23b0202", ver):
-            ok("ggml version", f"matches a tested commit ({ver})")
+        if re.search(r"7fe450e|23b0202", ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
+            ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
-            warn("ggml version", "tested with 7fe450e19 (API 2) and 23b0202a1 (API 3); other versions usually load but may not (the plugin warns at start)")
+            warn("ggml version", "tested with 7fe450e19 (API 2) and 23b0202a1 (API 3)" + (", and on Windows with b11669 (ggml 0.27.0, 620d2225c)" if WINDOWS else "") + "; other versions usually load but may not (the plugin warns at start)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):
                 ok("shared ggml", "libggml-base is a shared library")
@@ -1292,8 +1422,20 @@ def run_check(lsp, model, load, port=8097):
                 p.kill()
 
 
+def key_cmd(argv):
+    """moe_cache.py key: print the stable API key of agent / project servers (made on first use); the file is KEY_FILE."""
+    ap = argparse.ArgumentParser(prog="moe_cache.py key", description="print the API key that agent mode and --project servers use")
+    ap.add_argument("--path", action="store_true", help="print where the key is stored instead of the key")
+    a = ap.parse_args(argv)
+    print(KEY_FILE if a.path else stored_key(create=True))
+    return 0
+
+
 def main():
-    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect}
+    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd}
+    if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
+        from moe_cache_ui import ui
+        return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         say(__doc__.strip())
         return 0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 1
