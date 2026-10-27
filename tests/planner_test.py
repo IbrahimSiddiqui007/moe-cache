@@ -232,5 +232,20 @@ check(_t == _oj and len(_w) == 1 and '"model"' in _w[0], "opencode target: .json
 if _env is not None:
     os.environ["OPENCODE_CONFIG"] = _env
 
+# the launcher's "plugin disabled itself" warning: only the plugin's lines that say it is not caching, not its "Windows refused ..." warnings (F5, PC)
+check(L.plugin_off_line(b"moe-cache: no experts found - plugin disabled, the model loads the normal way"), "plugin off: setup failure line")
+check(L.plugin_off_line(b"moe-cache: this plugin was built for ggml backend API 3 but the server uses ggml 0.24.0 (API 2): not loaded, the model loads the normal way. x"),
+      "plugin off: backend API mismatch line")
+check(not L.plugin_off_line(b"moe-cache: MOE_CACHE_WIN_VIEW: Windows refused a working-set minimum of 21.97 GiB (error 1314): resident experts may be trimmed"),
+      "plugin off: a refused working-set minimum is a warning, the plugin keeps running")
+check(not L.plugin_off_line(b"moe-cache: warning: Windows refused memory for an expert (error 1455): the cache gives experts back and shrinks"),
+      "plugin off: a refused expert commit is a warning")
+# drive probe (N8): unbuffered random reads of the model file; None for a file too small to probe
+_small = os.path.join(_od, "small.bin"); open(_small, "wb").write(b"\0" * 4096)
+check(L.drive_read_speed(_small, seconds=0.2) is None, "drive probe: a file under 64 MiB is not probed")
+if len(sys.argv) > 1 and os.path.getsize(sys.argv[1]) >= 64 << 20:
+    _g = L.drive_read_speed(sys.argv[1], seconds=0.5)
+    check(_g is None or _g > 0, f"drive probe on the model: {_g if _g is None else round(_g, 2)} GB/s (None = no unbuffered reads on this file system)")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

@@ -121,6 +121,80 @@ def model_parts(model):
     return [model]
 
 
+def plugin_off_line(line):
+    """True for the plugin's lines that say it is not caching (setup failed, MOE_CACHE_DISABLE, wrong backend API); its other "refused" lines
+    (a working-set minimum or memory Windows did not grant) are warnings of a plugin that keeps running."""
+    return b"plugin disabled" in line or b"not loaded, the model loads the normal way" in line
+
+SLOW_DRIVE_GBS = 1.0      # random 1 MiB reads. PC NVMe drives: 3.1 (C:) and 4.5 GB/s (D:); the plugin's own read rate followed the probe (0.74 vs 0.70
+                          # C:/D:) but 122B decode differed by 2 % at 98 % hits (RESULTS 61): only SATA / HDD / USB speeds are worth a warning
+
+
+def drive_read_speed(path, seconds=4.0, block=1 << 20, threads=4):
+    """Random reads of `block` bytes from `path` that bypass the file cache (FILE_FLAG_NO_BUFFERING / O_DIRECT), `threads` at a time for
+    `seconds` (idea N8: two same-size runs on the PC differed only by drive). -> GB/s, or None when unbuffered reads are not possible here."""
+    import random
+    size = os.path.getsize(path) // block * block
+    if size < 64 * block:
+        return None
+    stop = time.time() + seconds
+    done = [0] * threads
+    def opener():
+        if WINDOWS:
+            import ctypes
+            k = ctypes.windll.kernel32
+            k.CreateFileW.restype = ctypes.c_void_p
+            k.VirtualAlloc.restype = ctypes.c_void_p
+            h = k.CreateFileW(path, 0x80000000, 7, None, 3, 0x20000000, None)        # GENERIC_READ, share all, OPEN_EXISTING, NO_BUFFERING
+            if h in (None, ctypes.c_void_p(-1).value):
+                return None
+            buf = k.VirtualAlloc(None, block, 0x3000, 4)                              # page-aligned, as unbuffered reads need
+            got = ctypes.c_uint32()
+            def read(off):
+                if not k.SetFilePointerEx(ctypes.c_void_p(h), ctypes.c_int64(off), None, 0):
+                    return 0
+                return got.value if k.ReadFile(ctypes.c_void_p(h), ctypes.c_void_p(buf), block, ctypes.byref(got), None) else 0
+            def close():
+                k.CloseHandle(ctypes.c_void_p(h)); k.VirtualFree(ctypes.c_void_p(buf), 0, 0x8000)
+            return read, close
+        import mmap
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECT", 0))
+        except OSError:
+            return None
+        buf = mmap.mmap(-1, block)                                                       # page-aligned, as O_DIRECT needs
+        def read(off):
+            try:
+                return os.preadv(fd, [buf], off)
+            except OSError:
+                return 0
+        return read, lambda: (os.close(fd), buf.close())
+    def worker(i, rw):
+        read, close = rw
+        rnd = random.Random(i)
+        try:
+            while time.time() < stop:
+                n = read(rnd.randrange(size // block) * block)
+                if n <= 0:
+                    break
+                done[i] += n
+        finally:
+            close()
+    rws = [opener() for _ in range(threads)]
+    if not all(rws):
+        for rw in rws:
+            if rw:
+                rw[1]()
+        return None
+    t0 = time.time()
+    ts = [threading.Thread(target=worker, args=(i, rw)) for i, rw in enumerate(rws)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    return sum(done) / (time.time() - t0) / 1e9 if sum(done) else None
+
+
 def win_memory():
     """(total, available) bytes on Windows (GlobalMemoryStatusEx); (None, None) elsewhere or on failure."""
     if not WINDOWS:
@@ -700,7 +774,7 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
             if b"moe-cache:" in line:
                 seen["plugin"] = True
                 seen["last"] = line.decode(errors="replace").strip()
-                if b"plugin disabled" in line or b"refus" in line:
+                if plugin_off_line(line):
                     seen["disabled"] = line.decode(errors="replace").strip()
     pump_t = threading.Thread(target=pump, daemon=True)
     pump_t.start()
@@ -1606,6 +1680,14 @@ def check(argv):
                     ok("direct reads", "O_DIRECT works on this file system")
                 except OSError:
                     fail("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): put the model on a normal disk")
+            gbs = drive_read_speed(max(model_parts(a.model), key=os.path.getsize))
+            if gbs is None:
+                warn("drive speed", "not measured: reads that bypass the file cache are not possible on this file")
+            elif gbs < SLOW_DRIVE_GBS:
+                warn("drive speed", f"{gbs:.1f} GB/s (random 1 MiB reads, 4 s): a slow drive (SATA, hard disk or USB?); experts that miss the cache "
+                     f"are read from it, so start-up, long prompts and models far bigger than RAM get slower. An NVMe drive reads 3 GB/s or more")
+            else:
+                ok("drive speed", f"{gbs:.1f} GB/s (random 1 MiB reads, 4 s)")
             lim = float(a.ram) if a.ram else (cg or memav)
             if lim and size > lim:
                 ok("fit", f"model ({size:.1f} GB) is larger than the memory limit ({lim:.1f} GB): this is where moe-cache helps most")
