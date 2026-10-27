@@ -29,6 +29,27 @@ int main(int argc, char ** argv) {
     q[60 * 1024] = 5; q[64 * 1024 - 1] = 6;
     CHECK(q[60 * 1024] == 5 && q[64 * 1024 - 1] == 6);
     plat::mem_release(q, 64 * 1024);
+    { char * s = (char *) plat::mem_reserve(4096); CHECK(s != nullptr && plat::mem_commit(s, 4096)); plat::mem_release(s, 4096); }   // a plain commit reports success
+#ifdef _WIN32
+    // ...but never into the reservation right after it (another buffer: its evicted experts would read as zeros instead of faulting)
+    {
+        char * r = (char *) VirtualAlloc(nullptr, 128 * 1024, MEM_RESERVE, PAGE_NOACCESS);
+        VirtualFree(r, 0, MEM_RELEASE);
+        char * r1 = (char *) VirtualAlloc(r, 64 * 1024, MEM_RESERVE, PAGE_READWRITE);
+        char * r2 = (char *) VirtualAlloc(r + 64 * 1024, 64 * 1024, MEM_RESERVE, PAGE_READWRITE);
+        if (r1 == r && r2 == r + 64 * 1024) {
+            CHECK(plat::mem_commit(r1 + 60 * 1024, 8192));
+            MEMORY_BASIC_INFORMATION mi;
+            CHECK(VirtualQuery(r2, &mi, sizeof(mi)) == sizeof(mi) && mi.State == MEM_RESERVE);
+            r1[64 * 1024 - 1] = 1;
+            CHECK(r1[64 * 1024 - 1] == 1);
+        } else {
+            printf("note: could not place two adjacent reservations, neighbour check skipped\n");
+        }
+        if (r1) VirtualFree(r1, 0, MEM_RELEASE);
+        if (r2) VirtualFree(r2, 0, MEM_RELEASE);
+    }
+#endif
 
     // aligned buffer + unbuffered read at an offset
     std::string path = "moe_cache_platform_test.bin";

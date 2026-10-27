@@ -167,7 +167,15 @@ inline file_t file_open(const char * path, bool direct, bool random = false) {
 // read len bytes at offset off; returns the number of bytes read, 0 at end of file, -1 on error (retry is up to the caller)
 inline ptrdiff_t file_pread(const file_t & f, void * buf, size_t len, uint64_t off) {
 #ifdef _WIN32
-    static thread_local HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    static thread_local HANDLE ev = nullptr;
+    if (!ev) {
+        // without an event GetOverlappedResult would wait on the file handle, which all readers share: another thread's completion could end
+        // this wait while the read is still running, and the read would later write into a buffer and an OVERLAPPED that are gone
+        ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ev) {
+            return -1;          // nothing issued; the caller retries, then falls back to a buffered read, then stops with the error
+        }
+    }
     OVERLAPPED ov;
     memset(&ov, 0, sizeof(ov));
     ov.Offset = (DWORD) (off & 0xffffffffu);
@@ -226,28 +234,48 @@ inline bool mem_guard() {
     return on;
 }
 // p and size are rounded outwards to whole pages; committing an already committed page keeps its content
-inline void mem_commit(void * p, size_t size) {
+// Returns false when part of the range inside its reservation could not be committed (Windows: the commit limit, RAM + page file).
+inline bool mem_commit(void * p, size_t size) {
 #ifdef _WIN32
-    const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
-    if (!VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
-        // one call fails as a whole when the range runs past the end of its reservation (e.g. the extra page after the last expert of a buffer):
-        // then nothing was committed and the next write faulted (Windows CI, RESULTS 50). Commit page by page, as far as the reservation goes.
+    const uintptr_t a = (uintptr_t) p / 4096 * 4096;
+    uintptr_t b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
+    if (VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
+        return true;
+    }
+    // one call fails as a whole when the range runs past the end of its reservation (e.g. the extra page after the last expert of a buffer,
+    // Windows CI, RESULTS 50): commit only up to the end of the reservation that holds p. Page by page without that limit could commit pages
+    // of a neighbouring reservation (another buffer, its evicted experts) and turn a fault there into zeros
+    MEMORY_BASIC_INFORMATION mi;
+    if (VirtualQuery((void *) a, &mi, sizeof(mi)) == sizeof(mi) && mi.AllocationBase) {
+        uintptr_t end = a;
+        for (uintptr_t q = a; q < b;) {
+            MEMORY_BASIC_INFORMATION r;
+            if (VirtualQuery((void *) q, &r, sizeof(r)) != sizeof(r) || r.AllocationBase != mi.AllocationBase) {
+                break;
+            }
+            q = (uintptr_t) r.BaseAddress + r.RegionSize;
+            end = q;
+        }
+        b = std::min(b, end);
+    }
+    if (b > a && !VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
         static bool told = false;
+        const DWORD e = GetLastError();
         if (!told) {
             told = true;
-            fprintf(stderr, "moe-cache: note: commit of %zu bytes failed (Windows error %lu), committing page by page\n", (size_t) (b - a), (unsigned long) GetLastError());
+            fprintf(stderr, "moe-cache: error: Windows could not commit %.1f MiB (error %lu%s): the next write there crashes. A larger page file, "
+                    "a smaller cache (MOE_CACHE_SIZE_GIB) or fewer other programs avoids this\n", (b - a) / 1048576.0, (unsigned long) e,
+                    e == ERROR_COMMITMENT_LIMIT ? ", the commit limit: RAM + page file are used up" : "");
         }
-        for (uintptr_t q = a; q < b; q += 4096) {
-            if (!VirtualAlloc((void *) q, 4096, MEM_COMMIT, PAGE_READWRITE)) {
-                break;      // past the reservation: the rest is not ours
-            }
-        }
+        return false;
     }
+    return true;
 #else
     if (mem_guard()) {
         const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
         mprotect((void *) a, b - a, PROT_READ | PROT_WRITE);
     }
+    return true;
 #endif
 }
 // p and size must be page aligned
