@@ -110,10 +110,14 @@ def shards(path):
 
 
 def model_layout(path):
-    """-> dict(n_layers, expert_bytes_per_layer, other_bytes, total_bytes)"""
-    layers, other, table = {}, 0, 0
+    """-> dict(n_layers, expert_bytes_per_layer, other_bytes, total_bytes, mtp_blocks). n_layers counts the MTP head's block (blk.N.nextn.*) when it
+    has experts (Qwen3.6: 41 = 40 + 1); mtp_blocks says how many of the highest blocks are that head."""
+    layers, other, table, mtp = {}, 0, 0, set()
     for p in shards(path):
         for name, size in read_tensors(p):
+            mm = re.match(r"blk\.(\d+)\.nextn\.", name)
+            if mm:
+                mtp.add(int(mm.group(1)))
             m = re.match(r"blk\.(\d+)\..*_exps\.(weight|scale)", name)
             if m:
                 layers[int(m.group(1))] = layers.get(int(m.group(1)), 0) + size
@@ -123,7 +127,8 @@ def model_layout(path):
                 other += size
     n = (max(layers) + 1) if layers else 0
     per = sum(layers.values()) / len(layers) if layers else 0
-    return {"n_layers": n, "expert_bytes_per_layer": per, "other_bytes": other, "table_bytes": table, "total_bytes": other + table + sum(layers.values())}
+    return {"n_layers": n, "expert_bytes_per_layer": per, "other_bytes": other, "table_bytes": table, "total_bytes": other + table + sum(layers.values()),
+            "mtp_blocks": len(mtp & set(layers))}
 
 
 def free_vram_bytes():
@@ -234,7 +239,11 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         cache_mib = 0
         gpu_layers = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0
         n_cpu_moe = lay["n_layers"] - gpu_layers
-        why.append(f"{gpu_layers} layers of experts stay on the GPU ({int(block // 1048576)} MiB kept free for the long-prompt GPU block"
+        # --n-cpu-moe counts from layer 0, so the MTP head's block (the last one) is the first to go to the GPU: say the model's own layers apart
+        mtpb = min(lay.get("mtp_blocks", 0), gpu_layers)
+        where = (f"{gpu_layers - mtpb} of {lay['n_layers'] - lay['mtp_blocks']} layers of experts, plus the MTP head's block (used only with --mtp), stay on the GPU"
+                 if mtpb else f"{gpu_layers} layers of experts stay on the GPU")
+        why.append(f"{where} ({int(block // 1048576)} MiB kept free for the long-prompt GPU block"
                    + (")" if not want_cache else "; a cache would be under 1.5 GiB or under 4 % of the experts)"))
     why.append(f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576), "compute_mib": compute_buffer_mib(ctx, ub), "why": why}

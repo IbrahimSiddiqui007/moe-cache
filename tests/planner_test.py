@@ -169,6 +169,12 @@ for name, declared, tensors, want in [("head", 1, ["blk.0.attn_q.weight", "blk.1
     _p = os.path.join(_md, name + ".gguf"); _gguf(_p, declared, tensors)
     got = gguf_plan.mtp_layers(_p)
     check(got == want, f"mtp_layers: '{name}' file -> {got} (want {want})")
+# the tuner's line names the model's own layers apart from the MTP head's block (it has experts too: Qwen3.6 41 = 40 + 1)
+_p = os.path.join(_md, "mtpexp.gguf"); _gguf(_p, 1, ["blk.0.ffn_up_exps.weight", "blk.1.ffn_up_exps.weight", "blk.1.nextn.eh_proj.weight"])
+_l = gguf_plan.model_layout(_p)
+_w = [w for w in gguf_plan.tune(_p, 4096, free=8 * 2**30, want_cache=False)["why"] if "stay on the GPU" in w]
+check(_l["n_layers"] == 2 and _l["mtp_blocks"] == 1 and _w and _w[0].startswith("1 of 1 layers of experts, plus the MTP head's block"),
+      f"tuner wording with an MTP block: {_l.get('mtp_blocks')} block, {_w}")
 _h, _d = gguf_plan.mtp_layers(model)
 check(_h == 0 or _d >= 1, f"mtp_layers on the test model: {_h} head layer(s), header declares {_d} (a file with nextn tensors declares them)")
 D = L.mtp_decide
