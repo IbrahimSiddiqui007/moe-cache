@@ -18,6 +18,11 @@ static bool server_repack_disabled() {
     return false;
 }
 
+struct state_t;
+#ifdef _WIN32
+void install_crash_report(state_t * s);
+#endif
+
 struct state_t {
     bool   cache_on = false;
     bool   stats = false;
@@ -74,6 +79,9 @@ struct state_t {
     bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
     size_t max_nb2_all = 0;                             // largest expert slice, for the helper threads' bounce buffers
     std::vector<std::thread> pf_threads;
+#ifdef _WIN32
+    std::thread stats_th, save_th;                       // event threads (MOE_CACHE_STATS_SIGNAL, profile save on request): joined in the destructor
+#endif
     std::mutex pf_mu;
     std::condition_variable pf_cv;
     std::deque<std::function<void()>> pf_q;
@@ -89,7 +97,14 @@ struct state_t {
     std::atomic<uint64_t> pf_issued{0}, pf_used{0}, pf_wasted{0}, pf_late{0}, pf_pred_total{0}, pf_pred_hit{0}, pf_skipped{0};
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
+#ifdef _WIN32
+    bool   win_buffered = false;                // MOE_CACHE_WIN_BUFFERED=1: model files opened without FILE_FLAG_NO_BUFFERING (see the constructor)
+    bool   win_random = false;                  // MOE_CACHE_WIN_BUFFERED=2: and with FILE_FLAG_RANDOM_ACCESS
+#else
+    static constexpr bool win_buffered = false, win_random = false;
+#endif
     size_t budget = 0;
+    bool   commit_warned = false;      // Windows: the commit-limit warning was printed (tune())
     size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
     bool shrink_warned = false;
     bool   auto_mode = false;          // MOE_CACHE_SIZE_GIB=auto: size the cache from the real memory limit
@@ -101,6 +116,40 @@ struct state_t {
     uint64_t tune_shrinks = 0, tune_grows = 0;
     size_t resident_bytes = 0;
     uint64_t epoch = 0;
+    // experts with epoch >= protect_epoch are used by the graph being prepared/computed: no eviction may take them. All groups of a graph are
+    // prepared before any is computed, so protecting only the current group (epoch == epoch) let a later group (or tune() shrinking the budget)
+    // evict an earlier group's experts before llama.cpp read them: decommitted memory on Windows (access violation, PC 2026-10-27), zeros on Linux
+    uint64_t protect_epoch = UINT64_MAX;
+    uint64_t cpu_check_reloads = 0;                     // experts cpu_path_check() had to load again (should stay 0)
+    bool in_use(const node_t & n) const { return n.loading || n.epoch == epoch || n.epoch >= protect_epoch; }
+#ifdef _WIN32
+    // once, at the first graph (llama.cpp has uploaded every tensor) and before the warm start fills the cache: release the model-file pages
+    // llama.cpp's loader left in the working set (I37), then size the auto budget again from what is available now
+    void release_model_pages() {
+        size_t views = 0;
+        const size_t freed = plat::trim_file_pages(shard_paths, &views);
+        if (views) {
+            fprintf(stderr, "moe-cache: released %.2f GiB of model-file pages from the working set (Windows, %zu mapped views)\n", freed / 1073741824.0, views);
+        }
+        if (auto_mode && !getenv("MOE_CACHE_RAM_GIB")) {
+            const size_t lim = read_mem_limit();
+            std::lock_guard<std::mutex> lk(mu);
+            if (lim > limit_bytes + ((size_t) 256 << 20) || lim + ((size_t) 256 << 20) < limit_bytes) {
+                limit_bytes = lim;
+                const size_t guess = (size_t) 7 << 29;   // as at start: 3.5 GiB for everything that is not expert cache, until measured
+                budget = limit_bytes > margin + guess + ((size_t) 1 << 30) ? limit_bytes - margin - guess : (size_t) 1 << 30;
+                if (max_budget) {
+                    budget = std::min(budget, max_budget);
+                }
+                fprintf(stderr, "moe-cache: memory limit now %.2f GiB, start budget %.2f GiB\n", limit_bytes / 1073741824.0, budget / 1073741824.0);
+            }
+        }
+    }
+#endif
+    void begin_graph() {
+        std::lock_guard<std::mutex> lk(mu);
+        protect_epoch = epoch + 1;
+    }
     std::unordered_map<std::string, std::pair<size_t, size_t>> file_tensors;
     std::vector<std::unique_ptr<tinfo_t>> tensors;
     std::unordered_map<const ggml_tensor *, int> by_tensor;
@@ -200,6 +249,23 @@ struct state_t {
             fail("MOE_CACHE_GGUF is not set");
             return;
         }
+#ifdef _WIN32
+        // MOE_CACHE_WIN_BUFFERED=1 (opt-in, Windows only; idea I38): read the experts through the Windows file cache instead of FILE_FLAG_NO_BUFFERING.
+        // Unbuffered reads never warm the file cache, so every start reads the SSD, while stock llama-server (mmap) starts warm from it (Flash-Next on
+        // a 32 GB PC: 3-5 tok/s first session vs 13-16 warm stock). Same aligned offsets and lengths, so the same bytes. An expert then sits twice in
+        // RAM (cache + file cache), but the file-cache copy moves to the standby list, which Windows counts as available and gives back on demand:
+        // the budget (available + this process's private memory) does not shrink for it.
+        // =2: also FILE_FLAG_RANDOM_ACCESS (no read-ahead around each expert; A/B switch)
+        if (const char * v = getenv("MOE_CACHE_WIN_BUFFERED")) {
+            win_buffered = strcmp(v, "0") != 0;
+            win_random = strcmp(v, "2") == 0;
+        }
+        if (win_buffered) {
+            plat::count_file_cache() = true;
+            fprintf(stderr, "moe-cache: MOE_CACHE_WIN_BUFFERED: experts are read through the Windows file cache%s; its %.2f GiB in memory count as available\n",
+                    win_random ? " (random access, no read-ahead)" : "", plat::file_cache_ws() / 1073741824.0);
+        }
+#endif
         // split models: name-00001-of-0000N.gguf -> open all parts
         std::vector<std::string> shards = { file };
         {
@@ -236,9 +302,9 @@ struct state_t {
                 file_shard[nm] = (int) si;
             }
             gguf_free(g);
-            const plat::file_t f = plat::file_open(shards[si].c_str(), true);
+            const plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
             if (!f.ok()) {
-                fail("cannot open " + shards[si] + " with O_DIRECT");
+                fail("cannot open " + shards[si] + (win_buffered ? std::string() : std::string(" with O_DIRECT")));
                 return;
             }
             fds.push_back(f);
@@ -353,7 +419,11 @@ struct state_t {
                 size_t total = 0;
                 for (const auto & sp : shard_paths) {
                     std::error_code ec;
+#ifdef _WIN32
+                    total += (size_t) std::filesystem::file_size(std::filesystem::path(plat::widen(sp.c_str())), ec);   // a std::string path is ANSI there
+#else
                     total += (size_t) std::filesystem::file_size(sp, ec);
+#endif
                 }
                 direct_ok = total > limit_bytes * 0.85;
             }
@@ -493,7 +563,7 @@ struct state_t {
             snprintf(name, sizeof(name), "Local\\moe-cache-stats-%lu", plat::process_id());
             g_stats_event = CreateEventA(nullptr, FALSE, FALSE, name);
             if (g_stats_event) {
-                std::thread([this] { while (WaitForSingleObject(g_stats_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) { print_snapshot(); } }).detach();
+                stats_th = std::thread([this] { while (WaitForSingleObject(g_stats_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) { print_snapshot(); } });
             }
         }
         // Windows stops a server by killing it, so the profile save in the destructor never runs: the launcher sets this event first
@@ -503,13 +573,17 @@ struct state_t {
             snprintf(name, sizeof(name), "Local\\moe-cache-save-%lu", plat::process_id());
             g_save_event = CreateEventA(nullptr, FALSE, FALSE, name);
             if (g_save_event) {
-                std::thread([this] {
+                save_th = std::thread([this] {
                     while (WaitForSingleObject(g_save_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) {
-                        save_profile();
-                        fprintf(stderr, "moe-cache: usage profile saved (on request)\n");
+                        if (save_profile()) {
+                            fprintf(stderr, "moe-cache: usage profile saved (on request)\n");
+                        }
                     }
-                }).detach();
+                });
             }
+        }
+        if (cache_on) {
+            install_crash_report(this);
         }
 #endif
     }
@@ -524,5 +598,123 @@ state_t & S() {
     static state_t s;
     return s;
 }
+
+#ifdef _WIN32
+// Windows crash report: on an access violation, one stderr line with the faulting code (module+offset) and data address and, when the address is
+// inside an expert tensor, which expert and its cache state. The Windows event log gives only the module offset (PC 2026-10-27: 0xC0000005 in
+// ggml-cpu-zen4.dll at a prompt of 11-16 tokens), which cannot tell an evicted expert from anything else. A first-chance handler reports faults in
+// expert memory (before anyone else sees them), the unhandled-exception filter any crash; both pass the exception on unchanged.
+state_t * g_crash_state = nullptr;
+std::atomic<int> g_crash_said{0};
+LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter = nullptr;
+
+bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
+    const EXCEPTION_RECORD * er = ep ? ep->ExceptionRecord : nullptr;
+    state_t * s = g_crash_state;
+    if (!er || !s || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) {
+        return false;
+    }
+    const uintptr_t addr = (uintptr_t) er->ExceptionInformation[1];
+    const tinfo_t * hit = nullptr;
+    for (const auto & t : s->tensors) {
+        if (t && addr >= (uintptr_t) t->data && addr < (uintptr_t) t->data + t->nb2 * (size_t) t->n_expert + PAGE) {
+            hit = t.get();
+            break;
+        }
+    }
+    if ((experts_only && !hit) || g_crash_said.exchange(1) != 0) {
+        return false;
+    }
+    const uintptr_t pc = (uintptr_t) er->ExceptionAddress;
+    HMODULE mod = nullptr;
+    char mname[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) pc, &mod)) {
+        GetModuleFileNameA(mod, mname, MAX_PATH);
+    }
+    const char * base = std::max(strrchr(mname, '\\'), strrchr(mname, '/'));
+    base = base ? base + 1 : mname;
+    const ULONG_PTR kind = er->ExceptionInformation[0];
+    char buf[4096];
+    int n = snprintf(buf, sizeof(buf), "moe-cache: crash: access violation at %s+0x%llx, %s address 0x%llx", base,
+                     (unsigned long long) (pc - (uintptr_t) mod), kind == 0 ? "reading" : kind == 1 ? "writing" : "executing", (unsigned long long) addr);
+    if (hit) {
+        const size_t rel = addr - (uintptr_t) hit->data;
+        const int64_t e = std::min<int64_t>((int64_t) (rel / hit->nb2), hit->n_expert - 1);
+        const node_t & nd = s->nodes[(size_t) (hit->node0 + e)];
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
+                      "cache %.2f of %.2f GiB, %llu evictions", hit->name.c_str(), (long long) e, rel - (size_t) e * hit->nb2, hit->nb2, (int) nd.resident,
+                      (int) nd.loading, (int) nd.mapped, (unsigned long long) nd.epoch, (unsigned long long) s->epoch,
+                      (unsigned long long) (s->protect_epoch == UINT64_MAX ? 0 : s->protect_epoch), s->resident_bytes / 1073741824.0,
+                      s->budget / 1073741824.0, (unsigned long long) s->evictions);
+    } else {
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " (not in the expert cache)");
+    }
+    // was the plugin handing a graph to the CPU backend? If so, its nodes without data (a NULL base + offset write points there)
+    if (ggml_cgraph * g = g_cpu_graph.load()) {
+        const int nn = ggml_graph_n_nodes(g);
+        int nulls = 0;
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
+        for (int i = 0; i < nn && n < (int) sizeof(buf) - 200; i++) {
+            const ggml_tensor * t = ggml_graph_node(g, i);
+            const bool null_src = (t->src[0] && !t->src[0]->data) || (t->src[1] && !t->src[1]->data);
+            if (t->op != GGML_OP_NONE && (!t->data || null_src) && nulls++ < 8) {
+                n += snprintf(buf + n, sizeof(buf) - (size_t) n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
+                              t->data, t->src[0] ? t->src[0]->data : nullptr, t->src[1] ? t->src[1]->data : nullptr,
+                              (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2]);
+            }
+        }
+        if (!nulls) {
+            n += snprintf(buf + n, sizeof(buf) - (size_t) n, "; no node or source without data");
+        }
+    } else {
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
+    }
+    // stack of the faulting thread, module+offset per frame (x64 unwind tables)
+    {
+        CONTEXT ctx = *ep->ContextRecord;
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: stack");
+        for (int f = 0; f < 20 && ctx.Rip && n < (int) sizeof(buf) - 120; f++) {
+            HMODULE fm = nullptr;
+            char fname[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) ctx.Rip, &fm)) {
+                GetModuleFileNameA(fm, fname, MAX_PATH);
+            }
+            const char * fb = std::max(strrchr(fname, '\\'), strrchr(fname, '/'));
+            n += snprintf(buf + n, sizeof(buf) - (size_t) n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
+            DWORD64 image = 0;
+            PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &image, nullptr);
+            if (rf) {
+                void * hd = nullptr;
+                DWORD64 est = 0;
+                RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, rf, &ctx, &hd, &est, nullptr);
+            } else {
+                if (IsBadReadPtr((const void *) (uintptr_t) ctx.Rsp, 8)) {
+                    break;
+                }
+                ctx.Rip = *(const DWORD64 *) (uintptr_t) ctx.Rsp;     // leaf function: the return address is on top of the stack
+                ctx.Rsp += 8;
+            }
+        }
+    }
+    n = std::min<int>(n, (int) sizeof(buf) - 2);
+    buf[n++] = '\n';
+    DWORD w = 0;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), buf, (DWORD) n, &w, nullptr);   // no stdio: the crashing thread may hold its lock
+    return true;
+}
+LONG WINAPI crash_veh(EXCEPTION_POINTERS * ep) {
+    crash_report(ep, true);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+LONG WINAPI crash_filter(EXCEPTION_POINTERS * ep) {
+    crash_report(ep, false);
+    return g_prev_filter ? g_prev_filter(ep) : EXCEPTION_CONTINUE_SEARCH;
+}
+void install_crash_report(state_t * s) {
+    g_crash_state = s;
+    AddVectoredExceptionHandler(0, crash_veh);
+    g_prev_filter = SetUnhandledExceptionFilter(crash_filter);
+}
+#endif
 
 }  // namespace

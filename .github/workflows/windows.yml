@@ -40,12 +40,14 @@ jobs:
           # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
           ! grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32" build/win/imports_dlls.txt
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
+          $MINGW_CXX -std=c++17 -O2 -Wall -Werror -Isrc tests/win_read_bench.cpp -o build/win/win_read_bench.exe -static
       - uses: actions/upload-artifact@v4
         with:
           name: win-dll
           path: |
             build/win/ggml-moe-cache.dll
             build/win/platform_test.exe
+            build/win/win_read_bench.exe
 
   windows:
     needs: dll

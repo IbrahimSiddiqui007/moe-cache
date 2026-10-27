@@ -498,14 +498,18 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
            if agent else ""))
     return ["--ctx-checkpoints", "0"]
 
-def win_request_save(pid, path, timeout=60.0):
+def win_request_save(pid, path, timeout=60.0, proc=None):
     """Windows: ask the plugin inside llama-server `pid` to save its usage profile now (named event Local\\moe-cache-save-<pid>; a server on
-    Windows is killed, so the save at exit never runs) and wait up to `timeout` s for `path` to change. True when it changed."""
+    Windows is killed, so the save at exit never runs) and wait up to `timeout` s for `path` to change (less if `proc` exits). True when it changed."""
     if not WINDOWS:
         return False
     try:
         import ctypes
-        k = ctypes.windll.kernel32
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32", use_last_error=True)     # own instance: the types set here do not touch ctypes.windll.kernel32
+        k.OpenEventW.restype, k.OpenEventW.argtypes = wintypes.HANDLE, [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+        k.SetEvent.restype, k.SetEvent.argtypes = wintypes.BOOL, [wintypes.HANDLE]
+        k.CloseHandle.restype, k.CloseHandle.argtypes = wintypes.BOOL, [wintypes.HANDLE]
         h = k.OpenEventW(0x0002, False, f"Local\\moe-cache-save-{pid}")     # EVENT_MODIFY_STATE
         if not h:
             return False
@@ -516,6 +520,8 @@ def win_request_save(pid, path, timeout=60.0):
         while time.time() - t < timeout:
             if path and os.path.isfile(path) and (before is None or os.path.getmtime(path) > before):
                 return True
+            if proc is not None and proc.poll() is not None:
+                break
             time.sleep(0.25)
     except Exception:
         pass
@@ -573,11 +579,18 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
         p.terminate()
     if not WINDOWS:
         signal.signal(signal.SIGTERM, stop)
+    saved = False
     while True:
         try:
             rc = p.wait()
             break
         except KeyboardInterrupt:      # the child got the same Ctrl-C; wait for it to finish
+            if WINDOWS and env.get("MOE_CACHE_PROFILE") and not saved and p.poll() is None:
+                saved = True           # Windows may end the server without its save at exit: ask for the save first (at most 30 s)
+                try:
+                    win_request_save(p.pid, env["MOE_CACHE_PROFILE"], timeout=30, proc=p)
+                except KeyboardInterrupt:   # a second Ctrl-C: stop waiting for the save
+                    pass
             continue
     quiet = (rc & 0xFFFFFFFF) in (0xC000013A, 1) if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:

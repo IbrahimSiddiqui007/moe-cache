@@ -91,9 +91,10 @@
         return idx;
     }
 
-    void save_profile() {
+    // true when the profile file was written
+    bool save_profile() {
         if (profile_path.empty() || session.empty()) {
-            return;
+            return false;
         }
         std::lock_guard<std::mutex> lk(mu);
         int nl = std::max<int>(learned.n_layers, (int) session.size());
@@ -125,7 +126,7 @@
         FILE * f = fopen_private(tmp.c_str());
         if (!f) {
             fprintf(stderr, "moe-cache: cannot write profile %s\n", tmp.c_str());
-            return;
+            return false;
         }
         const int32_t h[2] = { nl, ne };
         bool ok = fwrite("XUSE", 1, 4, f) == 4;
@@ -135,10 +136,10 @@
         ok = (fclose(f) == 0) && ok;
         if (!ok) {
             fprintf(stderr, "moe-cache: writing the profile failed (disk full?); the old profile %s is kept\n", profile_path.c_str());
-            std::remove(tmp.c_str());
-            return;
+            plat::remove_file(tmp.c_str());
+            return false;
         }
-        plat::replace_file(tmp.c_str(), profile_path.c_str());
+        return plat::replace_file(tmp.c_str(), profile_path.c_str());
     }
 
     // warm start: read the most used experts of the profile into place, most used last (so it is the most recently used)
@@ -241,9 +242,18 @@
         const size_t target = limit_bytes > margin ? limit_bytes - margin : limit_bytes / 2;
         // bytes of expert data that are really in memory (pending ones are marked but not read yet)
         const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
-        if (rss > target) {
+        // Windows: every loaded expert is committed memory; near the commit limit (RAM + page file) a commit fails and the next write crashes.
+        // Keep 1 GiB of commit free: shrink by what is missing (on Linux commit_available() is unlimited)
+        const size_t commit_free = plat::commit_available(), commit_keep = (size_t) 1 << 30;
+        const size_t commit_short = commit_free < commit_keep ? commit_keep - commit_free : 0;
+        if (commit_short && !commit_warned) {
+            commit_warned = true;
+            fprintf(stderr, "moe-cache: warning: the system is close to its commit limit (%.2f GiB left of RAM + page file): the cache shrinks to "
+                    "stay below it; a larger page file avoids this\n", commit_free / 1073741824.0);
+        }
+        if (rss > target || commit_short) {
             // over the target: the new budget is what is loaded now minus the excess, so eviction starts at once
-            const size_t over = rss - target + ((size_t) 64 << 20);
+            const size_t over = std::max(rss > target ? rss - target : 0, commit_short) + ((size_t) 64 << 20);
             size_t nb = have > over ? have - over : 0;
             nb = std::min(std::max(nb, min_budget), budget);
             budget_peak = std::max(budget_peak, budget);
@@ -262,7 +272,7 @@
             }
             while (resident_bytes > budget) {
                 int v = lru;
-                while (v >= 0 && (nodes[v].epoch == epoch || nodes[v].loading)) {
+                while (v >= 0 && in_use(nodes[v])) {
                     v = nodes[v].prev;
                 }
                 if (v < 0) {

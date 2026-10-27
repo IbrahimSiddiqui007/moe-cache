@@ -152,11 +152,12 @@ inline FILE * fopen_utf8(const char * path, const char * mode) {
 
 // ---- files ----
 // direct = bypass the OS page cache (O_DIRECT / FILE_FLAG_NO_BUFFERING). Offsets, lengths and buffers must then be 4096-aligned.
-inline file_t file_open(const char * path, bool direct) {
+// random = Windows, buffered: FILE_FLAG_RANDOM_ACCESS (no read-ahead around each read); ignored elsewhere
+inline file_t file_open(const char * path, bool direct, bool random = false) {
     file_t f;
 #ifdef _WIN32
     f.h = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                      FILE_FLAG_OVERLAPPED | (direct ? FILE_FLAG_NO_BUFFERING : 0), nullptr);
+                      FILE_FLAG_OVERLAPPED | (direct ? FILE_FLAG_NO_BUFFERING : 0) | (!direct && random ? FILE_FLAG_RANDOM_ACCESS : 0), nullptr);
 #else
     f.fd = open(path, O_RDONLY | O_CLOEXEC | (direct ? O_DIRECT : 0));
 #endif
@@ -306,6 +307,32 @@ inline void sleep_ms(int ms) {
 }
 
 // ---- memory accounting ----
+// Windows: bytes in the system file cache working set: file data read through the cache that Windows keeps mapped. It trims it to the standby
+// list as soon as memory is needed, so it is as good as available, but GlobalMemoryStatusEx counts it as in use. 0 elsewhere or if unknown.
+inline size_t file_cache_ws() {
+#ifdef _WIN32
+    struct {    // SYSTEM_FILECACHE_INFORMATION (NtQuerySystemInformation class 21)
+        SIZE_T CurrentSize, PeakSize;
+        ULONG  PageFaultCount;
+        SIZE_T MinimumWorkingSet, MaximumWorkingSet, CurrentSizeIncludingTransitionInPages, PeakSizeIncludingTransitionInPages;
+        ULONG  TransitionRePurposeCount, Flags;
+    } info;
+    typedef LONG (WINAPI * nqsi_t)(int, void *, ULONG, ULONG *);
+    static const nqsi_t fn = (nqsi_t) (void *) GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation");   // no import: looked up
+    memset(&info, 0, sizeof(info));
+    if (fn && fn(21, &info, (ULONG) sizeof(info), nullptr) == 0) {
+        return (size_t) info.CurrentSize;
+    }
+#endif
+    return 0;
+}
+// set by the plugin when it reads the model through the Windows file cache (MOE_CACHE_WIN_BUFFERED): that cache is then counted as available,
+// else a warm start found the model's cached pages "in use" and started with a smaller budget (PC, Qwen3.5-122B: 9.1 instead of 12 GiB)
+inline bool & count_file_cache() {
+    static bool on = false;
+    return on;
+}
+
 // memory this process may use: Linux = smallest cgroup memory.max on the path, else MemAvailable; Windows = job limit, else available physical memory
 inline size_t mem_limit() {
     size_t lim = (size_t) -1;
@@ -319,7 +346,7 @@ inline size_t mem_limit() {
     if (lim == (size_t) -1) {
         MEMORYSTATUSEX ms;
         ms.dwLength = sizeof(ms);
-        if (GlobalMemoryStatusEx(&ms)) { lim = (size_t) ms.ullAvailPhys; }
+        if (GlobalMemoryStatusEx(&ms)) { lim = (size_t) ms.ullAvailPhys + (count_file_cache() ? file_cache_ws() : 0); }
     }
 #else
     std::string path;
@@ -371,7 +398,7 @@ inline size_t mem_available() {
 #ifdef _WIN32
     MEMORYSTATUSEX ms;
     ms.dwLength = sizeof(ms);
-    if (GlobalMemoryStatusEx(&ms)) { r = (size_t) ms.ullAvailPhys; }
+    if (GlobalMemoryStatusEx(&ms)) { r = (size_t) ms.ullAvailPhys + (count_file_cache() ? file_cache_ws() : 0); }
 #else
     if (FILE * f = fopen("/proc/meminfo", "r")) {
         char line[256];
@@ -385,10 +412,24 @@ inline size_t mem_available() {
     return r;
 }
 
-// private memory of this process (Linux RssAnon; Windows PrivateUsage, which counts committed pages: exactly the loaded experts)
+// private memory of this process in RAM (Linux RssAnon; Windows the private working set).
+// Windows used PrivateUsage (commit charge) before: with GPU layers llama-server's commit stays ~15 GB even when its working set is empty and
+// the system has the RAM free (AMD driver allocations are charged, not resident; PC, Flash-Next, 12 GPU expert layers), so the cache was
+// shrunk from 18.4 to 6.5 GiB for memory that was not in use. The commit limit is watched separately (commit_available()).
 inline size_t rss_private() {
     size_t r = 0;
 #ifdef _WIN32
+    struct {    // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809+; older systems reject its size and the counters below are used)
+        DWORD  cb, PageFaultCount;
+        SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage,
+               PagefileUsage, PeakPagefileUsage, PrivateUsage, PrivateWorkingSetSize;
+        ULONG64 SharedCommitUsage;
+    } ex2;
+    memset(&ex2, 0, sizeof(ex2));
+    ex2.cb = sizeof(ex2);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &ex2, sizeof(ex2)) && ex2.PrivateWorkingSetSize > 0) {
+        return (size_t) ex2.PrivateWorkingSetSize;
+    }
     PROCESS_MEMORY_COUNTERS_EX pmc;
     memset(&pmc, 0, sizeof(pmc));
     if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &pmc, sizeof(pmc))) {
@@ -413,6 +454,70 @@ inline size_t rss_private() {
     return r;
 }
 
+// Windows: take the pages of this process's views of the given files out of its working set (VirtualUnlock on a range that is not locked does
+// exactly that; the pages stay in the standby list, so a later touch is a soft fault). Only views mapped from these files are touched, never private
+// memory. Returns the working-set bytes released; *views = how many mapped views matched. Elsewhere: 0.
+// Why (I37, PC 2026-10-27): llama.cpp's Windows loader reads the GPU tensors through its mapping of the model file and never unmaps those pages,
+// so ~13 GB of model file stayed in llama-server's working set (counted as in use) after loading; the plugin's cache then got that much less.
+inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * views) {
+    *views = 0;
+#ifdef _WIN32
+    std::vector<std::wstring> names;
+    for (const std::string & p : paths) {
+        std::wstring w = widen(p.c_str());
+        const size_t sl = w.find_last_of(L"\\/");
+        w = sl == std::wstring::npos ? w : w.substr(sl + 1);
+        for (auto & ch : w) { ch = (wchar_t) towlower(ch); }
+        names.push_back(w);
+    }
+    PROCESS_MEMORY_COUNTERS pmc;
+    memset(&pmc, 0, sizeof(pmc));
+    GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+    const size_t ws0 = (size_t) pmc.WorkingSetSize;
+    MEMORY_BASIC_INFORMATION mbi;
+    const char * q = nullptr;
+    while (VirtualQuery(q, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+        if (mbi.State == MEM_COMMIT && mbi.Type == MEM_MAPPED) {
+            wchar_t fn[2048];
+            const DWORD n = GetMappedFileNameW(GetCurrentProcess(), mbi.BaseAddress, fn, 2048);
+            if (n > 0 && n < 2048) {
+                std::wstring f(fn, n);
+                const size_t sl = f.find_last_of(L"\\/");
+                f = sl == std::wstring::npos ? f : f.substr(sl + 1);
+                for (auto & ch : f) { ch = (wchar_t) towlower(ch); }
+                if (std::find(names.begin(), names.end(), f) != names.end()) {
+                    VirtualUnlock(mbi.BaseAddress, mbi.RegionSize);   // fails with ERROR_NOT_LOCKED, and releases the pages: intended
+                    (*views)++;
+                }
+            }
+        }
+        const char * next = (const char *) mbi.BaseAddress + mbi.RegionSize;
+        if (next <= q) {
+            break;
+        }
+        q = next;
+    }
+    memset(&pmc, 0, sizeof(pmc));
+    GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+    return ws0 > (size_t) pmc.WorkingSetSize ? ws0 - (size_t) pmc.WorkingSetSize : 0;
+#else
+    (void) paths;
+    return 0;
+#endif
+}
+
+// commit the system can still give out (Windows: commit limit minus commit charge, ullAvailPageFile); SIZE_MAX elsewhere (Linux overcommits)
+inline size_t commit_available() {
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        return (size_t) ms.ullAvailPageFile;
+    }
+#endif
+    return SIZE_MAX;
+}
+
 // ---- small file helpers (UTF-8 paths) ----
 inline void make_dir(const char * path) {
 #ifdef _WIN32
@@ -421,16 +526,26 @@ inline void make_dir(const char * path) {
     mkdir(path, 0700);
 #endif
 }
-// rename tmp over dst (replaces an existing file on both systems)
-inline void replace_file(const char * tmp, const char * dst) {
+// rename tmp over dst (replaces an existing file on both systems); false (with a message) if it could not
+inline bool replace_file(const char * tmp, const char * dst) {
 #ifdef _WIN32
     if (!MoveFileExW(widen(tmp).c_str(), widen(dst).c_str(), MOVEFILE_REPLACE_EXISTING)) {     // e.g. a virus scanner holding dst open
         fprintf(stderr, "moe-cache: cannot replace %s (Windows error %lu); the new data is in %s\n", dst, (unsigned long) GetLastError(), tmp);
+        return false;
     }
 #else
     if (rename(tmp, dst) != 0) {
         fprintf(stderr, "moe-cache: cannot replace %s (%s); the new data is in %s\n", dst, strerror(errno), tmp);
+        return false;
     }
+#endif
+    return true;
+}
+inline void remove_file(const char * path) {
+#ifdef _WIN32
+    _wremove(widen(path).c_str());
+#else
+    std::remove(path);
 #endif
 }
 

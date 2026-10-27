@@ -107,10 +107,14 @@ struct exec_pool_t {
                         if (++spins < 40000) {
                             cpu_relax();
                         } else {
+                            // idle: sleep until run() publishes the next job. This used to wake every 200 us and spin again, so an idle server kept
+                            // every worker at ~85 % of a core (I30, Flash-Next: ~700 % CPU for 30+ min with no request). No wake-up is lost:
+                            // `parked` is raised under the mutex before `gen` is checked again, run() raises `gen` before it reads `parked` (all
+                            // sequentially consistent), and run() notifies under the mutex, so the worker sees the new job or is woken
                             std::unique_lock<std::mutex> lk(m);
-                            parked++;
-                            cv.wait_for(lk, std::chrono::microseconds(200));
-                            parked--;
+                            parked.fetch_add(1);
+                            cv.wait(lk, [&] { return stop.load() || gen.load() != seen; });
+                            parked.fetch_sub(1);
                             spins = 0;
                         }
                     }
@@ -146,8 +150,9 @@ struct exec_pool_t {
         j->next.store(0, std::memory_order_relaxed);
         j->done.store(0, std::memory_order_relaxed);
         cur.store(j, std::memory_order_release);
-        gen.fetch_add(1, std::memory_order_acq_rel);
+        gen.fetch_add(1);              // sequentially consistent, as the parked count: see the worker's idle wait
         if (parked.load() > 0) {
+            std::lock_guard<std::mutex> lk(m);
             cv.notify_all();
         }
         work(j);
@@ -157,7 +162,10 @@ struct exec_pool_t {
     }
 
     ~exec_pool_t() {
-        stop = true;
+        {
+            std::lock_guard<std::mutex> lk(m);   // a worker between its check and its wait cannot miss this
+            stop = true;
+        }
         cv.notify_all();
         for (auto & t : th) {
             t.join();
