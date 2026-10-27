@@ -61,6 +61,20 @@
             }
             return -1;
         }
+        // every tensor of a layer is indexed with the same expert ids (lookahead, warm start, siblings check them against the layer's first
+        // tensor only): a layer whose expert tensors disagree on the expert count, or an absurd count, is left to plain memory
+        {
+            int layer = -1;
+            sscanf(t->name, "blk.%d.", &layer);
+            const auto lt = layer >= 0 ? layer_tensors.find(layer) : layer_tensors.end();
+            if (t->ne[2] > 65536 || (lt != layer_tensors.end() && !lt->second.empty() && tensors[(size_t) lt->second[0]]->n_expert != t->ne[2])) {
+                if (unmatched++ == 0) {
+                    fprintf(stderr, "moe-cache: tensor %s has %lld experts, other expert tensors of its layer another count: it is loaded normally and not cached\n",
+                            t->name, (long long) t->ne[2]);
+                }
+                return -1;
+            }
+        }
         auto ti = std::make_unique<tinfo_t>();
         ti->name = t->name;
         ti->file_off = ft->second.first;

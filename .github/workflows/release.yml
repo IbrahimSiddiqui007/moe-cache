@@ -1,7 +1,7 @@
 # Release workflow: builds the portable plugin from the tagged commit on a clean GitHub runner, signs the tarball with a GitHub build
 # attestation (provenance: which commit and workflow produced it) and attaches it to the release.
 #   push a tag v0.1.3        -> build, attest, publish the release (pre-release while the project is alpha)
-#   Actions tab -> Run workflow -> build and attest only; the tarball is kept as a workflow artifact, nothing is published
+#   Actions tab -> Run workflow -> build only (not attested); the tarball is kept as a workflow artifact, nothing is published
 # Users verify a download with:  gh attestation verify moe-cache-v0.1.3-linux-x86_64.tar.gz -R IbrahimSiddiqui007/moe-cache
 name: release
 
@@ -27,7 +27,9 @@ jobs:
       attestations: write
       actions: read         # the gate below reads the identity and windows runs of this commit
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false   # the write token must not sit in .git/config while the build and later actions run
 
       - name: Gate (tags only) - identity and windows passed on this commit
         if: github.ref_type == 'tag'
@@ -67,12 +69,13 @@ jobs:
         run: tools/make_release.sh "$V"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        if: github.ref_type == 'tag'   # a manual run on a branch must not get the same signature as a release
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: dist/moe-cache-v*-linux-x86_64.tar.gz
 
       - name: Keep the files as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: moe-cache-release-files
           path: |

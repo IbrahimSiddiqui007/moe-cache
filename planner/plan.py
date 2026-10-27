@@ -31,16 +31,29 @@ class MiniGGUF:
         with open(path, "rb") as f:
             if f.read(4) != b"GGUF": raise ValueError(f"{path}: not a GGUF file")
             def rd(fmt): n = struct.calcsize(fmt); return struct.unpack(fmt, f.read(n))[0]
-            def rstr(): return f.read(rd("<Q")).decode("utf-8", "replace")
+            fsize = os.fstat(f.fileno()).st_size
+            def skip(n):          # hostile length fields must not allocate (or list) a model-sized buffer: seek over what is not needed
+                if n < 0 or n > fsize - f.tell(): raise ValueError(f"{path}: GGUF header length past the end of the file")
+                f.seek(n, 1)
+            def rstr():
+                n = rd("<Q")
+                if n > (1 << 24) or n > fsize - f.tell(): raise ValueError(f"{path}: GGUF header string of {n} bytes")
+                return f.read(n).decode("utf-8", "replace")
             def rval(t):
                 if t in self.SCALAR: return rd(self.SCALAR[t])
                 if t == 8: return rstr()
                 if t == 9:
                     et, n = rd("<I"), rd("<Q")
-                    if et in self.SCALAR and et != 7:
+                    if et in self.SCALAR:
                         fmt = self.SCALAR[et]; sz = struct.calcsize(fmt)
+                        if et == 7 or n > (1 << 20):
+                            skip(n * sz); return []      # only small numeric arrays (per-layer values) are used
+                        if n * sz > fsize - f.tell(): raise ValueError(f"{path}: GGUF header array past the end of the file")
                         return list(struct.unpack("<" + str(n) + fmt[1:], f.read(n * sz)))
-                    return [rval(et) for _ in range(n)]
+                    if et == 8:           # string arrays (the tokenizer) are not used: skip them
+                        for _ in range(n): skip(rd("<Q"))
+                        return []
+                    raise ValueError(f"{path}: GGUF array of type {et}")   # arrays of arrays: no writer makes them; they would recurse
                 raise ValueError(f"unknown GGUF value type {t}")
             version, n_tensors, n_kv = rd("<I"), rd("<Q"), rd("<Q")
             if version < 2: raise ValueError("GGUF version 1 is not supported")
@@ -48,8 +61,11 @@ class MiniGGUF:
                 key = rstr(); t = rd("<I"); self.fields[key] = _Field(rval(t))
             info = []
             for _ in range(n_tensors):
-                name = rstr(); nd = rd("<I"); [rd("<Q") for _ in range(nd)]; rd("<I"); info.append((name, rd("<Q")))
+                name = rstr(); nd = rd("<I")
+                if nd > 8: raise ValueError(f"{path}: tensor {name!r} has {nd} dimensions")
+                skip(8 * nd); rd("<I"); info.append((name, rd("<Q")))
             align = int(self.fields["general.alignment"].v) if "general.alignment" in self.fields else 32
+            if not (1 <= align <= 1 << 16 and align & (align - 1) == 0): raise ValueError(f"{path}: GGUF alignment {align}")
             data_off = (f.tell() + align - 1) // align * align
             size = os.path.getsize(path) - data_off
         order = sorted(range(len(info)), key=lambda i: info[i][1])

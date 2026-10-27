@@ -33,7 +33,7 @@ def ldd(path):
     if WINDOWS:
         return ""
     try:
-        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, timeout=20).stdout
+        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20).stdout
     except Exception:
         return ""
 
@@ -202,14 +202,14 @@ def pick_gpu(listing):
 def nvidia_reports():
     """True when nvidia-smi exists and reports at least one GPU's free memory."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         return out.returncode == 0 and out.stdout.strip()[:1].isdigit()
     except Exception:
         return False
 
 def list_devices(ls):
     try:
-        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, timeout=60)
+        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         return out.stdout + out.stderr
     except Exception:
         return ""
@@ -380,6 +380,17 @@ def key_for(url, given=None):
     return stored_key() if st in (401, 403) else None
 
 
+def gb_arg(s):
+    """argparse check for --ram / --vram: a positive finite number (kept as the text given, which the rest of the launcher passes on)."""
+    try:
+        v = float(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {s!r}")
+    if not (0 < v < 1e6):
+        raise argparse.ArgumentTypeError(f"out of range: {s!r}")
+    return s
+
+
 def take_api_key_from_args(extra):
     """Remove a user-given `--api-key KEY` from llama-server's arguments (it would show in the process list) and return KEY, else None."""
     for i, x in enumerate(extra):
@@ -452,13 +463,22 @@ def _kill_with_parent_windows(p, mem_limit=None):
     return None
 
 
+_PRCTL = None
+if sys.platform.startswith("linux"):
+    try:                       # looked up here, not in the forked child: imports and dlopen after fork() can deadlock in a threaded parent (the UI)
+        import ctypes
+        _PRCTL = ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except Exception:
+        _PRCTL = None
+
+
 def _die_with_parent_linux():
     """preexec_fn: the child gets SIGTERM when the launcher dies, even if the launcher is killed with SIGKILL."""
-    try:
-        import ctypes
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)    # PR_SET_PDEATHSIG
-    except Exception:
-        pass
+    if _PRCTL is not None:
+        try:
+            _PRCTL(1, signal.SIGTERM)    # PR_SET_PDEATHSIG
+        except Exception:
+            pass
 
 
 AMD_CHECKPOINT_FIXED = "32.0.32015.7029"       # first AMD Windows display driver known to survive a Flash-Next context checkpoint (I44, 2026-10-27)
@@ -681,7 +701,8 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 seen["last"] = line.decode(errors="replace").strip()
                 if b"plugin disabled" in line or b"refus" in line:
                     seen["disabled"] = line.decode(errors="replace").strip()
-    threading.Thread(target=pump, daemon=True).start()
+    pump_t = threading.Thread(target=pump, daemon=True)
+    pump_t.start()
     if expect_plugin and port:
         def check():
             for _ in range(900):
@@ -716,6 +737,7 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 except KeyboardInterrupt:   # a second Ctrl-C: stop waiting for the save
                     pass
             continue
+    pump_t.join(timeout=5)             # the last lines llama-server printed (why it stopped) come before the launcher's own verdict
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:
         say("moe-cache: " + exit_reason(rc, seen["ready"] if (expect_plugin and port) else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
@@ -788,7 +810,7 @@ def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model")
-    ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram"); ap.add_argument("--vram")
+    ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
@@ -844,7 +866,7 @@ def server(argv):
         if a.vram: p += ["--vram-gib", a.vram]
         r = None
         try:
-            r = subprocess.run(p, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
             ncmoe = str(json.loads(r.stdout)["n_cpu_moe"])
         except Exception as e:
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
@@ -1032,7 +1054,7 @@ def server(argv):
     cram = arg_after(extra, "--cache-ram", "-cram")
     if cram is None:
         try:
-            if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout:
+            if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout:
                 # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
                 # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
                 lim = mem_for_server(a.ram)
@@ -1128,7 +1150,7 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             n = None
         say(f"moe-cache: warm session: restored a saved agent conversation ({n} tokens) into slot {to} in {time.time() - t0:.1f} s" if st == 200
             else f"moe-cache: warm session: could not restore {os.path.basename(f)} (HTTP {st}): {body[:160]}", err=True)
-    saved, seen = {}, {}
+    saved, seen, tries = {}, {}, {}
     while True:
         time.sleep(poll)
         st, body = http(f"{url}/slots", api_key=api_key)
@@ -1154,12 +1176,15 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             fname, tmp = f"{tag}-s{sid}.bin", f"{tag}-s{sid}.new.bin"
             t0 = time.time()
             st, body = http(f"{url}/slots/{sid}?action=save", {"filename": tmp}, api_key, timeout=600)
-            saved[sid] = key
+            tries[(sid, key)] = tries.get((sid, key), 0) + 1
+            if tries[(sid, key)] >= 3:
+                saved[sid] = key       # three failures for the same state: stop trying until the conversation changes
             if st != 200:
                 say(f"moe-cache: warm session: save failed (HTTP {st}): {body[:160]}", err=True)
                 continue
             try:
                 os.replace(os.path.join(slotdir, tmp), os.path.join(slotdir, fname))
+                saved[sid] = key       # only a save that really landed counts (a failed one is tried again at the next idle moment)
                 say(f"moe-cache: warm session: saved slot {sid} ({x.get('n_prompt_tokens')} tokens, "
                     f"{os.path.getsize(os.path.join(slotdir, fname)) / 1e6:.0f} MB) in {time.time() - t0:.1f} s", err=True)
             except OSError as e:
@@ -1231,7 +1256,7 @@ def connect(argv):
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
         for k, v in sets:
-            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, timeout=60)
+            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             if r.returncode:
                 raise SystemExit(f"hermes config set {k} failed: {(r.stderr or r.stdout).strip()[-300:]}")
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
@@ -1253,10 +1278,17 @@ def connect(argv):
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
         shutil.copy2(cfg, cfg + ".bak")
+        if not WINDOWS:
+            os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
     data.setdefault("provider", {})["moe-cache"] = entry
     data["model"] = f"moe-cache/{name}"
     os.makedirs(os.path.dirname(cfg), exist_ok=True)
-    with open(cfg + ".tmp", "w", encoding="utf-8") as f:
+    # the file holds the API key: private to this user (a 0600 opencode.json used to come back 0644 through the umask), never through a planted link
+    tmp = cfg + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     os.replace(cfg + ".tmp", cfg)
     say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
@@ -1433,7 +1465,7 @@ def check(argv):
         fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
     else:
         try:
-            v = subprocess.run([lsp, "--version"], capture_output=True, text=True, timeout=30)
+            v = subprocess.run([lsp, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             vtxt = v.stdout + v.stderr
             m = re.search(r"commit [0-9a-f]+", vtxt)
         except Exception:
@@ -1461,7 +1493,7 @@ def check(argv):
             load, method = load_env(lsp, lib)
             probe = ""
             try:
-                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60, env=dict(os.environ, **dict(load)))
+                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=dict(os.environ, **dict(load)))
                 probe = out.stdout + out.stderr
             except Exception:
                 pass

@@ -11,19 +11,20 @@ cd /d "%~dp0" || (echo Cannot change to the folder of this file. & pause & exit 
 set "HERE=%~dp0"
 set "SYS32=%SystemRoot%\System32"
 set "WHERE=%SYS32%\where.exe"
-rem (SystemRoot has no spaces: where.exe is called unquoted, as for /f mangles a command line that starts with a quote)
+rem (SystemRoot has no spaces: where.exe is called unquoted, as for /f mangles a command line that starts with a quote). $PATH: searches the PATH
+rem only: a plain "where" also looks in the current folder (this file's), where a planted py.exe or llama-server.exe (Downloads) would win
 
 if /i "%~1"=="--shortcut" goto shortcut
 
 set "PY=%MOE_CACHE_PYTHON%"
 if defined PY goto have_python
 rem the py launcher, by its full path
-for /f "delims=" %%P in ('%WHERE% py.exe 2^>nul') do if not defined PY (
+for /f "delims=" %%P in ('%WHERE% $PATH:py.exe 2^>nul') do if not defined PY (
   "%%~fP" -3 -c "import sys" >nul 2>nul && set "PY="%%~fP" -3"
 )
 if defined PY goto have_python
 rem a python.exe that really runs: the one Windows ships without Python only opens the Store
-for /f "delims=" %%P in ('%WHERE% python.exe 2^>nul') do if not defined PY (
+for /f "delims=" %%P in ('%WHERE% $PATH:python.exe 2^>nul') do if not defined PY (
   "%%~fP" -c "import sys" >nul 2>nul && set "PY="%%~fP""
 )
 if defined PY goto have_python
@@ -40,7 +41,7 @@ for %%F in ("%HERE%ggml-moe-cache-api3.dll" "%HERE%..\ggml-moe-cache-api3.dll" "
 if defined MOE_CACHE_LIB (echo plugin: "%MOE_CACHE_LIB%") else (echo plugin: not found next to this file or in build\win*: the launcher looks itself; set MOE_CACHE_LIB to the DLL)
 
 if defined LLAMA_SERVER goto have_ls
-for /f "delims=" %%L in ('%WHERE% llama-server.exe 2^>nul') do if not defined LLAMA_SERVER set "LLAMA_SERVER=%%~fL"
+for /f "delims=" %%L in ('%WHERE% $PATH:llama-server.exe 2^>nul') do if not defined LLAMA_SERVER set "LLAMA_SERVER=%%~fL"
 if not defined LLAMA_SERVER if exist "C:\llama\llama-server.exe" set "LLAMA_SERVER=C:\llama\llama-server.exe"
 :have_ls
 if defined LLAMA_SERVER (echo llama-server: "%LLAMA_SERVER%") else (echo llama-server: not found: unpack the llama.cpp release to C:\llama or set LLAMA_SERVER)
@@ -50,11 +51,10 @@ if errorlevel 1 pause
 exit /b
 
 :shortcut
-rem single quotes in the paths are doubled for PowerShell's '...' strings
+rem the paths reach PowerShell through the environment, never inside its command text (a folder name with a quote, or a typographic one, would end
+rem the string there and run the rest as code)
 set "SELF=%~f0"
-set "SELF=%SELF:'=''%"
-set "DIR=%HERE:'=''%"
-"%SYS32%\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Programs')+'\moe-cache.lnk'); $s.TargetPath='%SELF%'; $s.WorkingDirectory='%DIR%'; $s.Description='moe-cache control page'; $s.Save()"
+"%SYS32%\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Programs')+'\moe-cache.lnk'); $s.TargetPath=$env:SELF; $s.WorkingDirectory=$env:HERE; $s.Description='moe-cache control page'; $s.Save()"
 if errorlevel 1 (echo Could not create the shortcut. & pause & exit /b 1)
 echo Added "moe-cache" to the Start menu.
 exit /b 0
