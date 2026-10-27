@@ -6,7 +6,8 @@
         std::unique_lock<std::mutex> lk(mu);
         for (size_t i = 0; i < tensors.size(); i++) {
             tinfo_t & ti = *tensors[i];
-            if (!ti.data || ti.data < base || ti.data >= base + size) {
+            const char * at = ti.view ? ti.buf_addr : ti.data;     // a view tensor's data is in the model-file view, not in this buffer
+            if (!ti.data || at < base || at >= base + size) {
                 continue;
             }
             for (int64_t e = 0; e < ti.n_expert; e++) {
@@ -18,6 +19,7 @@
                     unlink(ti.node0 + (int) e);
                     n.resident = false;
                     resident_bytes -= ti.nb2;
+                    if (ti.view) { view_bytes -= ti.nb2; }
                 }
                 n.mapped = false;
             }
@@ -91,6 +93,14 @@
                 ti->repack = ti->tensor->extra != nullptr;
             }
             ti->direct = direct_ok && !ti->repack && ((uintptr_t) ti->data % PAGE) == (ti->file_off % PAGE);
+            if (win_view && !ti->repack && (size_t) ti->fdi < views.size() && ti->file_off + ti->nb2 * (size_t) ti->n_expert <= view_sizes[(size_t) ti->fdi]) {
+                // Windows file-view cache: the tensor's data is its bytes in the plugin's read-only view of the model file
+                ti->view = true;
+                ti->buf_addr = ti->data;
+                ti->data = const_cast<char *>(views[(size_t) ti->fdi]) + ti->file_off;
+                ti->tensor->data = ti->data;
+                ti->direct = false;
+            }
         }
         sscanf(t->name, "blk.%d.", &ti->layer);
         ti->node0 = (int) nodes.size();
@@ -225,6 +235,7 @@
                 nodes[s].resident = true;
                 nodes[s].epoch = 0;
                 resident_bytes += ti.nb2;
+                if (ti.view) { view_bytes += ti.nb2; }
                 push_mru(s);
                 max_nb2 = std::max(max_nb2, ti.nb2);
                 jobs.push_back({ ti.data + (size_t) take[i].e * ti.nb2, ti.file_off + (size_t) take[i].e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr });
@@ -254,7 +265,7 @@
                         limit_bytes / 1073741824.0, min_budget / 1073741824.0);
             }
         }
-        const size_t rss = read_rss_anon();
+        const size_t rss = read_rss_anon() + view_bytes;     // the file-view cache's experts are not private memory but are this cache's
         if (!rss) {
             return;
         }
@@ -264,7 +275,7 @@
         // Windows: every loaded expert is committed memory; near the commit limit (RAM + page file) a commit fails and the next write crashes.
         // Keep commit_keep() free (2 GiB or 8 % of the commit limit): shrink by what is missing (on Linux commit_available() is unlimited)
         const size_t commit_free = plat::commit_available(), commit_keep = plat::commit_keep();
-        const size_t commit_short = commit_free < commit_keep ? commit_keep - commit_free : 0;
+        const size_t commit_short = !win_view && commit_free < commit_keep ? commit_keep - commit_free : 0;   // file-view experts use no commit
         if (commit_short && !commit_warned) {
             commit_warned = true;
             fprintf(stderr, "moe-cache: warning: the system is close to its commit limit (%.2f GiB left of RAM + page file): the cache shrinks to "
@@ -305,5 +316,36 @@
             budget = std::min(max_budget, budget + g);
             tune_grows++;
         }
+        update_ws_min();
+    }
+
+    // Windows file-view cache: a hard working-set minimum of the cache budget plus the rest of the process, so the system does not trim the
+    // resident experts' file pages (it would otherwise take them first: they are not private). Set again when the target moves by 256 MiB.
+    void update_ws_min() {
+        if (!win_view) {
+            return;
+        }
+        const size_t step = (size_t) 256 << 20;
+        const size_t want = budget + read_rss_anon() + step;
+        if (ws_min_cur && (want > ws_min_cur ? want - ws_min_cur : ws_min_cur - want) < step) {
+            return;
+        }
+        size_t w = want;
+        while (w >= ((size_t) 1 << 30) && !plat::ws_min_set(w)) {
+            w = w / 4 * 3;
+        }
+        if (w < ((size_t) 1 << 30)) {
+            if (!ws_min_warned) {
+                ws_min_warned = true;
+                fprintf(stderr, "moe-cache: MOE_CACHE_WIN_VIEW: Windows refused a working-set minimum of %.2f GiB (error %lu): resident experts may be "
+                                "trimmed to the file cache (still correct, slower)\n", want / 1073741824.0, plat::commit_error());
+            }
+            return;
+        }
+        if (!ws_min_cur || (w < want && !ws_min_warned)) {
+            fprintf(stderr, "moe-cache: MOE_CACHE_WIN_VIEW: working-set minimum %.2f GiB%s\n", w / 1073741824.0, w < want ? " (less than asked: the system could not guarantee more)" : "");
+            ws_min_warned = ws_min_warned || w < want;
+        }
+        ws_min_cur = w;
     }
 

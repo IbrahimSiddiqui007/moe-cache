@@ -105,6 +105,12 @@ struct state_t {
 #else
     static constexpr bool win_buffered = false, win_random = false;
 #endif
+    bool   win_view = false;                    // Windows file-view cache (MOE_CACHE_WIN_VIEW=1, see the constructor); never on Linux
+    std::vector<const char *> views;            // win_view: one read-only view per model file (split GGUF)
+    std::vector<size_t> view_sizes;
+    size_t view_bytes = 0;                      // win_view: resident bytes of experts held in the views (not private memory: not in rss_private())
+    size_t ws_min_cur = 0;                      // win_view: the hard working-set minimum set last (0 = none)
+    bool   ws_min_warned = false;
     size_t budget = 0;
     bool   commit_warned = false;      // Windows: the commit-limit warning was printed (tune())
     bool   commit_fail_warned = false; // Windows: a refused expert commit was reported (commit_for())
@@ -130,10 +136,10 @@ struct state_t {
     // once, at the first graph (llama.cpp has uploaded every tensor) and before the warm start fills the cache: release the model-file pages
     // llama.cpp's loader left in the working set (I37), then size the auto budget again from what is available now
     void release_model_pages() {
-        size_t views = 0;
-        const size_t freed = plat::trim_file_pages(shard_paths, &views);
-        if (views) {
-            fprintf(stderr, "moe-cache: released %.2f GiB of model-file pages from the working set (Windows, %zu mapped views)\n", freed / 1073741824.0, views);
+        size_t nviews = 0;
+        const size_t freed = plat::trim_file_pages(shard_paths, &nviews, views);     // never the file-view cache's own views
+        if (nviews) {
+            fprintf(stderr, "moe-cache: released %.2f GiB of model-file pages from the working set (Windows, %zu mapped views)\n", freed / 1073741824.0, nviews);
         }
         // the start budget again, now that llama.cpp has allocated everything (weights, KV, compute buffers, an MTP draft context): from what
         // the rest of the process really uses instead of the 3.5 GiB guess, and never more than the system's free commit minus commit_keep()
@@ -144,15 +150,15 @@ struct state_t {
         }
         const size_t old = budget;
         if (!getenv("MOE_CACHE_RAM_GIB")) {
-            limit_bytes = read_mem_limit();
+            limit_bytes = read_mem_limit(view_bytes);
         }
-        const size_t rss = read_rss_anon();
+        const size_t rss = read_rss_anon() + view_bytes;
         const size_t other = rss > resident_bytes ? rss - resident_bytes : 0;
         const size_t floor_b = (size_t) 512 << 20;
         size_t nb = limit_bytes > margin + other + floor_b ? limit_bytes - margin - other : floor_b;
         const size_t ca = plat::commit_available(), keep = plat::commit_keep();
         const size_t by_commit = (ca > keep ? ca - keep : 0) + resident_bytes;
-        nb = std::max(floor_b, std::min(nb, by_commit));
+        nb = std::max(floor_b, win_view ? nb : std::min(nb, by_commit));     // file-view experts use no commit
         if (max_budget) {
             nb = std::min(nb, max_budget);
         }
@@ -160,6 +166,7 @@ struct state_t {
         fprintf(stderr, "moe-cache: memory limit now %.2f GiB, rest of llama-server %.2f GiB, free commit %.2f GiB (keeping %.2f GiB): start budget %.2f GiB "
                 "(was %.2f)\n", limit_bytes / 1073741824.0, other / 1073741824.0, ca / 1073741824.0, keep / 1073741824.0, budget / 1073741824.0,
                 old / 1073741824.0);
+        update_ws_min();
     }
 #endif
     void begin_graph() {
@@ -327,6 +334,35 @@ struct state_t {
             shard_paths.push_back(shards[si]);
             fds_buf.push_back(plat::file_t());
         }
+#ifdef _WIN32
+        // MOE_CACHE_WIN_VIEW=1 (being tested, idea I47): keep the cached experts in read-only views of the model files instead of private memory.
+        // Private memory is charged to Windows commit (RAM + page file), and so are Vulkan's GPU allocations: on the PC that held the cache at
+        // 8-11 GiB, resized hundreds of times per request, while stock llama.cpp's mmap used ~27 GB of file pages that cost no commit (RESULTS 59).
+        // File-view pages cost no commit; a hard working-set minimum (update_ws_min) keeps the resident ones in RAM. Which experts are resident,
+        // prefetch and the executor work exactly as on Linux; only loading (touch the view instead of reading into private pages) and eviction
+        // (drop the pages from the working set; they stay in the file cache) differ.
+        if (const char * v = getenv("MOE_CACHE_WIN_VIEW")) {
+            win_view = strcmp(v, "0") != 0;
+        }
+        if (win_view) {
+            for (const std::string & sp : shard_paths) {
+                size_t n = 0;
+                const char * vb = plat::file_view_map(sp.c_str(), &n);
+                if (!vb) {
+                    fprintf(stderr, "moe-cache: MOE_CACHE_WIN_VIEW: cannot map %s read-only (Windows error %lu): the cache uses private memory\n", sp.c_str(), GetLastError());
+                    break;
+                }
+                views.push_back(vb);
+                view_sizes.push_back(n);
+            }
+            win_view = views.size() == shard_paths.size();
+            if (win_view) {
+                plat::count_file_cache() = false;      // the views' pages are counted as the cache's own (view_bytes), not as available file cache
+                fprintf(stderr, "moe-cache: MOE_CACHE_WIN_VIEW: experts are kept in read-only views of the model file (%zu), held in RAM by a hard "
+                                "working-set minimum; they use no commit (RAM + page file)\n", views.size());
+            }
+        }
+#endif
         if (const char * v = getenv("MOE_CACHE_FAULT_EVERY")) {
             fault_every = atoi(v);
         }

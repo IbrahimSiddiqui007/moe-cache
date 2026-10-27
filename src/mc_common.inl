@@ -55,6 +55,8 @@ struct tinfo_t {
     int     fdi = 0;          // model file index (split GGUF)
     bool    direct = false;   // can be read straight into place
     bool    repack = false;   // stored in llama.cpp's repacked CPU layout (faster CPU kernels)
+    bool    view = false;     // Windows file-view cache: data points into the plugin's read-only view of the model file (no reads, no commit)
+    char *  buf_addr = nullptr;   // view: the address the buffer gave this tensor (forget_range matches the buffer by it)
     ggml_tensor * tensor = nullptr;
 };
 
@@ -148,10 +150,11 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
 // memory limit of this process and its private memory (see platform.h)
 // The limit is the smaller of the configured one (cgroup / job) and what the machine can really give: a 28 GB cgroup limit on a 31 GB laptop
 // with the desktop running (25 GB available) was OOM-killed by the kernel at 26.3 GB before the cgroup limit was reached.
-size_t read_mem_limit() {
+// extra: memory this process holds that is neither available nor private (the Windows file-view cache's resident experts)
+size_t read_mem_limit(size_t extra = 0) {
     const size_t lim = plat::mem_limit();
     const size_t avail = plat::mem_available();
-    return avail ? std::min(lim, avail + plat::rss_private()) : lim;
+    return avail ? std::min(lim, avail + plat::rss_private() + extra) : lim;
 }
 
 size_t read_rss_anon() {

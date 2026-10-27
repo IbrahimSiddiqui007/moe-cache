@@ -194,6 +194,19 @@ jobs:
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 failed ($LASTEXITCODE)" }
 
+      - name: Identity, Windows file-view cache (MOE_CACHE_WIN_VIEW=1, idea I47), cache forced to evict, executor byte-checked
+        run: |
+          $env:MOE_CACHE_WIN_VIEW = "1"; $env:MOE_CACHE_EXEC = "2"; $env:MOE_CACHE_EXEC_CHECK = "1"
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048 -Extra "--no-repack"
+          if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (file view) failed ($LASTEXITCODE)" }
+          $log = "$env:TEMP\moe-cache-test\plugin.err.txt"
+          Select-String $log -Pattern "MOE_CACHE_WIN_VIEW|evictions|executor ran" | ForEach-Object { $_.Line }
+          if (-not (Select-String $log -Pattern "experts are kept in read-only views of the model file" -Quiet)) { throw "the file-view cache was not used" }
+          $m = Select-String $log -Pattern '"evictions":(\d+)' | Select-Object -Last 1
+          if (-not $m -or [int64]$m.Matches[0].Groups[1].Value -eq 0) { throw "no evictions: the 0.2 GiB cache did not cycle experts through the views ($($m.Line))" }
+          $x = Select-String $log -Pattern '"exec_checked":(\d+),"exec_mismatch":(\d+)' | Select-Object -Last 1
+          if (-not $x -or [int64]$x.Matches[0].Groups[1].Value -eq 0 -or [int64]$x.Matches[0].Groups[2].Value -ne 0) { throw "executor byte check on the views: none checked or mismatches ($($x.Line))" }
+
       - name: Identity, executor forced on and byte-checked (no repacking on both servers, else the executor steps aside)
         run: |
           $env:MOE_CACHE_EXEC = "2"; $env:MOE_CACHE_EXEC_CHECK = "1"
