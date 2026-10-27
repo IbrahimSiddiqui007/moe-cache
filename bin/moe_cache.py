@@ -1121,6 +1121,26 @@ def server_info(url, api_key=None):
     return name, ctx
 
 
+def opencode_config_target(cfg):
+    """The global opencode.json to write, and warnings. OpenCode (and OpenCode Desktop, whose server reads the same global folder) merges config.json,
+    opencode.json, then opencode.jsonc, later files winning, and creates opencode.jsonc on first run: write into that one when it is plain JSON,
+    else into opencode.json and warn if the .jsonc sets its own model. OPENCODE_CONFIG (a file merged after these) is reported too."""
+    warn = []
+    jc = os.path.splitext(cfg)[0] + ".jsonc"
+    if os.path.isfile(jc):
+        text = open(jc, encoding="utf-8").read()
+        try:
+            json.loads(text)
+            cfg = jc
+        except ValueError:
+            if '"model"' in text:
+                warn.append(f"{jc} (has comments, so it is not edited here) sets its own \"model\" and wins over {os.path.basename(cfg)}: "
+                            "change it there to moe-cache/NAME, or paste the block 'moe_cache.py connect opencode' prints")
+    if os.environ.get("OPENCODE_CONFIG"):
+        warn.append(f"OPENCODE_CONFIG={os.environ['OPENCODE_CONFIG']} is merged after this file and wins where they differ")
+    return cfg, warn
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
                                  "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
@@ -1153,6 +1173,9 @@ def connect(argv):
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
         return 0
     cfg = a.config or os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode", "opencode.json")
+    warn = []
+    if not a.config:
+        cfg, warn = opencode_config_target(cfg)
     entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache", "options": dict({"baseURL": base}, **({"apiKey": a.api_key} if a.api_key else {})),
              "models": {name: {"name": name, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}}}}
     if not a.write:
@@ -1173,6 +1196,8 @@ def connect(argv):
         json.dump(data, f, indent=2)
     os.replace(cfg + ".tmp", cfg)
     say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
+    for w in warn:
+        say("moe-cache: warning: " + w, err=True)
     return 0
 
 

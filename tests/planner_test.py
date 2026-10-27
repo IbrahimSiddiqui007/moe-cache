@@ -190,5 +190,17 @@ check(L.mtp_args(None, True, "llama-server", os.path.join(_md, "none.gguf"), [])
 check(L.mtp_args(True, False, "llama-server", os.path.join(_md, "head.gguf"), ["--spec-type", "ngram-simple"]) == [], "mtp_args: --mtp keeps your own --spec-type")
 L.say = _say
 
+# connect opencode --write: the global file that wins (OpenCode merges opencode.json, then opencode.jsonc)
+_od = tempfile.mkdtemp(); _oj = os.path.join(_od, "opencode.json"); _ojc = os.path.join(_od, "opencode.jsonc")
+_env = os.environ.pop("OPENCODE_CONFIG", None)
+check(L.opencode_config_target(_oj) == (_oj, []), "opencode target: no .jsonc -> opencode.json, no warning")
+open(_ojc, "w").write('{"$schema": "https://opencode.ai/config.json"}')
+check(L.opencode_config_target(_oj) == (_ojc, []), "opencode target: plain-JSON opencode.jsonc (made by OpenCode) is the file written")
+open(_ojc, "w").write('// mine\n{"model": "x/y"}')
+_t, _w = L.opencode_config_target(_oj)
+check(_t == _oj and len(_w) == 1 and '"model"' in _w[0], "opencode target: .jsonc with comments and its own model -> opencode.json + a warning")
+if _env is not None:
+    os.environ["OPENCODE_CONFIG"] = _env
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)
