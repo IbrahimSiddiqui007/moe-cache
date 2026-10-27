@@ -50,6 +50,7 @@ jobs:
         run: |
           if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; else H=third_party/ggml; fi
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/args_test.cpp -o /tmp/args_test && /tmp/args_test    # the llama-server flags the plugin mirrors
           ./build.sh --portable
           ls -la build/libggml-moe-cache.so
 
@@ -147,6 +148,29 @@ jobs:
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
           grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_exec/plugin.log    # the executor really ran (it steps aside silently on repacked weights)
+
+      - name: Identity with GGML_CPU_TILED_MM_FORCE=1 (stock tiles every expert, so the executor must hand every op back) - API 3 rows
+        if: matrix.api == '3'
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          GGML_CPU_TILED_MM_FORCE: "1"    # both servers
+          IDENT_EXTRA: "--no-repack"
+          IDENT_KEEP: ident_tiled_force
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_tiled_force.txt
+          grep -q "GGML_CPU_TILED_MM_FORCE=1: every expert op is left to llama.cpp" ident_tiled_force/plugin.log
+
+      - name: Identity with different thread counts for prompts and decode (-t 2 -tb 3; the plugin switches between two threadpools)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_EXTRA: "-t 2 -tb 3"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_tb.txt
 
       - name: Cache smaller than one op (1 MiB) - experts mapped from the model file instead of aborting, guard mode on
         env:
@@ -316,6 +340,21 @@ jobs:
           grep -qE "an expert task of .* has [0-9]+ columns" mut_dup/plugin.log dup_ids_mutant.txt || grep -qE "Segmentation fault|FAIL: the server (died|is gone)" dup_ids_mutant.txt ||
             { echo "FAIL: the mutant failed for another reason"; tail -5 mut_dup/plugin.log; exit 1; }
           echo "OK: the mutant fails (column check or crash)"
+
+      - name: Mutant check - a build that expects another op number must refuse to run (start-up layout check of the running ggml)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_STATS: "1"
+          IDENT_KEEP: mut_abi
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_ABI BUILD_DIR=build-mut-abi ./build.sh --portable
+          MOE_CACHE_LIB=$PWD/build-mut-abi/libggml-moe-cache.so tests/identity.sh granite.gguf --tokens 8 --ctx 2048 --n-cpu-moe 999 | tee abi_mutant.txt || true   # the refused plugin makes identity.sh exit 2: the greps decide
+          grep -q "does not match the ggml headers this plugin was built with (op .* expected MUL_MAT_ID)" mut_abi/plugin.log ||
+            { echo "FAIL: the mutant did not refuse"; grep "moe-cache:" mut_abi/plugin.log | head -5; exit 1; }
+          if grep -q "does not match the ggml headers" ident_exec/plugin.log; then echo "FAIL: the real build refused"; exit 1; fi
+          echo "OK: the layout check refuses a mismatch and passes the real build"
 
       - name: Reads straight into place, each read's range poisoned while it is in flight (what Windows shows other threads), executor byte-checked
         env:

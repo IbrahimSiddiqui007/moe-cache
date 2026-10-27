@@ -189,6 +189,19 @@ bool stock_uses_tiled(const ggml_tensor * nd) {
         return false;
     }
 #endif
+    // GGML_CPU_TILED_MM_FORCE=1 (a llama.cpp test switch, honoured unless GGML_CPU_TILED_MM=0) makes stock take the tiled routine for any row
+    // count: then every op goes back to llama.cpp
+    static const bool tiled_forced = [] {
+        const char * f = getenv("GGML_CPU_TILED_MM_FORCE"), * m = getenv("GGML_CPU_TILED_MM");
+        const bool on = f && atoi(f) == 1 && !(m && atoi(m) == 0);
+        if (on) {
+            fprintf(stderr, "moe-cache: GGML_CPU_TILED_MM_FORCE=1: every expert op is left to llama.cpp's tiled routine (the executor would add up in another order)\n");
+        }
+        return on;
+    }();
+    if (tiled_forced) {
+        return true;
+    }
     if (ids->ne[0] * ids->ne[1] < 8) {
         return false;
     }
