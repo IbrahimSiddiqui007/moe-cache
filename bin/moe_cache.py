@@ -1101,10 +1101,17 @@ def connect(argv):
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
         shutil.copy2(cfg, cfg + ".bak")
+        if not WINDOWS:
+            os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
     data.setdefault("provider", {})["moe-cache"] = entry
     data["model"] = f"moe-cache/{name}"
     os.makedirs(os.path.dirname(cfg), exist_ok=True)
-    with open(cfg + ".tmp", "w", encoding="utf-8") as f:
+    # the file holds the API key: private to this user (a 0600 opencode.json used to come back 0644 through the umask), never through a planted link
+    tmp = cfg + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     os.replace(cfg + ".tmp", cfg)
     say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
