@@ -187,10 +187,18 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     if (!c->cpu) {
         c->cpu = ggml_backend_dev_init(CPU().dev, nullptr);
     }
+    if (c->tp_n != c->n_threads && c->tp2 && c->tp2_n == c->n_threads && CPU().set_tp) {
+        // back to the other thread count (-t for decode, -tb for prompts): reuse its threadpool instead of joining and starting all threads again
+        std::swap(c->tp, c->tp2);
+        std::swap(c->tp_n, c->tp2_n);
+        CPU().set_tp(c->cpu, c->tp);    // pauses the other one
+    }
     if (c->tp_n != c->n_threads && CPU().tp_new && CPU().set_tp) {
-        if (c->tp && CPU().tp_free) {
-            CPU().tp_free(c->tp);
+        if (c->tp2 && CPU().tp_free) {
+            CPU().tp_free(c->tp2);         // not the one the backend holds
         }
+        c->tp2 = c->tp;                    // keep the current one for the next switch back
+        c->tp2_n = c->tp_n;
         ggml_threadpool_params tpp;
         memset(&tpp, 0, sizeof(tpp));
         tpp.n_threads = c->n_threads;
@@ -433,7 +441,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 
     // long prompts: run the expert block on the GPU (what llama.cpp's own offload does for batches of 32+ tokens)
     std::vector<std::pair<ggml_tensor *, ggml_op>> silenced;
-    if (s.cache_on && s.gpu_dev && !c->gpu_failed) {
+    if (s.cache_on && s.gpu_dev && !c->gpu_failed && s.graphs.load() >= c->gpu_retry_at) {
         for (const auto & gr : groups_found) {
             if (gr.n_tok < s.gpu_min_tokens) {
                 continue;

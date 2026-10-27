@@ -3,19 +3,16 @@
 
 namespace {
 
+// llama-server's own settings that decide where its CPU weights go (read once: environment, then the command line, the last occurrence winning)
+static const mcargs::server_args & server_args() {
+    static const mcargs::server_args a = mcargs::parse_server_args(plat::command_line(), getenv("LLAMA_ARG_REPACK"), getenv("LLAMA_ARG_NO_HOST"),
+                                                                   getenv("LLAMA_ARG_DEVICE"));
+    return a;
+}
+
+// Windows: the plugin repacked although llama-server had --no-repack, so CPU-only output differed from stock (Windows CI executor step: 1/4 identical)
 static bool server_repack_disabled() {
-    if (const char * v = getenv("LLAMA_ARG_REPACK")) {
-        if (!strcmp(v, "0") || !strcasecmp(v, "false") || !strcasecmp(v, "off") || !strcasecmp(v, "no") || !strcasecmp(v, "disabled")) {
-            return true;
-        }
-    }
-    // Windows: the plugin repacked although llama-server had --no-repack, so CPU-only output differed from stock (Windows CI executor step: 1/4 identical)
-    for (const std::string & a : plat::command_line()) {
-        if (a == "--no-repack" || a == "-nr") {
-            return true;
-        }
-    }
-    return false;
+    return !server_args().repack;
 }
 
 struct state_t;
@@ -260,6 +257,12 @@ struct state_t {
                      " (API " + std::to_string(api) + "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
                 return;
             }
+            const std::string abi = ggml_abi_mismatch();
+            if (!abi.empty()) {
+                fail(std::string("the running ggml ") + ggml_version() + " does not match the ggml headers this plugin was built with (" + abi +
+                     "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
+                return;
+            }
         }
         if (!file) {
             fail("MOE_CACHE_GGUF is not set");
@@ -347,7 +350,16 @@ struct state_t {
                 gpu_min_tokens = 2;
             }
         }
-        for (size_t i = 0; i < ggml_backend_dev_count() && gpu_min_tokens > 0; i++) {
+        // the GPU llama.cpp offloads to: --device none means none; --device A,B the first GPU of that list; else its default choice below
+        const mcargs::server_args & sa = server_args();
+        for (size_t k = 0; k < sa.devices.size() && gpu_min_tokens > 0 && !gpu_dev; k++) {
+            ggml_backend_dev_t d = ggml_backend_dev_by_name(sa.devices[k].c_str());
+            const auto t = d ? ggml_backend_dev_type(d) : GGML_BACKEND_DEVICE_TYPE_CPU;
+            if (t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+                gpu_dev = d;
+            }
+        }
+        for (size_t i = 0; i < ggml_backend_dev_count() && gpu_min_tokens > 0 && !sa.device_none && sa.devices.empty(); i++) {
             // a discrete GPU first, else an integrated one (ggml-vulkan reports APUs as IGPU; stock llama.cpp offloads to them too).
             // Taking only GPU left the Vega 8 unused: prefill 363 vs stock 693 tok/s (mini PC, T7); with the iGPU 569-597
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
@@ -365,13 +377,15 @@ struct state_t {
             const std::string mode = rp ? rp : "auto";
             bool want = mode == "on";
             if (mode == "auto") {
-                // stock llama.cpp repacks CPU weights only when no GPU backend is present: do the same, so results stay identical
+                // do what stock llama.cpp does, so results stay identical. Its CPU buffer types are tried in the order ACCEL (this plugin), the
+                // host buffer of its first GPU, CPU_REPACK, CPU: with a GPU in use its CPU weights land in the GPU's host buffer and are not
+                // repacked; with no GPU in use (none loaded, or --device none), or with --no-host (no host buffer), they are repacked
                 bool gpu = false;
-                for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+                for (size_t i = 0; i < ggml_backend_dev_count() && !sa.device_none; i++) {
                     const auto t = ggml_backend_dev_type(ggml_backend_dev_get(i));
                     gpu = gpu || t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU;
                 }
-                want = !gpu && !server_repack_disabled();
+                want = (!gpu || sa.no_host) && !server_repack_disabled();
             }
             if (want) {
                 ggml_backend_dev_t cd = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
