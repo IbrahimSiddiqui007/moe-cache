@@ -72,6 +72,7 @@ listener that loads the model on the first request and unloads it when idle (`--
 python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart
 python3 bin/moe_cache.py connect hermes --write      # and/or: connect opencode --write (writes URL, model, 65k context, API key)
 ```
+Several models: `on-demand /path/to/model2.gguf --add` adds one; the request's `"model"` picks it, one is loaded at a time (`connect opencode` lists them all).
 Or start a server yourself with `bin/moe-cache-server /path/to/model.gguf --agent` and run the same `connect` line. Measured on a Windows desktop
 (RESULTS 60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
 two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details and the Desktop-app steps: [docs/AGENTS.md](docs/AGENTS.md).
