@@ -126,7 +126,8 @@ def plugin_off_line(line):
     (a working-set minimum or memory Windows did not grant) are warnings of a plugin that keeps running."""
     return b"plugin disabled" in line or b"not loaded, the model loads the normal way" in line
 
-SLOW_DRIVE_GBS = 2.0      # random 1 MiB reads; PLACEHOLDER
+SLOW_DRIVE_GBS = 1.0      # random 1 MiB reads. PC NVMe drives: 3.1 (C:) and 4.5 GB/s (D:); the plugin's own read rate followed the probe (0.74 vs 0.70
+                          # C:/D:) but 122B decode differed by 2 % at 98 % hits (RESULTS 61): only SATA / HDD / USB speeds are worth a warning
 
 
 def drive_read_speed(path, seconds=4.0, block=1 << 20, threads=4):
@@ -1683,8 +1684,8 @@ def check(argv):
             if gbs is None:
                 warn("drive speed", "not measured: reads that bypass the file cache are not possible on this file")
             elif gbs < SLOW_DRIVE_GBS:
-                warn("drive speed", f"{gbs:.1f} GB/s (random 1 MiB reads, 4 s): slow for experts that miss the cache; if you have a faster drive "
-                     f"(NVMe), put the model there (a slower drive costs 20-40 % of decode on models much bigger than RAM)")
+                warn("drive speed", f"{gbs:.1f} GB/s (random 1 MiB reads, 4 s): a slow drive (SATA, hard disk or USB?); experts that miss the cache "
+                     f"are read from it, so start-up, long prompts and models far bigger than RAM get slower. An NVMe drive reads 3 GB/s or more")
             else:
                 ok("drive speed", f"{gbs:.1f} GB/s (random 1 MiB reads, 4 s)")
             lim = float(a.ram) if a.ram else (cg or memav)
