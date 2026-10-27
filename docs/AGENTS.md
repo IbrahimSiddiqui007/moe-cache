@@ -65,6 +65,20 @@ model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.
 
+**Multi-token prediction (MTP)** makes decode faster with the same output: a small draft head guesses the next 2 tokens and the model checks them in
+one step (Qwen3.6 on the desktop PC: 45.6 -> 70.3 tok/s). `--agent` turns it on when the model has a head (`blk.N.nextn.*`) and llama-server has
+`--spec-type draft-mtp`. Many quants drop the head (our Flash-Next IQ2_XS and the 122B UD-IQ2_XXS). For those, a head in its own file works too:
+
+| How | What the launcher does |
+|---|---|
+| `--mtp-head mtp-Qwen3.8-Flash-Next-Q8_0.gguf` | checks the file fits the model (architecture, width, layers, from the GGUF headers), adds `-md FILE --spec-type draft-mtp --spec-draft-n-max 2 -ngld 99`, and plans the model with the head's VRAM (its size + 0.4 GB) taken off |
+| put `mtp-*.gguf` next to the model, in its `MTP/` subfolder (how unsloth's repos keep them) or in `~/.cache/moe-cache/mtp/` | found by itself and used like a head inside the model (on with `--agent` or `--mtp`) |
+| `--no-mtp` | off |
+
+"shared-" heads (smaller: they borrow the model's token embedding and output) need a llama.cpp with tensor borrowing; the self-contained head of the
+same name works on every llama.cpp that has `draft-mtp`. Whether a head file pays off on models bigger than RAM is not measured yet;
+one line at start says whether MTP is on and why.
+
 ## Measuring it yourself: replay a recorded agent session (tools/agent_bench.py)
 
 Decode tok/s says little about agents; what they wait for is the time to the first token of each turn and the whole task. `tools/agent_bench.py`

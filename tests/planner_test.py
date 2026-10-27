@@ -191,6 +191,63 @@ check(L.mtp_args(None, True, "llama-server", os.path.join(_md, "none.gguf"), [])
 check(L.mtp_args(True, False, "llama-server", os.path.join(_md, "head.gguf"), ["--spec-type", "ngram-simple"]) == [], "mtp_args: --mtp keeps your own --spec-type")
 L.say = _say
 
+# MTP head in its own file (--mtp-head, mtp-*.gguf): header check, discovery, arguments, VRAM kept for it
+def _gguf2(path, arch, n_layer, n_nextn, embd, tensors):
+    def s(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    kv = [s("general.architecture") + struct.pack("<I", 8) + s(arch), s(f"{arch}.block_count") + struct.pack("<II", 4, n_layer + n_nextn),
+          s(f"{arch}.embedding_length") + struct.pack("<II", 4, embd)]
+    if n_nextn:
+        kv.append(s(f"{arch}.nextn_predict_layers") + struct.pack("<II", 4, n_nextn))
+    ti = b"".join(s(n) + struct.pack("<IQIQ", 1, 8, 0, 32 * i) for i, n in enumerate(tensors))
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kv)) + b"".join(kv) + ti
+    open(path, "wb").write(head + b"\0" * (-len(head) % 32) + b"\0" * 32 * len(tensors))
+_hd = tempfile.mkdtemp(); os.makedirs(os.path.join(_hd, "MTP"))
+_trunk = os.path.join(_hd, "trunk.gguf"); _gguf2(_trunk, "tst", 2, 0, 8, ["token_embd.weight", "blk.0.attn_q.weight", "blk.1.attn_q.weight"])
+_dropped = os.path.join(_hd, "dropped.gguf"); _gguf2(_dropped, "tst", 2, 1, 8, ["token_embd.weight", "blk.0.attn_q.weight"])   # keeps the key, no tensors
+_mh = {n: os.path.join(_hd, "MTP", f"mtp-{n}.gguf") for n in ("a", "0-shared", "wrongarch", "wrongshape", "nohead")}
+_gguf2(_mh["a"], "tst", 2, 1, 8, ["token_embd.weight", "output.weight", "blk.2.nextn.eh_proj.weight"])
+_gguf2(_mh["0-shared"], "tst", 2, 1, 8, ["blk.2.nextn.eh_proj.weight"])
+_gguf2(_mh["wrongarch"], "oth", 2, 1, 8, ["token_embd.weight", "blk.2.nextn.eh_proj.weight"])
+_gguf2(_mh["wrongshape"], "tst", 3, 1, 8, ["token_embd.weight", "blk.3.nextn.eh_proj.weight"])
+_gguf2(_mh["nohead"], "tst", 2, 1, 8, ["token_embd.weight"])
+_C = gguf_plan.mtp_head_check
+check(_C(_trunk, _mh["a"])[0] and not _C(_trunk, _mh["a"])[2]["shared"], "mtp head file: matching self-contained head accepted")
+check(_C(_dropped, _mh["a"])[0], "mtp head file: a trunk that kept nextn_predict_layers but dropped the tensors still matches")
+check(_C(_trunk, _mh["0-shared"])[0] and _C(_trunk, _mh["0-shared"])[2]["shared"], "mtp head file: head without token_embd is marked shared")
+check(not _C(_trunk, _mh["wrongarch"])[0] and "architecture" in _C(_trunk, _mh["wrongarch"])[1], "mtp head file: other architecture refused")
+check(not _C(_trunk, _mh["wrongshape"])[0] and "shape" in _C(_trunk, _mh["wrongshape"])[1], "mtp head file: other depth refused")
+check(not _C(_trunk, _mh["nohead"])[0] and "nextn" in _C(_trunk, _mh["nohead"])[1], "mtp head file: file without nextn tensors refused")
+check(L.find_mtp_head(_trunk) == _mh["a"], "find_mtp_head: MTP/ subfolder searched, self-contained before shared, mismatches skipped")
+check(L.find_mtp_head(os.path.join(_md, "none.gguf")) is None, "find_mtp_head: nothing next to a model without a head file")
+check(D(None, True, 0, 0, True, False, head_file=_mh["a"])[0] is True and "head file" in D(None, True, 0, 0, True, False, head_file=_mh["a"])[1],
+      "mtp: --agent + head file + draft-mtp -> on, names the file")
+check(D(None, False, 0, 0, True, False, head_file=_mh["a"])[0] is False and "--mtp" in D(None, False, 0, 0, True, False, head_file=_mh["a"])[1],
+      "mtp: plain server + head file -> off with a --mtp hint")
+check(D(False, True, 0, 0, True, False, head_file=_mh["a"])[0] is False, "mtp: --no-mtp wins over a head file")
+try:
+    D(True, False, 0, 0, False, False, head_file=_mh["a"]); check(False, "mtp: head file + llama-server without draft-mtp must stop with --mtp")
+except SystemExit as e:
+    check("draft-mtp" in str(e), "mtp: head file + llama-server without draft-mtp stops with a reason")
+if os.name != "nt":
+    _ls = os.path.join(_hd, "fake-llama-server"); open(_ls, "w").write("#!/bin/sh\necho '--spec-type draft-mtp'\n"); os.chmod(_ls, 0o755)
+    _said = []; L.say = lambda m, err=False: _said.append(m)
+    _a = L.mtp_args(None, False, _ls, _trunk, [], head_file=_mh["a"])
+    check(_a == ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2", "-md", _mh["a"], "-ngld", "99"], f"mtp_args: --mtp-head -> -md FILE -ngld 99 ({_a})")
+    check(L.mtp_args(None, True, _ls, _trunk, [])[-3:] == [_mh["a"], "-ngld", "99"], "mtp_args: --agent finds the head file by itself")
+    check(L.mtp_args(None, False, _ls, _trunk, []) == [] and any("--mtp" in m for m in _said), "mtp_args: found head file, plain server -> off with a hint")
+    check(L.mtp_args(True, False, _ls, _trunk, ["-ngld", "10"], head_file=_mh["a"]).count("-ngld") == 0, "mtp_args: your own -ngld is kept")
+    _said.clear(); L.mtp_args(True, False, _ls, _trunk, [], head_file=_mh["0-shared"])
+    check(any("tensor borrowing" in m for m in _said), "mtp_args: a shared head says it needs tensor borrowing")
+    try:
+        L.mtp_args(None, False, _ls, _trunk, [], head_file=_mh["wrongarch"]); check(False, "mtp_args: a non-matching --mtp-head must stop")
+    except SystemExit as e:
+        check("--mtp-head" in str(e) and "architecture" in str(e), "mtp_args: a non-matching --mtp-head stops and says why")
+    _v = L.mtp_head_vram("8", ["-md", _mh["a"], "-ngld", "99"])
+    check(abs(float(_v) - (8 - (os.path.getsize(_mh["a"]) + L.MTP_HEAD_EXTRA) / 2**30)) < 0.01, f"mtp_head_vram: 8 GiB minus the head -> {_v}")
+    check(L.mtp_head_vram("8", ["-md", _mh["a"], "-ngld", "0"]) == "8" and L.mtp_head_vram("8", ["--spec-type", "draft-mtp"]) == "8",
+          "mtp_head_vram: head kept on the CPU or the model's own head -> VRAM unchanged")
+    L.say = _say
+
 # connect opencode --write: the global file that wins (OpenCode merges opencode.json, then opencode.jsonc)
 _od = tempfile.mkdtemp(); _oj = os.path.join(_od, "opencode.json"); _ojc = os.path.join(_od, "opencode.jsonc")
 _env = os.environ.pop("OPENCODE_CONFIG", None)

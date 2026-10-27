@@ -104,6 +104,45 @@ def mtp_layers(path):
     return len(head), declared
 
 
+def header_info(path):
+    """-> dict(arch, block_count, embd, nextn) from the GGUF header of the first file (missing numbers are 0, a missing arch is None)."""
+    meta, arch = {}, None
+    with open(shards(path)[0], "rb") as f:
+        if f.read(4) != b"GGUF":
+            raise ValueError("not a GGUF file")
+        f.read(4)
+        _, n_kv = struct.unpack("<QQ", f.read(16))
+        for _ in range(n_kv):
+            key = _read_str(f)
+            t = struct.unpack("<I", f.read(4))[0]
+            if key == "general.architecture" and t == 8:
+                arch = _read_str(f)
+            elif key.rsplit(".", 1)[-1] in ("block_count", "embedding_length", "nextn_predict_layers") and t in (4, 5, 10, 11):
+                meta[key] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
+            else:
+                _skip_value(f, t)
+    get = lambda k: meta.get(f"{arch}.{k}", 0)  # noqa: E731
+    return {"arch": arch, "block_count": get("block_count"), "embd": get("embedding_length"), "nextn": get("nextn_predict_layers")}
+
+
+def mtp_head_check(model, head_file):
+    """Does head_file (an MTP-only GGUF, mtp-*.gguf, used with -md) belong to model? -> (ok, reason, info). The head must have the model's
+    architecture, width and trunk depth (block_count minus nextn layers, so a trunk that keeps the nextn key but dropped the tensors still matches)
+    and carry blk.N.nextn.* tensors. info: bytes (file size, what the GPU holds), shared (no token_embd/output of its own: a "shared-" head that
+    borrows them from the model, which needs a llama.cpp with tensor borrowing)."""
+    m, h = header_info(model), header_info(head_file)
+    names = [n for n, _ in read_tensors(head_file)]
+    info = {"bytes": os.path.getsize(head_file), "shared": "token_embd.weight" not in names, "arch": h["arch"]}
+    if not any(re.match(r"blk\.\d+\.nextn\.", n) for n in names):
+        return False, "it has no blk.N.nextn.* tensors (not an MTP head)", info
+    if h["arch"] != m["arch"]:
+        return False, f"it is for architecture '{h['arch']}', the model is '{m['arch']}'", info
+    if h["embd"] != m["embd"] or h["block_count"] - h["nextn"] != m["block_count"] - m["nextn"]:
+        return False, (f"its shape ({h['block_count'] - h['nextn']} layers x {h['embd']}) differs from the model's "
+                       f"({m['block_count'] - m['nextn']} layers x {m['embd']}): a head for another model of the same family"), info
+    return True, "", info
+
+
 def shards(path):
     m = re.match(r"(.*)-(\d+)-of-(\d+)\.gguf$", path)
     return sorted(glob.glob(f"{m.group(1)}-*-of-{m.group(3)}.gguf")) if m else [path]

@@ -509,13 +509,24 @@ MTP_ARGS = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
 MTP_GAIN = "Qwen3.6 on the PC: decode +54 %, prompt processing -5..-8 %"
 
 
-def mtp_decide(want, agent, head, declared, server_has, user_spec):
+def mtp_decide(want, agent, head, declared, server_has, user_spec, head_file=None):
     """Multi-token prediction (I43): the model's own draft head (blk.N.nextn.*) guesses the next 2 tokens, the model checks them in one step; the
-    output is the same. want: True (--mtp), False (--no-mtp), None (default: on in --agent mode). -> (on, one-line reason or None)."""
+    output is the same. want: True (--mtp), False (--no-mtp), None (default: on in --agent mode). head_file: an MTP head in its own file
+    (mtp-*.gguf, for quants that dropped the head), used like the model's own. -> (on, one-line reason or None)."""
     if user_spec:
         return False, "moe-cache: MTP: speculative decoding set by your own arguments (--spec-type / --model-draft): left as given"
     if want is False:
-        return False, ("moe-cache: MTP off (--no-mtp)" if head else None)
+        return False, ("moe-cache: MTP off (--no-mtp)" if head or head_file else None)
+    if head_file:
+        name = os.path.basename(head_file)
+        if not server_has:
+            if want:
+                raise SystemExit(f"--mtp: this llama-server has no MTP speculative decoding (no draft-mtp in its --help for --spec-type), so the head file {name} cannot be used")
+            return False, (f"moe-cache: MTP off: head file {name} found but this llama-server lacks --spec-type draft-mtp" if agent else None)
+        if want or agent:
+            return True, (f"moe-cache: MTP on: head file {name}: -md {name} {' '.join(MTP_ARGS)} -ngld 99 (head on the GPU; same output)"
+                          f"{'' if want else '; --no-mtp turns it off'}")
+        return False, f"moe-cache: MTP head file {name} found next to the model: --mtp for faster decode ({MTP_GAIN})"
     if not head:
         why = (f"the header declares {declared} MTP layer(s) but this file has no blk.N.nextn.* tensors (the quant dropped them)" if declared
                else "the model has no MTP head (no blk.N.nextn.* tensors)")
@@ -533,30 +544,88 @@ def mtp_decide(want, agent, head, declared, server_has, user_spec):
     return False, f"moe-cache: this model has an MTP head: --mtp for faster decode ({MTP_GAIN})"
 
 
-def mtp_args(want, agent, ls, model, extra):
+def find_mtp_head(model):
+    """An MTP head in its own file for a model whose quant has none: mtp-*.gguf next to the model, in its MTP/ subfolder (where unsloth's repos
+    keep them) or in ~/.cache/moe-cache/mtp. The first one that fits the model (mtp_head_check), self-contained heads before "shared-" ones
+    (those need a llama.cpp with tensor borrowing). -> path or None."""
+    from gguf_plan import mtp_head_check
+    d = os.path.dirname(os.path.abspath(model))
+    found = []
+    for folder in (d, os.path.join(d, "MTP"), os.path.join(CACHE_DIR, "mtp")):
+        for c in sorted(glob.glob(os.path.join(folder, "mtp-*.gguf"))):
+            try:
+                ok, _, info = mtp_head_check(model, c)
+            except Exception:
+                continue
+            if ok:
+                found.append((info["shared"], c))
+    return sorted(found, key=lambda x: x[0])[0][1] if found else None
+
+
+def mtp_args(want, agent, ls, model, extra, head_file=None):
     """The --spec-* arguments for the model's MTP head (see mtp_decide), and says why in one line. Reads the GGUF header and, only when the model
-    has a head, llama-server --help."""
-    user_spec = arg_after(extra, "--spec-type", "--model-draft", "-md") is not None
+    has a head, llama-server --help. head_file: --mtp-head FILE (checked against the model; implies --mtp); without it a model with no head of its
+    own gets a matching mtp-*.gguf found by find_mtp_head."""
+    user_spec = arg_after(extra, "--spec-type", "--model-draft", "-md", "--spec-draft-model") is not None
     try:
         sys.path.insert(0, os.path.join(HERE, "planner"))
-        from gguf_plan import mtp_layers
+        from gguf_plan import mtp_layers, mtp_head_check
         head, declared = mtp_layers(model)
+        if head_file:
+            ok, why, info = mtp_head_check(model, head_file)
+            if not ok:
+                raise SystemExit(f"--mtp-head {head_file}: {why}")
+            want = True if want is None else want
+        elif not head and want is not False and not user_spec:
+            head_file = find_mtp_head(model)
+            info = mtp_head_check(model, head_file)[2] if head_file else None
+    except SystemExit:
+        raise
     except Exception as e:
-        if want:
-            raise SystemExit(f"--mtp: could not read the model header ({e})")
+        if want or head_file:
+            raise SystemExit(f"--mtp: could not read the model or head header ({e})")
         return []
     server_has = False
-    if head and want is not False and not user_spec:
+    if (head or head_file) and want is not False and not user_spec:
         try:
             server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout
         except Exception:
             pass
-    on, why = mtp_decide(want, agent, head, declared, server_has, user_spec)
+    on, why = mtp_decide(want, agent, head, declared, server_has, user_spec, head_file=head_file)
     if why:
         say(why)
     if not on:
         return []
-    return MTP_ARGS[:2] + ([] if arg_after(extra, "--spec-draft-n-max") is not None else MTP_ARGS[2:])
+    out = MTP_ARGS[:2] + ([] if arg_after(extra, "--spec-draft-n-max") is not None else MTP_ARGS[2:])
+    if head_file:
+        if info["shared"]:
+            say(f"moe-cache: {os.path.basename(head_file)} is a 'shared' head (it borrows the model's token embedding and output): it needs a "
+                "llama.cpp with tensor borrowing; if llama-server rejects it, use the self-contained mtp-*.gguf of the same head")
+        out += ["-md", head_file] + ([] if arg_after(extra, "-ngld", "--gpu-layers-draft", "--n-gpu-layers-draft", "--spec-draft-ngl") is not None
+                                     else ["-ngld", "99"])
+    return out
+
+
+MTP_HEAD_EXTRA = 0.4e9    # the head's own KV cache and compute buffer next to its weights (rough; the planner's reserve covers the spread)
+
+
+def mtp_head_vram(vram, args):
+    """VRAM to plan the model with when an MTP head file goes to the GPU (-md ... -ngld): the free VRAM (--vram GiB, else what the GPU reports)
+    minus the head file and MTP_HEAD_EXTRA, and one line saying so. -> new --vram value (GiB string) or the old one when nothing changes."""
+    if "-md" not in args or arg_after(args, "-ngld") == "0":
+        return vram
+    need = os.path.getsize(arg_after(args, "-md")) + MTP_HEAD_EXTRA
+    try:
+        from gguf_plan import free_vram_bytes
+        free = float(vram) * 2**30 if vram else free_vram_bytes()
+    except Exception:
+        free = None
+    if not free:
+        return vram
+    left = max(0.0, free - need)
+    say(f"moe-cache: MTP head on the GPU: {need / 2**30:.2f} GiB kept for it, planning the model with {left / 2**30:.2f} GiB of VRAM")
+    return f"{left / 2**30:.2f}"
+
 
 def win_request_save(pid, path, timeout=60.0, proc=None):
     """Windows: ask the plugin inside llama-server `pid` to save its usage profile now (named event Local\\moe-cache-save-<pid>; a server on
@@ -712,6 +781,10 @@ SERVER_HELP = """\
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
            Same output; Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
+--mtp-head FILE  an MTP head in its own file (mtp-*.gguf) for a quant that has none (e.g. unsloth's MTP/mtp-Qwen3.8-Flash-Next-Q8_0.gguf):
+           -md FILE --spec-type draft-mtp --spec-draft-n-max 2 -ngld 99 (head on the GPU; its size plus about 0.4 GB is taken off the VRAM the planner
+           uses). Implies --mtp; the file must match the model (architecture, width, layers: checked in the GGUF header). Without --mtp-head a
+           matching mtp-*.gguf next to the model, in its MTP/ subfolder or in ~/.cache/moe-cache/mtp is used the same way as a head inside the model
 --api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
@@ -731,6 +804,7 @@ def server(argv):
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
+    ap.add_argument("--mtp-head", metavar="FILE")
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
@@ -767,6 +841,8 @@ def server(argv):
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
+    mtp_extra = mtp_args(a.mtp, a.agent, ls, model, extra, head_file=a.mtp_head)    # before the planner: a head file takes VRAM
+    a.vram = mtp_head_vram(a.vram, mtp_extra)
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
     if ncmoe is None:
@@ -813,7 +889,7 @@ def server(argv):
                 extra += ["--slot-save-path", slotdir]
             else:
                 slotdir = arg_after(extra, "--slot-save-path")
-    extra += mtp_args(a.mtp, a.agent, ls, model, extra)
+    extra += mtp_extra
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "

@@ -43,6 +43,10 @@
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
 ### Agent mode, Hermes Agent and OpenCode
+- **`--mtp-head FILE`**: an MTP draft head in its own file (`mtp-*.gguf`) for quants that dropped the model's head. Checked against the model's GGUF header,
+  passed as `-md FILE --spec-type draft-mtp --spec-draft-n-max 2 -ngld 99`, and its VRAM (file + 0.4 GB) is taken off what the planner places. A matching
+  `mtp-*.gguf` next to the model, in its `MTP/` subfolder or in `~/.cache/moe-cache/mtp/` is found by itself (on with `--agent` / `--mtp`). Speed on
+  models bigger than RAM not measured yet ([docs/AGENTS.md](docs/AGENTS.md)).
 - **`--agent`** (RESULTS 51): context 65536, `--jinja` tool calls, stable `--alias`, at most 8 context checkpoints per slot with a 1 GiB reserve, config blocks printed
   when ready; `--api-key` for other machines. **`connect hermes|opencode [--write]`** writes the agent's config (Hermes through `hermes config set`, OpenCode by merging
   `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/AGENTS.md),
