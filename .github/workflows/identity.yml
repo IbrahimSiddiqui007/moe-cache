@@ -69,10 +69,10 @@ jobs:
           bin/moe-cache-check granite.gguf --run | tee launcher_check.txt
           grep -q "plugin loads .*yes" launcher_check.txt
           grep -q "cache runs .*yes: one request in cache mode" launcher_check.txt     # I26: the cache really computed
-          # --gpu-cache with the plugin loaded as a file (GGML_BACKEND_PATH) would give wrong tokens: the launcher must drop it (T7, B1)
+          # --gpu-cache with the plugin loaded as a file (GGML_BACKEND_PATH): kept since I28 (the plugin hooks llama.cpp's uploads), with --no-op-offload
           bin/moe-cache-server granite.gguf --ram 4 --always-plugin --load-method path --gpu-cache 1000 --dry-run 2>&1 | tee launcher_gcache_path.txt
-          grep -q "gpu-cache needs a llama-server that links its backends directly" launcher_gcache_path.txt
-          if grep -q "moe-cache-mib" launcher_gcache_path.txt; then echo "FAIL: --moe-cache-mib passed on path loading (T7)"; exit 1; fi    # "! grep" alone never fails under bash -e
+          if grep -q "gpu-cache needs a llama-server that links its backends directly" launcher_gcache_path.txt; then echo "FAIL: --gpu-cache dropped on path loading"; exit 1; fi
+          if grep -q -- "--moe-cache-mib" launcher_gcache_path.txt && ! grep -q -- "--no-op-offload" launcher_gcache_path.txt; then echo "FAIL: path loading with --moe-cache-mib needs --no-op-offload"; exit 1; fi
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
 
@@ -104,7 +104,7 @@ jobs:
           cmake --build llama.cpp/build-dl --target llama-server ggml-cpu-haswell -j "$(nproc)"   # AVX2: every GitHub runner has it; one variant is enough
           ls llama.cpp/build-dl/bin/ | grep -E "ggml-cpu|llama-server"
 
-      - name: Path loading (GGML_BACKEND_PATH, the official way), cache forced to evict, with MOE_CACHE_GPU_CACHE=1 - the plugin must refuse that mode (wrong tokens there before, T7)
+      - name: Path loading (GGML_BACKEND_PATH, the official way), cache forced to evict, with MOE_CACHE_GPU_CACHE=1 - the plugin hooks llama.cpp's expert uploads (I28) and tokens stay identical
         if: matrix.name == 'ggml-0.26-api3'
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build-dl/bin/llama-server
@@ -117,8 +117,8 @@ jobs:
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_path_gcache.txt
           grep "moe-cache:" ident_small_path/plugin.log | head -6
-          grep -q "MOE_CACHE_GPU_CACHE=1 ignored" ident_small_path/plugin.log
-          grep -q "load=GGML_BACKEND_PATH .*gpu_cache_host_buffer=off" ident_small_path/plugin.log
+          grep -qE "GPU expert cache with the plugin loaded as a file: .* \([1-9][0-9]* import entr" ident_small_path/plugin.log
+          grep -q "load=GGML_BACKEND_PATH .*gpu_cache_host_buffer=on" ident_small_path/plugin.log
 
       - name: Identity on long prompts (prompt batches of 512+ tokens load scan-resistant by default, I3)
         env:

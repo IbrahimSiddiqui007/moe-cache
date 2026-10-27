@@ -147,6 +147,7 @@ extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_iq3_xxs_q8_K(int n, float * s, siz
     orig(n, s, bs, vx, bx, vy, by, nrc);
 }
 
+#ifndef MOE_CACHE_TEST_NO_INTERPOSE_UPLOAD   // test build: without this interposer a preloaded plugin uses the GOT hook of path loading (I28)
 // ---- llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache: see gpu_cache_mode() ----
 // Its uploads read the expert bytes straight from the weight memory, where only the experts we hold in RAM exist. Make them resident first.
 extern "C" MOE_CACHE_EXPORT void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
@@ -162,4 +163,5 @@ extern "C" MOE_CACHE_EXPORT void ggml_backend_tensor_set_async(ggml_backend_t ba
         abort();
     }
 }
+#endif
 #endif

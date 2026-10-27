@@ -111,7 +111,7 @@ from 16.1 to 9.6 GiB; with a 14 GB page file it held 14.9 GiB and decode went fr
 |---|---|
 | `--no-mmap` | loads the whole model into RAM: impossible for a model bigger than RAM |
 | `--mlock` | pins memory so Windows cannot page it out: less RAM for everything else |
-| `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). moe-cache's cache size follows `--ram` (or `MOE_CACHE_SIZE_GIB`); forcing it above the free RAM makes Windows page to disk |
+| `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, use it through the launcher's `--gpu-cache auto|MIB` (since I28 it works with the plugin on Windows; the launcher adds `--no-op-offload`). moe-cache's cache size follows `--ram` (or `MOE_CACHE_SIZE_GIB`); forcing it above the free RAM makes Windows page to disk |
 | "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ...") |
 | q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045, RESULTS 53), so it is part of `--fast`, not the default; the saving on this desktop is being measured (RESULTS 56, R11) |
 | WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |

@@ -94,7 +94,8 @@ jobs:
           if (-not (Select-String launcher_check.txt -Pattern "cache runs .*yes" -Quiet)) { throw "check --run: the cache did not compute" }
           python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 4 --always-plugin --gpu-cache 1000 --dry-run 2>&1 | Tee-Object launcher_dry.txt
           if (-not (Select-String launcher_dry.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { throw "dry run: no GGML_BACKEND_PATH" }
-          if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
+          if (Select-String launcher_dry.txt -Pattern "gpu-cache needs a llama-server" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache dropped on path loading (kept since I28)" }
+          if ((Select-String launcher_dry.txt -Pattern "--moe-cache-mib" -SimpleMatch -Quiet) -and -not (Select-String launcher_dry.txt -Pattern "--no-op-offload" -SimpleMatch -Quiet)) { throw "dry run: --moe-cache-mib on path loading needs --no-op-offload" }
           python -c "import importlib.util as u, sys; sys.argv=['x']; s=u.spec_from_file_location('m','bin/moe_cache.py'); m=u.module_from_spec(s); s.loader.exec_module(m); c=m.win_cores(); print('cores (efficiency class, cpus):', c); print('hybrid masks:', m.hybrid_masks(c)); print('ggml API of the server:', m.ls_api(r'$ls')); sys.exit(0 if c else 1)"
           python tests/ui_test.py       # control page (GUI1) without a model
           if ($LASTEXITCODE -ne 0) { throw "control page test failed" }
@@ -165,6 +166,15 @@ jobs:
         run: |
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 failed ($LASTEXITCODE)" }
+
+      - name: Identity with MOE_CACHE_GPU_CACHE=1 (I28) - the plugin rewrites llama.cpp's import of ggml_backend_tensor_set_async, tokens stay identical (no GPU here)
+        run: |
+          $env:MOE_CACHE_GPU_CACHE = "1"
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
+          if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (gpu cache hook) failed ($LASTEXITCODE)" }
+          $log = "$env:TEMP\moe-cache-test\plugin.err.txt"
+          Select-String $log -Pattern "GPU expert cache|MOE_CACHE_GPU_CACHE" | ForEach-Object { $_.Line }
+          if (-not (Select-String $log -Pattern "GPU expert cache with the plugin loaded as a file: .* \([1-9][0-9]* import entr" -Quiet)) { throw "the upload hook was not installed" }
 
       - name: Identity, executor forced on and byte-checked (no repacking on both servers, else the executor steps aside)
         run: |

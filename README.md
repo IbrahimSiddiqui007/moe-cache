@@ -168,7 +168,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
   | RAM expert cache, SSD streaming, memory limit, warm start | yes | yes |
   | Expert executor (computes ready experts while others load) | yes | yes (since 0.2.3.3; tested on a Vulkan build) |
   | Fast Q2_0 / IQ3_XXS kernels | yes | inside the executor only (Linux; the Windows build has none of the plugin's own CPU kernels) |
-  | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | **no** (refused since cffa6f9: it gave wrong tokens; the launcher uses static GPU expert layers instead) |
+  | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | yes since I28 (the plugin rewrites llama.cpp's import of the upload function; the launcher adds `--no-op-offload`) |
 
   The `moe-cache: active: ...` line in the server log says which parts are on.
 - Needs a llama.cpp with shared ggml libraries; tested with commits `23b0202a1` (ggml 0.26.0) and `7fe450e19` (ggml 0.25.1). The plugin refuses to load into a ggml with a different backend API than it was built for (it prints why and the model loads normally). Linux; Windows is experimental (identity-tested on a Windows 11 + RX 9070 XT desktop and in CI, see [COMPATIBILITY](docs/COMPATIBILITY.md) and the [Windows quick start](docs/WINDOWS.md)).

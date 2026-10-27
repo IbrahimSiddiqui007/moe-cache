@@ -3,6 +3,10 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Windows and AMD
+- **`--gpu-cache` on Windows and with `GGML_BACKEND_PATH`** (idea I28; was refused there because it gave wrong tokens). Loaded as a file, the plugin
+  rewrites the import entry of `ggml_backend_tensor_set_async` in llama.cpp's libraries (Windows: import address table, Linux x86-64: GOT), so
+  every expert upload of llama.cpp's GPU expert cache makes that expert resident first, as the LD_PRELOAD interposer does. The launcher adds
+  `--no-op-offload` in that mode (a big batch offloaded inside ggml would be copied past the plugin). Stats line / JSON: uploads routed.
 - **Fixed: wrong output and a crash at the second request with models bigger than RAM on Windows** (PC, Qwen3.5-122B IQ2 from a fast NVMe
   drive). An expert read straight into place covered the memory pages it shares with its neighbours; on Windows a page under such a read briefly
   holds other data, so the executor sometimes read garbage in a neighbour's first or last rows: wrong text ("3333..."), NaN router scores, and a

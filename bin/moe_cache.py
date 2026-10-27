@@ -689,7 +689,7 @@ SERVER_HELP = """\
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
 --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 --project NAME  its own profile plus a saved prompt state (KV cache) restored at start; save it with: moe_cache.py project save NAME
---gpu-cache off|auto|MIB  (Linux, preload method only) llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
+--gpu-cache off|auto|MIB  llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
            Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
@@ -850,11 +850,10 @@ def server(argv):
         size = None
     avail = mem_for_server(a.ram)
     stock = bool(size and avail and size + 1.5e9 <= avail and not (a.fast or a.hybrid or a.always_plugin))
-    if gcache != "off" and not stock and method == "path":
-        # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
-        say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
-            "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
-        gcache = "off"
+    gcache_path = gcache != "off" and not stock and method == "path"
+    # loaded as a file (Windows, official builds) the plugin routes llama.cpp's expert uploads through itself by rewriting their import entry (I28).
+    # Only the uploads llama.cpp makes are routed: a big batch offloaded to the GPU can also be copied inside ggml itself, past the plugin, so
+    # --no-op-offload keeps those batches on the CPU side (the plugin's own long-prompt GPU block still takes long prompts to the GPU).
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
@@ -948,6 +947,8 @@ def server(argv):
             say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
         if gcmib:
             ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
+            if gcache_path and not any(x in ("--op-offload", "--no-op-offload") for x in extra):
+                extra.append("--no-op-offload")
             say(f"moe-cache: GPU expert cache of {gcmib} MiB; " + ("llama.cpp keeps the hottest experts on the GPU" if stock else "all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"))
     if a.hybrid and ncmoe != "0":
         ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))

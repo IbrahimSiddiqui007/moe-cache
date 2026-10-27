@@ -38,7 +38,9 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
   It found a second commit bug (a commit range past the end of a reservation committed nothing; fixed 87dd800) and a third (`--no-repack` was not
   seen by the plugin on Windows; fixed 150c8fe), then passed 4/4 with forced eviction and 4/4 with the executor forced on (6,765 ops byte-checked,
   0 mismatches). `moe-cache-check MODEL --run` passes there too.
-- Not available on Windows: `--gpu-cache` / `MOE_CACHE_GPU_CACHE=1` (needs LD_PRELOAD symbol interposition), the file-mapped fallback for a cache smaller
+- `--gpu-cache` / `MOE_CACHE_GPU_CACHE=1` works on Windows and with `GGML_BACKEND_PATH` since I28: the plugin rewrites llama.cpp's import of
+  `ggml_backend_tensor_set_async`, so each expert upload makes the expert resident first; the launcher adds `--no-op-offload` there (a big batch
+  offloaded by ggml itself would be copied past the plugin). Not available on Windows: the file-mapped fallback for a cache smaller
   than one op (loads over the size instead). Core pinning: implemented from the cores' efficiency class (f7721a6); on the 7950X (no hybrid cores) it correctly does nothing. Pinning covers processor group 0 only (up to 64 logical CPUs, like llama.cpp's own `-C`): with more, the launcher does not pin and says so.
 - `MOE_CACHE_WIN_BUFFERED=1` (opt-in, being tested, idea I38): read experts through the Windows file cache instead of unbuffered, so a second start is warm the way stock llama-server's is. The default stays unbuffered.
 - `./build.sh --windows` cross-compiles `ggml-moe-cache.dll` with mingw-w64 (load it with `GGML_BACKEND_PATH`; official Windows llama.cpp builds load their backends as DLLs).

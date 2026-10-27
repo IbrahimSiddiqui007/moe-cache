@@ -316,7 +316,7 @@
                      (unsigned long long) small_mapped, (unsigned long long) small_over);
             j = b;
             j += ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
-                 ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load());
+                 ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"hooked_uploads\":" + std::to_string(hooked_uploads.load());
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
             j += "],\"layer_misses\":[";
@@ -452,6 +452,10 @@
             if (commit_evictions) {
                 fprintf(stderr, "moe-cache: Windows commit was short (refused, or below the headroom kept for others): %llu experts given back early, cache ended at %.2f GiB\n",
                         (unsigned long long) commit_evictions, budget / 1073741824.0);
+            }
+            if (hooked_uploads) {
+                fprintf(stderr, "moe-cache: GPU expert cache: %llu uploads by llama.cpp went through the plugin (experts made resident first)\n",
+                        (unsigned long long) hooked_uploads.load());
             }
             if (cpu_check_reloads) {
                 fprintf(stderr, "moe-cache: internal: %llu experts were loaded again right before llama.cpp's kernels (please report)\n", (unsigned long long) cpu_check_reloads);

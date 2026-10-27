@@ -153,21 +153,29 @@ size_t buft_align(ggml_backend_buffer_type_t) {
 }
 
 // MOE_CACHE_GPU_CACHE=1: llama.cpp's own GPU expert cache (--moe-cache-mib) only caches experts of layers whose weights sit in a host buffer and
-// uploads them by reading the weight memory. Our buffer then says "host", and the upload is intercepted (ggml_backend_tensor_set_async below) to
-// make the experts being read resident first. That interception is symbol interposition, which only works when the plugin is preloaded
-// (LD_PRELOAD + MOE_CACHE_PRELOAD=1); loaded through GGML_BACKEND_PATH (install.sh, Vulkan, official and all Windows builds) the hook never runs
-// and the GPU would upload experts that are not in RAM: wrong tokens (found on the mini PC, T7: 0/4 identical). So the mode is refused there.
+// uploads them by reading the weight memory. Our buffer then says "host", and the upload (ggml_backend_tensor_set_async, called from libllama)
+// is intercepted to make the experts being read resident first. Preloaded (LD_PRELOAD + MOE_CACHE_PRELOAD=1) that is symbol interposition
+// (mc_interpose.inl). Loaded as a file (GGML_BACKEND_PATH: install.sh, Vulkan, official and all Windows builds; idea I28) the plugin rewrites the
+// import entry of that function in every other loaded library instead (Windows: import address table, Linux: GOT), see install_upload_hook().
+// Without either, the GPU would upload experts that are not in RAM: wrong tokens (mini PC, T7: 0/4 identical), so the mode is refused then.
+int install_upload_hook();
 bool gpu_cache_mode() {
     static const bool on = [] {
         const char * e = getenv("MOE_CACHE_GPU_CACHE");
         if (!(e && atoi(e) != 0)) {
             return false;
         }
-        if (!getenv("MOE_CACHE_PRELOAD")) {
-            fprintf(stderr, "moe-cache: MOE_CACHE_GPU_CACHE=1 ignored: it needs LD_PRELOAD loading (MOE_CACHE_PRELOAD=1); "
-                            "this plugin was loaded through GGML_BACKEND_PATH, where the GPU would read experts that are not loaded\n");
+        if (getenv("MOE_CACHE_PRELOAD")) {
+            return true;
+        }
+        const int n = install_upload_hook();
+        if (n <= 0) {
+            fprintf(stderr, "moe-cache: MOE_CACHE_GPU_CACHE=1 ignored: the plugin was loaded through GGML_BACKEND_PATH and found no call of "
+                            "ggml_backend_tensor_set_async to route through it, so the GPU would read experts that are not loaded\n");
             return false;
         }
+        fprintf(stderr, "moe-cache: GPU expert cache with the plugin loaded as a file: llama.cpp's expert uploads go through the plugin (%d import "
+                        "entr%s rewritten)\n", n, n == 1 ? "y" : "ies");
         return true;
     }();
     return on;
@@ -247,6 +255,151 @@ void gpu_cache_ensure(const void * p, size_t size) {
     }
     s.prepare_group(std::vector<int>{ idx }, cnt, false);
 }
+
+// ---- the upload hook for path loading (idea I28) ----
+typedef void (*set_async_fn_t)(ggml_backend_t, struct ggml_tensor *, const void *, size_t, size_t);
+set_async_fn_t g_set_async_orig = nullptr;
+
+void hooked_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+    S().hooked_uploads++;
+#ifndef MOE_CACHE_TEST_MUTANT_NO_UPLOAD_ENSURE   // test only: without this the GPU cache must get wrong experts (proves the GPU test covers it)
+    gpu_cache_ensure(data, size);
+#endif
+    g_set_async_orig(backend, tensor, data, offset, size);
+}
+
+#if defined(_WIN32)
+// every import address table entry of every other module that holds ggml-base's ggml_backend_tensor_set_async now points to the hook.
+// Matched by address (not by DLL or function name), so a renamed ggml-base or an import by ordinal is found too.
+int install_upload_hook() {
+    HMODULE base = GetModuleHandleA("ggml-base.dll");
+    if (!base || !(g_set_async_orig = (set_async_fn_t) (void *) GetProcAddress(base, "ggml_backend_tensor_set_async"))) {
+        return 0;
+    }
+    HMODULE self = nullptr;
+    GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) (void *) &hooked_tensor_set_async, &self);
+    HMODULE mods[1024];
+    DWORD need = 0;
+    if (!EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &need)) {
+        return 0;
+    }
+    int n = 0;
+    for (DWORD m = 0; m < need / sizeof(HMODULE) && m < 1024; m++) {
+        char * img = (char *) mods[m];
+        if (mods[m] == self || mods[m] == base) {
+            continue;
+        }
+        const IMAGE_DOS_HEADER * dos = (const IMAGE_DOS_HEADER *) img;
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+            continue;
+        }
+        const IMAGE_NT_HEADERS * nt = (const IMAGE_NT_HEADERS *) (img + dos->e_lfanew);
+        const IMAGE_DATA_DIRECTORY & dir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+        if (!dir.VirtualAddress || !dir.Size) {
+            continue;
+        }
+        for (const IMAGE_IMPORT_DESCRIPTOR * imp = (const IMAGE_IMPORT_DESCRIPTOR *) (img + dir.VirtualAddress); imp->Name; imp++) {
+            for (IMAGE_THUNK_DATA * ft = (IMAGE_THUNK_DATA *) (img + imp->FirstThunk); ft->u1.Function; ft++) {
+                if (ft->u1.Function != (ULONG_PTR) (void *) g_set_async_orig) {
+                    continue;
+                }
+                DWORD old = 0;
+                if (VirtualProtect(&ft->u1.Function, sizeof(ft->u1.Function), PAGE_READWRITE, &old)) {
+                    ft->u1.Function = (ULONG_PTR) (void *) &hooked_tensor_set_async;
+                    VirtualProtect(&ft->u1.Function, sizeof(ft->u1.Function), old, &old);
+                    n++;
+                }
+            }
+        }
+    }
+    return n;
+}
+#elif defined(__linux__) && defined(__x86_64__)
+// the GOT entries (PLT jump slots and GLOB_DAT) of every other loaded object that name ggml_backend_tensor_set_async now point to the hook.
+// The original is the one the global scope resolves to (libggml-base; a plugin loaded by path is not in that scope).
+int install_upload_hook() {
+    g_set_async_orig = (set_async_fn_t) dlsym(RTLD_DEFAULT, "ggml_backend_tensor_set_async");
+    Dl_info self_info;
+    if (!g_set_async_orig || !dladdr((void *) &hooked_tensor_set_async, &self_info)) {
+        return 0;
+    }
+    Dl_info base_info;
+    const void * base_addr = dladdr((void *) g_set_async_orig, &base_info) ? base_info.dli_fbase : nullptr;
+    struct ctx_t { const void * self; const void * base; int n; } ctx = { self_info.dli_fbase, base_addr, 0 };
+    dl_iterate_phdr([](struct dl_phdr_info * info, size_t, void * data) {
+        ctx_t & c = *(ctx_t *) data;
+        const uintptr_t lb = (uintptr_t) info->dlpi_addr;
+        const ElfW(Dyn) * dyn = nullptr;
+        uintptr_t first = UINTPTR_MAX, relro0 = 0, relro1 = 0;
+        for (int i = 0; i < info->dlpi_phnum; i++) {
+            if (info->dlpi_phdr[i].p_type == PT_GNU_RELRO) {
+                relro0 = lb + info->dlpi_phdr[i].p_vaddr;
+                relro1 = relro0 + info->dlpi_phdr[i].p_memsz;
+            }
+            if (info->dlpi_phdr[i].p_type == PT_DYNAMIC) {
+                dyn = (const ElfW(Dyn) *) (lb + info->dlpi_phdr[i].p_vaddr);
+            }
+            if (info->dlpi_phdr[i].p_type == PT_LOAD) {
+                first = std::min<uintptr_t>(first, lb + info->dlpi_phdr[i].p_vaddr);
+            }
+        }
+        const uintptr_t start = first / 4096 * 4096;
+        if (!dyn || (const void *) start == c.self || (const void *) start == c.base || (c.self && lb == (uintptr_t) c.self) || (c.base && lb == (uintptr_t) c.base)) {
+            return 0;
+        }
+        // ld.so has already turned these into addresses for most objects; the main program's or a vDSO's may still be offsets
+        auto addr = [lb](ElfW(Addr) v) { return v < lb ? lb + v : v; };
+        const ElfW(Sym) * symtab = nullptr;
+        const char * strtab = nullptr;
+        const ElfW(Rela) * jmprel = nullptr, * rela = nullptr;
+        size_t jmprelsz = 0, relasz = 0;
+        for (const ElfW(Dyn) * d = dyn; d->d_tag != DT_NULL; d++) {
+            switch (d->d_tag) {
+                case DT_SYMTAB:   symtab = (const ElfW(Sym) *) addr(d->d_un.d_ptr); break;
+                case DT_STRTAB:   strtab = (const char *) addr(d->d_un.d_ptr); break;
+                case DT_JMPREL:   jmprel = (const ElfW(Rela) *) addr(d->d_un.d_ptr); break;
+                case DT_PLTRELSZ: jmprelsz = d->d_un.d_val; break;
+                case DT_RELA:     rela = (const ElfW(Rela) *) addr(d->d_un.d_ptr); break;
+                case DT_RELASZ:   relasz = d->d_un.d_val; break;
+                default: break;
+            }
+        }
+        if (!symtab || !strtab) {
+            return 0;
+        }
+        auto scan = [&](const ElfW(Rela) * r, size_t sz) {
+            for (size_t i = 0; r && i < sz / sizeof(ElfW(Rela)); i++) {
+                const unsigned type = ELF64_R_TYPE(r[i].r_info);
+                if (type != R_X86_64_JUMP_SLOT && type != R_X86_64_GLOB_DAT) {
+                    continue;
+                }
+                const ElfW(Sym) & sym = symtab[ELF64_R_SYM(r[i].r_info)];
+                if (strcmp(strtab + sym.st_name, "ggml_backend_tensor_set_async") != 0) {
+                    continue;
+                }
+                void ** slot = (void **) (lb + r[i].r_offset);
+                char * page = (char *) ((uintptr_t) slot / 4096 * 4096);
+                const bool in_relro = (uintptr_t) slot >= relro0 && (uintptr_t) slot < relro1;   // read-only after relocation (-z relro / now)
+                if (in_relro ? mprotect(page, 4096, PROT_READ | PROT_WRITE) == 0 : true) {
+                    *slot = (void *) &hooked_tensor_set_async;
+                    if (in_relro) {
+                        mprotect(page, 4096, PROT_READ);     // a writable .got.plt stays as it was: lazy binding still writes its other slots
+                    }
+                    c.n++;
+                }
+            }
+        };
+        scan(jmprel, jmprelsz);
+        scan(rela, relasz);
+        return 0;
+    }, &ctx);
+    return ctx.n;
+}
+#else
+int install_upload_hook() {
+    return 0;
+}
+#endif
 
 ggml_backend_dev_t g_dev = nullptr;
 

@@ -124,6 +124,7 @@ struct state_t {
     // prepared before any is computed, so protecting only the current group (epoch == epoch) let a later group (or tune() shrinking the budget)
     // evict an earlier group's experts before llama.cpp read them: decommitted memory on Windows (access violation, PC 2026-10-27), zeros on Linux
     uint64_t protect_epoch = UINT64_MAX;
+    std::atomic<uint64_t> hooked_uploads{0};            // path loading + GPU expert cache (I28): uploads llama.cpp made through the rewritten import
     uint64_t cpu_check_reloads = 0;                     // experts cpu_path_check() had to load again (should stay 0)
     bool in_use(const node_t & n) const { return n.loading || n.epoch == epoch || n.epoch >= protect_epoch; }
 #ifdef _WIN32
