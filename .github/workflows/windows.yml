@@ -51,6 +51,14 @@ jobs:
             build/win/ggml-moe-cache.dll
             build/win/platform_test.exe
             build/win/win_read_bench.exe
+      - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
+        run: tools/make_windows_kit.sh 0.0.0-ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-kit
+          path: |
+            dist/moe-cache-v0.0.0-ci-windows-x64.zip
+            dist/SHA256SUMS-windows
 
   windows:
     needs: dll
@@ -65,6 +73,10 @@ jobs:
         with:
           name: win-dll
           path: dll
+      - uses: actions/download-artifact@v4
+        with:
+          name: win-kit
+          path: kitzip
 
       - name: Platform layer natively (reserve / commit / decommit, unbuffered reads, limits)
         run: |
@@ -84,6 +96,18 @@ jobs:
           Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
           $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
           if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
+
+      - name: The kit as a user gets it (unzipped elsewhere, no MOE_CACHE_LIB, no repository) - check finds the kit's API 3 DLL and the cache runs
+        run: |
+          Expand-Archive kitzip\moe-cache-v0.0.0-ci-windows-x64.zip -DestinationPath $env:RUNNER_TEMP\kit
+          $k = "$env:RUNNER_TEMP\kit\moe-cache-v0.0.0-ci-windows-x64"
+          Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
+          Push-Location $k
+          python bin\moe_cache.py check "$env:GITHUB_WORKSPACE\granite.gguf" --llama-server "$env:LLAMA_DIR\llama-server.exe" --run | Tee-Object $env:RUNNER_TEMP\kit_check.txt
+          Pop-Location
+          if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "ggml-moe-cache-api3.dll" -SimpleMatch -Quiet)) { throw "kit: check did not pick the kit's API 3 DLL" }
+          if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "plugin loads .*yes" -Quiet)) { throw "kit: the plugin does not load" }
+          if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "cache runs .*yes" -Quiet)) { throw "kit: the cache did not compute" }
 
       - name: Launcher on Windows (check, dry run, core detection for pinning)
         run: |
