@@ -2114,3 +2114,8 @@ best count; one more layer than the planner loses ~23 % (VRAM runs short next to
 |---|---|---|
 | IQ2_XS | 8 (40) / 10 (38) / **12 (36, default)** / 14 (34) | 20.94 / 21.31 / **22.12** / 16.91 |
 | IQ3_XXS | 5 (43) / 7 (41) / **9 (39, default)** / 11 (37) | 18.68 / 19.06 / **19.82** / 15.27 |
+
+**MTP on GLM-5.3-Flash with the file-view cache** (one cold run, the 256-token request; GLM has an MTP head, blk.45.nextn): stock 2.21,
+plugin 4.44, **plugin + `--mtp` 6.92 tok/s (3.1x stock)**, text byte-identical to stock, drafts accepted 61 % / 100 % (two requests).
+The cache kept its 20 GiB with free system commit at 3.47 GiB (the MTP draft context's GPU memory is charged to commit); before the file view
+the same setup cut the cache to 4.25 GiB and decoded at 0.8-1.0 tok/s (RESULTS 58). MTP on GLM: yes, now.
