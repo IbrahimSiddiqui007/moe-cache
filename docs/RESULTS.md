@@ -2232,3 +2232,27 @@ from the usage profile; with `--hybrid` all experts go to the plugin (`--n-cpu-m
 The GLM bank is freed for long prompts and loaded again for decoding, so its prompt speed stays; on the 122B the bank costs prompt speed too.
 Verdict: under the +10 % kill line on GLM (and approximate), a loss on the 122B: killed on this PC. For GLM, MTP (+25 % over the plugin, exact,
 RESULTS 60) is the better lever.
+
+**N13 / B4 / R2: `-ub` 512-4096 at ~34k tokens, and a launcher bug** (Flash-Next IQ2_XS, plugin with the file view, `--ctx 40960 --ub N`, cold, ABBA;
+C:\dl\pc_ub.ps1 -PromptFile C:\dl\long30k.txt: the first 90 KB of this file, 33979 tokens, then the 256-token request).
+**Bug**: the launcher ran its tuner (micro-batch, GPU expert layers, VRAM kept free for the plugin's long-prompt GPU block) only with `--ub auto`. A
+chosen `--ub N` (or `-- -ub N`) fell back to the plain planner, which fills the card with expert layers (36 at any -ub): every long-prompt
+block found 0 MiB free ("needs 1293 MiB ... only 0 MiB are free: it stays on the CPU") and the whole prompt ran on the CPU. Fix
+(claude/pc-list-a 1d2d5a8): `tune(..., ub=N)` plans the layers around the chosen micro-batch (512/1024: 38, 2048: 41, 4096: 46 CPU expert
+layers at 40960; auto picks 1024 with 38).
+| `-ub` | before the fix (launcher 65facd1): prompt tok/s, decode | after the fix (1d2d5a8): prompt tok/s (two runs) | GPU blocks | decode tok/s |
+|---|---|---|---|---|
+| 512 | 141.3, 23.03 | 215.4, 215.4 | 2546 | 22.31, 22.30 |
+| **1024 (auto at this context)** | 121.0, 18.73 | **275.7, 278.8** | 1292 | 22.39, 22.24 |
+| 2048 | 132.6, 19.26 | 244.4, 249.2 | 697 | 20.29, 20.20 |
+| 4096 | 119.9 / 119.3, 17.53 / 17.67 | 231.6, 232.0 | 414 | 18.05, 18.28 |
+Verdict: with the fix every `-ub` is 1.5-2.3x faster at 34k tokens than before; 1024 (what the tuner already picks at this context) is best,
++12 % over 2048 and +28 % over 512; bigger batches cost decode (fewer GPU layers). The default (`--ub auto`) was not affected by the bug.
+Not run (wrap-up): MOE_CACHE_GPU_MIN_TOKENS 8 / 16 / 32 for short follow-up prompts (script C:\dl\pc_mintok.ps1 ready).
+
+**Left over from list A** (stopped at the owner's wrap-up, 2026-10-28)
+| Item | Done | What remains |
+|---|---|---|
+| N13 short prompts | - | MOE_CACHE_GPU_MIN_TOKENS 8 / 16 / 32, ABBA (32, 16, 8, 8, 16, 32): `C:\dl\pc_mintok.ps1 -Tag t -MinTok N` (cached ~3k context, 10 cumulative follow-up turns of ~10-60 tokens, prompt ms per turn); ~40 min |
+| N3 idle release | design only | measure first: `C:\dl\pc_n3.ps1` (running server, its hard minimum dropped and working set emptied from outside, next request timed vs the on-demand restart: 34 s ready, 39 s to first answer). Build only if the next request is fast: plugin named event Local\moe-cache-idle-<pid> (drop the minimum, empty the working set, ws_min_cur = 0 so the next graph sets it again) + an earlier idle stage in on-demand. Note: an idle on-demand server is already stopped after --idle (memory back, RESULTS 61 F5) |
+| N5 serve before the warm start ends | measured cost only | the warm start runs inside llama.cpp's load (a graph before "model loaded"), 3.9-4.0 s for 13-15 GiB here. Measure first: `C:\dl\pc_n5.ps1 -Tag a` vs `-EnvList "MOE_CACHE_PRELOAD_FRAC=0"` (ready + first answer). Build only on a gain: preload in a background thread per chunk with loading flags (shared Linux/Windows) |
