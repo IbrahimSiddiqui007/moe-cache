@@ -12,6 +12,7 @@ Standard library only (Windows and Linux). Greedy = temperature 0, top_k 1, fixe
 
 usage:
   quality_yardstick.py run     --url http://127.0.0.1:8080 --out ref.json [--label stock] [--n-predict 256] [--no-think] [--prompts FILE.json]
+                               [--tasks tools/quality_tasks.json] [--tasks-only] [--task-n-predict 128]
   quality_yardstick.py compare REF.json TEST.json [TEST2.json ...]
   quality_yardstick.py kl      --perplexity BIN --model GGUF --text FILE --kld BASE.kld (--make-base | --test) [-- extra llama-perplexity args]
 
@@ -114,7 +115,11 @@ def has_loop(tokens, n=LOOP_N, repeats=LOOP_REPEATS):
 def cmd_run(a):
     global API_KEY
     API_KEY = a.api_key or API_KEY
-    items = [{"kind": "open", "prompt": p} for p in OPEN] + [{"kind": "task", "prompt": p + TASK_SUFFIX, "answers": ans} for p, ans in TASKS]
+    if a.tasks:      # task file: JSON list of {prompt, answers: [regex], category?}; replaces the built-in 20 questions
+        tasks = [(t["prompt"], t["answers"]) for t in json.load(open(a.tasks, encoding="utf-8"))]
+    else:
+        tasks = TASKS
+    items = ([] if a.tasks_only else [{"kind": "open", "prompt": p} for p in OPEN]) + [{"kind": "task", "prompt": p + TASK_SUFFIX, "answers": ans} for p, ans in tasks]
     if a.prompts:
         items = json.load(open(a.prompts, encoding="utf-8"))
     props = get(a.url, "/props")
@@ -219,6 +224,8 @@ def main():
     r.add_argument("--n-predict", type=int, default=256, help="tokens per open-ended prompt (default 256)")
     r.add_argument("--task-n-predict", type=int, default=64, help="tokens per exact-answer question (default 64; raise it for thinking models)")
     r.add_argument("--no-think", action="store_true", help="pass enable_thinking=false to the chat template (Qwen-style thinking models)")
+    r.add_argument("--tasks", help="JSON task file (tools/quality_tasks.json: 200 exact-answer tasks) instead of the built-in 20 questions")
+    r.add_argument("--tasks-only", action="store_true", help="skip the 24 open-ended prompts and run only the exact-answer tasks (minutes instead of an hour)")
     r.add_argument("--prompts", help="JSON list of {kind: open|task, prompt, answers: [regex]} instead of the built-in set")
     c = sp.add_parser("compare", help="flip rate, loops and task score of runs against a reference run")
     c.add_argument("ref")

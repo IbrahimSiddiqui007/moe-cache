@@ -91,6 +91,9 @@
   stays Intel-only by default.** The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are Linux-only (they need `LD_PRELOAD`).
 - `state_t` methods split into three include files (`.text` and `.rodata` unchanged).
 
+### Quality yardstick
+- `tools/quality_tasks.json`: 202 original exact-answer tasks (arithmetic and word problems, unit conversions, Python output, strings, logic, dates, facts, tool-call JSON; the 20 old ones included), every answer computed or brute-forced by `tools/make_quality_tasks.py`. `quality_yardstick.py run --tasks tools/quality_tasks.json --tasks-only` runs them alone (no open prompts): 5-10 minutes on Flash-Next instead of 8-14.
+
 ### Known limits
 - **Windows: a small page file limits the cache** (above): let Windows manage it, or make it 14 GB or more.
 - **Flash-Next on AMD under Windows runs without context checkpoints with drivers older than 32.0.32015.7029** (driver crash, above).

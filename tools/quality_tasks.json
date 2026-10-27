@@ -1,0 +1,1618 @@
+[
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is 17 * 23?",
+  "answers": [
+   "\\b391\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is 1234 + 5678?",
+  "answers": [
+   "\\b6,?912\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is 144 divided by 12?",
+  "answers": [
+   "\\b12\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is 15% of 80?",
+  "answers": [
+   "\\b12(\\.0+)?\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is the square root of 169?",
+  "answers": [
+   "\\b13\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is 2 to the power of 10?",
+  "answers": [
+   "\\b1,?024\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "How many minutes are in 3.5 hours?",
+  "answers": [
+   "\\b210\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "How many centimetres are in 2.5 metres?",
+  "answers": [
+   "\\b250\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is the capital of Australia?",
+  "answers": [
+   "canberra"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is the capital of Canada?",
+  "answers": [
+   "ottawa"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is the chemical symbol for gold?",
+  "answers": [
+   "\\bau\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "Which planet is closest to the Sun?",
+  "answers": [
+   "mercury"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "How many sides does a hexagon have?",
+  "answers": [
+   "\\b6\\b|\\bsix\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "In which year did the Second World War end?",
+  "answers": [
+   "\\b1945\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "Who wrote the play Romeo and Juliet?",
+  "answers": [
+   "shakespeare"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is the boiling point of water at sea level in degrees Celsius?",
+  "answers": [
+   "\\b100\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "If Alice is taller than Bob and Bob is taller than Carol, who is the shortest?",
+  "answers": [
+   "carol"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "A shop sells pens at 3 for 2 dollars. How many dollars do 12 pens cost?",
+  "answers": [
+   "\\b8\\b|\\beight\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "What is the next number in the sequence 2, 4, 8, 16, ...?",
+  "answers": [
+   "\\b32\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "v2 original",
+  "prompt": "How many days are in a leap year?",
+  "answers": [
+   "\\b366\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 48 * 25?",
+  "answers": [
+   "(?<![\\d.,])1,?200(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 7919 - 2468?",
+  "answers": [
+   "(?<![\\d.,])5,?451(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 156 * 12?",
+  "answers": [
+   "(?<![\\d.,])1,?872(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 9,000 divided by 45?",
+  "answers": [
+   "(?<![\\d.,])200(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 13 squared?",
+  "answers": [
+   "(?<![\\d.,])169(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 3 to the power of 5?",
+  "answers": [
+   "(?<![\\d.,])243(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 25% of 360?",
+  "answers": [
+   "(?<![\\d.,])90(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 8.5 + 4.75?",
+  "answers": [
+   "(?<![\\d.,])13\\.250*(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 1000 - 387?",
+  "answers": [
+   "(?<![\\d.,])613(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is the sum of the integers from 1 to 20?",
+  "answers": [
+   "(?<![\\d.,])210(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 6 + 4 * 5 - 3?",
+  "answers": [
+   "(?<![\\d.,])23(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is (14 + 6) * (9 - 4)?",
+  "answers": [
+   "(?<![\\d.,])100(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 2 to the power of 12?",
+  "answers": [
+   "(?<![\\d.,])4,?096(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is 999 * 3?",
+  "answers": [
+   "(?<![\\d.,])2,?997(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is the remainder when 100 is divided by 7?",
+  "answers": [
+   "(?<![\\d.,])2(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is the greatest common divisor of 84 and 36?",
+  "answers": [
+   "(?<![\\d.,])12(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "What is the least common multiple of 6 and 8?",
+  "answers": [
+   "(?<![\\d.,])24(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A train leaves at 9:40 and arrives at 12:15 the same day. How many minutes is the journey?",
+  "answers": [
+   "(?<![\\d.,])155(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A bakery makes 36 rolls per tray and fills 14 trays. It sells 400 rolls. How many are left?",
+  "answers": [
+   "(?<![\\d.,])104(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "Maya buys 3 notebooks at 4 dollars each and 2 pens at 1.50 dollars each. She pays with a 20 dollar bill. How many dollars of change?",
+  "answers": [
+   "(?<![\\d.,])5(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A tank holds 240 litres and is 3/8 full. How many litres are in it?",
+  "answers": [
+   "(?<![\\d.,])90(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A car drives 60 km/h for 2.5 hours, then 80 km/h for 1.5 hours. How many km in total?",
+  "answers": [
+   "(?<![\\d.,])270(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "Seven friends split a bill of 245 dollars equally. How many dollars does each pay?",
+  "answers": [
+   "(?<![\\d.,])35(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A rectangle is 18 cm long and 7 cm wide. What is its perimeter in cm?",
+  "answers": [
+   "(?<![\\d.,])50(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A rectangle is 18 cm long and 7 cm wide. What is its area in square cm?",
+  "answers": [
+   "(?<![\\d.,])126(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A jacket costs 120 dollars and is discounted by 30%. What is the sale price in dollars?",
+  "answers": [
+   "(?<![\\d.,])84(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A recipe for 4 people uses 300 g of rice. How many grams are needed for 10 people?",
+  "answers": [
+   "(?<![\\d.,])750(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "Sam saves 15 dollars a week. After how many weeks will Sam have saved 240 dollars?",
+  "answers": [
+   "(?<![\\d.,])16(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A class has 28 students; 3/7 of them are girls. How many boys are in the class?",
+  "answers": [
+   "(?<![\\d.,])16(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "Three consecutive integers add up to 72. What is the largest?",
+  "answers": [
+   "(?<![\\d.,])25(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "The average of four numbers is 18. Three of them are 10, 20 and 30. What is the fourth?",
+  "answers": [
+   "(?<![\\d.,])12(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A phone battery drops 4% every hour. Starting at 100%, what percent is left after 9 hours?",
+  "answers": [
+   "(?<![\\d.,])64(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A pool fills at 12 litres per minute. How many minutes does it take to put 1,500 litres in it?",
+  "answers": [
+   "(?<![\\d.,])125(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "Tickets cost 12 dollars for adults and 7 dollars for children. What do 3 adults and 5 children pay in dollars?",
+  "answers": [
+   "(?<![\\d.,])71(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "If 5 machines make 5 parts in 5 minutes, how many minutes do 100 machines need to make 100 parts?",
+  "answers": [
+   "(?<![\\d.,])5(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "arithmetic",
+  "prompt": "A number is doubled and then increased by 9, giving 51. What is the number?",
+  "answers": [
+   "(?<![\\d.,])21(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "Convert 68 degrees Fahrenheit to Celsius.",
+  "answers": [
+   "(?<![\\d.,])20(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "Convert 37 degrees Celsius to Fahrenheit.",
+  "answers": [
+   "(?<![\\d.,])98\\.60*(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many metres are in 5 kilometres?",
+  "answers": [
+   "(?<![\\d.,])5,?000(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many seconds are in 7 minutes?",
+  "answers": [
+   "(?<![\\d.,])420(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many minutes are in 2 hours and 15 minutes?",
+  "answers": [
+   "(?<![\\d.,])135(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many grams are in 3.2 kilograms?",
+  "answers": [
+   "(?<![\\d.,])3,?200(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many litres are in 250 millilitres?",
+  "answers": [
+   "(?<![\\d.,])0\\.250*(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many inches are in 5 feet (12 inches per foot)?",
+  "answers": [
+   "(?<![\\d.,])60(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "Convert 12 inches to centimetres (1 inch = 2.54 cm).",
+  "answers": [
+   "(?<![\\d.,])30\\.480*(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "Convert 90 km/h to metres per second.",
+  "answers": [
+   "(?<![\\d.,])25(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many megabytes are in 4.5 gigabytes (1 GB = 1000 MB)?",
+  "answers": [
+   "(?<![\\d.,])4,?500(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many feet are in 12 yards (3 feet per yard)?",
+  "answers": [
+   "(?<![\\d.,])36(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many ounces are in 3 pounds (16 ounces per pound)?",
+  "answers": [
+   "(?<![\\d.,])48(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many hours are in 3 days?",
+  "answers": [
+   "(?<![\\d.,])72(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many months are in 7.5 years?",
+  "answers": [
+   "(?<![\\d.,])90(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many millimetres are in 0.35 metres?",
+  "answers": [
+   "(?<![\\d.,])350(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "How many seconds are in one day?",
+  "answers": [
+   "(?<![\\d.,])86,?400(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "units",
+  "prompt": "A recipe needs 1.5 litres of milk. How many cups is that if a cup is 250 ml?",
+  "answers": [
+   "(?<![\\d.,])6(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(sum(range(1, 11)))\n```",
+  "answers": [
+   "(?<![\\d.,])55(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nx = [3, 1, 2]\nx.sort()\nprint(x[0], x[-1])\n```",
+  "answers": [
+   "1\\s+3"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(len('hello world'))\n```",
+  "answers": [
+   "(?<![\\d.,])11(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint('abc' * 3)\n```",
+  "answers": [
+   "abcabcabc"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nd = {'a': 1, 'b': 2}\nd['c'] = d['a'] + d['b']\nprint(sorted(d.items())[-1])\n```",
+  "answers": [
+   "\\('c',\\s+3\\)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(10 // 3, 10 % 3)\n```",
+  "answers": [
+   "3\\s+1"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint([i * i for i in range(5)])\n```",
+  "answers": [
+   "\\[0,\\s+1,\\s+4,\\s+9,\\s+16\\]"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\ns = 0\nfor i in range(1, 6):\n    if i % 2:\n        s += i\nprint(s)\n```",
+  "answers": [
+   "(?<![\\d.,])9(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint('banana'.count('a'))\n```",
+  "answers": [
+   "(?<![\\d.,])3(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\na = [1, 2, 3]\nb = a\nb.append(4)\nprint(len(a))\n```",
+  "answers": [
+   "(?<![\\d.,])4(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(' '.join(w[0] for w in 'north east south west'.split()))\n```",
+  "answers": [
+   "n\\s+e\\s+s\\s+w"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\ndef f(n):\n    return 1 if n < 2 else n * f(n - 1)\nprint(f(5))\n```",
+  "answers": [
+   "(?<![\\d.,])120(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(max('apple', 'pear', 'fig', key=len))\n```",
+  "answers": [
+   "apple"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(7 / 2, 7 // 2)\n```",
+  "answers": [
+   "3\\.5\\s+3"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(bool([]), bool([0]))\n```",
+  "answers": [
+   "false\\s+true"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nt = (1, 2, 3)\nprint(t[1:])\n```",
+  "answers": [
+   "\\(2,\\s+3\\)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint('Hello'[::-1])\n```",
+  "answers": [
+   "olleh"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nx = 5\nwhile x > 0:\n    x -= 2\nprint(x)\n```",
+  "answers": [
+   "\\-1"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(sorted({3, 1, 3, 2, 1}))\n```",
+  "answers": [
+   "\\[1,\\s+2,\\s+3\\]"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(int('12') + int('30'))\n```",
+  "answers": [
+   "(?<![\\d.,])42(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(list(range(10, 0, -3)))\n```",
+  "answers": [
+   "\\[10,\\s+7,\\s+4,\\s+1\\]"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(round(2.675, 1), abs(-4))\n```",
+  "answers": [
+   "2\\.7\\s+4"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\ndef g(a, b=2):\n    return a ** b\nprint(g(3), g(2, 5))\n```",
+  "answers": [
+   "9\\s+32"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nprint(len(set('mississippi')))\n```",
+  "answers": [
+   "(?<![\\d.,])4(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "code output",
+  "prompt": "What exactly does this Python program print?\n```python\nwords = ['pear', 'fig', 'apple']\nprint(sorted(words, key=len))\n```",
+  "answers": [
+   "\\['fig',\\s+'pear',\\s+'apple'\\]"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Write the word 'stressed' backwards.",
+  "answers": [
+   "(?<![a-z])desserts(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Write the word 'planet' with its letters in alphabetical order.",
+  "answers": [
+   "(?<![a-z])aelnpt(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Remove all vowels (a, e, i, o, u) from the word 'education'.",
+  "answers": [
+   "(?<![a-z])dctn(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Write the word 'notebook' backwards.",
+  "answers": [
+   "(?<![a-z])koobeton(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "What is the third letter of the word 'keyboard'?",
+  "answers": [
+   "(?<![a-z])y(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "What is the last letter of the word 'mountain'?",
+  "answers": [
+   "(?<![a-z])n(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Write the first letters of the words in 'portable network graphics format' joined together.",
+  "answers": [
+   "(?<![a-z])pngf(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Replace every 'a' with 'o' in the word 'banana'.",
+  "answers": [
+   "(?<![a-z])bonono(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Take the word 'ornament', remove its first and last letters.",
+  "answers": [
+   "(?<![a-z])rnamen(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Write the word 'garden' twice with a hyphen between the copies.",
+  "answers": [
+   "(?<![a-z])garden\\-garden(?![a-z])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "How many times does the letter 'r' appear in the word 'strawberry'?",
+  "answers": [
+   "(?<![\\d.,])3(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "How many vowels (a, e, i, o, u) are in the word 'encyclopedia'?",
+  "answers": [
+   "(?<![\\d.,])5(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "How many letters are in the word 'extraordinary'?",
+  "answers": [
+   "(?<![\\d.,])13(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "How many words are in the sentence 'the quick brown fox jumps over the lazy dog'?",
+  "answers": [
+   "(?<![\\d.,])9(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "How many times does the letter 'e' appear in 'independence'?",
+  "answers": [
+   "(?<![\\d.,])4(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "How many distinct letters are in the word 'bookkeeper'?",
+  "answers": [
+   "(?<![\\d.,])6(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Is the word 'level' a palindrome? Answer yes or no.",
+  "answers": [
+   "\\byes\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Is the word 'planet' a palindrome? Answer yes or no.",
+  "answers": [
+   "\\bno\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "strings",
+  "prompt": "Which word comes first in alphabetical order: 'mango', 'melon', 'maple' or 'marble'?",
+  "answers": [
+   "\\bmango\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "Four runners finish a race. Ana finishes before Ben. Cy finishes before Ana. Ben finishes before Dee. Who finishes third?",
+  "answers": [
+   "\\bben\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "Four runners finish a race. Ana finishes before Ben. Cy finishes before Ana. Ben finishes before Dee. Who finishes last?",
+  "answers": [
+   "\\bdee\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "Five books are on a shelf in a row. Red is left of Green. Green is left of Blue. Black is left of Red. Pink is right of Blue. Which book is in the middle?",
+  "answers": [
+   "\\bgreen\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "All bloops are razzies. All razzies are lazzies. Are all bloops lazzies? Answer yes or no.",
+  "answers": [
+   "\\byes\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "All cats are animals. Some animals are fast. Does it follow that some cats are fast? Answer yes or no.",
+  "answers": [
+   "\\bno\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "No fish can fly. A salmon is a fish. Can a salmon fly? Answer yes or no.",
+  "answers": [
+   "\\bno\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "If it rains, the street is wet. The street is not wet. Did it rain? Answer yes or no.",
+  "answers": [
+   "\\bno\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "On an island, knights always tell the truth and knaves always lie. A says: 'B is a knave.' B says: 'A and I are the same type.' What is A: knight or knave?",
+  "answers": [
+   "\\bknight\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "On an island, knights always tell the truth and knaves always lie. A says: 'We are both knaves.' (B says nothing.) What is A: knight or knave?",
+  "answers": [
+   "\\bknave\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "A farmer has 17 sheep. All but 9 run away. How many sheep are left?",
+  "answers": [
+   "(?<![\\d.,])9(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "How many months of the year have 28 days (at least)?",
+  "answers": [
+   "(?<![\\d.,])12(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "What is the next number in the sequence 3, 6, 11, 18, 27, ...?",
+  "answers": [
+   "(?<![\\d.,])38(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "What is the next number in the sequence 1, 1, 2, 3, 5, 8, 13, ...?",
+  "answers": [
+   "(?<![\\d.,])21(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "What is the next number in the sequence 100, 90, 81, 73, ...? (the differences shrink by 1 each step)",
+  "answers": [
+   "(?<![\\d.,])66(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "Monday, Wednesday, Friday, ... what is the next day of the week in this pattern?",
+  "answers": [
+   "\\bsunday\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "Alice, Bob and Carol each own exactly one pet, all different: a cat, a dog or a fish. Alice is allergic to fur, and Bob's pet barks. Who owns the cat?",
+  "answers": [
+   "\\bcarol\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "logic",
+  "prompt": "Two fathers and two sons go fishing and each catches one fish, for exactly 3 fish in total (nobody is left out). How many people are fishing?",
+  "answers": [
+   "(?<![\\d.,])3(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What day of the week is 2024-03-01? Answer with the weekday name.",
+  "answers": [
+   "\\bfriday\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What day of the week is 2023-12-25? Answer with the weekday name.",
+  "answers": [
+   "\\bmonday\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What day of the week is 2026-02-14? Answer with the weekday name.",
+  "answers": [
+   "\\bsaturday\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What day of the week is 2000-01-01? Answer with the weekday name.",
+  "answers": [
+   "\\bsaturday\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What day of the week is 2025-07-04? Answer with the weekday name.",
+  "answers": [
+   "\\bfriday\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "How many days are there from 2024-01-15 to 2024-03-10?",
+  "answers": [
+   "(?<![\\d.,])55(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "How many days are there from 2023-11-20 to 2024-01-05?",
+  "answers": [
+   "(?<![\\d.,])46(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "How many days are there from 2025-02-01 to 2025-03-01?",
+  "answers": [
+   "(?<![\\d.,])28(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What date is 15 days after 2024-02-20? Answer in YYYY-MM-DD format.",
+  "answers": [
+   "2024\\-03\\-06"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What date is 10 days after 2025-12-28? Answer in YYYY-MM-DD format.",
+  "answers": [
+   "2026\\-01\\-07"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What date is 30 days after 2023-01-31? Answer in YYYY-MM-DD format.",
+  "answers": [
+   "2023\\-03\\-02"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What date is 61 days after 2024-12-01? Answer in YYYY-MM-DD format.",
+  "answers": [
+   "2025\\-01\\-31"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "Is 1900 a leap year? Answer yes or no.",
+  "answers": [
+   "\\bno\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "Is 2100 a leap year? Answer yes or no.",
+  "answers": [
+   "\\bno\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "Is 2024 a leap year? Answer yes or no.",
+  "answers": [
+   "\\byes\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "Is 2023 a leap year? Answer yes or no.",
+  "answers": [
+   "\\bno\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "How many days are in February 2100?",
+  "answers": [
+   "(?<![\\d.,])28(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "If today is Wednesday, which weekday is it 10 days from now? Answer with the weekday name.",
+  "answers": [
+   "\\bsaturday\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "A meeting starts at 14:35 and lasts 1 hour 50 minutes. At what time does it end? Answer as HH:MM.",
+  "answers": [
+   "(?<!\\d)16:25(?!\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "dates",
+  "prompt": "What month comes 7 months after October? Answer with the month name.",
+  "answers": [
+   "\\bmay\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the capital of Japan?",
+  "answers": [
+   "\\b(tokyo)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the chemical symbol for sodium?",
+  "answers": [
+   "\\b(na)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the largest planet in the Solar System?",
+  "answers": [
+   "\\b(jupiter)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Who wrote the novel Pride and Prejudice?",
+  "answers": [
+   "\\b(austen)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the capital of Egypt?",
+  "answers": [
+   "\\b(cairo)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the chemical symbol for iron?",
+  "answers": [
+   "\\b(fe)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the capital of Brazil?",
+  "answers": [
+   "\\b(brasilia|brasília)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the capital of Turkey?",
+  "answers": [
+   "\\b(ankara)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the capital of Switzerland?",
+  "answers": [
+   "\\b(bern)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the capital of Kenya?",
+  "answers": [
+   "\\b(nairobi)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Which is the largest ocean on Earth?",
+  "answers": [
+   "\\b(pacific)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the currency of Japan?",
+  "answers": [
+   "\\b(yen)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Who painted the Mona Lisa?",
+  "answers": [
+   "\\b(leonardo|da\\ vinci)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What gas do plants absorb from the air for photosynthesis?",
+  "answers": [
+   "\\b(carbon\\ dioxide|co2)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Which planet is known as the Red Planet?",
+  "answers": [
+   "\\b(mars)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the chemical formula of table salt?",
+  "answers": [
+   "\\b(nacl)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Which organelle is called the powerhouse of the cell?",
+  "answers": [
+   "\\b(mitochondri)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the hardest natural substance?",
+  "answers": [
+   "\\b(diamond)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Which gas makes up most of Earth's atmosphere?",
+  "answers": [
+   "\\b(nitrogen)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the chemical symbol for silver?",
+  "answers": [
+   "\\b(ag)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Which mountain range contains Mount Everest?",
+  "answers": [
+   "\\b(himalaya)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the chemical symbol for potassium?",
+  "answers": [
+   "\\b(k)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "Who wrote the dystopian novel Nineteen Eighty-Four?",
+  "answers": [
+   "\\b(orwell)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the largest mammal?",
+  "answers": [
+   "\\b(blue\\ whale)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the capital of Italy?",
+  "answers": [
+   "\\b(rome)\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "In which year did the Berlin Wall fall?",
+  "answers": [
+   "(?<![\\d.,])1,?989(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "In which year did Apollo 11 land humans on the Moon?",
+  "answers": [
+   "(?<![\\d.,])1,?969(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "How many chromosomes does a typical human cell have?",
+  "answers": [
+   "(?<![\\d.,])46(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "How many bones does an adult human have?",
+  "answers": [
+   "(?<![\\d.,])206(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the atomic number of carbon?",
+  "answers": [
+   "(?<![\\d.,])6(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "How many strings does a standard guitar have?",
+  "answers": [
+   "(?<![\\d.,])6(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "How many sides does an octagon have?",
+  "answers": [
+   "(?<![\\d.,])8(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "How many continents are there on Earth by the usual seven-continent count?",
+  "answers": [
+   "(?<![\\d.,])7(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "At what temperature in degrees Fahrenheit does water freeze at sea level?",
+  "answers": [
+   "(?<![\\d.,])32(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "How many letters are in the English alphabet?",
+  "answers": [
+   "(?<![\\d.,])26(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the smallest prime number?",
+  "answers": [
+   "(?<![\\d.,])2(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "In which year did the French Revolution begin?",
+  "answers": [
+   "(?<![\\d.,])1,?789(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is 255 in hexadecimal? Use lowercase letters, no prefix.",
+  "answers": [
+   "(?<![0-9a-f])ff(?![0-9a-f])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the decimal number 37 written in binary?",
+  "answers": [
+   "(?<![01])100101(?![01])"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the number 49 written as a Roman numeral?",
+  "answers": [
+   "\\bxlix\\b"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "facts",
+  "prompt": "What is the binary number 101101 in decimal?",
+  "answers": [
+   "(?<![\\d.,])45(\\.0+)?(?!\\d|[.,]\\d)"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "tool call",
+  "prompt": "You can call this tool: get_weather(city: string, unit: \"celsius\" or \"fahrenheit\")\nWhat is the weather in Paris right now, in celsius?\nReply with only a JSON object of the form {\"name\": ..., \"arguments\": {...}} and nothing else.",
+  "answers": [
+   "(?s)^(?=.*\"name\"\\s*:\\s*\"get_weather\")(?=.*\"city\"\\s*:\\s*\"paris\")(?=.*\"unit\"\\s*:\\s*\"celsius\").*"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "tool call",
+  "prompt": "You can call this tool: add_numbers(a: number, b: number)\nAdd 17 and 25 using the tool.\nReply with only a JSON object of the form {\"name\": ..., \"arguments\": {...}} and nothing else.",
+  "answers": [
+   "(?s)^(?=.*\"name\"\\s*:\\s*\"add_numbers\")(?=.*\"a\"\\s*:\\s*17)(?=.*\"b\"\\s*:\\s*25).*"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "tool call",
+  "prompt": "You can call this tool: set_timer(minutes: integer)\nSet a timer for twenty minutes.\nReply with only a JSON object of the form {\"name\": ..., \"arguments\": {...}} and nothing else.",
+  "answers": [
+   "(?s)^(?=.*\"name\"\\s*:\\s*\"set_timer\")(?=.*\"minutes\"\\s*:\\s*20).*"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "tool call",
+  "prompt": "You can call this tool: send_email(to: string, subject: string)\nEmail sam@example.com with the subject lunch.\nReply with only a JSON object of the form {\"name\": ..., \"arguments\": {...}} and nothing else.",
+  "answers": [
+   "(?s)^(?=.*\"name\"\\s*:\\s*\"send_email\")(?=.*\"to\"\\s*:\\s*\"sam@example\\.com\")(?=.*\"subject\"\\s*:\\s*\"lunch\").*"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "tool call",
+  "prompt": "You can call this tool: search_files(query: string, limit: integer)\nFind at most 5 files matching the word invoice.\nReply with only a JSON object of the form {\"name\": ..., \"arguments\": {...}} and nothing else.",
+  "answers": [
+   "(?s)^(?=.*\"name\"\\s*:\\s*\"search_files\")(?=.*\"query\"\\s*:\\s*\"invoice\")(?=.*\"limit\"\\s*:\\s*5).*"
+  ]
+ },
+ {
+  "kind": "task",
+  "category": "tool call",
+  "prompt": "You can call this tool: convert_currency(amount: number, from: string (ISO code), to: string (ISO code))\nConvert 100 US dollars (USD) to euros (EUR).\nReply with only a JSON object of the form {\"name\": ..., \"arguments\": {...}} and nothing else.",
+  "answers": [
+   "(?s)^(?=.*\"name\"\\s*:\\s*\"convert_currency\")(?=.*\"amount\"\\s*:\\s*100)(?=.*\"from\"\\s*:\\s*\"usd\")(?=.*\"to\"\\s*:\\s*\"eur\").*"
+  ]
+ }
+]
