@@ -30,7 +30,7 @@ jobs:
           - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3" }
           - { name: "master-api3", sha: "master", api: "3" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
@@ -311,7 +311,7 @@ jobs:
 
       - name: Keep the logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: identity-${{ matrix.name }}
           path: |
