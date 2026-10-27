@@ -653,6 +653,21 @@ SERVER_HELP = """\
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
 
+STOCK_HEADROOM = 1.5e9     # stock when model + this fits in the memory the server may use
+
+
+def decide(model, ram_gb=None, plugin_wanted=False):
+    """Stock llama-server or the plugin for this model: (stock, size bytes, memory the server may use). The one rule server() and the control page
+    (moe_cache_ui.plan_model) both use. When the model fits, stock is faster (its page cache holds the whole file and stays warm across restarts;
+    Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast, --hybrid and --always-plugin need the plugin."""
+    try:
+        size = sum(os.path.getsize(p) for p in model_parts(model))
+    except OSError:
+        size = None
+    avail = mem_for_server(ram_gb)
+    return bool(size and avail and size + STOCK_HEADROOM <= avail and not plugin_wanted), size, avail
+
+
 def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -789,14 +804,7 @@ def server(argv):
         except Exception as e:
             say(f"moe-cache: could not use a starter profile ({e})", err=True)
     load, method = load_env(ls, lib, a.load_method)
-    # the model fits in the memory the server may use: stock llama-server is faster (its page cache holds the whole file and stays warm across
-    # restarts; Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast and --hybrid need the plugin, so they keep it.
-    try:
-        size = sum(os.path.getsize(p) for p in model_parts(model))
-    except OSError:
-        size = None
-    avail = mem_for_server(a.ram)
-    stock = bool(size and avail and size + 1.5e9 <= avail and not (a.fast or a.hybrid or a.always_plugin))
+    stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin))
     if gcache != "off" and not stock and method == "path":
         # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
         say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "

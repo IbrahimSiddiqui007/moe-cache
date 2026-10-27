@@ -447,6 +447,17 @@ ui.vram_now, ui._GPU["gpu"] = (lambda: None), {"name": "AMD Radeon RX 7900 XT", 
 si = ui.system_info()
 check(si["gpu"] == "AMD Radeon RX 7900 XT" and si["vram_free"] == 15 * 2**30 and si["vram_total"] == 20 * 2**30, "the status uses it when nvidia-smi and sysfs have nothing")
 
+# one stock-or-plugin rule: the page asks the launcher's decide(), so the two cannot disagree
+calls = []
+real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False: calls.append((path, ram)) or (True, 1e9, 64e9))
+p = ui.plan_model(small["path"], ram="1")
+ui.mc.decide = real_decide
+check(calls == [(small["path"], "1")] and p["kind"] == "stock", f"the plan follows moe_cache.decide() ({calls}, {p['kind']})")
+st, sz, av = ui.mc.decide(small["path"], "64")
+check(st and av == 64e9 and sz == ui.size_of(small["path"]), "decide(): a small model fits in 64 GB: stock")
+check(not ui.mc.decide(small["path"], "64", plugin_wanted=True)[0], "decide(): --fast/--hybrid/--always-plugin keep the plugin")
+check(not ui.mc.decide(small["path"], f"{(sz + ui.mc.STOCK_HEADROOM - 1) / 1e9}")[0], "decide(): model + 1.5 GB headroom must fit")
+
 # Windows + AMD rules in the plan, in the launcher's words (the checkpoint rule is the launcher's own function)
 fn = os.path.join(TMP, "Flash-Next-IQ2_XS.gguf")
 gguf_header(fn, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512)])
@@ -461,9 +472,9 @@ check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 40
 check(ui.windows_amd_rules(amd, fn, 68e9, 30e9, windows=False) == (False, []), "Linux: no AMD rule")
 ui.WINDOWS, ui._GPU["gpu"] = True, dict(amd, free=15 * 2**30, integrated=False)
 ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
-real_size, ui.size_of = ui.size_of, (lambda path: 68e9)
+real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False: (False, 68e9, 24e9))
 p = ui.plan_model(fn, ram="24")
-ui.WINDOWS, ui.size_of = os.name == "nt", real_size
+ui.WINDOWS, ui.mc.decide = os.name == "nt", real_decide
 check(p["numbers"]["gpu_expert_layers"] == 0 and p["numbers"]["free_vram_GiB"] == 15.0 and any(r.startswith("Windows + AMD: all experts") for r in p["reasons"]),
       "plan on Windows + AMD: the free VRAM found goes to the planner, the rule keeps the experts on the CPU, and says why")
 

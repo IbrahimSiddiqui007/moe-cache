@@ -21,7 +21,7 @@ WINDOWS = mc.WINDOWS
 PAGE = os.path.join(HERE, "ui", "index.html")
 SETTINGS_FILE = os.path.join(mc.CACHE_DIR, "ui.json")
 LAUNCHER = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
-HEADROOM = 1.5e9            # the launcher's rule: stock when model + 1.5 GB fits in the memory the server may use
+HEADROOM = mc.STOCK_HEADROOM   # shown in the reasons; the rule itself is mc.decide()
 GIB = 2**30
 
 
@@ -305,13 +305,12 @@ def windows_amd_rules(gpu, path, size, avail, agent=False, windows=WINDOWS):
 
 def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units)."""
-    size = size_of(path)
-    avail = mc.mem_for_server(ram)
+    stock_fits, size, avail = mc.decide(path, ram)     # the launcher's own stock-or-plugin rule (the mode is applied below, as server() does)
+    size = size or 0
     gpu = _GPU["gpu"] if WINDOWS else None
     if vram is None and gpu and gpu.get("free") and not gpu.get("integrated"):
         vram = f"{gpu['free'] / GIB:.2f}"          # as the launcher: on Windows without nvidia-smi it passes the free VRAM it found to the planner
     amd_cpu_only, amd_reasons = windows_amd_rules(gpu, path, size, avail, agent, windows=WINDOWS)
-    stock_fits = bool(size and avail and size + HEADROOM <= avail)
     out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size)}
     R = out["reasons"]
     if avail:
