@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>moe-cache (mockup)</title>
+<!-- MOCKUP ONLY: static sample data, no server. Proposed 3-pane layout for bin/moe_cache_ui.py + ui/index.html. -->
+<style>
+:root { --bg:#f6f7f9; --panel:#fff; --line:#dde1e6; --text:#1d232b; --muted:#5f6b78; --accent:#2f6fde; --ok:#1f8a4c; --warn:#b26a00; --bad:#c23b3b; --gpu:#7a4fd0; --code:#eef1f5; --side:#eef0f3; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; --side:#171a20; } }
+:root[data-theme=dark] { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; --side:#171a20; }
+* { box-sizing:border-box; }
+html, body { height:100%; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+a { color:var(--accent); }
+button { font:inherit; color:var(--text); background:var(--code); border:1px solid var(--line); border-radius:6px; padding:5px 10px; cursor:pointer; white-space:nowrap; }
+button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
+button.ghost { background:transparent; border-color:transparent; }
+button.icon { padding:4px 8px; background:transparent; border-color:transparent; font-size:16px; line-height:1; }
+button.icon:hover, button.ghost:hover { background:var(--code); }
+code, pre { font:12px/1.45 ui-monospace, Consolas, monospace; background:var(--code); border-radius:4px; }
+code { padding:1px 4px; }
+pre { padding:10px; margin:8px 0; overflow:auto; }
+.small { font-size:12px; color:var(--muted); }
+.badge { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; border:1px solid currentColor; white-space:nowrap; }
+.stock { color:var(--ok); } .cache { color:var(--warn); } .gpu { color:var(--gpu); } .error { color:var(--bad); }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.seg button { border:0; border-radius:0; background:transparent; padding:4px 10px; }
+.seg button.on { background:var(--accent); color:#fff; }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:6px; vertical-align:1px; }
+.dot.ok { background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+.dot.warn { background:var(--warn); }
+
+/* ---------- frame ---------- */
+.app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
+.top { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); min-width:0; }
+.top .brand { font-weight:600; font-size:15px; }
+.top .grow { flex:1; }
+.modelpick { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:4px 10px; background:var(--bg); cursor:pointer; min-width:0; max-width:420px; }
+.modelpick b { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.state { white-space:nowrap; font-size:13px; }
+.startgrp { display:inline-flex; }
+.startgrp button:first-child { border-top-right-radius:0; border-bottom-right-radius:0; }
+.startgrp button + button { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid color-mix(in srgb, #fff 30%, transparent); padding:5px 7px; }
+.menu { position:absolute; top:46px; right:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:6px; z-index:40; width:300px; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+.menu div { padding:6px 8px; border-radius:6px; cursor:pointer; }
+.menu div:hover { background:var(--code); }
+.menu div .small { display:block; }
+
+.panes { display:grid; grid-template-columns:260px minmax(0,1fr) 330px; min-height:0; }
+.app.noleft .panes { grid-template-columns:0 minmax(0,1fr) 330px; }
+.app.noright .panes { grid-template-columns:260px minmax(0,1fr) 0; }
+.app.noleft.noright .panes { grid-template-columns:0 minmax(0,1fr) 0; }
+.left, .right { overflow:auto; min-height:0; background:var(--side); }
+.left { border-right:1px solid var(--line); }
+.right { border-left:1px solid var(--line); }
+.app.noleft .left, .app.noright .right { visibility:hidden; }
+
+/* ---------- left ---------- */
+.left { display:flex; flex-direction:column; }
+.left .scroll { flex:1; overflow:auto; padding:10px 8px; }
+.left h3 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:14px 8px 4px; display:flex; justify-content:space-between; }
+.left input.search { width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); margin-top:8px; }
+.item { padding:6px 8px; border-radius:6px; cursor:pointer; display:flex; flex-direction:column; gap:1px; }
+.item:hover { background:var(--code); }
+.item.sel { background:color-mix(in srgb, var(--accent) 16%, transparent); }
+.item .t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item .s { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.left .foot { border-top:1px solid var(--line); padding:8px; display:flex; gap:6px; }
+.left .foot button { flex:1; }
+
+/* ---------- center ---------- */
+.center { display:flex; flex-direction:column; min-height:0; min-width:0; position:relative; }
+.chathead { display:flex; align-items:center; gap:8px; padding:8px 16px; border-bottom:1px solid var(--line); min-width:0; }
+.chathead .title { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.msgs { flex:1; overflow:auto; padding:18px 16px 8px; }
+.msgs .inner { max-width:780px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
+.msg.user { align-self:flex-end; max-width:85%; background:var(--panel); border:1px solid var(--line); border-radius:12px 12px 2px 12px; padding:8px 12px; }
+.msg.user .att { margin-top:6px; }
+.msg.ai { max-width:100%; }
+.msg.ai p { margin:0 0 8px; }
+.msg.ai ul { margin:0 0 8px; padding-left:20px; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px; }
+.chip { font-size:11px; padding:1px 8px; border-radius:10px; background:var(--code); color:var(--muted); white-space:nowrap; }
+.chip.mtp { color:var(--gpu); background:color-mix(in srgb, var(--gpu) 14%, transparent); }
+.chip.hit { color:var(--ok); background:color-mix(in srgb, var(--ok) 13%, transparent); }
+.chip.tps { color:var(--accent); background:color-mix(in srgb, var(--accent) 13%, transparent); }
+.chips .acts { margin-left:auto; display:flex; gap:2px; }
+.chips .acts button { padding:1px 7px; font-size:12px; background:transparent; border-color:transparent; color:var(--muted); }
+.chips .acts button:hover { background:var(--code); color:var(--text); }
+.think { border-left:2px solid var(--line); padding:2px 10px; margin-bottom:8px; color:var(--muted); font-size:13px; }
+.think summary { cursor:pointer; }
+.cursor { display:inline-block; width:7px; height:15px; background:var(--accent); vertical-align:-2px; animation:blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity:0; } }
+.composer { padding:8px 16px 14px; }
+.composer .box { max-width:780px; margin:0 auto; border:1px solid var(--line); border-radius:12px; background:var(--panel); padding:8px 10px; }
+.composer textarea { width:100%; border:0; outline:0; resize:none; background:transparent; color:var(--text); font:inherit; min-height:44px; }
+.composer .row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.composer .row .grow { flex:1; }
+.file { display:inline-flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--line); border-radius:6px; padding:2px 8px; background:var(--bg); }
+.file .x { cursor:pointer; color:var(--muted); }
+.drop { position:absolute; inset:8px; border:2px dashed var(--accent); border-radius:12px; background:color-mix(in srgb, var(--bg) 85%, transparent); display:none; align-items:center; justify-content:center; flex-direction:column; gap:4px; z-index:20; font-size:16px; }
+.center.dragging .drop { display:flex; }
+.banner { max-width:780px; margin:0 auto 10px; border:1px solid var(--warn); border-radius:8px; padding:6px 10px; font-size:12px; color:var(--warn); }
+
+/* ---------- right ---------- */
+.right { padding:10px; display:flex; flex-direction:column; gap:10px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+.card > summary { list-style:none; cursor:pointer; padding:8px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); display:flex; justify-content:space-between; align-items:center; }
+.card > summary::-webkit-details-marker { display:none; }
+.card > summary::after { content:"▾"; }
+.card:not([open]) > summary::after { content:"▸"; }
+.card .body { padding:0 10px 10px; }
+.stats { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; }
+.stat { border:1px solid var(--line); border-radius:6px; padding:5px 7px; min-width:0; }
+.stat b { display:block; font-size:17px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.stat span { font-size:11px; color:var(--muted); }
+svg.spark { width:100%; height:44px; display:block; }
+.bar { height:10px; border-radius:5px; background:var(--code); overflow:hidden; display:flex; }
+.bar i { display:block; height:100%; }
+.kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:12px; }
+.kv span:nth-child(odd) { color:var(--muted); }
+.agent { display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--line); }
+.agent:first-child { border-top:0; }
+.agent .n { flex:1; min-width:0; }
+.log { height:150px; overflow:auto; margin:0; font-size:11px; white-space:pre-wrap; word-break:break-all; }
+.log .p { color:var(--warn); } .log .u { color:var(--accent); }
+ul.why { margin:0; padding-left:16px; font-size:12px; }
+ul.why li { margin:2px 0; }
+.warnbox div { color:var(--warn); font-size:12px; }
+
+/* ---------- settings drawer ---------- */
+.scrim { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:50; display:none; }
+.drawer { position:fixed; top:0; bottom:0; left:0; width:min(420px, 100vw); background:var(--panel); border-right:1px solid var(--line); z-index:60; transform:translateX(-102%); transition:transform .2s; display:flex; flex-direction:column; }
+body.settings .drawer { transform:none; } body.settings .scrim { display:block; }
+.drawer header { display:flex; align-items:center; padding:10px 14px; border-bottom:1px solid var(--line); }
+.drawer header b { flex:1; }
+.drawer .body { padding:4px 14px 14px; overflow:auto; }
+.drawer h4 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:16px 0 6px; }
+.drawer label { display:block; margin:10px 0 3px; font-size:12px; color:var(--muted); }
+.drawer input[type=range] { width:100%; }
+.drawer input[type=text], .drawer input[type=password], .drawer input[type=number] { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); }
+.drawer .seg { display:flex; } .drawer .seg button { flex:1; }
+.hint { font-size:12px; color:var(--muted); margin-top:3px; }
+
+/* ---------- narrower screens ---------- */
+.only-narrow { display:none; }
+@media (max-width: 1180px) {          /* laptop at 125 % zoom, small windows: right pane becomes an overlay */
+  .panes, .app.noleft .panes, .app.noright .panes { grid-template-columns:240px minmax(0,1fr) 0; }
+  .app.noleft .panes, .app.noleft.noright .panes { grid-template-columns:0 minmax(0,1fr) 0; }
+  .right { position:fixed; top:49px; right:0; bottom:0; width:340px; z-index:30; box-shadow:-8px 0 24px rgba(0,0,0,.35); visibility:hidden; }
+  .app.showright .right { visibility:visible; }
+}
+@media (max-width: 760px) {           /* phone: only the chat; both side panes are drawers */
+  .panes, .app.noleft .panes, .app.noright .panes { grid-template-columns:minmax(0,1fr); }
+  .left { position:fixed; top:49px; left:0; bottom:0; width:86vw; z-index:30; visibility:hidden; box-shadow:8px 0 24px rgba(0,0,0,.35); }
+  .app.showleft .left { visibility:visible; }
+  .right { width:90vw; }
+  .only-wide { display:none !important; }
+  .only-narrow { display:inline-flex; }
+  .top { gap:6px; padding:8px; }
+  .modelpick { padding:3px 8px; } .modelpick .badge { display:none; }
+  .msgs { padding:12px 10px 6px; } .composer { padding:6px 8px 10px; }
+  .chathead { padding:6px 10px; }
+  .msg.user { max-width:92%; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <!-- ================= TOP BAR ================= -->
+  <div class="top">
+    <button class="icon" id="tglLeft" title="Chats, agent sessions, models">☰</button>
+    <span class="brand only-wide">moe-cache</span>
+    <div class="modelpick" id="modelpick" title="Pick a model (the list on the left)">
+      <b id="topmodel">Qwen3.6-35B-A3B-Q4_K_M</b>
+      <span class="badge cache">does not fit: moe-cache exact</span>
+    </div>
+    <div class="seg only-wide" id="mode" title="Exact: same answers as stock llama-server · Fast: about +10 %, 1 token in 40-50 differs · Hybrid: experimental"><button data-v="exact" class="on">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <span class="grow"></span>
+    <span class="state only-wide" id="state"><span class="dot ok"></span>running · <span class="small">127.0.0.1:8080 · Agent mode · + MTP</span></span>
+    <span class="state only-narrow" id="stateN"><span class="dot ok"></span></span>
+    <span class="startgrp"><button class="danger" id="startstop">Stop</button><button class="danger" id="startmenu" title="Start options">▾</button></span>
+    <button class="icon" id="tglRight" title="Status, context, files, agents, log">◧</button>
+  </div>
+  <div class="menu" id="menu" hidden>
+    <div data-v="now"><b>Start now</b><span class="small">load the model and keep it loaded</span></div>
+    <div data-v="ondemand"><b>Start on first request</b><span class="small">(hook for the on-demand mode) listen on the port; load the model when a chat or an agent asks, unload after it is idle</span></div>
+    <div data-v="cmd"><b>Show the llama-server command</b><span class="small">what Start runs (--dry-run)</span></div>
+  </div>
+
+  <div class="panes">
+    <!-- ================= LEFT ================= -->
+    <aside class="left" id="left">
+      <div class="scroll">
+        <button class="primary" style="width:100%" id="newchat">＋ New chat</button>
+        <input class="search" placeholder="Search chats">
+        <h3>Chats</h3>
+        <div id="chats">
+          <div class="item sel" data-c="0"><span class="t">How does the expert cache decide what to keep?</span><span class="s">Qwen3.6-35B · 3,912 tokens · 2 min ago</span></div>
+          <div class="item" data-c="1"><span class="t">Fix the off-by-one in calc.py</span><span class="s">Qwen3.6-35B · calc.py · 1 h ago</span></div>
+          <div class="item" data-c="2"><span class="t">Summarise RESULTS.md section 57</span><span class="s">Granite 1B · yesterday</span></div>
+          <div class="item" data-c="3"><span class="t">Rust lifetimes, short answer</span><span class="s">Flash-Next 80B · Fast · Oct 24</span></div>
+        </div>
+        <h3>Agent sessions <span title="saved warm conversations of OpenCode / Hermes">?</span></h3>
+        <div class="item"><span class="t"><span class="dot ok"></span>OpenCode · fix-tests</span><span class="s">slot 0 · 31,204 tokens · restored at start · working</span></div>
+        <div class="item"><span class="t"><span class="dot"></span>Hermes · notes</span><span class="s">slot 1 · 12,880 tokens · saved 18:02</span></div>
+        <div class="item"><span class="t"><span class="dot"></span>unknown agent</span><span class="s">Flash-Next 80B · slot 0 · 7,461 tokens · other model</span></div>
+        <h3>Models <span><a href="#" class="small" style="text-decoration:none">Rescan</a></span></h3>
+        <div id="models">
+          <div class="item sel" data-m="Qwen3.6-35B-A3B-Q4_K_M" data-v="does not fit: moe-cache exact" data-k="cache"><span class="t">Qwen3.6-35B-A3B-Q4_K_M</span><span class="s">21.7 GB · <span class="cache">does not fit: moe-cache exact</span></span></div>
+          <div class="item" data-m="granite-3.1-1b-a400m-instruct-Q4_K_M" data-v="fits in RAM: stock llama-server" data-k="stock"><span class="t">granite-3.1-1b-a400m-instruct</span><span class="s">0.8 GB · <span class="stock">fits in RAM: stock (fastest)</span></span></div>
+          <div class="item" data-m="Qwen3-Next-80B-A3B-Q4_K_M" data-v="does not fit: moe-cache exact" data-k="cache"><span class="t">Qwen3-Next-80B-A3B (Flash-Next)</span><span class="s">48.4 GB · <span class="cache">does not fit: moe-cache exact</span></span></div>
+          <div class="item" data-m="gpt-oss-20b-MXFP4" data-v="all experts fit on the GPU" data-k="gpu"><span class="t">gpt-oss-20b</span><span class="s">12.1 GB · <span class="gpu">all experts fit on the GPU</span></span></div>
+        </div>
+        <details style="margin:6px 8px 0" class="small"><summary>Why moe-cache for Qwen3.6-35B?</summary>
+          <ul class="why" style="margin-top:4px">
+            <li>model 21.7 GB + 1.5 GB headroom does not fit in the 18.5 GB the server may use</li>
+            <li>exact: output identical to stock llama-server; experts not in RAM are read from the SSD</li>
+            <li>tuner: 14 of 40 layers of experts on the GPU, micro-batch 1024</li>
+            <li>expert cache 9.0 GiB holds 71 % of the CPU experts</li>
+            <li>MTP: on (Agent mode, the model has an MTP head, llama-server supports it)</li>
+          </ul>
+          <div style="margin-top:4px">Measured on the test laptop: 31 tok/s decode, 163 tok/s prefill.</div>
+        </details>
+      </div>
+      <div class="foot"><button id="openSettings">⚙ Settings</button><button id="openAgents">🔌 Agents</button></div>
+    </aside>
+
+    <!-- ================= CENTER ================= -->
+    <main class="center" id="center">
+      <div class="chathead">
+        <span class="title" id="chattitle">How does the expert cache decide what to keep?</span>
+        <span class="small only-wide">· system prompt: default · temp 0.7</span>
+        <span style="flex:1"></span>
+        <button class="ghost small" title="Export this chat as Markdown">Export</button>
+        <button class="ghost small" title="Move this chat to the Trash">Trash</button>
+      </div>
+      <div class="msgs" id="msgs"><div class="inner" id="inner">
+        <div class="msg user">How does moe-cache decide which experts stay in RAM? Keep it short.</div>
+        <div class="msg ai">
+          <details class="think"><summary>Thought for 2.1 s</summary>The user wants a short answer about the cache policy...</details>
+          <p>It counts how often each expert is used and keeps the most used ones in RAM:</p>
+          <ul>
+            <li><b>Pinned set.</b> At start it loads the experts that were used most in earlier runs (the learned profile), up to the RAM budget.</li>
+            <li><b>Misses.</b> An expert that is not in RAM is read from the SSD for that token, then may replace a colder one.</li>
+            <li><b>Exact mode</b> never skips an expert, so the answer is the same as stock llama-server; <b>Fast</b> may skip a rare one that is not in RAM.</li>
+          </ul>
+          <div class="chips"><span class="chip tps">31.4 tok/s</span><span class="chip">prefill 163 tok/s</span><span class="chip mtp">MTP 68 % accepted</span><span class="chip hit">hit 96.2 %</span><span class="chip">214 tokens · 6.8 s</span>
+            <span class="acts"><button title="Copy">Copy</button><button title="Regenerate">↻ Regenerate</button></span></div>
+        </div>
+        <div class="msg user">Show the part of the log that says how big the cache is.<div class="att"><span class="file">📄 server.log · 1.2k tokens</span></div></div>
+        <div class="msg ai" id="streaming">
+          <p>The line is printed by the plugin when it starts:</p>
+          <pre>moe-cache: expert cache 9.0 GiB (budget 9.0 GiB), 71 % of CPU experts
+moe-cache: pinned 1,412 experts from profile qwen36-35b.prof</pre>
+          <p id="streamtext">So the cache holds 9.0 GiB, which is <span class="cursor"></span></p>
+          <div class="chips"><span class="chip tps" id="livetps">writing · 29.8 tok/s</span><span class="chip mtp">MTP 64 %</span><span class="chip hit">hit 95.7 %</span>
+            <span class="acts"><button id="stopgen" style="color:var(--bad)">■ Stop</button></span></div>
+        </div>
+      </div></div>
+      <div class="composer">
+        <div class="box">
+          <div class="row" id="files"><span class="file">📄 calc.py · 2.1k tokens <span class="x">✕</span></span><span class="file">🖼 screenshot.png · needs a vision model <span class="x">✕</span></span></div>
+          <textarea id="ta" placeholder="Message Qwen3.6-35B… (Enter sends, Shift+Enter new line; drop files here)"></textarea>
+          <div class="row">
+            <button class="ghost" title="Attach files">📎</button>
+            <span class="small">ctx 5,412 / 65,536</span>
+            <span class="grow"></span>
+            <button class="primary" id="send">Send</button>
+          </div>
+        </div>
+      </div>
+      <div class="drop"><b>Drop files to attach</b><span class="small">text and code go into the prompt; images need a vision model</span></div>
+    </main>
+
+    <!-- ================= RIGHT ================= -->
+    <aside class="right" id="right">
+      <details class="card" open><summary>Live</summary><div class="body">
+        <div class="stats">
+          <div class="stat"><b>29.8</b><span>decode tok/s</span></div>
+          <div class="stat"><b>163</b><span>prefill tok/s</span></div>
+          <div class="stat"><b>95.7 %</b><span>cache hit</span></div>
+          <div class="stat"><b>184</b><span>SSD MB/s</span></div>
+          <div class="stat"><b>8.6/9.0</b><span>cache GB</span></div>
+          <div class="stat"><b>7.1/8.0</b><span>VRAM GiB</span></div>
+        </div>
+        <div class="small" style="margin-top:8px">tok/s, last 2 min</div>
+        <svg class="spark" viewBox="0 0 300 44" preserveAspectRatio="none"><line x1="0" y1="43.5" x2="300" y2="43.5" stroke="var(--line)"/><polyline fill="none" stroke="var(--accent)" stroke-width="1.5" points="0,40 30,40 40,14 60,12 80,13 100,15 110,40 150,40 160,40 170,16 190,13 210,12 230,14 250,13 270,15 300,14"/></svg>
+        <div class="small">hit rate, last 2 min</div>
+        <svg class="spark" viewBox="0 0 300 44" preserveAspectRatio="none"><line x1="0" y1="43.5" x2="300" y2="43.5" stroke="var(--line)"/><polyline fill="none" stroke="var(--ok)" stroke-width="1.5" points="0,12 40,10 60,6 80,5 100,5 170,8 190,5 230,4 300,4"/></svg>
+        <div class="small" style="margin-top:6px">Mode: <b>moe-cache exact + MTP</b> · Qwen3.6-35B · ctx 64k</div>
+      </div></details>
+
+      <details class="card" open><summary>Context of this chat</summary><div class="body">
+        <div class="bar"><i style="width:1.2%;background:var(--muted)"></i><i style="width:5%;background:var(--gpu)"></i><i style="width:2%;background:var(--accent)"></i></div>
+        <div class="small" style="margin-top:4px"><b style="color:var(--text)">5,412</b> of 65,536 tokens (8 %)</div>
+        <div class="kv" style="margin-top:6px"><span>system</span><span>780</span><span>files</span><span>3,300 (calc.py, server.log)</span><span>messages</span><span>1,332</span></div>
+        <div class="hint">Older messages are dropped from the start when it is full (shown here before it happens).</div>
+      </div></details>
+
+      <details class="card" open><summary>Files in this chat</summary><div class="body">
+        <div class="agent"><span class="n">📄 calc.py <span class="small">2.1k tokens · attached</span></span><button class="ghost small">Remove</button></div>
+        <div class="agent"><span class="n">📄 server.log <span class="small">1.2k tokens · message 2</span></span><button class="ghost small">Open</button></div>
+      </div></details>
+
+      <details class="card" open id="agentsCard"><summary>Agents</summary><div class="body">
+        <div class="kv"><span>Base URL</span><span><code>http://127.0.0.1:8080/v1</code></span><span>Model</span><span><code>Qwen3.6-35B-A3B-Q4_K_M</code></span><span>API key</span><span><code>••••a91f</code> <a href="#">Copy</a></span></div>
+        <div style="margin-top:8px">
+          <div class="agent"><span class="dot ok"></span><span class="n"><b>OpenCode</b><br><span class="small">connected · 1 request now (slot 0)</span></span><button class="ghost small">Preview</button></div>
+          <div class="agent"><span class="dot warn"></span><span class="n"><b>Hermes</b><br><span class="small">config points elsewhere (port 8081)</span></span><button class="primary">Connect</button></div>
+        </div>
+      </div></details>
+
+      <details class="card"><summary>What the launcher decided</summary><div class="body">
+        <ul class="why"><li>does not fit in RAM: moe-cache (exact)</li><li>GPU: NVIDIA GeForce RTX 4060 Laptop GPU, 7.2 GiB free</li><li>-ngl 99, experts of 14 layers on the GPU, -ub 1024</li><li>MTP on: the model has 1 MTP layer</li><li>CPU threads 6 (performance cores)</li></ul>
+      </div></details>
+
+      <details class="card"><summary>Benchmark</summary><div class="body">
+        <button>Quick benchmark</button> <span class="small">about 1-3 min, saved to bench.csv</span>
+        <div class="small" style="margin-top:6px">Last: moe-cache exact 31.2 tok/s · stock 9.8 tok/s → <b class="stock">3.18×</b></div>
+      </div></details>
+
+      <details class="card" open><summary>Warnings <span class="badge cache" style="text-transform:none">1</span></summary><div class="body warnbox"><div>⚠ the expert cache shrank to 9.0 GiB (less RAM free than planned)</div></div></details>
+
+      <details class="card" open><summary>Log</summary><div class="body">
+        <pre class="log"><span class="u">ui: started moe_cache.py server … --agent --mtp</span>
+<span class="p">moe-cache: expert cache 9.0 GiB, 71 % of CPU experts</span>
+srv  load_model: loaded in 11.4 s
+<span class="p">moe-cache: restored slot 0 (31,204 tokens) in 0.2 s</span>
+slot launch_slot_: id 0 | task 12 | processing task
+slot update_slots: id 0 | n_past 31188, n_tokens 16
+slot print_timing: prompt eval 163.2 tok/s, eval 31.4 tok/s
+slot launch_slot_: id 2 | task 15 | processing task (ui chat)</pre>
+        <a href="#" class="small">Open the full log</a>
+      </div></details>
+    </aside>
+  </div>
+</div>
+
+<!-- ================= SETTINGS DRAWER ================= -->
+<div class="scrim" id="scrim"></div>
+<div class="drawer" id="drawer">
+  <header><b>⚙ Settings</b><button class="icon" id="closeSettings">✕</button></header>
+  <div class="body">
+    <div class="hint">Changes apply at the next Start; the verdicts on the left update at once.</div>
+    <h4>Memory</h4>
+    <label>RAM budget: <b>auto (18.6 GB now)</b></label><input type="range" min="0" max="33" value="0">
+    <label>VRAM: <b>auto (7.2 GiB free now)</b></label><input type="range" min="0" max="8" step="0.5" value="0">
+    <h4>Model</h4>
+    <label>Context</label><div class="seg"><button>8k</button><button>32k</button><button class="on">64k</button></div>
+    <label>Mode</label><div class="seg"><button class="on">Exact</button><button>Fast</button><button>Hybrid</button></div>
+    <div class="hint">Output identical to stock llama-server (default). Also in the top bar.</div>
+    <label>Run as</label><div class="seg"><button class="on">Auto</button><button>moe-cache</button><button>Stock</button></div>
+    <label>MTP (multi-token prediction)</label><div class="seg"><button class="on">Auto</button><button>On</button><button>Off</button></div>
+    <h4>Agents</h4>
+    <label style="color:var(--text)"><input type="checkbox" checked> Agent mode <span class="small">(64k context, tool calls, warm sessions, API key)</span></label>
+    <label style="color:var(--text)"><input type="checkbox"> Don't restore saved agent sessions <span class="small">(--no-warm)</span></label>
+    <h4>Server</h4>
+    <label>Port</label><input type="number" value="8080">
+    <label>API key (optional)</label><input type="password" value="">
+    <label>Model folders</label>
+    <div class="small"><code>~/models</code> <code>~/Dev/StrataTest/work/zoo/granite</code> + Ollama</div>
+    <div style="display:flex;gap:6px;margin-top:6px"><input type="text" placeholder="add a folder with .gguf files"><button>Add</button></div>
+    <h4>Chat</h4>
+    <label>Default system prompt</label><input type="text" value="You are a helpful assistant.">
+    <label>Temperature: <b>0.7</b></label><input type="range" min="0" max="2" step="0.1" value="0.7">
+    <label style="color:var(--text)"><input type="checkbox" checked> Show thinking (reasoning models)</label>
+    <label>Chats are stored</label><div class="small">in this browser (and as JSON files next to the page server's cache, so the Tauri app sees the same chats)</div>
+    <h4>Look</h4>
+    <div class="seg" id="theme"><button data-v="">System</button><button data-v="light">Light</button><button data-v="dark" class="on">Dark</button></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id), app = $("app");
+const narrow = () => matchMedia("(max-width: 1180px)").matches, phone = () => matchMedia("(max-width: 760px)").matches;
+const q = new URLSearchParams(location.search);
+document.documentElement.dataset.theme = q.get("theme") || "dark";
+if (q.get("show") == "settings") document.body.classList.add("settings");
+if (q.get("show") == "left") app.classList.add("showleft");
+if (q.get("show") == "right") app.classList.add("showright");
+if (q.get("show") == "drop") $("center").classList.add("dragging");
+
+$("tglLeft").onclick = () => { if (phone()) { app.classList.toggle("showleft"); app.classList.remove("showright"); } else app.classList.toggle("noleft"); };
+$("tglRight").onclick = () => { if (narrow()) { app.classList.toggle("showright"); app.classList.remove("showleft"); } else app.classList.toggle("noright"); };
+$("modelpick").onclick = () => phone() ? app.classList.add("showleft") : (app.classList.remove("noleft"), $("models").scrollIntoView({ block:"center" }));
+const openS = () => document.body.classList.add("settings"), closeS = () => document.body.classList.remove("settings");
+$("openSettings").onclick = openS; $("closeSettings").onclick = closeS; $("scrim").onclick = closeS;
+$("openAgents").onclick = () => { if (narrow()) app.classList.add("showright"); else app.classList.remove("noright"); $("agentsCard").open = true; $("agentsCard").scrollIntoView({ block:"start" }); };
+document.querySelectorAll(".seg").forEach(s => s.onclick = e => { if (e.target.tagName != "BUTTON") return; s.querySelectorAll("button").forEach(b => b.classList.toggle("on", b == e.target));
+  if (s.id == "theme") document.documentElement.dataset.theme = e.target.dataset.v; });
+$("chats").onclick = e => { const it = e.target.closest(".item"); if (!it) return; document.querySelectorAll("#chats .item").forEach(x => x.classList.toggle("sel", x == it)); $("chattitle").textContent = it.querySelector(".t").textContent; if (phone()) app.classList.remove("showleft"); };
+$("models").onclick = e => { const it = e.target.closest(".item"); if (!it) return; document.querySelectorAll("#models .item").forEach(x => x.classList.toggle("sel", x == it));
+  $("topmodel").textContent = it.dataset.m; const b = document.querySelector(".modelpick .badge"); b.textContent = it.dataset.v; b.className = "badge " + it.dataset.k; };
+$("startmenu").onclick = e => { e.stopPropagation(); $("menu").hidden = !$("menu").hidden; };
+document.addEventListener("click", () => $("menu").hidden = true);
+let running = true;
+function paintRun(st) {
+  running = st != "idle";
+  $("startstop").textContent = running ? "Stop" : "Start"; ["startstop", "startmenu"].forEach(id => $(id).className = running ? "danger" : "primary");
+  const lbl = { run: '<span class="dot ok"></span>running · <span class="small">127.0.0.1:8080 · Agent mode · + MTP</span>', idle: '<span class="dot"></span>idle',
+                ondemand: '<span class="dot warn"></span>waiting for a request · <span class="small">127.0.0.1:8080 · loads on first request</span>' }[st];
+  $("state").innerHTML = lbl;
+}
+$("startstop").onclick = () => paintRun(running ? "idle" : "run");
+$("menu").onclick = e => { const d = e.target.closest("[data-v]"); if (!d) return; if (d.dataset.v == "now") paintRun("run"); if (d.dataset.v == "ondemand") paintRun("ondemand"); };
+
+// fake streaming
+const words = "about 71 % of the experts that run on the CPU. The rest (29 %) are read from the SSD when a token needs them, at about 184 MB/s right now; that is why the hit rate (95.7 %) matters more than the cache size itself.".split(" ");
+let wi = 0, timer = setInterval(step, 140);
+function step() {
+  if (wi >= words.length) return done();
+  const c = document.querySelector("#streamtext .cursor"); c.insertAdjacentText("beforebegin", words[wi++] + " ");
+  $("livetps").textContent = "writing · " + (28 + Math.random() * 3).toFixed(1) + " tok/s";
+  $("msgs").scrollTop = $("msgs").scrollHeight;
+}
+function done() {
+  clearInterval(timer); const c = document.querySelector("#streamtext .cursor"); if (c) c.remove();
+  $("livetps").textContent = "29.6 tok/s"; $("stopgen").outerHTML = '<button>Copy</button><button>↻ Regenerate</button>';
+}
+$("stopgen").onclick = () => { done(); $("livetps").insertAdjacentHTML("afterend", '<span class="chip" style="color:var(--bad)">stopped</span>'); };
+if (q.get("still")) { clearInterval(timer); }
+
+// file drop demo
+let depth = 0;
+$("center").addEventListener("dragenter", e => { e.preventDefault(); depth++; $("center").classList.add("dragging"); });
+$("center").addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; $("center").classList.remove("dragging"); } });
+$("center").addEventListener("dragover", e => e.preventDefault());
+$("center").addEventListener("drop", e => { e.preventDefault(); depth = 0; $("center").classList.remove("dragging");
+  for (const f of e.dataTransfer.files) $("files").insertAdjacentHTML("beforeend", `<span class="file">📄 ${f.name.replace(/[<>&]/g, "")} · ${(f.size / 4 / 1000).toFixed(1)}k tokens <span class="x">✕</span></span>`); });
+$("files").onclick = e => { if (e.target.classList.contains("x")) e.target.parentNode.remove(); };
+$("send").onclick = () => { const t = $("ta").value.trim(); if (!t) return; $("inner").insertAdjacentHTML("beforeend", `<div class="msg user"></div>`); $("inner").lastChild.textContent = t; $("ta").value = ""; $("msgs").scrollTop = 1e9; };
+$("ta").onkeydown = e => { if (e.key == "Enter" && !e.shiftKey) { e.preventDefault(); $("send").click(); } };
+</script>
+</body>
+</html>
