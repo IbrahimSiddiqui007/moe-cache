@@ -93,6 +93,20 @@
         char * const p = ti.direct ? dst - shift : dst;
         const size_t n = (ti.direct ? round_up(shift + ti.nb2) : ti.nb2) + PAGE;
         bool evicted = false;
+        // the system as a whole is low on commit (llama.cpp or other programs took it): give an LRU expert back instead of growing
+        const size_t low = plat::commit_keep() / 2;
+        while (plat::commit_available() < low + n) {
+            int v = lru;
+            while (v >= 0 && in_use(nodes[v])) {
+                v = nodes[v].prev;
+            }
+            if (v < 0) {
+                break;       // nothing to give back: load anyway (this step needs it), the commit below still has to succeed
+            }
+            evict(v);
+            evicted = true;
+            commit_evictions++;
+        }
         for (;;) {
             if (plat::mem_commit(p, n)) {
                 if (evicted) {

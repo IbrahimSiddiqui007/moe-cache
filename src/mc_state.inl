@@ -106,7 +106,7 @@ struct state_t {
     size_t budget = 0;
     bool   commit_warned = false;      // Windows: the commit-limit warning was printed (tune())
     bool   commit_fail_warned = false; // Windows: a refused expert commit was reported (commit_for())
-    uint64_t commit_evictions = 0;     // experts evicted because Windows refused a commit
+    uint64_t commit_evictions = 0;     // experts evicted because Windows refused a commit or system commit ran low
     size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
     bool shrink_warned = false;
     bool   auto_mode = false;          // MOE_CACHE_SIZE_GIB=auto: size the cache from the real memory limit
@@ -133,19 +133,31 @@ struct state_t {
         if (views) {
             fprintf(stderr, "moe-cache: released %.2f GiB of model-file pages from the working set (Windows, %zu mapped views)\n", freed / 1073741824.0, views);
         }
-        if (auto_mode && !getenv("MOE_CACHE_RAM_GIB")) {
-            const size_t lim = read_mem_limit();
-            std::lock_guard<std::mutex> lk(mu);
-            if (lim > limit_bytes + ((size_t) 256 << 20) || lim + ((size_t) 256 << 20) < limit_bytes) {
-                limit_bytes = lim;
-                const size_t guess = (size_t) 7 << 29;   // as at start: 3.5 GiB for everything that is not expert cache, until measured
-                budget = limit_bytes > margin + guess + ((size_t) 1 << 30) ? limit_bytes - margin - guess : (size_t) 1 << 30;
-                if (max_budget) {
-                    budget = std::min(budget, max_budget);
-                }
-                fprintf(stderr, "moe-cache: memory limit now %.2f GiB, start budget %.2f GiB\n", limit_bytes / 1073741824.0, budget / 1073741824.0);
-            }
+        // the start budget again, now that llama.cpp has allocated everything (weights, KV, compute buffers, an MTP draft context): from what
+        // the rest of the process really uses instead of the 3.5 GiB guess, and never more than the system's free commit minus commit_keep()
+        // (GLM + MTP on the PC: 18.3 GiB start budget, and the whole system ran out of commit)
+        std::lock_guard<std::mutex> lk(mu);
+        if (!auto_mode) {
+            return;
         }
+        const size_t old = budget;
+        if (!getenv("MOE_CACHE_RAM_GIB")) {
+            limit_bytes = read_mem_limit();
+        }
+        const size_t rss = read_rss_anon();
+        const size_t other = rss > resident_bytes ? rss - resident_bytes : 0;
+        const size_t floor_b = (size_t) 512 << 20;
+        size_t nb = limit_bytes > margin + other + floor_b ? limit_bytes - margin - other : floor_b;
+        const size_t ca = plat::commit_available(), keep = plat::commit_keep();
+        const size_t by_commit = (ca > keep ? ca - keep : 0) + resident_bytes;
+        nb = std::max(floor_b, std::min(nb, by_commit));
+        if (max_budget) {
+            nb = std::min(nb, max_budget);
+        }
+        budget = nb;
+        fprintf(stderr, "moe-cache: memory limit now %.2f GiB, rest of llama-server %.2f GiB, free commit %.2f GiB (keeping %.2f GiB): start budget %.2f GiB "
+                "(was %.2f)\n", limit_bytes / 1073741824.0, other / 1073741824.0, ca / 1073741824.0, keep / 1073741824.0, budget / 1073741824.0,
+                old / 1073741824.0);
     }
 #endif
     void begin_graph() {

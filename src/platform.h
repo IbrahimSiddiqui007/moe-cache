@@ -534,6 +534,22 @@ inline size_t commit_available() {
     return SIZE_MAX;
 }
 
+// commit the cache must leave free for everything else (llama.cpp's later allocations such as an MTP draft context, other programs): max(2 GiB,
+// 8 % of the commit limit). PC 2026-10-27: GLM + MTP with a 14 GB page file took the whole system to zero commit ("the paging file is too
+// small" in an unrelated PowerShell) while the plugin itself never saw a refused commit. 0 elsewhere (Linux overcommits).
+inline size_t commit_keep() {
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        return std::max<size_t>((size_t) 2 << 30, (size_t) (ms.ullTotalPageFile / 100 * 8));
+    }
+    return (size_t) 2 << 30;
+#else
+    return 0;
+#endif
+}
+
 // ---- small file helpers (UTF-8 paths) ----
 inline void make_dir(const char * path) {
 #ifdef _WIN32

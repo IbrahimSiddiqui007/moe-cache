@@ -450,7 +450,7 @@
                         (unsigned long long) small_mapped, (unsigned long long) small_over);
             }
             if (commit_evictions) {
-                fprintf(stderr, "moe-cache: Windows refused memory for experts: %llu experts given back early, cache ended at %.2f GiB\n",
+                fprintf(stderr, "moe-cache: Windows commit was short (refused, or below the headroom kept for others): %llu experts given back early, cache ended at %.2f GiB\n",
                         (unsigned long long) commit_evictions, budget / 1073741824.0);
             }
             if (cpu_check_reloads) {

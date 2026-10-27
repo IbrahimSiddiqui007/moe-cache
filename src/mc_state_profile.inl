@@ -248,8 +248,8 @@
         // bytes of expert data that are really in memory (pending ones are marked but not read yet)
         const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
         // Windows: every loaded expert is committed memory; near the commit limit (RAM + page file) a commit fails and the next write crashes.
-        // Keep 1 GiB of commit free: shrink by what is missing (on Linux commit_available() is unlimited)
-        const size_t commit_free = plat::commit_available(), commit_keep = (size_t) 1 << 30;
+        // Keep commit_keep() free (2 GiB or 8 % of the commit limit): shrink by what is missing (on Linux commit_available() is unlimited)
+        const size_t commit_free = plat::commit_available(), commit_keep = plat::commit_keep();
         const size_t commit_short = commit_free < commit_keep ? commit_keep - commit_free : 0;
         if (commit_short && !commit_warned) {
             commit_warned = true;
