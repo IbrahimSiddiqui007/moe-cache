@@ -50,6 +50,7 @@ jobs:
         run: |
           if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; else H=third_party/ggml; fi
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/args_test.cpp -o /tmp/args_test && /tmp/args_test    # the llama-server flags the plugin mirrors
           ./build.sh --portable
           ls -la build/libggml-moe-cache.so
 

@@ -37,6 +37,7 @@
 #include <map>
 #include <unordered_set>
 #include "platform.h"
+#include "mc_args.h"
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
