@@ -2065,12 +2065,13 @@ cache), a hard working-set minimum of budget + rest of the process. Cache policy
 | Flash-Next IQ2_XS (68 GB, C:) | 12 | 15.35, 14.43 (14.89) | 22.00, 21.87 (**21.94**) | **+47 %** |
 | Flash-Next IQ3_XXS (76 GB, D:) | 9 | 15.10, 15.18 (15.14) | 19.80, 19.91 (**19.86**) | **+31 %** |
 | Flash-Next IQ3_XXS | 13 | 13.46, 13.29 (13.38) | 16.10, 16.02 (16.06) | +20 % |
+| Flash-Next IQ3_S (84 GB, C:) | 7 | 12.93, 12.91 (12.92) | 17.27, 17.29 (**17.28**) | **+34 %** |
 | Qwen3.5-122B UD-IQ2_XXS (34 GB, D:) | 12 | 13.70, 14.05 (13.88) | 16.31, 15.95 (**16.13**) | **+16 %** |
 | GLM-5.3-Flash UD-IQ2_XXS (102 GB, C:), one pair | 3 | 2.21 | **4.44** | **2.0x** |
 IQ3_XXS stats with the view (13 layers): hit 97.8 %, 3.6 GB read, cache 16.21 GiB, resizes 1 / 0. The launcher's default layer count is the
 best of the two tried (19.9 at 9 layers vs 16.1 at 13): no extra GPU layers needed.
 
-**Text**: plugin = stock, byte for byte, on Flash-Next IQ2_XS (1041 characters), the 122B (1027) and GLM (1148). Granite on the PC with a 0.2 GiB
+**Text**: plugin = stock, byte for byte, on Flash-Next IQ2_XS (1041 characters), IQ3_S (1032), the 122B (1027) and GLM (1148). Granite on the PC with a 0.2 GiB
 cache (35929 evictions through the views): identity 4/4, executor 6765 ops checked, 0 mismatches.
 
 **Another program needs memory while the server runs** (C:\dl\pc_pressure.ps1, Flash-Next IQ2_XS, working-set minimum 21.9 GiB):
@@ -2082,4 +2083,7 @@ No freeze, no errors: Windows found the memory elsewhere (file cache, page file)
 
 **Also tonight**: `--moe-cache-mib` (llama.cpp's own GPU expert cache, needed by I28) aborts at load on this Vulkan build even without the plugin
 (`ggml-backend.cpp:1089: pre-allocated tensor (moe_cache.0.blk.0.ffn_gate_exps.weight) in a buffer (Vulkan1) that cannot run the operation (NONE)`),
-with or without the iGPU and op offload: I28 cannot be tested on this PC until llama.cpp fixes it (handover/parts/i28-pc-test.md).
+with or without the iGPU and op offload. Cause: each cache bank is one tensor (~2970 MiB at 8909 MiB) and Vulkan refuses tensors over its
+~2 GiB storage-buffer limit; `--moe-cache-mib 5900` (~1967 MiB banks) and 1500 load. With 5900 MiB, I28 (hook, plugin loaded by path, branch
+claude/gpu-cache-path without the file view), IQ2_XS cold: stock + GPU cache 6.93 tok/s (prefill 3.1), plugin --gpu-cache 9.69 (5.5),
+plugin --gpu-cache off 13.71 (12.6); 112948 uploads routed, text = stock. llama.cpp's GPU expert cache loses on this Vulkan PC: I28 parked.
