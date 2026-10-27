@@ -88,6 +88,8 @@ struct moe_cache_backend_ctx {
     ggml_backend_t     cpu = nullptr;
     ggml_threadpool_t  tp = nullptr;
     int                tp_n = 0;
+    ggml_threadpool_t  tp2 = nullptr;   // the previous threadpool, kept: llama.cpp alternates n_threads (decode) and n_threads_batch (prompts)
+    int                tp2_n = 0;
     int                n_threads = 6;
     ggml_backend_t     gpu = nullptr;
     ggml_gallocr_t     galloc = nullptr;
@@ -132,6 +134,9 @@ void be_free(ggml_backend_t backend) {
     }
     if (c->tp && CPU().tp_free) {
         CPU().tp_free(c->tp);
+    }
+    if (c->tp2 && CPU().tp_free) {
+        CPU().tp_free(c->tp2);
     }
     if (c->galloc) {
         ggml_gallocr_free(c->galloc);

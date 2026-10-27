@@ -156,6 +156,15 @@ jobs:
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_tiled_force.txt
           grep -q "GGML_CPU_TILED_MM_FORCE=1: every expert op is left to llama.cpp" ident_tiled_force/plugin.log
 
+      - name: Identity with different thread counts for prompts and decode (-t 2 -tb 3; the plugin switches between two threadpools)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_EXTRA: "-t 2 -tb 3"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_tb.txt
+
       - name: Cache smaller than one op (1 MiB) - experts mapped from the model file instead of aborting, guard mode on
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
