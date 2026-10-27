@@ -279,6 +279,43 @@ def mtp_reason(path, want, agent, ls):
     return why.replace("moe-cache: ", "", 1) if why else None
 
 
+# ---- servers started elsewhere (GUI1 step 4 #6, status only): a llama-server on this machine that the page did not start ----
+PEEK_PORTS = range(8080, 8090)
+
+
+def peek_server(port, api_key=None):
+    """What a llama-server on 127.0.0.1:port says about itself: {port, up, health, model, ctx, slots, busy, key}. Only this machine (no other host:
+    the page must not become a way to probe the network); the key itself is never returned. key: "needed" (the server wants one and the stored key
+    or `api_key` was used), "rejected" (401 even with it), or null."""
+    url = f"http://127.0.0.1:{int(port)}"
+    st = mc.http(url + "/health", timeout=1)[0]          # llama-server answers /health without a key; 503 while it loads the model
+    if st not in (200, 503):
+        return {"port": port, "up": False}
+    key = mc.key_for(url, api_key)
+    name, ctx = mc.server_info(url, key)
+    out = {"port": port, "up": True, "health": "ready" if st == 200 else "loading", "model": name, "ctx": ctx, "slots": None, "busy": None,
+           "key": ("rejected" if not name and mc.http(url + "/v1/models", api_key=key, timeout=2)[0] in (401, 403) else "needed") if key else None}
+    sst, body = mc.http(url + "/slots", api_key=key, timeout=2)
+    if sst == 200:
+        try:
+            sl = json.loads(body)
+            out.update(slots=len(sl), busy=sum(1 for x in sl if x.get("is_processing")))
+        except (ValueError, AttributeError, TypeError):
+            pass
+    return out
+
+
+def peek_servers(ports=None, own=None):
+    """peek_server() for the usual ports at once (closed ports answer at once); `own` = the port of the server this page started."""
+    res, ports = {}, list(ports or PEEK_PORTS)
+    ts = [threading.Thread(target=lambda p=p: res.__setitem__(p, peek_server(p)), daemon=True) for p in ports]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join(15)
+    return [dict(res[p], started_here=p == own) for p in ports if p in res and res[p].get("up")]
+
+
 # Measured decode speeds from README "Results" / docs/RESULTS.md, all on the test laptop (i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD), by model
 # family (gguf_plan.model_key) and file size (GB, so each quant has its own row). (RAM GB, setting, stock tok/s, moe-cache tok/s, where)
 MEASURED = {
@@ -1396,6 +1433,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"csv": BENCH_CSV, "rows": rows[-20:], "compare": bench_compare(rows)})
             if u.path == "/api/sessions":
                 return self.send(200, self.runner.sessions())
+            if u.path == "/api/servers":                   # llama-servers on this machine (ports 8080-8089), started here or elsewhere
+                own = int(self.runner.settings.get("port") or 8080) if self.runner.state in ("starting", "ready") else None
+                return self.send(200, {"servers": peek_servers(own=own)})
+            if u.path == "/api/peek":                      # one port on 127.0.0.1 (a server started elsewhere, e.g. by a script or the on-demand server)
+                port = number(q.get("port"), 1, 65535, int, "port")
+                if port is None:
+                    raise ValueError("port: a number")
+                return self.send(200, peek_server(port))
             if u.path == "/api/key":                       # for the Copy button only (token-protected, not cached)
                 if self.runner.state not in ("starting", "ready") or not self.runner.key():
                     raise ValueError("no API key in use")

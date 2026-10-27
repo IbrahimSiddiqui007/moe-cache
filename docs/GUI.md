@@ -228,10 +228,13 @@ If you open the page without the password you see a short note: open the address
 ## 12. For developers
 
 - Code: `bin/moe_cache_ui.py` (the page server, standard-library Python) and `ui/index.html` (the page, plain JavaScript).
-- The verdict uses the launcher's own rules: `planner/plan.py --json`, `planner/gguf_plan.py tune()` and the stock rule (model + 1.5 GB against
-  the memory it may use).
+- The verdict uses the launcher's own rules: `planner/plan.py --json`, `planner/gguf_plan.py tune()`, the stock rule `moe_cache.decide()`
+  (model + 1.5 GB against the memory it may use; the launcher calls the same function) and the MTP rule `moe_cache.mtp_decide()`.
 - Live numbers: the plugin's stats snapshot (`MOE_CACHE_STATS_SIGNAL`: SIGUSR1 on Linux, sent only when llama-server has the plugin's handler;
   the named event `Local\moe-cache-stats-<pid>` on Windows), llama-server's `/slots` and its timing lines. No change to the plugin or llama.cpp.
 - Scripts can use the page's API with the header `X-MoeCache-Token: <the ?t= value>`.
+- Servers started elsewhere (status only, no page view yet): `GET /api/peek?port=N` says what a llama-server on 127.0.0.1:N reports (up,
+  loading or ready, model, context, slots, busy slots, whether it wants a key; the key is never returned), and `GET /api/servers` does that for
+  ports 8080-8089, marking the one the page started. Only this machine is asked.
 - Tests: `tests/ui_test.py` (no model) and `tests/ui_live.py MODEL.gguf --llama-server PATH` (a real model); CI runs both on Linux and Windows.
 - Not yet: model downloads, several models at once, remote access, a desktop app (design draft APP2).

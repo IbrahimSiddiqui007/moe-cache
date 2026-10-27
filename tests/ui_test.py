@@ -266,6 +266,17 @@ open(os.path.join(sd, "notes.bin"), "wb").write(b"x"); open(os.path.join(sd, "We
 warm = json.loads(req("/api/status")[1])["warm"]
 check([e["line"] for e in warm["events"]] == ["restored a saved agent conversation (4096 tokens) into slot 0 in 1.0 s", "saved slot 0 (4096 tokens, 120 MB) in 0.5 s"],
       f"warm-session events from the launcher's log ({warm['events']})")
+# servers started elsewhere (status only): one port, and the scan that marks the one this page started
+import socket
+_s = socket.socket(); _s.bind(("127.0.0.1", 0)); closed = _s.getsockname()[1]; _s.close()
+pk = json.loads(req(f"/api/peek?port={port}")[1])
+check(pk.get("up") and pk.get("model") == "fake-moe" and pk.get("ctx") == 65536 and pk.get("slots") == 1 and pk.get("busy") == 0 and pk.get("health") == "ready",
+      f"peek: model, context and slots of a llama-server on this machine ({pk})")
+check(json.loads(req(f"/api/peek?port={closed}")[1]) == {"port": closed, "up": False}, "peek: a closed port is just 'not up'")
+check(req("/api/peek?port=99999")[0] == 400 and req("/api/peek")[0] == 400, "peek: the port is range-checked")
+ui.PEEK_PORTS = [port, closed]
+sv = json.loads(req("/api/servers")[1])["servers"]
+check(len(sv) == 1 and sv[0]["port"] == port and sv[0]["started_here"], f"servers: the one this page started is marked, closed ports left out ({sv})")
 st, body = req("/api/sessions")
 ss = json.loads(body)
 byname = {f["name"]: f for f in ss["files"]}
