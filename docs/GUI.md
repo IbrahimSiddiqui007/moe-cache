@@ -61,8 +61,8 @@ Each model shows its size, its quantisation (for example `Q4_K_M`) and a verdict
 | **cannot plan this model** | the planner could not read it (for example not a MoE model); the reason is shown |
 
 Click a model to see **Why**: the numbers behind the verdict (model size against your memory, how many layers of experts go on the GPU, how much
-of the experts the cache can hold, the micro-batch). On Windows with an AMD graphics card it also lists the launcher's AMD rules (all experts on
-the CPU when the model is bigger than RAM; `--ctx-checkpoints 0` for Flash-Next), in purple. For models we have measured, it also lists the
+of the experts the cache can hold, the micro-batch). On Windows with an AMD graphics card it also lists the launcher's AMD rule
+(`--ctx-checkpoints 0` for Flash-Next on older drivers), in purple. For models we have measured, it also lists the
 speeds we measured on our test laptop (yours will differ).
 
 The verdict uses the same rules and planner as the launcher, so it matches what **Start** will do.

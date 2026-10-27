@@ -119,7 +119,7 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 import os
 print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x for x in sys.argv), bool(os.environ.get("LLAMA_API_KEY"))), flush=True)
 print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
-print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
+print("moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 15.00 GiB free (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
@@ -236,7 +236,7 @@ check(abs((c.get("hit_rate_total") or 0) - 0.85) < 1e-9 and c.get("budget") == 7
 check((c.get("read_mbs") or 0) > 0, f"SSD reads MB/s from read_bytes ({c.get('read_mbs')})")
 check(f"--port {port}" in status.get("command", ""), "the status shows the launcher command")
 d = status.get("decisions", [])
-check(len(d) == 2 and d[0].startswith("AMD GPU on Windows") and d[1].startswith("experts of 38 layers"),
+check(len(d) == 2 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("experts of 38 layers"),
       f"what the launcher decided, up to its URL line, without the prefix ({d})")
 w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
@@ -487,21 +487,20 @@ check(not ui.mc.decide(small["path"], f"{(sz + ui.mc.STOCK_HEADROOM - 1) / 1e9}"
 fn = os.path.join(TMP, "Flash-Next-IQ2_XS.gguf")
 gguf_header(fn, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512)])
 amd = {"device": "Vulkan0", "adapter": "AMD Radeon RX 9070 XT"}
-cpu_only, rs = ui.windows_amd_rules(amd, fn, 68e9, 30e9, agent=True, windows=True)
-check(cpu_only and len(rs) == 2 and "all experts stay on the CPU" in rs[0] and "--ctx-checkpoints 0" in rs[1] and "agents:" in rs[1],
-      f"Flash-Next bigger than RAM on an AMD GPU: experts on the CPU, checkpoints off ({rs})")
+rs = ui.windows_amd_rules(amd, fn, agent=True, windows=True)
+check(len(rs) == 1 and "--ctx-checkpoints 0" in rs[0] and "agents:" in rs[0] and not any("system RAM" in r or "stay on the CPU" in r for r in rs),
+      f"Flash-Next on an AMD GPU: checkpoints off; no 'all experts on the CPU' rule any more ({rs})")
 check(ui.mc.WINDOWS == (os.name == "nt"), "the launcher's WINDOWS flag is put back")
-cpu_only, rs = ui.windows_amd_rules(amd, blob, 21.7e9, 30e9, windows=True)
-check(not cpu_only and rs == [], "Qwen3.6 that fits: no AMD rule")
-check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 4060"}, fn, 68e9, 30e9, windows=True) == (False, []), "NVIDIA: no AMD rule")
-check(ui.windows_amd_rules(amd, fn, 68e9, 30e9, windows=False) == (False, []), "Linux: no AMD rule")
+check(ui.windows_amd_rules(amd, blob, windows=True) == [], "Qwen3.6: no AMD rule")
+check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 4060"}, fn, windows=True) == [], "NVIDIA: no AMD rule")
+check(ui.windows_amd_rules(amd, fn, windows=False) == [], "Linux: no AMD rule")
 ui.WINDOWS, ui._GPU["gpu"] = True, dict(amd, free=15 * 2**30, integrated=False)
 ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
 real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False, stock_wanted=False: (stock_wanted, 68e9, 24e9))
 p = ui.plan_model(fn, ram="24")
 ui.WINDOWS, ui.mc.decide = os.name == "nt", real_decide
-check(p["numbers"]["gpu_expert_layers"] == 0 and p["numbers"]["free_vram_GiB"] == 15.0 and any(r.startswith("Windows + AMD: all experts") for r in p["reasons"]),
-      "plan on Windows + AMD: the free VRAM found goes to the planner, the rule keeps the experts on the CPU, and says why")
+check(p["numbers"]["free_vram_GiB"] == 15.0 and not any("system RAM" in r or "stay on the CPU" in r for r in p["reasons"]),
+      f"plan on Windows + AMD, model bigger than RAM: the free VRAM found goes to the planner, no 'experts on the CPU' rule ({p['numbers']['gpu_expert_layers']} GPU layers)")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)
