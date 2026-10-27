@@ -2136,3 +2136,10 @@ IQ3_XXS leads by ~3 points; 10 vs 4 changed tasks is a lean, not a proof (paired
 5.99 / 6.02 (+8 %; single runs had shown 4.44 vs 6.01, 41 layers 4.58). Long prompt (3020 tokens, one cold run each): 45: **54.8 tok/s**,
 84 long-prompt GPU blocks; 43: 47.8 tok/s (-13 %), only 2 GPU blocks (no VRAM left for the block). The planner's block reserve trades the
 +8 % decode for prompt speed, which is what agent sessions wait on: the default stays.
+
+**Memory budget (`--ram`)** (Flash-Next IQ2_XS, file view, one cold run each): 24 GB 21.81, 20 GB 21.00, 16 GB **failed to load**:
+`ggml_vulkan: Device memory allocation of size 717930704 failed ... ErrorOutOfDeviceMemory`. Cause: the launcher put a Windows job memory
+limit of `--ram` on llama-server; a job limit caps committed memory, and Windows commits Vulkan's GPU allocations. With the file view the
+experts use no commit, so the limit only capped llama.cpp's GPU memory (a Linux cgroup does not count GPU memory). Fix (branch
+claude/win-job-limit c20cfb2): no job limit with the file view (kept for MOE_CACHE_WIN_VIEW=0). After the fix: 16 GB **20.03 tok/s**
+(cache 11.55 GiB), 92 % of the 24 GB speed.
