@@ -448,6 +448,10 @@ ui.vram_now, ui._GPU["gpu"] = (lambda: None), {"name": "AMD Radeon RX 7900 XT", 
 si = ui.system_info()
 check(si["gpu"] == "AMD Radeon RX 7900 XT" and si["vram_free"] == 15 * 2**30 and si["vram_total"] == 20 * 2**30, "the status uses it when nvidia-smi and sysfs have nothing")
 
+# warnings: llama-server's "no usable GPU found" only repeats the plan; real warnings still show
+check(not ui.is_warning("warning: no usable GPU found, --gpu-layers option will be ignored") and ui.is_warning("moe-cache: WARNING: the plugin did not load: test")
+      and ui.is_warning("error: invalid argument: --foo"), "warnings: 'no usable GPU found' left out, real warnings kept")
+
 # benchmark comparison: stock and moe-cache runs of one model side by side
 R0 = {"model": "Q.gguf", "ram_gb": "12", "ctx": "8192", "start": "warm", "gpu": "G", "os": "Linux", "hit_rate": ""}
 rows = [dict(R0, mode="stock llama-server (--stock, to compare)", decode_mean="5.00", prefill="100.0", time="t1"),

@@ -606,6 +606,12 @@ def proc_rss(pid):
 # lines the page lifts out of the log: the launcher's and the plugin's warnings (e.g. the cache shrank because llama-server grew), the plugin
 # disabling itself, and why llama-server stopped
 WARN_RE = re.compile(r"(?i)moe-cache: (warning|.*plugin disabled|.*refus|llama-server (exited|was stopped))|^WARNING|^error: |\binvalid argument\b")
+# llama-server's own warnings that only repeat what the plan already says (a CPU-only machine: "no usable GPU found, --gpu-layers ... ignored")
+NOT_WARN_RE = re.compile(r"(?i)no usable GPU found")
+
+
+def is_warning(line):
+    return bool(WARN_RE.search(line)) and not NOT_WARN_RE.search(line)
 # ---- agent sessions: the conversations the launcher's warm keeper saved (moe_cache.warm_keeper) ----
 # One file per slot: slots/agent/<model alias>-c<ctx>[-<K type>-<V type>]-s<slot>.bin, written by llama-server's slot save (state file: 'ggsq' magic,
 # version, token count, tokens, KV state) with the context checkpoints appended to the same file. The launcher restores the two largest files of
@@ -1069,7 +1075,7 @@ class Runner:
                     self.decisions.append(line[len("moe-cache: "):])
             if "moe-cache: warm session:" in line:
                 self.warm = (self.warm + [{"t": time.time(), "line": line.split("warm session:", 1)[1].strip()}])[-8:]
-            if WARN_RE.search(line):
+            if is_warning(line):
                 self.add_warning(line)
             m = TIMING_RE.search(line)
             if m:
