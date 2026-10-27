@@ -303,9 +303,13 @@ def windows_amd_rules(gpu, path, size, avail, agent=False, windows=WINDOWS):
     return cpu_only, reasons
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
-    """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units)."""
-    stock_fits, size, avail = mc.decide(path, ram)     # the launcher's own stock-or-plugin rule (the mode is applied below, as server() does)
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto"):
+    """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units).
+    engine: auto (the launcher decides), plugin (--always-plugin) or stock (--stock)."""
+    if engine == "stock":
+        mode = "exact"                             # --fast and --hybrid need the plugin
+    stock_fits, size, avail = mc.decide(path, ram)     # the launcher's own stock-or-plugin rule: does it fit?
+    stock = mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]   # what it will run
     size = size or 0
     gpu = _GPU["gpu"] if WINDOWS else None
     if vram is None and gpu and gpu.get("free") and not gpu.get("integrated"):
@@ -322,7 +326,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
     try:
         plan = run_planner(path, ctx, ram, vram, kv="q8_0" if mode == "fast" else "f16")
     except Exception as e:
-        out.update(kind="stock" if stock_fits else "error", verdict="fits in RAM: stock llama-server" if stock_fits else "cannot plan this model")
+        out.update(kind="stock" if stock else "error", verdict=("stock llama-server" + ("" if stock_fits else ", as asked (--stock)")) if stock else "cannot plan this model")
         R.append(f"planner: {e}" + (" (not a MoE model: moe-cache has nothing to manage; llama-server runs it stock)" if "MoE" in str(e) else ""))
         return out
     try:
@@ -338,8 +342,11 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
     out["numbers"] = {"layers": layers, "gpu_expert_layers": gpu_layers, "n_cpu_moe": ncmoe, "cache_GiB": plan["cache_GiB"],
                       "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": tuned["ub"] if tuned else None,
                       "experts": plan["experts"], "used": plan["used"], "arch": plan["arch"]}
-    plugin_mode = mode in ("fast", "hybrid")
-    if stock_fits and not plugin_mode:
+    if stock and not stock_fits:
+        out.update(kind="stock", verdict="does not fit: stock llama-server, as asked (to compare)")
+        R.append("--stock: no plugin; experts that are not in the file cache are read from the SSD by the OS (usually much slower than moe-cache "
+                 "when the model is bigger than RAM; run the Quick benchmark in both to see it)")
+    elif stock:
         out.update(kind="stock", verdict="fits in RAM: stock llama-server (fastest)")
         R.append("when everything fits, stock llama-server is faster: the page cache holds the whole file (Qwen3.6-35B: 42.9 vs 36.6 tok/s, RESULTS 44)")
     elif ncmoe == 0:
@@ -347,7 +354,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
         R.append("every layer of experts fits in VRAM next to the rest of the model: the cache has nothing to manage")
     else:
         name = {"fast": "moe-cache --fast", "hybrid": "moe-cache --hybrid (experimental)"}.get(mode, "moe-cache exact")
-        out.update(kind="cache", verdict=("fits in RAM, but " + mode + " needs the plugin: " if stock_fits else "does not fit: ") + name)
+        why = "moe-cache was asked (--always-plugin)" if mode == "exact" else mode + " needs the plugin"
+        out.update(kind="cache", verdict=("fits in RAM, but " + why + ": " if stock_fits else "does not fit: ") + name)
         if mode == "fast":
             R.append("--fast skips low-ranked experts that are not in RAM: about +10 %, about 1 token in 40-50 differs from stock")
         elif mode == "hybrid":
@@ -382,10 +390,14 @@ def server_args(s):
         a += ["--ram", str(float(s["ram"]))]
     if s.get("vram"):
         a += ["--vram", str(float(s["vram"]))]
-    if s.get("mode") == "fast":
+    if s.get("engine") == "stock":
+        a.append("--stock")                # to compare: no plugin whatever the size (the mode is exact then)
+    elif s.get("mode") == "fast":
         a.append("--fast")
     elif s.get("mode") == "hybrid":
         a.append("--hybrid")
+    elif s.get("engine") == "plugin":
+        a.append("--always-plugin")
     if s.get("agent"):
         a.append("--agent")
         if s.get("no_warm"):
@@ -700,6 +712,34 @@ def read_bench_rows(limit=20):
         return []
 
 
+def bench_compare(rows):
+    """Stock and moe-cache runs of the same model side by side: for each (model, RAM, context, warm/cold, GPU, OS) with both kinds, the newest
+    stock run and the newest run of each moe-cache mode, and how many times faster moe-cache was (decode and prefill)."""
+    def num(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+    groups = {}
+    for r in rows:
+        kind = "stock" if str(r.get("mode", "")).startswith("stock") else r.get("mode") if str(r.get("mode", "")).startswith("moe-cache") else None
+        if kind and num(r.get("decode_mean")):
+            key = tuple(r.get(k) or "" for k in ("model", "ram_gb", "ctx", "start", "gpu", "os"))
+            groups.setdefault(key, {})[kind] = r                 # rows come oldest first: the newest of each kind wins
+    out = []
+    for key, g in groups.items():
+        st = g.pop("stock", None)
+        for mode, r in sorted(g.items()):
+            if not st:
+                continue
+            ratio = lambda k: round(num(r.get(k)) / num(st.get(k)), 2) if num(r.get(k)) and num(st.get(k)) else None
+            out.append({"model": key[0], "ram_gb": key[1], "ctx": key[2], "start": key[3] or "warm", "gpu": key[4], "mode": mode,
+                        "stock_decode": st.get("decode_mean"), "moe_decode": r.get("decode_mean"), "decode_x": ratio("decode_mean"),
+                        "stock_prefill": st.get("prefill"), "moe_prefill": r.get("prefill"), "prefill_x": ratio("prefill"),
+                        "hit_rate": r.get("hit_rate"), "stock_time": st.get("time"), "moe_time": r.get("time")})
+    return out
+
+
 def append_bench_row(row):
     os.makedirs(os.path.dirname(BENCH_CSV), exist_ok=True)
     migrate_bench_csv()
@@ -1001,7 +1041,9 @@ class Runner:
             if m:
                 key = "prefill" if m.group(1) == "prompt eval" else "decode"
                 self.last[key + "_tps"] = float(m.group(4)); self.last[key + "_tokens"] = int(m.group(3))
-            if "running stock llama-server" in line:
+            if "--stock: running stock llama-server" in line:
+                self.mode = "stock llama-server (--stock, to compare)"
+            elif "running stock llama-server" in line:
                 self.mode = "stock llama-server (the model fits in RAM)"
             elif "stay on the CPU and are managed by the cache" in line:
                 self.mode = "moe-cache " + {"fast": "--fast", "hybrid": "--hybrid"}.get(self.settings.get("mode"), "exact")
@@ -1297,18 +1339,19 @@ class Handler(BaseHTTPRequestHandler):
                 m = self.known(q.get("model"))
                 ps = self.settings(dict(q, model=m))             # the same checks as Start (numbers in range, no nan / inf)
                 q = {"ram": str(ps["ram"]) if "ram" in ps else "", "vram": str(ps["vram"]) if "vram" in ps else "", "ctx": str(ps.get("ctx", 8192)),
-                     "mode": ps["mode"], "agent": "1" if ps["agent"] else ""}
-                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"))
+                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"]}
+                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"])
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
-                                                                             q.get("agent") in ("1", "true")))
+                                                                             q.get("agent") in ("1", "true"), q["engine"]))
                 return self.send(200, hit[1])
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
             if u.path == "/api/bench":
-                return self.send(200, {"csv": BENCH_CSV, "rows": read_bench_rows()})
+                rows = read_bench_rows(500)
+                return self.send(200, {"csv": BENCH_CSV, "rows": rows[-20:], "compare": bench_compare(rows)})
             if u.path == "/api/sessions":
                 return self.send(200, self.runner.sessions())
             if u.path == "/api/key":                       # for the Copy button only (token-protected, not cached)
@@ -1403,7 +1446,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def settings(self, d):
         s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("exact", "fast", "hybrid") else "exact",
+             "engine": d.get("engine") if d.get("engine") in ("auto", "plugin", "stock") else "auto",
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+        if s["engine"] == "stock":
+            s["mode"] = "exact"                   # --fast and --hybrid need the plugin
         for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),
                                       ("ctx", 512, 1048576, int, "context"), ("port", 1, 65535, int, "port")):
             x = number(d.get(k), lo, hi, conv, what)

@@ -75,6 +75,7 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 | VRAM | graphics memory (GiB) the planner may use (`--vram`) | auto: detected at start |
 | Context | how much text the model keeps in view: 8k, 32k or 64k tokens | 8k (64k in Agent mode) |
 | Mode | **Exact**: answers identical to stock llama-server. **Fast** (`--fast`): skips rarely needed experts that are not in RAM, about +10 % speed, about 1 token in 40-50 differs. **Hybrid** (`--hybrid`, experimental): most used experts on the GPU, the rest on the CPU, answers differ from stock | Exact |
+| Run as | **Auto**: stock llama-server when the model fits in RAM (faster then), moe-cache when it does not. **moe-cache** (`--always-plugin`): the plugin even when the model fits. **Stock** (`--stock`): no plugin even when the model does not fit (Mode is Exact then). The last two are for comparing the two on your machine (section 9) | Auto |
 | Agent mode | for coding agents (`--agent`): 64k context, tool calls, saved conversations, an API key | off |
 | Don't restore saved agent sessions | starts without the saved conversations (`--no-warm`); then nothing is saved either | off |
 | Port | where llama-server listens | 8080 |
@@ -152,8 +153,13 @@ With a model running, **Quick benchmark** measures it the way our own speed test
 about 3,500 tokens (fixed settings, so runs compare). It takes one to a few minutes and shows decode speed (both answers and the mean), prefill
 speed and, with the plugin, the cache hit rate. Every run is added to `bench.csv` in the cache folder and shown next to earlier runs.
 
-**Compare stock and moe-cache on your machine:** run it once with a RAM budget the model fits in (the launcher runs stock) and once with a smaller
-budget (the plugin), then compare the two rows.
+**Compare stock and moe-cache on your machine:** set **Run as** to **Stock**, start, run the benchmark; stop, set **Run as** to **moe-cache**
+(or Auto for a model bigger than RAM), start, run it again. Leave everything else the same. A table **Stock vs moe-cache** then shows the newest
+run of each side by side, with how many times faster moe-cache was (decode and prefill, green when faster). It also appears when you open the
+page, from the runs saved before.
+
+A RAM budget limits moe-cache only: stock llama-server still uses all free RAM through the file cache, so a comparison with a RAM number favours
+stock (the page says so under the table). The fair test is RAM on **auto** with a model bigger than this computer's RAM.
 
 **Cold start (fair).** A model you used a moment ago is still in the operating system's file cache, which makes stock llama-server look faster
 than on a first start. Tick **Cold start** and the benchmark stops the server, pushes the model out of the file cache, starts it again and then

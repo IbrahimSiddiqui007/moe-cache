@@ -35,6 +35,9 @@
 - Agent benchmark numbers (laptop, Qwen3.6, 16 GB): OpenCode task 154-183 s stock vs 97-114 s with moe-cache; Hermes 476-646 s stock vs 116 s. (Preliminary; I30.)
 
 ### Control page (GUI)
+- One stock-or-plugin rule: `moe_cache.decide()` is used by the launcher and the page, so the page's verdict cannot differ from what the launcher
+  runs. New launcher option `--stock` (stock llama-server whatever the model's size, to compare). On the page: **Run as** Auto / moe-cache / Stock,
+  and a **Stock vs moe-cache** table from the Quick benchmark runs (newest run of each, same model and settings, with the speed-up).
 - `moe-cache-server --ui` or `python bin\moe_cache.py ui`: a local page at http://127.0.0.1:8070 on Linux and Windows. Models with the planner's verdict and reasons, start and stop,
   live tok/s, hit rate, SSD reads, RAM and VRAM (also for AMD/Intel on Windows), the log, llama-server's chat page; Connect OpenCode / Hermes buttons with a preview;
   warnings read from the log; measured speeds from RESULTS next to the verdict; warm-session state. `bin\moe-cache-ui.bat` starts it with one click on Windows. See [docs/GUI.md](docs/GUI.md).

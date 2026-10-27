@@ -639,6 +639,7 @@ SERVER_HELP = """\
 --n-cpu-moe N  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
 --no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
 --always-plugin  use the plugin even when the model fits in the memory the server may use (by default stock llama-server runs then: faster, RESULTS 44)
+--stock    run stock llama-server without the plugin whatever the model's size (to compare stock and moe-cache on the same model)
 --no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
 --agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
            (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
@@ -656,16 +657,17 @@ MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this py
 STOCK_HEADROOM = 1.5e9     # stock when model + this fits in the memory the server may use
 
 
-def decide(model, ram_gb=None, plugin_wanted=False):
+def decide(model, ram_gb=None, plugin_wanted=False, stock_wanted=False):
     """Stock llama-server or the plugin for this model: (stock, size bytes, memory the server may use). The one rule server() and the control page
     (moe_cache_ui.plan_model) both use. When the model fits, stock is faster (its page cache holds the whole file and stays warm across restarts;
-    Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast, --hybrid and --always-plugin need the plugin."""
+    Qwen3.6-35B at 24 GB: stock 42.9 vs plugin 36.6 warm / 33.4 cold, RESULTS 44). --fast, --hybrid and --always-plugin need the plugin;
+    --stock runs stock whatever the size (to compare the two)."""
     try:
         size = sum(os.path.getsize(p) for p in model_parts(model))
     except OSError:
         size = None
     avail = mem_for_server(ram_gb)
-    return bool(size and avail and size + STOCK_HEADROOM <= avail and not plugin_wanted), size, avail
+    return bool(stock_wanted or (size and avail and size + STOCK_HEADROOM <= avail and not plugin_wanted)), size, avail
 
 
 def server(argv):
@@ -681,6 +683,7 @@ def server(argv):
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
+    ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     extra = []
     if "--" in argv:
@@ -804,7 +807,9 @@ def server(argv):
         except Exception as e:
             say(f"moe-cache: could not use a starter profile ({e})", err=True)
     load, method = load_env(ls, lib, a.load_method)
-    stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin))
+    if a.stock and (a.fast or a.hybrid or a.always_plugin):
+        raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
+    stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock)
     if gcache != "off" and not stock and method == "path":
         # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
         say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
@@ -930,8 +935,11 @@ def server(argv):
     elif a.agent:
         env.append(("MOE_CACHE_HOST_RESERVE_MIB", "1024"))     # told to the plugin directly instead of it parsing our command line
     if stock:
-        say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
-            "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
+        if a.stock:
+            say("moe-cache: --stock: running stock llama-server without the plugin, as asked (to compare; a model bigger than RAM is read through the file cache)")
+        else:
+            say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
+                "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
         method = "none (stock)"
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra

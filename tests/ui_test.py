@@ -447,15 +447,40 @@ ui.vram_now, ui._GPU["gpu"] = (lambda: None), {"name": "AMD Radeon RX 7900 XT", 
 si = ui.system_info()
 check(si["gpu"] == "AMD Radeon RX 7900 XT" and si["vram_free"] == 15 * 2**30 and si["vram_total"] == 20 * 2**30, "the status uses it when nvidia-smi and sysfs have nothing")
 
+# benchmark comparison: stock and moe-cache runs of one model side by side
+R0 = {"model": "Q.gguf", "ram_gb": "12", "ctx": "8192", "start": "warm", "gpu": "G", "os": "Linux", "hit_rate": ""}
+rows = [dict(R0, mode="stock llama-server (--stock, to compare)", decode_mean="5.00", prefill="100.0", time="t1"),
+        dict(R0, mode="moe-cache exact", decode_mean="20.00", prefill="150.0", hit_rate="0.950", time="t2"),
+        dict(R0, mode="stock llama-server (--stock, to compare)", decode_mean="10.00", prefill="100.0", time="t3"),      # newer stock run wins
+        dict(R0, mode="moe-cache --fast", decode_mean="22.00", prefill="", time="t4"),
+        dict(R0, ram_gb="24", mode="moe-cache exact", decode_mean="30.00", prefill="200.0", time="t5"),                 # no stock at 24 GB: no pair
+        dict(R0, mode="all experts on the GPU", decode_mean="50.00", prefill="300.0", time="t6")]
+cmp_ = ui.bench_compare(rows)
+check(len(cmp_) == 2 and cmp_[0]["mode"] == "moe-cache --fast" and cmp_[1]["mode"] == "moe-cache exact", f"compare: one row per moe-cache mode that has a stock run ({cmp_})")
+check(cmp_[1]["decode_x"] == 2.0 and cmp_[1]["prefill_x"] == 1.5 and cmp_[1]["stock_time"] == "t3" and cmp_[0]["prefill_x"] is None,
+      "compare: ratio against the newest stock run; a missing number gives no ratio")
+check(ui.bench_compare([]) == [] and ui.bench_compare([{"mode": "stock", "decode_mean": "x"}]) == [], "compare: empty or bad rows give nothing")
+
 # one stock-or-plugin rule: the page asks the launcher's decide(), so the two cannot disagree
 calls = []
-real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False: calls.append((path, ram)) or (True, 1e9, 64e9))
+real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False, stock_wanted=False: calls.append((path, ram)) or (True, 1e9, 64e9))
 p = ui.plan_model(small["path"], ram="1")
 ui.mc.decide = real_decide
-check(calls == [(small["path"], "1")] and p["kind"] == "stock", f"the plan follows moe_cache.decide() ({calls}, {p['kind']})")
+check(calls and all(c == (small["path"], "1") for c in calls) and p["kind"] == "stock", f"the plan follows moe_cache.decide() ({calls}, {p['kind']})")
 st, sz, av = ui.mc.decide(small["path"], "64")
 check(st and av == 64e9 and sz == ui.size_of(small["path"]), "decide(): a small model fits in 64 GB: stock")
 check(not ui.mc.decide(small["path"], "64", plugin_wanted=True)[0], "decide(): --fast/--hybrid/--always-plugin keep the plugin")
+check(ui.mc.decide(small["path"], "0.1", stock_wanted=True)[0], "decide(): --stock runs stock even when the model does not fit")
+p = ui.plan_model(small["path"], ram="0.1", engine="stock")
+check(p["kind"] == "stock" and "as asked" in p["verdict"] and any("--stock" in r for r in p["reasons"]), f"Run as Stock, model bigger than RAM: said plainly ({p['verdict']})")
+p = ui.plan_model(small["path"], ram="64", engine="plugin")
+check(p["kind"] == "cache" and "--always-plugin" in p["verdict"], f"Run as moe-cache, model fits: the plugin, and why ({p['verdict']})")
+base = {"model": "/m.gguf", "port": 8080}
+check("--stock" in ui.server_args(dict(base, engine="stock", mode="fast")) and "--fast" not in ui.server_args(dict(base, engine="stock", mode="fast")),
+      "server args: Stock wins over Fast (they cannot go together)")
+check("--always-plugin" in ui.server_args(dict(base, engine="plugin")) and "--always-plugin" not in ui.server_args(dict(base, engine="plugin", mode="fast")),
+      "server args: moe-cache adds --always-plugin (not needed with --fast)")
+check(not any(x in ui.server_args(dict(base, engine="auto")) for x in ("--stock", "--always-plugin")), "server args: Auto adds nothing")
 check(not ui.mc.decide(small["path"], f"{(sz + ui.mc.STOCK_HEADROOM - 1) / 1e9}")[0], "decide(): model + 1.5 GB headroom must fit")
 
 # Windows + AMD rules in the plan, in the launcher's words (the checkpoint rule is the launcher's own function)
@@ -472,7 +497,7 @@ check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 40
 check(ui.windows_amd_rules(amd, fn, 68e9, 30e9, windows=False) == (False, []), "Linux: no AMD rule")
 ui.WINDOWS, ui._GPU["gpu"] = True, dict(amd, free=15 * 2**30, integrated=False)
 ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
-real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False: (False, 68e9, 24e9))
+real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False, stock_wanted=False: (stock_wanted, 68e9, 24e9))
 p = ui.plan_model(fn, ram="24")
 ui.WINDOWS, ui.mc.decide = os.name == "nt", real_decide
 check(p["numbers"]["gpu_expert_layers"] == 0 and p["numbers"]["free_vram_GiB"] == 15.0 and any(r.startswith("Windows + AMD: all experts") for r in p["reasons"]),
