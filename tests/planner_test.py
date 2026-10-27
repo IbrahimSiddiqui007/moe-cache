@@ -49,7 +49,11 @@ def dry(*extra):
     env.setdefault("MOE_CACHE_LIB", os.path.join(HERE, "build", "libggml-moe-cache.so"))
     r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "server", model, "--ram", "4", "--always-plugin", "--dry-run", *extra],
                        capture_output=True, text=True, timeout=300, env=env)
-    return r.stdout + r.stderr
+    out = r.stdout + r.stderr
+    if "plugin not built" in out or "MOE_CACHE_LIB points to a file that does not exist" in out:
+        # stop with the reason instead of failing every launcher check (a fresh worktree has no build/; 2026-10-27 that read as 16 planner bugs)
+        sys.exit(f"planner_test: the launcher checks need the plugin: run ./build.sh first (or set MOE_CACHE_LIB). Launcher said: {out.strip().splitlines()[-1]}")
+    return out
 def ncmoe(text):
     import re
     m = re.search(r"--n-cpu-moe (\d+)", text)
