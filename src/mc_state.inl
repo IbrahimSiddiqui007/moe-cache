@@ -257,6 +257,12 @@ struct state_t {
                      " (API " + std::to_string(api) + "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
                 return;
             }
+            const std::string abi = ggml_abi_mismatch();
+            if (!abi.empty()) {
+                fail(std::string("the running ggml ") + ggml_version() + " does not match the ggml headers this plugin was built with (" + abi +
+                     "): use the plugin build that matches your llama.cpp (see docs/QUICKSTART.md)");
+                return;
+            }
         }
         if (!file) {
             fail("MOE_CACHE_GGUF is not set");
