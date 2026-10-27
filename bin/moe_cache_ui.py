@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, json, math, secrets, os, re, signal, subprocess, sys, threading, time, urllib.parse
+import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, signal, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1253,6 +1253,66 @@ class Runner:
                 "system": system_info()}
 
 
+# ---- the page's own chat: chats kept as JSON files, answers streamed from llama-server through the page server ----
+# The page talks only to its own server (CSP connect-src 'self', the page token); this server adds llama-server's API key, so the key never reaches
+# the browser. Chats are files and not browser storage because browser storage is per port, and the app (APP2) picks a free port each run.
+
+CHAT_DIR = os.path.join(mc.CACHE_DIR, "ui-chats")
+CHAT_ID = re.compile(r"[a-z0-9-]{1,40}")
+MAX_CHAT_BODY = 8 * 1024 * 1024        # a chat with a few attached text files
+ON_DEMAND = False                       # hook: True once the launcher can start the model on the first request (claude/on-demand)
+
+
+def chat_path(cid):
+    if not isinstance(cid, str) or not CHAT_ID.fullmatch(cid):
+        raise ValueError("bad chat id")
+    return os.path.join(CHAT_DIR, cid + ".json")
+
+
+def list_chats():
+    out = []
+    for f in glob.glob(os.path.join(CHAT_DIR, "*.json")):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                c = json.load(fh)
+            out.append({"id": c["id"], "title": c.get("title") or "", "model": c.get("model") or "", "t": c.get("t") or os.path.getmtime(f),
+                        "n": len(c.get("messages") or []), "tokens": c.get("tokens")})
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return sorted(out, key=lambda c: -c["t"])
+
+
+def save_chat(c):
+    path = chat_path(c.get("id"))
+    msgs = c.get("messages")
+    if not isinstance(msgs, list) or not all(isinstance(m, dict) and m.get("role") in ("system", "user", "assistant") and isinstance(m.get("content"), str) for m in msgs):
+        raise ValueError("messages: a list of {role, content}")
+    keep = {k: c.get(k) for k in ("id", "title", "model", "system", "tokens", "files")}
+    keep.update(messages=msgs, t=time.time())
+    os.makedirs(CHAT_DIR, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(keep, fh)
+    os.replace(tmp, path)
+    return {"id": keep["id"], "t": keep["t"]}
+
+
+def chat_request(body):
+    """The /v1/chat/completions body the page may send: messages and a few sampling settings, nothing else."""
+    msgs = body.get("messages")
+    if not isinstance(msgs, list) or not msgs or not all(isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
+                                                         and isinstance(m.get("content"), str) for m in msgs):
+        raise ValueError("messages: a non-empty list of {role, content}")
+    r = {"messages": [{"role": m["role"], "content": m["content"]} for m in msgs], "stream": True, "timings_per_token": False}
+    t = number(body.get("temperature"), 0, 5, float, "temperature")
+    if t is not None:
+        r["temperature"] = t
+    n = number(body.get("max_tokens"), 1, 1048576, int, "max_tokens")
+    if n is not None:
+        r["max_tokens"] = n
+    return r
+
+
 # ---- the page server ----
 
 class Store:
@@ -1282,9 +1342,9 @@ class Store:
         return self.models
 
 
-# what the page may do: its own scripts and requests, llama-server's chat page in the frame, never be framed itself (clickjacking)
-CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
-       "frame-src http://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
+# what the page may do: its own scripts and requests (the chat goes through /api/chat), no frames, never be framed itself (clickjacking)
+CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
+       "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
 
 
@@ -1368,7 +1428,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if u.path == "/api/system":
                 return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}),
-                                           llama_server=self.store.ls, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
+                                           llama_server=self.store.ls, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
@@ -1394,9 +1454,16 @@ class Handler(BaseHTTPRequestHandler):
                 if self.runner.state not in ("starting", "ready") or not self.runner.key():
                     raise ValueError("no API key in use")
                 return self.send(200, {"key": self.runner.key()})
+            if u.path == "/api/chats":
+                if q.get("id"):
+                    with open(chat_path(q["id"]), encoding="utf-8") as fh:
+                        return self.send(200, json.load(fh))
+                return self.send(200, {"dir": CHAT_DIR, "chats": list_chats()})
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
                 return self.send(200, {"lines": [[n, l] for n, l in list(self.runner.log) if n > since]})
+        except FileNotFoundError:
+            return self.send(404, {"error": "no such chat"})
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:
@@ -1410,13 +1477,19 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = -1
-        if not 0 <= n <= MAX_BODY:
+        if not 0 <= n <= (MAX_CHAT_BODY if self.path in ("/api/chat", "/api/chats/save") else MAX_BODY):
             self.close_connection = True
             return self.send(413, {"error": "request too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
             if not isinstance(body, dict):
                 raise ValueError("a JSON object is expected")
+            if self.path == "/api/chat":
+                return self.chat(body)
+            if self.path == "/api/chats/save":
+                return self.send(200, save_chat(body))
+            if self.path == "/api/chats/trash":
+                return self.send(200, {"ok": True, "where": move_to_trash(chat_path(body.get("id")))})
             if self.path == "/api/folders":
                 f = os.path.abspath(os.path.expanduser(str(body.get("add") or body.get("remove") or "")))
                 lst = self.store.saved.setdefault("folders", [])
@@ -1430,6 +1503,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.save()
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(True)})
             if self.path == "/api/start":
+                if body.get("on_demand") and not ON_DEMAND:
+                    raise ValueError("Start on first request is not in this version yet")
                 s = self.settings(body)
                 self.store.saved["last"] = {k: v for k, v in s.items() if k != "api_key"}
                 self.store.save()
@@ -1472,6 +1547,56 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             return self.send(500, {"error": f"{type(e).__name__}: {e}"})
         self.send(404, {"error": "not found"})
+
+    def chat(self, body):
+        """Stream one answer: llama-server's server-sent events passed through line by line, plus one {"moe": ...} event before [DONE] with this
+        answer's expert-cache hits and misses (plugin only). The page stops an answer by closing the request; llama-server then stops too."""
+        r = self.runner
+        if r.state != "ready":
+            raise ValueError("no model is running: start one first")
+        req = chat_request(body)
+        before = r.cache_counts()
+        port = int(r.settings.get("port") or 8080)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=900)
+        hdr = {"Content-Type": "application/json", "Accept": "text/event-stream"}
+        if r.key():
+            hdr["Authorization"] = "Bearer " + r.key()
+        streaming = False
+        try:
+            conn.request("POST", "/v1/chat/completions", json.dumps(req), hdr)
+            up = conn.getresponse()
+            if up.status != 200:
+                text = up.read().decode(errors="replace")
+                try:
+                    text = json.loads(text)["error"]["message"]
+                except (ValueError, KeyError, TypeError):
+                    pass
+                return self.send(502, {"error": f"llama-server answered {up.status}: {str(text)[:500]}"})
+            self.close_connection = True
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            streaming = True
+            while True:
+                line = up.readline()
+                if not line:
+                    break
+                if line.strip() == b"data: [DONE]":
+                    after = r.cache_counts() if before else None
+                    if before and after:
+                        h, m = after[0] - before[0], after[1] - before[1]
+                        self.wfile.write(b"data: " + json.dumps({"moe": {"hits": h, "misses": m, "hit_rate": h / (h + m) if h + m else None}}).encode() + b"\n\n")
+                self.wfile.write(line)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass                                  # the page pressed Stop: closing our side makes llama-server stop generating
+        except OSError as e:
+            if not streaming:
+                self.send(502, {"error": f"llama-server did not answer: {e}"})
+        finally:
+            conn.close()
 
     def known(self, path):
         """Only models the page listed can be planned or started."""

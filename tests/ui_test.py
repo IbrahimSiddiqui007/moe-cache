@@ -111,6 +111,15 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/detokenize":
             body = {"content": "You are opencode, an interactive CLI tool" if q["tokens"][:3] == [11, 22, 33] else "Hello"}
             self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(body).encode()); return
+        if self.path == "/v1/chat/completions":         # the page's own chat: streamed; the page server must have added the key
+            ok = self.headers.get("Authorization") == "Bearer sekrit-123" and q["stream"] is True and q.get("temperature") == 0.5 and set(q["messages"][-1]) == {"role", "content"}
+            self.send_response(200 if ok else 401); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+            if not ok:
+                self.wfile.write(json.dumps({"error": {"message": "Invalid API Key"}}).encode()); return
+            for piece in ("Hel", "lo"):
+                self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": piece}}]}).encode() + b"\n\n"); self.wfile.flush()
+            t = {"predicted_n": 2, "predicted_per_second": 25.0, "predicted_ms": 80.0, "prompt_n": 5, "prompt_per_second": 500.0, "cache_n": 0, "draft_n": 4, "draft_n_accepted": 3}
+            self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}], "timings": t}).encode() + b"\n\ndata: [DONE]\n\n"); return
         assert self.path == "/completion" and q["temperature"] == 0 and q["seed"] == 42 and q["cache_prompt"] is False
         t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
         self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
@@ -172,8 +181,8 @@ check(st == 303 and hdr("Location") == "/" and cookie.startswith(f"moe_cache_ui_
       f"the launcher's link sets an HttpOnly, SameSite=Strict cookie and drops the token from the address ({st}, {cookie})")
 st, hdr, page = raw("GET", "/", {"Cookie": cookie.split(";")[0]})
 check(st == 200 and "<title>moe-cache</title>" in page, "the page loads with the cookie")
-check(hdr("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in (hdr("Content-Security-Policy") or "") and "frame-src http://127.0.0.1:*" in hdr("Content-Security-Policy"),
-      "1: no framing (X-Frame-Options DENY, CSP frame-ancestors 'none'); the chat frame may load 127.0.0.1")
+check(hdr("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in (hdr("Content-Security-Policy") or "") and "frame-src 'none'" in hdr("Content-Security-Policy"),
+      "1: no framing (X-Frame-Options DENY, CSP frame-ancestors 'none'); the page has no frames either (own chat)")
 st, hdr, _ = raw("GET", "/api/status")
 check(st == 403 and hdr("X-Frame-Options") == "DENY", "1: the headers are on errors too")
 st, _, page = raw("GET", "/")
@@ -218,6 +227,10 @@ with socket.socket() as s:
     s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]
 st, _ = req("/api/bench", {})
 check(st == 400, "no benchmark without a running model")
+st, body = req("/api/chat", {"messages": [{"role": "user", "content": "hi"}]})
+check(st == 400 and "no model is running" in body, f"chat: no answer without a running model ({st})")
+st, body = req("/api/start", {"model": small["path"], "on_demand": True})
+check(st == 400 and "first request" in body and json.loads(req("/api/system")[1])["on_demand"] is False, "on-demand hook: refused until the launcher has it; /api/system says so")
 st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact", "agent": True, "api_key": "sekrit-123"})
 check(st == 200, f"POST /api/start ({body[:120]})")
 st, _ = req("/api/start", {"model": small["path"], "port": port + 1})
@@ -247,6 +260,37 @@ check(status.get("api_key") == {"in_use": True, "source": "typed on this page", 
 st, body = req("/api/key")
 check(st == 200 and json.loads(body)["key"] == "sekrit-123", "Copy key: /api/key gives the key in use")
 check(req("/api/key", headers={"X-MoeCache-Token": None})[0] == 403, "Copy key: not without the page token")
+
+# ---- the page's own chat (3-pane page): streamed through the page server, which adds llama-server's API key ----
+HI = {"messages": [{"role": "system", "content": "be brief"}, {"role": "user", "content": "hi", "shown": "hi", "files": []}], "temperature": 0.5}
+st, body = req("/api/chat", HI)
+ev = [json.loads(l[6:]) for l in body.splitlines() if l.startswith("data: {")]
+text = "".join((((e.get("choices") or [{}])[0]).get("delta") or {}).get("content", "") for e in ev)
+check(st == 200 and text == "Hello" and body.rstrip().endswith("data: [DONE]") and any((e.get("timings") or {}).get("draft_n_accepted") == 3 for e in ev),
+      f"chat: streamed answer, timings (MTP drafts) passed through, key added by the page server ({st}, {text!r})")
+check("sekrit" not in body, "chat: the key is not in the stream")
+moe = [e["moe"] for e in ev if "moe" in e]
+check(len(moe) <= 1 and all(set(m) == {"hits", "misses", "hit_rate"} for m in moe), f"chat: at most one per-answer cache event ({moe})")
+for bad, what in (({"messages": []}, "no messages"), ({"messages": [{"role": "tool", "content": "x"}]}, "an unknown role"), ({"messages": [{"role": "user", "content": 5}]}, "content not text"),
+                  (dict(HI, temperature=99), "temperature out of range"), (dict(HI, max_tokens="nan"), "max_tokens not a number")):
+    check(req("/api/chat", bad)[0] == 400, f"chat: {what} is refused")
+check(req("/api/chat", HI, headers={"X-MoeCache-Token": None})[0] == 403 and req("/api/chat", HI, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403,
+      "chat: not without the page token, not from another site")
+st, body = req("/api/chat", dict(HI, messages=[{"role": "user", "content": "x" * 200000}]))
+check(st != 413, f"chat: up to 8 MB for messages with attached files ({st})")
+# chats are files in the cache folder (browser storage is per port; the app picks a free port each run)
+CH = {"id": "abc-123", "title": "Hello chat", "model": small["path"], "system": "", "messages": HI["messages"][1:] + [{"role": "assistant", "content": "Hello", "meta": {"predicted_n": 2}}],
+      "tokens": 7, "files": [], "junk": "dropped"}
+st, body = req("/api/chats/save", CH)
+check(st == 200 and os.path.isfile(os.path.join(ui.CHAT_DIR, "abc-123.json")), f"chats: saved as a file ({st} {body[:80]})")
+lst = json.loads(req("/api/chats")[1])["chats"]
+check([(c["id"], c["title"], c["n"], c["tokens"]) for c in lst] == [("abc-123", "Hello chat", 2, 7)], f"chats: listed ({lst})")
+got = json.loads(req("/api/chats?id=abc-123")[1])
+check(got["messages"][1]["meta"] == {"predicted_n": 2} and "junk" not in got, "chats: read back with the answer's numbers; unknown keys dropped")
+check(req("/api/chats/save", dict(CH, id="../x"))[0] == 400 and req("/api/chats?id=..%2Fui")[0] == 400 and req("/api/chats?id=nothere")[0] == 404, "chats: ids are checked")
+check(req("/api/chats/save", dict(CH, messages=[{"role": "user"}]))[0] == 400, "chats: messages are checked")
+check(req("/api/chats/save", dict(CH, messages=[{"role": "user", "content": "y" * 100000}]))[0] == 200, "chats: bigger than 64 KiB is fine")
+check(req("/api/chats", headers={"X-MoeCache-Token": None})[0] == 403 and req("/api/chats/save", CH, headers={"X-MoeCache-Token": None})[0] == 403, "chats: not without the page token")
 lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
 check("fake: argv has the key: False, LLAMA_API_KEY set: True" in lg, "4: the API key reaches the launcher in LLAMA_API_KEY, not in its argv")
 check(not any("sekrit" in l for l in lg), "4: and is not in the log")
@@ -290,6 +334,9 @@ if os.name != "nt":
     slot_file(tag + "-s1.bin", 10, [1]); req("/api/sessions/trash", {"name": tag + "-s1.bin"})
     check(os.path.isfile(os.path.join(tf, "files", tag + "-s1.bin.1")), "a second file of the same name gets its own Trash name")
 check(req("/api/sessions/trash", {"name": "../ui.json"})[0] == 400 and req("/api/sessions/trash", {"name": "notes.bin"})[0] == 400, "only listed session files can be moved")
+st, body = req("/api/chats/trash", {"id": "abc-123"})
+check(st == 200 and not os.path.exists(os.path.join(ui.CHAT_DIR, "abc-123.json")) and json.loads(req("/api/chats")[1])["chats"] == [],
+      f"chats: Trash moves the file to the Trash (after the test Trash is set up; {body[:100]})")
 check(req("/api/sessions/trash", {"name": tag + "-s0.bin"}, headers={"X-MoeCache-Token": None})[0] == 403, "not without the page token")
 check(ui.server_args({"model": "m.gguf", "agent": True})[3:5] == ["--ctx", "65536"] and ui.server_args({"model": "m.gguf"})[3:5] == ["--ctx", "8192"],
       "Agent mode without a chosen context: 65536, as the launcher's --agent (the page passed 8192 before)")

@@ -5,88 +5,330 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moe-cache</title>
 <style>
-:root { --bg:#f6f7f9; --panel:#fff; --line:#dde1e6; --text:#1d232b; --muted:#5f6b78; --accent:#2f6fde; --ok:#1f8a4c; --warn:#b26a00; --bad:#c23b3b; --gpu:#7a4fd0; --code:#eef1f5; }
-@media (prefers-color-scheme: dark) { :root { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; } }
-a { color:var(--accent); }
+:root { --bg:#f6f7f9; --panel:#fff; --line:#dde1e6; --text:#1d232b; --muted:#5f6b78; --accent:#2f6fde; --ok:#1f8a4c; --warn:#b26a00; --bad:#c23b3b; --gpu:#7a4fd0; --code:#eef1f5; --side:#eef0f3; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; --side:#171a20; } }
+:root[data-theme=dark] { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; --side:#171a20; }
 * { box-sizing:border-box; }
-body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
-header h1 { font-size:16px; margin:0; }
-header .sys { color:var(--muted); font-size:13px; }
-main { display:grid; grid-template-columns:minmax(360px, 5fr) 7fr; gap:12px; padding:12px 16px; }
-@media (max-width: 1100px) { main { grid-template-columns:1fr; } }
-section { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; min-width:0; }
-section h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
-.col { display:flex; flex-direction:column; gap:12px; min-width:0; }
-table { width:100%; border-collapse:collapse; }
-td, th { padding:5px 6px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
-th { color:var(--muted); font-weight:500; font-size:12px; }
-#models tr.m { cursor:pointer; }
-#models tr.m:hover { background:var(--code); }
-#models tr.sel { background:color-mix(in srgb, var(--accent) 14%, transparent); }
-.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
-.badge { display:inline-block; padding:1px 7px; border-radius:10px; font-size:12px; border:1px solid currentColor; margin-top:3px; }
-.stock { color:var(--ok); } .cache { color:var(--warn); } .gpu { color:var(--gpu); } .error { color:var(--bad); } .wait { color:var(--muted); }
-.small { font-size:12px; color:var(--muted); }
-ul.why { margin:6px 0 0; padding-left:18px; }
-ul.why li { margin:2px 0; }
-ul.why li.win { color:var(--gpu); }
-label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
-input[type=text], input[type=number], input[type=password] { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); }
-input[type=range] { width:100%; }
-.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-.row > * { flex:1; min-width:0; }
-.row > button { flex:0 0 auto; }
-.seg { display:flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
-.seg button { flex:1; border:0; border-radius:0; background:transparent; color:var(--text); padding:5px 6px; }
-.seg button.on { background:var(--accent); color:#fff; }
-button { white-space:nowrap; flex:0 0 auto; padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:var(--code); color:var(--text); cursor:pointer; font:inherit; }
+html, body { height:100%; }
+body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
+a { color:var(--accent); }
+button { font:inherit; color:var(--text); background:var(--code); border:1px solid var(--line); border-radius:6px; padding:5px 10px; cursor:pointer; white-space:nowrap; }
 button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
 button.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
+button.ghost { background:transparent; border-color:transparent; }
+button.icon { padding:4px 8px; background:transparent; border-color:transparent; font-size:16px; line-height:1; }
+button.icon:hover, button.ghost:hover { background:var(--code); }
 button:disabled { opacity:.5; cursor:default; }
-code, pre { background:var(--code); border-radius:4px; font:12px/1.4 ui-monospace, Consolas, monospace; }
+code, pre { font:12px/1.45 ui-monospace, Consolas, monospace; background:var(--code); border-radius:4px; }
 code { padding:1px 4px; word-break:break-all; }
-pre { padding:8px; overflow:auto; white-space:pre-wrap; word-break:break-all; margin:6px 0 0; }
-.stats { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin:8px 0; }
-.stat { border:1px solid var(--line); border-radius:6px; padding:6px 8px; }
-.stat b { display:block; font-size:20px; font-variant-numeric:tabular-nums; }
-.stat span { color:var(--muted); font-size:12px; }
-canvas { width:100%; height:60px; display:block; }
-.tabs { display:flex; gap:4px; margin-bottom:8px; }
-.tabs button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
-iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6px; background:#fff; }
-#log { height:560px; overflow:auto; margin:0; }
-#log .p { color:var(--warn); }
-#log .u { color:var(--accent); }
+pre { padding:8px 10px; margin:6px 0; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+table { width:100%; border-collapse:collapse; }
+td, th { padding:4px 5px; text-align:left; border-bottom:1px solid var(--line); vertical-align:top; }
+th { color:var(--muted); font-weight:500; font-size:11px; }
+.num { text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; }
+.small { font-size:12px; color:var(--muted); }
+.hint { font-size:12px; color:var(--muted); margin-top:3px; }
 .err { color:var(--bad); }
-.hint { color:var(--muted); font-size:12px; margin-top:4px; }
-#warnings { margin-top:8px; border:1px solid var(--warn); border-radius:6px; padding:6px 8px; }
+.badge { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; border:1px solid currentColor; }
+.stock { color:var(--ok); } .cache { color:var(--warn); } .gpu { color:var(--gpu); } .error { color:var(--bad); } .wait { color:var(--muted); }
+.seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+.seg button { border:0; border-radius:0; background:transparent; padding:4px 10px; }
+.seg button.on { background:var(--accent); color:#fff; }
+.dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:6px; vertical-align:1px; flex:0 0 auto; }
+.dot.ok { background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
+.dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
+ul.why { margin:4px 0 0; padding-left:16px; font-size:12px; }
+ul.why li { margin:2px 0; }
+ul.why li.win { color:var(--gpu); }
+
+/* ---------- frame ---------- */
+.app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
+.top { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); min-width:0; position:relative; }
+.top .brand { font-weight:600; font-size:15px; cursor:default; }
+.top .grow { flex:1; }
+.modelpick { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:4px 10px; background:var(--bg); cursor:pointer; min-width:0; max-width:460px; }
+.modelpick b { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.modelpick .badge { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px; }
+.state { white-space:nowrap; font-size:13px; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.startgrp { display:inline-flex; flex:0 0 auto; }
+.startgrp > button:first-child, .startgrp > button:nth-child(2) { border-top-right-radius:0; border-bottom-right-radius:0; }
+.startgrp #startmenu { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid color-mix(in srgb, #fff 30%, transparent); padding:5px 7px; }
+.menu { position:absolute; top:44px; right:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:6px; z-index:70; width:320px; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+.menu button { display:block; width:100%; text-align:left; background:transparent; border:0; white-space:normal; }
+.menu button:hover:not(:disabled) { background:var(--code); }
+.menu .small { display:block; }
+
+.panes { display:grid; grid-template-columns:270px minmax(0,1fr) 360px; min-height:0; }
+.app.wideright .panes { grid-template-columns:270px minmax(0,1fr) 48vw; }
+.app.noleft .panes { grid-template-columns:0 minmax(0,1fr) 360px; }
+.app.noleft.wideright .panes { grid-template-columns:0 minmax(0,1fr) 48vw; }
+.app.noright .panes { grid-template-columns:270px minmax(0,1fr) 0; }
+.app.noleft.noright .panes { grid-template-columns:0 minmax(0,1fr) 0; }
+.left, .right { overflow:auto; min-height:0; background:var(--side); }
+.left { border-right:1px solid var(--line); }
+.right { border-left:1px solid var(--line); }
+.app.noleft .left, .app.noright .right { visibility:hidden; }
+
+/* ---------- left ---------- */
+.left { display:flex; flex-direction:column; }
+.left .scroll { flex:1; overflow:auto; padding:10px 8px; }
+.left h3 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:14px 8px 4px; display:flex; justify-content:space-between; align-items:center; }
+.left h3 button { font-size:11px; padding:0 6px; text-transform:none; letter-spacing:0; }
+.left input.search { width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); margin-top:8px; }
+.item { padding:6px 8px; border-radius:6px; cursor:pointer; display:flex; gap:6px; align-items:flex-start; position:relative; }
+.item > div { display:flex; flex-direction:column; gap:1px; min-width:0; flex:1; }
+.item:hover { background:var(--code); }
+.item.sel { background:color-mix(in srgb, var(--accent) 16%, transparent); }
+.item .t { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item .s { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.item .x { visibility:hidden; padding:0 6px; font-size:12px; background:transparent; border:0; color:var(--muted); }
+.item:hover .x { visibility:visible; }
+.left .foot { border-top:1px solid var(--line); padding:8px; display:flex; gap:6px; }
+.left .foot button { flex:1; }
+
+/* ---------- center ---------- */
+.center { display:flex; flex-direction:column; min-height:0; min-width:0; position:relative; }
+.chathead { display:flex; align-items:center; gap:8px; padding:8px 16px; border-bottom:1px solid var(--line); min-width:0; }
+.chathead .title { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.msgs { flex:1; overflow:auto; padding:18px 16px 8px; }
+.msgs .inner { max-width:800px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
+.empty { text-align:center; color:var(--muted); margin-top:12vh; }
+.empty b { color:var(--text); font-size:18px; display:block; margin-bottom:6px; }
+.msg.user { align-self:flex-end; max-width:85%; background:var(--panel); border:1px solid var(--line); border-radius:12px 12px 2px 12px; padding:8px 12px; white-space:pre-wrap; word-break:break-word; }
+.msg.user .att { margin-top:6px; white-space:normal; display:flex; flex-wrap:wrap; gap:4px; }
+.msg.ai { max-width:100%; word-break:break-word; }
+.msg.ai p { margin:0 0 8px; }
+.msg.ai ul, .msg.ai ol { margin:0 0 8px; padding-left:22px; }
+.msg.ai h1, .msg.ai h2, .msg.ai h3, .msg.ai h4 { font-size:15px; margin:10px 0 6px; }
+.msg.ai .errmsg { color:var(--bad); }
+.chips { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px; }
+.chip { font-size:11px; padding:1px 8px; border-radius:10px; background:var(--code); color:var(--muted); white-space:nowrap; }
+.chip.mtp { color:var(--gpu); background:color-mix(in srgb, var(--gpu) 14%, transparent); }
+.chip.hit { color:var(--ok); background:color-mix(in srgb, var(--ok) 13%, transparent); }
+.chip.tps { color:var(--accent); background:color-mix(in srgb, var(--accent) 13%, transparent); }
+.chip.stopped { color:var(--bad); }
+.chips .acts { margin-left:auto; display:flex; gap:2px; }
+.chips .acts button { padding:1px 7px; font-size:12px; background:transparent; border-color:transparent; color:var(--muted); }
+.chips .acts button:hover { background:var(--code); color:var(--text); }
+.think { border-left:2px solid var(--line); padding:2px 10px; margin-bottom:8px; color:var(--muted); font-size:13px; white-space:pre-wrap; }
+.think summary { cursor:pointer; white-space:normal; }
+.cursor { display:inline-block; width:7px; height:15px; background:var(--accent); vertical-align:-2px; animation:blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity:0; } }
+.composer { padding:8px 16px 14px; }
+.composer .box { max-width:800px; margin:0 auto; border:1px solid var(--line); border-radius:12px; background:var(--panel); padding:8px 10px; }
+.composer textarea { width:100%; border:0; outline:0; resize:none; background:transparent; color:var(--text); font:inherit; min-height:44px; max-height:40vh; }
+.composer .row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.composer .row .grow { flex:1; }
+.file { display:inline-flex; align-items:center; gap:6px; font-size:12px; border:1px solid var(--line); border-radius:6px; padding:2px 8px; background:var(--bg); }
+.file .x { cursor:pointer; color:var(--muted); }
+.drop { position:absolute; inset:8px; border:2px dashed var(--accent); border-radius:12px; background:color-mix(in srgb, var(--bg) 85%, transparent); display:none; align-items:center; justify-content:center; flex-direction:column; gap:4px; z-index:20; font-size:16px; }
+.center.dragging .drop { display:flex; }
+.banner { max-width:800px; margin:0 auto 8px; border:1px solid var(--warn); border-radius:8px; padding:6px 10px; font-size:12px; color:var(--warn); }
+.banner:empty { display:none; }
+#err:empty { display:none; }
+#err { max-width:800px; margin:0 auto 8px; border:1px solid var(--bad); border-radius:8px; padding:6px 10px; font-size:12px; }
+
+/* ---------- right ---------- */
+.right { padding:10px; display:flex; flex-direction:column; gap:10px; }
+.right .rtop { display:flex; justify-content:flex-end; margin:-4px 0 -6px; }
+.card { background:var(--panel); border:1px solid var(--line); border-radius:8px; flex:0 0 auto; }
+.card > summary { list-style:none; cursor:pointer; padding:8px 10px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); display:flex; justify-content:space-between; align-items:center; gap:6px; }
+.card > summary::-webkit-details-marker { display:none; }
+.card > summary::after { content:"▾"; }
+.card:not([open]) > summary::after { content:"▸"; }
+.card > summary .badge { text-transform:none; letter-spacing:0; margin-left:auto; }
+.card .body { padding:0 10px 10px; min-width:0; }
+.stats { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:6px; }
+.stat { border:1px solid var(--line); border-radius:6px; padding:5px 7px; min-width:0; }
+.stat b { display:block; font-size:16px; font-variant-numeric:tabular-nums; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.stat span { font-size:11px; color:var(--muted); display:block; }
+canvas { width:100%; height:44px; display:block; }
+.bar { height:10px; border-radius:5px; background:var(--code); overflow:hidden; display:flex; }
+.bar i { display:block; height:100%; }
+.kv { display:grid; grid-template-columns:auto minmax(0,1fr); gap:3px 10px; font-size:12px; align-items:baseline; }
+.kv > span:nth-child(odd) { color:var(--muted); }
+.line { display:flex; align-items:center; gap:8px; padding:6px 0; border-top:1px solid var(--line); }
+.line:first-child { border-top:0; }
+.line .n { flex:1; min-width:0; }
+.row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+.scrollx { overflow-x:auto; font-size:12px; }
+#log { height:200px; overflow:auto; margin:0; font-size:11px; }
+#log.tall { height:60vh; }
+#log .p { color:var(--warn); } #log .u { color:var(--accent); }
 #warnings div { color:var(--warn); font-size:12px; word-break:break-word; }
 #warnings div + div { margin-top:4px; }
+
+/* ---------- settings drawer ---------- */
+.scrim { position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:50; display:none; }
+.drawer { position:fixed; top:0; bottom:0; left:0; width:min(440px, 100vw); background:var(--panel); border-right:1px solid var(--line); z-index:60; transform:translateX(-102%); transition:transform .2s; display:flex; flex-direction:column; }
+body.settings .drawer { transform:none; } body.settings .scrim { display:block; }
+.drawer header { display:flex; align-items:center; padding:10px 14px; border-bottom:1px solid var(--line); }
+.drawer header b { flex:1; }
+.drawer .body { padding:4px 14px 14px; overflow:auto; }
+.drawer h4 { font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--muted); margin:16px 0 4px; }
+.drawer label { display:block; margin:10px 0 3px; font-size:12px; color:var(--muted); }
+.drawer label.check { color:var(--text); font-size:13px; }
+.drawer input[type=range] { width:100%; }
+.drawer input[type=text], .drawer input[type=password], .drawer input[type=number], .drawer textarea { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); font:inherit; }
+.drawer .seg { display:flex; } .drawer .seg button { flex:1; }
+.drawer .row > * { flex:1; min-width:0; } .drawer .row > button { flex:0 0 auto; }
+
+/* ---------- narrower screens ---------- */
+.only-narrow { display:none !important; }
+@media (max-width: 1180px) {          /* small windows: the right pane becomes an overlay */
+  .panes, .app.noright .panes, .app.wideright .panes { grid-template-columns:250px minmax(0,1fr) 0; }
+  .app.noleft .panes, .app.noleft.noright .panes, .app.noleft.wideright .panes { grid-template-columns:0 minmax(0,1fr) 0; }
+  .right { position:fixed; top:49px; right:0; bottom:0; width:380px; max-width:100vw; z-index:30; box-shadow:-8px 0 24px rgba(0,0,0,.35); visibility:hidden; }
+  .app.wideright .right { width:min(720px, 100vw); }
+  .app.showright .right { visibility:visible; }
+  .app.noright .right { visibility:hidden; }
+  .app.noright.showright .right { visibility:visible; }
+}
+@media (max-width: 760px) {           /* phone: only the chat; both side panes are drawers */
+  .panes, .app.noleft .panes, .app.noright .panes, .app.wideright .panes, .app.noleft.wideright .panes { grid-template-columns:minmax(0,1fr); }
+  .left { position:fixed; top:49px; left:0; bottom:0; width:86vw; z-index:30; visibility:hidden; box-shadow:8px 0 24px rgba(0,0,0,.35); }
+  .app.showleft .left, .app.noleft.showleft .left { visibility:visible; }
+  .right, .app.wideright .right { width:92vw; }
+  .only-wide { display:none !important; }
+  .only-narrow { display:inline-flex !important; }
+  .top { gap:6px; padding:8px; }
+  .modelpick { padding:3px 8px; } .modelpick .badge { display:none; }
+  .msgs { padding:12px 10px 6px; } .composer { padding:6px 8px 10px; }
+  .chathead { padding:6px 10px; }
+  .msg.user { max-width:92%; }
+}
 </style>
 </head>
 <body>
-<header><h1>moe-cache</h1><span class="sys" id="sys">…</span></header>
-<main>
-<div class="col">
-  <section id="p-model">
-    <h2>1 · Model</h2>
-    <table id="models"><thead><tr><th>Model and verdict</th><th class="num">Size</th><th>Quant</th></tr></thead><tbody></tbody></table>
-    <div id="nomodels" class="small" hidden></div>
-    <div id="plan" style="margin-top:10px"></div>
-    <div class="row" style="margin-top:10px"><input type="text" id="folder" placeholder="add a folder with .gguf files"><button id="addfolder">Add folder</button><button id="rescan">Rescan</button></div>
-    <div class="small" id="folders"></div>
-  </section>
-  <section id="p-settings">
-    <h2>2 · Settings</h2>
+<div class="app" id="app">
+  <!-- ================= TOP BAR: model, mode, start/stop ================= -->
+  <div class="top">
+    <button class="icon" id="tglLeft" title="Chats, agent sessions, models">☰</button>
+    <span class="brand only-wide" id="sys" title="">moe-cache</span>
+    <div class="modelpick" id="modelpick" title="The model Start uses (pick one in the list on the left)"><b id="topmodel">no model</b><span class="badge wait" id="topverdict"></span></div>
+    <div class="seg only-wide" data-seg="mode" title="Exact: same answers as stock llama-server · Fast: about +10 %, about 1 token in 40-50 differs · Hybrid: experimental"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <span class="grow"></span>
+    <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
+    <span class="startgrp"><button class="primary" id="start">Start</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
+    <button class="icon" id="tglRight" title="Status, context, files, agents, log">◧</button>
+    <div class="menu" id="menu" hidden>
+      <button data-m="now"><b>Start now</b><span class="small">load the model with the settings and keep it loaded</span></button>
+      <button data-m="ondemand" id="m-ondemand"><b>Start on first request</b><span class="small" id="m-ondemand-why">listen on the port and load the model when a chat or an agent asks (not in this version yet)</span></button>
+      <button data-m="cmd"><b>Show the llama-server command</b><span class="small">what Start runs (the launcher's --dry-run)</span></button>
+      <button data-m="own"><b>Open llama-server's own chat page</b><span class="small">in a new tab (needs a running model)</span></button>
+    </div>
+  </div>
+
+  <div class="panes">
+    <!-- ================= LEFT: chats, agent sessions, models ================= -->
+    <aside class="left" id="left">
+      <div class="scroll">
+        <button class="primary" style="width:100%" id="newchat">＋ New chat</button>
+        <input class="search" id="search" placeholder="Search chats" autocomplete="off">
+        <h3>Chats</h3>
+        <div id="chatlist"></div>
+        <h3>Agent sessions <button class="ghost" id="aboutsessions" title="What these are">?</button></h3>
+        <div id="sessions"></div>
+        <h3>Models <button class="ghost" id="rescan" title="Read the model folders again">Rescan</button></h3>
+        <div id="models"></div>
+        <div id="nomodels" class="small" style="margin:4px 8px" hidden></div>
+        <details id="planbox" style="margin:6px 8px 0"><summary class="small" id="plansum">Why?</summary><div id="plan"></div></details>
+      </div>
+      <div class="foot"><button id="openSettings">⚙ Settings</button><button id="openAgents">🔌 Agents</button></div>
+    </aside>
+
+    <!-- ================= CENTER: the chat ================= -->
+    <main class="center" id="center">
+      <div class="chathead">
+        <span class="title" id="chattitle">New chat</span>
+        <span class="small only-wide" id="chatinfo"></span>
+        <span style="flex:1"></span>
+        <button class="ghost small" id="export" title="Save this chat as a Markdown file">Export</button>
+        <button class="ghost small" id="trashchat" title="Move this chat to the Trash">Trash</button>
+      </div>
+      <div class="msgs" id="msgs"><div class="inner" id="inner"></div></div>
+      <div class="composer">
+        <div id="err"></div>
+        <div class="banner" id="chatnote"></div>
+        <div class="box">
+          <div class="row" id="attached"></div>
+          <textarea id="ta" rows="2" placeholder="Message… (Enter sends, Shift+Enter new line; drop text files here)"></textarea>
+          <div class="row">
+            <button class="ghost" id="attach" title="Attach text files">📎</button><input type="file" id="fileinput" multiple hidden>
+            <span class="small" id="ctxinfo"></span>
+            <span class="grow"></span>
+            <button class="danger" id="stopgen" hidden>■ Stop</button>
+            <button class="primary" id="send">Send</button>
+          </div>
+        </div>
+      </div>
+      <div class="drop"><b>Drop files to attach</b><span class="small">text and code files go into the message (up to 512 KB each)</span></div>
+    </main>
+
+    <!-- ================= RIGHT: live status, context, files, agents, log ================= -->
+    <aside class="right" id="right">
+      <div class="rtop"><button class="ghost small" id="widen" title="Make this pane wider (for the tables)">⇔ wider</button></div>
+      <details class="card" open id="c-live"><summary>Live</summary><div class="body">
+        <div class="stats">
+          <div class="stat"><b id="s-dec">–</b><span>decode tok/s</span></div>
+          <div class="stat"><b id="s-pre">–</b><span>prefill tok/s</span></div>
+          <div class="stat"><b id="s-hit">–</b><span>cache hit</span></div>
+          <div class="stat"><b id="s-read">–</b><span>SSD MB/s</span></div>
+          <div class="stat" title=""><b id="s-ram">–</b><span id="s-ram-l">RAM</span></div>
+          <div class="stat"><b id="s-vram">–</b><span id="s-vram-l">VRAM</span></div>
+        </div>
+        <div class="small" style="margin-top:8px">tok/s, last 2 minutes</div><canvas id="c-tps"></canvas>
+        <div class="small">hit rate, last 2 minutes</div><canvas id="c-hit"></canvas>
+        <div class="small" style="margin-top:6px">Mode: <b id="s-mode">–</b></div>
+        <div class="row small" id="keyrow" hidden style="margin-top:4px"><span>API key in use: <code id="keyends"></code> <span id="keysrc"></span></span><button id="copykey">Copy key</button><span id="keymsg"></span></div>
+        <div style="margin-top:4px"><code id="cmd"></code></div>
+        <div class="row" style="margin-top:6px"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
+        <pre id="dry" hidden></pre>
+      </div></details>
+
+      <details class="card" open id="c-context"><summary>Context of this chat</summary><div class="body">
+        <div class="bar" id="ctxbar"></div>
+        <div class="small" style="margin-top:4px" id="ctxtext"></div>
+        <div class="kv" style="margin-top:6px" id="ctxparts"></div>
+      </div></details>
+
+      <details class="card" open id="c-files"><summary>Files in this chat</summary><div class="body" id="filelist"></div></details>
+
+      <details class="card" open id="c-agents"><summary>Agents</summary><div class="body"><div id="agentsmain"></div></div></details>
+
+      <details class="card" id="decisions" hidden><summary>What the launcher decided</summary><div class="body"><ul class="why"></ul></div></details>
+
+      <details class="card" id="c-bench"><summary>Benchmark</summary><div class="body">
+        <div class="row"><button id="bench">Quick benchmark</button></div>
+        <div class="small" id="benchstate" style="margin-top:4px">warm-up, 2 replies of 256 tokens, one 3.5k-token prompt (about 1-3 minutes); saved to a CSV so you can compare stock and moe-cache runs</div>
+        <div class="small" id="coldrow" style="margin-top:4px"><label><input type="checkbox" id="cold"> Cold start (fair): stop, push the model out of the file cache, start again, then measure</label> <span id="coldhow"></span></div>
+        <div class="small" id="otherrow" hidden><span>Other big files to read (folders, separated by ;):</span><input type="text" id="other" style="width:100%"></div>
+        <div id="benchres" class="scrollx"></div>
+      </div></details>
+
+      <details class="card" open id="c-warn" hidden><summary>Warnings <span class="badge cache" id="warncount"></span></summary><div class="body"><div id="warnings"></div></div></details>
+
+      <details class="card" open id="c-log"><summary>Log</summary><div class="body"><pre id="log"></pre><button class="ghost small" id="logtall">Taller</button></div></details>
+    </aside>
+  </div>
+</div>
+
+<!-- ================= SETTINGS DRAWER ================= -->
+<div class="scrim" id="scrim"></div>
+<div class="drawer" id="drawer">
+  <header><b>⚙ Settings</b><button class="icon" id="closeSettings" title="Close">✕</button></header>
+  <div class="body">
+    <div class="hint">These apply at the next Start; the verdicts in the model list update at once. The page remembers them (not the API key).</div>
+    <h4>Memory</h4>
     <label>RAM budget: <b id="ramv"></b> <span class="small">(empty = what is available when it starts)</span></label>
     <input type="range" id="ram" min="0" max="64" step="1">
     <label>VRAM: <b id="vramv"></b> <span class="small">(free VRAM the planner may use)</span></label>
     <input type="range" id="vram" min="0" max="24" step="0.5">
+    <h4>Model</h4>
     <label>Context</label>
     <div class="seg" id="ctx"><button data-v="8192">8k</button><button data-v="32768">32k</button><button data-v="65536">64k</button></div>
-    <label>Mode</label>
-    <div class="seg" id="mode"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <label>Mode <span class="small">(also in the top bar)</span></label>
+    <div class="seg" data-seg="mode"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <div class="hint" id="modehint"></div>
     <label>Run as</label>
     <div class="seg" id="engine"><button data-v="auto">Auto</button><button data-v="plugin">moe-cache</button><button data-v="stock">Stock</button></div>
@@ -94,76 +336,76 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <label>MTP (multi-token prediction)</label>
     <div class="seg" id="mtp"><button data-v="auto">Auto</button><button data-v="on">On</button><button data-v="off">Off</button></div>
     <div class="hint" id="mtphint"></div>
-    <div class="row" style="margin-top:8px">
-      <label style="margin:0"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
-      <label style="margin:0"><input type="checkbox" id="nowarm"> Don't restore saved agent sessions <span class="small">(--no-warm: nothing is saved either)</span></label>
-    </div>
+    <h4>Agents</h4>
+    <label class="check"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
+    <label class="check"><input type="checkbox" id="nowarm"> Don't restore saved agent sessions <span class="small">(--no-warm: nothing is saved either)</span></label>
+    <h4>Server</h4>
     <div class="row">
       <div><label>Port</label><input type="number" id="port" value="8080" min="1" max="65535"></div>
       <div><label>API key <span class="small">(optional)</span></label><input type="password" id="apikey" autocomplete="off"></div>
     </div>
-  </section>
+    <label>Model folders</label>
+    <div class="small" id="folders"></div>
+    <div class="row" style="margin-top:6px"><input type="text" id="folder" placeholder="add a folder with .gguf files"><button id="addfolder">Add folder</button></div>
+    <h4>Chat</h4>
+    <label>System prompt for new chats <span class="small">(empty = the model's default)</span></label>
+    <textarea id="sysprompt" rows="2"></textarea>
+    <label>Temperature: <b id="tempv"></b> <span class="small">(empty = the server's default)</span></label>
+    <input type="range" id="temp" min="-0.1" max="2" step="0.1" value="-0.1">
+    <label class="check"><input type="checkbox" id="showthink" checked> Show the model's thinking (folded)</label>
+    <div class="hint" id="chatdir"></div>
+    <h4>Look</h4>
+    <div class="seg" id="theme"><button data-v="">System</button><button data-v="light">Light</button><button data-v="dark">Dark</button></div>
+  </div>
 </div>
-<div class="col">
-  <section id="p-status">
-    <h2>3 · Status</h2>
-    <div class="row"><div><b id="state">idle</b> <span class="small" id="statemodel"></span></div>
-      <button class="primary" id="start">Start</button><button class="danger" id="stop" disabled>Stop</button></div>
-    <div class="stats">
-      <div class="stat"><b id="s-dec">–</b><span>decode tok/s</span></div>
-      <div class="stat"><b id="s-pre">–</b><span>prefill tok/s (last request)</span></div>
-      <div class="stat"><b id="s-hit">–</b><span>cache hit rate</span></div>
-      <div class="stat"><b id="s-read">–</b><span>SSD reads MB/s</span></div>
-      <div class="stat"><b id="s-ram">–</b><span id="s-ram-l">RAM used / budget</span></div>
-      <div class="stat"><b id="s-vram">–</b><span id="s-vram-l">VRAM used</span></div>
-    </div>
-    <div class="row"><div><span class="small">tok/s, last 2 minutes</span><canvas id="c-tps"></canvas></div><div><span class="small">hit rate, last 2 minutes</span><canvas id="c-hit"></canvas></div></div>
-    <div class="small" style="margin-top:8px">Mode: <b id="s-mode">–</b></div>
-    <div class="row small" id="keyrow" hidden style="margin-top:4px; justify-content:flex-start"><span>API key in use: <code id="keyends"></code> <span id="keysrc"></span></span><button id="copykey">Copy key</button><span id="keymsg"></span></div>
-    <div style="margin-top:4px"><code id="cmd"></code></div>
-    <div class="row" style="margin-top:6px; justify-content:flex-start"><button id="copycmd">Copy command</button><button id="showcmd">Show the llama-server command</button></div>
-    <pre id="dry" hidden></pre>
-    <div class="row" style="margin-top:10px; justify-content:flex-start"><button id="bench">Quick benchmark</button><span class="small" id="benchstate">warm-up, 2 replies of 256 tokens, one 3.5k-token prompt (about 1-3 minutes); saved to a CSV so you can compare stock and moe-cache runs</span></div>
-    <div class="row small" id="coldrow" style="margin-top:4px; justify-content:flex-start">
-      <label style="margin:0"><input type="checkbox" id="cold"> Cold start (fair): stop, push the model out of the file cache, start again, then measure</label>
-      <span id="coldhow"></span></div>
-    <div class="row small" id="otherrow" hidden style="justify-content:flex-start"><span>Other big files to read (folders, separated by ;):</span><input type="text" id="other" style="flex:1"></div>
-    <div id="benchres"></div>
-    <details id="decisions" hidden style="margin-top:8px"><summary class="small">What the launcher decided</summary><ul class="why"></ul></details>
-    <div id="warnings" hidden></div>
-    <div class="err" id="err"></div>
-  </section>
-  <section id="p-chat">
-    <div class="tabs"><button data-t="chat" class="on">Chat</button><button data-t="agents">Agents</button><button data-t="log">Log</button></div>
-    <div id="t-chat"><div class="small" id="chatnote">Start a model: llama-server's own chat page appears here.</div><iframe id="chat" hidden title="llama-server chat"></iframe></div>
-    <div id="t-agents" hidden><div id="agentsmain"></div><div id="sessions"></div></div>
-    <div id="t-log" hidden><pre id="log"></pre></div>
-  </section>
-</div>
-</main>
+
 <script>
 "use strict";
-const $ = id => document.getElementById(id);
-const S = { models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", engine: "auto", mtp: "auto", plans: {}, logSeq: 0, status: {}, tab: "chat" };
+const $ = id => document.getElementById(id), app = $("app");
+const S = { models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", engine: "auto", mtp: "auto", plans: {}, logSeq: 0, status: {}, connected: {} };
 const fmtGB = b => b == null ? "–" : (b / 1e9).toFixed(1) + " GB";
 const fmtGiB = b => b == null ? "–" : (b / 2 ** 30).toFixed(1) + " GiB";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const shortName = p => (p || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
+const narrow = () => matchMedia("(max-width: 1180px)").matches, phone = () => matchMedia("(max-width: 760px)").matches;
+const pref = (k, v) => { try { if (v === undefined) return localStorage.getItem("moe." + k); localStorage.setItem("moe." + k, v); } catch (e) { return null; } };
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
 }
+
+/* ---------- panes and drawers ---------- */
+function showRight(cardId) {
+  if (narrow()) { app.classList.add("showright"); app.classList.remove("showleft", "noright"); } else app.classList.remove("noright");
+  if (cardId) { const c = $(cardId); c.open = true; c.scrollIntoView({ block: "start" }); }
+}
+$("tglLeft").onclick = () => { if (phone()) { app.classList.toggle("showleft"); app.classList.remove("showright"); } else app.classList.toggle("noleft"); };
+$("tglRight").onclick = () => { if (narrow()) { app.classList.toggle("showright"); app.classList.remove("showleft", "noright"); } else app.classList.toggle("noright"); };
+$("widen").onclick = () => { app.classList.toggle("wideright"); $("widen").textContent = app.classList.contains("wideright") ? "⇔ narrower" : "⇔ wider"; };
+$("modelpick").onclick = () => { if (phone()) app.classList.add("showleft"); else app.classList.remove("noleft"); $("models").scrollIntoView({ block: "center" }); };
+const openS = () => document.body.classList.add("settings"), closeS = () => document.body.classList.remove("settings");
+$("openSettings").onclick = openS; $("closeSettings").onclick = closeS; $("scrim").onclick = closeS;
+document.addEventListener("keydown", e => { if (e.key == "Escape") { closeS(); $("menu").hidden = true; app.classList.remove("showleft", "showright"); } });
+$("openAgents").onclick = () => showRight("c-agents");
+$("logtall").onclick = () => { $("log").classList.toggle("tall"); $("logtall").textContent = $("log").classList.contains("tall") ? "Shorter" : "Taller"; };
+$("aboutsessions").onclick = () => alert("In Agent mode the launcher saves each long conversation of an agent (OpenCode, Hermes, …) when it is idle, one file per slot, " +
+  "and restores the two largest of the same model and settings at the next start, so an agent continues where it stopped.\n\nFolder: " + (S.sessionsDir || "?") +
+  "\n\nTo start without them: Settings → Don't restore saved agent sessions, or move a file to the Trash (✕ on the row; never deleted for good here).");
+
+/* ---------- settings (unchanged rules from the GUI1/GUI2 page) ---------- */
 function settings() {
   return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.engine == "stock" ? "exact" : S.mode,
            engine: S.engine, mtp: S.mtp, agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, port: $("port").value, api_key: $("apikey").value };
 }
 function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent, s.engine, s.mtp].join("|"); }
-function seg(id, key, cb) {
-  const el = $(id);
-  const paint = () => el.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v == S[key]));
-  el.addEventListener("click", e => { if (e.target.dataset.v) { S[key] = isNaN(+e.target.dataset.v) ? e.target.dataset.v : +e.target.dataset.v; paint(); cb && cb(); } });
-  paint(); return paint;
+const segPainters = [];
+function seg(sel, key, cb) {
+  const els = [...document.querySelectorAll(sel)];
+  const paint = () => els.forEach(el => el.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v == S[key])));
+  els.forEach(el => el.addEventListener("click", e => { const b = e.target.closest("button"); if (b && b.dataset.v != null && !b.disabled) { S[key] = isNaN(+b.dataset.v) || b.dataset.v === "" ? b.dataset.v : +b.dataset.v; paint(); cb && cb(); } }));
+  paint(); segPainters.push(paint); return paint;
 }
 const MODEHINT = { exact: "Output identical to stock llama-server (default).", fast: "--fast: skips rarely needed experts that are not in RAM: about +10 %, about 1 token in 40-50 differs.",
                    hybrid: "--hybrid (experimental): most used experts computed on the GPU, the rest on the CPU; output differs from stock." };
@@ -172,13 +414,13 @@ const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and lla
                   off: "--no-mtp: never." };
 const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM (faster then), moe-cache when it does not (recommended).",
                      plugin: "--always-plugin: moe-cache even when the model fits (to compare with stock).",
-                     stock: "--stock: stock llama-server even when the model does not fit (to compare; Mode is Exact then). Run the Quick benchmark in each and compare below." };
+                     stock: "--stock: stock llama-server even when the model does not fit (to compare; Mode is Exact then). Run the Quick benchmark in each and compare in the Benchmark card." };
 
 async function loadSystem() {
   S.sys = await api("/api/system");
   const s = S.sys, last = s.last || {};
-  $("sys").title = "llama-server: " + s.llama_server + "\nplugin: " + s.plugin;
-  $("sys").textContent = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "");
+  $("sys").title = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "") +
+    "\nllama-server: " + s.llama_server + "\nplugin: " + s.plugin;
   $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
   $("vram").max = Math.max(1, Math.ceil((s.vram_total || s.vram_free || 8 * 2 ** 30) / 2 ** 30));
   if (!S.inited) {
@@ -188,6 +430,8 @@ async function loadSystem() {
     if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.engine) S.engine = last.engine; if (last.mtp != null) S.mtp = last.mtp ? "on" : "off"; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm;
     if (last.model) S.sel = last.model;
   }
+  $("m-ondemand").disabled = !s.on_demand;
+  if (s.on_demand) $("m-ondemand-why").textContent = "listen on the port and load the model when a chat or an agent asks";
   paintRanges();
   const cs = s.cold_start || {};
   $("cold").disabled = !cs.available;
@@ -201,13 +445,15 @@ function paintRanges() {
   $("modehint").textContent = MODEHINT[S.mode];
   $("enginehint").textContent = ENGINEHINT[S.engine] || "";
   $("mtphint").textContent = MTPHINT[S.mtp] || "";
-  document.querySelectorAll("#mode button").forEach(b => { b.disabled = S.engine == "stock" && b.dataset.v != "exact";
+  document.querySelectorAll("[data-seg=mode] button").forEach(b => { b.disabled = S.engine == "stock" && b.dataset.v != "exact";
     b.classList.toggle("on", b.dataset.v == (S.engine == "stock" ? "exact" : S.mode)); });
 }
+
+/* ---------- models and the plan ---------- */
 async function loadModels(fresh) {
   const j = await api("/api/models" + (fresh ? "?fresh=1" : ""));
   S.models = j.models;
-  $("folders").innerHTML = "Folders: " + j.folders.map(f => `<code>${esc(f)}</code>`).join(" ") + " and Ollama's model store when present.";
+  $("folders").innerHTML = j.folders.map(f => `<code>${esc(f)}</code>`).join(" ") + " and Ollama's model store when present.";
   if (!S.models.find(m => m.path == S.sel)) S.sel = S.models.length ? S.models[0].path : null;
   paintModels(); planAll();
 }
@@ -216,19 +462,24 @@ function verdictBadge(p) {
   return `<span class="badge ${p.kind || "error"}">${esc(p.verdict || "?")}</span>`;
 }
 function paintModels() {
-  const tb = $("models").tBodies[0];
   $("nomodels").hidden = S.models.length > 0;
-  $("nomodels").textContent = "No .gguf models found in the folders below: add a folder.";
-  tb.innerHTML = S.models.map((m, i) => `<tr class="m${m.path == S.sel ? " sel" : ""}" data-i="${i}"><td>${esc(m.name)} <span class="small">${esc(m.source)}</span><br>${verdictBadge(S.plans[planKey(m.path)])}</td>
-    <td class="num">${fmtGB(m.size)}</td><td>${esc(m.quant)}</td></tr>`).join("");
+  $("nomodels").textContent = "No .gguf models found: add a folder in Settings.";
+  $("models").innerHTML = S.models.map((m, i) => { const p = S.plans[planKey(m.path)];
+    return `<div class="item${m.path == S.sel ? " sel" : ""}" data-i="${i}" title="${esc(m.path)}"><div><span class="t">${esc(shortName(m.name))}</span>
+      <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span></span></div></div>`; }).join("");
+  const m = S.models.find(x => x.path == S.sel), p = S.sel && S.plans[planKey(S.sel)];
+  $("topmodel").textContent = m ? shortName(m.name) : "no model";
+  $("topverdict").className = "badge " + (p ? p.kind || "error" : "wait"); $("topverdict").textContent = m ? (p ? p.verdict || "?" : "planning…") : "";
   paintPlan();
 }
 function paintPlan() {
   const p = S.sel && S.plans[planKey(S.sel)];
   const m = S.models.find(x => x.path == S.sel);
+  $("planbox").hidden = !m;
   if (!m) { $("plan").innerHTML = ""; return; }
-  if (!p) { $("plan").innerHTML = `<b>${esc(m.name)}</b> <span class="small">planning…</span>`; return; }
-  $("plan").innerHTML = `<b>${esc(m.name)}</b> ${verdictBadge(p)}<div class="small" style="margin-top:4px">Why:</div><ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
+  $("plansum").textContent = `Why ${p ? p.verdict : "…"} for ${shortName(m.name)}?`;
+  if (!p) { $("plan").innerHTML = `<span class="small">planning…</span>`; return; }
+  $("plan").innerHTML = `<ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
     (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on the test laptop (i7-13620H, RTX 4060 8 GB; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
 }
 let planning = false;
@@ -249,8 +500,10 @@ async function planAll() {
 }
 function settingsChanged() { paintRanges(); paintModels(); planAll(); $("dry").hidden = true; }
 
+/* ---------- live status ---------- */
 function chart(id, pts, max, color, pct) {
   const c = $(id), dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+  if (!w) return;
   c.width = w * dpr; c.height = h * dpr;
   const g = c.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
   const css = getComputedStyle(document.documentElement);
@@ -270,31 +523,30 @@ function chart(id, pts, max, color, pct) {
 }
 async function poll() {
   let st;
-  try { st = await api("/api/status"); } catch (e) { $("state").textContent = "page server not reachable"; return; }
+  try { st = await api("/api/status"); } catch (e) { $("state").textContent = "page server not reachable"; $("statedot").className = "dot bad"; return; }
   S.status = st;
   const running = st.state == "starting" || st.state == "ready" || st.state == "stopping";
   $("state").textContent = { idle: "idle", starting: "starting…", ready: "running", stopping: "stopping…", stopped: "stopped", exited: "ended (see Log)" }[st.state] || st.state;
-  $("state").className = st.state == "ready" ? "stock" : st.state == "exited" ? "error" : "";
-  $("statemodel").textContent = st.model ? st.model.split(/[\\/]/).pop() + (st.state == "ready" ? ` · ${st.url}` : "") : "";
-  $("start").disabled = running || !S.sel; $("stop").disabled = !running || st.state == "stopping";
+  $("statedot").className = "dot " + (st.state == "ready" ? "ok" : st.state == "exited" ? "bad" : running ? "warn" : "");
+  $("statemodel").textContent = st.model ? shortName(st.model) + (st.state == "ready" ? ` · ${st.url.replace("http://", "")}` : "") + (st.agent ? " · Agent mode" : "") : "";
+  $("start").hidden = running; $("stop").hidden = !running;
+  $("start").disabled = !S.sel; $("stop").disabled = st.state == "stopping";
+  $("startmenu").className = running ? "danger" : "primary";
   const c = st.cache || {}, l = st.last || {}, sy = st.system || {};
   $("s-dec").textContent = st.live_tps != null ? st.live_tps.toFixed(1) : l.decode_tps != null ? l.decode_tps.toFixed(1) : "–";
   $("s-pre").textContent = l.prefill_tps != null ? l.prefill_tps.toFixed(0) : "–";
   $("s-hit").textContent = c.hit_rate != null ? (c.hit_rate * 100).toFixed(1) + " %" : c.hit_rate_total != null ? (c.hit_rate_total * 100).toFixed(1) + " %" : "–";
   $("s-read").textContent = c.read_mbs != null ? c.read_mbs.toFixed(0) : "–";
-  if (c.resident != null) { $("s-ram").textContent = `${fmtGB(c.resident)} / ${fmtGB(c.budget)}`; $("s-ram-l").textContent = "expert cache used / budget"; }
+  if (c.resident != null) { $("s-ram").textContent = `${(c.resident / 1e9).toFixed(1)}/${fmtGB(c.budget)}`; $("s-ram-l").textContent = "expert cache used / budget"; }
   else { $("s-ram").textContent = st.server_rss != null ? fmtGB(st.server_rss) : fmtGB(sy.ram_total - sy.ram_avail); $("s-ram-l").textContent = st.server_rss != null ? `llama-server RAM (${fmtGB(sy.ram_avail)} free)` : "RAM used (system)"; }
-  $("s-vram").textContent = sy.vram_total ? `${fmtGiB(sy.vram_total - sy.vram_free)} / ${fmtGiB(sy.vram_total)}` : "–";
+  $("s-vram").textContent = sy.vram_total ? `${((sy.vram_total - sy.vram_free) / 2 ** 30).toFixed(1)}/${fmtGiB(sy.vram_total)}` : "–";
   $("s-vram-l").textContent = sy.gpu ? (sy.vram_total ? "VRAM used · " : sy.vram_free != null ? "VRAM free · " : "") + sy.gpu : sy.gpu_detecting ? "VRAM (looking for the GPU…)" : "VRAM (no GPU found)";
   if (!sy.vram_total && sy.vram_free != null) $("s-vram").textContent = fmtGiB(sy.vram_free);
   $("s-mode").textContent = st.mode || (running ? "deciding…" : "–");
   $("cmd").textContent = st.command || "";
   chart("c-tps", st.history.map(h => [h[0], h[1]]), 0, "--accent");
   chart("c-hit", st.history.map(h => [h[0], h[2]]), 1, "--ok", true);
-  const ifr = $("chat");
-  if (st.state == "ready") { if (ifr.dataset.u != st.url) { ifr.src = st.url + "/"; ifr.dataset.u = st.url; } ifr.hidden = false; $("chatnote").innerHTML = `llama-server's chat page · <a href="${esc(st.url)}" target="_blank" rel="noopener">open in a new tab</a>` +
-    ((st.api_key || {}).in_use ? ` · this server needs its API key: the chat asks for it once (per browser), use <b>Copy key</b> above and paste it there` : ""); }
-  else { ifr.hidden = true; ifr.dataset.u = ""; ifr.removeAttribute("src"); $("chatnote").textContent = running ? "Loading the model…" : "Start a model: llama-server's own chat page appears here."; }
+  paintChatState(st, running);
   paintAgents(st);
   const k = st.api_key || {};
   $("keyrow").hidden = !k.in_use || !(st.state == "starting" || st.state == "ready");
@@ -310,7 +562,7 @@ async function poll() {
   const wk = JSON.stringify(st.warnings || []);
   if ($("warnings").dataset.k != wk) {
     $("warnings").dataset.k = wk;
-    $("warnings").hidden = !(st.warnings || []).length;
+    $("c-warn").hidden = !(st.warnings || []).length; $("warncount").textContent = (st.warnings || []).length;
     $("warnings").innerHTML = (st.warnings || []).map(w => `<div>⚠ ${esc(w.line)}${w.count > 1 ? ` <span class="small">(${w.count}×)</span>` : ""}</div>`).join("");
   }
   if (st.log_seq > S.logSeq) {
@@ -325,38 +577,42 @@ async function poll() {
     if (atEnd) el.scrollTop = el.scrollHeight;
   }
 }
+
+/* ---------- agent sessions (left) ---------- */
 let sessionsBusy = false;
 async function loadSessions() {
   if (sessionsBusy) return; sessionsBusy = true;
-  try { paintSessions(await api("/api/sessions")); } catch (e) { $("sessions").innerHTML = `<div class="err">${esc(e.message)}</div>`; }
+  try { paintSessions(await api("/api/sessions")); } catch (e) { $("sessions").innerHTML = `<div class="small err" style="margin:0 8px">${esc(e.message)}</div>`; }
   finally { sessionsBusy = false; }
 }
 function paintSessions(j) {
   const st = S.status || {}, ev = (st.warm || {}).events || [];
-  const t = x => new Date(x * 1000).toLocaleString();
+  S.sessionsDir = j.dir;
+  const t = x => new Date(x * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const live = Array.isArray(j.live) ? j.live : [];
   const state = f => f.restored ? `<span class="stock">restored at start</span>` : f.restore_failed ? `<span class="error">restore failed</span>` :
-    !j.running ? "saved" : f.this_server ? "for this server's model and settings" : `<span class="small">another model or setting</span>`;
-  let h = `<h2 style="margin-top:14px">Agent sessions</h2><div class="hint">In Agent mode the launcher saves each long conversation when it is idle (one file per slot, its
-    context checkpoints included) and restores the two largest of the same model and settings at the next start, so an agent continues where it
-    stopped. Folder: <code>${esc(j.dir)}</code>.${j.no_warm ? " <b>This server was started with --no-warm: nothing is restored or saved.</b>" : ""}</div>`;
-  if (ev.length) h += `<ul class="why">${ev.map(e => `<li>${new Date(e.t * 1000).toLocaleTimeString()} ${esc(e.line)}</li>`).join("")}</ul>`;
-  if (Array.isArray(j.live) && j.live.length)
-    h += `<div class="small" style="margin-top:6px">Live slots of this server: ${j.live.map(x => `slot ${x.id}: ${x.tokens ?? 0} tokens${x.processing ? " (working)" : ""}`).join(" · ")}</div>`;
-  else if (typeof j.live == "string") h += `<div class="small err">Live slots: ${esc(j.live)}</div>`;
-  h += j.files.length ? `<table style="margin-top:6px"><tr><th>Saved conversation</th><th class="num">Slot</th><th class="num">Tokens</th><th class="num">Size</th>
-      <th>Saved</th><th>Agent</th><th>State</th><th></th></tr>` + j.files.map(f => `<tr><td>${esc(f.model)} <span class="small">ctx ${esc(f.ctx ?? "?")}, KV ${esc(f.kv)}</span></td>
-      <td class="num">${f.slot}</td><td class="num">${f.tokens != null ? f.tokens.toLocaleString() : "?"}</td><td class="num">${f.size >= 1e9 ? fmtGB(f.size) : (f.size / 1e6).toFixed(0) + " MB"}</td><td>${t(f.t)}</td>
-      <td>${f.agent ? esc(f.agent) : '<span class="small">' + (f.this_server && st.state == "ready" ? "unknown" : "known while its model runs") + "</span>"}</td>
-      <td>${state(f)}</td><td><button data-trash="${esc(f.name)}">Move to Trash</button></td></tr>`).join("") + "</table>"
-    : `<div class="hint">No saved agent conversations.</div>`;
-  h += `<div class="hint">To start without them: tick "Don't restore saved agent sessions" in Settings (or move a file to the Trash; it is never deleted for good here).</div><div id="trashmsg" class="small"></div>`;
+    !j.running ? "saved " + t(f.t) : f.this_server ? "this server's model, saved " + t(f.t) : "another model or setting";
+  let h = j.no_warm ? `<div class="small" style="margin:0 8px 4px">This server was started with --no-warm: nothing is restored or saved.</div>` : "";
+  h += j.files.map(f => { const busy = f.this_server && live.some(x => x.id == f.slot && x.processing);
+    return `<div class="item" title="${esc(f.model)} · ctx ${esc(f.ctx ?? "?")}, KV ${esc(f.kv)} · ${f.size >= 1e9 ? fmtGB(f.size) : (f.size / 1e6).toFixed(0) + " MB"}">
+      <span class="dot ${busy ? "ok" : ""}" style="margin-top:6px"></span><div><span class="t">${esc(f.agent || (f.this_server && st.state == "ready" ? "unknown agent" : "agent"))} · ${esc(shortName(f.model))}</span>
+      <span class="s">slot ${f.slot} · ${f.tokens != null ? f.tokens.toLocaleString() : "?"} tokens · ${state(f)}${busy ? " · working" : ""}</span></div>
+      <button class="x" data-trash="${esc(f.name)}" title="Move to the Trash">✕</button></div>`; }).join("");
+  if (!j.files.length) h += `<div class="small" style="margin:0 8px">No saved agent conversations${live.length ? "" : " (Agent mode saves them)"}.</div>`;
+  if (live.length) h += `<div class="small" style="margin:4px 8px">Live slots: ${live.map(x => `${x.id}: ${x.tokens ?? 0} tok${x.processing ? " (working)" : ""}`).join(" · ")}</div>`;
+  else if (typeof j.live == "string") h += `<div class="small err" style="margin:4px 8px">Live slots: ${esc(j.live)}</div>`;
+  if (ev.length) h += `<ul class="why" style="margin:4px 8px">${ev.map(e => `<li>${new Date(e.t * 1000).toLocaleTimeString()} ${esc(e.line)}</li>`).join("")}</ul>`;
+  h += `<div id="trashmsg" class="small" style="margin:0 8px"></div>`;
   $("sessions").innerHTML = h;
-  $("sessions").querySelectorAll("button[data-trash]").forEach(b => b.onclick = async () => {
+  $("sessions").querySelectorAll("button[data-trash]").forEach(b => b.onclick = async e => {
+    e.stopPropagation();
     if (!confirm(`Move the saved conversation ${b.dataset.trash} to the Trash? The agent then starts this conversation from scratch next time.`)) return;
     try { const r = await api("/api/sessions/trash", { name: b.dataset.trash }); await loadSessions(); $("trashmsg").textContent = `Moved to ${r.where}.` + (r.running_note ? " Note: " + r.running_note + "." : ""); }
     catch (e) { $("trashmsg").innerHTML = `<span class="err">${esc(e.message)}</span>`; }
   });
 }
+
+/* ---------- benchmark (right) ---------- */
 const BENCH_COLS = [["time", "When"], ["model", "Model"], ["mode", "Mode"], ["start", "Start"], ["ram_gb", "RAM GB"], ["decode_mean", "Decode tok/s"], ["prefill", "Prefill tok/s"], ["hit_rate", "Hit rate"]];
 function benchTable(rows, model) {
   return `<table style="margin-top:6px"><tr>${BENCH_COLS.map(c => `<th${c[0] == "decode_mean" || c[0] == "prefill" ? ' class="num"' : ""}>${c[1]}</th>`).join("")}</tr>` +
@@ -395,40 +651,286 @@ async function paintBench(st) {
   $("benchres").innerHTML = `<div class="small" style="margin-top:6px">This run, and earlier runs from the CSV (same model in full colour), newest last:</div>` + benchTable(j.rows.slice(-8), model)
     + compareTable(j.compare || [], model);
 }
+
+/* ---------- agents (right) ---------- */
 function paintAgents(st) {
   const el = $("agentsmain");
-  const key = [st.state, st.url, st.agent, JSON.stringify(st.warm || {}), JSON.stringify(st.api_key || {})].join("|");
+  const key = [st.state, st.url, st.agent, JSON.stringify(st.api_key || {}), JSON.stringify(S.connected)].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
-  if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on: this tab then shows what to give OpenCode, Hermes or any OpenAI-compatible client.</div>`; return; }
-  const name = (st.model || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
-  el.innerHTML = `<table><tr><th>Base URL</th><td><code>${esc(st.url)}/v1</code></td></tr><tr><th>Model</th><td><code>${esc(name)}</code></td></tr>
-    <tr><th>Context</th><td>${esc(st.ctx || (st.agent ? 65536 : 8192))}</td></tr></table>` +
-    (st.agent ? "" : `<div class="hint">Agent mode is off for this server: tool calls may not work, and Hermes needs a 64k context. Stop, tick Agent mode and start again.</div>`) +
-    `<table style="margin-top:8px"><tr><th>OpenCode</th><td><button data-a="opencode">Preview</button> <button data-a="opencode" data-w="1" class="primary">Connect OpenCode</button>
-      <div class="hint">merges a "moe-cache" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)${(st.api_key || {}).in_use ? "; includes the server's API key" : ""}</div></td></tr>
-     <tr><th>Hermes</th><td><button data-a="hermes">Preview</button> <button data-a="hermes" data-w="1" class="primary">Connect Hermes</button>
-      <div class="hint">runs "hermes config set" for the provider, URL, model and context${(st.api_key || {}).in_use ? " and the API key" : ""} (needs hermes on the PATH)</div></td></tr></table>
+  if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on (Settings): this card then shows what to give OpenCode, Hermes or any OpenAI-compatible client, and connects them.</div>`; return; }
+  const k = st.api_key || {};
+  const line = (a, label, hint) => { const c = S.connected[a];
+    return `<div class="line"><span class="dot ${c ? "ok" : ""}"></span><span class="n"><b>${label}</b><br><span class="small">${c ? "connected from this page at " + c : hint}</span></span>
+      <button class="ghost small" data-a="${a}">Preview</button><button data-a="${a}" data-w="1" class="${c ? "" : "primary"}">${c ? "Again" : "Connect"}</button></div>`; };
+  el.innerHTML = `<div class="kv"><span>Base URL</span><span><code>${esc(st.url)}/v1</code></span><span>Model</span><span><code>${esc(shortName(st.model))}</code></span>
+    <span>Context</span><span>${esc(st.ctx || (st.agent ? 65536 : 8192))}</span>${k.in_use ? `<span>API key</span><span><code>••••${esc(k.ends)}</code> <a href="#" id="copykey2">Copy</a></span>` : ""}</div>` +
+    (st.agent ? "" : `<div class="hint">Agent mode is off for this server: tool calls may not work, and Hermes needs a 64k context. Stop, tick Agent mode in Settings and start again.</div>`) +
+    `<div style="margin-top:6px">${line("opencode", "OpenCode", "merges a \"moe-cache\" provider into ~/.config/opencode/opencode.json and makes it the default model (old file kept as .bak)" + (k.in_use ? "; includes the API key" : ""))}
+     ${line("hermes", "Hermes", "runs \"hermes config set\" for the provider, URL, model and context" + (k.in_use ? " and the API key" : "") + " (needs hermes on the PATH)")}</div>
      <div id="connres"></div>`;
+  if ($("copykey2")) $("copykey2").onclick = e => { e.preventDefault(); $("copykey").click(); };
   el.querySelectorAll("button[data-a]").forEach(b => b.onclick = async () => {
     const o = $("connres"), w = !!b.dataset.w;
     o.innerHTML = `<pre>${w ? "writing" : "asking"} (moe_cache.py connect ${esc(b.dataset.a)}${w ? " --write" : ""})…</pre>`;
     try {
       const j = await api("/api/connect", { agent: b.dataset.a, write: w });
-      o.innerHTML = `<div class="${j.rc ? "err" : "small"}" style="margin-top:6px">${j.rc ? "Failed" : w ? "Done" : "What would be written"} (exit ${j.rc}):</div><pre>${esc(j.output)}</pre>` +
+      const out = `<div class="${j.rc ? "err" : "small"}" style="margin-top:6px">${j.rc ? "Failed" : w ? "Done" : "What would be written"} (exit ${j.rc}):</div><pre>${esc(j.output)}</pre>` +
         (j.file ? `<div class="small" style="margin-top:6px">Now in <code>${esc(j.file)}</code>:</div><pre>${esc(j.written || "")}</pre>` : "");
-    } catch (e) { o.innerHTML = `<pre class="err">${esc(e.message)}</pre>`; }
+      if (w && !j.rc) { S.connected[b.dataset.a] = new Date().toLocaleTimeString(); paintAgents(S.status); }
+      $("connres").innerHTML = out;
+    } catch (e) { $("connres").innerHTML = `<pre class="err">${esc(e.message)}</pre>`; }
   });
 }
 
-$("start").onclick = async () => {
-  $("err").textContent = "";
-  try { await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll(); } catch (e) { $("err").textContent = e.message; }
+/* ---------- the chat (center) ---------- */
+// A chat: {id, title, model, system, messages: [{role, content, shown?, files?, think?, meta?}], tokens}. user content = the text plus the attached files;
+// shown = the text alone. Saved by the page server as one JSON file per chat (/api/chats), sent to llama-server through /api/chat.
+const C = { chat: null, list: [], files: [], ctrl: null, busy: false };
+const newId = () => Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+function newChat() {
+  C.chat = { id: newId(), title: "", model: "", system: $("sysprompt").value.trim(), messages: [], tokens: null };
+  C.files = []; paintChat(); paintChatList();
+  if (phone()) app.classList.remove("showleft");
+  $("ta").focus();
+}
+async function loadChatList() {
+  try { const j = await api("/api/chats"); C.list = j.chats; $("chatdir").textContent = "Chats are saved as files in " + j.dir + " (Trash in the chat header moves one to the Trash)."; }
+  catch (e) { C.list = []; }
+  paintChatList();
+}
+function paintChatList() {
+  const q = $("search").value.trim().toLowerCase();
+  const when = t => { const d = new Date(t * 1000), now = new Date(); return d.toDateString() == now.toDateString() ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : d.toLocaleDateString([], { month: "short", day: "numeric" }); };
+  const rows = C.list.filter(c => !q || c.title.toLowerCase().includes(q) || (c.model || "").toLowerCase().includes(q));
+  $("chatlist").innerHTML = rows.map(c => `<div class="item${C.chat && c.id == C.chat.id ? " sel" : ""}" data-id="${esc(c.id)}"><div><span class="t">${esc(c.title || "(untitled)")}</span>
+    <span class="s">${esc(shortName(c.model) || "–")} · ${c.tokens ? c.tokens.toLocaleString() + " tokens · " : ""}${when(c.t)}</span></div></div>`).join("") ||
+    `<div class="small" style="margin:0 8px">${q ? "No chat matches." : "No saved chats yet."}</div>`;
+}
+$("search").oninput = paintChatList;
+$("chatlist").onclick = async e => {
+  const it = e.target.closest(".item"); if (!it || C.busy) return;
+  try { C.chat = await api("/api/chats?id=" + encodeURIComponent(it.dataset.id)); C.files = []; paintChat(); paintChatList(); if (phone()) app.classList.remove("showleft"); }
+  catch (er) { showErr(er.message); }
 };
-$("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { $("err").textContent = e.message; } };
+$("newchat").onclick = () => { if (!C.busy) newChat(); };
+async function saveChat() {
+  const c = C.chat; if (!c.messages.length) return;
+  if (!c.title) c.title = (c.messages.find(m => m.role == "user") || {}).shown?.slice(0, 70) || "chat";
+  try { await api("/api/chats/save", c); await loadChatList(); } catch (e) { showErr("could not save the chat: " + e.message); }
+}
+$("trashchat").onclick = async () => {
+  if (C.busy || !C.chat.messages.length) return;
+  if (!C.list.some(x => x.id == C.chat.id)) return newChat();
+  if (!confirm(`Move the chat "${C.chat.title}" to the Trash?`)) return;
+  try { const r = await api("/api/chats/trash", { id: C.chat.id }); showErr(""); newChat(); await loadChatList(); $("chatnote").textContent = "Moved to " + r.where + "."; S.noteUntil = Date.now() + 5000; }
+  catch (e) { showErr(e.message); }
+};
+$("export").onclick = () => {
+  const c = C.chat; if (!c.messages.length) return;
+  const md = `# ${c.title}\n\n` + (c.system ? `System: ${c.system}\n\n` : "") + c.messages.map(m => `**${m.role == "user" ? "You" : shortName(c.model) || "Model"}:**\n\n${m.role == "user" ? m.content : splitThink(m)[1]}\n`).join("\n");
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([md], { type: "text/markdown" }));
+  a.download = (c.title || "chat").replace(/[^\w\- ]+/g, "").slice(0, 50).trim() + ".md"; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+};
+function showErr(t) { $("err").innerHTML = t ? `<span class="err">${esc(t)}</span>` : ""; }
+
+// a small Markdown subset: code fences, inline code, bold, italics, headings, lists, links shown as text
+function md(src) {
+  const parts = src.split(/^```[^\n]*\n?/m);
+  return parts.map((p, i) => i % 2 ? `<pre><code>${esc(p.replace(/\n$/, ""))}</code></pre>` : block(p)).join("");
+}
+function inline(t) {
+  return esc(t).replace(/`([^`]+)`/g, "<code>$1</code>").replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<i>$2</i>");
+}
+function block(t) {
+  const out = []; let list = null;
+  const close = () => { if (list) { out.push(`<${list.tag}>${list.items.map(x => `<li>${inline(x)}</li>`).join("")}</${list.tag}>`); list = null; } };
+  for (const para of t.split(/\n{2,}/)) {
+    for (const line of para.split("\n")) {
+      const li = line.match(/^\s*(?:[-*+]|(\d+)[.)])\s+(.*)/), h = line.match(/^(#{1,4})\s+(.*)/);
+      if (li) { const tag = li[1] ? "ol" : "ul"; if (!list || list.tag != tag) { close(); list = { tag, items: [] }; } list.items.push(li[2]); continue; }
+      if (list && /^\s{2,}\S/.test(line)) { list.items[list.items.length - 1] += " " + line.trim(); continue; }
+      close();
+      if (h) out.push(`<h${h[1].length + 1}>${inline(h[2])}</h${h[1].length + 1}>`);
+      else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
+    }
+    close();
+  }
+  return out.join("");
+}
+function splitThink(m) {          // models that write <think>…</think> into the answer itself
+  let think = m.think || "", text = m.content || "";
+  const t = text.match(/^\s*<think>([\s\S]*?)(<\/think>|$)/);
+  if (t) { think += t[1]; text = t[2] ? text.slice(t[0].length) : ""; }
+  return [think.trim(), text];
+}
+function chips(m, i, live) {
+  const t = m.meta || {}, out = [];
+  if (live) out.push(`<span class="chip tps">writing · ${t.live_tps != null ? t.live_tps.toFixed(1) + " tok/s" : "…"}</span>`);
+  else if (t.predicted_per_second) out.push(`<span class="chip tps">${t.predicted_per_second.toFixed(1)} tok/s</span>`);
+  if (t.prompt_per_second && t.prompt_n > 1) out.push(`<span class="chip" title="${t.prompt_n} new prompt tokens${t.cache_n ? ", " + t.cache_n + " reused" : ""}">prefill ${t.prompt_per_second.toFixed(0)} tok/s</span>`);
+  if (t.draft_n) out.push(`<span class="chip mtp" title="multi-token prediction: drafted ${t.draft_n}, accepted ${t.draft_n_accepted}">MTP ${(100 * t.draft_n_accepted / t.draft_n).toFixed(0)} % accepted</span>`);
+  if (t.hit_rate != null) out.push(`<span class="chip hit" title="experts found in RAM during this answer: ${t.hits} hits, ${t.misses} misses">hit ${(t.hit_rate * 100).toFixed(1)} %</span>`);
+  if (t.predicted_n) out.push(`<span class="chip">${t.predicted_n} tokens · ${(t.predicted_ms / 1000).toFixed(1)} s</span>`);
+  if (t.stopped) out.push(`<span class="chip stopped">stopped</span>`);
+  const last = i == C.chat.messages.length - 1;
+  out.push(`<span class="acts">${live ? "" : `<button data-copy="${i}">Copy</button>${last ? `<button data-regen="${i}">↻ Regenerate</button>` : ""}`}</span>`);
+  return `<div class="chips">${out.join("")}</div>`;
+}
+function msgHTML(m, i, live) {
+  if (m.role == "user")
+    return `<div class="msg user">${esc(m.shown ?? m.content)}${(m.files || []).length ? `<div class="att">${m.files.map(f => `<span class="file">📄 ${esc(f.name)} · ${f.tokens.toLocaleString()} tokens</span>`).join("")}</div>` : ""}</div>`;
+  const [think, text] = splitThink(m);
+  return `<div class="msg ai" data-i="${i}">${think && $("showthink").checked ? `<details class="think"${live && !text ? " open" : ""}><summary>${live && !text ? "Thinking…" : "Thinking"}</summary>${esc(think)}</details>` : ""}` +
+    (m.error ? `<p class="errmsg">${esc(m.error)}</p>` : "") + md(text) + (live ? `<span class="cursor"></span>` : "") + chips(m, i, live) + "</div>";
+}
+function paintChat() {
+  const c = C.chat;
+  $("chattitle").textContent = c.title || "New chat";
+  $("chatinfo").textContent = c.messages.length ? `· ${shortName(c.model) || "?"}` + (c.system ? " · own system prompt" : "") : "";
+  $("inner").innerHTML = c.messages.length ? c.messages.map((m, i) => msgHTML(m, i, C.busy && i == c.messages.length - 1 && m.role == "assistant")).join("") :
+    `<div class="empty"><b>Chat with your model</b>${S.status.state == "ready" ? "Type below. Speed, MTP and cache hits show under each answer." : "Pick a model on the left and press Start (top right)."}</div>`;
+  paintAttached(); paintContext();
+  $("msgs").scrollTop = $("msgs").scrollHeight;
+}
+function paintLast() {             // only the answer being written (cheap enough per animation frame)
+  const i = C.chat.messages.length - 1, el = $("inner").lastElementChild, stick = $("msgs").scrollTop + $("msgs").clientHeight >= $("msgs").scrollHeight - 40;
+  if (!el) return;
+  el.outerHTML = msgHTML(C.chat.messages[i], i, C.busy);
+  if (stick) $("msgs").scrollTop = $("msgs").scrollHeight;
+}
+$("inner").onclick = e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.copy != null) { navigator.clipboard && navigator.clipboard.writeText(splitThink(C.chat.messages[+b.dataset.copy])[1]); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); }
+  if (b.dataset.regen != null && !C.busy) { C.chat.messages.pop(); paintChat(); ask(); }
+};
+function paintChatState(st, running) {
+  const ready = st.state == "ready", ondemand = st.state == "waiting";      // "waiting": the on-demand mode's state, once the launcher has it
+  $("send").disabled = C.busy || !(ready || ondemand);
+  $("ta").placeholder = ready ? `Message ${shortName(st.model)}… (Enter sends, Shift+Enter new line; drop text files here)` : running ? "The model is loading…" : "Start a model to chat (top right)";
+  if (!(S.noteUntil > Date.now())) $("chatnote").textContent = running && !ready && !ondemand ? "Loading the model… the chat works as soon as it says running." : "";
+  if (!C.chat.messages.length && S.lastState != st.state) paintChat();
+  S.lastState = st.state;
+}
+async function send() {
+  const text = $("ta").value.trim();
+  if ((!text && !C.files.length) || C.busy || $("send").disabled) return;
+  const files = C.files.map(f => ({ name: f.name, tokens: f.tokens }));
+  const content = (text + C.files.map(f => `\n\nFile: ${f.name}\n\`\`\`\n${f.text}\n\`\`\``).join("")).trim();
+  C.chat.messages.push({ role: "user", content, shown: text, files });
+  C.chat.files = (C.chat.files || []).concat(files);
+  C.files = []; $("ta").value = ""; autosize();
+  paintChat(); ask();
+}
+async function ask() {
+  const c = C.chat;
+  c.model = S.status.model || c.model;
+  const msgs = (c.system ? [{ role: "system", content: c.system }] : []).concat(c.messages.map(m => ({ role: m.role, content: m.role == "assistant" ? splitThink(m)[1] : m.content })).filter(m => m.content));
+  const a = { role: "assistant", content: "", think: "", meta: {} };
+  c.messages.push(a);
+  C.busy = true; C.ctrl = new AbortController(); showErr("");
+  $("send").hidden = true; $("stopgen").hidden = false; paintChat();
+  const t0 = performance.now(); let n = 0, frame = 0;
+  const redraw = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; paintLast(); }); };
+  const temp = +$("temp").value;
+  try {
+    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, signal: C.ctrl.signal,
+                                         body: JSON.stringify(Object.assign({ messages: msgs }, temp >= 0 ? { temperature: temp } : {})) });
+    if (!r.ok) { let m = r.status; try { m = (await r.json()).error; } catch (e) {} throw new Error(m); }
+    const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const { value, done } = await rd.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let k;
+      while ((k = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, k).trim(); buf = buf.slice(k + 1);
+        if (!line.startsWith("data:")) continue;
+        const d = line.slice(5).trim(); if (d == "[DONE]") continue;
+        let j; try { j = JSON.parse(d); } catch (e) { continue; }
+        if (j.error) throw new Error(j.error.message || JSON.stringify(j.error));
+        if (j.moe) Object.assign(a.meta, j.moe);
+        if (j.timings) Object.assign(a.meta, j.timings);
+        const delta = ((j.choices || [])[0] || {}).delta || {};
+        if (delta.reasoning_content) { a.think += delta.reasoning_content; n++; }
+        if (delta.content) { a.content += delta.content; n++; }
+        if (n > 1) a.meta.live_tps = (n - 1) / ((performance.now() - t0) / 1000 - (a.meta.first || 0));
+        if (n == 1 && a.meta.first == null) a.meta.first = (performance.now() - t0) / 1000;
+        redraw();
+      }
+    }
+  } catch (e) {
+    if (e.name == "AbortError") a.meta.stopped = true; else a.error = e.message;
+  }
+  delete a.meta.live_tps; delete a.meta.first;
+  const t = a.meta; if (t.prompt_n != null) c.tokens = (t.cache_n || 0) + t.prompt_n + (t.predicted_n || 0);
+  C.busy = false; C.ctrl = null; $("send").hidden = false; $("stopgen").hidden = true;
+  if (!a.content && !a.think && !a.error && !t.stopped) a.error = "no answer (see the Log)";
+  paintChat(); paintChatState(S.status, true);
+  if (!a.error || a.content) saveChat();
+}
+$("send").onclick = send;
+$("stopgen").onclick = () => C.ctrl && C.ctrl.abort();
+function autosize() { const t = $("ta"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, innerHeight * 0.4) + "px"; }
+$("ta").oninput = autosize;
+$("ta").onkeydown = e => { if (e.key == "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); } };
+
+// attached files: text only, read in the browser, put into the message
+const MAX_FILE = 512 * 1024;
+async function addFiles(list) {
+  for (const f of list) {
+    if (f.size > MAX_FILE) { showErr(`${f.name}: bigger than 512 KB, not attached`); continue; }
+    const text = await f.text();
+    if (text.includes("\0") || /�{3,}/.test(text)) { showErr(`${f.name}: not a text file (images and binary files are not supported yet)`); continue; }
+    C.files.push({ name: f.name, text, tokens: Math.ceil(text.length / 4) });
+  }
+  paintAttached(); paintContext();
+}
+function paintAttached() {
+  $("attached").innerHTML = C.files.map((f, i) => `<span class="file">📄 ${esc(f.name)} · ~${f.tokens.toLocaleString()} tokens <span class="x" data-i="${i}" title="Remove">✕</span></span>`).join("");
+  const all = (C.chat.files || []).map(f => ({ ...f, sent: true })).concat(C.files);
+  $("filelist").innerHTML = all.length ? all.map(f => `<div class="line"><span class="n">📄 ${esc(f.name)} <span class="small">~${f.tokens.toLocaleString()} tokens · ${f.sent ? "sent" : "attached, not sent yet"}</span></span></div>`).join("")
+    : `<div class="small">No files. Drop text or code files on the chat, or use 📎.</div>`;
+}
+$("attached").onclick = e => { if (e.target.dataset.i != null) { C.files.splice(+e.target.dataset.i, 1); paintAttached(); paintContext(); } };
+$("attach").onclick = () => $("fileinput").click();
+$("fileinput").onchange = () => { addFiles([...$("fileinput").files]); $("fileinput").value = ""; };
+let depth = 0;
+$("center").addEventListener("dragenter", e => { if (![...e.dataTransfer.types].includes("Files")) return; e.preventDefault(); depth++; $("center").classList.add("dragging"); });
+$("center").addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0; $("center").classList.remove("dragging"); } });
+$("center").addEventListener("dragover", e => e.preventDefault());
+$("center").addEventListener("drop", e => { e.preventDefault(); depth = 0; $("center").classList.remove("dragging"); addFiles([...e.dataTransfer.files]); });
+
+function paintContext() {
+  const c = C.chat, ctx = S.status.state == "ready" && S.status.ctx || S.ctx;
+  const est = s => Math.ceil((s || "").length / 4);
+  const sys = est(c.system), files = (c.files || []).concat(C.files).reduce((a, f) => a + f.tokens, 0);
+  const all = c.tokens != null ? c.tokens + C.files.reduce((a, f) => a + f.tokens, 0) : sys + files + c.messages.reduce((a, m) => a + est(m.content), 0);
+  const msgs = Math.max(0, all - sys - files), pc = x => Math.min(100, 100 * x / ctx).toFixed(2) + "%";
+  $("ctxbar").innerHTML = `<i style="width:${pc(sys)};background:var(--muted)"></i><i style="width:${pc(files)};background:var(--gpu)"></i><i style="width:${pc(msgs)};background:var(--accent)"></i>`;
+  $("ctxtext").innerHTML = `<b style="color:var(--text)">${all.toLocaleString()}</b> of ${ctx.toLocaleString()} tokens (${(100 * all / ctx).toFixed(0)} %)` + (c.tokens == null ? " · estimated" : "");
+  $("ctxparts").innerHTML = `<span>system</span><span>~${sys.toLocaleString()}</span><span>files</span><span>~${files.toLocaleString()}</span><span>messages</span><span>${msgs.toLocaleString()}</span>` +
+    (all > ctx * 0.8 ? `<span></span><span class="err">almost full: start a new chat, or a bigger context in Settings</span>` : "");
+  $("ctxinfo").textContent = `ctx ${all.toLocaleString()} / ${ctx.toLocaleString()}`;
+}
+
+/* ---------- start, stop and the other buttons ---------- */
+$("start").onclick = async () => {
+  showErr("");
+  try { await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll(); } catch (e) { showErr(e.message); }
+};
+$("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { showErr(e.message); } };
+$("startmenu").onclick = e => { e.stopPropagation(); $("menu").hidden = !$("menu").hidden; };
+document.addEventListener("click", e => { if (!e.target.closest("#menu")) $("menu").hidden = true; });
+$("menu").onclick = async e => {
+  const b = e.target.closest("button[data-m]"); if (!b || b.disabled) return; $("menu").hidden = true;
+  if (b.dataset.m == "now") { if (!$("start").hidden) $("start").click(); }
+  if (b.dataset.m == "ondemand") { try { await api("/api/start", Object.assign(settings(), { on_demand: true })); poll(); } catch (er) { showErr(er.message); } }
+  if (b.dataset.m == "cmd") { showRight("c-live"); $("showcmd").click(); }
+  if (b.dataset.m == "own") { if (S.status.state == "ready") window.open(S.status.url + "/", "_blank", "noopener"); else showErr("Start a model first."); }
+};
 $("bench").onclick = async () => {
   const cold = $("cold").checked && !$("cold").disabled;
   const other = $("other").value.split(";").map(x => x.trim()).filter(Boolean);
-  try { await api("/api/bench", { cold, other }); poll(); } catch (e) { $("err").textContent = e.message; }
+  try { await api("/api/bench", { cold, other }); poll(); } catch (e) { showErr(e.message); }
 };
 $("copykey").onclick = async () => {
   try {
@@ -443,27 +945,36 @@ $("showcmd").onclick = async () => {
   const d = $("dry"); d.hidden = false; d.textContent = "asking the launcher (--dry-run)…";
   try { const j = await api("/api/command", settings()); d.textContent = j.lines.join("\n"); } catch (e) { d.textContent = e.message; }
 };
-$("models").onclick = e => { const tr = e.target.closest("tr.m"); if (tr) { S.sel = S.models[+tr.dataset.i].path; paintModels(); planAll(); $("dry").hidden = true; } };
+$("models").onclick = e => { const it = e.target.closest(".item"); if (it) { S.sel = S.models[+it.dataset.i].path; paintModels(); planAll(); $("dry").hidden = true; } };
 $("addfolder").onclick = async () => {
-  try { await api("/api/folders", { add: $("folder").value }); $("folder").value = ""; loadModels(true); } catch (e) { $("err").textContent = e.message; }
+  try { await api("/api/folders", { add: $("folder").value }); $("folder").value = ""; loadModels(true); } catch (e) { alert(e.message); }
 };
 $("rescan").onclick = () => { S.plans = {}; loadSystem().then(() => loadModels(true)); };
 ["ram", "vram"].forEach(id => { $(id).oninput = paintRanges; $(id).onchange = settingsChanged; });
-function showTab(t) {
-  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t == t));
-  ["chat", "agents", "log"].forEach(x => $("t-" + x).hidden = x != t);
-  if (t == "agents") loadSessions();
-  history.replaceState(null, "", t == "chat" ? location.pathname : "#" + t);     // #agents / #log open that tab (bookmarks)
+const paintTemp = () => $("tempv").textContent = +$("temp").value < 0 ? "server default" : (+$("temp").value).toFixed(1);
+$("temp").oninput = () => { paintTemp(); pref("temp", $("temp").value); };
+$("sysprompt").onchange = () => pref("sysprompt", $("sysprompt").value);
+$("showthink").onchange = () => { pref("showthink", $("showthink").checked ? "1" : "0"); paintChat(); };
+function openHash() {             // #agents / #log / #status open that card (bookmarks from the GUI1 page keep working)
+  const id = { agents: "c-agents", log: "c-log", status: "c-live", bench: "c-bench" }[location.hash.slice(1)];
+  if (id) showRight(id);
 }
-document.querySelector(".tabs").onclick = e => { if (e.target.dataset.t) showTab(e.target.dataset.t); };
+window.addEventListener("hashchange", openHash);
 (async () => {
+  S.theme = pref("theme") ?? ""; document.documentElement.dataset.theme = S.theme;
+  if (pref("temp") != null) $("temp").value = pref("temp"); paintTemp();
+  if (pref("sysprompt") != null) $("sysprompt").value = pref("sysprompt");
+  if (pref("showthink") == "0") $("showthink").checked = false;
+  seg("#theme", "theme", () => { document.documentElement.dataset.theme = S.theme; pref("theme", S.theme); });
+  newChat();
   await loadSystem();
-  seg("ctx", "ctx", settingsChanged); seg("mode", "mode", settingsChanged); seg("engine", "engine", settingsChanged); seg("mtp", "mtp", settingsChanged);
-  $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; document.querySelectorAll("#ctx button").forEach(b => b.classList.toggle("on", b.dataset.v == 65536)); settingsChanged(); } };
+  seg("#ctx", "ctx", settingsChanged); seg("[data-seg=mode]", "mode", settingsChanged); seg("#engine", "engine", settingsChanged); seg("#mtp", "mtp", settingsChanged);
+  paintRanges();
+  $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; segPainters.forEach(p => p()); } settingsChanged(); };
   await loadModels(false);
-  if (["agents", "log"].includes(location.hash.slice(1))) showTab(location.hash.slice(1));
+  loadChatList(); loadSessions(); openHash();
   poll(); setInterval(poll, 1000);
-  setInterval(() => { if (!$("t-agents").hidden) loadSessions(); }, 10000);
+  setInterval(loadSessions, 10000);
   setInterval(() => { if (!S.status.state || S.status.state == "idle") loadSystem(); }, 10000);
 })();
 </script>
