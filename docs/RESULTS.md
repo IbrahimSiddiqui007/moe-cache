@@ -2128,3 +2128,6 @@ the same setup cut the cache to 4.25 GiB and decoded at 0.8-1.0 tok/s (RESULTS 5
 | IQ2_XS (68 GB) | 187 / 202 (92.6 %) | 0 | 186 s | 14: 10 right only on IQ3_XXS, 4 only on IQ2_XS |
 IQ3_XXS leads by ~3 points; 10 vs 4 changed tasks is a lean, not a proof (paired sign test p ~ 0.18). IQ2_XS is ~10 % faster (21.9 vs
 19.9 tok/s, RESULTS 59) and 8 GB smaller. Recommendation (owner's D4): list both; IQ3_XXS when accuracy matters, IQ2_XS for speed.
+
+**llama.cpp threads** (Flash-Next IQ2_XS, file view, one cold run each; the executor pool follows -t): 8: 20.99, 12: 22.81, **16 (default)
+22.13**, 24: 21.60, 32: 18.68 tok/s. Flat from 12 to 24 (inside run-to-run noise), SMT threads (32) lose 16 %: the default stays.
