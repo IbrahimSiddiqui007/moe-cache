@@ -1233,6 +1233,15 @@ def server_info(url, api_key=None):
     return name, ctx
 
 
+def server_models(url, api_key=None):
+    """Every model id /v1/models lists (one for llama-server; all of them for an on-demand endpoint with several models)."""
+    st, body = http(url.rstrip("/") + "/v1/models", api_key=api_key)
+    try:
+        return [m["id"] for m in json.loads(body)["data"]] if st == 200 else []
+    except (ValueError, KeyError, TypeError):
+        return []
+
+
 def opencode_config_target(cfg):
     """The global opencode.json to write, and warnings. OpenCode (and OpenCode Desktop, whose server reads the same global folder) merges config.json,
     opencode.json, then opencode.jsonc, later files winning, and creates opencode.jsonc on first run: write into that one when it is plain JSON,
@@ -1290,8 +1299,9 @@ def connect(argv):
     warn = []
     if not a.config:
         cfg, warn = opencode_config_target(cfg)
+    names = [name] + [n for n in server_models(a.url, a.api_key) if n != name]       # on-demand with several models (N9): all of them
     entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache", "options": dict({"baseURL": base}, **({"apiKey": a.api_key} if a.api_key else {})),
-             "models": {name: {"name": name, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}}}}
+             "models": {n: {"name": n, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}} for n in names}}
     if not a.write:
         say(agent_snippets(None, name, ctx, a.api_key, base=base, only="opencode"))
         say(f"apply with: moe_cache.py connect opencode --write  (merges into {cfg})")
