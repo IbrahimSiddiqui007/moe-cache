@@ -22,6 +22,7 @@ WINDOWS = mc.WINDOWS
 CHOICE_FILE = os.path.join(mc.CACHE_DIR, "on-demand.json")
 LOG_FILE = os.path.join(mc.CACHE_DIR, "on-demand.log")       # the launcher's and llama-server's output
 PID_FILE = os.path.join(mc.CACHE_DIR, "on-demand.pid")
+LISTENER_LOG = os.path.join(mc.CACHE_DIR, "on-demand-listener.log")   # the listener's own lines when it has no console (Windows)
 LAUNCHER = [mc.python_cmd(), os.path.join(mc.HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
 UNIT = "moe-cache-on-demand.service"
 LINK = "moe-cache on-demand.lnk"
@@ -429,8 +430,10 @@ def install_autostart(dry=False):
             raise SystemExit(f"could not create the Startup shortcut {link}: {(r.stderr or r.stdout).strip()[-300:]}")
         say(f"autostart: {link} (runs at every login, no admin rights needed)")
         if not running_pid():
-            subprocess.Popen([pythonw(), os.path.join(mc.HERE, "bin", "moe_cache.py"), "on-demand"], cwd=mc.HERE, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=0x00000008 | 0x00000200 | 0x08000000)
+            os.makedirs(mc.CACHE_DIR, exist_ok=True)
+            with open(LISTENER_LOG, "a", encoding="utf-8") as lf:      # the same file the login start (no console) writes to
+                subprocess.Popen([pythonw(), os.path.join(mc.HERE, "bin", "moe_cache.py"), "on-demand"], cwd=mc.HERE, stdin=subprocess.DEVNULL,
+                                 stdout=lf, stderr=lf, creationflags=0x00000008 | 0x00000200 | 0x08000000)
             say("autostart: started it now too")      # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
         return 0
     path = unit_path()
@@ -570,7 +573,7 @@ def on_demand(argv):
         return install_autostart()
     if sys.stdout is None:          # pythonw (Windows autostart) has no console: keep the start/stop lines in a file
         os.makedirs(mc.CACHE_DIR, exist_ok=True)
-        sys.stdout = sys.stderr = open(os.path.join(mc.CACHE_DIR, "on-demand-listener.log"), "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = open(LISTENER_LOG, "a", encoding="utf-8", buffering=1)
     port = c.get("port", 8080)
     if mc.port_busy(port):
         raise SystemExit(f"port {port} is already in use (another server, or on-demand already runs: moe_cache.py on-demand --status)")
