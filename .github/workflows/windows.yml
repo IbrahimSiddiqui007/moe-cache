@@ -99,7 +99,7 @@ jobs:
           python tests/ui_test.py       # control page (GUI1) without a model
           if ($LASTEXITCODE -ne 0) { throw "control page test failed" }
 
-      - name: Launcher real start with --ram (Windows job memory limit, WP3) and --agent (tool call, connect)
+      - name: Launcher real start with --ram (no job limit with the file view; MOE_CACHE_WIN_VIEW=0 keeps WP3) and --agent (tool call, connect)
         run: |
           $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
           $ls = "$env:LLAMA_DIR\llama-server.exe"
@@ -116,7 +116,12 @@ jobs:
           Start-Sleep 3
           Get-Content launcher_real.err | Select-String "moe-cache:" | Select-Object -First 30
           if (-not $ok) { throw "the launcher's server never became ready" }
-          if (-not (Select-String launcher_real.err -Pattern "Windows job memory limit 3.0 GB" -SimpleMatch -Quiet)) { throw "--ram did not set a job memory limit" }
+          # file-view cache (default): no job memory limit (it would only cap llama.cpp's GPU memory, which Windows commits; RESULTS 60)
+          if (Select-String launcher_real.err -Pattern "Windows job memory limit" -SimpleMatch -Quiet) { throw "--ram set a job memory limit although the file-view cache is on" }
+          $env:MOE_CACHE_WIN_VIEW = "0"
+          python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 3 --always-plugin --dry-run 2>&1 | Out-File launcher_joblimit.txt
+          Remove-Item Env:MOE_CACHE_WIN_VIEW
+          if (-not (Select-String launcher_joblimit.txt -Pattern "would set a Windows job memory limit of 3.0 GB" -SimpleMatch -Quiet)) { throw "MOE_CACHE_WIN_VIEW=0 --ram did not plan a job memory limit" }
           if (-not (Select-String launcher_real.err -Pattern "cache mode" -SimpleMatch -Quiet)) { throw "the plugin's cache was not on" }
           if (-not (Select-String "$env:RUNNER_TEMP\opencode.json" -Pattern '"tool_call": true' -SimpleMatch -Quiet)) { throw "connect opencode wrote no model entry" }
 
