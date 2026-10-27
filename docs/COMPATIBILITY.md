@@ -40,7 +40,7 @@ moe-cache repacks each expert as it loads it, exactly when stock would (`MOE_CAC
   0 mismatches). `moe-cache-check MODEL --run` passes there too.
 - Not available on Windows: `--gpu-cache` / `MOE_CACHE_GPU_CACHE=1` (needs LD_PRELOAD symbol interposition), the file-mapped fallback for a cache smaller
   than one op (loads over the size instead). Core pinning: implemented from the cores' efficiency class (f7721a6); on the 7950X (no hybrid cores) it correctly does nothing. Pinning covers processor group 0 only (up to 64 logical CPUs, like llama.cpp's own `-C`): with more, the launcher does not pin and says so.
-- `MOE_CACHE_WIN_BUFFERED=1` (opt-in, being tested, idea I38): read experts through the Windows file cache instead of unbuffered, so a second start is warm the way stock llama-server's is. The default stays unbuffered.
+- Experts are read through the Windows file cache by default (idea I38, RESULTS 59), so a second start is warm the way stock llama-server's is. `MOE_CACHE_WIN_BUFFERED=0` goes back to unbuffered reads (`=2` also turns off read-ahead).
 - `./build.sh --windows` cross-compiles `ggml-moe-cache.dll` with mingw-w64 (load it with `GGML_BACKEND_PATH`; official Windows llama.cpp builds load their backends as DLLs).
 - `tests/platform_test.cpp` passes natively on Linux and, compiled for Windows, under Wine (reserve/commit/decommit, unbuffered reads at the end of a file, limits, file replacement).
 - Identity passes on a Windows CI runner (CPU) and on the AMD desktop with a GPU; speed numbers with the plugin: RESULTS 55 (clean; GLM still to be confirmed); the Python launcher (`bin/moe_cache.py`) runs there, the bash wrappers do not. Treat it as experimental; `docs/WINDOWS_TEST.md` and `tools/windows_test.ps1` are the test.

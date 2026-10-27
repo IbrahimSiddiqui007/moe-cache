@@ -3,6 +3,9 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Windows and AMD
+- **Buffered reads are the Windows default** (idea I38): experts are read through the Windows file cache, as stock llama-server's mmap does, so a
+  second start is warm and misses can come from RAM. PC (7950X + RX 9070 XT, Flash-Next IQ2_XS, 13 GPU expert layers): +22 % decode, +40 % prefill;
+  GLM-5.3 +9 % (RESULTS 58-59). `MOE_CACHE_WIN_BUFFERED=0` goes back to unbuffered reads.
 - **Fixed: wrong output and a crash at the second request with models bigger than RAM on Windows** (PC, Qwen3.5-122B IQ2 from a fast NVMe
   drive). An expert read straight into place covered the memory pages it shares with its neighbours; on Windows a page under such a read briefly
   holds other data, so the executor sometimes read garbage in a neighbour's first or last rows: wrong text ("3333..."), NaN router scores, and a

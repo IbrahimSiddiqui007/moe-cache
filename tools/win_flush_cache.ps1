@@ -1,6 +1,6 @@
 # Push a model out of Windows' file cache before a benchmark run, without admin rights and without changing anything on disk.
 # It only READS other big files (more than the machine's RAM in total), so the standby cache no longer holds the target.
-# Stock llama-server benefits from a warm file cache, the plugin's unbuffered reads do not: flush before every run for a fair stock-vs-plugin comparison.
+# Stock llama-server and the plugin (buffered reads, the Windows default) both benefit from a warm file cache: flush before every run for a fair comparison.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target D:\models\a.gguf -Other "D:\models|E:\more\b.gguf"
 #     -Target  the model(s) you are about to run: never read here, and skipped if they also lie in an -Other folder

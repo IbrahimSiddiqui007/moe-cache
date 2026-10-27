@@ -100,7 +100,7 @@ struct state_t {
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
 #ifdef _WIN32
-    bool   win_buffered = false;                // MOE_CACHE_WIN_BUFFERED=1: model files opened without FILE_FLAG_NO_BUFFERING (see the constructor)
+    bool   win_buffered = false;                // Windows default (MOE_CACHE_WIN_BUFFERED=0 turns it off): model files opened without FILE_FLAG_NO_BUFFERING (see the constructor)
     bool   win_random = false;                  // MOE_CACHE_WIN_BUFFERED=2: and with FILE_FLAG_RANDOM_ACCESS
 #else
     static constexpr bool win_buffered = false, win_random = false;
@@ -266,19 +266,21 @@ struct state_t {
             return;
         }
 #ifdef _WIN32
-        // MOE_CACHE_WIN_BUFFERED=1 (opt-in, Windows only; idea I38): read the experts through the Windows file cache instead of FILE_FLAG_NO_BUFFERING.
+        // Windows default since RESULTS 59 (idea I38; MOE_CACHE_WIN_BUFFERED=0 goes back to FILE_FLAG_NO_BUFFERING): read the experts through the Windows
+        // file cache. Measured on the 7950X + 9070 XT PC (RESULTS 58): Flash-Next IQ2_XS +22 % decode, +40 % prefill with 13 GPU layers; GLM-5.3 +9 %.
         // Unbuffered reads never warm the file cache, so every start reads the SSD, while stock llama-server (mmap) starts warm from it (Flash-Next on
         // a 32 GB PC: 3-5 tok/s first session vs 13-16 warm stock). Same aligned offsets and lengths, so the same bytes. An expert then sits twice in
         // RAM (cache + file cache), but the file-cache copy moves to the standby list, which Windows counts as available and gives back on demand:
         // the budget (available + this process's private memory) does not shrink for it.
         // =2: also FILE_FLAG_RANDOM_ACCESS (no read-ahead around each expert; A/B switch)
+        win_buffered = true;
         if (const char * v = getenv("MOE_CACHE_WIN_BUFFERED")) {
             win_buffered = strcmp(v, "0") != 0;
             win_random = strcmp(v, "2") == 0;
         }
         if (win_buffered) {
             plat::count_file_cache() = true;
-            fprintf(stderr, "moe-cache: MOE_CACHE_WIN_BUFFERED: experts are read through the Windows file cache%s; its %.2f GiB in memory count as available\n",
+            fprintf(stderr, "moe-cache: experts are read through the Windows file cache%s (MOE_CACHE_WIN_BUFFERED=0: unbuffered); its %.2f GiB in memory count as available\n",
                     win_random ? " (random access, no read-ahead)" : "", plat::file_cache_ws() / 1073741824.0);
         }
 #endif

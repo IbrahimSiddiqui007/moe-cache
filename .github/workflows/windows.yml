@@ -193,6 +193,14 @@ jobs:
         run: |
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 failed ($LASTEXITCODE)" }
+          if (-not (Select-String "$env:TEMP\moe-cache-test\plugin.err.txt" -Pattern "experts are read through the Windows file cache" -Quiet)) { throw "buffered reads are not the default" }
+
+      - name: Identity, unbuffered reads (MOE_CACHE_WIN_BUFFERED=0, the default before RESULTS 59)
+        run: |
+          $env:MOE_CACHE_WIN_BUFFERED = "0"
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
+          if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (unbuffered) failed ($LASTEXITCODE)" }
+          if (Select-String "$env:TEMP\moe-cache-test\plugin.err.txt" -Pattern "experts are read through the Windows file cache" -Quiet) { throw "MOE_CACHE_WIN_BUFFERED=0 did not turn buffered reads off" }
 
       - name: Identity, executor forced on and byte-checked (no repacking on both servers, else the executor steps aside)
         run: |
