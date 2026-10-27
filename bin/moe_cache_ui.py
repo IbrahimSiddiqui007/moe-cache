@@ -1205,6 +1205,31 @@ CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 
 MAX_BODY = 64 * 1024
 
 
+def token_eq(given, token):
+    """Constant-time token check that also takes odd input (compare_digest raises TypeError on non-ASCII str: a dropped connection)."""
+    return bool(given) and bool(token) and secrets.compare_digest(str(given).encode("utf-8", "replace"), str(token).encode("utf-8"))
+
+
+def open_page(url):
+    """Open the page without putting its token on the browser's command line, which other users of a Linux machine can read in /proc:
+    the browser gets a private (0600) file that forwards to the address; the file is removed after a minute."""
+    import tempfile
+    import webbrowser
+    fd, path = tempfile.mkstemp(prefix="moe-cache-ui-", suffix=".html")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url={url}'><title>moe-cache</title>"
+                f"<p style='font:15px system-ui;margin:2em'><a href='{url}'>Open the moe-cache control page</a></p>")
+    import pathlib
+    webbrowser.open(pathlib.Path(path).as_uri())
+
+    def gone():
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    threading.Timer(60, gone).start()
+
+
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
@@ -1215,7 +1240,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def allowed(self, navigation=False):
+    def allowed(self, navigation=False, cross_site=False):
         """Only pages from this server: the Host must be ours (no DNS rebinding), a foreign Origin is refused and the browser must say the request
         comes from this page (Sec-Fetch-Site same-origin, or 'none' for opening the page itself from the address bar or the launcher)."""
         port = self.server.server_address[1]
@@ -1226,7 +1251,7 @@ class Handler(BaseHTTPRequestHandler):
         if o is not None and o not in {"http://" + h for h in ok}:
             return False
         site = self.headers.get("Sec-Fetch-Site")
-        return site is None or site == "same-origin" or (navigation and site == "none")
+        return site is None or site == "same-origin" or (navigation and (site == "none" or (cross_site and site == "cross-site")))
 
     def cookie_name(self):
         return f"moe_cache_ui_{self.server.server_address[1]}"       # cookies are not per port: the name is
@@ -1240,7 +1265,7 @@ class Handler(BaseHTTPRequestHandler):
                 k, _, v = part.strip().partition("=")
                 if k == self.cookie_name():
                     t = v
-        return bool(t) and secrets.compare_digest(t, self.token)
+        return bool(t) and token_eq(t, self.token)
 
     def end_headers(self):
         self.send_header("X-Frame-Options", "DENY")
@@ -1264,10 +1289,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query).items()}
-        if not self.allowed(navigation=u.path in ("/", "/index.html")):
+        link = u.path in ("/", "/index.html") and token_eq(q.get("t"), self.token)
+        # the launcher opens the link from a private file:// page (cross-site), so the token never shows in the browser's command line
+        if not self.allowed(navigation=u.path in ("/", "/index.html")) and not (link and self.allowed(navigation=True, cross_site=True)):
             return self.send(403, {"error": "forbidden"})
         if u.path in ("/", "/index.html"):
-            if q.get("t") and secrets.compare_digest(q["t"], self.token):
+            if link and self.headers.get("Sec-Fetch-Site") == "cross-site":
+                # from the launcher's file:// page: a redirect would stay "cross-site" and the browser would hold back the SameSite=Strict cookie,
+                # so set the cookie here and let this page itself move on to / (a same-origin navigation)
+                body = b"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url=/'><title>moe-cache</title>"
+                self.send_response(200)
+                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if link:
                 # the launcher's link: keep the token in a cookie only this page sends, and drop it from the address bar
                 self.send_response(303)
                 self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
@@ -1470,8 +1509,7 @@ def ui(argv):
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
     mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if not a.no_browser:
-        import webbrowser
-        threading.Timer(0.5, webbrowser.open, args=(url,)).start()
+        threading.Timer(0.5, open_page, args=(url,)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

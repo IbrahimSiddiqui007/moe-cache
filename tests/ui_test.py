@@ -188,6 +188,25 @@ check(req("/api/status", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200, "
 check(req("/api/stop", {}, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: POST cross-site: 403")
 check(req("/api/status", headers={"Origin": "http://attacker.example"})[0] == 403, "3: GET with a foreign Origin: 403")
 check(raw("GET", "/", {"Sec-Fetch-Site": "none", "Cookie": cookie.split(";")[0]})[0] == 200, "3: opening the page itself (none) works")
+# audit 2026-10-27: the browser gets a private file:// page that forwards to the link (no token in its command line, readable in /proc)
+st, hdr, page = raw("GET", "/?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})
+check(st == 200 and (hdr("Set-Cookie") or "").startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "SameSite=Strict" in hdr("Set-Cookie")
+      and "url=/'" in page, f"S1: the link opened from the launcher's file page sets the cookie and moves on to / itself ({st})")
+check(raw("GET", "/?t=wrong", {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: a cross-site link with a wrong token: 403")
+check(raw("GET", "/", {"Sec-Fetch-Site": "cross-site", "Cookie": cookie.split(";")[0]})[0] == 403, "S1: cross-site without the link token stays refused")
+check(raw("GET", "/api/status?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: the cross-site exception is for the page link only")
+check(raw("GET", "/?t=%C3%A9")[0] == 403 and req("/api/status", headers={"X-MoeCache-Token": "\u00e9"})[0] in (400, 403),
+      "S1: a non-ASCII token is refused, not a dropped connection")
+opened = []
+import webbrowser as _wb
+real_wb, _wb.open = _wb.open, (lambda u: opened.append(u))
+try:
+    ui.open_page("http://127.0.0.1:1/?t=secret-x")
+finally:
+    _wb.open = real_wb
+fpath = urllib.request.url2pathname(urllib.parse.urlparse(opened[0]).path) if opened else ""
+check(opened and opened[0].startswith("file:") and "secret-x" not in opened[0] and "secret-x" in open(fpath, encoding="utf-8").read()
+      and (os.name == "nt" or (os.stat(fpath).st_mode & 0o077) == 0), f"S1: the browser is given a private file, not the token ({opened})")
 st, _, _ = raw("POST", "/api/folders", {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN, "Content-Length": str(70000)}, b"x" * 70000)
 check(st == 413, f"5: a body over 64 KiB is refused ({st})")
 check(ui.Handler.timeout == 30, "5: a handler timeout is set")
