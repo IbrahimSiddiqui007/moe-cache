@@ -3,6 +3,12 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Windows and AMD
+- **Windows: the expert cache lives in read-only views of the model file** (idea I47). Its memory was private and Windows charges private
+  memory to commit (RAM + page file), as it does Vulkan's GPU allocations: on a 32 GB PC with a 16 GB card the cache was held to 8-11 GiB and
+  resized hundreds of times per request, while stock llama.cpp's mmap used file pages that cost no commit. File-view pages cost no commit; a
+  hard working-set minimum keeps the cached experts in RAM, and an evicted expert stays in the file cache. Which experts are cached, prefetch and
+  the executor are unchanged (same as Linux). PC cold ABBA vs stock, launcher defaults: Flash-Next IQ3_XXS **19.9 vs 15.1 tok/s**, IQ2_XS
+  **21.9 vs 14.9** (RESULTS 59). `MOE_CACHE_WIN_VIEW=0` goes back to private memory.
 - **Fixed: wrong output and a crash at the second request with models bigger than RAM on Windows** (PC, Qwen3.5-122B IQ2 from a fast NVMe
   drive). An expert read straight into place covered the memory pages it shares with its neighbours; on Windows a page under such a read briefly
   holds other data, so the executor sometimes read garbage in a neighbour's first or last rows: wrong text ("3333..."), NaN router scores, and a

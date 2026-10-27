@@ -40,7 +40,11 @@
         const uintptr_t a = (start + PAGE - 1) / PAGE * PAGE;
         const uintptr_t b = (start + ti.nb2) / PAGE * PAGE;
         if (b > a) {
-            plat::mem_decommit((void *) a, b - a);
+            if (ti.view) {
+                plat::file_view_drop((void *) a, b - a);   // the pages leave the working set and stay in the file cache
+            } else {
+                plat::mem_decommit((void *) a, b - a);
+            }
         }
         evict_age_sum += epoch - nodes[s].epoch;   // how many groups ago this expert was last used
         if (nodes[s].prefetched) {
@@ -51,6 +55,7 @@
         nodes[s].resident = false;
         nodes[s].mapped = false;       // the pages were given back (guard mode: made inaccessible); a later fallback maps them again
         resident_bytes -= ti.nb2;
+        if (ti.view) { view_bytes -= ti.nb2; }
         evictions++;
     }
 
@@ -85,7 +90,7 @@
     // the budget to what fits. Returns false when nothing is left to evict; the caller must then not load the expert. Called with mu held.
     // (Before this, a refused commit was only retried page by page and the read went ahead: "read failed ... error 998", PC 2026-10-27.)
     bool commit_for(const tinfo_t & ti, int64_t e) {
-        if (!plat::is_windows) {
+        if (!plat::is_windows || ti.view) {     // a file-view expert uses no commit
             return true;
         }
         char * const p = ti.data + (size_t) e * ti.nb2;      // the range read_job() writes: the expert's own bytes, plus one page
@@ -219,6 +224,7 @@
                     n.resident = true;
                     n.epoch = epoch;
                     resident_bytes += ti.nb2;
+                    if (ti.view) { view_bytes += ti.nb2; }
                     if (cur_scan) { push_lru(s); } else { push_mru(s); }
                     { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                     pending_bytes += ti.nb2;
@@ -287,6 +293,7 @@
                 n.resident = true;
                 n.epoch = epoch;
                 resident_bytes += ti.nb2;
+                if (ti.view) { view_bytes += ti.nb2; }
                 if (cur_scan) { push_lru(s); } else { push_mru(s); }
                 { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                 pending_bytes += ti.nb2;

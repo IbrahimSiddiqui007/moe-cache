@@ -225,6 +225,7 @@
                     n.prefetched = true;
                     n.epoch = epoch;
                     resident_bytes += ti.nb2;
+                    if (ti.view) { view_bytes += ti.nb2; }
                     push_mru(s);
                     todo.push_back({ io_job_t{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }, s });
                     pf_issued++;
@@ -503,6 +504,14 @@
 
     // read one expert slice into place (or through the bounce buffer); retries, then falls back to a buffered read, then stops
     void read_job(const io_job_t & j, char * bounce) {
+        for (size_t v = 0; v < views.size(); v++) {
+            if (j.dst >= views[v] && j.dst < views[v] + view_sizes[v]) {
+                plat::file_view_load(j.dst, j.nb2);     // Windows file-view cache: bring the expert's file pages into the working set
+                direct_jobs++;
+                bytes += j.nb2;
+                return;
+            }
+        }
         const size_t aoff = j.off / PAGE * PAGE;
         const size_t shift = j.off - aoff;
         const size_t len = round_up(shift + j.nb2);
