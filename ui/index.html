@@ -9,6 +9,7 @@
 @media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; --side:#171a20; } }
 :root[data-theme=dark] { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; --side:#171a20; }
 * { box-sizing:border-box; }
+[hidden] { display:none !important; }
 html, body { height:100%; }
 body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
 a { color:var(--accent); }
@@ -44,7 +45,8 @@ ul.why li.win { color:var(--gpu); }
 /* ---------- frame ---------- */
 .app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
 .top { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--panel); border-bottom:1px solid var(--line); min-width:0; position:relative; }
-.top .brand { font-weight:600; font-size:15px; cursor:default; }
+.top .brand { font-weight:600; font-size:15px; cursor:default; white-space:nowrap; }
+@media (max-width: 1000px) { .top .seg[data-seg=mode] { display:none; } }
 .top .grow { flex:1; }
 .modelpick { display:flex; align-items:center; gap:8px; border:1px solid var(--line); border-radius:8px; padding:4px 10px; background:var(--bg); cursor:pointer; min-width:0; max-width:460px; }
 .modelpick b { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -90,6 +92,7 @@ ul.why li.win { color:var(--gpu); }
 .center { display:flex; flex-direction:column; min-height:0; min-width:0; position:relative; }
 .chathead { display:flex; align-items:center; gap:8px; padding:8px 16px; border-bottom:1px solid var(--line); min-width:0; }
 .chathead .title { font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+#chatinfo { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; min-width:0; }
 .msgs { flex:1; overflow:auto; padding:18px 16px 8px; }
 .msgs .inner { max-width:800px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
 .empty { text-align:center; color:var(--muted); margin-top:12vh; }
@@ -192,6 +195,7 @@ body.settings .drawer { transform:none; } body.settings .scrim { display:block; 
   .only-wide { display:none !important; }
   .only-narrow { display:inline-flex !important; }
   .top { gap:6px; padding:8px; }
+  #state { display:none; }               /* the dot and Start/Stop say it */
   .modelpick { padding:3px 8px; } .modelpick .badge { display:none; }
   .msgs { padding:12px 10px 6px; } .composer { padding:6px 8px 10px; }
   .chathead { padding:6px 10px; }
@@ -715,7 +719,7 @@ $("chatlist").onclick = async e => {
 $("newchat").onclick = () => { if (!C.busy) newChat(); };
 async function saveChat() {
   const c = C.chat; if (!c.messages.length) return;
-  if (!c.title) c.title = (c.messages.find(m => m.role == "user") || {}).shown?.slice(0, 70) || "chat";
+  if (!c.title) { c.title = (c.messages.find(m => m.role == "user") || {}).shown?.slice(0, 70) || "chat"; $("chattitle").textContent = c.title; }
   try { await api("/api/chats/save", c); await loadChatList(); } catch (e) { showErr("could not save the chat: " + e.message); }
 }
 $("trashchat").onclick = async () => {
@@ -955,9 +959,10 @@ const paintTemp = () => $("tempv").textContent = +$("temp").value < 0 ? "server 
 $("temp").oninput = () => { paintTemp(); pref("temp", $("temp").value); };
 $("sysprompt").onchange = () => pref("sysprompt", $("sysprompt").value);
 $("showthink").onchange = () => { pref("showthink", $("showthink").checked ? "1" : "0"); paintChat(); };
-function openHash() {             // #agents / #log / #status open that card (bookmarks from the GUI1 page keep working)
-  const id = { agents: "c-agents", log: "c-log", status: "c-live", bench: "c-bench" }[location.hash.slice(1)];
+function openHash() {             // #agents / #log / #status open that card (bookmarks from the GUI1 page keep working); #chat=ID opens a saved chat
+  const h = location.hash.slice(1), id = { agents: "c-agents", log: "c-log", status: "c-live", bench: "c-bench" }[h];
   if (id) showRight(id);
+  if (h.startsWith("chat=")) api("/api/chats?id=" + encodeURIComponent(h.slice(5))).then(c => { C.chat = c; C.files = []; paintChat(); paintChatList(); }).catch(e => showErr(e.message));
 }
 window.addEventListener("hashchange", openHash);
 (async () => {

@@ -60,6 +60,20 @@ try:
         st, r = req("/v1/chat/completions", {"messages": [{"role": "user", "content": "Count from one to twenty in words."}], "max_tokens": 48, "temperature": 0},
                     timeout=600, base=f"http://127.0.0.1:{a.port}")
         check(st == 200 and r.get("choices"), "one request")
+        # the page's own chat: streamed through the page server, numbers for the chips under the answer
+        rq = urllib.request.Request(UI + "/api/chat", json.dumps({"messages": [{"role": "user", "content": "Name three colours."}], "max_tokens": 32, "temperature": 0}).encode(),
+                                    {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN["t"]})
+        try:
+            with urllib.request.urlopen(rq, timeout=600) as x:
+                body = x.read().decode()
+        except urllib.error.HTTPError as e:
+            body = "HTTP %d %s" % (e.code, e.read().decode()[:200])
+        ev = [json.loads(l[6:]) for l in body.splitlines() if l.startswith("data: {")]
+        text = "".join((((e.get("choices") or [{}])[0]).get("delta") or {}).get("content") or "" for e in ev)
+        tim = next((e["timings"] for e in ev if e.get("timings")), {})
+        moe = next((e["moe"] for e in ev if "moe" in e), {})
+        check(text.strip() and tim.get("predicted_per_second") and body.rstrip().endswith("[DONE]"), f"page chat: streamed answer {text.strip()[:40]!r}, {tim.get('predicted_per_second', 0):.1f} tok/s")
+        check(moe.get("hits", 0) + moe.get("misses", 0) > 0 and moe.get("hit_rate") is not None, f"page chat: this answer's cache hit rate from the plugin ({moe})")
         t1 = time.time()
         while time.time() - t1 < 30:
             s = req("/api/status")[1]

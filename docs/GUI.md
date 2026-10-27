@@ -38,18 +38,29 @@ It prints what it found. The same is shown in the page's header when you hold th
 
 ## 2. The page at a glance
 
-![The control page with Granite 1B running through moe-cache](img/gui-overview.png)
+![The control page: chats and models on the left, the chat in the middle, live numbers on the right](img/gui-3pane-desktop.png)
 
-*(Granite 1B on the test laptop, Linux, RTX 4060 8 GB, 2026-10-27; VRAM set to 0.5 GiB so the experts stay on the CPU and the cache has work to do.)*
+*(Granite 1B on the test laptop, Linux, RTX 4060 8 GB, 2026-10-27; VRAM 0.5 GiB and Run as moe-cache so the plugin has work to do.)*
 
-| Panel | What it is for |
+The page is laid out like a chat app, in three panes:
+
+| Where | What is there |
 |---|---|
-| **1 · Model** (left, top) | pick a model; see if it fits and how it would run |
-| **2 · Settings** (left, bottom) | memory budgets, context, mode, agent mode, port, API key |
-| **3 · Status** (right, top) | Start / Stop, live speed and memory, what the launcher decided, warnings, Quick benchmark |
-| **4 · Chat / Agents / Log** (right, bottom) | chat with the model, connect coding agents, saved agent sessions, the server's log |
+| **Top bar** | the model Start uses (click it to pick another), its verdict, Exact / Fast / Hybrid, the state (running, idle, …), **Start** / **Stop**; the ▾ next to it: Start now, Start on first request (coming), Show the llama-server command, Open llama-server's own chat page |
+| **Left** | **New chat**, your saved chats (search), **Agent sessions** (saved agent conversations, ✕ moves one to the Trash), **Models** with their verdicts and "Why", and at the bottom **Settings** (a drawer) and **Agents** |
+| **Middle** | the chat (section 6) |
+| **Right** | cards: **Live** (speed, cache, memory, the two charts, mode, API key, the command), **Context of this chat**, **Files in this chat**, **Agents**, **What the launcher decided**, **Benchmark**, **Warnings**, **Log**. "⇔ wider" makes the pane wider for the tables |
 
-Add `#agents` or `#log` to the page's address to open that tab directly (handy as a bookmark).
+☰ and ◧ in the top bar hide or show the side panes. In a narrow window the right pane opens over the chat; on a phone-sized screen only the chat
+stays and both side panes slide in:
+
+<img src="img/gui-3pane-phone.png" alt="The page at phone width: only the chat" width="260">
+
+Add `#agents`, `#log`, `#status` or `#bench` to the page's address to open that card directly, or `#chat=ID` for a saved chat (handy as bookmarks).
+
+The pictures in sections 3-9 were taken before the three-pane layout: the parts look the same, they only moved. Model list → left pane; Settings
+panel → the Settings drawer; Status panel → the Live, Benchmark, Warnings and decision cards on the right; Agents tab → the Agents card and the left
+pane's Agent sessions; Log tab → the Log card.
 
 ## 3. Models and the plan
 
@@ -125,12 +136,31 @@ running it).
 
 ## 6. Chat
 
-<img src="img/gui-chat.png" alt="llama-server's chat page inside the control page" width="600">
+The middle pane is the page's own chat. Start a model, type, press Enter (Shift+Enter for a new line). The answer appears as it is written.
 
-The **Chat** tab shows llama-server's own chat page once the model is ready (or open it in a new tab with the link). In Agent mode the server needs
-its API key: the chat page asks for it once per browser; press **Copy key** in the Status panel and paste it there.
+| Under each answer | Meaning |
+|---|---|
+| **tok/s** (blue) | how fast this answer was written |
+| **prefill** | how fast the new part of the prompt was read (hover: tokens read and reused) |
+| **MTP … % accepted** (purple) | with MTP on: the share of drafted tokens the model kept |
+| **hit … %** (green) | experts found in RAM during this answer (moe-cache only; stock has no cache) |
+| tokens · seconds | the length of the answer and how long it took |
+| **Copy**, **↻ Regenerate** | copy the answer (without the thinking); write the last answer again |
 
-<img src="img/gui-chat-key.png" alt="In Agent mode the chat page asks for the API key" width="600">
+**■ Stop** ends the answer being written (llama-server stops too). A model's thinking, if it shows any, is folded above the answer
+(Settings → Chat turns it off).
+
+**Files:** drop text or code files on the chat or use 📎 (up to 512 KB each). They go into your message, so the model reads them; the right pane
+lists them and the **Context** card shows how much of the context they use. Images and other binary files are not supported yet.
+
+**Saved chats:** every chat is saved after each answer as a file in `~/.cache/moe-cache/ui-chats/` (Windows: in your profile's moe-cache
+folder; Settings shows the place), so it is there after a restart, in any browser and in the coming desktop app. **Export** saves a chat as a
+Markdown file; **Trash** moves it to the Trash.
+
+**System prompt and temperature** for new chats are in Settings → Chat (empty = the model's and the server's defaults).
+
+The chat talks to llama-server through the page, which adds the API key itself: in Agent mode there is nothing to paste. llama-server's own chat
+page is still there: Start menu ▾ → Open llama-server's own chat page (that one asks for the key: **Copy key** in the Live card).
 
 ## 7. Coding agents (OpenCode, Hermes)
 
@@ -203,7 +233,8 @@ The page can start programs, so it only answers you:
 | it listens on 127.0.0.1 only | other computers |
 | the password in the address (`?t=…`), new for every run, kept in a cookie only this page gets | other users of the same computer |
 | it checks where each request comes from | web sites open in your browser |
-| it cannot be shown inside another site's frame | click tricks by other sites |
+| it cannot be shown inside another site's frame, and shows no frames itself | click tricks by other sites |
+| the chat goes through the page, which adds llama-server's API key: the key never reaches the browser (except **Copy key**) | web pages reading the key |
 | only listed models can be started; the API key never goes on a command line or into an address | misuse |
 
 If you open the page without the password you see a short note: open the address the terminal printed.
@@ -220,7 +251,8 @@ If you open the page without the password you see a short note: open the address
 | warning "the plugin did not load: llama-server is running stock llama.cpp" | the plugin does not match this llama-server or was not found: run `python bin/moe_cache.py check MODEL --llama-server PATH`, which says why; on Windows set `MOE_CACHE_LIB` to the right DLL (api3 for current llama.cpp releases) |
 | warning "the plugin loaded but disabled itself" | the warning and the **Log** tab say why |
 | the model stops right after Start (state "ended") | open the **Log** tab: the last lines say why (out of memory, a wrong argument, a crash) |
-| the chat asks for an API key | Agent mode is on: press **Copy key** and paste it into the chat |
+| llama-server's own chat page asks for an API key | Agent mode is on: press **Copy key** (Live card) and paste it there; the page's own chat needs no key |
+| the chat says "no model is running" | press **Start** and wait until the state says running |
 | hit rate and SSD reads stay "–" | the model runs stock (it fits in RAM): there is no cache to measure |
 | "Cold start: not available" | not supported on this system (Windows needs `tools\win_flush_cache.ps1` and PowerShell) |
 | cold start: "another program uses this model file" | another program (another llama-server, Ollama) has the model open: stop it first, or run a warm benchmark |
