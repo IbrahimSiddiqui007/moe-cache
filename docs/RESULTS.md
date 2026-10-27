@@ -2131,3 +2131,8 @@ IQ3_XXS leads by ~3 points; 10 vs 4 changed tasks is a lean, not a proof (paired
 
 **llama.cpp threads** (Flash-Next IQ2_XS, file view, one cold run each; the executor pool follows -t): 8: 20.99, 12: 22.81, **16 (default)
 22.13**, 24: 21.60, 32: 18.68 tok/s. Flat from 12 to 24 (inside run-to-run noise), SMT threads (32) lose 16 %: the default stays.
+
+**GLM-5.3 GPU expert layers** (file view, no MTP, cold): ABBA decode `--n-cpu-moe 45` (planner default) 5.52 / 5.58 vs 43 (+2 layers)
+5.99 / 6.02 (+8 %; single runs had shown 4.44 vs 6.01, 41 layers 4.58). Long prompt (3020 tokens, one cold run each): 45: **54.8 tok/s**,
+84 long-prompt GPU blocks; 43: 47.8 tok/s (-13 %), only 2 GPU blocks (no VRAM left for the block). The planner's block reserve trades the
++8 % decode for prompt speed, which is what agent sessions wait on: the default stays.
