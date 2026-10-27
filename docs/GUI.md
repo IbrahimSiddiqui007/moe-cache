@@ -208,10 +208,13 @@ With a model running, **Quick benchmark** measures it the way our own speed test
 about 3,500 tokens (fixed settings, so runs compare). It takes one to a few minutes and shows decode speed (both answers and the mean), prefill
 speed and, with the plugin, the cache hit rate. Every run is added to `bench.csv` in the cache folder and shown next to earlier runs.
 
-**Compare stock and moe-cache on your machine:** set **Run as** to **Stock**, start, run the benchmark; stop, set **Run as** to **moe-cache**
-(or Auto for a model bigger than RAM), start, run it again. Leave everything else the same. A table **Stock vs moe-cache** then shows the newest
-run of each side by side, with how many times faster moe-cache was (decode and prefill, green when faster). It also appears when you open the
-page, from the runs saved before.
+**Compare stock and moe-cache on your machine:** tick **Compare with the other side** and press **Quick benchmark**. The page measures the
+running server, starts it again the other way (stock llama-server if it ran moe-cache, moe-cache if it ran stock; everything else the same),
+measures again and at the end starts it once more with your own settings. It takes twice as long; tick **Cold start** too for a fair result.
+(By hand: set **Run as** to **Stock**, start, benchmark; then **moe-cache**, start, benchmark.) A table **Stock vs moe-cache** then shows the
+newest run of each side by side, with how many times faster moe-cache was (decode and prefill, green when faster). It also appears when you
+open the page, from the runs saved before, and the model's **Why** list shows the pairs as "Measured on this computer". When the other side
+has nothing for the cache to do (every expert fits on the GPU) the page says so instead of a pair.
 
 A RAM budget limits moe-cache only: stock llama-server still uses all free RAM through the file cache, so a comparison with a RAM number favours
 stock (the page says so under the table). The fair test is RAM on **auto** with a model bigger than this computer's RAM.

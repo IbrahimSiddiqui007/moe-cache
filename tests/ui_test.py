@@ -134,7 +134,7 @@ class H(BaseHTTPRequestHandler):
             t = {"predicted_n": 2, "predicted_per_second": 25.0, "predicted_ms": 80.0, "prompt_n": 5, "prompt_per_second": 500.0, "cache_n": 0, "draft_n": 4, "draft_n_accepted": 3}
             self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}], "timings": t}).encode() + b"\n\ndata: [DONE]\n\n"); return
         assert self.path == "/completion" and q["temperature"] == 0 and q["seed"] == 42 and q["cache_prompt"] is False
-        t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
+        t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7 - (10.0 if "--stock" in sys.argv else 0), "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
         self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -143,7 +143,10 @@ print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x f
 print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
 print("moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 15.00 GiB free (test)", flush=True)
 print("moe-cache: AMD GPU on Windows, driver older than 32.0.32015.7029: --ctx-checkpoints 0 (test)", flush=True)
-print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
+if "--stock" in sys.argv:
+    print("moe-cache: --stock: running stock llama-server (test)", flush=True)
+else:
+    print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print("moe-cache: MTP on: the model has an MTP head (1 layer) and llama-server has draft-mtp: --spec-type draft-mtp --spec-draft-n-max 2 (test)", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
@@ -465,6 +468,29 @@ r = b.get("result", {})
 check(b["state"] == "done" and r.get("start") == "cold" and r.get("flush") == "fake flush" and r.get("load_s", "") != "", f"cold run recorded: start cold, flush line, load time ({b.get('error') or r.get('load_s')})")
 check(flushed == [(small["path"], [models])] and runner.p.pid != pid_before and runner.state == "ready", "the server was stopped, the model flushed, the server started again")
 check(json.loads(req("/api/bench")[1])["rows"][-1]["start"] == "cold", "cold / warm in the CSV")
+# compare (I42): measure, start again with Run as flipped (moe-cache -> stock), measure, then back to the user's settings
+flushed.clear()
+st, body = req("/api/bench", {"compare": True})
+check(st == 200 and json.loads(body).get("compare") is True, f"compare benchmark starts ({body[:100]})")
+deadline, steps = time.time() + 90, set()
+while time.time() < deadline:
+    b = json.loads(req("/api/status")[1])["bench"]
+    steps.add(b.get("step", ""))
+    if b["state"] != "running":
+        break
+    time.sleep(0.2)
+res = b.get("results") or []
+check(b["state"] == "done" and len(res) == 2 and res[0]["mode"].startswith("moe-cache") and res[1]["mode"].startswith("stock llama-server (--stock"),
+      f"compare: one moe-cache run, then one stock run ({b.get('error')}; {[r['mode'] for r in res]})")
+check(float(res[1]["decode_mean"]) < float(res[0]["decode_mean"]) and flushed == [] and all(r["start"] == "warm" for r in res), "compare without Cold start: no flush, both warm")
+check(any(x.startswith("run 2 of 2: ") for x in steps), f"compare: the steps say which run ({sorted(steps)[:4]})")
+check(runner.state == "ready" and runner.settings.get("engine") in (None, "", "auto") and (runner.mode or "").startswith("moe-cache"),
+      f"compare: back to the user's settings at the end ({runner.settings.get('engine')}, {runner.mode})")
+cmp_rows = json.loads(req("/api/bench")[1])["compare"]
+check(any(r["model"] == "Small-MoE-Q4_K_M.gguf" and r["decode_x"] and r["decode_x"] > 1 for r in cmp_rows), "compare: the pair shows in the Stock vs moe-cache table")
+here = ui.measured_here(small["path"])
+check(len(here) >= 1 and "stock " in here[0] and "x)" in here[0], f"plan: this computer's stock vs moe-cache pair next to the verdict ({here})")
+check(ui.measured_here(os.path.join(TMP, "Other.gguf")) == [], "plan: no lines for a model never benchmarked here")
 ui.flush_model_cache = real_flush
 cs = ui.cold_start_support()
 check(cs["available"] == (sys.platform.startswith("linux") or os.name == "nt"), f"cold start offered on Linux and Windows ({cs})")
