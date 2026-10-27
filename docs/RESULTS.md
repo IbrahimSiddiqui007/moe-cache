@@ -2012,5 +2012,20 @@ Prefill -5..-8 % with MTP. Flash-Next and the 122B quants have no head in their 
 **Qwen3.5-122B UD-IQ2_XXS from D: (request 2 of the crash sequence)**: stock 12.35-13.06; plugin after the fix 12.89 (measured while a download wrote
 to D:, not clean); `MOE_CACHE_DIRECT=0` 13.46. A clean ABBA series is still to do.
 
-**Pending at the time of writing (filled in by the next session):** quality yardstick IQ3_XXS vs IQ2_XS (IQ3_XXS: tasks 18/20, loops 1/44); IQ3_XXS
-executor on/off; Flash-Next MTP head file (unsloth `mtp-Qwen3.8-Flash-Next-Q8_0.gguf`) stock and plugin.
+**IQ3_XXS executor on / off** (buffered + 13 layers): on 11.93-12.01 / 13.05-13.16, off 11.39-11.49 / 12.67-12.68: the executor helps a little;
+the gap to stock (14.7 / 17.5-17.9) is elsewhere (stock reads IQ3's experts through Windows' file cache; to investigate).
+
+**Quality yardstick 2.0** (tools/quality_yardstick.py, branch claude/quality-yardstick; 24 open prompts x 256 tokens + 20 exact-answer tasks, greedy),
+Flash-Next through the plugin (buffered + 13 layers), IQ3_XXS as the reference:
+| Quant | Tasks right | Loops | Time | vs IQ3_XXS |
+|---|---|---|---|---|
+| IQ3_XXS | 18/20 | 1/44 | 850 s | reference |
+| IQ2_XS | 17/20 | 0/44 | 475 s | every answer worded differently (median first difference at token 22, 18 % same prefix); 3 tasks changed |
+A small set: IQ2_XS is not measurably worse here; a bigger task set is needed to settle "IQ2 answers worse".
+
+**Flash-Next MTP head as a separate file** (unsloth `mtp-Qwen3.8-Flash-Next-Q8_0.gguf`, `-md ... --spec-type draft-mtp --spec-draft-n-max 2 -ngld 99`), IQ2_XS:
+| | no head | head | drafts accepted |
+|---|---|---|---|
+| stock (12 layers) | 15.10 / 19.22, prefill 110 | 13.06 / 15.85 (-15 %), prefill 79 | 74 % |
+| plugin (buffered + 13 layers) | 18.58 / 19.55, prefill 153 | 11.02 / 12.39 (-38 %), prefill 103 | 73 % |
+Killed: verifying 3 tokens at once on CPU-held experts costs more than the drafts save. MTP pays only when the experts are in RAM/VRAM (Qwen3.6).
