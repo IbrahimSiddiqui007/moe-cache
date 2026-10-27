@@ -76,17 +76,18 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 
 ## 6. Known limits
 
-- **Speed on the test PC** (RESULTS 55: apps closed, Windows' file cache flushed before every run, stock-plugin-plugin-stock order, all experts on the CPU):
+- **Speed on the test PC** (Ryzen 9 7950X, 32 GB DDR5, RX 9070 XT 16 GB, Windows 11, llama.cpp 620d2225c Vulkan (ggml 0.27), AMD driver 32.0.32015.7029, 14 GB page file; cold starts, 256-token greedy requests (RESULTS 58)):
 
-  | Model | Decode: stock vs plugin | Prefill (about 3.5k-token prompt) |
+  | Model | Stock llama.cpp | moe-cache |
   |---|---|---|
-  | Flash-Next IQ2_XS (64 GB) | stock 12.1-16.1, plugin about 12.2 tok/s (about equal) | **2.2x** (120 vs 53-57 tok/s) |
-  | Qwen3.5-122B UD-IQ2_XXS (36.6 GB) | stock about 11-14, plugin about 6.5 tok/s (**about half**; cause under diagnosis) | **1.5-1.6x** (128 vs 80-87) |
-  | GLM-5.3-Flash UD-IQ2_XXS (102 GB) | plugin lower than stock in these runs (small cache: before the I37 fix, 6.9 GB page file); plugin 1.52 -> 2.02 tok/s with a 14 GB page file | about **2.9x**; **numbers to be confirmed** (the clean GLM runs are still going) |
+  | Qwen3.8-Flash-Next IQ2_XS (68 GB, bigger than RAM) | decode 15.0-15.2 / 19.2-19.4 tok/s (two prompts), prefill 108-110 tok/s (3.5k-token prompt); 12 GPU expert layers | default (12 GPU expert layers): decode 15.0-15.2 on both prompts, prefill 120. With `MOE_CACHE_WIN_BUFFERED=1` and 13 GPU expert layers (`--n-cpu-moe 35`): decode **18.5 / 19.4-19.6**, prefill **153** |
+  | Qwen3.6-35B-A3B (20 GB, fits in RAM) | 46.0; 68.6 with MTP | 45.6; 70.3 with MTP (plugin forced; the launcher runs stock for a model that fits) |
+  | Qwen3.5-122B UD-IQ2_XXS (37 GB) | 12.35-13.06 | wrong output and the crash at the second request are fixed; no speed claim yet (preliminary 12.89, not a clean run) |
+  | GLM-5.3-Flash UD-IQ2_XXS (102 GB) | 1.2-3.7 (older runs) | 2.02 default, 2.20 buffered (preliminary) |
 
   What it means for you on Windows with an AMD card: the plugin's gain is **prompt processing** (long prompts, coding agents that send 5-20k tokens per turn): the first turn and follow-ups
-  after a big tool result come back 1.5-3x sooner, and the output is exact. **Decode is limited by RAM** (the cache holds only what fits; a small page file makes it smaller, see below):
-  on models far bigger than RAM expect decode equal to or below stock, not above. If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself).
+  after a big tool result come back sooner, and the output is exact. **Decode is limited by RAM** (the cache holds only what fits; a small page file makes it smaller, see below):
+  decode is about equal to stock by default; on Flash-Next with `MOE_CACHE_WIN_BUFFERED=1` and one more GPU expert layer it was about 20 % faster on one prompt and equal on the other. GLM (102 GB on 32 GB) stays at about 2 tok/s, inside stock's range. If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself).
   One desktop only; Linux numbers are in the README.
 - The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
   not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.

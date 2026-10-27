@@ -19,9 +19,16 @@ Check a download: `gh attestation verify <file> -R IbrahimSiddiqui007/moe-cache`
 | 3 | Unzip the kit and double-click `moe-cache.bat`; pick a model on the page and press Start |
 | 4 | Coding agents: start with `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`) |
 
-## Speed on Windows (one desktop: Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, llama.cpp b11669 Vulkan, 2026-10-27)
+## Speed on Windows (one desktop, 2026-10-27)
 
-@SPEED_TABLE@
+| Model | Stock llama.cpp | moe-cache |
+|---|---|---|
+| Qwen3.8-Flash-Next IQ2_XS (68 GB, bigger than RAM) | decode 15.0-15.2 / 19.2-19.4 tok/s (two prompts), prefill 108-110 tok/s (3.5k-token prompt); 12 GPU expert layers | default (12 GPU expert layers): decode 15.0-15.2 on both prompts, prefill 120. With `MOE_CACHE_WIN_BUFFERED=1` and 13 GPU expert layers (`--n-cpu-moe 35`): decode **18.5 / 19.4-19.6**, prefill **153** |
+| Qwen3.6-35B-A3B (20 GB, fits in RAM) | 46.0; 68.6 with MTP | 45.6; 70.3 with MTP (plugin forced; the launcher runs stock for a model that fits) |
+| Qwen3.5-122B UD-IQ2_XXS (37 GB) | 12.35-13.06 | wrong output and the crash at the second request are fixed; no speed claim yet (preliminary 12.89, not a clean run) |
+| GLM-5.3-Flash UD-IQ2_XXS (102 GB) | 1.2-3.7 (older runs) | 2.02 default, 2.20 buffered (preliminary) |
+
+Setup: Ryzen 9 7950X, 32 GB DDR5, RX 9070 XT 16 GB, Windows 11, llama.cpp 620d2225c Vulkan (ggml 0.27), AMD driver 32.0.32015.7029, 14 GB page file; cold starts, 256-token greedy requests (RESULTS 58). `MOE_CACHE_WIN_BUFFERED=1` (buffered expert reads) is opt-in for now.
 
 These numbers come from one PC. Your speed depends on RAM, the SSD and the GPU. If the model fits in RAM, the launcher runs stock llama.cpp (that is faster then).
 
