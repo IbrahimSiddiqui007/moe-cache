@@ -2183,3 +2183,12 @@ tokens after a 16-token warm-up (C:\dl\pc_i32.ps1, log C:\dl\i32.err.txt). Shape
 Prompt batches (`MUL_MAT_ID`, 2 / 4 tokens): iq2_s 115 / 142 us vs iq2_xs 41 / 61 us (2.8x / 2.3x).
 Verdict: the gap seen on the Arc iGPU (1.9x, I25) is also on AMD RDNA4 (1.64x median, over the 1.3x kill line): iq2_s is as slow as iq3_xxs
 with 18 % fewer bits. Not checked: whether 620d2225c changed either shader (that commit is not on the laptop; no fetch).
+
+**B13 / R5: `-ub` 4096 / 8192 vs 2048 with all experts in RAM** (Qwen3.6-35B-A3B, 20 GB, fits: the launcher runs stock llama-server; `--ub N -- -c 20480`,
+the planner keeps 15 expert layers on the CPU for all three; cold, ABBA; C:\dl\pc_ub.ps1: a 14710-token and a 2950-token prompt, then the 256-token request)
+| `-ub` | 14.7k prompt tok/s (two runs) | mean | 2.95k prompt tok/s | decode tok/s |
+|---|---|---|---|---|
+| **2048 (default)** | 658.6, 657.8 | **658** | 632.8, 636.1 | 40.86, 40.31 |
+| 4096 | 504.8, 513.6 | 509 (-23 %) | 614.0, 616.3 | 41.11, 41.16 |
+| 8192 | 421.9, 407.8 | 415 (-37 %) | 580.5, 583.8 | 40.66, 41.06 |
+Verdict: bigger micro-batches are slower on this Vulkan PC (same layer split, so it is the batch itself); decode unchanged. The default 2048 stays; killed.
