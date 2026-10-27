@@ -30,6 +30,11 @@
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
 ### Agent mode, Hermes Agent and OpenCode
+- **`moe_cache.py on-demand`: agents work without starting a server by hand** (as with Ollama). A small always-on listener holds the agent port; the
+  first request starts the launcher in agent mode for the remembered model, requests (streaming included) pass through, and the model stops after 15 idle
+  minutes (`--idle`). The API key and the localhost-only CORS rule are checked in front, so a web page cannot wake the model; `/v1/models` and `/props`
+  answer without starting it. `--install-autostart` starts it at login (systemd --user unit; Windows Startup-folder shortcut, no admin). `connect
+  hermes|opencode` now defaults to the on-demand port. [docs/AGENTS.md](docs/AGENTS.md#without-starting-a-server-by-hand-on-demand)
 - **`--agent`** (RESULTS 51): context 65536, `--jinja` tool calls, stable `--alias`, at most 8 context checkpoints per slot with a 1 GiB reserve, config blocks printed
   when ready; `--api-key` for other machines. **`connect hermes|opencode [--write]`** writes the agent's config (Hermes through `hermes config set`, OpenCode by merging
   `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/AGENTS.md),

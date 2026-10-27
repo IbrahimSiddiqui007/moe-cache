@@ -59,7 +59,17 @@ python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llam
 python bin\moe_cache.py connect opencode --write        # or: connect hermes --write
 ```
 
-Details, and the desktop apps: [AGENTS](AGENTS.md). Note for Flash-Next below.
+Without starting the server by hand each time (as with Ollama): the model starts on the first agent request and stops after 15 idle minutes.
+
+```
+python bin\moe_cache.py on-demand D:\models\model.gguf --llama-server C:\llama\llama-server.exe --ram 20
+python bin\moe_cache.py connect opencode --write        # or: connect hermes --write  (the model does not start for this)
+python bin\moe_cache.py on-demand --install-autostart   # optional: a shortcut in your Startup folder, no admin; --remove-autostart undoes it
+```
+
+Hermes Desktop by hand: Settings -> Model -> Main model, provider custom, URL `http://127.0.0.1:8080/v1`, API key from `python bin\moe_cache.py key`.
+
+Details, and the desktop apps: [AGENTS](AGENTS.md#without-starting-a-server-by-hand-on-demand). Note for Flash-Next below.
 
 ## 5. What the launcher does for you on Windows with an AMD or Intel GPU
 
