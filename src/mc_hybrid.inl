@@ -423,6 +423,11 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             } else if (n->op == GGML_OP_MUL_MAT_ID && k == 2) {
                 nn->src[k] = gids;
             } else {
+                // uploaded row by row below: whole rows of F32 / I32 only (the same rule as gpu_segment)
+                if (src->nb[0] != ggml_type_size(src->type) || (src->type != GGML_TYPE_F32 && src->type != GGML_TYPE_I32)) {
+                    ggml_free(ctx);
+                    return false;
+                }
                 ggml_tensor * nt = ggml_new_tensor(ctx, src->type, GGML_MAX_DIMS, src->ne);
                 ggml_set_input(nt);
                 clone[src] = nt;
@@ -436,7 +441,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     ggml_set_output(gout);
     ggml_cgraph * g = ggml_new_graph(ctx);
     ggml_build_forward_expand(g, gout);
-    if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
+    if (!gpu_graph_supported(c, g) || !ggml_gallocr_alloc_graph(c->galloc, g)) {
         ggml_free(ctx);
         return false;
     }
@@ -458,6 +463,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         ggml_backend_tensor_set(up.second, pack.data(), 0, pack.size());
     }
     if (ggml_backend_graph_compute_async(c->gpu, g) != GGML_STATUS_SUCCESS) {
+        ggml_backend_synchronize(c->gpu);    // part of it may have been submitted: let it finish before the buffers are used again
         ggml_free(ctx);
         return false;
     }

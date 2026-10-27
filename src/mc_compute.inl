@@ -433,7 +433,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 
     // long prompts: run the expert block on the GPU (what llama.cpp's own offload does for batches of 32+ tokens)
     std::vector<std::pair<ggml_tensor *, ggml_op>> silenced;
-    if (s.cache_on && s.gpu_dev && !c->gpu_failed) {
+    if (s.cache_on && s.gpu_dev && !c->gpu_failed && s.graphs.load() >= c->gpu_retry_at) {
         for (const auto & gr : groups_found) {
             if (gr.n_tok < s.gpu_min_tokens) {
                 continue;
