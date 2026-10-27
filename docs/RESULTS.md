@@ -2119,3 +2119,12 @@ best count; one more layer than the planner loses ~23 % (VRAM runs short next to
 plugin 4.44, **plugin + `--mtp` 6.92 tok/s (3.1x stock)**, text byte-identical to stock, drafts accepted 61 % / 100 % (two requests).
 The cache kept its 20 GiB with free system commit at 3.47 GiB (the MTP draft context's GPU memory is charged to commit); before the file view
 the same setup cut the cache to 4.25 GiB and decoded at 0.8-1.0 tok/s (RESULTS 58). MTP on GLM: yes, now.
+
+**Quality, 202 exact-answer tasks** (tools/quality_tasks.json from branch claude/quality-100 ad775f5; `run --tasks-only --no-think
+--task-n-predict 128`, greedy; plugin, launcher defaults, file view):
+| Flash-Next | tasks right | loops | time | tasks changed vs IQ3_XXS |
+|---|---|---|---|---|
+| IQ3_XXS (76 GB) | **193 / 202 (95.5 %)** | 0 | 242 s | reference |
+| IQ2_XS (68 GB) | 187 / 202 (92.6 %) | 0 | 186 s | 14: 10 right only on IQ3_XXS, 4 only on IQ2_XS |
+IQ3_XXS leads by ~3 points; 10 vs 4 changed tasks is a lean, not a proof (paired sign test p ~ 0.18). IQ2_XS is ~10 % faster (21.9 vs
+19.9 tok/s, RESULTS 59) and 8 GB smaller. Recommendation (owner's D4): list both; IQ3_XXS when accuracy matters, IQ2_XS for speed.
