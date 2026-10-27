@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
+## 0.2.3.6 (2026-10-27)
 
 ### Windows and AMD
 - **Windows kit**: `moe-cache-vX-windows-x64.zip` with both plugin DLLs (API 2 / API 3), the launcher, the control page, a one-click `moe-cache.bat`
