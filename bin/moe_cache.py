@@ -33,7 +33,7 @@ def ldd(path):
     if WINDOWS:
         return ""
     try:
-        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, timeout=20).stdout
+        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20).stdout
     except Exception:
         return ""
 
@@ -202,14 +202,14 @@ def pick_gpu(listing):
 def nvidia_reports():
     """True when nvidia-smi exists and reports at least one GPU's free memory."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         return out.returncode == 0 and out.stdout.strip()[:1].isdigit()
     except Exception:
         return False
 
 def list_devices(ls):
     try:
-        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, timeout=60)
+        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         return out.stdout + out.stderr
     except Exception:
         return ""
@@ -717,7 +717,7 @@ def server(argv):
         if a.vram: p += ["--vram-gib", a.vram]
         r = None
         try:
-            r = subprocess.run(p, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
             ncmoe = str(json.loads(r.stdout)["n_cpu_moe"])
         except Exception as e:
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
@@ -903,7 +903,7 @@ def server(argv):
     cram = arg_after(extra, "--cache-ram", "-cram")
     if cram is None:
         try:
-            if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout:
+            if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout:
                 # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
                 # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
                 lim = mem_for_server(a.ram)
@@ -1082,7 +1082,7 @@ def connect(argv):
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
         for k, v in sets:
-            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, timeout=60)
+            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             if r.returncode:
                 raise SystemExit(f"hermes config set {k} failed: {(r.stderr or r.stdout).strip()[-300:]}")
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
@@ -1286,7 +1286,7 @@ def check(argv):
         fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
     else:
         try:
-            v = subprocess.run([lsp, "--version"], capture_output=True, text=True, timeout=30)
+            v = subprocess.run([lsp, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             vtxt = v.stdout + v.stderr
             m = re.search(r"commit [0-9a-f]+", vtxt)
         except Exception:
@@ -1314,7 +1314,7 @@ def check(argv):
             load, method = load_env(lsp, lib)
             probe = ""
             try:
-                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60, env=dict(os.environ, **dict(load)))
+                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=dict(os.environ, **dict(load)))
                 probe = out.stdout + out.stderr
             except Exception:
                 pass

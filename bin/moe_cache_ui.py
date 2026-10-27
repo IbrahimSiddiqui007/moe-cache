@@ -159,7 +159,7 @@ def vram_now():
     """{name, used, total} bytes of the GPU (NVIDIA: nvidia-smi; AMD on Linux: sysfs); None when neither answers."""
     try:
         r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
         if r.returncode == 0 and r.stdout.strip():
             name, used, tot = [x.strip() for x in r.stdout.strip().splitlines()[0].split(",")]
             return {"name": name, "used": float(used) * 2**20, "total": float(tot) * 2**20}
@@ -234,7 +234,7 @@ def run_planner(path, ctx, ram, vram, kv="f16"):
         p += ["--ram-gib", mc.ram_gib(ram)]       # ram is GB, the planner takes GiB
     if vram:
         p += ["--vram-gib", str(vram)]
-    r = subprocess.run(p, capture_output=True, text=True, timeout=300)
+    r = subprocess.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     try:
         return json.loads(r.stdout)
     except ValueError:
@@ -398,7 +398,7 @@ def shown_command(s):
 def dry_run(s):
     a = server_args(s)
     a.insert(a.index("--"), "--dry-run")          # a launcher option: after the -- it would go to llama-server
-    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, timeout=300, env=child_env(s.get("api_key")))
+    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, env=child_env(s.get("api_key")))
     key = s.get("api_key")
     return [l.replace(key, "KEY") if key else l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
 
@@ -414,7 +414,7 @@ KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]
 def launcher_key():
     """The launcher's key for agent servers; None when this launcher has none (before option C) or the command fails."""
     try:
-        r = subprocess.run(KEY_CMD, capture_output=True, text=True, timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        r = subprocess.run(KEY_CMD, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     except Exception:
         return None
     k = r.stdout.strip()
@@ -640,7 +640,7 @@ def move_to_trash(path):
         return "the Recycle Bin"
     gio = shutil_which("gio")
     if gio:
-        r = subprocess.run([gio, "trash", path], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([gio, "trash", path], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         if r.returncode == 0 and not os.path.exists(path):
             return "the Trash"
     # the freedesktop.org Trash in the user's home (same file system as ~/.cache in the usual set-up): info file first, then a rename
@@ -792,8 +792,8 @@ def flush_model_cache(model, other):
         folders = [o for o in other if o and os.path.exists(o)]
         if not folders:
             return False, "no folder with other big files to read (set one under Cold start)"
-        r = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", WIN_FLUSH, "-Target"] + parts + ["-Other"] + folders,
-                           capture_output=True, text=True, timeout=3600)
+        r = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", WIN_FLUSH, "-Target", "|".join(parts), "-Other", "|".join(folders)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3600)
         out = " ".join(l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip())
         return r.returncode == 0, out or f"win_flush_cache.ps1 exit code {r.returncode}"
     users = sorted({pid for p in parts for pid in mapped_by(p)})
@@ -1468,7 +1468,7 @@ def connect_agent(agent, url, api_key, write):
     env = dict(os.environ, LLAMA_API_KEY=api_key, PYTHONIOENCODING="utf-8")
     if not api_key:
         env.pop("LLAMA_API_KEY", None)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, env=env)
     out = {"rc": r.returncode, "output": (r.stdout + r.stderr).strip(), "file": None, "written": None}
     m = re.search(r"; config (.+?\.json)", out["output"])
     if write and r.returncode == 0 and m:
