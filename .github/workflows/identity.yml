@@ -294,6 +294,7 @@ jobs:
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
         run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DUP_IDS BUILD_DIR=build-mut-dup ./build.sh --portable
           if MOE_CACHE_LIB=$PWD/build-mut-dup/libggml-moe-cache.so IDENT_KEEP=mut_dup timeout 900 tests/dup_ids.sh granite.gguf 2>&1 | tee dup_ids_mutant.txt; then
             echo "FAIL: the mutant passed, so the repeated-ids step does not cover the overflow"; exit 1; fi
