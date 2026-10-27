@@ -72,7 +72,7 @@ jobs:
           # --gpu-cache with the plugin loaded as a file (GGML_BACKEND_PATH) would give wrong tokens: the launcher must drop it (T7, B1)
           bin/moe-cache-server granite.gguf --ram 4 --always-plugin --load-method path --gpu-cache 1000 --dry-run 2>&1 | tee launcher_gcache_path.txt
           grep -q "gpu-cache needs a llama-server that links its backends directly" launcher_gcache_path.txt
-          ! grep -q "moe-cache-mib" launcher_gcache_path.txt
+          if grep -q "moe-cache-mib" launcher_gcache_path.txt; then echo "FAIL: --moe-cache-mib passed on path loading (T7)"; exit 1; fi    # "! grep" alone never fails under bash -e
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
 
@@ -135,8 +135,11 @@ jobs:
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
           IDENT_EXTRA: "--no-repack"      # CPU weight repacking would make the executor step aside (repacked weights); both servers get the flag
+          IDENT_KEEP: ident_exec
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
-        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+          grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_exec/plugin.log    # the executor really ran (it steps aside silently on repacked weights)
 
       - name: Cache smaller than one op (1 MiB) - experts mapped from the model file instead of aborting, guard mode on
         env:
@@ -161,6 +164,7 @@ jobs:
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_small_over.txt
           grep -E "experts mapped from the model file, [1-9][0-9]* loaded over" ident_small_over/plugin.log
+          grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_small_over/plugin.log
 
       - name: Logits at batch 8 (KL divergence vs stock), cache forced to evict, executor forced on
         env:
@@ -272,8 +276,11 @@ jobs:
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
           IDENT_EXTRA: "--no-repack"
+          IDENT_KEEP: ident_guard
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_GUARD=1"
-        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_guard.txt
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_guard.txt
+          grep -E "executor ran [1-9][0-9]* expert ops itself" ident_guard/plugin.log
 
       - name: Identity with guard mode, two slots (each short prompt, 12-25 tokens, goes to the other slot; the PC crashed at the second request, slot 1)
         env:
