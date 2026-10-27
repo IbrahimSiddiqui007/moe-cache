@@ -132,6 +132,10 @@ for want in ("-c 65536", "--jinja", "--ctx-checkpoints 8", "--alias ", "--slot-s
     check(want in ag, f"--agent: the command has '{want}'")
 check("-c 32768" in dry("--agent", "--ctx", "32768"), "--agent --ctx 32768 keeps the given context")
 check("--slot-save-path" not in dry("--agent", "--no-warm"), "--agent --no-warm: no warm-session slot directory")
+if gguf_plan.mtp_layers(model)[0] == 0:
+    check("--spec-type" not in ag and "MTP off: the model has no MTP head" in ag, "--agent on a model without an MTP head: no --spec-type, one line why")
+else:
+    check(("MTP on:" in ag) == ("--spec-type draft-mtp --spec-draft-n-max 2" in ag) and "MTP o" in ag, "--agent on a model with an MTP head: one line, args only when on")
 check("--jinja" not in dry(), "no --agent: the command is unchanged (no --jinja added)")
 check("-ctk q8_0 -ctv q8_0" in dry("--fast") and "-ctk" not in dry(), "--fast adds a q8_0 KV cache (I6); the exact default does not")
 check(dry("--fast", "--", "-ctk", "f16").count("-ctk") == 1, "--fast keeps a -ctk given after the --")
@@ -149,6 +153,42 @@ for sp in _glob.glob(os.path.join(HERE, "profiles", "*-*x*.usage")):
     n_l, n_e = struct.unpack("<ii", d[4:12])
     check(d[:4] == b"XUSE" and len(d) == 12 + 4 * n_l * n_e and str(n_e) == sp.rsplit("x", 1)[1].split(".")[0],
           f"starter profile {os.path.basename(sp)}: XUSE, {n_l} x {n_e}, no fingerprint")
+
+# MTP head (I43): header reader on synthetic GGUFs, the decision table, and the launcher's argparse defaults
+def _gguf(path, declared, tensors):
+    def s(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    kv = [s("general.architecture") + struct.pack("<I", 8) + s("tst")]
+    if declared is not None:
+        kv.append(s("tst.nextn_predict_layers") + struct.pack("<II", 4, declared))
+    ti = b"".join(s(n) + struct.pack("<IQIQ", 1, 8, 0, 32 * i) for i, n in enumerate(tensors))
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kv)) + b"".join(kv) + ti
+    open(path, "wb").write(head + b"\0" * (-len(head) % 32) + b"\0" * 32 * len(tensors))
+_md = tempfile.mkdtemp()
+for name, declared, tensors, want in [("head", 1, ["blk.0.attn_q.weight", "blk.1.nextn.eh_proj.weight", "blk.1.nextn.enorm.weight"], (1, 1)),
+                                      ("dropped", 1, ["blk.0.attn_q.weight"], (0, 1)), ("none", None, ["blk.0.attn_q.weight"], (0, 0))]:
+    _p = os.path.join(_md, name + ".gguf"); _gguf(_p, declared, tensors)
+    got = gguf_plan.mtp_layers(_p)
+    check(got == want, f"mtp_layers: '{name}' file -> {got} (want {want})")
+_h, _d = gguf_plan.mtp_layers(model)
+check(_h == 0 or _d >= 1, f"mtp_layers on the test model: {_h} head layer(s), header declares {_d} (a file with nextn tensors declares them)")
+D = L.mtp_decide
+check(D(None, True, 1, 1, True, False)[0] is True, "mtp: --agent + head + draft-mtp in llama-server -> on")
+check(D(None, False, 1, 1, True, False)[0] is False and "--mtp" in D(None, False, 1, 1, True, False)[1], "mtp: plain server + head -> off with a --mtp hint")
+check(D(True, False, 1, 1, True, False)[0] is True, "mtp: --mtp + head -> on")
+check(D(False, True, 1, 1, True, False) == (False, "moe-cache: MTP off (--no-mtp)"), "mtp: --no-mtp wins over --agent")
+check(D(None, True, 1, 1, False, False)[0] is False and "draft-mtp" in D(None, True, 1, 1, False, False)[1], "mtp: llama-server without draft-mtp -> off, says why")
+check(D(None, True, 0, 0, True, False)[0] is False and D(None, False, 0, 0, True, False)[1] is None, "mtp: no head -> off; silent outside --agent")
+check("dropped" in D(None, True, 0, 1, True, False)[1], "mtp: header declares a head the quant dropped -> says so")
+check(D(None, True, 1, 1, True, True)[0] is False, "mtp: your own --spec-type is left alone")
+for args in [(True, True, 0, 0, True, False), (True, True, 1, 1, False, False)]:
+    try:
+        D(*args); check(False, f"mtp: --mtp with {args} must stop")
+    except SystemExit as e:
+        check("--mtp:" in str(e), f"mtp: --mtp stops with a reason ({str(e)[:60]}...)")
+_said = []; _say = L.say; L.say = lambda m, err=False: _said.append(m)
+check(L.mtp_args(None, True, "llama-server", os.path.join(_md, "none.gguf"), []) == [] and len(_said) == 1, "mtp_args: no head -> no args, one line")
+check(L.mtp_args(True, False, "llama-server", os.path.join(_md, "head.gguf"), ["--spec-type", "ngram-simple"]) == [], "mtp_args: --mtp keeps your own --spec-type")
+L.say = _say
 
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

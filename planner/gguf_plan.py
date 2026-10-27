@@ -83,6 +83,27 @@ def read_tensors(path):
     return out
 
 
+def mtp_layers(path):
+    """-> (head, declared): head = number of layers with multi-token-prediction tensors (blk.N.nextn.*) in the files, declared =
+    <arch>.nextn_predict_layers from the header (0 when absent). A quant can keep the key but drop the tensors; only `head` says the head is there."""
+    declared = 0
+    files = shards(path)
+    with open(files[0], "rb") as f:
+        if f.read(4) != b"GGUF":
+            return 0, 0
+        f.read(4)
+        _, n_kv = struct.unpack("<QQ", f.read(16))
+        for _ in range(n_kv):
+            key = _read_str(f)
+            t = struct.unpack("<I", f.read(4))[0]
+            if key.endswith(".nextn_predict_layers") and t in (4, 5, 10, 11):
+                declared = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
+            else:
+                _skip_value(f, t)
+    head = {m.group(1) for p in files for name, _ in read_tensors(p) for m in [re.match(r"blk\.(\d+)\.nextn\.", name)] if m}
+    return len(head), declared
+
+
 def shards(path):
     m = re.match(r"(.*)-(\d+)-of-(\d+)\.gguf$", path)
     return sorted(glob.glob(f"{m.group(1)}-*-of-{m.group(3)}.gguf")) if m else [path]
