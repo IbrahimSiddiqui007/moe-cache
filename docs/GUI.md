@@ -79,10 +79,13 @@ Each model shows its size, its quantisation (for example `Q4_K_M`) and a verdict
 | **all experts fit on the GPU** | every expert fits in your graphics card's memory: nothing for the cache to do |
 | **cannot plan this model** | the planner could not read it (for example not a MoE model); the reason is shown |
 
-Click a model to see **Why**: the numbers behind the verdict (model size against your memory, how many layers of experts go on the GPU, how much
-of the experts the cache can hold, the micro-batch). On Windows with an AMD graphics card it also lists the launcher's AMD rule
-(`--ctx-checkpoints 0` for Flash-Next on older drivers), in purple. For models we have measured, it also lists the
-speeds we measured on our test laptop (yours will differ).
+Click a model to see **Why**. It starts with one plain sentence that says why this mode (for example "moe-cache: the model (68.0 GB) is 2.9x
+the 23.0 GB this server may use. Stock llama-server would keep re-reading it from the disk; the cache keeps 52 % of the experts that run on the
+CPU in RAM and reads the rest only when needed."; the same sentence is the tooltip of the verdict in the top bar). Below it are the numbers
+behind the verdict (model size against your memory, how many layers of experts go on the GPU, how much of the experts the cache can hold, the
+micro-batch). On Windows with an AMD graphics card it also lists the launcher's AMD rule (`--ctx-checkpoints 0` for Flash-Next on older
+drivers), in purple. For models we have measured, it also lists the speeds we measured, stock and moe-cache, on the test laptop (Linux, RTX
+4060 8 GB) and the desktop PC (Windows, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB; RESULTS 59-60). Yours will differ.
 
 The verdict uses the same rules and planner as the launcher, so it matches what **Start** will do.
 
@@ -97,7 +100,7 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 | Context | how much text the model keeps in view: 8k, 32k or 64k tokens | 8k (64k in Agent mode) |
 | Mode | **Exact**: answers identical to stock llama-server. **Fast** (`--fast`): skips rarely needed experts that are not in RAM, about +10 % speed, about 1 token in 40-50 differs. **Hybrid** (`--hybrid`, experimental): most used experts on the GPU, the rest on the CPU, answers differ from stock | Exact |
 | Run as | **Auto**: stock llama-server when the model fits in RAM (faster then), moe-cache when it does not. **moe-cache** (`--always-plugin`): the plugin even when the model fits. **Stock** (`--stock`): no plugin even when the model does not fit (Mode is Exact then). The last two are for comparing the two on your machine (section 9) | Auto |
-| MTP | multi-token prediction with the model's own draft head (Qwen3.6, GLM-5.3 have one): same answers, faster replies (Qwen3.6 on the desktop PC: +54 % decode). **Auto**: on in Agent mode when the model has the head and your llama-server supports it. **On** (`--mtp`) / **Off** (`--no-mtp`). The plan's Why list says what will happen; the Status panel shows "+ MTP" when it is on. GLM on Windows: MTP currently fails at load (being fixed), choose Off there | Auto |
+| MTP | multi-token prediction with the model's own draft head (Qwen3.6, GLM-5.3 have one): same answers, faster replies (Qwen3.6 on the desktop PC: +54 % decode). **Auto**: on in Agent mode when the model has the head and your llama-server supports it. **On** (`--mtp`) / **Off** (`--no-mtp`). The plan's Why list says what will happen; the Status panel shows "+ MTP" when it is on (GLM-5.3 on the desktop PC: 4.4 -> 6.9 tok/s, same text) | Auto |
 | Agent mode | for coding agents (`--agent`): 64k context, tool calls, saved conversations, an API key | off |
 | Don't restore saved agent sessions | starts without the saved conversations (`--no-warm`); then nothing is saved either | off |
 | Port | where llama-server listens | 8080 |

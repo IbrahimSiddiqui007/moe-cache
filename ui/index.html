@@ -41,6 +41,7 @@ th { color:var(--muted); font-weight:500; font-size:11px; }
 ul.why { margin:4px 0 0; padding-left:16px; font-size:12px; }
 ul.why li { margin:2px 0; }
 ul.why li.win { color:var(--gpu); }
+p.whysum { margin:4px 0 6px; font-size:13px; line-height:1.45; }
 
 /* ---------- frame ---------- */
 .app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
@@ -519,7 +520,7 @@ function paintModels() {
       <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span></span></div></div>`; }).join("");
   const m = S.models.find(x => x.path == S.sel), p = S.sel && S.plans[planKey(S.sel)];
   $("topmodel").textContent = m ? shortName(m.name) : "no model";
-  $("topverdict").className = "badge " + (p ? p.kind || "error" : "wait"); $("topverdict").textContent = m ? (p ? p.verdict || "?" : "planning…") : "";
+  $("topverdict").className = "badge " + (p ? p.kind || "error" : "wait"); $("topverdict").textContent = m ? (p ? p.verdict || "?" : "planning…") : ""; $("topverdict").title = (p && p.summary) || "";
   paintPlan();
 }
 function paintPlan() {
@@ -529,8 +530,8 @@ function paintPlan() {
   if (!m) { $("plan").innerHTML = ""; return; }
   $("plansum").textContent = `Why ${p ? p.verdict : "…"} for ${shortName(m.name)}?`;
   if (!p) { $("plan").innerHTML = `<span class="small">planning…</span>`; return; }
-  $("plan").innerHTML = `<ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
-    (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on the test laptop (i7-13620H, RTX 4060 8 GB; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
+  $("plan").innerHTML = (p.summary ? `<p class="whysum">${esc(p.summary)}</p>` : "") + `<ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
+    (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on our machines (laptop: i7-13620H, RTX 4060 8 GB, Linux; PC: Ryzen 9 7950X, RX 9070 XT 16 GB, Windows; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
 }
 let planning = false;
 async function planAll() {

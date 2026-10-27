@@ -274,8 +274,6 @@ def mtp_reason(path, want, agent, ls):
         on, why = mc.mtp_decide(want, agent, head, declared, bool(head and want is not False and ls and server_has_mtp(ls)), False)
     except SystemExit as e:                     # --mtp the launcher would refuse: say so before Start
         return f"MTP: Start would stop with: {e}"
-    if why and head and want is not False and re.search(r"glm", os.path.basename(path), re.I):      # don't promise GLM a speed-up yet
-        why += "; GLM: MTP currently fails at load on Windows (a plugin bug being fixed): choose MTP Off there"
     return why.replace("moe-cache: ", "", 1) if why else None
 
 
@@ -316,21 +314,30 @@ def peek_servers(ports=None, own=None):
     return [dict(res[p], started_here=p == own) for p in ports if p in res and res[p].get("up")]
 
 
-# Measured decode speeds from README "Results" / docs/RESULTS.md, all on the test laptop (i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD), by model
-# family (gguf_plan.model_key) and file size (GB, so each quant has its own row). (RAM GB, setting, stock tok/s, moe-cache tok/s, where)
+# Measured decode speeds from README "Results" / docs/RESULTS.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
+# row): (machine, RAM GB, setting, stock tok/s or None, moe-cache tok/s, where). Machines: laptop = i7-13620H, 31 GB RAM, RTX 4060 8 GB, Linux;
+# PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
+LAPTOP, PC = "laptop", "PC"
 MEASURED = {
-    ("qwen35moe-41x256", 21.7): [(24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44: the launcher runs stock here"),
-                                 (12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (12, "no GPU", 3.1, 9.9, "RESULTS 5")],
-    ("qwen4exp-48x512", 68.0): [(24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31")],
-    ("qwen35moe-48x256", 36.6): [(24, "8 GB GPU", 1.89, 7.7, "RESULTS 45; 9.0 with --fast")],
-    ("qwen35moe-48x256", 44.7): [(24, "8 GB GPU", 1.10, 5.7, "RESULTS 45; 6.8 with --fast")],
-    ("qwen35moe-48x256", 60.2): [(24, "8 GB GPU", 0.91, 3.7, "RESULTS 45; 4.5 with --fast")],
-    ("glm5-next-46x288", 101.8): [(24, "8 GB GPU", 0.32, 1.75, "RESULTS 26; 2.1 with --fast")],
+    ("qwen35moe-41x256", 21.7): [(LAPTOP, 24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44: the launcher runs stock here"),
+                                 (LAPTOP, 12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (LAPTOP, 12, "no GPU", 3.1, 9.9, "RESULTS 5"),
+                                 (PC, 32, "fits in RAM, agent context", 43.6, 43.1, "RESULTS 60; about 72 with --mtp: the launcher runs stock here")],
+    ("qwen4exp-48x512", 68.0): [(LAPTOP, 24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31"),
+                                (PC, 32, "16 GB GPU", 14.89, 21.94, "RESULTS 59; agent sessions 2.0-2.4x faster, RESULTS 60"),
+                                (PC, 16, "16 GB GPU, --ram 16", None, 20.03, "RESULTS 60: 92 % of the 24 GB speed")],
+    ("qwen4exp-48x512", 76.0): [(PC, 32, "16 GB GPU", 15.14, 19.86, "RESULTS 59")],
+    ("qwen4exp-48x512", 83.6): [(PC, 32, "16 GB GPU", 12.92, 17.28, "RESULTS 59")],
+    ("qwen35moe-48x256", 36.6): [(LAPTOP, 24, "8 GB GPU", 1.89, 7.7, "RESULTS 45; 9.0 with --fast"),
+                                 (PC, 32, "16 GB GPU", 13.88, 16.13, "RESULTS 59")],
+    ("qwen35moe-48x256", 44.7): [(LAPTOP, 24, "8 GB GPU", 1.10, 5.7, "RESULTS 45; 6.8 with --fast")],
+    ("qwen35moe-48x256", 60.2): [(LAPTOP, 24, "8 GB GPU", 0.91, 3.7, "RESULTS 45; 4.5 with --fast")],
+    ("glm5-next-46x288", 101.8): [(LAPTOP, 24, "8 GB GPU", 0.32, 1.75, "RESULTS 26; 2.1 with --fast"),
+                                  (PC, 32, "16 GB GPU", 2.21, 4.44, "RESULTS 59; 6.92 with --mtp, same text, RESULTS 60")],
 }
 
 
 def measured(path, size):
-    """Lines like 'test laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
+    """Lines like 'laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
     try:
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import model_key
@@ -339,8 +346,36 @@ def measured(path, size):
         return []
     for (k, gbs), rows in MEASURED.items():
         if k == key and abs(size / 1e9 - gbs) <= 0.03 * gbs:
-            return [f"{ram} GB RAM, {what}: stock {st} tok/s, moe-cache {mc_} tok/s ({src})" for ram, what, st, mc_, src in rows]
+            return [f"{where}, {ram} GB RAM, {what}: " + (f"stock {st} tok/s, " if st is not None else "") + f"moe-cache {mc_} tok/s ({src})"
+                    for where, ram, what, st, mc_, src in rows]
     return []
+
+
+def summary(out, mode="exact", engine="auto"):
+    """One plain sentence: why this mode (I33). Built from the verdict and the numbers plan_model() already has."""
+    kind, size, avail, n = out.get("kind"), out.get("size") or 0, out.get("avail"), out.get("numbers") or {}
+    room = f"the {gb(avail)} this server may use" if avail else "the memory this server may use"
+    if kind == "error":
+        return "The planner could not read this model, so the page cannot say how it would run."
+    if kind == "gpu":
+        return "Every layer of experts fits in the graphics card's memory, so the cache has nothing to do."
+    if kind == "stock" and engine == "stock" and avail and size + HEADROOM > avail:
+        return (f"Stock llama-server because you chose Run as Stock: the model ({gb(size)}) is bigger than {room}, "
+                "so moe-cache is usually faster here. Use it to compare.")
+    if kind == "stock":
+        return (f"Stock llama-server: the model ({gb(size)}) fits in {room}, and when everything fits the plain llama-server is fastest. "
+                "The plugin only helps models bigger than RAM.")
+    if kind == "cache":
+        x = f"{size / avail:.1f}x" if avail and size > avail else "more than"
+        cpu, cache = n.get("cpu_experts_GiB"), n.get("cache_GiB")
+        held = f" keeps {min(100, 100 * cache / cpu):.0f} % of the experts that run on the CPU in RAM and" if cpu and cache is not None else ""
+        if avail and size + HEADROOM <= avail:
+            return f"moe-cache, as you chose: the model ({gb(size)}) fits in {room}, so stock would likely be faster."
+        tail = {"fast": " --fast skips a few rarely used experts that are not in RAM (a little faster, some tokens differ).",
+                "hybrid": " --hybrid also runs the most used experts on the GPU (experimental, answers differ)."}.get(mode, " The answers are the same as stock's.")
+        return (f"moe-cache: the model ({gb(size)}) is {x} {room}. Stock llama-server would keep re-reading it from the disk; "
+                f"the cache{held} reads the rest only when needed." + tail)
+    return ""
 
 
 def gb(x):
@@ -394,6 +429,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     except Exception as e:
         out.update(kind="stock" if stock else "error", verdict=("stock llama-server" + ("" if stock_fits else ", as asked (--stock)")) if stock else "cannot plan this model")
         R.append(f"planner: {e}" + (" (not a MoE model: moe-cache has nothing to manage; llama-server runs it stock)" if "MoE" in str(e) else ""))
+        out["summary"] = ("Stock llama-server: this is not a MoE model, so moe-cache has nothing to manage." if "MoE" in str(e) and stock
+                          else summary(out, mode, engine))
         return out
     try:
         tuned = run_tuner(path, ctx, vram, mode == "fast")
@@ -447,6 +484,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     m = mtp_reason(path, mtp, agent, ls)
     if m:
         R.append(m)
+    out["summary"] = summary(out, mode, engine)
     return out
 
 
