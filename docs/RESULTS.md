@@ -2107,3 +2107,10 @@ each kind. Both kinds get the launcher's `--agent` arguments (context 65536, --j
   follow-up first token ~3x), decode is equal at this context.
 - Fits in RAM (Qwen3.6): sessions 5-9 % faster, follow-up first token 20-37 % faster, decode equal.
 - MTP (both kinds): decode 43.5 -> 72 tok/s, a session 13-25 % shorter; keep `--mtp` on in agent mode for models with a head.
+
+**GPU expert layers with the file-view cache** (one cold run each, plugin, the 256-token request): the launcher's planner already picks the
+best count; one more layer than the planner loses ~23 % (VRAM runs short next to the long-prompt block).
+| Flash-Next | GPU expert layers (--n-cpu-moe) | decode tok/s |
+|---|---|---|
+| IQ2_XS | 8 (40) / 10 (38) / **12 (36, default)** / 14 (34) | 20.94 / 21.31 / **22.12** / 16.91 |
+| IQ3_XXS | 5 (43) / 7 (41) / **9 (39, default)** / 11 (37) | 18.68 / 19.06 / **19.82** / 15.27 |
