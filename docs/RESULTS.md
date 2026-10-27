@@ -2217,3 +2217,18 @@ Laptop NVMe: 2.9-3.1 GB/s (drive ceiling 3.6). The probe is repeatable (±4 %) a
 0.74), but at 98 % hits the faster drive gives only +2.3 % decode; the "20-40 % loss" behind N8 was from the private-memory cache era.
 Verdict: kept as a `check` line that warns only below 1.0 GB/s (SATA, hard disk, USB); NVMe drives get an OK line with the number.
 Also: the 122B decodes at 19.8-20.3 tok/s here vs 16.1 in RESULTS 59 (same DLL and launcher; cause not investigated: hit rate 97.8 % here).
+
+**B11 / B12 / R3: `--hybrid` GPU bank of 6 / 10 GB vs the launcher default** (plugin, file view, cold; order default, 6, 10, 10, 6, default;
+`--hybrid` with MOE_CACHE_HYBRID=6144 / 10240 MiB; C:\dl\pc_ub.ps1 -Reps 70: a ~3k-token prompt, then the 256-token request). The bank is chosen
+from the usage profile; with `--hybrid` all experts go to the plugin (`--n-cpu-moe 999`) and the output is no longer identical to stock.
+| Model | Run | bank | 3k prompt tok/s | decode tok/s (two runs) | decode vs default |
+|---|---|---|---|---|---|
+| GLM-5.3-Flash (C:) | default (`--n-cpu-moe 45`) | - | 54.8, 55.3 | 5.40, 5.32 (5.36) | - |
+| | `--hybrid` 6 GB | 842 experts, 42 layers, 6138 MiB | 54.1, 54.7 | 5.89, 5.87 (5.88) | **+9.7 %** |
+| | `--hybrid` 10 GB | capped at free VRAM: 959 experts, 6996 MiB | 53.2, - | 5.70, 5.68 (5.69) | +6.2 % |
+| Qwen3.5-122B (D:) | default (`--n-cpu-moe 36`) | - | 259.7, 265.8 | 21.23, 21.14 (21.19) | - |
+| | `--hybrid` 6 GB | 2449 experts, 47 layers, 6142 MiB | 189.0, 187.6 | 17.46, 17.54 (17.50) | **-17 %** |
+| | `--hybrid` 10 GB | 3935 experts, 9868 MiB | 159.7, 159.1 | 17.54, 17.41 (17.48) | -18 % (prompt -40 %) |
+The GLM bank is freed for long prompts and loaded again for decoding, so its prompt speed stays; on the 122B the bank costs prompt speed too.
+Verdict: under the +10 % kill line on GLM (and approximate), a loss on the 122B: killed on this PC. For GLM, MTP (+25 % over the plugin, exact,
+RESULTS 60) is the better lever.
