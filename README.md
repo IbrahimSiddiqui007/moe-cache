@@ -89,6 +89,18 @@ chat app: left your chats and models (each with the planner's verdict: fits in R
 centre the chat with a speed chip per answer, right live tok/s, cache hit rate, SSD reads, RAM and VRAM, plus a settings drawer (RAM/VRAM budget,
 context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one click, the same on stock llama-server for comparison. See [docs/GUI.md](docs/GUI.md).
 
+### Windows quick start (experimental)
+
+| Step | What to do |
+|---|---|
+| 1. llama.cpp | Download the official release `llama-bNNNNN-bin-win-vulkan-x64.zip` from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) (tested: b11669) and unpack it to `C:\llama` |
+| 2. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH") |
+| 3. The kit | Download `moe-cache-vX-windows-x64.zip` from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
+| 4. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |
+| 5. Agents | Add `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`); the page also has Connect buttons |
+
+Keep the Windows page file at "system managed" (or 14 GB or more): a small page file limits the cache. Details and known limits: [docs/WINDOWS.md](docs/WINDOWS.md).
+
 ### 4. Optional: prove it is correct and measure it on your machine
 
 ```bash
