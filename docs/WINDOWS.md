@@ -98,6 +98,14 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   after a big tool result come back 1.5-3x sooner, and the output is exact. **Decode is limited by RAM** (the cache holds only what fits; a small page file makes it smaller, see below):
   on models far bigger than RAM expect decode equal to or below stock, not above. If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself).
   One desktop only; Linux numbers are in the README.
+- **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (RESULTS 58: Ryzen 9 7950X + RX 9070 XT, Windows 11, ggml 0.27, cold runs, decode = two 256-token prompts, prefill = 3.5k-token prompt; plugin = `MOE_CACHE_WIN_BUFFERED=1` + `--n-cpu-moe 35`, 13 GPU expert layers; stock = the launcher's own split). Both files are listed on purpose; pick by what you value:
+
+  | Quant | File size | Plugin decode (tok/s) | Plugin prefill (tok/s) | Stock decode (tok/s) | Stock prefill (tok/s) | Quality set (20 tasks) |
+  |---|---|---|---|---|---|---|
+  | IQ2_XS | 68 GB | 18.5 / 19.5 | 153 | 15.1-15.2 / 19.2-19.4 | 108-110 | 17/20, 0 loops in 44 |
+  | IQ3_XXS | 76 GB | 11.9-12.0 / 13.2 | 108-109 | 14.7 / 17.5-17.9 | 96-102 | 18/20, 1 loop in 44 |
+
+  How to choose: IQ2_XS is faster with the plugin (decode above stock, prefill 1.4x) and scored 17/20 against 18/20 for IQ3_XXS on a small set, so it is not measurably worse there. Choose IQ3_XXS if you want the larger quant anyway; today the plugin is **slower than stock on IQ3 decode on Windows** (about 12-13 against 15-18 tok/s; prefill is still ahead; being investigated, task T4), so for IQ3 decode alone stock llama.cpp is faster at the moment. An IQ3_S file (83.6 GB) behaves like IQ3_XXS in a first look (plugin decode 8.7-9.8 against stock 10.6-12.7). The quality set is small (20 tasks): it cannot settle "IQ2 answers worse". Details: [RESULTS 58](RESULTS.md#58-windows-desktop-2026-10-27-fixes-confirmed-mtp-flash-next-iq2_xs-vs-iq3_xxs-glm-page-file).
 - The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
   not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.
 - `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers.
