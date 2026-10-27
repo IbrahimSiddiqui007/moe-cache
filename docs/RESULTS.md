@@ -2087,3 +2087,23 @@ with or without the iGPU and op offload. Cause: each cache bank is one tensor (~
 ~2 GiB storage-buffer limit; `--moe-cache-mib 5900` (~1967 MiB banks) and 1500 load. With 5900 MiB, I28 (hook, plugin loaded by path, branch
 claude/gpu-cache-path without the file view), IQ2_XS cold: stock + GPU cache 6.93 tok/s (prefill 3.1), plugin --gpu-cache 9.69 (5.5),
 plugin --gpu-cache off 13.71 (12.6); 112948 uploads routed, text = stock. llama.cpp's GPU expert cache loses on this Vulkan PC: I28 parked.
+
+## 60. Windows desktop, 2026-10-27 night: agent sessions (I43 / T8), stock vs plugin, with and without MTP
+
+Same PC as RESULTS 59, experimental 46ed596 (file-view cache), tools\agent_bench_pair.ps1 (fixed in 3a54f00): the recorded OpenCode (5
+requests) and Hermes (7 requests) sessions replayed, cold before every run, order stock, plugin, plugin, stock; means of the two runs of
+each kind. Both kinds get the launcher's `--agent` arguments (context 65536, --jinja, the same MTP choice). 0 errors in every replay.
+
+| Model | MTP | Session | task s stock / plugin | first token s stock / plugin | follow-up first token (median) s stock / plugin | decode tok/s stock / plugin |
+|---|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B (20 GB, fits in RAM) | on | OpenCode | 27.77 / 26.38 | 13.53 / 13.41 | 1.067 / **0.670** | 72.4 / 72.7 |
+| | on | Hermes | 25.34 / 22.95 | 5.20 / 5.11 | 1.061 / **0.846** | 71.5 / 72.2 |
+| | off | OpenCode | 31.79 / 29.46 | 12.87 / 10.94 | 1.076 / **0.717** | 43.6 / 43.1 |
+| | off | Hermes | 33.29 / 31.03 | 5.03 / 4.89 | 1.048 / **0.809** | 43.7 / 43.3 |
+| Flash-Next IQ2_XS (68 GB, bigger than RAM) | (no head) | OpenCode | 174.8 / **73.4** | 116.8 / **38.6** | 7.30 / **2.14** | 21.5 / 21.2 |
+| | | Hermes | 163.9 / **81.6** | 66.2 / **21.8** | 8.76 / **3.01** | 21.1 / 21.3 |
+
+- Bigger than RAM (Flash-Next): a whole agent session is **2.0-2.4x faster** with the plugin; the gain is prompt processing (first token 3x,
+  follow-up first token ~3x), decode is equal at this context.
+- Fits in RAM (Qwen3.6): sessions 5-9 % faster, follow-up first token 20-37 % faster, decode equal.
+- MTP (both kinds): decode 43.5 -> 72 tok/s, a session 13-25 % shorter; keep `--mtp` on in agent mode for models with a head.
