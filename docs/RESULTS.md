@@ -2151,3 +2151,8 @@ claude/win-job-limit c20cfb2): no job limit with the file view (kept for MOE_CAC
 | plugin (file view), cold / warm | 28.5 / 21.0 s | 3.6 s (20.8 tok/s) / 3.5 s (21.0 tok/s) | 32.1 / **24.5 s** |
 The plugin's cold start loads the profile's hot experts before it reports ready (+5.6 s), which the first request gets back; a warm restart
 finds the experts in the file cache (the view's evicted pages stay there) and answers 6 s sooner than stock.
+
+**Two agents at once on one server** (Flash-Next IQ2_XS, `--agent` arguments, the OpenCode and Hermes replays started together, cold,
+ABBA; C:\dl\pc_twoagents.ps1): both sessions done after stock 333.8 / 336.1 s, plugin **145.5 / 145.4 s (2.3x)**; first token stock
+177-197 s vs plugin 54-61 s; follow-up first token (median) stock 4.8-10.6 s vs plugin 2.5-3.7 s; 0 errors. The gain holds with two
+agents sharing the server.
