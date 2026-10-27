@@ -2033,3 +2033,53 @@ Killed: verifying 3 tokens at once on CPU-held experts costs more than the draft
 **Flash-Next IQ3_S (83.6 GB, C:), first look, one cold run each:** stock (launcher's 7 GPU expert layers, `--n-cpu-moe 41`) decode 10.62 / 12.66 / 12.22,
 prefill 49.3; plugin buffered + 13 layers decode 8.73 / 9.19 / 9.81, prefill 88.6 (1.8x). As on IQ3_XXS, the plugin's decode lags stock on IQ3 types on
 Windows while its prefill is far ahead. (IQ3_S file 2 is byte-identical to IQ3_XXS file 2, same sha256.)
+
+## 59. Windows desktop, 2026-10-27 evening: the cache moves to read-only views of the model file (no commit) and beats stock
+
+PC: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, page file 14 GB, Windows 11, llama.cpp Vulkan ggml 0.27 (620d2225c), launcher 65facd1.
+Every run cold (tools/win_flush_cache.ps1 reads 38.5 GB of other files first). Decode = the 256-token greedy "water cycle" request after a
+64-token warm-up, `cache_prompt` off. Stock = llama-server with the same `-ngl 99 --n-cpu-moe N -c 8192 -fa on --load-mode mmap -ub 2048`.
+
+**Why the plugin lost on IQ3 (stats of the measured request, plugin with private memory, buffered reads, 13 GPU layers)**
+| Model | decode | hit % | disk read | cache | resizes in one request |
+|---|---|---|---|---|---|
+| Flash-Next IQ2_XS | 18.37 | 96.0 | 5.5 GB | 10.85 GiB | 75 / 74 |
+| Flash-Next IQ3_XXS | 12.61 | 88.0 | 19.5 GB | 8.31 GiB | 226 / 226 |
+Windows charges private memory to commit (RAM + page file), and Vulkan's GPU allocations too: the cache was held at 8-11 GiB (start budget cut
+from 17.4 to 11.5 GiB, "free commit 15.13 GiB") while stock's mmap pages are file-backed and never charged. Not a kernel issue: on Windows stock
+and plugin both use ggml-cpu-zen4.dll (the plugin's own kernels are Linux-only).
+
+**Feasibility (C:\dl\locktest.exe, wstest.exe; 15 GB of the IQ3_XXS file)**
+| Method | system commit | load speed | under 14 GB extra pressure |
+|---|---|---|---|
+| VirtualLock on a read-only view | +15 GB | 1.94 GB/s | - |
+| hard working-set minimum, no lock | **+0** | 2.67 GB/s | 87 % stayed, rest in standby |
+
+**The fix** (branch claude/win-file-cache, now the Windows default; `MOE_CACHE_WIN_VIEW=0` = private memory): expert tensors point into the
+plugin's read-only view of the model file; load = PrefetchVirtualMemory + touch, evict = drop from the working set (pages stay in the file
+cache), a hard working-set minimum of budget + rest of the process. Cache policy, prefetch and executor unchanged (same as Linux).
+
+**Cold ABBA, stock vs plugin, launcher defaults (decode tok/s)**
+| Model | GPU expert layers | stock | plugin (file view) | change |
+|---|---|---|---|---|
+| Flash-Next IQ2_XS (68 GB, C:) | 12 | 15.35, 14.43 (14.89) | 22.00, 21.87 (**21.94**) | **+47 %** |
+| Flash-Next IQ3_XXS (76 GB, D:) | 9 | 15.10, 15.18 (15.14) | 19.80, 19.91 (**19.86**) | **+31 %** |
+| Flash-Next IQ3_XXS | 13 | 13.46, 13.29 (13.38) | 16.10, 16.02 (16.06) | +20 % |
+| Qwen3.5-122B UD-IQ2_XXS (34 GB, D:) | 12 | 13.70, 14.05 (13.88) | 16.31, 15.95 (**16.13**) | **+16 %** |
+| GLM-5.3-Flash UD-IQ2_XXS (102 GB, C:), one pair | 3 | 2.21 | **4.44** | **2.0x** |
+IQ3_XXS stats with the view (13 layers): hit 97.8 %, 3.6 GB read, cache 16.21 GiB, resizes 1 / 0. The launcher's default layer count is the
+best of the two tried (19.9 at 9 layers vs 16.1 at 13): no extra GPU layers needed.
+
+**Text**: plugin = stock, byte for byte, on Flash-Next IQ2_XS (1041 characters), the 122B (1027) and GLM (1148). Granite on the PC with a 0.2 GiB
+cache (35929 evictions through the views): identity 4/4, executor 6765 ops checked, 0 mismatches.
+
+**Another program needs memory while the server runs** (C:\dl\pc_pressure.ps1, Flash-Next IQ2_XS, working-set minimum 21.9 GiB):
+| Other program | got its memory in | new program starts in | server decode before / during / after |
+|---|---|---|---|
+| 8 GB (8.2 GB free) | 1.0 s | 17, 7 ms | 22.33 / 23.41 / 23.98 |
+| 14 GB (8.4 GB free) | 3.8 s (1.3 s without the server) | 15, 8 ms | 22.35 / 23.67 / 22.88 |
+No freeze, no errors: Windows found the memory elsewhere (file cache, page file) and the cache kept its pages.
+
+**Also tonight**: `--moe-cache-mib` (llama.cpp's own GPU expert cache, needed by I28) aborts at load on this Vulkan build even without the plugin
+(`ggml-backend.cpp:1089: pre-allocated tensor (moe_cache.0.blk.0.ffn_gate_exps.weight) in a buffer (Vulkan1) that cannot run the operation (NONE)`),
+with or without the iGPU and op offload: I28 cannot be tested on this PC until llama.cpp fixes it (handover/parts/i28-pc-test.md).
