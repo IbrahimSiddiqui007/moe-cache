@@ -83,6 +83,31 @@ def read_tensors(path):
     return out
 
 
+def sampling_meta(path):
+    """-> {"arch", "name", "basename", "file_type", "sampling": {key: value}} from the GGUF header: what picks the model card's sampling defaults
+    (general.sampling.* are the publisher's own, which llama.cpp already applies unless a flag is given)."""
+    out = {"arch": "", "name": "", "basename": "", "file_type": None, "sampling": {}}
+    with open(shards(path)[0], "rb") as f:
+        if f.read(4) != b"GGUF":
+            return out
+        f.read(4)
+        _, n_kv = struct.unpack("<QQ", f.read(16))
+        for _ in range(n_kv):
+            key = _read_str(f)
+            t = struct.unpack("<I", f.read(4))[0]
+            if key in ("general.architecture", "general.name", "general.basename") and t == 8:
+                out[{"general.architecture": "arch"}.get(key, key.split(".")[1])] = _read_str(f)
+            elif (key == "general.file_type" or key.startswith("general.sampling.")) and t in _FMT:
+                v = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
+                if key == "general.file_type":
+                    out["file_type"] = v
+                else:
+                    out["sampling"][key[len("general.sampling."):]] = v
+            else:
+                _skip_value(f, t)
+    return out
+
+
 def mtp_layers(path):
     """-> (head, declared): head = number of layers with multi-token-prediction tensors (blk.N.nextn.*) in the files, declared =
     <arch>.nextn_predict_layers from the header (0 when absent). A quant can keep the key but drop the tensors; only `head` says the head is there."""

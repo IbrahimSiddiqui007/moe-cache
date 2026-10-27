@@ -191,6 +191,25 @@ check(L.mtp_args(None, True, "llama-server", os.path.join(_md, "none.gguf"), [])
 check(L.mtp_args(True, False, "llama-server", os.path.join(_md, "head.gguf"), ["--spec-type", "ngram-simple"]) == [], "mtp_args: --mtp keeps your own --spec-type")
 L.say = _say
 
+# model-card sampling (I45): the decision table on header dicts, and the header reader on the synthetic GGUF
+S = L.sampling_decide
+_q = {"arch": "qwen35moe", "name": "", "basename": "", "sampling": {}}
+_a, _w = S(_q, "m.gguf", [], False)
+check(_a == ["--temp", "1", "--top-p", "0.95", "--top-k", "20", "--min-p", "0", "--presence-penalty", "1.5"] and "thinking" in _w, "sampling: Qwen3.6 thinking = card values, one line")
+check(S(_q, "m.gguf", [], True)[0][:2] == ["--temp", "0.6"] and "--presence-penalty" in S(_q, "m.gguf", [], True)[0], "sampling: --agent uses the card's coding values")
+check(S(_q, "m.gguf", ["--reasoning", "off"], False)[0][:4] == ["--temp", "0.7", "--top-p", "0.8"], "sampling: --reasoning off -> non-thinking values")
+check(S(_q, "m.gguf", ["--chat-template-kwargs", '{"enable_thinking": false}'], False)[0][1] == "0.7", "sampling: enable_thinking false -> non-thinking")
+check("--temp" not in S(_q, "m.gguf", ["--temp", "0.3"], False)[0] and "--top-k" in S(_q, "m.gguf", ["--temp", "0.3"], False)[0], "sampling: your --temp is kept, the rest set")
+_g = dict(_q, sampling={"temp": 0.6, "top_p": 0.95, "top_k": 20})
+_a, _w = S(_g, "m.gguf", [], False)
+check(_a == ["--min-p", "0", "--presence-penalty", "1.5"] and "from the GGUF" in _w, "sampling: values the GGUF carries are left to llama.cpp")
+check(S({"arch": "qwen4exp", "sampling": {}}, "m.gguf", [], False)[0][-2:] == ["--presence-penalty", "0"], "sampling: Qwen3.8 thinking has presence 0 (its card)")
+check(S({"arch": "qwen3moe", "name": "Qwen3-30B-A3B-Instruct-2507", "sampling": {}}, "m.gguf", [], False)[0][1] == "0.7", "sampling: an Instruct name -> non-thinking")
+check(S({"arch": "glm5-next", "sampling": {}}, "m.gguf", [], False)[0] == ["--temp", "1", "--top-p", "0.95"], "sampling: GLM gets only what its card states")
+check(S({"arch": "granitemoe", "sampling": {}}, "m.gguf", [], False) == ([], None), "sampling: unknown family -> nothing, no line")
+check(gguf_plan.sampling_meta(os.path.join(_md, "head.gguf"))["arch"] == "tst", "sampling_meta reads the architecture")
+check(L.sampling_args(True, False, os.path.join(_md, "head.gguf"), []) == [], "sampling: --no-sampling-defaults -> nothing")
+
 # connect opencode --write: the global file that wins (OpenCode merges opencode.json, then opencode.jsonc)
 _od = tempfile.mkdtemp(); _oj = os.path.join(_od, "opencode.json"); _ojc = os.path.join(_od, "opencode.jsonc")
 _env = os.environ.pop("OPENCODE_CONFIG", None)

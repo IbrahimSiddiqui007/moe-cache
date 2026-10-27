@@ -533,6 +533,70 @@ def mtp_decide(want, agent, head, declared, server_has, user_spec):
     return False, f"moe-cache: this model has an MTP head: --mtp for faster decode ({MTP_GAIN})"
 
 
+# Model-card sampling (I45): (temp, top_p, top_k, min_p, presence_penalty) per GGUF architecture and mode, as the official Hugging Face cards state
+# them (read 2026-10-27, section "Best Practices" / "1. Sampling Parameters"). None = the card gives no value (llama.cpp's default stays).
+#   qwen35moe  huggingface.co/Qwen/Qwen3.6-35B-A3B and Qwen/Qwen3.5-122B-A10B (same numbers): thinking general 1.0/0.95/20/0/1.5;
+#              thinking precise coding 0.6/0.95/20/0/0.0 (used for --agent); non-thinking 0.7/0.8/20/0/1.5
+#   qwen4exp   huggingface.co/Qwen/Qwen3.8-Flash-Next: thinking 1.0/0.95/20/0/0.0; non-thinking 0.7/0.8/20/0/1.5
+#   qwen3moe, qwen3next  huggingface.co/Qwen/Qwen3-30B-A3B, Qwen3-Next-80B-A3B-*: thinking 0.6/0.95/20/0, non-thinking 0.7/0.8/20/0, presence
+#              "between 0 and 2"; huggingface.co/Qwen/Qwen3-30B-A3B-GGUF: "presence_penalty to 1.5 for quantized models"
+#   glm*       huggingface.co/zai-org/GLM-5.3-Flash: temperature 1.0, top_p 0.95 in its evaluation notes; nothing else stated
+SAMPLING_CARDS = {
+    "qwen35moe": ("Qwen3.5/3.6", {"think": (1.0, 0.95, 20, 0.0, 1.5), "code": (0.6, 0.95, 20, 0.0, 0.0), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "qwen4exp": ("Qwen3.8", {"think": (1.0, 0.95, 20, 0.0, 0.0), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "qwen3moe": ("Qwen3", {"think": (0.6, 0.95, 20, 0.0, 1.5), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "qwen3next": ("Qwen3-Next", {"think": (0.6, 0.95, 20, 0.0, 1.5), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "glm": ("GLM", {"think": (1.0, 0.95, None, None, None)}),
+}
+SAMPLING_FLAGS = (("temp", ("--temp", "--temperature")), ("top_p", ("--top-p",)), ("top_k", ("--top-k",)), ("min_p", ("--min-p",)),
+                  ("presence_penalty", ("--presence-penalty",)))
+
+
+def sampling_decide(meta, filename, extra, agent):
+    """-> (llama-server args, one-line reason or None): the model card's sampling settings for this model and mode, except those you set (flags
+    after --) or that the GGUF carries (general.sampling.*, which llama.cpp applies itself). Request values (an agent's own temperature) still win:
+    llama-server uses these only as defaults for fields a request leaves out."""
+    arch = meta.get("arch") or ""
+    fam = SAMPLING_CARDS.get("glm" if arch.startswith("glm") else arch)
+    if not fam:
+        return [], None
+    label, modes = fam
+    names = " ".join([meta.get("name") or "", meta.get("basename") or "", os.path.basename(filename)])
+    kw = (arg_after(extra, "--chat-template-kwargs") or "").replace(" ", "")
+    off = (arg_after(extra, "-rea", "--reasoning") == "off" or arg_after(extra, "--reasoning-budget") == "0" or '"enable_thinking":false' in kw
+           or re.search(r"Instruct", names) is not None)
+    mode = "nothink" if off and "nothink" in modes else ("code" if agent and "code" in modes else "think")
+    gguf = {"temp", "top_p", "top_k", "min_p"} & set(meta.get("sampling") or {})
+    args, kept = [], []
+    for (key, flags), v in zip(SAMPLING_FLAGS, modes[mode]):
+        if v is None or any(f in extra for f in flags):
+            continue
+        if key in gguf:
+            kept.append(key.replace("_", "-"))
+            continue
+        args += [flags[0], f"{v:g}"]
+    if not args:
+        return [], None
+    why = {"think": "thinking", "nothink": "non-thinking", "code": "thinking, its precise-coding values for --agent"}[mode]
+    return args, (f"moe-cache: sampling from the {label} model card ({why}): {' '.join(args)}"
+                  + (f"; {', '.join(kept)} from the GGUF" if kept else "") + "; requests that send their own values win; --no-sampling-defaults turns it off")
+
+
+def sampling_args(off, agent, model, extra):
+    """sampling_decide() on the model's header; says what it set in one line."""
+    if off:
+        return []
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import sampling_meta
+        args, why = sampling_decide(sampling_meta(model), model, extra, agent)
+    except Exception:
+        return []
+    if why:
+        say(why)
+    return args
+
+
 def mtp_args(want, agent, ls, model, extra):
     """The --spec-* arguments for the model's MTP head (see mtp_decide), and says why in one line. Reads the GGUF header and, only when the model
     has a head, llama-server --help."""
@@ -712,6 +776,10 @@ SERVER_HELP = """\
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
            Same output; Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
+--no-sampling-defaults  do not pass the model card's sampling settings. By default, for Qwen3 / 3.5 / 3.6 / 3.8 / Qwen3-Next and GLM models,
+           temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:
+           the card's coding values where it has them), skipping any you pass after -- and any the GGUF carries; low-bit quants loop less with them.
+           Requests that send their own values (agents send a temperature) still win
 --api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
@@ -731,6 +799,7 @@ def server(argv):
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
+    ap.add_argument("--no-sampling-defaults", action="store_true")
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
@@ -814,6 +883,7 @@ def server(argv):
             else:
                 slotdir = arg_after(extra, "--slot-save-path")
     extra += mtp_args(a.mtp, a.agent, ls, model, extra)
+    extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
