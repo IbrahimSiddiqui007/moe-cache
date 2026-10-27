@@ -2161,3 +2161,6 @@ agents sharing the server.
 256-token request (11.57 s at 22.12 tok/s): time in the plugin's CPU expert backend 5.02 s (43 %), of which CPU expert compute 4.91 s (42 %),
 read waits ~1 % (hit 98.9 %); the other 57 % is the GPU layers, attention and sync. Under the 50 % kill line: even a perfect bank moving the
 CPU's share of picks from 75 % to 40 % saves ~20 % of a token (ceiling ~+25 % decode) before its VRAM's system-RAM cost on AMD. Parked.
+
+**KV cache q8_0 (R11)** (Flash-Next IQ2_XS, file view, one cold run each): decode 22.01 tok/s (f16: 22.12); 2950-token prompt 170.6 tok/s
+(f16: 164.6). No speed difference at this context; q8_0 halves the KV memory, which only matters at long agent contexts (--fast already uses it).
