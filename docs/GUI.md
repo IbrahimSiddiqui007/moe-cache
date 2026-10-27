@@ -49,7 +49,7 @@ The page is laid out like a chat app, in three panes:
 | **Top bar** | the model Start uses (click it to pick another), its verdict, Exact / Fast / Hybrid, the state (running, idle, …), **Start** / **Stop**; the ▾ next to it: Start now, Start on first request (coming), Show the llama-server command, Open llama-server's own chat page |
 | **Left** | **New chat**, your saved chats (search), **Agent sessions** (saved agent conversations, ✕ moves one to the Trash), **Models** with their verdicts and "Why", and at the bottom **Settings** (a drawer) and **Agents** |
 | **Middle** | the chat (section 6) |
-| **Right** | cards: **Live** (speed, cache, memory, the two charts, mode, API key, the command), **Context of this chat**, **Files in this chat**, **Agents**, **What the launcher decided**, **Benchmark**, **Warnings**, **Log**. "⇔ wider" makes the pane wider for the tables |
+| **Right** | cards: **Live** (speed, cache, memory, the two charts, mode, API key, the command), **Context of this chat**, **Files in this chat**, **Agents**, **Other servers on this machine** (llama-servers on ports 8080-8089 started outside the page; shown only), **What the launcher decided**, **Benchmark**, **Warnings**, **Log**. "⇔ wider" makes the pane wider for the tables |
 
 ☰ and ◧ in the top bar hide or show the side panes. In a narrow window the right pane opens over the chat; on a phone-sized screen only the chat
 stays and both side panes slide in:

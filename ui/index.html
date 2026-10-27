@@ -300,6 +300,8 @@ body.settings .drawer { transform:none; } body.settings .scrim { display:block; 
 
       <details class="card" open id="c-agents"><summary>Agents</summary><div class="body"><div id="agentsmain"></div></div></details>
 
+      <details class="card" open id="c-servers" hidden><summary>Other servers on this machine</summary><div class="body" id="servers"></div></details>
+
       <details class="card" id="decisions" hidden><summary>What the launcher decided</summary><div class="body"><ul class="why"></ul></div></details>
 
       <details class="card" id="c-bench"><summary>Benchmark</summary><div class="body">
@@ -686,6 +688,16 @@ function paintAgents(st) {
   });
 }
 
+/* ---------- llama-servers started elsewhere (status only; /api/servers asks ports 8080-8089 on this machine) ---------- */
+async function loadServers() {
+  let j; try { j = await api("/api/servers"); } catch (e) { return; }
+  const other = (j.servers || []).filter(x => !x.started_here);
+  $("c-servers").hidden = !other.length;
+  $("servers").innerHTML = other.map(x => `<div class="line"><span class="dot ${x.health == "ready" ? (x.busy ? "ok" : "") : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
+    <br><span class="small">${x.health == "ready" ? "ready" : "loading"}${x.ctx ? " · ctx " + x.ctx.toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span></div>`).join("") +
+    (other.length ? `<div class="hint">Started outside this page (a script, the terminal, another page). Shown only; Start/Stop here act on the page's own server.</div>` : "");
+}
+
 /* ---------- the chat (center) ---------- */
 // A chat: {id, title, model, system, messages: [{role, content, shown?, files?, think?, meta?}], tokens}. user content = the text plus the attached files;
 // shown = the text alone. Saved by the page server as one JSON file per chat (/api/chats), sent to llama-server through /api/chat.
@@ -980,6 +992,7 @@ window.addEventListener("hashchange", openHash);
   loadChatList(); loadSessions(); openHash();
   poll(); setInterval(poll, 1000);
   setInterval(loadSessions, 10000);
+  loadServers(); setInterval(loadServers, 10000);
   setInterval(() => { if (!S.status.state || S.status.state == "idle") loadSystem(); }, 10000);
 })();
 </script>
