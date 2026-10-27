@@ -88,10 +88,8 @@
         if (!plat::is_windows) {
             return true;
         }
-        const size_t off = ti.file_off + (size_t) e * ti.nb2, shift = off % PAGE;
-        char * const dst = ti.data + (size_t) e * ti.nb2;
-        char * const p = ti.direct ? dst - shift : dst;
-        const size_t n = (ti.direct ? round_up(shift + ti.nb2) : ti.nb2) + PAGE;
+        char * const p = ti.data + (size_t) e * ti.nb2;      // the range read_job() writes: the expert's own bytes, plus one page
+        const size_t n = ti.nb2 + PAGE;
         bool evicted = false;
         // the system as a whole is low on commit (llama.cpp or other programs took it): give an LRU expert back instead of growing
         const size_t low = plat::commit_keep() / 2;
