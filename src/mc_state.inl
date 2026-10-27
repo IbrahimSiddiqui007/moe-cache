@@ -105,6 +105,8 @@ struct state_t {
 #endif
     size_t budget = 0;
     bool   commit_warned = false;      // Windows: the commit-limit warning was printed (tune())
+    bool   commit_fail_warned = false; // Windows: a refused expert commit was reported (commit_for())
+    uint64_t commit_evictions = 0;     // experts evicted because Windows refused a commit
     size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
     bool shrink_warned = false;
     bool   auto_mode = false;          // MOE_CACHE_SIZE_GIB=auto: size the cache from the real memory limit
@@ -617,7 +619,8 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     const uintptr_t addr = (uintptr_t) er->ExceptionInformation[1];
     const tinfo_t * hit = nullptr;
     for (const auto & t : s->tensors) {
-        if (t && addr >= (uintptr_t) t->data && addr < (uintptr_t) t->data + t->nb2 * (size_t) t->n_expert + PAGE) {
+        // a forgotten tensor (its buffer was freed) has data == nullptr and no experts: it would claim every address below one page
+        if (t && t->data && t->n_expert > 0 && addr >= (uintptr_t) t->data && addr < (uintptr_t) t->data + t->nb2 * (size_t) t->n_expert + PAGE) {
             hit = t.get();
             break;
         }
@@ -639,7 +642,7 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
                      (unsigned long long) (pc - (uintptr_t) mod), kind == 0 ? "reading" : kind == 1 ? "writing" : "executing", (unsigned long long) addr);
     if (hit) {
         const size_t rel = addr - (uintptr_t) hit->data;
-        const int64_t e = std::min<int64_t>((int64_t) (rel / hit->nb2), hit->n_expert - 1);
+        const int64_t e = std::max<int64_t>(0, std::min<int64_t>((int64_t) (rel / hit->nb2), hit->n_expert - 1));
         const node_t & nd = s->nodes[(size_t) (hit->node0 + e)];
         n += snprintf(buf + n, sizeof(buf) - (size_t) n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
                       "cache %.2f of %.2f GiB, %llu evictions", hit->name.c_str(), (long long) e, rel - (size_t) e * hit->nb2, hit->nb2, (int) nd.resident,
@@ -669,10 +672,27 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     } else {
         n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
     }
+    // inside executor work (a pool worker or the compute thread's share): which op, task, row, column and output it was computing
+    if (const exec_where_t & wh = g_exec_where; wh.op) {
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: inside the executor: op %s, task %p", wh.op, (const void *) wh.task);
+        if (wh.task) {
+            n = std::min<int>(n, (int) sizeof(buf) - 2);
+            n += snprintf(buf + n, sizeof(buf) - (size_t) n, " (weights %p, %d columns, %lld rows), row %lld, column %d, dst %p",
+                          (const void *) wh.task->w, wh.task->ncol, (long long) wh.task->rows, (long long) wh.r, wh.k, (const void *) wh.dst);
+        }
+    }
+    // what is known so far goes out now: a damaged stack can make the walk below fault inside this handler, and then nothing would be printed
+    {
+        n = std::min<int>(n, (int) sizeof(buf) - 2);
+        buf[n++] = '\n';
+        DWORD w0 = 0;
+        WriteFile(GetStdHandle(STD_ERROR_HANDLE), buf, (DWORD) n, &w0, nullptr);
+        n = 0;
+    }
     // stack of the faulting thread, module+offset per frame (x64 unwind tables)
     {
         CONTEXT ctx = *ep->ContextRecord;
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: stack");
+        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "moe-cache: crash: stack");
         for (int f = 0; f < 20 && ctx.Rip && n < (int) sizeof(buf) - 120; f++) {
             HMODULE fm = nullptr;
             char fname[MAX_PATH] = "?";

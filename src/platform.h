@@ -225,29 +225,45 @@ inline bool mem_guard() {
     static const bool on = [] { const char * e = getenv("MOE_CACHE_GUARD"); return e && strcmp(e, "0") != 0; }();
     return on;
 }
-// p and size are rounded outwards to whole pages; committing an already committed page keeps its content
-inline void mem_commit(void * p, size_t size) {
+// p and size are rounded outwards to whole pages; committing an already committed page keeps its content.
+// Returns false when Windows refuses the commit (ERROR_COMMITMENT_LIMIT 1455: RAM + page file are full); the pages are then NOT usable and must
+// not be written (a read into them fails with 998, a memcpy faults). The error code is in commit_error(). A range that runs past the end of its
+// reservation (error 487, e.g. the extra page after the last expert of a buffer) is clamped to the reservation; that part counts as success.
+inline unsigned long & commit_error() {
+    static thread_local unsigned long e = 0;
+    return e;
+}
+inline bool mem_commit(void * p, size_t size) {
 #ifdef _WIN32
     const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
-    if (!VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
-        // one call fails as a whole when the range runs past the end of its reservation (e.g. the extra page after the last expert of a buffer):
-        // then nothing was committed and the next write faulted (Windows CI, RESULTS 50). Commit page by page, as far as the reservation goes.
-        static bool told = false;
-        if (!told) {
-            told = true;
-            fprintf(stderr, "moe-cache: note: commit of %zu bytes failed (Windows error %lu), committing page by page\n", (size_t) (b - a), (unsigned long) GetLastError());
-        }
-        for (uintptr_t q = a; q < b; q += 4096) {
-            if (!VirtualAlloc((void *) q, 4096, MEM_COMMIT, PAGE_READWRITE)) {
-                break;      // past the reservation: the rest is not ours
+    if (VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
+        return true;
+    }
+    DWORD err = GetLastError();
+    if (err == ERROR_INVALID_ADDRESS) {
+        // one call fails as a whole when the range leaves its reservation (Windows CI, RESULTS 50): commit up to the reservation's end
+        MEMORY_BASIC_INFORMATION mi;
+        if (VirtualQuery((void *) a, &mi, sizeof(mi)) && mi.State != MEM_FREE) {
+            void * const base = mi.AllocationBase;
+            uintptr_t end = a;
+            while (end < b && VirtualQuery((void *) end, &mi, sizeof(mi)) && mi.State != MEM_FREE && mi.AllocationBase == base) {
+                end = (uintptr_t) mi.BaseAddress + mi.RegionSize;
             }
+            end = std::min(end, b);
+            if (end > a && VirtualAlloc((void *) a, end - a, MEM_COMMIT, PAGE_READWRITE)) {
+                return true;
+            }
+            err = GetLastError();
         }
     }
+    commit_error() = err;
+    return false;
 #else
     if (mem_guard()) {
         const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
         mprotect((void *) a, b - a, PROT_READ | PROT_WRITE);
     }
+    return true;
 #endif
 }
 // p and size must be page aligned

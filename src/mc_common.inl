@@ -222,4 +222,14 @@ struct io_job_t {
     int    node = -1;        // index in the node table (asynchronous loads clear its "loading" flag when done)
 };
 
+// Windows refused to commit memory the plugin must write (RAM + page file full, or another commit error): stop with a message that says so,
+// instead of writing into pages that do not exist (a fault, or a read failing with error 998 that looks like a disk error)
+[[noreturn]] inline void commit_fatal(const char * what, size_t bytes) {
+    const unsigned long e = plat::commit_error();
+    fprintf(stderr, "moe-cache: Windows refused %.1f MiB of memory for %s (error %lu%s). A larger page file, a smaller context, fewer GPU layers or a "
+            "lower --ram leaves room; stopping here instead of writing into memory that does not exist\n", bytes / 1048576.0, what, e,
+            e == 1455 ? ": RAM + page file are full" : "");
+    abort();
+}
+
 }  // namespace

@@ -196,12 +196,17 @@
             acc += bytes;
             take.push_back(c);
         }
-        for (size_t i = take.size(); i-- > 0;) {
+        bool refused = false;
+        for (size_t i = take.size(); i-- > 0 && !refused;) {
             for (int ti_i : by_layer[take[i].l]) {
                 tinfo_t & ti = *tensors[ti_i];
                 const int s = ti.node0 + take[i].e;
                 if (nodes[s].resident) {
                     continue;
+                }
+                if (!commit_for(ti, take[i].e)) {
+                    refused = true;   // Windows refused the memory (nothing evictable yet): the warm start stops here, the cache fills on demand
+                    break;
                 }
                 nodes[s].resident = true;
                 nodes[s].epoch = 0;

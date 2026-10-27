@@ -362,7 +362,7 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
         }
     }
     const auto tp0 = std::chrono::steady_clock::now();
-    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32);
+    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32, nd->name);
     if ((unsigned) w->type < 64) {
         s.exec_type_ns[w->type] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
         s.exec_type_ops[w->type]++;

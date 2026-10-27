@@ -215,7 +215,7 @@
                         }
                         evict(v);
                     }
-                    if (resident_bytes + ti.nb2 > budget) {
+                    if (resident_bytes + ti.nb2 > budget || !commit_for(ti, e)) {
                         pf_skipped++;
                         continue;
                     }
@@ -449,6 +449,10 @@
                 fprintf(stderr, "moe-cache: cache smaller than one op: %llu experts mapped from the model file, %llu loaded over the cache size\n",
                         (unsigned long long) small_mapped, (unsigned long long) small_over);
             }
+            if (commit_evictions) {
+                fprintf(stderr, "moe-cache: Windows refused memory for experts: %llu experts given back early, cache ended at %.2f GiB\n",
+                        (unsigned long long) commit_evictions, budget / 1073741824.0);
+            }
             if (cpu_check_reloads) {
                 fprintf(stderr, "moe-cache: internal: %llu experts were loaded again right before llama.cpp's kernels (please report)\n", (unsigned long long) cpu_check_reloads);
             }
@@ -504,7 +508,9 @@
         const size_t len = round_up(shift + j.nb2);
         char * buf = j.direct ? j.dst - shift : bounce;   // direct: the aligned read lands exactly around the expert
         // the pages must exist before they are written (Windows); one extra page covers kernels that read a little past the end
-        plat::mem_commit(j.direct ? j.dst - shift : j.dst, (j.direct ? len : j.nb2) + PAGE);
+        if (!plat::mem_commit(j.direct ? j.dst - shift : j.dst, (j.direct ? len : j.nb2) + PAGE)) {
+            commit_fatal("an expert read (its pages were committed when it was queued, then given back)", len);
+        }
         // direct read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
         const bool inject_job = fault_every > 0 && (++fault_ctr % (uint64_t) fault_every) == 0;   // test switch: this read fails every direct attempt
         auto read_all = [&](const plat::file_t & rfd, bool inject) {

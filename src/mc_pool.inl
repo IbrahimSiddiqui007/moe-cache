@@ -26,7 +26,19 @@ struct exec_task_t {
     int64_t      rows;
 };
 
+// what this thread's executor work is computing right now: the Windows crash report prints it (a fault inside a pool worker otherwise says only
+// "not inside a graph"). Plain stores, one thread-local lookup per job.
+struct exec_where_t {
+    const char *        op = nullptr;     // name of the op's output tensor; nullptr: not inside executor work
+    const exec_task_t * task = nullptr;
+    int64_t             r = -1;
+    int                 k = -1;
+    const float *       dst = nullptr;
+};
+thread_local exec_where_t g_exec_where;
+
 struct exec_job_t {
+    const char * name = nullptr;          // the op (for the crash report)
     const exec_task_t * tasks = nullptr;
     int      total = 0;        // chunks
     int      nch = 1;          // chunks per task
@@ -51,9 +63,12 @@ struct exec_pool_t {
     int which = 0;
 
     static void work(exec_job_t * j) {
+        exec_where_t & wh = g_exec_where;
+        wh.op = j->name;
         for (;;) {
             const int c = j->next.fetch_add(1, std::memory_order_relaxed);
             if (c >= j->total) {
+                wh.op = nullptr;
                 return;
             }
             const exec_task_t & t = j->tasks[c / j->nch];
@@ -69,6 +84,10 @@ struct exec_pool_t {
             for (int64_t r = r0; r < r1; r++) {
                 const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
                 for (int k = 0; k < t.ncol; k++) {
+                    wh.task = &t;
+                    wh.r = r;
+                    wh.k = k;
+                    wh.dst = &t.dsts[k][r];
                     j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
                 }
             }
@@ -132,7 +151,7 @@ struct exec_pool_t {
 
     // runs the job on the pool and the calling thread; returns when every chunk is done and no worker is inside the job any more.
     // One caller only (the backend's compute thread).
-    void run(const exec_task_t * tasks, int n_tasks, int64_t rows, int64_t ne00, size_t nb01, ggml_vec_dot_t dot, int chunk) {
+    void run(const exec_task_t * tasks, int n_tasks, int64_t rows, int64_t ne00, size_t nb01, ggml_vec_dot_t dot, int chunk, const char * name) {
         // a worker that saw the previous generation late may only now be entering (it counts itself in `inside` before it reads `cur`):
         // wait for it to leave before this job slot is rewritten, so no worker ever reads a job while it is being filled
         while (inside.load() > 0) {
@@ -140,6 +159,7 @@ struct exec_pool_t {
         }
         exec_job_t * j = &jobs[which];
         which ^= 1;
+        j->name = name;
         j->tasks = tasks;
         j->nch = (int) ((rows + chunk - 1) / chunk);
         j->total = n_tasks * j->nch;
