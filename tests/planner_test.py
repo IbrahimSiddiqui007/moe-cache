@@ -232,6 +232,14 @@ check(_t == _oj and len(_w) == 1 and '"model"' in _w[0], "opencode target: .json
 if _env is not None:
     os.environ["OPENCODE_CONFIG"] = _env
 
+# a micro-batch the user chose is planned around (RESULTS 61: a chosen -ub skipped the tuner, so the long-prompt block found no VRAM)
+_f = gguf_plan.tune(model, 40960, free=16 * GIB, want_cache=False, ub=4096)
+_g = gguf_plan.tune(model, 40960, free=16 * GIB, want_cache=False, ub=512)
+check(_f["ub"] == 4096 and any("as asked" in w for w in _f["why"]), "tune ub=4096: the asked micro-batch is kept")
+check(_f["n_cpu_moe"] >= _g["n_cpu_moe"], f"tune: a bigger asked micro-batch keeps at least as many CPU expert layers ({_f['n_cpu_moe']} >= {_g['n_cpu_moe']})")
+check(gguf_plan.compute_buffer_guess_mib(65536, 2048) >= gguf_plan.compute_buffer_mib(65536, 1024) and gguf_plan.compute_buffer_guess_mib(8192, 4096) > 0,
+      "compute buffer guess: unmeasured pairs get an estimate that errs high")
+
 # the launcher's "plugin disabled itself" warning: only the plugin's lines that say it is not caching, not its "Windows refused ..." warnings (F5, PC)
 check(L.plugin_off_line(b"moe-cache: no experts found - plugin disabled, the model loads the normal way"), "plugin off: setup failure line")
 check(L.plugin_off_line(b"moe-cache: this plugin was built for ggml backend API 3 but the server uses ggml 0.24.0 (API 2): not loaded, the model loads the normal way. x"),

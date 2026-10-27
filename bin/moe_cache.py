@@ -1093,13 +1093,18 @@ def server(argv):
         except Exception:
             pass
     # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
+    # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
+    # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
     tuned = None
-    if a.ub == "auto" or gcache == "auto":
+    ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
+    if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
         try:
             sys.path.insert(0, os.path.join(HERE, "planner"))
             from gguf_plan import tune
             free = float(a.vram) * 2**30 if a.vram else None          # GiB, the same unit as the planner's --vram-gib
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
+            if (ub_asked or "").isdigit():
+                kw["ub"] = int(ub_asked)
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
         except Exception:
             tuned = None
