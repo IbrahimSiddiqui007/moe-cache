@@ -1964,3 +1964,53 @@ Findings:
 - Follow-up turns process 100-250 tokens more than in the recording (the replay re-sends the agent's original assistant message; the model now
   writes something else at temperature 0); the same on both sides. The warm-session keeper logged no save or restore during any run (it saves after
   20 s idle; each server was stopped sooner).
+
+## 58. Windows desktop, 2026-10-27: fixes confirmed, MTP, Flash-Next IQ2_XS vs IQ3_XXS, GLM page file
+
+PC: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Windows 11, llama.cpp Vulkan **ggml 0.27 (620d2225c)** (no longer b11669: numbers before this
+section are not strictly comparable), AMD driver 32.0.32015.7029. Every run cold (other big model files read first). Decode = 256-token greedy
+requests; one prompt ("CPU cache") now ends after 1 token on Flash-Next with stock and plugin alike (newer llama.cpp), so it is left out.
+
+**Fixes confirmed on the PC**
+| Bug | Cause | Fix (merged in experimental) | PC check |
+|---|---|---|---|
+| Crash at request 2 (122B from the fast D: drive) | an unbuffered read of one expert covered pages it shares with a neighbour; Windows shows other data there while the read runs, so the executor read garbage, router scores went NaN, a token listed one expert twice and the task's column arrays overflowed | direct reads write only the expert's own whole pages (head/tail through the bounce buffer); task bound check; poison-reads CI step + mutant (1299479, 6f72b0b) | correct text at both requests, 0 mismatches in `MOE_CACHE_EXEC_CHECK=1`, no crash |
+| Wrong 122B output ("3333...") once the crash was gone | same cause | same | as above; `MOE_CACHE_DIRECT=0` (bounce reads only) was also correct, 13.46 tok/s |
+| Read into uncommitted memory (Windows error 998) after a refused commit (1455); commit at an invalid address (487) | failed commits went on page by page and the reader wrote into them | a refused commit shrinks the cache; 487 clamps to the reservation (ed70328) | no 998/487 lines in later runs |
+| The cache starved Windows of commit (GLM + MTP: a new PowerShell could not start) | the start budget after the I37 trim ignored llama.cpp's own commit; on Windows Vulkan VRAM allocations are charged to system commit (~24 GB with GLM) | start budget capped at free commit minus max(2 GiB, 8 %), re-checked by tune() (87323e5) | GLM + MTP: budget 4.25 GiB instead of 19.07, lowest free commit 2.9 GB, Windows stayed usable |
+| `--ram` GB passed as GiB | launcher units | B1 (ebc946f) | - |
+
+**Flash-Next (Qwen3.8-Flash-Next-GSQ-RCO), decode tok/s on two prompts ("CPU cache 2" / "water cycle"), prefill of 3.5k tokens; ABBA order; DLL 1299479**
+| Quant | Setup | Decode | Prefill |
+|---|---|---|---|
+| IQ2_XS (68 GB, C:) | stock, launcher's 12 GPU expert layers | 15.23 / 19.36, 15.03 / 19.22 | 109.5, 107.9 |
+| IQ2_XS | plugin default (12 layers) | 15.09 / 15.22, 15.01 / 14.95 | 120.2, 120.5 |
+| IQ2_XS | **plugin, `MOE_CACHE_WIN_BUFFERED=1` + `--n-cpu-moe 35` (13 layers)** | **18.51 / 19.57, 18.49 / 19.44** | **152.7, 152.7** |
+| IQ3_XXS (76 GB, D:) | stock, launcher's 9 GPU expert layers | 14.65 / 17.89, 14.75 / 17.51 | 96.4, 102.0 |
+| IQ3_XXS | plugin default (9 layers) | 9.97 / 10.89, 9.90 / 10.85 | 93.9, 93.7 |
+| IQ3_XXS | plugin, buffered + 13 layers | 11.94 / 13.16, 12.01 / 13.15 | 108.0, 109.4 |
+Text: plugin = stock (first 200 characters of both requests) on IQ2_XS and IQ3_XXS. The issue #1 user (Linux, same GPU, 13 layers) had 18.8 (IQ2_XS) and
+16.9 (IQ3_XXS). On IQ3_XXS the plugin loses decode to stock on Windows; executor on/off test: see below.
+
+**Qwen3.6-35B-A3B (fits in RAM), MTP head on the GPU (`--spec-type draft-mtp --spec-draft-n-max 2`)**
+| | no MTP | MTP | drafts accepted |
+|---|---|---|---|
+| stock | 46.01 / 46.10 | 68.28 / 68.92 (+49 %) | ~78 % |
+| plugin (forced) | 45.57 / 45.62 | **70.29 / 70.20 (+54 %)** | |
+Prefill -5..-8 % with MTP. Flash-Next and the 122B quants have no head in their files; GLM has one (blk.45.nextn) but with MTP its cache fell to 4.25 GiB
+(commit) and decode to 0.76-0.99 tok/s: MTP stays off for GLM on this PC.
+
+**GLM-5.3-Flash (102 GB), one cold run per setting (preliminary)**
+| Page file | Setting | Decode | Cache |
+|---|---|---|---|
+| 6.9 GB | default | 1.52 | 16.1 -> 9.6 GiB (commit limit) |
+| 14 GB | default | 2.02 | 16.2 -> 14.9 |
+| 14 GB | executor off | 1.71 | 15.2 -> 15.8 |
+| 14 GB | buffered reads | **2.20** | 16.1 -> 14.8 |
+| 14 GB | executor off + buffered | 2.02 | 15.1 -> 15.8 |
+
+**Qwen3.5-122B UD-IQ2_XXS from D: (request 2 of the crash sequence)**: stock 12.35-13.06; plugin after the fix 12.89 (measured while a download wrote
+to D:, not clean); `MOE_CACHE_DIRECT=0` 13.46. A clean ABBA series is still to do.
+
+**Pending at the time of writing (filled in by the next session):** quality yardstick IQ3_XXS vs IQ2_XS (IQ3_XXS: tasks 18/20, loops 1/44); IQ3_XXS
+executor on/off; Flash-Next MTP head file (unsloth `mtp-Qwen3.8-Flash-Next-Q8_0.gguf`) stock and plugin.
