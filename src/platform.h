@@ -103,6 +103,46 @@ inline bool env_utf8(const char * name, std::string & out) {
 
 // this process's command line (UTF-8 words): Linux /proc/self/cmdline; Windows GetCommandLineW split at blanks, double quotes group (as the C runtime
 // does for argv; backslash escapes are not needed for the flags the plugin looks for); empty elsewhere
+// Windows command line -> arguments (also built on Linux, for tests/platform_test.cpp)
+inline std::vector<std::wstring> split_windows_args(const wchar_t * c) {
+    std::vector<std::wstring> out;
+    while (c && *c) {
+        while (*c == L' ' || *c == L'\t') { c++; }
+        if (!*c) {
+            break;
+        }
+        // the C runtime's rules (as CommandLineToArgvW, without linking shell32): 2n backslashes + quote -> n backslashes and the quote toggles
+        // quoting; 2n+1 backslashes + quote -> n backslashes and a literal quote; "" inside quotes -> a literal quote; other backslashes are literal
+        std::wstring a;
+        bool q = false;
+        while (*c && (q || (*c != L' ' && *c != L'\t'))) {
+            size_t bs = 0;
+            while (*c == L'\\') { bs++; c++; }
+            if (*c == L'"') {
+                a.append(bs / 2, L'\\');
+                if (bs % 2) {
+                    a += L'"';
+                    c++;
+                } else if (q && c[1] == L'"') {
+                    a += L'"';
+                    c += 2;
+                } else {
+                    q = !q;
+                    c++;
+                }
+            } else {
+                a.append(bs, L'\\');
+                if (*c && (q || (*c != L' ' && *c != L'\t'))) {
+                    a += *c;
+                    c++;
+                }
+            }
+        }
+        out.push_back(a);
+    }
+    return out;
+}
+
 inline std::vector<std::string> command_line() {
     std::vector<std::string> out;
 #if defined(__linux__)
@@ -124,17 +164,7 @@ inline std::vector<std::string> command_line() {
         }
     }
 #elif defined(_WIN32)
-    const wchar_t * c = GetCommandLineW();
-    while (c && *c) {
-        while (*c == L' ' || *c == L'\t') { c++; }
-        if (!*c) {
-            break;
-        }
-        std::wstring a;
-        bool q = false;
-        for (; *c && (q || (*c != L' ' && *c != L'\t')); c++) {
-            if (*c == L'"') { q = !q; } else { a += *c; }
-        }
+    for (const std::wstring & a : split_windows_args(GetCommandLineW())) {
         out.push_back(narrow(a.c_str()));
     }
 #endif
@@ -295,6 +325,9 @@ inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) 
 #if defined(__linux__)
     void * r = mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, f.fd, (off_t) off);
     if (r == MAP_FAILED) {
+        // a failed MAP_FIXED may already have unmapped the range (ENOMEM from vm.max_map_count): put the reservation back, or a later
+        // allocation could land inside our buffer and the next expert read would write over it
+        mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
         return false;
     }
     madvise(p, size, MADV_WILLNEED);
@@ -490,6 +523,11 @@ inline size_t rss_private() {
 inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * views) {
     *views = 0;
 #ifdef _WIN32
+    for (const std::string & a : command_line()) {
+        if (a == "--mlock") {
+            return 0;          // VirtualUnlock would also undo the locking the user asked for
+        }
+    }
     std::vector<std::wstring> names;
     for (const std::string & p : paths) {
         std::wstring w = widen(p.c_str());

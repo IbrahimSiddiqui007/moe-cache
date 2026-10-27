@@ -51,6 +51,13 @@ int main(int argc, char ** argv) {
     }
 #endif
 
+    // Windows command-line splitting (the C runtime's rules): --no-repack after an argument with escaped quotes must still be its own word
+    {
+        const auto v = plat::split_windows_args(L"llama-server.exe --alias \"a\\\"b\" -m \"C:\\My Models\\x.gguf\" a\\\\\"b c\" d\\e \"x\"\"y\" --no-repack");
+        CHECK(v.size() == 9);
+        CHECK(v.size() == 9 && v[2] == L"a\"b" && v[4] == L"C:\\My Models\\x.gguf" && v[5] == L"a\\b c" && v[6] == L"d\\e" && v[7] == L"x\"y" && v[8] == L"--no-repack");
+    }
+
     // aligned buffer + unbuffered read at an offset
     std::string path = "moe_cache_platform_test.bin";
     { FILE * f = fopen(path.c_str(), "wb"); std::vector<unsigned char> d(MB); for (size_t i = 0; i < d.size(); i++) d[i] = (unsigned char) (i * 31 + 7); fwrite(d.data(), 1, d.size(), f); fclose(f); }
