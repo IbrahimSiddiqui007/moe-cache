@@ -598,7 +598,7 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 except KeyboardInterrupt:   # a second Ctrl-C: stop waiting for the save
                     pass
             continue
-    quiet = (rc & 0xFFFFFFFF) in (0xC000013A, 1) if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
+    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:
         say("moe-cache: " + exit_reason(rc, seen["ready"] if (expect_plugin and port) else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
     return rc

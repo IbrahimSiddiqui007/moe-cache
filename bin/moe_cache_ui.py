@@ -1008,7 +1008,7 @@ class Runner:
         rc = p.wait()
         if p is self.p:
             self.rc = rc
-            self.state = "stopped" if self.state == "stopping" or rc in (0, -signal.SIGTERM, 143, 1 if WINDOWS else 0) else "exited"
+            self.state = "stopped" if self.state == "stopping" or rc in (0, -signal.SIGTERM, 143) else "exited"
             self.add_line(f"ui: the server ended (exit code {rc})")
 
     def add_warning(self, line):
