@@ -137,6 +137,7 @@ if gguf_plan.mtp_layers(model)[0] == 0:
 else:
     check(("MTP on:" in ag) == ("--spec-type draft-mtp --spec-draft-n-max 2" in ag) and "MTP o" in ag, "--agent on a model with an MTP head: one line, args only when on")
 check("--jinja" not in dry(), "no --agent: the command is unchanged (no --jinja added)")
+check("MOE_CACHE_RAM_GIB=3.725" in dry(), "--ram 4 (GB) reaches the plugin as MOE_CACHE_RAM_GIB=3.725 (GiB), not 4 (B1)")
 check("-ctk q8_0 -ctv q8_0" in dry("--fast") and "-ctk" not in dry(), "--fast adds a q8_0 KV cache (I6); the exact default does not")
 check(dry("--fast", "--", "-ctk", "f16").count("-ctk") == 1, "--fast keeps a -ctk given after the --")
 check("MOE_CACHE_ROUTE_DROP=4" in dry("--fast=2") and "MOE_CACHE_ROUTE_DROP" not in dry("--fast"), "--fast=2 sets MOE_CACHE_ROUTE_DROP=4, --fast does not")
@@ -195,6 +196,37 @@ _said = []; _say = L.say; L.say = lambda m, err=False: _said.append(m)
 check(L.mtp_args(None, True, "llama-server", os.path.join(_md, "none.gguf"), []) == [] and len(_said) == 1, "mtp_args: no head -> no args, one line")
 check(L.mtp_args(True, False, "llama-server", os.path.join(_md, "head.gguf"), ["--spec-type", "ngram-simple"]) == [], "mtp_args: --mtp keeps your own --spec-type")
 L.say = _say
+
+# model-card sampling (I45): the decision table on header dicts, and the header reader on the synthetic GGUF
+S = L.sampling_decide
+_q = {"arch": "qwen35moe", "name": "", "basename": "", "sampling": {}}
+_a, _w = S(_q, "m.gguf", [], False)
+check(_a == ["--temp", "1", "--top-p", "0.95", "--top-k", "20", "--min-p", "0", "--presence-penalty", "1.5"] and "thinking" in _w, "sampling: Qwen3.6 thinking = card values, one line")
+check(S(_q, "m.gguf", [], True)[0][:2] == ["--temp", "0.6"] and "--presence-penalty" in S(_q, "m.gguf", [], True)[0], "sampling: --agent uses the card's coding values")
+check(S(_q, "m.gguf", ["--reasoning", "off"], False)[0][:4] == ["--temp", "0.7", "--top-p", "0.8"], "sampling: --reasoning off -> non-thinking values")
+check(S(_q, "m.gguf", ["--chat-template-kwargs", '{"enable_thinking": false}'], False)[0][1] == "0.7", "sampling: enable_thinking false -> non-thinking")
+check("--temp" not in S(_q, "m.gguf", ["--temp", "0.3"], False)[0] and "--top-k" in S(_q, "m.gguf", ["--temp", "0.3"], False)[0], "sampling: your --temp is kept, the rest set")
+_g = dict(_q, sampling={"temp": 0.6, "top_p": 0.95, "top_k": 20})
+_a, _w = S(_g, "m.gguf", [], False)
+check(_a == ["--min-p", "0", "--presence-penalty", "1.5"] and "from the GGUF" in _w, "sampling: values the GGUF carries are left to llama.cpp")
+check(S({"arch": "qwen4exp", "sampling": {}}, "m.gguf", [], False)[0][-2:] == ["--presence-penalty", "0"], "sampling: Qwen3.8 thinking has presence 0 (its card)")
+check(S({"arch": "qwen3moe", "name": "Qwen3-30B-A3B-Instruct-2507", "sampling": {}}, "m.gguf", [], False)[0][1] == "0.7", "sampling: an Instruct name -> non-thinking")
+check(S({"arch": "glm5-next", "sampling": {}}, "m.gguf", [], False)[0] == ["--temp", "1", "--top-p", "0.95"], "sampling: GLM gets only what its card states")
+check(S({"arch": "granitemoe", "sampling": {}}, "m.gguf", [], False) == ([], None), "sampling: unknown family -> nothing, no line")
+check(gguf_plan.sampling_meta(os.path.join(_md, "head.gguf"))["arch"] == "tst", "sampling_meta reads the architecture")
+check(L.sampling_args(True, False, os.path.join(_md, "head.gguf"), []) == [], "sampling: --no-sampling-defaults -> nothing")
+
+# connect opencode --write: the global file that wins (OpenCode merges opencode.json, then opencode.jsonc)
+_od = tempfile.mkdtemp(); _oj = os.path.join(_od, "opencode.json"); _ojc = os.path.join(_od, "opencode.jsonc")
+_env = os.environ.pop("OPENCODE_CONFIG", None)
+check(L.opencode_config_target(_oj) == (_oj, []), "opencode target: no .jsonc -> opencode.json, no warning")
+open(_ojc, "w").write('{"$schema": "https://opencode.ai/config.json"}')
+check(L.opencode_config_target(_oj) == (_ojc, []), "opencode target: plain-JSON opencode.jsonc (made by OpenCode) is the file written")
+open(_ojc, "w").write('// mine\n{"model": "x/y"}')
+_t, _w = L.opencode_config_target(_oj)
+check(_t == _oj and len(_w) == 1 and '"model"' in _w[0], "opencode target: .jsonc with comments and its own model -> opencode.json + a warning")
+if _env is not None:
+    os.environ["OPENCODE_CONFIG"] = _env
 
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

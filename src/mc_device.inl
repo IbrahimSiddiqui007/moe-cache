@@ -64,13 +64,15 @@ bool dev_supports_op(ggml_backend_dev_t, const ggml_tensor * op) {
     if (getenv("MOE_CACHE_TRACE")) {
         fprintf(stderr, "moe-cache: supports_op %s src0=%s buf=%p\n", ggml_op_name(op->op), op->src[0] ? op->src[0]->name : "-", op->src[0] ? (void *) op->src[0]->buffer : nullptr);
     }
+    if (op->op == g_op_glu) {
+        return true;
+    }
     switch (op->op) {
         case GGML_OP_NONE:
         case GGML_OP_RESHAPE:
         case GGML_OP_VIEW:
         case GGML_OP_PERMUTE:
         case GGML_OP_TRANSPOSE:
-        case GGML_OP_GLU:
             return true;
         case GGML_OP_MUL_MAT_ID:
             break;

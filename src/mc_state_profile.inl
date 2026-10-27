@@ -61,6 +61,20 @@
             }
             return -1;
         }
+        // every tensor of a layer is indexed with the same expert ids (lookahead, warm start, siblings check them against the layer's first
+        // tensor only): a layer whose expert tensors disagree on the expert count, or an absurd count, is left to plain memory
+        {
+            int layer = -1;
+            sscanf(t->name, "blk.%d.", &layer);
+            const auto lt = layer >= 0 ? layer_tensors.find(layer) : layer_tensors.end();
+            if (t->ne[2] > 65536 || (lt != layer_tensors.end() && !lt->second.empty() && tensors[(size_t) lt->second[0]]->n_expert != t->ne[2])) {
+                if (unmatched++ == 0) {
+                    fprintf(stderr, "moe-cache: tensor %s has %lld experts, other expert tensors of its layer another count: it is loaded normally and not cached\n",
+                            t->name, (long long) t->ne[2]);
+                }
+                return -1;
+            }
+        }
         auto ti = std::make_unique<tinfo_t>();
         ti->name = t->name;
         ti->file_off = ft->second.first;
@@ -196,12 +210,17 @@
             acc += bytes;
             take.push_back(c);
         }
-        for (size_t i = take.size(); i-- > 0;) {
+        bool refused = false;
+        for (size_t i = take.size(); i-- > 0 && !refused;) {
             for (int ti_i : by_layer[take[i].l]) {
                 tinfo_t & ti = *tensors[ti_i];
                 const int s = ti.node0 + take[i].e;
                 if (nodes[s].resident) {
                     continue;
+                }
+                if (!commit_for(ti, take[i].e)) {
+                    refused = true;   // Windows refused the memory (nothing evictable yet): the warm start stops here, the cache fills on demand
+                    break;
                 }
                 nodes[s].resident = true;
                 nodes[s].epoch = 0;
@@ -243,8 +262,8 @@
         // bytes of expert data that are really in memory (pending ones are marked but not read yet)
         const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
         // Windows: every loaded expert is committed memory; near the commit limit (RAM + page file) a commit fails and the next write crashes.
-        // Keep 1 GiB of commit free: shrink by what is missing (on Linux commit_available() is unlimited)
-        const size_t commit_free = plat::commit_available(), commit_keep = (size_t) 1 << 30;
+        // Keep commit_keep() free (2 GiB or 8 % of the commit limit): shrink by what is missing (on Linux commit_available() is unlimited)
+        const size_t commit_free = plat::commit_available(), commit_keep = plat::commit_keep();
         const size_t commit_short = commit_free < commit_keep ? commit_keep - commit_free : 0;
         if (commit_short && !commit_warned) {
             commit_warned = true;
@@ -261,12 +280,12 @@
                 budget = nb;
                 tune_shrinks++;
                 if (!shrink_warned && budget < budget_peak / 2) {
-                    // desktop PC 2026-10-26: AMD's Windows driver took ~15 GB of RAM for 12 GiB of GPU layers and the cache fell from 14 to 2 GiB
-                    // without a word; the user only saw a slow server
+                    // desktop PC 2026-10-26: the cache fell from 14 to 2 GiB without a word; the user only saw a slow server. (The ~15 GB that
+                    // llama-server took there was llama.cpp's model-file pages left in its working set, I37, now released at the first graph)
                     shrink_warned = true;
                     const double other = (double) (rss > have ? rss - have : 0) / 1073741824.0;
                     fprintf(stderr, "moe-cache: warning: the expert cache shrank from %.1f to %.1f GiB because the rest of llama-server now uses %.1f GiB "
-                            "(limit %.1f GiB): expect many SSD reads. Fewer layers on the GPU (--n-cpu-moe), a smaller context or closing other programs "
+                            "(limit %.1f GiB): expect many SSD reads. A smaller context, a smaller --cache-ram or closing other programs "
                             "leaves it more room\n", budget_peak / 1073741824.0, budget / 1073741824.0, other, limit_bytes / 1073741824.0);
                 }
             }

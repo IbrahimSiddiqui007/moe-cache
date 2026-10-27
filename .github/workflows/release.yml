@@ -1,7 +1,7 @@
 # Release workflow: builds the portable plugin from the tagged commit on a clean GitHub runner, signs the tarball with a GitHub build
 # attestation (provenance: which commit and workflow produced it) and attaches it to the release.
 #   push a tag v0.1.3        -> build, attest, publish the release (pre-release while the project is alpha)
-#   Actions tab -> Run workflow -> build and attest only; the tarball is kept as a workflow artifact, nothing is published
+#   Actions tab -> Run workflow -> build only (not attested); the tarball is kept as a workflow artifact, nothing is published
 # Users verify a download with:  gh attestation verify moe-cache-v0.1.3-linux-x86_64.tar.gz -R IbrahimSiddiqui007/moe-cache
 name: release
 
@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash     # bash -eo pipefail: without it "kernel_check | tee" hides a failing kernel check
+
 jobs:
   build:
     # Ubuntu 22.04 on purpose: the tarball then needs only glibc 2.34 or older and libstdc++ of GCC 11 or newer
@@ -21,13 +25,28 @@ jobs:
       contents: write       # create the release and upload files
       id-token: write       # sign the attestation
       attestations: write
+      actions: read         # the gate below reads the identity and windows runs of this commit
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false   # the write token must not sit in .git/config while the build and later actions run
+
+      - name: Gate (tags only) - identity and windows passed on this commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # run both on the tag first: gh workflow run identity.yml --ref vX.Y.Z; gh workflow run windows.yml --ref vX.Y.Z
+          for w in identity.yml windows.yml; do
+            n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -c "$GITHUB_SHA" -s success --json databaseId --jq length)
+            [ "${n:-0}" -ge 1 ] || { echo "no successful $w run on $GITHUB_SHA: run it on this tag first, then re-run this workflow"; exit 1; }
+            echo "$w passed on $GITHUB_SHA"
+          done
 
       - name: Check scripts
         run: |
           for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do bash -n "$f"; done
-          python3 -m py_compile bin/moe_cache.py planner/plan.py planner/gguf_plan.py tests/ident.py
+          python3 -m py_compile bin/moe_cache.py bin/moe_cache_on_demand.py planner/plan.py planner/gguf_plan.py tests/ident.py
           # a tagged release must not install an older moe-cache when install.sh is run on its own
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
             grep -q "MOE_CACHE_REF:-${GITHUB_REF_NAME}}" install.sh || { echo "install.sh MOE_CACHE_REF does not match ${GITHUB_REF_NAME}: bump it with the version"; exit 1; }
@@ -50,12 +69,13 @@ jobs:
         run: tools/make_release.sh "$V"
 
       - name: Attest build provenance
-        uses: actions/attest-build-provenance@v2
+        if: github.ref_type == 'tag'   # a manual run on a branch must not get the same signature as a release
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: dist/moe-cache-v*-linux-x86_64.tar.gz
 
       - name: Keep the files as a workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: moe-cache-release-files
           path: |

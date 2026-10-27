@@ -17,6 +17,80 @@ std::atomic<ggml_cgraph *> g_cpu_graph{nullptr};   // the graph the plugin is ha
 std::atomic<bool> g_stats_stop{false};   // set when the state is destroyed: the snapshot thread then stops without touching it
 #endif
 constexpr size_t PAGE = 4096;
+// GGML_OP_GLU of the running ggml, read from a GLU node it builds at start-up (ggml_abi_mismatch): ggml master inserted TOP_K_MASK before it,
+// so GLU is 101 there and 100 in the headers this plugin is built with. The ops below GLU that the plugin compares have not moved.
+int g_op_glu = GGML_OP_GLU;
+
+// The running ggml against the headers this plugin was built with: the op and type numbers the plugin compares, the tensor fields it reads and
+// the threadpool parameters it passes. The backend API number only covers the backend structs, and ggml 0.27 (llama.cpp b11669) is not
+// in its table at all, so a changed enum or field would give wrong output or a crash without a word. Returns "" when everything matches.
+std::string ggml_abi_mismatch() {
+    struct { int v; const char * name; } ops[] = {
+        { GGML_OP_NONE, "NONE" }, { GGML_OP_MUL_MAT_ID, "MUL_MAT_ID" }, { GGML_OP_VIEW, "VIEW" },
+        { GGML_OP_RESHAPE, "RESHAPE" }, { GGML_OP_PERMUTE, "PERMUTE" }, { GGML_OP_TRANSPOSE, "TRANSPOSE" },
+    };
+#ifdef MOE_CACHE_TEST_MUTANT_ABI      // CI only: a build that expects another op number must refuse to run
+    ops[1].v = GGML_OP_MUL_MAT;
+#endif
+    for (const auto & o : ops) {
+        if (strcmp(ggml_op_name((enum ggml_op) o.v), o.name) != 0) {
+            return std::string("op ") + std::to_string(o.v) + " is " + ggml_op_name((enum ggml_op) o.v) + ", expected " + o.name;
+        }
+    }
+    struct { ggml_type t; const char * name; } types[] = {
+        { GGML_TYPE_F32, "f32" }, { GGML_TYPE_F16, "f16" }, { GGML_TYPE_BF16, "bf16" }, { GGML_TYPE_I32, "i32" }, { GGML_TYPE_Q8_0, "q8_0" },
+        { GGML_TYPE_Q8_K, "q8_K" }, { GGML_TYPE_Q2_0, "q2_0" }, { GGML_TYPE_IQ1_S, "iq1_s" }, { GGML_TYPE_IQ1_M, "iq1_m" },
+        { GGML_TYPE_IQ2_XXS, "iq2_xxs" }, { GGML_TYPE_IQ2_XS, "iq2_xs" }, { GGML_TYPE_IQ2_S, "iq2_s" }, { GGML_TYPE_IQ3_XXS, "iq3_xxs" },
+        { GGML_TYPE_IQ3_S, "iq3_s" },
+    };
+    for (const auto & t : types) {
+        if (strcmp(ggml_type_name(t.t), t.name) != 0) {
+            return std::string("type ") + std::to_string((int) t.t) + " is " + ggml_type_name(t.t) + ", expected " + t.name;
+        }
+    }
+    // tensor fields: build a small MUL_MAT_ID graph node with the running ggml and read it back through this plugin's struct definition
+    ggml_init_params ip = { ggml_tensor_overhead() * 8, nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    if (!ctx) {
+        return "ggml_init failed";
+    }
+    ggml_tensor * w = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 8, 4, 6);
+    ggml_tensor * b = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 8, 2, 3);
+    ggml_tensor * ids = ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 2, 3);
+    ggml_set_name(b, "mc_abi");
+    ggml_tensor * m = ggml_mul_mat_id(ctx, w, b, ids);
+    ggml_tensor * v = ggml_view_2d(ctx, b, 8, 2, b->nb[1], b->nb[2]);
+    ggml_tensor * g = ggml_swiglu(ctx, b);
+    const bool tensor_ok = b->type == GGML_TYPE_F32 && b->ne[0] == 8 && b->ne[1] == 2 && b->ne[2] == 3 && b->ne[3] == 1 && b->nb[0] == 4 &&
+                           b->nb[1] == 32 && b->nb[2] == 64 && b->op == GGML_OP_NONE && strcmp(b->name, "mc_abi") == 0 && ggml_nbytes(b) == 192 &&
+                           m->op == GGML_OP_MUL_MAT_ID && m->src[0] == w && m->src[1] == b && m->src[2] == ids && m->ne[0] == 4 && m->ne[1] == 2 &&
+                           m->ne[2] == 3 && v->op == GGML_OP_VIEW && v->view_src == b && v->view_offs == b->nb[2];
+    const int glu = g->op;
+    ggml_free(ctx);
+    if (!tensor_ok) {
+        return "the fields of ggml_tensor moved";
+    }
+    if (strcmp(ggml_op_name((enum ggml_op) glu), "GLU") != 0) {
+        return std::string("a GLU node has op ") + std::to_string(glu) + " (" + ggml_op_name((enum ggml_op) glu) + ")";
+    }
+    if (glu != GGML_OP_GLU) {
+        fprintf(stderr, "moe-cache: the running ggml numbers GLU %d (these headers: %d): using %d\n", glu, (int) GGML_OP_GLU, glu);
+    }
+    g_op_glu = glu;
+    // threadpool parameters: filled by the running ggml into a buffer larger than this plugin's struct, which must end where the plugin thinks
+    alignas(64) unsigned char buf[sizeof(ggml_threadpool_params) + 4096];
+    memset(buf, 0xA5, sizeof(buf));
+    ggml_threadpool_params & tp = *(ggml_threadpool_params *) buf;
+    ggml_threadpool_params_init(&tp, 7);
+    bool tail_ok = true;
+    for (size_t i = sizeof(ggml_threadpool_params); i < sizeof(buf); i++) {
+        tail_ok = tail_ok && buf[i] == 0xA5;
+    }
+    if (!tail_ok || tp.n_threads != 7 || tp.poll != 50 || tp.strict_cpu || tp.paused || tp.cpumask[0] || tp.cpumask[GGML_MAX_N_THREADS - 1]) {
+        return "ggml_threadpool_params changed";
+    }
+    return "";
+}
 
 // GiB value from an environment variable: finite, not negative, at most 1 PiB; anything else is ignored with a message
 bool parse_gib(const char * name, const char * txt, size_t & out) {
@@ -97,6 +171,11 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
         fclose(f);
         if (!ok) {
             return false;
+        }
+        for (float & v : tmp) {
+            if (!std::isfinite(v) || v < 0.0f) {
+                v = 0.0f;          // a damaged or hostile profile: NaN or negative counts would only mislead the warm start and the GPU bank
+            }
         }
         u.n_layers = nl;
         u.n_exp = ne;
@@ -221,5 +300,15 @@ struct io_job_t {
     const ggml_tensor * rtensor = nullptr;   // set: repack this expert while loading it
     int    node = -1;        // index in the node table (asynchronous loads clear its "loading" flag when done)
 };
+
+// Windows refused to commit memory the plugin must write (RAM + page file full, or another commit error): stop with a message that says so,
+// instead of writing into pages that do not exist (a fault, or a read failing with error 998 that looks like a disk error)
+[[noreturn]] inline void commit_fatal(const char * what, size_t bytes) {
+    const unsigned long e = plat::commit_error();
+    fprintf(stderr, "moe-cache: Windows refused %.1f MiB of memory for %s (error %lu%s). A larger page file, a smaller context, fewer GPU layers or a "
+            "lower --ram leaves room; stopping here instead of writing into memory that does not exist\n", bytes / 1048576.0, what, e,
+            e == 1455 ? ": RAM + page file are full" : "");
+    abort();
+}
 
 }  // namespace

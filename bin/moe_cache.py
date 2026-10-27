@@ -6,6 +6,7 @@
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode [--url URL] [--write]               point Hermes Agent or OpenCode at a running server (start it with --agent)
+  moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
 
@@ -33,7 +34,7 @@ def ldd(path):
     if WINDOWS:
         return ""
     try:
-        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, timeout=20).stdout
+        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20).stdout
     except Exception:
         return ""
 
@@ -202,14 +203,14 @@ def pick_gpu(listing):
 def nvidia_reports():
     """True when nvidia-smi exists and reports at least one GPU's free memory."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=10)
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         return out.returncode == 0 and out.stdout.strip()[:1].isdigit()
     except Exception:
         return False
 
 def list_devices(ls):
     try:
-        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, timeout=60)
+        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         return out.stdout + out.stderr
     except Exception:
         return ""
@@ -282,6 +283,12 @@ def mem_total():
     except OSError:
         pass
     return None
+
+
+def ram_gib(ram_gb):
+    """--ram is GB (1e9 bytes, as the Windows job limit and mem_for_server use it); the plugin's MOE_CACHE_RAM_GIB and the planner's --ram-gib are GiB.
+    PC 2026-10-27: passing --ram 20 unchanged planned 21.5 GB under a 20 GB job limit, the commit failed (error 1455) and the server died."""
+    return f"{float(ram_gb) * 1e9 / 2**30:.3f}"
 
 
 def mem_for_server(ram_gb):
@@ -374,6 +381,17 @@ def key_for(url, given=None):
     return stored_key() if st in (401, 403) else None
 
 
+def gb_arg(s):
+    """argparse check for --ram / --vram: a positive finite number (kept as the text given, which the rest of the launcher passes on)."""
+    try:
+        v = float(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {s!r}")
+    if not (0 < v < 1e6):
+        raise argparse.ArgumentTypeError(f"out of range: {s!r}")
+    return s
+
+
 def take_api_key_from_args(extra):
     """Remove a user-given `--api-key KEY` from llama-server's arguments (it would show in the process list) and return KEY, else None."""
     for i, x in enumerate(extra):
@@ -446,13 +464,22 @@ def _kill_with_parent_windows(p, mem_limit=None):
     return None
 
 
+_PRCTL = None
+if sys.platform.startswith("linux"):
+    try:                       # looked up here, not in the forked child: imports and dlopen after fork() can deadlock in a threaded parent (the UI)
+        import ctypes
+        _PRCTL = ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except Exception:
+        _PRCTL = None
+
+
 def _die_with_parent_linux():
     """preexec_fn: the child gets SIGTERM when the launcher dies, even if the launcher is killed with SIGKILL."""
-    try:
-        import ctypes
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)    # PR_SET_PDEATHSIG
-    except Exception:
-        pass
+    if _PRCTL is not None:
+        try:
+            _PRCTL(1, signal.SIGTERM)    # PR_SET_PDEATHSIG
+        except Exception:
+            pass
 
 
 AMD_CHECKPOINT_FIXED = "32.0.32015.7029"       # first AMD Windows display driver known to survive a Flash-Next context checkpoint (I44, 2026-10-27)
@@ -525,6 +552,70 @@ def mtp_decide(want, agent, head, declared, server_has, user_spec):
         return True, (f"moe-cache: MTP on: the model has an MTP head ({head} layer) and llama-server has draft-mtp: {' '.join(MTP_ARGS)} "
                       f"(same output; {MTP_GAIN}){'' if want else '; --no-mtp turns it off'}")
     return False, f"moe-cache: this model has an MTP head: --mtp for faster decode ({MTP_GAIN})"
+
+
+# Model-card sampling (I45): (temp, top_p, top_k, min_p, presence_penalty) per GGUF architecture and mode, as the official Hugging Face cards state
+# them (read 2026-10-27, section "Best Practices" / "1. Sampling Parameters"). None = the card gives no value (llama.cpp's default stays).
+#   qwen35moe  huggingface.co/Qwen/Qwen3.6-35B-A3B and Qwen/Qwen3.5-122B-A10B (same numbers): thinking general 1.0/0.95/20/0/1.5;
+#              thinking precise coding 0.6/0.95/20/0/0.0 (used for --agent); non-thinking 0.7/0.8/20/0/1.5
+#   qwen4exp   huggingface.co/Qwen/Qwen3.8-Flash-Next: thinking 1.0/0.95/20/0/0.0; non-thinking 0.7/0.8/20/0/1.5
+#   qwen3moe, qwen3next  huggingface.co/Qwen/Qwen3-30B-A3B, Qwen3-Next-80B-A3B-*: thinking 0.6/0.95/20/0, non-thinking 0.7/0.8/20/0, presence
+#              "between 0 and 2"; huggingface.co/Qwen/Qwen3-30B-A3B-GGUF: "presence_penalty to 1.5 for quantized models"
+#   glm*       huggingface.co/zai-org/GLM-5.3-Flash: temperature 1.0, top_p 0.95 in its evaluation notes; nothing else stated
+SAMPLING_CARDS = {
+    "qwen35moe": ("Qwen3.5/3.6", {"think": (1.0, 0.95, 20, 0.0, 1.5), "code": (0.6, 0.95, 20, 0.0, 0.0), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "qwen4exp": ("Qwen3.8", {"think": (1.0, 0.95, 20, 0.0, 0.0), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "qwen3moe": ("Qwen3", {"think": (0.6, 0.95, 20, 0.0, 1.5), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "qwen3next": ("Qwen3-Next", {"think": (0.6, 0.95, 20, 0.0, 1.5), "nothink": (0.7, 0.8, 20, 0.0, 1.5)}),
+    "glm": ("GLM", {"think": (1.0, 0.95, None, None, None)}),
+}
+SAMPLING_FLAGS = (("temp", ("--temp", "--temperature")), ("top_p", ("--top-p",)), ("top_k", ("--top-k",)), ("min_p", ("--min-p",)),
+                  ("presence_penalty", ("--presence-penalty",)))
+
+
+def sampling_decide(meta, filename, extra, agent):
+    """-> (llama-server args, one-line reason or None): the model card's sampling settings for this model and mode, except those you set (flags
+    after --) or that the GGUF carries (general.sampling.*, which llama.cpp applies itself). Request values (an agent's own temperature) still win:
+    llama-server uses these only as defaults for fields a request leaves out."""
+    arch = meta.get("arch") or ""
+    fam = SAMPLING_CARDS.get("glm" if arch.startswith("glm") else arch)
+    if not fam:
+        return [], None
+    label, modes = fam
+    names = " ".join([meta.get("name") or "", meta.get("basename") or "", os.path.basename(filename)])
+    kw = (arg_after(extra, "--chat-template-kwargs") or "").replace(" ", "")
+    off = (arg_after(extra, "-rea", "--reasoning") == "off" or arg_after(extra, "--reasoning-budget") == "0" or '"enable_thinking":false' in kw
+           or re.search(r"Instruct", names) is not None)
+    mode = "nothink" if off and "nothink" in modes else ("code" if agent and "code" in modes else "think")
+    gguf = {"temp", "top_p", "top_k", "min_p"} & set(meta.get("sampling") or {})
+    args, kept = [], []
+    for (key, flags), v in zip(SAMPLING_FLAGS, modes[mode]):
+        if v is None or any(f in extra for f in flags):
+            continue
+        if key in gguf:
+            kept.append(key.replace("_", "-"))
+            continue
+        args += [flags[0], f"{v:g}"]
+    if not args:
+        return [], None
+    why = {"think": "thinking", "nothink": "non-thinking", "code": "thinking, its precise-coding values for --agent"}[mode]
+    return args, (f"moe-cache: sampling from the {label} model card ({why}): {' '.join(args)}"
+                  + (f"; {', '.join(kept)} from the GGUF" if kept else "") + "; requests that send their own values win; --no-sampling-defaults turns it off")
+
+
+def sampling_args(off, agent, model, extra):
+    """sampling_decide() on the model's header; says what it set in one line."""
+    if off:
+        return []
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import sampling_meta
+        args, why = sampling_decide(sampling_meta(model), model, extra, agent)
+    except Exception:
+        return []
+    if why:
+        say(why)
+    return args
 
 
 def mtp_args(want, agent, ls, model, extra):
@@ -611,7 +702,8 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 seen["last"] = line.decode(errors="replace").strip()
                 if b"plugin disabled" in line or b"refus" in line:
                     seen["disabled"] = line.decode(errors="replace").strip()
-    threading.Thread(target=pump, daemon=True).start()
+    pump_t = threading.Thread(target=pump, daemon=True)
+    pump_t.start()
     if expect_plugin and port:
         def check():
             for _ in range(900):
@@ -646,7 +738,8 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 except KeyboardInterrupt:   # a second Ctrl-C: stop waiting for the save
                     pass
             continue
-    quiet = (rc & 0xFFFFFFFF) in (0xC000013A, 1) if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
+    pump_t.join(timeout=5)             # the last lines llama-server printed (why it stopped) come before the launcher's own verdict
+    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:
         say("moe-cache: " + exit_reason(rc, seen["ready"] if (expect_plugin and port) else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
     return rc
@@ -707,6 +800,10 @@ SERVER_HELP = """\
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
            Same output; Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
+--no-sampling-defaults  do not pass the model card's sampling settings. By default, for Qwen3 / 3.5 / 3.6 / 3.8 / Qwen3-Next and GLM models,
+           temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:
+           the card's coding values where it has them), skipping any you pass after -- and any the GGUF carries; low-bit quants loop less with them.
+           Requests that send their own values (agents send a temperature) still win
 --api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
@@ -731,7 +828,7 @@ def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model")
-    ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram"); ap.add_argument("--vram")
+    ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
@@ -743,6 +840,7 @@ def server(argv):
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
+    ap.add_argument("--no-sampling-defaults", action="store_true")
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
@@ -781,25 +879,13 @@ def server(argv):
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
-    if (ncmoe is None and WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])):
-        # desktop PC 2026-10-26 (RX 9070 XT, AMD's Windows Vulkan driver): VRAM in use costs about as much system RAM (llama-server with 12 GiB of
-        # expert layers on the GPU took 14.9 GB of RAM), so for a model bigger than RAM, GPU expert layers starve the page cache / expert cache:
-        # Flash-Next decode stock 11-14 -> 14-16 tok/s, plugin 3 -> 12-13.5 tok/s with all experts on the CPU (the GPU keeps attention and long prompts)
-        try:
-            mem = mem_for_server(a.ram)
-            if mem and sum(os.path.getsize(f) for f in model_parts(model)) > mem:
-                ncmoe = ncmoe_user = "999"      # also keeps the tuner (below) from moving expert layers back to the GPU
-                say("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (on this driver VRAM also uses system RAM; "
-                    "--n-cpu-moe N to override)")
-        except Exception:
-            pass
     if ncmoe is None:
         p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
-        if a.ram: p += ["--ram-gib", a.ram]
+        if a.ram: p += ["--ram-gib", ram_gib(a.ram)]
         if a.vram: p += ["--vram-gib", a.vram]
         r = None
         try:
-            r = subprocess.run(p, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
             ncmoe = str(json.loads(r.stdout)["n_cpu_moe"])
         except Exception as e:
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
@@ -838,6 +924,7 @@ def server(argv):
             else:
                 slotdir = arg_after(extra, "--slot-save-path")
     extra += mtp_args(a.mtp, a.agent, ls, model, extra)
+    extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
@@ -876,7 +963,7 @@ def server(argv):
         gcache = "off"
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
-        env.append(("MOE_CACHE_RAM_GIB", a.ram))
+        env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
@@ -981,7 +1068,7 @@ def server(argv):
     cram = arg_after(extra, "--cache-ram", "-cram")
     if cram is None:
         try:
-            if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout:
+            if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout:
                 # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
                 # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
                 lim = mem_for_server(a.ram)
@@ -1080,7 +1167,7 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             n = None
         say(f"moe-cache: warm session: restored a saved agent conversation ({n} tokens) into slot {to} in {time.time() - t0:.1f} s" if st == 200
             else f"moe-cache: warm session: could not restore {os.path.basename(f)} (HTTP {st}): {body[:160]}", err=True)
-    saved, seen = {}, {}
+    saved, seen, tries = {}, {}, {}
     while True:
         time.sleep(poll)
         st, body = http(f"{url}/slots", api_key=api_key)
@@ -1106,12 +1193,15 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             fname, tmp = f"{tag}-s{sid}.bin", f"{tag}-s{sid}.new.bin"
             t0 = time.time()
             st, body = http(f"{url}/slots/{sid}?action=save", {"filename": tmp}, api_key, timeout=600)
-            saved[sid] = key
+            tries[(sid, key)] = tries.get((sid, key), 0) + 1
+            if tries[(sid, key)] >= 3:
+                saved[sid] = key       # three failures for the same state: stop trying until the conversation changes
             if st != 200:
                 say(f"moe-cache: warm session: save failed (HTTP {st}): {body[:160]}", err=True)
                 continue
             try:
                 os.replace(os.path.join(slotdir, tmp), os.path.join(slotdir, fname))
+                saved[sid] = key       # only a save that really landed counts (a failed one is tried again at the next idle moment)
                 say(f"moe-cache: warm session: saved slot {sid} ({x.get('n_prompt_tokens')} tokens, "
                     f"{os.path.getsize(os.path.join(slotdir, fname)) / 1e6:.0f} MB) in {time.time() - t0:.1f} s", err=True)
             except OSError as e:
@@ -1137,13 +1227,35 @@ def server_info(url, api_key=None):
     return name, ctx
 
 
+def opencode_config_target(cfg):
+    """The global opencode.json to write, and warnings. OpenCode (and OpenCode Desktop, whose server reads the same global folder) merges config.json,
+    opencode.json, then opencode.jsonc, later files winning, and creates opencode.jsonc on first run: write into that one when it is plain JSON,
+    else into opencode.json and warn if the .jsonc sets its own model. OPENCODE_CONFIG (a file merged after these) is reported too."""
+    warn = []
+    jc = os.path.splitext(cfg)[0] + ".jsonc"
+    if os.path.isfile(jc):
+        text = open(jc, encoding="utf-8").read()
+        try:
+            json.loads(text)
+            cfg = jc
+        except ValueError:
+            if '"model"' in text:
+                warn.append(f"{jc} (has comments, so it is not edited here) sets its own \"model\" and wins over {os.path.basename(cfg)}: "
+                            "change it there to moe-cache/NAME, or paste the block 'moe_cache.py connect opencode' prints")
+    if os.environ.get("OPENCODE_CONFIG"):
+        warn.append(f"OPENCODE_CONFIG={os.environ['OPENCODE_CONFIG']} is merged after this file and wins where they differ")
+    return cfg, warn
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
                                  "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
-    ap.add_argument("agent", choices=["hermes", "opencode"]); ap.add_argument("--url", default="http://127.0.0.1:8080")
+    ap.add_argument("agent", choices=["hermes", "opencode"])
+    ap.add_argument("--url", help="the server (default: the on-demand endpoint's port when `on-demand` has a model, else http://127.0.0.1:8080)")
     ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
     ap.add_argument("--config", help="opencode.json to merge into (default: ~/.config/opencode/opencode.json)")
     a = ap.parse_args(argv)
+    a.url = a.url or default_agent_url()
     a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
     if not name:
@@ -1163,12 +1275,15 @@ def connect(argv):
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
         for k, v in sets:
-            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, timeout=60)
+            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             if r.returncode:
                 raise SystemExit(f"hermes config set {k} failed: {(r.stderr or r.stdout).strip()[-300:]}")
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
         return 0
     cfg = a.config or os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode", "opencode.json")
+    warn = []
+    if not a.config:
+        cfg, warn = opencode_config_target(cfg)
     entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache", "options": dict({"baseURL": base}, **({"apiKey": a.api_key} if a.api_key else {})),
              "models": {name: {"name": name, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}}}}
     if not a.write:
@@ -1182,14 +1297,37 @@ def connect(argv):
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
         shutil.copy2(cfg, cfg + ".bak")
+        if not WINDOWS:
+            os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
     data.setdefault("provider", {})["moe-cache"] = entry
     data["model"] = f"moe-cache/{name}"
     os.makedirs(os.path.dirname(cfg), exist_ok=True)
-    with open(cfg + ".tmp", "w", encoding="utf-8") as f:
+    # the file holds the API key: private to this user (a 0600 opencode.json used to come back 0644 through the umask), never through a planted link
+    tmp = cfg + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
     os.replace(cfg + ".tmp", cfg)
     say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
+    for w in warn:
+        say("moe-cache: warning: " + w, err=True)
     return 0
+
+
+def default_agent_url():
+    """The agents' URL: the on-demand endpoint's port when one is set up (moe_cache.py on-demand), else the launcher's default 8080."""
+    try:
+        port = int(json.load(open(os.path.join(CACHE_DIR, "on-demand.json"), encoding="utf-8")).get("port", 8080))
+    except (OSError, ValueError, TypeError, AttributeError):
+        port = 8080
+    return f"http://127.0.0.1:{port}"
+
+
+def on_demand_cmd(argv):
+    from moe_cache_on_demand import on_demand      # bin/moe_cache_on_demand.py
+    return on_demand(argv)
 
 
 def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None, hide_key=False):
@@ -1254,7 +1392,7 @@ def learn(argv):
     logf = tempfile.NamedTemporaryFile(prefix="moe-cache-learn.", suffix=".log", delete=False)
     say(f"learning from {len(prompts)} prompts, {a.tokens} tokens each; profile -> {out}")
     load, _ = load_env(a.llama_server, lib, a.load_method)
-    env = dict(os.environ, **dict(load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_RAM_GIB", a.ram), ("MOE_CACHE_GGUF", a.model), ("MOE_CACHE_PROFILE", out)]))
+    env = dict(os.environ, **dict(load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_RAM_GIB", ram_gib(a.ram)), ("MOE_CACHE_GGUF", a.model), ("MOE_CACHE_PROFILE", out)]))
     cmd = [a.llama_server, "-m", a.model, "-ngl", "99", "--n-cpu-moe", a.n_cpu_moe, "-c", "4096", "-fa", "on", "--load-mode", "mmap", "--no-warmup",
            "--port", str(a.port), "--seed", "42"]
     cmd += amd_windows_checkpoint_args(pick_gpu(list_devices(a.llama_server)) if WINDOWS else None, a.model, cmd)
@@ -1360,7 +1498,7 @@ def check(argv):
         fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
     else:
         try:
-            v = subprocess.run([lsp, "--version"], capture_output=True, text=True, timeout=30)
+            v = subprocess.run([lsp, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             vtxt = v.stdout + v.stderr
             m = re.search(r"commit [0-9a-f]+", vtxt)
         except Exception:
@@ -1388,7 +1526,7 @@ def check(argv):
             load, method = load_env(lsp, lib)
             probe = ""
             try:
-                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, timeout=60, env=dict(os.environ, **dict(load)))
+                out = subprocess.run([lsp, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, env=dict(os.environ, **dict(load)))
                 probe = out.stdout + out.stderr
             except Exception:
                 pass
@@ -1541,7 +1679,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd}
+    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0

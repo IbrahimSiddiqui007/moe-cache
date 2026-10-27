@@ -25,7 +25,7 @@ jobs:
       matrix:
         san: [thread, address]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Packages
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
@@ -87,7 +87,7 @@ jobs:
           import re, sys
           txt = open(sys.argv[1], errors="replace").read()
           reports = re.split(r"(?=WARNING: ThreadSanitizer|==\d+==ERROR: AddressSanitizer)", txt)[1:]
-          ours = [r for r in reports if re.search(r"mc_[a-z]+\.inl|moe_cache_plugin\.cpp|platform\.h|libggml-moe-cache", r[:6000])]
+          ours = [r for r in reports if re.search(r"mc_[a-z_]+\.inl|moe_cache_plugin\.cpp|platform\.h|libggml-moe-cache", r)]
           print(f"{len(reports)} sanitizer reports, {len(ours)} in plugin code")
           for r in ours[:5]:
               print(r[:3000]); print("....")
@@ -97,7 +97,7 @@ jobs:
 
       - name: Keep the logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sanitize-${{ matrix.san }}
           path: |

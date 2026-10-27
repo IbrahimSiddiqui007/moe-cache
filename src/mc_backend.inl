@@ -88,10 +88,14 @@ struct moe_cache_backend_ctx {
     ggml_backend_t     cpu = nullptr;
     ggml_threadpool_t  tp = nullptr;
     int                tp_n = 0;
+    ggml_threadpool_t  tp2 = nullptr;   // the previous threadpool, kept: llama.cpp alternates n_threads (decode) and n_threads_batch (prompts)
+    int                tp2_n = 0;
     int                n_threads = 6;
     ggml_backend_t     gpu = nullptr;
     ggml_gallocr_t     galloc = nullptr;
-    bool               gpu_failed = false;
+    bool               gpu_failed = false;   // the GPU backend could not be started: no GPU blocks for good
+    uint64_t           gpu_retry_at = 0;     // a GPU allocation failed: long-prompt blocks stay on the CPU until this many graphs have run
+    int                gpu_alloc_fails = 0;
     bool               pin_reported = false;
     // MOE_CACHE_HYBRID=MiB: a bank of the most used experts in GPU memory (from the usage profile); per weight tensor: bank tensor and slot of each expert
     bool               hb_tried = false;
@@ -131,6 +135,9 @@ void be_free(ggml_backend_t backend) {
     if (c->tp && CPU().tp_free) {
         CPU().tp_free(c->tp);
     }
+    if (c->tp2 && CPU().tp_free) {
+        CPU().tp_free(c->tp2);
+    }
     if (c->galloc) {
         ggml_gallocr_free(c->galloc);
     }
@@ -147,6 +154,23 @@ void be_free(ggml_backend_t backend) {
     delete backend;
 }
 
+// llama.cpp gives a GPU backend only the nodes it supports; the plugin's own GPU graphs must ask too, else the backend aborts on such a node
+// (ggml-vulkan refuses for example MUL_MAT_ID at GGML_PREC_F32, or when its shared memory is too small for a type)
+bool gpu_graph_supported(moe_cache_backend_ctx * c, ggml_cgraph * g) {
+    for (int i = 0; i < ggml_graph_n_nodes(g); i++) {
+        const ggml_tensor * n = ggml_graph_node(g, i);
+        if (!ggml_backend_supports_op(c->gpu, n)) {
+            static std::atomic<int> said{0};
+            if (said++ == 0) {
+                fprintf(stderr, "moe-cache: the GPU backend does not support %s with %s weights: such expert blocks stay on the CPU\n", ggml_op_desc(n),
+                        n->src[0] ? ggml_type_name(n->src[0]->type) : "-");
+            }
+            return false;
+        }
+    }
+    return true;
+}
+
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
 // to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
 bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
@@ -154,7 +178,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     std::unordered_set<const ggml_tensor *> inside;
     for (int i = first; i <= last; i++) {
         ggml_tensor * n = ggml_graph_node(cg, i);
-        if (n->op != GGML_OP_MUL_MAT_ID && n->op != GGML_OP_GLU) {
+        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu) {
             return false;
         }
         inside.insert(n);
@@ -299,6 +323,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     ggml_set_output(gout);
     ggml_cgraph * g = ggml_new_graph(ctx);
     ggml_build_forward_expand(g, gout);
+    if (!gpu_graph_supported(c, g)) {
+        ggml_free(ctx);
+        return false;
+    }
     {
         // a whole layer of expert weights is uploaded for this block: with a GPU expert cache next to it the card can be full.
         // Check first and keep the block on the CPU instead of letting the allocation (or the CUDA pool) fail hard.
@@ -353,8 +381,12 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     }
 #endif
     if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
+        // not for good (it was for the rest of the process): another program may hold the GPU memory for a while (Windows). Try again later.
         ggml_free(ctx);
-        c->gpu_failed = true;
+        c->gpu_retry_at = s.graphs.load() + 64;
+        if (c->gpu_alloc_fails++ == 0) {
+            fprintf(stderr, "moe-cache: could not allocate GPU memory for a long-prompt block: blocks stay on the CPU for 64 graphs, then the GPU is tried again\n");
+        }
         return false;
     }
     // idea I2 kill check (MOE_CACHE_SEG_TIMES=1): upload vs compute time per block; overlap can only pay if compute is a real share of the block

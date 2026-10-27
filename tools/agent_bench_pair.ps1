@@ -10,10 +10,12 @@
 # -Ram: GB for the launcher (the plugin run also gets a Windows job memory limit of that size); -FlushOther: OTHER model files/folders totalling more than
 # the machine's RAM (never the model under test). Environment: none needed (the plugin DLL is -Lib). Windows has no cgroup for the stock run: use a
 # model bigger than the RAM (the comparison is then memory-limited on both sides by the machine itself).
+# -Mtp auto|on|off: the launcher's MTP choice (I43), for both kinds (stock gets the same arguments): auto = on with --agent when the model has an
+# MTP head and llama-server has draft-mtp; on = --mtp (stops if not possible); off = --no-mtp. Use a separate -OutDir per setting.
 param([Parameter(Mandatory = $true)][string]$OutDir, [Parameter(Mandatory = $true)][string]$Model, [Parameter(Mandatory = $true)][string]$Alias,
       [Parameter(Mandatory = $true)][int]$Ram, [Parameter(Mandatory = $true)][string]$FlushOther, [string]$Order = "stock,mc,mc,stock", [int]$Port = 8099,
       [string]$LlamaServer = "C:\llama-vk\llama-server.exe", [string]$Lib = "C:\moe-cache-kit\ggml-moe-cache-api3.dll", [string]$Repo = "C:\moe-cache",
-      [string]$Sessions = "")
+      [string]$Sessions = "", [ValidateSet("auto", "on", "off")][string]$Mtp = "auto")
 $ErrorActionPreference = "Continue"
 if (-not $Sessions) { $Sessions = Join-Path $Repo "tests\agent_sessions" }
 New-Item -ItemType Directory -Force $OutDir | Out-Null
@@ -45,11 +47,13 @@ if (-not (Test-Path $csv)) { Add-Csv "run,kind,session,requests,task_s,pauses_s,
 
 # the stock command: what the launcher prints for --agent (computed once; dry run, nothing starts)
 $env:MOE_CACHE_LIB = $Lib
-$dry = @(& python $launcher server $Model --agent --ram $Ram --port $Port --llama-server $LlamaServer --no-warm --dry-run -- --alias $Alias 2>&1 | ForEach-Object { "$_" })
+$mtpFlag = @(switch ($Mtp) { "on" { "--mtp" } "off" { "--no-mtp" } default { } })
+$dry = @(& python $launcher server $Model --agent --ram $Ram --port $Port --llama-server $LlamaServer --no-warm --dry-run @mtpFlag "--" --alias $Alias 2>&1 | ForEach-Object { "$_" })
 $m = @($dry | Where-Object { $_ -match "llama-server\.exe" })
 if ($m.Count -eq 0) { Log "could not get the launcher's command (dry run printed no llama-server line)"; $dry | ForEach-Object { Log "  $_" }; exit 1 }
 $stockArgs = (($m[$m.Count - 1] -replace '^.*llama-server\.exe"?\s+', '') -replace "'", '"')
-Log "stock arguments: $stockArgs"
+Log "stock arguments (-Mtp $Mtp): $stockArgs"
+$dry | Where-Object { $_ -match "MTP" } | ForEach-Object { Log "  $_" }
 $kl = @(& python $launcher key 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ } | ForEach-Object { $_.Trim() })
 $key = $kl[$kl.Count - 1]     # the stored per-user key (made on first use); never logged
 
@@ -57,6 +61,7 @@ $k = 0
 foreach ($kind in $kinds) {
   $k++; $tag = "$k-$kind"
   if (Port-Busy) { Log "port $Port is in use (another server?): stop"; exit 1 }
+  $global:LASTEXITCODE = 0     # win_flush_cache.ps1 calls exit only on failure
   $out = & $flush -Target $Model -Other ($FlushOther -split ";" | Where-Object { $_ }) *>&1 | ForEach-Object { "$_" }      # *>&1: the script reports with Write-Host
   $fc = $LASTEXITCODE
   Log "run $k/$($kinds.Count) ($kind): $($out -join ' ')"
@@ -65,7 +70,7 @@ foreach ($kind in $kinds) {
   $so = Join-Path $OutDir "server-$tag.out.log"; $se = Join-Path $OutDir "server-$tag.err.log"
   if ($kind -eq "mc") {
     $env:MOE_CACHE_LIB = $Lib; $env:MOE_CACHE_STATS = "1"
-    $a = @($launcher, "server", $Model, "--agent", "--always-plugin", "--ram", "$Ram", "--port", "$Port", "--llama-server", $LlamaServer, "--", "--alias", $Alias, "--slot-save-path", $slots)
+    $a = @($launcher, "server", $Model, "--agent", "--always-plugin", "--ram", "$Ram", "--port", "$Port", "--llama-server", $LlamaServer) + $mtpFlag + @("--", "--alias", $Alias, "--slot-save-path", $slots)
     $p = Start-Process -FilePath python -ArgumentList (Quote-Args $a) -PassThru -RedirectStandardOutput $so -RedirectStandardError $se -WindowStyle Hidden
     Remove-Item Env:MOE_CACHE_STATS -ErrorAction SilentlyContinue
   } else {

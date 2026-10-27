@@ -179,17 +179,43 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
 // llama.cpp (ggml 0.26) computes an expert with a separate tiled routine once it has 8 or more rows (tokens) in the batch (ggml-cpu/tiled, rows >= 8),
 // which adds up in another order than the one-row kernel. Such ops are left to llama.cpp so the result stays identical (found on GLM-5.3-Flash:
 // one expert picked by all 8 tokens of a prompt batch). Older ggml has no tiled routine; handing the op back is exact there too.
+// Counted for every batch size: a token can list the same expert more than once (likely a GPU top-k fed NaN router scores, which can repeat an index), so
+// 2 tokens can already give one expert 8+ rows. Such an op must not reach the executor either: its tasks hold at most EXEC_MAXCOL columns
+// (Windows crash at request 2, 2026-10-27: Qwen3.5-122B on the GPU router, a 4-token prompt tail, a pool worker writing through a garbage pointer).
 bool stock_uses_tiled(const ggml_tensor * nd) {
     const ggml_tensor * ids = nd->src[2];
+#ifdef MOE_CACHE_TEST_MUTANT_DUP_IDS    // CI only: the old count (batches of 8+ tokens only); with the no-split below it must fail tests/dup_ids.sh
     if (ids->ne[1] < 8) {
         return false;
     }
-    std::unordered_map<int32_t, int> cnt;
+#endif
+    // GGML_CPU_TILED_MM_FORCE=1 (a llama.cpp test switch, honoured unless GGML_CPU_TILED_MM=0) makes stock take the tiled routine for any row
+    // count: then every op goes back to llama.cpp
+    static const bool tiled_forced = [] {
+        const char * f = getenv("GGML_CPU_TILED_MM_FORCE"), * m = getenv("GGML_CPU_TILED_MM");
+        const bool on = f && atoi(f) == 1 && !(m && atoi(m) == 0);
+        if (on) {
+            fprintf(stderr, "moe-cache: GGML_CPU_TILED_MM_FORCE=1: every expert op is left to llama.cpp's tiled routine (the executor would add up in another order)\n");
+        }
+        return on;
+    }();
+    if (tiled_forced) {
+        return true;
+    }
+    if (ids->ne[0] * ids->ne[1] < 8) {
+        return false;
+    }
+    static thread_local std::vector<int32_t> v;   // runs for every expert op of a decode step: no allocation after the first
+    v.clear();
     for (int64_t t = 0; t < ids->ne[1]; t++) {
         for (int64_t k = 0; k < ids->ne[0]; k++) {
-            if (++cnt[*(const int32_t *) ((const char *) ids->data + k * ids->nb[0] + t * ids->nb[1])] >= 8) {
-                return true;
-            }
+            v.push_back(*(const int32_t *) ((const char *) ids->data + k * ids->nb[0] + t * ids->nb[1]));
+        }
+    }
+    std::sort(v.begin(), v.end());
+    for (size_t i = 0; i + 7 < v.size(); i++) {
+        if (v[i] == v[i + 7]) {
+            return true;
         }
     }
     return false;
@@ -216,6 +242,17 @@ bool exec_wait_loaded(state_t & s, const ggml_tensor * nd) {
     }
     return waited;
 }
+
+// MOE_CACHE_EXEC_CHECK only: what the last executor op handed to the kernel, so a mismatch report can tell a wrong activation column from a
+// wrong timing (expert bytes not complete when the op ran) or a wrong result on a pool worker
+struct exec_last_t {
+    const ggml_tensor *  nd = nullptr;
+    const char *         base = nullptr;
+    size_t               stride_i11 = 0, stride_tok = 0;
+    ggml_vec_dot_t       dot = nullptr;
+    std::vector<int32_t> late;             // experts still loading when the op started
+};
+exec_last_t g_exec_last;
 
 void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
@@ -296,7 +333,13 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
                 abort();
             }
             int & ti_ = task_of[(size_t) e];
+            // one column per token that picked this expert; a full task gets a second one for the same expert (an expert listed twice by one
+            // token: each column is still its own dot product, so the result does not change). The old code wrote past the task here.
+#ifndef MOE_CACHE_TEST_MUTANT_DUP_IDS
+            if (ti_ < 0 || all[(size_t) ti_].ncol == EXEC_MAXCOL) {
+#else
             if (ti_ < 0) {
+#endif
                 exec_task_t nt;
                 nt.w = (const char *) w->data + (size_t) e * w->nb[2];
                 nt.ncol = 0;
@@ -320,8 +363,41 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
     for (const auto & t : late) {
         tasks.push_back(t);
     }
+    if (s.exec_check) {
+        g_exec_last.nd = nd;
+        g_exec_last.base = base;
+        g_exec_last.stride_i11 = stride_i11;
+        g_exec_last.stride_tok = stride_tok;
+        g_exec_last.dot = dot;
+        g_exec_last.late.clear();
+        for (const auto & t : late) {
+            g_exec_last.late.push_back((int32_t) ((t.w - (const char *) w->data) / (ptrdiff_t) w->nb[2]));
+        }
+    }
+    // every task has 1..EXEC_MAXCOL columns and every output row lies inside this op's output tensor: checked before the pool runs, because a
+    // wrong pointer here is a write anywhere in the process, found later as a crash somewhere else (cheap: at most n_tok x picks values)
+    {
+        const char * lo = (const char *) nd->data, * hi = lo + ggml_nbytes(nd);
+        const size_t row_bytes = (size_t) w->ne[1] * sizeof(float);
+        for (const auto & t : tasks) {
+            if (t.ncol < 1 || t.ncol > EXEC_MAXCOL) {
+                fprintf(stderr, "moe-cache: internal: an expert task of %s has %d columns (1-%d allowed; %d tokens, %d picks); stopping before memory is "
+                        "overwritten (please report this line)\n", nd->name, t.ncol, EXEC_MAXCOL, n_tok, n_ids);
+                abort();
+            }
+            for (int k = 0; k < t.ncol; k++) {
+                const char * d = (const char *) t.dsts[k];
+                if (!lo || d < lo || d + row_bytes > hi) {
+                    fprintf(stderr, "moe-cache: internal: output of %s (%p, %zu bytes) does not hold column %d of an expert at %p (%d tokens, %d picks); "
+                            "stopping before memory is overwritten (please report this line)\n", nd->name, (const void *) lo, ggml_nbytes(nd), k,
+                            (const void *) d, n_tok, n_ids);
+                    abort();
+                }
+            }
+        }
+    }
     const auto tp0 = std::chrono::steady_clock::now();
-    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32);
+    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32, nd->name);
     if ((unsigned) w->type < 64) {
         s.exec_type_ns[w->type] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
         s.exec_type_ops[w->type]++;

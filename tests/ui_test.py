@@ -58,7 +58,7 @@ check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the
 PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe": 40, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0,
         "free_vram_GiB": 7.5, "note": ""}
 TUNE = {"n_cpu_moe": 38, "ub": 1024, "gpu_cache_mib": 0, "why": ["10 layers of experts stay on the GPU", "micro-batch 1024"]}
-ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
+real_planner, ui.run_planner = ui.run_planner, lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
 ui.run_tuner = lambda path, ctx, vram, kv_q8: dict(TUNE)
 
 p = ui.plan_model(small["path"], ram="2")
@@ -129,6 +129,7 @@ import os
 print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x for x in sys.argv), bool(os.environ.get("LLAMA_API_KEY"))), flush=True)
 print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
 print("moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 15.00 GiB free (test)", flush=True)
+print("moe-cache: AMD GPU on Windows, driver older than 32.0.32015.7029: --ctx-checkpoints 0 (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print("moe-cache: MTP on: the model has an MTP head (1 layer) and llama-server has draft-mtp: --spec-type draft-mtp --spec-draft-n-max 2 (test)", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
@@ -198,6 +199,25 @@ check(req("/api/status", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200, "
 check(req("/api/stop", {}, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: POST cross-site: 403")
 check(req("/api/status", headers={"Origin": "http://attacker.example"})[0] == 403, "3: GET with a foreign Origin: 403")
 check(raw("GET", "/", {"Sec-Fetch-Site": "none", "Cookie": cookie.split(";")[0]})[0] == 200, "3: opening the page itself (none) works")
+# audit 2026-10-27: the browser gets a private file:// page that forwards to the link (no token in its command line, readable in /proc)
+st, hdr, page = raw("GET", "/?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})
+check(st == 200 and (hdr("Set-Cookie") or "").startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "SameSite=Strict" in hdr("Set-Cookie")
+      and "url=/'" in page, f"S1: the link opened from the launcher's file page sets the cookie and moves on to / itself ({st})")
+check(raw("GET", "/?t=wrong", {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: a cross-site link with a wrong token: 403")
+check(raw("GET", "/", {"Sec-Fetch-Site": "cross-site", "Cookie": cookie.split(";")[0]})[0] == 403, "S1: cross-site without the link token stays refused")
+check(raw("GET", "/api/status?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: the cross-site exception is for the page link only")
+check(raw("GET", "/?t=%C3%A9")[0] == 403 and req("/api/status", headers={"X-MoeCache-Token": "\u00e9"})[0] in (400, 403),
+      "S1: a non-ASCII token is refused, not a dropped connection")
+opened = []
+import webbrowser as _wb
+real_wb, _wb.open = _wb.open, (lambda u: opened.append(u))
+try:
+    ui.open_page("http://127.0.0.1:1/?t=secret-x")
+finally:
+    _wb.open = real_wb
+fpath = urllib.request.url2pathname(urllib.parse.urlparse(opened[0]).path) if opened else ""
+check(opened and opened[0].startswith("file:") and "secret-x" not in opened[0] and "secret-x" in open(fpath, encoding="utf-8").read()
+      and (os.name == "nt" or (os.stat(fpath).st_mode & 0o077) == 0), f"S1: the browser is given a private file, not the token ({opened})")
 st, _, _ = raw("POST", "/api/folders", {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN, "Content-Length": str(70000)}, b"x" * 70000)
 check(st == 413, f"5: a body over 64 KiB is refused ({st})")
 check(ui.Handler.timeout == 30, "5: a handler timeout is set")
@@ -250,7 +270,7 @@ check(abs((c.get("hit_rate_total") or 0) - 0.85) < 1e-9 and c.get("budget") == 7
 check((c.get("read_mbs") or 0) > 0, f"SSD reads MB/s from read_bytes ({c.get('read_mbs')})")
 check(f"--port {port}" in status.get("command", ""), "the status shows the launcher command")
 d = status.get("decisions", [])
-check(len(d) == 3 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("experts of 38 layers") and d[2].startswith("MTP on:"),
+check(len(d) == 4 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("AMD GPU on Windows") and d[2].startswith("experts of 38 layers") and d[3].startswith("MTP on:"),
       f"what the launcher decided, up to its URL line, without the prefix ({d})")
 w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
@@ -584,6 +604,16 @@ p = ui.plan_model(fn, ram="24")
 ui.WINDOWS, ui.mc.decide = os.name == "nt", real_decide
 check(p["numbers"]["free_vram_GiB"] == 15.0 and not any("system RAM" in r or "stay on the CPU" in r for r in p["reasons"]),
       f"plan on Windows + AMD, model bigger than RAM: the free VRAM found goes to the planner, no 'experts on the CPU' rule ({p['numbers']['gpu_expert_layers']} GPU layers)")
+
+# --ram is GB; the planner's --ram-gib and the plugin's MOE_CACHE_RAM_GIB are GiB (B1: --ram 20 planned 21.5 GB under a 20 GB job limit)
+check(mc.ram_gib("20") == "18.626" and abs(float(mc.ram_gib(12.5)) * 2**30 - 12.5e9) < 1e6, f"ram_gib: GB -> GiB ({mc.ram_gib('20')})")
+seen = []
+real_run, ui.subprocess.run = ui.subprocess.run, (lambda p, **k: seen.append(p) or type("R", (), {"stdout": "{}", "stderr": ""})())
+try:
+    real_planner(fn, 8192, "20", None)
+finally:
+    ui.subprocess.run = real_run
+check(seen and seen[0][seen[0].index("--ram-gib") + 1] == "18.626", f"the page passes --ram 20 GB to the planner as 18.626 GiB ({seen})")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

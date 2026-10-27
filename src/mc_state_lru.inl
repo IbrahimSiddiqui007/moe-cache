@@ -80,6 +80,56 @@
         return plat::mem_map_file((void *) a, b - a, buffered_file(ti.fdi), off);
     }
 
+    // Windows: commit the pages the read of expert e will write (the same range read_job() writes), before the expert is marked resident.
+    // When Windows refuses (RAM + page file full: error 1455), evict least-recently-used experts this step does not need and try again, and lower
+    // the budget to what fits. Returns false when nothing is left to evict; the caller must then not load the expert. Called with mu held.
+    // (Before this, a refused commit was only retried page by page and the read went ahead: "read failed ... error 998", PC 2026-10-27.)
+    bool commit_for(const tinfo_t & ti, int64_t e) {
+        if (!plat::is_windows) {
+            return true;
+        }
+        char * const p = ti.data + (size_t) e * ti.nb2;      // the range read_job() writes: the expert's own bytes, plus one page
+        const size_t n = ti.nb2 + PAGE;
+        bool evicted = false;
+        // the system as a whole is low on commit (llama.cpp or other programs took it): give an LRU expert back instead of growing
+        const size_t low = plat::commit_keep() / 2;
+        while (plat::commit_available() < low + n) {
+            int v = lru;
+            while (v >= 0 && in_use(nodes[v])) {
+                v = nodes[v].prev;
+            }
+            if (v < 0) {
+                break;       // nothing to give back: load anyway (this step needs it), the commit below still has to succeed
+            }
+            evict(v);
+            evicted = true;
+            commit_evictions++;
+        }
+        for (;;) {
+            if (plat::mem_commit(p, n)) {
+                if (evicted) {
+                    budget = std::min(budget, std::max(min_budget, resident_bytes + ti.nb2));   // stay at what Windows lets us commit
+                }
+                return true;
+            }
+            int v = lru;
+            while (v >= 0 && in_use(nodes[v])) {
+                v = nodes[v].prev;
+            }
+            if (v < 0) {
+                return false;
+            }
+            if (!commit_fail_warned) {
+                commit_fail_warned = true;
+                fprintf(stderr, "moe-cache: warning: Windows refused memory for an expert (error %lu%s): the cache gives experts back and shrinks; "
+                        "a larger page file avoids this\n", plat::commit_error(), plat::commit_error() == 1455 ? ": RAM + page file are full" : "");
+            }
+            evict(v);
+            evicted = true;
+            commit_evictions++;
+        }
+    }
+
     // make sure all experts used by the ops of one group (same ids tensor) are resident
     // returns the number of reads handed to the reader threads (async mode), otherwise 0
     size_t prepare_group(const std::vector<int> & tidx, const std::vector<int> & cnt, bool async = false) {
@@ -163,7 +213,7 @@
                         }
                         evict(v);
                     }
-                    if (resident_bytes + ti.nb2 > budget) {
+                    if (resident_bytes + ti.nb2 > budget || !commit_for(ti, e)) {
                         continue;
                     }
                     n.resident = true;
@@ -230,6 +280,9 @@
                         continue;
                     }
                     small_over++;
+                }
+                if (!commit_for(ti, e)) {
+                    commit_fatal("an expert this step needs (every other expert is in use)", ti.nb2);
                 }
                 n.resident = true;
                 n.epoch = epoch;

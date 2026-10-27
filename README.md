@@ -189,7 +189,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 **Does it work with Ollama or LM Studio?** Not directly: both ship their own bundled copy of llama.cpp, and the plugin needs a `llama-server` built with shared ggml libraries from a tested commit. Their model files are plain GGUF, so you can run the same file with `moe-cache-server` (see "Ollama user?" above) and point any OpenAI-compatible client at `http://localhost:8080/v1`.
 
-**Windows with an AMD GPU uses a lot of RAM, should I add `--no-mmap`, `--mlock` or `--moe-cache-mib`?** No. On AMD's Windows driver VRAM in use also takes about as much system RAM (measured, RESULTS 56 I37); those flags do not change that, and `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. Details and what is being tried: [docs/WINDOWS.md](docs/WINDOWS.md), "Windows + AMD: where the RAM goes".
+**On Windows llama-server uses a lot of RAM with GPU layers, should I add `--no-mmap`, `--mlock` or `--moe-cache-mib`?** No. llama.cpp's Windows loader leaves the model-file pages of the GPU tensors in llama-server's working set (about as much RAM as the GPU layers; RESULTS 56 I37). It is not the GPU driver. The plugin releases those pages at the first graph (the log says "released N GiB of model-file pages from the working set"). `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. A small page file also limits the cache. Details: [docs/WINDOWS.md](docs/WINDOWS.md), "Windows: where the RAM goes".
 
 **Mac?** No. The plugin uses Linux (and Windows) memory and direct-I/O calls, and on Apple Silicon the GPU and CPU share one memory, which changes the problem.
 

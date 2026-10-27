@@ -3,14 +3,34 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Windows and AMD
+- **Fixed: wrong output and a crash at the second request with models bigger than RAM on Windows** (PC, Qwen3.5-122B IQ2 from a fast NVMe
+  drive). An expert read straight into place covered the memory pages it shares with its neighbours; on Windows a page under such a read briefly
+  holds other data, so the executor sometimes read garbage in a neighbour's first or last rows: wrong text ("3333..."), NaN router scores, and a
+  GPU top-k that then listed one expert several times per token, which overflowed an executor task and crashed a pool worker. Reads now write only
+  the expert's own bytes, an expert listed more than once can no longer overflow a task (and every task is checked before it runs), and
+  `MOE_CACHE_EXEC_CHECK=1` reports where a mismatch comes from. Confirmed on the PC: text identical to stock, no crash, 0 executor mismatches.
+- **Windows memory commit**: when Windows refuses memory (RAM + page file full, error 1455) the cache gives experts back and shrinks instead of
+  reading into pages that do not exist ("read failed ... error 998"); a range past the end of its reservation (error 487) is clamped instead of
+  retried page by page; the start budget counts what llama-server really uses and keeps max(2 GiB, 8 % of the commit limit) of system-wide commit
+  free (GPU memory on Windows counts there too: GLM-5.3 + MTP started at 4.3 instead of 18.9 GiB and no longer starves the whole PC). The crash
+  report names the executor's op, row and output, and no longer mistakes a small address for an expert.
+- New CI steps: repeated expert ids (`tests/dup_ids.sh`, `MOE_CACHE_TEST_DUP_IDS`) and reads poisoned while in flight
+  (`MOE_CACHE_TEST_POISON_READS`), each with a mutant that must fail.
 - **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
   Granite, Qwen3.6 and Qwen3.5-122B (bigger than RAM); executor byte check 0 mismatches; Flash-Next through the launcher and a chat. Steps:
   [docs/WINDOWS.md](docs/WINDOWS.md); status in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Windows stays **experimental**.
 - Launcher finds the GPU on Windows with AMD and Intel cards (the planner knew only nvidia-smi and Linux sysfs, so it saw no GPU and kept every expert on
   the CPU): it reads `llama-server --list-devices` and picks the adapter with the most dedicated VRAM in the registry, not the first listed (the iGPU).
-- **AMD GPU on Windows + a model bigger than RAM: all experts stay on the CPU.** VRAM in use costs about as much system RAM on AMD's Windows driver (12 GiB of
-  GPU expert layers took 14.9 GB of RAM and shrank the plugin's cache from 14 to 2-3 GiB; decode fell to a quarter). Stock llama-server also decodes faster this
-  way. `--n-cpu-moe N` overrides.
+- **Windows: the plugin releases the model-file pages llama.cpp leaves in llama-server's working set** (I37). llama.cpp's Windows loader never unmaps the
+  file pages of the GPU tensors, so ~13 GB stayed counted as in use with 12 GPU expert layers and the cache shrank. It looked like AMD's driver taking RAM for
+  VRAM; it is not. The log says "released N GiB of model-file pages from the working set"; the cache measures the process by its private working set.
+  GPU expert layers are planned as on other GPUs (an earlier "all experts on the CPU" rule for AMD is gone: Flash-Next cold decode 12.9-14.9 tok/s all on the
+  CPU vs 14.9-15.0 with 12 GPU expert layers, no cache shrink).
+- **A small page file limits the cache on Windows** (every allocation needs commit): 6.9 GB page file and 16 GB committed by other programs, GLM's cache
+  16.1 -> 9.6 GiB; 14 GB page file, 14.9 GiB and 1.52 -> 2.02 tok/s. The plugin warns near the commit limit.
+- **`--ram` is GB everywhere**: it reached the plugin and the planner as GiB, 7 % over the Windows job limit the launcher sets (`--ram 20`: commit failed,
+  Windows error 1455, the server died).
+- Windows: llama-server's exit code 1 (e.g. a model that fails to load) is reported as a failure, not as a quiet stop, in the launcher and the page.
 - **Flash-Next (`qwen4exp`) on an AMD Vulkan GPU under Windows: `--ctx-checkpoints 0`.** Saving a context checkpoint crashes `amdvlk64.dll` (stock llama-server
   too); the launcher turns checkpoints off with a message that names the driver version. `learn` does the same. Price: a conversation cannot jump back to an earlier point.
 - **Fixed: Windows crash in the long-prompt GPU block** (GLM-5.3-Flash, 102 GB, desktop): the block uploaded whole expert tensors including evicted
@@ -23,6 +43,11 @@
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
 ### Agent mode, Hermes Agent and OpenCode
+- **`moe_cache.py on-demand`: agents work without starting a server by hand** (as with Ollama). A small always-on listener holds the agent port; the
+  first request starts the launcher in agent mode for the remembered model, requests (streaming included) pass through, and the model stops after 15 idle
+  minutes (`--idle`). The API key and the localhost-only CORS rule are checked in front, so a web page cannot wake the model; `/v1/models` and `/props`
+  answer without starting it. `--install-autostart` starts it at login (systemd --user unit; Windows Startup-folder shortcut, no admin). `connect
+  hermes|opencode` now defaults to the on-demand port. [docs/AGENTS.md](docs/AGENTS.md#without-starting-a-server-by-hand-on-demand)
 - **`--agent`** (RESULTS 51): context 65536, `--jinja` tool calls, stable `--alias`, at most 8 context checkpoints per slot with a 1 GiB reserve, config blocks printed
   when ready; `--api-key` for other machines. **`connect hermes|opencode [--write]`** writes the agent's config (Hermes through `hermes config set`, OpenCode by merging
   `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/AGENTS.md),
@@ -61,9 +86,8 @@
 - `state_t` methods split into three include files (`.text` and `.rodata` unchanged).
 
 ### Known limits
-- **AMD Windows driver: VRAM costs system RAM** (none of llama.cpp's Vulkan switches change it; the memory is taken inside the driver), so the launcher keeps experts on the CPU there
-  and leaves a 16 GB card mostly idle for experts. A newer Adrenalin driver, hardware-accelerated GPU scheduling or the HIP SDK might change it: untested.
-- **Flash-Next on AMD under Windows runs without context checkpoints** (driver crash, above).
+- **Windows: a small page file limits the cache** (above): let Windows manage it, or make it 14 GB or more.
+- **Flash-Next on AMD under Windows runs without context checkpoints with drivers older than 32.0.32015.7029** (driver crash, above).
 - **HIP / ROCm release on Windows**: lists no device without AMD's HIP SDK; untested.
 - **The plugin's CPU kernels are Linux-only**; on Windows the executor uses llama.cpp's own kernels. `--gpu-cache` is not available on Windows (needs `LD_PRELOAD`).
 - Windows speed numbers are from one desktop; plugin decode is about equal to stock there (models bigger than RAM), prefill 1.5-2.2x. Intel GPUs on Windows: untested.

@@ -5,24 +5,46 @@ import glob, os, re, struct, subprocess
 _FMT = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
 
 
+MAX_STR = 1 << 24      # longest key or string value taken from a header (tokenizer entries are tiny; a hostile length must not allocate the file)
+
+
+def _left(f):
+    """Bytes from the current position to the end of the file."""
+    return os.fstat(f.fileno()).st_size - f.tell()
+
+
+def _skip(f, n):
+    """Skip n bytes of the file without reading them (a hostile length field must not make us load a model-sized buffer)."""
+    if n < 0 or n > _left(f):
+        raise ValueError("GGUF header: length past the end of the file")
+    f.seek(n, 1)
+
+
 def _read_str(f):
     n = struct.unpack("<Q", f.read(8))[0]
+    if n > MAX_STR or n > _left(f):
+        raise ValueError(f"GGUF header: string of {n} bytes")
     return f.read(n).decode("utf-8", "replace")
 
 
 def _skip_value(f, t):
     if t in _FMT:
-        f.read(struct.calcsize(_FMT[t]))
+        _skip(f, struct.calcsize(_FMT[t]))
     elif t == 8:
-        _read_str(f)
+        n = struct.unpack("<Q", f.read(8))[0]
+        _skip(f, n)
     elif t == 9:
         it = struct.unpack("<I", f.read(4))[0]
         n = struct.unpack("<Q", f.read(8))[0]
         if it in _FMT:
-            f.read(n * struct.calcsize(_FMT[it]))
-        else:
+            _skip(f, n * struct.calcsize(_FMT[it]))
+        elif it == 8:
+            if n * 8 > _left(f):
+                raise ValueError("GGUF header: array past the end of the file")
             for _ in range(n):
-                _skip_value(f, it)
+                _skip_value(f, 8)
+        else:          # arrays of arrays: no GGUF writer makes them, and they would recurse as deep as the file says
+            raise ValueError(f"GGUF header: array of type {it}")
     else:
         raise ValueError(f"unknown GGUF value type {t}")
 
@@ -41,6 +63,8 @@ def model_key(path):
             t = struct.unpack("<I", f.read(4))[0]
             if key == "general.architecture" and t == 8:
                 meta["arch"] = _read_str(f)
+                if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}", meta["arch"]) or ".." in meta["arch"]:
+                    return None        # it becomes part of a file name (profiles/<key>.usage): no / \\ or ..
             elif (key.endswith(".block_count") or key.endswith(".expert_count")) and t in (4, 5, 10, 11):
                 meta[key.rsplit(".", 1)[1]] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
             else:
@@ -63,14 +87,17 @@ def read_tensors(path):
             t = struct.unpack("<I", f.read(4))[0]
             if key == "general.alignment" and t in (4, 5):
                 align = struct.unpack(_FMT[t], f.read(4))[0]
+                if not (1 <= align <= 1 << 16 and align & (align - 1) == 0):
+                    raise ValueError(f"GGUF header: alignment {align}")
             else:
                 _skip_value(f, t)
         infos = []
         for _ in range(n_t):
             name = _read_str(f)
             nd = struct.unpack("<I", f.read(4))[0]
-            f.read(8 * nd)
-            f.read(4)
+            if nd > 8:
+                raise ValueError(f"GGUF header: tensor {name!r} has {nd} dimensions")
+            _skip(f, 8 * nd + 4)
             off = struct.unpack("<Q", f.read(8))[0]
             infos.append((name, off))
         data_start = (f.tell() + align - 1) // align * align
@@ -79,7 +106,32 @@ def read_tensors(path):
     out = []
     for i, (name, off) in enumerate(infos):
         end = infos[i + 1][1] if i + 1 < len(infos) else total
-        out.append((name, end - off))
+        out.append((name, max(0, end - off)))
+    return out
+
+
+def sampling_meta(path):
+    """-> {"arch", "name", "basename", "file_type", "sampling": {key: value}} from the GGUF header: what picks the model card's sampling defaults
+    (general.sampling.* are the publisher's own, which llama.cpp already applies unless a flag is given)."""
+    out = {"arch": "", "name": "", "basename": "", "file_type": None, "sampling": {}}
+    with open(shards(path)[0], "rb") as f:
+        if f.read(4) != b"GGUF":
+            return out
+        f.read(4)
+        _, n_kv = struct.unpack("<QQ", f.read(16))
+        for _ in range(n_kv):
+            key = _read_str(f)
+            t = struct.unpack("<I", f.read(4))[0]
+            if key in ("general.architecture", "general.name", "general.basename") and t == 8:
+                out[{"general.architecture": "arch"}.get(key, key.split(".")[1])] = _read_str(f)
+            elif (key == "general.file_type" or key.startswith("general.sampling.")) and t in _FMT:
+                v = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
+                if key == "general.file_type":
+                    out["file_type"] = v
+                else:
+                    out["sampling"][key[len("general.sampling."):]] = v
+            else:
+                _skip_value(f, t)
     return out
 
 
@@ -231,7 +283,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     cache_room = room
     cache_mib = int(cache_room // 1048576) if cache_room > 0 else 0
     expert_total = lay["expert_bytes_per_layer"] * lay["n_layers"]
-    if want_cache and cache_mib >= 1536 and cache_mib * 1048576 >= 0.04 * expert_total:
+    if want_cache and expert_total > 0 and cache_mib >= 1536 and cache_mib * 1048576 >= 0.04 * expert_total:
         n_cpu_moe = 999
         why.append(f"GPU expert cache of {cache_mib} MiB ({100 * cache_mib * 1048576 / expert_total:.0f} % of the experts; "
                    f"{int(block // 1048576)} MiB kept free for the long-prompt GPU block)")

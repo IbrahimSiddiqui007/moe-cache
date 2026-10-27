@@ -103,6 +103,46 @@ inline bool env_utf8(const char * name, std::string & out) {
 
 // this process's command line (UTF-8 words): Linux /proc/self/cmdline; Windows GetCommandLineW split at blanks, double quotes group (as the C runtime
 // does for argv; backslash escapes are not needed for the flags the plugin looks for); empty elsewhere
+// Windows command line -> arguments (also built on Linux, for tests/platform_test.cpp)
+inline std::vector<std::wstring> split_windows_args(const wchar_t * c) {
+    std::vector<std::wstring> out;
+    while (c && *c) {
+        while (*c == L' ' || *c == L'\t') { c++; }
+        if (!*c) {
+            break;
+        }
+        // the C runtime's rules (as CommandLineToArgvW, without linking shell32): 2n backslashes + quote -> n backslashes and the quote toggles
+        // quoting; 2n+1 backslashes + quote -> n backslashes and a literal quote; "" inside quotes -> a literal quote; other backslashes are literal
+        std::wstring a;
+        bool q = false;
+        while (*c && (q || (*c != L' ' && *c != L'\t'))) {
+            size_t bs = 0;
+            while (*c == L'\\') { bs++; c++; }
+            if (*c == L'"') {
+                a.append(bs / 2, L'\\');
+                if (bs % 2) {
+                    a += L'"';
+                    c++;
+                } else if (q && c[1] == L'"') {
+                    a += L'"';
+                    c += 2;
+                } else {
+                    q = !q;
+                    c++;
+                }
+            } else {
+                a.append(bs, L'\\');
+                if (*c && (q || (*c != L' ' && *c != L'\t'))) {
+                    a += *c;
+                    c++;
+                }
+            }
+        }
+        out.push_back(a);
+    }
+    return out;
+}
+
 inline std::vector<std::string> command_line() {
     std::vector<std::string> out;
 #if defined(__linux__)
@@ -124,17 +164,7 @@ inline std::vector<std::string> command_line() {
         }
     }
 #elif defined(_WIN32)
-    const wchar_t * c = GetCommandLineW();
-    while (c && *c) {
-        while (*c == L' ' || *c == L'\t') { c++; }
-        if (!*c) {
-            break;
-        }
-        std::wstring a;
-        bool q = false;
-        for (; *c && (q || (*c != L' ' && *c != L'\t')); c++) {
-            if (*c == L'"') { q = !q; } else { a += *c; }
-        }
+    for (const std::wstring & a : split_windows_args(GetCommandLineW())) {
         out.push_back(narrow(a.c_str()));
     }
 #endif
@@ -167,7 +197,15 @@ inline file_t file_open(const char * path, bool direct, bool random = false) {
 // read len bytes at offset off; returns the number of bytes read, 0 at end of file, -1 on error (retry is up to the caller)
 inline ptrdiff_t file_pread(const file_t & f, void * buf, size_t len, uint64_t off) {
 #ifdef _WIN32
-    static thread_local HANDLE ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    static thread_local HANDLE ev = nullptr;
+    if (!ev) {
+        // without an event GetOverlappedResult would wait on the file handle, which all readers share: another thread's completion could end
+        // this wait while the read is still running, and the read would later write into a buffer and an OVERLAPPED that are gone
+        ev = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!ev) {
+            return -1;          // nothing issued; the caller retries, then falls back to a buffered read, then stops with the error
+        }
+    }
     OVERLAPPED ov;
     memset(&ov, 0, sizeof(ov));
     ov.Offset = (DWORD) (off & 0xffffffffu);
@@ -225,29 +263,45 @@ inline bool mem_guard() {
     static const bool on = [] { const char * e = getenv("MOE_CACHE_GUARD"); return e && strcmp(e, "0") != 0; }();
     return on;
 }
-// p and size are rounded outwards to whole pages; committing an already committed page keeps its content
-inline void mem_commit(void * p, size_t size) {
+// p and size are rounded outwards to whole pages; committing an already committed page keeps its content.
+// Returns false when Windows refuses the commit (ERROR_COMMITMENT_LIMIT 1455: RAM + page file are full); the pages are then NOT usable and must
+// not be written (a read into them fails with 998, a memcpy faults). The error code is in commit_error(). A range that runs past the end of its
+// reservation (error 487, e.g. the extra page after the last expert of a buffer) is clamped to the reservation; that part counts as success.
+inline unsigned long & commit_error() {
+    static thread_local unsigned long e = 0;
+    return e;
+}
+inline bool mem_commit(void * p, size_t size) {
 #ifdef _WIN32
     const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
-    if (!VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
-        // one call fails as a whole when the range runs past the end of its reservation (e.g. the extra page after the last expert of a buffer):
-        // then nothing was committed and the next write faulted (Windows CI, RESULTS 50). Commit page by page, as far as the reservation goes.
-        static bool told = false;
-        if (!told) {
-            told = true;
-            fprintf(stderr, "moe-cache: note: commit of %zu bytes failed (Windows error %lu), committing page by page\n", (size_t) (b - a), (unsigned long) GetLastError());
-        }
-        for (uintptr_t q = a; q < b; q += 4096) {
-            if (!VirtualAlloc((void *) q, 4096, MEM_COMMIT, PAGE_READWRITE)) {
-                break;      // past the reservation: the rest is not ours
+    if (VirtualAlloc((void *) a, b - a, MEM_COMMIT, PAGE_READWRITE)) {
+        return true;
+    }
+    DWORD err = GetLastError();
+    if (err == ERROR_INVALID_ADDRESS) {
+        // one call fails as a whole when the range leaves its reservation (Windows CI, RESULTS 50): commit up to the reservation's end
+        MEMORY_BASIC_INFORMATION mi;
+        if (VirtualQuery((void *) a, &mi, sizeof(mi)) && mi.State != MEM_FREE) {
+            void * const base = mi.AllocationBase;
+            uintptr_t end = a;
+            while (end < b && VirtualQuery((void *) end, &mi, sizeof(mi)) && mi.State != MEM_FREE && mi.AllocationBase == base) {
+                end = (uintptr_t) mi.BaseAddress + mi.RegionSize;
             }
+            end = std::min(end, b);
+            if (end > a && VirtualAlloc((void *) a, end - a, MEM_COMMIT, PAGE_READWRITE)) {
+                return true;
+            }
+            err = GetLastError();
         }
     }
+    commit_error() = err;
+    return false;
 #else
     if (mem_guard()) {
         const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
         mprotect((void *) a, b - a, PROT_READ | PROT_WRITE);
     }
+    return true;
 #endif
 }
 // p and size must be page aligned
@@ -267,6 +321,9 @@ inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) 
 #if defined(__linux__)
     void * r = mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, f.fd, (off_t) off);
     if (r == MAP_FAILED) {
+        // a failed MAP_FIXED may already have unmapped the range (ENOMEM from vm.max_map_count): put the reservation back, or a later
+        // allocation could land inside our buffer and the next expert read would write over it
+        mmap(p, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED | MAP_NORESERVE, -1, 0);
         return false;
     }
     madvise(p, size, MADV_WILLNEED);
@@ -462,6 +519,11 @@ inline size_t rss_private() {
 inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * views) {
     *views = 0;
 #ifdef _WIN32
+    for (const std::string & a : command_line()) {
+        if (a == "--mlock") {
+            return 0;          // VirtualUnlock would also undo the locking the user asked for
+        }
+    }
     std::vector<std::wstring> names;
     for (const std::string & p : paths) {
         std::wstring w = widen(p.c_str());
@@ -516,6 +578,22 @@ inline size_t commit_available() {
     }
 #endif
     return SIZE_MAX;
+}
+
+// commit the cache must leave free for everything else (llama.cpp's later allocations such as an MTP draft context, other programs): max(2 GiB,
+// 8 % of the commit limit). PC 2026-10-27: GLM + MTP with a 14 GB page file took the whole system to zero commit ("the paging file is too
+// small" in an unrelated PowerShell) while the plugin itself never saw a refused commit. 0 elsewhere (Linux overcommits).
+inline size_t commit_keep() {
+#ifdef _WIN32
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        return std::max<size_t>((size_t) 2 << 30, (size_t) (ms.ullTotalPageFile / 100 * 8));
+    }
+    return (size_t) 2 << 30;
+#else
+    return 0;
+#endif
 }
 
 // ---- small file helpers (UTF-8 paths) ----

@@ -21,7 +21,7 @@ jobs:
   dll:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: mingw-w64 (UCRT when available, the C runtime of official llama.cpp and of the kit; else posix/msvcrt)
         run: |
           sudo apt-get update -q
@@ -32,16 +32,19 @@ jobs:
             echo "MINGW_CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
           fi
       - name: Plugin DLL (API 3, with debug info for crash offsets; same code) and the platform test, warnings are errors
+        shell: bash     # -eo pipefail: an objdump failure must not leave an empty import list that passes
         run: |
           $MINGW_CXX --version | head -1
           $MINGW_CXX -std=c++17 -Wall -Werror -Wno-unused-function -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src -fsyntax-only src/moe_cache_plugin.cpp
           GGML_API=3 MOE_CACHE_CXXFLAGS="-g" ./build.sh --windows
           x86_64-w64-mingw32-objdump -p build/win/ggml-moe-cache.dll | grep "DLL Name" | tee build/win/imports_dlls.txt
           # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
-          ! grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32" build/win/imports_dlls.txt
+          grep -q -i "KERNEL32" build/win/imports_dlls.txt || { echo "FAIL: no import list (objdump?)"; exit 1; }
+          if grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32" build/win/imports_dlls.txt; then
+            echo "FAIL: the DLL imports a DLL that is not a system or ggml DLL"; exit 1; fi
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
           $MINGW_CXX -std=c++17 -O2 -Wall -Werror -Isrc tests/win_read_bench.cpp -o build/win/win_read_bench.exe -static
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: win-dll
           path: |
@@ -57,8 +60,8 @@ jobs:
       run:
         shell: pwsh
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: win-dll
           path: dll
@@ -122,6 +125,34 @@ jobs:
           $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
           python tests/ui_live.py granite.gguf --llama-server "$env:LLAMA_DIR\llama-server.exe"
           if ($LASTEXITCODE -ne 0) { throw "control page with the model failed" }
+
+      - name: On-demand endpoint (fake server, then Granite; then autostart in the Startup folder, installed and removed)
+        run: |
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
+          $ls = "$env:LLAMA_DIR\llama-server.exe"
+          python tests/on_demand_test.py
+          if ($LASTEXITCODE -ne 0) { throw "on-demand test failed" }
+          python tests/on_demand_live.py granite.gguf --llama-server $ls
+          if ($LASTEXITCODE -ne 0) { throw "on-demand live test failed" }
+          $env:XDG_CACHE_HOME = "$env:RUNNER_TEMP\od-cache"; $env:APPDATA = "$env:RUNNER_TEMP\od-appdata"
+          python bin/moe_cache.py on-demand granite.gguf --llama-server $ls --ram 3 --ctx 4096 --always-plugin --port 8094 --install-autostart
+          if ($LASTEXITCODE -ne 0) { throw "on-demand --install-autostart failed" }
+          $lnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\moe-cache on-demand.lnk"
+          if (-not (Test-Path $lnk)) { throw "no Startup shortcut" }
+          $ok = $false
+          for ($i = 0; $i -lt 30; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8094/health).Content -match "on_demand") { $ok = $true; break } } catch {} ; Start-Sleep 1 }
+          if (-not $ok) { throw "the listener started by --install-autostart does not answer" }
+          $key = (python bin/moe_cache.py key | Out-String).Trim()
+          $body = '{"messages":[{"role":"user","content":"Say hi"}],"max_tokens":8,"temperature":0}'
+          (Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Headers @{ Authorization = "Bearer $key" } -Body $body http://127.0.0.1:8094/v1/chat/completions).Content
+          python bin/moe_cache.py on-demand --status
+          python bin/moe_cache.py on-demand --remove-autostart
+          Start-Sleep 3
+          if (Test-Path $lnk) { throw "--remove-autostart left the shortcut" }
+          $up = $true; try { Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8094/health | Out-Null } catch { $up = $false }
+          if ($up) { throw "--remove-autostart did not stop the listener" }
+          if (Get-Process llama-server -ErrorAction SilentlyContinue) { throw "llama-server still runs after the listener was stopped" }
+          Get-Content "$env:XDG_CACHE_HOME\moe-cache\on-demand-listener.log"
 
       - name: One-click start (bin\moe-cache-ui.bat finds Python, the plugin DLL in build\win-api3 and llama-server, and serves the page)
         run: |
@@ -198,7 +229,7 @@ jobs:
 
       - name: Keep the logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-logs
           path: logs

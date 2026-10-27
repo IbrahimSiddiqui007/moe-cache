@@ -30,7 +30,7 @@ jobs:
           - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3" }
           - { name: "master-api3", sha: "master", api: "3" }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
@@ -50,6 +50,7 @@ jobs:
         run: |
           if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; H=third_party/ggml-v3; else H=third_party/ggml; fi
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/args_test.cpp -o /tmp/args_test && /tmp/args_test    # the llama-server flags the plugin mirrors
           ./build.sh --portable
           ls -la build/libggml-moe-cache.so
 
@@ -72,15 +73,22 @@ jobs:
           # --gpu-cache with the plugin loaded as a file (GGML_BACKEND_PATH) would give wrong tokens: the launcher must drop it (T7, B1)
           bin/moe-cache-server granite.gguf --ram 4 --always-plugin --load-method path --gpu-cache 1000 --dry-run 2>&1 | tee launcher_gcache_path.txt
           grep -q "gpu-cache needs a llama-server that links its backends directly" launcher_gcache_path.txt
-          ! grep -q "moe-cache-mib" launcher_gcache_path.txt
+          if grep -q "moe-cache-mib" launcher_gcache_path.txt; then echo "FAIL: --moe-cache-mib passed on path loading (T7)"; exit 1; fi    # "! grep" alone never fails under bash -e
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
+          python3 tests/on_demand_test.py    # on-demand endpoint: key, CORS, start on first request, SSE pass-through, idle stop, restart; fake server
 
       - name: Control page with the model (GUI1; start, one request, live hit rate, stop through the page)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
         run: python3 tests/ui_live.py granite.gguf --llama-server "$LLAMA_SERVER"
+
+      - name: On-demand endpoint with the model (first request starts it, streaming, idle stop, second start, connect)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+        run: python3 tests/on_demand_live.py granite.gguf --llama-server "$LLAMA_SERVER"
 
       - name: API key and CORS (option C; agent mode needs the stored key, a plain server allows only localhost origins)
         env:
@@ -135,8 +143,34 @@ jobs:
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
           IDENT_EXTRA: "--no-repack"      # CPU weight repacking would make the executor step aside (repacked weights); both servers get the flag
+          IDENT_KEEP: ident_exec
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
-        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+          grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_exec/plugin.log    # the executor really ran (it steps aside silently on repacked weights)
+
+      - name: Identity with GGML_CPU_TILED_MM_FORCE=1 (stock tiles every expert, so the executor must hand every op back) - API 3 rows
+        if: matrix.api == '3'
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          GGML_CPU_TILED_MM_FORCE: "1"    # both servers
+          IDENT_EXTRA: "--no-repack"
+          IDENT_KEEP: ident_tiled_force
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_tiled_force.txt
+          grep -q "GGML_CPU_TILED_MM_FORCE=1: every expert op is left to llama.cpp" ident_tiled_force/plugin.log
+
+      - name: Identity with different thread counts for prompts and decode (-t 2 -tb 3; the plugin switches between two threadpools)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_EXTRA: "-t 2 -tb 3"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
+        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_tb.txt
 
       - name: Cache smaller than one op (1 MiB) - experts mapped from the model file instead of aborting, guard mode on
         env:
@@ -161,6 +195,7 @@ jobs:
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_small_over.txt
           grep -E "experts mapped from the model file, [1-9][0-9]* loaded over" ident_small_over/plugin.log
+          grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_small_over/plugin.log
 
       - name: Logits at batch 8 (KL divergence vs stock), cache forced to evict, executor forced on
         env:
@@ -272,8 +307,11 @@ jobs:
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
           IDENT_EXTRA: "--no-repack"
+          IDENT_KEEP: ident_guard
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_GUARD=1"
-        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_guard.txt
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_guard.txt
+          grep -E "executor ran [1-9][0-9]* expert ops itself" ident_guard/plugin.log
 
       - name: Identity with guard mode, two slots (each short prompt, 12-25 tokens, goes to the other slot; the PC crashed at the second request, slot 1)
         env:
@@ -283,6 +321,66 @@ jobs:
           IDENT_EXTRA: "--no-repack"
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_GUARD=1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 4096 --np 2 --n-cpu-moe 999 | tee identity_guard_np2.txt
+
+      - name: Repeated expert ids (a GPU top-k fed NaN repeats an index), two slots in parallel, executor byte-checked - the PC's request-2 crash
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+        run: tests/dup_ids.sh granite.gguf | tee dup_ids.txt
+
+      - name: Mutant check - a build with the old expert count and no task split must fail the repeated-ids step
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DUP_IDS BUILD_DIR=build-mut-dup ./build.sh --portable
+          if MOE_CACHE_LIB=$PWD/build-mut-dup/libggml-moe-cache.so IDENT_KEEP=mut_dup timeout 900 tests/dup_ids.sh granite.gguf 2>&1 | tee dup_ids_mutant.txt; then
+            echo "FAIL: the mutant passed, so the repeated-ids step does not cover the overflow"; exit 1; fi
+          # the overflow either reaches the column check or has already overwritten the heap and crashes (both seen in CI)
+          grep -qE "an expert task of .* has [0-9]+ columns" mut_dup/plugin.log dup_ids_mutant.txt || grep -qE "Segmentation fault|FAIL: the server (died|is gone)" dup_ids_mutant.txt ||
+            { echo "FAIL: the mutant failed for another reason"; tail -5 mut_dup/plugin.log; exit 1; }
+          echo "OK: the mutant fails (column check or crash)"
+
+      - name: Mutant check - a build that expects another op number must refuse to run (start-up layout check of the running ggml)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_STATS: "1"
+          IDENT_KEEP: mut_abi
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_ABI BUILD_DIR=build-mut-abi ./build.sh --portable
+          MOE_CACHE_LIB=$PWD/build-mut-abi/libggml-moe-cache.so tests/identity.sh granite.gguf --tokens 8 --ctx 2048 --n-cpu-moe 999 | tee abi_mutant.txt || true   # the refused plugin makes identity.sh exit 2: the greps decide
+          grep -q "does not match the ggml headers this plugin was built with (op .* expected MUL_MAT_ID)" mut_abi/plugin.log ||
+            { echo "FAIL: the mutant did not refuse"; grep "moe-cache:" mut_abi/plugin.log | head -5; exit 1; }
+          if grep -q "does not match the ggml headers" ident_exec/plugin.log; then echo "FAIL: the real build refused"; exit 1; fi
+          echo "OK: the layout check refuses a mismatch and passes the real build"
+
+      - name: Reads straight into place, each read's range poisoned while it is in flight (what Windows shows other threads), executor byte-checked
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_DIRECT: "1"
+          MOE_CACHE_TEST_POISON_READS: "1"
+          MOE_CACHE_TEST_READ_DELAY_US: "2000"
+          IDENT_KEEP: poison_reads
+        run: |
+          tests/dup_ids.sh granite.gguf 1 | tee poison_reads.txt
+          grep -E "reads straight into place [1-9]" poison_reads/plugin.log
+
+      - name: Mutant check - the old direct read over the pages shared with neighbouring experts must fail the poisoned-reads step
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_DIRECT: "1"
+          MOE_CACHE_TEST_POISON_READS: "1"
+          MOE_CACHE_TEST_READ_DELAY_US: "2000"
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DIRECT_SHARED BUILD_DIR=build-mut-shared ./build.sh --portable
+          if MOE_CACHE_LIB=$PWD/build-mut-shared/libggml-moe-cache.so IDENT_KEEP=mut_poison timeout 900 tests/dup_ids.sh granite.gguf 1 2>&1 | tee poison_mutant.txt; then
+            echo "FAIL: the mutant passed, so the poisoned-reads step does not cover reads over shared pages"; exit 1; fi
+          grep -q "moe-cache: cache mode" mut_poison/plugin.log || { echo "FAIL: the mutant plugin was not active"; tail -5 mut_poison/plugin.log; exit 1; }
+          echo "OK: the mutant fails (mismatch or crash)"
 
       - name: Noise floor - plugin loaded but disabled, no repacking (must equal stock; if it does not, the comparison itself is not deterministic)
         env:
@@ -304,7 +402,7 @@ jobs:
 
       - name: Keep the logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: identity-${{ matrix.name }}
           path: |

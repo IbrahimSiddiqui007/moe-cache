@@ -17,7 +17,7 @@ while [ $# -gt 0 ]; do case "$1" in
   -h|--help) sed -n 2,14p "$0"; exit 0;; *) echo "unknown argument: $1"; exit 1;; esac; done
 [ -x "$LS" ] || { echo "llama-server not found: pass --llama-server /path/to/llama-server"; exit 1; }
 LS="$(readlink -f "$LS")"
-TMP="$(mktemp)"; trap 'rm -f "$TMP"' EXIT
+TD="$(mktemp -d)"; TMP="$TD/report"; trap 'rm -rf "$TD"' EXIT     # one private folder: no fixed names next to a file in /tmp
 say() { echo "$@" | tee -a "$TMP"; }
 run() { echo "\$ $*" >> "$TMP"; "$@" 2>&1 | tee -a "$TMP"; }
 
@@ -78,7 +78,8 @@ if [ -n "$MODEL" ]; then
 fi
 
 # the report must not contain the user's name or paths
-sed -e "s#$HOME#~#g" -e "s#/home/[^/ ]*#/home/USER#g" "$TMP" > "$OUT"
+r=$(<"$TMP"); r=${r//"$HOME"/\~}       # literal replacement: a HOME with # . & would break a sed pattern or leave the real path in
+printf '%s\n' "$r" | sed -e "s#/home/[^/ ]*#/home/USER#g" > "$OUT"
 echo
 echo "Report written to: $OUT"
 echo "Please send that file back. Thank you!"

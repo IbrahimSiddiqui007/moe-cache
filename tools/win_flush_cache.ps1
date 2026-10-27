@@ -2,7 +2,7 @@
 # It only READS other big files (more than the machine's RAM in total), so the standby cache no longer holds the target.
 # Stock llama-server benefits from a warm file cache, the plugin's unbuffered reads do not: flush before every run for a fair stock-vs-plugin comparison.
 #
-#   powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target D:\models\a.gguf -Other D:\models,E:\more\b.gguf
+#   powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target D:\models\a.gguf -Other "D:\models|E:\more\b.gguf"
 #     -Target  the model(s) you are about to run: never read here, and skipped if they also lie in an -Other folder
 #     -Other   big files and/or folders (searched recursively, files of 100 MB or more) to read instead
 #     -Factor  read this multiple of the RAM (default 1.15; the cache cannot hold more than the RAM)
@@ -13,6 +13,9 @@ param(
   [double]$Factor = 1.15
 )
 $ErrorActionPreference = "Stop"
+# "-File" passes a list as separate words that do not bind to [string[]]: callers join several paths with "|" (never part of a Windows path)
+$Target = @($Target | ForEach-Object { $_ -split '\|' } | Where-Object { $_ })
+$Other = @($Other | ForEach-Object { $_ -split '\|' } | Where-Object { $_ })
 $ram = [double](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $want = $ram * $Factor
 $skip = @{}

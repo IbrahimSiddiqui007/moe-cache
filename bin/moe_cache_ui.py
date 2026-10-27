@@ -159,7 +159,7 @@ def vram_now():
     """{name, used, total} bytes of the GPU (NVIDIA: nvidia-smi; AMD on Linux: sysfs); None when neither answers."""
     try:
         r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.used,memory.total", "--format=csv,noheader,nounits"],
-                           capture_output=True, text=True, timeout=5)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
         if r.returncode == 0 and r.stdout.strip():
             name, used, tot = [x.strip() for x in r.stdout.strip().splitlines()[0].split(",")]
             return {"name": name, "used": float(used) * 2**20, "total": float(tot) * 2**20}
@@ -231,10 +231,10 @@ def run_planner(path, ctx, ram, vram, kv="f16"):
     """planner/plan.py --json, exactly as the launcher calls it; raises with the planner's own last line on failure."""
     p = [mc.python_cmd(), os.path.join(HERE, "planner", "plan.py"), path, "--ctx", str(ctx), "--kv", kv, "--json"]
     if ram:
-        p += ["--ram-gib", str(ram)]
+        p += ["--ram-gib", mc.ram_gib(ram)]       # ram is GB, the planner takes GiB
     if vram:
         p += ["--vram-gib", str(vram)]
-    r = subprocess.run(p, capture_output=True, text=True, timeout=300)
+    r = subprocess.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     try:
         return json.loads(r.stdout)
     except ValueError:
@@ -484,7 +484,7 @@ def shown_command(s):
 def dry_run(s):
     a = server_args(s)
     a.insert(a.index("--"), "--dry-run")          # a launcher option: after the -- it would go to llama-server
-    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, timeout=300, env=child_env(s.get("api_key")))
+    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, env=child_env(s.get("api_key")))
     key = s.get("api_key")
     return [l.replace(key, "KEY") if key else l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
 
@@ -500,7 +500,7 @@ KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]
 def launcher_key():
     """The launcher's key for agent servers; None when this launcher has none (before option C) or the command fails."""
     try:
-        r = subprocess.run(KEY_CMD, capture_output=True, text=True, timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        r = subprocess.run(KEY_CMD, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     except Exception:
         return None
     k = r.stdout.strip()
@@ -732,7 +732,7 @@ def move_to_trash(path):
         return "the Recycle Bin"
     gio = shutil_which("gio")
     if gio:
-        r = subprocess.run([gio, "trash", path], capture_output=True, text=True, timeout=60)
+        r = subprocess.run([gio, "trash", path], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
         if r.returncode == 0 and not os.path.exists(path):
             return "the Trash"
     # the freedesktop.org Trash in the user's home (same file system as ~/.cache in the usual set-up): info file first, then a rename
@@ -913,8 +913,8 @@ def flush_model_cache(model, other):
         folders = [o for o in other if o and os.path.exists(o)]
         if not folders:
             return False, "no folder with other big files to read (set one under Cold start)"
-        r = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", WIN_FLUSH, "-Target"] + parts + ["-Other"] + folders,
-                           capture_output=True, text=True, timeout=3600)
+        r = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", WIN_FLUSH, "-Target", "|".join(parts), "-Other", "|".join(folders)],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3600)
         out = " ".join(l.strip() for l in (r.stdout + r.stderr).splitlines() if l.strip())
         return r.returncode == 0, out or f"win_flush_cache.ps1 exit code {r.returncode}"
     users = sorted({pid for p in parts for pid in mapped_by(p)})
@@ -1012,11 +1012,11 @@ class Runner:
             except Exception:
                 pass
         self.state, self.started = "starting", time.time()
+        ready.set()                 # the launcher runs: start() may answer now (the key lookup below can take as long as start() waits)
         if s.get("agent") and not s.get("api_key"):
             self.auto_key = launcher_key()
         self.add_line("ui: " + shown_command(s) + (" (API key: the launcher's agent key)" if self.auto_key else ""))
         threading.Thread(target=self.read, args=(p,), daemon=True).start()
-        ready.set()
         self.poll(p)
         p.wait()
 
@@ -1086,6 +1086,13 @@ class Runner:
             p.wait(timeout=60)
         except subprocess.TimeoutExpired:
             p.kill()
+        # Windows: llama-server ends a moment after the launcher (when its job closes); a Start or the cold-start bench right after found the
+        # port still in use
+        port = int(self.settings.get("port") or 8080)
+        for _ in range(40):
+            if not mc.port_busy(port):
+                break
+            time.sleep(0.25)
 
     # -- input --
     def add_line(self, line):
@@ -1134,7 +1141,7 @@ class Runner:
         rc = p.wait()
         if p is self.p:
             self.rc = rc
-            self.state = "stopped" if self.state == "stopping" or rc in (0, -signal.SIGTERM, 143, 1 if WINDOWS else 0) else "exited"
+            self.state = "stopped" if self.state == "stopping" or rc in (0, -signal.SIGTERM, 143) else "exited"
             self.add_line(f"ui: the server ended (exit code {rc})")
 
     def add_warning(self, line):
@@ -1391,6 +1398,31 @@ CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 
 MAX_BODY = 64 * 1024
 
 
+def token_eq(given, token):
+    """Constant-time token check that also takes odd input (compare_digest raises TypeError on non-ASCII str: a dropped connection)."""
+    return bool(given) and bool(token) and secrets.compare_digest(str(given).encode("utf-8", "replace"), str(token).encode("utf-8"))
+
+
+def open_page(url):
+    """Open the page without putting its token on the browser's command line, which other users of a Linux machine can read in /proc:
+    the browser gets a private (0600) file that forwards to the address; the file is removed after a minute."""
+    import tempfile
+    import webbrowser
+    fd, path = tempfile.mkstemp(prefix="moe-cache-ui-", suffix=".html")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(f"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url={url}'><title>moe-cache</title>"
+                f"<p style='font:15px system-ui;margin:2em'><a href='{url}'>Open the moe-cache control page</a></p>")
+    import pathlib
+    webbrowser.open(pathlib.Path(path).as_uri())
+
+    def gone():
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    threading.Timer(60, gone).start()
+
+
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
@@ -1401,7 +1433,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def allowed(self, navigation=False):
+    def allowed(self, navigation=False, cross_site=False):
         """Only pages from this server: the Host must be ours (no DNS rebinding), a foreign Origin is refused and the browser must say the request
         comes from this page (Sec-Fetch-Site same-origin, or 'none' for opening the page itself from the address bar or the launcher)."""
         port = self.server.server_address[1]
@@ -1412,7 +1444,7 @@ class Handler(BaseHTTPRequestHandler):
         if o is not None and o not in {"http://" + h for h in ok}:
             return False
         site = self.headers.get("Sec-Fetch-Site")
-        return site is None or site == "same-origin" or (navigation and site == "none")
+        return site is None or site == "same-origin" or (navigation and (site == "none" or (cross_site and site == "cross-site")))
 
     def cookie_name(self):
         return f"moe_cache_ui_{self.server.server_address[1]}"       # cookies are not per port: the name is
@@ -1426,7 +1458,7 @@ class Handler(BaseHTTPRequestHandler):
                 k, _, v = part.strip().partition("=")
                 if k == self.cookie_name():
                     t = v
-        return bool(t) and secrets.compare_digest(t, self.token)
+        return bool(t) and token_eq(t, self.token)
 
     def end_headers(self):
         self.send_header("X-Frame-Options", "DENY")
@@ -1450,10 +1482,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query).items()}
-        if not self.allowed(navigation=u.path in ("/", "/index.html")):
+        link = u.path in ("/", "/index.html") and token_eq(q.get("t"), self.token)
+        # the launcher opens the link from a private file:// page (cross-site), so the token never shows in the browser's command line
+        if not self.allowed(navigation=u.path in ("/", "/index.html")) and not (link and self.allowed(navigation=True, cross_site=True)):
             return self.send(403, {"error": "forbidden"})
         if u.path in ("/", "/index.html"):
-            if q.get("t") and secrets.compare_digest(q["t"], self.token):
+            if link and self.headers.get("Sec-Fetch-Site") == "cross-site":
+                # from the launcher's file:// page: a redirect would stay "cross-site" and the browser would hold back the SameSite=Strict cookie,
+                # so set the cookie here and let this page itself move on to / (a same-origin navigation)
+                body = b"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url=/'><title>moe-cache</title>"
+                self.send_response(200)
+                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if link:
                 # the launcher's link: keep the token in a cookie only this page sends, and drop it from the address bar
                 self.send_response(303)
                 self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
@@ -1693,7 +1739,7 @@ def connect_agent(agent, url, api_key, write):
     env = dict(os.environ, LLAMA_API_KEY=api_key, PYTHONIOENCODING="utf-8")
     if not api_key:
         env.pop("LLAMA_API_KEY", None)
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, env=env)
     out = {"rc": r.returncode, "output": (r.stdout + r.stderr).strip(), "file": None, "written": None}
     m = re.search(r"; config (.+?\.json)", out["output"])
     if write and r.returncode == 0 and m:
@@ -1734,8 +1780,7 @@ def ui(argv):
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
     mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if not a.no_browser:
-        import webbrowser
-        threading.Timer(0.5, webbrowser.open, args=(url,)).start()
+        threading.Timer(0.5, open_page, args=(url,)).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

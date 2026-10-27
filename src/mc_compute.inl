@@ -146,6 +146,19 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
                         fprintf(stderr, "moe-cache:   row %lld, pick %lld, token %lld, expert %d (picked %d times in this batch); by hand %.9g -> %s; activation type %s, ne1 %lld\n",
                                 (long long) r, (long long) slot, (long long) t, e, same_e, v, v == x[k] ? "matches the executor" : v == y[k] ? "matches stock" : "matches neither",
                                 ggml_type_name(a->type), (long long) a->ne[1]);
+                        if (g_exec_last.nd == nd) {
+                            // the executor's own input column for this value (still in its buffer) and its kernel, run now on this thread
+                            const char * ec = g_exec_last.base + (size_t) (slot % a->ne[1]) * g_exec_last.stride_i11 + (size_t) t * g_exec_last.stride_tok;
+                            const size_t rs = ggml_row_size(tt->vec_dot_type, a->ne[0]);
+                            const bool same = memcmp(ec, col.data(), rs) == 0;
+                            float v2 = 0;
+                            g_exec_last.dot((int) w->ne[0], &v2, 0, (const char *) w->data + (size_t) e * w->nb[2] + (size_t) r * w->nb[1], 0, ec, 0, 1);
+                            const bool was_late = std::find(g_exec_last.late.begin(), g_exec_last.late.end(), e) != g_exec_last.late.end();
+                            fprintf(stderr, "moe-cache:   executor's column %s a fresh conversion%s; executor's kernel on it now %.9g -> %s; expert %d %s when the op "
+                                    "started (%zu of the op's experts were)\n", same ? "equals" : "DIFFERS FROM", g_exec_last.dot == tt->vec_dot ? "" : " (other kernel)",
+                                    v2, v2 == x[k] ? "matches the executor" : v2 == y[k] ? "matches stock" : "matches neither", e,
+                                    was_late ? "was STILL LOADING" : "was complete", g_exec_last.late.size());
+                        }
                     }
                     memcpy(nd->data, mine.data(), nb);
                 }
@@ -174,10 +187,18 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     if (!c->cpu) {
         c->cpu = ggml_backend_dev_init(CPU().dev, nullptr);
     }
+    if (c->tp_n != c->n_threads && c->tp2 && c->tp2_n == c->n_threads && CPU().set_tp) {
+        // back to the other thread count (-t for decode, -tb for prompts): reuse its threadpool instead of joining and starting all threads again
+        std::swap(c->tp, c->tp2);
+        std::swap(c->tp_n, c->tp2_n);
+        CPU().set_tp(c->cpu, c->tp);    // pauses the other one
+    }
     if (c->tp_n != c->n_threads && CPU().tp_new && CPU().set_tp) {
-        if (c->tp && CPU().tp_free) {
-            CPU().tp_free(c->tp);
+        if (c->tp2 && CPU().tp_free) {
+            CPU().tp_free(c->tp2);         // not the one the backend holds
         }
+        c->tp2 = c->tp;                    // keep the current one for the next switch back
+        c->tp2_n = c->tp_n;
         ggml_threadpool_params tpp;
         memset(&tpp, 0, sizeof(tpp));
         tpp.n_threads = c->n_threads;
@@ -267,6 +288,17 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 if (ggml_graph_node(cg, k) == ids) {
                     fprintf(stderr, "moe-cache: ids tensor is computed inside the same split, not supported\n");
                     abort();
+                }
+            }
+            // test switch: picks 1..N-1 of every token repeat pick 0, as a GPU top-k fed NaN router scores does (CPU runners never produce it).
+            // Stock and the executor (and MOE_CACHE_EXEC_CHECK) then see the same repeated ids; CI checks that nothing crashes or differs.
+            static const int test_dup = [] { const char * v = getenv("MOE_CACHE_TEST_DUP_IDS"); return v ? atoi(v) : 0; }();
+            if (test_dup > 1 && ids->type == GGML_TYPE_I32) {
+                for (int64_t t = 0; t < ids->ne[1]; t++) {
+                    const char * row = (const char *) ids->data + t * ids->nb[1];
+                    for (int64_t u = 1; u < std::min<int64_t>(test_dup, ids->ne[0]); u++) {
+                        *(int32_t *) (row + u * ids->nb[0]) = *(const int32_t *) row;
+                    }
                 }
             }
             std::vector<int> tidx;
@@ -409,7 +441,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 
     // long prompts: run the expert block on the GPU (what llama.cpp's own offload does for batches of 32+ tokens)
     std::vector<std::pair<ggml_tensor *, ggml_op>> silenced;
-    if (s.cache_on && s.gpu_dev && !c->gpu_failed) {
+    if (s.cache_on && s.gpu_dev && !c->gpu_failed && s.graphs.load() >= c->gpu_retry_at) {
         for (const auto & gr : groups_found) {
             if (gr.n_tok < s.gpu_min_tokens) {
                 continue;
