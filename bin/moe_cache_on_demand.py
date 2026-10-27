@@ -9,6 +9,9 @@ Model listing (/v1/models, /props) is answered without starting the model, so ag
 
   moe_cache.py on-demand MODEL.gguf [launcher options] [-- llama-server args]   remember this model and its options, then listen
   moe_cache.py on-demand                                                         listen with the remembered choice
+  moe_cache.py on-demand MODEL2.gguf [launcher options] --add                    a second model (Ollama-style: the request's "model" picks
+                                                                                 it; one runs at a time, the other is stopped first)
+  moe_cache.py on-demand --remove NAME                                           forget an added model (NAME as /v1/models lists it)
   moe_cache.py on-demand [MODEL ...] --install-autostart                         start it at login (systemd --user unit / Windows Startup folder)
   moe_cache.py on-demand --remove-autostart | --stop | --status
 """
@@ -154,9 +157,11 @@ class Backend:
             self.seen = self.c["seen"] = seen
             try:
                 c = load_choice()
-                if c and c.get("model") == self.c["model"] and c.get("args") == self.c.get("args"):
-                    c["seen"] = seen
-                    save_choice(c)
+                for e in ([c] + list(c.get("extra") or [])) if c else []:
+                    if e.get("model") == self.c["model"] and e.get("args") == self.c.get("args"):
+                        e["seen"] = seen
+                        save_choice(c)
+                        break
             except OSError:
                 pass
 
@@ -249,6 +254,68 @@ class Backend:
         return p
 
 
+class Pool:
+    """The models on-demand serves (N9; the first is the default). One runs at a time: a request for another model waits until the running one
+    has no request in flight, stops it, then starts the one asked for. The request's "model" field picks; a name it does not know goes to the
+    running model, else the default (as with one model: llama-server itself ignores the field)."""
+
+    def __init__(self, backends, drain_timeout=600):
+        self.bs, self.drain = list(backends), drain_timeout
+        self.key = self.bs[0].key
+        self.lock = threading.Lock()
+
+    @property
+    def state(self):
+        r = self.running()
+        return r.state if r else "idle"
+
+    def running(self):
+        return next((b for b in self.bs if b.running()), None)
+
+    def pick(self, name):
+        if name:
+            n = re.sub(r"\.gguf$", "", str(name))
+            for b in self.bs:
+                ids = [m.get("id") for m in (b.seen.get("/v1/models") or {}).get("data", []) if isinstance(m, dict)]
+                if n == b.alias or n in ids:
+                    return b
+        return self.running() or self.bs[0]
+
+    def ensure(self, b, why):
+        """The port of b, ready; another running model is stopped first (after its requests end). Counts the request as busy on b (the caller
+        ends it with b.busy(-1)), inside the lock, so a swap waiting for b to drain sees it."""
+        with self.lock:
+            for o in self.bs:
+                if o is not b and o.running():
+                    t = time.time()
+                    while o.active > 0 and time.time() - t < self.drain:
+                        time.sleep(0.2)
+                    if o.active > 0:
+                        raise RuntimeError(f"{o.alias} is still answering another request; try again when it is done")
+                    o.log(f"switching from {o.alias} to {b.alias}")
+                    o.stop(f"switching to {b.alias}")
+            b.busy(+1)
+            try:
+                return b.ensure(why)
+            except Exception:
+                b.busy(-1)
+                raise
+
+    def models(self):
+        if len(self.bs) == 1:
+            return self.bs[0].models()
+        data, seen = [], set()
+        for b in self.bs:
+            for m in b.models().get("data", []):
+                if m.get("id") not in seen:
+                    seen.add(m.get("id")); data.append(m)
+        return {"object": "list", "data": data}
+
+    def stop(self, reason):
+        for b in self.bs:
+            b.stop(reason)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "moe-cache-on-demand"
@@ -275,7 +342,7 @@ class Handler(BaseHTTPRequestHandler):
     def authed(self):
         h = self.headers.get("Authorization") or ""
         got = h[7:].strip() if h[:7].lower() == "bearer " else (self.headers.get("X-Api-Key") or "")
-        return hmac.compare_digest(got.encode(), self.server.b.key.encode())
+        return hmac.compare_digest(got.encode(), self.server.pool.key.encode())
 
     def body(self):
         n = self.headers.get("Content-Length")
@@ -306,29 +373,37 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def handle_any(self):
-        b = self.server.b
+        pool = self.server.pool
         path = self.path.split("?")[0]
         data = self.body()
         if path in ("/health", "/v1/health"):        # public, as in llama-server; never starts the model
-            return self.reply(200, {"status": "ok", "on_demand": b.state})
+            r = pool.running()
+            return self.reply(200, dict({"status": "ok", "on_demand": pool.state}, **({"model": r.alias} if r and len(pool.bs) > 1 else {})))
         if not self.authed():
             if path == "/" and self.command == "GET":
-                return self.reply(200, f"moe-cache on-demand: {b.alias}, {b.state}. Agents: base URL http://{self.headers.get('Host')}/v1 "
-                                       "with the API key from `moe_cache.py key`.\n", "text/plain; charset=utf-8")
+                return self.reply(200, f"moe-cache on-demand: {', '.join(b.alias for b in pool.bs)}, {pool.state}. Agents: base URL "
+                                       f"http://{self.headers.get('Host')}/v1 with the API key from `moe_cache.py key`.\n", "text/plain; charset=utf-8")
             return self.reply(401, {"error": {"message": "Invalid API Key", "type": "authentication_error", "code": 401}})
-        if self.command == "GET" and b.state != "ready":
-            if path in ("/v1/models", "/models"):
-                return self.reply(200, b.models())
-            if path == "/props":
-                return self.reply(200, b.props())
-            if path in NOT_FOUND_PROBES:     # Hermes asks these once to tell LM Studio / Ollama / llama.cpp apart; llama-server's own answer is 404
-                return self.reply(404, {"error": {"message": "File Not Found", "type": "not_found_error", "code": 404}})
-        b.busy(+1)
-        try:
+        name = None
+        if data and self.command == "POST":
             try:
-                port = b.ensure(f"{self.command} {path}")
-            except RuntimeError as e:
-                return self.reply(503, {"error": {"message": str(e), "type": "unavailable_error", "code": 503}})
+                name = json.loads(data).get("model")
+            except (ValueError, AttributeError, UnicodeDecodeError):
+                pass
+        b = pool.pick(name)
+        if self.command == "GET" and (pool.state != "ready" or len(pool.bs) > 1):
+            if path in ("/v1/models", "/models"):        # with several models: always all of them, not only the running one
+                return self.reply(200, pool.models())
+            if pool.state != "ready":
+                if path == "/props":
+                    return self.reply(200, b.props())
+                if path in NOT_FOUND_PROBES:     # Hermes asks these once to tell LM Studio / Ollama / llama.cpp apart; llama-server's own answer is 404
+                    return self.reply(404, {"error": {"message": "File Not Found", "type": "not_found_error", "code": 404}})
+        try:
+            port = pool.ensure(b, f"{self.command} {path}")
+        except RuntimeError as e:
+            return self.reply(503, {"error": {"message": str(e), "type": "unavailable_error", "code": 503}})
+        try:
             self.proxy(port, data)
         finally:
             b.busy(-1)
@@ -388,10 +463,12 @@ class Server(ThreadingHTTPServer):
 
 
 def serve(backend, port, host="127.0.0.1"):
-    """Listen until interrupted; returns the server (tests run it in a thread and call shutdown())."""
+    """Listen until interrupted; returns the server (tests run it in a thread and call shutdown()). backend: a Backend or a Pool of them."""
     srv = Server((host, port), Handler)
-    srv.b = backend
-    threading.Thread(target=backend.watch, daemon=True).start()
+    srv.pool = backend if isinstance(backend, Pool) else Pool([backend])
+    srv.b = srv.pool.bs[0]
+    for b in srv.pool.bs:
+        threading.Thread(target=b.watch, daemon=True).start()
     return srv
 
 
@@ -516,6 +593,8 @@ def status(c):
     """--status: the remembered choice, whether the listener runs and the model server's state."""
     pid = running_pid()
     say(f"on-demand: model {c['model']}  options {' '.join(c.get('args', [])) or '-'}  port {c.get('port', 8080)}  idle stop {c.get('idle', 15):g} min")
+    for e in c.get("extra") or []:
+        say(f"on-demand: also {model_alias(e['model'], e.get('args', []))}: {e['model']}  options {' '.join(e.get('args', [])) or '-'}")
     say(f"on-demand: listener {'running, PID ' + str(pid) if pid else 'not running'}; autostart "
         + ("on" if os.path.isfile(startup_link() if WINDOWS else unit_path()) else "off"))
     st, body = mc.http(f"http://127.0.0.1:{c.get('port', 8080)}/health", timeout=2)
@@ -537,6 +616,8 @@ def on_demand(argv):
     ap.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart and stop the listener")
     ap.add_argument("--stop", action="store_true", help="stop a running listener (and its model)")
     ap.add_argument("--status", action="store_true", help="print the remembered choice and whether the listener runs")
+    ap.add_argument("--add", action="store_true", help="add MODEL as another model (the default stays); a request's \"model\" picks it")
+    ap.add_argument("--remove", metavar="NAME", help="forget an added model (its name as /v1/models lists it)")
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i:]
@@ -546,6 +627,21 @@ def on_demand(argv):
     if a.stop:
         return 0 if stop_running() else (say("on-demand: no listener is running") or 1)
     c = load_choice()
+    if a.remove:
+        if not c:
+            raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options]")
+        keep = [e for e in c.get("extra") or [] if model_alias(e["model"], e.get("args", [])) != a.remove]
+        if len(keep) == len(c.get("extra") or []):
+            raise SystemExit(f"no added model named {a.remove} (the default {model_alias(c['model'], c.get('args', []))} is replaced, not removed: "
+                             "on-demand MODEL.gguf)")
+        c["extra"] = keep
+        save_choice(c)
+        say(f"on-demand: forgot {a.remove}; restart the listener to use the change")
+        return 0
+    if a.add and not a.model:
+        raise SystemExit("give the model to add: moe_cache.py on-demand MODEL.gguf [options] --add")
+    if a.add and not c:
+        raise SystemExit("choose the default model first: moe_cache.py on-demand MODEL.gguf [options]; then add others with --add")
     if a.model or rest or extra:
         if not a.model:
             raise SystemExit("give the model first: moe_cache.py on-demand MODEL.gguf [options]")
@@ -562,10 +658,23 @@ def on_demand(argv):
                            env=dict(os.environ, **env), timeout=600)
         if r.returncode:
             raise SystemExit("the launcher refused these options:\n" + (r.stderr or r.stdout).strip()[-1500:])
-        old = c or {}
-        c = {"model": model, "args": args, "env": env, "port": a.port or old.get("port", 8080), "idle": a.idle or old.get("idle", 15)}
-        save_choice(c)
-        say(f"on-demand: remembered {os.path.basename(model)} with {' '.join(args) or 'the default options'} ({CHOICE_FILE})")
+        if a.add:
+            alias = model_alias(model, args)
+            if alias == model_alias(c["model"], c.get("args", [])):
+                raise SystemExit(f"{alias} is already the default model (give the second one another file or -- --alias NAME)")
+            c["extra"] = [e for e in c.get("extra") or [] if model_alias(e["model"], e.get("args", [])) != alias] + [{"model": model, "args": args, "env": env}]
+            c.update({k: v for k, v in (("port", a.port), ("idle", a.idle)) if v})
+            save_choice(c)
+            say(f"on-demand: added {alias} ({os.path.basename(model)}) with {' '.join(args) or 'the default options'}; the default stays "
+                f"{model_alias(c['model'], c.get('args', []))}. One model runs at a time; restart the listener to use the change")
+            return 0
+        else:
+            old = c or {}
+            c = {"model": model, "args": args, "env": env, "port": a.port or old.get("port", 8080), "idle": a.idle or old.get("idle", 15)}
+            save_choice(c)
+            say(f"on-demand: remembered {os.path.basename(model)} with {' '.join(args) or 'the default options'} ({CHOICE_FILE})"
+                + (f"; the added models ({', '.join(model_alias(e['model'], e.get('args', [])) for e in old.get('extra') or [])}) are forgotten"
+                   if old.get("extra") else ""))
     elif not c:
         raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options]")
     elif a.port or a.idle:
@@ -583,12 +692,14 @@ def on_demand(argv):
         raise SystemExit(f"port {port} is already in use (another server, or on-demand already runs: moe_cache.py on-demand --status)")
     if not WINDOWS:
         os.umask(0o077)
-    b = Backend(c, idle_min=c.get("idle", 15), start_timeout=a.start_timeout)
+    b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout) for e in [c] + list(c.get("extra") or [])])
     srv = serve(b, port)
     with open(PID_FILE, "w") as f:
         f.write(f"{os.getpid()} {port}\n")
-    log(f"listening on http://127.0.0.1:{port}/v1 for {b.alias} (context {b.ctx}); the model starts on the first request and stops after "
-        f"{b.idle / 60:g} idle min. Connect agents: moe_cache.py connect hermes|opencode --write")
+    d = b.bs[0]
+    log(f"listening on http://127.0.0.1:{port}/v1 for {', '.join(x.alias for x in b.bs)} (context {d.ctx}); the model starts on the first request "
+        f"and stops after {d.idle / 60:g} idle min" + ("; one model at a time, the request's model name picks it" if len(b.bs) > 1 else "")
+        + ". Connect agents: moe_cache.py connect hermes|opencode --write")
     def bye(sig, frame):
         raise KeyboardInterrupt
     if not WINDOWS:
