@@ -194,9 +194,16 @@ jobs:
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 failed ($LASTEXITCODE)" }
 
-      - name: Identity, Windows file-view cache (MOE_CACHE_WIN_VIEW=1, idea I47), cache forced to evict, executor byte-checked
+      - name: Identity, private-memory cache (MOE_CACHE_WIN_VIEW=0, the Windows path before RESULTS 59), cache forced to evict
         run: |
-          $env:MOE_CACHE_WIN_VIEW = "1"; $env:MOE_CACHE_EXEC = "2"; $env:MOE_CACHE_EXEC_CHECK = "1"
+          $env:MOE_CACHE_WIN_VIEW = "0"
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048
+          if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (private memory) failed ($LASTEXITCODE)" }
+          if (Select-String "$env:TEMP\moe-cache-test\plugin.err.txt" -Pattern "read-only views of the model file" -Quiet) { throw "MOE_CACHE_WIN_VIEW=0 did not turn the file view off" }
+
+      - name: Identity, Windows file-view cache (the default, idea I47), cache forced to evict, executor byte-checked
+        run: |
+          $env:MOE_CACHE_EXEC = "2"; $env:MOE_CACHE_EXEC_CHECK = "1"
           powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048 -Extra "--no-repack"
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (file view) failed ($LASTEXITCODE)" }
           $log = "$env:TEMP\moe-cache-test\plugin.err.txt"

@@ -105,7 +105,7 @@ struct state_t {
 #else
     static constexpr bool win_buffered = false, win_random = false;
 #endif
-    bool   win_view = false;                    // Windows file-view cache (MOE_CACHE_WIN_VIEW=1, see the constructor); never on Linux
+    bool   win_view = false;                    // Windows file-view cache (default on Windows, MOE_CACHE_WIN_VIEW=0 turns it off; see the constructor); never on Linux
     std::vector<const char *> views;            // win_view: one read-only view per model file (split GGUF)
     std::vector<size_t> view_sizes;
     size_t view_bytes = 0;                      // win_view: resident bytes of experts held in the views (not private memory: not in rss_private())
@@ -335,12 +335,14 @@ struct state_t {
             fds_buf.push_back(plat::file_t());
         }
 #ifdef _WIN32
-        // MOE_CACHE_WIN_VIEW=1 (being tested, idea I47): keep the cached experts in read-only views of the model files instead of private memory.
+        // Windows default (idea I47; MOE_CACHE_WIN_VIEW=0 goes back to private memory): keep the cached experts in read-only views of the model files.
+        // PC cold ABBA vs stock at launcher defaults (RESULTS 59): Flash-Next IQ3_XXS 19.86 vs 15.14 tok/s, IQ2_XS 21.94 vs 14.89.
         // Private memory is charged to Windows commit (RAM + page file), and so are Vulkan's GPU allocations: on the PC that held the cache at
         // 8-11 GiB, resized hundreds of times per request, while stock llama.cpp's mmap used ~27 GB of file pages that cost no commit (RESULTS 59).
         // File-view pages cost no commit; a hard working-set minimum (update_ws_min) keeps the resident ones in RAM. Which experts are resident,
         // prefetch and the executor work exactly as on Linux; only loading (touch the view instead of reading into private pages) and eviction
         // (drop the pages from the working set; they stay in the file cache) differ.
+        win_view = true;
         if (const char * v = getenv("MOE_CACHE_WIN_VIEW")) {
             win_view = strcmp(v, "0") != 0;
         }
@@ -349,7 +351,7 @@ struct state_t {
                 size_t n = 0;
                 const char * vb = plat::file_view_map(sp.c_str(), &n);
                 if (!vb) {
-                    fprintf(stderr, "moe-cache: MOE_CACHE_WIN_VIEW: cannot map %s read-only (Windows error %lu): the cache uses private memory\n", sp.c_str(), GetLastError());
+                    fprintf(stderr, "moe-cache: file-view cache: cannot map %s read-only (Windows error %lu): the cache uses private memory\n", sp.c_str(), GetLastError());
                     break;
                 }
                 views.push_back(vb);
@@ -358,8 +360,8 @@ struct state_t {
             win_view = views.size() == shard_paths.size();
             if (win_view) {
                 plat::count_file_cache() = false;      // the views' pages are counted as the cache's own (view_bytes), not as available file cache
-                fprintf(stderr, "moe-cache: MOE_CACHE_WIN_VIEW: experts are kept in read-only views of the model file (%zu), held in RAM by a hard "
-                                "working-set minimum; they use no commit (RAM + page file)\n", views.size());
+                fprintf(stderr, "moe-cache: experts are kept in read-only views of the model file (%zu), held in RAM by a hard "
+                                "working-set minimum; they use no commit (RAM + page file; MOE_CACHE_WIN_VIEW=0: private memory)\n", views.size());
             }
         }
 #endif
