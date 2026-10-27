@@ -2107,3 +2107,20 @@ each kind. Both kinds get the launcher's `--agent` arguments (context 65536, --j
   follow-up first token ~3x), decode is equal at this context.
 - Fits in RAM (Qwen3.6): sessions 5-9 % faster, follow-up first token 20-37 % faster, decode equal.
 - MTP (both kinds): decode 43.5 -> 72 tok/s, a session 13-25 % shorter; keep `--mtp` on in agent mode for models with a head.
+
+## 61. Linux file-view cache prototype (laptop, 2026-10-27 night; ideas ledger 5f; branch claude/linux-file-cache, not merged)
+
+Question: does Linux gain from the file-view cache Windows uses (section 59)? `MOE_CACHE_LINUX_VIEW=1` (off by default): experts point into a
+shared read-only mmap of the model; load = MADV_WILLNEED + MADV_POPULATE_READ, evict = MADV_COLD + MADV_DONTNEED. Qwen3.6 35B Q4_K_M under
+`MemoryMax=10G MemorySwapMax=0`, ncmoe 34, ctx 8192, cold every run, both arms the plugin, ABBABAAB.
+| | private + O_DIRECT | file view | change |
+|---|---|---|---|
+| steady decode (mean of requests 4-8, 4 runs each) | 10.60 | 11.10 | +4.7 % (pairs +0.8 to +8.4 %) |
+| first (cold) request | 8.34 | 12.43 | +49 % |
+| expert read time / CPU compute time | 19.5 s / 9.0 s | 11.5 s / 17.4 s | reads −41 %, compute +93 % |
+| major faults | ~500 | ~27 000 | the kernel reclaims resident view pages at the cgroup limit |
+Tokens identical in all 8 runs; granite 0.2 GiB identity 4/4 (GPU, CPU, CPU --no-repack) and 2/2 long, ~140 k loads and evictions through the view.
+A first version mapped with MADV_RANDOM: 3.4-4.0 tok/s (Linux >= 6.3 ignores accessed bits of VM_RAND_READ mappings in reclaim, ~3 M faults).
+Verdict: under the +5 % bar, not merged. A cgroup charges page cache like private memory, so there is no Windows-style capacity gain; the
+real lead is the load path (page-cache read-ahead is ~40 % faster than the plugin's O_DIRECT reads here). Also seen: the executor runs 0
+ops on Linux with llama-new 23b0202a1 (granite and Qwen3.6, with or without the view).

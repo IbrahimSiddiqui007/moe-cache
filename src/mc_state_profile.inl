@@ -322,7 +322,7 @@
     // Windows file-view cache: a hard working-set minimum of the cache budget plus the rest of the process, so the system does not trim the
     // resident experts' file pages (it would otherwise take them first: they are not private). Set again when the target moves by 256 MiB.
     void update_ws_min() {
-        if (!win_view) {
+        if (!win_view || !plat::is_windows) {      // Linux view prototype: no working-set minimum (no mlock either)
             return;
         }
         const size_t step = (size_t) 256 << 20;
