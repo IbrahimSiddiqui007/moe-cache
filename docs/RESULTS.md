@@ -2164,3 +2164,22 @@ CPU's share of picks from 75 % to 40 % saves ~20 % of a token (ceiling ~+25 % de
 
 **KV cache q8_0 (R11)** (Flash-Next IQ2_XS, file view, one cold run each): decode 22.01 tok/s (f16: 22.12); 2950-token prompt 170.6 tok/s
 (f16: 164.6). No speed difference at this context; q8_0 halves the KV memory, which only matters at long agent contexts (--fast already uses it).
+
+## 61. Windows desktop, 2026-10-27/28: list A (I32, B13, F5, B11/B12, N13, N8, N3, N5)
+
+Same PC as RESULTS 59-60 (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, page file 14 GB, Windows 11), llama.cpp Vulkan 620d2225c, launcher 65facd1,
+plugin DLL 681f3bc (file view), unless a row says otherwise.
+
+**I32: Vulkan iq2_s vs iq2_xs matrix-vector kernel on RDNA4** (facts for the owner's upstream note, with I25). Stock llama-server, `--device Vulkan1`
+(the 9070 XT; the iGPU left out), `GGML_VK_PERF_LOGGER=1`, Flash-Next IQ3_XXS (D:), which mixes expert types of one shape: gate/up of layers
+12/15/17/21 (iq2_s), 0/2/4/5 (iq2_xs), 1/3/6/7 (iq2_xxs), 35/36/41/44 (iq3_xxs) on the GPU with `-ot`, the other experts on the CPU; 64 decode
+tokens after a 16-token warm-up (C:\dl\pc_i32.ps1, log C:\dl\i32.err.txt). Shape per call: m=640, k=2560, 10 experts of 512 (one token).
+| Tensor type | bits/weight | `MUL_MAT_ID_VEC` median (624 calls) | p10 | effective read | vs iq2_xs |
+|---|---|---|---|---|---|
+| iq2_xxs | 2.06 | 42.75 us | 42.32 us | 99 GB/s | 0.93x |
+| iq2_xs | 2.31 | 46.07 us | 36.48 us | 103 GB/s | 1 |
+| **iq2_s** | 2.5 | **75.57 us** | 74.40 us | 68 GB/s | **1.64x** (p10 2.04x) |
+| iq3_xxs | 3.06 | 73.66 us | 57.96 us | 85 GB/s | 1.60x |
+Prompt batches (`MUL_MAT_ID`, 2 / 4 tokens): iq2_s 115 / 142 us vs iq2_xs 41 / 61 us (2.8x / 2.3x).
+Verdict: the gap seen on the Arc iGPU (1.9x, I25) is also on AMD RDNA4 (1.64x median, over the 1.3x kill line): iq2_s is as slow as iq3_xxs
+with 18 % fewer bits. Not checked: whether 620d2225c changed either shader (that commit is not on the laptop; no fetch).
