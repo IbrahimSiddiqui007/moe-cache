@@ -178,7 +178,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     std::unordered_set<const ggml_tensor *> inside;
     for (int i = first; i <= last; i++) {
         ggml_tensor * n = ggml_graph_node(cg, i);
-        if (n->op != GGML_OP_MUL_MAT_ID && n->op != GGML_OP_GLU) {
+        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu) {
             return false;
         }
         inside.insert(n);

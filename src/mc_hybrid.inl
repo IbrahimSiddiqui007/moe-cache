@@ -329,7 +329,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     std::vector<ggml_tensor *> seg;
     for (int j = first; j < n_all; j++) {
         ggml_tensor * n = ggml_graph_node(cg, j);
-        if ((n->op == GGML_OP_MUL_MAT_ID && n->src[2] == ids) || n->op == GGML_OP_GLU) {
+        if ((n->op == GGML_OP_MUL_MAT_ID && n->src[2] == ids) || n->op == g_op_glu) {
             seg.push_back(n);
         } else {
             break;

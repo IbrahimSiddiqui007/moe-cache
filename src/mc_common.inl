@@ -17,13 +17,16 @@ std::atomic<ggml_cgraph *> g_cpu_graph{nullptr};   // the graph the plugin is ha
 std::atomic<bool> g_stats_stop{false};   // set when the state is destroyed: the snapshot thread then stops without touching it
 #endif
 constexpr size_t PAGE = 4096;
+// GGML_OP_GLU of the running ggml, read from a GLU node it builds at start-up (ggml_abi_mismatch): ggml master inserted TOP_K_MASK before it,
+// so GLU is 101 there and 100 in the headers this plugin is built with. The ops below GLU that the plugin compares have not moved.
+int g_op_glu = GGML_OP_GLU;
 
 // The running ggml against the headers this plugin was built with: the op and type numbers the plugin compares, the tensor fields it reads and
 // the threadpool parameters it passes. The backend API number only covers the backend structs, and ggml 0.27 (llama.cpp b11669) is not
 // in its table at all, so a changed enum or field would give wrong output or a crash without a word. Returns "" when everything matches.
 std::string ggml_abi_mismatch() {
     struct { int v; const char * name; } ops[] = {
-        { GGML_OP_NONE, "NONE" }, { GGML_OP_MUL_MAT_ID, "MUL_MAT_ID" }, { GGML_OP_GLU, "GLU" }, { GGML_OP_VIEW, "VIEW" },
+        { GGML_OP_NONE, "NONE" }, { GGML_OP_MUL_MAT_ID, "MUL_MAT_ID" }, { GGML_OP_VIEW, "VIEW" },
         { GGML_OP_RESHAPE, "RESHAPE" }, { GGML_OP_PERMUTE, "PERMUTE" }, { GGML_OP_TRANSPOSE, "TRANSPOSE" },
     };
 #ifdef MOE_CACHE_TEST_MUTANT_ABI      // CI only: a build that expects another op number must refuse to run
@@ -57,14 +60,23 @@ std::string ggml_abi_mismatch() {
     ggml_set_name(b, "mc_abi");
     ggml_tensor * m = ggml_mul_mat_id(ctx, w, b, ids);
     ggml_tensor * v = ggml_view_2d(ctx, b, 8, 2, b->nb[1], b->nb[2]);
+    ggml_tensor * g = ggml_swiglu(ctx, b);
     const bool tensor_ok = b->type == GGML_TYPE_F32 && b->ne[0] == 8 && b->ne[1] == 2 && b->ne[2] == 3 && b->ne[3] == 1 && b->nb[0] == 4 &&
                            b->nb[1] == 32 && b->nb[2] == 64 && b->op == GGML_OP_NONE && strcmp(b->name, "mc_abi") == 0 && ggml_nbytes(b) == 192 &&
                            m->op == GGML_OP_MUL_MAT_ID && m->src[0] == w && m->src[1] == b && m->src[2] == ids && m->ne[0] == 4 && m->ne[1] == 2 &&
                            m->ne[2] == 3 && v->op == GGML_OP_VIEW && v->view_src == b && v->view_offs == b->nb[2];
+    const int glu = g->op;
     ggml_free(ctx);
     if (!tensor_ok) {
         return "the fields of ggml_tensor moved";
     }
+    if (strcmp(ggml_op_name((enum ggml_op) glu), "GLU") != 0) {
+        return std::string("a GLU node has op ") + std::to_string(glu) + " (" + ggml_op_name((enum ggml_op) glu) + ")";
+    }
+    if (glu != GGML_OP_GLU) {
+        fprintf(stderr, "moe-cache: the running ggml numbers GLU %d (these headers: %d): using %d\n", glu, (int) GGML_OP_GLU, glu);
+    }
+    g_op_glu = glu;
     // threadpool parameters: filled by the running ggml into a buffer larger than this plugin's struct, which must end where the plugin thinks
     alignas(64) unsigned char buf[sizeof(ggml_threadpool_params) + 4096];
     memset(buf, 0xA5, sizeof(buf));
