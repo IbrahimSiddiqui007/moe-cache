@@ -196,12 +196,17 @@
             acc += bytes;
             take.push_back(c);
         }
-        for (size_t i = take.size(); i-- > 0;) {
+        bool refused = false;
+        for (size_t i = take.size(); i-- > 0 && !refused;) {
             for (int ti_i : by_layer[take[i].l]) {
                 tinfo_t & ti = *tensors[ti_i];
                 const int s = ti.node0 + take[i].e;
                 if (nodes[s].resident) {
                     continue;
+                }
+                if (!commit_for(ti, take[i].e)) {
+                    refused = true;   // Windows refused the memory (nothing evictable yet): the warm start stops here, the cache fills on demand
+                    break;
                 }
                 nodes[s].resident = true;
                 nodes[s].epoch = 0;
@@ -243,8 +248,8 @@
         // bytes of expert data that are really in memory (pending ones are marked but not read yet)
         const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
         // Windows: every loaded expert is committed memory; near the commit limit (RAM + page file) a commit fails and the next write crashes.
-        // Keep 1 GiB of commit free: shrink by what is missing (on Linux commit_available() is unlimited)
-        const size_t commit_free = plat::commit_available(), commit_keep = (size_t) 1 << 30;
+        // Keep commit_keep() free (2 GiB or 8 % of the commit limit): shrink by what is missing (on Linux commit_available() is unlimited)
+        const size_t commit_free = plat::commit_available(), commit_keep = plat::commit_keep();
         const size_t commit_short = commit_free < commit_keep ? commit_keep - commit_free : 0;
         if (commit_short && !commit_warned) {
             commit_warned = true;

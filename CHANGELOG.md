@@ -3,6 +3,19 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Windows and AMD
+- **Fixed: wrong output and a crash at the second request with models bigger than RAM on Windows** (PC, Qwen3.5-122B IQ2 from a fast NVMe
+  drive). An expert read straight into place covered the memory pages it shares with its neighbours; on Windows a page under such a read briefly
+  holds other data, so the executor sometimes read garbage in a neighbour's first or last rows: wrong text ("3333..."), NaN router scores, and a
+  GPU top-k that then listed one expert several times per token, which overflowed an executor task and crashed a pool worker. Reads now write only
+  the expert's own bytes, an expert listed more than once can no longer overflow a task (and every task is checked before it runs), and
+  `MOE_CACHE_EXEC_CHECK=1` reports where a mismatch comes from. Confirmed on the PC: text identical to stock, no crash, 0 executor mismatches.
+- **Windows memory commit**: when Windows refuses memory (RAM + page file full, error 1455) the cache gives experts back and shrinks instead of
+  reading into pages that do not exist ("read failed ... error 998"); a range past the end of its reservation (error 487) is clamped instead of
+  retried page by page; the start budget counts what llama-server really uses and keeps max(2 GiB, 8 % of the commit limit) of system-wide commit
+  free (GPU memory on Windows counts there too: GLM-5.3 + MTP started at 4.3 instead of 18.9 GiB and no longer starves the whole PC). The crash
+  report names the executor's op, row and output, and no longer mistakes a small address for an expert.
+- New CI steps: repeated expert ids (`tests/dup_ids.sh`, `MOE_CACHE_TEST_DUP_IDS`) and reads poisoned while in flight
+  (`MOE_CACHE_TEST_POISON_READS`), each with a mutant that must fail.
 - **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
   Granite, Qwen3.6 and Qwen3.5-122B (bigger than RAM); executor byte check 0 mismatches; Flash-Next through the launcher and a chat. Steps:
   [docs/WINDOWS.md](docs/WINDOWS.md); status in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Windows stays **experimental**.

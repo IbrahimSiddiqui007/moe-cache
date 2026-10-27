@@ -34,7 +34,9 @@ void buf_commit_once(moe_cache_buffer_ctx * c, const void * p, size_t size) {
     for (size_t i = c0; i <= c1; i++) {
         if (!c->committed[i]) {
             const size_t len = std::min(CH, c->size - i * CH);
-            plat::mem_commit((char *) c->base + i * CH, len);
+            if (!plat::mem_commit((char *) c->base + i * CH, len)) {
+                commit_fatal("llama.cpp's compute buffer or a non-expert weight", len);
+            }
             c->committed[i] = 1;
         }
     }
@@ -58,7 +60,9 @@ void * buf_base(ggml_backend_buffer_t buffer) {
 }
 
 void buf_memset(ggml_backend_buffer_t, ggml_tensor * t, uint8_t v, size_t off, size_t size) {
-    plat::mem_commit((char *) t->data + off, size);
+    if (!plat::mem_commit((char *) t->data + off, size)) {
+        commit_fatal(t->name, size);
+    }
     memset((char *) t->data + off, v, size);
 }
 
@@ -70,7 +74,9 @@ void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t o
             return;
         }
     }
-    plat::mem_commit((char *) t->data + off, size);
+    if (!plat::mem_commit((char *) t->data + off, size)) {
+        commit_fatal(t->name, size);
+    }
     memcpy((char *) t->data + off, data, size);
 }
 
@@ -134,7 +140,10 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
         return nullptr;
     }
     if (!S().cache_on) {
-        plat::mem_commit(p, size);   // pass-through mode: the weights are copied in, all pages are needed
+        if (!plat::mem_commit(p, size)) {   // pass-through mode: the weights are copied in, all pages are needed
+            plat::mem_release(p, size);
+            return nullptr;              // llama.cpp reports the failed allocation
+        }
     }
     return ggml_backend_buffer_init(buft, g_buf_i, new moe_cache_buffer_ctx{ p, size, {}, {} }, size);
 }

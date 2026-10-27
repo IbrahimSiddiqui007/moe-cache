@@ -215,7 +215,7 @@
                         }
                         evict(v);
                     }
-                    if (resident_bytes + ti.nb2 > budget) {
+                    if (resident_bytes + ti.nb2 > budget || !commit_for(ti, e)) {
                         pf_skipped++;
                         continue;
                     }
@@ -449,6 +449,10 @@
                 fprintf(stderr, "moe-cache: cache smaller than one op: %llu experts mapped from the model file, %llu loaded over the cache size\n",
                         (unsigned long long) small_mapped, (unsigned long long) small_over);
             }
+            if (commit_evictions) {
+                fprintf(stderr, "moe-cache: Windows commit was short (refused, or below the headroom kept for others): %llu experts given back early, cache ended at %.2f GiB\n",
+                        (unsigned long long) commit_evictions, budget / 1073741824.0);
+            }
             if (cpu_check_reloads) {
                 fprintf(stderr, "moe-cache: internal: %llu experts were loaded again right before llama.cpp's kernels (please report)\n", (unsigned long long) cpu_check_reloads);
             }
@@ -502,21 +506,54 @@
         const size_t aoff = j.off / PAGE * PAGE;
         const size_t shift = j.off - aoff;
         const size_t len = round_up(shift + j.nb2);
-        char * buf = j.direct ? j.dst - shift : bounce;   // direct: the aligned read lands exactly around the expert
+        // Straight into place (direct) only the whole pages inside the expert are read. Its first and last partial pages are shared with the
+        // neighbouring experts, which may be in use right now: they go through the bounce buffer and only this expert's bytes are copied.
+        // (Before, the aligned read covered the shared pages too. The bytes it wrote there were the same, but on Windows a page under an
+        // unbuffered read briefly holds other data: the executor read garbage in the last rows of a neighbouring expert, NaN router scores,
+        // repeated expert ids, then the crash at request 2. PC 2026-10-27, Qwen3.5-122B from a fast NVMe drive; MOE_CACHE_DIRECT=0 fixed it.)
+        char * const lo = j.dst, * const hi = j.dst + j.nb2;
+        char * const in0 = (char *) round_up((uintptr_t) lo), * const in1 = (char *) ((uintptr_t) hi / PAGE * PAGE);
+#ifndef MOE_CACHE_TEST_MUTANT_DIRECT_SHARED   // CI only: the old aligned read over the shared pages must fail the poisoned-reads step
+        const bool direct = j.direct && !j.rtensor && in1 > in0;
+#else
+        const bool direct = false;
+        if (j.direct && !j.rtensor) {
+            if (test_poison) {
+                memset(lo - shift, 0xff, len);
+                std::this_thread::sleep_for(std::chrono::microseconds(test_read_delay_us));
+            }
+            plat::mem_commit(lo - shift, len + PAGE);
+            const plat::file_t & f0 = fds[j.fdi];
+            for (size_t done = 0; done < shift + j.nb2;) {
+                const ptrdiff_t got = plat::file_pread(f0, lo - shift + done, len - done, (uint64_t) (aoff + done));
+                if (got <= 0) { abort(); }
+                done += (size_t) got;
+            }
+            direct_jobs++;
+            bytes += len;
+            return;
+        }
+#endif
         // the pages must exist before they are written (Windows); one extra page covers kernels that read a little past the end
-        plat::mem_commit(j.direct ? j.dst - shift : j.dst, (j.direct ? len : j.nb2) + PAGE);
-        // direct read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
+        if (!plat::mem_commit(j.dst, j.nb2 + PAGE)) {
+            commit_fatal("an expert read (its pages were committed when it was queued, then given back)", j.nb2);
+        }
+        if (test_poison) {      // test switch: what this read writes holds garbage for a while (only this expert's bytes, which nobody reads yet)
+            memset(lo, 0xff, j.nb2);
+            std::this_thread::sleep_for(std::chrono::microseconds(test_read_delay_us));
+        }
+        // each piece: a read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
         const bool inject_job = fault_every > 0 && (++fault_ctr % (uint64_t) fault_every) == 0;   // test switch: this read fails every direct attempt
-        auto read_all = [&](const plat::file_t & rfd, bool inject) {
+        auto read_all = [&](const plat::file_t & rfd, bool inject, char * buf, size_t want, size_t need, uint64_t foff) {
             size_t done = 0;
             int retries = 0;
-            while (done < shift + j.nb2) {
+            while (done < need) {
                 ptrdiff_t got;
                 if (inject && inject_job) {
                     got = -1;
                     errno = EIO;
                 } else {
-                    got = plat::file_pread(rfd, buf + done, len - done, (uint64_t) (aoff + done));
+                    got = plat::file_pread(rfd, buf + done, want - done, foff + done);
                 }
                 if (got <= 0) {
                     if (++retries <= 3) {
@@ -529,7 +566,11 @@
             }
             return true;
         };
-        if (!read_all(fds[j.fdi], true)) {
+        // want: aligned length asked for; need: bytes that must arrive (the end of the file can cut the last aligned page short)
+        auto read_piece = [&](char * buf, size_t want, size_t need, uint64_t foff) {
+            if (read_all(fds[j.fdi], true, buf, want, need, foff)) {
+                return;
+            }
             plat::file_t bfd;
             {
                 std::lock_guard<std::mutex> lk(fds_buf_mu);
@@ -538,30 +579,43 @@
                 }
                 bfd = fds_buf[j.fdi];
             }
-            if (!bfd.ok() || !read_all(bfd, false)) {
-                fprintf(stderr, "moe-cache: read failed at offset %zu of %s: %s (disk error, or the model file changed after loading)\n", aoff, shard_paths[j.fdi].c_str(), plat::last_error().c_str());
+            if (!bfd.ok() || !read_all(bfd, false, buf, need, need, foff)) {
+                fprintf(stderr, "moe-cache: read failed at offset %llu of %s: %s (disk error, or the model file changed after loading)\n",
+                        (unsigned long long) foff, shard_paths[j.fdi].c_str(), plat::last_error().c_str());
                 abort();
             }
             if (read_fallbacks++ == 0) {
                 fprintf(stderr, "moe-cache: direct read failed, used a buffered read instead (output stays correct; this may be slower)\n");
             }
-        }
-        if (j.rtensor) {
-            // repack this one expert into its place: use a copy of the tensor that describes a single expert
-            ggml_tensor v = *j.rtensor;
-            v.ne[2] = 1;
-            v.ne[3] = 1;
-            v.nb[2] = v.nb[1] * v.ne[1];
-            v.nb[3] = v.nb[2];
-            v.data = j.dst;
-            v.view_src = nullptr;
-            repack_buf->iface.set_tensor(repack_buf, &v, bounce + shift, 0, j.nb2);
-            repack_jobs++;
-        } else if (!j.direct) {
-            memcpy(j.dst, bounce + shift, j.nb2);
-            bounce_jobs++;
-        } else {
+        };
+        if (direct) {
+            if (in0 > lo) {                 // first partial page: aligned read into the bounce buffer, copy this expert's part
+                read_piece(bounce, PAGE, PAGE, aoff);
+                memcpy(lo, bounce + shift, (size_t) (in0 - lo));
+            }
+            read_piece(in0, (size_t) (in1 - in0), (size_t) (in1 - in0), (uint64_t) (j.off + (size_t) (in0 - lo)));
+            if (hi > in1) {                 // last partial page
+                read_piece(bounce, PAGE, (size_t) (hi - in1), (uint64_t) (j.off + (size_t) (in1 - lo)));
+                memcpy(in1, bounce, (size_t) (hi - in1));
+            }
             direct_jobs++;
+        } else {
+            read_piece(bounce, len, shift + j.nb2, aoff);
+            if (j.rtensor) {
+                // repack this one expert into its place: use a copy of the tensor that describes a single expert
+                ggml_tensor v = *j.rtensor;
+                v.ne[2] = 1;
+                v.ne[3] = 1;
+                v.nb[2] = v.nb[1] * v.ne[1];
+                v.nb[3] = v.nb[2];
+                v.data = j.dst;
+                v.view_src = nullptr;
+                repack_buf->iface.set_tensor(repack_buf, &v, bounce + shift, 0, j.nb2);
+                repack_jobs++;
+            } else {
+                memcpy(j.dst, bounce + shift, j.nb2);
+                bounce_jobs++;
+            }
         }
         bytes += len;
     }
