@@ -2192,3 +2192,15 @@ the planner keeps 15 expert layers on the CPU for all three; cold, ABBA; C:\dl\p
 | 4096 | 504.8, 513.6 | 509 (-23 %) | 614.0, 616.3 | 41.11, 41.16 |
 | 8192 | 421.9, 407.8 | 415 (-37 %) | 580.5, 583.8 | 40.66, 41.06 |
 Verdict: bigger micro-batches are slower on this Vulkan PC (same layer split, so it is the batch itself); decode unchanged. The default 2048 stays; killed.
+
+**F5 rest: robustness** (Flash-Next IQ2_XS, plugin with the file view, launcher defaults; C:\dl\pc_f5.ps1, pc_f5_user.ps1; memory from the Windows counters)
+| Test | Result |
+|---|---|
+| kill llama-server 5 s into the 256-token request (cold start before) | client gets "connection closed"; the launcher exits and says the server ended with 0xFFFFFFFF; 3 s after the kill: commit 30.5 -> **14.8 GB** (the idle level), available RAM 8.4 -> 25.5 GB, the expert pages in standby (24.4 GB): no stale working-set minimum (it belongs to the process) |
+| restart right after the kill (no flush) | ready after 20.7 s (cold start 28.8 s), decode **22.08 tok/s**, text byte-identical to the reference run, no warnings |
+| on-demand, `--idle 1`, two rounds (launcher experimental bbcec55 in C:\moe-cache-pla, own cache dir C:\dl\f5cache so the owner's remembered choice is untouched) | request -> model started, ready after 34 s, first 64-token answer after 39.6 / 39.3 s, decode 19.9 / 21.1; stopped after 1 idle minute both times; commit back to 14.8 GB and available RAM to 25.2 GB each time |
+| on-demand listener start | its port opens 16.5 s after start (a request in that window gets "connection refused") |
+| as a non-admin user: `runas /trustlevel:0x20000` (Administrators deny-only, the token keeps only SeChangeNotifyPrivilege; a normal desktop session also has SeIncreaseWorkingSetPrivilege) | the working-set minimum is refused (error 1314, privilege not held); the plugin keeps caching: decode **21.58 tok/s**, text identical, working set 18.5 GB (no other memory pressure, so nothing was trimmed). **Bug**: the launcher printed "the plugin loaded but disabled itself ... llama-server runs stock" (it took any plugin line with "refus" as disabled); fixed on claude/pc-list-a 1c94caf |
+| page file (read only, not changed) | fixed 14336 MB on C: (not system-managed), in use 1.8 GB, peak 2.96 GB |
+Note: the SSH sessions used for every PC run so far are elevated (High Mandatory Level, all admin privileges), including the RESULTS 59 working-set
+test labelled "as a normal user"; the run above is the first one without them.
