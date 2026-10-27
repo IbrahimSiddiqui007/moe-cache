@@ -3,6 +3,9 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Windows and AMD
+- **Windows kit**: `moe-cache-vX-windows-x64.zip` with both plugin DLLs (API 2 / API 3), the launcher, the control page, a one-click `moe-cache.bat`
+  (`--shortcut` adds a Start-menu entry) and `README_WINDOWS.txt`. Built by `tools/make_windows_kit.sh` from a clean export; CI unzips it outside the
+  repository and runs `check --run` from it; the release workflow attests it and attaches it to the release.
 - **Fixed: wrong output and a crash at the second request with models bigger than RAM on Windows** (PC, Qwen3.5-122B IQ2 from a fast NVMe
   drive). An expert read straight into place covered the memory pages it shares with its neighbours; on Windows a page under such a read briefly
   holds other data, so the executor sometimes read garbage in a neighbour's first or last rows: wrong text ("3333..."), NaN router scores, and a
@@ -14,6 +17,8 @@
   retried page by page; the start budget counts what llama-server really uses and keeps max(2 GiB, 8 % of the commit limit) of system-wide commit
   free (GPU memory on Windows counts there too: GLM-5.3 + MTP started at 4.3 instead of 18.9 GiB and no longer starves the whole PC). The crash
   report names the executor's op, row and output, and no longer mistakes a small address for an expert.
+- CI and release: checks that could not fail now can (the T7 grep, the DLL import list, "executor ran" in every executor-forced step); the release
+  workflow runs with pipefail and publishes a tag only when identity and windows passed on that commit.
 - New CI steps: repeated expert ids (`tests/dup_ids.sh`, `MOE_CACHE_TEST_DUP_IDS`) and reads poisoned while in flight
   (`MOE_CACHE_TEST_POISON_READS`), each with a mutant that must fail.
 - **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
