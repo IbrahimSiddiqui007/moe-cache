@@ -51,7 +51,13 @@ blob = os.path.join(TMP, "sha256-0123")
 gguf_header(blob, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 41), ("qwen35moe.expert_count", 256), ("general.file_type", 15)])
 check(ui.header_quant(blob) == "Q4_K_M", f"quant from general.file_type ({ui.header_quant(blob)})")
 m = ui.measured(blob, 21.7e9)
-check(len(m) == 3 and "22.6" in m[1] and "RESULTS 44" in m[1], "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M)")
+check(len(m) == 4 and "22.6" in m[1] and "RESULTS 44" in m[1] and m[1].startswith("laptop,"), "measured speeds for a known model family and size (Qwen3.6-35B Q4_K_M)")
+check(m[3].startswith("PC, 32 GB RAM") and "RESULTS 60" in m[3], f"measured: the PC's row too ({m[3]})")
+fnx = os.path.join(TMP, "fnx-blob")
+gguf_header(fnx, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512), ("general.file_type", 15)])
+mf = ui.measured(fnx, 68.0e9)
+check(any("stock 14.89 tok/s, moe-cache 21.94" in r for r in mf) and any(r.startswith("PC, 16 GB RAM") and "stock" not in r for r in mf),
+      f"measured: Flash-Next IQ2_XS on the PC, and the --ram 16 row without a stock number ({mf})")
 check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the same family")
 
 # ---- the plan and its reasons (planner mocked) ----
@@ -64,20 +70,27 @@ ui.run_tuner = lambda path, ctx, vram, kv_q8: dict(TUNE)
 p = ui.plan_model(small["path"], ram="2")
 check(p["kind"] == "stock" and "fits in RAM" in p["verdict"], f"model + 1.5 GB under the RAM budget: stock ({p['verdict']})")
 check(any("RESULTS 44" in r for r in p["reasons"]), "stock: says why stock is faster")
+check(p["summary"].startswith("Stock llama-server: the model") and "fastest" in p["summary"], f"summary: why stock ({p['summary']})")
 p = ui.plan_model(small["path"], ram="1")
 check(p["kind"] == "cache" and p["verdict"] == "does not fit: moe-cache exact", f"over the budget: moe-cache exact ({p['verdict']})")
 check(any("10 of 48 layers keep their experts on the GPU" in r for r in p["reasons"]), "reasons: GPU layers from the tuner (as the launcher)")
 check(any("holds 33 %" in r for r in p["reasons"]), "reasons: share of the CPU experts the cache holds")
 check(any(r.startswith("tuner: ") for r in p["reasons"]), "reasons: the tuner's own lines")
+check(p["summary"].startswith("moe-cache: the model") and "keeps 33 %" in p["summary"] and "same as stock" in p["summary"], f"summary: why moe-cache ({p['summary']})")
+p = ui.plan_model(small["path"], ram="1", engine="stock")
+check(p["kind"] == "stock" and "Run as Stock" in p["summary"] and "compare" in p["summary"], f"summary: stock as asked, model bigger than RAM ({p['summary']})")
+p = ui.plan_model(small["path"], ram="2", engine="plugin")
+check(p["kind"] == "cache" and "as you chose" in p["summary"] and "stock would likely be faster" in p["summary"], f"summary: plugin on a model that fits ({p['summary']})")
 p = ui.plan_model(small["path"], ram="2", mode="fast")
 check(p["kind"] == "cache" and "needs the plugin" in p["verdict"], f"--fast keeps the plugin even when the model fits ({p['verdict']})")
 TUNE["n_cpu_moe"] = 0
 p = ui.plan_model(small["path"], ram="1")
-check(p["kind"] == "gpu", f"every expert layer on the GPU ({p['verdict']})")
+check(p["kind"] == "gpu" and "nothing to do" in p["summary"], f"every expert layer on the GPU ({p['verdict']}; {p['summary']})")
 TUNE["n_cpu_moe"] = 38
 ui.run_planner = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF"))
 p = ui.plan_model(small["path"], ram="1")
 check(p["kind"] == "error" and any("not a MoE model" in r for r in p["reasons"]), "planner error: shown with the planner's own words")
+check(p["summary"].startswith("The planner could not read"), f"summary: planner error ({p['summary']})")
 ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
 
 args = ui.server_args({"model": "m.gguf", "port": 8123, "ctx": 32768, "ram": 12, "mode": "fast", "agent": True})
@@ -121,7 +134,7 @@ class H(BaseHTTPRequestHandler):
             t = {"predicted_n": 2, "predicted_per_second": 25.0, "predicted_ms": 80.0, "prompt_n": 5, "prompt_per_second": 500.0, "cache_n": 0, "draft_n": 4, "draft_n_accepted": 3}
             self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {}, "finish_reason": "stop"}], "timings": t}).encode() + b"\n\ndata: [DONE]\n\n"); return
         assert self.path == "/completion" and q["temperature"] == 0 and q["seed"] == 42 and q["cache_prompt"] is False
-        t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7, "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
+        t = {"predicted_n": q["n_predict"] if q.get("ignore_eos") else min(q["n_predict"], 149), "predicted_per_second": 20.0 + len(q["prompt"]) % 7 - (10.0 if "--stock" in sys.argv else 0), "prompt_n": len(q["prompt"]) // 4, "prompt_per_second": 300.0}
         self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"content": "x", "timings": t}).encode())
 srv = HTTPServer(("127.0.0.1", port), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -130,7 +143,10 @@ print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x f
 print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
 print("moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 15.00 GiB free (test)", flush=True)
 print("moe-cache: AMD GPU on Windows, driver older than 32.0.32015.7029: --ctx-checkpoints 0 (test)", flush=True)
-print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
+if "--stock" in sys.argv:
+    print("moe-cache: --stock: running stock llama-server (test)", flush=True)
+else:
+    print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print("moe-cache: MTP on: the model has an MTP head (1 layer) and llama-server has draft-mtp: --spec-type draft-mtp --spec-draft-n-max 2 (test)", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
@@ -452,6 +468,29 @@ r = b.get("result", {})
 check(b["state"] == "done" and r.get("start") == "cold" and r.get("flush") == "fake flush" and r.get("load_s", "") != "", f"cold run recorded: start cold, flush line, load time ({b.get('error') or r.get('load_s')})")
 check(flushed == [(small["path"], [models])] and runner.p.pid != pid_before and runner.state == "ready", "the server was stopped, the model flushed, the server started again")
 check(json.loads(req("/api/bench")[1])["rows"][-1]["start"] == "cold", "cold / warm in the CSV")
+# compare (I42): measure, start again with Run as flipped (moe-cache -> stock), measure, then back to the user's settings
+flushed.clear()
+st, body = req("/api/bench", {"compare": True})
+check(st == 200 and json.loads(body).get("compare") is True, f"compare benchmark starts ({body[:100]})")
+deadline, steps = time.time() + 90, set()
+while time.time() < deadline:
+    b = json.loads(req("/api/status")[1])["bench"]
+    steps.add(b.get("step", ""))
+    if b["state"] != "running":
+        break
+    time.sleep(0.2)
+res = b.get("results") or []
+check(b["state"] == "done" and len(res) == 2 and res[0]["mode"].startswith("moe-cache") and res[1]["mode"].startswith("stock llama-server (--stock"),
+      f"compare: one moe-cache run, then one stock run ({b.get('error')}; {[r['mode'] for r in res]})")
+check(float(res[1]["decode_mean"]) < float(res[0]["decode_mean"]) and flushed == [] and all(r["start"] == "warm" for r in res), "compare without Cold start: no flush, both warm")
+check(any(x.startswith("run 2 of 2: ") for x in steps), f"compare: the steps say which run ({sorted(steps)[:4]})")
+check(runner.state == "ready" and runner.settings.get("engine") in (None, "", "auto") and (runner.mode or "").startswith("moe-cache"),
+      f"compare: back to the user's settings at the end ({runner.settings.get('engine')}, {runner.mode})")
+cmp_rows = json.loads(req("/api/bench")[1])["compare"]
+check(any(r["model"] == "Small-MoE-Q4_K_M.gguf" and r["decode_x"] and r["decode_x"] > 1 for r in cmp_rows), "compare: the pair shows in the Stock vs moe-cache table")
+here = ui.measured_here(small["path"])
+check(len(here) >= 1 and "stock " in here[0] and "x)" in here[0], f"plan: this computer's stock vs moe-cache pair next to the verdict ({here})")
+check(ui.measured_here(os.path.join(TMP, "Other.gguf")) == [], "plan: no lines for a model never benchmarked here")
 ui.flush_model_cache = real_flush
 cs = ui.cold_start_support()
 check(cs["available"] == (sys.platform.startswith("linux") or os.name == "nt"), f"cold start offered on Linux and Windows ({cs})")
@@ -579,7 +618,7 @@ check("lacks --spec-type draft-mtp" in ui.mtp_reason(small["path"], None, True, 
 check(ui.mtp_reason(small["path"], False, True, "ls-new") == "MTP off (--no-mtp)", "MTP: Off")
 check(ui.mtp_reason(blob, True, True, "ls-new").startswith("MTP: Start would stop with: --mtp: the model has no MTP head"), "MTP: On for a model without a head: says Start would stop")
 check(ui.mtp_reason(blob, None, False, "ls-new") is None, "MTP: no head, plain server: nothing to say")
-check("GLM: MTP currently fails at load on Windows" in ui.mtp_reason("/m/GLM-5.3-Flash.gguf", None, True, "ls-new"), "MTP: GLM caveat")
+check("fails" not in ui.mtp_reason("/m/GLM-5.3-Flash.gguf", None, True, "ls-new"), "MTP: no GLM caveat any more (GLM + MTP works, RESULTS 60)")
 p = ui.plan_model(small["path"], ram="1", agent=True, mtp=None, ls="ls-new")
 check(any(r.startswith("MTP on:") for r in p["reasons"]), "MTP: the plan's Why list has the line")
 gguf_plan.mtp_layers = real_ml

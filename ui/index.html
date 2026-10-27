@@ -41,6 +41,7 @@ th { color:var(--muted); font-weight:500; font-size:11px; }
 ul.why { margin:4px 0 0; padding-left:16px; font-size:12px; }
 ul.why li { margin:2px 0; }
 ul.why li.win { color:var(--gpu); }
+p.whysum { margin:4px 0 6px; font-size:13px; line-height:1.45; }
 
 /* ---------- frame ---------- */
 .app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
@@ -352,6 +353,7 @@ button.danger { border-color:var(--ink); }
         <div class="row"><button id="bench">Quick benchmark</button></div>
         <div class="small" id="benchstate" style="margin-top:4px">warm-up, 2 replies of 256 tokens, one 3.5k-token prompt (about 1-3 minutes); saved to a CSV so you can compare stock and moe-cache runs</div>
         <div class="small" id="coldrow" style="margin-top:4px"><label><input type="checkbox" id="cold"> Cold start (fair): stop, push the model out of the file cache, start again, then measure</label> <span id="coldhow"></span></div>
+        <div class="small" style="margin-top:4px"><label><input type="checkbox" id="compare"> Compare with the other side: then run it again as stock llama-server (or as moe-cache, if this is stock), and go back to your settings at the end (twice the time; with Cold start for a fair result)</label></div>
         <div class="small" id="otherrow" hidden><span>Other big files to read (folders, separated by ;):</span><input type="text" id="other" style="width:100%"></div>
         <div id="benchres" class="scrollx"></div>
       </div></details>
@@ -519,7 +521,7 @@ function paintModels() {
       <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span></span></div></div>`; }).join("");
   const m = S.models.find(x => x.path == S.sel), p = S.sel && S.plans[planKey(S.sel)];
   $("topmodel").textContent = m ? shortName(m.name) : "no model";
-  $("topverdict").className = "badge " + (p ? p.kind || "error" : "wait"); $("topverdict").textContent = m ? (p ? p.verdict || "?" : "planning…") : "";
+  $("topverdict").className = "badge " + (p ? p.kind || "error" : "wait"); $("topverdict").textContent = m ? (p ? p.verdict || "?" : "planning…") : ""; $("topverdict").title = (p && p.summary) || "";
   paintPlan();
 }
 function paintPlan() {
@@ -529,8 +531,9 @@ function paintPlan() {
   if (!m) { $("plan").innerHTML = ""; return; }
   $("plansum").textContent = `Why ${p ? p.verdict : "…"} for ${shortName(m.name)}?`;
   if (!p) { $("plan").innerHTML = `<span class="small">planning…</span>`; return; }
-  $("plan").innerHTML = `<ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
-    (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on the test laptop (i7-13620H, RTX 4060 8 GB; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
+  $("plan").innerHTML = (p.summary ? `<p class="whysum">${esc(p.summary)}</p>` : "") + `<ul class="why">${p.reasons.map(r => `<li${/^Windows \+ AMD/.test(r) ? ' class="win"' : ""}>${esc(r)}</li>`).join("")}</ul>` +
+    (p.measured && p.measured.length ? `<div class="small" style="margin-top:6px">Measured on our machines (laptop: i7-13620H, RTX 4060 8 GB, Linux; PC: Ryzen 9 7950X, RX 9070 XT 16 GB, Windows; yours will differ):</div><ul class="why">${p.measured.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "") +
+    (p.here && p.here.length ? `<div class="small" style="margin-top:6px">Measured on this computer (Quick benchmark, newest first):</div><ul class="why">${p.here.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : "");
 }
 let planning = false;
 async function planAll() {
@@ -694,7 +697,9 @@ async function paintBench(st) {
     $("benchres").innerHTML = (j.compare || []).length ? compareTable(j.compare, (S.sel || "").split(/[\\/]/).pop()) : "";
     return;
   }
-  $("benchstate").textContent = "done" + (b.cold ? " (cold start: " + (b.result || {}).flush + ", ready in " + (b.result || {}).load_s + " s)" : "") +
+  if (S.sel) { delete S.plans[planKey(S.sel)]; planAll(); }          // the Why list shows this computer's stock vs moe-cache pairs
+  $("benchstate").textContent = "done" + (b.compare ? ", both sides (" + (b.results || []).map(r => r.mode).join(" · ") + ")" + (b.cold ? "" : "; warm: stock may look faster than on a first start, tick Cold start for a fair result") +
+    ((b.results || []).length == 2 && !(b.results || []).some(r => /^moe-cache/.test(r.mode)) ? "; no moe-cache run to compare: the launcher found nothing for the cache to do here (all experts fit on the GPU, or set a lower VRAM)" : "") : "") + (b.cold ? " (cold start: " + (b.result || {}).flush + ", ready in " + (b.result || {}).load_s + " s)" : "") +
     (b.csv ? " · saved to " + b.csv : b.csv_error ? " · not saved: " + b.csv_error : "");
   const j = await api("/api/bench");
   const model = (b.result || {}).model;
@@ -990,7 +995,8 @@ $("menu").onclick = async e => {
 $("bench").onclick = async () => {
   const cold = $("cold").checked && !$("cold").disabled;
   const other = $("other").value.split(";").map(x => x.trim()).filter(Boolean);
-  try { await api("/api/bench", { cold, other }); poll(); } catch (e) { showErr(e.message); }
+  const compare = $("compare").checked;
+  try { await api("/api/bench", { cold, other, compare }); poll(); } catch (e) { showErr(e.message); }
 };
 $("copykey").onclick = async () => {
   try {

@@ -274,8 +274,6 @@ def mtp_reason(path, want, agent, ls):
         on, why = mc.mtp_decide(want, agent, head, declared, bool(head and want is not False and ls and server_has_mtp(ls)), False)
     except SystemExit as e:                     # --mtp the launcher would refuse: say so before Start
         return f"MTP: Start would stop with: {e}"
-    if why and head and want is not False and re.search(r"glm", os.path.basename(path), re.I):      # don't promise GLM a speed-up yet
-        why += "; GLM: MTP currently fails at load on Windows (a plugin bug being fixed): choose MTP Off there"
     return why.replace("moe-cache: ", "", 1) if why else None
 
 
@@ -316,21 +314,30 @@ def peek_servers(ports=None, own=None):
     return [dict(res[p], started_here=p == own) for p in ports if p in res and res[p].get("up")]
 
 
-# Measured decode speeds from README "Results" / docs/RESULTS.md, all on the test laptop (i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD), by model
-# family (gguf_plan.model_key) and file size (GB, so each quant has its own row). (RAM GB, setting, stock tok/s, moe-cache tok/s, where)
+# Measured decode speeds from README "Results" / docs/RESULTS.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
+# row): (machine, RAM GB, setting, stock tok/s or None, moe-cache tok/s, where). Machines: laptop = i7-13620H, 31 GB RAM, RTX 4060 8 GB, Linux;
+# PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
+LAPTOP, PC = "laptop", "PC"
 MEASURED = {
-    ("qwen35moe-41x256", 21.7): [(24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44: the launcher runs stock here"),
-                                 (12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (12, "no GPU", 3.1, 9.9, "RESULTS 5")],
-    ("qwen4exp-48x512", 68.0): [(24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31")],
-    ("qwen35moe-48x256", 36.6): [(24, "8 GB GPU", 1.89, 7.7, "RESULTS 45; 9.0 with --fast")],
-    ("qwen35moe-48x256", 44.7): [(24, "8 GB GPU", 1.10, 5.7, "RESULTS 45; 6.8 with --fast")],
-    ("qwen35moe-48x256", 60.2): [(24, "8 GB GPU", 0.91, 3.7, "RESULTS 45; 4.5 with --fast")],
-    ("glm5-next-46x288", 101.8): [(24, "8 GB GPU", 0.32, 1.75, "RESULTS 26; 2.1 with --fast")],
+    ("qwen35moe-41x256", 21.7): [(LAPTOP, 24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44: the launcher runs stock here"),
+                                 (LAPTOP, 12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (LAPTOP, 12, "no GPU", 3.1, 9.9, "RESULTS 5"),
+                                 (PC, 32, "fits in RAM, agent context", 43.6, 43.1, "RESULTS 60; about 72 with --mtp: the launcher runs stock here")],
+    ("qwen4exp-48x512", 68.0): [(LAPTOP, 24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31"),
+                                (PC, 32, "16 GB GPU", 14.89, 21.94, "RESULTS 59; agent sessions 2.0-2.4x faster, RESULTS 60"),
+                                (PC, 16, "16 GB GPU, --ram 16", None, 20.03, "RESULTS 60: 92 % of the 24 GB speed")],
+    ("qwen4exp-48x512", 76.0): [(PC, 32, "16 GB GPU", 15.14, 19.86, "RESULTS 59")],
+    ("qwen4exp-48x512", 83.6): [(PC, 32, "16 GB GPU", 12.92, 17.28, "RESULTS 59")],
+    ("qwen35moe-48x256", 36.6): [(LAPTOP, 24, "8 GB GPU", 1.89, 7.7, "RESULTS 45; 9.0 with --fast"),
+                                 (PC, 32, "16 GB GPU", 13.88, 16.13, "RESULTS 59")],
+    ("qwen35moe-48x256", 44.7): [(LAPTOP, 24, "8 GB GPU", 1.10, 5.7, "RESULTS 45; 6.8 with --fast")],
+    ("qwen35moe-48x256", 60.2): [(LAPTOP, 24, "8 GB GPU", 0.91, 3.7, "RESULTS 45; 4.5 with --fast")],
+    ("glm5-next-46x288", 101.8): [(LAPTOP, 24, "8 GB GPU", 0.32, 1.75, "RESULTS 26; 2.1 with --fast"),
+                                  (PC, 32, "16 GB GPU", 2.21, 4.44, "RESULTS 59; 6.92 with --mtp, same text, RESULTS 60")],
 }
 
 
 def measured(path, size):
-    """Lines like 'test laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
+    """Lines like 'laptop, 12 GB RAM, 8 GB GPU: stock 6.9, moe-cache 22.6 tok/s (RESULTS 44)' for a model measured before; [] otherwise."""
     try:
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import model_key
@@ -339,8 +346,49 @@ def measured(path, size):
         return []
     for (k, gbs), rows in MEASURED.items():
         if k == key and abs(size / 1e9 - gbs) <= 0.03 * gbs:
-            return [f"{ram} GB RAM, {what}: stock {st} tok/s, moe-cache {mc_} tok/s ({src})" for ram, what, st, mc_, src in rows]
+            return [f"{where}, {ram} GB RAM, {what}: " + (f"stock {st} tok/s, " if st is not None else "") + f"moe-cache {mc_} tok/s ({src})"
+                    for where, ram, what, st, mc_, src in rows]
     return []
+
+
+def summary(out, mode="exact", engine="auto"):
+    """One plain sentence: why this mode (I33). Built from the verdict and the numbers plan_model() already has."""
+    kind, size, avail, n = out.get("kind"), out.get("size") or 0, out.get("avail"), out.get("numbers") or {}
+    room = f"the {gb(avail)} this server may use" if avail else "the memory this server may use"
+    if kind == "error":
+        return "The planner could not read this model, so the page cannot say how it would run."
+    if kind == "gpu":
+        return "Every layer of experts fits in the graphics card's memory, so the cache has nothing to do."
+    if kind == "stock" and engine == "stock" and avail and size + HEADROOM > avail:
+        return (f"Stock llama-server because you chose Run as Stock: the model ({gb(size)}) is bigger than {room}, "
+                "so moe-cache is usually faster here. Use it to compare.")
+    if kind == "stock":
+        return (f"Stock llama-server: the model ({gb(size)}) fits in {room}, and when everything fits the plain llama-server is fastest. "
+                "The plugin only helps models bigger than RAM.")
+    if kind == "cache":
+        x = f"{size / avail:.1f}x" if avail and size > avail else "more than"
+        cpu, cache = n.get("cpu_experts_GiB"), n.get("cache_GiB")
+        held = f" keeps {min(100, 100 * cache / cpu):.0f} % of the experts that run on the CPU in RAM and" if cpu and cache is not None else ""
+        if avail and size + HEADROOM <= avail:
+            return f"moe-cache, as you chose: the model ({gb(size)}) fits in {room}, so stock would likely be faster."
+        tail = {"fast": " --fast skips a few rarely used experts that are not in RAM (a little faster, some tokens differ).",
+                "hybrid": " --hybrid also runs the most used experts on the GPU (experimental, answers differ)."}.get(mode, " The answers are the same as stock's.")
+        return (f"moe-cache: the model ({gb(size)}) is {x} {room}. Stock llama-server would keep re-reading it from the disk; "
+                f"the cache{held} reads the rest only when needed." + tail)
+    return ""
+
+
+def measured_here(path, rows=None):
+    """The Quick benchmark's stock vs moe-cache pairs for this model file on this computer (bench.csv, newest first, at most 3), as lines."""
+    name = os.path.basename(path)
+    rows = bench_compare(read_bench_rows(500) if rows is None else rows)
+    out = []
+    for r in sorted(rows, key=lambda r: r.get("moe_time") or "", reverse=True):
+        if r["model"] != name:
+            continue
+        x = f" ({r['decode_x']:.2f}x)" if r.get("decode_x") else ""
+        out.append(f"{r['moe_time'] or '?'}, RAM {r['ram_gb']}, {r['start']} start: stock {r['stock_decode']} tok/s, {r['mode']} {r['moe_decode']} tok/s{x}")
+    return out[:3]
 
 
 def gb(x):
@@ -381,7 +429,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     if vram is None and gpu and gpu.get("free") and not gpu.get("integrated"):
         vram = f"{gpu['free'] / GIB:.2f}"          # as the launcher: on Windows without nvidia-smi it passes the free VRAM it found to the planner
     amd_reasons = windows_amd_rules(gpu, path, agent, windows=WINDOWS)
-    out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size)}
+    out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size), "here": measured_here(path)}
     R = out["reasons"]
     if avail:
         R.append(f"model {gb(size)} {'+' if stock_fits else 'plus'} {HEADROOM / 1e9:.1f} GB headroom "
@@ -394,6 +442,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     except Exception as e:
         out.update(kind="stock" if stock else "error", verdict=("stock llama-server" + ("" if stock_fits else ", as asked (--stock)")) if stock else "cannot plan this model")
         R.append(f"planner: {e}" + (" (not a MoE model: moe-cache has nothing to manage; llama-server runs it stock)" if "MoE" in str(e) else ""))
+        out["summary"] = ("Stock llama-server: this is not a MoE model, so moe-cache has nothing to manage." if "MoE" in str(e) and stock
+                          else summary(out, mode, engine))
         return out
     try:
         tuned = run_tuner(path, ctx, vram, mode == "fast")
@@ -447,6 +497,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     m = mtp_reason(path, mtp, agent, ls)
     if m:
         R.append(m)
+    out["summary"] = summary(out, mode, engine)
     return out
 
 
@@ -1202,25 +1253,27 @@ class Runner:
             time.sleep(1)
 
     # -- quick benchmark --
-    def start_bench(self, cold=False, other=None):
+    def start_bench(self, cold=False, other=None, compare=False):
         if self.state != "ready":
             raise ValueError("start a model first")
         if self.bench.get("state") == "running":
             raise ValueError("a benchmark is already running")
         if cold and not cold_start_support()["available"]:
             raise ValueError("cold start: " + cold_start_support()["why"])
-        self.bench = {"state": "running", "step": "warm-up", "started": time.time(), "cold": bool(cold)}
-        threading.Thread(target=self.run_bench, args=(self.p, cold, list(other or [])), daemon=True).start()
+        self.bench = {"state": "running", "step": "warm-up", "started": time.time(), "cold": bool(cold), "compare": bool(compare)}
+        threading.Thread(target=self.run_bench, args=(self.p, cold, list(other or []), compare), daemon=True).start()
 
-    def cold_restart(self, b, other):
-        """Stop the server, push the model out of the file cache, start it again with the same settings; returns (seconds to ready, flush line)."""
-        s = dict(self.settings)
-        b["step"] = "cold start: stopping the server"
+    def restart(self, b, s, flush, other, what=""):
+        """Stop the server, (flush=True) push the model out of the file cache, start it again with settings s; returns (seconds to ready, flush
+        line or "")."""
+        b["step"] = what + "stopping the server"
         self.stop()
-        b["step"] = "cold start: pushing the model out of the file cache"
-        ok, line = flush_model_cache(s["model"], other)
-        b["flush"] = line
-        b["step"] = "cold start: starting the server again"
+        ok, line = True, ""
+        if flush:
+            b["step"] = what + "pushing the model out of the file cache"
+            ok, line = flush_model_cache(s["model"], other)
+            b["flush"] = line
+        b["step"] = what + "starting the server again"
         t0 = time.time()
         self.start(s)
         self.bench = b                          # start() resets the runner; the benchmark goes on
@@ -1229,6 +1282,10 @@ class Runner:
         if self.state != "ready":
             raise RuntimeError(f"the server did not come back ({self.state})")
         return time.time() - t0, ("" if ok else "partial: ") + line
+
+    def cold_restart(self, b, other):
+        """Stop the server, push the model out of the file cache, start it again with the same settings; returns (seconds to ready, flush line)."""
+        return self.restart(b, dict(self.settings), True, other, "cold start: ")
 
     def complete(self, prompt, n, ignore_eos=False):
         """One /completion as pc_speed.ps1 asks it: greedy, fixed seed, no prompt reuse, so stock and moe-cache runs compare. The decode runs also
@@ -1251,46 +1308,76 @@ class Runner:
                 break
         return (self.snap[1].get("hits", 0), self.snap[1].get("misses", 0)) if self.snap else None
 
-    def run_bench(self, p, cold=False, other=()):
-        b = self.bench
-        load_s, flush = None, ""
+    def measure(self, b, what=""):
+        """One run of the method (warm-up, 2 x 256 decode, one ~3.5k-token prefill) on the running server; returns the CSV row."""
+        b["step"] = what + "warm-up"
+        t0 = time.time()
+        self.complete(BENCH_PROMPTS[0], 32)
+        warm = time.time() - t0
+        c0 = self.cache_counts()
+        dec, ntok = [], []
+        for i, q in enumerate(BENCH_PROMPTS[1:3]):
+            b["step"] = what + f"decode {i + 1} of 2 (256 tokens)"
+            t = self.complete(q, 256, ignore_eos=True)
+            dec.append(t["predicted_per_second"]); ntok.append(t.get("predicted_n"))
+        c1 = self.cache_counts()
+        b["step"] = what + "prefill (about 3.5k tokens)"
+        pf = self.complete(BENCH_LONG, 16)
+        hr = None
+        if c0 and c1 and (c1[0] - c0[0]) + (c1[1] - c0[1]) > 0:
+            hr = (c1[0] - c0[0]) / ((c1[0] - c0[0]) + (c1[1] - c0[1]))
+        s, sy = self.settings, system_info()
+        return {"time": time.strftime("%Y-%m-%d %H:%M"), "model": os.path.basename(s.get("model", "")), "size_gb": f"{size_of(s.get('model', '')) / 1e9:.1f}",
+                "mode": (self.mode or "?") + (" + MTP" if self.mtp else ""), "ram_gb": s.get("ram") or "auto", "vram_gib": s.get("vram") or "auto", "ctx": s.get("ctx") or 8192,
+                "gpu": sy.get("gpu") or "none", "os": sy.get("os"), "decode_1": f"{dec[0]:.2f}", "decode_2": f"{dec[1]:.2f}",
+                "decode_mean": f"{sum(dec) / len(dec):.2f}", "decode_tokens": "/".join(str(n) for n in ntok), "prefill_tokens": pf.get("prompt_n"),
+                "prefill": f"{pf['prompt_per_second']:.1f}", "hit_rate": f"{hr:.3f}" if hr is not None else "", "warmup_s": f"{warm:.1f}",
+                "command": shown_command(s), "start": "warm", "load_s": "", "flush": ""}
+
+    def save_row(self, b, row):
         try:
-            if cold:
-                load_s, flush = self.cold_restart(b, other)
+            append_bench_row(row)
+            b["csv"] = BENCH_CSV
+        except OSError as e:
+            b["csv_error"] = str(e)
+        self.add_line(f"ui: quick benchmark ({row['mode']}): decode {row['decode_1']} / {row['decode_2']} tok/s, prefill {row['prefill_tokens']} tokens at {row['prefill']} tok/s")
+
+    def run_bench(self, p, cold=False, other=(), compare=False):
+        """The benchmark on the running server. cold: stop, flush, start again first. compare (I42): then the same with Run as flipped (stock <->
+        moe-cache, cold again if cold), and at the end the server is started again with the settings it had, so the user is back where they were."""
+        b = self.bench
+        orig = dict(self.settings)
+        try:
+            rows = []
+            kinds = [orig]
+            if compare:
+                was_stock = (self.mode or "").startswith("stock")
+                kinds.append(dict(orig, engine="plugin" if was_stock else "stock"))
+            for i, s in enumerate(kinds):
+                what = f"run {i + 1} of {len(kinds)}: " if compare else ""
+                load_s, flush = None, ""
+                if cold:
+                    load_s, flush = self.restart(b, s, True, other, what + "cold start: ")
+                elif i:
+                    load_s, flush = self.restart(b, s, False, other, what)
                 p = self.p
-                b["step"] = "warm-up"
-            t0 = time.time()
-            self.complete(BENCH_PROMPTS[0], 32)
-            warm = time.time() - t0
-            c0 = self.cache_counts()
-            dec, ntok = [], []
-            for i, q in enumerate(BENCH_PROMPTS[1:3]):
-                b["step"] = f"decode {i + 1} of 2 (256 tokens)"
-                t = self.complete(q, 256, ignore_eos=True)
-                dec.append(t["predicted_per_second"]); ntok.append(t.get("predicted_n"))
-            c1 = self.cache_counts()
-            b["step"] = "prefill (about 3.5k tokens)"
-            pf = self.complete(BENCH_LONG, 16)
-            hr = None
-            if c0 and c1 and (c1[0] - c0[0]) + (c1[1] - c0[1]) > 0:
-                hr = (c1[0] - c0[0]) / ((c1[0] - c0[0]) + (c1[1] - c0[1]))
-            s, sy = self.settings, system_info()
-            row = {"time": time.strftime("%Y-%m-%d %H:%M"), "model": os.path.basename(s.get("model", "")), "size_gb": f"{size_of(s.get('model', '')) / 1e9:.1f}",
-                   "mode": (self.mode or "?") + (" + MTP" if self.mtp else ""), "ram_gb": s.get("ram") or "auto", "vram_gib": s.get("vram") or "auto", "ctx": s.get("ctx") or 8192,
-                   "gpu": sy.get("gpu") or "none", "os": sy.get("os"), "decode_1": f"{dec[0]:.2f}", "decode_2": f"{dec[1]:.2f}",
-                   "decode_mean": f"{sum(dec) / len(dec):.2f}", "decode_tokens": "/".join(str(n) for n in ntok), "prefill_tokens": pf.get("prompt_n"),
-                   "prefill": f"{pf['prompt_per_second']:.1f}", "hit_rate": f"{hr:.3f}" if hr is not None else "", "warmup_s": f"{warm:.1f}",
-                   "command": shown_command(s), "start": "cold" if cold else "warm", "load_s": f"{load_s:.0f}" if load_s is not None else "",
-                   "flush": flush}
-            try:
-                append_bench_row(row)
-                b["csv"] = BENCH_CSV
-            except OSError as e:
-                b["csv_error"] = str(e)
-            b.update(state="done", result=row, step="")
-            self.add_line(f"ui: quick benchmark: decode {row['decode_1']} / {row['decode_2']} tok/s, prefill {row['prefill_tokens']} tokens at {row['prefill']} tok/s")
+                row = self.measure(b, what + ("stock: " if (self.mode or "").startswith("stock") else ""))
+                row.update(start="cold" if cold else "warm", load_s=f"{load_s:.0f}" if load_s is not None else "", flush=flush)
+                self.save_row(b, row)
+                rows.append(row)
+                b["results"] = list(rows)
+            if compare:
+                self.restart(b, orig, False, other, "back to your settings: ")
+                p = self.p
+            b.update(state="done", result=rows[-1], step="")
         except Exception as e:
-            b.update(state="failed", error=str(e) if p.poll() is None else "the server stopped during the benchmark", step="")
+            err = str(e) if p is None or p.poll() is None else "the server stopped during the benchmark"
+            if compare and self.settings != orig:          # never leave the user on the flipped side
+                try:
+                    self.restart(b, orig, False, other, "back to your settings: ")
+                except Exception:
+                    err += "; your settings could not be started again: press Start"
+            b.update(state="failed", error=err, step="")
 
     def status(self):
         s = self.settings
@@ -1530,7 +1617,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
                                                                              q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls))
-                return self.send(200, hit[1])
+                return self.send(200, dict(hit[1], here=measured_here(m)))       # the benchmark lines are fresh even when the plan is cached
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
@@ -1627,7 +1714,7 @@ class Handler(BaseHTTPRequestHandler):
                 for x in other:
                     if not os.path.exists(x):
                         raise ValueError(f"no such folder or file: {x}")
-                self.runner.start_bench(cold=bool(body.get("cold")), other=other or self.store.folders())
+                self.runner.start_bench(cold=bool(body.get("cold")), other=other or self.store.folders(), compare=bool(body.get("compare")))
                 return self.send(200, self.runner.bench)
             if self.path == "/api/stop":
                 threading.Thread(target=self.runner.stop, daemon=True).start()

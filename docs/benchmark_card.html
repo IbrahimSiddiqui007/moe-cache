@@ -1,0 +1,234 @@
+<title>moe-cache Windows Bench Card</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..800&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: one column spec sheet; headline numbers, one bar chart, tables, then commands. Stock is grey, moe-cache is the one accent. */
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --ink: #12161c;
+  --ink-2: #4a5360;
+  --ink-3: #6f7886;
+  --rule: #dde1e7;
+  --stock: #9aa3b0;
+  --plugin: #2a78d6;
+  --mtp: #4a3aa7;
+  --code-bg: #eef1f5;
+  --display: "Archivo", "Arial Narrow", system-ui, sans-serif;
+  --body: "Archivo", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #14171c; --panel: #1b1f25; --ink: #f2f4f7; --ink-2: #c0c6cf; --ink-3: #8d95a1; --rule: #2d333c;
+    --stock: #6b7380; --plugin: #3987e5; --mtp: #9085e9; --code-bg: #232831; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #14171c; --panel: #1b1f25; --ink: #f2f4f7; --ink-2: #c0c6cf; --ink-3: #8d95a1; --rule: #2d333c;
+  --stock: #6b7380; --plugin: #3987e5; --mtp: #9085e9; --code-bg: #232831; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.55; }
+.wrap { max-width: 900px; margin: 0 auto; padding-inline: 20px; padding-block: 40px 64px; display: grid; gap: 40px; }
+h1, h2 { font-family: var(--display); font-stretch: 80%; text-wrap: balance; margin: 0; line-height: 1.1; }
+h1 { font-size: clamp(30px, 5.5vw, 46px); font-weight: 800; letter-spacing: -0.01em; }
+h2 { font-size: 22px; font-weight: 700; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+header { display: grid; gap: 14px; }
+.lede { color: var(--ink-2); font-size: 17px; }
+.machine { font-family: var(--mono); font-size: 12.5px; color: var(--ink-2); display: flex; flex-wrap: wrap; gap: 6px 18px; }
+section { display: grid; gap: 16px; min-width: 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 16px; display: grid; gap: 4px; align-content: start; }
+.tile b { font-family: var(--display); font-stretch: 75%; font-size: 40px; line-height: 1; font-weight: 800; font-variant-numeric: tabular-nums; }
+.tile span { color: var(--ink-2); font-size: 13.5px; }
+.chart { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 18px 16px 12px; position: relative; min-width: 0; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 13px; color: var(--ink-2); margin-bottom: 8px; }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 6px; }
+svg { display: block; width: 100%; min-width: 560px; height: auto; overflow: visible; }
+svg text { font-family: var(--body); }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 12.5px; padding: 6px 9px; border-radius: 4px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scroll { overflow-x: auto; min-width: 0; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; font-variant-numeric: tabular-nums; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); font-weight: 600; }
+td.n, th.n { text-align: right; white-space: nowrap; }
+td .sub { display: block; color: var(--ink-3); font-size: 12.5px; }
+.up { font-weight: 700; }
+.note { color: var(--ink-2); font-size: 14px; }
+ul { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 72ch; }
+pre { margin: 0; background: var(--code-bg); border-radius: 6px; padding: 12px 14px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px; line-height: 1.5; color: var(--ink); }
+code { font-family: var(--mono); font-size: 0.9em; }
+.cmd { display: grid; gap: 6px; min-width: 0; }
+.cmd h3 { margin: 0; font-size: 14px; font-weight: 600; color: var(--ink-2); }
+a { color: var(--plugin); }
+a:focus-visible { outline: 2px solid var(--plugin); outline-offset: 2px; }
+footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule); padding-top: 16px; }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Benchmark card · 2026-10-27 · Windows desktop</div>
+    <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
+    <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decodes faster than stock llama-server on every model that is bigger than the RAM, with the same output text.</p>
+    <div class="machine">
+      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>llama.cpp Vulkan, ggml 0.27 (620d2225c)</span>
+    </div>
+  </header>
+
+  <section aria-label="Headline numbers">
+    <div class="tiles">
+      <div class="tile"><b>+16–47 %</b><span>decode speed on the four Qwen MoE files that do not fit in RAM</span></div>
+      <div class="tile"><b>2.0×</b><span>GLM-5.3 (102 GB), 3.1× with MTP</span></div>
+      <div class="tile"><b>2.0–2.4×</b><span>faster agent sessions (OpenCode, Hermes) on Flash-Next</span></div>
+      <div class="tile"><b>Same text</b><span>byte-identical output to stock on every model checked</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Decode speed, tokens per second</h2>
+    <div class="chart" id="chart">
+      <div class="legend">
+        <span><i style="background:var(--stock)"></i>stock llama-server</span>
+        <span><i style="background:var(--plugin)"></i>moe-cache</span>
+        <span><i style="background:var(--mtp)"></i>moe-cache + MTP</span>
+      </div>
+      <div class="scroll"><svg id="bars" viewBox="0 0 860 420" role="img" aria-label="Bar chart of decode tokens per second, stock vs moe-cache, per model. Same numbers as the table below."></svg></div>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Model (file size)</th><th class="n">GPU expert layers</th><th class="n">stock</th><th class="n">moe-cache</th><th class="n">change</th></tr></thead>
+        <tbody>
+          <tr><td>Qwen3-Next “Flash-Next” IQ2_XS<span class="sub">68 GB, drive C:</span></td><td class="n">12</td><td class="n">14.89</td><td class="n">21.94</td><td class="n up">+47 %</td></tr>
+          <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:</span></td><td class="n">9</td><td class="n">15.14</td><td class="n">19.86</td><td class="n up">+31 %</td></tr>
+          <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive C:</span></td><td class="n">7</td><td class="n">12.92</td><td class="n">17.28</td><td class="n up">+34 %</td></tr>
+          <tr><td>Qwen3.5-122B UD-IQ2_XXS<span class="sub">36.6 GB, drive D:</span></td><td class="n">12</td><td class="n">13.88</td><td class="n">16.13</td><td class="n up">+16 %</td></tr>
+          <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB, drive C:, one pair</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">4.44</td><td class="n up">2.0×</td></tr>
+          <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">one run; drafts accepted 61–100 %</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">6.92</td><td class="n up">3.1×</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM is a single cold pair. Every model here is bigger than the free RAM once the GPU and Windows have taken their share.</p>
+  </section>
+
+  <section>
+    <h2>Agent sessions</h2>
+    <p>Recorded OpenCode (5 requests) and Hermes (7 requests) sessions were replayed against each server with the same request bodies, overlap and pauses. Each figure is the mean of two cold runs, order ABBA, with 0 errors in every replay.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Model</th><th>Session</th><th class="n">whole task, s<br>stock / moe-cache</th><th class="n">first answer, s<br>stock / moe-cache</th><th class="n">decode tok/s<br>stock / moe-cache</th></tr></thead>
+        <tbody>
+          <tr><td>Flash-Next IQ2_XS<span class="sub">68 GB, bigger than RAM</span></td><td>OpenCode</td><td class="n">174.8 / <b>73.4</b> <span class="sub">2.4× faster</span></td><td class="n">116.8 / <b>38.6</b></td><td class="n">21.5 / 21.2</td></tr>
+          <tr><td></td><td>Hermes</td><td class="n">163.9 / <b>81.6</b> <span class="sub">2.0× faster</span></td><td class="n">66.2 / <b>21.8</b></td><td class="n">21.1 / 21.3</td></tr>
+          <tr><td>Flash-Next IQ2_XS, both at once<span class="sub">two agents on one server</span></td><td>OpenCode + Hermes</td><td class="n">335 / <b>145</b> <span class="sub">2.3× faster</span></td><td class="n">177–197 / <b>54–61</b></td><td class="n">–</td></tr>
+          <tr><td>Qwen3.6-35B-A3B Q4_K_M, MTP on<span class="sub">20 GB, fits in RAM</span></td><td>OpenCode</td><td class="n">27.8 / 26.4 <span class="sub">5 % faster</span></td><td class="n">13.5 / 13.4</td><td class="n">72.4 / 72.7</td></tr>
+          <tr><td></td><td>Hermes</td><td class="n">25.3 / 23.0 <span class="sub">9 % faster</span></td><td class="n">5.2 / 5.1</td><td class="n">71.5 / 72.2</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">On the big model the gain is in reading the prompt: the first answer comes about 3× sooner and every follow-up answer starts in 2–3 s instead of 7–9 s. Decode speed at agent context length is the same for both.</p>
+  </section>
+
+  <section>
+    <h2>Where it does not help</h2>
+    <ul>
+      <li><b>Models that fit in RAM.</b> Qwen3.6-35B (20 GB) decodes at the same speed with or without the plugin (43.6 vs 43.1 tok/s without MTP). Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.</li>
+      <li><b>Decode at long agent contexts.</b> On Flash-Next the 2.0–2.4× session gain comes from prompt processing. Decode at 65k-context agent settings is equal (21.5 vs 21.2 tok/s).</li>
+      <li><b>CPU kernels.</b> On Windows both sides run llama.cpp's own CPU kernels (ggml-cpu-zen4). The gain comes from which experts are in RAM and how they are read, not from faster math.</li>
+      <li><b>Cold start.</b> From a cold file cache the plugin reports ready 5.6 s later than stock (28.5 vs 22.9 s) while it loads its hot experts; the first answer wins it back. A warm restart answers 6 s sooner than stock.</li>
+      <li><b>Small samples.</b> Two runs per side (one pair on GLM, one run for GLM with MTP). Run-to-run spread was under 1 tok/s on every pair.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Output quality</h2>
+    <p>The plugin does not change the math: the 256-token answers were byte-identical to stock on Flash-Next IQ2_XS (1041 characters), IQ3_S (1032), the 122B (1027) and GLM (1148), and GLM with MTP matched stock too. Separately, 202 exact-answer tasks (greedy, no thinking) on the plugin scored 193/202 with Flash-Next IQ3_XXS and 187/202 with IQ2_XS.</p>
+  </section>
+
+  <section>
+    <h2>Method</h2>
+    <ul>
+      <li><b>Cold every run.</b> Before each server start, <code>tools\win_flush_cache.ps1</code> reads 38.5 GB of other files so Windows' file cache no longer holds the model. Stock benefits most from a warm cache, so this is the fair setting for both.</li>
+      <li><b>ABBA order.</b> Stock, moe-cache, moe-cache, stock, so drift (heat, background work) hits both sides equally.</li>
+      <li><b>Same request.</b> A 64-token warm-up, then one greedy 256-token request (temperature 0, seed 42, <code>cache_prompt</code> off). Decode tok/s is llama-server's own timing.</li>
+      <li><b>Same layout.</b> Stock gets the same GPU expert layers, context, flash attention and batch size that the launcher picks for the plugin.</li>
+      <li><b>Text identical.</b> The plugin's answer is compared with stock's byte for byte.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Commands</h2>
+    <div class="cmd">
+      <h3>moe-cache (launcher defaults; it prints the llama-server command it runs)</h3>
+      <pre>python bin\moe_cache.py server C:\models\model.gguf --llama-server C:\llama-vk\llama-server.exe</pre>
+    </div>
+    <div class="cmd">
+      <h3>Stock llama-server (N = the plugin's CPU expert layers, e.g. 36 for Flash-Next IQ2_XS)</h3>
+      <pre>llama-server.exe -m C:\models\model.gguf -ngl 99 --n-cpu-moe N -c 8192 -fa on --load-mode mmap -ub 2048</pre>
+    </div>
+    <div class="cmd">
+      <h3>Flush the file cache before each run (reads other big files, writes nothing)</h3>
+      <pre>powershell -ExecutionPolicy Bypass -File tools\win_flush_cache.ps1 -Target C:\models\model.gguf -Other "D:\other-models"</pre>
+    </div>
+    <div class="cmd">
+      <h3>The measured request (after a 64-token warm-up)</h3>
+      <pre>curl http://127.0.0.1:8080/completion -H "Content-Type: application/json" -d "{\"prompt\":\"Describe the water cycle step by step for a ten-year-old.\",\"n_predict\":256,\"temperature\":0,\"seed\":42,\"cache_prompt\":false}"</pre>
+    </div>
+    <div class="cmd">
+      <h3>Agent sessions (stock and moe-cache, ABBA, cold)</h3>
+      <pre>powershell -NoProfile -ExecutionPolicy Bypass -File tools\agent_bench_pair.ps1 -OutDir C:\dl\i43 -Model C:\models\model.gguf -Alias flash -Ram &lt;GB&gt; -FlushOther "D:\other-models"</pre>
+    </div>
+  </section>
+
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 59 and 60. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+</div>
+
+<script>
+(function () {
+  var data = [
+    { m: "Flash-Next IQ2_XS", s: "68 GB", stock: 14.89, mc: 21.94 },
+    { m: "Flash-Next IQ3_XXS", s: "76 GB", stock: 15.14, mc: 19.86 },
+    { m: "Flash-Next IQ3_S", s: "83.6 GB", stock: 12.92, mc: 17.28 },
+    { m: "Qwen3.5-122B IQ2_XXS", s: "36.6 GB", stock: 13.88, mc: 16.13 },
+    { m: "GLM-5.3-Flash IQ2_XXS", s: "102 GB", stock: 2.21, mc: 4.44, mtp: 6.92 }
+  ];
+  var NS = "http://www.w3.org/2000/svg", svg = document.getElementById("bars"), tip = document.getElementById("tip"), box = document.getElementById("chart");
+  var W = 860, left = 190, right = 60, top = 8, max = 25, bh = 14, gap = 2;
+  var x = function (v) { return left + (W - left - right) * v / max; };
+  function el(n, a, txt) { var e = document.createElementNS(NS, n); for (var k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; }
+  var rowH = 74, y0 = top;
+  var H = top + data.length * rowH + 30;
+  svg.setAttribute("viewBox", "0 0 " + W + " " + H);
+  [0, 5, 10, 15, 20, 25].forEach(function (t) {
+    el("line", { x1: x(t), x2: x(t), y1: top, y2: H - 26, stroke: "var(--rule)", "stroke-width": 1 });
+    el("text", { x: x(t), y: H - 8, "text-anchor": "middle", "font-size": 12, fill: "var(--ink-3)" }, t);
+  });
+  function bar(y, v, color, label) {
+    var w = x(v) - left;
+    var r = el("path", { d: "M" + left + "," + y + "h" + (w - 4) + "a4,4 0 0 1 4,4v" + (bh - 8) + "a4,4 0 0 1 -4,4h" + (-(w - 4)) + "z", fill: color });
+    el("text", { x: x(v) + 6, y: y + bh - 3, "font-size": 12, fill: "var(--ink-2)", "font-variant-numeric": "tabular-nums" }, v.toFixed(2));
+    var hit = el("rect", { x: left, y: y - 1, width: W - left - right, height: bh + 2, fill: "transparent" });
+    hit.addEventListener("mousemove", function (e) {
+      var b = box.getBoundingClientRect();
+      tip.textContent = label + ": " + v.toFixed(2) + " tok/s";
+      tip.hidden = false;
+      tip.style.left = Math.min(e.clientX - b.left + 12, b.width - tip.offsetWidth - 4) + "px";
+      tip.style.top = (e.clientY - b.top - 34) + "px";
+      r.setAttribute("opacity", "0.85");
+    });
+    hit.addEventListener("mouseleave", function () { tip.hidden = true; r.setAttribute("opacity", "1"); });
+  }
+  data.forEach(function (d, i) {
+    var y = y0 + i * rowH + 6;
+    el("text", { x: 0, y: y + 12, "font-size": 14, "font-weight": 600, fill: "var(--ink)" }, d.m);
+    el("text", { x: 0, y: y + 30, "font-size": 12, fill: "var(--ink-3)" }, d.s + " · " + (d.mc / d.stock >= 1.95 ? (d.mc / d.stock).toFixed(1) + "×" : "+" + Math.round((d.mc / d.stock - 1) * 100) + " %"));
+    bar(y, d.stock, "var(--stock)", d.m + ", stock");
+    bar(y + bh + gap, d.mc, "var(--plugin)", d.m + ", moe-cache");
+    if (d.mtp) bar(y + 2 * (bh + gap), d.mtp, "var(--mtp)", d.m + ", moe-cache + MTP");
+  });
+  el("line", { x1: left, x2: left, y1: top, y2: H - 26, stroke: "var(--ink-3)", "stroke-width": 1 });
+})();
+</script>
