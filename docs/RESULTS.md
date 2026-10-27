@@ -2216,4 +2216,4 @@ ABBA C, D, D, C, launcher defaults, file view):
 Laptop NVMe: 2.9-3.1 GB/s (drive ceiling 3.6). The probe is repeatable (±4 %) and ranks the drives like the plugin's own reads (0.70 vs
 0.74), but at 98 % hits the faster drive gives only +2.3 % decode; the "20-40 % loss" behind N8 was from the private-memory cache era.
 Verdict: kept as a `check` line that warns only below 1.0 GB/s (SATA, hard disk, USB); NVMe drives get an OK line with the number.
-Also: the 122B decodes at 19.8-20.3 tok/s here vs 16.1 in RESULTS 59 (same DLL and launcher; its usage profile has grown since).
+Also: the 122B decodes at 19.8-20.3 tok/s here vs 16.1 in RESULTS 59 (same DLL and launcher; cause not investigated: hit rate 97.8 % here).
