@@ -504,6 +504,60 @@ def amd_windows_checkpoint_args(gpu, model, extra, agent=False):
            if agent else ""))
     return ["--ctx-checkpoints", "0"]
 
+
+MTP_ARGS = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
+MTP_GAIN = "Qwen3.6 on the PC: decode +54 %, prompt processing -5..-8 %"
+
+
+def mtp_decide(want, agent, head, declared, server_has, user_spec):
+    """Multi-token prediction (I43): the model's own draft head (blk.N.nextn.*) guesses the next 2 tokens, the model checks them in one step; the
+    output is the same. want: True (--mtp), False (--no-mtp), None (default: on in --agent mode). -> (on, one-line reason or None)."""
+    if user_spec:
+        return False, "moe-cache: MTP: speculative decoding set by your own arguments (--spec-type / --model-draft): left as given"
+    if want is False:
+        return False, ("moe-cache: MTP off (--no-mtp)" if head else None)
+    if not head:
+        why = (f"the header declares {declared} MTP layer(s) but this file has no blk.N.nextn.* tensors (the quant dropped them)" if declared
+               else "the model has no MTP head (no blk.N.nextn.* tensors)")
+        if want:
+            raise SystemExit(f"--mtp: {why}")
+        return False, (f"moe-cache: MTP off: {why}" if agent else None)
+    if not server_has:
+        if want:
+            raise SystemExit("--mtp: this llama-server has no MTP speculative decoding (no draft-mtp in its --help for --spec-type); a newer llama.cpp has it")
+        return False, (f"moe-cache: MTP off: the model has an MTP head but this llama-server lacks --spec-type draft-mtp (a newer llama.cpp has it; {MTP_GAIN})"
+                       if agent else None)
+    if want or agent:
+        return True, (f"moe-cache: MTP on: the model has an MTP head ({head} layer) and llama-server has draft-mtp: {' '.join(MTP_ARGS)} "
+                      f"(same output; {MTP_GAIN}){'' if want else '; --no-mtp turns it off'}")
+    return False, f"moe-cache: this model has an MTP head: --mtp for faster decode ({MTP_GAIN})"
+
+
+def mtp_args(want, agent, ls, model, extra):
+    """The --spec-* arguments for the model's MTP head (see mtp_decide), and says why in one line. Reads the GGUF header and, only when the model
+    has a head, llama-server --help."""
+    user_spec = arg_after(extra, "--spec-type", "--model-draft", "-md") is not None
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import mtp_layers
+        head, declared = mtp_layers(model)
+    except Exception as e:
+        if want:
+            raise SystemExit(f"--mtp: could not read the model header ({e})")
+        return []
+    server_has = False
+    if head and want is not False and not user_spec:
+        try:
+            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout
+        except Exception:
+            pass
+    on, why = mtp_decide(want, agent, head, declared, server_has, user_spec)
+    if why:
+        say(why)
+    if not on:
+        return []
+    return MTP_ARGS[:2] + ([] if arg_after(extra, "--spec-draft-n-max") is not None else MTP_ARGS[2:])
+
 def win_request_save(pid, path, timeout=60.0, proc=None):
     """Windows: ask the plugin inside llama-server `pid` to save its usage profile now (named event Local\\moe-cache-save-<pid>; a server on
     Windows is killed, so the save at exit never runs) and wait up to `timeout` s for `path` to change (less if `proc` exits). True when it changed."""
@@ -655,6 +709,9 @@ SERVER_HELP = """\
            one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
+--mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
+           Same output; Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
+           and llama-server has draft-mtp; one line says why it is on or off
 --api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
@@ -673,6 +730,7 @@ def server(argv):
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
+    ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
@@ -755,6 +813,7 @@ def server(argv):
                 extra += ["--slot-save-path", slotdir]
             else:
                 slotdir = arg_after(extra, "--slot-save-path")
+    extra += mtp_args(a.mtp, a.agent, ls, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
@@ -1056,6 +1115,26 @@ def server_info(url, api_key=None):
     return name, ctx
 
 
+def opencode_config_target(cfg):
+    """The global opencode.json to write, and warnings. OpenCode (and OpenCode Desktop, whose server reads the same global folder) merges config.json,
+    opencode.json, then opencode.jsonc, later files winning, and creates opencode.jsonc on first run: write into that one when it is plain JSON,
+    else into opencode.json and warn if the .jsonc sets its own model. OPENCODE_CONFIG (a file merged after these) is reported too."""
+    warn = []
+    jc = os.path.splitext(cfg)[0] + ".jsonc"
+    if os.path.isfile(jc):
+        text = open(jc, encoding="utf-8").read()
+        try:
+            json.loads(text)
+            cfg = jc
+        except ValueError:
+            if '"model"' in text:
+                warn.append(f"{jc} (has comments, so it is not edited here) sets its own \"model\" and wins over {os.path.basename(cfg)}: "
+                            "change it there to moe-cache/NAME, or paste the block 'moe_cache.py connect opencode' prints")
+    if os.environ.get("OPENCODE_CONFIG"):
+        warn.append(f"OPENCODE_CONFIG={os.environ['OPENCODE_CONFIG']} is merged after this file and wins where they differ")
+    return cfg, warn
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
                                  "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
@@ -1088,6 +1167,9 @@ def connect(argv):
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
         return 0
     cfg = a.config or os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode", "opencode.json")
+    warn = []
+    if not a.config:
+        cfg, warn = opencode_config_target(cfg)
     entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache", "options": dict({"baseURL": base}, **({"apiKey": a.api_key} if a.api_key else {})),
              "models": {name: {"name": name, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}}}}
     if not a.write:
@@ -1108,6 +1190,8 @@ def connect(argv):
         json.dump(data, f, indent=2)
     os.replace(cfg + ".tmp", cfg)
     say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
+    for w in warn:
+        say("moe-cache: warning: " + w, err=True)
     return 0
 
 
