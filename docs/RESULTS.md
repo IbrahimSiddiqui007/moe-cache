@@ -2204,3 +2204,16 @@ Verdict: bigger micro-batches are slower on this Vulkan PC (same layer split, so
 | page file (read only, not changed) | fixed 14336 MB on C: (not system-managed), in use 1.8 GB, peak 2.96 GB |
 Note: the SSH sessions used for every PC run so far are elevated (High Mandatory Level, all admin privileges), including the RESULTS 59 working-set
 test labelled "as a normal user"; the run above is the first one without them.
+
+**N8: drive speed probe in `check`** (branch claude/pc-list-a 1c94caf + 80baa9c): 4 s of random 1 MiB reads that bypass the file cache
+(FILE_FLAG_NO_BUFFERING / O_DIRECT, 4 threads) on the model's largest file. Same 122B file on both PC drives, and plugin runs from each (cold,
+ABBA C, D, D, C, launcher defaults, file view):
+| Drive | probe GB/s (3 runs) | plugin decode tok/s | measured request: read / reader time / rate | hit % (measured request) |
+|---|---|---|---|---|
+| C: Sabrent (PCIe 3) | 3.02, 3.22, 3.21 | 19.78, 19.84 (19.81) | 2.86 GB / 4.03 s / 0.71 GB/s | 97.8 |
+| D: SanDisk X3N (PCIe 4) | 4.53, 4.54, 4.53 | 20.31, 20.22 (20.27) | 2.83 GB / 2.97 s / 0.95 GB/s | 97.8 |
+| C: / D: | **0.70** | 0.98 | **0.74** | - |
+Laptop NVMe: 2.9-3.1 GB/s (drive ceiling 3.6). The probe is repeatable (±4 %) and ranks the drives like the plugin's own reads (0.70 vs
+0.74), but at 98 % hits the faster drive gives only +2.3 % decode; the "20-40 % loss" behind N8 was from the private-memory cache era.
+Verdict: kept as a `check` line that warns only below 1.0 GB/s (SATA, hard disk, USB); NVMe drives get an OK line with the number.
+Also: the 122B decodes at 19.8-20.3 tok/s here vs 16.1 in RESULTS 59 (same DLL and launcher; its usage profile has grown since).
