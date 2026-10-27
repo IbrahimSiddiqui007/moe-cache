@@ -2143,3 +2143,11 @@ limit of `--ram` on llama-server; a job limit caps committed memory, and Windows
 experts use no commit, so the limit only capped llama.cpp's GPU memory (a Linux cgroup does not count GPU memory). Fix (branch
 claude/win-job-limit c20cfb2): no job limit with the file view (kept for MOE_CACHE_WIN_VIEW=0). After the fix: 16 GB **20.03 tok/s**
 (cache 11.55 GiB), 92 % of the 24 GB speed.
+
+**Start-up** (Flash-Next IQ2_XS, launcher defaults; cold = after win_flush_cache, warm = restart right after, no flush):
+| | ready after | first 64-token request | ready + first answer |
+|---|---|---|---|
+| stock, cold / warm | 22.9 / 20.4 s | 8.5 s (10.2 tok/s) / 10.5 s (8.7 tok/s) | 31.4 / 30.9 s |
+| plugin (file view), cold / warm | 28.5 / 21.0 s | 3.6 s (20.8 tok/s) / 3.5 s (21.0 tok/s) | 32.1 / **24.5 s** |
+The plugin's cold start loads the profile's hot experts before it reports ready (+5.6 s), which the first request gets back; a warm restart
+finds the experts in the file cache (the view's evicted pages stay there) and answers 6 s sooner than stock.
