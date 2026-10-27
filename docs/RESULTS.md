@@ -2029,3 +2029,7 @@ A small set: IQ2_XS is not measurably worse here; a bigger task set is needed to
 | stock (12 layers) | 15.10 / 19.22, prefill 110 | 13.06 / 15.85 (-15 %), prefill 79 | 74 % |
 | plugin (buffered + 13 layers) | 18.58 / 19.55, prefill 153 | 11.02 / 12.39 (-38 %), prefill 103 | 73 % |
 Killed: verifying 3 tokens at once on CPU-held experts costs more than the drafts save. MTP pays only when the experts are in RAM/VRAM (Qwen3.6).
+
+**Flash-Next IQ3_S (83.6 GB, C:), first look, one cold run each:** stock (launcher's 7 GPU expert layers, `--n-cpu-moe 41`) decode 10.62 / 12.66 / 12.22,
+prefill 49.3; plugin buffered + 13 layers decode 8.73 / 9.19 / 9.81, prefill 88.6 (1.8x). As on IQ3_XXS, the plugin's decode lags stock on IQ3 types on
+Windows while its prefill is far ahead. (IQ3_S file 2 is byte-identical to IQ3_XXS file 2, same sha256.)
