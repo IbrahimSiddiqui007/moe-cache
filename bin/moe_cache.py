@@ -463,13 +463,22 @@ def _kill_with_parent_windows(p, mem_limit=None):
     return None
 
 
+_PRCTL = None
+if sys.platform.startswith("linux"):
+    try:                       # looked up here, not in the forked child: imports and dlopen after fork() can deadlock in a threaded parent (the UI)
+        import ctypes
+        _PRCTL = ctypes.CDLL("libc.so.6", use_errno=True).prctl
+    except Exception:
+        _PRCTL = None
+
+
 def _die_with_parent_linux():
     """preexec_fn: the child gets SIGTERM when the launcher dies, even if the launcher is killed with SIGKILL."""
-    try:
-        import ctypes
-        ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, signal.SIGTERM)    # PR_SET_PDEATHSIG
-    except Exception:
-        pass
+    if _PRCTL is not None:
+        try:
+            _PRCTL(1, signal.SIGTERM)    # PR_SET_PDEATHSIG
+        except Exception:
+            pass
 
 
 AMD_CHECKPOINT_FIXED = "32.0.32015.7029"       # first AMD Windows display driver known to survive a Flash-Next context checkpoint (I44, 2026-10-27)

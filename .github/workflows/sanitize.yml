@@ -87,7 +87,7 @@ jobs:
           import re, sys
           txt = open(sys.argv[1], errors="replace").read()
           reports = re.split(r"(?=WARNING: ThreadSanitizer|==\d+==ERROR: AddressSanitizer)", txt)[1:]
-          ours = [r for r in reports if re.search(r"mc_[a-z]+\.inl|moe_cache_plugin\.cpp|platform\.h|libggml-moe-cache", r[:6000])]
+          ours = [r for r in reports if re.search(r"mc_[a-z_]+\.inl|moe_cache_plugin\.cpp|platform\.h|libggml-moe-cache", r)]
           print(f"{len(reports)} sanitizer reports, {len(ours)} in plugin code")
           for r in ours[:5]:
               print(r[:3000]); print("....")
