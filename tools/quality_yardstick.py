@@ -19,7 +19,9 @@ The reference run should be the most exact thing available: stock llama.cpp on t
 or the higher-precision quant for a quant check (then flip rate measures quant damage, not identity). Compare runs made with
 the same prompts, --n-predict and --no-think setting; `compare` refuses otherwise.
 """
-import argparse, json, re, subprocess, sys, time, urllib.request
+import argparse, json, os, re, subprocess, sys, time, urllib.request
+
+API_KEY = os.environ.get("LLAMA_API_KEY", "")   # set by --api-key; agent-mode servers need one (`moe_cache.py key` prints it)
 
 # Open-ended prompts: long greedy answers, where flips and loops show. Kept short so the prompt cost is small.
 OPEN = [
@@ -77,14 +79,18 @@ LOOP_N, LOOP_REPEATS = 12, 3
 
 
 def post(url, path, body, timeout=1800):
-    req = urllib.request.Request(url.rstrip("/") + path, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+    h = {"Content-Type": "application/json"}
+    if API_KEY:
+        h["Authorization"] = "Bearer " + API_KEY
+    req = urllib.request.Request(url.rstrip("/") + path, data=json.dumps(body).encode(), headers=h)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8"))
 
 
 def get(url, path):
     try:
-        with urllib.request.urlopen(url.rstrip("/") + path, timeout=30) as r:
+        req = urllib.request.Request(url.rstrip("/") + path, headers={"Authorization": "Bearer " + API_KEY} if API_KEY else {})
+        with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read().decode("utf-8"))
     except Exception:
         return {}
@@ -106,6 +112,8 @@ def has_loop(tokens, n=LOOP_N, repeats=LOOP_REPEATS):
 
 
 def cmd_run(a):
+    global API_KEY
+    API_KEY = a.api_key or API_KEY
     items = [{"kind": "open", "prompt": p} for p in OPEN] + [{"kind": "task", "prompt": p + TASK_SUFFIX, "answers": ans} for p, ans in TASKS]
     if a.prompts:
         items = json.load(open(a.prompts, encoding="utf-8"))
@@ -207,6 +215,7 @@ def main():
     r.add_argument("--url", default="http://127.0.0.1:8080")
     r.add_argument("--out", required=True)
     r.add_argument("--label", default="")
+    r.add_argument("--api-key", default="", help="server API key (default: env LLAMA_API_KEY)")
     r.add_argument("--n-predict", type=int, default=256, help="tokens per open-ended prompt (default 256)")
     r.add_argument("--task-n-predict", type=int, default=64, help="tokens per exact-answer question (default 64; raise it for thinking models)")
     r.add_argument("--no-think", action="store_true", help="pass enable_thinking=false to the chat template (Qwen-style thinking models)")
