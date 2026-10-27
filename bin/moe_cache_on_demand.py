@@ -19,6 +19,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 
 WINDOWS = mc.WINDOWS
+# server-type probes that llama-server answers with 404: answered the same while the model is stopped, so a probe does not load it
+NOT_FOUND_PROBES = ("/api/v1/models", "/api/tags", "/v1/props", "/version")
 CHOICE_FILE = os.path.join(mc.CACHE_DIR, "on-demand.json")
 LOG_FILE = os.path.join(mc.CACHE_DIR, "on-demand.log")       # the launcher's and llama-server's output
 PID_FILE = os.path.join(mc.CACHE_DIR, "on-demand.pid")
@@ -319,6 +321,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(200, b.models())
             if path == "/props":
                 return self.reply(200, b.props())
+            if path in NOT_FOUND_PROBES:     # Hermes asks these once to tell LM Studio / Ollama / llama.cpp apart; llama-server's own answer is 404
+                return self.reply(404, {"error": {"message": "File Not Found", "type": "not_found_error", "code": 404}})
         b.busy(+1)
         try:
             try:

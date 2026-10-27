@@ -56,6 +56,30 @@ without `.gguf`), context 65536. The Hermes CLI and Desktop share one config, so
 
 The control page's Start button starts a server on its own port; do not give it the on-demand port while the listener runs.
 
+**Checked on the Linux laptop (2026-10-27)** with the real Hermes Agent 0.22.5 and OpenCode 1.19.4 (isolated config folders, API key on) against the listener: first request starts the model (Granite 1B: 2 s; Qwen3.6-35B under a 12 GB memory limit: 14-17 s), SSE streaming passes through, OpenCode ran `bash` and `read` tool calls on Qwen3.6, idle stop after the set minutes, the next request (Hermes) started it again, no key / wrong key / raw key without `Bearer` give 401, `x-api-key` and `Authorization: Bearer KEY` work, another site's origin gets no CORS header. One bug found and fixed: Hermes asks `/api/v1/models`, `/api/tags`, `/v1/props` and `/version` once to tell LM Studio, Ollama and llama.cpp apart; these started the model on a probe. The idle listener now answers them with llama-server's own 404. Not tried: the Desktop apps (no Windows here).
+
+## PC checklist: Hermes Desktop and OpenCode Desktop with on-demand (Windows)
+
+Use PowerShell. `LS` is your llama-server folder, `MODEL` your .gguf. Each step says what you should see; if not, stop and note it.
+
+| # | Do | You should see |
+|---|---|---|
+| 1 | `python bin\moe_cache.py on-demand MODEL --llama-server LS\llama-server.exe --ram 20` | "remembered ... " and a line with port 8080 and idle stop 15 min. If it says "refused these options", fix the path it names |
+| 2 | `python bin\moe_cache.py on-demand --install-autostart` | "started it now too"; `on-demand --status` says listener running, model idle. Task Manager: no llama-server |
+| 3 | `python bin\moe_cache.py key` | your API key (keep this window for steps 5 and 8) |
+| 4 | Add `%LOCALAPPDATA%\hermes\bin` to PATH if `hermes` is not found, then `python bin\moe_cache.py connect hermes --write` and `python bin\moe_cache.py connect opencode --write` | two lines "now uses ... at http://127.0.0.1:8080/v1"; llama-server still not running |
+| 5 | **Hermes Desktop**: open it, Settings -> Model -> Main model. Check provider `custom`, URL `http://127.0.0.1:8080/v1`, model = the file name without `.gguf`, context 65536. If empty, type them in and paste the key from step 3 | the values from `connect` are shown. Opening Settings must not start llama-server (note it if it does) |
+| 6 | Hermes Desktop: new chat, send "Use your terminal to list the files in this folder." | the answer arrives after the load time (first request waits); llama-server appears in Task Manager without a console window; the reply streams |
+| 7 | Send a second message | answers quickly (the conversation is reused, only new tokens are processed) |
+| 8 | **OpenCode Desktop**: open it, open a project folder, check the model picker lists `moe-cache/NAME`. If not: Settings -> Providers -> add OpenAI-compatible, base URL `http://127.0.0.1:8080/v1`, key from step 3, model NAME. Note which file got the config: `%USERPROFILE%\.config\opencode\opencode.jsonc` if it exists, else `opencode.json` | `moe-cache/NAME` is selected |
+| 9 | OpenCode Desktop: send "Run ls and read a file, tell me what it says." | a bash and a read tool call run, then the answer |
+| 10 | Close both apps, wait the idle time (15 min; use `--idle 2` in step 1 for a quick test) | llama-server gone from Task Manager, RAM back; `%USERPROFILE%\.cache\moe-cache\on-demand-listener.log` has a "stopped" line |
+| 11 | Open one app again, send a message | the model starts again, the old conversation is picked up (warm session) |
+| 12 | Sign out and in, send a message | the listener is back at login (Startup shortcut), the model starts again |
+| 13 | `python bin\moe_cache.py on-demand --remove-autostart` | shortcut gone, listener and model stopped |
+
+If a step fails, send: `python bin\moe_cache.py on-demand --status`, the last 30 lines of `on-demand-listener.log` and `on-demand.log` (both in `%USERPROFILE%\.cache\moe-cache\`), and the text of the app's error.
+
 ## Using the agents with a GUI
 
 Both agents come with a graphical front end. The steps are the same everywhere: start the server in agent mode, write the agent's config, open the GUI.
