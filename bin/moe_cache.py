@@ -781,7 +781,8 @@ SERVER_HELP = """\
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
 --ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it. On Windows it is also set as a
-           job memory limit on llama-server when the plugin runs (the counterpart of a Linux cgroup; it does not count the model's file cache)
+           job memory limit on llama-server only with MOE_CACHE_WIN_VIEW=0 (with the default file-view cache the experts use no commit and a job limit
+           would only cap llama.cpp's GPU memory, which Windows commits)
 --vram GiB GPU memory to plan with (default: what the GPU reports free)
 --n-cpu-moe N  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
 --no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
@@ -1096,9 +1097,14 @@ def server(argv):
     else:
         say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
-    # Windows has no cgroups: --ram becomes a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
-    # model lives in the file cache, which job limits do not count), so it is left off there.
-    win_limit = float(a.ram) * 1e9 if (WINDOWS and a.ram and method != "none (stock)") else None
+    # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
+    # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows
+    # commits Vulkan's GPU allocations too: with the file-view cache (the default since RESULTS 59) the experts use no commit, so the limit no
+    # longer bounds the cache at all, only llama.cpp's own GPU memory (--ram 16 on the PC: "ggml_vulkan: Device memory allocation ... failed",
+    # RESULTS 60). A Linux cgroup does not count GPU memory either. So the job limit is set only for the private-memory cache
+    # (MOE_CACHE_WIN_VIEW=0); --ram still sizes the cache (MOE_CACHE_RAM_GIB).
+    win_view = os.environ.get("MOE_CACHE_WIN_VIEW", "1") != "0"
+    win_limit = float(a.ram) * 1e9 if (WINDOWS and a.ram and method != "none (stock)" and not win_view) else None
     if a.dry_run:
         if win_limit:
             say(f"moe-cache: (would set a Windows job memory limit of {win_limit / 1e9:.1f} GB on llama-server)")
