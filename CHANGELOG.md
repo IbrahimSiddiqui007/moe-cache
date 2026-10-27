@@ -3,6 +3,12 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Windows and AMD
+- **Fixed: crash at the second request** (PC, Qwen3.5-122B IQ2_XXS from the fast D: drive, access violation in `ggml-cpu-zen4.dll` from an executor
+  pool worker). When a token lists the same expert more than once (likely a GPU top-k fed NaN router scores; not yet confirmed on the PC), a batch of a few tokens gave one
+  expert more than the 8 columns an executor task holds, and the task was written past its end. Such ops now go to llama.cpp's own kernel (counted for
+  every batch size, not only 8+ tokens), a full task gets a second one for the same expert, and every task is checked (1-8 columns, outputs inside the
+  op's tensor) before the pool runs: a wrong value stops with a message instead of overwriting memory. Same fix on Linux. New CI step
+  `tests/dup_ids.sh` (test switch `MOE_CACHE_TEST_DUP_IDS`) with a mutant that must fail it.
 - **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
   Granite, Qwen3.6 and Qwen3.5-122B (bigger than RAM); executor byte check 0 mismatches; Flash-Next through the launcher and a chat. Steps:
   [docs/WINDOWS.md](docs/WINDOWS.md); status in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Windows stays **experimental**.

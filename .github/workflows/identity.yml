@@ -284,6 +284,22 @@ jobs:
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_GUARD=1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 4096 --np 2 --n-cpu-moe 999 | tee identity_guard_np2.txt
 
+      - name: Repeated expert ids (a GPU top-k fed NaN repeats an index), two slots in parallel, executor byte-checked - the PC's request-2 crash
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+        run: tests/dup_ids.sh granite.gguf | tee dup_ids.txt
+
+      - name: Mutant check - a build with the old expert count and no task split must fail the repeated-ids step
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+        run: |
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DUP_IDS BUILD_DIR=build-mut-dup ./build.sh --portable
+          if MOE_CACHE_LIB=$PWD/build-mut-dup/libggml-moe-cache.so IDENT_KEEP=mut_dup timeout 900 tests/dup_ids.sh granite.gguf | tee dup_ids_mutant.txt; then
+            echo "FAIL: the mutant passed, so the repeated-ids step does not cover the overflow"; exit 1; fi
+          grep -qE "an expert task of .* has [0-9]+ columns" mut_dup/plugin.log || { echo "FAIL: the mutant failed for another reason"; tail -5 mut_dup/plugin.log; exit 1; }
+          echo "OK: the mutant is stopped by the column check"
+
       - name: Noise floor - plugin loaded but disabled, no repacking (must equal stock; if it does not, the comparison itself is not deterministic)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server

@@ -269,6 +269,17 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                     abort();
                 }
             }
+            // test switch: picks 1..N-1 of every token repeat pick 0, as a GPU top-k fed NaN router scores does (CPU runners never produce it).
+            // Stock and the executor (and MOE_CACHE_EXEC_CHECK) then see the same repeated ids; CI checks that nothing crashes or differs.
+            static const int test_dup = [] { const char * v = getenv("MOE_CACHE_TEST_DUP_IDS"); return v ? atoi(v) : 0; }();
+            if (test_dup > 1 && ids->type == GGML_TYPE_I32) {
+                for (int64_t t = 0; t < ids->ne[1]; t++) {
+                    const char * row = (const char *) ids->data + t * ids->nb[1];
+                    for (int64_t u = 1; u < std::min<int64_t>(test_dup, ids->ne[0]); u++) {
+                        *(int32_t *) (row + u * ids->nb[0]) = *(const int32_t *) row;
+                    }
+                }
+            }
             std::vector<int> tidx;
             std::vector<int> used((size_t) node->src[0]->ne[2], 0);
             for (int j = i; j < n_nodes; j++) {
