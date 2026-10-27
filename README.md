@@ -35,7 +35,7 @@ moe-cache manages the CPU-side experts itself:
 |---|---|
 | The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). On Qwen3.6-35B (21.7 GB) at a 24 GB limit, both with the same 5000 MiB GPU cache: stock 42 tok/s, moe-cache 30-34 (RESULTS section 29). moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. |
 | You want **Qwen3.8-Flash-Next or Qwen3.6-35B as fast as possible** and have **12 GB+ VRAM and 32 GB+ RAM** | [Strata](https://github.com/Niko1221/Strata), an engine built for those models (its authors report 94 tok/s on an RTX 5070). |
-| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: 2x to 12x stock decode speed in our Linux measurements (table below; the 12x is the oldest row, gpt-oss-120b; the clean runs since 2026-10-15 are 2.4x to 5.2x). On Windows it is about equal to stock or slower in decode today, faster in prefill (see Hardware and OS support). |
+| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: 2x to 12x stock decode speed in our Linux measurements (table below; the 12x is the oldest row, gpt-oss-120b; the clean runs since 2026-10-15 are 2.4x to 5.2x). On Windows (since 2026-10-27, RESULTS 59) 1.2x to 2x stock decode on the same models (GLM-5.3 3.1x with MTP), and coding-agent sessions 2x to 2.4x faster. |
 
 ## Get started
 
@@ -66,8 +66,15 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 `--ram 12` is the memory (GB) it may use; leave it out to use what is free. Add `--fast` for about +10 % on models much bigger than your RAM, at the cost of output that is no longer identical to stock (the launcher suggests it when it would help); `--fast=2` is a stronger level for memory far below the model size (Flash-Next at 12 GB: +43 % over `--fast`, same answers in different words). The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page
 (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
 
-For coding agents (OpenCode, Hermes Agent) add `--agent` (65k context, tool calls, warm sessions), then `python3 bin/moe_cache.py connect opencode --write`
-(or `hermes`): see [docs/AGENTS.md](docs/AGENTS.md).
+**Coding agents (Hermes Agent, OpenCode).** They only talk to an OpenAI-compatible address; moe-cache provides it. Easiest, Ollama-style: a small
+listener that loads the model on the first request and unloads it when idle (`--install-autostart` starts it at every login):
+```bash
+python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart
+python3 bin/moe_cache.py connect hermes --write      # and/or: connect opencode --write (writes URL, model, 65k context, API key)
+```
+Or start a server yourself with `bin/moe-cache-server /path/to/model.gguf --agent` and run the same `connect` line. Measured on a Windows desktop
+(RESULTS 60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
+two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details and the Desktop-app steps: [docs/AGENTS.md](docs/AGENTS.md).
 
 **Or use the control page** (new, step 1): `bin/moe-cache-server --ui` (Windows: double-click `bin\moe-cache-ui.bat`) opens http://127.0.0.1:8070, which
 lists the models in `~/models` (and folders you add), says for each whether it fits in RAM, needs the cache or fits on the GPU and why, starts and
@@ -128,7 +135,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardw
 | Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
 | Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB 1.23x stock (no expert layer fits on a 3 GiB iGPU); RESULTS 50 |
 | Linux + AMD discrete GPU | **Tested by a user** (GitHub issue #1: RX 9070 XT + Ryzen 7 7700, Linux, Vulkan): identity PASS, Flash-Next 15.9 -> 18.8 tok/s. Not yet run by the developer on Linux |
-| Windows | **Experimental.** Identical to stock with the cache on in CI on a Windows runner (official llama.cpp CPU release) since 2026-10-16, and on real hardware with a GPU since 2026-10-26: Windows 11 desktop, Ryzen 9 7950X + RX 9070 XT, Vulkan, identity 4/4 on four models (RESULTS 54). Speeds there (RESULTS 55, file cache flushed before every run): Flash-Next decode about equal to stock (12.2 vs 12.1-16.1 tok/s), prefill 2.2x; Qwen3.5-122B decode **about half of stock** (about 6.5 vs 11-14 tok/s, cause under investigation), prefill 1.5x. So on Windows today the gain is long prompts, not decode. On AMD's Windows driver the launcher keeps all experts on the CPU for models bigger than RAM (VRAM in use also costs system RAM) and turns off context checkpoints for Flash-Next (they crash the driver). See docs/COMPATIBILITY.md |
+| Windows | **Experimental, now faster than stock.** Identical to stock in CI on a Windows runner and on a Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). Since 2026-10-27 the cache keeps experts in read-only views of the model file (Windows charged its private memory, and Vulkan's GPU memory, to commit, which held the cache at 8-11 GiB). Cold, stock vs moe-cache, launcher defaults (RESULTS 59-60): Flash-Next IQ2_XS **21.9 vs 14.9 tok/s**, IQ3_XXS 19.9 vs 15.1, IQ3_S 17.3 vs 12.9, Qwen3.5-122B 16.1 vs 13.9, GLM-5.3 4.4 vs 2.2 (**6.9 with `--mtp`**); text byte-identical. Context checkpoints stay on with AMD driver 32.0.32015.7029 or newer (older ones crash with Flash-Next). See docs/COMPATIBILITY.md |
 | macOS | No |
 
 ## Benchmark it on your own model and your own use case
