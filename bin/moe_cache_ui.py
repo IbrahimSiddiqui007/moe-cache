@@ -890,11 +890,11 @@ class Runner:
             except Exception:
                 pass
         self.state, self.started = "starting", time.time()
+        ready.set()                 # the launcher runs: start() may answer now (the key lookup below can take as long as start() waits)
         if s.get("agent") and not s.get("api_key"):
             self.auto_key = launcher_key()
         self.add_line("ui: " + shown_command(s) + (" (API key: the launcher's agent key)" if self.auto_key else ""))
         threading.Thread(target=self.read, args=(p,), daemon=True).start()
-        ready.set()
         self.poll(p)
         p.wait()
 
@@ -964,6 +964,13 @@ class Runner:
             p.wait(timeout=60)
         except subprocess.TimeoutExpired:
             p.kill()
+        # Windows: llama-server ends a moment after the launcher (when its job closes); a Start or the cold-start bench right after found the
+        # port still in use
+        port = int(self.settings.get("port") or 8080)
+        for _ in range(40):
+            if not mc.port_busy(port):
+                break
+            time.sleep(0.25)
 
     # -- input --
     def add_line(self, line):

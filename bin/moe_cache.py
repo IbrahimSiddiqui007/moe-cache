@@ -380,6 +380,17 @@ def key_for(url, given=None):
     return stored_key() if st in (401, 403) else None
 
 
+def gb_arg(s):
+    """argparse check for --ram / --vram: a positive finite number (kept as the text given, which the rest of the launcher passes on)."""
+    try:
+        v = float(s)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {s!r}")
+    if not (0 < v < 1e6):
+        raise argparse.ArgumentTypeError(f"out of range: {s!r}")
+    return s
+
+
 def take_api_key_from_args(extra):
     """Remove a user-given `--api-key KEY` from llama-server's arguments (it would show in the process list) and return KEY, else None."""
     for i, x in enumerate(extra):
@@ -563,7 +574,8 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 seen["last"] = line.decode(errors="replace").strip()
                 if b"plugin disabled" in line or b"refus" in line:
                     seen["disabled"] = line.decode(errors="replace").strip()
-    threading.Thread(target=pump, daemon=True).start()
+    pump_t = threading.Thread(target=pump, daemon=True)
+    pump_t.start()
     if expect_plugin and port:
         def check():
             for _ in range(900):
@@ -598,6 +610,7 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 except KeyboardInterrupt:   # a second Ctrl-C: stop waiting for the save
                     pass
             continue
+    pump_t.join(timeout=5)             # the last lines llama-server printed (why it stopped) come before the launcher's own verdict
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:
         say("moe-cache: " + exit_reason(rc, seen["ready"] if (expect_plugin and port) else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
@@ -663,7 +676,7 @@ def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model")
-    ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram"); ap.add_argument("--vram")
+    ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
@@ -999,7 +1012,7 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             n = None
         say(f"moe-cache: warm session: restored a saved agent conversation ({n} tokens) into slot {to} in {time.time() - t0:.1f} s" if st == 200
             else f"moe-cache: warm session: could not restore {os.path.basename(f)} (HTTP {st}): {body[:160]}", err=True)
-    saved, seen = {}, {}
+    saved, seen, tries = {}, {}, {}
     while True:
         time.sleep(poll)
         st, body = http(f"{url}/slots", api_key=api_key)
@@ -1025,12 +1038,15 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             fname, tmp = f"{tag}-s{sid}.bin", f"{tag}-s{sid}.new.bin"
             t0 = time.time()
             st, body = http(f"{url}/slots/{sid}?action=save", {"filename": tmp}, api_key, timeout=600)
-            saved[sid] = key
+            tries[(sid, key)] = tries.get((sid, key), 0) + 1
+            if tries[(sid, key)] >= 3:
+                saved[sid] = key       # three failures for the same state: stop trying until the conversation changes
             if st != 200:
                 say(f"moe-cache: warm session: save failed (HTTP {st}): {body[:160]}", err=True)
                 continue
             try:
                 os.replace(os.path.join(slotdir, tmp), os.path.join(slotdir, fname))
+                saved[sid] = key       # only a save that really landed counts (a failed one is tried again at the next idle moment)
                 say(f"moe-cache: warm session: saved slot {sid} ({x.get('n_prompt_tokens')} tokens, "
                     f"{os.path.getsize(os.path.join(slotdir, fname)) / 1e6:.0f} MB) in {time.time() - t0:.1f} s", err=True)
             except OSError as e:
