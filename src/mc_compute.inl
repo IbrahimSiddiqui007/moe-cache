@@ -146,6 +146,19 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
                         fprintf(stderr, "moe-cache:   row %lld, pick %lld, token %lld, expert %d (picked %d times in this batch); by hand %.9g -> %s; activation type %s, ne1 %lld\n",
                                 (long long) r, (long long) slot, (long long) t, e, same_e, v, v == x[k] ? "matches the executor" : v == y[k] ? "matches stock" : "matches neither",
                                 ggml_type_name(a->type), (long long) a->ne[1]);
+                        if (g_exec_last.nd == nd) {
+                            // the executor's own input column for this value (still in its buffer) and its kernel, run now on this thread
+                            const char * ec = g_exec_last.base + (size_t) (slot % a->ne[1]) * g_exec_last.stride_i11 + (size_t) t * g_exec_last.stride_tok;
+                            const size_t rs = ggml_row_size(tt->vec_dot_type, a->ne[0]);
+                            const bool same = memcmp(ec, col.data(), rs) == 0;
+                            float v2 = 0;
+                            g_exec_last.dot((int) w->ne[0], &v2, 0, (const char *) w->data + (size_t) e * w->nb[2] + (size_t) r * w->nb[1], 0, ec, 0, 1);
+                            const bool was_late = std::find(g_exec_last.late.begin(), g_exec_last.late.end(), e) != g_exec_last.late.end();
+                            fprintf(stderr, "moe-cache:   executor's column %s a fresh conversion%s; executor's kernel on it now %.9g -> %s; expert %d %s when the op "
+                                    "started (%zu of the op's experts were)\n", same ? "equals" : "DIFFERS FROM", g_exec_last.dot == tt->vec_dot ? "" : " (other kernel)",
+                                    v2, v2 == x[k] ? "matches the executor" : v2 == y[k] ? "matches stock" : "matches neither", e,
+                                    was_late ? "was STILL LOADING" : "was complete", g_exec_last.late.size());
+                        }
                     }
                     memcpy(nd->data, mine.data(), nb);
                 }

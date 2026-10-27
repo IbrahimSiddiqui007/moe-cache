@@ -230,6 +230,17 @@ bool exec_wait_loaded(state_t & s, const ggml_tensor * nd) {
     return waited;
 }
 
+// MOE_CACHE_EXEC_CHECK only: what the last executor op handed to the kernel, so a mismatch report can tell a wrong activation column from a
+// wrong timing (expert bytes not complete when the op ran) or a wrong result on a pool worker
+struct exec_last_t {
+    const ggml_tensor *  nd = nullptr;
+    const char *         base = nullptr;
+    size_t               stride_i11 = 0, stride_tok = 0;
+    ggml_vec_dot_t       dot = nullptr;
+    std::vector<int32_t> late;             // experts still loading when the op started
+};
+exec_last_t g_exec_last;
+
 void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
@@ -338,6 +349,17 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
     }
     for (const auto & t : late) {
         tasks.push_back(t);
+    }
+    if (s.exec_check) {
+        g_exec_last.nd = nd;
+        g_exec_last.base = base;
+        g_exec_last.stride_i11 = stride_i11;
+        g_exec_last.stride_tok = stride_tok;
+        g_exec_last.dot = dot;
+        g_exec_last.late.clear();
+        for (const auto & t : late) {
+            g_exec_last.late.push_back((int32_t) ((t.w - (const char *) w->data) / (ptrdiff_t) w->nb[2]));
+        }
     }
     // every task has 1..EXEC_MAXCOL columns and every output row lies inside this op's output tensor: checked before the pool runs, because a
     // wrong pointer here is a write anywhere in the process, found later as a crash somewhere else (cheap: at most n_tok x picks values)
