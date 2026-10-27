@@ -98,6 +98,11 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
         if (!ok) {
             return false;
         }
+        for (float & v : tmp) {
+            if (!std::isfinite(v) || v < 0.0f) {
+                v = 0.0f;          // a damaged or hostile profile: NaN or negative counts would only mislead the warm start and the GPU bank
+            }
+        }
         u.n_layers = nl;
         u.n_exp = ne;
         u.c.assign(tmp.begin(), tmp.end());
