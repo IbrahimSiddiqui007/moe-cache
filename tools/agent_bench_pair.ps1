@@ -85,8 +85,9 @@ foreach ($kind in $kinds) {
   }
   if (-not $ready) { Log "run $k ($kind): the server did not become ready (see $se)"; Stop-Tree $p; exit 1 }
   if ($kind -eq "mc") {
-    $active = @(Get-Content $so, $se -ErrorAction SilentlyContinue | Where-Object { $_ -match "moe-cache: active:" })
-    if ($active.Count -eq 0) { Log "run $k (mc): no 'moe-cache: active:' line in the server log (plugin not active): stop"; Stop-Tree $p; exit 1 }
+    # "cache mode" is printed at load; "active:" only at the first computed graph, which with --no-warmup comes with the first request (checked after the replays)
+    $cm = @(Get-Content $so, $se -ErrorAction SilentlyContinue | Where-Object { $_ -match "moe-cache: cache mode" })
+    if ($cm.Count -eq 0) { Log "run $k (mc): no 'moe-cache: cache mode' line in the server log (plugin not active): stop"; Stop-Tree $p; exit 1 }
   }
   Start-Sleep 15
   # quiet-CPU gate (Windows has no temperature sensor to read here): three samples in a row at or below 15 % load, up to 5 minutes
@@ -112,6 +113,11 @@ foreach ($kind in $kinds) {
         Add-Csv $row; Log "  csv: $row"
       } catch { Log "  (could not read $json : $_)" }
     } else { Log "  (no result file for ${s}: the replay failed, see ${txt})" }
+  }
+  if ($kind -eq "mc") {
+    $active = @(Get-Content $so, $se -ErrorAction SilentlyContinue | Where-Object { $_ -match "moe-cache: active:" })
+    if ($active.Count -eq 0) { Log "run $k (mc): no 'moe-cache: active:' line after the replays (the plugin computed nothing): stop"; Stop-Tree $p; exit 1 }
+    Log ("  " + $active[0].Substring(0, [math]::Min(200, $active[0].Length)))
   }
   Stop-Tree $p
   Start-Sleep 5

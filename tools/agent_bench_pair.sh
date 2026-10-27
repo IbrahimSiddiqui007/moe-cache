@@ -50,14 +50,17 @@ for kind in "$@"; do
     systemd-run --user --scope -q --unit=$U -p MemoryMax=${LIM}G -p MemorySwapMax=0 $CMD >> "$O/server-$tag.log" 2>&1 &
   fi
   for i in $(seq 900); do [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$P/health)" = 200 ] && break; sleep 2; done
-  if [ "$kind" = mc ] && ! grep -q "moe-cache: active:" "$O/server-$tag.log"; then
-    log "run $k/$# (mc): no 'moe-cache: active:' line in the server log (plugin not active): stop"; systemctl --user stop $U.scope; exit 1; fi
+  # "cache mode" is printed at load; "active:" only at the first computed graph, which with --no-warmup comes with the first request (checked after the replays)
+  if [ "$kind" = mc ] && ! grep -q "moe-cache: cache mode" "$O/server-$tag.log"; then
+    log "run $k/$# (mc): no 'moe-cache: cache mode' line in the server log (plugin not active): stop"; systemctl --user stop $U.scope; exit 1; fi
   sleep 15; G=$(bash "$HERE/tools/wait_cool.sh" 65 1800)
   log "run $k/$# ($kind): server up, $G"
   for s in opencode_stats hermes_stats; do
     python3 "$HERE/tools/agent_bench.py" replay "$SES/$s.json" --url http://127.0.0.1:$P --label "$kind run $k" --json "$O/$tag-$s.json" > "$O/$tag-$s.txt" 2>&1
     log "run $k/$# ($kind) $s: $(tail -1 "$O/$tag-$s.txt" | cut -c1-230)"
   done
+  if [ "$kind" = mc ] && ! grep -q "moe-cache: active:" "$O/server-$tag.log"; then
+    log "run $k/$# (mc): no 'moe-cache: active:' line after the replays (the plugin computed nothing): stop"; systemctl --user stop $U.scope; exit 1; fi
   CG=$(systemctl --user show -p ControlGroup --value $U.scope)
   log "run $k/$# ($kind): memory.events $(tr '\n' ' ' < /sys/fs/cgroup$CG/memory.events) peak $(( $(cat /sys/fs/cgroup$CG/memory.peak 2>/dev/null || echo 0) / 1048576 )) MiB"
   systemctl --user stop $U.scope; sleep 5
