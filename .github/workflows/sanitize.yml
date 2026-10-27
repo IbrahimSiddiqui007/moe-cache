@@ -37,15 +37,13 @@ jobs:
           git remote add origin https://github.com/ggml-org/llama.cpp
           git fetch --depth 1 origin 23b0202a189c44a54625aadcb37a946dd1d6278d
           git checkout --detach FETCH_HEAD
-          # TSan: backends as files (GGML_BACKEND_DL=ON) so the plugin is dlopen'ed after start-up through GGML_BACKEND_PATH. Preloaded, the server
-          # segfaulted at start with an empty log, also with libtsan preloaded first (likely cause: the portable plugin does not link libggml-base, so its
-          # constructor can run before the TSan-built ggml libraries are initialised). ASan works preloaded and keeps that setup.
-          DL=OFF; TARGETS=llama-server
-          if [ ${{ matrix.san }} = thread ]; then DL=ON; TARGETS="llama-server ggml-cpu"; fi
+          # Both sanitizers preload the plugin, as the launcher does on Linux. TSan used to segfault at start with an empty log (I9, found 2026-10-28):
+          # dot_f32's target_clones made an ifunc resolver, which the loader runs while relocating the preloaded plugin, before libtsan is set up, and
+          # the instrumented resolver crashed in __tsan_func_entry. TSan builds of the plugin now pick the version without an ifunc (src/mc_common.inl).
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
-                -DGGML_BACKEND_DL=$DL -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DGGML_OPENMP=OFF \
+                -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF -DGGML_OPENMP=OFF \
                 -DLLAMA_SANITIZE_$S=ON -DGGML_SANITIZE_$S=ON
-          cmake --build build --target $TARGETS -j "$(nproc)"
+          cmake --build build --target llama-server -j "$(nproc)"
           ls build/bin
 
       - name: Plugin with the same sanitizer
@@ -70,10 +68,10 @@ jobs:
           TSAN_OPTIONS: "halt_on_error=0 report_signal_unsafe=0 second_deadlock_stack=1"
           ASAN_OPTIONS: "detect_leaks=0 halt_on_error=0"
         run: |
-          # LD_PRELOAD loads the plugin before the executable's own libraries, so its sanitizer runtime must be preloaded first (else the plugin's
-          # instrumented start-up code runs before the runtime exists: segfault with an empty log, first run of this workflow)
+          # LD_PRELOAD loads the plugin before the executable's own libraries, so ASan's runtime must be preloaded first (ASan wants to be the first
+          # library). TSan needs no extra preload once the plugin has no ifunc (see the build step)
           if [ ${{ matrix.san }} = thread ]; then
-            export METHOD=path          # see the build step: dlopen after start-up instead of LD_PRELOAD
+            export METHOD=preload
           else
             RT=$(gcc -print-file-name=libasan.so)
             export MOE_CACHE_LIB="$RT:$MOE_CACHE_LIB"

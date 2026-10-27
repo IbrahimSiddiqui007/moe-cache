@@ -273,7 +273,16 @@ static inline __attribute__((always_inline)) float dot_f32_body(const float * a,
     }
     return sum;
 }
-#if defined(_WIN32) && defined(__x86_64__)
+// ThreadSanitizer builds use it too (I9): target_clones makes an ifunc resolver, which the loader runs while it relocates a preloaded plugin,
+// before any constructor, so before libtsan is set up; the resolver is instrumented and its __tsan_func_entry crashed (segfault, empty log)
+#if defined(__SANITIZE_THREAD__)
+#define MC_TSAN 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define MC_TSAN 1
+#endif
+#endif
+#if (defined(_WIN32) || defined(MC_TSAN)) && defined(__x86_64__)
 // mingw has no ifunc, so no target_clones: the same two versions, picked once with the CPU's feature bits
 __attribute__((target("avx2,fma"))) float dot_f32_avx2(const float * a, const float * b, size_t n) {
     return dot_f32_body(a, b, n);
