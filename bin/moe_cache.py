@@ -284,6 +284,12 @@ def mem_total():
     return None
 
 
+def ram_gib(ram_gb):
+    """--ram is GB (1e9 bytes, as the Windows job limit and mem_for_server use it); the plugin's MOE_CACHE_RAM_GIB and the planner's --ram-gib are GiB.
+    PC 2026-10-27: passing --ram 20 unchanged planned 21.5 GB under a 20 GB job limit, the commit failed (error 1455) and the server died."""
+    return f"{float(ram_gb) * 1e9 / 2**30:.3f}"
+
+
 def mem_for_server(ram_gb):
     """Bytes the server may use: --ram (GB), else the cgroup limit, else available RAM; None when unknown."""
     if ram_gb:
@@ -705,21 +711,9 @@ def server(argv):
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
-    if (ncmoe is None and WINDOWS and gpu and gpu[0].startswith("Vulkan") and re.search(r"AMD|Radeon", gpu[1])):
-        # desktop PC 2026-10-26 (RX 9070 XT, AMD's Windows Vulkan driver): VRAM in use costs about as much system RAM (llama-server with 12 GiB of
-        # expert layers on the GPU took 14.9 GB of RAM), so for a model bigger than RAM, GPU expert layers starve the page cache / expert cache:
-        # Flash-Next decode stock 11-14 -> 14-16 tok/s, plugin 3 -> 12-13.5 tok/s with all experts on the CPU (the GPU keeps attention and long prompts)
-        try:
-            mem = mem_for_server(a.ram)
-            if mem and sum(os.path.getsize(f) for f in model_parts(model)) > mem:
-                ncmoe = ncmoe_user = "999"      # also keeps the tuner (below) from moving expert layers back to the GPU
-                say("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (on this driver VRAM also uses system RAM; "
-                    "--n-cpu-moe N to override)")
-        except Exception:
-            pass
     if ncmoe is None:
         p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
-        if a.ram: p += ["--ram-gib", a.ram]
+        if a.ram: p += ["--ram-gib", ram_gib(a.ram)]
         if a.vram: p += ["--vram-gib", a.vram]
         r = None
         try:
@@ -804,7 +798,7 @@ def server(argv):
         gcache = "off"
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
-        env.append(("MOE_CACHE_RAM_GIB", a.ram))
+        env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
@@ -1179,7 +1173,7 @@ def learn(argv):
     logf = tempfile.NamedTemporaryFile(prefix="moe-cache-learn.", suffix=".log", delete=False)
     say(f"learning from {len(prompts)} prompts, {a.tokens} tokens each; profile -> {out}")
     load, _ = load_env(a.llama_server, lib, a.load_method)
-    env = dict(os.environ, **dict(load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_RAM_GIB", a.ram), ("MOE_CACHE_GGUF", a.model), ("MOE_CACHE_PROFILE", out)]))
+    env = dict(os.environ, **dict(load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_RAM_GIB", ram_gib(a.ram)), ("MOE_CACHE_GGUF", a.model), ("MOE_CACHE_PROFILE", out)]))
     cmd = [a.llama_server, "-m", a.model, "-ngl", "99", "--n-cpu-moe", a.n_cpu_moe, "-c", "4096", "-fa", "on", "--load-mode", "mmap", "--no-warmup",
            "--port", str(a.port), "--seed", "42"]
     cmd += amd_windows_checkpoint_args(pick_gpu(list_devices(a.llama_server)) if WINDOWS else None, a.model, cmd)

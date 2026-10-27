@@ -231,7 +231,7 @@ def run_planner(path, ctx, ram, vram, kv="f16"):
     """planner/plan.py --json, exactly as the launcher calls it; raises with the planner's own last line on failure."""
     p = [mc.python_cmd(), os.path.join(HERE, "planner", "plan.py"), path, "--ctx", str(ctx), "--kv", kv, "--json"]
     if ram:
-        p += ["--ram-gib", str(ram)]
+        p += ["--ram-gib", mc.ram_gib(ram)]       # ram is GB, the planner takes GiB
     if vram:
         p += ["--vram-gib", str(vram)]
     r = subprocess.run(p, capture_output=True, text=True, timeout=300)
@@ -278,16 +278,12 @@ def gb(x):
     return f"{x / 1e9:.1f} GB"
 
 
-def windows_amd_rules(gpu, path, size, avail, agent=False, windows=WINDOWS):
-    """The launcher's Windows + AMD rules that apply to this model, as (all experts on the CPU?, [reasons in the launcher's words]).
-    gpu: {device, adapter} as windows_gpu_once finds it. Same conditions as moe_cache.server(); the checkpoint rule is the launcher's own function."""
+def windows_amd_rules(gpu, path, agent=False, windows=WINDOWS):
+    """The launcher's Windows + AMD rule that applies to this model (checkpoints), as [reasons in the launcher's words].
+    gpu: {device, adapter} as windows_gpu_once finds it. The rule is the launcher's own function."""
     if not (windows and gpu and str(gpu.get("device", "")).startswith("Vulkan") and re.search(r"AMD|Radeon", gpu.get("adapter", ""))):
-        return False, []
-    reasons, cpu_only = [], False
-    if avail and size > avail:
-        cpu_only = True
-        reasons.append("Windows + AMD: all experts stay on the CPU (on AMD's Windows Vulkan driver VRAM in use also costs system RAM, so GPU expert layers "
-                       "starve the cache when the model is bigger than RAM; Flash-Next 3 -> 12-13.5 tok/s; --n-cpu-moe N overrides)")
+        return []
+    reasons = []
     import contextlib, io
     buf, was = io.StringIO(), mc.WINDOWS
     try:
@@ -300,7 +296,7 @@ def windows_amd_rules(gpu, path, size, avail, agent=False, windows=WINDOWS):
         mc.WINDOWS = was
     if args:
         reasons.append("Windows + AMD: " + buf.getvalue().strip().replace("moe-cache: ", "", 1))
-    return cpu_only, reasons
+    return reasons
 
 
 def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
@@ -310,7 +306,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
     gpu = _GPU["gpu"] if WINDOWS else None
     if vram is None and gpu and gpu.get("free") and not gpu.get("integrated"):
         vram = f"{gpu['free'] / GIB:.2f}"          # as the launcher: on Windows without nvidia-smi it passes the free VRAM it found to the planner
-    amd_cpu_only, amd_reasons = windows_amd_rules(gpu, path, size, avail, agent, windows=WINDOWS)
+    amd_reasons = windows_amd_rules(gpu, path, agent, windows=WINDOWS)
     stock_fits = bool(size and avail and size + HEADROOM <= avail)
     out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size)}
     R = out["reasons"]
@@ -333,8 +329,6 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))
     ncmoe = tuned["n_cpu_moe"] if tuned and not no_vram else plan["n_cpu_moe"]       # the launcher's choice with --gpu-cache off, --ub auto
     layers = plan["layers"]
-    if amd_cpu_only:
-        ncmoe = layers
     gpu_layers = max(0, layers - min(ncmoe, layers))
     out["numbers"] = {"layers": layers, "gpu_expert_layers": gpu_layers, "n_cpu_moe": ncmoe, "cache_GiB": plan["cache_GiB"],
                       "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": tuned["ub"] if tuned else None,
@@ -369,7 +363,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False):
             R.append(f"the model is {size / lim:.1f}x the memory: --fast would add about +10 % (changes some tokens; off by default)")
     R.extend(amd_reasons)
     for w in (tuned or {}).get("why", []):
-        if not no_vram and not amd_cpu_only:
+        if not no_vram:
             R.append("tuner: " + w)
     if plan.get("note"):
         R.append("planner: " + plan["note"])
