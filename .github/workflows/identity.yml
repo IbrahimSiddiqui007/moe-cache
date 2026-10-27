@@ -295,10 +295,12 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
         run: |
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_DUP_IDS BUILD_DIR=build-mut-dup ./build.sh --portable
-          if MOE_CACHE_LIB=$PWD/build-mut-dup/libggml-moe-cache.so IDENT_KEEP=mut_dup timeout 900 tests/dup_ids.sh granite.gguf | tee dup_ids_mutant.txt; then
+          if MOE_CACHE_LIB=$PWD/build-mut-dup/libggml-moe-cache.so IDENT_KEEP=mut_dup timeout 900 tests/dup_ids.sh granite.gguf 2>&1 | tee dup_ids_mutant.txt; then
             echo "FAIL: the mutant passed, so the repeated-ids step does not cover the overflow"; exit 1; fi
-          grep -qE "an expert task of .* has [0-9]+ columns" mut_dup/plugin.log || { echo "FAIL: the mutant failed for another reason"; tail -5 mut_dup/plugin.log; exit 1; }
-          echo "OK: the mutant is stopped by the column check"
+          # the overflow either reaches the column check or has already overwritten the heap and crashes (both seen in CI)
+          grep -qE "an expert task of .* has [0-9]+ columns" mut_dup/plugin.log dup_ids_mutant.txt || grep -qE "Segmentation fault|FAIL: the server (died|is gone)" dup_ids_mutant.txt ||
+            { echo "FAIL: the mutant failed for another reason"; tail -5 mut_dup/plugin.log; exit 1; }
+          echo "OK: the mutant fails (column check or crash)"
 
       - name: Noise floor - plugin loaded but disabled, no repacking (must equal stock; if it does not, the comparison itself is not deterministic)
         env:
