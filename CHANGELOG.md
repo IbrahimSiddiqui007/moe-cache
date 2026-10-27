@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
+## 0.2.3.6 (2026-10-27)
 
 ### Agents
 - **Warm-session saves scale with the file** (idea N27): a save rewrites the whole slot (~1.7 GB at 64k, ~7 GB at 256k on Flash-Next) and llama-server answers nothing while it writes. The saver now waits 20 s + 20 s per GB of idle time, and a conversation that grew only a little since its last save waits 3 min + 30 s per GB (at most 10 min); the older file restores exactly (llama-server processes only the newer tokens). tests/warm_test.py (fake server) in both CIs.
