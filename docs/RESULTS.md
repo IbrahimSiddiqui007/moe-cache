@@ -2156,3 +2156,8 @@ finds the experts in the file cache (the view's evicted pages stay there) and an
 ABBA; C:\dl\pc_twoagents.ps1): both sessions done after stock 333.8 / 336.1 s, plugin **145.5 / 145.4 s (2.3x)**; first token stock
 177-197 s vs plugin 54-61 s; follow-up first token (median) stock 4.8-10.6 s vs plugin 2.5-3.7 s; 0 errors. The gain holds with two
 agents sharing the server.
+
+**Kill check N1 (GPU hot bank chosen by use instead of whole layers)**: Flash-Next IQ2_XS, default 12 GPU layers, stats of the measured
+256-token request (11.57 s at 22.12 tok/s): time in the plugin's CPU expert backend 5.02 s (43 %), of which CPU expert compute 4.91 s (42 %),
+read waits ~1 % (hit 98.9 %); the other 57 % is the GPU layers, attention and sync. Under the 50 % kill line: even a perfect bank moving the
+CPU's share of picks from 75 % to 40 % saves ~20 % of a token (ceiling ~+25 % decode) before its VRAM's system-RAM cost on AMD. Parked.
