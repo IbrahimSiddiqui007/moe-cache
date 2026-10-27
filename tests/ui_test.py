@@ -58,7 +58,7 @@ check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the
 PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe": 40, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0,
         "free_vram_GiB": 7.5, "note": ""}
 TUNE = {"n_cpu_moe": 38, "ub": 1024, "gpu_cache_mib": 0, "why": ["10 layers of experts stay on the GPU", "micro-batch 1024"]}
-ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
+real_planner, ui.run_planner = ui.run_planner, lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
 ui.run_tuner = lambda path, ctx, vram, kv_q8: dict(TUNE)
 
 p = ui.plan_model(small["path"], ram="2")
@@ -119,7 +119,7 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 import os
 print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x for x in sys.argv), bool(os.environ.get("LLAMA_API_KEY"))), flush=True)
 print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
-print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
+print("moe-cache: AMD GPU on Windows, driver older than 32.0.32015.7029: --ctx-checkpoints 0 (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
@@ -451,21 +451,29 @@ check(si["gpu"] == "AMD Radeon RX 7900 XT" and si["vram_free"] == 15 * 2**30 and
 fn = os.path.join(TMP, "Flash-Next-IQ2_XS.gguf")
 gguf_header(fn, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512)])
 amd = {"device": "Vulkan0", "adapter": "AMD Radeon RX 9070 XT"}
-cpu_only, rs = ui.windows_amd_rules(amd, fn, 68e9, 30e9, agent=True, windows=True)
-check(cpu_only and len(rs) == 2 and "all experts stay on the CPU" in rs[0] and "--ctx-checkpoints 0" in rs[1] and "agents:" in rs[1],
-      f"Flash-Next bigger than RAM on an AMD GPU: experts on the CPU, checkpoints off ({rs})")
+rs = ui.windows_amd_rules(amd, fn, agent=True, windows=True)
+check(len(rs) == 1 and "--ctx-checkpoints 0" in rs[0] and "agents:" in rs[0] and "all experts" not in rs[0],
+      f"Flash-Next on an AMD GPU: checkpoints off, no all-CPU rule (dropped 2026-10-27) ({rs})")
 check(ui.mc.WINDOWS == (os.name == "nt"), "the launcher's WINDOWS flag is put back")
-cpu_only, rs = ui.windows_amd_rules(amd, blob, 21.7e9, 30e9, windows=True)
-check(not cpu_only and rs == [], "Qwen3.6 that fits: no AMD rule")
-check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 4060"}, fn, 68e9, 30e9, windows=True) == (False, []), "NVIDIA: no AMD rule")
-check(ui.windows_amd_rules(amd, fn, 68e9, 30e9, windows=False) == (False, []), "Linux: no AMD rule")
+check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 4060"}, fn, windows=True) == [], "NVIDIA: no AMD rule")
+check(ui.windows_amd_rules(amd, fn, windows=False) == [], "Linux: no AMD rule")
 ui.WINDOWS, ui._GPU["gpu"] = True, dict(amd, free=15 * 2**30, integrated=False)
 ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
 real_size, ui.size_of = ui.size_of, (lambda path: 68e9)
 p = ui.plan_model(fn, ram="24")
 ui.WINDOWS, ui.size_of = os.name == "nt", real_size
-check(p["numbers"]["gpu_expert_layers"] == 0 and p["numbers"]["free_vram_GiB"] == 15.0 and any(r.startswith("Windows + AMD: all experts") for r in p["reasons"]),
-      "plan on Windows + AMD: the free VRAM found goes to the planner, the rule keeps the experts on the CPU, and says why")
+check(p["numbers"]["gpu_expert_layers"] == 10 and p["numbers"]["free_vram_GiB"] == 15.0 and not any("all experts" in r for r in p["reasons"]),
+      "plan on Windows + AMD: the free VRAM found goes to the planner and the tuner's GPU layers are kept (no all-CPU rule)")
+
+# --ram is GB; the planner's --ram-gib and the plugin's MOE_CACHE_RAM_GIB are GiB (B1: --ram 20 planned 21.5 GB under a 20 GB job limit)
+check(mc.ram_gib("20") == "18.626" and abs(float(mc.ram_gib(12.5)) * 2**30 - 12.5e9) < 1e6, f"ram_gib: GB -> GiB ({mc.ram_gib('20')})")
+seen = []
+real_run, ui.subprocess.run = ui.subprocess.run, (lambda p, **k: seen.append(p) or type("R", (), {"stdout": "{}", "stderr": ""})())
+try:
+    real_planner(fn, 8192, "20", None)
+finally:
+    ui.subprocess.run = real_run
+check(seen and seen[0][seen[0].index("--ram-gib") + 1] == "18.626", f"the page passes --ram 20 GB to the planner as 18.626 GiB ({seen})")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

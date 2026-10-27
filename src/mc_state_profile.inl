@@ -261,12 +261,12 @@
                 budget = nb;
                 tune_shrinks++;
                 if (!shrink_warned && budget < budget_peak / 2) {
-                    // desktop PC 2026-10-26: AMD's Windows driver took ~15 GB of RAM for 12 GiB of GPU layers and the cache fell from 14 to 2 GiB
-                    // without a word; the user only saw a slow server
+                    // desktop PC 2026-10-26: the cache fell from 14 to 2 GiB without a word; the user only saw a slow server. (The ~15 GB that
+                    // llama-server took there was llama.cpp's model-file pages left in its working set, I37, now released at the first graph)
                     shrink_warned = true;
                     const double other = (double) (rss > have ? rss - have : 0) / 1073741824.0;
                     fprintf(stderr, "moe-cache: warning: the expert cache shrank from %.1f to %.1f GiB because the rest of llama-server now uses %.1f GiB "
-                            "(limit %.1f GiB): expect many SSD reads. Fewer layers on the GPU (--n-cpu-moe), a smaller context or closing other programs "
+                            "(limit %.1f GiB): expect many SSD reads. A smaller context, a smaller --cache-ram or closing other programs "
                             "leaves it more room\n", budget_peak / 1073741824.0, budget / 1073741824.0, other, limit_bytes / 1073741824.0);
                 }
             }

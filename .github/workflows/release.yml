@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash     # bash -eo pipefail: without it "kernel_check | tee" hides a failing kernel check
+
 jobs:
   build:
     # Ubuntu 22.04 on purpose: the tarball then needs only glibc 2.34 or older and libstdc++ of GCC 11 or newer
@@ -21,8 +25,21 @@ jobs:
       contents: write       # create the release and upload files
       id-token: write       # sign the attestation
       attestations: write
+      actions: read         # the gate below reads the identity and windows runs of this commit
     steps:
       - uses: actions/checkout@v4
+
+      - name: Gate (tags only) - identity and windows passed on this commit
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # run both on the tag first: gh workflow run identity.yml --ref vX.Y.Z; gh workflow run windows.yml --ref vX.Y.Z
+          for w in identity.yml windows.yml; do
+            n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -c "$GITHUB_SHA" -s success --json databaseId --jq length)
+            [ "${n:-0}" -ge 1 ] || { echo "no successful $w run on $GITHUB_SHA: run it on this tag first, then re-run this workflow"; exit 1; }
+            echo "$w passed on $GITHUB_SHA"
+          done
 
       - name: Check scripts
         run: |
