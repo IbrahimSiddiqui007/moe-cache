@@ -75,12 +75,19 @@ jobs:
           if grep -q "moe-cache-mib" launcher_gcache_path.txt; then echo "FAIL: --moe-cache-mib passed on path loading (T7)"; exit 1; fi    # "! grep" alone never fails under bash -e
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
+          python3 tests/on_demand_test.py    # on-demand endpoint: key, CORS, start on first request, SSE pass-through, idle stop, restart; fake server
 
       - name: Control page with the model (GUI1; start, one request, live hit rate, stop through the page)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
         run: python3 tests/ui_live.py granite.gguf --llama-server "$LLAMA_SERVER"
+
+      - name: On-demand endpoint with the model (first request starts it, streaming, idle stop, second start, connect)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+        run: python3 tests/on_demand_live.py granite.gguf --llama-server "$LLAMA_SERVER"
 
       - name: API key and CORS (option C; agent mode needs the stored key, a plain server allows only localhost origins)
         env:
