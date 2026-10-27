@@ -55,7 +55,7 @@ Ollama user? The models in `ollama list` are plain GGUF files: the path is on th
 ```bash
 bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server
 ```
-Every line says OK, WARN or FAIL and what to do about it. Add `--run` to also start llama-server with the plugin for one short request (about a
+Every line says OK, WARN or FAIL and what to do about it (it also times a short read test on the model's drive and warns when the drive is too slow). Add `--run` to also start llama-server with the plugin for one short request (about a
 minute): "cache runs: yes" means the cache really computed on your machine.
 
 ### 3. Run your model
@@ -76,9 +76,10 @@ Or start a server yourself with `bin/moe-cache-server /path/to/model.gguf --agen
 (RESULTS 60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
 two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details and the Desktop-app steps: [docs/AGENTS.md](docs/AGENTS.md).
 
-**Or use the control page** (new, step 1): `bin/moe-cache-server --ui` (Windows: double-click `bin\moe-cache-ui.bat`) opens http://127.0.0.1:8070, which
-lists the models in `~/models` (and folders you add), says for each whether it fits in RAM, needs the cache or fits on the GPU and why, starts and
-stops it, and shows live tok/s, cache hit rate, SSD reads, RAM, VRAM and the chat. See [docs/GUI.md](docs/GUI.md).
+**Or use the control page**: `bin/moe-cache-server --ui` (Windows: double-click `bin\moe-cache-ui.bat`) opens http://127.0.0.1:8070, a three-pane
+chat app: left your chats and models (each with the planner's verdict: fits in RAM, needs the cache or fits on the GPU, and why in one sentence),
+centre the chat with a speed chip per answer, right live tok/s, cache hit rate, SSD reads, RAM and VRAM, plus a settings drawer (RAM/VRAM budget,
+context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one click, the same on stock llama-server for comparison. See [docs/GUI.md](docs/GUI.md).
 
 ### 4. Optional: prove it is correct and measure it on your machine
 
@@ -124,7 +125,10 @@ When the model fits in the memory llama-server may use, stock llama.cpp is faste
 
 **Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](docs/RESULTS.md), section 11.
 
-Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). Hardware for all measurements above: Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
+Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-page summary of the Windows desktop results: [docs/benchmark_card.html](docs/benchmark_card.html).
+
+**Which Flash-Next file?** On a 16 GB GPU + 32 GB RAM PC (RESULTS 59-60): IQ2_XS (68 GB) 21.9 tok/s, 187/202 on our exact-answer task set; IQ3_XXS
+(76 GB) 19.9 tok/s, 193/202. IQ3_XXS when accuracy matters and it fits on your disk, IQ2_XS for speed. Hardware for all measurements above: Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
 
 ## Hardware and OS support
 
