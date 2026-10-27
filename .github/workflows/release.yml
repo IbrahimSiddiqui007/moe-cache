@@ -43,7 +43,7 @@ jobs:
 
       - name: Check scripts
         run: |
-          for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do bash -n "$f"; done
+          for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do case "$f" in *.bat) continue;; esac; bash -n "$f"; done   # bin/moe-cache-ui.bat is not a shell script
           python3 -m py_compile bin/moe_cache.py planner/plan.py planner/gguf_plan.py tests/ident.py
           # a tagged release must not install an older moe-cache when install.sh is run on its own
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
