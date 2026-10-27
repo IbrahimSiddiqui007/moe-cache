@@ -6,6 +6,7 @@
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode [--url URL] [--write]               point Hermes Agent or OpenCode at a running server (start it with --agent)
+  moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
 
@@ -1059,10 +1060,12 @@ def server_info(url, api_key=None):
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
                                  "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
-    ap.add_argument("agent", choices=["hermes", "opencode"]); ap.add_argument("--url", default="http://127.0.0.1:8080")
+    ap.add_argument("agent", choices=["hermes", "opencode"])
+    ap.add_argument("--url", help="the server (default: the on-demand endpoint's port when `on-demand` has a model, else http://127.0.0.1:8080)")
     ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
     ap.add_argument("--config", help="opencode.json to merge into (default: ~/.config/opencode/opencode.json)")
     a = ap.parse_args(argv)
+    a.url = a.url or default_agent_url()
     a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
     if not name:
@@ -1109,6 +1112,20 @@ def connect(argv):
     os.replace(cfg + ".tmp", cfg)
     say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
     return 0
+
+
+def default_agent_url():
+    """The agents' URL: the on-demand endpoint's port when one is set up (moe_cache.py on-demand), else the launcher's default 8080."""
+    try:
+        port = int(json.load(open(os.path.join(CACHE_DIR, "on-demand.json"), encoding="utf-8")).get("port", 8080))
+    except (OSError, ValueError, TypeError, AttributeError):
+        port = 8080
+    return f"http://127.0.0.1:{port}"
+
+
+def on_demand_cmd(argv):
+    from moe_cache_on_demand import on_demand      # bin/moe_cache_on_demand.py
+    return on_demand(argv)
 
 
 def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None, hide_key=False):
@@ -1460,7 +1477,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd}
+    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
