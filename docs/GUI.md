@@ -38,6 +38,10 @@ It prints what it found. The same is shown in the page's header when you hold th
 
 ## 2. The page at a glance
 
+![The control page with Granite 1B running through moe-cache](img/gui-overview.png)
+
+*(Granite 1B on the test laptop, Linux, RTX 4060 8 GB, 2026-10-27; VRAM set to 0.5 GiB so the experts stay on the CPU and the cache has work to do.)*
+
 | Panel | What it is for |
 |---|---|
 | **1 · Model** (left, top) | pick a model; see if it fits and how it would run |
@@ -45,7 +49,11 @@ It prints what it found. The same is shown in the page's header when you hold th
 | **3 · Status** (right, top) | Start / Stop, live speed and memory, what the launcher decided, warnings, Quick benchmark |
 | **4 · Chat / Agents / Log** (right, bottom) | chat with the model, connect coding agents, saved agent sessions, the server's log |
 
+Add `#agents` or `#log` to the page's address to open that tab directly (handy as a bookmark).
+
 ## 3. Models and the plan
+
+<img src="img/gui-model.png" alt="Model panel: the list with verdicts and the Why list for the selected model" width="520">
 
 The list shows every `.gguf` file in your model folders: `~/models` (on Windows also `C:\models`), any folder you add with **Add folder**, and
 Ollama's model store if you have Ollama. A model split into several files is listed once. **Rescan** reads the folders again.
@@ -69,6 +77,8 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 
 ## 4. Settings
 
+<img src="img/gui-settings.png" alt="Settings panel" width="520">
+
 | Setting | What it does | Default |
 |---|---|---|
 | RAM budget | the memory (GB) the model may use (`--ram`) | empty: what is free when it starts |
@@ -84,6 +94,11 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 Changing a setting updates the verdicts. The page remembers your last settings (not the API key).
 
 ## 5. Start, stop and the live numbers
+
+<img src="img/gui-status.png" alt="Status panel: live numbers, the command, benchmark runs and the stock vs moe-cache table" width="600">
+
+*(Granite fits in RAM, so stock llama-server is faster here, 0.80× and 0.46× in red: as the launcher's Auto choice says. The gain is for models
+bigger than RAM.)*
 
 **Start** starts the selected model with your settings, through the launcher (`moe_cache.py server`). **Stop** stops it. The model loads in a
 few seconds to a few minutes; the state shows *starting…* until it is ready.
@@ -109,10 +124,16 @@ running it).
 
 ## 6. Chat
 
+<img src="img/gui-chat.png" alt="llama-server's chat page inside the control page" width="600">
+
 The **Chat** tab shows llama-server's own chat page once the model is ready (or open it in a new tab with the link). In Agent mode the server needs
 its API key: the chat page asks for it once per browser; press **Copy key** in the Status panel and paste it there.
 
+<img src="img/gui-chat-key.png" alt="In Agent mode the chat page asks for the API key" width="600">
+
 ## 7. Coding agents (OpenCode, Hermes)
+
+<img src="img/gui-agents.png" alt="Agents tab: base URL, model, context, Connect OpenCode / Hermes, Agent sessions" width="600">
 
 Start the model with **Agent mode** on. The **Agents** tab then shows the base URL (`http://127.0.0.1:8080/v1`), the model name and the context.
 

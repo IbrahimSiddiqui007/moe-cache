@@ -7,6 +7,7 @@
 <style>
 :root { --bg:#f6f7f9; --panel:#fff; --line:#dde1e6; --text:#1d232b; --muted:#5f6b78; --accent:#2f6fde; --ok:#1f8a4c; --warn:#b26a00; --bad:#c23b3b; --gpu:#7a4fd0; --code:#eef1f5; }
 @media (prefers-color-scheme: dark) { :root { --bg:#14171c; --panel:#1c2027; --line:#2e343d; --text:#e4e8ee; --muted:#9aa5b3; --accent:#6c9cff; --ok:#4cc27e; --warn:#e3a33b; --bad:#f07171; --gpu:#ae8cf2; --code:#252a33; } }
+a { color:var(--accent); }
 * { box-sizing:border-box; }
 body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
@@ -360,12 +361,12 @@ function compareTable(rows, model) {
   if (!rows.length) return `<div class="small" style="margin-top:8px">Stock vs moe-cache: run the benchmark once with <b>Run as: Stock</b> and once with <b>moe-cache</b>
     (same model, RAM and context) and the two appear side by side here.</div>`;
   return `<div class="small" style="margin-top:10px">Stock vs moe-cache, same model and settings (newest run of each; × = how many times faster moe-cache is):</div>
-    <table style="margin-top:6px"><tr><th>Model</th><th>RAM GB</th><th>Ctx</th><th>Start</th><th>moe-cache mode</th><th class="num">Decode stock → moe-cache</th><th class="num">×</th>
-    <th class="num">Prefill stock → moe-cache</th><th class="num">×</th><th>Hit rate</th></tr>` +
-    rows.map(r => `<tr${name(r.model) == name(model || "") ? "" : ' class="small"'}><td>${esc(name(r.model))}</td><td>${esc(r.ram_gb)}</td><td>${esc(r.ctx)}</td><td>${esc(r.start)}</td>
-      <td>${esc(r.mode.replace("moe-cache ", ""))}</td><td class="num">${esc(r.stock_decode)} → ${esc(r.moe_decode)}</td><td class="num">${x(r.decode_x)}</td>
+    <table style="margin-top:6px; font-size:12px"><tr><th>Model</th><th>RAM GB · ctx · start</th><th>Mode</th><th class="num">Decode tok/s<br>stock → moe-cache</th><th class="num">×</th>
+    <th class="num">Prefill tok/s<br>stock → moe-cache</th><th class="num">×</th><th class="num">Hit rate</th></tr>` +
+    rows.map(r => `<tr${name(r.model) == name(model || "") ? "" : ' class="small"'}><td style="word-break:break-word">${esc(name(r.model))}</td>
+      <td>${esc(r.ram_gb)} · ${esc(r.ctx >= 1024 ? r.ctx / 1024 + "k" : r.ctx)} · ${esc(r.start)}</td><td>${esc(r.mode.replace("moe-cache ", ""))}</td><td class="num">${esc(r.stock_decode)} → ${esc(r.moe_decode)}</td><td class="num">${x(r.decode_x)}</td>
       <td class="num">${esc(r.stock_prefill || "–")} → ${esc(r.moe_prefill || "–")}</td><td class="num">${x(r.prefill_x)}</td>
-      <td>${r.hit_rate ? (r.hit_rate * 100).toFixed(1) + " %" : "–"}</td></tr>`).join("") + "</table>" +
+      <td class="num">${r.hit_rate ? (r.hit_rate * 100).toFixed(1) + " %" : "–"}</td></tr>`).join("") + "</table>" +
     (rows.some(r => r.ram_gb != "auto") ? `<div class="hint">A RAM budget limits moe-cache only: stock llama-server still uses all free RAM through the file cache,
     so rows with a RAM number favour stock. The fair test is RAM on <b>auto</b> with a model bigger than this computer's RAM.</div>` : "");
 }
@@ -441,17 +442,19 @@ $("addfolder").onclick = async () => {
 };
 $("rescan").onclick = () => { S.plans = {}; loadSystem().then(() => loadModels(true)); };
 ["ram", "vram"].forEach(id => { $(id).oninput = paintRanges; $(id).onchange = settingsChanged; });
-document.querySelector(".tabs").onclick = e => {
-  const t = e.target.dataset.t; if (!t) return;
+function showTab(t) {
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.t == t));
   ["chat", "agents", "log"].forEach(x => $("t-" + x).hidden = x != t);
   if (t == "agents") loadSessions();
-};
+  history.replaceState(null, "", t == "chat" ? location.pathname : "#" + t);     // #agents / #log open that tab (bookmarks)
+}
+document.querySelector(".tabs").onclick = e => { if (e.target.dataset.t) showTab(e.target.dataset.t); };
 (async () => {
   await loadSystem();
   seg("ctx", "ctx", settingsChanged); seg("mode", "mode", settingsChanged); seg("engine", "engine", settingsChanged);
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; document.querySelectorAll("#ctx button").forEach(b => b.classList.toggle("on", b.dataset.v == 65536)); settingsChanged(); } };
   await loadModels(false);
+  if (["agents", "log"].includes(location.hash.slice(1))) showTab(location.hash.slice(1));
   poll(); setInterval(poll, 1000);
   setInterval(() => { if (!$("t-agents").hidden) loadSessions(); }, 10000);
   setInterval(() => { if (!S.status.state || S.status.state == "idle") loadSystem(); }, 10000);
