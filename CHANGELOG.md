@@ -38,6 +38,8 @@
 - One stock-or-plugin rule: `moe_cache.decide()` is used by the launcher and the page, so the page's verdict cannot differ from what the launcher
   runs. New launcher option `--stock` (stock llama-server whatever the model's size, to compare). On the page: **Run as** Auto / moe-cache / Stock,
   and a **Stock vs moe-cache** table from the Quick benchmark runs (newest run of each, same model and settings, with the speed-up).
+- Control page: **MTP** Auto / On / Off (the launcher's `--mtp` / `--no-mtp`); the plan's Why list gives the launcher's own MTP line
+  (`mtp_decide()`), Status shows "+ MTP"; MTP benchmark runs are compared only with MTP runs. docs/GUI.md has screenshots.
 - `moe-cache-server --ui` or `python bin\moe_cache.py ui`: a local page at http://127.0.0.1:8070 on Linux and Windows. Models with the planner's verdict and reasons, start and stop,
   live tok/s, hit rate, SSD reads, RAM and VRAM (also for AMD/Intel on Windows), the log, llama-server's chat page; Connect OpenCode / Hermes buttons with a preview;
   warnings read from the log; measured speeds from RESULTS next to the verdict; warm-session state. `bin\moe-cache-ui.bat` starts it with one click on Windows. See [docs/GUI.md](docs/GUI.md).

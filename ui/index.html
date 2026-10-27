@@ -91,6 +91,9 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
     <label>Run as</label>
     <div class="seg" id="engine"><button data-v="auto">Auto</button><button data-v="plugin">moe-cache</button><button data-v="stock">Stock</button></div>
     <div class="hint" id="enginehint"></div>
+    <label>MTP (multi-token prediction)</label>
+    <div class="seg" id="mtp"><button data-v="auto">Auto</button><button data-v="on">On</button><button data-v="off">Off</button></div>
+    <div class="hint" id="mtphint"></div>
     <div class="row" style="margin-top:8px">
       <label style="margin:0"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
       <label style="margin:0"><input type="checkbox" id="nowarm"> Don't restore saved agent sessions <span class="small">(--no-warm: nothing is saved either)</span></label>
@@ -141,7 +144,7 @@ iframe { width:100%; height:560px; border:1px solid var(--line); border-radius:6
 <script>
 "use strict";
 const $ = id => document.getElementById(id);
-const S = { models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", engine: "auto", plans: {}, logSeq: 0, status: {}, tab: "chat" };
+const S = { models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", engine: "auto", mtp: "auto", plans: {}, logSeq: 0, status: {}, tab: "chat" };
 const fmtGB = b => b == null ? "–" : (b / 1e9).toFixed(1) + " GB";
 const fmtGiB = b => b == null ? "–" : (b / 2 ** 30).toFixed(1) + " GiB";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -153,9 +156,9 @@ async function api(path, body) {
 }
 function settings() {
   return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.engine == "stock" ? "exact" : S.mode,
-           engine: S.engine, agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, port: $("port").value, api_key: $("apikey").value };
+           engine: S.engine, mtp: S.mtp, agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, port: $("port").value, api_key: $("apikey").value };
 }
-function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent, s.engine].join("|"); }
+function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent, s.engine, s.mtp].join("|"); }
 function seg(id, key, cb) {
   const el = $(id);
   const paint = () => el.querySelectorAll("button").forEach(b => b.classList.toggle("on", b.dataset.v == S[key]));
@@ -164,6 +167,9 @@ function seg(id, key, cb) {
 }
 const MODEHINT = { exact: "Output identical to stock llama-server (default).", fast: "--fast: skips rarely needed experts that are not in RAM: about +10 %, about 1 token in 40-50 differs.",
                    hybrid: "--hybrid (experimental): most used experts computed on the GPU, the rest on the CPU; output differs from stock." };
+const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (same output, faster decode); the plan's Why list says what it will do.",
+                  on: "--mtp: always use the model's MTP head (Start stops with a message when the model or llama-server cannot).",
+                  off: "--no-mtp: never." };
 const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM (faster then), moe-cache when it does not (recommended).",
                      plugin: "--always-plugin: moe-cache even when the model fits (to compare with stock).",
                      stock: "--stock: stock llama-server even when the model does not fit (to compare; Mode is Exact then). Run the Quick benchmark in each and compare below." };
@@ -179,7 +185,7 @@ async function loadSystem() {
     S.inited = true;
     $("ram").value = last.ram || 0;
     $("vram").value = last.vram || 0;      // auto: the planner and the launcher read the free VRAM at start (a running server would lower it here)
-    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.engine) S.engine = last.engine; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm;
+    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.engine) S.engine = last.engine; if (last.mtp != null) S.mtp = last.mtp ? "on" : "off"; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm;
     if (last.model) S.sel = last.model;
   }
   paintRanges();
@@ -194,6 +200,7 @@ function paintRanges() {
   $("vramv").textContent = $("vram").value > 0 ? $("vram").value + " GiB" : `auto (${S.sys.vram_free != null ? fmtGiB(S.sys.vram_free) + " free now" : "detected at start"})`;
   $("modehint").textContent = MODEHINT[S.mode];
   $("enginehint").textContent = ENGINEHINT[S.engine] || "";
+  $("mtphint").textContent = MTPHINT[S.mtp] || "";
   document.querySelectorAll("#mode button").forEach(b => { b.disabled = S.engine == "stock" && b.dataset.v != "exact";
     b.classList.toggle("on", b.dataset.v == (S.engine == "stock" ? "exact" : S.mode)); });
 }
@@ -233,7 +240,7 @@ async function planAll() {
       const k = planKey(path);
       if (S.plans[k]) continue;
       const s = settings();
-      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}&engine=${s.engine}&agent=${s.agent ? 1 : 0}`); }
+      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}&engine=${s.engine}&mtp=${s.mtp}&agent=${s.agent ? 1 : 0}`); }
       catch (e) { S.plans[k] = { kind: "error", verdict: "error", reasons: [e.message] }; }
       paintModels();
     }
@@ -451,7 +458,7 @@ function showTab(t) {
 document.querySelector(".tabs").onclick = e => { if (e.target.dataset.t) showTab(e.target.dataset.t); };
 (async () => {
   await loadSystem();
-  seg("ctx", "ctx", settingsChanged); seg("mode", "mode", settingsChanged); seg("engine", "engine", settingsChanged);
+  seg("ctx", "ctx", settingsChanged); seg("mode", "mode", settingsChanged); seg("engine", "engine", settingsChanged); seg("mtp", "mtp", settingsChanged);
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; document.querySelectorAll("#ctx button").forEach(b => b.classList.toggle("on", b.dataset.v == 65536)); settingsChanged(); } };
   await loadModels(false);
   if (["agents", "log"].includes(location.hash.slice(1))) showTab(location.hash.slice(1));

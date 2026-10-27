@@ -121,6 +121,7 @@ print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x f
 print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
 print("moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 15.00 GiB free (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
+print("moe-cache: MTP on: the model has an MTP head (1 layer) and llama-server has draft-mtp: --spec-type draft-mtp --spec-draft-n-max 2 (test)", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
 print("prompt eval time =     100.00 ms /    50 tokens (    2.00 ms per token,   500.00 tokens per second)", flush=True)
@@ -228,7 +229,7 @@ while time.time() < deadline:
         break
     time.sleep(0.3)
 check(status.get("state") == "ready", f"the server becomes ready ({status.get('state')})")
-check(status.get("mode") == "moe-cache exact", f"mode from the launcher's log ({status.get('mode')})")
+check(status.get("mode") == "moe-cache exact + MTP", f"mode (and MTP) from the launcher's log ({status.get('mode')})")
 check(status.get("last", {}).get("decode_tps") == 25.0 and status["last"].get("prefill_tps") == 500.0, "decode and prefill tok/s from the timing lines")
 c = status.get("cache", {})
 check(abs((c.get("hit_rate") or 0) - 0.8) < 1e-9, f"recent hit rate from two snapshots: 80/100 ({c.get('hit_rate')})")
@@ -236,7 +237,7 @@ check(abs((c.get("hit_rate_total") or 0) - 0.85) < 1e-9 and c.get("budget") == 7
 check((c.get("read_mbs") or 0) > 0, f"SSD reads MB/s from read_bytes ({c.get('read_mbs')})")
 check(f"--port {port}" in status.get("command", ""), "the status shows the launcher command")
 d = status.get("decisions", [])
-check(len(d) == 2 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("experts of 38 layers"),
+check(len(d) == 3 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("experts of 38 layers") and d[2].startswith("MTP on:"),
       f"what the launcher decided, up to its URL line, without the prefix ({d})")
 w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
@@ -345,7 +346,7 @@ while time.time() < deadline:
 r = b.get("result", {})
 check(b["state"] == "done" and r.get("decode_tokens") == "256/256" and float(r["decode_mean"]) > 0, f"two decode runs of 256 tokens even when the model would stop early (ignore_eos) ({b.get('error') or r.get('decode_1')} / {r.get('decode_2')})")
 check(3000 <= int(r.get("prefill_tokens") or 0) <= 4500 and r.get("prefill") == "300.0", f"one prefill of about 3.5k tokens ({r.get('prefill_tokens')})")
-check(r.get("mode") == "moe-cache exact" and r.get("model") == "Small-MoE-Q4_K_M.gguf" and "sekrit" not in r.get("command", ""), "the row names model and mode, no key")
+check(r.get("mode") == "moe-cache exact + MTP" and r.get("model") == "Small-MoE-Q4_K_M.gguf" and "sekrit" not in r.get("command", ""), "the row names model and mode, no key")
 rows = json.loads(req("/api/bench")[1])["rows"]
 check(len(rows) == 2 and rows[0]["model"] == "Old.gguf" and rows[0]["start"] == "warm" and os.path.isfile(old_csv + ".bak")
       and open(old_csv, encoding="utf-8").readline().strip() == ",".join(ui.BENCH_FIELDS), "an older bench.csv gets the new columns, its rows kept, a .bak copy")
@@ -459,6 +460,10 @@ cmp_ = ui.bench_compare(rows)
 check(len(cmp_) == 2 and cmp_[0]["mode"] == "moe-cache --fast" and cmp_[1]["mode"] == "moe-cache exact", f"compare: one row per moe-cache mode that has a stock run ({cmp_})")
 check(cmp_[1]["decode_x"] == 2.0 and cmp_[1]["prefill_x"] == 1.5 and cmp_[1]["stock_time"] == "t3" and cmp_[0]["prefill_x"] is None,
       "compare: ratio against the newest stock run; a missing number gives no ratio")
+mrows = [dict(R0, mode="stock llama-server (--stock, to compare)", decode_mean="10.00", prefill="100.0", time="t1"),
+         dict(R0, mode="moe-cache exact + MTP", decode_mean="30.00", prefill="100.0", time="t2")]
+check(ui.bench_compare(mrows) == [] and len(ui.bench_compare(mrows + [dict(mrows[0], mode="stock llama-server (--stock, to compare) + MTP")])) == 1,
+      "compare: an MTP run pairs only with an MTP run")
 check(ui.bench_compare([]) == [] and ui.bench_compare([{"mode": "stock", "decode_mean": "x"}]) == [], "compare: empty or bad rows give nothing")
 
 # one stock-or-plugin rule: the page asks the launcher's decide(), so the two cannot disagree
@@ -480,6 +485,22 @@ check("--stock" in ui.server_args(dict(base, engine="stock", mode="fast")) and "
       "server args: Stock wins over Fast (they cannot go together)")
 check("--always-plugin" in ui.server_args(dict(base, engine="plugin")) and "--always-plugin" not in ui.server_args(dict(base, engine="plugin", mode="fast")),
       "server args: moe-cache adds --always-plugin (not needed with --fast)")
+check("--mtp" in ui.server_args(dict(base, mtp=True)) and "--no-mtp" in ui.server_args(dict(base, mtp=False))
+      and not any("mtp" in x for x in ui.server_args(dict(base, mtp=None))), "server args: MTP On / Off / Auto")
+# MTP line in the plan: the launcher's own mtp_decide(); the head is faked here (the real reader is tested in planner_test)
+import gguf_plan
+real_ml, gguf_plan.mtp_layers = gguf_plan.mtp_layers, (lambda path: (1, 1) if "GLM" in path or "Small" in path else (0, 0))
+ui._MTP_SERVER.update({"ls-new": True, "ls-old": False})
+check(ui.mtp_reason(small["path"], None, True, "ls-new").startswith("MTP on: the model has an MTP head"), "MTP: Agent mode, head, new llama-server: on, and why")
+check(ui.mtp_reason(small["path"], None, False, "ls-new").startswith("this model has an MTP head: --mtp"), "MTP: plain server with a head: the hint")
+check("lacks --spec-type draft-mtp" in ui.mtp_reason(small["path"], None, True, "ls-old"), "MTP: old llama-server: off, and why")
+check(ui.mtp_reason(small["path"], False, True, "ls-new") == "MTP off (--no-mtp)", "MTP: Off")
+check(ui.mtp_reason(blob, True, True, "ls-new").startswith("MTP: Start would stop with: --mtp: the model has no MTP head"), "MTP: On for a model without a head: says Start would stop")
+check(ui.mtp_reason(blob, None, False, "ls-new") is None, "MTP: no head, plain server: nothing to say")
+check("GLM: MTP currently fails at load on Windows" in ui.mtp_reason("/m/GLM-5.3-Flash.gguf", None, True, "ls-new"), "MTP: GLM caveat")
+p = ui.plan_model(small["path"], ram="1", agent=True, mtp=None, ls="ls-new")
+check(any(r.startswith("MTP on:") for r in p["reasons"]), "MTP: the plan's Why list has the line")
+gguf_plan.mtp_layers = real_ml
 check(not any(x in ui.server_args(dict(base, engine="auto")) for x in ("--stock", "--always-plugin")), "server args: Auto adds nothing")
 check(not ui.mc.decide(small["path"], f"{(sz + ui.mc.STOCK_HEADROOM - 1) / 1e9}")[0], "decide(): model + 1.5 GB headroom must fit")
 

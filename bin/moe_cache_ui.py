@@ -247,6 +247,38 @@ def run_tuner(path, ctx, vram, kv_q8):
     return tune(path, ctx, free=float(vram) * GIB if vram else None, want_cache=False, kv_q8=kv_q8)
 
 
+_MTP_SERVER = {}
+
+
+def server_has_mtp(ls):
+    """True when this llama-server offers MTP speculative decoding (draft-mtp in its --help), as the launcher checks (moe_cache.mtp_args);
+    asked once per llama-server."""
+    if ls not in _MTP_SERVER:
+        try:
+            _MTP_SERVER[ls] = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout
+        except Exception:
+            _MTP_SERVER[ls] = False
+    return _MTP_SERVER[ls]
+
+
+def mtp_reason(path, want, agent, ls):
+    """The launcher's MTP line for this model and setting (its own mtp_decide(); the head from gguf_plan.mtp_layers), without the prefix; None
+    when the launcher would say nothing. want: None (auto), True (--mtp), False (--no-mtp)."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import mtp_layers
+        head, declared = mtp_layers(path)
+    except Exception:
+        return None
+    try:
+        on, why = mc.mtp_decide(want, agent, head, declared, bool(head and want is not False and ls and server_has_mtp(ls)), False)
+    except SystemExit as e:                     # --mtp the launcher would refuse: say so before Start
+        return f"MTP: Start would stop with: {e}"
+    if why and head and want is not False and re.search(r"glm", os.path.basename(path), re.I):      # don't promise GLM a speed-up yet
+        why += "; GLM: MTP currently fails at load on Windows (a plugin bug being fixed): choose MTP Off there"
+    return why.replace("moe-cache: ", "", 1) if why else None
+
+
 # Measured decode speeds from README "Results" / docs/RESULTS.md, all on the test laptop (i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD), by model
 # family (gguf_plan.model_key) and file size (GB, so each quant has its own row). (RAM GB, setting, stock tok/s, moe-cache tok/s, where)
 MEASURED = {
@@ -300,9 +332,9 @@ def windows_amd_rules(gpu, path, agent=False, windows=WINDOWS):
     return reasons
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto"):
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units).
-    engine: auto (the launcher decides), plugin (--always-plugin) or stock (--stock)."""
+    engine: auto (the launcher decides), plugin (--always-plugin) or stock (--stock). mtp: None (auto), True, False; ls: llama-server for its MTP check."""
     if engine == "stock":
         mode = "exact"                             # --fast and --hybrid need the plugin
     stock_fits, size, avail = mc.decide(path, ram)     # the launcher's own stock-or-plugin rule: does it fit?
@@ -375,6 +407,9 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
             R.append("tuner: " + w)
     if plan.get("note"):
         R.append("planner: " + plan["note"])
+    m = mtp_reason(path, mtp, agent, ls)
+    if m:
+        R.append(m)
     return out
 
 
@@ -393,6 +428,8 @@ def server_args(s):
         a.append("--hybrid")
     elif s.get("engine") == "plugin":
         a.append("--always-plugin")
+    if s.get("mtp") in (True, False):
+        a.append("--mtp" if s["mtp"] else "--no-mtp")
     if s.get("agent"):
         a.append("--agent")
         if s.get("no_warm"):
@@ -717,9 +754,10 @@ def bench_compare(rows):
             return None
     groups = {}
     for r in rows:
-        kind = "stock" if str(r.get("mode", "")).startswith("stock") else r.get("mode") if str(r.get("mode", "")).startswith("moe-cache") else None
+        mode = str(r.get("mode", ""))
+        kind = "stock" if mode.startswith("stock") else mode if mode.startswith("moe-cache") else None
         if kind and num(r.get("decode_mean")):
-            key = tuple(r.get(k) or "" for k in ("model", "ram_gb", "ctx", "start", "gpu", "os"))
+            key = tuple(r.get(k) or "" for k in ("model", "ram_gb", "ctx", "start", "gpu", "os")) + (mode.endswith("+ MTP"),)   # MTP runs pair with MTP runs
             groups.setdefault(key, {})[kind] = r                 # rows come oldest first: the newest of each kind wins
     out = []
     for key, g in groups.items():
@@ -879,6 +917,7 @@ class Runner:
         self.log = collections.deque(maxlen=500)
         self.seq = 0
         self.mode = ""
+        self.mtp = False                   # the launcher said "MTP on:"
         self.last = {}                     # last finished request: prefill / decode tok/s
         self.live_tps = None
         self.snap = None; self.prev_snap = None
@@ -1044,6 +1083,8 @@ class Runner:
                 self.mode = "moe-cache " + {"fast": "--fast", "hybrid": "--hybrid"}.get(self.settings.get("mode"), "exact")
             elif "all experts fit in your GPU memory" in line:
                 self.mode = "all experts on the GPU"
+            if line.startswith("moe-cache: MTP on:"):
+                self.mtp = True
             m = re.search(r"profile (\S+\.usage)", line)
             if m:
                 self.profile = m.group(1).rstrip(";")
@@ -1185,7 +1226,7 @@ class Runner:
                 hr = (c1[0] - c0[0]) / ((c1[0] - c0[0]) + (c1[1] - c0[1]))
             s, sy = self.settings, system_info()
             row = {"time": time.strftime("%Y-%m-%d %H:%M"), "model": os.path.basename(s.get("model", "")), "size_gb": f"{size_of(s.get('model', '')) / 1e9:.1f}",
-                   "mode": self.mode or "?", "ram_gb": s.get("ram") or "auto", "vram_gib": s.get("vram") or "auto", "ctx": s.get("ctx") or 8192,
+                   "mode": (self.mode or "?") + (" + MTP" if self.mtp else ""), "ram_gb": s.get("ram") or "auto", "vram_gib": s.get("vram") or "auto", "ctx": s.get("ctx") or 8192,
                    "gpu": sy.get("gpu") or "none", "os": sy.get("os"), "decode_1": f"{dec[0]:.2f}", "decode_2": f"{dec[1]:.2f}",
                    "decode_mean": f"{sum(dec) / len(dec):.2f}", "decode_tokens": "/".join(str(n) for n in ntok), "prefill_tokens": pf.get("prompt_n"),
                    "prefill": f"{pf['prompt_per_second']:.1f}", "hit_rate": f"{hr:.3f}" if hr is not None else "", "warmup_s": f"{warm:.1f}",
@@ -1206,7 +1247,7 @@ class Runner:
         port = int(s.get("port") or 8080)
         return {"state": self.state, "rc": self.rc, "model": s.get("model"), "port": port, "url": f"http://127.0.0.1:{port}",
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
-                "mode": self.mode, "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
+                "mode": self.mode + (" + MTP" if self.mode and self.mtp else ""), "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
                 "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "api_key": self.key_info(), "warm": {"events": self.warm},
                 "system": system_info()}
@@ -1334,12 +1375,12 @@ class Handler(BaseHTTPRequestHandler):
                 m = self.known(q.get("model"))
                 ps = self.settings(dict(q, model=m))             # the same checks as Start (numbers in range, no nan / inf)
                 q = {"ram": str(ps["ram"]) if "ram" in ps else "", "vram": str(ps["vram"]) if "vram" in ps else "", "ctx": str(ps.get("ctx", 8192)),
-                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"]}
-                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"])
+                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"], "mtp": ps["mtp"]}
+                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"])
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
-                                                                             q.get("agent") in ("1", "true"), q["engine"]))
+                                                                             q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls))
                 return self.send(200, hit[1])
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
@@ -1442,6 +1483,7 @@ class Handler(BaseHTTPRequestHandler):
     def settings(self, d):
         s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("exact", "fast", "hybrid") else "exact",
              "engine": d.get("engine") if d.get("engine") in ("auto", "plugin", "stock") else "auto",
+             "mtp": {"on": True, "off": False}.get(str(d.get("mtp")).lower()),
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
         if s["engine"] == "stock":
             s["mode"] = "exact"                   # --fast and --hybrid need the plugin
