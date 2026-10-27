@@ -119,7 +119,7 @@ threading.Thread(target=srv.serve_forever, daemon=True).start()
 import os
 print("fake: argv has the key: %s, LLAMA_API_KEY set: %s" % (any("sekrit" in x for x in sys.argv), bool(os.environ.get("LLAMA_API_KEY"))), flush=True)
 print("fake: agent snippet apiKey auto-key-ABCDEFGH", flush=True)
-print("moe-cache: AMD GPU on Windows and a model bigger than RAM: all experts stay on the CPU (test)", flush=True)
+print("moe-cache: AMD GPU on Windows, driver older than 32.0.32015.7029: --ctx-checkpoints 0 (test)", flush=True)
 print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
