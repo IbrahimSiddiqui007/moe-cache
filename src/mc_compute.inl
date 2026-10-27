@@ -17,7 +17,9 @@ void cpu_path_check(state_t & s, ggml_cgraph * cg) {
         if (it == s.by_tensor.end()) {
             continue;
         }
+#ifndef MOE_CACHE_TEST_MUTANT_NO_STEPASIDE_WAIT     // CI only: the mutant drops every wait before llama.cpp's CPU path, this one too (else it masks the missing step-aside wait)
         exec_wait_loaded(s, nd);
+#endif
         const tinfo_t & ti = *s.tensors[(size_t) it->second];
         const ggml_tensor * ids = nd->src[2];
         std::vector<int> cnt((size_t) ti.n_expert, 0);
