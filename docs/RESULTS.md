@@ -2033,3 +2033,121 @@ Killed: verifying 3 tokens at once on CPU-held experts costs more than the draft
 **Flash-Next IQ3_S (83.6 GB, C:), first look, one cold run each:** stock (launcher's 7 GPU expert layers, `--n-cpu-moe 41`) decode 10.62 / 12.66 / 12.22,
 prefill 49.3; plugin buffered + 13 layers decode 8.73 / 9.19 / 9.81, prefill 88.6 (1.8x). As on IQ3_XXS, the plugin's decode lags stock on IQ3 types on
 Windows while its prefill is far ahead. (IQ3_S file 2 is byte-identical to IQ3_XXS file 2, same sha256.)
+
+## 59. Windows desktop, 2026-10-27 evening: the cache moves to read-only views of the model file (no commit) and beats stock
+
+PC: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, page file 14 GB, Windows 11, llama.cpp Vulkan ggml 0.27 (620d2225c), launcher 65facd1.
+Every run cold (tools/win_flush_cache.ps1 reads 38.5 GB of other files first). Decode = the 256-token greedy "water cycle" request after a
+64-token warm-up, `cache_prompt` off. Stock = llama-server with the same `-ngl 99 --n-cpu-moe N -c 8192 -fa on --load-mode mmap -ub 2048`.
+
+**Why the plugin lost on IQ3 (stats of the measured request, plugin with private memory, buffered reads, 13 GPU layers)**
+| Model | decode | hit % | disk read | cache | resizes in one request |
+|---|---|---|---|---|---|
+| Flash-Next IQ2_XS | 18.37 | 96.0 | 5.5 GB | 10.85 GiB | 75 / 74 |
+| Flash-Next IQ3_XXS | 12.61 | 88.0 | 19.5 GB | 8.31 GiB | 226 / 226 |
+Windows charges private memory to commit (RAM + page file), and Vulkan's GPU allocations too: the cache was held at 8-11 GiB (start budget cut
+from 17.4 to 11.5 GiB, "free commit 15.13 GiB") while stock's mmap pages are file-backed and never charged. Not a kernel issue: on Windows stock
+and plugin both use ggml-cpu-zen4.dll (the plugin's own kernels are Linux-only).
+
+**Feasibility (C:\dl\locktest.exe, wstest.exe; 15 GB of the IQ3_XXS file)**
+| Method | system commit | load speed | under 14 GB extra pressure |
+|---|---|---|---|
+| VirtualLock on a read-only view | +15 GB | 1.94 GB/s | - |
+| hard working-set minimum, no lock | **+0** | 2.67 GB/s | 87 % stayed, rest in standby |
+
+**The fix** (branch claude/win-file-cache, now the Windows default; `MOE_CACHE_WIN_VIEW=0` = private memory): expert tensors point into the
+plugin's read-only view of the model file; load = PrefetchVirtualMemory + touch, evict = drop from the working set (pages stay in the file
+cache), a hard working-set minimum of budget + rest of the process. Cache policy, prefetch and executor unchanged (same as Linux).
+
+**Cold ABBA, stock vs plugin, launcher defaults (decode tok/s)**
+| Model | GPU expert layers | stock | plugin (file view) | change |
+|---|---|---|---|---|
+| Flash-Next IQ2_XS (68 GB, C:) | 12 | 15.35, 14.43 (14.89) | 22.00, 21.87 (**21.94**) | **+47 %** |
+| Flash-Next IQ3_XXS (76 GB, D:) | 9 | 15.10, 15.18 (15.14) | 19.80, 19.91 (**19.86**) | **+31 %** |
+| Flash-Next IQ3_XXS | 13 | 13.46, 13.29 (13.38) | 16.10, 16.02 (16.06) | +20 % |
+| Flash-Next IQ3_S (84 GB, C:) | 7 | 12.93, 12.91 (12.92) | 17.27, 17.29 (**17.28**) | **+34 %** |
+| Qwen3.5-122B UD-IQ2_XXS (34 GB, D:) | 12 | 13.70, 14.05 (13.88) | 16.31, 15.95 (**16.13**) | **+16 %** |
+| GLM-5.3-Flash UD-IQ2_XXS (102 GB, C:), one pair | 3 | 2.21 | **4.44** | **2.0x** |
+IQ3_XXS stats with the view (13 layers): hit 97.8 %, 3.6 GB read, cache 16.21 GiB, resizes 1 / 0. The launcher's default layer count is the
+best of the two tried (19.9 at 9 layers vs 16.1 at 13): no extra GPU layers needed.
+
+**Text**: plugin = stock, byte for byte, on Flash-Next IQ2_XS (1041 characters), IQ3_S (1032), the 122B (1027) and GLM (1148). Granite on the PC with a 0.2 GiB
+cache (35929 evictions through the views): identity 4/4, executor 6765 ops checked, 0 mismatches.
+
+**Another program needs memory while the server runs** (C:\dl\pc_pressure.ps1, Flash-Next IQ2_XS, working-set minimum 21.9 GiB):
+| Other program | got its memory in | new program starts in | server decode before / during / after |
+|---|---|---|---|
+| 8 GB (8.2 GB free) | 1.0 s | 17, 7 ms | 22.33 / 23.41 / 23.98 |
+| 14 GB (8.4 GB free) | 3.8 s (1.3 s without the server) | 15, 8 ms | 22.35 / 23.67 / 22.88 |
+No freeze, no errors: Windows found the memory elsewhere (file cache, page file) and the cache kept its pages.
+
+**Also tonight**: `--moe-cache-mib` (llama.cpp's own GPU expert cache, needed by I28) aborts at load on this Vulkan build even without the plugin
+(`ggml-backend.cpp:1089: pre-allocated tensor (moe_cache.0.blk.0.ffn_gate_exps.weight) in a buffer (Vulkan1) that cannot run the operation (NONE)`),
+with or without the iGPU and op offload. Cause: each cache bank is one tensor (~2970 MiB at 8909 MiB) and Vulkan refuses tensors over its
+~2 GiB storage-buffer limit; `--moe-cache-mib 5900` (~1967 MiB banks) and 1500 load. With 5900 MiB, I28 (hook, plugin loaded by path, branch
+claude/gpu-cache-path without the file view), IQ2_XS cold: stock + GPU cache 6.93 tok/s (prefill 3.1), plugin --gpu-cache 9.69 (5.5),
+plugin --gpu-cache off 13.71 (12.6); 112948 uploads routed, text = stock. llama.cpp's GPU expert cache loses on this Vulkan PC: I28 parked.
+
+## 60. Windows desktop, 2026-10-27 night: agent sessions (I43 / T8), stock vs plugin, with and without MTP
+
+Same PC as RESULTS 59, experimental 46ed596 (file-view cache), tools\agent_bench_pair.ps1 (fixed in 3a54f00): the recorded OpenCode (5
+requests) and Hermes (7 requests) sessions replayed, cold before every run, order stock, plugin, plugin, stock; means of the two runs of
+each kind. Both kinds get the launcher's `--agent` arguments (context 65536, --jinja, the same MTP choice). 0 errors in every replay.
+
+| Model | MTP | Session | task s stock / plugin | first token s stock / plugin | follow-up first token (median) s stock / plugin | decode tok/s stock / plugin |
+|---|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B (20 GB, fits in RAM) | on | OpenCode | 27.77 / 26.38 | 13.53 / 13.41 | 1.067 / **0.670** | 72.4 / 72.7 |
+| | on | Hermes | 25.34 / 22.95 | 5.20 / 5.11 | 1.061 / **0.846** | 71.5 / 72.2 |
+| | off | OpenCode | 31.79 / 29.46 | 12.87 / 10.94 | 1.076 / **0.717** | 43.6 / 43.1 |
+| | off | Hermes | 33.29 / 31.03 | 5.03 / 4.89 | 1.048 / **0.809** | 43.7 / 43.3 |
+| Flash-Next IQ2_XS (68 GB, bigger than RAM) | (no head) | OpenCode | 174.8 / **73.4** | 116.8 / **38.6** | 7.30 / **2.14** | 21.5 / 21.2 |
+| | | Hermes | 163.9 / **81.6** | 66.2 / **21.8** | 8.76 / **3.01** | 21.1 / 21.3 |
+
+- Bigger than RAM (Flash-Next): a whole agent session is **2.0-2.4x faster** with the plugin; the gain is prompt processing (first token 3x,
+  follow-up first token ~3x), decode is equal at this context.
+- Fits in RAM (Qwen3.6): sessions 5-9 % faster, follow-up first token 20-37 % faster, decode equal.
+- MTP (both kinds): decode 43.5 -> 72 tok/s, a session 13-25 % shorter; keep `--mtp` on in agent mode for models with a head.
+
+**GPU expert layers with the file-view cache** (one cold run each, plugin, the 256-token request): the launcher's planner already picks the
+best count; one more layer than the planner loses ~23 % (VRAM runs short next to the long-prompt block).
+| Flash-Next | GPU expert layers (--n-cpu-moe) | decode tok/s |
+|---|---|---|
+| IQ2_XS | 8 (40) / 10 (38) / **12 (36, default)** / 14 (34) | 20.94 / 21.31 / **22.12** / 16.91 |
+| IQ3_XXS | 5 (43) / 7 (41) / **9 (39, default)** / 11 (37) | 18.68 / 19.06 / **19.82** / 15.27 |
+
+**MTP on GLM-5.3-Flash with the file-view cache** (one cold run, the 256-token request; GLM has an MTP head, blk.45.nextn): stock 2.21,
+plugin 4.44, **plugin + `--mtp` 6.92 tok/s (3.1x stock)**, text byte-identical to stock, drafts accepted 61 % / 100 % (two requests).
+The cache kept its 20 GiB with free system commit at 3.47 GiB (the MTP draft context's GPU memory is charged to commit); before the file view
+the same setup cut the cache to 4.25 GiB and decoded at 0.8-1.0 tok/s (RESULTS 58). MTP on GLM: yes, now.
+
+**Quality, 202 exact-answer tasks** (tools/quality_tasks.json from branch claude/quality-100 ad775f5; `run --tasks-only --no-think
+--task-n-predict 128`, greedy; plugin, launcher defaults, file view):
+| Flash-Next | tasks right | loops | time | tasks changed vs IQ3_XXS |
+|---|---|---|---|---|
+| IQ3_XXS (76 GB) | **193 / 202 (95.5 %)** | 0 | 242 s | reference |
+| IQ2_XS (68 GB) | 187 / 202 (92.6 %) | 0 | 186 s | 14: 10 right only on IQ3_XXS, 4 only on IQ2_XS |
+IQ3_XXS leads by ~3 points; 10 vs 4 changed tasks is a lean, not a proof (paired sign test p ~ 0.18). IQ2_XS is ~10 % faster (21.9 vs
+19.9 tok/s, RESULTS 59) and 8 GB smaller. Recommendation (owner's D4): list both; IQ3_XXS when accuracy matters, IQ2_XS for speed.
+
+**llama.cpp threads** (Flash-Next IQ2_XS, file view, one cold run each; the executor pool follows -t): 8: 20.99, 12: 22.81, **16 (default)
+22.13**, 24: 21.60, 32: 18.68 tok/s. Flat from 12 to 24 (inside run-to-run noise), SMT threads (32) lose 16 %: the default stays.
+
+**GLM-5.3 GPU expert layers** (file view, no MTP, cold): ABBA decode `--n-cpu-moe 45` (planner default) 5.52 / 5.58 vs 43 (+2 layers)
+5.99 / 6.02 (+8 %; single runs had shown 4.44 vs 6.01, 41 layers 4.58). Long prompt (3020 tokens, one cold run each): 45: **54.8 tok/s**,
+84 long-prompt GPU blocks; 43: 47.8 tok/s (-13 %), only 2 GPU blocks (no VRAM left for the block). The planner's block reserve trades the
++8 % decode for prompt speed, which is what agent sessions wait on: the default stays.
+
+**Memory budget (`--ram`)** (Flash-Next IQ2_XS, file view, one cold run each): 24 GB 21.81, 20 GB 21.00, 16 GB **failed to load**:
+`ggml_vulkan: Device memory allocation of size 717930704 failed ... ErrorOutOfDeviceMemory`. Cause: the launcher put a Windows job memory
+limit of `--ram` on llama-server; a job limit caps committed memory, and Windows commits Vulkan's GPU allocations. With the file view the
+experts use no commit, so the limit only capped llama.cpp's GPU memory (a Linux cgroup does not count GPU memory). Fix (branch
+claude/win-job-limit c20cfb2): no job limit with the file view (kept for MOE_CACHE_WIN_VIEW=0). After the fix: 16 GB **20.03 tok/s**
+(cache 11.55 GiB), 92 % of the 24 GB speed.
+
+**Start-up** (Flash-Next IQ2_XS, launcher defaults; cold = after win_flush_cache, warm = restart right after, no flush):
+| | ready after | first 64-token request | ready + first answer |
+|---|---|---|---|
+| stock, cold / warm | 22.9 / 20.4 s | 8.5 s (10.2 tok/s) / 10.5 s (8.7 tok/s) | 31.4 / 30.9 s |
+| plugin (file view), cold / warm | 28.5 / 21.0 s | 3.6 s (20.8 tok/s) / 3.5 s (21.0 tok/s) | 32.1 / **24.5 s** |
+The plugin's cold start loads the profile's hot experts before it reports ready (+5.6 s), which the first request gets back; a warm restart
+finds the experts in the file cache (the view's evicted pages stay there) and answers 6 s sooner than stock.

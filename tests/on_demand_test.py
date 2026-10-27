@@ -121,6 +121,9 @@ check("preflight from a local page: allowed", r.getheader("Access-Control-Allow-
 c, r = req("OPTIONS", "/v1/chat/completions", origin="https://evil.example")
 check("preflight from another site: no CORS header", r.getheader("Access-Control-Allow-Origin") is None, r.getheaders()); r.read(); c.close()
 
+for p in ("/api/v1/models", "/api/tags", "/v1/props", "/version"):      # Hermes' server-type probes: llama-server's own 404, model not started
+    st, body, _ = get(p, key=KEY)
+    check(f"{p} while idle: 404 without starting the model", st == 404 and b.p is None, (st, body))
 # 2
 t0 = time.time()
 st, body, r = get("/v1/models", key=KEY)       # still idle: answered locally

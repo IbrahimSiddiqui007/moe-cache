@@ -333,6 +333,81 @@ inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) 
     return false;
 #endif
 }
+// ---- Windows file-view cache (idea I47) ----
+// The whole model file mapped read-only. Its pages are file-backed, so keeping them in RAM costs no commit (RAM + page file), unlike private
+// memory; Vulkan's GPU allocations are charged to commit too, which squeezed the private cache to 8-11 GiB on the PC (RESULTS 59). PC test
+// 2026-10-27: 15 GB of model-file pages held by a hard working-set minimum, system commit +0 (VirtualLock: +15 GB). Every address always shows
+// the file's bytes: a page that is not in RAM is read again on access, never garbage. Linux: not used (nullptr).
+inline const char * file_view_map(const char * path, size_t * size) {
+#ifdef _WIN32
+    HANDLE f = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) {
+        return nullptr;
+    }
+    LARGE_INTEGER sz;
+    HANDLE m = GetFileSizeEx(f, &sz) ? CreateFileMappingW(f, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
+    CloseHandle(f);        // the mapping keeps the file open
+    if (!m) {
+        return nullptr;
+    }
+    void * v = MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+    CloseHandle(m);        // the view keeps the mapping
+    if (v) {
+        *size = (size_t) sz.QuadPart;
+    }
+    return (const char *) v;
+#else
+    (void) path; (void) size;
+    return nullptr;
+#endif
+}
+// bring [p, p + n) of a file view into this process's working set: one large read-ahead (PrefetchVirtualMemory), then a touch per page
+inline void file_view_load(const char * p, size_t n) {
+#ifdef _WIN32
+    typedef BOOL (WINAPI * prefetch_fn)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+    static const prefetch_fn prefetch = (prefetch_fn) (void *) GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory");
+    if (n == 0) {
+        return;
+    }
+    if (prefetch) {
+        WIN32_MEMORY_RANGE_ENTRY r = { (void *) p, n };
+        prefetch(GetCurrentProcess(), 1, &r, 0);
+    }
+    unsigned sum = 0;
+    for (size_t o = (4096 - (uintptr_t) p % 4096) % 4096; o < n; o += 4096) {
+        sum += (unsigned char) *(volatile const char *) (p + o);
+    }
+    sum += (unsigned char) *(volatile const char *) p + (unsigned char) *(volatile const char *) (p + n - 1);
+    (void) sum;
+#else
+    (void) p; (void) n;
+#endif
+}
+// take whole pages of a file view out of the working set: they move to the standby list (still in RAM until the system needs the memory)
+inline void file_view_drop(const void * p, size_t n) {
+#ifdef _WIN32
+    if (n) {
+        VirtualUnlock((void *) p, n);      // on pages that are not locked this releases them from the working set (fails with ERROR_NOT_LOCKED: intended)
+    }
+#else
+    (void) p; (void) n;
+#endif
+}
+// hard working-set minimum: the system does not trim this process below `bytes` (file-backed pages included). Returns false when refused
+// (more than the system can guarantee); the error code is in commit_error().
+inline bool ws_min_set(size_t bytes) {
+#ifdef _WIN32
+    const SIZE_T mx = bytes + ((size_t) 1 << 30);
+    if (SetProcessWorkingSetSizeEx(GetCurrentProcess(), bytes, mx, QUOTA_LIMITS_HARDWS_MIN_ENABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE)) {
+        return true;
+    }
+    commit_error() = GetLastError();
+    return false;
+#else
+    (void) bytes;
+    return true;
+#endif
+}
 inline void * aligned_alloc_page(size_t size) {
 #ifdef _WIN32
     return VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -516,7 +591,7 @@ inline size_t rss_private() {
 // memory. Returns the working-set bytes released; *views = how many mapped views matched. Elsewhere: 0.
 // Why (I37, PC 2026-10-27): llama.cpp's Windows loader reads the GPU tensors through its mapping of the model file and never unmaps those pages,
 // so ~13 GB of model file stayed in llama-server's working set (counted as in use) after loading; the plugin's cache then got that much less.
-inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * views) {
+inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * views, const std::vector<const char *> & keep = {}) {
     *views = 0;
 #ifdef _WIN32
     for (const std::string & a : command_line()) {
@@ -547,7 +622,8 @@ inline size_t trim_file_pages(const std::vector<std::string> & paths, size_t * v
                 const size_t sl = f.find_last_of(L"\\/");
                 f = sl == std::wstring::npos ? f : f.substr(sl + 1);
                 for (auto & ch : f) { ch = (wchar_t) towlower(ch); }
-                if (std::find(names.begin(), names.end(), f) != names.end()) {
+                const bool own = std::find(keep.begin(), keep.end(), (const char *) mbi.AllocationBase) != keep.end();   // the file-view cache
+                if (!own && std::find(names.begin(), names.end(), f) != names.end()) {
                     VirtualUnlock(mbi.BaseAddress, mbi.RegionSize);   // fails with ERROR_NOT_LOCKED, and releases the pages: intended
                     (*views)++;
                 }
