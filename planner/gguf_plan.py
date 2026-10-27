@@ -240,12 +240,24 @@ def compute_buffer_mib(ctx, ub):
     return _COMPUTE_MIB[key].get(ub) if key else None
 
 
-def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5):
+def compute_buffer_guess_mib(ctx, ub):
+    """compute_buffer_mib, or for a pair that was not measured an estimate that errs high: the same micro-batch at the next larger measured
+    context, else the largest 2048 value scaled to this micro-batch (a micro-batch the user chose must still leave the long-prompt block its room)."""
+    b = compute_buffer_mib(ctx, ub)
+    if b is None:
+        b = next((_COMPUTE_MIB[k][ub] for k in sorted(_COMPUTE_MIB) if k >= ctx and _COMPUTE_MIB[k].get(ub)), None)
+    if b is None:
+        b = max(v.get(2048) or 0 for v in _COMPUTE_MIB.values()) * max(ub, 512) / 2048
+    return b
+
+
+def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left.
 
     Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use and a list of reasons. Rules come from measurements
     (docs/PERFORMANCE_ANALYSIS.md): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
-    compute buffer that grows with the context; the disk lookup table never counts as GPU weight.
+    compute buffer that grows with the context; the disk lookup table never counts as GPU weight. ub: a micro-batch the user chose (the rest is
+    planned around it; without this a chosen -ub left no room for the long-prompt block and long prompts ran on the CPU, RESULTS 61).
     """
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
@@ -263,18 +275,21 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     def block_for(u):
         return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
     best = None
-    for ub in (2048, 1024, 512):
-        buf = compute_buffer_mib(ctx, ub)
+    fixed_ub = ub
+    for ub in ((fixed_ub,) if fixed_ub else (2048, 1024, 512)):
+        buf = compute_buffer_guess_mib(ctx, ub) if fixed_ub else compute_buffer_mib(ctx, ub)
         if buf is None:
             continue
         block = block_for(ub)
         room = free - fixed - buf * 1048576 - reserve_gb * 1e9 - block
-        if room > 0 or ub == 512:
+        if room > 0 or ub == 512 or fixed_ub:
             best = (ub, room)
             break
     ub, room = best if best else (512, free - fixed - 0.55e9 - reserve_gb * 1e9 - block_for(512))
     block = block_for(ub)
-    if want_cache and ub > 1024 and room > 0:
+    if fixed_ub:
+        why.append(f"micro-batch {ub} as asked")
+    elif want_cache and ub > 1024 and room > 0:
         ub = 1024
         buf = compute_buffer_mib(ctx, 1024) or 0
         block = block_for(1024)
@@ -298,7 +313,8 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         why.append(f"{where} ({int(block // 1048576)} MiB kept free for the long-prompt GPU block"
                    + (")" if not want_cache else "; a cache would be under 1.5 GiB or under 4 % of the experts)"))
     why.append(f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
-    return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576), "compute_mib": compute_buffer_mib(ctx, ub), "why": why}
+    return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
+            "compute_mib": compute_buffer_guess_mib(ctx, ub) if fixed_ub else compute_buffer_mib(ctx, ub), "why": why}
 
 
 if __name__ == "__main__":
