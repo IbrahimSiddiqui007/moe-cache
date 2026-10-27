@@ -44,7 +44,7 @@ jobs:
       - name: Check scripts
         run: |
           for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do bash -n "$f"; done
-          python3 -m py_compile bin/moe_cache.py planner/plan.py planner/gguf_plan.py tests/ident.py
+          python3 -m py_compile bin/moe_cache.py bin/moe_cache_on_demand.py planner/plan.py planner/gguf_plan.py tests/ident.py
           # a tagged release must not install an older moe-cache when install.sh is run on its own
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
             grep -q "MOE_CACHE_REF:-${GITHUB_REF_NAME}}" install.sh || { echo "install.sh MOE_CACHE_REF does not match ${GITHUB_REF_NAME}: bump it with the version"; exit 1; }
