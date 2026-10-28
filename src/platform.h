@@ -357,7 +357,7 @@ inline const char * file_view_map(const char * path, size_t * size) {
     }
     return (const char *) v;
 #elif defined(__linux__)
-    // Linux prototype (MOE_CACHE_LINUX_VIEW=1): a shared read-only mapping. Not MADV_RANDOM: since Linux 6.3 reclaim ignores the accessed
+    // Linux (the default; MOE_CACHE_LINUX_VIEW=0 turns it off): a shared read-only mapping. Not MADV_RANDOM: since Linux 6.3 reclaim ignores the accessed
     // bits of VM_RAND_READ mappings (vma_has_recency), so the resident experts looked unused and were reclaimed at the cgroup limit (laptop
     // 2026-10-27, Qwen3.6 at 10 GB: 2.97 M major faults during compute, 3.4-4.0 vs 11.5 tok/s)
     const int fd = open(path, O_RDONLY | O_CLOEXEC);

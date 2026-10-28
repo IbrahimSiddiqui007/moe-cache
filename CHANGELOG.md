@@ -63,6 +63,8 @@
 - The launcher warns when `--n-cpu-moe N` puts more expert layers on the GPU than planned while MTP is on: the draft context needs GPU memory
   too and llama-server aborted at load on GLM (RESULTS 62). The control page's measured speeds have Flash-Next Q2_0 and Coder IQ1_M, and the
   122B row is RESULTS 61's re-measure (+24 %); a file gets the row of the closest size.
+- **Linux: the expert cache lives in read-only mappings of the model file too** (as on Windows): steady decode +4.7 % in every pair, the first
+  request +49 % (page-cache read-ahead loads faster than the private O_DIRECT reads), tokens identical (RESULTS 64). `MOE_CACHE_LINUX_VIEW=0` goes back.
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
