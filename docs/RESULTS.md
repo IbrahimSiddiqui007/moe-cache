@@ -2348,6 +2348,16 @@ Caveat: in the decode / 3k pair Q2_0 was on D: and IQ2_XS on C: (reader time 2.9
 drive); the 34k pair had both on D:. Hit rates equal (98.4-98.8 %). The model card's +33 % decode / 3.4x prompt (GPU-only setup) does not
 reproduce here: decode is CPU-bound on this PC, as quant-research predicted (0 to +7 %).
 
+**Stock vs plugin on Q2_0** (the owner's new default Flash-Next file; D:, cold; stock = launcher `--stock` defaults, two runs 18:39-18:43;
+plugin = the two Q2_0 runs above)
+| Q2_0 | water decode tok/s | code decode tok/s | 3k prompt tok/s |
+|---|---|---|---|
+| stock llama.cpp | 18.26, 18.55 (18.41) | 20.13, 19.88 (20.01) | 120.1, 121.5 (120.8) |
+| moe-cache | 21.95, 22.36 (22.16) | 22.40, 22.91 (22.66) | 283.4, 278.2 (281) |
+| plugin vs stock | **+20 %** | **+13 %** | **2.33x** |
+Stock decodes Q2_0 much faster than IQ2_XS (18.4 vs 14.9 tok/s, RESULTS 59), so the plugin's decode gain is smaller on Q2_0 (+20 % vs +47 %);
+the prompt gain (2.3x) is what agent sessions wait on.
+
 **Coder IQ1_M in an agent session** (OpenCode recording, one plugin run, cold; vs RESULTS 60's IQ2_XS plugin runs 74.04 / 72.84 s)
 | File | task s | first token s | follow-up first token (median) s | decode tok/s |
 |---|---|---|---|---|
