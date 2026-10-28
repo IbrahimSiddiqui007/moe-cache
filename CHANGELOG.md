@@ -11,7 +11,15 @@
   resized hundreds of times per request, while stock llama.cpp's mmap used file pages that cost no commit. File-view pages cost no commit; a
   hard working-set minimum keeps the cached experts in RAM, and an evicted expert stays in the file cache. Which experts are cached, prefetch and
   the executor are unchanged (same as Linux). PC cold ABBA vs stock, launcher defaults: Flash-Next IQ3_XXS **19.9 vs 15.1 tok/s**, IQ2_XS
-  **21.9 vs 14.9** (RESULTS 59). `MOE_CACHE_WIN_VIEW=0` goes back to private memory.
+  **21.9 vs 14.9**, IQ3_S **17.3 vs 12.9**, Qwen3.5-122B **16.1 vs 13.9**, GLM-5.3-Flash **4.4 vs 2.2** (**6.9 with `--mtp`**, 3.1x), text
+  byte-identical to stock (RESULTS 59-60). A second 8 or 14 GB program started while the server runs gets its memory in 1-4 s, no freeze.
+  `MOE_CACHE_WIN_VIEW=0` goes back to private memory.
+- **Windows: no job memory limit with the file-view cache.** A job limit caps commit, and with the file view the only commit left was Vulkan's
+  GPU memory: `--ram 16` failed to load (ErrorOutOfDeviceMemory). Now 16 GB loads and decodes at 20.0 tok/s, 92 % of the 24 GB speed (RESULTS 60).
+- Launcher: no false "the plugin loaded but disabled itself" when Windows refuses the hard working-set minimum (a user without the privilege);
+  the plugin keeps caching at full speed then (21.6 tok/s, RESULTS 61 F5).
+- **`check` measures the model's drive** (4 s of random 1 MiB reads that bypass the file cache) and warns below 1.0 GB/s (SATA, hard disk, USB);
+  NVMe drives get an OK line with the number (RESULTS 61 N8).
 - **Windows kit**: `moe-cache-vX-windows-x64.zip` with both plugin DLLs (API 2 / API 3), the launcher, the control page, a one-click `moe-cache.bat`
   (`--shortcut` adds a Start-menu entry) and `README_WINDOWS.txt`. Built by `tools/make_windows_kit.sh` from a clean export; CI unzips it outside the
   repository and runs `check --run` from it; the release workflow attests it and attaches it to the release.
@@ -30,6 +38,9 @@
   workflow runs with pipefail and publishes a tag only when identity and windows passed on that commit.
 - New CI steps: repeated expert ids (`tests/dup_ids.sh`, `MOE_CACHE_TEST_DUP_IDS`) and reads poisoned while in flight
   (`MOE_CACHE_TEST_POISON_READS`), each with a mutant that must fail.
+- ThreadSanitizer: the start-up segfault with the plugin preloaded was `dot_f32`'s ifunc resolver running before libtsan was set up (I9); the TSan
+  job preloads again.
+- Quality yardstick on the PC: 202 tasks, Flash-Next IQ3_XXS 193 right, IQ2_XS 187 (RESULTS 60): IQ3_XXS when accuracy matters, IQ2_XS for speed.
 - **Tested on a Windows 11 desktop** (Ryzen 9 7950X + RX 9070 XT 16 GB, official llama.cpp b11669 Vulkan, driver 32.0.23034.4; RESULTS 54-55): identity 4/4 on
   Granite, Qwen3.6 and Qwen3.5-122B (bigger than RAM); executor byte check 0 mismatches; Flash-Next through the launcher and a chat. Steps:
   [docs/WINDOWS.md](docs/WINDOWS.md); status in [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Windows stays **experimental**.
@@ -40,7 +51,7 @@
   VRAM; it is not. The log says "released N GiB of model-file pages from the working set"; the cache measures the process by its private working set.
   GPU expert layers are planned as on other GPUs (an earlier "all experts on the CPU" rule for AMD is gone: Flash-Next cold decode 12.9-14.9 tok/s all on the
   CPU vs 14.9-15.0 with 12 GPU expert layers, no cache shrink).
-- **A small page file limits the cache on Windows** (every allocation needs commit): 6.9 GB page file and 16 GB committed by other programs, GLM's cache
+- (Before the file view; the file-view cache costs no commit.) **A small page file limited the cache on Windows** (every allocation needs commit): 6.9 GB page file and 16 GB committed by other programs, GLM's cache
   16.1 -> 9.6 GiB; 14 GB page file, 14.9 GiB and 1.52 -> 2.02 tok/s. The plugin warns near the commit limit.
 - **`--ram` is GB everywhere**: it reached the plugin and the planner as GiB, 7 % over the Windows job limit the launcher sets (`--ram 20`: commit failed,
   Windows error 1455, the server died).
@@ -71,8 +82,17 @@
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
+- **Fixed: a chosen micro-batch (`--ub N`, or `-ub N` after `--`) skipped the tuner**, so the planner filled the GPU with expert layers and long
+  prompts found no VRAM for their GPU block and ran on the CPU. A chosen `--ub` now goes through the tuner like `--ub auto` (the default was not
+  affected): Flash-Next at 34k tokens 1.5-2.3x faster prompts, any `--ub` (RESULTS 61 N13).
+
 ### Agent mode, Hermes Agent and OpenCode
 - on-demand: an earlier idle stage, `--idle-release MIN` (default 5, 0 = off): the plugin gives the expert cache's RAM back while the server idles and the server keeps running, so the next request needs no restart (N3; PC: available RAM 6.8 -> 25 GB, next request +0.5 s instead of a 34 s start). Windows: the hard working-set minimum is dropped and the file-view pages move to standby; Linux: the experts are evicted. The plugin listens for SIGUSR2 / the event `Local\moe-cache-idle-<pid>`.
+- **Coding-agent sessions on Windows (bigger than RAM) are 2.0-2.4x faster than stock**: recorded OpenCode / Hermes sessions on Flash-Next
+  IQ2_XS, 175 / 164 s stock vs 73 / 82 s with moe-cache (first token ~3x sooner); two agents on one server at once 336 vs 145 s. A model that
+  fits in RAM (Qwen3.6-35B): 5-9 % faster sessions; `--mtp` there raises decode 43.5 -> 72 tok/s (RESULTS 60).
+- **on-demand serves several models** (Ollama-style): `on-demand MODEL2.gguf --add`; `/v1/models` lists all, the request's `"model"` picks one,
+  one runs at a time; `connect opencode --write` puts every model into OpenCode's picker. `--remove NAME` forgets one.
 - **`moe_cache.py on-demand`: agents work without starting a server by hand** (as with Ollama). A small always-on listener holds the agent port; the
   first request starts the launcher in agent mode for the remembered model, requests (streaming included) pass through, and the model stops after 15 idle
   minutes (`--idle`). The API key and the localhost-only CORS rule are checked in front, so a web page cannot wake the model; `/v1/models` and `/props`
@@ -96,6 +116,12 @@
 - Agent benchmark numbers (laptop, Qwen3.6, 16 GB): OpenCode task 154-183 s stock vs 97-114 s with moe-cache; Hermes 476-646 s stock vs 116 s. (Preliminary; I30.)
 
 ### Control page (GUI)
+- **The page is a three-pane chat app**: left, chats, agent sessions and models with a settings drawer; center, its own streaming chat; right, live
+  status, context, files, agents, benchmark, warnings and the log. New look (warm palette, flat buttons). "Other servers on this machine" shows
+  llama-servers started elsewhere (status only).
+- The page says **why this mode** in one sentence (stock / moe-cache / all on the GPU), with this PC's measured speeds next to it; the Quick
+  benchmark runs the other side (stock or moe-cache) in one click and shows the pair.
+- `docs/benchmark_card.html`: a one-page card of the Windows desktop results (stock vs moe-cache, RESULTS 59-60).
 - One stock-or-plugin rule: `moe_cache.decide()` is used by the launcher and the page, so the page's verdict cannot differ from what the launcher
   runs. New launcher option `--stock` (stock llama-server whatever the model's size, to compare). On the page: **Run as** Auto / moe-cache / Stock,
   and a **Stock vs moe-cache** table from the Quick benchmark runs (newest run of each, same model and settings, with the speed-up).
@@ -112,8 +138,7 @@
   questions; no gain at 24 GB. RESULTS 52-53.
 - **Starter usage profiles** (`profiles/`, `--no-starter` to skip) for Flash-Next, GLM-5.3-Flash, Qwen3.5-122B and Qwen3.6: first request 5.96/6.18 -> 13.70/11.81 tok/s on Flash-Next.
 - Long prompts keep part of the cache (I3, below): Flash-Next prefill +27 %.
-- Windows, clean run (RESULTS 55, Flash-Next, all experts on the CPU, file cache flushed before every run): plugin decode ~12.2 tok/s steady vs stock 12.1-16.1, prefill 2.2x stock (120 vs 53-57).
-  The 122B and GLM tables of that section are still being filled.
+- Windows desktop numbers: see the file-view entry above (RESULTS 59-61). The older RESULTS 55 run (decode about equal to stock) was before the file view.
 
 ### Kernels
 - `MOE_CACHE_IQ3_KERNEL=1` forces the bit-identical IQ3_XXS gather kernel on any AVX2 CPU, `=0` turns it off (GitHub issue #1: RX 9070 XT + Ryzen 7 7700 on Linux,
@@ -125,11 +150,15 @@
 - `tools/quality_tasks.json`: 202 original exact-answer tasks (arithmetic and word problems, unit conversions, Python output, strings, logic, dates, facts, tool-call JSON; the 20 old ones included), every answer computed or brute-forced by `tools/make_quality_tasks.py`. `quality_yardstick.py run --tasks tools/quality_tasks.json --tasks-only` runs them alone (no open prompts): 5-10 minutes on Flash-Next instead of 8-14.
 
 ### Known limits
-- **Windows: a small page file limits the cache** (above): let Windows manage it, or make it 14 GB or more.
+- **Windows page file**: the cache costs no commit now, but Vulkan's GPU memory does: keep the page file system-managed or 14 GB or more.
+- **Windows: the hard working-set minimum needs SeIncreaseWorkingSetPrivilege** (a normal desktop login has it); without it the cache still runs at
+  full speed, but Windows may trim cached experts under memory pressure.
 - **Flash-Next on AMD under Windows runs without context checkpoints with drivers older than 32.0.32015.7029** (driver crash, above).
 - **HIP / ROCm release on Windows**: lists no device without AMD's HIP SDK; untested.
 - **The plugin's CPU kernels are Linux-only**; on Windows the executor uses llama.cpp's own kernels. `--gpu-cache` is not available on Windows (needs `LD_PRELOAD`).
-- Windows speed numbers are from one desktop; plugin decode is about equal to stock there (models bigger than RAM), prefill 1.5-2.2x. Intel GPUs on Windows: untested.
+- Windows speed numbers are from one desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). NVIDIA and Intel GPUs on Windows: untested.
+- `--gpu-cache auto` with llama.cpp's own `--moe-cache-mib` on Vulkan can plan more than ~5.9 GiB, which aborts the load (each cache bank over
+  ~2 GiB); `--gpu-cache` is off by default (T5).
 
 ### Details of earlier entries in this section
 
