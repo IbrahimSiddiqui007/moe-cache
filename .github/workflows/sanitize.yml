@@ -64,7 +64,7 @@ jobs:
           MOE_CACHE_STATS: "1"
           IDENT_KEEP: ident_san
           IDENT_EXTRA: "--no-repack"
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_TEST_READ_DELAY_US=500"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_TEST_READ_DELAY_US=500 MOE_CACHE_LINUX_VIEW=0"
           TSAN_OPTIONS: "halt_on_error=0 report_signal_unsafe=0 second_deadlock_stack=1"
           ASAN_OPTIONS: "detect_leaks=0 halt_on_error=0"
         run: |

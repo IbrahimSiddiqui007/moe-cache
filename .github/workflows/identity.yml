@@ -233,7 +233,7 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_LINUX_VIEW=0"
           IDENT_EXTRA: "--no-repack"      # CPU-only builds repack the weights by default, and the executor stays out of repacked weights
           IDENT_KEEP: ident_gptoss
         run: |
@@ -282,13 +282,13 @@ jobs:
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT BUILD_DIR=build-mut-exec ./build.sh --portable
           MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_NO_TILED_WAIT BUILD_DIR=build-mut-tiled ./build.sh --portable
           # 1: executor graphs on the Q2_0 tiny gpt-oss with reads delayed 2 ms (same settings as the Q2_0 step above)
-          if MOE_CACHE_LIB=$PWD/build-mut-exec/libggml-moe-cache.so IDENT_EXTRA="--no-repack" IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000" \
+          if MOE_CACHE_LIB=$PWD/build-mut-exec/libggml-moe-cache.so IDENT_EXTRA="--no-repack" IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_LINUX_VIEW=0" \
              tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_mut_exec.txt; then
             echo "FAIL: the mutant without the executor's flag wait passed"; exit 1; fi
           grep -qE "^identical prompts: [0-3]/4" identity_mut_exec.txt || { echo "FAIL: the exec mutant failed for another reason"; exit 1; }
           echo "OK: exec-wait mutant fails"
           # 2: batch-8 logits with forced eviction, executor forced, reads delayed (the tiled hand-back reads experts still loading without the wait)
-          if MOE_CACHE_LIB=$PWD/build-mut-tiled/libggml-moe-cache.so KL_EXTRA="--no-repack" KL_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_TEST_READ_DELAY_US=2000" \
+          if MOE_CACHE_LIB=$PWD/build-mut-tiled/libggml-moe-cache.so KL_EXTRA="--no-repack" KL_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_LINUX_VIEW=0" \
              tests/kl_batch.sh granite.gguf --chunks 4 | tee identity_mut_tiled.txt; then
             echo "FAIL: the mutant without the tiled hand-back wait passed"; exit 1; fi
           grep -q "FAIL: the plugin's logits differ" identity_mut_tiled.txt || { echo "FAIL: the tiled mutant failed for another reason"; exit 1; }
@@ -300,7 +300,7 @@ jobs:
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
           KL_EXTRA: "--no-repack"
-          KL_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_TEST_READ_DELAY_US=2000"
+          KL_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_LINUX_VIEW=0"
         run: tests/kl_batch.sh granite.gguf --chunks 4 | tee identity_kl_batch8_delay.txt
 
       - name: Identity with guard mode (evicted pages inaccessible, so an unintercepted read crashes instead of reading zeros)
