@@ -119,9 +119,12 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   Stock vs plugin on Q2_0 (D:, cold, two runs each, not interleaved; RESULTS 63): decode 18.41 vs **22.16** tok/s (+20 %; code request 20.01 vs 22.66,
   +13 %), 3k-token prompt 120.8 vs **281** tok/s (2.33x). Stock decodes Q2_0 much faster than IQ2_XS (18.4 vs 14.9), so the decode gain is smaller
   than on IQ2_XS (+47 %); the prompt gain is what agent sessions wait on.
-  On Windows the plugin's own Q2_0 kernel is not used (see the next point): Q2_0 runs llama.cpp's own CPU kernel on both sides.
-- The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
-  not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.
+  The Q2_0 numbers above were measured before the plugin's exact Q2_0 executor kernel came to Windows; with it the PC's Q2_0 decode is unchanged
+  (22.2-22.7 tok/s, RESULTS 63 addendum).
+- The plugin's Q2_0 and IQ3_XXS executor kernels run on Windows x86-64 too since 2026-10-28 (bit-identical; the Q2_0 one matches llama.cpp's own
+  AVX2 Q2_0 function; no decode change on the PC because decode streams its weights from RAM, RESULTS 63 addendum). Replacing llama.cpp's own
+  functions outside the executor needs `LD_PRELOAD`, which Windows does not have. The IQ3_XXS gather and AVX-512 kernels stay off on AMD
+  (bit-exact but 0.60-0.77x of llama.cpp's own kernels on Zen 4).
 - `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers. A path-loading version exists on a branch, but
   llama.cpp's own GPU expert cache loses on this Vulkan PC (9.7 vs 13.7 tok/s without it) and aborts at load above about 5.9 GiB (RESULTS 59), so it is parked.
 - HIP / ROCm: needs AMD's HIP SDK, untested. Intel GPUs on Windows: untested.
@@ -151,7 +154,7 @@ from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (decode 1.52 -> 2.02 tok/s, RESU
 | `--mlock` | pins memory so Windows cannot page it out: less RAM for everything else |
 | `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). On this Vulkan PC it aborts at load above about 5.9 GiB even without the plugin (each cache bank is one tensor over Vulkan's ~2 GiB buffer limit) and, where it loads, it was slower (RESULTS 59). moe-cache's cache size follows `--ram` (the launcher sets `MOE_CACHE_SIZE_GIB` itself) |
 | "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ..."). With the file-view cache this no longer happens for commit (1 resize per request instead of 226 on IQ3_XXS, RESULTS 59) |
-| q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045, RESULTS 53), so it is part of `--fast`, not the default. Measured on this desktop at context 8192 (RESULTS 60, R11): decode 22.01 vs 22.12 tok/s, a 2,950-token prompt 170.6 vs 164.6: no speed difference; it matters only for memory at long agent contexts |
+| q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045 on the laptop's CUDA, RESULTS 53; **0.0120 on this PC's Vulkan**, `--fast` as shipped 0.0145, RESULTS 61 R11), so it is part of `--fast` (the owner kept it there), not the default. Measured on this desktop at context 8192 (RESULTS 60, R11): decode 22.01 vs 22.12 tok/s, a 2,950-token prompt 170.6 vs 164.6: no speed difference; it matters only for memory at long agent contexts |
 | WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |
 
 Still to try (owner's machine): the HIP SDK, Linux/RADV on the same PC. A newer Adrenalin driver (32.0.32015.7029) was tried: it fixed the Flash-Next
