@@ -2463,7 +2463,9 @@ A per-mode starting profile ("code mode" preloading code experts) would only cha
 (water 5.89, code 2.80 tok/s; stock was 2.21 on C: in RESULTS 59, not re-run on D:). `--n-cpu-moe 43` is +7-9 % decode for -13 % long prompts: worth it for chat, not for agents.
 Launcher default: **no change** (the planner's long-prompt reserve is right for agent sessions; a chat-only mode could take 43, same rule on
 Linux). MTP stays as is (on in agent mode): it does not lose on GLM (code +1 %, water +10-23 %), but it gives nothing on code; a small
-follow-up: the launcher should not let MTP combine with extra GPU layers on a 16 GB card (it aborts at load).
+follow-up: the launcher should not let MTP combine with extra GPU layers on a 16 GB card (it aborts at load). *Done (fixes, 2026-10-28)*: llama.cpp logs
+"failed to fit params to free device memory" at that load (the card is over-committed; on Windows the spill then starves the host allocation of the
+draft context); the launcher now warns when `--n-cpu-moe` is below the planned number while MTP is on (the planned 45 loads with MTP).
 
 ## 63. Flash-Next quant choice on the Windows PC (pc-glm, 2026-10-28): Q2_0, IQ3_S, Coder IQ1_M vs IQ2_XS / IQ3_XXS
 
@@ -2508,7 +2510,9 @@ the prompt gain (2.3x) is what agent sessions wait on.
 |---|---|---|---|---|
 | IQ2_XS (RESULTS 60, 2026-10-27) | 73.4 | 38.6 | 2.14 | 21.2 |
 | Coder IQ1_M | **55.5 (-24 %)** | 23.7 | 1.51 | 21.24 |
-More than 10 % apart, so no ABBA (owner's rule). Its server took ~150 s to come up (IQ2_XS ~60 s): not looked into.
+More than 10 % apart, so no ABBA (owner's rule). Its server took ~150 s to come up (IQ2_XS ~60 s): not looked into. *Later (N21)*: that was the benchmark's own wait before it starts, plus the old launcher's slow header reads (fixed in cbe46b0);
+with experimental's launcher the Coder server is ready 18.6 s after start (launcher 4.6 s, llama.cpp's load 10.8 s; pc-bench, timestamped), and
+the Q2_0 server 20.6-22.7 s (33.6 s with the old launcher).
 
 **Table for the owner** (decode: today's water request, or RESULTS 59 ABBA where marked)
 | File | GB | decode tok/s | 3k prompt | tasks /202 | vs IQ2_XS | vs IQ3_XXS | verdict |

@@ -60,6 +60,9 @@
   (1.25x per dot, bit-identical). At start the plugin compares the CPU library's Q2_0 function bit for bit with the plain loop and with #30447 and
   uses the matching kernel, or leaves llama.cpp's alone. The executor kernels were fenced to Linux with the LD_PRELOAD override (which stays
   Linux-only); they now run on Windows too. Windows CI checks the kernels as built for Windows (tests/kernel_check.cpp).
+- The launcher warns when `--n-cpu-moe N` puts more expert layers on the GPU than planned while MTP is on: the draft context needs GPU memory
+  too and llama-server aborted at load on GLM (RESULTS 62). The control page's measured speeds have Flash-Next Q2_0 and Coder IQ1_M, and the
+  122B row is RESULTS 61's re-measure (+24 %); a file gets the row of the closest size.
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 

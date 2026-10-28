@@ -1223,6 +1223,13 @@ def server(argv):
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))   # e.g. an integrated GPU: keep the planner's answer
     if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned and not no_vram:
         ncmoe = str(tuned["n_cpu_moe"])
+    # MTP's draft context needs GPU memory next to the layers; with more expert layers on the GPU than planned, llama.cpp over-commits the card
+    # (it logs "failed to fit params to free device memory") and on Windows the spill then starves host memory: GGML_ASSERT(ctx->mem_buffer != NULL)
+    # while creating the draft context (GLM on the PC, 41 and 43 CPU layers with MTP; the planned 45 loads, RESULTS 62). Same warning on Linux.
+    if (ncmoe_user or "").isdigit() and tuned and not no_vram and gcache == "off" and "draft-mtp" in extra and int(ncmoe_user) < int(tuned["n_cpu_moe"]) < 999:
+        say(f"moe-cache: WARNING: --n-cpu-moe {ncmoe_user} puts more expert layers on the GPU than planned ({tuned['n_cpu_moe']}) while MTP is on: "
+            "MTP's draft context needs GPU memory too, and llama-server may abort at load (seen on GLM: GGML_ASSERT(ctx->mem_buffer != NULL)). "
+            f"Use --n-cpu-moe {tuned['n_cpu_moe']} or more, or --no-mtp", err=True)
     if gcache != "off" and ncmoe != "0":
         gcmib = gcache
         if gcache == "auto":

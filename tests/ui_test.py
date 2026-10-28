@@ -58,6 +58,12 @@ gguf_header(fnx, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count",
 mf = ui.measured(fnx, 68.0e9)
 check(any("stock 14.89 tok/s, moe-cache 21.94" in r for r in mf) and any(r.startswith("PC, 16 GB RAM") and "stock" not in r for r in mf),
       f"measured: Flash-Next IQ2_XS on the PC, and the --ram 16 row without a stock number ({mf})")
+mq = ui.measured(fnx, 66.4e9)
+check(len(mq) == 1 and "stock 18.41 tok/s, moe-cache 22.16" in mq[0] and "Q2_0" in mq[0], f"measured: Flash-Next Q2_0 gets its own row, not IQ2_XS's (closest size; {mq})")
+check(any("moe-cache 21.94" in r for r in ui.measured(fnx, 67.5e9)), "measured: a size nearer IQ2_XS still gets IQ2_XS")
+m122 = os.path.join(TMP, "q122-blob")
+gguf_header(m122, [("general.architecture", "qwen35moe"), ("qwen35moe.block_count", 48), ("qwen35moe.expert_count", 256)])
+check(any("stock 15.95 tok/s, moe-cache 19.73" in r and "RESULTS 61" in r for r in ui.measured(m122, 36.6e9)), "measured: the 122B row is RESULTS 61's re-measure (+24 %)")
 check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the same family")
 
 # ---- the plan and its reasons (planner mocked) ----
