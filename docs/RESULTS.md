@@ -2399,7 +2399,8 @@ runs with DLL 570d351 (same compute, plus the exit-hang fix); C:\dl\pcb_r11.ps1,
 Verdict: **over the 0.01 kill line on this PC**: the q8_0 KV cache alone costs KL 0.0120 on Vulkan (RDNA4), 2.7x the laptop's CUDA figure, with no
 run-to-run noise (the f16 control is 0 to six places, every top token the same). The skipping that `--fast` adds is small here (+0.0025: 98 %
 hits). Since the same default must hold on Linux and Windows, the choice is to drop q8_0 KV from `--fast` everywhere (it stays one `-- -ctk q8_0
--ctv q8_0` away, and agent mode then picks a smaller `-ub` at 64k, I6) or keep it with this number in the docs: the owner's call (not changed).
+-ctv q8_0` away, and agent mode then picks a smaller `-ub` at 64k, I6) or keep it with this number in the docs. **Owner's decision (2026-10-28): keep
+q8_0 KV in `--fast`** (it saves about half the KV memory, ~0.8 GB at a 64k Flash-Next context; `--fast` is the approximate mode anyway); no code change.
 
 ## 62. GLM max on the Windows PC (pc-glm, 2026-10-28): drive, GPU layers, MTP, long prompts, and why code is slow
 
