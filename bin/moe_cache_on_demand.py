@@ -456,15 +456,17 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = not WINDOWS          # on Windows SO_REUSEADDR would let two listeners share the port
+    request_queue_size = 64                    # agents that connect while the listener still starts wait in the backlog
 
     def handle_error(self, request, client_address):
         if not isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError, ConnectionAbortedError)):   # an agent that hung up
             super().handle_error(request, client_address)
 
 
-def serve(backend, port, host="127.0.0.1"):
-    """Listen until interrupted; returns the server (tests run it in a thread and call shutdown()). backend: a Backend or a Pool of them."""
-    srv = Server((host, port), Handler)
+def serve(backend, port, host="127.0.0.1", srv=None):
+    """Listen until interrupted; returns the server (tests run it in a thread and call shutdown()). backend: a Backend or a Pool of them.
+    srv: a Server bound earlier (on_demand binds before it checks the options, so the port opens at once)."""
+    srv = srv or Server((host, port), Handler)
     srv.pool = backend if isinstance(backend, Pool) else Pool([backend])
     srv.b = srv.pool.bs[0]
     for b in srv.pool.bs:
@@ -622,6 +624,7 @@ def on_demand(argv):
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i:]
     a, rest = ap.parse_known_args(argv)
+    srv = None
     if a.remove_autostart:
         return remove_autostart()
     if a.stop:
@@ -638,6 +641,13 @@ def on_demand(argv):
         save_choice(c)
         say(f"on-demand: forgot {a.remove}; restart the listener to use the change")
         return 0
+    if not (a.add or a.status or a.install_autostart):
+        # bind before the option check below (a launcher dry run: 16 s on a Windows PC): the OS accepts connections into the backlog from
+        # now on, so an agent that connects meanwhile is not refused; its request is answered once serve_forever runs
+        port = a.port or (c or {}).get("port") or 8080
+        if mc.port_busy(port):
+            raise SystemExit(f"port {port} is already in use (another server, or on-demand already runs: moe_cache.py on-demand --status)")
+        srv = Server(("127.0.0.1", port), Handler)
     if a.add and not a.model:
         raise SystemExit("give the model to add: moe_cache.py on-demand MODEL.gguf [options] --add")
     if a.add and not c:
@@ -688,12 +698,10 @@ def on_demand(argv):
         os.makedirs(mc.CACHE_DIR, exist_ok=True)
         sys.stdout = sys.stderr = open(LISTENER_LOG, "a", encoding="utf-8", buffering=1)
     port = c.get("port", 8080)
-    if mc.port_busy(port):
-        raise SystemExit(f"port {port} is already in use (another server, or on-demand already runs: moe_cache.py on-demand --status)")
     if not WINDOWS:
         os.umask(0o077)
     b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout) for e in [c] + list(c.get("extra") or [])])
-    srv = serve(b, port)
+    srv = serve(b, port, srv=srv)
     with open(PID_FILE, "w") as f:
         f.write(f"{os.getpid()} {port}\n")
     d = b.bs[0]
