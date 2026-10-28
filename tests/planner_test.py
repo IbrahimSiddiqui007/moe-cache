@@ -331,5 +331,23 @@ _fp = os.path.join(_md, "fnx_full.gguf"); _full_gguf(_fp, _fkv, _ft)
 _h256, _h64 = gguf_plan.fast_kv_hint(_fp, 262144, free=15.06 * 2**30), gguf_plan.fast_kv_hint(_fp, 65536, free=15.06 * 2**30)
 check(_h256 and "--fast" in _h256 and "more layers of experts on the GPU" in _h256 and _h64 is None, f"fast_kv_hint: 256k -> {_h256}; 64k -> {_h64}")
 
+# hard memory cap (owner 2026-10-29): physical RAM minus max(4 GiB, 12.5 %), MOE_CACHE_MAX_RAM_GB overrides (0 = off), --ram cannot exceed it
+_mt, _env = L.mem_total, os.environ.pop("MOE_CACHE_MAX_RAM_GB", None)
+_caps = {}
+for _gib in (16, 32, 64):
+    L.mem_total = lambda g=_gib: g * 2**30
+    _caps[_gib] = L.mem_cap() / 2**30
+check(_caps == {16: 12.0, 32: 28.0, 64: 56.0}, f"mem_cap: 16/32/64 GiB machines -> {_caps} (want 12/28/56 GiB)")
+L.mem_total = lambda: 32 * 2**30
+os.environ["MOE_CACHE_MAX_RAM_GB"] = "20"
+check(L.mem_cap() == 20e9 and L.mem_for_server("40") == 20e9 and L.mem_for_server("10") == 10e9,
+      f"mem_cap: override 20 GB; --ram 40 capped to it, --ram 10 kept ({L.mem_cap()}, {L.mem_for_server('40')}, {L.mem_for_server('10')})")
+os.environ["MOE_CACHE_MAX_RAM_GB"] = "0"
+check(L.mem_cap() is None and L.mem_for_server("40") == 40e9, "mem_cap: MOE_CACHE_MAX_RAM_GB=0 turns the cap off")
+os.environ.pop("MOE_CACHE_MAX_RAM_GB")
+if _env is not None:
+    os.environ["MOE_CACHE_MAX_RAM_GB"] = _env
+L.mem_total = _mt
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

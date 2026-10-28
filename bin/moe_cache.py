@@ -463,8 +463,31 @@ def ram_gib(ram_gb):
     return f"{float(ram_gb) * 1e9 / 2**30:.3f}"
 
 
+def mem_cap():
+    """Hard cap on the whole server's memory, bytes (owner 2026-10-29): physical RAM minus max(4 GiB, 12.5 %) = 28 GiB on a 32 GiB machine, so
+    Windows does not run out of memory and Linux does not OOM; MOE_CACHE_MAX_RAM_GB (decimal GB; --max-ram sets it) overrides, 0 = no cap.
+    The plugin applies the same rule (src/mc_common.inl ram_cap). None when off or unknown."""
+    v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
+    if v is not None:
+        try:
+            return float(v) * 1e9 if float(v) > 0 else None
+        except ValueError:
+            return None
+    total = mem_total()
+    if not total:
+        return None
+    keep = max(4 * 2**30, total / 8)
+    return total - keep if total > keep else total / 2
+
+
 def mem_for_server(ram_gb):
-    """Bytes the server may use: --ram (GB), else the cgroup limit, else available RAM; None when unknown."""
+    """Bytes the server may use: --ram (GB), else the cgroup limit, else available RAM; never above mem_cap(); None when unknown."""
+    cap = mem_cap()
+    v = _mem_for_server(ram_gb)
+    return min(v, cap) if v and cap else (v or cap)
+
+
+def _mem_for_server(ram_gb):
     if ram_gb:
         return float(ram_gb) * 1e9
     if WINDOWS:
@@ -959,6 +982,9 @@ SERVER_HELP = """\
 --ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it. On Windows it is also set as a
            job memory limit on llama-server only with MOE_CACHE_WIN_VIEW=0 (with the default file-view cache the experts use no commit and a job limit
            would only cap llama.cpp's GPU memory, which Windows commits)
+--max-ram GB  hard cap on the whole server's memory (default: physical RAM minus max(4 GiB, 12.5 %), = 28 GiB on a 32 GiB machine; 0 = none).
+           Same rule on Linux and Windows; --ram and the free-memory logic stay below it (MOE_CACHE_MAX_RAM_GB does the same)
+--ram-scope   Linux: also start llama-server in a systemd scope with MemoryMax = the cap (opt-in: a cgroup counts the model's page cache too)
 --vram GiB GPU memory to plan with (default: what the GPU reports free)
 --n-cpu-moe N  layers whose experts stay on the CPU (default: chosen by the planner from free VRAM)
 --no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
@@ -1006,6 +1032,7 @@ def server(argv):
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model")
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
+    ap.add_argument("--max-ram", type=gb_arg); ap.add_argument("--ram-scope", action="store_true")
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
@@ -1022,6 +1049,8 @@ def server(argv):
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
     a = ap.parse_args(argv)
+    if a.max_ram:
+        os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram          # the launcher's planning and the plugin in llama-server both read it
     if not WINDOWS:
         os.umask(0o077)       # the usage profile is private to this user
     ls, model, port = a.llama_server, a.model, a.port
@@ -1059,7 +1088,8 @@ def server(argv):
     ncmoe = a.n_cpu_moe
     if ncmoe is None:
         p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
-        if a.ram: p += ["--ram-gib", ram_gib(a.ram)]
+        if a.ram or mem_cap():
+            p += ["--ram-gib", f"{mem_for_server(a.ram) / 2**30:.3f}"]      # the planner plans with the capped memory too
         if a.vram: p += ["--vram-gib", a.vram]
         r = None
         try:
@@ -1142,6 +1172,14 @@ def server(argv):
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
+    cap = mem_cap()
+    if a.max_ram:
+        env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    if cap:
+        say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
+            else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)" + (" Linux: --ram-scope also enforces it with a systemd scope" if a.ram_scope else ""))
+        if a.ram and float(a.ram) * 1e9 > cap:
+            say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
@@ -1294,6 +1332,13 @@ def server(argv):
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
         method = "none (stock)"
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
+    if a.ram_scope:
+        # opt-in (Linux): the kernel enforces the cap too. Off by default because a cgroup counts the model's page cache (stock's mmap and the plugin's
+        # file view): at the limit the kernel reclaims those pages instead of letting the run use free RAM, which can cost speed (RESULTS 64/65)
+        if WINDOWS or not shutil.which("systemd-run") or not mem_cap():
+            say("moe-cache: --ram-scope needs Linux with systemd-run and a memory cap: ignored", err=True)
+        else:
+            cmd = ["systemd-run", "--user", "--scope", "-q", "-p", f"MemoryMax={int(mem_cap())}", "-p", "MemorySwapMax=0", "--"] + cmd
     if method == "none (stock)":
         pass
     elif ncmoe == "0":

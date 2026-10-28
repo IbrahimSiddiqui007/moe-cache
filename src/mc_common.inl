@@ -227,8 +227,28 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
 // The limit is the smaller of the configured one (cgroup / job) and what the machine can really give: a 28 GB cgroup limit on a 31 GB laptop
 // with the desktop running (25 GB available) was OOM-killed by the kernel at 26.3 GB before the cgroup limit was reached.
 // extra: memory this process holds that is neither available nor private (the Windows file-view cache's resident experts)
+// Hard cap on what the server may use in all (owner, 2026-10-29: "nothing more than 28 GB of system RAM", Linux and Windows alike): physical RAM
+// minus max(4 GiB, 12.5 %), = 28 GiB on a 32 GiB machine, so the OS, the desktop and the GPU driver keep room (Windows commit errors, Linux OOM).
+// MOE_CACHE_MAX_RAM_GB=N (decimal GB, as the launcher's --max-ram) sets it; 0 turns it off. The cache budget is the limit minus the rest of the
+// process (llama.cpp's host buffers, KV, compute), so the whole server stays under it. (size_t) -1 when off or unknown.
+size_t ram_cap() {
+    static const size_t cap = [] {
+        if (const char * v = getenv("MOE_CACHE_MAX_RAM_GB")) {
+            const double gb = atof(v);
+            return gb > 0 ? (size_t) (gb * 1e9) : (size_t) -1;
+        }
+        const size_t total = plat::mem_total();
+        if (!total) {
+            return (size_t) -1;
+        }
+        const size_t keep = std::max<size_t>((size_t) 4 << 30, total / 8);
+        return total > keep ? total - keep : total / 2;
+    }();
+    return cap;
+}
+
 size_t read_mem_limit(size_t extra = 0) {
-    const size_t lim = plat::mem_limit();
+    const size_t lim = std::min(plat::mem_limit(), ram_cap());
     const size_t avail = plat::mem_available();
     return avail ? std::min(lim, avail + plat::rss_private() + extra) : lim;
 }
