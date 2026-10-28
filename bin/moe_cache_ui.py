@@ -631,14 +631,35 @@ def _kill0(pid):
         return False
 
 
-def catches_usr1(pid):
-    """Linux: True when the process handles SIGUSR1 (the plugin installs the handler; stock llama-server would die of it)."""
+def catches_usr1(pid, sig=None):
+    """Linux: True when the process handles SIGUSR1 (or sig; the plugin installs the handler; stock llama-server would die of it)."""
     try:
         for line in open(f"/proc/{pid}/status"):
             if line.startswith("SigCgt:"):
-                return bool(int(line.split()[1], 16) >> (signal.SIGUSR1 - 1) & 1)
+                return bool(int(line.split()[1], 16) >> ((sig or signal.SIGUSR1) - 1) & 1)
     except (OSError, ValueError, AttributeError):
         pass
+    return False
+
+
+def ask_idle_release(pid):
+    """Ask the plugin in llama-server `pid` to give its cache's RAM back while the server idles (N3); False when it cannot be asked (stock)."""
+    if WINDOWS:
+        try:
+            k = ctypes.windll.kernel32
+            h = k.OpenEventW(0x0002, False, f"Local\\moe-cache-idle-{pid}")
+            if not h:
+                return False
+            k.SetEvent(h); k.CloseHandle(h)
+            return True
+        except Exception:
+            return False
+    if catches_usr1(pid, signal.SIGUSR2):
+        try:
+            os.kill(pid, signal.SIGUSR2)
+            return True
+        except OSError:
+            pass
     return False
 
 

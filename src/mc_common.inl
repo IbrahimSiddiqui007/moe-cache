@@ -5,10 +5,12 @@ namespace {
 
 #ifdef __linux__
 int g_stats_pipe[2] = { -1, -1 };
+int g_idle_pipe[2] = { -1, -1 };            // SIGUSR2: the server is idle, give the cache's RAM back (N3, idle_release)
 #endif
 #ifdef _WIN32
 HANDLE g_stats_event = nullptr;            // MOE_CACHE_STATS_SIGNAL on Windows: named event that asks for one snapshot
 HANDLE g_save_event = nullptr;             // Windows: named event Local\moe-cache-save-<pid> that asks for a profile save (the server is killed, not stopped)
+HANDLE g_idle_event = nullptr;             // Windows: named event Local\moe-cache-idle-<pid>: the server is idle, give the cache's RAM back (N3, idle_release)
 #endif
 #ifdef _WIN32
 std::atomic<ggml_cgraph *> g_cpu_graph{nullptr};   // the graph the plugin is handing to the CPU backend right now (crash report)

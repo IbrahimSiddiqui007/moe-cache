@@ -94,26 +94,32 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 
   | Model | GPU expert layers | Decode: stock | Decode: plugin | Change |
   |---|---|---|---|---|
+  | Flash-Next Q2_0 (66.4 GB, D:, not interleaved; RESULTS 63) | 12 | 18.41 | **22.16** | +20 % |
   | Flash-Next IQ2_XS (68 GB) | 12 | 14.89 | **21.94** | +47 % |
   | Flash-Next IQ3_XXS (76 GB) | 9 | 15.14 | **19.86** | +31 % |
   | Flash-Next IQ3_S (84 GB) | 7 | 12.92 | **17.28** | +34 % |
-  | Qwen3.5-122B UD-IQ2_XXS (34 GB) | 12 | 13.88 | **16.13** | +16 % |
+  | Qwen3.5-122B UD-IQ2_XXS (34 GB), re-measured 2026-10-28 (RESULTS 61) | 12 | 15.95 | **19.73** | +24 % |
   | GLM-5.3-Flash UD-IQ2_XXS (102 GB), one pair | 3 | 2.21 | **4.44**; **6.92 with `--mtp`** | 2.0x; 3.1x |
 
   Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
-  IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). A later
-  122B series ran at 19.8-20.3 tok/s with the same plugin and launcher (RESULTS 61; cause of the difference not investigated).
+  IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). The
+  122B row replaces RESULTS 59's 13.88 vs 16.13 (+16 %): that pair ran during a slowdown of the whole PC (stock was 13 % slower too; RESULTS 61, T2b).
   If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself). One desktop only; Linux numbers are in the README.
-- **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC and method as above). Both files are listed on purpose; pick by what you value:
+- **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC, plugin with launcher defaults, cold; RESULTS 59, 60, 63). Tasks = 202
+  exact-answer tasks; no quality difference between any two files is proven (all paired sign tests p > 0.05):
 
-  | Quant | File size | Plugin decode (tok/s) | Stock decode (tok/s) | Quality, 202 exact-answer tasks |
-  |---|---|---|---|---|
-  | IQ2_XS | 68 GB | **21.9** (+47 %) | 14.9 | 187 / 202 (92.6 %) |
-  | IQ3_XXS | 76 GB | **19.9** (+31 %) | 15.1 | **193 / 202 (95.5 %)** |
+  | File | Size | Plugin decode (tok/s) | Prompt tok/s, 3k / 34k tokens | Tasks /202 | Use it |
+  |---|---|---|---|---|---|
+  | **Q2_0** | 66.4 GB | **22.2** | **281 / 287** | 191 | **recommended default**: vs IQ2_XS +5 % decode, prompts +11 % / +19 %, smaller. In the decode pair Q2_0 ran from D: and IQ2_XS from C:, so part of the +5 % may be the drive (the 34k pair had both on D:) |
+  | IQ3_XXS | 75.8 GB | 19.9 (stock 15.1) | - | **193** | when accuracy matters: most tasks right, about 10 % slower |
+  | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 21.2 (in an agent session) | - | 189 | coding agents: half the experts (256 of 512); OpenCode session 55.5 s vs 73.4 s on IQ2_XS, one run. General knowledge not checked beyond the task set |
+  | IQ2_XS | 68.0 GB | 21.0 same day as Q2_0 (21.9 in RESULTS 59, stock 14.9) | 253 / 242 | 187 | superseded by Q2_0. The other IQ2_XS numbers on this page were measured on IQ2_XS |
+  | IQ3_S | 83.6 GB | 17.3 (stock 12.9) | - | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |
 
-  How to choose: IQ3_XXS when accuracy matters and it fits on your disk; IQ2_XS for speed (about 10 % faster, 8 GB smaller). IQ3_XXS leads by about
-  3 points; 10 tasks were right only on IQ3_XXS and 4 only on IQ2_XS, which is a lean, not a proof (paired sign test p about 0.18). Both are faster than
-  stock. Details: RESULTS 59 (decode) and RESULTS 60 (quality).
+  Stock vs plugin on Q2_0 (D:, cold, two runs each, not interleaved; RESULTS 63): decode 18.41 vs **22.16** tok/s (+20 %; code request 20.01 vs 22.66,
+  +13 %), 3k-token prompt 120.8 vs **281** tok/s (2.33x). Stock decodes Q2_0 much faster than IQ2_XS (18.4 vs 14.9), so the decode gain is smaller
+  than on IQ2_XS (+47 %); the prompt gain is what agent sessions wait on.
+  On Windows the plugin's own Q2_0 kernel is not used (see the next point): Q2_0 runs llama.cpp's own CPU kernel on both sides.
 - The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
   not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.
 - `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers. A path-loading version exists on a branch, but

@@ -2,6 +2,9 @@
 
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
+### Docs
+- **Flash-Next file recommendation: GSQ-RCO Q2_0 is the default** (66.4 GB; PC: 22.2 tok/s, prompts 281 / 287 tok/s at 3k / 34k tokens, +5 % decode and +11-19 % prompts vs IQ2_XS, 191/202 tasks); IQ3_XXS when accuracy matters (193/202); ISTA GSQ-RCO Coder IQ1_M for coding agents (OpenCode session 55.5 vs 73.4 s); IQ2_XS superseded; IQ3_S not worth it; quality differences not proven (RESULTS 63). README, docs/WINDOWS.md, docs/AGENTS.md, benchmark card.
+
 ### Windows and AMD
 - **Windows: the expert cache lives in read-only views of the model file** (idea I47). Its memory was private and Windows charges private
   memory to commit (RAM + page file), as it does Vulkan's GPU allocations: on a 32 GB PC with a 16 GB card the cache was held to 8-11 GiB and
@@ -61,6 +64,7 @@
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
 ### Agent mode, Hermes Agent and OpenCode
+- on-demand: an earlier idle stage, `--idle-release MIN` (default 5, 0 = off): the plugin gives the expert cache's RAM back while the server idles and the server keeps running, so the next request needs no restart (N3; PC: available RAM 6.8 -> 25 GB, next request +0.5 s instead of a 34 s start). Windows: the hard working-set minimum is dropped and the file-view pages move to standby; Linux: the experts are evicted. The plugin listens for SIGUSR2 / the event `Local\moe-cache-idle-<pid>`.
 - **`moe_cache.py on-demand`: agents work without starting a server by hand** (as with Ollama). A small always-on listener holds the agent port; the
   first request starts the launcher in agent mode for the remembered model, requests (streaming included) pass through, and the model stops after 15 idle
   minutes (`--idle`). The API key and the localhost-only CORS rule are checked in front, so a web page cannot wake the model; `/v1/models` and `/props`
