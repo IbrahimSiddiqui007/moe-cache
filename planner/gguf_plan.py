@@ -435,6 +435,31 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
             "compute_mib": compute_buffer_guess_mib(ctx, ub) if fixed_ub else compute_buffer_mib(ctx, ub), "why": why}
 
 
+def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
+    """Exact mode keeps llama-server's f16 KV cache (identity with stock). At long contexts (>= 128k) q8_0 KV, which --fast uses, can free enough
+    VRAM for more expert layers on the GPU: one plain line saying so when it gains 2+ layers or lets the context fit at all; None otherwise
+    (idea N28; the owner keeps exact mode exact, so this only advises)."""
+    if ctx < min_ctx:
+        return None
+    lay = model_layout(path)
+    free = free if free is not None else free_vram_bytes()
+    if not lay["n_layers"] or free is None:
+        return None
+    kw = {"reserve_gb": reserve_gb, "want_cache": False}
+    if ub:
+        kw["ub"] = ub
+    a, b = tune(path, ctx, free=free, kv_q8=False, **kw), tune(path, ctx, free=free, kv_q8=True, **kw)
+    kv16, kv8 = _kv_or_flat(path, ctx), _kv_or_flat(path, ctx, True)
+    gained = a["n_cpu_moe"] - b["n_cpu_moe"]
+    no_fit = lay["other_bytes"] + kv16 > free and lay["other_bytes"] + kv8 <= free
+    if gained < 2 and not no_fit:
+        return None
+    what = ("the context does not fit the card's memory with an f16 KV cache, with q8_0 it does" if no_fit else
+            f"{gained} more layers of experts on the GPU ({b['n_cpu_moe']} instead of {a['n_cpu_moe']} on the CPU)")
+    return (f"at {ctx // 1024}k context, --fast would store the KV cache as q8_0 ({kv8 / 2**30:.1f} instead of {kv16 / 2**30:.1f} GiB): {what}. "
+            "It changes some tokens (exact mode stays identical to stock)")
+
+
 if __name__ == "__main__":
     import sys
     for p in sys.argv[1:]:

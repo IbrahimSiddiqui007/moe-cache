@@ -310,5 +310,25 @@ _meta_gguf(_gl, [("general.architecture", "glm5-next"), ("glm5-next.block_count"
                  ("glm5-next.attention.key_length_mla", 256)])
 check(gguf_plan.kv_bytes(_gl, 65536) is None, "kv_bytes: MLA layout -> None (the flat 40 KB per token stays)")
 
+# N28: at 128k+ in exact mode, one line suggesting --fast (q8_0 KV) when it frees 2+ GPU expert layers; nothing below 128k
+def _full_gguf(path, kv, tensors):
+    def s(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    body = b"".join(s(k) + (struct.pack("<I", 8) + s(v) if isinstance(v, str) else struct.pack("<II", 4, v)) for k, v in kv)
+    offs, o = [], 0
+    for _, size in tensors:
+        offs.append(o); o += size
+    ti = b"".join(s(n) + struct.pack("<IQIQ", 1, 8, 0, off) for (n, _), off in zip(tensors, offs))
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kv)) + body + ti
+    with open(path, "wb") as f:
+        f.write(head + b"\0" * (-len(head) % 32)); f.truncate(len(head) + (-len(head) % 32) + o)
+_fkv = [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.attention.head_count", 24), ("qwen4exp.attention.head_count_kv", 2),
+        ("qwen4exp.attention.key_length", 256), ("qwen4exp.attention.value_length", 256), ("qwen4exp.full_attention_interval", 4),
+        ("qwen4exp.attention.indexer.key_length", 128), ("qwen4exp.ssm.inner_size", 6144), ("qwen4exp.ssm.state_size", 128),
+        ("qwen4exp.ssm.group_count", 16), ("qwen4exp.ssm.time_step_rank", 48), ("qwen4exp.ssm.conv_kernel", 4)]
+_ft = [("token_embd.weight", 3 << 30)] + [(f"blk.{i}.ffn_down_exps.weight", 700 << 20) for i in range(48)]
+_fp = os.path.join(_md, "fnx_full.gguf"); _full_gguf(_fp, _fkv, _ft)
+_h256, _h64 = gguf_plan.fast_kv_hint(_fp, 262144, free=15.06 * 2**30), gguf_plan.fast_kv_hint(_fp, 65536, free=15.06 * 2**30)
+check(_h256 and "--fast" in _h256 and "more layers of experts on the GPU" in _h256 and _h64 is None, f"fast_kv_hint: 256k -> {_h256}; 64k -> {_h64}")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)

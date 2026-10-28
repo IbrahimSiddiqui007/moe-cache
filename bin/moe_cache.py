@@ -1223,6 +1223,15 @@ def server(argv):
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))   # e.g. an integrated GPU: keep the planner's answer
     if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned and not no_vram:
         ncmoe = str(tuned["n_cpu_moe"])
+        if not kv_q8 and not a.fast:
+            try:
+                from gguf_plan import fast_kv_hint
+                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else None, ub=int(ub) if (ub or "").isdigit() else None,
+                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}))
+                if h:
+                    say("moe-cache: " + h)
+            except Exception:
+                pass
     # MTP's draft context needs GPU memory next to the layers; with more expert layers on the GPU than planned, llama.cpp over-commits the card
     # (it logs "failed to fit params to free device memory") and on Windows the spill then starves host memory: GGML_ASSERT(ctx->mem_buffer != NULL)
     # while creating the draft context (GLM on the PC, 41 and 43 CPU layers with MTP; the planned 45 loads, RESULTS 62). Same warning on Linux.
