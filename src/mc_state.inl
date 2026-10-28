@@ -483,10 +483,14 @@ struct state_t {
         if (strcmp(gib, "auto") == 0) {
             auto_mode = true;
             limit_bytes = read_mem_limit();
+            if (ram_cap() != (size_t) -1) {
+                fprintf(stderr, "moe-cache: memory cap %.1f GiB (%.1f GB) for the whole server (%s; MOE_CACHE_MAX_RAM_GB or the launcher's --max-ram changes it)\n",
+                        ram_cap() / 1073741824.0, ram_cap() / 1e9, getenv("MOE_CACHE_MAX_RAM_GB") ? "set" : "physical RAM minus max(4 GiB, 12.5 %)");
+            }
             if (const char * v = getenv("MOE_CACHE_RAM_GIB")) {
                 size_t x = 0;
                 if (parse_gib("MOE_CACHE_RAM_GIB", v, x) && x > 0) {
-                    limit_bytes = x;
+                    limit_bytes = std::min(x, ram_cap());      // --ram cannot go above the hard cap either
                 }
             }
             if (const char * v = getenv("MOE_CACHE_MARGIN_GIB")) {
