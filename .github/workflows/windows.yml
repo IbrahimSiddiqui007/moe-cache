@@ -116,6 +116,10 @@ jobs:
           if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "ggml-moe-cache-api3.dll" -SimpleMatch -Quiet)) { throw "kit: check did not pick the kit's API 3 DLL" }
           if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "plugin loads .*yes" -Quiet)) { throw "kit: the plugin does not load" }
           if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "cache runs .*yes" -Quiet)) { throw "kit: the cache did not compute" }
+          Push-Location $k
+          $od = (python bin\moe_cache.py on-demand --status 2>&1) -join "`n"
+          Pop-Location
+          if ($od -notmatch "No model chosen yet") { throw "kit: on-demand does not run from the kit: $od" }
 
       - name: Launcher on Windows (check, dry run, core detection for pinning)
         run: |

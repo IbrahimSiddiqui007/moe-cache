@@ -27,11 +27,15 @@ launcher then runs it stock by itself.
      python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --agent
      python bin\moe_cache.py connect opencode --write
      python bin\moe_cache.py connect hermes --write
-   The control page has Connect buttons for both. Details: docs\AGENTS.md
+   The control page has Connect buttons for both.
+   Or let the agents start the model when they need it (stops after 15 idle minutes):
+     python bin\moe_cache.py on-demand D:\models\model.gguf --llama-server C:\llama\llama-server.exe
+   Details: docs\AGENTS.md
 
 4. Good to know
-   - Keep the Windows page file at "system managed" or 14 GB or more: a small page file
-     limits the cache (docs\WINDOWS.md, "where the RAM goes").
+   - Keep the Windows page file at "system managed" (or 14 GB or more): the cache itself
+     costs no commit (it keeps experts in read-only views of the model file), but
+     Windows counts the GPU's memory against RAM + page file.
    - The plugin DLL is ggml-moe-cache-api3.dll (llama.cpp with ggml 0.26 / 0.27);
      ggml-moe-cache-api2.dll is for older llama.cpp (ggml 0.25). The launcher picks the right one.
    - Problems: docs\WINDOWS.md. Report issues at github.com/IbrahimSiddiqui007/moe-cache/issues
