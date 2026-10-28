@@ -82,8 +82,8 @@
 - **Hard memory cap, Linux and Windows alike**: the whole server (cache + llama.cpp's host buffers, KV, compute) stays at or below physical RAM
   minus max(4 GiB, 12.5 %) = 28 GiB on a 32 GiB machine, on top of the free-memory logic (the lower wins), so Windows does not run out of
   memory and Linux does not OOM. `--max-ram GB` / `MOE_CACHE_MAX_RAM_GB` change it (0 = off); `--ram` cannot go above it; the cap is printed
-  at start (launcher and plugin). The Windows working-set minimum follows the capped cache budget. Linux: `--ram-scope` (opt-in) also starts
-  llama-server in a systemd scope with MemoryMax = the cap (a cgroup counts page cache too, which can cost speed).
+  at start (launcher and plugin). The Windows working-set minimum follows the capped cache budget. The cap is kept by planning only, never by
+  stopping a running server.
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
