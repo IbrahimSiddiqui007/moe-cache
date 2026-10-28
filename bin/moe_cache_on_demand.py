@@ -83,8 +83,9 @@ def free_port():
 class Backend:
     """The real server: started on demand, stopped when idle. One at a time; requests that come while it starts wait for it."""
 
-    def __init__(self, choice, launcher=None, idle_min=15.0, start_timeout=900, log=log):
+    def __init__(self, choice, launcher=None, idle_min=15.0, start_timeout=900, log=log, release_min=5.0):
         self.c, self.launcher, self.idle, self.start_timeout, self.log = choice, launcher or LAUNCHER, idle_min * 60, start_timeout, log
+        self.release, self.released = release_min * 60, False      # N3: earlier idle stage, the cache's RAM goes back but the server stays
         self.key = mc.stored_key(create=True)
         self.lock = threading.Lock()             # held while starting / stopping
         self.count = threading.Lock()
@@ -101,6 +102,7 @@ class Backend:
         with self.count:
             self.active += delta
             self.last = time.time()
+            self.released = False
 
     def running(self):
         return self.p is not None and self.p.poll() is None
@@ -244,6 +246,18 @@ class Backend:
                         self._stop_locked(f"{self.idle / 60:g} min without a request")
                 finally:
                     self.lock.release()
+            elif (self.release and self.release < self.idle and not self.released and self.state == "ready" and self.active == 0
+                  and time.time() - self.last > self.release):
+                self.released = True
+                self.idle_release()
+
+    def idle_release(self):
+        """N3: ask the plugin to give the cache's RAM back while the server idles; the next request needs no restart (PC: +0.5 s, not 34 s)."""
+        import moe_cache_ui as ui
+        pid = ui.child_pid(self.p.pid) if self.running() else None
+        if pid and ui.ask_idle_release(pid):
+            self.log(f"{self.release / 60:g} min without a request: the expert cache's RAM goes back to the system; the server keeps running "
+                     f"(it stops after {self.idle / 60:g} min)")
 
     def models(self):
         return self.seen.get("/v1/models") or {"object": "list", "data": [{"id": self.alias, "object": "model", "created": 0, "owned_by": "moe-cache"}]}
@@ -613,6 +627,8 @@ def on_demand(argv):
     ap.add_argument("model", nargs="?", help="model to serve (remembered; leave out to use the remembered one)")
     ap.add_argument("--port", type=int, help="the agents' port (default 8080; remembered)")
     ap.add_argument("--idle", type=float, help="stop the model after this many minutes without a request (default 15; remembered)")
+    ap.add_argument("--idle-release", type=float, help="before that, give the expert cache's RAM back after this many minutes without a request "
+                                                      "(the server keeps running, the next request needs no restart; default 5, 0 = off; remembered)")
     ap.add_argument("--start-timeout", type=int, default=900, help="seconds to wait for the model to load")
     ap.add_argument("--install-autostart", action="store_true", help="start the listener at login (systemd --user unit / Windows Startup folder)")
     ap.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart and stop the listener")
@@ -674,21 +690,26 @@ def on_demand(argv):
                 raise SystemExit(f"{alias} is already the default model (give the second one another file or -- --alias NAME)")
             c["extra"] = [e for e in c.get("extra") or [] if model_alias(e["model"], e.get("args", [])) != alias] + [{"model": model, "args": args, "env": env}]
             c.update({k: v for k, v in (("port", a.port), ("idle", a.idle)) if v})
+            if a.idle_release is not None:
+                c["idle_release"] = a.idle_release
             save_choice(c)
             say(f"on-demand: added {alias} ({os.path.basename(model)}) with {' '.join(args) or 'the default options'}; the default stays "
                 f"{model_alias(c['model'], c.get('args', []))}. One model runs at a time; restart the listener to use the change")
             return 0
         else:
             old = c or {}
-            c = {"model": model, "args": args, "env": env, "port": a.port or old.get("port", 8080), "idle": a.idle or old.get("idle", 15)}
+            c = {"model": model, "args": args, "env": env, "port": a.port or old.get("port", 8080), "idle": a.idle or old.get("idle", 15),
+                 "idle_release": old.get("idle_release", 5) if a.idle_release is None else a.idle_release}
             save_choice(c)
             say(f"on-demand: remembered {os.path.basename(model)} with {' '.join(args) or 'the default options'} ({CHOICE_FILE})"
                 + (f"; the added models ({', '.join(model_alias(e['model'], e.get('args', [])) for e in old.get('extra') or [])}) are forgotten"
                    if old.get("extra") else ""))
     elif not c:
         raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options]")
-    elif a.port or a.idle:
+    elif a.port or a.idle or a.idle_release is not None:
         c.update({k: v for k, v in (("port", a.port), ("idle", a.idle)) if v})
+        if a.idle_release is not None:
+            c["idle_release"] = a.idle_release
         save_choice(c)
     if a.status:
         return status(c)
@@ -700,7 +721,7 @@ def on_demand(argv):
     port = c.get("port", 8080)
     if not WINDOWS:
         os.umask(0o077)
-    b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout) for e in [c] + list(c.get("extra") or [])])
+    b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout, release_min=c.get("idle_release", 5)) for e in [c] + list(c.get("extra") or [])])
     srv = serve(b, port, srv=srv)
     with open(PID_FILE, "w") as f:
         f.write(f"{os.getpid()} {port}\n")

@@ -317,7 +317,7 @@
                      (unsigned long long) small_mapped, (unsigned long long) small_over);
             j = b;
             j += ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
-                 ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load());
+                 ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases);
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
             j += "],\"layer_misses\":[";
@@ -351,6 +351,10 @@
         if (g_stats_pipe[1] >= 0) {
             close(g_stats_pipe[1]);          // wakes the snapshot thread, which then exits
         }
+        if (g_idle_pipe[1] >= 0) {
+            close(g_idle_pipe[1]);           // wakes the idle thread, which then exits (joined below: it uses this state)
+            g_idle_pipe[1] = -1;
+        }
 #elif defined(_WIN32)
         g_stats_stop = true;
         if (g_stats_event) {
@@ -358,6 +362,9 @@
         }
         if (g_save_event) {
             SetEvent(g_save_event);          // wakes the save thread, which then exits
+        }
+        if (g_idle_event) {
+            SetEvent(g_idle_event);          // wakes the idle thread, which then exits
         }
         // joined, not detached: neither may run on after this state (and its mutex) is gone; then the events can be closed
         if (stats_th.joinable()) {
@@ -373,6 +380,15 @@
         if (g_save_event) {
             CloseHandle(g_save_event);
             g_save_event = nullptr;
+        }
+#endif
+        if (idle_th.joinable()) {
+            idle_th.join();
+        }
+#ifdef _WIN32
+        if (g_idle_event) {
+            CloseHandle(g_idle_event);
+            g_idle_event = nullptr;
         }
 #endif
         if (trace_f) {

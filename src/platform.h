@@ -393,6 +393,14 @@ inline void file_view_drop(const void * p, size_t n) {
     (void) p; (void) n;
 #endif
 }
+// idle release (N3): drop the hard working-set minimum and empty the working set; file-view pages move to the standby list (still in RAM).
+// The same two calls as the PC measurement (C:\dl\pc_n3.ps1); no-op on Linux
+inline void ws_release() {
+#ifdef _WIN32
+    SetProcessWorkingSetSizeEx(GetCurrentProcess(), (size_t) 200 << 20, (size_t) 1 << 30, QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);
+    SetProcessWorkingSetSizeEx(GetCurrentProcess(), (SIZE_T) -1, (SIZE_T) -1, 0);
+#endif
+}
 // hard working-set minimum: the system does not trim this process below `bytes` (file-backed pages included). Returns false when refused
 // (more than the system can guarantee); the error code is in commit_error().
 inline bool ws_min_set(size_t bytes) {

@@ -81,6 +81,9 @@ struct state_t {
 #ifdef _WIN32
     std::thread stats_th, save_th;                       // event threads (MOE_CACHE_STATS_SIGNAL, profile save on request): joined in the destructor
 #endif
+    std::thread idle_th;                                 // idle release on request (SIGUSR2 / Local\moe-cache-idle-<pid>): joined in the destructor
+    bool   idle_released = false;                       // idle_release() ran and no graph came since: the next graph sets the working-set minimum again
+    uint64_t idle_releases = 0;
     std::mutex pf_mu;
     std::condition_variable pf_cv;
     std::deque<std::function<void()>> pf_q;
@@ -169,6 +172,10 @@ struct state_t {
     void begin_graph() {
         std::lock_guard<std::mutex> lk(mu);
         protect_epoch = epoch + 1;
+        if (idle_released) {
+            idle_released = false;
+            update_ws_min();             // the first graph after an idle release holds the experts in RAM again (no-op on Linux)
+        }
     }
     std::unordered_map<std::string, std::pair<size_t, size_t>> file_tensors;
     std::vector<std::unique_ptr<tinfo_t>> tensors;
@@ -626,6 +633,15 @@ struct state_t {
                 std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1 && !g_stats_stop) { print_snapshot(); } }).detach();
             }
         }
+        // idle release (N3): the launcher's on-demand listener sends SIGUSR2 when the server has been idle for a while
+        if (cache_on && pipe(g_idle_pipe) == 0) {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof(sa));
+            sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_idle_pipe[1], &c, 1); (void) r; };    // async-signal-safe: only write()
+            sa.sa_flags = SA_RESTART;
+            sigaction(SIGUSR2, &sa, nullptr);
+            idle_th = std::thread([this] { char c; while (read(g_idle_pipe[0], &c, 1) == 1 && !g_stats_stop) { idle_release(); } });
+        }
 #elif defined(_WIN32)
         // no signals: setting the named event Local\moe-cache-stats-<pid> prints one snapshot (tools/windows_test.ps1 does it before stopping the
         // server, which on Windows is killed, so the summary at exit never appears)
@@ -651,6 +667,15 @@ struct state_t {
                         }
                     }
                 });
+            }
+        }
+        // idle release (N3): the launcher's on-demand listener sets this event when the server has been idle for a while
+        if (cache_on) {
+            char name[64];
+            snprintf(name, sizeof(name), "Local\\moe-cache-idle-%lu", plat::process_id());
+            g_idle_event = CreateEventA(nullptr, FALSE, FALSE, name);
+            if (g_idle_event) {
+                idle_th = std::thread([this] { while (WaitForSingleObject(g_idle_event, INFINITE) == WAIT_OBJECT_0 && !g_stats_stop) { idle_release(); } });
             }
         }
         if (cache_on) {
