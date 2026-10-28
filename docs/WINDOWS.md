@@ -98,12 +98,12 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   | Flash-Next IQ2_XS (68 GB) | 12 | 14.89 | **21.94** | +47 % |
   | Flash-Next IQ3_XXS (76 GB) | 9 | 15.14 | **19.86** | +31 % |
   | Flash-Next IQ3_S (84 GB) | 7 | 12.92 | **17.28** | +34 % |
-  | Qwen3.5-122B UD-IQ2_XXS (34 GB) | 12 | 13.88 | **16.13** | +16 % |
+  | Qwen3.5-122B UD-IQ2_XXS (34 GB), re-measured 2026-10-28 (RESULTS 61) | 12 | 15.95 | **19.73** | +24 % |
   | GLM-5.3-Flash UD-IQ2_XXS (102 GB), one pair | 3 | 2.21 | **4.44**; **6.92 with `--mtp`** | 2.0x; 3.1x |
 
   Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
-  IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). A later
-  122B series ran at 19.8-20.3 tok/s with the same plugin and launcher (RESULTS 61; cause of the difference not investigated).
+  IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). The
+  122B row replaces RESULTS 59's 13.88 vs 16.13 (+16 %): that pair ran during a slowdown of the whole PC (stock was 13 % slower too; RESULTS 61, T2b).
   If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself). One desktop only; Linux numbers are in the README.
 - **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC, plugin with launcher defaults, cold; RESULTS 59, 60, 63). Tasks = 202
   exact-answer tasks; no quality difference between any two files is proven (all paired sign tests p > 0.05):
