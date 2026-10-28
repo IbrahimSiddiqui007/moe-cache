@@ -199,6 +199,80 @@ def model_layout(path):
             "mtp_blocks": len(mtp & set(layers))}
 
 
+def read_meta(path):
+    """-> {key: value} of the GGUF header: numbers and strings, arrays of numbers up to 4096 entries as lists (longer arrays are skipped)."""
+    out = {}
+    with open(path, "rb") as f:
+        if f.read(4) != b"GGUF":
+            raise ValueError("not a GGUF file")
+        f.read(4)
+        _, n_kv = struct.unpack("<QQ", f.read(16))
+        for _ in range(n_kv):
+            key = _read_str(f)
+            t = struct.unpack("<I", f.read(4))[0]
+            if t in _FMT:
+                out[key] = struct.unpack(_FMT[t], f.read(struct.calcsize(_FMT[t])))[0]
+            elif t == 8:
+                out[key] = _read_str(f)
+            elif t == 9:
+                pos = f.tell()
+                it, n = struct.unpack("<I", f.read(4))[0], struct.unpack("<Q", f.read(8))[0]
+                if it in _FMT and n <= 4096:
+                    size = struct.calcsize(_FMT[it])
+                    if n * size > _left(f):
+                        raise ValueError("GGUF header: array past the end of the file")
+                    out[key] = [struct.unpack(_FMT[it], f.read(size))[0] for _ in range(n)]
+                else:
+                    f.seek(pos)
+                    _skip_value(f, t)
+            else:
+                _skip_value(f, t)
+    return out
+
+
+KV_ELEM = {False: 2.0, True: 34 / 32}       # bytes per K/V value: f16, q8_0 (--fast)
+
+
+def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
+    """GPU memory of llama-server's KV cache for `ctx` tokens plus the recurrent state of n_seq slots (llama-server's default 4), from the header
+    as llama.cpp sizes them: attention layers (every full_attention_interval-th layer on hybrid models) x KV heads x (key + value length), one
+    indexer key per token on models with a sparse-attention indexer (Flash-Next), and per slot the SSM conv + state tensors (f32) of the other layers.
+    Flash-Next at 64k: 1.50 + 0.19 + 0.44 = 2.13 GiB, as measured (I35). None for layouts this does not model (MLA, per-layer KV head lists:
+    GLM-5.3): the callers then keep the flat 40 KB per token (idea N26: the flat number over-reserved 3-5 GiB at 256k)."""
+    try:
+        m = read_meta(shards(path)[0])
+    except Exception:
+        return None
+    arch = m.get("general.architecture")
+    g = lambda k, d=None: m.get(f"{arch}.{k}", d)
+    blocks, heads, kvh = g("block_count"), g("attention.head_count"), g("attention.head_count_kv")
+    if not isinstance(blocks, int) or not isinstance(heads, int) or isinstance(kvh, list) or isinstance(heads, list) or \
+            g("attention.key_length_mla") is not None or g("attention.kv_lora_rank") is not None or g("attention.sliding_window") is not None:
+        return None
+    kvh = kvh or heads
+    n_main = blocks - int(g("nextn_predict_layers", 0) or 0)
+    k_len = g("attention.key_length") or (g("embedding_length", 0) // heads)
+    v_len = g("attention.value_length") or k_len
+    interval = int(g("full_attention_interval", 0) or 0)
+    n_attn = n_main // interval if interval else n_main
+    elem = KV_ELEM[bool(kv_q8)]
+    per_tok = n_attn * kvh * (k_len + v_len) * elem
+    if g("attention.indexer.key_length"):
+        per_tok += n_attn * g("attention.indexer.key_length") * elem        # one cached indexer key per token and attention layer
+    state = 0
+    if g("ssm.inner_size"):
+        inner, n_state, groups, rank, conv = (g("ssm.inner_size"), g("ssm.state_size", 0), g("ssm.group_count", 1), g("ssm.time_step_rank") or 1,
+                                              g("ssm.conv_kernel", 4))
+        per_layer = rank * (inner // rank) * n_state * 4 + (conv - 1) * (inner + 2 * groups * n_state) * 4
+        state = (n_main - n_attn) * per_layer * n_seq
+    return ctx * per_tok + state
+
+
+def _kv_or_flat(path, ctx, kv_q8=False):
+    kv = kv_bytes(path, ctx, kv_q8)
+    return kv if kv is not None else ctx * 40e3 * (0.53 if kv_q8 else 1.0)
+
+
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
     try:
@@ -227,7 +301,7 @@ def fit_n_cpu_moe(path, ctx=8192, reserve_gb=1.3, free=None):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return 999, lay, None
-    fixed = lay["other_bytes"] + 0.55e9 + ctx * 40e3          # weights + compute buffers + rough KV for an 8k context
+    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)          # weights + compute buffers + KV (from the header when it can)
     room = free - fixed - reserve_gb * 1e9
     gpu_layers = max(0, min(lay["n_layers"], int(room // lay["expert_bytes_per_layer"]))) if lay["expert_bytes_per_layer"] else 0
     return lay["n_layers"] - gpu_layers, lay, free
@@ -240,7 +314,7 @@ def gpu_cache_mib(path, ctx=8192, reserve_gb=1.3, free=None):
     free = free if free is not None else free_vram_bytes()
     if not lay["n_layers"] or free is None:
         return 0
-    fixed = lay["other_bytes"] + 0.55e9 + ctx * 40e3
+    fixed = lay["other_bytes"] + 0.55e9 + _kv_or_flat(path, ctx)
     room = free - fixed - reserve_gb * 1e9
     return int(room // (1024 * 1024)) if room > 0.5e9 else 0
 
@@ -308,7 +382,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     why = []
     if not lay["n_layers"] or free is None:
         return {"n_cpu_moe": 999, "ub": 512, "gpu_cache_mib": 0, "why": ["no GPU memory information: all experts stay on the CPU, default micro-batch"]}
-    kv = ctx * 40e3 * (0.53 if kv_q8 else 1.0)
+    kv = _kv_or_flat(path, ctx, kv_q8)
     fixed = lay["other_bytes"] + kv
     # long prompts run their expert block on the GPU and upload one whole layer of experts for it: the micro-batch, the cache and static layers must
     # all leave that room (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 18-24 tok/s instead
@@ -359,6 +433,31 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     why.append(f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
             "compute_mib": compute_buffer_guess_mib(ctx, ub) if fixed_ub else compute_buffer_mib(ctx, ub), "why": why}
+
+
+def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
+    """Exact mode keeps llama-server's f16 KV cache (identity with stock). At long contexts (>= 128k) q8_0 KV, which --fast uses, can free enough
+    VRAM for more expert layers on the GPU: one plain line saying so when it gains 2+ layers or lets the context fit at all; None otherwise
+    (idea N28; the owner keeps exact mode exact, so this only advises)."""
+    if ctx < min_ctx:
+        return None
+    lay = model_layout(path)
+    free = free if free is not None else free_vram_bytes()
+    if not lay["n_layers"] or free is None:
+        return None
+    kw = {"reserve_gb": reserve_gb, "want_cache": False}
+    if ub:
+        kw["ub"] = ub
+    a, b = tune(path, ctx, free=free, kv_q8=False, **kw), tune(path, ctx, free=free, kv_q8=True, **kw)
+    kv16, kv8 = _kv_or_flat(path, ctx), _kv_or_flat(path, ctx, True)
+    gained = a["n_cpu_moe"] - b["n_cpu_moe"]
+    no_fit = lay["other_bytes"] + kv16 > free and lay["other_bytes"] + kv8 <= free
+    if gained < 2 and not no_fit:
+        return None
+    what = ("the context does not fit the card's memory with an f16 KV cache, with q8_0 it does" if no_fit else
+            f"{gained} more layers of experts on the GPU ({b['n_cpu_moe']} instead of {a['n_cpu_moe']} on the CPU)")
+    return (f"at {ctx // 1024}k context, --fast would store the KV cache as q8_0 ({kv8 / 2**30:.1f} instead of {kv16 / 2**30:.1f} GiB): {what}. "
+            "It changes some tokens (exact mode stays identical to stock)")
 
 
 if __name__ == "__main__":

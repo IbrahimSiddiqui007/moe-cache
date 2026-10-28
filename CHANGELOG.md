@@ -63,6 +63,14 @@
 - The launcher warns when `--n-cpu-moe N` puts more expert layers on the GPU than planned while MTP is on: the draft context needs GPU memory
   too and llama-server aborted at load on GLM (RESULTS 62). The control page's measured speeds have Flash-Next Q2_0 and Coder IQ1_M, and the
   122B row is RESULTS 61's re-measure (+24 %); a file gets the row of the closest size.
+- Long contexts (64k-256k): the tuner sizes the KV cache from the model header (attention layers, KV heads, key/value lengths, the indexer key, the
+  recurrent state per slot) instead of a flat 40 KB per token, which over-reserved 3-5 GiB of VRAM at 256k (idea N26). Flash-Next at 64k: 2.13 GiB,
+  as measured. At 256k on a 16 GB card Flash-Next keeps 2 more expert layers on the GPU, the 122B 3 more. Layouts it does not model (MLA, GLM)
+  keep the flat estimate.
+- The executor hands its pool 128 weight rows per chunk instead of 32: decode +3.9 % on the PC (Flash-Next Q2_0, every ABBA pair, text identical; idea N25).
+  `MOE_CACHE_EXEC_CHUNK=N` sets it.
+- At 128k+ context the launcher says in one line when `--fast` (q8_0 KV cache) would put 2+ more expert layers on the GPU, or let the context fit at
+  all, and by how much; exact mode stays exact (f16 KV, identical to stock; owner's decision, idea N28).
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
