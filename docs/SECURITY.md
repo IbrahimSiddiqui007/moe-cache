@@ -10,7 +10,7 @@ moe-cache is a plugin that runs inside `llama-server` plus a few helper scripts.
 | `moe-cache-bench` (GUI, now in [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark)) | `127.0.0.1:8765` only | every API call needs a per-run token that is embedded in the page the server serves; Host, Origin and Sec-Fetch-Site are checked; run settings are validated (program name, library name, `MOE_CACHE_*` variables only, no file-writing or network flags); the servers it starts use a key file |
 | `install.sh` | git and pip over HTTPS | llama.cpp is pinned to a commit hash, the python `gguf` package to a version |
 
-Releases from v0.1.3 on are built by GitHub Actions from the tagged commit and carry a build attestation: `gh attestation verify <tarball> -R IbrahimSiddiqui007/moe-cache`. Only tag builds are attested (from v0.2.3.6 on); to be strict, also check the tag: `gh attestation verify <tarball> -R IbrahimSiddiqui007/moe-cache --source-ref refs/tags/vX.Y.Z`.
+Releases from v0.1.3 on are built by GitHub Actions from the tagged commit and carry a build attestation: `gh attestation verify <tarball> -R IbrahimSiddiqui007/moe-cache`. Only tag builds are attested (from v0.0.0.TBD on); to be strict, also check the tag: `gh attestation verify <tarball> -R IbrahimSiddiqui007/moe-cache --source-ref refs/tags/vX.Y.Z`.
 
 ## What is written to disk
 | File | Where | Contains | Mode |

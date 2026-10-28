@@ -1,12 +1,12 @@
-moe-cache v0.2.3.6 runs MoE models bigger than your RAM through llama.cpp's `llama-server`. The output is identical to stock llama.cpp. This is the first release with a **Windows kit** (experimental).
+moe-cache v0.0.0.TBD runs MoE models bigger than your RAM through llama.cpp's `llama-server`. The output is identical to stock llama.cpp. This is the first release with a **Windows kit** (experimental).
 
 ## Downloads
 
 | File | For |
 |---|---|
-| `moe-cache-v0.2.3.6-windows-x64.zip` | Windows 10/11 x64 with the official llama.cpp release (Vulkan, CPU; tested b11669). Unzip, double-click `moe-cache.bat`. Read `README_WINDOWS.txt` first |
-| `moe-cache-v0.2.3.6-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 7fe450e19 (ggml 0.25) |
-| `moe-cache-v0.2.3.6-ggml0.26-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 23b0202a1 or newer (ggml 0.26 / 0.27) |
+| `moe-cache-v0.0.0.TBD-windows-x64.zip` | Windows 10/11 x64 with the official llama.cpp release (Vulkan, CPU; tested b11669). Unzip, double-click `moe-cache.bat`. Read `README_WINDOWS.txt` first |
+| `moe-cache-v0.0.0.TBD-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 7fe450e19 (ggml 0.25) |
+| `moe-cache-v0.0.0.TBD-ggml0.26-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 23b0202a1 or newer (ggml 0.26 / 0.27) |
 
 Check a download: `gh attestation verify <file> -R IbrahimSiddiqui007/moe-cache` (`SHA256SUMS` and `SHA256SUMS-windows` only detect corruption).
 
