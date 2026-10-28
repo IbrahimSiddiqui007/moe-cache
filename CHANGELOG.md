@@ -62,7 +62,11 @@
   answer without starting it. `--install-autostart` starts it at login (systemd --user unit; Windows Startup-folder shortcut, no admin). `connect
   hermes|opencode` now defaults to the on-demand port. [docs/AGENTS.md](docs/AGENTS.md#without-starting-a-server-by-hand-on-demand)
 - on-demand opens its port at once: it bound the port only after the launcher's dry run had checked the options (16.5 s on the Windows PC), so an
-  agent that connected meanwhile was refused. Now that agent waits and is answered when the check is done.
+  agent that connected meanwhile was refused. Now that agent waits and is answered when the check is done. The free-port check before it took 1 s
+  on Windows (a refused local connect is retried until the timeout); its timeout is now 0.25 s.
+- The launcher reads a model's GGUF header faster and once per launch: skipping the tokenizer's string array asked the file size once per
+  entry (~150k system calls), and the header was read 4+ times per start. On the Windows PC this was most of the 16-21 s a dry run took (and every
+  on-demand model start pays it again).
 - **`--agent`** (RESULTS 51): context 65536, `--jinja` tool calls, stable `--alias`, at most 8 context checkpoints per slot with a 1 GiB reserve, config blocks printed
   when ready; `--api-key` for other machines. **`connect hermes|opencode [--write]`** writes the agent's config (Hermes through `hermes config set`, OpenCode by merging
   `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/AGENTS.md),

@@ -582,8 +582,10 @@ def healthy(port, api_key=None):
 
 
 def port_busy(port):
+    # a listening local port answers in well under 1 ms; a free one is refused at once on Linux, but Windows retries the refused connect until the
+    # timeout (1 s with timeout 1, which was most of the on-demand listener's start on the PC)
     with socket.socket() as s:
-        s.settimeout(1)
+        s.settimeout(0.25)
         return s.connect_ex(("127.0.0.1", port)) == 0
 
 
