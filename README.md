@@ -128,8 +128,18 @@ When the model fits in the memory llama-server may use, stock llama.cpp is faste
 
 Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-page summary of the Windows desktop results: [docs/benchmark_card.html](docs/benchmark_card.html).
 
-**Which Flash-Next file?** On a 16 GB GPU + 32 GB RAM PC (RESULTS 59-60): IQ2_XS (68 GB) 21.9 tok/s, 187/202 on our exact-answer task set; IQ3_XXS
-(76 GB) 19.9 tok/s, 193/202. IQ3_XXS when accuracy matters and it fits on your disk, IQ2_XS for speed. Hardware for all measurements above: Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
+**Which Flash-Next file?** Measured with moe-cache on a 16 GB GPU + 32 GB RAM PC (RESULTS 59, 60, 63; Qwen3.8-Flash-Next GSQ-RCO files; tasks = our
+202 exact-answer tasks; **no quality difference between any two files is proven**, all paired sign tests p > 0.05):
+
+| File | Size | Decode tok/s | Prompt tok/s (3k / 34k tokens) | Tasks /202 | Use it |
+|---|---|---|---|---|---|
+| **Q2_0** | 66.4 GB | **22.2** | **281 / 287** | 191 | **recommended default**: vs IQ2_XS +5 % decode (part of it may be the faster drive it ran from), prompts +11 % / +19 %, smaller |
+| IQ3_XXS | 75.8 GB | 19.9 | - | **193** | when accuracy matters: most tasks right, about 10 % slower decode |
+| ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 21.2 (agent session) | - | 189 | coding agents: half the experts (256 of 512); OpenCode session 55.5 s vs 73.4 s on IQ2_XS. General knowledge not checked beyond the task set |
+| IQ2_XS | 68.0 GB | 21.0 (same day as Q2_0; 21.9 in RESULTS 59) | 253 / 242 | 187 | superseded by Q2_0 (older rows above that say IQ2_XS were measured on IQ2_XS) |
+| IQ3_S | 83.6 GB | 17.3 | - | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |
+
+Hardware for the other measurements above (not this file table): Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
 
 ## Hardware and OS support
 

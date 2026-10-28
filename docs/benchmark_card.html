@@ -116,6 +116,43 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   </section>
 
   <section>
+    <h2>Which Flash-Next file</h2>
+    <p>Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>File</th><th class="n">size</th><th class="n">decode tok/s</th><th class="n">prompt tok/s<br>3k / 34k</th><th class="n">tasks /202</th><th>verdict</th></tr></thead>
+        <tbody>
+          <tr><td><b>Q2_0</b></td><td class="n">66.4 GB</td><td class="n"><b>22.2</b></td><td class="n"><b>281 / 287</b></td><td class="n">191</td><td><b>recommended default.</b> vs IQ2_XS: +1.2 tok/s (+5 %), prompts +11 % / +19 %, 1.6 GB smaller, +4 tasks (not proven)</td></tr>
+          <tr><td>IQ3_XXS</td><td class="n">75.8 GB</td><td class="n">19.9</td><td class="n">–</td><td class="n"><b>193</b></td><td><b>when accuracy matters.</b> vs Q2_0: −2.3 tok/s (−10 %) for +2 tasks (not proven)</td></tr>
+          <tr><td>Coder IQ1_M<span class="sub">ISTA GSQ-RCO, 256 of 512 experts</span></td><td class="n">58.4 GB</td><td class="n">21.2<span class="sub">agent session</span></td><td class="n">–</td><td class="n">189</td><td><b>coding agents.</b> OpenCode session 55.5 s vs 73.4 s on IQ2_XS (−24 %, one run); general knowledge not checked beyond the task set</td></tr>
+          <tr><td>IQ2_XS</td><td class="n">68.0 GB</td><td class="n">21.0<span class="sub">21.9 in the ABBA above</span></td><td class="n">253 / 242</td><td class="n">187</td><td>superseded by Q2_0: slower everywhere, bigger, 4 fewer tasks (not proven)</td></tr>
+          <tr><td>IQ3_S</td><td class="n">83.6 GB</td><td class="n">17.3</td><td class="n">–</td><td class="n">192</td><td><b>not worth it.</b> vs IQ3_XXS: −2.6 tok/s (−13 %), 7.8 GB bigger, −1 task</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note"><b>No quality difference between any two files is proven</b>: on the tasks that changed, every paired sign test has p &gt; 0.05 (e.g. IQ3_XXS vs IQ2_XS 10 / 4 tasks, p 0.18). Q2_0 vs IQ2_XS was a mirrored pair on the same day; in its decode run Q2_0 sat on the faster drive, so part of the +5 % may be the drive (the 34k-prompt pair had both on D:). IQ3_XXS and IQ3_S decode are the ABBA numbers from the table above. Stock llama-server on Q2_0 is still to be measured, so the stock-vs-plugin table keeps IQ2_XS. Source: RESULTS 63.</p>
+  </section>
+
+  <section>
+    <h2>GLM-5.3-Flash: best setting on this PC</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Setting (moe-cache, model on drive D:, apps closed, cold, ABBA)</th><th class="n">chat text tok/s</th><th class="n">code tok/s</th><th class="n">3k prompt tok/s</th></tr></thead>
+        <tbody>
+          <tr><td><b>launcher default</b> (45 CPU expert layers), no MTP</td><td class="n"><b>5.89</b></td><td class="n"><b>2.80</b></td><td class="n"><b>67.6</b></td></tr>
+          <tr><td>2 more GPU layers (<code>--n-cpu-moe 43</code>)</td><td class="n">6.28 (+6.6 %)</td><td class="n">3.04 (+8.6 %)</td><td class="n">59.1 (−12.6 %)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><b>Best:</b> the model on the faster drive and the launcher's default layers. The faster drive gave +3.6 % on chat text and +13 % on code (fixed memory, RESULTS 62).</li>
+      <li><b>43 layers:</b> better for chat, but one agent turn (3k prompt + 300 tokens out) takes 99 s vs 95 s, so the default stays.</li>
+      <li><b>Code is slow</b> (2.8 tok/s): GLM's code experts do not fit in the 14–19 GiB cache; the same request hits no better the second time. Needs more RAM, not a setting.</li>
+      <li>Stock was not re-run on D: (its 2.21 tok/s in the table above was on C:), so there is no new stock ratio here.</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>Qwen3.6-35B: a model that fits in RAM, with and without MTP</h2>
     <p>Qwen3.6-35B-A3B Q4_K_M (20 GB) fits in the 32 GB, so the launcher runs stock llama-server for it by itself; moe-cache was forced on here to compare. MTP = the model's own multi-token-prediction head on the GPU (<code>--spec-type draft-mtp --spec-draft-n-max 2</code>).</p>
     <div class="scroll">
@@ -138,12 +175,12 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         <thead><tr><th>Model</th><th>MTP head</th><th>Measured</th><th>Launcher</th></tr></thead>
         <tbody>
           <tr><td>Qwen3.6-35B-A3B<span class="sub">fits in RAM</span></td><td>in the file</td><td>decode +49 % stock, <b>+54 %</b> moe-cache (table above); agent sessions 13–25 % shorter (RESULTS 60)</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
-          <tr><td>GLM-5.3-Flash<span class="sub">102 GB, bigger than RAM</span></td><td>in the file (<code>blk.45.nextn</code>)</td><td>moe-cache 4.44 → <b>6.92 tok/s</b> (3.1× stock), text identical; one cold run, drafts accepted 61 % and 100 % on its two requests. Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
+          <tr><td>GLM-5.3-Flash<span class="sub">102 GB, bigger than RAM</span></td><td>in the file (<code>blk.45.nextn</code>)</td><td>moe-cache 4.44 → <b>6.92 tok/s</b> (3.1× stock), text identical; one cold run on chat text. Later runs (RESULTS 62, D:, fixed memory): chat text <b>+10–23 %</b> at 100 % draft acceptance, code <b>0 %</b> at 79 %: MTP's draft context takes memory the cache needed. With 2 extra GPU layers it does not fit (load abort). Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
           <tr><td>Flash-Next (every quant), Qwen3.5-122B<span class="sub">bigger than RAM</span></td><td>none in the files</td><td>a separate head file (unsloth Q8_0, 4.14 GB) on Flash-Next IQ2_XS: stock <b>−15 %</b>, moe-cache <b>−38 %</b>, with 73–74 % of drafts accepted. Checking three tokens at once on CPU-held experts cost more than the drafts saved. Measured before the file-view cache, not re-run</td><td>off: no head; separate head files are not supported (dropped)</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">The launcher reads the model file: MTP is turned on only when the file has <code>blk.N.nextn</code> tensors and llama-server has <code>draft-mtp</code>; it prints one line saying why it is on or off. <code>--no-mtp</code> turns it off. Sources: RESULTS 58 (Qwen3.6, head file) and 60 (GLM).</p>
+    <p class="note">The launcher reads the model file: MTP is turned on only when the file has <code>blk.N.nextn</code> tensors and llama-server has <code>draft-mtp</code>; it prints one line saying why it is on or off. <code>--no-mtp</code> turns it off. Sources: RESULTS 58 (Qwen3.6, head file), 60 and 62 (GLM).</p>
   </section>
 
   <section>
@@ -216,7 +253,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
   </section>
 
-  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 58, 59 and 60. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 58 to 63. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
 </div>
 
 <script>
