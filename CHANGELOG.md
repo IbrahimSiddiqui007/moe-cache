@@ -71,6 +71,7 @@
   `MOE_CACHE_EXEC_CHUNK=N` sets it.
 - At 128k+ context the launcher says in one line when `--fast` (q8_0 KV cache) would put 2+ more expert layers on the GPU, or let the context fit at
   all, and by how much; exact mode stays exact (f16 KV, identical to stock; owner's decision, idea N28).
+- `MOE_CACHE_STATS` reports `pool_parks` (executor workers that fell asleep); `MOE_CACHE_POOL_SPIN_US=N` keeps them spinning N us after their last job (test knob for idea N30; default unchanged until the PC ABBA).
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
