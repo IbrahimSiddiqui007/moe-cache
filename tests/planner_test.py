@@ -288,5 +288,27 @@ _a, _b = L.vk_cache_cap("ls", _p, _vk), L.vk_cache_cap("ls", _p, _cu)
 L.subprocess.run = _run
 check(_a == (7712, 2 << 30) and _b == (None, None), f"vk_cache_cap: Vulkan listing -> {_a} (smallest listed limit), CUDA listing -> {_b} (no cap)")
 
+# N26: KV + recurrent state from the header (Flash-Next-like hybrid), and the flat fallback for MLA (GLM-like)
+def _meta_gguf(path, kv):
+    def s(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    body = b""
+    for k, v in kv:
+        body += s(k) + (struct.pack("<I", 8) + s(v) if isinstance(v, str) else struct.pack("<II", 4, v))
+    head = b"GGUF" + struct.pack("<IQQ", 3, 0, len(kv)) + body
+    open(path, "wb").write(head + b"\0" * (-len(head) % 32))
+_fx = os.path.join(_md, "fnx_kv.gguf")
+_meta_gguf(_fx, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.attention.head_count", 24),
+                 ("qwen4exp.attention.head_count_kv", 2), ("qwen4exp.attention.key_length", 256), ("qwen4exp.attention.value_length", 256),
+                 ("qwen4exp.full_attention_interval", 4), ("qwen4exp.attention.indexer.key_length", 128), ("qwen4exp.ssm.inner_size", 6144),
+                 ("qwen4exp.ssm.state_size", 128), ("qwen4exp.ssm.group_count", 16), ("qwen4exp.ssm.time_step_rank", 48), ("qwen4exp.ssm.conv_kernel", 4)])
+_k = gguf_plan.kv_bytes(_fx, 65536)
+check(_k is not None and abs(_k / 2**30 - 2.13) < 0.01, f"kv_bytes: Flash-Next layout at 64k = {(_k or 0) / 2**30:.3f} GiB (measured 2.13, I35)")
+_kq = gguf_plan.kv_bytes(_fx, 65536, kv_q8=True)
+check(_kq is not None and _kq < _k, f"kv_bytes: q8_0 KV is smaller ({(_kq or 0) / 2**30:.3f} GiB)")
+_gl = os.path.join(_md, "glm_kv.gguf")
+_meta_gguf(_gl, [("general.architecture", "glm5-next"), ("glm5-next.block_count", 46), ("glm5-next.attention.head_count", 64),
+                 ("glm5-next.attention.key_length_mla", 256)])
+check(gguf_plan.kv_bytes(_gl, 65536) is None, "kv_bytes: MLA layout -> None (the flat 40 KB per token stays)")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)
