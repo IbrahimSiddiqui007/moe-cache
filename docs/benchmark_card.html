@@ -103,6 +103,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <table>
         <thead><tr><th>Model (file size)</th><th class="n">GPU expert layers</th><th class="n">stock</th><th class="n">moe-cache</th><th class="n">change</th></tr></thead>
         <tbody>
+          <tr><td><b>Flash-Next Q2_0</b> (recommended file)<span class="sub">66.4 GB, drive D:, two runs each, not interleaved; stock = launcher <code>--stock</code> defaults</span></td><td class="n">12 (moe-cache)</td><td class="n">18.41</td><td class="n">22.16</td><td class="n up">+20 %</td></tr>
           <tr><td>Qwen3-Next “Flash-Next” IQ2_XS<span class="sub">68 GB, drive C:</span></td><td class="n">12</td><td class="n">14.89</td><td class="n">21.94</td><td class="n up">+47 %</td></tr>
           <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:</span></td><td class="n">9</td><td class="n">15.14</td><td class="n">19.86</td><td class="n up">+31 %</td></tr>
           <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive C:</span></td><td class="n">7</td><td class="n">12.92</td><td class="n">17.28</td><td class="n up">+34 %</td></tr>
@@ -112,7 +113,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         </tbody>
       </table>
     </div>
-    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM is a single cold pair. Every model here is bigger than the free RAM once the GPU and Windows have taken their share.</p>
+    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM is a single cold pair. Every model here is bigger than the free RAM once the GPU and Windows have taken their share. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin's decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
   </section>
 
   <section>
@@ -130,7 +131,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         </tbody>
       </table>
     </div>
-    <p class="note"><b>No quality difference between any two files is proven</b>: on the tasks that changed, every paired sign test has p &gt; 0.05 (e.g. IQ3_XXS vs IQ2_XS 10 / 4 tasks, p 0.18). Q2_0 vs IQ2_XS was a mirrored pair on the same day; in its decode run Q2_0 sat on the faster drive, so part of the +5 % may be the drive (the 34k-prompt pair had both on D:). IQ3_XXS and IQ3_S decode are the ABBA numbers from the table above. Stock llama-server on Q2_0 is still to be measured, so the stock-vs-plugin table keeps IQ2_XS. Source: RESULTS 63.</p>
+    <p class="note"><b>No quality difference between any two files is proven</b>: on the tasks that changed, every paired sign test has p &gt; 0.05 (e.g. IQ3_XXS vs IQ2_XS 10 / 4 tasks, p 0.18). Q2_0 vs IQ2_XS was a mirrored pair on the same day; in its decode run Q2_0 sat on the faster drive, so part of the +5 % may be the drive (the 34k-prompt pair had both on D:). IQ3_XXS and IQ3_S decode are the ABBA numbers from the table above. Stock vs moe-cache on Q2_0 is in the decode table above. Source: RESULTS 63.</p>
   </section>
 
   <section>
@@ -259,6 +260,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 <script>
 (function () {
   var data = [
+    { m: "Flash-Next Q2_0", s: "66.4 GB", stock: 18.41, mc: 22.16 },
     { m: "Flash-Next IQ2_XS", s: "68 GB", stock: 14.89, mc: 21.94 },
     { m: "Flash-Next IQ3_XXS", s: "76 GB", stock: 15.14, mc: 19.86 },
     { m: "Flash-Next IQ3_S", s: "83.6 GB", stock: 12.92, mc: 17.28 },

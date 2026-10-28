@@ -94,6 +94,7 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 
   | Model | GPU expert layers | Decode: stock | Decode: plugin | Change |
   |---|---|---|---|---|
+  | Flash-Next Q2_0 (66.4 GB, D:, not interleaved; RESULTS 63) | 12 | 18.41 | **22.16** | +20 % |
   | Flash-Next IQ2_XS (68 GB) | 12 | 14.89 | **21.94** | +47 % |
   | Flash-Next IQ3_XXS (76 GB) | 9 | 15.14 | **19.86** | +31 % |
   | Flash-Next IQ3_S (84 GB) | 7 | 12.92 | **17.28** | +34 % |
@@ -115,7 +116,9 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   | IQ2_XS | 68.0 GB | 21.0 same day as Q2_0 (21.9 in RESULTS 59, stock 14.9) | 253 / 242 | 187 | superseded by Q2_0. The other IQ2_XS numbers on this page were measured on IQ2_XS |
   | IQ3_S | 83.6 GB | 17.3 (stock 12.9) | - | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |
 
-  A stock llama-server run of Q2_0 on this PC is still to come; the stock-vs-plugin table above stays on the files that were measured both ways.
+  Stock vs plugin on Q2_0 (D:, cold, two runs each, not interleaved; RESULTS 63): decode 18.41 vs **22.16** tok/s (+20 %; code request 20.01 vs 22.66,
+  +13 %), 3k-token prompt 120.8 vs **281** tok/s (2.33x). Stock decodes Q2_0 much faster than IQ2_XS (18.4 vs 14.9), so the decode gain is smaller
+  than on IQ2_XS (+47 %); the prompt gain is what agent sessions wait on.
   On Windows the plugin's own Q2_0 kernel is not used (see the next point): Q2_0 runs llama.cpp's own CPU kernel on both sides.
 - The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
   not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.
