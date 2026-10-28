@@ -2543,6 +2543,66 @@ ops with and without forcing, so it already computes the decode expert ops; the 
 stream their weights from RAM (bandwidth-bound) while the 1.25x was measured with data in cache. **Verdict: N20 kept (exact, same rule on
 Linux and Windows, no speed change on the PC); N20b killed (forcing the executor changes nothing).**
 
+## 64. Long context on the Windows PC (pc-bench, 2026-10-28 evening): 64k and 128k+ on Flash-Next Q2_0, the 122B and Qwen3.6
+
+Owner: the main use is 64k-256k context. Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan 620d2225c, launcher experimental 28b022b
+(`server MODEL --agent --no-warm --ctx N`, own cache dir with the usage profile copied), plugin DLL built from experimental f478564 (exit-hang fix,
+Windows executor kernels). Text: the moe-cache repo's docs and code concatenated (C:\dl\pcb\lc_text.txt), fed as appended chunks into slot 0
+(`cache_prompt`, 4k, then 16k each) so every chunk's prefill is timed; decode = 128 greedy tokens at that depth. Each point **one cold run** (no
+ABBA: single); free RAM is "available" from Windows; Steam was running on the PC. Driver C:\dl\pcb\pcb_lc.py, log C:\dl\pcb_lc.log.
+
+**Planner choices** (dry runs, all models; no load failed at any setting)
+| Model | `--ctx 65536` | `--ctx 262144` |
+|---|---|---|
+| Flash-Next Q2_0 (D:) | 39 expert layers on the CPU, `-ub 1024` | all 48 on the CPU, `-ub 512` |
+| Qwen3.5-122B IQ2_XXS (D:) | 39 on the CPU, `-ub 1024` | all 48 on the CPU, `-ub 512` |
+| Qwen3.6-35B (C:, fits: stock llama-server) | `--n-cpu-moe 22`, `-ub 1024` | `--n-cpu-moe 38`, `-ub 512` |
+Stock llama-server, Flash-Next Q2_0, `-ngl 99 --n-cpu-moe 48`, Vulkan1 buffers (MiB; `-lv 4`): 256k f16 KV 6144 + 1536 (indexer), q8_0 3264 + 816,
+recurrent state 450; compute 1403 (`-ub 512`), 2983 (1024), 3979 (2048); 128k `-ub 2048` compute 3040 (f16) / 3072 (q8_0). All loaded.
+
+**Prefill (tok/s) by depth and decode at depth**
+| Point | ready | prefill: 0-4k / 4-21k / 21-37k / 37-53k / 53-63k / beyond | decode at 4k | decode at ~63.5k | decode deeper |
+|---|---|---|---|---|---|
+| Flash-Next Q2_0, moe-cache, 64k | 19.2 s | 231 / 266 / 215 / 203 / 195 | 22.89 (hits 98.5 %) | **20.65** (97.0 %) | - |
+| Flash-Next Q2_0, **stock**, 64k | 16.2 s | 72 / 171 / 125 / 112 / 106 | 21.38 | **16.83** | - |
+| Flash-Next Q2_0, moe-cache, 256k setting | 15.1 s | 143 / 142 / 112 / 109 / 111 / 105, 113, 108 up to 138k | 18.52 (97.0 %) | - | **15.93 at 138k** (95.3 %) |
+| Qwen3.5-122B, moe-cache, 64k | 19.2 s | 209 / 266 / 255 / 237 / 217 | 19.69 (99.1 %) | **17.26** (95.3 %) | - |
+| Qwen3.6-35B (stock, fits), 64k | 16.2 s | 477 / 848 / 814 / 792 / 739 | 67.21 | **59.09** | - |
+Whole 63.5k prompt: Flash-Next moe-cache ~289 s vs stock ~525 s (**1.8x**); decode at 63.5k **+23 %** (20.65 vs 16.83). Free RAM during the runs:
+2.8-4.6 GB (moe-cache), 0.3 GB (stock: the file cache fills the rest), 10.5-14.6 GB at ready.
+
+**Saving the agent's conversation (N27: llama-server's `/slots/0?action=save`; an 8-token request on slot 1 sent 0.3 s into the save)**
+| Point | depth | save | file (incl. context checkpoints) | the 8-token request |
+|---|---|---|---|---|
+| Flash-Next Q2_0 64k | 63.5k | 2.4 s | 2.78 GB (6 checkpoints, 675 MiB) | 3.6 s (waits for the save) |
+| Qwen3.5-122B 64k | 63.5k | 1.9 s | 2.66 GB (894 MiB) | 2.4 s |
+| Qwen3.6 64k | 63.5k | 1.7 s | 1.90 GB (377 MiB) | 2.2 s |
+| Flash-Next Q2_0 256k setting | 138k | 5.5 s | 5.31 GB | 6.6 s |
+
+**Findings**
+| # | Finding | Next |
+|---|---|---|
+| 1 | At the 256k setting the planner moves every expert layer to the CPU and drops `-ub` to 512 (f16 KV + long-prompt block reserve): Flash-Next prefill halves (143 vs 231-266 tok/s at the same 4-21k depth) and decode at 4k is 19 % lower (18.52 vs 22.89) than at the 64k setting | fixes: N26 (KV from the header: the tuner's flat 40 KB/token over-reserved; corrected) and N29 (`-ub 1024` without the block at 128k+): ABBA queued (below) |
+| 2 | Decode falls with depth: Flash-Next -10 % at 63.5k, -14 % from 4k to 138k at the 256k setting; 122B -12 % at 63.5k; Qwen3.6 -12 % at 63.5k | expected (attention + indexer); the plugin's share is unchanged (hits 95-97 %) |
+| 3 | moe-cache vs stock at 64k (Flash-Next Q2_0): prefill 1.8x, decode +23 %; stock at 63.5k needs the whole file cache (0.3 GB free) | - |
+| 4 | A slot save at 64k blocks the server 1.7-2.4 s (5.5 s at 138k), and a request sent meanwhile waits | quant-research's N27 change (save later, less often) |
+| 5 | The 256k point's final decode after the 138k save and the slot-1 request did not finish in 7 min (likely the whole 138k prompt being processed again: unified KV, recurrent state); stopped at the 30-min limit | to check: whether a request on another slot or a save drops slot 0's recurrent state at 128k+ |
+| 6 | No load abort, no KV that did not fit, no checkpoint crash on the AMD driver at any point | - |
+Not run tonight (time; owner's stop 23:30): Qwen3.6 and the 122B at 256k, the 122B stock at 64k (its C: copy was gone, the D: one was queued
+too late). Coder IQ1_M and GLM: removed from the PC by the owner. Queued for the next PC session: N29 256k ABBA (fixes), N15 (shader), N22
+(laptop-h1-s9), N30 (fixes), with ready scripts (handover/parts/pc-bench.md).
+
+**Addendum: N25 executor chunk size** (MOE_CACHE_EXEC_CHUNK, DLL 31ac159, Flash-Next Q2_0 on D:, launcher defaults, cold, ABBA 32 / 128 / 512 / 512 / 128 / 32,
+256-token water and code decodes, a 3.5k-token prompt; C:\dl\pcb_chunk.ps1)
+| Chunk (rows) | water decode tok/s | code decode tok/s | 3.5k prompt tok/s | text |
+|---|---|---|---|---|
+| 32 (old default) | 23.30, 23.58 | 23.64, 23.99 | 328.6, 330.6 | reference |
+| **128** | 24.40, 24.29 (**+3.9 %**) | 24.83, 24.69 (**+3.9 %**) | 334.0, 328.3 | identical |
+| 512 | 23.56, 23.72 (+0.9 %) | 24.09, 24.28 (+1.6 %) | 330.4, 323.9 | identical |
+128 wins in every pair with identical text: the owner made it the default (fixes). Memory read speed of the PC (N25 / N25c, membw.exe, 8 GB):
+~50-55 GB/s from 4 threads up, the same through a read-only mapped view of the model file (51.5-55.3) as from private memory (50.3-55.1), so the
+CPU expert phase's ~26 GB/s is the executor's, not the view's.
+
 ## 65. New models on the Windows PC (pc-glm, 2026-10-28 evening): Nemotron 3.5 Bolt 74B-A9B; DeepSeek V4-Flash (desk only)
 
 Picks from quant-research (handover/parts/model-research.md); owner: "see what's the realistic performance we can get with these", minimal
