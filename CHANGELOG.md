@@ -45,6 +45,8 @@
   Profile saves work on Windows; `replace_file` reports errors; an iGPU-only machine reports its VRAM.
 - `check` on Windows reports the pinning result and knows llama.cpp b11669; `build.sh --windows` honors `BUILD_DIR` (an API 2 and an API 3 DLL side by side) and the
   launcher finds the DLL that matches the server's ggml, also in `build\win*` and the kit's `ggml-moe-cache-api2.dll` / `-api3.dll`; `learn` picks the library the way `server` does.
+- The start-up line "tested with ggml X only" lists every tested version of the build's API (API 3: 0.26.0 and 0.27.0, API 2: 0.25.1); it warned wrongly on the
+  Windows release b11669 (ggml 0.27.0). CI fails if the warning shows on a pinned version.
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
