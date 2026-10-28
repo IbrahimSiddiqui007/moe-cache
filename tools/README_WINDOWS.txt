@@ -13,10 +13,17 @@ launcher then runs it stock by itself.
    - for an AMD GPU: Adrenalin driver 32.0.32015.7029 or newer is best
      (older drivers crash on Flash-Next checkpoints; the launcher then turns them off)
 
+   Windows may warn "unknown publisher": the kit is not code-signed (open source, built by
+   GitHub Actions from the tagged commit). Before unzipping: right-click the zip > Properties >
+   tick "Unblock" > OK. If SmartScreen says "Windows protected your PC": More info > Run anyway.
+   Check the zip: Get-FileHash moe-cache-v@VERSION@-windows-x64.zip (PowerShell) must equal the
+   line in SHA256SUMS-windows on the release page.
+
 2. Start
    Unzip this kit (e.g. to C:\moe-cache) and double-click moe-cache.bat.
    The control page opens at http://127.0.0.1:8070: pick a model, press Start.
    Start-menu entry:   moe-cache.bat --shortcut
+   (moe-cache.exe does the same as moe-cache.bat; it is there for winget and scoop.)
 
    Or from a command prompt in this folder:
      python bin\moe_cache.py check D:\models\model.gguf --llama-server C:\llama\llama-server.exe --run

@@ -4,6 +4,7 @@
 # Like make_release.sh, it is built from a clean export of the last commit (git archive HEAD), never from the working tree.
 # Kit layout (the launcher's HERE is the kit folder, so it finds the DLLs there; the .bat looks one folder up from bin\):
 #   moe-cache.bat                 one click: the control page (moe-cache.bat --shortcut adds it to the Start menu)
+#   moe-cache.exe                 the same as a program (for winget/scoop; it runs moe-cache.bat from its own folder, also through a symlink)
 #   README_WINDOWS.txt            what to install and the first commands
 #   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 / 0.27 (b11669 and newer); -api2.dll for ggml 0.25
 #   bin\ planner\ ui\ tools\ profiles\ docs\ LICENSE   the launcher, the page and what they read (Python 3.8+, standard library only)
@@ -19,8 +20,10 @@ N=moe-cache-v$V-windows-x64; K="$X/kit/$N"; mkdir -p "$K"
 ( cd "$X" && BUILD_DIR=build/win-api2 ./build.sh --windows && GGML_API=3 BUILD_DIR=build/win-api3 ./build.sh --windows )
 cp "$X/build/win-api2/ggml-moe-cache.dll" "$K/ggml-moe-cache-api2.dll"
 cp "$X/build/win-api3/ggml-moe-cache.dll" "$K/ggml-moe-cache-api3.dll"
+# moe-cache.exe: runs moe-cache.bat from its own real folder (winget's portable installs need an .exe and start it through a symlink)
+"${MINGW_CXX:-x86_64-w64-mingw32-g++}" -x c -O2 -Wall -municode -static -o "$K/moe-cache.exe" "$X/tools/win_launcher.c"   # MINGW_CXX as build.sh
 # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
-for d in "$K"/ggml-moe-cache-api*.dll; do
+for d in "$K"/ggml-moe-cache-api*.dll "$K/moe-cache.exe"; do
   i=$(x86_64-w64-mingw32-objdump -p "$d" | grep "DLL Name") || { echo "FAIL: no import list for $d"; exit 1; }
   if echo "$i" | grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32"; then echo "FAIL: $d imports a non-system DLL"; exit 1; fi
 done
