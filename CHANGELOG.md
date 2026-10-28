@@ -14,7 +14,7 @@
   resized hundreds of times per request, while stock llama.cpp's mmap used file pages that cost no commit. File-view pages cost no commit; a
   hard working-set minimum keeps the cached experts in RAM, and an evicted expert stays in the file cache. Which experts are cached, prefetch and
   the executor are unchanged (same as Linux). PC cold ABBA vs stock, launcher defaults: Flash-Next IQ3_XXS **19.9 vs 15.1 tok/s**, IQ2_XS
-  **21.9 vs 14.9**, IQ3_S **17.3 vs 12.9**, Qwen3.5-122B **16.1 vs 13.9**, GLM-5.3-Flash **4.4 vs 2.2** (**6.9 with `--mtp`**, 3.1x), text
+  **21.9 vs 14.9**, IQ3_S **17.3 vs 12.9**, Qwen3.5-122B **19.7 vs 15.9** (+24 %, re-measured in RESULTS 61), GLM-5.3-Flash **4.4 vs 2.2** (**6.9 with `--mtp`**, 3.1x), text
   byte-identical to stock (RESULTS 59-60). A second 8 or 14 GB program started while the server runs gets its memory in 1-4 s, no freeze.
   `MOE_CACHE_WIN_VIEW=0` goes back to private memory.
 - **Windows: no job memory limit with the file-view cache.** A job limit caps commit, and with the file view the only commit left was Vulkan's
@@ -102,6 +102,10 @@
   memory and Linux does not OOM. `--max-ram GB` / `MOE_CACHE_MAX_RAM_GB` change it (0 = off); `--ram` cannot go above it; the cap is printed
   at start (launcher and plugin). The Windows working-set minimum follows the capped cache budget. The cap is kept by planning only, never by
   stopping a running server.
+- **Fixed: a program with the plugin could hang at exit on Windows and could not be killed** (llama-perplexity, found by R11; llama-server is
+  normally killed, so it never showed there): Windows ends every other thread before the DLL's teardown ran, which then locked, notified and joined
+  threads that were already gone. While the process exits the plugin now only saves the profile and prints its summary; otherwise (Linux exit,
+  unloading the DLL) the full teardown runs. Same rule on both systems: never join a thread the system has ended (RESULTS 61).
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
@@ -180,8 +184,6 @@
 - **HIP / ROCm release on Windows**: lists no device without AMD's HIP SDK; untested.
 - **The plugin's CPU kernels are Linux-only**; on Windows the executor uses llama.cpp's own kernels. `--gpu-cache` is not available on Windows (needs `LD_PRELOAD`).
 - Windows speed numbers are from one desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). NVIDIA and Intel GPUs on Windows: untested.
-- `--gpu-cache auto` with llama.cpp's own `--moe-cache-mib` on Vulkan can plan more than ~5.9 GiB, which aborts the load (each cache bank over
-  ~2 GiB); `--gpu-cache` is off by default (T5).
 
 ### Details of earlier entries in this section
 
