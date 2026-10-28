@@ -325,10 +325,12 @@ MEASURED = {
     ("qwen4exp-48x512", 68.0): [(LAPTOP, 24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31"),
                                 (PC, 32, "16 GB GPU", 14.89, 21.94, "RESULTS 59; agent sessions 2.0-2.4x faster, RESULTS 60"),
                                 (PC, 16, "16 GB GPU, --ram 16", None, 20.03, "RESULTS 60: 92 % of the 24 GB speed")],
+    ("qwen4exp-48x512", 66.4): [(PC, 32, "16 GB GPU", 18.41, 22.16, "RESULTS 63 (Q2_0, the recommended file): prompts 2.33x stock")],
+    ("qwen4exp-48x512", 58.4): [(PC, 32, "16 GB GPU, coding agent", None, 21.24, "RESULTS 63 (Coder IQ1_M): agent session 24 % shorter than IQ2_XS")],
     ("qwen4exp-48x512", 76.0): [(PC, 32, "16 GB GPU", 15.14, 19.86, "RESULTS 59")],
     ("qwen4exp-48x512", 83.6): [(PC, 32, "16 GB GPU", 12.92, 17.28, "RESULTS 59")],
     ("qwen35moe-48x256", 36.6): [(LAPTOP, 24, "8 GB GPU", 1.89, 7.7, "RESULTS 45; 9.0 with --fast"),
-                                 (PC, 32, "16 GB GPU", 13.88, 16.13, "RESULTS 59")],
+                                 (PC, 32, "16 GB GPU", 15.95, 19.73, "RESULTS 61 (re-measured; RESULTS 59 had 13.88 / 16.13)")],
     ("qwen35moe-48x256", 44.7): [(LAPTOP, 24, "8 GB GPU", 1.10, 5.7, "RESULTS 45; 6.8 with --fast")],
     ("qwen35moe-48x256", 60.2): [(LAPTOP, 24, "8 GB GPU", 0.91, 3.7, "RESULTS 45; 4.5 with --fast")],
     ("glm5-next-46x288", 101.8): [(LAPTOP, 24, "8 GB GPU", 0.32, 1.75, "RESULTS 26; 2.1 with --fast"),
@@ -344,11 +346,13 @@ def measured(path, size):
         key = model_key(path)
     except Exception:
         return []
-    for (k, gbs), rows in MEASURED.items():
-        if k == key and abs(size / 1e9 - gbs) <= 0.03 * gbs:
-            return [f"{where}, {ram} GB RAM, {what}: " + (f"stock {st} tok/s, " if st is not None else "") + f"moe-cache {mc_} tok/s ({src})"
-                    for where, ram, what, st, mc_, src in rows]
-    return []
+    # the closest size within 3 % (Flash-Next Q2_0 66.4 GB and IQ2_XS 68.0 GB are both within 3 % of each other)
+    near = [(abs(size / 1e9 - gbs), rows) for (k, gbs), rows in MEASURED.items() if k == key and abs(size / 1e9 - gbs) <= 0.03 * gbs]
+    if not near:
+        return []
+    rows = min(near, key=lambda x: x[0])[1]
+    return [f"{where}, {ram} GB RAM, {what}: " + (f"stock {st} tok/s, " if st is not None else "") + f"moe-cache {mc_} tok/s ({src})"
+            for where, ram, what, st, mc_, src in rows]
 
 
 def summary(out, mode="exact", engine="auto"):
