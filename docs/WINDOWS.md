@@ -1,14 +1,14 @@
 # Windows quick start (experimental)
 
 What follows is the set-up that worked on 2026-10-26 on a Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM): identity 4/4 on four models, launcher
-and chat working. Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM, stock llama.cpp is all you need; the plugin
+and chat working; speed numbers updated 2026-10-27 with the file-view cache (RESULTS 59-61). Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM, stock llama.cpp is all you need; the plugin
 helps with models bigger than RAM.
 
 ## 1. What you need
 
 | Piece | What worked | Notes |
 |---|---|---|
-| llama.cpp | the official release zip **b11669, Vulkan** (`llama-b11669-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 = backend API 3. The zip with HIP (ROCm) listed no device on the test PC: it most likely needs AMD's HIP SDK (untested). Use Vulkan |
+| llama.cpp | the official release zip **b11669, Vulkan** (`llama-b11669-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). The zip with HIP (ROCm) listed no device on the test PC: it most likely needs AMD's HIP SDK (untested). Use Vulkan |
 | The plugin | `ggml-moe-cache-api3.dll` (api3 for ggml 0.26/0.27, api2 for 0.25) | from the kit, or build it on Linux: `GGML_API=3 ./build.sh --windows` (mingw-w64) -> `build/win/ggml-moe-cache.dll` |
 | Python 3 | 3.8 or newer, standard library only | run the launcher with `python` |
 | This repository (or the kit with `moe_cache.py`) | `C:\moe-cache` | the launcher needs the `planner\`, `ui\` and `tools\` folders: keep the whole repository |
@@ -78,60 +78,85 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 | Automatic | Why |
 |---|---|
 | Finds the discrete GPU (the planner only knew nvidia-smi and Linux sysfs): reads `llama-server --list-devices` and takes the adapter with the most dedicated VRAM in the registry | otherwise it saw no GPU and kept every expert layer on the CPU; `check` named the built-in iGPU |
-| At the first graph the plugin releases the model-file pages llama.cpp left in llama-server's working set (log: "released N GiB of model-file pages from the working set") and sizes its cache by its private working set | llama.cpp's Windows loader never unmaps the file pages of the GPU tensors, so ~13 GB stayed counted as in use with 12 GPU expert layers and the cache got that much less (RESULTS 56, I37). GPU expert layers are planned as on other GPUs |
+| At the first graph the plugin releases the model-file pages llama.cpp left in llama-server's working set (log: "released N GiB of model-file pages from the working set"); its own cache then lives in read-only views of the model file (file-view cache, no commit) | llama.cpp's Windows loader never unmaps the file pages of the GPU tensors, so ~13 GB stayed counted as in use with 12 GPU expert layers and the cache got that much less (RESULTS 56, I37). GPU expert layers are planned as on other GPUs |
 | Flash-Next (`qwen4exp`) on an AMD Vulkan GPU with a driver older than 32.0.32015.7029 (or an unknown version): `--ctx-checkpoints 0`, with a message | saving a context checkpoint of its recurrent state crashes AMD's Windows Vulkan driver (`amdvlk64.dll` 32.0.23034.4, access violation); stock llama-server crashes the same way, so it is not the plugin. Cost: a conversation cannot jump back to an earlier point (plain continuation still reuses the cache); this matters for agents. **Driver 32.0.32015.7029 (Adrenalin, 2026-10-27) does not crash** (stock llama-server, checkpoints on, chat answered, no crash in the event log), so from that version on the launcher leaves checkpoints on and says so; the launcher reads the version from the registry (`DriverVersion` of the chosen adapter) |
-| `--ram N` becomes a job memory limit on llama-server | the Windows counterpart of the Linux memory limit; logged as "Windows job memory limit" |
+| `--ram N` sizes the cache; a Windows job memory limit on llama-server only with `MOE_CACHE_WIN_VIEW=0` | a job limit caps commit, and Windows commits Vulkan's GPU memory: with the file-view cache (experts use no commit) it only capped llama.cpp's GPU memory and `--ram 16` failed to load. Without the limit `--ram 16` runs at 20.0 tok/s on Flash-Next IQ2_XS, 92 % of `--ram 24` (RESULTS 60) |
 | Pins threads to the performance cores of a hybrid CPU | none needed on the 7950X (`check` says "no hybrid cores: no pinning") |
 | The log line "commit ... failed (Windows error 487), committing page by page" | a handled case, not an error |
 
 ## 6. Known limits
 
-- **Speed on the test PC** (RESULTS 55: apps closed, Windows' file cache flushed before every run, stock-plugin-plugin-stock order, all experts on the CPU):
+- **Speed on the test PC** (RESULTS 59-60, 2026-10-27: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, page file 14 GB, llama.cpp Vulkan ggml 0.27;
+  every run cold (file cache flushed), stock-plugin-plugin-stock order, launcher defaults, decode of a 256-token greedy request). These numbers need the
+  **file-view cache** (the Windows default since 2026-10-27, `MOE_CACHE_WIN_VIEW=0` turns it off): the cache keeps experts in read-only views of the
+  model file, which cost no commit. Before it, Windows charged the cache (and Vulkan's GPU memory) to commit, the cache was held at 8-11 GiB and decode
+  was at or below stock (RESULTS 55, 58).
 
-  | Model | Decode: stock vs plugin | Prefill (about 3.5k-token prompt) |
-  |---|---|---|
-  | Flash-Next IQ2_XS (64 GB) | stock 12.1-16.1, plugin about 12.2 tok/s (about equal) | **2.2x** (120 vs 53-57 tok/s) |
-  | Qwen3.5-122B UD-IQ2_XXS (36.6 GB) | stock about 11-14, plugin about 6.5 tok/s (**about half**; cause under diagnosis) | **1.5-1.6x** (128 vs 80-87) |
-  | GLM-5.3-Flash UD-IQ2_XXS (102 GB) | plugin lower than stock in these runs (small cache: before the I37 fix, 6.9 GB page file); plugin 1.52 -> 2.02 tok/s with a 14 GB page file | about **2.9x**; **numbers to be confirmed** (the clean GLM runs are still going) |
+  | Model | GPU expert layers | Decode: stock | Decode: plugin | Change |
+  |---|---|---|---|---|
+  | Flash-Next IQ2_XS (68 GB) | 12 | 14.89 | **21.94** | +47 % |
+  | Flash-Next IQ3_XXS (76 GB) | 9 | 15.14 | **19.86** | +31 % |
+  | Flash-Next IQ3_S (84 GB) | 7 | 12.92 | **17.28** | +34 % |
+  | Qwen3.5-122B UD-IQ2_XXS (34 GB) | 12 | 13.88 | **16.13** | +16 % |
+  | GLM-5.3-Flash UD-IQ2_XXS (102 GB), one pair | 3 | 2.21 | **4.44**; **6.92 with `--mtp`** | 2.0x; 3.1x |
 
-  What it means for you on Windows with an AMD card: the plugin's gain is **prompt processing** (long prompts, coding agents that send 5-20k tokens per turn): the first turn and follow-ups
-  after a big tool result come back 1.5-3x sooner, and the output is exact. **Decode is limited by RAM** (the cache holds only what fits; a small page file makes it smaller, see below):
-  on models far bigger than RAM expect decode equal to or below stock, not above. If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself).
-  One desktop only; Linux numbers are in the README.
+  Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
+  IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). A later
+  122B series ran at 19.8-20.3 tok/s with the same plugin and launcher (RESULTS 61; cause of the difference not investigated).
+  If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself). One desktop only; Linux numbers are in the README.
+- **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC and method as above). Both files are listed on purpose; pick by what you value:
+
+  | Quant | File size | Plugin decode (tok/s) | Stock decode (tok/s) | Quality, 202 exact-answer tasks |
+  |---|---|---|---|---|
+  | IQ2_XS | 68 GB | **21.9** (+47 %) | 14.9 | 187 / 202 (92.6 %) |
+  | IQ3_XXS | 76 GB | **19.9** (+31 %) | 15.1 | **193 / 202 (95.5 %)** |
+
+  How to choose: IQ3_XXS when accuracy matters and it fits on your disk; IQ2_XS for speed (about 10 % faster, 8 GB smaller). IQ3_XXS leads by about
+  3 points; 10 tasks were right only on IQ3_XXS and 4 only on IQ2_XS, which is a lean, not a proof (paired sign test p about 0.18). Both are faster than
+  stock. Details: RESULTS 59 (decode) and RESULTS 60 (quality).
 - The plugin's own CPU kernels (Q2_0, IQ3_XXS gather, AVX-512) are compiled for Linux only: they need `LD_PRELOAD` symbol interposition, which Windows does not have. On Zen 4 they would
   not help anyway (bit-exact but 0.60-0.77x of llama.cpp's own kernels), which is why they stay off on AMD.
-- `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers.
+- `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers. A path-loading version exists on a branch, but
+  llama.cpp's own GPU expert cache loses on this Vulkan PC (9.7 vs 13.7 tok/s without it) and aborts at load above about 5.9 GiB (RESULTS 59), so it is parked.
 - HIP / ROCm: needs AMD's HIP SDK, untested. Intel GPUs on Windows: untested.
 - The bash wrappers (`moe-cache-server` ...) do not run on Windows: use `python bin\moe_cache.py <command>`.
-- A GLM-class model (102 GB) crashed the plugin in the long-prompt GPU path on the test PC; a fix is committed and still to be confirmed on the PC.
+- GLM-5.3-Flash (102 GB) runs, long-prompt GPU blocks included (3,020-token prompt at 54.8 tok/s, RESULTS 60); the earlier crash in that path is fixed.
+- Run as a normal user (not elevated), Windows may refuse the file-view cache's working-set minimum (error 1314 in the log); the cache still works
+  (21.6 tok/s in that test, RESULTS 61). A normal desktop login has the privilege it needs.
 
 ### Windows: where the RAM goes, and suggestions that do not help
 
 llama.cpp's Windows loader reads the GPU tensors through its mapping of the model file and never unmaps those pages. After loading they stay in
 llama-server's working set, and Windows counts them as in use: 13.3 GB with 12 Flash-Next expert layers on the GPU. It looked like AMD's driver taking RAM
 for VRAM, but it is not: a newer driver changed nothing, and emptying the working set gave the RAM back with GPU memory unchanged (RESULTS 56, I37). The
-plugin releases these pages at the first graph (log: "released N GiB of model-file pages from the working set") and measures itself by its private
-working set. Stock llama-server keeps them.
+plugin releases these pages at the first graph (log: "released N GiB of model-file pages from the working set"). Stock llama-server keeps them.
+The plugin's own cache lives in read-only views of the model file (the file-view cache, default since 2026-10-27): those pages are file-backed, so they
+cost no commit, and a hard working-set minimum keeps them in RAM (log: "working-set minimum N GiB"). When another program needs memory Windows finds it
+elsewhere: with 8 and 14 GB taken by another program the server kept its speed (22.3 before, 23.4-23.7 during) and nothing froze (RESULTS 59).
 
-**Page file.** On Windows every allocation needs commit (RAM plus page file), even if it never leaves RAM. With a small page file the cache reaches the
-commit limit before RAM is full (log: "close to its commit limit"). On the PC, a 6.9 GB page file with 16 GB committed by other programs cut GLM's cache
-from 16.1 to 9.6 GiB; with a 14 GB page file it held 14.9 GiB and decode went from 1.52 to 2.02 tok/s. Let Windows manage the page file, or make it 14 GB or more.
+**Page file.** On Windows every private allocation needs commit (RAM plus page file), even if it never leaves RAM, and Vulkan's GPU allocations are charged
+to commit too (about 24 GB with GLM). The file-view cache needs none, but llama.cpp's own memory does: GLM with `--mtp` left 3.47 GiB of commit free on a
+14 GB page file (RESULTS 60). Before the file view (or with `MOE_CACHE_WIN_VIEW=0`) the cache itself was cut by commit: a 6.9 GB page file cut GLM's cache
+from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (decode 1.52 -> 2.02 tok/s, RESULTS 58). Let Windows manage the page file, or make it 14 GB or more.
 
 | Suggestion often made | What it does here |
 |---|---|
 | `--no-mmap` | loads the whole model into RAM: impossible for a model bigger than RAM |
 | `--mlock` | pins memory so Windows cannot page it out: less RAM for everything else |
-| `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). moe-cache's cache size follows `--ram` (or `MOE_CACHE_SIZE_GIB`); forcing it above the free RAM makes Windows page to disk |
-| "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ...") |
-| q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045, RESULTS 53), so it is part of `--fast`, not the default; the saving on this desktop is being measured (RESULTS 56, R11) |
+| `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). On this Vulkan PC it aborts at load above about 5.9 GiB even without the plugin (each cache bank is one tensor over Vulkan's ~2 GiB buffer limit) and, where it loads, it was slower (RESULTS 59). moe-cache's cache size follows `--ram` (the launcher sets `MOE_CACHE_SIZE_GIB` itself) |
+| "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ..."). With the file-view cache this no longer happens for commit (1 resize per request instead of 226 on IQ3_XXS, RESULTS 59) |
+| q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045, RESULTS 53), so it is part of `--fast`, not the default. Measured on this desktop at context 8192 (RESULTS 60, R11): decode 22.01 vs 22.12 tok/s, a 2,950-token prompt 170.6 vs 164.6: no speed difference; it matters only for memory at long agent contexts |
 | WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |
 
-Still to try (owner's machine): a newer Adrenalin driver, hardware-accelerated GPU scheduling off, the HIP SDK, Linux/RADV on the same PC (RESULTS 56, I37).
+Still to try (owner's machine): the HIP SDK, Linux/RADV on the same PC. A newer Adrenalin driver (32.0.32015.7029) was tried: it fixed the Flash-Next
+checkpoint crash but not the RAM use, which is the loader's (RESULTS 56, I37).
 
 ## 7. Fair stock-vs-plugin timings: empty the file cache first
 
-Stock llama-server reads the model through Windows' file cache, so a run after another run of the same model finds it in RAM; the plugin's unbuffered reads never use that cache.
-Timing stock after a warm-up and the plugin on a cold start compares two different things (on the test PC the plugin's first session ran at 3-5 tok/s against 14-16 for warm stock).
+Stock llama-server reads the model through Windows' file cache, so a run after another run of the same model finds it in RAM. The file-view cache uses the
+same file cache (its evicted pages stay there, which is why a warm restart answers 6 s sooner than stock, RESULTS 60). So a run right after another run of
+the same model is warm for both. Timing one side warm and the other cold compares two different things (before the file view the plugin's cold first
+session ran at 3-5 tok/s against 14-16 for warm stock, RESULTS 54).
 Before **every** timed run (stock and plugin alike) push the model out of the cache by reading other big files:
 
 ```
