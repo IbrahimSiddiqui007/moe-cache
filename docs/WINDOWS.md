@@ -14,6 +14,12 @@ helps with models bigger than RAM.
 | This repository (or the kit with `moe_cache.py`) | `C:\moe-cache` | the launcher needs the `planner\`, `ui\` and `tools\` folders: keep the whole repository |
 | A GGUF model | any MoE model | Windows has no memory-limit scope in the test script: a model bigger than RAM can slow the machine down, so start with one that fits |
 
+**Windows may warn: "unknown publisher".** The kit's DLLs and `.bat` files are not code-signed (a certificate costs money every year; the code is
+open source and the zip is built by GitHub Actions from the tagged commit), so Windows treats the downloaded zip as untrusted. Before you
+extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If SmartScreen still says "Windows protected your PC", click
+**More info** > **Run anyway**. To check that your zip is the one CI built, compare its SHA256 with `SHA256SUMS-windows` on the release page:
+`Get-FileHash moe-cache-vX-windows-x64.zip` in PowerShell (or `gh attestation verify moe-cache-vX-windows-x64.zip -R IbrahimSiddiqui007/moe-cache`).
+
 The launcher finds the DLL by itself when it is `ggml-moe-cache-api3.dll` next to `moe_cache.py` or `build\win*\`; otherwise point to it:
 
 ```
