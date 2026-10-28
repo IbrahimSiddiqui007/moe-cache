@@ -146,6 +146,11 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-p
 | IQ2_XS | 68.0 GB | 21.0 (same day as Q2_0; 21.9 in RESULTS 59) | 253 / 242 | 187 | superseded by Q2_0 (older rows above that say IQ2_XS were measured on IQ2_XS) |
 | IQ3_S | 83.6 GB | 17.3 | - | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |
 
+**Other models (Windows PC, RESULTS 65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
+so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
+57k and 721 at 114k, 190/202 tasks (Flash-Next Q2_0 191, not proven), OpenCode session 47.8 s (the fastest measured). moe-cache forced on it is slower
+(decode 22.1, prompt 329 at 57k): the plugin is for models bigger than memory. DeepSeek V4-Flash: not tested.
+
 Hardware for the other measurements above (not this file table): Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
 
 ## Hardware and OS support
