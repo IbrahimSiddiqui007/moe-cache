@@ -303,7 +303,7 @@ p = subprocess.Popen([sys.executable, "-c", code, os.path.join(ROOT, "bin"), cho
 t_open = None
 while time.time() - t0 < 30 and p.poll() is None:
     try:
-        socket.create_connection(("127.0.0.1", PORT), timeout=1).close(); t_open = time.time() - t0; break
+        socket.create_connection(("127.0.0.1", PORT), timeout=0.1).close(); t_open = time.time() - t0; break
     except OSError:
         time.sleep(0.05)
 check("on-demand: the port accepts while the options are still checked (3 s fake dry run)", t_open is not None and t_open < 2.5, t_open)

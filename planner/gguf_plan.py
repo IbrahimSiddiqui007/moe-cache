@@ -39,10 +39,15 @@ def _skip_value(f, t):
         if it in _FMT:
             _skip(f, n * struct.calcsize(_FMT[it]))
         elif it == 8:
-            if n * 8 > _left(f):
+            # string arrays (the tokenizer: ~150k entries): the file size once, not one fstat per entry (that made a dry run take 16 s on Windows)
+            size = os.fstat(f.fileno()).st_size
+            if n * 8 > size - f.tell():
                 raise ValueError("GGUF header: array past the end of the file")
             for _ in range(n):
-                _skip_value(f, 8)
+                k = struct.unpack("<Q", f.read(8))[0]
+                if k > size - f.tell():
+                    raise ValueError("GGUF header: length past the end of the file")
+                f.seek(k, 1)
         else:          # arrays of arrays: no GGUF writer makes them, and they would recurse as deep as the file says
             raise ValueError(f"GGUF header: array of type {it}")
     else:
@@ -74,8 +79,19 @@ def model_key(path):
     return f"{meta['arch']}-{meta['block_count']}x{meta['expert_count']}"
 
 
+_TENSORS = {}
+
+
 def read_tensors(path):
-    """-> [(name, size_bytes)] for the tensors stored in this one file."""
+    """-> [(name, size_bytes)] for the tensors stored in this one file (kept per file, size and modification time: a launch reads it several times)."""
+    st = os.stat(path)
+    k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+    if k not in _TENSORS:
+        _TENSORS[k] = _read_tensors(path)
+    return list(_TENSORS[k])
+
+
+def _read_tensors(path):
     with open(path, "rb") as f:
         if f.read(4) != b"GGUF":
             raise ValueError("not a GGUF file")
