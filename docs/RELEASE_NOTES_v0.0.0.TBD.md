@@ -62,7 +62,7 @@ These numbers come from one PC. Your speed depends on RAM, the SSD and the GPU. 
 | Agents | `--agent` (65k context, tool calls, warm sessions after a restart), `connect opencode\|hermes --write`. **`on-demand`**: an always-on listener that starts the model at the first request and stops it after 15 idle minutes, with **several models** (`--add`; the request's model picks one, one runs at a time) and start at login |
 | Control page | `moe-cache.bat` (Windows) or `moe-cache-server --ui`: a **three-pane** page: chats, agent sessions and models on the left, its own chat in the middle, live speed, cache, RAM/VRAM, warnings and the log on the right. It says why it runs stock or moe-cache, and the Quick benchmark compares both on your PC in one click |
 | Speed options | Flash-Next Q2_0 is the recommended file (above). `--mtp` on GLM-5.3-Flash now works with the cache (3.1x stock on chat). `--fast=2` for memory far below the model size; starter usage profiles for Flash-Next, GLM-5.3-Flash, Qwen3.5-122B and Qwen3.6 |
-| Q2_0 kernel | An exact Q2_0 kernel for the plugin's executor, bit-identical to llama.cpp's own (#30447), now on Linux and Windows alike (same rule on both: at start the plugin checks llama.cpp's Q2_0 function bit for bit and uses the matching kernel, or leaves it alone). No speed change at default settings (bandwidth-bound) |
+| Executor kernels | The plugin's Q2_0 and IQ3_XXS executor kernels now run on Windows x86-64 too, bit-identical. The Q2_0 one matches llama.cpp's own AVX2 function (#30447) bit for bit (same rule on both systems: at start the plugin checks llama.cpp's Q2_0 function bit for bit and uses the matching kernel, or leaves it alone). No speed change at default settings (bandwidth-bound) |
 | Quality | 202 exact-answer tasks (`tools/quality_tasks.json`): Flash-Next IQ3_XXS 193 right, IQ3_S 192, Q2_0 191, Coder IQ1_M 189, IQ2_XS 187 (differences not statistically proven) |
 | CI | The Windows runner unzips the kit and runs `check --run` and `on-demand` from it, as a user would. Releases are published only after identity and Windows CI passed on the tagged commit |
 
@@ -76,5 +76,5 @@ Full list: [CHANGELOG.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/m
 | Page file | keep it system-managed or 14 GB or more: the cache costs nothing there now, but Vulkan's GPU memory does |
 | Working-set privilege | the hard minimum that keeps experts in RAM needs SeIncreaseWorkingSetPrivilege (a normal desktop login has it); without it the cache still runs at full speed, but Windows may trim it under memory pressure |
 | Flash-Next on AMD, driver older than 32.0.32015.7029 | context checkpoints are off (the driver crashes); update Adrenalin |
-| Plugin's LD_PRELOAD kernels (IQ3_XXS gather, AVX-512), `--gpu-cache` | Linux only (they need `LD_PRELOAD`) |
+| Replacing llama.cpp's own CPU functions outside the executor, `--gpu-cache` | Linux only (they need `LD_PRELOAD`); the executor's Q2_0 and IQ3_XXS kernels run on Windows too |
 | HIP / ROCm on Windows | untested |
