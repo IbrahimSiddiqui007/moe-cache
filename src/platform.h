@@ -356,6 +356,25 @@ inline const char * file_view_map(const char * path, size_t * size) {
         *size = (size_t) sz.QuadPart;
     }
     return (const char *) v;
+#elif defined(__linux__)
+    // Linux (the default; MOE_CACHE_LINUX_VIEW=0 turns it off): a shared read-only mapping. Not MADV_RANDOM: since Linux 6.3 reclaim ignores the accessed
+    // bits of VM_RAND_READ mappings (vma_has_recency), so the resident experts looked unused and were reclaimed at the cgroup limit (laptop
+    // 2026-10-27, Qwen3.6 at 10 GB: 2.97 M major faults during compute, 3.4-4.0 vs 11.5 tok/s)
+    const int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return nullptr;
+    }
+    struct stat st;
+    void * v = fstat(fd, &st) == 0 && st.st_size > 0 ? mmap(nullptr, (size_t) st.st_size, PROT_READ, MAP_SHARED, fd, 0) : MAP_FAILED;
+    close(fd);             // the mapping keeps the file open
+    if (v == MAP_FAILED) {
+        return nullptr;
+    }
+    if (getenv("MOE_CACHE_LINUX_VIEW_RANDOM")) {
+        madvise(v, (size_t) st.st_size, MADV_RANDOM);      // A/B only: the first prototype's setting
+    }
+    *size = (size_t) st.st_size;
+    return (const char *) v;
 #else
     (void) path; (void) size;
     return nullptr;
@@ -379,6 +398,24 @@ inline void file_view_load(const char * p, size_t n) {
     }
     sum += (unsigned char) *(volatile const char *) p + (unsigned char) *(volatile const char *) (p + n - 1);
     (void) sum;
+#elif defined(__linux__)
+    if (n == 0) {
+        return;
+    }
+    // one large read-ahead of the whole expert (MADV_WILLNEED), then map every page into this process (MADV_POPULATE_READ waits for the reads;
+    // a touch per page where the kernel lacks it)
+    const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + n + 4095) / 4096 * 4096;
+    madvise((void *) a, b - a, MADV_WILLNEED);
+#ifndef MADV_POPULATE_READ
+#define MADV_POPULATE_READ 22
+#endif
+    if (madvise((void *) a, b - a, MADV_POPULATE_READ) != 0) {
+        unsigned sum = 0;
+        for (uintptr_t o = a; o < b; o += 4096) {
+            sum += (unsigned char) *(volatile const char *) o;
+        }
+        (void) sum;
+    }
 #else
     (void) p; (void) n;
 #endif
@@ -388,6 +425,14 @@ inline void file_view_drop(const void * p, size_t n) {
 #ifdef _WIN32
     if (n) {
         VirtualUnlock((void *) p, n);      // on pages that are not locked this releases them from the working set (fails with ERROR_NOT_LOCKED: intended)
+    }
+#elif defined(__linux__)
+    // Linux: unmap the pages from this process (they stay in the page cache, clean, first in line for reclaim: MADV_COLD moves them to the
+    // inactive list before the unmap). MOE_CACHE_LINUX_VIEW_DROP=pageout drops them from the page cache at once instead
+    if (n) {
+        static const bool pageout = getenv("MOE_CACHE_LINUX_VIEW_DROP") && strcmp(getenv("MOE_CACHE_LINUX_VIEW_DROP"), "pageout") == 0;
+        madvise((void *) p, n, pageout ? MADV_PAGEOUT : MADV_COLD);
+        madvise((void *) p, n, MADV_DONTNEED);
     }
 #else
     (void) p; (void) n;

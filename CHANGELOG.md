@@ -79,6 +79,8 @@
   within 1 MiB of llama-server at 256k: 6144 + 1536 + 450 MiB), compute buffers at 256k (512: 1403, 1024: 2983 MiB). -ub 2048 is not planned
   at 128k+ (slower than 1024 on long prompts). At 256k on 16 GB, -ub 1024 does not fit next to the long-prompt block's reserve, so 512 stays
   until a PC ABBA compares the two (N29).
+- **Linux: the expert cache lives in read-only mappings of the model file too** (as on Windows): steady decode +4.7 % in every pair, the first
+  request +49 % (page-cache read-ahead loads faster than the private O_DIRECT reads), tokens identical (RESULTS 66). `MOE_CACHE_LINUX_VIEW=0` goes back.
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
