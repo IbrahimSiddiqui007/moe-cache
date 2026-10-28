@@ -393,6 +393,17 @@ inline void file_view_drop(const void * p, size_t n) {
     (void) p; (void) n;
 #endif
 }
+// true while the process is exiting and the system has already ended every other thread (Windows: DLL detach inside ExitProcess). Linux runs
+// static destructors at exit while the threads are still alive, so there it is always false
+inline bool process_exiting() {
+#ifdef _WIN32
+    typedef BOOLEAN (WINAPI * fn_t)(void);
+    static const fn_t f = (fn_t) (void *) GetProcAddress(GetModuleHandleA("ntdll.dll"), "RtlDllShutdownInProgress");
+    return f && f();
+#else
+    return false;
+#endif
+}
 // idle release (N3): drop the hard working-set minimum and empty the working set; file-view pages move to the standby list (still in RAM).
 // The same two calls as the PC measurement (C:\dl\pc_n3.ps1); no-op on Linux
 inline void ws_release() {

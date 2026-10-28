@@ -336,7 +336,13 @@
 #endif
     }
 
+    // normal teardown (the threads are alive: Linux exit, a Windows FreeLibrary without exit): stop and join them, then save and report
     ~state_t() {
+        stop_threads();
+        finish();
+    }
+
+    void stop_threads() {
         {
             std::lock_guard<std::mutex> lk(rq_mu);
             rq_stop = true;
@@ -391,9 +397,6 @@
             g_idle_event = nullptr;
         }
 #endif
-        if (trace_f) {
-            fclose(trace_f);
-        }
         {
             std::lock_guard<std::mutex> lk(pf_mu);
             pf_stop = true;
@@ -409,6 +412,13 @@
         wcv.notify_all();
         for (auto & t : workers) {
             t.join();
+        }
+    }
+
+    // the profile save and the summary lines (no thread is needed for either)
+    void finish() {
+        if (trace_f) {
+            fclose(trace_f);
         }
         if (cache_on) {
             save_profile();
@@ -479,6 +489,19 @@
                     (unsigned long long) graphs, (unsigned long long) groups, (unsigned long long) ops, (unsigned long long) h, (unsigned long long) m,
                     h + m ? 100.0 * h / (h + m) : 0.0, bytes / 1e6, (unsigned long long) evictions, resident_bytes / (double) (1u << 30),
                     auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows)).c_str() : "");
+        }
+    }
+
+    // process exit on Windows: ExitProcess has already ended every other thread before the DLL detach runs this, so a lock may be held by a dead
+    // thread and a condition variable may wait for dead waiters (llama-perplexity hung at exit forever, PC 2026-10-28, code-audit row 32). No
+    // lock, notify or join: save the profile when nothing holds `mu`, report, and leave the state allocated (its threads and mutexes cannot be
+    // destroyed safely). Linux never takes this path: its exit runs the destructor while the threads are alive
+    void exit_without_threads() {
+        if (mu.try_lock()) {
+            mu.unlock();
+            finish();
+        } else if (trace_f) {
+            fclose(trace_f);
         }
     }
 

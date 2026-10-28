@@ -690,9 +690,23 @@ struct state_t {
 #include "mc_state_lru.inl"
 };
 
+// The state lives on the heap; a static guard ends it at exit. Normally (threads alive) it is deleted: threads joined, profile saved. When the
+// process is exiting on Windows, the other threads are already gone and the state is only asked to save and report (see exit_without_threads).
+struct state_exit_t {
+    state_t * s;
+    ~state_exit_t() {
+        if (plat::process_exiting()) {
+            s->exit_without_threads();
+        } else {
+            delete s;
+        }
+    }
+};
+
 state_t & S() {
-    static state_t s;
-    return s;
+    static state_t * s = new state_t;
+    static state_exit_t guard{ s };
+    return *s;
 }
 
 #ifdef _WIN32
