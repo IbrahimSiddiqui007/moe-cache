@@ -113,7 +113,31 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         </tbody>
       </table>
     </div>
-    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM is a single cold pair. Every model here is bigger than the free RAM once the GPU and Windows have taken their share. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin's decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
+    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM is a single cold pair. Every model here is bigger than the free RAM once the GPU and Windows have taken their share. Since experimental 29addb9 the executor works in 128-row chunks: Flash-Next Q2_0 decode +3.9 % in every ABBA pair (23.4 → 24.3 tok/s), text identical (RESULTS 64 addendum); the rows here were measured before. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin's decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
+  </section>
+
+  <section>
+    <h2>Long context (64k–256k)</h2>
+    <p>Agent mode (<code>--agent --ctx N</code>), a real 63.5k-token text fed in chunks, decode of 128 tokens at that depth. <b>One cold run per point</b> (not ABBA), Steam running on the PC.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Model, context setting</th><th class="n">prefill tok/s<br>at 4–21k / 53–63k</th><th class="n">decode tok/s<br>at 4k</th><th class="n">decode tok/s<br>at 63.5k</th><th class="n">deeper</th></tr></thead>
+        <tbody>
+          <tr><td><b>Flash-Next Q2_0, moe-cache</b>, 64k</td><td class="n"><b>266 / 195</b></td><td class="n">22.89</td><td class="n"><b>20.65</b></td><td class="n">–</td></tr>
+          <tr><td>Flash-Next Q2_0, stock, 64k</td><td class="n">171 / 106</td><td class="n">21.38</td><td class="n">16.83</td><td class="n">–</td></tr>
+          <tr><td>Flash-Next Q2_0, moe-cache, 256k setting</td><td class="n">142 / 111</td><td class="n">18.52</td><td class="n">–</td><td class="n">15.93 at 138k</td></tr>
+          <tr><td>Qwen3.5-122B, moe-cache, 64k</td><td class="n">266 / 217</td><td class="n">19.69</td><td class="n">17.26</td><td class="n">–</td></tr>
+          <tr><td>Qwen3.6-35B, stock (fits), 64k</td><td class="n">848 / 739</td><td class="n">67.21</td><td class="n">59.09</td><td class="n">–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><b>At 64k, Flash-Next with moe-cache</b> reads the whole 63.5k prompt 1.8× faster than stock (about 289 vs 525 s) and decodes 23 % faster at that depth (20.65 vs 16.83 tok/s).</li>
+      <li><b>The 256k setting is slower today:</b> the planner moves every expert layer to the CPU and uses <code>-ub 512</code>, so prefill is about half and decode at 4k is 19 % lower than at the 64k setting. A planner fix is in progress; not measured yet.</li>
+      <li>Decode falls 10–14 % with depth on every model (attention), with the plugin's hit rate still 95–97 %.</li>
+      <li>Saving the agent's conversation at 64k blocks the server for 1.7–2.4 s (5.5 s at 138k). At the 256k setting one decode after a save did not finish (under investigation).</li>
+      <li>Not run yet: Qwen3.6 and the 122B at 256k, the 122B stock at 64k. Source: RESULTS 64.</li>
+    </ul>
   </section>
 
   <section>

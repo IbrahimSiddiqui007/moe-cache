@@ -127,6 +127,10 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   than on IQ2_XS (+47 %); the prompt gain is what agent sessions wait on.
   The Q2_0 numbers above were measured before the plugin's exact Q2_0 executor kernel came to Windows; with it the PC's Q2_0 decode is unchanged
   (22.2-22.7 tok/s, RESULTS 63 addendum).
+- **Long context (Windows PC, RESULTS 64; agent mode, one cold run per point, not ABBA).** Flash-Next Q2_0 at a 64k setting: moe-cache reads a 63.5k-token
+  prompt 1.8x faster than stock (about 289 vs 525 s; prefill 266 / 195 tok/s at 4-21k / 53-63k vs 171 / 106) and decodes 20.7 vs 16.8 tok/s at that depth
+  (+23 %). Qwen3.5-122B with moe-cache at 64k: prefill 266 / 217, decode 17.3 at 63.5k. Qwen3.6 (fits, stock): 848 / 739, decode 59.1. At the 256k setting the
+  planner puts every expert layer on the CPU (`-ub 512`): Flash-Next prefill about half (142 tok/s) and decode 18.5 at 4k, 15.9 at 138k; a planner fix is in progress.
 - **Other models (Windows PC, RESULTS 65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
   so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
   57k and 721 at 114k, 190/202 tasks (Flash-Next Q2_0 191, not proven), OpenCode session 47.8 s (the fastest measured). moe-cache forced on it is slower
