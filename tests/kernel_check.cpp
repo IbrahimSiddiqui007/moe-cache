@@ -15,8 +15,9 @@
 
 using dot_fn = void (*)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
 
-// llama.cpp's generic loop, written out; the compiled library fuses the two multiply-adds, so this does too
-static void ref_loop(int n, float * s, size_t, const void * vx, size_t, const void * vy, size_t, int) {
+// llama.cpp's generic loop, written out; the compiled library fuses the two multiply-adds, so this does too. target("fma"): the fused multiply-add
+// instruction, not the C runtime's fmaf (Windows CI's UCRT fmaf is not exactly fused: half the trials differed from every kernel by the same count)
+__attribute__((target("fma"))) static void ref_loop(int n, float * s, size_t, const void * vx, size_t, const void * vy, size_t, int) {
     const fastk::block_q2_0 * x = (const fastk::block_q2_0 *) vx;
     const fastk::block_q8_0 * y = (const fastk::block_q8_0 *) vy;
     float sumf = 0.0f;
