@@ -159,7 +159,7 @@
   full speed, but Windows may trim cached experts under memory pressure.
 - **Flash-Next on AMD under Windows runs without context checkpoints with drivers older than 32.0.32015.7029** (driver crash, above).
 - **HIP / ROCm release on Windows**: lists no device without AMD's HIP SDK; untested.
-- **The plugin's CPU kernels are Linux-only**; on Windows the executor uses llama.cpp's own kernels. `--gpu-cache` is not available on Windows (needs `LD_PRELOAD`).
+- **The plugin's LD_PRELOAD kernel overrides (IQ3_XXS gather, AVX-512) are Linux-only**; the executor's exact Q2_0 kernels run on Linux and Windows. `--gpu-cache` is not available on Windows (needs `LD_PRELOAD`).
 - Windows speed numbers are from one desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). NVIDIA and Intel GPUs on Windows: untested.
 
 ### Details of earlier entries in this section

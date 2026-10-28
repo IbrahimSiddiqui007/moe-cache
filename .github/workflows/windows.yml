@@ -55,7 +55,7 @@ jobs:
             build/win/kernel_check.exe
       - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
         run: tools/make_windows_kit.sh 0.0.0-ci
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: win-kit
           path: |
@@ -75,7 +75,7 @@ jobs:
         with:
           name: win-dll
           path: dll
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: win-kit
           path: kitzip
