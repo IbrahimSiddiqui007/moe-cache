@@ -1343,9 +1343,23 @@ def server(argv):
     return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
 
 
+def warm_save_wait(n_tokens, last_tokens, bytes_per_token, poll=10, idle_polls=2, per_gb=20, small_wait=180, small_per_gb=30, small_cap=600):
+    """Idea N27: seconds a slot must stay unchanged before warm_keeper saves it. A save rewrites the whole slot (~7 GB at 256k on Flash-Next) and
+    llama-server serves nothing else while it writes, so the bigger the file, the longer the wait (20 s + 20 s per GB). A slot that only grew a little
+    since its last save (less than max(4096 tokens, a quarter)) waits much longer (180 s + 30 s per GB, at most 10 min): the file on disk is an older
+    prefix of the same conversation, which a restore picks up exactly (llama-server processes only the tokens after it). A new or shorter
+    conversation counts as a big change. bytes_per_token comes from the last save (None before the first: the plain 20 s)."""
+    gb = n_tokens * bytes_per_token / 1e9 if bytes_per_token else 0.0
+    base = poll * idle_polls
+    if last_tokens is None or n_tokens < last_tokens or n_tokens - last_tokens >= max(4096, last_tokens // 4):
+        return base + per_gb * gb
+    return min(small_wait + small_per_gb * gb, small_cap)
+
+
 def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2048, keep=2):
     """Ideas I29 / I34: at start, restore the saved conversations (one file per slot, at most `keep`, longest first) into the slots they came from; afterwards
-    save every idle slot of min_tokens or more (with its context checkpoints) once it has been unchanged for idle_polls polls. Each agent keeps
+    save every idle slot of min_tokens or more (with its context checkpoints) once it has been unchanged for warm_save_wait() seconds (N27: longer for
+    big files and for small changes). Each agent keeps
     its own slot (llama-server picks the slot whose prompt matches best), so Hermes and OpenCode both start warm after a restart. Saves go to a
     temporary name first, so a stop during a save never leaves a broken file. When the shared KV pool fills, llama-server clears idle slots itself."""
     url = f"http://127.0.0.1:{port}"
@@ -1355,6 +1369,8 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
         time.sleep(1)
     else:
         return
+    saved_tokens = {}           # slot -> token count of its file on disk (N27)
+    bytes_per_token = None      # from the last save or restore (file size / tokens); sets the waits of warm_save_wait()
     files = [f for f in glob.glob(os.path.join(slotdir, tag + "-s*.bin")) if re.search(r"-s(\d+)\.bin$", f) and not f.endswith(".new.bin")]
     for f in sorted(files, key=os.path.getsize, reverse=True)[:keep]:
         to = int(re.search(r"-s(\d+)\.bin$", f).group(1))      # back into the slot it came from, so later saves replace this file
@@ -1364,6 +1380,9 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             n = json.loads(body).get("n_restored") if st == 200 else None
         except ValueError:
             n = None
+        if n:
+            saved_tokens[to] = n     # the file on disk holds n tokens: the slot's next save is judged against it (N27)
+            bytes_per_token = os.path.getsize(f) / n
         say(f"moe-cache: warm session: restored a saved agent conversation ({n} tokens) into slot {to} in {time.time() - t0:.1f} s" if st == 200
             else f"moe-cache: warm session: could not restore {os.path.basename(f)} (HTTP {st}): {body[:160]}", err=True)
     saved, seen, tries = {}, {}, {}
@@ -1387,7 +1406,10 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             sid = x["id"]
             key = (x.get("id_task"), x.get("n_prompt_tokens"))
             seen[(sid, key)] = seen.get((sid, key), 0) + 1
-            if saved.get(sid) == key or seen[(sid, key)] < idle_polls:
+            if saved.get(sid) == key:
+                continue
+            wait = warm_save_wait(x["n_prompt_tokens"], saved_tokens.get(sid), bytes_per_token, poll, idle_polls)
+            if seen[(sid, key)] * poll < wait:
                 continue
             fname, tmp = f"{tag}-s{sid}.bin", f"{tag}-s{sid}.new.bin"
             t0 = time.time()
@@ -1401,6 +1423,8 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
             try:
                 os.replace(os.path.join(slotdir, tmp), os.path.join(slotdir, fname))
                 saved[sid] = key       # only a save that really landed counts (a failed one is tried again at the next idle moment)
+                saved_tokens[sid] = x["n_prompt_tokens"]
+                bytes_per_token = os.path.getsize(os.path.join(slotdir, fname)) / x["n_prompt_tokens"]
                 say(f"moe-cache: warm session: saved slot {sid} ({x.get('n_prompt_tokens')} tokens, "
                     f"{os.path.getsize(os.path.join(slotdir, fname)) / 1e6:.0f} MB) in {time.time() - t0:.1f} s", err=True)
             except OSError as e:
