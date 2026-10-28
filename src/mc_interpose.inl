@@ -10,46 +10,7 @@
 #include "fast_q2_0.h"
 extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc);
 
-// llama.cpp got its own SIMD Q2_0 kernel (master, ggml-org/llama.cpp#30447): it is faster than ours (96 vs 126-238 ns per 2560-weight dot) and adds up
-// in another order, so replacing it would make Q2_0 models slower and no longer identical to stock. Compare the library's function with the plain C
-// loop (which our kernels reproduce bit for bit) once; any difference means the library has its own kernel, and ours stay out.
-bool q2_0_library_is_plain() {
-    static const bool plain = [] {
-        typedef void (*fn_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
-        fn_t lib = (fn_t) dlsym(RTLD_NEXT, "ggml_vec_dot_q2_0_q8_0");             // preloaded: llama.cpp's own symbol behind ours
-        if (!lib || lib == (fn_t) &ggml_vec_dot_q2_0_q8_0) {
-            const ggml_type_traits_cpu * tt = cpu_traits(GGML_TYPE_Q2_0);         // loaded as a backend: the library's table is not replaced
-            lib = tt && (fn_t) tt->vec_dot != (fn_t) &ggml_vec_dot_q2_0_q8_0 ? (fn_t) tt->vec_dot : nullptr;
-        }
-        if (!lib) {
-            return true;                  // nothing to compare with: keep the measured behaviour of the supported versions
-        }
-        const int n = 64 * 40;
-        std::vector<fastk::block_q2_0> x((size_t) n / 64);
-        std::vector<fastk::block_q8_0> y((size_t) n / 32);
-        uint32_t r = 12345;
-        auto rnd = [&]() { r = r * 1664525u + 1013904223u; return r >> 8; };
-        for (int trial = 0; trial < 64; trial++) {
-            for (auto & b : x) {
-                b.d = (uint16_t) (0x2000 + rnd() % 0x2000);
-                for (auto & q : b.qs) q = (uint8_t) rnd();
-            }
-            for (auto & b : y) {
-                b.d = (uint16_t) (0x2000 + rnd() % 0x2000);
-                for (auto & q : b.qs) q = (int8_t) (rnd() % 255 - 127);
-            }
-            float a = 0.0f, b = 0.0f;
-            lib(n, &a, 0, x.data(), 0, y.data(), 0, 1);
-            fastk::vec_dot_q2_0_q8_0_avx2<true>(n, &b, x.data(), y.data());
-            if (memcmp(&a, &b, sizeof(float)) != 0) {
-                fprintf(stderr, "moe-cache: this llama.cpp has its own Q2_0 kernel (results differ from the plain C loop): using it instead of the plugin's\n");
-                return false;
-            }
-        }
-        return true;
-    }();
-    return plain;
-}
+bool q2_0_library_is_plain();   // mc_exec.inl
 
 extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     typedef void (*fn_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);

@@ -54,6 +54,12 @@
   Vulkan refuses a tensor over the device's limit (maxBufferSize / maxStorageBufferRange), which aborted the load ("pre-allocated tensor (moe_cache.0...)",
   PC: `auto` planned 8909 MiB, the limit allowed about 7700). The launcher reads the limit from the Vulkan driver (Linux and Windows) and works out
   the largest size from the model's expert layout (planner/gguf_plan.py gpu_cache_cap_mib).
+- **Q2_0 on current llama.cpp (b11669, master), Linux and Windows: an exact faster kernel** (idea N20). llama.cpp now has its own AVX2 Q2_0 dot
+  (#30447), so the plugin's old kernels (exact to the plain C loop of older pins) stepped aside. The executor now has a version with the same
+  integer lanes and multiply-add order as #30447 that takes the activation's lane sums from a column prepared once instead of in every row's dot
+  (1.25x per dot, bit-identical). At start the plugin compares the CPU library's Q2_0 function bit for bit with the plain loop and with #30447 and
+  uses the matching kernel, or leaves llama.cpp's alone. The executor kernels were fenced to Linux with the LD_PRELOAD override (which stays
+  Linux-only); they now run on Windows too. Windows CI checks the kernels as built for Windows (tests/kernel_check.cpp).
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 

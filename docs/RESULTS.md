@@ -2518,3 +2518,22 @@ More than 10 % apart, so no ABBA (owner's rule). Its server took ~150 s to come 
 | IQ3_S | 83.6 | R59: 17.28 | - | 192 | | -2.6 tok/s (-13 %), -1 task | **not worth it**: slower and bigger than IQ3_XXS for no gain (rule needed +5 tasks) |
 | Coder IQ1_M | 58.4 | 21.24 (agent) | - | 189 | agent session -24 % | -4 tasks (not proven) | **worth it for coding agents only** (half the experts; general knowledge not checked beyond these tasks) |
 | UD-IQ4_XS / UD-Q4_K_XL | 93.7 / 111.3 | not run | | | | | dropped (desk: under ~14 tok/s, little room to gain on this set) |
+
+**Addendum (session fixes, 2026-10-28 evening): N20 exact faster Q2_0 kernel, and N20b executor forced.** llama.cpp b11669 and master have their
+own AVX2 Q2_0 dot (#30447), so the plugin's old kernels (exact to the plain C loop) stepped aside, on Linux too. claude/q2_0-windows adds a
+kernel with #30447's integer lanes and multiply-add order that takes the activation's lane sums from a column prepared once (idea-scout's
+prototype): bit-identical, 1.25x per dot in cache (tests/kernel_check.cpp: 0 mismatches in 21,000 trials). At start the plugin compares the
+CPU library's Q2_0 function with the plain loop and with a #30447 copy and uses the matching kernel (PC: "#30447", column-sum kernel chosen);
+the executor kernels now run on Windows too (only the LD_PRELOAD override stays Linux-only). PC, Flash-Next Q2_0 on D:, cold, launcher defaults:
+
+| Run (mirrored) | water decode tok/s | code decode tok/s | 3k prompt tok/s |
+|---|---|---|---|
+| old DLL (experimental 8cc6c7c) | 22.54, 22.53 | 22.85, 22.97 | 282.0, 285.7 |
+| new DLL (column-sum kernel) | 22.15, 22.32 | 22.63, 22.66 | 284.4, 272.7 |
+| new DLL, executor default (MOE_CACHE_EXEC=1) | 22.66, 22.35 | 22.93, 22.80 | 285.9, 276.3 |
+| new DLL, executor forced (MOE_CACHE_EXEC=2) | 22.34, 22.40 | 22.77, 22.70 | 276.3, 284.0 |
+
+Text identical in all pairs (temperature 0); `MOE_CACHE_EXEC_CHECK=1`: 0 mismatches in 55,404 executor ops. The executor ran the same 55,404
+ops with and without forcing, so it already computes the decode expert ops; the faster kernel shows no gain because decode's expert dots
+stream their weights from RAM (bandwidth-bound) while the 1.25x was measured with data in cache. **Verdict: N20 kept (exact, same rule on
+Linux and Windows, no speed change on the PC); N20b killed (forcing the executor changes nothing).**
