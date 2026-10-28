@@ -249,7 +249,7 @@ jobs:
           # routing on with every pick kept (exact): an explicit routing mode keeps the executor for K-quant/legacy weights, so its graphs
           # load siblings in the background and then step aside to llama.cpp while those loads are still running. 8 MiB: a gate call's experts
           # plus their up/down siblings (~2.6 MB at ~213 KB each) must fit, else the siblings are skipped and the next call reads instead of stepping aside
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99 MOE_CACHE_LINUX_VIEW=0"   # private memory: with the file view a stepped-aside op reads the mapped file, so there is no race to wait for
           IDENT_EXTRA: "--no-repack"
           IDENT_KEEP: ident_gptoss_q8
         run: |
@@ -261,7 +261,7 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build-mutant/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.008 MOE_CACHE_TEST_READ_DELAY_US=2000 MOE_CACHE_ROUTE=skip MOE_CACHE_ROUTE_KEEP=99 MOE_CACHE_LINUX_VIEW=0"   # private memory: with the file view a stepped-aside op reads the mapped file, so there is no race to wait for
           IDENT_EXTRA: "--no-repack"
         run: |
           if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
