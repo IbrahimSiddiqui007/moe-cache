@@ -2542,3 +2542,34 @@ Text identical in all pairs (temperature 0); `MOE_CACHE_EXEC_CHECK=1`: 0 mismatc
 ops with and without forcing, so it already computes the decode expert ops; the faster kernel shows no gain because decode's expert dots
 stream their weights from RAM (bandwidth-bound) while the 1.25x was measured with data in cache. **Verdict: N20 kept (exact, same rule on
 Linux and Windows, no speed change on the PC); N20b killed (forcing the executor changes nothing).**
+
+## 65. New models on the Windows PC (pc-glm, 2026-10-28 evening): Nemotron 3.5 Bolt 74B-A9B; DeepSeek V4-Flash (desk only)
+
+Picks from quant-research (handover/parts/model-research.md); owner: "see what's the realistic performance we can get with these", minimal
+testing, one cold run per point. Same PC (7950X, RX 9070 XT 16 GB, 32 GB). Nemotron needs a llama.cpp newer than the PC's 620d2225c (tokenizer
+fix #30960): official release **b11966** (ff0d396e3, Vulkan x64 zip, sha256 977dc456... = the release digest) in C:\llama-new. The moe-cache
+DLL 681f3bc loads into b11966's ggml (backend API 3; 100 % cache hits when forced). Text checked: normal English and working code.
+
+**Nemotron 3.5 Bolt 74B-A9B** (nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF, NVIDIA's 2-bit QAT file, 22.0 GB, sha256 91d63363... = LFS oid;
+C:\models). It fits in RAM + VRAM, so the launcher runs **stock** llama-server by default (the plugin only for models bigger than memory).
+| Point (cold, launcher default = stock unless marked) | prompt | prompt tok/s | decode tok/s |
+|---|---|---|---|
+| water 256 / code 192 (ctx 64k) | short | - | 27.91 / 28.11 |
+| ~57k-token prompt + 128 tokens (`--ctx 65536`) | 56,661 | **595.4** (95 s) | 27.79 at that depth |
+| same, plugin forced (`--always-plugin`) | 56,661 | 329.0 (172 s) | 22.12 (water 22.82) |
+| ~114k-token prompt + 128 tokens (`--ctx 131072`) | 113,932 | **720.8** (158 s) | 24.85 at that depth (water 25.41) |
+| ~228k-token prompt + 128 tokens (`--ctx 262144`) | 227,709 | 279.6 (814 s) | 23.22 at that depth (water 25.82) |
+
+| Nemotron, other measures | Result |
+|---|---|
+| 202 tasks (launcher default, `--no-think`, cap 128) | **190 / 202** (Q2_0 191: 8 / 9 changed, p 1.00; IQ3_XXS 193: p 0.58); 0 truncated answers. Took 701 s (Q2_0 169 s): ~3.5 s per short request, not investigated |
+| OpenCode agent replay, stock (= launcher default), cold | **47.75 s** (first token 18.3 s, follow-up 1.53 s, decode 28.4) vs Flash-Next IQ2_XS 73.4 s (RESULTS 60), Coder IQ1_M 55.5 s (RESULTS 63) |
+| same, plugin forced (agent_bench_pair's "mc" kind) | 59.17 s (first token 25.2 s, decode 24.2) |
+
+**DeepSeek V4-Flash-0731 UD-IQ2_XXS (90.9 GB): desk only, not downloaded** (main session: its predicted 7-9 tok/s decode and 50-90 tok/s prefill,
+i.e. a 12-20 min first turn at 64k, are useless for agents). Runs on 620d2225c; KV 1.8 GB at 256k (quant-research's estimate, not measured).
+
+**Verdict.** Nemotron 3.5 Bolt is **worth it**: against Flash-Next Q2_0 (the default) it decodes +26 % (27.9 vs 22.2), reads long prompts about
+2x faster (595 tok/s at 57k vs 287 at 34k) and keeps 23-25 tok/s at 114k-228k, the 202 tasks are equal (190 vs 191), and an OpenCode session is
+the fastest measured (47.8 s). It fits in RAM + VRAM, so moe-cache adds nothing here (forced plugin: -18 % decode, -45 % prompt) and the
+launcher's default (stock) is right. Needs llama.cpp newer than 620d2225c (b11966 used). General knowledge beyond the 202 tasks not checked.
