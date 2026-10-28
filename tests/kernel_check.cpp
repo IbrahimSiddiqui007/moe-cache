@@ -66,8 +66,8 @@ int main(int argc, char ** argv) {
         printf("half -> float: %ld of 65536 values differ from the hardware conversion\n", bad);
     }
     std::mt19937_64 rng(12345);
-    long bad_fma = 0, bad_nofma = 0, bad_perm = 0, total = 0;
-    for (int n : { 64, 128, 640, 2560, 4096, 12288 }) {
+    long bad_fma = 0, bad_nofma = 0, bad_perm = 0, bad_ys = 0, bad_up_ref = 0, total = 0;
+    for (int n : { 64, 128, 192, 640, 2560, 4096, 12288 }) {      // 192: an odd block count (the tail of upstream's two-accumulator loop)
         const int nb = n / 64;
         std::vector<fastk::block_q2_0> x(nb);
         std::vector<fastk::block_q8_0> y(nb * 2);
@@ -83,6 +83,14 @@ int main(int argc, char ** argv) {
                 fastk::vec_dot_q2_0_perm_avx2(n, &pm, 0, x.data(), 0, yp.data(), 0, 1);
                 uint32_t ri2, pi2; memcpy(&ri2, &r, 4); memcpy(&pi2, &pm, 4); bad_perm += ri2 != pi2;
             }
+            {   // N20: the column-sum kernel against the written-out upstream #30447 kernel, and that one against the reference
+                float u = 0, v = 0;
+                std::vector<fastk::block_q8_0_ys> ys(nb * 2);
+                fastk::prepare_q8_0_ys(y.data(), ys.data(), nb * 2);
+                fastk::vec_dot_q2_0_up_avx2(n, &u, x.data(), y.data());
+                fastk::vec_dot_q2_0_ys_avx2(n, &v, 0, x.data(), 0, ys.data(), 0, 1);
+                uint32_t ui, vi, ri3; memcpy(&ui, &u, 4); memcpy(&vi, &v, 4); memcpy(&ri3, &r, 4); bad_ys += ui != vi; bad_up_ref += ui != ri3;
+            }
             fastk::vec_dot_q2_0_q8_0_avx2<true>(n, &a, x.data(), y.data());
             fastk::vec_dot_q2_0_q8_0_avx2<false>(n, &c, x.data(), y.data());
             uint32_t ri, ai, ci; memcpy(&ri, &r, 4); memcpy(&ai, &a, 4); memcpy(&ci, &c, 4);
@@ -91,6 +99,9 @@ int main(int argc, char ** argv) {
     }
     printf("trials %ld: mismatches with fused multiply-add %ld, with separate multiply/add %ld\n", total, bad_fma, bad_nofma);
     printf("permuted-activation kernel: %ld mismatches in %ld trials\n", bad_perm, total);
+    printf("column-sum kernel vs upstream #30447 kernel: %ld mismatches in %ld trials\n", bad_ys, total);
+    printf("upstream #30447 kernel vs the reference: %ld mismatches (0 = the library is #30447; the plain loop differs)\n", bad_up_ref);
+    const bool ref_plain = !(bad_fma && bad_nofma), ref_up = bad_up_ref == 0;
     // speed: one expert-row sized dot (n = 2560) repeated, data in L2
     const int n = 2560, nb = n / 64, reps = 400000;
     std::vector<fastk::block_q2_0> x(nb); std::vector<fastk::block_q8_0> y(nb * 2);
@@ -112,5 +123,16 @@ int main(int argc, char ** argv) {
         const double c = std::chrono::duration<double>(std::chrono::steady_clock::now() - t3).count();
         printf("n=%d: permuted-activation kernel %.1f ns per dot (%.1fx the library, %.1fx the first kernel)\n", n, c / reps * 1e9, a / c, b / c);
     }
-    return ((bad_fma && bad_nofma) || bad_perm) ? 1 : 0;
+    {
+        std::vector<fastk::block_q8_0_ys> ys(nb * 2);
+        fastk::prepare_q8_0_ys(y.data(), ys.data(), nb * 2);
+        auto t4 = std::chrono::steady_clock::now();
+        for (int i = 0; i < reps; i++) { fastk::vec_dot_q2_0_up_avx2(n, &s, x.data(), y.data()); sink += s; }
+        auto t5 = std::chrono::steady_clock::now();
+        for (int i = 0; i < reps; i++) { fastk::vec_dot_q2_0_ys_avx2(n, &s, 0, x.data(), 0, ys.data(), 0, 1); sink += s; }
+        const double u = std::chrono::duration<double>(t5 - t4).count(), v = std::chrono::duration<double>(std::chrono::steady_clock::now() - t5).count();
+        printf("n=%d: upstream #30447 kernel %.1f ns per dot, column-sum kernel %.1f ns per dot (%.2fx)\n", n, u / reps * 1e9, v / reps * 1e9, u / v);
+    }
+    // the reference must be one of the two kinds the plugin knows; each kind's own kernels must match it bit for bit
+    return (bad_ys || (!ref_plain && !ref_up) || (ref_plain && bad_perm)) ? 1 : 0;
 }

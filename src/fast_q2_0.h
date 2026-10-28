@@ -145,4 +145,99 @@ static inline void vec_dot_q2_0_perm_avx2(int n, float * s, size_t, const void *
     *s = sumf;
 }
 
+// ---- third version: exact match for llama.cpp's own AVX2 kernel (ggml-org/llama.cpp#30447; in release b11669 = 620d2225c and master) ----
+// llama.cpp now has a SIMD Q2_0 dot of its own that adds up in another order than the plain loop, so the kernels above no longer match it.
+// up_avx2 is upstream's function written out (the plugin compares it with the library's at start, bit for bit, before using ys_avx2).
+// ys_avx2 does the same integer lanes and the same multiply-add order, but takes the activation's per-lane sums madd(maddubs(1, y), 1) from a
+// column prepared once by the executor instead of computing them in every row's dot (desk: 1.24x, 0 mismatches; idea N20).
+// madd(maddubs(v, y) - maddubs(1, y), 1) = madd(maddubs(v, y), 1) - madd(maddubs(1, y), 1) exactly: no 16-bit saturation (|pair| <= 2*3*128).
+__attribute__((target("avx2,fma,f16c")))
+static inline float up_hsum_float_8(const __m256 x) {
+    __m128 res = _mm256_extractf128_ps(x, 1);
+    res = _mm_add_ps(res, _mm256_castps256_ps128(x));
+    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+    res = _mm_add_ss(res, _mm_movehdup_ps(res));
+    return _mm_cvtss_f32(res);
+}
+__attribute__((target("avx2,fma,f16c")))
+static inline __m256i up_unpack_32(const uint8_t * qs) {
+    __m256i v = _mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *) qs));
+    v = _mm256_or_si256(v, _mm256_slli_epi32(v, 12));
+    v = _mm256_or_si256(v, _mm256_slli_epi32(v, 6));
+    return _mm256_and_si256(v, _mm256_set1_epi32(0x03030303));
+}
+__attribute__((target("avx2,fma,f16c")))
+static inline __m256 up_acc_block(const block_q2_0 * x, const block_q8_0 * y, __m256 acc) {
+    const float dx = _cvtsh_ss(x->d);
+    const __m256 d0 = _mm256_set1_ps(dx * _cvtsh_ss(y[0].d));
+    const __m256 d1 = _mm256_set1_ps(dx * _cvtsh_ss(y[1].d));
+    const __m256i one = _mm256_set1_epi8(1);
+    const __m256i y0 = _mm256_loadu_si256((const __m256i *) y[0].qs), y1 = _mm256_loadu_si256((const __m256i *) y[1].qs);
+    const __m256i q0 = _mm256_sub_epi16(_mm256_maddubs_epi16(up_unpack_32(x->qs + 0), y0), _mm256_maddubs_epi16(one, y0));
+    const __m256i q1 = _mm256_sub_epi16(_mm256_maddubs_epi16(up_unpack_32(x->qs + 8), y1), _mm256_maddubs_epi16(one, y1));
+    const __m256 p0 = _mm256_cvtepi32_ps(_mm256_madd_epi16(q0, _mm256_set1_epi16(1)));
+    const __m256 p1 = _mm256_cvtepi32_ps(_mm256_madd_epi16(q1, _mm256_set1_epi16(1)));
+    acc = _mm256_fmadd_ps(d0, p0, acc);
+    return _mm256_fmadd_ps(d1, p1, acc);
+}
+__attribute__((target("avx2,fma,f16c")))
+static inline void vec_dot_q2_0_up_avx2(int n, float * s, const void * vx, const void * vy) {
+    const block_q2_0 * x = (const block_q2_0 *) vx;
+    const block_q8_0 * y = (const block_q8_0 *) vy;
+    const int nb = n / 64;
+    __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 1 < nb; i += 2) {
+        acc0 = up_acc_block(x + i + 0, y + 2 * i + 0, acc0);
+        acc1 = up_acc_block(x + i + 1, y + 2 * i + 2, acc1);
+    }
+    if (i < nb) {
+        acc0 = up_acc_block(x + i, y + 2 * i, acc0);
+    }
+    *s = up_hsum_float_8(_mm256_add_ps(acc0, acc1));
+}
+
+struct block_q8_0_ys { int32_t ysum[8]; int8_t qs[32]; float d; };   // 68 bytes: lane sums, values, scale as float
+
+__attribute__((target("avx2,fma,f16c")))
+static inline void prepare_q8_0_ys(const block_q8_0 * y, block_q8_0_ys * out, int nblocks) {
+    for (int j = 0; j < nblocks; j++) {
+        const __m256i yy = _mm256_loadu_si256((const __m256i *) y[j].qs);
+        _mm256_storeu_si256((__m256i *) out[j].ysum, _mm256_madd_epi16(_mm256_maddubs_epi16(_mm256_set1_epi8(1), yy), _mm256_set1_epi16(1)));
+        memcpy(out[j].qs, y[j].qs, 32);
+        out[j].d = _cvtsh_ss(y[j].d);
+    }
+}
+
+__attribute__((target("avx2,fma,f16c")))
+static inline __m256 ys_acc_block(const block_q2_0 * x, const block_q8_0_ys * y, __m256 acc) {
+    const float dx = _cvtsh_ss(x->d);
+    const __m256 d0 = _mm256_set1_ps(dx * y[0].d);
+    const __m256 d1 = _mm256_set1_ps(dx * y[1].d);
+    const __m256i ones16 = _mm256_set1_epi16(1);
+    const __m256i y0 = _mm256_loadu_si256((const __m256i *) y[0].qs), y1 = _mm256_loadu_si256((const __m256i *) y[1].qs);
+    const __m256 p0 = _mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(up_unpack_32(x->qs + 0), y0), ones16),
+                                                          _mm256_loadu_si256((const __m256i *) y[0].ysum)));
+    const __m256 p1 = _mm256_cvtepi32_ps(_mm256_sub_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(up_unpack_32(x->qs + 8), y1), ones16),
+                                                          _mm256_loadu_si256((const __m256i *) y[1].ysum)));
+    acc = _mm256_fmadd_ps(d0, p0, acc);
+    return _mm256_fmadd_ps(d1, p1, acc);
+}
+__attribute__((target("avx2,fma,f16c")))
+static inline void vec_dot_q2_0_ys_avx2(int n, float * s, size_t, const void * vx, size_t, const void * vy, size_t, int) {
+    const block_q2_0 * x = (const block_q2_0 *) vx;
+    const block_q8_0_ys * y = (const block_q8_0_ys *) vy;
+    const int nb = n / 64;
+    __m256 acc0 = _mm256_setzero_ps(), acc1 = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 1 < nb; i += 2) {
+        acc0 = ys_acc_block(x + i + 0, y + 2 * i + 0, acc0);
+        acc1 = ys_acc_block(x + i + 1, y + 2 * i + 2, acc1);
+    }
+    if (i < nb) {
+        acc0 = ys_acc_block(x + i, y + 2 * i, acc0);
+    }
+    *s = up_hsum_float_8(_mm256_add_ps(acc0, acc1));
+}
+
 }  // namespace fastk
