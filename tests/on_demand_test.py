@@ -301,7 +301,7 @@ srv = od.serve(od.Pool([A, B]), PORT)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 check("connect: server_models lists both on-demand models", mc.server_models(f"http://127.0.0.1:{PORT}", KEY) == ["Fake-Model", "Other-Coder"])
 cfg = os.path.join(TMP, "oc.json")
-rc = mc.connect(["opencode", "--url", f"http://127.0.0.1:{PORT}", "--api-key", KEY, "--write", "--config", cfg])
+rc = mc.connect(["opencode", "--url", f"http://127.0.0.1:{PORT}", f"--api-key={KEY}", "--write", "--config", cfg])
 oc = json.load(open(cfg))
 check("connect opencode writes both models, the default selected", rc == 0 and list(oc["provider"]["moe-cache"]["models"]) == ["Fake-Model", "Other-Coder"]
       and oc["model"] == "moe-cache/Fake-Model" and not A.running() and not B.running(), oc.get("model"))
