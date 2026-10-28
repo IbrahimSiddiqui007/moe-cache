@@ -99,7 +99,7 @@ context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one cl
 | 4. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |
 | 5. Agents | Add `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`); the page also has Connect buttons |
 
-Keep the Windows page file at "system managed" (or 14 GB or more): a small page file limits the cache. Details and known limits: [docs/WINDOWS.md](docs/WINDOWS.md).
+Keep the Windows page file at "system managed" (or 14 GB or more): the cache costs no commit (it keeps experts in read-only views of the model file), but Windows counts the GPU's memory against RAM + page file. Details and known limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ### 4. Optional: prove it is correct and measure it on your machine
 

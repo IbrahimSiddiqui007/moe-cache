@@ -25,7 +25,7 @@ for d in "$K"/ggml-moe-cache-api*.dll; do
   if echo "$i" | grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32"; then echo "FAIL: $d imports a non-system DLL"; exit 1; fi
 done
 mkdir -p "$K/bin" "$K/tools" "$K/docs"
-cp "$X"/bin/moe_cache.py "$X"/bin/moe_cache_ui.py "$X"/bin/moe-cache-ui.bat "$K/bin/"
+cp "$X"/bin/moe_cache.py "$X"/bin/moe_cache_ui.py "$X"/bin/moe_cache_on_demand.py "$X"/bin/moe-cache-ui.bat "$K/bin/"
 cp -r "$X/planner" "$X/ui" "$X/profiles" "$K/"
 cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$K/tools/"
 cp "$X"/docs/WINDOWS.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$K/docs/"
