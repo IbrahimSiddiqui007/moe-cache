@@ -208,7 +208,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     <ul>
       <li><b>Models that fit in RAM.</b> Qwen3.6-35B (20 GB) decodes at the same speed with or without the plugin (43.6 vs 43.1 tok/s without MTP). Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.</li>
       <li><b>Decode at long agent contexts.</b> On Flash-Next the 2.0–2.4× session gain comes from prompt processing. Decode at 65k-context agent settings is equal (21.5 vs 21.2 tok/s).</li>
-      <li><b>CPU kernels.</b> On Windows both sides run llama.cpp's own CPU kernels (ggml-cpu-zen4). The gain comes from which experts are in RAM and how they are read, not from faster math.</li>
+      <li><b>CPU kernels.</b> The numbers here were measured with llama.cpp's own CPU kernels (ggml-cpu-zen4) on both sides. The plugin's exact Q2_0 executor kernel, on Windows since 2026-10-28, did not change the PC's decode (it is limited by RAM bandwidth). The gain comes from which experts are in RAM and how they are read, not from faster math.</li>
       <li><b>Cold start.</b> From a cold file cache the plugin reports ready 5.6 s later than stock (28.5 vs 22.9 s) while it loads its hot experts; the first answer wins it back. A warm restart answers 6 s sooner than stock.</li>
       <li><b>Small samples.</b> Two runs per side (one pair on GLM, one run for GLM with MTP). Run-to-run spread was under 1 tok/s on every pair.</li>
       <li><b>MTP on models without a head.</b> Flash-Next and the 122B files have no MTP head; a separate head file made both stock and moe-cache slower (see above).</li>
