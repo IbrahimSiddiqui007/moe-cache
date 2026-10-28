@@ -120,6 +120,7 @@ jobs:
           $od = (python bin\moe_cache.py on-demand --status 2>&1) -join "`n"
           Pop-Location
           if ($od -notmatch "No model chosen yet") { throw "kit: on-demand does not run from the kit: $od" }
+          $global:LASTEXITCODE = 0   # on-demand --status exits 1 when no model is chosen; that is the expected answer here
 
       - name: Launcher on Windows (check, dry run, core detection for pinning)
         run: |
