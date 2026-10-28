@@ -77,6 +77,7 @@ jobs:
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
           python3 tests/on_demand_test.py    # on-demand endpoint: key, CORS, start on first request, SSE pass-through, idle stop, restart; fake server
+          python3 tests/warm_test.py         # warm-session saver (N27): waits by file size and change, restore, no save while busy; fake server
 
       - name: Control page with the model (GUI1; start, one request, live hit rate, stop through the page)
         env:
