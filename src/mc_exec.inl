@@ -526,7 +526,7 @@ void print_capabilities(state_t & s) {
         o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
     } else {
         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") +
-             (s.exec_chunk != 32 ? ", " + std::to_string(s.exec_chunk) + " rows per chunk" : "") + ")";
+             (s.exec_chunk != 128 ? ", " + std::to_string(s.exec_chunk) + " rows per chunk" : "") + ")";
     }
 #ifdef MC_X86_KERNELS
     o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? (q2_0_library_is_plain() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)"
