@@ -2256,3 +2256,82 @@ Not run (wrap-up): MOE_CACHE_GPU_MIN_TOKENS 8 / 16 / 32 for short follow-up prom
 | N13 short prompts | - | MOE_CACHE_GPU_MIN_TOKENS 8 / 16 / 32, ABBA (32, 16, 8, 8, 16, 32): `C:\dl\pc_mintok.ps1 -Tag t -MinTok N` (cached ~3k context, 10 cumulative follow-up turns of ~10-60 tokens, prompt ms per turn); ~40 min |
 | N3 idle release | design only | measure first: `C:\dl\pc_n3.ps1` (running server, its hard minimum dropped and working set emptied from outside, next request timed vs the on-demand restart: 34 s ready, 39 s to first answer). Build only if the next request is fast: plugin named event Local\moe-cache-idle-<pid> (drop the minimum, empty the working set, ws_min_cur = 0 so the next graph sets it again) + an earlier idle stage in on-demand. Note: an idle on-demand server is already stopped after --idle (memory back, RESULTS 61 F5) |
 | N5 serve before the warm start ends | measured cost only | the warm start runs inside llama.cpp's load (a graph before "model loaded"), 3.9-4.0 s for 13-15 GiB here. Measure first: `C:\dl\pc_n5.ps1 -Tag a` vs `-EnvList "MOE_CACHE_PRELOAD_FRAC=0"` (ready + first answer). Build only on a gain: preload in a background thread per chunk with loading flags (shared Linux/Windows) |
+
+**pc-bench: the list-A left-overs and more PC checks** (2026-10-28 afternoon; same PC, llama.cpp Vulkan 620d2225c, plugin DLL 681f3bc unless a row says
+otherwise; one job at a time under the PC lock, every run cold; scripts C:\dl\pcb_*.ps1 and C:\dl\pcb\, logs C:\dl\pcb_*.log; part handover/parts/pc-bench.md)
+
+**N13 rest: `MOE_CACHE_GPU_MIN_TOKENS` 8 / 16 / 32 for short follow-up turns** (Flash-Next IQ2_XS, launcher 65facd1 defaults; C:\dl\pc_mintok.ps1: an
+~3k-token context cached in slot 0, then 10 cumulative turns; ABBA 32, 16, 8, 8, 16, 32). Prompt ms of each new turn, both runs per value:
+| New tokens | 32 (default, as llama.cpp) | 16 | 8 |
+|---|---|---|---|
+| 14-15 | 410-475 | 433-473 (+0-6 %) | 551-663 (+35-39 %) |
+| 21 | 519-527 | 702-712 (+34-36 %) | 690-709 (+31-36 %) |
+| 31 | 656-713 | 826-915 (+26-28 %) | 818-904 (+25-27 %) |
+| 46 / 63 | 901-1201 | 908-1228 (same) | 913-1271 (same) |
+Verdict: **killed**. Below 32 tokens the GPU block (upload of whole expert layers) is slower than the CPU; 46+ tokens go to the GPU at every
+setting. The default 32 also keeps the output identical to stock llama.cpp (which moves batches of 32+ tokens to the GPU itself).
+
+**N3: idle release of the working-set minimum** (measure: C:\dl\pc_n3.ps1, Flash-Next IQ2_XS, twice: a running plugin server's hard minimum dropped and
+its working set emptied from outside, 30 s idle, then the next request)
+| | run 1 | run 2 |
+|---|---|---|
+| busy: 64-token request, 256-token decode | 3.9 s, 22.01 tok/s | 4.0 s, 21.73 tok/s |
+| busy: working set / minimum / available RAM | 18.7 / 22.8 / 6.8 GB | 18.7 / 22.8 / 6.8 GB |
+| released: working set / available RAM | 0.0 / **25.0 GB** | 0.0 / **24.9 GB** |
+| next 64-token request, then 256-token decode | **4.4 s**, 21.54 tok/s | **4.5 s**, 21.10 tok/s |
+(The decode after the release ran without a minimum: the outside release left the plugin thinking its minimum was still set. The build below sets
+it again at the next graph.) An on-demand restart instead takes 34 s to ready, 39 s to the first answer (F5). Verdict: **pays: built** (claude/pc-bench
+a92a45f): on-demand asks the plugin after `--idle-release` minutes (default 5, 0 = off; before the `--idle` stop) to give the cache's RAM back and
+keeps the server. Same logic on Linux and Windows: SIGUSR2 / event `Local\moe-cache-idle-<pid>`; file-view experts (Windows) stay marked resident
+(pages to standby, the minimum set again at the next graph), private-memory experts (Linux, `MOE_CACHE_WIN_VIEW=0`) are evicted. Linux check
+(Granite, all experts on the CPU): 0.19 GiB released, RSS -190 MB, next answer byte-identical. CI green (identity 40675256728, Windows 40675313675).
+PC check of the build (on-demand `--idle-release 0.5`, DLL 570d351 = N3 + the exit-hang fix below, two rounds; C:\dl\pcb\pcb_n3v.py):
+| | round 1 | round 2 |
+|---|---|---|
+| first request (starts the server, 64 tokens) / then 256 tokens | 45.1 s / 20.18 tok/s | 39.5 s / 20.07 tok/s |
+| busy: available RAM, working set, minimum | 6.4 GB, 18.3 GB, 20.86 GiB | 6.6 GB, 18.5 GB, 21.24 GiB |
+| after 30 s idle the listener asks; plugin: "idle: N GiB of experts given back" | 17.39 GiB | 17.55 GiB |
+| idle: available RAM, working set | **24.4 GB**, 0.0 GB | **24.3 GB**, 0.0 GB |
+| next request (256 tokens) after the release | 14.5 s, 18.67 tok/s, text identical | 14.6 s, 18.46 tok/s, text identical |
+| the request after that (no release) | 11.8 s, **22.37 tok/s** | 11.9 s, **22.12 tok/s** |
+The minimum is set again at the next graph (20.38 / 20.76 GiB); the first request after a release pays ~2.7 s while its pages come back from the
+standby list (no SSD reads: nothing else needed the memory), against ~40 s for a restart. Built and merged.
+
+**N5: serve while the warm start runs?** (C:\dl\pc_n5.ps1, Flash-Next IQ2_XS, ABBA: default, `MOE_CACHE_PRELOAD_FRAC=0`, same, default)
+| | ready | first 64-token request | ready + first | the next 256-token request |
+|---|---|---|---|---|
+| warm start (default; 14.7 GiB in 4.1-4.2 s) | 43.4, 43.1 s | 4.0, 3.9 s | **47.4, 47.0 s** | 21.70, 21.56 tok/s |
+| no warm start | 39.0, 39.1 s | 5.5, 5.5 s | **44.5, 44.6 s** | 18.87, 18.93 tok/s (-13 %) |
+Verdict: **not built**. Serving during the warm start can save at most ~2.7 s of a 47 s cold start (6 %), and the first requests would then run on a
+cold cache (the next request after a skipped warm start decodes 13 % slower, which costs more than it saves).
+
+**T2b: why the 122B ran 16.1 tok/s in RESULTS 59 and 19.8-21.2 in list A** (same DLL 681f3bc, launcher 65facd1, scripts pc_iq3_stats.ps1 / pc_stock.ps1,
+D:). Logs first, then one ABBA: plugin, plugin + 2.8 GB held by C:\dl\hog.exe (RESULTS 59's smaller free memory), stock, stock, plugin + hog, plugin.
+| Measured 256-token request | RESULTS 59 (2026-10-27 18:41) | list A N8 (23:47) | today plugin | today plugin + 2.8 GB hog |
+|---|---|---|---|---|
+| memory limit the plugin saw (after load) | 21.69 GiB | 24.87 GiB | 25.30, 25.41 | 22.66, 22.65 |
+| misses / evictions | 5034 / 3129 | 3228 / 0 | 3048 / 0 | 4127 / 1446 |
+| plugin read wait / CPU expert compute | 5.27 / 7.95 s | 2.97 / 6.53 s | 2.84 / 6.51 s | 3.63 / 6.70 s |
+| time outside the plugin (GPU layers, attention) | 7.21 s | 5.86 s | 6.24 s | 6.27 s |
+| decode tok/s | 16.31 (pair 16.13) | 20.31 | **19.77, 19.69** | **19.22, 19.25** |
+| stock in the same session | 13.70, 14.05 | - | **15.88, 16.02** | - |
+Explained: the smaller free memory of that evening is real but costs only **~3 %** (19.24 vs 19.73: more misses, 1446 evictions). The rest was a
+slowdown of the whole PC during the 122B pair at 18:40-18:44 on 2026-10-27: the same CPU expert work took 22 % longer, the GPU part 16 % longer, and
+stock was 13 % slower too. The Flash-Next IQ2_XS pair a few minutes earlier in the same series matches today's speed (21.94 then, 22.0 today). The
+cause of that slowdown is not in the logs (nothing else of ours wrote files in that window). **Correction to RESULTS 59**: the 122B is **+24 %**
+over stock on this PC (today's ABBA: stock 15.95, plugin 19.73), not +16 %.
+
+**Exit hang (found by R11): llama-perplexity with the plugin never exited on Windows; fixed** (claude/pc-bench 570d351; details handover/parts/pc-bench.md)
+R11's first run (DLL 681f3bc) finished its work at 15:22 and then stayed inside ExitProcess for good: one thread left in a user-mode wait, 23.5 GB
+working set, the process could not be killed (Stop-Process, taskkill /F); only a reboot cleared it. ExitProcess ends every other thread before the
+DLL detach runs the static state_t destructor, which then locked mutexes, notified condition variables and joined threads that were already gone
+(code-audit row 32). It never showed before because llama-server is always killed. Fix: the state lives on the heap behind a static guard; when the
+process is exiting on Windows (RtlDllShutdownInProgress) the guard only saves the profile (when nothing holds `mu`) and prints the summary, with no
+lock, notify or join; otherwise (threads alive: Linux exit, FreeLibrary) the old teardown runs. Same rule on both systems: never join a thread the
+system has ended. CI green (identity 40686766503, Windows 40686766623, sanitize 40686792661).
+| Check (PC, Granite 1B, llama-perplexity, 1 chunk, 0.2 GiB cache; C:\dl\pcb_exit.ps1) | exit | cache | profile saved at exit | summary line |
+|---|---|---|---|---|
+| no plugin | 3.2 s | - | - | - |
+| DLL 570d351, twice | **2.1 s, 1.7 s** | on | yes | yes |
+| DLL 681f3bc (R11, Flash-Next) | never (reboot) | on | no | no |
+Linux (laptop, Granite, 0.2 GiB cache, 99,278 evictions): llama-perplexity and llama-completion exit, profile saved, logits identical.
