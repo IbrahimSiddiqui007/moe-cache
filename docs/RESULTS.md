@@ -2315,7 +2315,7 @@ The same request hits no better the second time: GLM's code working set is large
 A per-mode starting profile ("code mode" preloading code experts) would only change the start state: no gain for GLM on 32 GB.
 
 **Verdict.** Best GLM setting on this PC: the model on the faster drive (D:), launcher default layers, no MTP for code/agent use
-(water 5.89, code 2.80 tok/s, 2.7x stock's 2.21). `--n-cpu-moe 43` is +7-9 % decode for -13 % long prompts: worth it for chat, not for agents.
+(water 5.89, code 2.80 tok/s; stock was 2.21 on C: in RESULTS 59, not re-run on D:). `--n-cpu-moe 43` is +7-9 % decode for -13 % long prompts: worth it for chat, not for agents.
 Launcher default: **no change** (the planner's long-prompt reserve is right for agent sessions; a chat-only mode could take 43, same rule on
 Linux). MTP stays as is (on in agent mode): it does not lose on GLM (code +1 %, water +10-23 %), but it gives nothing on code; a small
 follow-up: the launcher should not let MTP combine with extra GPU layers on a 16 GB card (it aborts at load).
