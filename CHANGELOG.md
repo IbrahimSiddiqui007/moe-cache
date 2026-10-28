@@ -47,6 +47,10 @@
   launcher finds the DLL that matches the server's ggml, also in `build\win*` and the kit's `ggml-moe-cache-api2.dll` / `-api3.dll`; `learn` picks the library the way `server` does.
 - The start-up line "tested with ggml X only" lists every tested version of the build's API (API 3: 0.26.0 and 0.27.0, API 2: 0.25.1); it warned wrongly on the
   Windows release b11669 (ggml 0.27.0). CI fails if the warning shows on a pinned version.
+- `--gpu-cache` on Vulkan is capped so llama.cpp's GPU expert cache loads: llama.cpp keeps each expert tensor's cache slots in one bank tensor, and
+  Vulkan refuses a tensor over the device's limit (maxBufferSize / maxStorageBufferRange), which aborted the load ("pre-allocated tensor (moe_cache.0...)",
+  PC: `auto` planned 8909 MiB, the limit allowed about 7700). The launcher reads the limit from the Vulkan driver (Linux and Windows) and works out
+  the largest size from the model's expert layout (planner/gguf_plan.py gpu_cache_cap_mib).
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 

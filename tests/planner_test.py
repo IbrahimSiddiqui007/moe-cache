@@ -255,5 +255,38 @@ if len(sys.argv) > 1 and os.path.getsize(sys.argv[1]) >= 64 << 20:
     _g = L.drive_read_speed(sys.argv[1], seconds=0.5)
     check(_g is None or _g > 0, f"drive probe on the model: {_g if _g is None else round(_g, 2)} GB/s (None = no unbuffered reads on this file system)")
 
+# T5: --gpu-cache on Vulkan is capped so each of llama.cpp's cache banks fits in one device tensor. Synthetic sparse GGUF with Flash-Next IQ2_XS's
+# expert layout (three groups: 34, 11 and 3 layers): at a 2 GiB limit the cap is 7712 MiB (7709 on the real file, its tensors are padded; 8909 aborted on the PC, 5900 loaded)
+def _gguf_sized(path, tensors):
+    def s(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    kv = [s("general.architecture") + struct.pack("<I", 8) + s("tst")]
+    offs, o = [], 0
+    for _, size in tensors:
+        offs.append(o); o += size
+    ti = b"".join(s(n) + struct.pack("<IQIQ", 1, 8, 0, off) for (n, _), off in zip(tensors, offs))
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(kv)) + b"".join(kv) + ti
+    with open(path, "wb") as f:
+        f.write(head + b"\0" * (-len(head) % 32)); f.truncate(len(head) + (-len(head) % 32) + o)     # sparse: no data written
+_MB = 1 << 20
+_lay = [(256, 256, 225)] * 34 + [(206, 206, 225)] * 11 + [(175, 175, 225)] * 3
+_t = [("token_embd.weight", 300 * _MB)]
+for _i, (_gt, _up, _dn) in enumerate(_lay):
+    _t += [(f"blk.{_i}.ffn_gate_exps.weight", _gt * _MB), (f"blk.{_i}.ffn_up_exps.weight", _up * _MB), (f"blk.{_i}.ffn_down_exps.weight", _dn * _MB),
+           (f"blk.{_i}.attn_q.weight", 4 * _MB)]
+_p = os.path.join(_md, "banks.gguf"); _gguf_sized(_p, _t)
+_c2, _c4, _c64 = (gguf_plan.gpu_cache_cap_mib(_p, b) for b in (2 << 30, 4 << 30, 64 << 30))
+check(_c2 == 7712 and _c4 == 15424 and _c64 is None, f"gpu_cache_cap_mib: 2 GiB -> {_c2} (want 7712), 4 GiB -> {_c4} (want 15424), 64 GiB -> {_c64} (want None)")
+_cm = gguf_plan.gpu_cache_cap_mib(model, 2 << 30)
+check(_cm is None or _cm > 0, f"gpu_cache_cap_mib on the test model: {_cm}")
+_lim = L.vk_tensor_limits()
+check(isinstance(_lim, list) and all(isinstance(n, str) and b > 0 for n, b in _lim), f"vk_tensor_limits runs: {_lim}")
+_run = L.subprocess.run
+L.subprocess.run = lambda *a, **k: types.SimpleNamespace(stdout=json.dumps([["AMD Radeon(TM) Graphics", 4 << 30], ["AMD Radeon RX 9070 XT", 2 << 30]]) + "\n")
+_vk = "Available devices:\n  Vulkan0: AMD Radeon(TM) Graphics (24000 MiB, 20000 MiB free)\n  Vulkan1: AMD Radeon RX 9070 XT (16304 MiB, 15600 MiB free)\n"
+_cu = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 7000 MiB free)\n"
+_a, _b = L.vk_cache_cap("ls", _p, _vk), L.vk_cache_cap("ls", _p, _cu)
+L.subprocess.run = _run
+check(_a == (7712, 2 << 30) and _b == (None, None), f"vk_cache_cap: Vulkan listing -> {_a} (smallest listed limit), CUDA listing -> {_b} (no cap)")
+
 print(f"planner checks: {len(fails)} failed")
 sys.exit(1 if fails else 0)
