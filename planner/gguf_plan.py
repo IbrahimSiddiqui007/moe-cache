@@ -229,6 +229,34 @@ def gpu_cache_mib(path, ctx=8192, reserve_gb=1.3, free=None):
     return int(room // (1024 * 1024)) if room > 0.5e9 else 0
 
 
+def gpu_cache_cap_mib(path, max_tensor_bytes, margin=0.97):
+    """Largest llama.cpp --moe-cache-mib whose cache banks each fit in one device tensor of max_tensor_bytes; None when every size fits.
+
+    llama.cpp (src/llama-moe-cache.cpp) groups the layers by expert layout (types and shapes), makes one bank tensor per expert tensor per group
+    (all of the group's slots), and shares the budget among groups by their expert bytes. Vulkan rejects a tensor above the device's maximum
+    buffer size or storage buffer range (ggml_backend_vk_device_supports_op), also a bank, and the scheduler then aborts the load (seen on the PC:
+    5900 MiB loads, 8909 aborts; T5). A group of n layers whose largest expert tensor is m bytes per layer gets budget * host_g / host_all, and its
+    biggest bank is about that * m / (bytes of one layer's experts), so the budget may be at most max_tensor_bytes * host_all / (n * m).
+    margin covers the bank's extra slot and layers llama.cpp leaves out (an MTP head that is not loaded)."""
+    groups = {}
+    for p in shards(path):
+        per = {}
+        for name, size in read_tensors(p):
+            m = re.match(r"blk\.(\d+)\.ffn_(gate_up|gate|up|down)_exps\.weight$", name)
+            if m:
+                per.setdefault(int(m.group(1)), {})[m.group(2)] = size
+        for il, t in per.items():
+            groups.setdefault(tuple(sorted(t.items())), []).append(il)
+    host_all = sum(len(ls) * sum(sz for _, sz in key) for key, ls in groups.items())
+    cap = None
+    for key, ls in groups.items():
+        big = len(ls) * max(sz for _, sz in key)            # the group's largest bank when it holds all of its experts
+        if big > max_tensor_bytes:
+            c = max_tensor_bytes * host_all / big
+            cap = c if cap is None else min(cap, c)
+    return int(cap * margin // 1048576) if cap is not None else None
+
+
 # Measured GPU compute buffers (MiB) of Qwen3.8-Flash-Next with a q8_0 KV cache, by context (rounded up between points) and micro-batch size.
 # Other architectures differ somewhat; the numbers are the best available and the reserve below covers the usual spread.
 _COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: None}, 131072: {512: 960, 1024: 1700, 2048: 3150}}

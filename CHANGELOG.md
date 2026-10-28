@@ -45,6 +45,12 @@
   Profile saves work on Windows; `replace_file` reports errors; an iGPU-only machine reports its VRAM.
 - `check` on Windows reports the pinning result and knows llama.cpp b11669; `build.sh --windows` honors `BUILD_DIR` (an API 2 and an API 3 DLL side by side) and the
   launcher finds the DLL that matches the server's ggml, also in `build\win*` and the kit's `ggml-moe-cache-api2.dll` / `-api3.dll`; `learn` picks the library the way `server` does.
+- The start-up line "tested with ggml X only" lists every tested version of the build's API (API 3: 0.26.0 and 0.27.0, API 2: 0.25.1); it warned wrongly on the
+  Windows release b11669 (ggml 0.27.0). CI fails if the warning shows on a pinned version.
+- `--gpu-cache` on Vulkan is capped so llama.cpp's GPU expert cache loads: llama.cpp keeps each expert tensor's cache slots in one bank tensor, and
+  Vulkan refuses a tensor over the device's limit (maxBufferSize / maxStorageBufferRange), which aborted the load ("pre-allocated tensor (moe_cache.0...)",
+  PC: `auto` planned 8909 MiB, the limit allowed about 7700). The launcher reads the limit from the Vulkan driver (Linux and Windows) and works out
+  the largest size from the model's expert layout (planner/gguf_plan.py gpu_cache_cap_mib).
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
@@ -54,6 +60,8 @@
   minutes (`--idle`). The API key and the localhost-only CORS rule are checked in front, so a web page cannot wake the model; `/v1/models` and `/props`
   answer without starting it. `--install-autostart` starts it at login (systemd --user unit; Windows Startup-folder shortcut, no admin). `connect
   hermes|opencode` now defaults to the on-demand port. [docs/AGENTS.md](docs/AGENTS.md#without-starting-a-server-by-hand-on-demand)
+- on-demand opens its port at once: it bound the port only after the launcher's dry run had checked the options (16.5 s on the Windows PC), so an
+  agent that connected meanwhile was refused. Now that agent waits and is answered when the check is done.
 - **`--agent`** (RESULTS 51): context 65536, `--jinja` tool calls, stable `--alias`, at most 8 context checkpoints per slot with a 1 GiB reserve, config blocks printed
   when ready; `--api-key` for other machines. **`connect hermes|opencode [--write]`** writes the agent's config (Hermes through `hermes config set`, OpenCode by merging
   `opencode.json`, old file kept as `.bak`). OpenCode 1.19.4 and Hermes Agent v0.22.5 fixed files through moe-cache on Linux ([docs/AGENTS.md](docs/AGENTS.md),

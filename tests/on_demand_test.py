@@ -7,6 +7,7 @@
   4. a server that dies by itself is started again by the next request; an agent that hangs up mid-stream does not break the endpoint
   5. option checks (on-demand owns --port), the systemd unit text, connect's default URL follows the on-demand port
   6. two models (N9): the request's "model" picks one, one runs at a time, a swap waits for a running stream, --add / --remove, connect lists both
+  7. the port accepts at once, while the launcher's dry run still checks the options; an early request is answered after it
 
    python3 tests/on_demand_test.py
 """
@@ -290,6 +291,28 @@ oc = json.load(open(cfg))
 check("connect opencode writes both models, the default selected", rc == 0 and list(oc["provider"]["moe-cache"]["models"]) == ["Fake-Model", "Other-Coder"]
       and oc["model"] == "moe-cache/Fake-Model" and not A.running() and not B.running(), oc.get("model"))
 srv.shutdown(); srv.server_close()
+
+# 7: the port opens before the option check (a launcher dry run took 16 s on a Windows PC and the port was refused meanwhile); a request
+# sent at once waits in the backlog and is answered when the check is done
+PORT = free_port()
+code = ("import sys; sys.path.insert(0, sys.argv[1]); import moe_cache_on_demand as od; "
+        "od.LAUNCHER = [sys.executable, '-c', 'import time; time.sleep(3)']; sys.exit(od.on_demand(sys.argv[2:]))")
+t0 = time.time()
+p = subprocess.Popen([sys.executable, "-c", code, os.path.join(ROOT, "bin"), choice["model"], "--port", str(PORT)],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+t_open = None
+while time.time() - t0 < 30 and p.poll() is None:
+    try:
+        socket.create_connection(("127.0.0.1", PORT), timeout=1).close(); t_open = time.time() - t0; break
+    except OSError:
+        time.sleep(0.05)
+check("on-demand: the port accepts while the options are still checked (3 s fake dry run)", t_open is not None and t_open < 2.5, t_open)
+try:
+    st, body, _ = get("/health", key=None); t_ans = time.time() - t0
+except Exception as e:
+    st, body, t_ans = None, str(e), None
+check("on-demand: a request sent at once is answered after the check", st == 200 and '"on_demand"' in body and t_ans and t_ans >= 2.5, (st, body, t_ans))
+p.terminate(); p.wait(30)
 
 print("FAILED: " + ", ".join(fails) if fails else "all on-demand tests passed")
 sys.exit(1 if fails else 0)

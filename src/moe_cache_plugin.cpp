@@ -71,13 +71,34 @@ static FILE * fopen_private(const char * path) {
 #endif
 }
 
+// ggml versions CI runs this build against (comma-separated): API 2 = identity CI at 7fe450e19; API 3 = identity CI at 23b0202a1 (0.26.0)
+// and Windows CI + the Windows test PC at release b11669 (0.27.0)
 #ifndef MOE_CACHE_TESTED_GGML
 #if GGML_BACKEND_API_VERSION >= 3
-#define MOE_CACHE_TESTED_GGML "0.26.0"
+#define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0"
 #else
 #define MOE_CACHE_TESTED_GGML "0.25.1"
 #endif
 #endif
+
+// true when v is one of the comma-separated versions in MOE_CACHE_TESTED_GGML
+static bool moe_cache_tested_ggml(const char * v) {
+    const size_t n = strlen(v);
+    for (const char * p = MOE_CACHE_TESTED_GGML; *p; ) {
+        while (*p == ' ' || *p == ',') {
+            p++;
+        }
+        const char * e = p;
+        while (*e && *e != ',') {
+            e++;
+        }
+        if (n > 0 && (size_t)(e - p) == n && strncmp(p, v, n) == 0) {
+            return true;
+        }
+        p = e;
+    }
+    return false;
+}
 
 // readable without loading the library (grep -a): lets the launcher pick the build that matches a llama-server's ggml
 #define MC_STR_(x) #x

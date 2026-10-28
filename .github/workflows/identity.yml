@@ -148,6 +148,7 @@ jobs:
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
           grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_exec/plugin.log    # the executor really ran (it steps aside silently on repacked weights)
+          if [ "${{ matrix.name }}" != master-api3 ] && grep "tested with ggml" ident_exec/plugin.log; then echo "FAIL: the plugin calls this pinned (tested) ggml untested (MOE_CACHE_TESTED_GGML)"; exit 1; fi
 
       - name: Identity with GGML_CPU_TILED_MM_FORCE=1 (stock tiles every expert, so the executor must hand every op back) - API 3 rows
         if: matrix.api == '3'
