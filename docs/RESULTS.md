@@ -2387,6 +2387,20 @@ under 10 us, 7.2 ms together); dense matrix-vector products 3.38 GB of weights i
 matrices 388-508 GB/s, iq4_xs ones 260-315 GB/s. Verdict (idea-scout, ledger 5k): on the 9070 XT the best mode is async reads alone (B), 73 us x 36
 layers = ~2.6 ms of a ~45 ms token, **~+6 %**; the GPU kernels are ~79 % of the ~26 ms outside the plugin.
 
+**R11: `--fast` with a q8_0 KV cache on the PC: KL against f16 KV** (llama-perplexity with the plugin, Flash-Next IQ2_XS, `--n-cpu-moe 38`, `-fa on`,
+batch 8 (every step through the executor, as in decode), 16 chunks of 512 tokens of C:\dl\long30k.txt; base logits f16 KV with DLL 681f3bc, the
+runs with DLL 570d351 (same compute, plus the exit-hang fix); C:\dl\pcb_r11.ps1, ~4.6 min per run)
+| Run | KV cache | routing | Mean KLD | 99 % KLD | Same top token | PPL (base 6.2143) |
+|---|---|---|---|---|---|---|
+| control | f16 | exact | **0.000000** | 0.000037 | 100.000 % | - |
+| q8 KV alone | q8_0 | exact | **0.0120** | 0.1114 | 95.12 % | 6.2323 |
+| `--fast` as shipped | q8_0 | skip (`MOE_CACHE_ROUTE=skip`) | **0.0145** | 0.1271 | 94.56 % | 6.2302 |
+| laptop, q8 KV alone (RESULTS 53, CUDA) | q8_0 | exact | 0.0045 | - | 98.2 % | - |
+Verdict: **over the 0.01 kill line on this PC**: the q8_0 KV cache alone costs KL 0.0120 on Vulkan (RDNA4), 2.7x the laptop's CUDA figure, with no
+run-to-run noise (the f16 control is 0 to six places, every top token the same). The skipping that `--fast` adds is small here (+0.0025: 98 %
+hits). Since the same default must hold on Linux and Windows, the choice is to drop q8_0 KV from `--fast` everywhere (it stays one `-- -ctk q8_0
+-ctv q8_0` away, and agent mode then picks a smaller `-ub` at 64k, I6) or keep it with this number in the docs: the owner's call (not changed).
+
 ## 62. GLM max on the Windows PC (pc-glm, 2026-10-28): drive, GPU layers, MTP, long prompts, and why code is slow
 
 PC as RESULTS 59-61 (7950X, RX 9070 XT 16 GB, 32 GB). GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards) copied C: -> D: (robocopy 30 s;
