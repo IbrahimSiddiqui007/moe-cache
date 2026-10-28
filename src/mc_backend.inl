@@ -92,6 +92,7 @@ struct moe_cache_backend_ctx {
     int                tp2_n = 0;
     int                n_threads = 6;
     ggml_backend_t     gpu = nullptr;
+    std::vector<ggml_backend_t> async_src;   // N15: backends with reads into our inputs still queued (cpy_tensor_async); synchronized before use
     ggml_gallocr_t     galloc = nullptr;
     bool               gpu_failed = false;   // the GPU backend could not be started: no GPU blocks for good
     uint64_t           gpu_retry_at = 0;     // a GPU allocation failed: long-prompt blocks stay on the CPU until this many graphs have run
