@@ -2335,3 +2335,172 @@ system has ended. CI green (identity 40686766503, Windows 40686766623, sanitize 
 | DLL 570d351, twice | **2.1 s, 1.7 s** | on | yes | yes |
 | DLL 681f3bc (R11, Flash-Next) | never (reboot) | on | no | no |
 Linux (laptop, Granite, 0.2 GiB cache, 99,278 evictions): llama-perplexity and llama-completion exit, profile saved, logits identical.
+
+**I42 PC check: the control page's "Compare with the other side" vs the pc_speed.ps1 method** (Flash-Next IQ2_XS, page and launcher at 7c47642, DLL
+681f3bc, both cold; ABBA: page with moe-cache first, script stock, plugin, plugin, stock, page with stock first; C:\dl\pcb\pcb_i42.py. The script times
+three 256-token prompts, the page the first two, both with `ignore_eos`)
+| | page (2 runs) | script, the same two prompts | script, mean of its 3 prompts |
+|---|---|---|---|
+| moe-cache decode tok/s | 21.57, 20.92 (21.25) | 21.10, 21.43 (21.27) | 21.30, 21.55 |
+| stock decode tok/s | 16.38, 16.26 (16.32) | 16.59, 16.57 (16.58) | 17.75, 17.69 |
+| moe-cache prefill tok/s | 294.1, 307.2 (3053 tokens) | 282.7, 284.8 (3533 tokens) | - |
+| stock prefill tok/s | 88.8, 84.0 | 101.7, 108.7 | - |
+| speed-up shown | **1.30x** | 1.28x | 1.21x |
+Verdict: **decode within 0.1 % (moe-cache) and 1.6 % (stock) of the script on the same prompts: the page's number stands.** Stock's first 256 tokens
+run on a cold file cache (13.0 tok/s) and its next ones on a warmer one (19.5-20.2), so the script's third prompt lifts stock's mean and the ratio
+(1.21x). Prefill: moe-cache within 6 %, stock 17 % lower on the page (shorter prompt, colder cache): label the page's prefill "indicative".
+
+**N9 PC check: two models in on-demand, does the file cache keep the other one warm on 32 GB?** (Qwen3.6-35B, 21.7 GB, + Flash-Next IQ2_XS, both on C:;
+on-demand of 7c47642 with its own cache dir; cold file cache at the start of each round, then A B A B A, every request after the first a swap;
+time = request sent to the 32-token answer; C:\dl\pcb\pcb_n9.py)
+| | round 1 | round 2 |
+|---|---|---|
+| Qwen3.6 cold / after a swap back | 30.5 / 31.1, 31.1 s | 30.5 / 31.2, 30.7 s |
+| Flash-Next cold (first swap) / after a swap back | 45.5 / 46.7 s | 45.9 / 46.2 s |
+| standby (normal priority) while Qwen3.6 / Flash-Next runs | 10.8-10.9 / 7.8-8.0 GB | 10.9-11.0 / 8.2-8.7 GB |
+Verdict: **killed**: a swap back costs as much as a cold start (+0-2 %). With one model's cache and working set in RAM only 8-11 GB of standby is
+left, less than either model, so the other model's pages are gone by the time it is asked for again. Two models in one endpoint still work (N9 is
+a usability feature); each swap is a full start.
+
+**N16 gate: upload speed of the long-prompt GPU block** (idea-scout; Flash-Next IQ2_XS, launcher 7c47642 `--ctx 40960` (auto `-ub` 1024), DLL 681f3bc,
+`MOE_CACHE_SEG_TIMES=1`, the 33,979-token prompt twice, cold then again; C: disk reads sampled every second; C:\dl\pcb_n16.ps1)
+| | cold | again |
+|---|---|---|
+| prompt tok/s, wall | 267.6, 127.0 s | 283.0, 120.1 s |
+| GPU blocks, bytes uploaded | 1292, 689.3 GB | 1292, 689.3 GB |
+| upload / compute / read back (cumulative) | ~29.1 / 7.4 / 8.3 s | ~25.8 / 7.4 / 8.1 s |
+| upload speed | **23.7 GB/s** | **26.7 GB/s** |
+| C: disk reads during the prompt | 18.1 GB (~5.8 s at 3.1 GB/s) | 11.8 GB |
+Verdict: **N16 killed** (its line: upload already over 18 GB/s): the copy runs near what PCIe 4.0 x16 carries, and the drive is ~20 % of the upload
+time. The blocks are ~35 % of the prompt's wall time; their read back takes 18 % of the block time (6.3 ms per block for ~10 MB of activations,
+~1.6 GB/s), the slowest part relative to its size.
+
+**N15 gate: the GPU <-> plugin hand-off per CPU expert layer** (idea-scout's handoff_bench.cpp, built with mingw against the ggml 0.27 headers, run with
+the PC's llama.cpp DLLs, 3000 iterations, two repeats, medians; A = today's scheduler path, B = async reads + one sync, C = floor, D = B + async copy
+back from the GPU's pinned host buffer)
+| Device | A | B | C | D | A - B | A - D |
+|---|---|---|---|---|---|---|
+| RX 9070 XT | 209.7, 211.8 us | 136.1, 139.2 | 64.3, 64.8 | 149.7, 150.9 | **73 us** | 60 us |
+| Radeon iGPU | 162.1, 165.9 | 118.2, 112.1 | 55.4, 52.6 | 59.6, 62.5 | 49 us | 103 us |
+GPU kernel time per decoded token (stock, `--n-cpu-moe 36`, GGML_VK_PERF_LOGGER=1, 64-token request): **20.8 ms** in 2981 kernel calls (2487 of them
+under 10 us, 7.2 ms together); dense matrix-vector products 3.38 GB of weights in 11.8 ms (286 GB/s, the card's peak is ~640): bf16 hyper-connection
+matrices 388-508 GB/s, iq4_xs ones 260-315 GB/s. Verdict (idea-scout, ledger 5k): on the 9070 XT the best mode is async reads alone (B), 73 us x 36
+layers = ~2.6 ms of a ~45 ms token, **~+6 %**; the GPU kernels are ~79 % of the ~26 ms outside the plugin.
+
+## 62. GLM max on the Windows PC (pc-glm, 2026-10-28): drive, GPU layers, MTP, long prompts, and why code is slow
+
+PC as RESULTS 59-61 (7950X, RX 9070 XT 16 GB, 32 GB). GLM-5.3-Flash UD-IQ2_XXS (102 GB, 4 shards) copied C: -> D: (robocopy 30 s;
+sha256 of the 4 copies = the download's). llama.cpp Vulkan 620d2225c, launcher C:\moe-cache-pla (1d2d5a8, launcher code = experimental),
+plugin DLL 681f3bc (file view). Script C:\dl\glm\glmrun.ps1: cold (win_flush_cache), ready time, 64-token warm-up, then two greedy requests
+with stats deltas per request: **water** = the usual 256-token "Describe the water cycle step by step for a ten-year-old.", **code** =
+192 tokens of "Write a Python function that reads a CSV file and prints the average of every numeric column, then explain ...".
+
+**Desk estimate first** (handover/parts/pc-glm.md): reads were ~half of a token at 90 % hits, so the D: drive was expected to give +15-20 %,
++2 GPU layers +8 %, MTP +25 % on predictable text and ~0 below ~65 % draft acceptance; ceiling ~10 tok/s if every read were free.
+
+**Memory confound found and removed.** With the owner's desktop apps open (Steam, Discord, Claude) the auto memory limit moved between runs
+(20.8 / 22.6 GiB; last night 25.7) and the cache with it. Sweeps below use a fixed `--ram 22` (20.5 GiB); the final pair uses auto memory
+after the owner closed the apps.
+
+**Drive, fixed `--ram 22`, ABBA (C, D, D, C), launcher default 45 CPU expert layers, no MTP**
+| Drive | water tok/s | code tok/s | ready |
+|---|---|---|---|
+| C: Sabrent (3.1 GB/s) | 4.16, 4.19 (4.18) | 2.33, 2.32 (2.33) | 47.8, 47.4 s |
+| D: SanDisk (4.5 GB/s) | 4.35, 4.30 (4.33) | 2.63, 2.62 (2.63) | 36.8, 36.8 s |
+| D: vs C: | **+3.6 %** | **+13 %** | **-23 %** |
+The more a request misses, the more the drive matters: water (72 % hits) +3.6 %, code (57 % hits, 1.2 GB read per token) +13 %.
+
+**Settings on D:, fixed `--ram 22`, mirrored order (each setting twice, except MTP draft 1)**
+| CPU expert layers | MTP | water tok/s | code tok/s | water hit % | draft acceptance water / code |
+|---|---|---|---|---|---|
+| 45 (default) | off | 4.35, 4.30 | 2.63, 2.62 | 72.4 | - |
+| 45 | on (draft 2) | 4.76, 5.33 | 2.62, 2.67 | 60.3, 66.5 | 100 % / 79 % |
+| 45 | on (draft 1) | 4.48 | 2.66 | 65.8 | 100 % / 85 % |
+| **43** | off | **5.06, 5.10** | **2.83, 2.85** | 78.3 | - |
+| 43 | on | load abort once (`GGML_ASSERT(ctx->mem_buffer != NULL)` creating the MTP draft context), 3.94 once | 2.48 | 48.1 | 100 % / 78 % |
+| 41 | off | 3.82, 3.87 | 2.66, 2.66 | 63.0 | - |
+| 41 | on | load abort twice (same assert) | - | - | - |
+MTP's draft context costs memory that the cache needed (water hits 72 -> 60-67 %): on water it gains +10-23 % (two runs 12 % apart) at 100 %
+acceptance, on code 0 % at 79 %. MTP with 2 more GPU layers does not fit (aborts or squeezes the cache to 48 % hits; llama-server also
+logged "failed to allocate memory for prompt cache state"). 43 without MTP is the best decode, and repeatable.
+
+**Best vs default with launcher auto memory** (apps closed: 25.7 GB available, memory limit 25.6-25.8 GiB, start budget ~19.2 GiB), D:, ABBA,
+each run: water, code, then a 3020-token prompt
+| CPU expert layers | water tok/s | code tok/s | 3k prompt tok/s | water hit % |
+|---|---|---|---|---|
+| 45 (default) | 5.89, 5.89 (5.89) | 2.80, 2.79 (2.80) | 67.2, 67.9 (67.6) | 88.8 |
+| 43 | 6.35, 6.21 (6.28) | 3.05, 3.02 (3.04) | 58.8, 59.3 (59.1) | 89.9 |
+| 43 vs 45 | +6.6 % | +8.6 % | **-12.6 %** | |
+Same trade as RESULTS 60 (+8 % decode, -13 % long prompt). One agent turn of 3k prompt tokens + 300 output tokens: 45 = 44.4 + 50.9 = 95 s,
+43 = 51.1 + 47.8 = 99 s: break-even to slightly worse for agents, better for chat.
+
+**Why code is slow: is the cache still learning, or is code's set too big?** (`--ram 22`, D:, default layers; one server: code A, a
+different code request B (JavaScript class), code A again; two runs)
+| Request | decode tok/s | hit % |
+|---|---|---|
+| code A | 2.66, 2.65 | 57.0, 57.1 |
+| code B | 2.32, 2.34 | 49.9, 50.3 |
+| code A again | 2.62, 2.66 | 56.2, 56.8 |
+The same request hits no better the second time: GLM's code working set is larger than a 14-19 GiB cache, which cycles within one request.
+A per-mode starting profile ("code mode" preloading code experts) would only change the start state: no gain for GLM on 32 GB.
+
+**Verdict.** Best GLM setting on this PC: the model on the faster drive (D:), launcher default layers, no MTP for code/agent use
+(water 5.89, code 2.80 tok/s; stock was 2.21 on C: in RESULTS 59, not re-run on D:). `--n-cpu-moe 43` is +7-9 % decode for -13 % long prompts: worth it for chat, not for agents.
+Launcher default: **no change** (the planner's long-prompt reserve is right for agent sessions; a chat-only mode could take 43, same rule on
+Linux). MTP stays as is (on in agent mode): it does not lose on GLM (code +1 %, water +10-23 %), but it gives nothing on code; a small
+follow-up: the launcher should not let MTP combine with extra GPU layers on a 16 GB card (it aborts at load).
+
+## 63. Flash-Next quant choice on the Windows PC (pc-glm, 2026-10-28): Q2_0, IQ3_S, Coder IQ1_M vs IQ2_XS / IQ3_XXS
+
+Same PC, plugin with launcher defaults (C:\moe-cache-pla 1d2d5a8 launcher, DLL 681f3bc file view), cold runs. Owner's rule: a slower file must
+earn it with clearly better quality; testing kept minimal (UD-IQ4_XS and UD-Q4_K_XL dropped after quant-research's desk review: both predicted
+under ~14 tok/s with at most ~4 tasks of headroom on this set; no KL run). Downloads: Q2_0 shard 1 and Coder IQ1_M shard 1 from Hugging Face
+(sha256 = LFS oid); the second shard of Q2_0, Coder IQ1_M and IQ2_XS is **the same file** (sha256 316b46f3...), copied locally.
+
+**Quality, 202 exact-answer tasks** (as RESULTS 60: `quality_yardstick.py run --tasks-only --no-think --task-n-predict 128`, greedy; 0 loops in every run).
+Paired sign test on the tasks that changed (two-sided, exact):
+| File | tasks right | vs IQ2_XS: right only here / only in IQ2_XS, p | vs IQ3_XXS: p |
+|---|---|---|---|
+| IQ2_XS (68.0 GB) | 187 | - | 4 / 10, p 0.18 |
+| IQ3_XXS (75.8 GB) | **193** | 10 / 4, p 0.18 | - |
+| IQ3_S (83.6 GB) | 192 | 8 / 3, p 0.23 | 3 / 4, p 1.00 |
+| Q2_0 (66.4 GB) | 191 | 8 / 4, p 0.39 | 4 / 6, p 0.75 |
+| Coder IQ1_M (58.4 GB, 256 of 512 experts) | 189 | 6 / 4, p 0.75 | 1 / 5, p 0.22 |
+No difference between any two files is proven (all p > 0.05): this set separates them only by a few tasks.
+
+**Q2_0 vs IQ2_XS speed** (cold, mirrored order IQ2_XS, Q2_0, Q2_0, IQ2_XS; both get 36 CPU expert layers, -ub 2048; auto memory ~23 GiB)
+| File | water decode tok/s | code decode tok/s | 3k prompt tok/s | 34k prompt tok/s (`--ctx 40960`) | ready |
+|---|---|---|---|---|---|
+| IQ2_XS | 21.05, 20.96 (21.01) | 21.57, 21.51 (21.54) | 251.0, 255.4 (253) | 228.0, 256.4 (242) | 45.7 s (C:) / 33.7 s (D:) |
+| Q2_0 | 21.95, 22.36 (22.16) | 22.40, 22.91 (22.66) | 283.4, 278.2 (281) | 283.3, 291.5 (287) | 33.6 s |
+| Q2_0 vs IQ2_XS | **+5.5 %** | +5.2 % | **+11 %** | **+19 %** | |
+Caveat: in the decode / 3k pair Q2_0 was on D: and IQ2_XS on C: (reader time 2.9 vs 3.6 s per request, so part of the +5 % decode may be the
+drive); the 34k pair had both on D:. Hit rates equal (98.4-98.8 %). The model card's +33 % decode / 3.4x prompt (GPU-only setup) does not
+reproduce here: decode is CPU-bound on this PC, as quant-research predicted (0 to +7 %).
+
+**Stock vs plugin on Q2_0** (the owner's new default Flash-Next file; D:, cold; stock = launcher `--stock` defaults, two runs 18:39-18:43;
+plugin = the two Q2_0 runs above)
+| Q2_0 | water decode tok/s | code decode tok/s | 3k prompt tok/s |
+|---|---|---|---|
+| stock llama.cpp | 18.26, 18.55 (18.41) | 20.13, 19.88 (20.01) | 120.1, 121.5 (120.8) |
+| moe-cache | 21.95, 22.36 (22.16) | 22.40, 22.91 (22.66) | 283.4, 278.2 (281) |
+| plugin vs stock | **+20 %** | **+13 %** | **2.33x** |
+Stock decodes Q2_0 much faster than IQ2_XS (18.4 vs 14.9 tok/s, RESULTS 59), so the plugin's decode gain is smaller on Q2_0 (+20 % vs +47 %);
+the prompt gain (2.3x) is what agent sessions wait on.
+
+**Coder IQ1_M in an agent session** (OpenCode recording, one plugin run, cold; vs RESULTS 60's IQ2_XS plugin runs 74.04 / 72.84 s)
+| File | task s | first token s | follow-up first token (median) s | decode tok/s |
+|---|---|---|---|---|
+| IQ2_XS (RESULTS 60, 2026-10-27) | 73.4 | 38.6 | 2.14 | 21.2 |
+| Coder IQ1_M | **55.5 (-24 %)** | 23.7 | 1.51 | 21.24 |
+More than 10 % apart, so no ABBA (owner's rule). Its server took ~150 s to come up (IQ2_XS ~60 s): not looked into.
+
+**Table for the owner** (decode: today's water request, or RESULTS 59 ABBA where marked)
+| File | GB | decode tok/s | 3k prompt | tasks /202 | vs IQ2_XS | vs IQ3_XXS | verdict |
+|---|---|---|---|---|---|---|---|
+| Q2_0 | 66.4 | 22.16 | 281 | 191 | +1.2 tok/s (+5 %), +4 tasks (not proven) | +2.3 tok/s, -2 tasks (not proven) | **worth it: new speed pick**, replaces IQ2_XS: not slower anywhere, prompts 11-19 % faster, smaller, same or better tasks |
+| IQ2_XS | 68.0 | 21.01 (R59: 21.94) | 253 | 187 | - | | superseded by Q2_0 |
+| IQ3_XXS | 75.8 | R59: 19.86 | - | 193 | -2 tok/s (-9 %), +6 tasks (not proven) | - | **keep as the accuracy pick** (most tasks right; costs ~10 % decode) |
+| IQ3_S | 83.6 | R59: 17.28 | - | 192 | | -2.6 tok/s (-13 %), -1 task | **not worth it**: slower and bigger than IQ3_XXS for no gain (rule needed +5 tasks) |
+| Coder IQ1_M | 58.4 | 21.24 (agent) | - | 189 | agent session -24 % | -4 tasks (not proven) | **worth it for coding agents only** (half the experts; general knowledge not checked beyond these tasks) |
+| UD-IQ4_XS / UD-Q4_K_XL | 93.7 / 111.3 | not run | | | | | dropped (desk: under ~14 tok/s, little room to gain on this set) |

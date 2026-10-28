@@ -2,6 +2,9 @@
 
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
+### Docs
+- **Flash-Next file recommendation: GSQ-RCO Q2_0 is the default** (66.4 GB; PC: 22.2 tok/s, prompts 281 / 287 tok/s at 3k / 34k tokens, +5 % decode and +11-19 % prompts vs IQ2_XS, 191/202 tasks); IQ3_XXS when accuracy matters (193/202); ISTA GSQ-RCO Coder IQ1_M for coding agents (OpenCode session 55.5 vs 73.4 s); IQ2_XS superseded; IQ3_S not worth it; quality differences not proven (RESULTS 63). README, docs/WINDOWS.md, docs/AGENTS.md, benchmark card.
+
 ### Windows and AMD
 - **Windows: the expert cache lives in read-only views of the model file** (idea I47). Its memory was private and Windows charges private
   memory to commit (RAM + page file), as it does Vulkan's GPU allocations: on a 32 GB PC with a 16 GB card the cache was held to 8-11 GiB and

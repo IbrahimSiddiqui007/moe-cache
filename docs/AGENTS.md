@@ -18,6 +18,17 @@ python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write 
 | an API key (made for you) | `--agent` always sets one: a stable random key kept in `~/.cache/moe-cache/api.key` (mode 0600; Windows: your profile), created on first use and given to llama-server through the environment, never on its command line. Why: agent mode saves conversations to disk and llama-server answers any web page's request on 127.0.0.1 by default, so a page in your browser could erase or read them. `python3 bin/moe_cache.py key` prints it; `connect hermes\|opencode --write` finds it by itself (it uses the stored key when the server answers 401) and writes it into the agent's config. Your own `--api-key KEY` (or `LLAMA_API_KEY`) replaces it |
 | (Windows + AMD GPU with a driver older than 32.0.32015.7029 + Flash-Next only) `--ctx-checkpoints 0` instead of 8 | saving a checkpoint crashes AMD's older Windows Vulkan driver (RESULTS 54; 32.0.32015.7029 does not); the cost is that edited history is processed again instead of resuming from a checkpoint; Qwen3.6 keeps its checkpoints. Not yet measured with an agent on Windows |
 
+## Which model
+
+| Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin; RESULTS 60, 63) |
+|---|---|---|
+| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB) | decode 22.2 tok/s, prompts 281 tok/s at 3k and 287 at 34k tokens (vs IQ2_XS: +5 % decode, +11 % / +19 % prompts), 191/202 tasks |
+| coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
+| accuracy first | GSQ-RCO IQ3_XXS (75.8 GB) | 193/202 tasks, about 10 % slower decode |
+
+No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
+IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC (RESULTS 60).
+
 ## Without starting a server by hand (on-demand)
 
 Hermes Agent and OpenCode only know a URL; they cannot start a server. `on-demand` gives them an endpoint that is always there and starts the model
