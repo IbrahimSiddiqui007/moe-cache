@@ -58,6 +58,7 @@
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
 ### Agent mode, Hermes Agent and OpenCode
+- on-demand: an earlier idle stage, `--idle-release MIN` (default 5, 0 = off): the plugin gives the expert cache's RAM back while the server idles and the server keeps running, so the next request needs no restart (N3; PC: available RAM 6.8 -> 25 GB, next request +0.5 s instead of a 34 s start). Windows: the hard working-set minimum is dropped and the file-view pages move to standby; Linux: the experts are evicted. The plugin listens for SIGUSR2 / the event `Local\moe-cache-idle-<pid>`.
 - **`moe_cache.py on-demand`: agents work without starting a server by hand** (as with Ollama). A small always-on listener holds the agent port; the
   first request starts the launcher in agent mode for the remembered model, requests (streaming included) pass through, and the model stops after 15 idle
   minutes (`--idle`). The API key and the localhost-only CORS rule are checked in front, so a web page cannot wake the model; `/v1/models` and `/props`

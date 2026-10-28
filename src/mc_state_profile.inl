@@ -349,3 +349,32 @@
         ws_min_cur = w;
     }
 
+    // N3: the server has been idle for a while (the on-demand listener asks: SIGUSR2 on Linux, event Local\moe-cache-idle-<pid> on Windows).
+    // Give the cache's RAM back to the system but keep the process, so the next request needs no restart (PC: +0.5 s instead of a 34 s start).
+    // File-view experts (Windows) stay marked resident: the hard minimum is dropped and the working set emptied, so their pages move to the
+    // standby list, still in RAM unless another program needs it (a page taken meanwhile is read from the file again: slower, never wrong).
+    // Private-memory experts (Linux, MOE_CACHE_WIN_VIEW=0) are evicted and read again when used. The next graph sets the minimum again.
+    void idle_release() {
+        std::lock_guard<std::mutex> lk(mu);
+        const size_t before = resident_bytes;
+        size_t freed = 0;
+        if (win_view) {
+            plat::ws_release();
+            ws_min_cur = 0;
+            freed = view_bytes;
+        } else {
+            for (int v = lru; v >= 0;) {
+                const int prev = nodes[v].prev;
+                if (!in_use(nodes[v])) {
+                    evict(v);
+                }
+                v = prev;
+            }
+            freed = before - resident_bytes;
+        }
+        idle_released = true;
+        idle_releases++;
+        fprintf(stderr, "moe-cache: idle: %.2f GiB of experts given back to the system (%s); the next request uses the same server\n", freed / 1073741824.0,
+                win_view ? "pages left in the file cache, read again only if another program took them" : "read again from the model file when used");
+    }
+

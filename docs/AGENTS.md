@@ -44,6 +44,7 @@ python3 bin/moe_cache.py on-demand --install-autostart        # optional: start 
 |---|---|
 | the listener | a small standard-library process (about 35 MB of RAM) on the agent port (`--port`, default 8080). It checks the API key (the stable key of `moe_cache.py key`) and allows cross-origin requests only from local pages, as agent mode does. `/health`, `/v1/models` and `/props` are answered without starting the model, so agents and `connect` can look at the endpoint for free |
 | first request | starts `moe_cache.py server MODEL --agent` with the remembered options on a private port, waits until it is ready (the request waits too; up to `--start-timeout`, 900 s) and passes everything through, streaming (SSE) included |
+| idle release (N3) | after `--idle-release` minutes (default 5, `0` = off) without a request the plugin gives the expert cache's RAM back and the server keeps running: on Windows the experts' file pages move to the standby list (PC, Flash-Next IQ2_XS: available RAM 6.8 -> 25 GB, the next request 4.4 s instead of 3.9 s, against 34 s for a restart); on Linux the experts are evicted and read again when used. The next request sets everything up again by itself |
 | idle stop | after `--idle` minutes (default 15) without a request the server is stopped and its RAM is free; a long streamed answer counts as busy. The next request starts it again (warm sessions bring the conversations back) |
 | the choice | `on-demand MODEL [launcher options] [-- llama-server args]` checks the options with a dry run and keeps them in `~/.cache/moe-cache/on-demand.json` (also `LLAMA_SERVER` and `MOE_CACHE_LIB` from your shell, since autostart has none); `on-demand` alone uses it. Any `server` option works except `--port`/`--agent` (on-demand sets them) |
 | log | one line per start and stop on the listener's output (journal on Linux); the launcher's and llama-server's output go to `~/.cache/moe-cache/on-demand.log` |
@@ -58,7 +59,7 @@ python3 bin/moe_cache.py on-demand --install-autostart        # optional: start 
 | Linux | a systemd user unit `~/.config/systemd/user/moe-cache-on-demand.service`, enabled and started (`systemctl --user enable --now`) | log: `journalctl --user -u moe-cache-on-demand`; no root. It runs while you are logged in |
 | Windows | a shortcut `moe-cache on-demand.lnk` in your Startup folder (`shell:startup`) that runs `pythonw.exe bin\moe_cache.py on-demand`, started right away too | no admin rights, no console window; the model server also runs without a window |
 
-Run `on-demand MODEL ...` (or `--port` / `--idle`) again to change the choice; restart the listener to use it (`--stop`, then
+Run `on-demand MODEL ...` (or `--port` / `--idle` / `--idle-release`) again to change the choice; restart the listener to use it (`--stop`, then
 `systemctl --user start moe-cache-on-demand` or log in again; without autostart, run `on-demand`).
 
 **Pointing the agents at it.** `connect hermes|opencode --write` uses the on-demand port when on-demand has a model (no `--url` needed). OpenCode CLI and

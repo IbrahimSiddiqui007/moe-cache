@@ -196,6 +196,21 @@ t = time.time()
 while b.active and time.time() - t < 5:     # the hung-up stream's thread ends at its next write (the fake sends every 0.3 s)
     time.sleep(0.1)
 check("no request is counted as running", b.active == 0, b.active)
+# N3: the earlier idle stage asks the plugin (in llama-server, the launcher's child) to give its cache's RAM back, once, and the server stays
+import moe_cache_ui as ui
+asked = []
+ui.child_pid, ui.ask_idle_release = (lambda pid: 4242), (lambda pid: asked.append(pid) or True)
+b.idle, b.release, b.released, b.last = 60, 0.5, False, time.time()
+threading.Thread(target=b.watch, args=(0.2,), daemon=True).start()
+t = time.time()
+while not asked and time.time() - t < 10:
+    time.sleep(0.1)
+time.sleep(1)
+check("idle release: the plugin is asked once, the server keeps running", asked == [4242] and b.state == "ready" and b.running(), (asked, b.state))
+check("idle release: logged", any("RAM goes back to the system" in x for x in lines), lines[-1:])
+c, r = req("POST", "/v1/chat/completions", chat); body = r.read().decode(); c.close()
+check("idle release: the next request is answered by the same server, and the stage is armed again", r.status == 200 and not b.released, (r.status, b.released))
+b.release = 0
 b.stop("test end")
 srv.shutdown(); srv.server_close()
 

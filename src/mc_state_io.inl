@@ -317,7 +317,7 @@
                      (unsigned long long) small_mapped, (unsigned long long) small_over);
             j = b;
             j += ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
-                 ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load());
+                 ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases);
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
             j += "],\"layer_misses\":[";
@@ -336,7 +336,13 @@
 #endif
     }
 
+    // normal teardown (the threads are alive: Linux exit, a Windows FreeLibrary without exit): stop and join them, then save and report
     ~state_t() {
+        stop_threads();
+        finish();
+    }
+
+    void stop_threads() {
         {
             std::lock_guard<std::mutex> lk(rq_mu);
             rq_stop = true;
@@ -351,6 +357,10 @@
         if (g_stats_pipe[1] >= 0) {
             close(g_stats_pipe[1]);          // wakes the snapshot thread, which then exits
         }
+        if (g_idle_pipe[1] >= 0) {
+            close(g_idle_pipe[1]);           // wakes the idle thread, which then exits (joined below: it uses this state)
+            g_idle_pipe[1] = -1;
+        }
 #elif defined(_WIN32)
         g_stats_stop = true;
         if (g_stats_event) {
@@ -358,6 +368,9 @@
         }
         if (g_save_event) {
             SetEvent(g_save_event);          // wakes the save thread, which then exits
+        }
+        if (g_idle_event) {
+            SetEvent(g_idle_event);          // wakes the idle thread, which then exits
         }
         // joined, not detached: neither may run on after this state (and its mutex) is gone; then the events can be closed
         if (stats_th.joinable()) {
@@ -375,9 +388,15 @@
             g_save_event = nullptr;
         }
 #endif
-        if (trace_f) {
-            fclose(trace_f);
+        if (idle_th.joinable()) {
+            idle_th.join();
         }
+#ifdef _WIN32
+        if (g_idle_event) {
+            CloseHandle(g_idle_event);
+            g_idle_event = nullptr;
+        }
+#endif
         {
             std::lock_guard<std::mutex> lk(pf_mu);
             pf_stop = true;
@@ -393,6 +412,13 @@
         wcv.notify_all();
         for (auto & t : workers) {
             t.join();
+        }
+    }
+
+    // the profile save and the summary lines (no thread is needed for either)
+    void finish() {
+        if (trace_f) {
+            fclose(trace_f);
         }
         if (cache_on) {
             save_profile();
@@ -463,6 +489,19 @@
                     (unsigned long long) graphs, (unsigned long long) groups, (unsigned long long) ops, (unsigned long long) h, (unsigned long long) m,
                     h + m ? 100.0 * h / (h + m) : 0.0, bytes / 1e6, (unsigned long long) evictions, resident_bytes / (double) (1u << 30),
                     auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows)).c_str() : "");
+        }
+    }
+
+    // process exit on Windows: ExitProcess has already ended every other thread before the DLL detach runs this, so a lock may be held by a dead
+    // thread and a condition variable may wait for dead waiters (llama-perplexity hung at exit forever, PC 2026-10-28, code-audit row 32). No
+    // lock, notify or join: save the profile when nothing holds `mu`, report, and leave the state allocated (its threads and mutexes cannot be
+    // destroyed safely). Linux never takes this path: its exit runs the destructor while the threads are alive
+    void exit_without_threads() {
+        if (mu.try_lock()) {
+            mu.unlock();
+            finish();
+        } else if (trace_f) {
+            fclose(trace_f);
         }
     }
 
