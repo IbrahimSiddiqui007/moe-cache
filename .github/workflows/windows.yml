@@ -55,6 +55,22 @@ jobs:
             build/win/kernel_check.exe
       - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
         run: tools/make_windows_kit.sh 0.0.0-ci
+      - name: scoop / winget manifests filled from the kit (valid JSON / YAML, hash = the zip's; nothing submitted)
+        run: |
+          python3 packaging/fill_manifests.py dist/moe-cache-v0.0.0-ci-windows-x64.zip
+          H=$(sha256sum dist/moe-cache-v0.0.0-ci-windows-x64.zip | cut -d' ' -f1)
+          python3 -c "import json,sys; j=json.load(open('dist/packaging/scoop/moe-cache.json')); assert j['architecture']['64bit']['hash']==sys.argv[1]" "$H"
+          python3 - "$H" <<'PY'
+          import glob, sys
+          fs = glob.glob("dist/packaging/winget/manifests/i/IbrahimSiddiqui007/MoeCache/0.0.0-ci/*.yaml"); assert len(fs) == 3, fs
+          inst = open([f for f in fs if f.endswith(".installer.yaml")][0]).read()
+          assert f'InstallerSha256: "{sys.argv[1].upper()}"' in inst and "moe-cache-v0.0.0-ci-windows-x64\\moe-cache.exe" in inst, inst
+          try:
+              import yaml
+              for f in fs: yaml.safe_load(open(f))
+          except ImportError:
+              print("PyYAML not installed: YAML not parsed (the PC's winget validate is the full check)")
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: win-kit
@@ -120,6 +136,11 @@ jobs:
           $od = (python bin\moe_cache.py on-demand --status 2>&1) -join "`n"
           Pop-Location
           if ($od -notmatch "No model chosen yet") { throw "kit: on-demand does not run from the kit: $od" }
+          # moe-cache.exe (winget's command) through a symlink, as winget starts it: must run the kit's moe-cache.bat (here: --shortcut, a Start-menu entry)
+          New-Item -ItemType Directory -Force $env:RUNNER_TEMP\links | Out-Null
+          New-Item -ItemType SymbolicLink -Path $env:RUNNER_TEMP\links\moe-cache.exe -Target $k\moe-cache.exe | Out-Null
+          $sc = (& $env:RUNNER_TEMP\links\moe-cache.exe --shortcut 2>&1) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $sc -notmatch "Added") { throw "kit: moe-cache.exe through a symlink did not run moe-cache.bat ($LASTEXITCODE): $sc" }
           $global:LASTEXITCODE = 0   # on-demand --status exits 1 when no model is chosen; that is the expected answer here
 
       - name: Launcher on Windows (check, dry run, core detection for pinning)

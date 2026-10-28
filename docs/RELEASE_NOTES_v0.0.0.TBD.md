@@ -10,6 +10,10 @@ moe-cache v0.0.0.TBD runs MoE models bigger than your RAM through llama.cpp's `l
 
 Check a download: `gh attestation verify <file> -R IbrahimSiddiqui007/moe-cache` (`SHA256SUMS` and `SHA256SUMS-windows` only detect corruption).
 
+## Windows: "unknown publisher"
+
+The kit is not code-signed (a certificate costs money every year; the code is open source and the zip is built by GitHub Actions from the tagged commit), so Windows may warn. Before you extract the zip: right-click it > **Properties** > tick **Unblock** > **OK**. If SmartScreen says "Windows protected your PC": **More info** > **Run anyway**. Check that your zip is the one CI built: `Get-FileHash moe-cache-v0.0.0.TBD-windows-x64.zip` in PowerShell must equal its line in `SHA256SUMS-windows` (or `gh attestation verify` as above).
+
 ## Windows quick start
 
 | Step | What to do |
