@@ -535,6 +535,8 @@ def stored_key(create=False):
         return ""
     import secrets
     k = secrets.token_urlsafe(24)
+    while k.startswith("-"):              # a key starting with "-" breaks `connect --api-key KEY` (argparse reads it as an option)
+        k = secrets.token_urlsafe(24)
     os.makedirs(os.path.dirname(KEY_FILE), mode=0o700, exist_ok=True)
     try:
         fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

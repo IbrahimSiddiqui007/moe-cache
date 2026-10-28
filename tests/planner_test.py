@@ -302,7 +302,8 @@ _meta_gguf(_fx, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 
                  ("qwen4exp.full_attention_interval", 4), ("qwen4exp.attention.indexer.key_length", 128), ("qwen4exp.ssm.inner_size", 6144),
                  ("qwen4exp.ssm.state_size", 128), ("qwen4exp.ssm.group_count", 16), ("qwen4exp.ssm.time_step_rank", 48), ("qwen4exp.ssm.conv_kernel", 4)])
 _k = gguf_plan.kv_bytes(_fx, 65536)
-check(_k is not None and abs(_k / 2**30 - 2.13) < 0.01, f"kv_bytes: Flash-Next layout at 64k = {(_k or 0) / 2**30:.3f} GiB (measured 2.13, I35)")
+_k256 = gguf_plan.kv_bytes(_fx, 262144)
+check(_k256 is not None and abs(_k256 / 2**20 - (6144 + 1536 + 450.28)) < 5, f"kv_bytes: Flash-Next layout at 256k = {(_k256 or 0) / 2**20:.0f} MiB (PC llama-server: 6144 + 1536 + 450 MiB)")
 _kq = gguf_plan.kv_bytes(_fx, 65536, kv_q8=True)
 check(_kq is not None and _kq < _k, f"kv_bytes: q8_0 KV is smaller ({(_kq or 0) / 2**30:.3f} GiB)")
 _gl = os.path.join(_md, "glm_kv.gguf")

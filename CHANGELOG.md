@@ -74,6 +74,11 @@
   `MOE_CACHE_EXEC_CHUNK=N` sets it.
 - At 128k+ context the launcher says in one line when `--fast` (q8_0 KV cache) would put 2+ more expert layers on the GPU, or let the context fit at
   all, and by how much; exact mode stays exact (f16 KV, identical to stock; owner's decision, idea N28).
+- `MOE_CACHE_STATS` reports `pool_parks` (executor workers that fell asleep); `MOE_CACHE_POOL_SPIN_US=N` keeps them spinning N us after their last job (test knob for idea N30; default unchanged until the PC ABBA).
+- Tuner at 128k-256k: llama-server's measured GPU buffers on the PC (pc-bench): the indexer cache is 2 x key_length per token (KV estimate now
+  within 1 MiB of llama-server at 256k: 6144 + 1536 + 450 MiB), compute buffers at 256k (512: 1403, 1024: 2983 MiB). -ub 2048 is not planned
+  at 128k+ (slower than 1024 on long prompts). At 256k on 16 GB, -ub 1024 does not fit next to the long-prompt block's reserve, so 512 stays
+  until a PC ABBA compares the two (N29).
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 

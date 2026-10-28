@@ -57,6 +57,10 @@ struct exec_pool_t {
     std::atomic<exec_job_t *> cur{nullptr};
     std::atomic<int> inside{0};
     std::atomic<int> parked{0};
+    std::atomic<uint64_t> parks{0};    // times a worker fell asleep (stats "pool_parks"; idea N30: each one costs an OS wake-up at the next layer)
+    // MOE_CACHE_POOL_SPIN_US=N: a worker keeps spinning N microseconds after its last job before it sleeps (0 = the fixed 40,000 pauses).
+    // The GPU part between two CPU expert layers can outlast the fixed spin, so every layer may wake the workers through the OS (N30)
+    const int spin_us = [] { const char * v = getenv("MOE_CACHE_POOL_SPIN_US"); return v ? std::max(0, std::min(1000000, atoi(v))) : 0; }();
     std::mutex m;
     std::condition_variable cv;
     exec_job_t jobs[2];
@@ -119,11 +123,16 @@ struct exec_pool_t {
                 uint32_t seen = gen.load(std::memory_order_acquire);
                 for (;;) {
                     int spins = 0;
+                    auto idle_from = std::chrono::steady_clock::now();
                     while (gen.load(std::memory_order_acquire) == seen) {
                         if (stop.load(std::memory_order_relaxed)) {
                             return;
                         }
-                        if (++spins < 40000) {
+                        ++spins;
+                        const bool keep = spin_us > 0 ? ((spins & 1023) != 0 ||
+                                                         std::chrono::steady_clock::now() - idle_from < std::chrono::microseconds(spin_us))
+                                                      : spins < 40000;
+                        if (keep) {
                             cpu_relax();
                         } else {
                             // idle: sleep until run() publishes the next job. This used to wake every 200 us and spin again, so an idle server kept
@@ -132,9 +141,11 @@ struct exec_pool_t {
                             // sequentially consistent), and run() notifies under the mutex, so the worker sees the new job or is woken
                             std::unique_lock<std::mutex> lk(m);
                             parked.fetch_add(1);
+                            parks.fetch_add(1, std::memory_order_relaxed);
                             cv.wait(lk, [&] { return stop.load() || gen.load() != seen; });
                             parked.fetch_sub(1);
                             spins = 0;
+                            idle_from = std::chrono::steady_clock::now();
                         }
                     }
                     seen = gen.load(std::memory_order_acquire);
