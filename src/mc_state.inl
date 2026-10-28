@@ -187,6 +187,7 @@ struct state_t {
     // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
     bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
     bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
+    int    exec_chunk = 32;                             // MOE_CACHE_EXEC_CHUNK=N: weight rows per pool chunk (tests, idea N25; the arithmetic per row is unchanged)
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
     int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes
@@ -555,6 +556,9 @@ struct state_t {
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
+        }
+        if (const char * v = getenv("MOE_CACHE_EXEC_CHUNK")) {
+            exec_chunk = std::max(1, std::min(4096, atoi(v)));
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE")) {
             route_mode = strcmp(v, "skip") == 0 ? 1 : (strcmp(v, "subst") == 0 ? 2 : 0);

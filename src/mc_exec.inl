@@ -502,7 +502,7 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
         }
     }
     const auto tp0 = std::chrono::steady_clock::now();
-    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, 32, nd->name);
+    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, s.exec_chunk, nd->name);
     if ((unsigned) w->type < 64) {
         s.exec_type_ns[w->type] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
         s.exec_type_ops[w->type]++;
@@ -525,7 +525,8 @@ void print_capabilities(state_t & s) {
     } else if ((s.lookahead && !s.la_exec) || s.repack_tag || s.gpu_min_tokens == 1) {
         o += std::string(" executor=off(") + (s.lookahead ? "lookahead" : s.repack_tag ? "repacked weights" : "gpu_min_tokens=1") + ")";
     } else {
-        o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") + ")";
+        o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") +
+             (s.exec_chunk != 32 ? ", " + std::to_string(s.exec_chunk) + " rows per chunk" : "") + ")";
     }
 #ifdef MC_X86_KERNELS
     o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? (q2_0_library_is_plain() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)"

@@ -67,6 +67,7 @@
   recurrent state per slot) instead of a flat 40 KB per token, which over-reserved 3-5 GiB of VRAM at 256k (idea N26). Flash-Next at 64k: 2.13 GiB,
   as measured. At 256k on a 16 GB card Flash-Next keeps 2 more expert layers on the GPU, the 122B 3 more. Layouts it does not model (MLA, GLM)
   keep the flat estimate.
+- `MOE_CACHE_EXEC_CHUNK=N` (tests): weight rows per executor chunk (default 32), to measure whether bigger chunks move the CPU expert phase closer to the memory's speed (idea N25); every row is computed the same way.
 - `tools/win_flush_cache.ps1`: empties Windows' file cache before a timed run by reading other big files (no admin, read-only), for fair stock-vs-plugin timings.
 - `tests/kernel_variants.cpp` builds and runs on Windows; skips AVX-VNNI variants on CPUs without them (Zen 4 crashed with an illegal instruction).
 
