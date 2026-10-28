@@ -53,7 +53,9 @@
 #include <dlfcn.h>
 #include <link.h>
 #endif
-#if defined(__x86_64__) && defined(__linux__)
+// the plugin's own x86 kernels (Q2_0, IQ3_XXS gather) run in its executor on Linux and Windows; only the LD_PRELOAD symbol override is Linux-only
+#if defined(__x86_64__) && (defined(__linux__) || defined(_WIN32))
+#define MC_X86_KERNELS 1
 #include "fast_q2_0.h"
 #include "fast_iq3.h"
 #endif

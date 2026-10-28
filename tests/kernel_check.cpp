@@ -1,12 +1,15 @@
 // Bit-exactness and speed check of the plugin's Q2_0 kernel.
 //   g++ -O2 -std=c++17 -Isrc tests/kernel_check.cpp -o /tmp/kernel_check -ldl && /tmp/kernel_check [/path/to/libggml-cpu.so.0]
+//   Windows (Windows CI): x86_64-w64-mingw32-g++ -O2 -std=c++17 -Isrc tests/kernel_check.cpp -o kernel_check.exe -static (built-in reference only)
 // With a library path it compares against the real ggml_vec_dot_q2_0_q8_0 of that library; without one (or when it cannot be loaded) it compares
 // against a plain C++ copy of llama.cpp's loop (same operations, same order, fused multiply-add as the compiled library uses).
 #include "fast_q2_0.h"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#ifndef _WIN32
 #include <dlfcn.h>
+#endif
 #include <random>
 #include <vector>
 
@@ -40,6 +43,7 @@ static void ref_loop(int n, float * s, size_t, const void * vx, size_t, const vo
 __attribute__((target("f16c"))) static float hw_half(unsigned short h) { return _cvtsh_ss(h); }
 int main(int argc, char ** argv) {
     dot_fn ref = nullptr;
+#ifndef _WIN32
     if (argc > 1) {
         void * h = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
         if (h) {
@@ -47,6 +51,9 @@ int main(int argc, char ** argv) {
             ref = (dot_fn) dlsym(h, "ggml_vec_dot_q2_0_q8_0");
         }
     }
+#else
+    (void) argc; (void) argv;
+#endif
     printf("reference: %s\n", ref ? "the real library function" : "built-in copy of llama.cpp's loop");
     if (!ref) ref = ref_loop;
     // the half -> float conversion must match the hardware one for all 65536 values

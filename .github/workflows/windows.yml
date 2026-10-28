@@ -44,6 +44,7 @@ jobs:
             echo "FAIL: the DLL imports a DLL that is not a system or ggml DLL"; exit 1; fi
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
           $MINGW_CXX -std=c++17 -O2 -Wall -Werror -Isrc tests/win_read_bench.cpp -o build/win/win_read_bench.exe -static
+          $MINGW_CXX -std=c++17 -O2 -Isrc tests/kernel_check.cpp -o build/win/kernel_check.exe -static     # the executor's Q2_0 kernels, as built for Windows
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: win-dll
@@ -51,6 +52,7 @@ jobs:
             build/win/ggml-moe-cache.dll
             build/win/platform_test.exe
             build/win/win_read_bench.exe
+            build/win/kernel_check.exe
 
   windows:
     needs: dll
@@ -65,6 +67,12 @@ jobs:
         with:
           name: win-dll
           path: dll
+
+      - name: Q2_0 kernels as built for Windows are bit-identical to llama.cpp's plain C loop (the executor uses them when llama.cpp has no SIMD Q2_0 kernel)
+        run: |
+          & "$env:GITHUB_WORKSPACE\dll\kernel_check.exe" | Tee-Object kernel_check.txt
+          if ($LASTEXITCODE -ne 0) { throw "kernel_check failed ($LASTEXITCODE)" }
+          if (-not (Select-String kernel_check.txt -Pattern "permuted-activation kernel: 0 mismatches" -Quiet)) { throw "permuted kernel mismatches" }
 
       - name: Platform layer natively (reserve / commit / decommit, unbuffered reads, limits)
         run: |

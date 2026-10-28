@@ -71,7 +71,7 @@ const ggml_type_traits_cpu * cpu_traits(enum ggml_type t) {
     return fn ? fn(t) : nullptr;
 }
 
-#if defined(__x86_64__) && defined(__linux__)
+#ifdef MC_X86_KERNELS
 // Q2_0 weights: the executor rearranges the quantised activation column once and uses the permuted-layout kernel (bit-identical, about 2x the other one)
 void q2_0_perm_dot(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     fastk::vec_dot_q2_0_perm_avx2(n, s, bs, vx, bx, vy, by, nrc);
@@ -90,8 +90,61 @@ ggml_vec_dot_t fast_iq3_dot() {
     }();
     return fn;
 }
-}   // namespace (the check is defined next to the interposed Q2_0 function, outside it)
-bool q2_0_library_is_plain();
+}   // namespace
+#ifdef __linux__
+extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc);
+#endif
+// llama.cpp got its own SIMD Q2_0 kernel (master, ggml-org/llama.cpp#30447; also in release b11669): it is faster than ours (96 vs 126-238 ns per
+// 2560-weight dot) and adds up in another order, so replacing it would make Q2_0 models slower and no longer identical to stock. Compare the
+// library's function with the plain C loop (which our kernels reproduce bit for bit) once; any difference means the library has its own kernel, and
+// ours stay out. The same check on Linux and Windows; only where the library's function comes from differs.
+bool q2_0_library_is_plain() {
+    static const bool plain = [] {
+        typedef void (*fn_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
+        fn_t lib = nullptr;
+#ifdef __linux__
+        lib = (fn_t) dlsym(RTLD_NEXT, "ggml_vec_dot_q2_0_q8_0");                  // preloaded: llama.cpp's own symbol behind ours
+        if (lib == (fn_t) &ggml_vec_dot_q2_0_q8_0) {
+            lib = nullptr;
+        }
+#endif
+        if (!lib) {
+            const ggml_type_traits_cpu * tt = cpu_traits(GGML_TYPE_Q2_0);         // loaded as a backend (and Windows): the CPU backend's table
+#ifdef __linux__
+            lib = tt && (fn_t) tt->vec_dot != (fn_t) &ggml_vec_dot_q2_0_q8_0 ? (fn_t) tt->vec_dot : nullptr;
+#else
+            lib = tt ? (fn_t) tt->vec_dot : nullptr;
+#endif
+        }
+        if (!lib) {
+            return true;                  // nothing to compare with: keep the measured behaviour of the supported versions
+        }
+        const int n = 64 * 40;
+        std::vector<fastk::block_q2_0> x((size_t) n / 64);
+        std::vector<fastk::block_q8_0> y((size_t) n / 32);
+        uint32_t r = 12345;
+        auto rnd = [&]() { r = r * 1664525u + 1013904223u; return r >> 8; };
+        for (int trial = 0; trial < 64; trial++) {
+            for (auto & b : x) {
+                b.d = (uint16_t) (0x2000 + rnd() % 0x2000);
+                for (auto & q : b.qs) q = (uint8_t) rnd();
+            }
+            for (auto & b : y) {
+                b.d = (uint16_t) (0x2000 + rnd() % 0x2000);
+                for (auto & q : b.qs) q = (int8_t) (rnd() % 255 - 127);
+            }
+            float a = 0.0f, b = 0.0f;
+            lib(n, &a, 0, x.data(), 0, y.data(), 0, 1);
+            fastk::vec_dot_q2_0_q8_0_avx2<true>(n, &b, x.data(), y.data());
+            if (memcmp(&a, &b, sizeof(float)) != 0) {
+                fprintf(stderr, "moe-cache: this llama.cpp has its own Q2_0 kernel (results differ from the plain C loop): using it instead of the plugin's\n");
+                return false;
+            }
+        }
+        return true;
+    }();
+    return plain;
+}
 namespace {
 bool fast_kernels_enabled() {
     static const bool on = [] {
@@ -268,7 +321,7 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
     const char * base;
     size_t stride_i11, stride_tok;       // column (token t, activation row i11) = base + i11 * stride_i11 + t * stride_tok
     ggml_vec_dot_t dot = tt->vec_dot;
-#if defined(__x86_64__) && defined(__linux__)
+#ifdef MC_X86_KERNELS
     const bool permuted = w->type == GGML_TYPE_Q2_0 && vdt == GGML_TYPE_Q8_0 && a->type == GGML_TYPE_F32 && ne10 % 64 == 0 && fast_kernels_enabled();
     if (w->type == GGML_TYPE_IQ3_XXS && vdt == GGML_TYPE_Q8_K && fast_iq3_dot()) {
         dot = fast_iq3_dot();
@@ -290,7 +343,7 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
         base = (const char *) wbuf.data();
         stride_i11 = row_size;
         stride_tok = (size_t) ne11 * row_size;
-#if defined(__x86_64__) && defined(__linux__)
+#ifdef MC_X86_KERNELS
         if (permuted) {
             const size_t nbk = (size_t) (ne10 / 32);
             const size_t ncols = (size_t) ne11 * n_tok;
@@ -422,7 +475,7 @@ void print_capabilities(state_t & s) {
     } else {
         o += " executor=on(<=" + std::to_string(EXEC_MAXCOL) + " tokens" + (s.exec_force ? ", forced" : ", steps aside when resident and bandwidth-bound") + ")";
     }
-#if defined(__x86_64__) && defined(__linux__)
+#ifdef MC_X86_KERNELS
     o += std::string(" q2_0_kernel=") + (!fast_kernels_enabled() ? (q2_0_library_is_plain() ? "off(MOE_CACHE_FAST_KERNELS=0 or no AVX2)" : "off(llama.cpp's own is faster)")
                                                                : preload ? "on(interposed)" : "executor only(not preloaded)");
     o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0 or MOE_CACHE_IQ3_KERNEL=0, no AVX2, or not Intel: MOE_CACHE_IQ3_KERNEL=1 forces it on)");
