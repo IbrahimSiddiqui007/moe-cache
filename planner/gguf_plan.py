@@ -237,7 +237,7 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     """GPU memory of llama-server's KV cache for `ctx` tokens plus the recurrent state of n_seq slots (llama-server's default 4), from the header
     as llama.cpp sizes them: attention layers (every full_attention_interval-th layer on hybrid models) x KV heads x (key + value length), one
     indexer key per token on models with a sparse-attention indexer (Flash-Next), and per slot the SSM conv + state tensors (f32) of the other layers.
-    Flash-Next at 64k: 1.50 + 0.19 + 0.44 = 2.13 GiB, as measured (I35). None for layouts this does not model (MLA, per-layer KV head lists:
+    Flash-Next at 256k, as llama-server reports it on the PC (pc-bench, 620d2225c): KV 6144 + indexer 1536 MiB, RS 450 MiB. None for layouts this does not model (MLA, per-layer KV head lists:
     GLM-5.3): the callers then keep the flat 40 KB per token (idea N26: the flat number over-reserved 3-5 GiB at 256k)."""
     try:
         m = read_meta(shards(path)[0])
@@ -258,7 +258,7 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     elem = KV_ELEM[bool(kv_q8)]
     per_tok = n_attn * kvh * (k_len + v_len) * elem
     if g("attention.indexer.key_length"):
-        per_tok += n_attn * g("attention.indexer.key_length") * elem        # one cached indexer key per token and attention layer
+        per_tok += 2 * n_attn * g("attention.indexer.key_length") * elem    # the indexer's cache: 2 x key_length per token and attention layer (PC, 256k: 1536 MiB f16)
     state = 0
     if g("ssm.inner_size"):
         inner, n_state, groups, rank, conv = (g("ssm.inner_size"), g("ssm.state_size", 0), g("ssm.group_count", 1), g("ssm.time_step_rank") or 1,
@@ -349,7 +349,10 @@ def gpu_cache_cap_mib(path, max_tensor_bytes, margin=0.97):
 
 # Measured GPU compute buffers (MiB) of Qwen3.8-Flash-Next with a q8_0 KV cache, by context (rounded up between points) and micro-batch size.
 # Other architectures differ somewhat; the numbers are the best available and the reserve below covers the usual spread.
-_COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: None}, 131072: {512: 960, 1024: 1700, 2048: 3150}}
+_COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: None}, 131072: {512: 960, 1024: 1700, 2048: None},   # 2048 measured 3150 (q8) / 3040 (f16) MiB but slower than 1024 on long prompts
+                # 256k (N29, PC llama-server 620d2225c, same with f16 or q8_0 KV): 512 1403, 1024 2983, 2048 3979 MiB. 2048 left out as at 64k:
+                # at long prompts 1024 is the faster micro-batch (34k: 277 vs 247 tok/s, RESULTS 61), and without this row 256k fell back to 512
+                262144: {512: 1403, 1024: 2983, 2048: None}}
 _PROMPT_GAIN = {512: 1.0, 1024: 1.26, 2048: 1.58}      # measured prefill speed-up of a bigger micro-batch (6k-token prompt)
 
 
