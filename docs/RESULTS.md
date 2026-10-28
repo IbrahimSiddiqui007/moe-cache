@@ -2542,3 +2542,20 @@ Text identical in all pairs (temperature 0); `MOE_CACHE_EXEC_CHECK=1`: 0 mismatc
 ops with and without forcing, so it already computes the decode expert ops; the faster kernel shows no gain because decode's expert dots
 stream their weights from RAM (bandwidth-bound) while the 1.25x was measured with data in cache. **Verdict: N20 kept (exact, same rule on
 Linux and Windows, no speed change on the PC); N20b killed (forcing the executor changes nothing).**
+
+## 64. Linux file-view cache made the default (laptop, measured 2026-10-27 night; merged 2026-10-28 under the owner's new rule)
+
+`MOE_CACHE_LINUX_VIEW` was a prototype (branch claude/linux-file-cache, killed then for being under +5 %). The owner's rule of 2026-10-28 keeps every
+gain that repeats in all ABBA pairs with exact output, so it is now the Linux default, as the file view already is on Windows (section 59);
+`MOE_CACHE_LINUX_VIEW=0` goes back to private memory and O_DIRECT reads. Experts point into a shared read-only mmap of the model; load =
+MADV_WILLNEED + MADV_POPULATE_READ, evict = MADV_COLD + MADV_DONTNEED. Qwen3.6 35B Q4_K_M under `MemoryMax=10G MemorySwapMax=0`, ncmoe 34,
+ctx 8192, cold every run, both arms the plugin, ABBABAAB:
+| | private + O_DIRECT | file view | change |
+|---|---|---|---|
+| steady decode (mean of requests 4-8, 4 runs each) | 10.60 | 11.10 | **+4.7 %** (every pair: +0.8, +8.4, +8.3, +1.8 %) |
+| first (cold) request | 8.34 | 12.43 | **+49 %** |
+| expert read time / CPU compute time | 19.5 s / 9.0 s | 11.5 s / 17.4 s | reads -41 %, compute +93 % |
+| major faults | ~500 | ~27 000 | the kernel reclaims resident view pages at the cgroup limit |
+Tokens identical in all 8 runs; granite identity 4/4 (GPU, CPU, CPU --no-repack) and 2/2 long through the view. Never map it MADV_RANDOM (Linux >= 6.3
+reclaim ignores accessed bits of such mappings: 3.4-4.0 tok/s). Open lead: the compute time doubles because reclaimed view pages fault back;
+a private cache read as fast as page-cache read-ahead would keep both gains.

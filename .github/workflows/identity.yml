@@ -148,6 +148,7 @@ jobs:
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
           grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_exec/plugin.log    # the executor really ran (it steps aside silently on repacked weights)
+          grep -q "read-only mappings of the model file" ident_exec/plugin.log || { echo "FAIL: the file-view cache (Linux default) was not used"; exit 1; }
           if [ "${{ matrix.name }}" != master-api3 ] && grep "tested with ggml" ident_exec/plugin.log; then echo "FAIL: the plugin calls this pinned (tested) ggml untested (MOE_CACHE_TESTED_GGML)"; exit 1; fi
 
       - name: Identity with GGML_CPU_TILED_MM_FORCE=1 (stock tiles every expert, so the executor must hand every op back) - API 3 rows
@@ -180,7 +181,7 @@ jobs:
           MOE_CACHE_STATS: "1"
           IDENT_KEEP: ident_small_map
           IDENT_EXTRA: "--no-repack"      # mapping needs experts stored as in the file
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.001 MOE_CACHE_DIRECT=1 MOE_CACHE_GUARD=1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.001 MOE_CACHE_DIRECT=1 MOE_CACHE_GUARD=1 MOE_CACHE_LINUX_VIEW=0"   # the private-memory path (the file view is the default)
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_small_map.txt
           grep -E "cache smaller than one op: [1-9][0-9]* experts mapped" ident_small_map/plugin.log
@@ -192,7 +193,7 @@ jobs:
           MOE_CACHE_STATS: "1"
           IDENT_KEEP: ident_small_over
           IDENT_EXTRA: "--no-repack"
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.001 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.001 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_LINUX_VIEW=0"
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_small_over.txt
           grep -E "experts mapped from the model file, [1-9][0-9]* loaded over" ident_small_over/plugin.log
@@ -362,6 +363,7 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_DIRECT: "1"
+          MOE_CACHE_LINUX_VIEW: "0"        # reads into private memory (the file view, the default, has no reads to poison)
           MOE_CACHE_TEST_POISON_READS: "1"
           MOE_CACHE_TEST_READ_DELAY_US: "2000"
           IDENT_KEEP: poison_reads
@@ -373,6 +375,7 @@ jobs:
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_DIRECT: "1"
+          MOE_CACHE_LINUX_VIEW: "0"
           MOE_CACHE_TEST_POISON_READS: "1"
           MOE_CACHE_TEST_READ_DELAY_US: "2000"
         run: |

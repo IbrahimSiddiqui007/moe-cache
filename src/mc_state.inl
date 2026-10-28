@@ -105,7 +105,7 @@ struct state_t {
 #else
     static constexpr bool win_buffered = false, win_random = false;
 #endif
-    bool   win_view = false;                    // Windows file-view cache (default on Windows, MOE_CACHE_WIN_VIEW=0 turns it off; see the constructor); never on Linux
+    bool   win_view = false;                    // file-view cache (default on Windows and Linux; MOE_CACHE_WIN_VIEW=0 / MOE_CACHE_LINUX_VIEW=0 turn it off; see the constructor)
     std::vector<const char *> views;            // win_view: one read-only view per model file (split GGUF)
     std::vector<size_t> view_sizes;
     size_t view_bytes = 0;                      // win_view: resident bytes of experts held in the views (not private memory: not in rss_private())
@@ -372,6 +372,32 @@ struct state_t {
                 plat::count_file_cache() = false;      // the views' pages are counted as the cache's own (view_bytes), not as available file cache
                 fprintf(stderr, "moe-cache: experts are kept in read-only views of the model file (%zu), held in RAM by a hard "
                                 "working-set minimum; they use no commit (RAM + page file; MOE_CACHE_WIN_VIEW=0: private memory)\n", views.size());
+            }
+        }
+#elif defined(__linux__)
+        // Linux default too (same as Windows; MOE_CACHE_LINUX_VIEW=0 goes back to private memory + O_DIRECT reads): the same file-view cache.
+        // Load = MADV_WILLNEED + MADV_POPULATE_READ, evict = MADV_COLD + MADV_DONTNEED (the pages stay in the page cache). A cgroup charges page
+        // cache like private memory, so the budget (tune(): RssAnon + view_bytes) is unchanged; no mlock (RLIMIT_MEMLOCK), the kernel may reclaim
+        // resident experts. Laptop ABBA (Qwen3.6, 10 GB cgroup): steady decode +4.7 % (every pair +0.8 to +8.4 %), first request +49 %, tokens
+        // identical (RESULTS 64); kept under the owner's rule of 2026-10-28 (every repeatable exact gain).
+        win_view = true;
+        if (const char * v = getenv("MOE_CACHE_LINUX_VIEW")) {
+            win_view = strcmp(v, "0") != 0;
+        }
+        if (win_view) {
+            for (const std::string & sp : shard_paths) {
+                size_t n = 0;
+                const char * vb = plat::file_view_map(sp.c_str(), &n);
+                if (!vb) {
+                    fprintf(stderr, "moe-cache: MOE_CACHE_LINUX_VIEW: cannot map %s read-only (%s): the cache uses private memory\n", sp.c_str(), strerror(errno));
+                    break;
+                }
+                views.push_back(vb);
+                view_sizes.push_back(n);
+            }
+            win_view = views.size() == shard_paths.size();
+            if (win_view) {
+                fprintf(stderr, "moe-cache: experts are kept in read-only mappings of the model file (%zu, page cache; MOE_CACHE_LINUX_VIEW=0: private memory)\n", views.size());
             }
         }
 #endif
