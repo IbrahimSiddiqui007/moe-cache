@@ -2319,3 +2319,48 @@ A per-mode starting profile ("code mode" preloading code experts) would only cha
 Launcher default: **no change** (the planner's long-prompt reserve is right for agent sessions; a chat-only mode could take 43, same rule on
 Linux). MTP stays as is (on in agent mode): it does not lose on GLM (code +1 %, water +10-23 %), but it gives nothing on code; a small
 follow-up: the launcher should not let MTP combine with extra GPU layers on a 16 GB card (it aborts at load).
+
+## 63. Flash-Next quant choice on the Windows PC (pc-glm, 2026-10-28): Q2_0, IQ3_S, Coder IQ1_M vs IQ2_XS / IQ3_XXS
+
+Same PC, plugin with launcher defaults (C:\moe-cache-pla 1d2d5a8 launcher, DLL 681f3bc file view), cold runs. Owner's rule: a slower file must
+earn it with clearly better quality; testing kept minimal (UD-IQ4_XS and UD-Q4_K_XL dropped after quant-research's desk review: both predicted
+under ~14 tok/s with at most ~4 tasks of headroom on this set; no KL run). Downloads: Q2_0 shard 1 and Coder IQ1_M shard 1 from Hugging Face
+(sha256 = LFS oid); the second shard of Q2_0, Coder IQ1_M and IQ2_XS is **the same file** (sha256 316b46f3...), copied locally.
+
+**Quality, 202 exact-answer tasks** (as RESULTS 60: `quality_yardstick.py run --tasks-only --no-think --task-n-predict 128`, greedy; 0 loops in every run).
+Paired sign test on the tasks that changed (two-sided, exact):
+| File | tasks right | vs IQ2_XS: right only here / only in IQ2_XS, p | vs IQ3_XXS: p |
+|---|---|---|---|
+| IQ2_XS (68.0 GB) | 187 | - | 4 / 10, p 0.18 |
+| IQ3_XXS (75.8 GB) | **193** | 10 / 4, p 0.18 | - |
+| IQ3_S (83.6 GB) | 192 | 8 / 3, p 0.23 | 3 / 4, p 1.00 |
+| Q2_0 (66.4 GB) | 191 | 8 / 4, p 0.39 | 4 / 6, p 0.75 |
+| Coder IQ1_M (58.4 GB, 256 of 512 experts) | 189 | 6 / 4, p 0.75 | 1 / 5, p 0.22 |
+No difference between any two files is proven (all p > 0.05): this set separates them only by a few tasks.
+
+**Q2_0 vs IQ2_XS speed** (cold, mirrored order IQ2_XS, Q2_0, Q2_0, IQ2_XS; both get 36 CPU expert layers, -ub 2048; auto memory ~23 GiB)
+| File | water decode tok/s | code decode tok/s | 3k prompt tok/s | 34k prompt tok/s (`--ctx 40960`) | ready |
+|---|---|---|---|---|---|
+| IQ2_XS | 21.05, 20.96 (21.01) | 21.57, 21.51 (21.54) | 251.0, 255.4 (253) | 228.0, 256.4 (242) | 45.7 s (C:) / 33.7 s (D:) |
+| Q2_0 | 21.95, 22.36 (22.16) | 22.40, 22.91 (22.66) | 283.4, 278.2 (281) | 283.3, 291.5 (287) | 33.6 s |
+| Q2_0 vs IQ2_XS | **+5.5 %** | +5.2 % | **+11 %** | **+19 %** | |
+Caveat: in the decode / 3k pair Q2_0 was on D: and IQ2_XS on C: (reader time 2.9 vs 3.6 s per request, so part of the +5 % decode may be the
+drive); the 34k pair had both on D:. Hit rates equal (98.4-98.8 %). The model card's +33 % decode / 3.4x prompt (GPU-only setup) does not
+reproduce here: decode is CPU-bound on this PC, as quant-research predicted (0 to +7 %).
+
+**Coder IQ1_M in an agent session** (OpenCode recording, one plugin run, cold; vs RESULTS 60's IQ2_XS plugin runs 74.04 / 72.84 s)
+| File | task s | first token s | follow-up first token (median) s | decode tok/s |
+|---|---|---|---|---|
+| IQ2_XS (RESULTS 60, 2026-10-27) | 73.4 | 38.6 | 2.14 | 21.2 |
+| Coder IQ1_M | **55.5 (-24 %)** | 23.7 | 1.51 | 21.24 |
+More than 10 % apart, so no ABBA (owner's rule). Its server took ~150 s to come up (IQ2_XS ~60 s): not looked into.
+
+**Table for the owner** (decode: today's water request, or RESULTS 59 ABBA where marked)
+| File | GB | decode tok/s | 3k prompt | tasks /202 | vs IQ2_XS | vs IQ3_XXS | verdict |
+|---|---|---|---|---|---|---|---|
+| Q2_0 | 66.4 | 22.16 | 281 | 191 | +1.2 tok/s (+5 %), +4 tasks (not proven) | +2.3 tok/s, -2 tasks (not proven) | **worth it: new speed pick**, replaces IQ2_XS: not slower anywhere, prompts 11-19 % faster, smaller, same or better tasks |
+| IQ2_XS | 68.0 | 21.01 (R59: 21.94) | 253 | 187 | - | | superseded by Q2_0 |
+| IQ3_XXS | 75.8 | R59: 19.86 | - | 193 | -2 tok/s (-9 %), +6 tasks (not proven) | - | **keep as the accuracy pick** (most tasks right; costs ~10 % decode) |
+| IQ3_S | 83.6 | R59: 17.28 | - | 192 | | -2.6 tok/s (-13 %), -1 task | **not worth it**: slower and bigger than IQ3_XXS for no gain (rule needed +5 tasks) |
+| Coder IQ1_M | 58.4 | 21.24 (agent) | - | 189 | agent session -24 % | -4 tasks (not proven) | **worth it for coding agents only** (half the experts; general knowledge not checked beyond these tasks) |
+| UD-IQ4_XS / UD-Q4_K_XL | 93.7 / 111.3 | not run | | | | | dropped (desk: under ~14 tok/s, little room to gain on this set) |
