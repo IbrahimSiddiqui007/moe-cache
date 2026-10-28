@@ -135,6 +135,22 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   </section>
 
   <section>
+    <h2>Other models</h2>
+    <p>A newer model that fits in RAM + VRAM, measured on the same PC. One cold run per point. It needs llama.cpp b11966 or newer (tokenizer fix).</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Model</th><th class="n">size</th><th>runs as</th><th class="n">decode tok/s</th><th class="n">long prompt tok/s</th><th class="n">tasks /202</th><th class="n">OpenCode session</th></tr></thead>
+        <tbody>
+          <tr><td><b>Nemotron 3.5 Bolt 74B-A9B</b><span class="sub">NVIDIA 2-bit QAT file</span></td><td class="n">22.0 GB</td><td>stock (fits; launcher default)</td><td class="n"><b>27.9</b><span class="sub">27.8 / 24.9 / 23.2 at 57k / 114k / 228k</span></td><td class="n"><b>595</b> at 57k<span class="sub">721 at 114k, 280 at 228k</span></td><td class="n">190</td><td class="n"><b>47.8 s</b></td></tr>
+          <tr><td>Nemotron, moe-cache forced</td><td class="n">22.0 GB</td><td>plugin</td><td class="n">22.1 at 57k<span class="sub">22.8 short</span></td><td class="n">329 at 57k</td><td class="n">–</td><td class="n">59.2 s</td></tr>
+          <tr><td>Flash-Next Q2_0 (for comparison)</td><td class="n">66.4 GB</td><td>moe-cache</td><td class="n">22.2</td><td class="n">287 at 34k</td><td class="n">191</td><td class="n">–<span class="sub">IQ2_XS 73.4 s, Coder 55.5 s</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it costs 18 % decode and 45 % prompt speed. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.</p>
+  </section>
+
+  <section>
     <h2>GLM-5.3-Flash: best setting on this PC</h2>
     <div class="scroll">
       <table>
@@ -255,7 +271,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
   </section>
 
-  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 58 to 63. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 58 to 65. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
 </div>
 
 <script>

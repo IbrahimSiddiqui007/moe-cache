@@ -127,6 +127,10 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   than on IQ2_XS (+47 %); the prompt gain is what agent sessions wait on.
   The Q2_0 numbers above were measured before the plugin's exact Q2_0 executor kernel came to Windows; with it the PC's Q2_0 decode is unchanged
   (22.2-22.7 tok/s, RESULTS 63 addendum).
+- **Other models (Windows PC, RESULTS 65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
+  so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
+  57k and 721 at 114k, 190/202 tasks (Flash-Next Q2_0 191, not proven), OpenCode session 47.8 s (the fastest measured). moe-cache forced on it is slower
+  (decode 22.1, prompt 329 at 57k): the plugin is for models bigger than memory. DeepSeek V4-Flash: not tested.
 - The plugin's Q2_0 and IQ3_XXS executor kernels run on Windows x86-64 too since 2026-10-28 (bit-identical; the Q2_0 one matches llama.cpp's own
   AVX2 Q2_0 function; no decode change on the PC because decode streams its weights from RAM, RESULTS 63 addendum). Replacing llama.cpp's own
   functions outside the executor needs `LD_PRELOAD`, which Windows does not have. The IQ3_XXS gather and AVX-512 kernels stay off on AMD
