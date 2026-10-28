@@ -70,7 +70,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Benchmark card · 2026-10-27 · Windows desktop</div>
+    <div class="eyebrow">Benchmark card · 2026-10-28 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
     <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decodes faster than stock llama-server on every model that is bigger than the RAM, with the same output text.</p>
     <div class="machine">
@@ -83,6 +83,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <div class="tile"><b>+16–47 %</b><span>decode speed on the four Qwen MoE files that do not fit in RAM</span></div>
       <div class="tile"><b>2.0×</b><span>GLM-5.3 (102 GB), 3.1× with MTP</span></div>
       <div class="tile"><b>2.0–2.4×</b><span>faster agent sessions (OpenCode, Hermes) on Flash-Next</span></div>
+      <div class="tile"><b>+54 %</b><span>decode with MTP on Qwen3.6-35B (fits in RAM; stock gains +49 %)</span></div>
       <div class="tile"><b>Same text</b><span>byte-identical output to stock on every model checked</span></div>
     </div>
   </section>
@@ -115,6 +116,37 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   </section>
 
   <section>
+    <h2>Qwen3.6-35B: a model that fits in RAM, with and without MTP</h2>
+    <p>Qwen3.6-35B-A3B Q4_K_M (20 GB) fits in the 32 GB, so the launcher runs stock llama-server for it by itself; moe-cache was forced on here to compare. MTP = the model's own multi-token-prediction head on the GPU (<code>--spec-type draft-mtp --spec-draft-n-max 2</code>).</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Server</th><th class="n">no MTP, tok/s</th><th class="n">MTP, tok/s</th><th class="n">MTP gain</th></tr></thead>
+        <tbody>
+          <tr><td>stock llama-server</td><td class="n">46.01 / 46.10</td><td class="n">68.28 / 68.92</td><td class="n up">+49 %</td></tr>
+          <tr><td>moe-cache (forced)</td><td class="n">45.57 / 45.62</td><td class="n"><b>70.29 / 70.20</b></td><td class="n up">+54 %</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Two measurements per cell, cold, PC above (RESULTS 58). About 78 % of the drafted tokens were accepted. Prompt processing is 5–8 % slower with MTP. Without MTP the plugin and stock decode at the same speed, as expected for a model that fits.</p>
+  </section>
+
+  <section>
+    <h2>Why MTP is on for some models and off for others</h2>
+    <p>With MTP a small extra head guesses the next two tokens, and the model then checks three tokens in one pass. The answer stays the same (a wrong guess is thrown away). It pays when checking three tokens costs little more than checking one. That is true when the experts the three tokens need are already in RAM or VRAM. It is not true when most of them sit on the CPU or have to be read from disk.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Model</th><th>MTP head</th><th>Measured</th><th>Launcher</th></tr></thead>
+        <tbody>
+          <tr><td>Qwen3.6-35B-A3B<span class="sub">fits in RAM</span></td><td>in the file</td><td>decode +49 % stock, <b>+54 %</b> moe-cache (table above); agent sessions 13–25 % shorter (RESULTS 60)</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
+          <tr><td>GLM-5.3-Flash<span class="sub">102 GB, bigger than RAM</span></td><td>in the file (<code>blk.45.nextn</code>)</td><td>moe-cache 4.44 → <b>6.92 tok/s</b> (3.1× stock), text identical; one cold run, drafts accepted 61 % and 100 % on its two requests. Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
+          <tr><td>Flash-Next (every quant), Qwen3.5-122B<span class="sub">bigger than RAM</span></td><td>none in the files</td><td>a separate head file (unsloth Q8_0, 4.14 GB) on Flash-Next IQ2_XS: stock <b>−15 %</b>, moe-cache <b>−38 %</b>, with 73–74 % of drafts accepted. Checking three tokens at once on CPU-held experts cost more than the drafts saved. Measured before the file-view cache, not re-run</td><td>off: no head; separate head files are not supported (dropped)</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">The launcher reads the model file: MTP is turned on only when the file has <code>blk.N.nextn</code> tensors and llama-server has <code>draft-mtp</code>; it prints one line saying why it is on or off. <code>--no-mtp</code> turns it off. Sources: RESULTS 58 (Qwen3.6, head file) and 60 (GLM).</p>
+  </section>
+
+  <section>
     <h2>Agent sessions</h2>
     <p>Recorded OpenCode (5 requests) and Hermes (7 requests) sessions were replayed against each server with the same request bodies, overlap and pauses. Each figure is the mean of two cold runs, order ABBA, with 0 errors in every replay.</p>
     <div class="scroll">
@@ -140,6 +172,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <li><b>CPU kernels.</b> On Windows both sides run llama.cpp's own CPU kernels (ggml-cpu-zen4). The gain comes from which experts are in RAM and how they are read, not from faster math.</li>
       <li><b>Cold start.</b> From a cold file cache the plugin reports ready 5.6 s later than stock (28.5 vs 22.9 s) while it loads its hot experts; the first answer wins it back. A warm restart answers 6 s sooner than stock.</li>
       <li><b>Small samples.</b> Two runs per side (one pair on GLM, one run for GLM with MTP). Run-to-run spread was under 1 tok/s on every pair.</li>
+      <li><b>MTP on models without a head.</b> Flash-Next and the 122B files have no MTP head; a separate head file made both stock and moe-cache slower (see above).</li>
     </ul>
   </section>
 
@@ -183,7 +216,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
   </section>
 
-  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 59 and 60. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 58, 59 and 60. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
 </div>
 
 <script>
