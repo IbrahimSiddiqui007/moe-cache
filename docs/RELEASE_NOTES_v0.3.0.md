@@ -1,18 +1,18 @@
-moe-cache v0.0.0.TBD runs MoE models bigger than your RAM through llama.cpp's `llama-server`. The output is identical to stock llama.cpp. **On Windows it is now faster than stock** on every model we measured, and this is the first release with a **Windows kit** (experimental).
+moe-cache v0.3.0 runs MoE models bigger than your RAM through llama.cpp's `llama-server`. The output is identical to stock llama.cpp. **On Windows it is now faster than stock** on every model we measured, and this is the first release with a **Windows kit** (experimental).
 
 ## Downloads
 
 | File | For |
 |---|---|
-| `moe-cache-v0.0.0.TBD-windows-x64.zip` | Windows 10/11 x64 with the official llama.cpp release (Vulkan, CPU; tested b11669). Unzip, double-click `moe-cache.bat`. Read `README_WINDOWS.txt` first |
-| `moe-cache-v0.0.0.TBD-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 7fe450e19 (ggml 0.25) |
-| `moe-cache-v0.0.0.TBD-ggml0.26-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 23b0202a1 or newer (ggml 0.26 / 0.27) |
+| `moe-cache-v0.3.0-windows-x64.zip` | Windows 10/11 x64 with the official llama.cpp release (Vulkan, CPU; tested b11669). Unzip, double-click `moe-cache.bat`. Read `README_WINDOWS.txt` first |
+| `moe-cache-v0.3.0-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 7fe450e19 (ggml 0.25) |
+| `moe-cache-v0.3.0-ggml0.26-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 23b0202a1 or newer (ggml 0.26 / 0.27) |
 
 Check a download: `gh attestation verify <file> -R IbrahimSiddiqui007/moe-cache` (`SHA256SUMS` and `SHA256SUMS-windows` only detect corruption).
 
 ## Windows: "unknown publisher"
 
-The kit is not code-signed (a certificate costs money every year; the code is open source and the zip is built by GitHub Actions from the tagged commit), so Windows may warn. Before you extract the zip: right-click it > **Properties** > tick **Unblock** > **OK**. If SmartScreen says "Windows protected your PC": **More info** > **Run anyway**. Check that your zip is the one CI built: `Get-FileHash moe-cache-v0.0.0.TBD-windows-x64.zip` in PowerShell must equal its line in `SHA256SUMS-windows` (or `gh attestation verify` as above).
+The kit is not code-signed (a certificate costs money every year; the code is open source and the zip is built by GitHub Actions from the tagged commit), so Windows may warn. Before you extract the zip: right-click it > **Properties** > tick **Unblock** > **OK**. If SmartScreen says "Windows protected your PC": **More info** > **Run anyway**. Check that your zip is the one CI built: `Get-FileHash moe-cache-v0.3.0-windows-x64.zip` in PowerShell must equal its line in `SHA256SUMS-windows` (or `gh attestation verify` as above).
 
 ## Windows quick start
 

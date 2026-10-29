@@ -9,11 +9,13 @@
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
+  moe_cache.py --version                                                   print the moe-cache version
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
 import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request
 
+VERSION = "0.3.0"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
@@ -1748,7 +1750,7 @@ def check(argv):
     def ok(k, m): say(f"  [ OK ] {k:<22} {m}")
     def warn(k, m): say(f"  [WARN] {k:<22} {m}"); n["warn"] += 1
     def fail(k, m): say(f"  [FAIL] {k:<22} {m}"); n["fail"] += 1
-    say("moe-cache check")
+    say(f"moe-cache {VERSION} check")
     import platform
     if sys.platform.startswith("linux"):
         ok("system", "Linux " + platform.release())
@@ -1973,6 +1975,9 @@ def main():
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
+    if sys.argv[1:2] in (["--version"], ["-V"], ["version"]):
+        say(f"moe-cache {VERSION}")
+        return 0
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         say(__doc__.strip())
         return 0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 1

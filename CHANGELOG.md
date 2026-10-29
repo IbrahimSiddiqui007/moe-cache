@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.0.0.TBD (2026-10-28)
+## 0.3.0 (2026-10-29)
 
 ### Agents
 - **Warm-session saves scale with the file** (idea N27): a save rewrites the whole slot (~1.7 GB at 64k, ~7 GB at 256k on Flash-Next) and llama-server answers nothing while it writes. The saver now waits 20 s + 20 s per GB of idle time, and a conversation that grew only a little since its last save waits 3 min + 30 s per GB (at most 10 min); the older file restores exactly (llama-server processes only the newer tokens). tests/warm_test.py (fake server) in both CIs.
@@ -102,6 +102,15 @@
   memory and Linux does not OOM. `--max-ram GB` / `MOE_CACHE_MAX_RAM_GB` change it (0 = off); `--ram` cannot go above it; the cap is printed
   at start (launcher and plugin). The Windows working-set minimum follows the capped cache budget. The cap is kept by planning only, never by
   stopping a running server.
+- **AMD Vulkan: the plugin reads its split's inputs from the GPU asynchronously** (one wait at compute instead of one per tensor): decode
+  +12 % on the PC (Flash-Next Q2_0, 22.7 -> 25.6 tok/s after a 34k prompt; every ABBA pair, text identical; RESULTS 67, idea N15).
+  `MOE_CACHE_ASYNC_IN=0` goes back; default on for AMD Vulkan.
+- Tuner: contexts past the largest measured one scale the compute buffer from that row instead of a flat 0.55 GB, which at 256k had left the
+  long-prompt GPU block no room and halved prefill (RESULTS 67, T0a).
+- The launcher passes the model card's sampling settings (temperature, top-p, top-k, min-p, presence penalty) for Qwen3 / Qwen3-Next /
+  Qwen3.5 / 3.6 / 3.8 and GLM, thinking or non-thinking as chosen; `--agent` takes the card's coding values. Values after `--`, in the GGUF or
+  in a request still win; `--no-sampling-defaults` turns it off (I45).
+- docs/WINDOWS.md: what to do after a driver timeout, LiveKernelEvent 141 or sleep during a long run (T6).
 - **Fixed: a program with the plugin could hang at exit on Windows and could not be killed** (llama-perplexity, found by R11; llama-server is
   normally killed, so it never showed there): Windows ends every other thread before the DLL's teardown ran, which then locked, notified and joined
   threads that were already gone. While the process exits the plugin now only saves the profile and prints its summary; otherwise (Linux exit,
