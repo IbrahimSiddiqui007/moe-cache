@@ -46,7 +46,7 @@ Ollama user? The models in `ollama list` are plain GGUF files: the path is on th
 
 | | Best if | What you do |
 |---|---|---|
-| **A. Prebuilt** (2 minutes) | you already have a matching `llama-server` (Arch `llama.cpp-cuda`, a build from commit 7fe450e19) | download `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases), then `tar xzf` it and `cd` into the folder. Releases built by CI can be verified: `gh attestation verify FILE.tar.gz -R IbrahimSiddiqui007/moe-cache` |
+| **A. Prebuilt** (2 minutes) | you already have a `llama-server` built with shared ggml libraries | download from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` (llama.cpp 23b0202a1 and newer: ggml 0.26 / 0.27, current releases) or `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` (older: ggml 0.24 / 0.25, up to commit 7fe450e19, e.g. Arch `llama.cpp-cuda`; `bin/moe-cache-check` tells which fits), then `tar xzf` it and `cd` into the folder. Releases built by CI can be verified: `gh attestation verify FILE.tar.gz -R IbrahimSiddiqui007/moe-cache` |
 | **B. One script** (10 to 20 minutes) | fresh Ubuntu / Debian, nothing installed | `git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache && ./install.sh` (add `--vulkan` for AMD / Intel / NVIDIA through Vulkan). It builds the matching llama.cpp and the plugin and prints the next commands. It has only been tried on Arch with `--no-apt` so far: please report problems. |
 | **C. From source** | you want to build it yourself | `git clone ... && cd moe-cache && ./build.sh` (needs g++; finds `libggml-base.so` next to your llama-server, or set `GGML_LIB_DIR`) |
 

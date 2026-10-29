@@ -19,7 +19,7 @@ defaults:
 
 jobs:
   build:
-    # Ubuntu 22.04 on purpose: the tarball then needs only glibc 2.34 or older and libstdc++ of GCC 11 or newer
+    # Ubuntu 22.04 on purpose: the tarball then needs glibc 2.35 or newer (checked below after the build) and libstdc++ of GCC 12 or newer
     runs-on: ubuntu-22.04
     permissions:
       contents: write       # create the release and upload files
@@ -46,7 +46,7 @@ jobs:
       - name: Check scripts
         run: |
           for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do case "$f" in *.bat) continue;; esac; bash -n "$f"; done   # bin/moe-cache-ui.bat is not a shell script
-          python3 -m py_compile bin/moe_cache.py bin/moe_cache_on_demand.py planner/plan.py planner/gguf_plan.py tests/ident.py
+          python3 -m py_compile bin/*.py planner/*.py tests/ident.py     # every launcher part (the UI and on-demand were left out before)
           # a tagged release must not install an older moe-cache when install.sh is run on its own
           if [ "${GITHUB_REF_TYPE}" = tag ]; then
             grep -q "MOE_CACHE_REF:-${GITHUB_REF_NAME}}" install.sh || { echo "install.sh MOE_CACHE_REF does not match ${GITHUB_REF_NAME}: bump it with the version"; exit 1; }
@@ -67,6 +67,19 @@ jobs:
         env:
           V: ${{ steps.v.outputs.version }}
         run: tools/make_release.sh "$V"
+
+      - name: The prebuilt libraries need no newer glibc / libstdc++ than README and QUICKSTART say (glibc 2.35, libstdc++ of GCC 12)
+        run: |
+          for t in dist/moe-cache-v*-linux-x86_64.tar.gz; do
+            d=$(mktemp -d); tar -C "$d" -xzf "$t" --wildcards '*/build/libggml-moe-cache.so'
+            so=$(ls "$d"/*/build/libggml-moe-cache.so)
+            g=$(objdump -T "$so" | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sed 's/GLIBC_//' | sort -V | tail -1)
+            x=$(objdump -T "$so" | grep -oE 'GLIBCXX_[0-9.]+[0-9]' | sed 's/GLIBCXX_//' | sort -V | tail -1)
+            echo "$t: needs glibc $g, libstdc++ GLIBCXX_${x:-none}"
+            [ "$(printf '%s\n' "$g" 2.35 | sort -V | tail -1)" = 2.35 ] || { echo "FAIL: $t needs glibc $g; README/QUICKSTART say 2.35 or newer"; exit 1; }
+            [ -z "$x" ] || [ "$(printf '%s\n' "$x" 3.4.30 | sort -V | tail -1)" = 3.4.30 ] || { echo "FAIL: $t needs GLIBCXX_$x; the docs say libstdc++ of GCC 12"; exit 1; }
+            rm -rf "$d"
+          done
 
       - name: Attest build provenance
         if: github.ref_type == 'tag'   # a manual run on a branch must not get the same signature as a release

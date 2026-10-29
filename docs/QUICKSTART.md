@@ -43,7 +43,8 @@ The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_
 ## 1. Get it (2 minutes)
 
 **Option A, prebuilt plugin (no compiler needed):** download the newest `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` from the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases), check it against `SHA256SUMS`, unpack it and `cd` into the folder. Releases built by GitHub Actions (v0.1.3 and later) can also be verified with `gh attestation verify moe-cache-vX.Y.Z-linux-x86_64.tar.gz -R IbrahimSiddiqui007/moe-cache`, which proves the file was built from the tagged commit.
-The plugin in it needs glibc 2.14 or newer and a libstdc++ from GCC 12 or newer (any distro from about 2022 on) and a llama.cpp built with shared ggml libraries.
+The plugin in it needs glibc 2.35 or newer and a libstdc++ from GCC 12 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later; the release workflow checks this) and a llama.cpp built with shared ggml libraries.
+Each release has two Linux files; take the one that matches your llama.cpp's ggml: `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` for ggml 0.26 / 0.27 (llama.cpp 23b0202a1 and newer, current official releases), `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` for ggml 0.24 / 0.25 (up to commit 7fe450e19). `bin/moe-cache-check` says so when the plugin and your llama-server do not match.
 
 **Option B, build it yourself:**
 
