@@ -276,7 +276,8 @@ def _kv_or_flat(path, ctx, kv_q8=False):
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout.split(",")
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+        out = out.strip().splitlines()[0].split(",")    # one line per GPU: the first, as plan.py (with two GPUs the whole text failed to parse: no GPU)
         return (float(out[0]) - float(out[1])) * 1048576
     except Exception:
         pass
