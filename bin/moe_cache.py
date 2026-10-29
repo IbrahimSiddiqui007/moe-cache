@@ -30,6 +30,20 @@ def which(prog):
     return shutil.which(prog) or prog
 
 
+def default_llama_server():
+    """llama-server when --llama-server is not given: LLAMA_SERVER, else the one on the PATH, else where the docs put it (Windows: the official
+    release unpacked to C:\\llama; Linux: install.sh's default prefix), else plain "llama-server" (check then says it is missing)."""
+    if os.environ.get("LLAMA_SERVER"):
+        return os.environ["LLAMA_SERVER"]
+    if shutil.which("llama-server"):
+        return "llama-server"
+    for c in ([r"C:\llama\llama-server.exe"] if WINDOWS else
+              [os.path.join(os.path.expanduser("~"), "moe-cache-setup", "llama.cpp", "build", "bin", "llama-server")]):
+        if os.path.isfile(c):
+            return c
+    return "llama-server"
+
+
 # ---- how a llama-server loads the plugin ----
 
 def ldd(path):
@@ -1036,7 +1050,7 @@ def server(argv):
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
     ap.add_argument("--max-ram", type=gb_arg)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
+    ap.add_argument("--llama-server", default=default_llama_server())
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2"]); ap.add_argument("--hybrid", action="store_true")
@@ -1654,7 +1668,7 @@ def learn(argv):
                                  "moe-cache-server loads it automatically (same default path)")
     ap.add_argument("model"); ap.add_argument("--name", default=""); ap.add_argument("--ram", default="20"); ap.add_argument("--n-cpu-moe", default="999")
     ap.add_argument("--tokens", type=int, default=150); ap.add_argument("--prompts", default=os.path.join(HERE, "tools", "learn_prompts.txt"))
-    ap.add_argument("--out"); ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server")); ap.add_argument("--port", type=int, default=8097)
+    ap.add_argument("--out"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--port", type=int, default=8097)
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     a = ap.parse_args(argv)
     if not WINDOWS:
@@ -1741,7 +1755,7 @@ def project(argv):
 
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
-    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server")); ap.add_argument("--ram")
+    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram")
     ap.add_argument("--run", action="store_true", help="also start llama-server with the plugin and a small cache for one short request (about a minute): "
                     "proves the cache really computes on this machine")
     a = ap.parse_args(argv)
@@ -1779,7 +1793,8 @@ def check(argv):
             ok("cpu pinning", "no hybrid cores: no pinning")
     lsp = shutil.which(a.llama_server)
     if not lsp:
-        fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
+        fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH" +
+             (r" (or unpack the official llama.cpp release to C:\llama)" if WINDOWS else " (or run ./install.sh, or put llama-server on the PATH)"))
     else:
         try:
             v = subprocess.run([lsp, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
