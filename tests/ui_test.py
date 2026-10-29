@@ -78,7 +78,7 @@ check(p["kind"] == "stock" and "fits in RAM" in p["verdict"], f"model + 1.5 GB u
 check(any("RESULTS 44" in r for r in p["reasons"]), "stock: says why stock is faster")
 check(p["summary"].startswith("Stock llama-server: the model") and "fastest" in p["summary"], f"summary: why stock ({p['summary']})")
 p = ui.plan_model(small["path"], ram="1")
-check(p["kind"] == "cache" and p["verdict"] == "does not fit: moe-cache exact", f"over the budget: moe-cache exact ({p['verdict']})")
+check(p["kind"] == "cache" and p["verdict"] == "runs with moe-cache (bigger than free RAM)", f"over the budget: runs with moe-cache, said as what happens ({p['verdict']})")
 check(any("10 of 48 layers keep their experts on the GPU" in r for r in p["reasons"]), "reasons: GPU layers from the tuner (as the launcher)")
 check(any("holds 33 %" in r for r in p["reasons"]), "reasons: share of the CPU experts the cache holds")
 check(any(r.startswith("tuner: ") for r in p["reasons"]), "reasons: the tuner's own lines")
@@ -757,6 +757,100 @@ try:
 finally:
     ui.subprocess.run = real_run
 check(seen and seen[0][seen[0].index("--ram-gib") + 1] == "18.626", f"the page passes --ram 20 GB to the planner as 18.626 GiB ({seen})")
+
+# ---- v0.3.2 page fixes: draft heads are not models, the verdict is not an error, readable selected buttons, the "Which model?" card ----
+import re, shutil, subprocess
+def tgguf(path, tensors):
+    def gs(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    kv = gs("general.architecture") + struct.pack("<I", 8) + gs("tst")
+    ti = b"".join(gs(n) + struct.pack("<IQIQ", 1, 8, 0, 32 * i) for i, n in enumerate(tensors))
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), 1) + kv + ti
+    open(path, "wb").write(head + b"\0" * (-len(head) % 32) + b"\0" * 32 * len(tensors))
+hm = os.path.join(TMP, "heads"); os.makedirs(hm)
+tgguf(os.path.join(hm, "Full-Q4_K_M.gguf"), ["blk.0.attn_q.weight", "blk.1.attn_q.weight", "blk.1.nextn.eh_proj.weight"])          # a model that carries its own MTP layer
+tgguf(os.path.join(hm, "Drafty-Q8_0.gguf"), ["blk.1.nextn.eh_proj.weight", "blk.1.nextn.enorm.weight", "blk.1.attn_q.weight"])      # only the head's layer: not a model
+open(os.path.join(hm, "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"), "wb").write(b"GGUF" + b"\0" * 60)                                         # named as a head
+open(os.path.join(hm, "Broken-Q4.gguf"), "wb").write(b"GGUF" + b"\0" * 60)                                                           # unreadable header: still listed
+hn = [m["name"] for m in ui.find_models([hm])]
+check(hn == ["Broken-Q4", "Full-Q4_K_M"], f"draft / MTP heads are not in the models list (mtp- name, nextn-only tensors); a model with its own head stays ({hn})")
+check(not ui.picker.is_draft_head(os.path.join(hm, "Full-Q4_K_M.gguf")) and ui.picker.is_draft_head(os.path.join(hm, "Drafty-Q8_0.gguf")), "is_draft_head: by tensors")
+fl = ui.picker.find_local([hm], []); check("qwen3.6-35b" not in fl, "the picker's local models skip draft heads too")
+os.rename(os.path.join(hm, "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"), os.path.join(hm, "mtp-Qwen3.6-35B-A3B-Q8_0.gguf"))
+check("qwen3.6-35b" not in ui.picker.find_local([hm], []), "an mtp- file named like Qwen3.6 is not taken for the Qwen3.6 model")
+
+# verdict wording: what will happen, no 'does not fit', and the colour of the 'cache' class is not a warning colour
+for md_, ram_ in (("exact", "1"), ("fast", "1"), ("hybrid", "1")):
+    pv = ui.plan_model(small["path"], ram=ram_, mode=md_)
+    check(pv["verdict"].startswith("runs with moe-cache") and "does not fit" not in pv["verdict"] and "bigger than free RAM" in pv["verdict"], f"verdict ({md_}): {pv['verdict']}")
+check("does not fit" not in ui.plan_model(small["path"], ram="1", engine="stock")["verdict"], "verdict (--stock, bigger than RAM): no 'does not fit'")
+
+# colours: WCAG contrast of the segmented buttons and the card colours, in the light and the dark theme (parsed from the page's CSS)
+html = open(ui.PAGE, encoding="utf-8").read()
+def theme_vars(block):
+    return dict(re.findall(r"--([\w-]+):\s*(#[0-9a-fA-F]{6})", block))
+light = theme_vars(re.search(r"^:root \{(.*?)\}", html, re.M | re.S).group(1))
+dark = theme_vars(re.search(r":root\[data-theme=dark\] \{(.*?)\}", html, re.S).group(1))
+darkmq = theme_vars(re.search(r"prefers-color-scheme: dark\) \{ :root:not\(\[data-theme=light\]\) \{(.*?)\} \}", html, re.S).group(1))
+check(dark == darkmq and "on-ink" in light and "on-ink" in dark, "the dark theme variables are the same in the media query and in data-theme=dark")
+def lum(h):
+    c = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+def contrast(a, b):
+    la, lb = sorted((lum(a), lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+def rule(sel):
+    """declarations of the LAST rule whose selector is exactly `sel` (the cascade: later wins at equal specificity)"""
+    found = [m.group(1) for m in re.finditer(r"(?:^|\})\s*" + re.escape(sel) + r"\s*\{([^}]*)\}", html)]
+    assert found, sel
+    return dict((k.strip(), v.strip()) for k, v in (d.split(":", 1) for d in found[-1].split(";") if ":" in d))
+def resolve(v, t):
+    m = re.fullmatch(r"var\(--([\w-]+)\)", v)
+    return t[m.group(1)] if m else v
+pairs = [("selected", ".seg button.on", "background", "color"), ("selected, disabled", ".seg button.on:disabled", "background", "color")]
+for nm, t in (("light", light), ("dark", dark)):
+    for what, sel, bgk, fgk in pairs:
+        r_ = rule(sel); c = contrast(resolve(r_[bgk], t), resolve(r_[fgk], t))
+        check(c >= 4.5, f"{nm} theme, segmented button {what}: text/background contrast {c:.1f} (>= 4.5)")
+    hov = rule(".seg button:hover:not(:disabled):not(.on)"); c = contrast(resolve(hov["background"], t), resolve(hov["color"], t))
+    check(c >= 4.5, f"{nm} theme, segmented button hover: contrast {c:.1f}")
+    c = contrast(t["panel"], resolve(rule(".seg button:disabled")["color"], t)); check(c >= 4.5, f"{nm} theme, segmented button disabled on the panel: contrast {c:.1f}")
+    c = contrast(t["panel"], t["text"]); check(c >= 4.5, f"{nm} theme, unselected segmented button text on the panel: contrast {c:.1f}")
+    for nm2 in ("warn", "muted", "text", "bad"):
+        for bg in ("panel", "bg"):
+            c = contrast(t[bg], t[nm2]); check(c >= 4.5, f"{nm} theme, --{nm2} on --{bg} (card, model list): contrast {c:.1f}")
+check(resolve(rule(".cache")["color"], light) == light["text"], "the 'runs with moe-cache' class is neutral text, not the warning colour")
+check("seg button.on { background:var(--accent); color:#fff" not in html and "color:var(--bg)" not in rule(".seg button.on").get("color", ""), "no leftover selected rule with the page background as text colour")
+
+# the Mode texts: Exact keeps the default but no 'identical'; Fast says what it changes
+check("Exact: same output as stock llama.cpp (default)" in html and "identical" not in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Exact wording, no 'identical'")
+check("about 1 token in 40-50 comes out different" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Fast says what it changes")
+
+# the card: run the page's own loadPick() under node with a stub DOM and look at the HTML it builds
+node = shutil.which("node")
+if node:
+    spec2 = dict(fake_spec, local={}, disk_kind="HDD")
+    jj = {"machine": spec2, "lines": ui.picker.spec_lines(spec2), "recommendations": [ui.picker.recommend(spec2, "agents")]}     # what /api/pick sends
+    src = re.search(r"async function loadPick\(\) \{.*?\n\}\n", html, re.S).group(0)
+    harness = ("const esc = s => String(s).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n"
+               "const fmtGB = b => (b / 1e9).toFixed(1) + ' GB'; const S = { pickuse: 'agents' }; const els = {};\n"
+               "const $ = id => els[id] || (els[id] = { hidden: false, textContent: '', innerHTML: '', value: '' });\n"
+               "const api = async () => (" + json.dumps(jj) + ");\n" + src + "\nloadPick().then(() => console.log(JSON.stringify({ html: els.pickres.innerHTML, btn: els.pickapply.textContent, hidden: els.pickapply.hidden })));\n")
+    hf = os.path.join(TMP, "card.js"); open(hf, "w", encoding="utf-8").write(harness)
+    out = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        card = json.loads(out.stdout.strip().splitlines()[-1])["html"]
+    except Exception:
+        card = ""; print(out.stdout[-300:], out.stderr[-500:])
+    check(card.count("<h5>") >= 1 and "Your machine" in card and all(f"<td>{k}</td>" in card for k in ("RAM", "GPU", "Disk", "CPU", "llama.cpp")), "card: a 'Your machine' table with RAM, GPU, Disk, CPU, llama.cpp")
+    check(len(re.findall(r'<div class="name">', card)) == 1 and 'class="nums"' in card and "decode" in card and "tok/s" in card, "card: the recommendation is one bold name line with its measured numbers")
+    check('class="why"' in card and 'class="alts"' in card or jj["recommendations"][0]["alternatives"] == [], "card: a Why line and the alternatives as a list")
+    dm = re.search(r"<details>.*</details>", card, re.S)
+    check(bool(dm) and "pwarn" in dm.group(0) and "pwarn" not in card[:dm.start()] and 'class="err"' not in card, "card: warnings sit in the collapsed details, in the one warning colour (no red 'err')")
+    check(card.count("<br>") == 0, "card: no run-together <br> text wall")
+    check('<div class="pickcard"><div id="pickres">' in html and re.search(r'class="pickact"><button id="pickapply"', html), "card: the Use it button is inside the card, in its own action row")
+else:
+    print("  skip card test: node not found")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

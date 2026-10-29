@@ -83,7 +83,7 @@ def size_of(path):
 
 
 def scan_folder(folder, depth=4):
-    """GGUF models below `folder`: split models once (their first part), projector files (mmproj) left out."""
+    """GGUF models below `folder`: split models once (their first part), projector files (mmproj) and MTP / draft heads (not models) left out."""
     out = []
     folder = os.path.abspath(os.path.expanduser(folder))
     if not os.path.isdir(folder):
@@ -100,6 +100,8 @@ def scan_folder(folder, depth=4):
             if m and m.group(1) != "00001":
                 continue
             p = os.path.join(root, f)
+            if picker.is_draft_head(p):
+                continue
             out.append({"path": p, "name": re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", f), "size": size_of(p), "quant": quant_of(f), "source": folder})
     return out
 
@@ -464,7 +466,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
                       "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": tuned["ub"] if tuned else None,
                       "experts": plan["experts"], "used": plan["used"], "arch": plan["arch"]}
     if stock and not stock_fits:
-        out.update(kind="stock", verdict="does not fit: stock llama-server, as asked (to compare)")
+        out.update(kind="stock", verdict="runs stock llama-server, as asked (bigger than free RAM; to compare)")
         R.append("--stock: no plugin; experts that are not in the file cache are read from the SSD by the OS (usually much slower than moe-cache "
                  "when the model is bigger than RAM; run the Quick benchmark in both to see it)")
     elif stock:
@@ -474,15 +476,15 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
         out.update(kind="gpu", verdict="all experts fit on the GPU")
         R.append("every layer of experts fits in VRAM next to the rest of the model: the cache has nothing to manage")
     else:
-        name = {"fast": "moe-cache --fast", "hybrid": "moe-cache --hybrid (experimental)"}.get(mode, "moe-cache exact")
-        why = "moe-cache was asked (--always-plugin)" if mode == "exact" else mode + " needs the plugin"
-        out.update(kind="cache", verdict=("fits in RAM, but " + why + ": " if stock_fits else "does not fit: ") + name)
+        name = {"fast": "moe-cache --fast", "hybrid": "moe-cache --hybrid"}.get(mode, "moe-cache")
+        why = "you chose --always-plugin" if mode == "exact" else mode + " needs the plugin"
+        out.update(kind="cache", verdict=f"runs with {name} (fits in RAM, but {why})" if stock_fits else f"runs with {name} (bigger than free RAM)")
         if mode == "fast":
             R.append("--fast skips low-ranked experts that are not in RAM: about +10 %, about 1 token in 40-50 differs from stock")
         elif mode == "hybrid":
             R.append("--hybrid computes the most used experts on the GPU from a bank, the rest on the CPU (output differs from stock)")
         else:
-            R.append("exact: output identical to stock llama-server; experts that are not in RAM are read from the SSD")
+            R.append("exact: same output as stock llama.cpp; experts that are not in RAM are read from the SSD")
     if gpu_layers:
         R.append(f"{gpu_layers} of {layers} layers keep their experts on the GPU ({plan['free_vram_GiB']:.1f} GiB free VRAM)")
     elif out["kind"] != "stock" or plan["free_vram_GiB"] == 0:

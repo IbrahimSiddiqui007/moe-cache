@@ -69,13 +69,15 @@ pane's Agent sessions; Log tab → the Log card.
 The list shows every `.gguf` file in your model folders: `~/models` (on Windows also `C:\models`), any folder you add with **Add folder**, and
 Ollama's model store if you have Ollama. A model split into several files is listed once. **Rescan** reads the folders again.
 
+Draft / MTP head files (a name that starts with `mtp-`, or a GGUF that holds only the head's tensors) are not models and are not listed.
+
 Each model shows its size, its quantisation (for example `Q4_K_M`) and a verdict:
 
 | Verdict | Meaning |
 |---|---|
 | **fits in RAM: stock llama-server (fastest)** | the model plus 1.5 GB fits in the memory it may use: the launcher runs plain llama-server without the plugin, which is faster when everything fits |
-| **does not fit: moe-cache exact** | the model is bigger than that: the plugin keeps the most used experts in RAM and reads the rest from the SSD; the answers are exactly the same as stock llama-server's |
-| **does not fit: moe-cache --fast** / **--hybrid** | the same, with the faster but approximate mode you picked in Settings |
+| **runs with moe-cache (bigger than free RAM)** | the model is bigger than that: the plugin keeps the most used experts in RAM and reads the rest from the SSD; the output is the same as stock llama.cpp's. This is how it is meant to run, not an error |
+| **runs with moe-cache --fast** / **--hybrid (bigger than free RAM)** | the same, with the faster but approximate mode you picked in Settings |
 | **all experts fit on the GPU** | every expert fits in your graphics card's memory: nothing for the cache to do |
 | **cannot plan this model** | the planner could not read it (for example not a MoE model); the reason is shown |
 
@@ -98,7 +100,7 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 | RAM budget | the memory (GB) the model may use (`--ram`) | empty: what is free when it starts |
 | VRAM | graphics memory (GiB) the planner may use (`--vram`) | auto: detected at start |
 | Context | how much text the model keeps in view: 8k, 32k or 64k tokens | 8k (64k in Agent mode) |
-| Mode | **Exact**: answers identical to stock llama-server. **Fast** (`--fast`): skips rarely needed experts that are not in RAM, about +10 % speed, about 1 token in 40-50 differs. **Hybrid** (`--hybrid`, experimental): most used experts on the GPU, the rest on the CPU, answers differ from stock | Exact |
+| Mode | **Exact**: same output as stock llama.cpp. **Fast** (`--fast`): skips experts that are rarely needed and not in RAM; about 10 % faster, about 1 token in 40-50 comes out different. **Hybrid** (`--hybrid`, experimental): most used experts on the GPU, the rest on the CPU, answers differ from stock | Exact |
 | Run as | **Auto**: stock llama-server when the model fits in RAM (faster then), moe-cache when it does not. **moe-cache** (`--always-plugin`): the plugin even when the model fits. **Stock** (`--stock`): no plugin even when the model does not fit (Mode is Exact then). The last two are for comparing the two on your machine (section 9) | Auto |
 | MTP | multi-token prediction with the model's own draft head (Qwen3.6, GLM-5.3 have one): same answers, faster replies (Qwen3.6 on the desktop PC: +54 % decode). **Auto**: on in Agent mode when the model has the head and your llama-server supports it. **On** (`--mtp`) / **Off** (`--no-mtp`). The plan's Why list says what will happen; the Status panel shows "+ MTP" when it is on (GLM-5.3 on the desktop PC: 4.4 -> 6.9 tok/s, same text) | Auto |
 | Agent mode | for coding agents (`--agent`): 64k context, tool calls, saved conversations, an API key | off |

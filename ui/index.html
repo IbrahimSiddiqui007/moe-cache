@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moe-cache</title>
 <style>
-:root { --bg:#f8efc9; --panel:#fffbe8; --line:#d8c98f; --text:#2a1b14; --muted:#645241; --accent:#c8442a; --ok:#2f7a45; --warn:#9a5a10; --bad:#b32e1c; --gpu:#5f4796; --code:#efe2aa; --side:#a9c4d4; --top:#6b99b3; --ink:#2a1b14; --shade:rgba(42,27,20,.28); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --shade:rgba(0,0,0,.45); } }
-:root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --shade:rgba(0,0,0,.45); }
+:root { --bg:#f8efc9; --panel:#fffbe8; --line:#d8c98f; --text:#2a1b14; --muted:#645241; --accent:#c8442a; --ok:#2f7a45; --warn:#9a5a10; --bad:#b32e1c; --gpu:#5f4796; --code:#efe2aa; --side:#a9c4d4; --top:#6b99b3; --ink:#2a1b14; --on-ink:#fffbe8; --shade:rgba(42,27,20,.28); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --shade:rgba(0,0,0,.45); } }
+:root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --shade:rgba(0,0,0,.45); }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
 html, body { height:100%; }
@@ -31,10 +31,9 @@ th { color:var(--muted); font-weight:500; font-size:11px; }
 .hint { font-size:12px; color:var(--muted); margin-top:3px; }
 .err { color:var(--bad); }
 .badge { display:inline-block; padding:0 7px; border-radius:10px; font-size:11px; border:1px solid currentColor; }
-.stock { color:var(--ok); } .cache { color:var(--warn); } .gpu { color:var(--gpu); } .error { color:var(--bad); } .wait { color:var(--muted); }
+.stock { color:var(--ok); } .cache { color:var(--text); } .gpu { color:var(--gpu); } .error { color:var(--bad); } .wait { color:var(--muted); }
 .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
 .seg button { border:0; border-radius:0; background:transparent; padding:4px 10px; }
-.seg button.on { background:var(--accent); color:#fff; }
 .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--muted); margin-right:6px; vertical-align:1px; flex:0 0 auto; }
 .dot.ok { background:var(--ok); box-shadow:0 0 0 3px color-mix(in srgb, var(--ok) 25%, transparent); }
 .dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
@@ -186,7 +185,26 @@ button.ghost, button.icon, .item .x, .menu button, .chips .acts button, .seg but
 button.primary { background:var(--accent); border-color:var(--ink); color:#fffbe8; font-weight:600; }
 button.danger { border-color:var(--ink); }
 .seg { border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); }
-.seg button.on { background:var(--ink); color:var(--bg); }
+.seg button.on { background:var(--ink); color:var(--on-ink); }
+.seg button:hover:not(:disabled):not(.on) { background:var(--code); color:var(--text); }
+.seg button:disabled { opacity:1; color:var(--muted); cursor:not-allowed; }
+.seg button.on:disabled { background:var(--muted); color:var(--panel); }
+.pickcard { margin-top:8px; border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); padding:10px 12px; font-size:13px; color:var(--text); }
+.pickcard h5 { margin:0 0 4px; font:600 11px ui-monospace, Consolas, monospace; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+.pickcard table.mach td { padding:2px 6px 2px 0; border-bottom:0; font-size:13px; }
+.pickcard table.mach td:first-child { color:var(--muted); width:84px; white-space:nowrap; }
+.pickcard .rec { margin-top:12px; padding:8px 10px; border-left:4px solid var(--accent); background:var(--bg); }
+.pickcard .rec .name { font-weight:700; font-size:14px; }
+.pickcard .rec .nums { margin-top:3px; font-variant-numeric:tabular-nums; }
+.pickcard .rec .nums span { margin-right:12px; white-space:nowrap; }
+.pickcard .rec .why { margin-top:4px; }
+.pickcard ul.alts { margin:0; padding-left:18px; } .pickcard ul.alts li { margin:2px 0; }
+.pickcard .pwarn { color:var(--warn); }
+.pickcard details { margin-top:10px; } .pickcard details > summary { cursor:pointer; color:var(--muted); font-size:12px; }
+.pickcard details > div { margin-top:4px; font-size:12px; } .pickcard details > div > div { margin:3px 0; }
+.pickcard .get { margin-top:10px; font-size:12px; }
+.pickact { display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+.pickact:has(#pickapply[hidden]):not(:has(#pickmsg:not(:empty))) { display:none; }
 .top .brand { font:700 15px ui-monospace, "SF Mono", Consolas, monospace; letter-spacing:.04em; text-transform:lowercase; }
 .modelpick { border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); box-shadow:2px 2px 0 var(--shade); }
 .left { border-right:2px solid var(--ink); } .right { border-left:2px solid var(--ink); }
@@ -255,7 +273,7 @@ button.danger { border-color:var(--ink); }
     <button class="icon" id="tglLeft" title="Chats, agent sessions, models">☰</button>
     <span class="brand only-wide" id="sys" title="">moe-cache</span>
     <div class="modelpick" id="modelpick" title="The model Start uses (pick one in the list on the left)"><b id="topmodel">no model</b><span class="badge wait" id="topverdict"></span></div>
-    <div class="seg only-wide" data-seg="mode" title="Exact: same answers as stock llama-server · Fast: about +10 %, about 1 token in 40-50 differs · Hybrid: experimental"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <div class="seg only-wide" data-seg="mode" title="Exact: same output as stock llama.cpp · Fast: about 10 % faster, about 1 token in 40-50 comes out different · Hybrid: experimental"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <span class="grow"></span>
     <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
     <span class="startgrp"><button class="primary" id="start">Start</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
@@ -377,8 +395,8 @@ button.danger { border-color:var(--ink); }
     <div class="row small" style="margin-top:6px"><label for="pickmodel">Or choose one yourself (only warned about, never refused):</label>
       <select id="pickmodel"><option value="">the recommended one</option><option value="bolt">Nemotron 3.5 Bolt 74B</option><option value="flash-next-q2_0">Flash-Next Q2_0</option>
         <option value="flash-next-iq3_xxs">Flash-Next IQ3_XXS</option><option value="qwen3.5-122b">Qwen3.5-122B</option><option value="qwen3.6-35b">Qwen3.6-35B</option><option value="glm-5.3">GLM-5.3-Flash</option></select></div>
-    <div class="small" id="pickres" style="margin-top:6px"></div>
-    <div class="row" style="margin-top:6px"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div>
+    <div class="pickcard"><div id="pickres"></div>
+      <div class="pickact"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div></div>
     <h4>Memory</h4>
     <label>RAM budget: <b id="ramv"></b> <span class="small">(empty = what is available when it starts)</span></label>
     <input type="range" id="ram" min="0" max="64" step="1">
@@ -467,8 +485,8 @@ function seg(sel, key, cb) {
   els.forEach(el => el.addEventListener("click", e => { const b = e.target.closest("button"); if (b && b.dataset.v != null && !b.disabled) { S[key] = isNaN(+b.dataset.v) || b.dataset.v === "" ? b.dataset.v : +b.dataset.v; paint(); cb && cb(); } }));
   paint(); segPainters.push(paint); return paint;
 }
-const MODEHINT = { exact: "Output identical to stock llama-server (default).", fast: "--fast: skips rarely needed experts that are not in RAM: about +10 %, about 1 token in 40-50 differs.",
-                   hybrid: "--hybrid (experimental): most used experts computed on the GPU, the rest on the CPU; output differs from stock." };
+const MODEHINT = { exact: "Exact: same output as stock llama.cpp (default).", fast: "Fast (--fast): skips experts that are rarely needed and not in RAM. About 10 % faster; about 1 token in 40-50 comes out different.",
+                   hybrid: "Hybrid (--hybrid, experimental): the most used experts run on the GPU, the rest on the CPU; some tokens come out different from stock." };
 const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (same output, faster decode); the plan's Why list says what it will do.",
                   on: "--mtp: always use the model's MTP head (Start stops with a message when the model or llama-server cannot).",
                   off: "--no-mtp: never." };
@@ -566,11 +584,26 @@ async function loadPick() {
   $("pickres").textContent = "reading this machine…"; $("pickapply").hidden = true; $("pickmsg").textContent = "";
   try {
     const j = await api("/api/pick?use=" + S.pickuse + "&model=" + encodeURIComponent($("pickmodel").value)), r = j.recommendations[0], d = r.download;
-    $("pickres").innerHTML = `<div>${j.lines.map(esc).join("<br>")}</div><div style="margin-top:6px"><b>${esc(r.name)}</b> (${fmtGB(r.size)}, ${esc(r.engine)})<br>` +
-      `context ${esc(r.ctx.toLocaleString())} · <code>${esc(r.args.join(" "))}</code><br>memory: model ${fmtGB(r.memory.model)} + KV cache ${fmtGB(r.memory.kv)} (${esc(r.memory.kv_how)}) = ${fmtGB(r.memory.total)}; this machine ${fmtGB(r.memory.available)} (RAM cap + VRAM)<br>measured: ${esc(r.measured)}<br>` + r.why.map(w => "why: " + esc(w)).join("<br>") +
-      r.alternatives.map(a => `<br>or: ${esc(a.name)}: ${esc(a.why)}`).join("") + r.warnings.map(w => `<br><span class="err">note: ${esc(w)}</span>`).join("") +
-      (r.local ? `<br>file: <code>${esc(r.local)}</code>` : r.fits_disk === false ? `<br><span class="err">not on this machine and ${fmtGB(r.disk_missing)} of disk missing: no download is offered</span>` : `<br>not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code><br>download it yourself:<br><code>${esc(d.command)}</code>` +
-        (d.ollama ? `<br>(Ollama: <code>${esc(d.ollama)}</code>)` : "") + "<br>then add its folder above and press Use it again") + "</div>";
+    const m = j.machine || {}, gbs = b => b == null ? "?" : (b / 1e9).toFixed(1) + " GB", yn = v => v ? "yes" : v === false ? "no" : "?";
+    const row = (a, b) => `<tr><td>${a}</td><td>${b}</td></tr>`, local = (j.lines.find(l => l.startsWith("models here: ")) || "").replace("models here: ", "");
+    const key = (r.key || []).map(([a, b]) => `<span>${esc(a)} <b>${esc(b)}</b></span>`).join("");
+    const noDisk = !r.local && r.fits_disk === false;
+    const notes = [`<div>memory: model ${fmtGB(r.memory.model)} + KV cache ${fmtGB(r.memory.kv)} (${esc(r.memory.kv_how)}) = ${fmtGB(r.memory.total)}; this machine ${fmtGB(r.memory.available)} (RAM cap + VRAM)</div>`,
+      `<div>measured: ${esc(r.measured)}</div>`, `<div>options: <code>${esc(r.args.join(" "))}</code></div>`, r.local ? `<div>file: <code>${esc(r.local)}</code></div>` : ""]
+      .concat(r.warnings.map(w => `<div class="pwarn">${esc(w)}</div>`)).join("");
+    $("pickres").innerHTML = `<h5>Your machine</h5><table class="mach">` +
+      row("RAM", `${gbs(m.ram_total)} <span class="small">· the server may use ${gbs(m.ram_cap)}</span>`) +
+      row("GPU", m.gpu ? `${esc(m.gpu)}${m.vram ? ", " + (m.vram / 2**30).toFixed(1) + " GiB VRAM" : ""}` : "none with its own memory") +
+      row("Disk", `${gbs(m.disk_free)} free <span class="small">· ${esc(m.disk_kind || "SSD or HDD unknown")}</span>`) +
+      row("CPU", `AVX2 ${yn(m.avx2)} · AVX-512 ${yn(m.avx512)}`) + row("llama.cpp", m.llama_build ? "b" + esc(m.llama_build) : "not found") +
+      row("Models here", esc(local)) + `</table>` +
+      `<div class="rec"><div class="name">${esc(r.name)}</div><div class="small">${fmtGB(r.size)} · context ${Math.round(r.ctx / 1024)}k · ${esc(r.engine)}</div>` +
+      `<div class="nums">${key || `<span class="small">${esc(r.measured)}</span>`}</div><div class="why">${r.why.map(esc).join(" ")}</div></div>` +
+      (r.alternatives.length ? `<h5 style="margin-top:12px">Other options</h5><ul class="alts">${r.alternatives.map(a => `<li><b>${esc(a.name)}</b>: ${esc(a.why)}</li>`).join("")}</ul>` : "") +
+      (noDisk ? `<div class="get pwarn">Not on this machine, and ${fmtGB(r.disk_missing)} of disk is missing: no download is offered.</div>`
+        : !r.local ? `<div class="get">Not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code>. Download it yourself, then add its folder above and press Use it again:<div><code>${esc(d.command)}</code></div>` +
+          (d.ollama ? `<div>Ollama: <code>${esc(d.ollama)}</code></div>` : "") + `</div>` : "") +
+      `<details><summary>Memory, measurements and notes${r.warnings.length ? ` (${r.warnings.length} ${r.warnings.length == 1 ? "warning" : "warnings"})` : ""}</summary><div>${notes}</div></details>`;
     $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice"; $("pickapply").hidden = !r.local && r.fits_disk === false;
   } catch (e) { $("pickres").textContent = "could not read this machine: " + e.message; }
 }

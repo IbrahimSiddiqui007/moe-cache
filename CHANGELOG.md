@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Control page fixes (owner's Windows test of v0.3.1)**: the selected button of every button group keeps readable text in the dark and light theme (contrast >= 4.5, also hover and
+  disabled); "Which model?" is a card (a "Your machine" table, the recommendation with its key numbers, Why, other options, notes collapsed, one warning colour, the Use it button
+  inside the card); MTP / draft-head GGUFs (`mtp-` names, files with only the head's tensors) are no longer listed as models or taken as candidates; "does not fit: moe-cache exact"
+  now reads "runs with moe-cache (bigger than free RAM)" in a neutral colour; the Mode help says "Exact: same output as stock llama.cpp (default)" and what Fast changes.
 - **`moe_cache.py diffusion` / `moe-cache-diffusion`** (diffusion plan S3): runs `llama-diffusion-cli` (LLaDA-MoE, RND1; `llama-server` has no diffusion path) with the
   plugin, the cache size (`--ram`), the memory cap (`--max-ram`) and the same stock-when-it-fits rule as the server. A diffusion step is a prefill of the whole
   canvas (`--canvas`, default 256 tokens), so every expert is read each step; LLaDA-MoE-7B-A1B at a 3 GB limit: 14-16 % faster per step than stock, text
