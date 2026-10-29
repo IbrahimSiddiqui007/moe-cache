@@ -5,6 +5,9 @@
 // On Linux commit is a no-op (pages appear when touched) and decommit is madvise(DONTNEED).
 #pragma once
 #include <cerrno>
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>

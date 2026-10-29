@@ -319,6 +319,23 @@
     }
     }
 
+    // page faults of this process so far (Windows: all faults of GetProcessMemoryInfo; Linux: minor + major): with MOE_CACHE_SEG_TIMES the stats
+    // lines carry it, so the faults of a prompt (lazy mmap reads of tables such as Flash-Next's per-layer embedding, SM1) can be counted
+    static uint64_t process_faults(uint64_t * major = nullptr) {
+#ifdef _WIN32
+        PROCESS_MEMORY_COUNTERS pmc = {};
+        pmc.cb = sizeof(pmc);
+        GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+        if (major) *major = 0;
+        return (uint64_t) pmc.PageFaultCount;
+#else
+        struct rusage ru = {};
+        getrusage(RUSAGE_SELF, &ru);
+        if (major) *major = (uint64_t) ru.ru_majflt;
+        return (uint64_t) ru.ru_minflt + (uint64_t) ru.ru_majflt;
+#endif
+    }
+
     // one line of cumulative counters on stderr (see MOE_CACHE_STATS_SIGNAL)
     void print_snapshot() {
         std::string j;
@@ -343,6 +360,11 @@
                  ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
                  ",\"n_gap\":" + std::to_string(n_gap.load()) + ",\"gap_b_ns\":[" + std::to_string(gap_b_ns[0].load()) + "," + std::to_string(gap_b_ns[1].load()) + "," +
                  std::to_string(gap_b_ns[2].load()) + "," + std::to_string(gap_b_ns[3].load()) + "]";
+            if (getenv("MOE_CACHE_SEG_TIMES")) {
+                uint64_t mj = 0;
+                const uint64_t f = process_faults(&mj);
+                j += ",\"faults\":" + std::to_string(f) + ",\"major_faults\":" + std::to_string(mj);
+            }
             if (pool && pool->times) {      // MOE_CACHE_EXEC_TIMES
                 j += ",\"ex\":{\"runs\":" + std::to_string(pool->n_runs.load()) + ",\"run_ns\":" + std::to_string(ex_run_ns.load()) + ",\"quant_ns\":" + std::to_string(ex_quant_ns.load()) +
                      ",\"build_ns\":" + std::to_string(ex_build_ns.load()) + ",\"disp_ns\":" + std::to_string(pool->t_disp_ns.load()) + ",\"main_ns\":" + std::to_string(pool->t_main_ns.load()) +
