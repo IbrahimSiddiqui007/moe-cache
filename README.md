@@ -34,7 +34,7 @@ moe-cache manages the CPU-side experts itself:
 | Your situation | Best choice |
 |---|---|
 | The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). On Qwen3.6-35B (21.7 GB) at a 24 GB limit, both with the same 5000 MiB GPU cache: stock 42 tok/s, moe-cache 30-34 (RESULTS section 29). moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. |
-| You want **Qwen3.8-Flash-Next or Qwen3.6-35B as fast as possible** and have **12 GB+ VRAM and 32 GB+ RAM** | [Strata](https://github.com/Niko1221/Strata), an engine built for those models (its authors report 94 tok/s on an RTX 5070). |
+| You want **Qwen3.8-Flash-Next or Qwen3.6-35B as fast as possible** and have **12 GB+ VRAM and 32 GB+ RAM** (more RAM is better) | [Strata](https://github.com/Niko1221/Strata), an engine with its own kernels for those models (its authors report 94 tok/s on an RTX 5070 with 64 GB RAM; see "Strata and Maya today" below). We have not run it ourselves. |
 | The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: 2x to 12x stock decode speed in our Linux measurements (table below; the 12x is the oldest row, gpt-oss-120b; the clean runs since 2026-10-15 are 2.4x to 5.2x). On Windows (since 2026-10-27, RESULTS 59) 1.2x to 2x stock decode on the same models (GLM-5.3 3.1x with MTP), and coding-agent sessions 2x to 2.4x faster. |
 
 ## Get started
@@ -282,7 +282,24 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 **Is there a GUI?** Yes: the control page (`bin/moe-cache-server --ui`, see [docs/GUI.md](docs/GUI.md)), plus llama-server's own chat page (`--open`). Any OpenAI-compatible app such as [Open WebUI](https://github.com/open-webui/open-webui) can use `http://localhost:8080/v1` (we have not tested Open WebUI ourselves).
 
-**Why not an own inference engine like Strata or Maya?** Short answer: they are single-model engines with a high hardware floor; moe-cache is a small layer for the MoE models llama.cpp runs (tested list in COMPATIBILITY). The reasoning and our measurements: [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md).
+**Why not an own inference engine like Strata or Maya?** Short answer: they ship their own engine per model family; moe-cache is a small layer for the MoE models stock llama.cpp runs (tested list in COMPATIBILITY). The reasoning and our measurements: [docs/ENGINE_DECISION.md](docs/ENGINE_DECISION.md). A side-by-side with what each project says about itself today follows.
+
+### Strata and Maya today (as of 2026-10-29)
+
+Read from their public release notes and README pages only; we did not clone, build or run either one, so every number in the Strata and Maya columns is **their own, not ours**. Both are MIT-licensed. Both change fast (Strata has had about one release a day), so check their pages.
+
+| | Strata ([Niko1221/Strata](https://github.com/Niko1221/Strata), 0.2.7.1 of 2026-10-27) | Project Maya ([mw00/project-maya](https://github.com/mw00/project-maya)) | moe-cache |
+|---|---|---|---|
+| What it is | an app, a terminal tool and an engine per hardware family (CUDA, HIP, SYCL, Metal, DGX Spark), with its own kernels and parts of ggml | started from Strata's code, rewritten per model; engine, server and dashboard | a plugin for stock, upstream llama.cpp; the server is llama-server |
+| Models | Qwen3.8-Flash-Next, Qwen3.6-35B-A3B, and since 0.2.4 DeepSeek-V4.1-Flash (2.00 bpw and similar) | GLM-5.3-Flash, DeepSeek-V4.1-Flash, MiniMax-M3.1-Flash (their own quantizations) | any MoE model llama.cpp runs; tested list in COMPATIBILITY |
+| Bigger than RAM | yes for DeepSeek: the part that does not fit is read from SSD (about 265 GB of disk at 2.00 bpw). Their number: RTX 3060 12 GB + 46 GB RAM, 9-11 tok/s, 155 tok/s prompt at 4K. For the Qwen models we read in October, all experts were pinned in RAM; we have not re-checked | yes: GPU, RAM and NVMe tiers; 32 GB RAM minimum | yes: the RAM cache plus direct SSD reads is the point of the project |
+| GPUs | NVIDIA, AMD (HIP), Intel Arc (SYCL), Apple (Metal) | NVIDIA compute capability 7.0+; AMD and Windows are marked experimental | whatever llama.cpp supports: our measurements are Vulkan (AMD) and CUDA (NVIDIA); the plugin itself does not depend on the GPU backend |
+| Their reported speeds | RTX 5070 12 GB: Qwen3.8-Flash-Next Q2_0 94 tok/s decode, 2,650 tok/s prompt (64 GB RAM); R9700: Qwen3.6-35B UD-Q4_K_XL 117.8 tok/s (0.1.45) | one RTX 5090 + 128 GB RAM, GLM-5.3: 24-26 tok/s up to 512K context (a user's write-up); no result for 16 GB VRAM + 32 GB RAM is published | see the tables above; PC with a 16 GB card and 32 GB RAM, Flash-Next Q2_0 (66.4 GB file): 22.2 tok/s decode (model table above) |
+| Exact output | their "Faster" mode (opt-in on some, default on cards of 16 GB or less for DeepSeek) uses 5 of 6 experts per token; KL not given | not stated | exact by default (output compared byte for byte with stock llama.cpp in CI); the approximate options (`--fast`, `--hybrid`) are opt-in and labelled |
+| Long context | their 64K figure is for Strix Halo (749 tok/s prompt) and DGX Spark; AMD 131K / 230K / 500K prompts were read 8.7 / 16 / 79 % faster in 0.1.45 | up to 1M context on GLM-5.3 and MiniMax on big GPUs (H100, RTX PRO 6000); KV cache streams from RAM | 64k-256k with agents on 32 GB RAM: the long-context table above (Windows PC, RESULTS 64) |
+| Windows and Linux | both | Linux; Windows experimental | both; Windows is newer and has fewer runs |
+
+Where they are the better choice: you have a card and RAM they list, and you want their model at the highest speed; their installers are polished. Where moe-cache fits: you want to stay on stock llama.cpp, you use a MoE model or a quantization they do not ship, you want output identical to stock, or you have 32 GB of RAM and a model bigger than that.
 
 ## Documentation
 
@@ -322,7 +339,7 @@ moe-cache is built and tested in my spare time on my own machines. If it saves y
 ## Acknowledgements
 
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml (MIT, Copyright The ggml authors): moe-cache is a plugin for their backend interface, and it runs their CPU kernels unchanged.
-- Related projects with a similar approach (tiering experts across VRAM, RAM and SSD), built as single-model engines: [Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221) and [Project Maya](https://github.com/mw00/project-maya) (MIT, by mw00).
+- Related projects with a similar approach (tiering experts across VRAM, RAM and SSD), built as their own engines: [Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221) and [Project Maya](https://github.com/mw00/project-maya) (MIT, by mw00; started from Strata's code).
 
 ## License
 
