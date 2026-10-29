@@ -12,7 +12,7 @@
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
-import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request
+import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
@@ -1528,6 +1528,29 @@ def opencode_config_target(cfg):
     return cfg, warn
 
 
+def hermes_backup(h):
+    """Before 'hermes config set' replaces the main model: copy config.yaml to config.yaml.bak and describe the model it had, unless it already
+    points at a local server (a second connect must not replace the backup of the user's own setup, e.g. OpenRouter, with ours).
+    Returns (backup path, "provider P, model M, URL U") or (None, "") when nothing was kept."""
+    def get(k):
+        r = subprocess.run([h, "config", "get", k], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    try:
+        r = subprocess.run([h, "config", "path"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        path = (r.stdout.strip().splitlines() or [""])[-1].strip() if r.returncode == 0 else ""
+        old = {k: get("model." + k) for k in ("provider", "default", "base_url")}
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+    if not path or not os.path.isfile(path):
+        return None, ""
+    if old["provider"] == "custom" and urllib.parse.urlparse(old["base_url"]).hostname in ("127.0.0.1", "localhost", "::1"):
+        return None, ""
+    shutil.copy2(path, path + ".bak")
+    if not WINDOWS:
+        os.chmod(path + ".bak", 0o600)     # it may hold the old provider's key
+    return path + ".bak", f"provider {old['provider'] or '(not set)'}, model {old['default'] or '(not set)'}, URL {old['base_url'] or '(not set)'}"
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
                                  "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
@@ -1555,11 +1578,14 @@ def connect(argv):
         h = shutil.which("hermes")
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
+        bak, prev = hermes_backup(h)
         for k, v in sets:
             r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             if r.returncode:
                 raise SystemExit(f"hermes config set {k} failed: {(r.stderr or r.stdout).strip()[-300:]}")
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
+        if prev:
+            say(f"  before: {prev}; old config kept as {bak} (copy it back over config.yaml to undo)")
         return 0
     cfg = a.config or os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode", "opencode.json")
     warn = []
@@ -1578,9 +1604,11 @@ def connect(argv):
             data = json.load(open(cfg, encoding="utf-8"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
-        shutil.copy2(cfg, cfg + ".bak")
-        if not WINDOWS:
-            os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
+        if not str(data.get("model", "")).startswith("moe-cache/") or not os.path.isfile(cfg + ".bak"):
+            # keep the backup of the user's own setup: a second connect (already moe-cache) must not replace it with ours
+            shutil.copy2(cfg, cfg + ".bak")
+            if not WINDOWS:
+                os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
     data.setdefault("provider", {})["moe-cache"] = entry
     data["model"] = f"moe-cache/{name}"
     os.makedirs(os.path.dirname(cfg), exist_ok=True)

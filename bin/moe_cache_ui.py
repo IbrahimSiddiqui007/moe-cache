@@ -1853,7 +1853,7 @@ def connect_agent(agent, url, api_key, write):
         env.pop("LLAMA_API_KEY", None)
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, env=env)
     out = {"rc": r.returncode, "output": (r.stdout + r.stderr).strip(), "file": None, "written": None}
-    m = re.search(r"; config (.+?\.json)", out["output"])
+    m = re.search(r"; config (.+?\.jsonc?)(?: \(old file|$)", out["output"], re.M)       # opencode.jsonc too (OpenCode Desktop creates it)
     if write and r.returncode == 0 and m:
         out["file"] = m.group(1)
         try:
