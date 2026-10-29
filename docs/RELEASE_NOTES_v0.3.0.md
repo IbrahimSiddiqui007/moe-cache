@@ -68,6 +68,12 @@ These numbers come from one PC. Your speed depends on RAM, the SSD and the GPU. 
 | Speed options | Flash-Next Q2_0 is the recommended file (above). `--mtp` on GLM-5.3-Flash now works with the cache (3.1x stock on chat). `--fast=2` for memory far below the model size; starter usage profiles for Flash-Next, GLM-5.3-Flash, Qwen3.5-122B and Qwen3.6 |
 | Executor kernels | The plugin's Q2_0 and IQ3_XXS executor kernels now run on Windows x86-64 too, bit-identical. The Q2_0 one matches llama.cpp's own AVX2 function (#30447) bit for bit (same rule on both systems: at start the plugin checks llama.cpp's Q2_0 function bit for bit and uses the matching kernel, or leaves it alone). No speed change at default settings (bandwidth-bound) |
 | Quality | 202 exact-answer tasks (`tools/quality_tasks.json`): Flash-Next IQ3_XXS 193 right, IQ3_S 192, Q2_0 191, Coder IQ1_M 189, IQ2_XS 187 (differences not statistically proven) |
+| AMD Vulkan decode | The plugin reads its split's inputs from the GPU asynchronously: decode +12 % (Flash-Next Q2_0, 22.7 -> 25.6 tok/s after a 34k prompt; every ABBA pair, text identical). `MOE_CACHE_ASYNC_IN=0` goes back |
+| Long context | 64k-256k: the tuner sizes the KV cache from the model header, and past the measured contexts scales the compute buffer instead of a flat guess; the launcher says when `--fast` would fit more layers. Flash-Next Q2_0: 64k prompt 1.8x stock |
+| Memory cap | The whole server stays at or below physical RAM minus max(4 GiB, 12.5 %) on Linux and Windows (`--max-ram GB` changes it); kept by planning, never by stopping a run |
+| Linux | The expert cache lives in read-only mappings of the model file too (as on Windows): steady decode +4.7 %, first request +49 %, tokens identical. `MOE_CACHE_LINUX_VIEW=0` goes back |
+| Sampling | The launcher passes the model card's sampling settings for Qwen3/3.5/3.6/3.8 and GLM; `--no-sampling-defaults` turns it off |
+| Launcher | `--version`; finds `C:\llama\llama-server.exe` (Windows) or install.sh's build (Linux) without `--llama-server` |
 | CI | The Windows runner unzips the kit and runs `check --run` and `on-demand` from it, as a user would. Releases are published only after identity and Windows CI passed on the tagged commit |
 
 Full list: [CHANGELOG.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/CHANGELOG.md).
@@ -82,3 +88,13 @@ Full list: [CHANGELOG.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/m
 | Flash-Next on AMD, driver older than 32.0.32015.7029 | context checkpoints are off (the driver crashes); update Adrenalin |
 | Replacing llama.cpp's own CPU functions outside the executor, `--gpu-cache` | Linux only (they need `LD_PRELOAD`); the executor's Q2_0 and IQ3_XXS kernels run on Windows too |
 | HIP / ROCm on Windows | untested |
+
+## Known issues
+
+| Issue | Note |
+|---|---|
+| Unsigned Windows zip | see "unknown publisher" above |
+| Tested hardware | Windows: one desktop plus a CPU-only GitHub runner. Linux: Intel + NVIDIA, CPU-only, Vulkan; a user's RX 9070 XT. macOS no |
+| Models measured | Qwen3.8-Flash-Next (5 files), Qwen3.5-122B, GLM-5.3-Flash, Qwen3.6-35B, Nemotron 3.5 Bolt 74B (agents), Granite 1B (CI). Others untested |
+| Not tested | winget / scoop install (manifests are in the repo, not submitted); Hermes / OpenCode Desktop on Windows; fresh Ubuntu `install.sh` with apt; Windows 10 |
+| Speed numbers | one PC, cold runs, mostly single series |

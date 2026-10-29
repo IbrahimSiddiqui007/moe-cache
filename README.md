@@ -50,7 +50,7 @@ Ollama user? The models in `ollama list` are plain GGUF files: the path is on th
 | **B. One script** (10 to 20 minutes) | fresh Ubuntu / Debian, nothing installed | `git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache && ./install.sh` (add `--vulkan` for AMD / Intel / NVIDIA through Vulkan). It builds the matching llama.cpp and the plugin and prints the next commands. It has only been tried on Arch with `--no-apt` so far: please report problems. |
 | **C. From source** | you want to build it yourself | `git clone ... && cd moe-cache && ./build.sh` (needs g++; finds `libggml-base.so` next to your llama-server, or set `GGML_LIB_DIR`) |
 
-**Windows (experimental)**: the Windows kit zip from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) (from the next release on) or this repository; steps in [docs/WINDOWS.md](docs/WINDOWS.md).
+**Windows (experimental)**: the Windows kit zip `moe-cache-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) (v0.3.0 is the first with a kit); steps below and in [docs/WINDOWS.md](docs/WINDOWS.md).
 **Windows may warn: "unknown publisher".** The kit's DLLs and `.bat` files are not code-signed (a certificate costs money every year; the code is
 open source and the zip is built by GitHub Actions from the tagged commit), so Windows treats the downloaded zip as untrusted. Before you
 extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If SmartScreen still says "Windows protected your PC", click
@@ -96,8 +96,9 @@ context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one cl
 | 1. llama.cpp | Download the official release `llama-bNNNNN-bin-win-vulkan-x64.zip` from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) (tested: b11669) and unpack it to `C:\llama` |
 | 2. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH") |
 | 3. The kit | Download `moe-cache-vX-windows-x64.zip` from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
-| 4. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |
-| 5. Agents | Add `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`); the page also has Connect buttons |
+| 4. Check | In a command prompt in the kit folder: `python bin\moe_cache.py check D:\models\model.gguf` (finds `C:\llama\llama-server.exe` by itself; `--version` prints the version). Every line says OK, WARN or FAIL and what to do |
+| 5. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |
+| 6. Agents | Add `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`); the page also has Connect buttons |
 
 Keep the Windows page file at "system managed" (or 14 GB or more): the cache costs no commit (it keeps experts in read-only views of the model file), but Windows counts the GPU's memory against RAM + page file. Details and known limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 
@@ -223,6 +224,17 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
   The `moe-cache: active: ...` line in the server log says which parts are on.
 - Needs a llama.cpp with shared ggml libraries; tested with commits `23b0202a1` (ggml 0.26.0) and `7fe450e19` (ggml 0.25.1). The plugin refuses to load into a ggml with a different backend API than it was built for (it prints why and the model loads normally). Linux; Windows is experimental (identity-tested on a Windows 11 + RX 9070 XT desktop and in CI, see [COMPATIBILITY](docs/COMPATIBILITY.md) and the [Windows quick start](docs/WINDOWS.md)).
+
+## Known issues in v0.3.0 (honest list)
+
+| Issue | Detail |
+|---|---|
+| Windows zip is unsigned | Windows shows "unknown publisher" / SmartScreen: Unblock the zip, More info > Run anyway (steps above). Check the SHA256 or `gh attestation verify` |
+| Windows tested on one desktop | Ryzen 9 7950X + RX 9070 XT 16 GB + 32 GB, Windows 11, Vulkan, plus a GitHub Windows runner (CPU). NVIDIA, Intel GPUs and Windows 10 are untested; HIP loads but is slower than Vulkan |
+| Models measured | Qwen3.8-Flash-Next (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Coder IQ1_M), Qwen3.5-122B IQ2_XXS, GLM-5.3-Flash, Qwen3.6-35B, Nemotron 3.5 Bolt 74B (agent speed; plugin forced slower than stock in one test), Granite 1B (CI). Other MoE models should work but are not measured. Long context (64k-256k) is measured on Flash-Next and a few more, single runs |
+| Linux | Tested on Intel + NVIDIA, CPU-only, Vulkan, and a user's RX 9070 XT. `install.sh` has been tried on Arch (`--no-apt`) and, for this release, from a clean clone on that machine; a fresh Ubuntu/Debian run with apt is not tested. macOS: no |
+| Not tested for this release | `winget install` and `scoop install` (manifests exist but are not submitted); Hermes Desktop and OpenCode Desktop on Windows (click-through still open); a full model run from the final zip |
+| Speed numbers | One PC, cold runs, mostly single series; yours depends on RAM, SSD and GPU. The Linux table is older (v0.2.3.5) |
 
 ## FAQ
 
