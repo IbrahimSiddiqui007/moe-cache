@@ -2,6 +2,7 @@
 """moe-cache launcher (Linux and Windows; Python 3.8+, standard library only).
 
   moe_cache.py server  MODEL.gguf [options] [-- extra llama-server args]   run llama-server with the expert-cache plugin
+  moe_cache.py pick    [--use agents|chat|docs] [--apply]                  recommend a model for this machine (RAM, VRAM, disk, CPU) and use; --apply uses it
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
@@ -1030,7 +1031,7 @@ def decide(model, ram_gb=None, plugin_wanted=False, stock_wanted=False):
 def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("model")
+    ap.add_argument("model", nargs="?", help="the .gguf file (leave out to use the one `moe_cache.py pick --apply` chose)")
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
     ap.add_argument("--max-ram", type=gb_arg)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
@@ -1049,6 +1050,15 @@ def server(argv):
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
     a = ap.parse_args(argv)
+    if not a.model:
+        from moe_cache_pick import picked       # bin/moe_cache_pick.py
+        p = picked()
+        if not p:
+            raise SystemExit("usage: moe-cache-server MODEL.gguf [options]  (no model given and none picked: `moe_cache.py pick` recommends one for this machine)")
+        a.model = p[0]
+        a.ctx = a.ctx or p[1]
+        a.agent = a.agent or p[2]
+        say(f"moe-cache: no model given: using the picked one, {a.model} (context {a.ctx}" + (", agent mode" if a.agent else "") + "; moe_cache.py pick)")
     if a.max_ram:
         os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram          # the launcher's planning and the plugin in llama-server both read it
     if not WINDOWS:
@@ -1540,7 +1550,11 @@ def connect(argv):
     a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
     if not name:
-        raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent)")
+        from moe_cache_pick import picked
+        p = picked()
+        raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent"
+                         + (f"; or `moe_cache.py server --agent` / `on-demand` for your picked model, {os.path.basename(p[0])}" if p else
+                            "; `moe_cache.py pick` recommends a model for this machine") + ")")
     ctx = ctx or 65536
     base = a.url.rstrip("/") + "/v1"
     if a.agent == "hermes":
@@ -1605,6 +1619,11 @@ def default_agent_url():
     except (OSError, ValueError, TypeError, AttributeError):
         port = 8080
     return f"http://127.0.0.1:{port}"
+
+
+def pick_cmd(argv):
+    from moe_cache_pick import pick      # bin/moe_cache_pick.py
+    return pick(argv)
 
 
 def on_demand_cmd(argv):
@@ -1969,7 +1988,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
+    cmds = {"server": server, "pick": pick_cmd, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0

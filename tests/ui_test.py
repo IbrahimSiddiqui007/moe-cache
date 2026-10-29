@@ -552,6 +552,36 @@ req("/api/stop", {})
 deadline = time.time() + 30
 while time.time() < deadline and json.loads(req("/api/status")[1])["state"] not in ("stopped", "exited"):
     time.sleep(0.3)
+# "Which model?" (bin/moe_cache_pick.py): /api/pick and /api/pick/use with a fake machine (32 GB RAM, 16 GB GPU, the Bolt file here)
+bolt = os.path.join(TMP, "pickmodels", "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf")
+os.makedirs(os.path.dirname(bolt)); open(bolt, "wb").write(b"GGUF" + b"\0" * 60)
+fake_spec = {"os": "test", "ram_total": 32 * 2**30, "ram_cap": 28 * 2**30, "gpu": "GPU", "vram": 16 * 2**30, "disk_path": TMP, "disk_free": 500e9,
+             "disk_kind": "SSD", "avx2": True, "avx512": False, "llama_build": 11966, "local": {"bolt": bolt}}
+ui.picker.machine_specs = lambda folders=None, ls=None: dict(fake_spec)
+pbase = base
+def preq(path, body=None):
+    r = urllib.request.Request(pbase + path, json.dumps(body).encode() if body is not None else None,
+                               {"X-MoeCache-Token": TOKEN, "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(r, timeout=30) as x:
+            return x.status, json.loads(x.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode())
+st, j = preq("/api/pick?use=agents&fresh=1")
+check(st == 200 and len(j["recommendations"]) == 1 and j["recommendations"][0]["id"] == "bolt" and j["recommendations"][0]["ctx"] == 131072
+      and any("RAM" in l for l in j["lines"]), f"/api/pick: the machine and one recommendation (Bolt at 128k for agents) ({st})")
+st, j = preq("/api/pick")
+check(st == 200 and [r["use"] for r in j["recommendations"]] == ["agents", "chat", "docs"], "/api/pick without a use: all three")
+check(preq("/api/pick/use", {"use": "gaming"})[0] == 400, "/api/pick/use: unknown use refused")
+st, j = preq("/api/pick/use", {"use": "agents"})
+check(st == 200 and j["last"]["model"] == bolt and j["last"]["ctx"] == 131072 and j["last"]["agent"] is True and j["pick"]["id"] == "bolt",
+      f"/api/pick/use: Start now uses the picked file, its context and agent mode ({st})")
+saved = json.load(open(ui.SETTINGS_FILE, encoding="utf-8"))
+check(saved["last"]["model"] == bolt and saved["pick"]["use"] == "agents", "/api/pick/use: written to ui.json (the launcher's `server` without a model reads it)")
+st, j = preq("/api/system")
+check(st == 200 and (j.get("pick") or {}).get("id") == "bolt" and j["last"]["model"] == bolt, "/api/system: the page sees the pick at load")
+check("pickuse" in open(ui.PAGE, encoding="utf-8").read(), "the page has the Which model? panel")
+
 srv.shutdown()
 
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)

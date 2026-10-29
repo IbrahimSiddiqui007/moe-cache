@@ -371,6 +371,11 @@ button.danger { border-color:var(--ink); }
   <header><b>⚙ Settings</b><button class="icon" id="closeSettings" title="Close">✕</button></header>
   <div class="body">
     <div class="hint">These apply at the next Start; the verdicts in the model list update at once. The page remembers them (not the API key).</div>
+    <h4>Which model?</h4>
+    <div class="hint">Reads this machine (RAM, VRAM, disk, CPU) and recommends one model from our measurements. It never downloads anything.</div>
+    <div class="seg" id="pickuse"><button data-v="agents">Agents / coding</button><button data-v="chat">Chat</button><button data-v="docs">Long documents</button></div>
+    <div class="small" id="pickres" style="margin-top:6px"></div>
+    <div class="row" style="margin-top:6px"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div>
     <h4>Memory</h4>
     <label>RAM budget: <b id="ramv"></b> <span class="small">(empty = what is available when it starts)</span></label>
     <input type="range" id="ram" min="0" max="64" step="1">
@@ -378,7 +383,7 @@ button.danger { border-color:var(--ink); }
     <input type="range" id="vram" min="0" max="24" step="0.5">
     <h4>Model</h4>
     <label>Context</label>
-    <div class="seg" id="ctx"><button data-v="8192">8k</button><button data-v="32768">32k</button><button data-v="65536">64k</button></div>
+    <div class="seg" id="ctx"><button data-v="8192">8k</button><button data-v="32768">32k</button><button data-v="65536">64k</button><button data-v="131072">128k</button><button data-v="262144">256k</button></div>
     <label>Mode <span class="small">(also in the top bar)</span></label>
     <div class="seg" data-seg="mode"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <div class="hint" id="modehint"></div>
@@ -515,7 +520,7 @@ function verdictBadge(p) {
 }
 function paintModels() {
   $("nomodels").hidden = S.models.length > 0;
-  $("nomodels").textContent = "No .gguf models found: add a folder in Settings.";
+  $("nomodels").textContent = "No .gguf models found: add a folder in Settings, or let Settings → Which model? suggest one for this machine.";
   $("models").innerHTML = S.models.map((m, i) => { const p = S.plans[planKey(m.path)];
     return `<div class="item${m.path == S.sel ? " sel" : ""}" data-i="${i}" title="${esc(m.path)}"><div><span class="t">${esc(shortName(m.name))}</span>
       <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span></span></div></div>`; }).join("");
@@ -552,6 +557,30 @@ async function planAll() {
   if (S.models.some(m => !S.plans[planKey(m.path)])) planAll();
 }
 function settingsChanged() { paintRanges(); paintModels(); planAll(); $("dry").hidden = true; }
+
+/* ---------- which model? (bin/moe_cache_pick.py; the same rules as `moe_cache.py pick`) ---------- */
+async function loadPick() {
+  $("pickres").textContent = "reading this machine…"; $("pickapply").hidden = true; $("pickmsg").textContent = "";
+  try {
+    const j = await api("/api/pick?use=" + S.pickuse), r = j.recommendations[0], d = r.download;
+    $("pickres").innerHTML = `<div>${j.lines.map(esc).join("<br>")}</div><div style="margin-top:6px"><b>${esc(r.name)}</b> (${fmtGB(r.size)}, ${esc(r.engine)})<br>` +
+      `context ${esc(r.ctx.toLocaleString())} · <code>${esc(r.args.join(" "))}</code><br>measured: ${esc(r.measured)}<br>` + r.why.map(w => "why: " + esc(w)).join("<br>") +
+      r.alternatives.map(a => `<br>or: ${esc(a.name)}: ${esc(a.why)}`).join("") + r.warnings.map(w => `<br><span class="err">note: ${esc(w)}</span>`).join("") +
+      (r.local ? `<br>file: <code>${esc(r.local)}</code>` : `<br>not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code><br>download it yourself:<br><code>${esc(d.command)}</code>` +
+        (d.ollama ? `<br>(Ollama: <code>${esc(d.ollama)}</code>)` : "") + "<br>then add its folder above and press Use it again") + "</div>";
+    $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice";
+  } catch (e) { $("pickres").textContent = "could not read this machine: " + e.message; }
+}
+async function applyPick() {
+  try {
+    const j = await api("/api/pick/use", { use: S.pickuse }), l = j.last || {}, r = j.recommendation;
+    if (r.local) {
+      S.sel = l.model; S.ctx = l.ctx; S.mode = l.mode; S.engine = l.engine; $("agent").checked = !!l.agent;
+      segPainters.forEach(p => p()); await loadModels(true); settingsChanged();
+      $("pickmsg").textContent = "selected; press Start" + (l.agent ? ", then Agents → connect OpenCode or Hermes" : "");
+    } else $("pickmsg").textContent = "remembered; download the file, then press Use it again";
+  } catch (e) { $("pickmsg").textContent = e.message; }
+}
 
 /* ---------- live status ---------- */
 function chart(id, pts, max, color, pct) {
@@ -1035,10 +1064,13 @@ window.addEventListener("hashchange", openHash);
   seg("#theme", "theme", () => { document.documentElement.dataset.theme = S.theme; pref("theme", S.theme); });
   newChat();
   await loadSystem();
+  S.pickuse = (S.sys.pick || {}).use || "agents"; seg("#pickuse", "pickuse", loadPick); $("pickapply").onclick = applyPick;
+  $("openSettings").addEventListener("click", () => { if (!S.pickLoaded) { S.pickLoaded = true; loadPick(); } });
   seg("#ctx", "ctx", settingsChanged); seg("[data-seg=mode]", "mode", settingsChanged); seg("#engine", "engine", settingsChanged); seg("#mtp", "mtp", settingsChanged);
   paintRanges();
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; segPainters.forEach(p => p()); } settingsChanged(); };
   await loadModels(false);
+  if (!S.models.length && !(S.sys.last || {}).model && !S.sys.pick) { openS(); S.pickLoaded = true; loadPick(); }   // first run: suggest a model
   loadChatList(); loadSessions(); openHash();
   poll(); setInterval(poll, 1000);
   setInterval(loadSessions, 10000);

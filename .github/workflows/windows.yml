@@ -104,6 +104,7 @@ jobs:
           if (-not (Select-String launcher_dry.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { throw "dry run: no GGML_BACKEND_PATH" }
           if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
           python -c "import importlib.util as u, sys; sys.argv=['x']; s=u.spec_from_file_location('m','bin/moe_cache.py'); m=u.module_from_spec(s); s.loader.exec_module(m); c=m.win_cores(); print('cores (efficiency class, cpus):', c); print('hybrid masks:', m.hybrid_masks(c)); print('ggml API of the server:', m.ls_api(r'$ls')); sys.exit(0 if c else 1)"
+          python tests/picker_test.py   # model picker: fake machines, no download
           python tests/ui_test.py       # control page (GUI1) without a model
           if ($LASTEXITCODE -ne 0) { throw "control page test failed" }
 

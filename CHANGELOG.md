@@ -3,6 +3,7 @@
 ## Unreleased (v0.2.3.6 candidate; draft for the owner, not released)
 
 ### Agents
+- **Model picker** (`moe_cache.py pick`, control page Settings > Which model?): reads RAM (and the hard cap), dedicated VRAM, free disk, SSD / HDD, AVX2 / AVX-512 and the llama-server build, asks what the model is for (agents / chat / long documents) and recommends one model, file, context and options from the measured numbers ("untested on this class of machine" where there is none). `--apply` / *Use it* makes it the default for `server` and `on-demand` without a model; nothing is downloaded without the user. Same code on Linux and Windows (tests/picker_test.py).
 - **Warm-session saves scale with the file** (idea N27): a save rewrites the whole slot (~1.7 GB at 64k, ~7 GB at 256k on Flash-Next) and llama-server answers nothing while it writes. The saver now waits 20 s + 20 s per GB of idle time, and a conversation that grew only a little since its last save waits 3 min + 30 s per GB (at most 10 min); the older file restores exactly (llama-server processes only the newer tokens). tests/warm_test.py (fake server) in both CIs.
 
 ### Docs

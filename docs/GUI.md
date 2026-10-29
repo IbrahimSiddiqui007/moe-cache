@@ -108,6 +108,13 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 
 Changing a setting updates the verdicts. The page remembers your last settings (not the API key).
 
+**Which model?** (top of Settings; the same rules as `moe_cache.py pick`, bin/moe_cache_pick.py.) Choose what it is for (Agents / coding, Chat, Long
+documents): the page lists what it read (RAM and the server's cap, VRAM, free disk, SSD or HDD, AVX2 / AVX-512, llama-server build), the
+recommended model with size, context and options, the measurement behind it or "untested on this class of machine", and one alternative. **Use it**
+selects the file (when it is in a model folder), the context, Agent mode and writes them to the page's settings, where `moe-cache-server` without a file
+name and `connect hermes|opencode` find them; if the file is not on this machine the page shows the download command (size, source) and never runs it.
+With no model found at all, the panel opens by itself at the first start.
+
 ## 5. Start, stop and the live numbers
 
 <img src="img/gui-status.png" alt="Status panel: live numbers, the command, benchmark runs and the stock vs moe-cache table" width="600">
