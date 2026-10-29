@@ -118,6 +118,18 @@ try:
 except ValueError:
     check(True, "unknown use refused")
 
+# llama-server's build number from --version (the PC's own output, and a distro build with no number)
+import subprocess
+class _R:
+    def __init__(s, t): s.stdout, s.stderr = "", t
+for text, want in (("version: 0.7.0-dev (build 11669, commit 620d2225c)\nbuilt with Clang", 11669), ("version: 0.5.0-dev (build 1, commit 7fe450e)", None),
+                   ("version: 11966 (ff0d396e3)", 11966), ("no version here", None)):
+    real, pk.subprocess.run = pk.subprocess.run, (lambda *a, **k: _R(text))
+    got = pk.llama_build("x"); pk.subprocess.run = real
+    check(got == want, f"llama_build({text.splitlines()[0]!r}) = {got}")
+r = pk.recommend(machine(32, 16, build=11669), "agents")
+check(r["id"] == "qwen3.6-35b" and any("b11966" in w for w in r["warnings"]), "the PC's llama-vk (build 11669): no Bolt, the version note says why")
+
 # ---- settings: apply() writes ui.json; server / on-demand without a model read it ----
 model = os.path.join(TMP, "models", "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf")
 os.makedirs(os.path.dirname(model))
