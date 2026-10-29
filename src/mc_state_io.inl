@@ -486,6 +486,9 @@
                 fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
                         route_mode == 1 ? "skip" : "subst", (unsigned long long) route_considered, (unsigned long long) route_skipped, (unsigned long long) route_substituted);
             }
+            if (fewer > 0) {
+                fprintf(stderr, "moe-cache: approximate: fewer experts (MOE_CACHE_FEWER=%d): %llu of the lowest-ranked picks on executor layers dropped\n", fewer, (unsigned long long) fewer_dropped);
+            }
             if (small_mapped || small_over) {
                 fprintf(stderr, "moe-cache: cache smaller than one op: %llu experts mapped from the model file, %llu loaded over the cache size\n",
                         (unsigned long long) small_mapped, (unsigned long long) small_over);

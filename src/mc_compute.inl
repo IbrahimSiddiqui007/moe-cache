@@ -251,7 +251,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     bool exec_graph = s.cache_on && exec_eligible(s, cg);
     // --fast (routing) and --hybrid live in the executor path: when asked for explicitly they keep it, whatever the weight type
     static const bool hybrid_asked = [] { const char * e = getenv("MOE_CACHE_HYBRID"); return e && strcmp(e, "0") != 0; }();
-    if (exec_graph && !s.exec_force && !s.route_mode && !hybrid_asked) {
+    if (exec_graph && !s.exec_force && !(s.route_mode || s.fewer > 0) && !hybrid_asked) {
         // the executor only pays for weights whose dot product is compute-bound (IQ types, Q2_0: our kernels and parallel reads win); for K-quants
         // and legacy types llama.cpp's own (repacked) kernels are faster even while some experts still have to be read
         // (Qwen3.6-35B Q4_K_M at 12 GB: 7.8 tok/s with the executor, 17.2 without)
@@ -354,7 +354,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 exec_heavy = exec_heavy || wt == GGML_TYPE_IQ1_S || wt == GGML_TYPE_IQ1_M || wt == GGML_TYPE_IQ2_XXS || wt == GGML_TYPE_IQ2_XS ||
                              wt == GGML_TYPE_IQ2_S || wt == GGML_TYPE_IQ3_XXS || wt == GGML_TYPE_IQ3_S || wt == GGML_TYPE_Q2_0;
             }
-            if (s.route_mode && exec_graph && n_tok <= s.exec_maxcol && !tidx.empty() && n_used >= 3) {
+            if ((s.route_mode || s.fewer > 0) && exec_graph && n_tok <= s.exec_maxcol && !tidx.empty() && n_used >= 3) {
                 const tinfo_t & t0 = *s.tensors[(size_t) tidx[0]];
                 // MOE_CACHE_ROUTE_DROP (default 2; --fast=2 sets 4, RESULTS 53): the lowest-ranked picks that may be skipped; at least half are always honoured
                 const int keep = s.route_keep >= 0 ? (int) std::min<int64_t>(s.route_keep, n_used) : (int) std::max<int64_t>(n_used - s.route_drop, (n_used + 1) / 2);
@@ -366,7 +366,17 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                         eff[(size_t) (t * n_used + u)] = e;
                         if (e >= 0 && e < (int32_t) taken.size()) taken[(size_t) e] = 1;
                     }
-                    for (int64_t u = keep; u < n_used; u++) {
+                    // B3: the lowest-ranked picks are given up whether or not they are in RAM (at least half of the picks always stay)
+                    const int keep_fewer = s.fewer > 0 ? (int) std::max<int64_t>(n_used - s.fewer, (n_used + 1) / 2) : (int) n_used;
+                    for (int64_t u = keep_fewer; u < n_used; u++) {
+                        const int32_t e = eff[(size_t) (t * n_used + u)];
+                        if (e < 0 || e >= (int32_t) t0.n_expert) continue;
+                        s.fewer_considered++;
+                        if (e < (int32_t) used.size() && used[(size_t) e] > 0) used[(size_t) e]--;
+                        eff[(size_t) (t * n_used + u)] = -1;
+                        s.fewer_dropped++;
+                    }
+                    for (int64_t u = keep; s.route_mode && u < n_used; u++) {
                         const int32_t e = eff[(size_t) (t * n_used + u)];
                         if (e < 0 || e >= (int32_t) t0.n_expert) continue;
                         s.route_considered++;
@@ -400,7 +410,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             // MOE_CACHE_GPU_PIPE=0: off. A block that ends up on the CPU waits for all of its experts first (below).
             static const bool pipe_env = !getenv("MOE_CACHE_GPU_PIPE") || atoi(getenv("MOE_CACHE_GPU_PIPE")) != 0;
             const bool pipe = pipe_env && !exec_graph && s.gpu_dev && !c->gpu_failed && s.gpu_min_tokens > 0 && n_tok >= s.gpu_min_tokens &&
-                              s.graphs.load() >= c->gpu_retry_at && !s.route_mode;
+                              s.graphs.load() >= c->gpu_retry_at && !(s.route_mode || s.fewer > 0);
             exec_jobs += s.prepare_group(tidx, used, exec_graph || pipe);
             piped = piped || pipe;
             if (s.lookahead && n_tok == 1) {

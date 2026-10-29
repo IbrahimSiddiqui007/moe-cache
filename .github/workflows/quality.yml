@@ -56,6 +56,11 @@ jobs:
           grep -E "Mean +KLD" gate_fast/kl_candidate.log
           grep -E "route|skip" gate_fast/kl_candidate.log | head -5 || true
 
+      - name: Gate, level fewer (B3, FEWER=1 for the smoke, Granite has only 8 picks); the plugin must have dropped picks
+        run: |
+          python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level fewer --smoke --env MOE_CACHE_FEWER=1 --out gate_fewer --common-args=--no-repack --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_fewer.txt
+          grep -E "fewer experts \(MOE_CACHE_FEWER=1\): [1-9][0-9]* of the lowest-ranked picks" gate_fewer/server_candidate.log || { echo "FAIL: B3 dropped no picks"; exit 1; }
+
       - name: Gate results
         if: always()
         run: grep -h '^{' gate_*.txt || true

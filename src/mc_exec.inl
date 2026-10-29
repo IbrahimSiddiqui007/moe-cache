@@ -438,7 +438,7 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
     all.reserve((size_t) n_ids * (size_t) n_tok);
     std::vector<int> task_of((size_t) w->ne[2], -1);
     const std::vector<int32_t> * routed = nullptr;
-    if (s.route_mode) {
+    if (s.route_mode || s.fewer > 0) {
         auto rit = s.route_ids.find(ids);
         if (rit != s.route_ids.end()) routed = &rit->second;
     }
@@ -563,6 +563,7 @@ void print_capabilities(state_t & s) {
 #endif
     o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
     o += s.gpu_dev ? " long_prompt_gpu=on(>=" + std::to_string(s.gpu_min_tokens) + " tokens)" : " long_prompt_gpu=off(no GPU device)";
+    if (s.fewer > 0) o += std::string(" approx_fewer=") + std::to_string(s.fewer);
     if (s.route_mode) o += std::string(" approx_route=") + (s.route_mode == 1 ? "skip" : "subst");
     fprintf(stderr, "%s\n", o.c_str());
 }
