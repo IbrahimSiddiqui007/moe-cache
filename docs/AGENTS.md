@@ -99,7 +99,7 @@ Both agents come with a graphical front end. The steps are the same everywhere: 
 
 ```bash
 bin/moe-cache-server MODEL.gguf --agent                # Windows: python bin\moe_cache.py server MODEL.gguf --agent --llama-server C:\llama\llama-server.exe
-bin/moe-cache-server connect hermes --write            # and/or: connect opencode --write   (Windows: python bin\moe_cache.py connect ...)
+python3 bin/moe_cache.py connect hermes --write        # and/or: connect opencode --write   (Windows: python bin\moe_cache.py connect ...)
 ```
 
 | | Linux | Windows (signed desktop apps) |

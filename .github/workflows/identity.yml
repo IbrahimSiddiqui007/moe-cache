@@ -103,8 +103,11 @@ jobs:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           MOE_CACHE_STATS: "1"
+          IDENT_KEEP: ident_evict
           IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2"
-        run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_evict.txt
+        run: |
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_evict.txt
+          grep -qE "evictions=[1-9]" ident_evict/plugin.log || { echo "FAIL: no evictions: the 0.2 GiB cache did not cycle experts (as windows.yml checks)"; grep "moe-cache: graphs=" ident_evict/plugin.log; exit 1; }
 
       - name: llama.cpp built the way install.sh, official releases and Windows are (backends as files, CPU variants) - 0.26 row only
         if: matrix.name == 'ggml-0.26-api3'
@@ -129,6 +132,7 @@ jobs:
           grep "moe-cache:" ident_small_path/plugin.log | head -6
           grep -q "MOE_CACHE_GPU_CACHE=1 ignored" ident_small_path/plugin.log
           grep -q "load=GGML_BACKEND_PATH .*gpu_cache_host_buffer=off" ident_small_path/plugin.log
+          grep -qE "evictions=[1-9]" ident_small_path/plugin.log || { echo "FAIL: no evictions with the 0.2 GiB cache"; exit 1; }
 
       - name: Identity on long prompts (prompt batches of 512+ tokens load scan-resistant by default, I3)
         env:
