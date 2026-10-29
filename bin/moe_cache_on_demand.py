@@ -333,6 +333,8 @@ class Pool:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "moe-cache-on-demand"
+    timeout = 300            # an idle or stalled client does not hold a thread for ever (the UI's handler has 30 s)
+    MAX_BODY = 512 << 20     # requests with attached images stay far below; read only once the key matched
 
     def log_message(self, *a):
         pass
@@ -359,20 +361,33 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.compare_digest(got.encode(), self.server.pool.key.encode())
 
     def body(self):
+        """The request body; ValueError on a bad or too large length (the caller answers 400 / 413 and closes)."""
         n = self.headers.get("Content-Length")
         if n is not None:
+            if not n.strip().isdigit():
+                raise ValueError("bad Content-Length")
+            if int(n) > self.MAX_BODY:
+                raise OverflowError("request body too large")
             return self.rfile.read(int(n))
         if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
-            out = b""
+            out = bytearray()
             while True:
-                size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
+                size = int(self.rfile.readline(64).split(b";")[0].strip() or b"0", 16)
+                if size < 0:
+                    raise ValueError("bad chunk size")
                 if size == 0:
-                    while self.rfile.readline() not in (b"\r\n", b"\n", b""):
+                    while self.rfile.readline(65537) not in (b"\r\n", b"\n", b""):
                         pass
-                    return out
+                    return bytes(out)
+                if len(out) + size > self.MAX_BODY:
+                    raise OverflowError("request body too large")
                 out += self.rfile.read(size)
-                self.rfile.readline()
+                self.rfile.readline(64)
         return None
+
+    def local_host(self):
+        h = (self.headers.get("Host") or "").lower()
+        return h.rsplit(":", 1)[0] in ("127.0.0.1", "localhost", "[::1]")
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -389,15 +404,23 @@ class Handler(BaseHTTPRequestHandler):
     def handle_any(self):
         pool = self.server.pool
         path = self.path.split("?")[0]
-        data = self.body()
+        if path in ("/health", "/v1/health") or not self.authed():
+            # the body is never read before the key matched: a page or local process cannot make this listener hold a large body
+            if self.headers.get("Content-Length") not in (None, "0") or self.headers.get("Transfer-Encoding"):
+                self.close_connection = True
         if path in ("/health", "/v1/health"):        # public, as in llama-server; never starts the model
             r = pool.running()
             return self.reply(200, dict({"status": "ok", "on_demand": pool.state}, **({"model": r.alias} if r and len(pool.bs) > 1 else {})))
         if not self.authed():
-            if path == "/" and self.command == "GET":
+            if path == "/" and self.command == "GET" and self.local_host():   # Host check: a DNS-rebinding page cannot read the model list
                 return self.reply(200, f"moe-cache on-demand: {', '.join(b.alias for b in pool.bs)}, {pool.state}. Agents: base URL "
                                        f"http://{self.headers.get('Host')}/v1 with the API key from `moe_cache.py key`.\n", "text/plain; charset=utf-8")
             return self.reply(401, {"error": {"message": "Invalid API Key", "type": "authentication_error", "code": 401}})
+        try:
+            data = self.body()
+        except (ValueError, OverflowError) as e:
+            self.close_connection = True
+            return self.reply(413 if isinstance(e, OverflowError) else 400, {"error": {"message": str(e), "type": "invalid_request_error", "code": 400}})
         name = None
         if data and self.command == "POST":
             try:

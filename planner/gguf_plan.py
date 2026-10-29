@@ -276,7 +276,8 @@ def _kv_or_flat(path, ctx, kv_q8=False):
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout.split(",")
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+        out = out.strip().splitlines()[0].split(",")    # one line per GPU: the first, as plan.py (with two GPUs the whole text failed to parse: no GPU)
         return (float(out[0]) - float(out[1])) * 1048576
     except Exception:
         pass
@@ -353,6 +354,9 @@ _COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024:
                 # 256k (N29, PC llama-server 620d2225c, same with f16 or q8_0 KV): 512 1403, 1024 2983, 2048 3979 MiB. 2048 left out as at 64k:
                 # at long prompts 1024 is the faster micro-batch (34k: 277 vs 247 tok/s, RESULTS 61), and without this row 256k fell back to 512
                 262144: {512: 1403, 1024: 2983, 2048: None}}
+# Measured but never auto-picked (None above): still the size llama-server takes when the user asks for that micro-batch (audit 2026-10-29 L1:
+# without these, -ub 2048 at 128k/256k was guessed at 990 MiB, about 2-3 GiB short, so the long-prompt block found no room)
+_COMPUTE_MIB_NOT_PICKED = {131072: {2048: 3150}, 262144: {2048: 3979}}
 _PROMPT_GAIN = {512: 1.0, 1024: 1.26, 2048: 1.58}      # measured prefill speed-up of a bigger micro-batch (6k-token prompt)
 
 
@@ -366,7 +370,9 @@ def compute_buffer_guess_mib(ctx, ub):
     context, else the largest 2048 value scaled to this micro-batch (a micro-batch the user chose must still leave the long-prompt block its room)."""
     b = compute_buffer_mib(ctx, ub)
     if b is None:
-        b = next((_COMPUTE_MIB[k][ub] for k in sorted(_COMPUTE_MIB) if k >= ctx and _COMPUTE_MIB[k].get(ub)), None)
+        def known(k):
+            return _COMPUTE_MIB[k].get(ub) or _COMPUTE_MIB_NOT_PICKED.get(k, {}).get(ub)
+        b = next((known(k) for k in sorted(_COMPUTE_MIB) if k >= ctx and known(k)), None)
     if b is None and ctx > max(_COMPUTE_MIB):
         # past the largest measured context the buffer keeps growing with it: scale that row (T0a: a flat 0.55 GB guess at 256k, where llama-server
         # takes 1403 MiB, put 3 expert layers on the GPU and left the long-prompt block 0 MiB, so prompts ran on the CPU at half speed)

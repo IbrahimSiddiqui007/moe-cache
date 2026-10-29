@@ -9,7 +9,7 @@ LS="${LLAMA_SERVER:-llama-server}"; LIMIT=12; NCMOE=999; CTX=8192; PORT=8093
 while [ $# -gt 0 ]; do case "$1" in --limit) LIMIT=$2; shift 2;; --llama-server) LS=$2; shift 2;; --n-cpu-moe) NCMOE=$2; shift 2;; --ctx) CTX=$2; shift 2;; *) echo "unknown: $1"; exit 1;; esac; done
 [ -f "$MODEL" ] || { echo "usage: tests/limit.sh MODEL.gguf --limit GB [options]"; exit 1; }
 if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health"; then echo "port $PORT is already in use (a leftover server?): stop it first"; exit 1; fi
-. "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}" "${METHOD:-auto}"
+. "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "${MOE_CACHE_LIB:-$(moe_cache_pick_lib "$LS" "$HERE")}" "${METHOD:-auto}"
 python3 -c "import os,sys; fd=os.open(sys.argv[1],os.O_RDONLY); os.posix_fadvise(fd,0,0,os.POSIX_FADV_DONTNEED)" "$MODEL"
 LOG="$(mktemp)"; UNIT="moe-cache-limit-$$"
 # only this test's own server is stopped (by its systemd unit), never other llama-server processes of the user

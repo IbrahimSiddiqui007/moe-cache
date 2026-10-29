@@ -234,8 +234,12 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
 size_t ram_cap() {
     static const size_t cap = [] {
         if (const char * v = getenv("MOE_CACHE_MAX_RAM_GB")) {
-            const double gb = atof(v);
-            return gb > 0 ? (size_t) (gb * 1e9) : (size_t) -1;
+            char * end = nullptr;
+            const double gb = strtod(v, &end);
+            if (end != v && gb >= 0) {        // also false for nan; a typo keeps the default cap below, as the launcher does
+                return gb > 0 ? (size_t) (gb * 1e9) : (size_t) -1;
+            }
+            fprintf(stderr, "moe-cache: MOE_CACHE_MAX_RAM_GB=%s is not a number of GB: the default cap is used\n", v);
         }
         const size_t total = plat::mem_total();
         if (!total) {

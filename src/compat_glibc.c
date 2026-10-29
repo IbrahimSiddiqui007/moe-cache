@@ -14,3 +14,4 @@ __attribute__((visibility("hidden"))) int __isoc23_sscanf(const char * s, const 
 __attribute__((visibility("hidden"))) long __isoc23_strtol(const char * s, char ** e, int base) { return strtol(s, e, base); }
 __attribute__((visibility("hidden"))) unsigned long __isoc23_strtoul(const char * s, char ** e, int base) { return strtoul(s, e, base); }
 __attribute__((visibility("hidden"))) unsigned long long __isoc23_strtoull(const char * s, char ** e, int base) { return strtoull(s, e, base); }
+__attribute__((visibility("hidden"))) long long __isoc23_strtoll(const char * s, char ** e, int base) { return strtoll(s, e, base); }   /* atoll at -O2 */

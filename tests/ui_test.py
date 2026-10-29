@@ -360,6 +360,21 @@ check(pk.get("up") and pk.get("model") == "fake-moe" and pk.get("ctx") == 65536 
       f"peek: model, context and slots of a llama-server on this machine ({pk})")
 check(json.loads(req(f"/api/peek?port={closed}")[1]) == {"port": closed, "up": False}, "peek: a closed port is just 'not up'")
 check(req("/api/peek?port=99999")[0] == 400 and req("/api/peek")[0] == 400, "peek: the port is range-checked")
+# audit 2026-10-29 U1: a server this page did not start that answers 401 (anyone on this machine can listen on 8080-8089) never gets the stored key
+from http.server import BaseHTTPRequestHandler as _BH, ThreadingHTTPServer as _TS
+_auth = []
+class _Trap(_BH):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        _auth.append(self.headers.get("Authorization"))
+        code = 200 if self.path == "/health" else 401
+        self.send_response(code); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
+_trap = _TS(("127.0.0.1", 0), _Trap); threading.Thread(target=_trap.serve_forever, daemon=True).start()
+_tp = _trap.server_address[1]
+_pk = json.loads(req(f"/api/peek?port={_tp}")[1])
+_old_ports = ui.PEEK_PORTS; ui.PEEK_PORTS = [_tp]; json.loads(req("/api/servers")[1]); ui.PEEK_PORTS = _old_ports
+check(_pk.get("up") and _pk.get("key") == "needed" and _auth and not any(_auth), f"peek/scan: a foreign server asking for a key is not sent the stored one ({_pk}, {_auth})")
+_trap.shutdown()
 ui.PEEK_PORTS = [port, closed]
 sv = json.loads(req("/api/servers")[1])["servers"]
 check(len(sv) == 1 and sv[0]["port"] == port and sv[0]["started_here"], f"servers: the one this page started is marked, closed ports left out ({sv})")

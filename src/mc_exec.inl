@@ -90,7 +90,29 @@ ggml_vec_dot_t fast_iq3_dot() {
         if ((e && strcmp(e, "0") == 0) || (k && strcmp(k, "0") == 0) || !fastk3::usable(vnni, k && strcmp(k, "1") == 0)) {
             return (ggml_vec_dot_t) nullptr;
         }
-        return vnni ? (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_vnni : (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_avx2;
+        const ggml_vec_dot_t mine = vnni ? (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_vnni : (ggml_vec_dot_t) fastk3::vec_dot_iq3_xxs_avx2;
+        // bit-identical only to upstream's AVX2 function: compare with the running library's own on random blocks first, as for Q2_0 (a llama.cpp
+        // built without AVX2, or a later change to that kernel, would otherwise give other tokens than stock without a word; audit 2026-10-29 N3)
+        const ggml_type_traits_cpu * tt = cpu_traits(GGML_TYPE_IQ3_XXS);
+        if (!tt || !tt->vec_dot) {
+            return (ggml_vec_dot_t) nullptr;
+        }
+        std::vector<fastk512::block_iq3_xxs> w(8);
+        std::vector<fastk512::block_q8_K> a(8);
+        uint32_t r = 54321;
+        auto rnd = [&]() { r = r * 1664525u + 1013904223u; return r >> 8; };
+        for (int trial = 0; trial < 64; trial++) {
+            for (auto & b : w) { for (auto & q : b.qs) q = (uint8_t) rnd(); b.d = (uint16_t) (0x2800 + rnd() % 0x1000); }
+            for (auto & b : a) { b.d = 0.001f * (float) (1 + rnd() % 100); for (auto & q : b.qs) q = (int8_t) ((int) (rnd() % 255) - 127); }
+            float x = 0.0f, y = 0.0f;
+            tt->vec_dot(8 * 256, &x, 0, w.data(), 0, a.data(), 0, 1);
+            mine(8 * 256, &y, 0, w.data(), 0, a.data(), 0, 1);
+            if (memcmp(&x, &y, sizeof(float)) != 0) {
+                fprintf(stderr, "moe-cache: this llama.cpp's IQ3_XXS kernel gives other bits than the plugin's: llama.cpp's own is used\n");
+                return (ggml_vec_dot_t) nullptr;
+            }
+        }
+        return mine;
     }();
     return fn;
 }
