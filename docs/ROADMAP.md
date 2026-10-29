@@ -28,7 +28,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 - **Web UI**: not built here. `llama-server` already serves a web UI at its address, and `moe-cache-server --open` opens it. Anything that speaks the OpenAI API (for example Open WebUI) can connect to the same address.
 - **Setup GUI** (choose model, RAM, GPU split with sliders): reasonable for v0.4, a small local web page or a terminal menu.
 
-## Status against the v1.0 list (2026-10-28, version 0.3.0)
+## Status against the v1.0 list (2026-10-28, version 0.3.1)
 
 | v1.0 requirement | State |
 |---|---|

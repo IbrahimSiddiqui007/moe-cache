@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1 (2026-10-29)
+
+- Windows kit: ships every launcher module. v0.3.0's zip left out `bin/moe_cache_pick.py`, so the control page (`moe-cache.bat`), `pick`, and `server` / `on-demand` without a model failed with `ModuleNotFoundError`. The kit build now fails if a launcher module does not import, and windows.yml starts the control page and runs `pick --json` from the unzipped kit (found by the release audit). Linux tarballs unchanged.
+
 ## 0.3.0 (2026-10-29)
 
 ### Agents
