@@ -35,7 +35,7 @@ def plugin_env(server, lib):
 
 
 def run_ppl(a, base_file, test, env, extra, log):
-    cmd = [a.perplexity, "-m", a.model, "-f", a.text, "-c", "512", "--chunks", str(a.chunks), "-b", "8", "-ub", "8", "-ngl", str(a.ngl),
+    cmd = [a.perplexity, "-m", a.model, "-f", a.text, "-c", "512", "--chunks", str(a.chunks), "-b", "8", "-ub", "8", "-ngl", str(a.ngl), "-fa", "on",
            "--n-cpu-moe", str(a.n_cpu_moe), "--kl-divergence-base", base_file] + a.common_args.split() + extra + (["--kl-divergence"] if test else [])
     e = dict(os.environ, **env)
     print("  $", " ".join(cmd), flush=True)
