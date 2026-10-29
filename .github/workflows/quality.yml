@@ -1,0 +1,61 @@
+# Quality gate for the approximate mode (docs/QUALITY_GATE.md) on a GitHub runner: Granite 1B-A400M, CPU only, cache forced to evict (0.2 GiB) and the executor
+# forced on, so route skip and the other approximate items really act. Smoke limits (a tiny model is far more sensitive than a 100 B one): every level must run,
+# the plugin must be active, `exact` must stay at KL 0 and 100 % top-1, the approximate levels must stay within an order of magnitude of the real limits.
+# The real limits are checked on Flash-Next on the PC (queue item 50). Exact mode keeps its token-identity tests in identity.yml.
+name: quality
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/approx"]
+    paths: ["src/**", "tools/quality_gate.py", "tools/quality_yardstick.py", "tools/quality_tasks.json", ".github/workflows/quality.yml", "docs/QUALITY_GATE.md"]
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Packages
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
+
+      - name: llama.cpp at the API 3 pin (CPU only, shared libraries)
+        run: |
+          git init llama.cpp && cd llama.cpp
+          git remote add origin https://github.com/ggml-org/llama.cpp
+          git fetch --depth 1 origin 23b0202a189c44a54625aadcb37a946dd1d6278d
+          git checkout --detach FETCH_HEAD
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_CUDA=OFF -DGGML_NATIVE=OFF -DGGML_AVX2=ON \
+                -DGGML_BACKEND_DL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_CURL=OFF
+          cmake --build build --target llama-server llama-perplexity -j "$(nproc)"
+
+      - name: Plugin
+        run: GGML_API=3 ./build.sh --portable
+
+      - name: Small MoE model
+        run: |
+          curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
+          echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+
+      - name: Gate, level exact (must be KL 0, 100 % top-1, same task answers)
+        run: python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level exact --smoke --out gate_exact --common-args "--no-repack" --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_exact.txt
+
+      - name: Gate, level kv (q8_0 KV cache)
+        run: python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level kv --smoke --out gate_kv --common-args "--no-repack" --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_kv.txt
+
+      - name: Gate, level fast (route skip + q8_0 KV); route skip must have skipped something
+        run: |
+          python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level fast --smoke --out gate_fast --common-args "--no-repack" --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_fast.txt
+          grep -E "Mean +KLD" gate_fast/kl_candidate.log
+          grep -E "route|skip" gate_fast/kl_candidate.log | head -5 || true
+
+      - name: Gate results
+        if: always()
+        run: grep -h '^{' gate_*.txt || true
