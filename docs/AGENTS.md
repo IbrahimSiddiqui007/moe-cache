@@ -111,6 +111,8 @@ Both desktop apps are already installed on the test PC (Hermes Desktop; OpenCode
 | 10 | Press **Stop** on the page, then **Start** again, send one more message in either app | the old conversation is picked up (restored at start) |
 | 11 | Close the apps; the page's **Stop** ends the server | llama-server is gone from Task Manager |
 
+Harmless: after each Hermes chat the Log tab shows one `unauthorized: Invalid API Key` (HTTP 401) line, because Hermes asks `GET /v1/models` once without the key (seen on the Linux laptop; Hermes' `model_metadata_llamacpp.py`). The chat itself works.
+
 If a step fails, send the page's Log tab (or `ui.log` of the console) and the text of the app's error.
 
 ## Using the agents with a GUI
