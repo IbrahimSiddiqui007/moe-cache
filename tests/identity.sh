@@ -25,10 +25,22 @@ wait_up() { for i in $(seq 300); do [ "$(curl -s -o /dev/null -w '%{http_code}' 
 if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$PORT/health"; then echo "port $PORT is already in use (a leftover server?): stop it first, the comparison would be wrong"; exit 1; fi
 echo "1/2 stock server"; "${PRE[@]}" "$LS" "${COMMON[@]}" > "$TMP/stock.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/stock.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
 echo "2/2 server with the plugin"
-. "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}" "${METHOD:-auto}"
+. "$HERE/bin/_moe_cache_env.sh"; moe_cache_load_env "$LS" "${MOE_CACHE_LIB:-$(moe_cache_pick_lib "$LS" "$HERE")}" "${METHOD:-auto}"
 ENVV=("${MOE_CACHE_LOAD[@]}" MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF="$MODEL"); [ -n "$RAM" ] && ENVV+=(MOE_CACHE_RAM_GIB="$RAM")
 [ -n "$IDENT_PLUGIN_ENV" ] && ENVV+=($IDENT_PLUGIN_ENV)
-"${PRE[@]}" env "${ENVV[@]}" "$LS" "${COMMON[@]}" > "$TMP/plugin.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/plugin.json" $PORT $N; kill $SPID; wait $SPID 2>/dev/null || true
+"${PRE[@]}" env "${ENVV[@]}" "$LS" "${COMMON[@]}" > "$TMP/plugin.log" 2>&1 & SPID=$!; wait_up; python3 "$HERE/tests/ident.py" "$TMP/plugin.json" $PORT $N
+if [ -n "$IDENT_IDLE" ]; then
+  # IDENT_IDLE=1: idle release (N3, what on-demand sends after its idle time): the server's resident memory must drop, and the same prompts
+  # afterwards must give the same tokens (audit 2026-10-29 N1: with the Linux file view it gave nothing back but said it did)
+  rss() { awk '/^(RssFile|RssAnon):/{s+=$2} END{print s}' /proc/$SPID/status; }
+  R0=$(rss); kill -USR2 $SPID; sleep 3; R1=$(rss)
+  echo "idle release: resident $((R0 / 1024)) MiB -> $((R1 / 1024)) MiB"; grep "moe-cache: idle:" "$TMP/plugin.log" | tail -1
+  if ! grep -q "moe-cache: idle:" "$TMP/plugin.log" || [ "$R1" -gt $((R0 * 9 / 10)) ]; then echo "FAIL: the idle release gave back less than 10 % of the server's memory"; exit 3; fi
+  python3 "$HERE/tests/ident.py" "$TMP/plugin_idle.json" $PORT $N
+  cmp -s "$TMP/plugin.json" "$TMP/plugin_idle.json" || { echo "FAIL: tokens after the idle release differ from before it"; exit 3; }
+  echo "idle release: same tokens after it"
+fi
+kill $SPID; wait $SPID 2>/dev/null || true
 if [ -z "$IDENT_ALLOW_INACTIVE" ] && { grep -q "moe-cache: .*plugin disabled" "$TMP/plugin.log" || ! grep -qE "moe-cache: (cache mode|pass-through mode)" "$TMP/plugin.log"; }; then
   echo "FAIL: the plugin was not active in the second run (no 'moe-cache: cache mode' line in the server log), so this comparison proves nothing."
   grep "moe-cache:" "$TMP/plugin.log" | tail -5; exit 2

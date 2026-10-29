@@ -360,6 +360,21 @@ check(pk.get("up") and pk.get("model") == "fake-moe" and pk.get("ctx") == 65536 
       f"peek: model, context and slots of a llama-server on this machine ({pk})")
 check(json.loads(req(f"/api/peek?port={closed}")[1]) == {"port": closed, "up": False}, "peek: a closed port is just 'not up'")
 check(req("/api/peek?port=99999")[0] == 400 and req("/api/peek")[0] == 400, "peek: the port is range-checked")
+# audit 2026-10-29 U1: a server this page did not start that answers 401 (anyone on this machine can listen on 8080-8089) never gets the stored key
+from http.server import BaseHTTPRequestHandler as _BH, ThreadingHTTPServer as _TS
+_auth = []
+class _Trap(_BH):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        _auth.append(self.headers.get("Authorization"))
+        code = 200 if self.path == "/health" else 401
+        self.send_response(code); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
+_trap = _TS(("127.0.0.1", 0), _Trap); threading.Thread(target=_trap.serve_forever, daemon=True).start()
+_tp = _trap.server_address[1]
+_pk = json.loads(req(f"/api/peek?port={_tp}")[1])
+_old_ports = ui.PEEK_PORTS; ui.PEEK_PORTS = [_tp]; json.loads(req("/api/servers")[1]); ui.PEEK_PORTS = _old_ports
+check(_pk.get("up") and _pk.get("key") == "needed" and _auth and not any(_auth), f"peek/scan: a foreign server asking for a key is not sent the stored one ({_pk}, {_auth})")
+_trap.shutdown()
 ui.PEEK_PORTS = [port, closed]
 sv = json.loads(req("/api/servers")[1])["servers"]
 check(len(sv) == 1 and sv[0]["port"] == port and sv[0]["started_here"], f"servers: the one this page started is marked, closed ports left out ({sv})")
@@ -426,6 +441,39 @@ check('"moe-cache/fake-moe"' in (j["written"] or "") and f"127.0.0.1:{port}/v1" 
 check("sekrit" not in body and "sekrit-123" in open(cfg).read(), "the key is written to the file but never shown on the page")
 st, body = req("/api/connect", {"agent": "hermes", "write": False})
 check(st == 200 and "hermes config set" in json.loads(body)["output"], "Preview Hermes: the 'hermes config set' commands")
+# Connect Hermes with a fake 'hermes' (config path / get / set on a JSON file): the user's own model (here OpenRouter) is kept as config.yaml.bak
+# and shown, and a second connect does not replace that backup with the moe-cache one
+fh = os.path.join(TMP, "fakebin"); os.makedirs(fh)
+hcfg = os.path.join(TMP, "hermes", "config.yaml"); os.makedirs(os.path.dirname(hcfg))
+json.dump({"model.provider": "auto", "model.default": "anthropic/claude-x", "model.base_url": "https://openrouter.ai/api/v1"}, open(hcfg, "w"))
+with open(os.path.join(fh, "fake_hermes.py"), "w") as f:
+    f.write("import json, sys\np = %r\nd = json.load(open(p))\na = sys.argv[1:]\n"
+            "if a[1] == 'path': print(p)\n"
+            "elif a[1] == 'get':\n    sys.exit(print(d[a[2]]) if a[2] in d else 'Config key not set: ' + a[2])\n"
+            "elif a[1] == 'set': d[a[2]] = a[3]; json.dump(d, open(p, 'w'))\n" % hcfg)
+if os.name == "nt":
+    open(os.path.join(fh, "hermes.bat"), "w").write(f'@"{sys.executable}" "{os.path.join(fh, "fake_hermes.py")}" %*\n')
+else:
+    open(os.path.join(fh, "hermes"), "w").write(f'#!/bin/sh\nexec "{sys.executable}" "{os.path.join(fh, "fake_hermes.py")}" "$@"\n')
+    os.chmod(os.path.join(fh, "hermes"), 0o755)
+old_path = os.environ["PATH"]; os.environ["PATH"] = fh + os.pathsep + old_path
+st, body = req("/api/connect", {"agent": "hermes", "write": True})
+j = json.loads(body)
+h = json.load(open(hcfg))
+check(st == 200 and j["rc"] == 0 and h["model.provider"] == "custom" and h["model.base_url"] == f"http://127.0.0.1:{port}/v1" and h["model.default"] == "fake-moe",
+      f"Connect Hermes sets provider custom, URL, model ({j['output'][-160:]})")
+check("before: provider auto, model anthropic/claude-x, URL https://openrouter.ai/api/v1" in j["output"]
+      and json.load(open(hcfg + ".bak"))["model.provider"] == "auto", "and keeps the user's own model as config.yaml.bak, saying what it was")
+req("/api/connect", {"agent": "hermes", "write": True})
+check(json.load(open(hcfg + ".bak"))["model.provider"] == "auto", "a second Connect Hermes keeps that backup (not replaced by the moe-cache one)")
+os.environ["PATH"] = old_path
+# OpenCode Desktop creates opencode.jsonc on first run; connect writes into it when it is plain JSON, and the page reads that file back
+jc = os.path.join(TMP, "config", "opencode", "opencode.jsonc")
+json.dump({"$schema": "https://opencode.ai/config.json"}, open(jc, "w"))
+st, body = req("/api/connect", {"agent": "opencode", "write": True})
+j = json.loads(body)
+check(st == 200 and j["file"] == jc and '"moe-cache/fake-moe"' in (j["written"] or ""), f"Connect OpenCode with an opencode.jsonc: writes and reads back that file ({j['file']})")
+os.remove(jc)
 st, _ = req("/api/connect", {"agent": "bash"})
 check(st == 400, "only opencode and hermes")
 

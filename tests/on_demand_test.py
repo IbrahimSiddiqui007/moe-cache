@@ -123,6 +123,34 @@ check("preflight from a local page: allowed", r.getheader("Access-Control-Allow-
 c, r = req("OPTIONS", "/v1/chat/completions", origin="https://evil.example")
 check("preflight from another site: no CORS header", r.getheader("Access-Control-Allow-Origin") is None, r.getheaders()); r.read(); c.close()
 
+
+def raw(head, body=b"", key=None, wait=5):
+    """Send a hand-made request; returns (first line of the answer, seconds taken)."""
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=wait)
+    t = time.time()
+    s.sendall(head.encode() + (f"Authorization: Bearer {key}\r\n" if key else "").encode() + b"\r\n" + body)
+    try:
+        first = s.recv(4096).split(b"\r\n")[0].decode()
+    except socket.timeout:
+        first = "timeout"
+    s.close()
+    return first, time.time() - t
+
+
+# audit 2026-10-29 D1: the body is not read before the key matched (a 2 GB Content-Length without key is answered at once, nothing sent)
+first, dt = raw("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 2000000000\r\n")
+check("no key + 2 GB Content-Length: 401 at once, body never read", first.endswith("401 Unauthorized") and dt < 2, (first, dt))
+first, dt = raw("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: -1\r\n", key=KEY)
+check("Content-Length -1 with key: 400 at once (not a read to EOF)", first.endswith("400 Bad Request") and dt < 2, (first, dt))
+first, dt = raw("POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 9000000000\r\n", key=KEY)
+check("Content-Length above the cap with key: 413", " 413 " in first and dt < 2, (first, dt))
+check("on-demand handler has a socket timeout (D2)", (od.Handler.timeout or 0) > 0, od.Handler.timeout)
+first, _ = raw("GET / HTTP/1.1\r\nHost: rebind.example:%d\r\n" % PORT)
+check("GET / without key from a foreign Host (DNS rebinding): 401, no model list (D3)", first.endswith("401 Unauthorized"), first)
+first, _ = raw("GET / HTTP/1.1\r\nHost: 127.0.0.1:%d\r\n" % PORT)
+check("GET / without key from 127.0.0.1: the text page", first.endswith("200 OK"), first)
+check("audit checks did not start the model", b.p is None, b.state)
+
 for p in ("/api/v1/models", "/api/tags", "/v1/props", "/version"):      # Hermes' server-type probes: llama-server's own 404, model not started
     st, body, _ = get(p, key=KEY)
     check(f"{p} while idle: 404 without starting the model", st == 404 and b.p is None, (st, body))
