@@ -44,7 +44,7 @@ def run_ppl(a, base_file, test, env, extra, log):
     open(log, "w", encoding="utf-8").write(p.stdout)
     print(f"  done in {time.time() - t:.0f} s, exit {p.returncode}", flush=True)
     if p.returncode != 0:
-        print("FAIL: llama-perplexity failed; log", log); sys.exit(2)
+        print("FAIL: llama-perplexity failed; log", log); print("\n".join(p.stdout.splitlines()[-25:])); sys.exit(2)
     return p.stdout
 
 
