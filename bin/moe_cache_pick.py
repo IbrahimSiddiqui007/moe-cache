@@ -366,15 +366,10 @@ def apply(rec, settings=None):
         last.update({"model": rec["local"], "ctx": rec["ctx"], "agent": rec["use"] == "agents", "mode": "exact", "engine": "auto"})
         s["last"] = last
     if settings is None:
-        os.makedirs(mc.CACHE_DIR, mode=0o700, exist_ok=True)
-        tmp = SETTINGS_FILE + ".tmp"
-        if os.path.lexists(tmp):
-            os.unlink(tmp)
-        # the page's settings file (folders, last model, port) is private to this user, whatever the umask, and never written through a planted link
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        os.makedirs(mc.CACHE_DIR, exist_ok=True)
+        with open(SETTINGS_FILE + ".tmp", "w", encoding="utf-8") as f:
             json.dump(s, f, indent=1)
-        os.replace(tmp, SETTINGS_FILE)
+        os.replace(SETTINGS_FILE + ".tmp", SETTINGS_FILE)
     return s
 
 

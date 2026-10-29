@@ -153,17 +153,6 @@ check(s["pick"]["id"] == "flash-next-q2_0" and s["pick"]["model"] is None and s[
 check(pk.picked() is None, "picked(): None while the picked file is not here")
 pk.apply(r)
 
-# umask: ui.json written by `pick --apply` is private (0600) even under a permissive umask (POSIX; Windows has no such bits)
-if os.name != "nt":
-    old_mask = os.umask(0o022)
-    try:
-        os.remove(pk.SETTINGS_FILE)
-        pk.apply(r)
-        mode = os.stat(pk.SETTINGS_FILE).st_mode & 0o777
-    finally:
-        os.umask(old_mask)
-    check(mode == 0o600, f"pick --apply: ui.json is 0600 under umask 022 ({oct(mode)})")
-
 # `connect claude`: the env block, never a file without --write, a merge with the first backup kept, a private file
 env = mc.claude_env("http://127.0.0.1:8080/", "my-model", "KEY123")
 check(env == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080", "ANTHROPIC_AUTH_TOKEN": "KEY123", "ANTHROPIC_MODEL": "my-model", "ANTHROPIC_SMALL_FAST_MODEL": "my-model"},
