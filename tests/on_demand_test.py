@@ -353,7 +353,8 @@ code = ("import sys; sys.path.insert(0, sys.argv[1]); import moe_cache_on_demand
         "od.LAUNCHER = [sys.executable, '-c', 'import time; time.sleep(3)']; sys.exit(od.on_demand(sys.argv[2:]))")
 t0 = time.time()
 p = subprocess.Popen([sys.executable, "-c", code, os.path.join(ROOT, "bin"), choice["model"], "--port", str(PORT)],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     env=dict(os.environ, LLAMA_SERVER=sys.executable))      # any existing program: setup refuses a missing llama-server (A1)
 t_open = None
 while time.time() - t0 < 30 and p.poll() is None:
     try:
