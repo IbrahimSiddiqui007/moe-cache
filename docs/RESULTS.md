@@ -2841,3 +2841,34 @@ N29, N30 and I31. Session "abba" owns the question whether this is the check or 
 
 **RAM watch.** Past 28 GiB in use (log only, nothing stopped): every logged N15, N22, N26 (runs 3-4), N27, N23, I31 and HIP-item run, Flash-Next
 and Qwen3.6 at 128k; peak **30.86 GiB** (hip_plugin run 1). Never past 28 GiB: N30, the 122B at 128k and 256k, Qwen3.6 at 256k, GLM, Bolt, N25c. The product's hard cap (RAM minus max(4 GiB, 12.5 %)) was merged since (e708462).
+
+## 68. Nemotron 3.5 Bolt: the "3.5 s per tiny request" explained, and short prompts on stock runs (T5, Windows PC, 2026-10-29)
+
+Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp b11966, Bolt stock (launcher default: it fits), cold (file cache flushed), one server per arm.
+**Not clean: owner work running** (Edge open; 22.7-24.4 GB free RAM at each start). Data: PC C:\dl\t5\out\.
+
+**The 202-task run of RESULTS 65 (701 s):** 431 s were one request stuck from 21:36:42 to 21:43:51, the window of the PC's driver timeout and
+network drop (T6); 227 s prompt processing; 27 s decoding (4 tokens per answer, as Q2_0; thinking was off); 16 s other. Without the stall 1.34 s
+per request (Q2_0 0.84 s). Prompts of 33-35 tokens took ~0.4 s, prompts of 36+ tokens ~1.2 s: llama.cpp moves an op to the GPU for batches of
+32+ tokens (`GGML_OP_OFFLOAD_MIN_BATCH`, default 32; Vulkan, CUDA, SYCL, Metal, CANN), which for Bolt copies every CPU-held expert to the GPU
+(~1 s), and llama-server processes a prompt as (n - 4) + 4 tokens for its checkpoint.
+
+| Arm (tiny requests) | chat, template default (thinking on) | chat, enable_thinking off | 202-task requests (first 60) | tokens vs default |
+|---|---|---|---|---|
+| default | 3.36 s (68 tokens, reasoning) | 0.71 s | 1.32 s | - |
+| `--reasoning-budget 0` | 0.87 s | - | 1.31 s | 60/60 identical |
+| `GGML_OP_OFFLOAD_MIN_BATCH` 64 / 128 / 256 | - | 0.83-0.85 s | 0.61 / 0.59 / 0.60 s | 60/60 identical |
+
+Prompt time (ms) by size, nothing cached:
+| Prompt tokens | 32 (llama.cpp) | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|
+| 51 | 1223 | 435 | 421 | 437 | - |
+| 105 | 1377 | 1391 | 588 | 586 | - |
+| 159 | 1439 | 1482 | 1468 | 683 | - |
+| 303 | 1748 | - | - | 1787 | **962** |
+| 375 | 1613 | - | - | 1763 | **1102** |
+| 465 | 1657 | - | - | 1817 | **1266** |
+| 555 / 735 | 1697 / 1784 | - | - | 1733 / 1796 | 1688 / 1774 |
+Answers identical in every arm (90 prompts). **Launcher default since this section:** stock runs whose model fits and that keep expert layers on
+the CPU get `GGML_OP_OFFLOAD_MIN_BATCH=512` (a user's value wins; plugin runs unchanged). Not proven bit-exact (CPU and GPU sums may round
+differently); tokens were identical everywhere it was checked. Thinking stays as the model card sets it (on for agents).
