@@ -160,7 +160,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-p
 
 | File | Size | Decode tok/s | Prompt tok/s (3k / 34k tokens) | Tasks /202 | Use it |
 |---|---|---|---|---|---|
-| **Q2_0** | 66.4 GB | **22.2** | **281 / 287** | 191 | **recommended default**: vs IQ2_XS +5 % decode (part of it may be the faster drive it ran from), prompts +11 % / +19 %, smaller |
+| **Q2_0** | 66.4 GB | **22.2**; **24.7-25.5** with the async reads (N15, +12 %, RESULTS 67) | **281 / 287**; long prompts **+8-11 %** (N23 pipelined block) and **+3-5 %** at 34k (N22), RESULTS 69 | 191 | **recommended default**: vs IQ2_XS +5 % decode (part of it may be the faster drive it ran from), prompts +11 % / +19 %, smaller |
 | IQ3_XXS | 75.8 GB | 19.9 | - | **193** | when accuracy matters: most tasks right, about 10 % slower decode |
 | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 21.2 (agent session) | - | 189 | coding agents: half the experts (256 of 512); OpenCode session 55.5 s vs 73.4 s on IQ2_XS. General knowledge not checked beyond the task set |
 | IQ2_XS | 68.0 GB | 21.0 (same day as Q2_0; 21.9 in RESULTS 59) | 253 / 242 | 187 | superseded by Q2_0 (older rows above that say IQ2_XS were measured on IQ2_XS) |
@@ -175,7 +175,7 @@ machine it says "untested on this class of machine". The rules, from the measure
 
 | Your machine | Agents / coding (64k-256k) | Plain chat | Long documents |
 |---|---|---|---|
-| **32 GB RAM + 16 GB GPU** (measured) | **Nemotron 3.5 Bolt 74B** at 128k, stock: decode 27.9 (24.9 at 114k), OpenCode session 47.8 s | **Flash-Next Q2_0**: 22-25 tok/s, 191/202 tasks (IQ3_XXS 193/202 is the accuracy pick, about 10 % slower) | **Bolt**: prompts 595 tok/s at 57k, 721 at 114k (Flash-Next Q2_0 170-220 at 128k) |
+| **32 GB RAM + 16 GB GPU** (measured) | **Nemotron 3.5 Bolt 74B** at 128k, stock: decode 27.9 (24.9 at 114k), OpenCode session 47.8 s | **Flash-Next Q2_0**: 24-25 tok/s, 191/202 tasks (IQ3_XXS 193/202 is the accuracy pick, about 10 % slower) | **Bolt**: prompts 595 tok/s at 57k, 721 at 114k (Flash-Next Q2_0 170-220 at 128k) |
 | 32 GB + 8 GB GPU | Bolt at 64k (untested with 8 GB) | Flash-Next Q2_0 (untested; the IQ2_XS file of the same size gave 12.5 tok/s on 24 GB + 8 GB) | Bolt at 64k (untested) |
 | 64 GB + 16 GB GPU | Bolt | Flash-Next IQ3_XXS (untested here) | Bolt |
 | 128 GB+ | Bolt | GLM-5.3-Flash (fits; untested) | Bolt |
@@ -186,7 +186,7 @@ on a hard disk, and a model is skipped when the disk has less free space than it
 **Long context (Windows PC, RESULTS 64; agent mode, one cold run per point, not ABBA).** Flash-Next Q2_0 at a 64k setting: moe-cache reads a 63.5k-token
 prompt 1.8x faster than stock (about 289 vs 525 s; prefill 266 / 195 tok/s at 4-21k / 53-63k vs 171 / 106) and decodes 20.7 vs 16.8 tok/s at that depth
 (+23 %). Qwen3.5-122B with moe-cache at 64k: prefill 266 / 217, decode 17.3 at 63.5k. Qwen3.6 (fits, stock): 848 / 739, decode 59.1. At the 256k setting the
-planner puts every expert layer on the CPU (`-ub 512`): Flash-Next prefill about half (142 tok/s) and decode 18.5 at 4k, 15.9 at 138k; a planner fix is in progress.
+planner now keeps the long-prompt GPU block its room (RESULTS 67 / 69, paired runs): Flash-Next prefill 108-110 tok/s at 4-34k and decode **21.9 vs 18.5 tok/s** at 4k (+18 %) over the old plan; decode at 138k depth was 15.9 with the old plan (not re-measured).
 
 **Other models (Windows PC, RESULTS 65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
 so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
@@ -253,6 +253,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 | Issue | Detail |
 |---|---|
+| Desktop apps take GPU memory | when the GPU also draws your screen, the desktop and a browser can hold ~3 GB of VRAM; the long-prompt block then runs on the CPU and long prompts drop to about a quarter (Flash-Next 34k: ~75 instead of ~290 tok/s, RESULTS 69). Start with `--gpu-margin 2`; an automatic fix is in progress |
 | Windows zip is unsigned | Windows shows "unknown publisher" / SmartScreen: Unblock the zip, More info > Run anyway (steps above). Check the SHA256 or `gh attestation verify` |
 | Windows tested on one desktop | Ryzen 9 7950X + RX 9070 XT 16 GB + 32 GB, Windows 11, Vulkan, plus a GitHub Windows runner (CPU). NVIDIA, Intel GPUs and Windows 10 are untested; HIP loads but is slower than Vulkan |
 | Models measured | Qwen3.8-Flash-Next (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Coder IQ1_M), Qwen3.5-122B IQ2_XXS, GLM-5.3-Flash, Qwen3.6-35B, Nemotron 3.5 Bolt 74B (agent speed; plugin forced slower than stock in one test), Granite 1B (CI). Other MoE models should work but are not measured. Long context (64k-256k) is measured on Flash-Next and a few more, single runs |
