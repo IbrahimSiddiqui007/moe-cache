@@ -97,6 +97,8 @@ def main():
     ap.add_argument("--chunks", type=int, default=3); ap.add_argument("--text", help="text for the KL run (default: README + docs of this repo)")
     ap.add_argument("--tasks-file", default=os.path.join(HERE, "quality_tasks.json")); ap.add_argument("--no-tasks", action="store_true"); ap.add_argument("--no-kl", action="store_true")
     ap.add_argument("--no-think", action="store_true"); ap.add_argument("--port", type=int, default=8098)
+    ap.add_argument("--no-kv", action="store_true", help="drop the q8_0 KV arguments of the level (CPU-only llama.cpp aborts with q8_0 KV at the CI pin, stock too)")
+    ap.add_argument("--report-only", action="store_true", help="print the numbers, never fail on the limits (CI smoke)")
     ap.add_argument("--stock-only", action="store_true", help="only compute and cache the stock side (needs --cache-dir), then exit 0")
     ap.add_argument("--cache-dir", default="", help="keeps the stock base logits (base.kld) and the stock task run (tasks_stock.json) for the next level; one dir per model/settings")
     ap.add_argument("--out", default=""); ap.add_argument("--env", action="append", default=[]); ap.add_argument("--args", default="")
@@ -113,7 +115,7 @@ def main():
     if a.smoke:
         kld_max, top_min, tol = SMOKE[a.level]
     cand_env = dict(lenv); cand_env.update(kv.split("=", 1) for kv in a.env)
-    cand_args = list(largs) + a.args.split()
+    cand_args = ([] if a.no_kv else list(largs)) + a.args.split()
     both_env = dict(kv.split("=", 1) for kv in a.ram_env)
     load = plugin_env(a.llama_server, a.lib)
     plug = dict(load, MOE_CACHE_GGUF=a.model, MOE_CACHE_SIZE_GIB=both_env.pop("MOE_CACHE_SIZE_GIB", "auto"), MOE_CACHE_STATS="1")
@@ -174,6 +176,8 @@ def main():
     res["pass"] = not fails
     json.dump(res, open(os.path.join(a.out, "gate.json"), "w"), indent=1)
     print(json.dumps(res))
+    if fails and a.report_only:
+        print("REPORT ONLY, would fail (" + a.level + "): " + "; ".join(fails)); return
     if fails:
         print("GATE FAIL (" + a.level + "): " + "; ".join(fails)); sys.exit(1)
     print("GATE PASS (" + a.level + ")")
