@@ -141,7 +141,9 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   (bit-exact but 0.60-0.77x of llama.cpp's own kernels on Zen 4).
 - `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers. A path-loading version exists on a branch, but
   llama.cpp's own GPU expert cache loses on this Vulkan PC (9.7 vs 13.7 tok/s without it) and aborts at load above about 5.9 GiB (RESULTS 59), so it is parked.
-- HIP / ROCm: needs AMD's HIP SDK, untested. Intel GPUs on Windows: untested.
+- HIP / ROCm (RESULTS 67): llama.cpp's official b11669 HIP zip runs on the RX 9070 XT without the HIP SDK, and the plugin loads into it, but HIP
+  is much slower than Vulkan on this card (stock Flash-Next Q2_0: decode 7.7 vs 18.7 tok/s, 3.5k prompt 45 vs 122 tok/s), so use Vulkan. Intel GPUs
+  on Windows: untested.
 - The bash wrappers (`moe-cache-server` ...) do not run on Windows: use `python bin\moe_cache.py <command>`.
 - GLM-5.3-Flash (102 GB) runs, long-prompt GPU blocks included (3,020-token prompt at 54.8 tok/s, RESULTS 60); the earlier crash in that path is fixed.
 - Run as a normal user (not elevated), Windows may refuse the file-view cache's working-set minimum (error 1314 in the log); the cache still works
@@ -171,8 +173,28 @@ from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (decode 1.52 -> 2.02 tok/s, RESU
 | q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045 on the laptop's CUDA, RESULTS 53; **0.0120 on this PC's Vulkan**, `--fast` as shipped 0.0145, RESULTS 61 R11), so it is part of `--fast` (the owner kept it there), not the default. Measured on this desktop at context 8192 (RESULTS 60, R11): decode 22.01 vs 22.12 tok/s, a 2,950-token prompt 170.6 vs 164.6: no speed difference; it matters only for memory at long agent contexts |
 | WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |
 
-Still to try (owner's machine): the HIP SDK, Linux/RADV on the same PC. A newer Adrenalin driver (32.0.32015.7029) was tried: it fixed the Flash-Next
+Still to try (owner's machine): Linux/RADV on the same PC. A newer Adrenalin driver (32.0.32015.7029) was tried: it fixed the Flash-Next
 checkpoint crash but not the RAM use, which is the loader's (RESULTS 56, I37).
+
+### Windows: "display driver stopped responding", a frozen screen, or the PC gone for minutes
+
+What you can see and what it means. Check the PC's own record first (PowerShell, read-only): `Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Display'}`
+(event 4101 = a real driver timeout), `Get-ChildItem C:\Windows\LiveKernelReports -Recurse` (files named WATCHDOG or AMD_WATCHDOG), and in the Application log
+`Windows Error Reporting` entries named `LiveKernelEvent` (P1 141 or a1000001 = the GPU stopped answering and the driver reset it without a screen flash).
+
+| What you see | What it is | What to do |
+|---|---|---|
+| Message "Display driver amdkmdag (or nvlddmkm) stopped responding and has recovered", System log event 4101 | Windows' timeout detection (TDR): one GPU submission ran longer than 2 s (`TdrDelay`) | lower the micro-batch at long context: `--ub 512` (the launcher already picks 512 at `--ctx 262144`); update the GPU driver; do not raise `TdrDelay` on a machine you do not own |
+| No message, but a `WATCHDOG` or `AMD_WATCHDOG` file in `C:\Windows\LiveKernelReports` (the `WATCHDOG` one can be 4 GB), Application log `LiveKernelEvent` 141 / a1000001, nothing in the System log | the AMD driver's own watchdog saw the GPU hang and reset it: Windows keeps going and the System log stays empty. Windows re-reports the same dump at every sleep and wake, hours later, which looks like new events | moe-cache does not read these files (Windows' Disk Cleanup can remove them); if it happens in a pattern, note what was running and open an issue |
+| PC unreachable (SSH, remote desktop, the GUI) for some minutes, no reboot, "driver timeout" notice when you come back | the PC went to **sleep** (System log: Kernel-Power 42 "entering sleep", 107 "resumed") and the GPU needed about 5 s to start again (Kernel-PnP Driver Watchdog 902/903, shown as a long-running device start). Nothing crashed, but a run that was in progress was paused for that time | turn off sleep while a long run is going (Settings > System > Power: "Put my device to sleep" = never); a run that spans a sleep has wrong timings and may time out its requests |
+
+**Can a long run of moe-cache trigger the 2 s TDR?** Unlikely, and nothing here shows it happening. The plugin has no GPU kernels of its own on Windows (its expert kernels run on
+the CPU; the GPU work is llama.cpp's Vulkan backend, the plugin only copies tensors through it). That backend cuts every graph into submissions of at most 100 nodes and at most
+200 GFLOP (less on small AMD GPUs; it says so in its source: "larger submissions can hit a driver timeout"), so a long prompt never becomes one long submission.
+Only one single operation is not cut: the attention (or indexer) step of one layer for one micro-batch, whose cost grows with the batch size times the context. On the test PC
+(RX 9070 XT) there was no event 4101 in 14 days of runs, which included 64k, 128k and 256k contexts at `-ub` 512-2048 and prompts of 228k tokens; a whole 512-token batch at
+228k depth took 1.8 s (Nemotron, stock, RESULTS 65), more than any one operation in it. A slower GPU (an integrated one, an old card) or a hand-chosen `-ub 4096` or more at
+256k is where it could happen; the cure is a smaller `-ub`, which costs a little prompt speed and nothing else. The launcher's choice (512 at 256k) already does that.
 
 ## 7. Fair stock-vs-plugin timings: empty the file cache first
 
