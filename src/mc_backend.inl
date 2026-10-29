@@ -233,6 +233,8 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     static const bool pack_env = !getenv("MOE_CACHE_GPU_PACK") || atoi(getenv("MOE_CACHE_GPU_PACK")) > 0;
     const ggml_tensor * pack_ids = nullptr;
     std::vector<int32_t> pack_used, pack_map;
+    const ggml_tensor * full_ids = nullptr;
+    std::vector<int32_t> full_used;
     if (pack_env) {
         bool ok = true;
         int64_t n_as = -1;
@@ -262,6 +264,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     pack_used.push_back((int32_t) e);
                 }
             }
+            if (ok) {
+                full_ids = pack_ids;      // N23: a split block packs even when every expert is used
+                full_used = pack_used;
+            }
             // Windows: pack unless every expert is used: the whole-tensor upload also reads the experts this block does not use, which may be evicted
             // (desktop PC 2026-10-26, GLM-5.3-Flash with a 4.6 GiB cache: on Windows an evicted expert is decommitted memory and the upload's copy
             // crashed with an access violation; on Linux it reads zeros, harmless because they are unused, so Linux keeps the
@@ -284,6 +290,61 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
         }
     }
+    // N23: at long contexts llama.cpp's own GPU buffers grow during the prompt (attention scratch), the free GPU memory falls and the blocks went
+    // back to the CPU one by one (PC, Flash-Next Q2_0 at 128k: from ~40k tokens on every micro-batch took 22 s instead of ~9 s). When the block
+    // does not fit, its used experts are split into parts that fit the buffer already held: each part runs the same graph (ids of the other parts point at
+    // the part's first expert and those rows are thrown away) and its rows are copied into the output. Every row comes from the same expert matrix and
+    // input row as in one block. MOE_CACHE_GPU_CHUNKS=0: off (old behaviour), =N: always N parts (identity checks).
+    static const int chunks_env = getenv("MOE_CACHE_GPU_CHUNKS") ? atoi(getenv("MOE_CACHE_GPU_CHUNKS")) : -1;
+    const size_t headroom = (size_t) 256 << 20;                                  // pool buffers, graph, fragmentation
+    const size_t held = ggml_gallocr_get_buffer_size(c->galloc, 0);               // already allocated for an earlier block: reused
+    size_t gpu_free = 0, gpu_tot = 0;
+    ggml_backend_dev_memory(s.gpu_dev, &gpu_free, &gpu_tot);
+    // a block that needs no more than the held buffer allocates nothing, so it needs no headroom (with chunks off: the old rule, headroom always)
+    auto fits = [&](size_t need) {
+        const size_t extra = need > held ? need - held : 0;
+        return gpu_tot == 0 || (chunks_env != 0 && extra == 0) || gpu_free >= extra + headroom;
+    };
+    size_t n_chunk = 1;
+    if (chunks_env != 0 && full_ids && out->ne[1] == full_ids->ne[0] && out->ne[2] == full_ids->ne[1] && out->ne[3] == 1) {
+        auto need_for = [&](size_t n_w) {      // bytes of the block's graph with n_w experts per weight tensor (0: whole tensors)
+            size_t need = 0;
+            std::unordered_set<const ggml_tensor *> seen;
+            for (ggml_tensor * n : seg) {
+                need += ggml_row_size(n->type, n->ne[0]) * (size_t) (n->ne[1] * n->ne[2] * n->ne[3]);
+                for (int k = 0; k < GGML_MAX_SRC; k++) {
+                    const ggml_tensor * src = n->src[k];
+                    if (!src || inside.count(src) || !seen.insert(src).second) {
+                        continue;
+                    }
+                    const bool w = n->op == GGML_OP_MUL_MAT_ID && k == 0 && n_w > 0;
+                    need += ggml_row_size(src->type, src->ne[0]) * (size_t) (src->ne[1] * (w ? (int64_t) n_w : src->ne[2]) * src->ne[3]);
+                }
+            }
+            return need;
+        };
+        if (chunks_env > 1) {
+            n_chunk = (size_t) chunks_env;
+        } else if (!fits(need_for(pack_ids ? pack_used.size() : 0))) {
+            for (size_t k = 2; k <= 16; k++) {
+                if (fits(need_for((full_used.size() + k - 1) / k))) {
+                    n_chunk = k;
+                    break;
+                }
+            }
+        }
+        if (n_chunk > 1) {
+            pack_ids = full_ids;
+            pack_used = full_used;
+            n_chunk = std::min(n_chunk, pack_used.size());
+            static std::atomic<int> said_ch{0};
+            if (said_ch++ < 3) {
+                fprintf(stderr, "moe-cache: long-prompt block split into %zu parts of %zu experts to fit in GPU memory (%.0f MiB free, %.0f MiB held)\n",
+                        n_chunk, (pack_used.size() + n_chunk - 1) / n_chunk, gpu_free / 1048576.0, held / 1048576.0);
+            }
+        }
+    }
+    const size_t per_chunk = n_chunk > 1 ? (pack_used.size() + n_chunk - 1) / n_chunk : pack_used.size();
     std::unordered_set<const ggml_tensor *> pack_weights;
     if (pack_ids) {
         for (ggml_tensor * n : seg) {
@@ -301,7 +362,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         int64_t ne[GGML_MAX_DIMS] = { t->ne[0], t->ne[1], t->ne[2], t->ne[3] };
         if (pack_weights.count(t)) {
-            ne[2] = (int64_t) pack_used.size();
+            ne[2] = (int64_t) per_chunk;
         }
         ggml_tensor * nt = ggml_new_tensor(ctx, t->type, GGML_MAX_DIMS, ne);
         ggml_set_input(nt);
@@ -338,12 +399,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         for (ggml_tensor * n : seg) {
             need += ggml_nbytes(clone[n]);
         }
-        const size_t held = ggml_gallocr_get_buffer_size(c->galloc, 0);       // already allocated for an earlier block: reused
         const size_t extra = need > held ? need - held : 0;
-        size_t fr = 0, tot = 0;
-        ggml_backend_dev_memory(s.gpu_dev, &fr, &tot);
-        const size_t headroom = (size_t) 256 << 20;                              // pool buffers, graph, fragmentation
-        if (tot > 0 && fr < extra + headroom) {
+        const size_t fr = gpu_free;
+        if (!fits(need)) {
             c->seg_nomem = true;
             if (!c->hb_buf && s.gpu_nomem++ == 0) {
                 fprintf(stderr, "moe-cache: a long-prompt block needs %.0f MiB of GPU memory but only %.0f MiB are free: it stays on the CPU "
@@ -392,83 +450,110 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     }
     // idea I2 kill check (MOE_CACHE_SEG_TIMES=1): upload vs compute time per block; overlap can only pay if compute is a real share of the block
     static const bool seg_times = getenv("MOE_CACHE_SEG_TIMES") != nullptr;
-    const auto t_up0 = std::chrono::steady_clock::now();
-    std::vector<uint8_t> pack;
-    for (auto & u : uploads) {
-        const ggml_tensor * t = u.first;
-        ggml_tensor * d = u.second;
-        if (pack_weights.count(t)) {
-            // the used experts, in runs of neighbours, into their packed places
-            const size_t nb2 = t->nb[2];
-            for (size_t k = 0; k < pack_used.size();) {
-                size_t r = 1;
-                while (k + r < pack_used.size() && pack_used[k + r] == pack_used[k] + (int32_t) r) {
-                    r++;
+    double up_ns = 0, comp_ns = 0, get_ns = 0;
+    std::vector<uint8_t> pack, part;
+    for (size_t ch = 0; ch < n_chunk; ch++) {
+        const size_t lo = ch * per_chunk, hi = std::min(pack_used.size(), lo + per_chunk);
+        const auto t_up0 = std::chrono::steady_clock::now();
+        for (auto & u : uploads) {
+            const ggml_tensor * t = u.first;
+            ggml_tensor * d = u.second;
+            if (pack_weights.count(t)) {
+                // the used experts (of this part), in runs of neighbours, into their packed places
+                const size_t nb2 = t->nb[2];
+                for (size_t k = lo; k < hi;) {
+                    size_t r = 1;
+                    while (k + r < hi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
+                        r++;
+                    }
+                    ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, (k - lo) * nb2, r * nb2);
+                    k += r;
                 }
-                ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, k * nb2, r * nb2);
-                k += r;
+                s.gpu_up_bytes += (hi - lo) * nb2;
+                continue;
             }
-            s.gpu_up_bytes += pack_used.size() * nb2;
-            continue;
-        }
-        if (t == pack_ids) {
-            std::vector<int32_t> ids((size_t) (t->ne[0] * t->ne[1]));
-            for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
-                for (int64_t i0 = 0; i0 < t->ne[0]; i0++) {
-                    ids[(size_t) (i1 * t->ne[0] + i0)] = pack_map[(size_t) *(const int32_t *) ((const char *) t->data + i0 * t->nb[0] + i1 * t->nb[1])];
+            if (t == pack_ids) {
+                std::vector<int32_t> ids((size_t) (t->ne[0] * t->ne[1]));
+                for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
+                    for (int64_t i0 = 0; i0 < t->ne[0]; i0++) {
+                        const int32_t v = pack_map[(size_t) *(const int32_t *) ((const char *) t->data + i0 * t->nb[0] + i1 * t->nb[1])];
+                        ids[(size_t) (i1 * t->ne[0] + i0)] = n_chunk == 1 ? v : ((size_t) v >= lo && (size_t) v < hi ? v - (int32_t) lo : 0);
+                    }
                 }
+                ggml_backend_tensor_set(d, ids.data(), 0, ids.size() * sizeof(int32_t));
+                continue;
             }
-            ggml_backend_tensor_set(d, ids.data(), 0, ids.size() * sizeof(int32_t));
-            continue;
+            if (ggml_is_contiguous(t)) {
+                ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
+                s.gpu_up_bytes += ggml_nbytes(d);
+            } else {
+                // activations / ids that are views: pack row by row
+                const size_t es = ggml_type_size(t->type);
+                if (t->nb[0] != es) {
+                    ggml_free(ctx);
+                    return false;
+                }
+                pack.assign(ggml_nbytes(d), 0);
+                size_t o = 0;
+                for (int64_t i3 = 0; i3 < t->ne[3]; i3++) {
+                    for (int64_t i2 = 0; i2 < t->ne[2]; i2++) {
+                        for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
+                            memcpy(pack.data() + o, (const char *) t->data + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3], (size_t) t->ne[0] * es);
+                            o += (size_t) t->ne[0] * es;
+                        }
+                    }
+                }
+                ggml_backend_tensor_set(d, pack.data(), 0, ggml_nbytes(d));
+            }
         }
-        if (ggml_is_contiguous(t)) {
-            ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
-            s.gpu_up_bytes += ggml_nbytes(d);
+        if (seg_times) {
+            ggml_backend_synchronize(c->gpu);
+        }
+        const auto t_c0 = std::chrono::steady_clock::now();
+        const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
+        ggml_backend_synchronize(c->gpu);
+        if (st != GGML_STATUS_SUCCESS) {
+            ggml_free(ctx);
+            return false;
+        }
+        const auto t_g0 = std::chrono::steady_clock::now();
+        if (n_chunk == 1) {
+            ggml_backend_tensor_get(gout, out->data, 0, ggml_nbytes(out));
         } else {
-            // activations / ids that are views: pack row by row
-            const size_t es = ggml_type_size(t->type);
-            if (t->nb[0] != es) {
-                ggml_free(ctx);
-                return false;
-            }
-            pack.assign(ggml_nbytes(d), 0);
-            size_t o = 0;
-            for (int64_t i3 = 0; i3 < t->ne[3]; i3++) {
-                for (int64_t i2 = 0; i2 < t->ne[2]; i2++) {
-                    for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
-                        memcpy(pack.data() + o, (const char *) t->data + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3], (size_t) t->ne[0] * es);
-                        o += (size_t) t->ne[0] * es;
+            // keep the rows (one per token and expert slot) whose expert is in this part
+            part.resize(ggml_nbytes(out));
+            ggml_backend_tensor_get(gout, part.data(), 0, part.size());
+            const size_t row = ggml_row_size(out->type, out->ne[0]);
+            for (int64_t i1 = 0; i1 < pack_ids->ne[1]; i1++) {
+                for (int64_t i0 = 0; i0 < pack_ids->ne[0]; i0++) {
+                    const size_t v = (size_t) pack_map[(size_t) *(const int32_t *) ((const char *) pack_ids->data + i0 * pack_ids->nb[0] + i1 * pack_ids->nb[1])];
+                    if (v >= lo && v < hi) {
+                        const size_t off = (size_t) i0 * out->nb[1] + (size_t) i1 * out->nb[2];
+                        memcpy((char *) out->data + off, part.data() + off, row);
                     }
                 }
             }
-            ggml_backend_tensor_set(d, pack.data(), 0, ggml_nbytes(d));
         }
+        const auto t_end = std::chrono::steady_clock::now();
+        up_ns += std::chrono::duration<double, std::nano>(t_c0 - t_up0).count();
+        comp_ns += std::chrono::duration<double, std::nano>(t_g0 - t_c0).count();
+        get_ns += std::chrono::duration<double, std::nano>(t_end - t_g0).count();
     }
-    if (seg_times) {
-        ggml_backend_synchronize(c->gpu);
-    }
-    const auto t_c0 = std::chrono::steady_clock::now();
-    const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
-    ggml_backend_synchronize(c->gpu);
-    if (st != GGML_STATUS_SUCCESS) {
-        ggml_free(ctx);
-        return false;
-    }
-    const auto t_g0 = std::chrono::steady_clock::now();
-    ggml_backend_tensor_get(gout, out->data, 0, ggml_nbytes(out));
     ggml_free(ctx);
     s.gpu_segments++;
+    if (n_chunk > 1) {
+        s.gpu_split_blocks++;
+    }
     if (seg_times) {
         static double up_ms = 0, comp_ms = 0, get_ms = 0;
         static uint64_t n = 0;
-        const auto t_end = std::chrono::steady_clock::now();
-        up_ms += std::chrono::duration<double, std::milli>(t_c0 - t_up0).count();
-        comp_ms += std::chrono::duration<double, std::milli>(t_g0 - t_c0).count();
-        get_ms += std::chrono::duration<double, std::milli>(t_end - t_g0).count();
+        up_ms += up_ns / 1e6;
+        comp_ms += comp_ns / 1e6;
+        get_ms += get_ns / 1e6;
         if ((++n & 63) == 0) {
             const double tot = up_ms + comp_ms + get_ms;
-            fprintf(stderr, "moe-cache: long-prompt blocks: %llu, upload %.0f ms (%.0f %%), compute %.0f ms (%.0f %%), read back %.0f ms\n", (unsigned long long) n,
-                    up_ms, 100 * up_ms / tot, comp_ms, 100 * comp_ms / tot, get_ms);
+            fprintf(stderr, "moe-cache: long-prompt blocks: %llu (split %llu), upload %.0f ms (%.0f %%), compute %.0f ms (%.0f %%), read back %.0f ms\n", (unsigned long long) n,
+                    (unsigned long long) s.gpu_split_blocks.load(), up_ms, 100 * up_ms / tot, comp_ms, 100 * comp_ms / tot, get_ms);
         }
     }
     return true;
