@@ -2877,3 +2877,19 @@ Prompt time (ms) by size, nothing cached:
 Answers identical in every arm (90 prompts). **Launcher default since this section:** stock runs whose model fits and that keep expert layers on
 the CPU get `GGML_OP_OFFLOAD_MIN_BATCH=512` (a user's value wins; plugin runs unchanged). Not proven bit-exact (CPU and GPU sums may round
 differently); tokens were identical everywhere it was checked. Thinking stays as the model card sets it (on for agents).
+
+## 69. Afternoon PC queue (Windows PC, 2026-10-29 10:11-17:00; all runs "not clean": the owner's own work was running, ~7 GiB)
+Runner `C:\dl\afternoon\runner.ps1`, paired ABBA, Flash-Next Q2_0, abba's fixed text check (per prompt; "differs, split differed" allowed only where
+the GPU/CPU split of the long-prompt blocks changed). The first hour produced nothing (helper `pcb_t0_run.py` had no `--port` option; every run
+stopped after 11 s), and the runner lost its own log lines until 14:47 (`$o` and `$O` are one variable in PowerShell); both fixed.
+
+| Item | A | B | Runs (prefill tok/s; decode tok/s) | Text | Verdict |
+|---|---|---|---|---|---|
+| T0a confirm, ctx 262144 | old plan (28b022b + f478564) | f310c28 (378cc26 + 2963cc5) | 4k: A 109.4 / 102.9, B 110.0 / 109.0; 34k: A 107.3 / 102.5, B 108.6 / 107.1; decode A 18.5 / 18.0, **B 21.9 / 21.6** | identical in every pair | **no regression; decode +18 %** (T0a closed) |
+| n23-pipe (c05b9a0) vs n23-split alone | split (MOE_CACHE_GPU_PIPE=0) | split + pipelined block | 34k: A 148.4 / 154.2, **B 165.3 / 166.1**; 128k: A 132.7 / 136.9, **B 147.2 / 147.8**; decode equal | identical | +10 % prefill, but it sits on n23-split |
+| n23-split (d4d381d) vs today's code | MOE_CACHE_GPU_CHUNKS=0 | default | 34k: A 154.0 / 156.2, B 155.4 / 155.2; 128k: A 136.7 / 137.0, B 137.0 / 136.2 | identical | **no repeatable gain** (B lost pair 2): not merged |
+| N22 read-back (6465d7d) | MOE_CACHE_GPU_READBACK=0 | default | 34k: A 191.5, B 200.3 / 195.1; 128k: A 168.6, B 169.4 / 169.5; **run 4 (A) never ran**: a CHECK job left two log files in C:\dl\pc_checks at 15:23, and the lock waits while that folder holds any file | no check file | **undecided** (3 of 4 runs): rerun |
+| n23 pipe-only (809505c, pipelining without split) | MOE_CACHE_GPU_PIPE=0 | default | queued 16:57; results in `C:\dl\afternoon\summary.csv` | - | next session |
+| 122B 256k, GLM 64k, Flash-Next 256k | - | - | queued after it (until 22:00 at the latest) | - | next session |
+
+Peak RAM in use on the PC during the 128k runs: 28.7-29.5 GiB including the owner's ~7 GiB (logged; nothing stopped).

@@ -3,6 +3,13 @@
 ## 0.3.1 (2026-10-29)
 
 - Windows kit: ships every launcher module. v0.3.0's zip left out `bin/moe_cache_pick.py`, so the control page (`moe-cache.bat`), `pick`, and `server` / `on-demand` without a model failed with `ModuleNotFoundError`. The kit build now fails if a launcher module does not import, and windows.yml starts the control page and runs `pick --json` from the unzipped kit (found by the release audit). Linux tarballs unchanged.
+- Settings: `ui.json` is written atomically under a lock with mode 0600; `pick --apply` and an open control page no longer drop each other's changes (folders were lost).
+- llama-server is found the same way everywhere (`LLAMA_SERVER`, PATH, `C:\llama`, install.sh's folder): the picker, `server`, `check`, `on-demand`. `on-demand` setup refuses a missing llama-server at once (it answered 503 at the first agent request) and keeps its full path for autostart.
+- Clearer messages: `server` names a missing llama-server first (not "run ./build.sh"); `check` compares the plugin's and llama-server's ggml API and names the matching download; a picked model that is not downloaded yet is named. Windows: a `setx LLAMA_SERVER` hint in `check`, `server`, `moe-cache.bat` and README_WINDOWS; how to use the api2 DLL.
+- The launcher prints the prompt-cache size it chose for agents (size, slots, checkpoints); the control page lists it under "What the launcher decided".
+- Picker: its memory estimate leaves the same GPU margin as the launcher (`pick --gpu-margin`, with the `--gpu-margin 2` hint for a GPU that draws the screen).
+- `connect claude`: Claude Code through llama-server's `/v1/messages` (checked on llama.cpp b11966); prints the `ANTHROPIC_*` lines, `--write` only into this folder's `.claude/settings.local.json`.
+- Docs: QUICKSTART short version and the `-ggml0.26` tarball, uninstall steps, `--gpu-margin 2` for a GPU that also drives the desktop, small fixes.
 
 ## 0.3.0 (2026-10-29)
 
