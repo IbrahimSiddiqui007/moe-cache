@@ -78,8 +78,9 @@ struct state_t {
     bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
     size_t max_nb2_all = 0;                             // largest expert slice, for the helper threads' bounce buffers
     std::vector<std::thread> pf_threads;
+    std::thread stats_th;                                // snapshot thread (MOE_CACHE_STATS_SIGNAL: SIGUSR1 / event): joined in the destructor
 #ifdef _WIN32
-    std::thread stats_th, save_th;                       // event threads (MOE_CACHE_STATS_SIGNAL, profile save on request): joined in the destructor
+    std::thread save_th;                                 // profile save on request: joined in the destructor
 #endif
     std::thread idle_th;                                 // idle release on request (SIGUSR2 / Local\moe-cache-idle-<pid>): joined in the destructor
     bool   idle_released = false;                       // idle_release() ran and no graph came since: the next graph sets the working-set minimum again
@@ -238,7 +239,12 @@ struct state_t {
         plat::env_utf8("MOE_CACHE_PROFILE", profile_path);     // paths: UTF-8 (Windows getenv gives the ANSI code page)
         plat::env_utf8("MOE_CACHE_WARM", warm_path);
         if (const char * v = getenv("MOE_CACHE_PRELOAD_FRAC")) {
-            preload_frac = atof(v);
+            const double f = atof(v);
+            if (f >= 0.0 && f <= 1.0) {          // also false for nan: a bad value keeps the default instead of loading past the budget (audit N6)
+                preload_frac = f;
+            } else {
+                fprintf(stderr, "moe-cache: MOE_CACHE_PRELOAD_FRAC=%s ignored (a fraction 0..1)\n", v);
+            }
         }
         if (const char * v = getenv("MOE_CACHE_PROFILE_DECAY")) {
             profile_decay = atof(v);
@@ -664,7 +670,7 @@ struct state_t {
                 sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_stats_pipe[1], &c, 1); (void) r; };   // async-signal-safe: only write()
                 sa.sa_flags = SA_RESTART;
                 sigaction(SIGUSR1, &sa, nullptr);
-                std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1 && !g_stats_stop) { print_snapshot(); } }).detach();
+                stats_th = std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1 && !g_stats_stop) { print_snapshot(); } });   // joined in stop_threads
             }
         }
         // idle release (N3): the launcher's on-demand listener sends SIGUSR2 when the server has been idle for a while
