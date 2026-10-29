@@ -63,7 +63,7 @@ extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If
 bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server
 ```
 Every line says OK, WARN or FAIL and what to do about it (it also times a short read test on the model's drive and warns when the drive is too slow). Add `--run` to also start llama-server with the plugin for one short request (about a
-minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too**: it checks the GPU, RAM, the model's drive and llama-server.
+minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too** (also called `doctor`; it ends with a table of your GPU, driver, RAM, disk and llama-server and a list of what to fix): it checks the GPU, RAM, the model's drive and llama-server.
 If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command (GiB of VRAM left free; default about 0.5).
 
 ### 3. Run your model

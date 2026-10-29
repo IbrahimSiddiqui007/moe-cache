@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **The machine stays awake while the server runs** (idea I47; a PC that slept 7 minutes in the middle of a benchmark stalled it): Windows sets a
+  power request on the launcher (`SetThreadExecutionState`, the display may still turn off), Linux holds a `systemd-inhibit --what=sleep:idle`
+  lock in a small helper that ends with the launcher however it ends (kill -9 included); llama-server itself is not wrapped. No power setting is
+  changed. One start-up line says so; skipped quietly without systemd-inhibit. `--allow-sleep` or `MOE_CACHE_ALLOW_SLEEP=1` turn it off. Covers
+  `server` and `on-demand`.
+- **`doctor`** (N34) is `check` under a second name, and both now end with an overview table (system, CPU, RAM, GPU with driver version, disk
+  space and read speed, llama-server, plugin, model) and a "what to fix" list that repeats the WARN / FAIL lines with their remedy. A GPU driver
+  older than AMD's 32.0.32015.7029 on Windows is a WARN. Run it first: `python bin/moe_cache.py doctor MODEL.gguf`.
+
 ## 0.3.1 (2026-10-29)
 
 - Windows kit: ships every launcher module. v0.3.0's zip left out `bin/moe_cache_pick.py`, so the control page (`moe-cache.bat`), `pick`, and `server` / `on-demand` without a model failed with `ModuleNotFoundError`. The kit build now fails if a launcher module does not import, and windows.yml starts the control page and runs `pick --json` from the unzipped kit (found by the release audit). Linux tarballs unchanged.
