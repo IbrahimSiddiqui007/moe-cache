@@ -153,6 +153,56 @@ check(s["pick"]["id"] == "flash-next-q2_0" and s["pick"]["model"] is None and s[
 check(pk.picked() is None, "picked(): None while the picked file is not here")
 pk.apply(r)
 
+# umask: ui.json written by `pick --apply` is private (0600) even under a permissive umask (POSIX; Windows has no such bits)
+if os.name != "nt":
+    old_mask = os.umask(0o022)
+    try:
+        os.remove(pk.SETTINGS_FILE)
+        pk.apply(r)
+        mode = os.stat(pk.SETTINGS_FILE).st_mode & 0o777
+    finally:
+        os.umask(old_mask)
+    check(mode == 0o600, f"pick --apply: ui.json is 0600 under umask 022 ({oct(mode)})")
+
+# `connect claude`: the env block, never a file without --write, a merge with the first backup kept, a private file
+env = mc.claude_env("http://127.0.0.1:8080/", "my-model", "KEY123")
+check(env == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080", "ANTHROPIC_AUTH_TOKEN": "KEY123", "ANTHROPIC_MODEL": "my-model", "ANTHROPIC_SMALL_FAST_MODEL": "my-model"},
+      f"connect claude: base URL without /v1 or a trailing slash, token, model ({env})")
+check(mc.claude_env("http://h:1", "m", None)["ANTHROPIC_AUTH_TOKEN"] == "none", "connect claude: a server without a key gets the placeholder token 'none'")
+txt = mc.claude_snippets(env, 65536)
+check('export ANTHROPIC_BASE_URL="http://127.0.0.1:8080"' in txt and '$env:ANTHROPIC_MODEL = "my-model"' in txt, "connect claude: bash and PowerShell lines")
+check("KEY123" not in mc.claude_snippets(env, 65536, hide_key=True), "connect claude: the key can be hidden")
+cfgdir = os.path.join(TMP, "proj", ".claude")
+cfg = os.path.join(cfgdir, "settings.local.json")
+check(not os.path.exists(cfg), "connect claude: nothing written before --write")
+os.makedirs(cfgdir)
+json.dump({"permissions": {"allow": ["Bash(ls)"]}, "env": {"FOO": "1"}}, open(cfg, "w"))
+mc.write_claude_settings(cfg, env)
+d = json.load(open(cfg))
+check(d["permissions"] == {"allow": ["Bash(ls)"]} and d["env"]["FOO"] == "1" and d["env"]["ANTHROPIC_MODEL"] == "my-model", "connect claude --write: merged, the user's other settings kept")
+mc.write_claude_settings(cfg, dict(env, ANTHROPIC_MODEL="other"))
+check(json.load(open(cfg + ".bak"))["env"] == {"FOO": "1"} and json.load(open(cfg))["env"]["ANTHROPIC_MODEL"] == "other", "connect claude --write twice: the first .bak (what the user had) is kept")
+if os.name != "nt":
+    check(os.stat(cfg).st_mode & 0o077 == 0 and os.stat(cfg + ".bak").st_mode & 0o077 == 0, "connect claude: the settings file and its backup are private")
+open(cfg, "w").write("{ not json")
+try:
+    mc.write_claude_settings(cfg, env); check(False, "connect claude: broken JSON refused")
+except SystemExit:
+    check(open(cfg).read() == "{ not json", "connect claude: broken JSON is not touched")
+
+# prompt cache line (item 1): what the launcher chose for agents, in one plain line (the control page lists every 'moe-cache:' line it logs)
+n = mc.prompt_cache_note("2048", ["--ctx-checkpoints", "8"], True)
+check(n.startswith("moe-cache: prompt cache: up to 2048 MiB") and "8 checkpoints per slot" in n and "default number of slots" in n and "--cache-ram MiB" in n, f"prompt cache line: size, slots, checkpoints ({n})")
+n = mc.prompt_cache_note("0", ["-np", "2"], True)
+check("off (--cache-ram 0)" in n and "2 slots (-np)" in n, f"prompt cache line: off below 16 GB, -np named ({n})")
+check("no --cache-ram" in mc.prompt_cache_note(None, [], False) and "checkpoint" not in mc.prompt_cache_note("2048", ["--ctx-checkpoints", "8"], False), "prompt cache line: old llama-server; no checkpoints outside agent mode")
+
+# the margin the launcher keeps next to what it places (--gpu-margin) is taken off the VRAM in the estimate
+a0 = pk.recommend(machine(32, 16), "agents")["memory"]["available"]
+a2 = pk.recommend(dict(machine(32, 16), gpu_margin=2), "agents")["memory"]
+check(abs(a0 - a2["available"] - (2 - pk.GPU_MARGIN_GIB) * GIB) < 1 and a2["gpu_margin_gib"] == 2, f"gpu margin: --gpu-margin 2 takes 2 GiB off the VRAM in the estimate ({(a0 - a2['available']) / GIB:.2f} GiB less)")
+check(any("--gpu-margin 2" in w for w in pk.recommend(machine(32, 16), "agents")["warnings"]), "gpu margin: the long-context agent pick names --gpu-margin 2 for a GPU that also draws the screen")
+
 # `server` without a model uses the pick (stops right after the model check: MOE_CACHE_LIB points to a missing file)
 import io, contextlib
 os.environ["MOE_CACHE_LIB"] = os.path.join(TMP, "no-plugin.so")

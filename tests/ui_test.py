@@ -153,6 +153,7 @@ if "--stock" in sys.argv:
     print("moe-cache: --stock: running stock llama-server (test)", flush=True)
 else:
     print("moe-cache: experts of 38 layers stay on the CPU and are managed by the cache; profile /tmp/x.usage; plugin loaded by preload", flush=True)
+print("moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); llama-server's default number of slots, 8 checkpoints per slot. To change it: moe-cache-server ... -- --cache-ram MiB (test)", flush=True)
 print("moe-cache: MTP on: the model has an MTP head (1 layer) and llama-server has draft-mtp: --spec-type draft-mtp --spec-draft-n-max 2 (test)", flush=True)
 print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=True)
 time.sleep(0.5)
@@ -292,7 +293,8 @@ check(abs((c.get("hit_rate_total") or 0) - 0.85) < 1e-9 and c.get("budget") == 7
 check((c.get("read_mbs") or 0) > 0, f"SSD reads MB/s from read_bytes ({c.get('read_mbs')})")
 check(f"--port {port}" in status.get("command", ""), "the status shows the launcher command")
 d = status.get("decisions", [])
-check(len(d) == 4 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("AMD GPU on Windows") and d[2].startswith("experts of 38 layers") and d[3].startswith("MTP on:"),
+check(len(d) == 5 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("AMD GPU on Windows") and d[2].startswith("experts of 38 layers") and d[3].startswith("prompt cache: up to 2048 MiB")
+      and d[4].startswith("MTP on:"),
       f"what the launcher decided, up to its URL line, without the prefix ({d})")
 w = status.get("warnings", [])
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),

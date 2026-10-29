@@ -6,7 +6,7 @@
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
-  moe_cache.py connect hermes|opencode [--url URL] [--write]               point Hermes Agent or OpenCode at a running server (start it with --agent)
+  moe_cache.py connect hermes|opencode|claude [--url URL] [--write]        point Hermes Agent, OpenCode or Claude Code at a running server (start it with --agent)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
@@ -1050,6 +1050,26 @@ def decide(model, ram_gb=None, plugin_wanted=False, stock_wanted=False):
     return bool(stock_wanted or (size and avail and size + STOCK_HEADROOM <= avail and not plugin_wanted)), size, avail
 
 
+def prompt_cache_note(cram, extra, agent):
+    """One plain line for the log (and so the control page's "What the launcher decided"): how much host RAM llama-server keeps for finished
+    conversations (--cache-ram), how many conversations (slots) it serves at once and how many checkpoints each keeps. Two agents on one server
+    reuse each other's shared prompt only while the prompt cache holds it (Strata 0.2.3 sizes theirs from free memory; ours: 2048 MiB, or off below
+    16 GB of server memory where the RAM is worth more to the expert cache, RESULTS 44). Change it with: -- --cache-ram MiB."""
+    if cram is None:
+        mem = "this llama-server has no --cache-ram: its own prompt-cache default"
+    elif re.fullmatch(r"-?\d+", str(cram)) and int(cram) == 0:
+        mem = "off (--cache-ram 0): a conversation that is replaced is processed again when it comes back"
+    elif re.fullmatch(r"-?\d+", str(cram)) and int(cram) < 0:
+        mem = "no size limit (--cache-ram -1)"
+    else:
+        mem = f"up to {cram} MiB of host RAM keeps finished conversations for reuse (--cache-ram)"
+    np_ = arg_after(extra, "-np", "--parallel")
+    slots = f"{np_} slot{'s' if str(np_) != '1' else ''} (-np)" if np_ else "llama-server's default number of slots"
+    cp = arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints")
+    cps = f", {cp} checkpoint{'s' if str(cp) != '1' else ''} per slot" if cp is not None and agent else ""
+    return f"moe-cache: prompt cache: {mem}; {slots}{cps}. To change it: moe-cache-server ... -- --cache-ram MiB"
+
+
 def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1356,6 +1376,7 @@ def server(argv):
                 extra += ["--cache-ram", cram]
         except Exception:
             pass
+    say(prompt_cache_note(cram, extra, a.agent))
     if cram is not None and re.fullmatch(r"[0-9-]+", cram):
         env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
     elif a.agent:
@@ -1602,13 +1623,58 @@ def hermes_backup(h):
     return path + ".bak", f"provider {old['provider'] or '(not set)'}, model {old['default'] or '(not set)'}, URL {old['base_url'] or '(not set)'}"
 
 
+def claude_env(url, model, api_key):
+    """The environment Claude Code needs to talk to llama-server's Anthropic-compatible endpoint (/v1/messages, also accepts count_tokens; checked
+    on llama.cpp b11966, Windows PC 2026-10-29: 200 with x-api-key and with Authorization: Bearer). ANTHROPIC_AUTH_TOKEN is sent as Bearer and does
+    not trigger Claude Code's 'use this API key?' question. The base URL has no /v1: Claude Code adds /v1/messages itself."""
+    env = {"ANTHROPIC_BASE_URL": url.rstrip("/"), "ANTHROPIC_AUTH_TOKEN": api_key or "none"}      # Claude Code wants some token even for a server without a key
+    env["ANTHROPIC_MODEL"] = model
+    env["ANTHROPIC_SMALL_FAST_MODEL"] = model       # its background calls (titles, summaries) would otherwise ask for a Haiku the server does not have
+    return env
+
+
+def claude_snippets(env, ctx, hide_key=False):
+    shown = {k: ("(your key)" if hide_key and k == "ANTHROPIC_AUTH_TOKEN" else v) for k, v in env.items()}
+    return "\n".join(["  Claude Code, bash / zsh (this terminal only):"] + [f"    export {k}={json.dumps(v)}" for k, v in shown.items()]
+                      + ["  Claude Code, PowerShell (this window only):"] + [f"    $env:{k} = {json.dumps(v)}" for k, v in shown.items()]
+                      + [f"  then run: claude   (context {ctx}: Claude Code's own system prompt is long; the server should run with --agent or --ctx 65536 or more)"])
+
+
+def write_claude_settings(cfg, env):
+    """Merge env into the "env" object of a Claude Code settings file (project-local by default), old file kept as .bak, private file (it holds the key)."""
+    data = {}
+    if os.path.isfile(cfg):
+        try:
+            data = json.load(open(cfg, encoding="utf-8"))
+        except ValueError:
+            raise SystemExit(f"{cfg} is not plain JSON: add the lines printed by 'moe_cache.py connect claude' by hand")
+        if not isinstance(data, dict):
+            raise SystemExit(f"{cfg} does not hold a JSON object")
+        if not os.path.isfile(cfg + ".bak"):
+            shutil.copy2(cfg, cfg + ".bak")                 # the first backup is kept: a second connect does not replace what the user had
+            if not WINDOWS:
+                os.chmod(cfg + ".bak", 0o600)
+    cur = data.get("env") if isinstance(data.get("env"), dict) else {}
+    cur.update(env)
+    data["env"] = cur
+    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
+    tmp = cfg + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp, cfg)
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
-                                 "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
-    ap.add_argument("agent", choices=["hermes", "opencode"])
+                                 "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak; "
+                                 "claude = Claude Code through llama-server's Anthropic-compatible /v1/messages: prints the ANTHROPIC_* lines, --write merges them into this folder's .claude/settings.local.json)")
+    ap.add_argument("agent", choices=["hermes", "opencode", "claude"])
     ap.add_argument("--url", help="the server (default: the on-demand endpoint's port when `on-demand` has a model, else http://127.0.0.1:8080)")
     ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
-    ap.add_argument("--config", help="opencode.json to merge into (default: ~/.config/opencode/opencode.json)")
+    ap.add_argument("--config", help="file to merge into (opencode: ~/.config/opencode/opencode.json; claude: ./.claude/settings.local.json of this folder)")
     a = ap.parse_args(argv)
     a.url = a.url or default_agent_url()
     a.api_key = key_for(a.url, a.api_key)
@@ -1641,6 +1707,19 @@ def connect(argv):
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
         if prev:
             say(f"  before: {prev}; old config kept as {bak} (copy it back over config.yaml to undo)")
+        return 0
+    if a.agent == "claude":
+        env = claude_env(a.url, name, a.api_key)
+        if not a.write:
+            say(claude_snippets(env, ctx))
+            say("apply to this folder only with: moe_cache.py connect claude --write  (merges into ./.claude/settings.local.json; nothing is written without --write)")
+            return 0
+        cfg = a.config or os.path.join(os.getcwd(), ".claude", "settings.local.json")
+        write_claude_settings(cfg, env)
+        say(f"Claude Code in {os.path.dirname(os.path.dirname(cfg)) or '.'} now uses {name} at {a.url} (context {ctx}); config {cfg}"
+            + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else "") + "; run: claude")
+        if ctx < 64000:
+            say(f"moe-cache: warning: the server's context is {ctx}; Claude Code sends a long system prompt (restart with --agent or --ctx 65536)", err=True)
         return 0
     cfg = a.config or os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode", "opencode.json")
     warn = []

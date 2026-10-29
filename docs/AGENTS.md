@@ -7,8 +7,11 @@ bin/moe-cache-server MODEL.gguf --agent            # context 65536, tool calls, 
 python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write   (add --url http://127.0.0.1:PORT for another port)
 ```
 
+**Claude Code** (it speaks Anthropic's API; llama-server answers `/v1/messages` and `/v1/messages/count_tokens`, checked on llama.cpp b11966 on the Windows PC with a small model, 2026-10-29: 200 with `x-api-key` and with a Bearer token): `python3 bin/moe_cache.py connect claude` prints the `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL` lines for bash and PowerShell and writes nothing; `connect claude --write` merges them into the `env` of **this folder's** `.claude/settings.local.json` only (first backup kept as `.bak`, file private), so Claude Code started elsewhere is not redirected. Claude Code's own system prompt is long: use `--agent` (64k) or more. Untested: how well a given local model follows Claude Code's tool use.
+
 | What `--agent` does | Why |
 |---|---|
+| a log line about the prompt cache | `moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); ... slots, 8 checkpoints per slot`. Two agents on one server reuse a shared prompt only while this cache holds it; below 16 GB of server memory it is off (the RAM is worth more to the expert cache, RESULTS 44). The control page lists the line under "What the launcher decided". Change it with `-- --cache-ram MiB` |
 | context 65536 (unless `--ctx`) | agents send 5-20k tokens of tools and instructions before the conversation starts; Hermes Agent refuses less than 64,000 |
 | `--jinja` | tool calls use the model's own chat template (already the default in current llama.cpp) |
 | `--alias NAME` (the file name) | the name agents see in `/v1/models`; pass `-- --alias other` to choose it |

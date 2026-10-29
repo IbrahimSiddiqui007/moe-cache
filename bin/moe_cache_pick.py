@@ -16,6 +16,7 @@ import moe_cache as mc  # noqa: E402
 WINDOWS = mc.WINDOWS
 GIB = 2**30
 SETTINGS_FILE = os.path.join(mc.CACHE_DIR, "ui.json")      # the control page's settings (moe_cache_ui.SETTINGS_FILE): "last" = what Start uses
+GPU_MARGIN_GIB = 0.5 * 1e9 / GIB      # the launcher's --gpu-margin default (the tuner's 0.5 GB): VRAM it leaves free next to everything it places
 USES = {"agents": "agents and coding (Hermes, OpenCode) at 64k-256k context", "chat": "plain chat", "docs": "long documents (64k-128k prompts)"}
 BOLT_BUILD = 11966          # Nemotron needs llama.cpp b11966 or newer (tokenizer fix #30960, RESULTS 65)
 PC = "32 GB RAM + 16 GB GPU (Windows desktop, RESULTS 59-67)"
@@ -278,6 +279,11 @@ def recommend(spec, use, model=None):
         warn.append(f"Nemotron needs llama.cpp b{BOLT_BUILD} or newer; your llama-server's build could not be read (`llama-server --version`)")
     if build is not None and build < BOLT_BUILD and use in ("agents", "docs") and fits("bolt"):
         warn.append(f"your llama-server is b{build}: Nemotron 3.5 Bolt (the faster pick here) needs b{BOLT_BUILD} or newer")
+    if vram and spec.get("gpu_margin") is not None and float(spec["gpu_margin"]) > GPU_MARGIN_GIB + 0.01:
+        warn.append(f"counting {float(spec['gpu_margin']):.1f} GiB of VRAM as left free (--gpu-margin), the launcher's default is {GPU_MARGIN_GIB:.1f}")
+    elif vram and use in ("agents", "docs") and ctx >= 131072:
+        warn.append(f"VRAM is counted minus {GPU_MARGIN_GIB:.1f} GiB, as the launcher does; if this GPU also draws your screen and answers slow down sharply, "
+                    "start with --gpu-margin 2")
     if hdd:
         warn.append("the models are on a hard disk: only models that fit in RAM are suggested (moe-cache reads experts from the drive; "
                     "moe_cache.py check times it)")
@@ -289,7 +295,10 @@ def recommend(spec, use, model=None):
         warn.append("agents send 5-20k-token prompts; without a GPU the first answer can take minutes (untested at 64k on such a machine)")
     kv = kv_estimate(k, ctx, local.get(k))
     need = m["size"] + kv["bytes"]
-    memory = {"model": m["size"], "kv": kv["bytes"], "kv_how": kv["how"], "total": need, "available": cap * 1e9 + vram * GIB}
+    margin = spec.get("gpu_margin")
+    margin = GPU_MARGIN_GIB if margin is None else float(margin)
+    usable_vram = max(0.0, vram - margin) * GIB if vram else 0.0          # the same margin the launcher's tuner keeps (--gpu-margin)
+    memory = {"model": m["size"], "kv": kv["bytes"], "kv_how": kv["how"], "total": need, "available": cap * 1e9 + usable_vram, "gpu_margin_gib": margin}
     if need > memory["available"] and fits(k):
         warn.append(f"model {m['size'] / 1e9:.1f} GB + KV cache {kv['bytes'] / 1e9:.1f} GB at context {ctx} ({kv['how']}) is more than RAM cap + VRAM "
                     f"({memory['available'] / 1e9:.1f} GB): a smaller context may be needed")
@@ -357,10 +366,15 @@ def apply(rec, settings=None):
         last.update({"model": rec["local"], "ctx": rec["ctx"], "agent": rec["use"] == "agents", "mode": "exact", "engine": "auto"})
         s["last"] = last
     if settings is None:
-        os.makedirs(mc.CACHE_DIR, exist_ok=True)
-        with open(SETTINGS_FILE + ".tmp", "w", encoding="utf-8") as f:
+        os.makedirs(mc.CACHE_DIR, mode=0o700, exist_ok=True)
+        tmp = SETTINGS_FILE + ".tmp"
+        if os.path.lexists(tmp):
+            os.unlink(tmp)
+        # the page's settings file (folders, last model, port) is private to this user, whatever the umask, and never written through a planted link
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(s, f, indent=1)
-        os.replace(SETTINGS_FILE + ".tmp", SETTINGS_FILE)
+        os.replace(tmp, SETTINGS_FILE)
     return s
 
 
@@ -392,7 +406,7 @@ def rec_lines(r):
     out = [f"{USES[r['use']]}: {r['name']}  ({r['size'] / 1e9:.1f} GB, {r['engine']})",
            f"  context {r['ctx']}, options: {' '.join(r['args'])}",
            f"  memory: model {r['memory']['model'] / 1e9:.1f} GB + KV cache {r['memory']['kv'] / 1e9:.1f} GB ({r['memory']['kv_how']}) = {r['memory']['total'] / 1e9:.1f} GB; "
-           f"this machine: RAM cap + VRAM = {r['memory']['available'] / 1e9:.1f} GB",
+           f"this machine: RAM cap + VRAM (minus {r['memory']['gpu_margin_gib']:.1f} GiB margin) = {r['memory']['available'] / 1e9:.1f} GB",
            f"  measured: {r['measured']}"] + [f"  why: {w}" for w in r["why"]]
     out += [f"  or: {a['name']}: {a['why']}" for a in r["alternatives"]]
     out += [f"  note: {w}" for w in r["warnings"]]
@@ -416,12 +430,15 @@ def pick(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py pick", description="recommend a model for this machine and what it is for; --apply uses it")
     ap.add_argument("--use", choices=list(USES), help="agents (coding agents, 64k-256k context), chat, docs (long documents); asked when left out")
     ap.add_argument("--model", choices=list(MODELS), help="use this candidate instead of the recommendation (only warned about, never refused)")
+    ap.add_argument("--gpu-margin", type=float, help="GiB of VRAM counted as left free (the launcher's --gpu-margin; default 0.5)")
     ap.add_argument("--apply", action="store_true", help="write the choice into the launcher's settings (server / on-demand without a model use it)")
     ap.add_argument("--models-dir", action="append", default=[], help="another folder with .gguf files (repeatable)")
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--json", action="store_true", help="print the machine and the recommendations as JSON")
     a = ap.parse_args(argv)
     spec = machine_specs(a.models_dir, a.llama_server)
+    if a.gpu_margin is not None:
+        spec["gpu_margin"] = a.gpu_margin
     tty = sys.stdin.isatty() and not a.json
     use = a.use
     if not use and tty:
