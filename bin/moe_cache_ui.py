@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
+import moe_cache_pick as picker  # noqa: E402
 
 HERE = mc.HERE
 WINDOWS = mc.WINDOWS
@@ -281,14 +282,28 @@ def mtp_reason(path, want, agent, ls):
 PEEK_PORTS = range(8080, 8090)
 
 
-def peek_server(port, api_key=None):
+def on_demand_port():
+    """The port of this user's on-demand listener (from its pid file in the private cache folder) while that process lives, else None."""
+    try:
+        pid, port = (int(x) for x in open(os.path.join(mc.CACHE_DIR, "on-demand.pid")).read().split()[:2])
+    except (OSError, ValueError):
+        return None
+    return port if alive(pid) else None
+
+
+def peek_server(port, api_key=None, trusted=False):
     """What a llama-server on 127.0.0.1:port says about itself: {port, up, health, model, ctx, slots, busy, key}. Only this machine (no other host:
-    the page must not become a way to probe the network); the key itself is never returned. key: "needed" (the server wants one and the stored key
-    or `api_key` was used), "rejected" (401 even with it), or null."""
+    the page must not become a way to probe the network); the key itself is never returned. key: "needed" (the server wants one; the stored key
+    or `api_key` was used only when `trusted`), "rejected" (401 even with it), or null. The stored key goes only to a `trusted` port (the page's own
+    server, this user's on-demand listener): any local user can listen on a free port of 8080-8089 and answer 401 to collect it (audit 2026-10-29 U1)."""
     url = f"http://127.0.0.1:{int(port)}"
     st = mc.http(url + "/health", timeout=1)[0]          # llama-server answers /health without a key; 503 while it loads the model
     if st not in (200, 503):
         return {"port": port, "up": False}
+    if not trusted and not api_key:
+        if mc.http(url + "/v1/models", timeout=2)[0] in (401, 403):
+            return {"port": port, "up": True, "health": "ready" if st == 200 else "loading", "model": None, "ctx": None, "slots": None, "busy": None,
+                    "key": "needed"}
     key = mc.key_for(url, api_key)
     name, ctx = mc.server_info(url, key)
     out = {"port": port, "up": True, "health": "ready" if st == 200 else "loading", "model": name, "ctx": ctx, "slots": None, "busy": None,
@@ -306,7 +321,8 @@ def peek_server(port, api_key=None):
 def peek_servers(ports=None, own=None):
     """peek_server() for the usual ports at once (closed ports answer at once); `own` = the port of the server this page started."""
     res, ports = {}, list(ports or PEEK_PORTS)
-    ts = [threading.Thread(target=lambda p=p: res.__setitem__(p, peek_server(p)), daemon=True) for p in ports]
+    mine = {own, on_demand_port()} - {None}
+    ts = [threading.Thread(target=lambda p=p: res.__setitem__(p, peek_server(p, trusted=p in mine)), daemon=True) for p in ports]
     for t in ts:
         t.start()
     for t in ts:
@@ -1451,7 +1467,9 @@ def save_chat(c):
         raise ValueError("messages: a list of {role, content}")
     keep = {k: c.get(k) for k in ("id", "title", "model", "system", "tokens", "files")}
     keep.update(messages=msgs, t=time.time())
-    os.makedirs(CHAT_DIR, exist_ok=True)
+    os.makedirs(CHAT_DIR, mode=0o700, exist_ok=True)
+    if not WINDOWS:
+        os.chmod(CHAT_DIR, 0o700)       # a folder made 0755 by an older version: the chats inside become private too
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(keep, fh)
@@ -1489,6 +1507,12 @@ class Store:
 
     def folders(self):
         return list(dict.fromkeys(default_folders() + self.saved.get("folders", [])))
+
+    def pick_specs(self, fresh=False):
+        """The picker's view of this machine (kept 5 minutes: it asks nvidia-smi, PowerShell and llama-server --version)."""
+        if fresh or not getattr(self, "_spec", None) or time.time() - self._spec[0] > 300:
+            self._spec = (time.time(), picker.machine_specs(self.folders(), self.ls))
+        return self._spec[1]
 
     def save(self):
         try:
@@ -1532,7 +1556,9 @@ def open_page(url):
             os.unlink(path)
         except OSError:
             pass
-    threading.Timer(60, gone).start()
+    t = threading.Timer(60, gone)
+    t.daemon = True             # Ctrl-C right after the start does not keep the process (and the Windows window) for a minute (audit U3)
+    t.start()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1628,8 +1654,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
             if u.path == "/api/system":
-                return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}),
+                return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}), pick=self.store.saved.get("pick"),
                                            llama_server=self.store.ls, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
+            if u.path == "/api/pick":                      # "Which model?": this machine and one recommendation per use (bin/moe_cache_pick.py)
+                spec = self.store.pick_specs(q.get("fresh") == "1")
+                uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)
+                return self.send(200, {"machine": spec, "lines": picker.spec_lines(spec), "uses": picker.USES,
+                                       "recommendations": [picker.recommend(spec, x, q.get("model") or None) for x in uses], "pick": self.store.saved.get("pick")})
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
@@ -1658,7 +1689,7 @@ class Handler(BaseHTTPRequestHandler):
                 port = number(q.get("port"), 1, 65535, int, "port")
                 if port is None:
                     raise ValueError("port: a number")
-                return self.send(200, peek_server(port))
+                return self.send(200, peek_server(port, trusted=port == on_demand_port()))
             if u.path == "/api/key":                       # for the Copy button only (token-protected, not cached)
                 if self.runner.state not in ("starting", "ready") or not self.runner.key():
                     raise ValueError("no API key in use")
@@ -1719,6 +1750,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.save()
                 self.runner.start(s)
                 return self.send(200, self.runner.status())
+            if self.path == "/api/pick/use":               # "Use it": the same settings `moe_cache.py pick --apply` writes (no download here)
+                if body.get("use") not in picker.USES:
+                    raise ValueError("use: " + ", ".join(picker.USES))
+                rec = picker.recommend(self.store.pick_specs(True), body["use"], body.get("model") or None)
+                picker.apply(rec, self.store.saved)
+                self.store.save()
+                self.store.models_at = 0                   # the list shows the file at once
+                return self.send(200, {"recommendation": rec, "last": self.store.saved.get("last", {}), "pick": self.store.saved.get("pick")})
             if self.path == "/api/command":
                 s = self.settings(body)
                 return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
@@ -1853,7 +1892,7 @@ def connect_agent(agent, url, api_key, write):
         env.pop("LLAMA_API_KEY", None)
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120, env=env)
     out = {"rc": r.returncode, "output": (r.stdout + r.stderr).strip(), "file": None, "written": None}
-    m = re.search(r"; config (.+?\.json)", out["output"])
+    m = re.search(r"; config (.+?\.jsonc?)(?: \(old file|$)", out["output"], re.M)       # opencode.jsonc too (OpenCode Desktop creates it)
     if write and r.returncode == 0 and m:
         out["file"] = m.group(1)
         try:
@@ -1883,6 +1922,8 @@ def ui(argv):
     ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--no-browser", action="store_true", help="do not open the page in the browser")
     a = ap.parse_args(argv)
+    if not WINDOWS:
+        os.umask(0o077)         # chats (whole conversations, attached files), ui.json and bench.csv private to this user, as the launcher's files (audit U2)
     try:
         srv = make_server(a.ui_port, a.llama_server)
     except OSError as e:
@@ -1892,7 +1933,9 @@ def ui(argv):
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
     mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if not a.no_browser:
-        threading.Timer(0.5, open_page, args=(url,)).start()
+        t = threading.Timer(0.5, open_page, args=(url,))
+        t.daemon = True
+        t.start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

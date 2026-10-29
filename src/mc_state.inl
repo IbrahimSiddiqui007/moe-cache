@@ -78,8 +78,9 @@ struct state_t {
     bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
     size_t max_nb2_all = 0;                             // largest expert slice, for the helper threads' bounce buffers
     std::vector<std::thread> pf_threads;
+    std::thread stats_th;                                // snapshot thread (MOE_CACHE_STATS_SIGNAL: SIGUSR1 / event): joined in the destructor
 #ifdef _WIN32
-    std::thread stats_th, save_th;                       // event threads (MOE_CACHE_STATS_SIGNAL, profile save on request): joined in the destructor
+    std::thread save_th;                                 // profile save on request: joined in the destructor
 #endif
     std::thread idle_th;                                 // idle release on request (SIGUSR2 / Local\moe-cache-idle-<pid>): joined in the destructor
     bool   idle_released = false;                       // idle_release() ran and no graph came since: the next graph sets the working-set minimum again
@@ -238,7 +239,12 @@ struct state_t {
         plat::env_utf8("MOE_CACHE_PROFILE", profile_path);     // paths: UTF-8 (Windows getenv gives the ANSI code page)
         plat::env_utf8("MOE_CACHE_WARM", warm_path);
         if (const char * v = getenv("MOE_CACHE_PRELOAD_FRAC")) {
-            preload_frac = atof(v);
+            const double f = atof(v);
+            if (f >= 0.0 && f <= 1.0) {          // also false for nan: a bad value keeps the default instead of loading past the budget (audit N6)
+                preload_frac = f;
+            } else {
+                fprintf(stderr, "moe-cache: MOE_CACHE_PRELOAD_FRAC=%s ignored (a fraction 0..1)\n", v);
+            }
         }
         if (const char * v = getenv("MOE_CACHE_PROFILE_DECAY")) {
             profile_decay = atof(v);
@@ -336,7 +342,17 @@ struct state_t {
                 file_shard[nm] = (int) si;
             }
             gguf_free(g);
-            const plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
+            plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
+#ifndef _WIN32
+            if (!f.ok() && !win_buffered && errno == EINVAL) {
+                // a file system without O_DIRECT (ntfs-3g and other FUSE mounts, e.g. a dual-boot model folder): the same aligned reads work
+                // through the page cache; before, the whole plugin was turned off (audit 2026-10-29 N8)
+                f = plat::file_open(shards[si].c_str(), false, win_random);
+                if (f.ok()) {
+                    fprintf(stderr, "moe-cache: %s: this file system refuses O_DIRECT; reading through the page cache instead\n", shards[si].c_str());
+                }
+            }
+#endif
             if (!f.ok()) {
                 fail("cannot open " + shards[si] + (win_buffered ? std::string() : std::string(" with O_DIRECT")));
                 return;
@@ -664,7 +680,7 @@ struct state_t {
                 sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_stats_pipe[1], &c, 1); (void) r; };   // async-signal-safe: only write()
                 sa.sa_flags = SA_RESTART;
                 sigaction(SIGUSR1, &sa, nullptr);
-                std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1 && !g_stats_stop) { print_snapshot(); } }).detach();
+                stats_th = std::thread([this] { char c; while (read(g_stats_pipe[0], &c, 1) == 1 && !g_stats_stop) { print_snapshot(); } });   // joined in stop_threads
             }
         }
         // idle release (N3): the launcher's on-demand listener sends SIGUSR2 when the server has been idle for a while
@@ -725,13 +741,21 @@ struct state_t {
 };
 
 // The state lives on the heap; a static guard ends it at exit. Normally (threads alive) it is deleted: threads joined, profile saved. When the
-// process is exiting on Windows, the other threads are already gone and the state is only asked to save and report (see exit_without_threads).
+// process is exiting on Windows, the other threads are already gone, or (both systems) exit came while a graph held the cache lock, the state is
+// only asked to report (see exit_without_threads).
 struct state_exit_t {
     state_t * s;
     ~state_exit_t() {
         if (plat::process_exiting()) {
             s->exit_without_threads();
+        } else if (!s->mu.try_lock()) {
+            // exit() called while a graph holds the cache lock (Linux: llama-server's second Ctrl+C calls exit(1) from its signal handler, in the
+            // middle of a prompt). Joining the readers would wait for ever (they need the lock) and the save would lock it again: leave the state
+            // as the Windows exit does; the system takes the memory back (audit 2026-10-29 N2)
+            fprintf(stderr, "moe-cache: exit during a computation: threads left to the system, usage profile not saved this time\n");
+            s->exit_without_threads();
         } else {
+            s->mu.unlock();
             delete s;
         }
     }

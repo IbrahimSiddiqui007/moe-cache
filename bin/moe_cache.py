@@ -2,6 +2,7 @@
 """moe-cache launcher (Linux and Windows; Python 3.8+, standard library only).
 
   moe_cache.py server  MODEL.gguf [options] [-- extra llama-server args]   run llama-server with the expert-cache plugin
+  moe_cache.py pick    [--use agents|chat|docs] [--apply]                  recommend a model for this machine (RAM, VRAM, disk, CPU) and use; --apply uses it
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
@@ -13,7 +14,7 @@
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
-import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.request
+import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
 VERSION = "0.3.0"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -486,9 +487,14 @@ def mem_cap():
     v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
     if v is not None:
         try:
-            return float(v) * 1e9 if float(v) > 0 else None
+            f = float(v)
+            if f == f and f >= 0:            # not nan
+                return f * 1e9 if f > 0 else None
         except ValueError:
-            return None
+            pass
+        if not getattr(mem_cap, "warned", False):    # a typo kept the default cap, as the plugin does (audit 2026-10-29 L6: it dropped the cap)
+            mem_cap.warned = True
+            say(f"moe-cache: MOE_CACHE_MAX_RAM_GB={v!r} is not a number of GB: the default cap is used", err=True)
     total = mem_total()
     if not total:
         return None
@@ -1023,7 +1029,7 @@ SERVER_HELP = """\
            temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:
            the card's coding values where it has them), skipping any you pass after -- and any the GGUF carries; low-bit quants loop less with them.
            Requests that send their own values (agents send a temperature) still win
---api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
+--api-key KEY  require this key on the API (passed to llama-server; better: LLAMA_API_KEY, not visible in the process list); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
 
@@ -1047,9 +1053,9 @@ def decide(model, ram_gb=None, plugin_wanted=False, stock_wanted=False):
 def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("model")
+    ap.add_argument("model", nargs="?", help="the .gguf file (leave out to use the one `moe_cache.py pick --apply` chose)")
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
-    ap.add_argument("--max-ram", type=gb_arg)
+    ap.add_argument("--max-ram", type=lambda v: "0" if v.strip() in ("0", "0.0") else gb_arg(v))    # 0 = no cap (the help says so; gb_arg refused it)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=default_llama_server())
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
@@ -1066,8 +1072,21 @@ def server(argv):
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
     a = ap.parse_args(argv)
+    if not a.model:
+        from moe_cache_pick import picked       # bin/moe_cache_pick.py
+        p = picked()
+        if not p:
+            raise SystemExit("usage: moe-cache-server MODEL.gguf [options]  (no model given and none picked: `moe_cache.py pick` recommends one for this machine)")
+        a.model = p[0]
+        a.ctx = a.ctx or p[1]
+        a.agent = a.agent or p[2]
+        say(f"moe-cache: no model given: using the picked one, {a.model} (context {a.ctx}" + (", agent mode" if a.agent else "") + "; moe_cache.py pick)")
     if a.max_ram:
         os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram          # the launcher's planning and the plugin in llama-server both read it
+    if not WINDOWS and any(x == "--api-key" or x.startswith("--api-key=") for x in argv):
+        # llama-server gets it through the environment, but this launcher's own command line stays readable (/proc) for the server's lifetime
+        say("moe-cache: note: a key on the command line is visible to other users of this machine (ps); LLAMA_API_KEY or the stored key "
+            "(moe_cache.py key) keep it private", err=True)
     if not WINDOWS:
         os.umask(0o077)       # the usage profile is private to this user
     ls, model, port = a.llama_server, a.model, a.port
@@ -1378,6 +1397,13 @@ def server(argv):
         else:
             say(("env " + " ".join(f"{k}={v}" for k, v in shown) + " " if shown else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
         return 0
+    # audit 2026-10-29 L2/L3: checked before any helper thread starts, as learn and check do: with another server on the port the restore thread
+    # sent it our project state (with the stored key) and the plugin check called it ours; a missing llama-server was a Python traceback
+    if port_busy(port):
+        raise SystemExit(f"moe-cache: port {port} is already in use (another llama-server, or on-demand: moe_cache.py on-demand --status); "
+                         f"stop it or pick another with --port")
+    if not (os.path.isfile(cmd[0]) or shutil.which(cmd[0])):
+        raise SystemExit(f"moe-cache: llama-server not found: {cmd[0]}. Pass --llama-server PATH or set LLAMA_SERVER (moe_cache.py check tells what is missing)")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
@@ -1550,6 +1576,29 @@ def opencode_config_target(cfg):
     return cfg, warn
 
 
+def hermes_backup(h):
+    """Before 'hermes config set' replaces the main model: copy config.yaml to config.yaml.bak and describe the model it had, unless it already
+    points at a local server (a second connect must not replace the backup of the user's own setup, e.g. OpenRouter, with ours).
+    Returns (backup path, "provider P, model M, URL U") or (None, "") when nothing was kept."""
+    def get(k):
+        r = subprocess.run([h, "config", "get", k], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    try:
+        r = subprocess.run([h, "config", "path"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        path = (r.stdout.strip().splitlines() or [""])[-1].strip() if r.returncode == 0 else ""
+        old = {k: get("model." + k) for k in ("provider", "default", "base_url")}
+    except (OSError, subprocess.SubprocessError):
+        return None, ""
+    if not path or not os.path.isfile(path):
+        return None, ""
+    if old["provider"] == "custom" and urllib.parse.urlparse(old["base_url"]).hostname in ("127.0.0.1", "localhost", "::1"):
+        return None, ""
+    shutil.copy2(path, path + ".bak")
+    if not WINDOWS:
+        os.chmod(path + ".bak", 0o600)     # it may hold the old provider's key
+    return path + ".bak", f"provider {old['provider'] or '(not set)'}, model {old['default'] or '(not set)'}, URL {old['base_url'] or '(not set)'}"
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
                                  "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak)")
@@ -1562,7 +1611,11 @@ def connect(argv):
     a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
     if not name:
-        raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent)")
+        from moe_cache_pick import picked
+        p = picked()
+        raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent"
+                         + (f"; or `moe_cache.py server --agent` / `on-demand` for your picked model, {os.path.basename(p[0])}" if p else
+                            "; `moe_cache.py pick` recommends a model for this machine") + ")")
     ctx = ctx or 65536
     base = a.url.rstrip("/") + "/v1"
     if a.agent == "hermes":
@@ -1577,11 +1630,14 @@ def connect(argv):
         h = shutil.which("hermes")
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
+        bak, prev = hermes_backup(h)
         for k, v in sets:
             r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
             if r.returncode:
                 raise SystemExit(f"hermes config set {k} failed: {(r.stderr or r.stdout).strip()[-300:]}")
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
+        if prev:
+            say(f"  before: {prev}; old config kept as {bak} (copy it back over config.yaml to undo)")
         return 0
     cfg = a.config or os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode", "opencode.json")
     warn = []
@@ -1600,9 +1656,11 @@ def connect(argv):
             data = json.load(open(cfg, encoding="utf-8"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
-        shutil.copy2(cfg, cfg + ".bak")
-        if not WINDOWS:
-            os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
+        if not str(data.get("model", "")).startswith("moe-cache/") or not os.path.isfile(cfg + ".bak"):
+            # keep the backup of the user's own setup: a second connect (already moe-cache) must not replace it with ours
+            shutil.copy2(cfg, cfg + ".bak")
+            if not WINDOWS:
+                os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
     data.setdefault("provider", {})["moe-cache"] = entry
     data["model"] = f"moe-cache/{name}"
     os.makedirs(os.path.dirname(cfg), exist_ok=True)
@@ -1627,6 +1685,11 @@ def default_agent_url():
     except (OSError, ValueError, TypeError, AttributeError):
         port = 8080
     return f"http://127.0.0.1:{port}"
+
+
+def pick_cmd(argv):
+    from moe_cache_pick import pick      # bin/moe_cache_pick.py
+    return pick(argv)
 
 
 def on_demand_cmd(argv):
@@ -1997,7 +2060,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
+    cmds = {"server": server, "pick": pick_cmd, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0

@@ -262,15 +262,12 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     pack_used.push_back((int32_t) e);
                 }
             }
-            // Windows: pack unless every expert is used: the whole-tensor upload also reads the experts this block does not use, which may be evicted
+            // pack unless every expert is used: the whole-tensor upload also reads the experts this block does not use, which may be evicted
             // (desktop PC 2026-10-26, GLM-5.3-Flash with a 4.6 GiB cache: on Windows an evicted expert is decommitted memory and the upload's copy
-            // crashed with an access violation; on Linux it reads zeros, harmless because they are unused, so Linux keeps the
-            // 90 % rule). At 100 % use it is the same single copy.
-#ifdef _WIN32
+            // crashed with an access violation). Linux used a 90 % rule while evicted experts read as zeros; with the file view (its default since
+            // 191e6d4) they are read from the disk on this thread and stay mapped outside the cache's budget, so both systems pack now (audit
+            // 2026-10-29). At 100 % use it is the same single copy.
             if (!ok || pack_used.size() == (size_t) n_as) {
-#else
-            if (!ok || pack_used.size() * 10 >= (size_t) n_as * 9) {     // (almost) every expert used: nothing to gain (evicted experts read as zeros)
-#endif
                 pack_used.clear();
             }
         }

@@ -185,7 +185,7 @@
         {
             std::lock_guard<std::mutex> lk(mu);
             auto lt = layer_tensors.find(layer);
-            if (lt == layer_tensors.end()) {
+            if (lt == layer_tensors.end() || lt->second.empty()) {     // empty: the layer's model was unloaded (forget_range)
                 return;
             }
             int fresh = 0;
@@ -355,12 +355,25 @@
         pool.reset();
 #ifdef __linux__
         g_stats_stop = true;
+        // the signals are ignored before their pipes close: the control page sends SIGUSR1 every 2 s until the process is gone, and a handler
+        // writing into a closed (and reused) descriptor put a stray byte into the profile file finish() opens next (audit 2026-10-29 N7)
+        struct sigaction ign;
+        memset(&ign, 0, sizeof(ign));
+        ign.sa_handler = SIG_IGN;
         if (g_stats_pipe[1] >= 0) {
-            close(g_stats_pipe[1]);          // wakes the snapshot thread, which then exits
+            sigaction(SIGUSR1, &ign, nullptr);
+            const int fd = g_stats_pipe[1];
+            g_stats_pipe[1] = -1;
+            close(fd);                       // wakes the snapshot thread, which then exits (joined below: it uses this state)
         }
         if (g_idle_pipe[1] >= 0) {
-            close(g_idle_pipe[1]);           // wakes the idle thread, which then exits (joined below: it uses this state)
+            sigaction(SIGUSR2, &ign, nullptr);
+            const int fd = g_idle_pipe[1];
             g_idle_pipe[1] = -1;
+            close(fd);                       // wakes the idle thread, which then exits (joined below: it uses this state)
+        }
+        if (stats_th.joinable()) {
+            stats_th.join();
         }
 #elif defined(_WIN32)
         g_stats_stop = true;

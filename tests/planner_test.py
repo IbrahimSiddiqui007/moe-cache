@@ -3,7 +3,7 @@
    python3 tests/planner_test.py MODEL.gguf
 Checks rules that must hold for any model: more VRAM never puts more expert layers on the CPU, the margin is respected, the micro-batch is one the
 tuner knows, plan.py's answer is in range, and the launcher passes --vram to the tuner in GiB (audit A12) and --gpu-margin through (audit A05)."""
-import json, os, subprocess, sys
+import json, os, subprocess, sys, types
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "planner"))
@@ -91,7 +91,6 @@ import importlib.util, struct  # noqa: E402
 _sp = importlib.util.spec_from_file_location("moe_cache_launcher", os.path.join(HERE, "bin", "moe_cache.py"))
 L = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(L)
 # AMD driver version for the checkpoint message (I44): fake winreg with two display adapters
-import types  # noqa: E402
 _keys = {"": ["0000", "0001", "Properties"], "0000": {"DriverDesc": "AMD Radeon(TM) Graphics", "DriverVersion": "31.0.1.1"},
          "0001": {"DriverDesc": "AMD Radeon RX 9070 XT", "DriverVersion": "32.0.23034.4"}}
 class _K:
@@ -262,6 +261,17 @@ check(gguf_plan.compute_buffer_guess_mib(65536, 2048) >= gguf_plan.compute_buffe
       "compute buffer guess: unmeasured pairs get an estimate that errs high")
 check(gguf_plan.compute_buffer_guess_mib(524288, 512) >= 2 * gguf_plan.compute_buffer_mib(262144, 512),
       "compute buffer guess: past the largest measured context it grows with the context (T0a: a flat 0.55 GB at 256k starved the long-prompt block)")
+for _c in sorted(gguf_plan._COMPUTE_MIB):      # audit 2026-10-29 L1: -ub 2048 at 128k/256k was guessed at a flat 990 MiB (3150 / 3979 measured)
+    check(gguf_plan.compute_buffer_guess_mib(_c, 2048) >= gguf_plan.compute_buffer_guess_mib(_c, 1024) >= gguf_plan.compute_buffer_guess_mib(_c, 512),
+          f"compute buffer guess at {_c}: 2048 >= 1024 >= 512 ({[gguf_plan.compute_buffer_guess_mib(_c, u) for u in (2048, 1024, 512)]})")
+check(gguf_plan.compute_buffer_guess_mib(262144, 2048) >= 3979 and gguf_plan.compute_buffer_mib(262144, 2048) is None,
+      "compute buffer: 2048 at 256k guessed at its measured size but still never auto-picked")
+_run = gguf_plan.subprocess.run      # audit 2026-10-29 L4: two NVIDIA GPUs print two lines; the tuner read none
+gguf_plan.subprocess.run = lambda *a, **k: types.SimpleNamespace(stdout="24564, 300\n12288, 100\n")
+try:
+    check(gguf_plan.free_vram_bytes() == (24564 - 300) * 1048576, "free VRAM with two NVIDIA GPUs: the first GPU's line")
+finally:
+    gguf_plan.subprocess.run = _run
 _h = gguf_plan.tune(model, 524288, free=16 * GIB, want_cache=False)
 check(_h["compute_mib"] and _h["compute_mib"] >= gguf_plan.compute_buffer_mib(262144, 512), f"tune past the table: compute buffer from the scaled guess ({_h['compute_mib']})")
 
@@ -369,6 +379,9 @@ check(L.mem_cap() == 20e9 and L.mem_for_server("40") == 20e9 and L.mem_for_serve
       f"mem_cap: override 20 GB; --ram 40 capped to it, --ram 10 kept ({L.mem_cap()}, {L.mem_for_server('40')}, {L.mem_for_server('10')})")
 os.environ["MOE_CACHE_MAX_RAM_GB"] = "0"
 check(L.mem_cap() is None and L.mem_for_server("40") == 40e9, "mem_cap: MOE_CACHE_MAX_RAM_GB=0 turns the cap off")
+for _bad in ("abc", "nan", "-5"):       # audit 2026-10-29 L6: a typo dropped the cap; now the default cap stays (as in the plugin)
+    os.environ["MOE_CACHE_MAX_RAM_GB"] = _bad
+    check(L.mem_cap() == _caps[32] * 2**30 if L.mem_total() == 32 * 2**30 else L.mem_cap() is not None, f"mem_cap: MOE_CACHE_MAX_RAM_GB={_bad} keeps the default cap ({L.mem_cap()})")
 os.environ.pop("MOE_CACHE_MAX_RAM_GB")
 if _env is not None:
     os.environ["MOE_CACHE_MAX_RAM_GB"] = _env

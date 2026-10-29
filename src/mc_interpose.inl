@@ -12,6 +12,15 @@ extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t
 
 bool q2_0_library_is_plain();   // mc_exec.inl
 
+// preloaded into a llama-server whose CPU backend is a separate library loaded later (RTLD_LOCAL: --load-method preload on a build with
+// GGML_BACKEND_DL): that library's table still binds to these symbols, but RTLD_NEXT cannot find its own functions. Say so instead of calling
+// a null pointer, or (Q2_0) replacing a kernel that could not be compared with the library's (audit 2026-10-29)
+[[noreturn]] static void interpose_no_orig(const char * fn) {
+    fprintf(stderr, "moe-cache: %s of llama.cpp's CPU backend is not visible to the preloaded plugin (its CPU backend is a separate library): "
+                    "load the plugin with --load-method path (GGML_BACKEND_PATH) instead of LD_PRELOAD\n", fn);
+    abort();
+}
+
 extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     typedef void (*fn_t)(int, float *, size_t, const void *, size_t, const void *, size_t, int);
     static fn_t orig = (fn_t) dlsym(RTLD_NEXT, "ggml_vec_dot_q2_0_q8_0");
@@ -19,16 +28,14 @@ extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_q2_0_q8_0(int n, float * s, size_t
         const char * e = getenv("MOE_CACHE_FAST_KERNELS");
         return !(e && strcmp(e, "0") == 0) && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && q2_0_library_is_plain();
     }();
+    if (!orig) {
+        interpose_no_orig("ggml_vec_dot_q2_0_q8_0");
+    }
     if (fast && nrc == 1 && n > 0 && n % 64 == 0) {
         fastk::vec_dot_q2_0_q8_0_avx2<true>(n, s, vx, vy);
         return;
     }
-    if (orig) {
-        orig(n, s, bs, vx, bx, vy, by, nrc);
-        return;
-    }
-    fprintf(stderr, "moe-cache: no Q2_0 dot product available\n");
-    abort();
+    orig(n, s, bs, vx, bx, vy, by, nrc);
 }
 
 // ---- AVX-512 IQ2_XXS / IQ3_XXS dot products (MOE_CACHE_AVX512=1; off by default) ----
@@ -90,6 +97,9 @@ static const int iq512_registered = (moe_cache_iq512_probe = &iq512_probe_trampo
 
 extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_iq2_xxs_q8_K(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     static iq_dot_t orig = (iq_dot_t) dlsym(RTLD_NEXT, "ggml_vec_dot_iq2_xxs_q8_K");
+    if (!orig) {
+        interpose_no_orig("ggml_vec_dot_iq2_xxs_q8_K");
+    }
     const int m = iq512_mode();
     if (m && nrc == 1 && n > 0 && n % 256 == 0) {
         if (m == 2) fastk512::dot_iq2_xxs_vnni(n, s, vx, vy); else fastk512::dot_iq2_xxs(n, s, vx, vy);
@@ -100,6 +110,9 @@ extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_iq2_xxs_q8_K(int n, float * s, siz
 
 extern "C" MOE_CACHE_EXPORT void ggml_vec_dot_iq3_xxs_q8_K(int n, float * s, size_t bs, const void * vx, size_t bx, const void * vy, size_t by, int nrc) {
     static iq_dot_t orig = (iq_dot_t) dlsym(RTLD_NEXT, "ggml_vec_dot_iq3_xxs_q8_K");
+    if (!orig) {
+        interpose_no_orig("ggml_vec_dot_iq3_xxs_q8_K");
+    }
     const int m = iq512_mode();
     if (m && nrc == 1 && n > 0 && n % 256 == 0) {
         if (m == 2) fastk512::dot_iq3_xxs_vnni(n, s, vx, vy); else fastk512::dot_iq3_xxs(n, s, vx, vy);
@@ -116,11 +129,9 @@ extern "C" MOE_CACHE_EXPORT void ggml_backend_tensor_set_async(ggml_backend_t ba
     if (gpu_cache_mode()) {
         gpu_cache_ensure(data, size);
     }
-    if (orig) {
-        orig(backend, tensor, data, offset, size);
-    } else {
-        fprintf(stderr, "moe-cache: ggml_backend_tensor_set_async not found\n");
-        abort();
+    if (!orig) {
+        interpose_no_orig("ggml_backend_tensor_set_async");
     }
+    orig(backend, tensor, data, offset, size);
 }
 #endif
