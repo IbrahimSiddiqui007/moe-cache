@@ -466,6 +466,11 @@ check("before: provider auto, model anthropic/claude-x, URL https://openrouter.a
       and json.load(open(hcfg + ".bak"))["model.provider"] == "auto", "and keeps the user's own model as config.yaml.bak, saying what it was")
 req("/api/connect", {"agent": "hermes", "write": True})
 check(json.load(open(hcfg + ".bak"))["model.provider"] == "auto", "a second Connect Hermes keeps that backup (not replaced by the moe-cache one)")
+os.remove(hcfg + ".bak")      # audit 2026-10-29: the user's own local server (Ollama) and no backup yet: it is backed up, not lost
+json.dump({"model.provider": "custom", "model.default": "qwen3:32b", "model.base_url": "http://localhost:11434/v1"}, open(hcfg, "w"))
+st, body = req("/api/connect", {"agent": "hermes", "write": True})
+check(os.path.isfile(hcfg + ".bak") and json.load(open(hcfg + ".bak"))["model.base_url"] == "http://localhost:11434/v1" and "before: provider custom, model qwen3:32b" in json.loads(body)["output"],
+      "Connect Hermes over the user's own local server (Ollama) keeps it as config.yaml.bak")
 os.environ["PATH"] = old_path
 # OpenCode Desktop creates opencode.jsonc on first run; connect writes into it when it is plain JSON, and the page reads that file back
 jc = os.path.join(TMP, "config", "opencode", "opencode.jsonc")

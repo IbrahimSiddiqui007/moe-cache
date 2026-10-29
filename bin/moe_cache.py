@@ -1581,7 +1581,10 @@ def hermes_backup(h):
         return None, ""
     if not path or not os.path.isfile(path):
         return None, ""
-    if old["provider"] == "custom" and urllib.parse.urlparse(old["base_url"]).hostname in ("127.0.0.1", "localhost", "::1"):
+    if (old["provider"] == "custom" and urllib.parse.urlparse(old["base_url"]).hostname in ("127.0.0.1", "localhost", "::1")
+            and os.path.isfile(path + ".bak")):
+        # a local server with a backup already made: a second connect. A local server without one (the user's own Ollama or LM Studio) is
+        # backed up like any other setup (audit 2026-10-29: it was overwritten without a backup)
         return None, ""
     shutil.copy2(path, path + ".bak")
     if not WINDOWS:
