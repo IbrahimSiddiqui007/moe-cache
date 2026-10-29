@@ -972,9 +972,9 @@ if node:
           f"Switch to <name> only when a server is up and another model is selected ({r_ and [x['show'] for x in r_[:6]]})")
     check(r_ is not None and r_[6:] == [True, False, True, False], "confirm only when a request is running (agent slot processing or the chat)")
 
-# the model list's menu: right-click, Shift+F10 / the menu key, the ⋮ button; the items follow the server state
+# the model list's menu: right-click, Shift+F10 / the menu key, the three-dots button; the items follow the server state
 check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),
-      "the list rows have the context menu, the keyboard keys, the ⋮ button and focusable rows")
+      "the list rows have the context menu, the keyboard keys, the three-dots button and focusable rows")
 if node:
     fn = re.search(r"function rowMenuItems\(st, path\) \{.*?\n\}\n", page, re.S).group(0)
     harness = fn + ("const ids = (st, p) => rowMenuItems(st, p).map(x => x.id).join(',');\n"
