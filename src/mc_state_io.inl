@@ -185,7 +185,7 @@
         {
             std::lock_guard<std::mutex> lk(mu);
             auto lt = layer_tensors.find(layer);
-            if (lt == layer_tensors.end()) {
+            if (lt == layer_tensors.end() || lt->second.empty()) {     // empty: the layer's model was unloaded (forget_range)
                 return;
             }
             int fresh = 0;

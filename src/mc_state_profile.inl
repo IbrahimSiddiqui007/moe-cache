@@ -26,6 +26,10 @@
             for (auto it = by_tensor.begin(); it != by_tensor.end();) {
                 it = it->second == (int) i ? by_tensor.erase(it) : std::next(it);
             }
+            const auto lt = layer_tensors.find(ti.layer);   // the layer index forgets it too: a model loaded again in this process compared its
+            if (lt != layer_tensors.end()) {                 // tensors with this one's 0 experts and kept every one uncached (audit N4)
+                lt->second.erase(std::remove(lt->second.begin(), lt->second.end(), (int) i), lt->second.end());
+            }
             ti.n_expert = 0;          // the entry stays (indices are stable) but owns nothing
             ti.data = nullptr;
         }
