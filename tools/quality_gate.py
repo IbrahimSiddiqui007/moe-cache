@@ -4,7 +4,7 @@
 Replaces token identity for the approximate levels. Standard library only (Linux and Windows).
   quality_gate.py --llama-server BIN --perplexity BIN --model GGUF --lib PLUGIN --level kv|fast|fewer|exact [--smoke]
                   [--n-cpu-moe N] [--ngl 99] [--ctx 4096] [--chunks 3] [--text FILE] [--tasks-file FILE] [--no-tasks] [--no-kl] [--out DIR]
-                  [--env K=V ...] [--args "..."] [--common-args "..."] [--ram-env K=V ...]     (extra plugin environment / llama.cpp arguments for the candidate only, on top of the level)
+                  [--env K=V ...] [--args "..."] [--common-args=ARGS] [--ram-env K=V ...]     (extra plugin environment / llama.cpp arguments for the candidate only, on top of the level)
 Exit status: 0 = pass, 1 = a limit missed, 2 = the plugin was not active or a run failed.
 """
 import argparse, json, os, re, shutil, subprocess, sys, tempfile, time, urllib.request
@@ -97,11 +97,14 @@ def main():
     ap.add_argument("--chunks", type=int, default=3); ap.add_argument("--text", help="text for the KL run (default: README + docs of this repo)")
     ap.add_argument("--tasks-file", default=os.path.join(HERE, "quality_tasks.json")); ap.add_argument("--no-tasks", action="store_true"); ap.add_argument("--no-kl", action="store_true")
     ap.add_argument("--no-think", action="store_true"); ap.add_argument("--port", type=int, default=8098)
+    ap.add_argument("--stock-only", action="store_true", help="only compute and cache the stock side (needs --cache-dir), then exit 0")
     ap.add_argument("--cache-dir", default="", help="keeps the stock base logits (base.kld) and the stock task run (tasks_stock.json) for the next level; one dir per model/settings")
     ap.add_argument("--out", default=""); ap.add_argument("--env", action="append", default=[]); ap.add_argument("--args", default="")
     ap.add_argument("--common-args", default="", help="llama.cpp arguments for stock AND candidate (e.g. --no-repack)")
     ap.add_argument("--ram-env", action="append", default=[], help="K=V for BOTH plugin runs (e.g. MOE_CACHE_SIZE_GIB=0.2)")
     a = ap.parse_args()
+    if a.stock_only and not a.cache_dir:
+        sys.exit("--stock-only needs --cache-dir")
     a.out = a.out or tempfile.mkdtemp(prefix="qgate_")
     os.makedirs(a.out, exist_ok=True)
     if a.cache_dir:
@@ -129,6 +132,9 @@ def main():
         else:
             print("1. KL: stock (f16 KV) writes the base logits")
             run_ppl(a, base, False, {}, [], os.path.join(a.out, "kl_stock.log"))
+        if a.stock_only:
+            print("stock KL base ready"); a.no_kl = True
+    if not a.no_kl:
         print("2. KL: candidate")
         txt = run_ppl(a, base, True, dict(plug, **cand_env), cand_args, os.path.join(a.out, "kl_candidate.log"))
         if not re.search(r"moe-cache: (cache mode|pass-through mode)", txt):
@@ -149,6 +155,8 @@ def main():
             s_out, _ = serve_and_run_tasks(a, {}, [], "stock", a.port)
             if a.cache_dir:
                 shutil.copy(s_out, os.path.join(a.cache_dir, "tasks_stock.json"))
+        if a.stock_only:
+            print("stock task run ready"); sys.exit(0)
         print("4. tasks: candidate server")
         c_out, slog = serve_and_run_tasks(a, dict(plug, **cand_env), cand_args, "candidate", a.port)
         if not re.search(r"moe-cache: (cache mode|pass-through mode)", slog):
@@ -160,6 +168,8 @@ def main():
         print(f"   tasks right: stock {rs['task_ok']}/{rs['task_n']}, candidate {rc['task_ok']}/{rc['task_n']}; looping answers: stock {rs['loops']}, candidate {rc['loops']}")
         if rc["task_ok"] < rs["task_ok"] - tol: fails.append(f"tasks {rc['task_ok']} < stock {rs['task_ok']} - {tol}")
         if rc["loops"] > rs["loops"] + LOOP_EXTRA: fails.append(f"loops {rc['loops']} > stock {rs['loops']} + {LOOP_EXTRA}")
+    if a.stock_only:
+        sys.exit(0)
     res["pass"] = not fails
     json.dump(res, open(os.path.join(a.out, "gate.json"), "w"), indent=1)
     print(json.dumps(res))

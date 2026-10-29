@@ -45,14 +45,14 @@ jobs:
           echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
 
       - name: Gate, level exact (must be KL 0, 100 % top-1, same task answers)
-        run: python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level exact --smoke --out gate_exact --common-args "--no-repack" --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_exact.txt
+        run: python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level exact --smoke --out gate_exact --common-args=--no-repack --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_exact.txt
 
       - name: Gate, level kv (q8_0 KV cache)
-        run: python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level kv --smoke --out gate_kv --common-args "--no-repack" --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_kv.txt
+        run: python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level kv --smoke --out gate_kv --common-args=--no-repack --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_kv.txt
 
       - name: Gate, level fast (route skip + q8_0 KV); route skip must have skipped something
         run: |
-          python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level fast --smoke --out gate_fast --common-args "--no-repack" --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_fast.txt
+          python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level fast --smoke --out gate_fast --common-args=--no-repack --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_fast.txt
           grep -E "Mean +KLD" gate_fast/kl_candidate.log
           grep -E "route|skip" gate_fast/kl_candidate.log | head -5 || true
 
