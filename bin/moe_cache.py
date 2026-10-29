@@ -470,9 +470,14 @@ def mem_cap():
     v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
     if v is not None:
         try:
-            return float(v) * 1e9 if float(v) > 0 else None
+            f = float(v)
+            if f == f and f >= 0:            # not nan
+                return f * 1e9 if f > 0 else None
         except ValueError:
-            return None
+            pass
+        if not getattr(mem_cap, "warned", False):    # a typo kept the default cap, as the plugin does (audit 2026-10-29 L6: it dropped the cap)
+            mem_cap.warned = True
+            say(f"moe-cache: MOE_CACHE_MAX_RAM_GB={v!r} is not a number of GB: the default cap is used", err=True)
     total = mem_total()
     if not total:
         return None
@@ -1007,7 +1012,7 @@ SERVER_HELP = """\
            temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:
            the card's coding values where it has them), skipping any you pass after -- and any the GGUF carries; low-bit quants loop less with them.
            Requests that send their own values (agents send a temperature) still win
---api-key KEY  require this key on the API (passed to llama-server; also LLAMA_API_KEY); needed when other machines can reach the server
+--api-key KEY  require this key on the API (passed to llama-server; better: LLAMA_API_KEY, not visible in the process list); needed when other machines can reach the server
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
 
@@ -1032,7 +1037,7 @@ def server(argv):
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model")
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
-    ap.add_argument("--max-ram", type=gb_arg)
+    ap.add_argument("--max-ram", type=lambda v: "0" if v.strip() in ("0", "0.0") else gb_arg(v))    # 0 = no cap (the help says so; gb_arg refused it)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
@@ -1051,6 +1056,10 @@ def server(argv):
     a = ap.parse_args(argv)
     if a.max_ram:
         os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram          # the launcher's planning and the plugin in llama-server both read it
+    if not WINDOWS and any(x == "--api-key" or x.startswith("--api-key=") for x in argv):
+        # llama-server gets it through the environment, but this launcher's own command line stays readable (/proc) for the server's lifetime
+        say("moe-cache: note: a key on the command line is visible to other users of this machine (ps); LLAMA_API_KEY or the stored key "
+            "(moe_cache.py key) keep it private", err=True)
     if not WINDOWS:
         os.umask(0o077)       # the usage profile is private to this user
     ls, model, port = a.llama_server, a.model, a.port

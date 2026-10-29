@@ -358,6 +358,9 @@ check(L.mem_cap() == 20e9 and L.mem_for_server("40") == 20e9 and L.mem_for_serve
       f"mem_cap: override 20 GB; --ram 40 capped to it, --ram 10 kept ({L.mem_cap()}, {L.mem_for_server('40')}, {L.mem_for_server('10')})")
 os.environ["MOE_CACHE_MAX_RAM_GB"] = "0"
 check(L.mem_cap() is None and L.mem_for_server("40") == 40e9, "mem_cap: MOE_CACHE_MAX_RAM_GB=0 turns the cap off")
+for _bad in ("abc", "nan", "-5"):       # audit 2026-10-29 L6: a typo dropped the cap; now the default cap stays (as in the plugin)
+    os.environ["MOE_CACHE_MAX_RAM_GB"] = _bad
+    check(L.mem_cap() == _caps[32] * 2**30 if L.mem_total() == 32 * 2**30 else L.mem_cap() is not None, f"mem_cap: MOE_CACHE_MAX_RAM_GB={_bad} keeps the default cap ({L.mem_cap()})")
 os.environ.pop("MOE_CACHE_MAX_RAM_GB")
 if _env is not None:
     os.environ["MOE_CACHE_MAX_RAM_GB"] = _env
