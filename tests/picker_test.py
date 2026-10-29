@@ -147,7 +147,7 @@ os.environ["MOE_CACHE_LIB"] = os.path.join(TMP, "no-plugin.so")
 err = io.StringIO()
 with contextlib.redirect_stderr(err), contextlib.redirect_stdout(err):
     try:
-        mc.server(["--llama-server", os.path.join(TMP, "no-llama-server"), "--dry-run"])
+        mc.server(["--llama-server", os.path.join(TMP, "no-llama-server"), "--always-plugin", "--dry-run"])
     except SystemExit as e:
         msg = str(e)
 check("no model given: using the picked one" in err.getvalue() and "context 131072, agent mode" in err.getvalue(),
