@@ -239,6 +239,10 @@ check(_f["ub"] == 4096 and any("as asked" in w for w in _f["why"]), "tune ub=409
 check(_f["n_cpu_moe"] >= _g["n_cpu_moe"], f"tune: a bigger asked micro-batch keeps at least as many CPU expert layers ({_f['n_cpu_moe']} >= {_g['n_cpu_moe']})")
 check(gguf_plan.compute_buffer_guess_mib(65536, 2048) >= gguf_plan.compute_buffer_mib(65536, 1024) and gguf_plan.compute_buffer_guess_mib(8192, 4096) > 0,
       "compute buffer guess: unmeasured pairs get an estimate that errs high")
+check(gguf_plan.compute_buffer_guess_mib(524288, 512) >= 2 * gguf_plan.compute_buffer_mib(262144, 512),
+      "compute buffer guess: past the largest measured context it grows with the context (T0a: a flat 0.55 GB at 256k starved the long-prompt block)")
+_h = gguf_plan.tune(model, 524288, free=16 * GIB, want_cache=False)
+check(_h["compute_mib"] and _h["compute_mib"] >= gguf_plan.compute_buffer_mib(262144, 512), f"tune past the table: compute buffer from the scaled guess ({_h['compute_mib']})")
 
 # the launcher's "plugin disabled itself" warning: only the plugin's lines that say it is not caching, not its "Windows refused ..." warnings (F5, PC)
 check(L.plugin_off_line(b"moe-cache: no experts found - plugin disabled, the model loads the normal way"), "plugin off: setup failure line")

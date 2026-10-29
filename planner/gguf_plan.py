@@ -367,6 +367,12 @@ def compute_buffer_guess_mib(ctx, ub):
     b = compute_buffer_mib(ctx, ub)
     if b is None:
         b = next((_COMPUTE_MIB[k][ub] for k in sorted(_COMPUTE_MIB) if k >= ctx and _COMPUTE_MIB[k].get(ub)), None)
+    if b is None and ctx > max(_COMPUTE_MIB):
+        # past the largest measured context the buffer keeps growing with it: scale that row (T0a: a flat 0.55 GB guess at 256k, where llama-server
+        # takes 1403 MiB, put 3 expert layers on the GPU and left the long-prompt block 0 MiB, so prompts ran on the CPU at half speed)
+        top = max(_COMPUTE_MIB); row = {u: v for u, v in _COMPUTE_MIB[top].items() if v}
+        near = min(row, key=lambda u: abs(u - ub))
+        b = row[near] * max(ub, 512) / near * ctx / top
     if b is None:
         b = max(v.get(2048) or 0 for v in _COMPUTE_MIB.values()) * max(ub, 512) / 2048
     return b
@@ -406,7 +412,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         if room > 0 or ub == 512 or fixed_ub:
             best = (ub, room)
             break
-    ub, room = best if best else (512, free - fixed - 0.55e9 - reserve_gb * 1e9 - block_for(512))
+    ub, room = best if best else (512, free - fixed - compute_buffer_guess_mib(ctx, 512) * 1048576 - reserve_gb * 1e9 - block_for(512))
     block = block_for(ub)
     if fixed_ub:
         why.append(f"micro-batch {ub} as asked")
@@ -435,7 +441,7 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
                    + (")" if not want_cache else "; a cache would be under 1.5 GiB or under 4 % of the experts)"))
     why.append(f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
-            "compute_mib": compute_buffer_guess_mib(ctx, ub) if fixed_ub else compute_buffer_mib(ctx, ub), "why": why}
+            "compute_mib": compute_buffer_guess_mib(ctx, ub) if fixed_ub or not best else compute_buffer_mib(ctx, ub), "why": why}
 
 
 def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
