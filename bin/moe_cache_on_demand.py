@@ -719,7 +719,7 @@ def on_demand(argv):
               or next((x.split("=", 1)[1] for x in args if x.startswith("--llama-server=")), None) or env.get("LLAMA_SERVER") or mc.default_llama_server())
         found = ls if os.path.isfile(ls) else mc.shutil.which(ls)
         if not found:
-            raise SystemExit(f"llama-server not found: {ls}. Pass --llama-server PATH (after the model)" +
+            raise SystemExit(f"llama-server not found: {ls} (looked: {mc.ls_looked()}). Pass --llama-server PATH (after the model)" +
                              (r' or set it once: setx LLAMA_SERVER "C:\path\to\llama-server.exe" and open a new window' if mc.WINDOWS else " or set LLAMA_SERVER"))
         if "--llama-server" not in " ".join(args):
             env["LLAMA_SERVER"] = os.path.abspath(found)

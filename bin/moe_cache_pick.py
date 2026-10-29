@@ -127,15 +127,8 @@ def disk_kind(path):
 
 
 def llama_build(ls):
-    """llama-server's build number (`--version`: 'version: 11966 (ff0d396e3)'), None when unknown."""
-    try:
-        r = subprocess.run([ls, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-        text = r.stdout + r.stderr
-        m = re.search(r"\(build (\d+)", text) or re.search(r"version:\s*(\d+)\s*\(", text)     # '0.7.0-dev (build 11669, commit ...)' or the old 'version: 4567 (abc)'
-        n = int(m.group(1)) if m else 0
-        return n if n >= 100 else None        # distro builds report 'build 1' / 0: no usable number
-    except Exception:
-        return None
+    """llama-server's build number, None when unknown (moe_cache.ls_build)."""
+    return mc.ls_build(ls)
 
 
 def model_folders(extra=None):

@@ -189,6 +189,10 @@ button.danger { border-color:var(--ink); }
 .seg button:hover:not(:disabled):not(.on) { background:var(--code); color:var(--text); }
 .seg button:disabled { opacity:1; color:var(--muted); cursor:not-allowed; }
 .seg button.on:disabled { background:var(--muted); color:var(--panel); }
+.modal { position:fixed; inset:0; background:var(--shade); display:flex; align-items:center; justify-content:center; z-index:200; padding:16px; }
+.modal .box { background:var(--panel); color:var(--text); border:1.5px solid var(--ink); border-radius:4px; box-shadow:4px 4px 0 var(--shade); padding:14px 18px; width:min(560px, 100%); max-height:100%; overflow:auto; }
+.modal h3 { margin:0 0 6px; } .modal input[type=text] { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); font:inherit; }
+.modal .row { display:flex; gap:8px; margin-top:8px; }
 .pickcard { margin-top:8px; border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); padding:10px 12px; font-size:13px; color:var(--text); }
 .pickcard h5 { margin:0 0 4px; font:600 11px ui-monospace, Consolas, monospace; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
 .pickcard table.mach td { padding:2px 6px 2px 0; border-bottom:0; font-size:13px; }
@@ -383,6 +387,20 @@ button.danger { border-color:var(--ink); }
   </div>
 </div>
 
+<!-- ================= llama.cpp not found ================= -->
+<div class="modal" id="llamadlg" hidden><div class="box" role="dialog" aria-labelledby="llamatitle">
+  <h3 id="llamatitle">llama.cpp not found</h3>
+  <p>moe-cache runs on top of llama.cpp's <code>llama-server</code>, and it was not found on this machine. Download the official release, unpack it, and enter the path of
+    <code id="llamaexe">llama-server</code> here (or the folder that holds it).</p>
+  <p><a id="llamalink" href="https://github.com/ggml-org/llama.cpp/releases" target="_blank" rel="noopener">Official llama.cpp releases</a>
+    <span class="small">(Windows: the file whose name ends in <code>-bin-win-vulkan-x64.zip</code> for an AMD or Intel GPU, <code>-bin-win-cuda-…</code> for NVIDIA)</span></p>
+  <label for="llamapath" class="small">Path of llama-server</label>
+  <input type="text" id="llamapath" placeholder="C:\llama\llama-server.exe" autocomplete="off" spellcheck="false">
+  <div class="small err" id="llamaerr" style="min-height:1.4em"></div>
+  <div class="row"><button id="llamasave" class="primary">Check and remember</button><button id="llamaclose">Not now</button></div>
+  <details class="small"><summary>Where moe-cache looked</summary><div id="llamalooked"></div></details>
+</div></div>
+
 <!-- ================= SETTINGS DRAWER ================= -->
 <div class="scrim" id="scrim"></div>
 <div class="drawer" id="drawer">
@@ -576,6 +594,15 @@ async function planAll() {
     }
   } finally { planning = false; }
   if (S.models.some(m => !S.plans[planKey(m.path)])) planAll();
+}
+function askLlama() {
+  const sy = S.sys || {}; $("llamalooked").textContent = sy.llama_looked || ""; $("llamaexe").textContent = sy.os == "Windows" ? "llama-server.exe" : "llama-server";
+  $("llamalink").href = sy.llama_releases || $("llamalink").href; $("llamaerr").textContent = ""; $("llamadlg").hidden = false; $("llamapath").focus();
+}
+async function saveLlama() {
+  $("llamaerr").textContent = "checking…";
+  try { const j = await api("/api/llama", { path: $("llamapath").value }); S.sys.llama_found = true; S.sys.llama_server = j.path; $("llamadlg").hidden = true; await loadSystem(); planAll(); }
+  catch (e) { $("llamaerr").textContent = e.message; }
 }
 function settingsChanged() { paintRanges(); paintModels(); planAll(); $("dry").hidden = true; }
 
@@ -1043,8 +1070,11 @@ function paintContext() {
 }
 
 /* ---------- start, stop and the other buttons ---------- */
+$("llamasave").onclick = saveLlama; $("llamaclose").onclick = () => { $("llamadlg").hidden = true; };
+$("llamapath").addEventListener("keydown", e => { if (e.key == "Enter") saveLlama(); });
 $("start").onclick = async () => {
   showErr("");
+  if (S.sys && S.sys.llama_found === false) { askLlama(); return; }
   try { await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll(); } catch (e) { showErr(e.message); }
 };
 $("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { showErr(e.message); } };
@@ -1106,7 +1136,8 @@ window.addEventListener("hashchange", openHash);
   paintRanges();
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; segPainters.forEach(p => p()); } settingsChanged(); };
   await loadModels(false);
-  if (!S.models.length && !(S.sys.last || {}).model && !S.sys.pick) { openS(); S.pickLoaded = true; loadPick(); }   // first run: suggest a model
+  if (S.sys.llama_found === false) askLlama();
+  else if (!S.models.length && !(S.sys.last || {}).model && !S.sys.pick) { openS(); S.pickLoaded = true; loadPick(); }   // first run: suggest a model
   loadChatList(); loadSessions(); openHash();
   poll(); setInterval(poll, 1000);
   setInterval(loadSessions, 10000);

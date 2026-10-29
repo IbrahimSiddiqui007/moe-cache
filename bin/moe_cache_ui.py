@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, signal, subprocess, sys, threading, time, urllib.parse
+import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1508,6 +1508,32 @@ class Store:
     def folders(self):
         return list(dict.fromkeys(default_folders() + self.saved.get("folders", [])))
 
+    def llama_found(self):
+        return bool(mc.resolve_llama_server(self.ls) or shutil.which(self.ls))
+
+    def set_llama(self, path):
+        """The dialog's path: a llama-server (or the folder that holds it) that answers --version; kept in ui.json (key llama_server), where the
+        launcher's search reads it too, so every later start uses it without setx. Returns (path, version text)."""
+        r = mc.resolve_llama_server(str(path or "")) or (shutil.which(str(path)) if path else None)
+        if not r:
+            raise ValueError(f"no llama-server at '{path}': give the full path of {mc.llama_exe()} (or the folder that holds it)")
+        if os.path.basename(r).lower() not in ("llama-server", "llama-server.exe"):
+            raise ValueError(f"'{r}' is not named {mc.llama_exe()}")
+        try:
+            o = subprocess.run([r, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            text = (o.stdout + o.stderr).strip()
+        except (OSError, subprocess.SubprocessError) as e:
+            raise ValueError(f"'{r}' could not be run: {e}")
+        if not re.search(r"version|build", text, re.I):
+            raise ValueError(f"'{r}' did not answer --version like llama-server does" + (f": {text[:200]}" if text else ""))
+        self.saved["llama_server"] = r
+        self.save("llama_server")
+        self.ls = r
+        self._spec = None
+        self.plans.clear()
+        mc.default_llama_server(refresh=True)
+        return r, next((l for l in text.splitlines() if re.search(r"version|build", l, re.I)), "")
+
     def pick_specs(self, fresh=False):
         """The picker's view of this machine (kept 5 minutes: it asks nvidia-smi, PowerShell and llama-server --version)."""
         if fresh or not getattr(self, "_spec", None) or time.time() - self._spec[0] > 300:
@@ -1656,7 +1682,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/system":
                 self.store.fresh()                         # `pick --apply` may have changed ui.json while the page is open
                 return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}), pick=self.store.saved.get("pick"),
-                                           llama_server=self.store.ls, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
+                                           llama_server=self.store.ls, llama_found=self.store.llama_found(),
+                                           llama_looked=mc.ls_looked(), llama_releases=mc.RELEASES_URL, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/pick":                      # "Which model?": this machine and one recommendation per use (bin/moe_cache_pick.py)
                 spec = self.store.pick_specs(q.get("fresh") == "1")
                 uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)
@@ -1743,6 +1770,9 @@ class Handler(BaseHTTPRequestHandler):
                     lst.remove(f)
                 self.store.save("folders")
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(True)})
+            if self.path == "/api/llama":                    # "llama.cpp not found": the path the user typed (checked with --version) is remembered
+                r, v = self.store.set_llama(body.get("path"))
+                return self.send(200, {"path": r, "version": v, "llama_found": True})
             if self.path == "/api/start":
                 if body.get("on_demand") and not ON_DEMAND:
                     raise ValueError("Start on first request is not in this version yet")
@@ -1911,6 +1941,8 @@ def connect_agent(agent, url, api_key, write):
 
 def make_server(port=8070, ls=None, token=None):
     store = Store(ls or mc.default_llama_server())
+    if not ls and (line := mc.ls_found_line(store.ls)):
+        mc.say(line)
     h = type("H", (Handler,), {"store": store, "runner": Runner(), "token": token or secrets.token_urlsafe(24)})
     srv = ThreadingHTTPServer(("127.0.0.1", port), h)
     srv.daemon_threads = True

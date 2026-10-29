@@ -649,6 +649,32 @@ st, j = preq("/api/system")
 check(st == 200 and (j.get("pick") or {}).get("id") == "bolt" and j["last"]["model"] == bolt, "/api/system: the page sees the pick at load")
 check("pickuse" in open(ui.PAGE, encoding="utf-8").read(), "the page has the Which model? panel")
 
+# "llama.cpp not found" dialog: /api/system says so, /api/llama checks the path with --version and remembers it in ui.json (no setx)
+import subprocess as _sp, shutil as _sh
+LS_NAME = "llama-server.exe" if os.name == "nt" else "llama-server"
+fakels = os.path.join(TMP, "lsdir", LS_NAME); os.makedirs(os.path.dirname(fakels)); open(fakels, "wb").write(b"fake")
+notls = os.path.join(TMP, "lsdir", "notes.txt"); open(notls, "w").write("x")
+real_run = _sp.run
+def fake_run(cmd, *a, **k):
+    if cmd and cmd[0] == fakels and "--version" in cmd:
+        return type("R", (), {"stdout": "", "stderr": "version: 12345 (abcdef0)\nbuilt with fake\n", "returncode": 0})()
+    return real_run(cmd, *a, **k)
+_sp.run = fake_run
+st, j = preq("/api/system")
+check(st == 200 and "llama_found" in j and "llama_looked" in j and j["llama_releases"].startswith("https://github.com/ggml-org/llama.cpp"), "/api/system: llama_found, where it looked, the release link")
+check(preq("/api/llama", {"path": os.path.join(TMP, "nowhere", LS_NAME)})[0] == 400, "/api/llama: a path with no llama-server is refused")
+check(preq("/api/llama", {"path": notls})[0] == 400 and preq("/api/llama", {})[0] == 400, "/api/llama: a file that is not llama-server, and no path, are refused")
+st, j = preq("/api/llama", {"path": os.path.dirname(fakels)})
+check(st == 200 and j["path"] == os.path.abspath(fakels) and "12345" in j["version"] and j["llama_found"], f"/api/llama: the folder is resolved, --version answered ({st} {j})")
+check(json.load(open(ui.SETTINGS_FILE, encoding="utf-8")).get("llama_server") == os.path.abspath(fakels), "/api/llama: remembered in ui.json (llama_server)")
+st, j = preq("/api/system")
+check(j["llama_server"] == os.path.abspath(fakels) and j["llama_found"] is True, "/api/system after saving: the page uses it, found")
+_sp.run = lambda cmd, *a, **k: type("R", (), {"stdout": "hello", "stderr": "", "returncode": 0})() if cmd[0] == fakels else real_run(cmd, *a, **k)
+st, j = preq("/api/llama", {"path": fakels}); check(st == 400 and "did not answer --version" in j.get("error", str(j)), f"/api/llama: a program that does not answer --version like llama-server is refused ({st})")
+_sp.run = real_run
+_d = json.load(open(ui.SETTINGS_FILE, encoding="utf-8")); _d.pop("llama_server", None); json.dump(_d, open(ui.SETTINGS_FILE, "w", encoding="utf-8"))   # the search tests below start clean
+check("llamadlg" in open(ui.PAGE, encoding="utf-8").read() and "askLlama" in open(ui.PAGE, encoding="utf-8").read(), "the page has the llama.cpp not found dialog")
+
 srv.shutdown()
 
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)
@@ -851,6 +877,81 @@ if node:
     check('<div class="pickcard"><div id="pickres">' in html and re.search(r'class="pickact"><button id="pickapply"', html), "card: the Use it button is inside the card, in its own action row")
 else:
     print("  skip card test: node not found")
+
+# ---- finding llama-server (one function for the launcher, check, the picker and the page): the order, the registry, the newest supported build ----
+import types as _types
+mc = ui.mc
+root = os.path.join(TMP, "lsfind"); os.makedirs(root)
+def mkls(*parts):
+    d = os.path.join(root, *parts); os.makedirs(d, exist_ok=True); f = os.path.join(d, mc.llama_exe()); open(f, "wb").write(b"x"); return os.path.abspath(f)
+saved_env = {k: os.environ.pop(k, None) for k in ("LLAMA_SERVER", "USERPROFILE")}
+saved_fns = (mc.shutil.which, mc.llama_search_dirs, mc.ls_build, mc.ls_api, mc.shipped_apis, mc.WINDOWS, sys.modules.get("winreg"))
+real_which = mc.shutil.which
+nopath = lambda n, *a, **k: None if n == "llama-server" else real_which(n, *a, **k)
+mc.shutil.which = nopath; mc.shipped_apis = lambda: set(); mc.ls_api = lambda p: None; mc.ls_build = lambda p: None
+mc.llama_search_dirs = lambda: []
+try:
+    r = mc.find_llama_server(saved="")
+    check(r["path"] is None and len(r["looked"]) >= 3 and "PATH: not on it" in r["looked"], f"nothing found: path None, and it lists where it looked ({len(r['looked'])} places)")
+    mc.default_llama_server(refresh=True); check(mc.default_llama_server() == "llama-server" and "PATH" in mc.ls_looked(), "default_llama_server: plain name when nothing is found; ls_looked() names the places")
+    a, b, c = mkls("A"), mkls("B", "bin"), mkls("C")
+    mc.llama_search_dirs = lambda: [os.path.join(root, "A"), os.path.join(root, "B"), os.path.join(root, "C"), os.path.join(root, "none")]
+    builds = {a: 11000, b: 12500, c: 13000}; apis = {a: "3", b: "3", c: "2"}
+    mc.ls_build = lambda p: builds.get(p); mc.ls_api = lambda p: apis.get(p)
+    mc.shipped_apis = lambda: {"3"}
+    r = mc.find_llama_server(saved="")
+    check(r["path"] == b and r["source"] == "a default folder" and r["build"] == 12500 and sorted(r["others"]) == sorted([a, c]),
+          f"folders: the newest build a shipped plugin supports (C is newer but API 2, not shipped) ({os.path.relpath(r['path'], root)})")
+    mc.default_llama_server(refresh=True); line = mc.ls_found_line(mc.default_llama_server())
+    check(line and "b12500" in line and "API 3" in line and "also found, not used" in line, f"one log line says which one and what else was found ({line and line[:90]})")
+    mc.shipped_apis = lambda: set(); r = mc.find_llama_server(saved=""); check(r["path"] == c, "folders: no shipped plugin known: the newest build")
+    mc.shipped_apis = lambda: {"3"}
+    # explicit settings beat the folders; a stale one falls through; the page's saved path comes before PATH and the folders
+    os.environ["LLAMA_SERVER"] = a; r = mc.find_llama_server(saved=c); check(r["path"] == a and r["source"] == "LLAMA_SERVER", "order: LLAMA_SERVER in the process environment first")
+    os.environ["LLAMA_SERVER"] = os.path.join(root, "gone", mc.llama_exe()); r = mc.find_llama_server(saved=c)
+    check(r["path"] == c and "saved path" in r["source"], "order: a stale LLAMA_SERVER is skipped; the page's saved path is next")
+    check(any("no llama-server there" in x for x in r["looked"]), "the stale value is reported in the places looked")
+    del os.environ["LLAMA_SERVER"]
+    mc.shutil.which = real_which if real_which("llama-server") else (lambda n, *a, **k: "/usr/bin/llama-server" if n == "llama-server" else real_which(n, *a, **k))
+    r = mc.find_llama_server(saved=""); check(r["path"] == "llama-server" and r["source"] == "PATH", "order: PATH before the default folders")
+    mc.shutil.which = nopath
+    # Windows: the registry as stored (setx), user before machine, %VARS% expanded, then the registry PATH
+    store = {"HKCU": {}, "HKLM": {}}
+    def _open(root_, sub_): return types_k(root_)
+    class types_k:
+        def __init__(self, r): self.r = r
+        def __enter__(self): return self
+        def __exit__(self, *x): return False
+    def _q(k, name):
+        if name not in store[k.r]: raise OSError
+        return (store[k.r][name], 2)
+    fake = _types.SimpleNamespace(HKEY_CURRENT_USER="HKCU", HKEY_LOCAL_MACHINE="HKLM", OpenKey=_open, QueryValueEx=_q)
+    sys.modules["winreg"] = fake; mc.WINDOWS = True
+    win = os.path.join(root, "Users", "me"); os.makedirs(win); wa = mkls("w", "reguser"); wm = mkls("w", "regmachine")
+    os.environ["USERPROFILE"] = win
+    store["HKLM"]["LLAMA_SERVER"] = wm
+    r = mc.find_llama_server(saved=""); check(r["path"] == wm and "machine environment" in r["source"], "windows: LLAMA_SERVER only in the machine registry is found")
+    store["HKCU"]["LLAMA_SERVER"] = os.path.join("%USERPROFILE%", "..", "..", "w", "reguser", mc.llama_exe())
+    r = mc.find_llama_server(saved=""); check(os.path.realpath(r["path"]) == os.path.realpath(wa) and "user environment" in r["source"], f"windows: the user's registry value (with %USERPROFILE% expanded) beats the machine's ({r['source']})")
+    os.environ["LLAMA_SERVER"] = a; r = mc.find_llama_server(saved=""); check(r["path"] == a, "windows: the process environment still comes before the registry")
+    del os.environ["LLAMA_SERVER"]; store["HKCU"].clear(); store["HKLM"].clear()
+    r = mc.find_llama_server(saved=c); check(r["path"] == c, "windows: registry empty: the page's saved path")
+    pd = os.path.dirname(mkls("w", "onpath")); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd
+    r = mc.find_llama_server(saved=""); check(os.path.dirname(r["path"] or "") == pd and "PATH in the user environment" in r["source"], f"windows: llama-server on the PATH as the registry stores it ({r['source']})")
+    store["HKCU"].clear()
+    dl = os.path.join(win, "Downloads", "llama-b12000-bin-win-vulkan-x64"); os.makedirs(dl); open(os.path.join(dl, mc.llama_exe()), "wb").write(b"x")
+    mc.llama_search_dirs = saved_fns[1]; got = [d for d in mc.llama_search_dirs()]
+    check(dl in got and r"C:\llama" in got and mc.HERE in got, "windows: the default folders include Downloads\\llama-b*-bin-win-* and the kit")
+    os.makedirs(os.path.join(win, "llama-vk")); check(os.path.join(win, "llama-vk") in mc.llama_search_dirs(), "windows: every %USERPROFILE%\\llama* folder")
+    mc.WINDOWS = False; check(mc.win_registry_env("LLAMA_SERVER") == [], "off Windows: the registry is not read")
+finally:
+    mc.shutil.which, mc.llama_search_dirs, mc.ls_build, mc.ls_api, mc.shipped_apis, mc.WINDOWS = saved_fns[:6]
+    if saved_fns[6] is None: sys.modules.pop("winreg", None)
+    else: sys.modules["winreg"] = saved_fns[6]
+    os.environ.pop("USERPROFILE", None)
+    for k, v in saved_env.items():
+        if v is not None: os.environ[k] = v
+    mc.default_llama_server(refresh=True)
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

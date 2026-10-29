@@ -40,11 +40,8 @@ for %%F in ("%HERE%ggml-moe-cache-api3.dll" "%HERE%..\ggml-moe-cache-api3.dll" "
 :have_lib
 if defined MOE_CACHE_LIB (echo plugin: "%MOE_CACHE_LIB%") else (echo plugin: not found next to this file or in build\win*: the launcher looks itself; set MOE_CACHE_LIB to the DLL)
 
-if defined LLAMA_SERVER goto have_ls
-for /f "delims=" %%L in ('%WHERE% $PATH:llama-server.exe 2^>nul') do if not defined LLAMA_SERVER set "LLAMA_SERVER=%%~fL"
-if not defined LLAMA_SERVER if exist "C:\llama\llama-server.exe" set "LLAMA_SERVER=C:\llama\llama-server.exe"
-:have_ls
-if defined LLAMA_SERVER (echo llama-server: "%LLAMA_SERVER%") else (echo llama-server: not found: unpack the llama.cpp release to C:\llama, or run once: setx LLAMA_SERVER "D:\path\to\llama-server.exe" and start this again)
+rem llama-server: the launcher looks itself (LLAMA_SERVER also as stored in the registry, the page's saved path, PATH, C:\llama*, Downloads, ...); the page asks when there is none
+if defined LLAMA_SERVER echo llama-server: "%LLAMA_SERVER%"
 
 %PY% "%HERE%moe_cache.py" ui %*
 if errorlevel 1 pause
