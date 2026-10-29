@@ -145,6 +145,17 @@ The Linux commands were checked against `hermes --help` and `opencode --help` (2
 
 If a GUI does not show the model, add the provider by hand in its settings: type OpenAI-compatible, base URL `http://127.0.0.1:8080/v1` (your `--port`), model name = the file name, context 65536, API key `none` (or your `--api-key`). `connect` without `--write` prints these values. Keep the server on `127.0.0.1`. In agent mode the key is in the config that `connect --write` wrote (or print it with `python3 bin/moe_cache.py key`); llama-server's own web page asks for it once.
 
+## Keep the agent's own context limit below the server's
+
+`connect --write` (and the control page's Connect buttons) write the server's context as the agent's window: 65536 by default, or your `--ctx`. When the agent believes it has the whole window, it keeps adding tool results until llama-server refuses the request ("context too large"), and the reply itself also has to fit. Leave 10-25 % of headroom, so the agent's own summarising or compaction starts first:
+
+| Agent | What to do | Example for the default 65536 |
+|---|---|---|
+| OpenCode | lower `limit.context` (and set `limit.output`) of the `moe-cache` model in `opencode.json` | `"limit": {"context": 56000, "output": 8192}` |
+| Hermes | it needs `model.context_length` of at least 64,000, so keep 65536 there and give the server more room | start the server with `--ctx 81920` (Flash-Next KV is about 27.5 KB per token: about 0.4 GiB more than at 65536), run `connect hermes --write` (it copies the server's 81920), then `hermes config set model.context_length 65536` |
+
+A bigger server window costs KV memory and some speed at depth. Not measured by us: the advice follows from how the limits work and from Strata's agent chat, which reports the peak prompt in a 64K-window test falling from 83 % to 61 % when it summarises early (their number).
+
 ## What makes agents fast or slow
 
 An agent's first turn is the expensive one. llama-server keeps each conversation in its own slot (4 slots sharing the context), so later turns only
