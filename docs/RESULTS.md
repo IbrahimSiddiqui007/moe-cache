@@ -2893,3 +2893,17 @@ stopped after 11 s), and the runner lost its own log lines until 14:47 (`$o` and
 | 122B 256k, GLM 64k, Flash-Next 256k | - | - | queued after it (until 22:00 at the latest) | - | next session |
 
 Peak RAM in use on the PC during the 128k runs: 28.7-29.5 GiB including the owner's ~7 GiB (logged; nothing stopped).
+
+## 70. Diffusion MoE: prefill proxy and LLaDA-MoE (laptop, 2026-10-29 night, "not clean"; plan S0-S1, scripts tests/diffusion_proxy.sh and tests/diffusion_identity.sh)
+A diffusion step is a no-cache prefill of the whole canvas (`-ub` tokens), so S0 times prefill passes of canvas size under a memory limit. Flash-Next IQ3_XXS (75.8 GB), 24 GB scope, `llama-bench -p N -b N -ub N -r 2`:
+
+| Canvas | stock s/pass | plugin s/pass | plugin / stock | experts per layer used (of 512) |
+|---|---|---|---|---|
+| 128 | 12.2 | 2.9 | 4.3x | ~211 |
+| 256 | 11.1 | 3.1 | 3.6x | ~259 |
+| 512 | 10.7 | 4.5 | 2.4x | ~287 |
+| 1024 | 14.6 | 7.0 | 2.1x | ~323 |
+
+Decode of the same model at 24 GB (64 tokens, cold): plugin 5.85 tok/s, stock 1.60. Ten 1024-token passes (70 s with the plugin) cost less than 1.5x the decode of 1024 tokens (263 s): the plan's kill rule is not triggered.
+S1, LLaDA-MoE-7B-A1B Instruct Q4_K_M (4.5 GB, 16 layers, 64 experts, top 8), `llama-diffusion-cli -ngl 0 -ub 256 --diffusion-steps 64`, 3 GB scope: plugin 1596 / 1299 ms per step vs stock 1846 / 1548 (-14 / -16 %, two orders), text identical. Every expert is used in every step (cache hit 0 %); both arms are read-bound.
+`llama-diffusion-cli` ignores `--n-cpu-moe` (it fills only n_gpu_layers), so a model that fits VRAM runs entirely on the GPU and the plugin sees nothing; `-ngl 0` keeps experts on the CPU side and the plugin's GPU block does the compute.
