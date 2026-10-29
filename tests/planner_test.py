@@ -241,6 +241,11 @@ check(gguf_plan.compute_buffer_guess_mib(65536, 2048) >= gguf_plan.compute_buffe
       "compute buffer guess: unmeasured pairs get an estimate that errs high")
 check(gguf_plan.compute_buffer_guess_mib(524288, 512) >= 2 * gguf_plan.compute_buffer_mib(262144, 512),
       "compute buffer guess: past the largest measured context it grows with the context (T0a: a flat 0.55 GB at 256k starved the long-prompt block)")
+for _c in sorted(gguf_plan._COMPUTE_MIB):      # audit 2026-10-29 L1: -ub 2048 at 128k/256k was guessed at a flat 990 MiB (3150 / 3979 measured)
+    check(gguf_plan.compute_buffer_guess_mib(_c, 2048) >= gguf_plan.compute_buffer_guess_mib(_c, 1024) >= gguf_plan.compute_buffer_guess_mib(_c, 512),
+          f"compute buffer guess at {_c}: 2048 >= 1024 >= 512 ({[gguf_plan.compute_buffer_guess_mib(_c, u) for u in (2048, 1024, 512)]})")
+check(gguf_plan.compute_buffer_guess_mib(262144, 2048) >= 3979 and gguf_plan.compute_buffer_mib(262144, 2048) is None,
+      "compute buffer: 2048 at 256k guessed at its measured size but still never auto-picked")
 _h = gguf_plan.tune(model, 524288, free=16 * GIB, want_cache=False)
 check(_h["compute_mib"] and _h["compute_mib"] >= gguf_plan.compute_buffer_mib(262144, 512), f"tune past the table: compute buffer from the scaled guess ({_h['compute_mib']})")
 
