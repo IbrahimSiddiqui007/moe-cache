@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX
 say() { printf '\n== %s\n' "$*"; }
 [ "$(uname -s)" = Linux ] || { echo "Linux only"; exit 1; }
 [ "$(id -u)" != 0 ] || { echo "run as a normal user, not root"; exit 1; }
-mkdir -p "$PREFIX"
+mkdir -p "$PREFIX"; PREFIX="$(cd "$PREFIX" && pwd)"     # absolute: env.sh / env.fish are sourced from other folders (a relative --prefix broke them)
 
 if [ $APT = 1 ]; then
   say "1/5 packages (sudo needed)"
