@@ -972,5 +972,23 @@ if node:
           f"Switch to <name> only when a server is up and another model is selected ({r_ and [x['show'] for x in r_[:6]]})")
     check(r_ is not None and r_[6:] == [True, False, True, False], "confirm only when a request is running (agent slot processing or the chat)")
 
+# the model list's menu: right-click, Shift+F10 / the menu key, the ⋮ button; the items follow the server state
+check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),
+      "the list rows have the context menu, the keyboard keys, the ⋮ button and focusable rows")
+if node:
+    fn = re.search(r"function rowMenuItems\(st, path\) \{.*?\n\}\n", page, re.S).group(0)
+    harness = fn + ("const ids = (st, p) => rowMenuItems(st, p).map(x => x.id).join(',');\n"
+                    "console.log(JSON.stringify([ids({state:'idle'}, 'a'), ids({state:'ready', model:'a'}, 'a'), ids({state:'ready', model:'a'}, 'b'), ids({state:'starting', model:'a'}, 'b'), ids({state:'stopping', model:'a'}, 'b'), ids(null, 'a'), rowMenuItems({state:'idle'}, 'a').map(x => x.label)]));\n")
+    hf = os.path.join(TMP, "rowmenu.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    tail = "plan,where,copy"
+    check(r_ is not None and r_[:6] == ["start," + tail, "stop," + tail, "switch," + tail, "switch," + tail, tail, "start," + tail],
+          f"row menu: Start when nothing runs, Stop on the running model, Switch to this model on the others, nothing to start while stopping ({r_ and r_[:6]})")
+    check(r_ is not None and r_[6] == ["Start", "Plan / Why", "Show in folder", "Copy path"], "row menu: the labels")
+
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)
