@@ -136,6 +136,15 @@ jobs:
           $od = (python bin\moe_cache.py on-demand --status 2>&1) -join "`n"
           Pop-Location
           if ($od -notmatch "No model chosen yet") { throw "kit: on-demand does not run from the kit: $od" }
+          # the control page (what moe-cache.bat / .exe start) and the picker run from the kit alone (v0.3.0's kit lacked moe_cache_pick.py)
+          Push-Location $k
+          $env:XDG_CACHE_HOME = "$env:RUNNER_TEMP\kit_xdg"
+          $ui = (python bin\moe_cache.py ui --help 2>&1) -join "`n"; $uirc = $LASTEXITCODE
+          $pk = (python bin\moe_cache.py pick --json --use chat --llama-server "$env:LLAMA_DIR\llama-server.exe" 2>&1) -join "`n"; $pkrc = $LASTEXITCODE
+          Remove-Item Env:XDG_CACHE_HOME
+          Pop-Location
+          if ($uirc -ne 0 -or $ui -notmatch "ui-port") { throw "kit: the control page does not start from the kit ($uirc): $ui" }
+          if ($pkrc -ne 0 -or $pk -notmatch '"recommendations"') { throw "kit: pick does not run from the kit ($pkrc): $pk" }
           # moe-cache.exe (winget's command) through a symlink, as winget starts it: must run the kit's moe-cache.bat (here: --shortcut, a Start-menu entry)
           New-Item -ItemType Directory -Force $env:RUNNER_TEMP\links | Out-Null
           New-Item -ItemType SymbolicLink -Path $env:RUNNER_TEMP\links\moe-cache.exe -Target $k\moe-cache.exe | Out-Null

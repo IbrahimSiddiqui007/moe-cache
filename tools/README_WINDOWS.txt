@@ -8,6 +8,8 @@ launcher then runs it stock by itself.
 1. What you need
    - llama.cpp, the official release zip "llama-bNNNNN-bin-win-vulkan-x64.zip"
      (github.com/ggml-org/llama.cpp/releases; tested: b11669), unpacked to C:\llama
+     Unpacked somewhere else (for example in Downloads)? Run this once in a Command Prompt,
+     then open a new window:  setx LLAMA_SERVER "D:\path\to\llama-server.exe"
    - Python 3.8 or newer (python.org; tick "Add python.exe to PATH")
    - a MoE model in GGUF format, on an SSD
    - for an AMD GPU: Adrenalin driver 32.0.32015.7029 or newer is best
@@ -44,7 +46,8 @@ launcher then runs it stock by itself.
      costs no commit (it keeps experts in read-only views of the model file), but
      Windows counts the GPU's memory against RAM + page file.
    - The plugin DLL is ggml-moe-cache-api3.dll (llama.cpp with ggml 0.26 / 0.27);
-     ggml-moe-cache-api2.dll is for older llama.cpp (ggml 0.25). The launcher picks the right one.
+     ggml-moe-cache-api2.dll is for older llama.cpp (ggml 0.25): moe-cache.bat uses api3; for an
+     older llama.cpp run once:  setx MOE_CACHE_LIB "%CD%\ggml-moe-cache-api2.dll"  (in the kit folder).
    - Problems: docs\WINDOWS.md. Report issues at github.com/IbrahimSiddiqui007/moe-cache/issues
      with the output of "python bin\moe_cache.py check MODEL.gguf --run".
 

@@ -1403,7 +1403,9 @@ def server(argv):
         raise SystemExit(f"moe-cache: port {port} is already in use (another llama-server, or on-demand: moe_cache.py on-demand --status); "
                          f"stop it or pick another with --port")
     if not (os.path.isfile(cmd[0]) or shutil.which(cmd[0])):
-        raise SystemExit(f"moe-cache: llama-server not found: {cmd[0]}. Pass --llama-server PATH or set LLAMA_SERVER (moe_cache.py check tells what is missing)")
+        raise SystemExit(f"moe-cache: llama-server not found: {cmd[0]}. Pass --llama-server PATH or set LLAMA_SERVER"
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama)' if WINDOWS else "")
+                         + " (moe_cache.py check tells what is missing)")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
@@ -1866,7 +1868,7 @@ def check(argv):
     lsp = shutil.which(a.llama_server)
     if not lsp:
         fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH" +
-             (r" (or unpack the official llama.cpp release to C:\llama)" if WINDOWS else " (or run ./install.sh, or put llama-server on the PATH)"))
+             (r' (or unpack the official llama.cpp release to C:\llama, or set it once: setx LLAMA_SERVER "D:\path\to\llama-server.exe" and open a new window)' if WINDOWS else " (or run ./install.sh, or put llama-server on the PATH)"))
     else:
         try:
             v = subprocess.run([lsp, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)

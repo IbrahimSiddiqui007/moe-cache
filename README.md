@@ -64,7 +64,7 @@ bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server
 ```
 Every line says OK, WARN or FAIL and what to do about it (it also times a short read test on the model's drive and warns when the drive is too slow). Add `--run` to also start llama-server with the plugin for one short request (about a
 minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too**: it checks the GPU, RAM, the model's drive and llama-server.
-If the GPU also drives your screen and answers slow down sharply, the card is too full: start with `--gpu-margin 2` (GiB of VRAM left free; default about 0.5).
+If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command (GiB of VRAM left free; default about 0.5).
 
 ### 3. Run your model
 
@@ -79,7 +79,7 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 **Coding agents (Hermes Agent, OpenCode).** They only talk to an OpenAI-compatible address; moe-cache provides it. Easiest, Ollama-style: a small
 listener that loads the model on the first request and unloads it when idle (`--install-autostart` starts it at every login):
 ```bash
-python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart
+python3 bin/moe_cache.py on-demand /path/to/model.gguf --llama-server /path/to/llama-server --install-autostart
 python3 bin/moe_cache.py connect hermes --write      # and/or: connect opencode --write (writes URL, model, 65k context, API key)
 ```
 Several models: `on-demand /path/to/model2.gguf --add` adds one; the request's `"model"` picks it, one is loaded at a time (`connect opencode` lists them all).
@@ -106,6 +106,8 @@ context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one cl
 Keep the Windows page file at "system managed" (or 14 GB or more): the cache costs no commit (it keeps experts in read-only views of the model file), but Windows counts the GPU's memory against RAM + page file. Details and known limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ### 4. Optional: prove it is correct and measure it on your machine
+
+Linux (from the tarball or a checkout; the Windows kit has `tools\windows_test.ps1` instead, see docs/WINDOWS_TEST.md):
 
 ```bash
 tests/identity.sh /path/to/model.gguf --llama-server /path/to/llama-server      # PASS = the same tokens as stock llama.cpp

@@ -304,6 +304,14 @@ real_launcher = od.LAUNCHER
 od.LAUNCHER = [sys.executable, "-c", "pass"]
 open(other["model"], "wb").close()
 od.save_choice({"model": choice["model"], "args": ["--ctx", "70000"], "env": {}, "port": 8123, "idle": 15})
+_ls_env = os.environ.get("LLAMA_SERVER")
+os.environ["LLAMA_SERVER"] = os.path.join(TMP, "no-such-llama-server")      # audit 2026-10-29 A1: a missing llama-server is refused at setup
+try:
+    od.on_demand([other["model"], "--ram", "8", "--add"]); miss = None
+except SystemExit as e:
+    miss = str(e)
+check("on-demand setup refuses a llama-server that does not exist (not a 503 at the first request)", miss and "llama-server not found" in miss, miss)
+os.environ["LLAMA_SERVER"] = sys.executable                                   # any existing program: the dry run is faked here
 rc = od.on_demand([other["model"], "--ram", "8", "--add"])
 c6 = od.load_choice()
 check("--add keeps the default and adds the second model", rc == 0 and c6["model"] == choice["model"] and [e["model"] for e in c6["extra"]] == [other["model"]]
@@ -321,7 +329,10 @@ try:
 except SystemExit as e:
     rm = str(e)
 check("--remove of the default is refused (replace it instead)", rm and "replaced, not removed" in rm, rm)
+check("the added model keeps the full llama-server path (autostart has no shell PATH)", all(e["env"].get("LLAMA_SERVER") == sys.executable for e in od.load_choice()["extra"]), od.load_choice()["extra"])
 check("--remove forgets an added model", od.on_demand(["--remove", "Other-Coder"]) == 0 and od.load_choice()["extra"] == [], od.load_choice())
+if _ls_env is None: os.environ.pop("LLAMA_SERVER", None)
+else: os.environ["LLAMA_SERVER"] = _ls_env
 od.LAUNCHER = real_launcher
 PORT = free_port()
 A, B = mk(dict(choice, seen={})), mk(other)
