@@ -207,6 +207,13 @@ jobs:
           python tests/ui_live.py granite.gguf --llama-server "$env:LLAMA_DIR\llama-server.exe"
           if ($LASTEXITCODE -ne 0) { throw "control page with the model failed" }
 
+      - name: Keep-awake power request and doctor overview (no model)
+        run: |
+          python tests/awake_test.py
+          if ($LASTEXITCODE -ne 0) { throw "keep-awake test failed" }
+          python tests/doctor_test.py
+          if ($LASTEXITCODE -ne 0) { throw "doctor test failed" }
+
       - name: On-demand endpoint (fake server, then Granite; then autostart in the Startup folder, installed and removed)
         run: |
           $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"

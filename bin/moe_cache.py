@@ -3,6 +3,7 @@
 
   moe_cache.py server  MODEL.gguf [options] [-- extra llama-server args]   run llama-server with the expert-cache plugin
   moe_cache.py pick    [--use agents|chat|docs] [--apply]                  recommend a model for this machine (RAM, VRAM, disk, CPU) and use; --apply uses it
+  moe_cache.py doctor  [MODEL.gguf] [--llama-server PATH] [--ram GB]       the same as check (preflight: GPU, driver, RAM, disk, llama-server; what to fix)
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
@@ -903,10 +904,56 @@ def win_request_save(pid, path, timeout=60.0, proc=None):
         pass
     return False
 
-def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
+def keep_awake(cmd, allow_sleep=False):
+    """Keep the machine from sleeping while the server runs, without changing any power setting (idea I47: the PC slept for 7 minutes in the middle of a
+    benchmark). Windows: a power request on this process (SetThreadExecutionState, ES_CONTINUOUS | ES_SYSTEM_REQUIRED; the display may still turn off);
+    Linux: a helper holds `systemd-inhibit --what=sleep:idle` while the server runs (ends with the launcher, however it ends); skipped quietly when
+    systemd-inhibit is missing or logind refuses. --allow-sleep / MOE_CACHE_ALLOW_SLEEP=1 turn it off. Returns (cmd, release, note); note is the
+    start-up line, or "" when nothing was done."""
+    if allow_sleep or os.environ.get("MOE_CACHE_ALLOW_SLEEP") in ("1", "true", "yes"):
+        return cmd, (lambda: None), "moe-cache: the machine may sleep while the server runs (--allow-sleep)"
+    if WINDOWS:
+        try:
+            import ctypes
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.SetThreadExecutionState.restype = ctypes.c_uint32
+            k.SetThreadExecutionState.argtypes = [ctypes.c_uint32]
+            if not k.SetThreadExecutionState(0x80000001):            # ES_CONTINUOUS | ES_SYSTEM_REQUIRED
+                return cmd, (lambda: None), ""
+            return cmd, (lambda: k.SetThreadExecutionState(0x80000000)), \
+                "moe-cache: keeping the PC awake while the server runs (no power setting changed; --allow-sleep to allow sleep)"
+        except Exception:
+            return cmd, (lambda: None), ""
+    inh = shutil.which("systemd-inhibit")
+    if sys.platform.startswith("linux") and inh:
+        # the lock is held by a helper (`systemd-inhibit ... cat`) whose stdin is a pipe from this process: it ends when we release it, and also
+        # when the launcher dies by any means (the pipe closes). llama-server itself is not wrapped (systemd-inhibit forks its command: pid, signals
+        # and exit code would no longer be llama-server's)
+        try:
+            h = subprocess.Popen([inh, "--what=sleep:idle", "--who=moe-cache", "--why=llama-server is running", "--mode=block", "cat"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.3)
+            if h.poll() is None:
+                def release():
+                    try:
+                        h.stdin.close()
+                        h.wait(timeout=5)
+                    except Exception:
+                        h.kill()
+                return cmd, release, \
+                    "moe-cache: keeping the machine awake while the server runs (systemd-inhibit; no power setting changed; --allow-sleep to allow sleep)"
+        except Exception:
+            pass
+    return cmd, (lambda: None), ""
+
+
+def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False):
     """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code.
     The child dies with the launcher. Its log is passed through; when the plugin was meant to load and the server becomes ready without a single
     'moe-cache:' line, a warning says it is running stock (found on the MSI Claw, 2026-10-15: the plugin failed to load and nothing said so)."""
+    cmd, release_awake, awake_note = keep_awake(cmd, allow_sleep)
+    if awake_note:
+        say(awake_note)
     kw = {"env": env, "stderr": subprocess.PIPE}
     if sys.platform.startswith("linux"):
         kw["preexec_fn"] = _die_with_parent_linux
@@ -969,6 +1016,7 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None):
                 except KeyboardInterrupt:   # a second Ctrl-C: stop waiting for the save
                     pass
             continue
+    release_awake()
     pump_t.join(timeout=5)             # the last lines llama-server printed (why it stopped) come before the launcher's own verdict
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:
@@ -1022,6 +1070,8 @@ SERVER_HELP = """\
 --no-ecores  do not let the expert executor use efficiency cores (hybrid Intel CPUs: up to 4 are used by default, about +10-15 %)
 --always-plugin  use the plugin even when the model fits in the memory the server may use (by default stock llama-server runs then: faster, RESULTS 44)
 --stock    run stock llama-server without the plugin whatever the model's size (to compare stock and moe-cache on the same model)
+--allow-sleep  let the machine sleep while the server runs (by default it is kept awake without changing a power setting: Windows power request,
+           Linux systemd-inhibit; MOE_CACHE_ALLOW_SLEEP=1 does the same)
 --no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
 --agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
            (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
@@ -1091,7 +1141,7 @@ def server(argv):
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2"]); ap.add_argument("--hybrid", action="store_true")
-    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true")
+    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--stock", action="store_true")
@@ -1474,7 +1524,8 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
-    return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit)
+    return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit,
+                     allow_sleep=a.allow_sleep)
 
 
 def warm_save_wait(n_tokens, last_tokens, bytes_per_token, poll=10, idle_polls=2, per_gb=20, small_wait=180, small_per_gb=30, small_cap=600):
@@ -1920,6 +1971,42 @@ def project(argv):
 
 # ---- check ----
 
+def cpu_name():
+    """The CPU's model name for the overview; "" when unknown."""
+    try:
+        if WINDOWS:
+            return os.environ.get("PROCESSOR_IDENTIFIER", "")
+        for line in open("/proc/cpuinfo"):
+            if line.startswith("model name"):
+                return line.split(":", 1)[1].strip()
+    except OSError:
+        pass
+    return ""
+
+
+def meminfo_total_gb():
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemTotal"):
+                return int(line.split()[1]) * 1024 / 1e9
+    except OSError:
+        pass
+    return None
+
+
+def gpu_driver(name):
+    """Driver version of the GPU called `name`: Windows registry; Linux nvidia-smi for NVIDIA cards. "" when unknown."""
+    try:
+        if WINDOWS:
+            return win_driver_version(name)
+        if "NVIDIA" in name and shutil.which("nvidia-smi"):
+            out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True, timeout=10).stdout
+            return out.strip().splitlines()[0].strip() if out.strip() else ""
+    except Exception:
+        pass
+    return ""
+
+
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
     ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram")
@@ -1928,9 +2015,10 @@ def check(argv):
     a = ap.parse_args(argv)
     run_load = None
     n = {"fail": 0, "warn": 0}
+    facts, todo = {}, []             # the overview table at the end (N34, "doctor") and the lines that need a fix
     def ok(k, m): say(f"  [ OK ] {k:<22} {m}")
-    def warn(k, m): say(f"  [WARN] {k:<22} {m}"); n["warn"] += 1
-    def fail(k, m): say(f"  [FAIL] {k:<22} {m}"); n["fail"] += 1
+    def warn(k, m): say(f"  [WARN] {k:<22} {m}"); n["warn"] += 1; todo.append(("WARN", k, m))
+    def fail(k, m): say(f"  [FAIL] {k:<22} {m}"); n["fail"] += 1; todo.append(("FAIL", k, m))
     say(f"moe-cache {VERSION} check")
     import platform
     if sys.platform.startswith("linux"):
@@ -1939,6 +2027,8 @@ def check(argv):
         warn("system", f"Windows {platform.release()}: experimental (identity-tested in CI on a Windows runner; use --run to try the cache here)")
     else:
         fail("system", f"{platform.system()}: only Linux (and experimental Windows) are supported")
+    facts["system"] = ("Linux " if sys.platform.startswith("linux") else "Windows " if WINDOWS else platform.system() + " ") + platform.release()
+    facts["cpu"] = cpu_name()
     if platform.machine().lower() in ("x86_64", "amd64"):
         ok("cpu", "x86-64")
     else:
@@ -1971,6 +2061,7 @@ def check(argv):
             m = None; vtxt = ""
         ver = m.group(0) if m else ""
         ok("llama-server", f"{lsp} ({ver or 'version unknown'})")
+        facts["llama-server"] = f"{ver or 'version unknown'} ({lsp})"
         if re.search(r"7fe450e|23b0202", ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
@@ -1992,6 +2083,7 @@ def check(argv):
             fail("plugin", "not built and no g++ found; use the prebuilt release or install g++")
     else:
         ok("plugin", lib)
+        facts["moe-cache"] = f"{VERSION}, plugin {os.path.basename(lib)}"
         want, have = (ls_api(lsp), lib_api(lib)) if lsp else (None, None)
         if want and have and want != have:      # the docs send tarball / kit users here to learn which build fits (audit 2026-10-29 V1)
             fail("plugin build", f"made for ggml backend API {have}, this llama-server uses API {want}: {api_advice(want)}")
@@ -2017,7 +2109,12 @@ def check(argv):
             g = pick_gpu(list_devices(lsp))
             if g:
                 ok("gpu", f"{g[0]}: {g[1]}" + (f", {g[2]} MiB free" if g[2] else ""))
+                drv = gpu_driver(g[1])
+                facts["gpu"] = f"{g[1]} ({g[0]})" + (f", {g[2]} MiB free" if g[2] else "") + (f", driver {drv}" if drv else "")
+                if "AMD" in g[1] and WINDOWS and drv and driver_older(drv):
+                    warn("gpu driver", f"AMD driver {drv} is older than 32.0.32015.7029: Flash-Next checkpoints crash it (the launcher turns them off); update Adrenalin")
             else:
+                facts["gpu"] = "none usable by this llama-server (CPU only)"
                 warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower). For a GPU: " +
                      ("the llama.cpp release zip ...-bin-win-vulkan-x64.zip" if WINDOWS else "./install.sh --vulkan, or a llama.cpp built with -DGGML_VULKAN=ON / -DGGML_CUDA=ON"))
     memav = cg = None
@@ -2037,6 +2134,8 @@ def check(argv):
                     break
     except OSError:
         pass
+    tot = win_memory()[0] / 1e9 if WINDOWS and win_memory()[0] else meminfo_total_gb()
+    facts["ram"] = (f"{tot:.0f} GB total, " if tot else "") + (f"{memav:.1f} GB available" if memav else "available unknown") + (f", cgroup limit {cg:.1f} GB" if cg else "")
     ok("memory", (f"--ram {a.ram} GB; " if a.ram else "") + (f"available {memav:.1f} GB" if memav else "available: unknown") + (f", cgroup limit {cg:.1f} GB" if cg else ""))
     try:
         sw = next(int(l.split()[1]) * 1024 / 1e9 for l in open("/proc/meminfo") if l.startswith("SwapTotal"))
@@ -2066,6 +2165,7 @@ def check(argv):
                 ok("model", f"GGUF, {size:.1f} GB")
             else:
                 fail("model", "not a GGUF file")
+            facts["model"] = f"{os.path.basename(a.model)}, {size:.1f} GB"
             if b"expert_count" in head:
                 ok("MoE model", "has experts (expert_count found)")
             else:
@@ -2076,7 +2176,14 @@ def check(argv):
                     ok("direct reads", "O_DIRECT works on this file system")
                 except OSError:
                     fail("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): put the model on a normal disk")
+            try:
+                du = shutil.disk_usage(os.path.dirname(os.path.abspath(a.model)))
+                facts["disk"] = f"{du.free / 1e9:.0f} GB free of {du.total / 1e9:.0f} GB where the model is"
+            except OSError:
+                pass
             gbs = drive_read_speed(max(model_parts(a.model), key=os.path.getsize))
+            if gbs is not None:
+                facts["disk"] = facts.get("disk", "the model's drive") + f"; reads {gbs:.1f} GB/s"
             if gbs is None:
                 warn("drive speed", "not measured: reads that bypass the file cache are not possible on this file")
             elif gbs < SLOW_DRIVE_GBS:
@@ -2097,6 +2204,15 @@ def check(argv):
         else:
             r = run_check(lsp, a.model, run_load)
             (ok if r[0] else fail)("cache runs", r[1])
+    say("")
+    say("this machine at a glance")
+    for k in ("system", "cpu", "ram", "gpu", "disk", "llama-server", "moe-cache", "model"):
+        if k in facts:
+            say(f"  {k:<13} {facts[k]}")
+    if todo:
+        say("what to fix (FAIL first)")
+        for lvl, k, m in sorted(todo, key=lambda t: t[0] != "FAIL"):
+            say(f"  [{lvl}] {k:<14} {m}")
     say(f"summary: {n['fail']} failed, {n['warn']} warnings")
     return 1 if n["fail"] else 0
 
@@ -2163,7 +2279,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "pick": pick_cmd, "check": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
+    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
