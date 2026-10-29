@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, signal, subprocess, sys, threading, time, urllib.parse
+import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -83,7 +83,7 @@ def size_of(path):
 
 
 def scan_folder(folder, depth=4):
-    """GGUF models below `folder`: split models once (their first part), projector files (mmproj) left out."""
+    """GGUF models below `folder`: split models once (their first part), projector files (mmproj) and MTP / draft heads (not models) left out."""
     out = []
     folder = os.path.abspath(os.path.expanduser(folder))
     if not os.path.isdir(folder):
@@ -100,6 +100,8 @@ def scan_folder(folder, depth=4):
             if m and m.group(1) != "00001":
                 continue
             p = os.path.join(root, f)
+            if picker.is_draft_head(p):
+                continue
             out.append({"path": p, "name": re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", f), "size": size_of(p), "quant": quant_of(f), "source": folder})
     return out
 
@@ -464,7 +466,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
                       "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": tuned["ub"] if tuned else None,
                       "experts": plan["experts"], "used": plan["used"], "arch": plan["arch"]}
     if stock and not stock_fits:
-        out.update(kind="stock", verdict="does not fit: stock llama-server, as asked (to compare)")
+        out.update(kind="stock", verdict="runs stock llama-server, as asked (bigger than free RAM; to compare)")
         R.append("--stock: no plugin; experts that are not in the file cache are read from the SSD by the OS (usually much slower than moe-cache "
                  "when the model is bigger than RAM; run the Quick benchmark in both to see it)")
     elif stock:
@@ -474,15 +476,15 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
         out.update(kind="gpu", verdict="all experts fit on the GPU")
         R.append("every layer of experts fits in VRAM next to the rest of the model: the cache has nothing to manage")
     else:
-        name = {"fast": "moe-cache --fast", "hybrid": "moe-cache --hybrid (experimental)"}.get(mode, "moe-cache exact")
-        why = "moe-cache was asked (--always-plugin)" if mode == "exact" else mode + " needs the plugin"
-        out.update(kind="cache", verdict=("fits in RAM, but " + why + ": " if stock_fits else "does not fit: ") + name)
+        name = {"fast": "moe-cache --fast", "hybrid": "moe-cache --hybrid"}.get(mode, "moe-cache")
+        why = "you chose --always-plugin" if mode == "exact" else mode + " needs the plugin"
+        out.update(kind="cache", verdict=f"runs with {name} (fits in RAM, but {why})" if stock_fits else f"runs with {name} (bigger than free RAM)")
         if mode == "fast":
             R.append("--fast skips low-ranked experts that are not in RAM: about +10 %, about 1 token in 40-50 differs from stock")
         elif mode == "hybrid":
             R.append("--hybrid computes the most used experts on the GPU from a bank, the rest on the CPU (output differs from stock)")
         else:
-            R.append("exact: output identical to stock llama-server; experts that are not in RAM are read from the SSD")
+            R.append("exact: same output as stock llama.cpp; experts that are not in RAM are read from the SSD")
     if gpu_layers:
         R.append(f"{gpu_layers} of {layers} layers keep their experts on the GPU ({plan['free_vram_GiB']:.1f} GiB free VRAM)")
     elif out["kind"] != "stock" or plan["free_vram_GiB"] == 0:
@@ -1506,6 +1508,32 @@ class Store:
     def folders(self):
         return list(dict.fromkeys(default_folders() + self.saved.get("folders", [])))
 
+    def llama_found(self):
+        return bool(mc.resolve_llama_server(self.ls) or shutil.which(self.ls))
+
+    def set_llama(self, path):
+        """The dialog's path: a llama-server (or the folder that holds it) that answers --version; kept in ui.json (key llama_server), where the
+        launcher's search reads it too, so every later start uses it without setx. Returns (path, version text)."""
+        r = mc.resolve_llama_server(str(path or "")) or (shutil.which(str(path)) if path else None)
+        if not r:
+            raise ValueError(f"no llama-server at '{path}': give the full path of {mc.llama_exe()} (or the folder that holds it)")
+        if os.path.basename(r).lower() not in ("llama-server", "llama-server.exe"):
+            raise ValueError(f"'{r}' is not named {mc.llama_exe()}")
+        try:
+            o = subprocess.run([r, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            text = (o.stdout + o.stderr).strip()
+        except (OSError, subprocess.SubprocessError) as e:
+            raise ValueError(f"'{r}' could not be run: {e}")
+        if not re.search(r"version|build", text, re.I):
+            raise ValueError(f"'{r}' did not answer --version like llama-server does" + (f": {text[:200]}" if text else ""))
+        self.saved["llama_server"] = r
+        self.save("llama_server")
+        self.ls = r
+        self._spec = None
+        self.plans.clear()
+        mc.default_llama_server(refresh=True)
+        return r, next((l for l in text.splitlines() if re.search(r"version|build", l, re.I)), "")
+
     def pick_specs(self, fresh=False):
         """The picker's view of this machine (kept 5 minutes: it asks nvidia-smi, PowerShell and llama-server --version)."""
         if fresh or not getattr(self, "_spec", None) or time.time() - self._spec[0] > 300:
@@ -1654,7 +1682,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/system":
                 self.store.fresh()                         # `pick --apply` may have changed ui.json while the page is open
                 return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}), pick=self.store.saved.get("pick"),
-                                           llama_server=self.store.ls, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
+                                           llama_server=self.store.ls, llama_found=self.store.llama_found(),
+                                           llama_looked=mc.ls_looked(), llama_releases=mc.RELEASES_URL, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/pick":                      # "Which model?": this machine and one recommendation per use (bin/moe_cache_pick.py)
                 spec = self.store.pick_specs(q.get("fresh") == "1")
                 uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)
@@ -1741,6 +1770,9 @@ class Handler(BaseHTTPRequestHandler):
                     lst.remove(f)
                 self.store.save("folders")
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(True)})
+            if self.path == "/api/llama":                    # "llama.cpp not found": the path the user typed (checked with --version) is remembered
+                r, v = self.store.set_llama(body.get("path"))
+                return self.send(200, {"path": r, "version": v, "llama_found": True})
             if self.path == "/api/start":
                 if body.get("on_demand") and not ON_DEMAND:
                     raise ValueError("Start on first request is not in this version yet")
@@ -1909,6 +1941,8 @@ def connect_agent(agent, url, api_key, write):
 
 def make_server(port=8070, ls=None, token=None):
     store = Store(ls or mc.default_llama_server())
+    if not ls and (line := mc.ls_found_line(store.ls)):
+        mc.say(line)
     h = type("H", (Handler,), {"store": store, "runner": Runner(), "token": token or secrets.token_urlsafe(24)})
     srv = ThreadingHTTPServer(("127.0.0.1", port), h)
     srv.daemon_threads = True

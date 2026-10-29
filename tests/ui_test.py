@@ -78,7 +78,7 @@ check(p["kind"] == "stock" and "fits in RAM" in p["verdict"], f"model + 1.5 GB u
 check(any("RESULTS 44" in r for r in p["reasons"]), "stock: says why stock is faster")
 check(p["summary"].startswith("Stock llama-server: the model") and "fastest" in p["summary"], f"summary: why stock ({p['summary']})")
 p = ui.plan_model(small["path"], ram="1")
-check(p["kind"] == "cache" and p["verdict"] == "does not fit: moe-cache exact", f"over the budget: moe-cache exact ({p['verdict']})")
+check(p["kind"] == "cache" and p["verdict"] == "runs with moe-cache (bigger than free RAM)", f"over the budget: runs with moe-cache, said as what happens ({p['verdict']})")
 check(any("10 of 48 layers keep their experts on the GPU" in r for r in p["reasons"]), "reasons: GPU layers from the tuner (as the launcher)")
 check(any("holds 33 %" in r for r in p["reasons"]), "reasons: share of the CPU experts the cache holds")
 check(any(r.startswith("tuner: ") for r in p["reasons"]), "reasons: the tuner's own lines")
@@ -649,6 +649,32 @@ st, j = preq("/api/system")
 check(st == 200 and (j.get("pick") or {}).get("id") == "bolt" and j["last"]["model"] == bolt, "/api/system: the page sees the pick at load")
 check("pickuse" in open(ui.PAGE, encoding="utf-8").read(), "the page has the Which model? panel")
 
+# "llama.cpp not found" dialog: /api/system says so, /api/llama checks the path with --version and remembers it in ui.json (no setx)
+import subprocess as _sp, shutil as _sh
+LS_NAME = "llama-server.exe" if os.name == "nt" else "llama-server"
+fakels = os.path.join(TMP, "lsdir", LS_NAME); os.makedirs(os.path.dirname(fakels)); open(fakels, "wb").write(b"fake")
+notls = os.path.join(TMP, "lsdir", "notes.txt"); open(notls, "w").write("x")
+real_run = _sp.run
+def fake_run(cmd, *a, **k):
+    if cmd and cmd[0] == fakels and "--version" in cmd:
+        return type("R", (), {"stdout": "", "stderr": "version: 12345 (abcdef0)\nbuilt with fake\n", "returncode": 0})()
+    return real_run(cmd, *a, **k)
+_sp.run = fake_run
+st, j = preq("/api/system")
+check(st == 200 and "llama_found" in j and "llama_looked" in j and j["llama_releases"].startswith("https://github.com/ggml-org/llama.cpp"), "/api/system: llama_found, where it looked, the release link")
+check(preq("/api/llama", {"path": os.path.join(TMP, "nowhere", LS_NAME)})[0] == 400, "/api/llama: a path with no llama-server is refused")
+check(preq("/api/llama", {"path": notls})[0] == 400 and preq("/api/llama", {})[0] == 400, "/api/llama: a file that is not llama-server, and no path, are refused")
+st, j = preq("/api/llama", {"path": os.path.dirname(fakels)})
+check(st == 200 and j["path"] == os.path.abspath(fakels) and "12345" in j["version"] and j["llama_found"], f"/api/llama: the folder is resolved, --version answered ({st} {j})")
+check(json.load(open(ui.SETTINGS_FILE, encoding="utf-8")).get("llama_server") == os.path.abspath(fakels), "/api/llama: remembered in ui.json (llama_server)")
+st, j = preq("/api/system")
+check(j["llama_server"] == os.path.abspath(fakels) and j["llama_found"] is True, "/api/system after saving: the page uses it, found")
+_sp.run = lambda cmd, *a, **k: type("R", (), {"stdout": "hello", "stderr": "", "returncode": 0})() if cmd[0] == fakels else real_run(cmd, *a, **k)
+st, j = preq("/api/llama", {"path": fakels}); check(st == 400 and "did not answer --version" in j.get("error", str(j)), f"/api/llama: a program that does not answer --version like llama-server is refused ({st})")
+_sp.run = real_run
+_d = json.load(open(ui.SETTINGS_FILE, encoding="utf-8")); _d.pop("llama_server", None); json.dump(_d, open(ui.SETTINGS_FILE, "w", encoding="utf-8"))   # the search tests below start clean
+check("llamadlg" in open(ui.PAGE, encoding="utf-8").read() and "askLlama" in open(ui.PAGE, encoding="utf-8").read(), "the page has the llama.cpp not found dialog")
+
 srv.shutdown()
 
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)
@@ -757,6 +783,212 @@ try:
 finally:
     ui.subprocess.run = real_run
 check(seen and seen[0][seen[0].index("--ram-gib") + 1] == "18.626", f"the page passes --ram 20 GB to the planner as 18.626 GiB ({seen})")
+
+# ---- v0.3.2 page fixes: draft heads are not models, the verdict is not an error, readable selected buttons, the "Which model?" card ----
+import re, shutil, subprocess
+def tgguf(path, tensors):
+    def gs(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    kv = gs("general.architecture") + struct.pack("<I", 8) + gs("tst")
+    ti = b"".join(gs(n) + struct.pack("<IQIQ", 1, 8, 0, 32 * i) for i, n in enumerate(tensors))
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), 1) + kv + ti
+    open(path, "wb").write(head + b"\0" * (-len(head) % 32) + b"\0" * 32 * len(tensors))
+hm = os.path.join(TMP, "heads"); os.makedirs(hm)
+tgguf(os.path.join(hm, "Full-Q4_K_M.gguf"), ["blk.0.attn_q.weight", "blk.1.attn_q.weight", "blk.1.nextn.eh_proj.weight"])          # a model that carries its own MTP layer
+tgguf(os.path.join(hm, "Drafty-Q8_0.gguf"), ["blk.1.nextn.eh_proj.weight", "blk.1.nextn.enorm.weight", "blk.1.attn_q.weight"])      # only the head's layer: not a model
+open(os.path.join(hm, "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"), "wb").write(b"GGUF" + b"\0" * 60)                                         # named as a head
+open(os.path.join(hm, "Broken-Q4.gguf"), "wb").write(b"GGUF" + b"\0" * 60)                                                           # unreadable header: still listed
+hn = [m["name"] for m in ui.find_models([hm])]
+check(hn == ["Broken-Q4", "Full-Q4_K_M"], f"draft / MTP heads are not in the models list (mtp- name, nextn-only tensors); a model with its own head stays ({hn})")
+check(not ui.picker.is_draft_head(os.path.join(hm, "Full-Q4_K_M.gguf")) and ui.picker.is_draft_head(os.path.join(hm, "Drafty-Q8_0.gguf")), "is_draft_head: by tensors")
+fl = ui.picker.find_local([hm], []); check("qwen3.6-35b" not in fl, "the picker's local models skip draft heads too")
+os.rename(os.path.join(hm, "mtp-Qwen3.8-Flash-Next-Q8_0.gguf"), os.path.join(hm, "mtp-Qwen3.6-35B-A3B-Q8_0.gguf"))
+check("qwen3.6-35b" not in ui.picker.find_local([hm], []), "an mtp- file named like Qwen3.6 is not taken for the Qwen3.6 model")
+
+# verdict wording: what will happen, no 'does not fit', and the colour of the 'cache' class is not a warning colour
+for md_, ram_ in (("exact", "1"), ("fast", "1"), ("hybrid", "1")):
+    pv = ui.plan_model(small["path"], ram=ram_, mode=md_)
+    check(pv["verdict"].startswith("runs with moe-cache") and "does not fit" not in pv["verdict"] and "bigger than free RAM" in pv["verdict"], f"verdict ({md_}): {pv['verdict']}")
+check("does not fit" not in ui.plan_model(small["path"], ram="1", engine="stock")["verdict"], "verdict (--stock, bigger than RAM): no 'does not fit'")
+
+# colours: WCAG contrast of the segmented buttons and the card colours, in the light and the dark theme (parsed from the page's CSS)
+html = open(ui.PAGE, encoding="utf-8").read()
+def theme_vars(block):
+    return dict(re.findall(r"--([\w-]+):\s*(#[0-9a-fA-F]{6})", block))
+light = theme_vars(re.search(r"^:root \{(.*?)\}", html, re.M | re.S).group(1))
+dark = theme_vars(re.search(r":root\[data-theme=dark\] \{(.*?)\}", html, re.S).group(1))
+darkmq = theme_vars(re.search(r"prefers-color-scheme: dark\) \{ :root:not\(\[data-theme=light\]\) \{(.*?)\} \}", html, re.S).group(1))
+check(dark == darkmq and "on-ink" in light and "on-ink" in dark, "the dark theme variables are the same in the media query and in data-theme=dark")
+def lum(h):
+    c = [int(h[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+    c = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+def contrast(a, b):
+    la, lb = sorted((lum(a), lum(b)), reverse=True)
+    return (la + 0.05) / (lb + 0.05)
+def rule(sel):
+    """declarations of the LAST rule whose selector is exactly `sel` (the cascade: later wins at equal specificity)"""
+    found = [m.group(1) for m in re.finditer(r"(?:^|\})\s*" + re.escape(sel) + r"\s*\{([^}]*)\}", html)]
+    assert found, sel
+    return dict((k.strip(), v.strip()) for k, v in (d.split(":", 1) for d in found[-1].split(";") if ":" in d))
+def resolve(v, t):
+    m = re.fullmatch(r"var\(--([\w-]+)\)", v)
+    return t[m.group(1)] if m else v
+pairs = [("selected", ".seg button.on", "background", "color"), ("selected, disabled", ".seg button.on:disabled", "background", "color")]
+for nm, t in (("light", light), ("dark", dark)):
+    for what, sel, bgk, fgk in pairs:
+        r_ = rule(sel); c = contrast(resolve(r_[bgk], t), resolve(r_[fgk], t))
+        check(c >= 4.5, f"{nm} theme, segmented button {what}: text/background contrast {c:.1f} (>= 4.5)")
+    hov = rule(".seg button:hover:not(:disabled):not(.on)"); c = contrast(resolve(hov["background"], t), resolve(hov["color"], t))
+    check(c >= 4.5, f"{nm} theme, segmented button hover: contrast {c:.1f}")
+    c = contrast(t["panel"], resolve(rule(".seg button:disabled")["color"], t)); check(c >= 4.5, f"{nm} theme, segmented button disabled on the panel: contrast {c:.1f}")
+    c = contrast(t["panel"], t["text"]); check(c >= 4.5, f"{nm} theme, unselected segmented button text on the panel: contrast {c:.1f}")
+    for nm2 in ("warn", "muted", "text", "bad"):
+        for bg in ("panel", "bg"):
+            c = contrast(t[bg], t[nm2]); check(c >= 4.5, f"{nm} theme, --{nm2} on --{bg} (card, model list): contrast {c:.1f}")
+check(resolve(rule(".cache")["color"], light) == light["text"], "the 'runs with moe-cache' class is neutral text, not the warning colour")
+check("seg button.on { background:var(--accent); color:#fff" not in html and "color:var(--bg)" not in rule(".seg button.on").get("color", ""), "no leftover selected rule with the page background as text colour")
+
+# the Mode texts: Exact keeps the default but no 'identical'; Fast says what it changes
+check("Exact: same output as stock llama.cpp (default)" in html and "identical" not in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Exact wording, no 'identical'")
+check("about 1 token in 40-50 comes out different" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Fast says what it changes")
+
+# the card: run the page's own loadPick() under node with a stub DOM and look at the HTML it builds
+node = shutil.which("node")
+if node:
+    spec2 = dict(fake_spec, local={}, disk_kind="HDD")
+    jj = {"machine": spec2, "lines": ui.picker.spec_lines(spec2), "recommendations": [ui.picker.recommend(spec2, "agents")]}     # what /api/pick sends
+    src = re.search(r"async function loadPick\(\) \{.*?\n\}\n", html, re.S).group(0)
+    harness = ("const esc = s => String(s).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));\n"
+               "const fmtGB = b => (b / 1e9).toFixed(1) + ' GB'; const S = { pickuse: 'agents' }; const els = {};\n"
+               "const $ = id => els[id] || (els[id] = { hidden: false, textContent: '', innerHTML: '', value: '' });\n"
+               "const api = async () => (" + json.dumps(jj) + ");\n" + src + "\nloadPick().then(() => console.log(JSON.stringify({ html: els.pickres.innerHTML, btn: els.pickapply.textContent, hidden: els.pickapply.hidden })));\n")
+    hf = os.path.join(TMP, "card.js"); open(hf, "w", encoding="utf-8").write(harness)
+    out = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        card = json.loads(out.stdout.strip().splitlines()[-1])["html"]
+    except Exception:
+        card = ""; print(out.stdout[-300:], out.stderr[-500:])
+    check(card.count("<h5>") >= 1 and "Your machine" in card and all(f"<td>{k}</td>" in card for k in ("RAM", "GPU", "Disk", "CPU", "llama.cpp")), "card: a 'Your machine' table with RAM, GPU, Disk, CPU, llama.cpp")
+    check(len(re.findall(r'<div class="name">', card)) == 1 and 'class="nums"' in card and "decode" in card and "tok/s" in card, "card: the recommendation is one bold name line with its measured numbers")
+    check('class="why"' in card and 'class="alts"' in card or jj["recommendations"][0]["alternatives"] == [], "card: a Why line and the alternatives as a list")
+    dm = re.search(r"<details>.*</details>", card, re.S)
+    check(bool(dm) and "pwarn" in dm.group(0) and "pwarn" not in card[:dm.start()] and 'class="err"' not in card, "card: warnings sit in the collapsed details, in the one warning colour (no red 'err')")
+    check(card.count("<br>") == 0, "card: no run-together <br> text wall")
+    check('<div class="pickcard"><div id="pickres">' in html and re.search(r'class="pickact"><button id="pickapply"', html), "card: the Use it button is inside the card, in its own action row")
+else:
+    print("  skip card test: node not found")
+
+# ---- finding llama-server (one function for the launcher, check, the picker and the page): the order, the registry, the newest supported build ----
+import types as _types
+mc = ui.mc
+root = os.path.join(TMP, "lsfind"); os.makedirs(root)
+def mkls(*parts):
+    d = os.path.join(root, *parts); os.makedirs(d, exist_ok=True); f = os.path.join(d, mc.llama_exe()); open(f, "wb").write(b"x"); return os.path.abspath(f)
+saved_env = {k: os.environ.pop(k, None) for k in ("LLAMA_SERVER", "USERPROFILE")}
+saved_fns = (mc.shutil.which, mc.llama_search_dirs, mc.ls_build, mc.ls_api, mc.shipped_apis, mc.WINDOWS, sys.modules.get("winreg"))
+real_which = mc.shutil.which
+nopath = lambda n, *a, **k: None if n == "llama-server" else real_which(n, *a, **k)
+mc.shutil.which = nopath; mc.shipped_apis = lambda: set(); mc.ls_api = lambda p: None; mc.ls_build = lambda p: None
+mc.llama_search_dirs = lambda: []
+try:
+    r = mc.find_llama_server(saved="")
+    check(r["path"] is None and len(r["looked"]) >= 3 and "PATH: not on it" in r["looked"], f"nothing found: path None, and it lists where it looked ({len(r['looked'])} places)")
+    mc.default_llama_server(refresh=True); check(mc.default_llama_server() == "llama-server" and "PATH" in mc.ls_looked(), "default_llama_server: plain name when nothing is found; ls_looked() names the places")
+    a, b, c = mkls("A"), mkls("B", "bin"), mkls("C")
+    mc.llama_search_dirs = lambda: [os.path.join(root, "A"), os.path.join(root, "B"), os.path.join(root, "C"), os.path.join(root, "none")]
+    builds = {a: 11000, b: 12500, c: 13000}; apis = {a: "3", b: "3", c: "2"}
+    mc.ls_build = lambda p: builds.get(p); mc.ls_api = lambda p: apis.get(p)
+    mc.shipped_apis = lambda: {"3"}
+    r = mc.find_llama_server(saved="")
+    check(r["path"] == b and r["source"] == "a default folder" and r["build"] == 12500 and sorted(r["others"]) == sorted([a, c]),
+          f"folders: the newest build a shipped plugin supports (C is newer but API 2, not shipped) ({os.path.relpath(r['path'], root)})")
+    mc.default_llama_server(refresh=True); line = mc.ls_found_line(mc.default_llama_server())
+    check(line and "b12500" in line and "API 3" in line and "also found, not used" in line, f"one log line says which one and what else was found ({line and line[:90]})")
+    mc.shipped_apis = lambda: set(); r = mc.find_llama_server(saved=""); check(r["path"] == c, "folders: no shipped plugin known: the newest build")
+    mc.shipped_apis = lambda: {"3"}
+    # explicit settings beat the folders; a stale one falls through; the page's saved path comes before PATH and the folders
+    os.environ["LLAMA_SERVER"] = a; r = mc.find_llama_server(saved=c); check(r["path"] == a and r["source"] == "LLAMA_SERVER", "order: LLAMA_SERVER in the process environment first")
+    os.environ["LLAMA_SERVER"] = os.path.join(root, "gone", mc.llama_exe()); r = mc.find_llama_server(saved=c)
+    check(r["path"] == c and "saved path" in r["source"], "order: a stale LLAMA_SERVER is skipped; the page's saved path is next")
+    check(any("no llama-server there" in x for x in r["looked"]), "the stale value is reported in the places looked")
+    del os.environ["LLAMA_SERVER"]
+    mc.shutil.which = real_which if real_which("llama-server") else (lambda n, *a, **k: "/usr/bin/llama-server" if n == "llama-server" else real_which(n, *a, **k))
+    r = mc.find_llama_server(saved=""); check(r["path"] == "llama-server" and r["source"] == "PATH", "order: PATH before the default folders")
+    mc.shutil.which = nopath
+    # Windows: the registry as stored (setx), user before machine, %VARS% expanded, then the registry PATH
+    store = {"HKCU": {}, "HKLM": {}}
+    def _open(root_, sub_): return types_k(root_)
+    class types_k:
+        def __init__(self, r): self.r = r
+        def __enter__(self): return self
+        def __exit__(self, *x): return False
+    def _q(k, name):
+        if name not in store[k.r]: raise OSError
+        return (store[k.r][name], 2)
+    fake = _types.SimpleNamespace(HKEY_CURRENT_USER="HKCU", HKEY_LOCAL_MACHINE="HKLM", OpenKey=_open, QueryValueEx=_q)
+    sys.modules["winreg"] = fake; mc.WINDOWS = True
+    win = os.path.join(root, "Users", "me"); os.makedirs(win); wa = mkls("w", "reguser"); wm = mkls("w", "regmachine")
+    os.environ["USERPROFILE"] = win
+    store["HKLM"]["LLAMA_SERVER"] = wm
+    r = mc.find_llama_server(saved=""); check(r["path"] == wm and "machine environment" in r["source"], "windows: LLAMA_SERVER only in the machine registry is found")
+    store["HKCU"]["LLAMA_SERVER"] = os.path.join("%USERPROFILE%", "..", "..", "w", "reguser", mc.llama_exe())
+    r = mc.find_llama_server(saved=""); check(os.path.realpath(r["path"]) == os.path.realpath(wa) and "user environment" in r["source"], f"windows: the user's registry value (with %USERPROFILE% expanded) beats the machine's ({r['source']})")
+    os.environ["LLAMA_SERVER"] = a; r = mc.find_llama_server(saved=""); check(r["path"] == a, "windows: the process environment still comes before the registry")
+    del os.environ["LLAMA_SERVER"]; store["HKCU"].clear(); store["HKLM"].clear()
+    r = mc.find_llama_server(saved=c); check(r["path"] == c, "windows: registry empty: the page's saved path")
+    pd = os.path.dirname(mkls("w", "onpath")); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd
+    r = mc.find_llama_server(saved=""); check(os.path.dirname(r["path"] or "") == pd and "PATH in the user environment" in r["source"], f"windows: llama-server on the PATH as the registry stores it ({r['source']})")
+    store["HKCU"].clear()
+    dl = os.path.join(win, "Downloads", "llama-b12000-bin-win-vulkan-x64"); os.makedirs(dl); open(os.path.join(dl, mc.llama_exe()), "wb").write(b"x")
+    mc.llama_search_dirs = saved_fns[1]; got = [d for d in mc.llama_search_dirs()]
+    check(dl in got and r"C:\llama" in got and mc.HERE in got, "windows: the default folders include Downloads\\llama-b*-bin-win-* and the kit")
+    os.makedirs(os.path.join(win, "llama-vk")); check(os.path.join(win, "llama-vk") in mc.llama_search_dirs(), "windows: every %USERPROFILE%\\llama* folder")
+    mc.WINDOWS = False; check(mc.win_registry_env("LLAMA_SERVER") == [], "off Windows: the registry is not read")
+finally:
+    mc.shutil.which, mc.llama_search_dirs, mc.ls_build, mc.ls_api, mc.shipped_apis, mc.WINDOWS = saved_fns[:6]
+    if saved_fns[6] is None: sys.modules.pop("winreg", None)
+    else: sys.modules["winreg"] = saved_fns[6]
+    os.environ.pop("USERPROFILE", None)
+    for k, v in saved_env.items():
+        if v is not None: os.environ[k] = v
+    mc.default_llama_server(refresh=True)
+
+# switching models while a server runs: the top bar offers "Switch to <name>" when the selection differs; the list marks the running one; confirm when busy
+page = open(ui.PAGE, encoding="utf-8").read()
+check('id="switch"' in page and "Running: " in page and 'badge stock">running' in page and "switchModel" in page, "the page has the Switch button, the 'Running:' label and the running mark in the list")
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"function runningState\(st\).*?\n", r"function switchInfo\(st, sel, models\) \{.*?\n\}\n", r"function switchNeedsConfirm.*?\n"))
+    harness = ("const shortName = n => n.replace(/\\.gguf$/, '');\n" + fn + "const M = [{path:'/m/a.gguf',name:'granite-a'},{path:'/m/b.gguf',name:'qwen-b'}];\n"
+               "console.log(JSON.stringify([switchInfo({state:'idle',model:null},'/m/b.gguf',M), switchInfo({state:'ready',model:'/m/a.gguf'},'/m/a.gguf',M),\n"
+               "  switchInfo({state:'ready',model:'/m/a.gguf'},'/m/b.gguf',M), switchInfo({state:'starting',model:'/m/a.gguf'},'/m/b.gguf',M), switchInfo({state:'stopping',model:'/m/a.gguf'},'/m/b.gguf',M),\n"
+               "  switchInfo({state:'ready',model:'/m/a.gguf'},'/m/zzz.gguf',M), switchNeedsConfirm([{processing:true}], false), switchNeedsConfirm([{processing:false}], false), switchNeedsConfirm([], true), switchNeedsConfirm(undefined, false)]));\n")
+    hf = os.path.join(TMP, "switch.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and [x["show"] for x in r_[:6]] == [False, False, True, True, False, False] and r_[2]["label"] == "Switch to qwen-b",
+          f"Switch to <name> only when a server is up and another model is selected ({r_ and [x['show'] for x in r_[:6]]})")
+    check(r_ is not None and r_[6:] == [True, False, True, False], "confirm only when a request is running (agent slot processing or the chat)")
+
+# the model list's menu: right-click, Shift+F10 / the menu key, the three-dots button; the items follow the server state
+check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),
+      "the list rows have the context menu, the keyboard keys, the three-dots button and focusable rows")
+if node:
+    fn = re.search(r"function rowMenuItems\(st, path\) \{.*?\n\}\n", page, re.S).group(0)
+    harness = fn + ("const ids = (st, p) => rowMenuItems(st, p).map(x => x.id).join(',');\n"
+                    "console.log(JSON.stringify([ids({state:'idle'}, 'a'), ids({state:'ready', model:'a'}, 'a'), ids({state:'ready', model:'a'}, 'b'), ids({state:'starting', model:'a'}, 'b'), ids({state:'stopping', model:'a'}, 'b'), ids(null, 'a'), rowMenuItems({state:'idle'}, 'a').map(x => x.label)]));\n")
+    hf = os.path.join(TMP, "rowmenu.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    tail = "plan,where,copy"
+    check(r_ is not None and r_[:6] == ["start," + tail, "stop," + tail, "switch," + tail, "switch," + tail, tail, "start," + tail],
+          f"row menu: Start when nothing runs, Stop on the running model, Switch to this model on the others, nothing to start while stopping ({r_ and r_[:6]})")
+    check(r_ is not None and r_[6] == ["Start", "Plan / Why", "Show in folder", "Copy path"], "row menu: the labels")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

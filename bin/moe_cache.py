@@ -43,18 +43,168 @@ def api_advice(want):
             f"{'GGML_API=3 ' if want == 3 else ''}./build.sh")
 
 
-def default_llama_server():
-    """llama-server when --llama-server is not given: LLAMA_SERVER, else the one on the PATH, else where the docs put it (Windows: the official
-    release unpacked to C:\\llama; Linux: install.sh's default prefix), else plain "llama-server" (check then says it is missing)."""
-    if os.environ.get("LLAMA_SERVER"):
-        return os.environ["LLAMA_SERVER"]
-    if shutil.which("llama-server"):
-        return "llama-server"
-    for c in ([r"C:\llama\llama-server.exe"] if WINDOWS else
-              [os.path.join(os.path.expanduser("~"), "moe-cache-setup", "llama.cpp", "build", "bin", "llama-server")]):
-        if os.path.isfile(c):
-            return c
-    return "llama-server"
+RELEASES_URL = "https://github.com/ggml-org/llama.cpp/releases"
+_LS = {}        # the last search: {"path", "source", "build", "api", "looked": [places], "others": [paths]} (see find_llama_server)
+
+
+def llama_exe():
+    return "llama-server.exe" if WINDOWS else "llama-server"
+
+
+def expand_win_vars(v):
+    """%NAME% as the registry stores it (REG_EXPAND_SZ), from the process environment; unknown names stay as they are."""
+    return re.sub(r"%([^%]+)%", lambda m: os.environ.get(m.group(1), m.group(0)), v)
+
+
+def win_registry_env(name):
+    """[(where, value)] of an environment variable as Windows stores it: the user's, then the machine's. `setx` writes here, and a program started
+    earlier (Explorer, so moe-cache.bat started from it) never sees the new value in its own environment. [] off Windows."""
+    out = []
+    if not WINDOWS:
+        return out
+    try:
+        import winreg
+    except ImportError:
+        return out
+    for where, root, sub_ in (("the user environment (registry)", winreg.HKEY_CURRENT_USER, "Environment"),
+                              ("the machine environment (registry)", winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(root, sub_) as k:
+                v = winreg.QueryValueEx(k, name)[0]
+            if isinstance(v, str) and v.strip():
+                out.append((where, expand_win_vars(v.strip())))
+        except OSError:
+            pass
+    return out
+
+
+def saved_llama_server():
+    """The path the control page saved (ui.json, key llama_server) when it could not find one itself; "" when none."""
+    try:
+        v = json.load(open(os.path.join(CACHE_DIR, "ui.json"), encoding="utf-8")).get("llama_server")
+        return v if isinstance(v, str) else ""
+    except Exception:
+        return ""
+
+
+def resolve_llama_server(v):
+    """A path to llama-server: the file itself, or a folder that holds it (also bin / build\\bin below it); None when there is none."""
+    if not v:
+        return None
+    v = os.path.expanduser(v.strip().strip('"'))
+    if os.path.isfile(v):
+        return os.path.abspath(v)
+    if os.path.isdir(v):
+        for sub_ in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release")):
+            c = os.path.join(v, sub_, llama_exe())
+            if os.path.isfile(c):
+                return os.path.abspath(c)
+    return None
+
+
+def llama_search_dirs():
+    """Folders that may hold llama-server, in the order they are looked at (only existing files count)."""
+    home = os.path.expanduser("~")
+    if WINDOWS:
+        up = os.environ.get("USERPROFILE") or home
+        return ([r"C:\llama"] + sorted(glob.glob(r"C:\llama*")) + sorted(glob.glob(os.path.join(up, "llama*")))
+                + sorted(glob.glob(os.path.join(up, "Downloads", "llama-b*-bin-win-*"))) + [HERE, os.path.dirname(HERE)])
+    return [os.path.join(home, "moe-cache-setup", "llama.cpp", "build", "bin"), os.path.join(home, "llama.cpp", "build", "bin"), HERE, os.path.dirname(HERE)]
+
+
+def ls_build(ls):
+    """llama-server's build number (`--version`: 'version: 11966 (ff0d396e3)'), None when unknown."""
+    try:
+        r = subprocess.run([ls, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        text = r.stdout + r.stderr
+        m = re.search(r"\(build (\d+)", text) or re.search(r"version:\s*(\d+)\s*\(", text)     # '0.7.0-dev (build 11669, commit ...)' or the old 'version: 4567 (abc)'
+        n = int(m.group(1)) if m else 0
+        return n if n >= 100 else None        # distro builds report 'build 1' / 0: no usable number
+    except Exception:
+        return None
+
+
+def shipped_apis():
+    """Backend APIs of the plugin builds that ship with (or were built next to) this launcher."""
+    pats = [default_lib(), os.path.join(HERE, "build", "win*", "ggml-moe-cache*.dll"), os.path.join(HERE, "build-*", "ggml-moe-cache*.dll"),
+            os.path.join(HERE, "ggml-moe-cache*.dll"), os.path.join(HERE, "..", "ggml-moe-cache*.dll"), os.path.join(HERE, "build-*", "libggml-moe-cache.so")]
+    return {a for pat in pats for c in glob.glob(pat) for a in [lib_api(c)] if a}
+
+
+def find_llama_server(saved=None):
+    """Looks for llama-server (the same code for the launcher, check, the picker and the control page). Order: LLAMA_SERVER in the process
+    environment; on Windows LLAMA_SERVER as stored in the registry (user, then machine); the control page's saved path; the PATH (process, and on
+    Windows the registry's); then every default folder (Windows: C:\\llama*, %USERPROFILE%\\llama*, Downloads\\llama-b*-bin-win-*, the kit; Linux:
+    install.sh's build, ~/llama.cpp/build/bin, the kit). An explicit setting that points at a file wins; among the folders the newest build whose
+    ggml API a shipped plugin supports wins. Returns {"path", "source", "build", "api", "others", "looked"}; "path" is None when nothing was found."""
+    looked = []
+    res = {"path": None, "source": None, "build": None, "api": None, "others": [], "looked": looked}
+    def hit(path, source):
+        res.update(path=path, source=source, api=ls_api(path) if os.path.isabs(path) else None)
+        return res
+    explicit = [("LLAMA_SERVER", os.environ.get("LLAMA_SERVER"))] + [("LLAMA_SERVER in " + w, v) for w, v in win_registry_env("LLAMA_SERVER")]
+    explicit.append(("the control page's saved path", saved if saved is not None else saved_llama_server()))
+    for src, v in explicit:
+        if v:
+            r = resolve_llama_server(v) or shutil.which(v)
+            looked.append(f"{src}: {v}" + ("" if r else " (no llama-server there)"))
+            if r:
+                return hit(r, src)
+        else:
+            looked.append(f"{src}: not set")
+    w = shutil.which("llama-server")
+    looked.append("PATH: " + ("llama-server" if w else "not on it"))
+    if w:
+        return hit("llama-server", "PATH")
+    if WINDOWS:
+        for where, v in win_registry_env("PATH"):
+            for d in v.split(";"):
+                r = resolve_llama_server(d) if d and os.path.isdir(d) and os.path.isfile(os.path.join(d, llama_exe())) else None
+                if r:
+                    looked.append(f"PATH in {where}: {d}")
+                    return hit(r, "PATH in " + where)
+        looked.append("PATH in the registry: not on it")
+    found = []
+    for d in llama_search_dirs():
+        r = next((os.path.join(d, x, llama_exe()) for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release"))
+                  if os.path.isfile(os.path.join(d, x, llama_exe()))), None)
+        looked.append(f"folder {d}: " + ("found" if r else "no llama-server"))
+        if r and os.path.abspath(r) not in found:
+            found.append(os.path.abspath(r))
+    if found:
+        apis = shipped_apis()
+        def rank(c):
+            api = ls_api(c)
+            return (2 if (not apis or api in apis) and api else 1 if api is None else 0, ls_build(c) or 0, os.path.getmtime(c))
+        best = max(found, key=rank) if len(found) > 1 else found[0]
+        hit(best, "a default folder")
+        res["build"] = ls_build(best)
+        res["others"] = [c for c in found if c != best]
+    return res
+
+
+def default_llama_server(refresh=False):
+    """llama-server when --llama-server is not given (see find_llama_server; kept per process, refresh=True looks again). When nothing is found:
+    LLAMA_SERVER as set, else plain "llama-server" (the callers then say it is missing and where this looked: ls_looked())."""
+    if refresh or "done" not in _LS:
+        _LS.clear()
+        _LS.update(find_llama_server(), done=True)
+    return _LS["path"] or os.environ.get("LLAMA_SERVER") or "llama-server"
+
+
+def ls_looked():
+    default_llama_server()
+    return "; ".join(_LS.get("looked") or [])
+
+
+def ls_found_line(ls):
+    """One log line saying which llama-server was found by the search (None when it came from --llama-server or LLAMA_SERVER)."""
+    default_llama_server()
+    if _LS.get("path") != ls or _LS.get("source") in (None, "LLAMA_SERVER"):
+        return None
+    return (f"moe-cache: llama-server: {which(ls) if ls != 'llama-server' else ls} (found by {_LS['source']}"
+            + (f", build b{_LS['build']}" if _LS.get("build") else "") + (f", ggml API {_LS['api']}" if _LS.get("api") else "")
+            + (f"; also found, not used: {', '.join(_LS['others'])}" if _LS.get("others") else "") + ")")
 
 
 # ---- how a llama-server loads the plugin ----
@@ -1232,8 +1382,10 @@ def server(argv):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
         # tarball users the wrong way (audit 2026-10-29 K2)
         raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
-                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama)' if WINDOWS else "")
-                         + " (moe_cache.py check tells what is missing)")
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if WINDOWS else "")
+                         + f". Looked: {ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
+    if (line := ls_found_line(ls)):
+        say(line)
     if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
         want, have = ls_api(ls), lib_api(lib)
         if want and have and want != have:
@@ -2142,7 +2294,7 @@ def check(argv):
             ok("cpu pinning", "no hybrid cores: no pinning")
     lsp = shutil.which(a.llama_server)
     if not lsp:
-        fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH" +
+        fail("llama-server", f"not found ('{a.llama_server}'); looked: {ls_looked()}; pass --llama-server PATH" +
              (r' (or unpack the official llama.cpp release to C:\llama, or set it once: setx LLAMA_SERVER "D:\path\to\llama-server.exe" and open a new window)' if WINDOWS else " (or run ./install.sh, or put llama-server on the PATH)"))
     else:
         try:

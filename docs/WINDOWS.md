@@ -55,7 +55,7 @@ What the `.bat` finds by itself (set the variable to override):
 |---|---|
 | Python | `MOE_CACHE_PYTHON`, the `py` launcher, a `python.exe` that really runs (the one Windows ships without Python only opens the Store) |
 | Plugin (`MOE_CACHE_LIB`) | `ggml-moe-cache-api3.dll`, then `ggml-moe-cache.dll`, next to the `.bat` or one folder up (the kit), then `build\win-api3\`, `build\win\` |
-| llama-server (`LLAMA_SERVER`) | on the `PATH`, then `C:\llama\llama-server.exe` |
+| llama-server (`LLAMA_SERVER`) | `LLAMA_SERVER` (the process environment; on Windows also as stored in the registry, user then machine, because `setx` writes there and a program started earlier does not see it), the path the control page saved, the `PATH` (on Windows also the registry's), then the default folders (Windows: `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build, `~/llama.cpp/build/bin`, the kit folder). Among the folders the newest build whose ggml API a shipped plugin supports wins, and one log line says which one. When none is found the control page asks for the path (checked with `--version`) and remembers it. |
 
 It prints what it found and the page's address (with a per-run token: only you can use the page); the same is in the page header's tooltip. Without the `.bat`: `python bin\moe_cache.py ui --llama-server C:\llama\llama-server.exe`.
 Options for both: `--ui-port N`, `--no-browser`. Details: [GUI](GUI.md).
