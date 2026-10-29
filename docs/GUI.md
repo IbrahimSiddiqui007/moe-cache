@@ -23,7 +23,7 @@ Options (for all ways of starting):
 | Option | Meaning |
 |---|---|
 | `--ui-port N` | use another port for the page (default 8070) |
-| `--llama-server PATH` | the llama-server program to start (default: the `LLAMA_SERVER` variable, else `llama-server` on the PATH) |
+| `--llama-server PATH` | the llama-server program to start (default: the search described below) |
 | `--no-browser` | do not open the browser |
 
 **What the Windows `.bat` finds by itself** (set the variable yourself to choose):
@@ -32,7 +32,7 @@ Options (for all ways of starting):
 |---|---|
 | Python | `MOE_CACHE_PYTHON`, the `py` launcher, a `python.exe` that really runs |
 | The plugin (`MOE_CACHE_LIB`) | `ggml-moe-cache-api3.dll` or `ggml-moe-cache.dll` next to the `.bat` or one folder up, then `build\win-api3\`, `build\win\` |
-| llama-server (`LLAMA_SERVER`) | on the PATH, then `C:\llama\llama-server.exe` |
+| llama-server (`LLAMA_SERVER`) | `LLAMA_SERVER` (the process environment; on Windows also as stored in the registry, user then machine, because `setx` writes there and a program started earlier does not see it), the path the control page saved, the `PATH` (on Windows also the registry's), then the default folders (Windows: `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build, `~/llama.cpp/build/bin`, the kit folder). Among the folders the newest build whose ggml API a shipped plugin supports wins, and one log line says which one. When none is found the control page asks for the path (checked with `--version`) and remembers it. |
 
 It prints what it found. The same is shown in the page's header when you hold the mouse over it.
 

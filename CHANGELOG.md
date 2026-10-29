@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **llama-server is found in more places, by one function** (launcher, `check`, the picker and the control page share `default_llama_server`): `LLAMA_SERVER` in the process
+  environment, on Windows also as stored in the registry (user, then machine: `setx` writes there and an Explorer started earlier never passes it on), the path the control page
+  saved, the PATH (also the registry's), `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build and `~/llama.cpp/build/bin`.
+  Among several folders the newest build a shipped plugin supports (API match) is used, and one log line names it. The launcher's "not found" message lists where it looked. When
+  nothing is found the control page shows a "llama.cpp not found" dialog (path input checked with `--version`, link to the official release) and remembers the path in its settings.
 - **Control page fixes (owner's Windows test of v0.3.1)**: the selected button of every button group keeps readable text in the dark and light theme (contrast >= 4.5, also hover and
   disabled); "Which model?" is a card (a "Your machine" table, the recommendation with its key numbers, Why, other options, notes collapsed, one warning colour, the Use it button
   inside the card); MTP / draft-head GGUFs (`mtp-` names, files with only the head's tensors) are no longer listed as models or taken as candidates; "does not fit: moe-cache exact"
