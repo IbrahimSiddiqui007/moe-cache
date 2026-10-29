@@ -5,6 +5,9 @@
 ### Agents
 - **Warm-session saves scale with the file** (idea N27): a save rewrites the whole slot (~1.7 GB at 64k, ~7 GB at 256k on Flash-Next) and llama-server answers nothing while it writes. The saver now waits 20 s + 20 s per GB of idle time, and a conversation that grew only a little since its last save waits 3 min + 30 s per GB (at most 10 min); the older file restores exactly (llama-server processes only the newer tokens). tests/warm_test.py (fake server) in both CIs.
 
+- **Fixed: a model that fits in memory no longer needs a plugin build.** The launcher stopped with "plugin not built" before it decided to run
+  stock llama-server (seen with Nemotron 3.5 Bolt on the PC); it now decides first and looks for the plugin only when it will use it (Linux and Windows).
+
 ### Docs
 - **Flash-Next file recommendation: GSQ-RCO Q2_0 is the default** (66.4 GB; PC: 22.2 tok/s, prompts 281 / 287 tok/s at 3k / 34k tokens, +5 % decode and +11-19 % prompts vs IQ2_XS, 191/202 tasks); IQ3_XXS when accuracy matters (193/202); ISTA GSQ-RCO Coder IQ1_M for coding agents (OpenCode session 55.5 vs 73.4 s); IQ2_XS superseded; IQ3_S not worth it; quality differences not proven (RESULTS 63). README, docs/WINDOWS.md, docs/AGENTS.md, benchmark card.
 

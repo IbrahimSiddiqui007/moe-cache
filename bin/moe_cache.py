@@ -1060,15 +1060,19 @@ def server(argv):
         say("moe-cache: --hybrid replaces --gpu-cache: the GPU memory goes to the hybrid bank"); gcache = "off"
     if not os.path.isfile(model):
         raise SystemExit(f"usage: moe-cache-server MODEL.gguf [options]  (model file not found: '{model}')")
+    if a.stock and (a.fast or a.hybrid or a.always_plugin):
+        raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
+    stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock)
     lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(ls)
-    want, have = ls_api(ls), lib_api(lib)
-    if want and have and want != have:
-        say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load "
-            "(build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)", err=True)
-    if not os.path.isfile(lib):
-        if os.environ.get("MOE_CACHE_LIB"):
-            raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
-        raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
+        want, have = ls_api(ls), lib_api(lib)
+        if want and have and want != have:
+            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load "
+                "(build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)", err=True)
+        if not os.path.isfile(lib):
+            if os.environ.get("MOE_CACHE_LIB"):
+                raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
+            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     listing = list_devices(ls) if WINDOWS else None
     gpu = pick_gpu(listing) if WINDOWS else None
     if WINDOWS and not a.vram and not nvidia_reports():
@@ -1160,10 +1164,7 @@ def server(argv):
                 say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
         except Exception as e:
             say(f"moe-cache: could not use a starter profile ({e})", err=True)
-    load, method = load_env(ls, lib, a.load_method)
-    if a.stock and (a.fast or a.hybrid or a.always_plugin):
-        raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
-    stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock)
+    load, method = ([], "none (stock)") if stock else load_env(ls, lib, a.load_method)
     if gcache != "off" and not stock and method == "path":
         # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
         say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "

@@ -65,6 +65,19 @@ for v in ("2", "4", "8"):
 lo, hi = ncmoe(dry("--vram", "8", "--gpu-margin", "0.2")), ncmoe(dry("--vram", "8", "--gpu-margin", "3"))
 check(lo is not None and hi is not None and hi >= lo, f"launcher --gpu-margin 3 keeps at least as many CPU expert layers ({hi}) as 0.2 ({lo})")
 
+# a stock run (model fits, or --stock) needs no plugin build (T5: Nemotron Bolt on the PC stopped with "plugin not built" before deciding stock)
+def dry_nolib(*extra):
+    env = dict(os.environ, MOE_CACHE_LIB=os.path.join(HERE, "no-such-dir", "libggml-moe-cache.so"))
+    r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "server", model, "--dry-run", "--vram", "4", *extra],
+                       capture_output=True, text=True, timeout=300, env=env)
+    return r.returncode, r.stdout + r.stderr
+for args, what in ((("--ram", "8"), "fits in RAM"), (("--ram", "8", "--stock"), "--stock")):
+    rc, out = dry_nolib(*args)
+    check(rc == 0 and "does not exist" not in out and "running stock llama-server" in out and "GGML_BACKEND_PATH" not in out and "LD_PRELOAD" not in out,
+          f"launcher, plugin missing, {what}: runs stock without asking for the plugin (rc {rc})")
+rc, out = dry_nolib("--ram", "4", "--always-plugin")
+check(rc != 0 and "MOE_CACHE_LIB points to a file that does not exist" in out, "launcher, plugin missing, --always-plugin: stops with the missing-file message")
+
 # Windows core pinning (WINPIN): the launcher's parser of GetLogicalProcessorInformationEx records, on synthetic records (no Windows needed)
 import importlib.util, struct  # noqa: E402
 _sp = importlib.util.spec_from_file_location("moe_cache_launcher", os.path.join(HERE, "bin", "moe_cache.py"))
