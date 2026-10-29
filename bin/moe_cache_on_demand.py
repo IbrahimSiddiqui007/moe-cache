@@ -744,7 +744,9 @@ def on_demand(argv):
                 + (f"; the added models ({', '.join(model_alias(e['model'], e.get('args', [])) for e in old.get('extra') or [])}) are forgotten"
                    if old.get("extra") else ""))
     elif not c:
-        raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options] (or let moe_cache.py pick choose one)")
+        from moe_cache_pick import pick_missing
+        raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options] (" +
+                         (pick_missing() or "or let moe_cache.py pick choose one") + ")")
     elif a.port or a.idle or a.idle_release is not None:
         c.update({k: v for k, v in (("port", a.port), ("idle", a.idle)) if v})
         if a.idle_release is not None:

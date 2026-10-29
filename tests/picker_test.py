@@ -151,6 +151,13 @@ s = json.load(open(pk.SETTINGS_FILE))
 check(s["pick"]["id"] == "flash-next-q2_0" and s["pick"]["model"] is None and s["last"]["model"] == model,
       "apply of a model not downloaded yet: remembered, but Start keeps the last file")
 check(pk.picked() is None, "picked(): None while the picked file is not here")
+check("you picked" in pk.pick_missing() and "--use chat --apply" in pk.pick_missing(), f"pick_missing: names the pick and the next step ({pk.pick_missing()[:80]})")
+try:
+    mc.server(["--dry-run"]); _m = ""
+except SystemExit as e:
+    _m = str(e)
+check("you picked" in _m, f"server without a model, pick not downloaded: says so, not 'none picked' ({_m[:100]})")
+check("-ggml0.26-" in mc.api_advice("3") and "-ggml0.26-" not in mc.api_advice("2") or os.name == "nt", f"api_advice: the right tarball per API ({mc.api_advice('3')[:70]})")
 pk.apply(r)
 # audit 2026-10-29 R4-2: ui.json private, written atomically under a lock; the page's save keeps what `pick --apply` wrote meanwhile
 if os.name != "nt":

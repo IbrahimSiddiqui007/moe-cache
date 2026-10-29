@@ -417,6 +417,16 @@ def picked():
     return path, int(p.get("ctx") or 65536), p.get("use") == "agents"
 
 
+def pick_missing():
+    """A line for `server` / `on-demand` without a model when a model was picked but its file is not here (not downloaded yet, or moved),
+    else "" (audit 2026-10-29 P1: they said "none picked" right after a pick)."""
+    p = load_settings().get("pick") or {}
+    if not p.get("id") or picked():
+        return ""
+    return (f"you picked {p.get('name') or p['id']} ({p.get('use')}), but its file is not here yet: `moe_cache.py pick --use {p.get('use')}` "
+            "offers the download (or put the .gguf in a model folder), then `moe_cache.py pick --use " + str(p.get("use")) + " --apply` again")
+
+
 # ---- output ----
 
 def gb(b):

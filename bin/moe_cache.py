@@ -31,6 +31,16 @@ def which(prog):
     return shutil.which(prog) or prog
 
 
+def api_advice(want):
+    """What a user does when the plugin build is for the other ggml backend API than llama-server (want = llama-server's API)."""
+    want = int(want)
+    if WINDOWS:
+        return (f"use ggml-moe-cache-api{want}.dll from the kit: set MOE_CACHE_LIB to its full path (setx MOE_CACHE_LIB \"...\\ggml-moe-cache-api{want}.dll\" "
+                "for good)")
+    return (f"download moe-cache-vX.Y.Z{'-ggml0.26' if want == 3 else ''}-linux-x86_64.tar.gz (API {want}) from the Releases page, or build from source: "
+            f"{'GGML_API=3 ' if want == 3 else ''}./build.sh")
+
+
 def default_llama_server():
     """llama-server when --llama-server is not given: LLAMA_SERVER, else the one on the PATH, else where the docs put it (Windows: the official
     release unpacked to C:\\llama; Linux: install.sh's default prefix), else plain "llama-server" (check then says it is missing)."""
@@ -1076,7 +1086,9 @@ def server(argv):
         from moe_cache_pick import picked       # bin/moe_cache_pick.py
         p = picked()
         if not p:
-            raise SystemExit("usage: moe-cache-server MODEL.gguf [options]  (no model given and none picked: `moe_cache.py pick` recommends one for this machine)")
+            from moe_cache_pick import pick_missing
+            raise SystemExit("usage: moe-cache-server MODEL.gguf [options]  (no model given: " +
+                             (pick_missing() or "none picked: `moe_cache.py pick` recommends one for this machine") + ")")
         a.model = p[0]
         a.ctx = a.ctx or p[1]
         a.agent = a.agent or p[2]
@@ -1100,11 +1112,17 @@ def server(argv):
         raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock)
     lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(ls)
+    if not a.dry_run and not (os.path.isfile(ls) or shutil.which(ls)):
+        # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
+        # tarball users the wrong way (audit 2026-10-29 K2)
+        raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama)' if WINDOWS else "")
+                         + " (moe_cache.py check tells what is missing)")
     if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
         want, have = ls_api(ls), lib_api(lib)
         if want and have and want != have:
-            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load "
-                "(build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)", err=True)
+            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load; "
+                + api_advice(want), err=True)
         if not os.path.isfile(lib):
             if os.environ.get("MOE_CACHE_LIB"):
                 raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
@@ -1397,15 +1415,11 @@ def server(argv):
         else:
             say(("env " + " ".join(f"{k}={v}" for k, v in shown) + " " if shown else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
         return 0
-    # audit 2026-10-29 L2/L3: checked before any helper thread starts, as learn and check do: with another server on the port the restore thread
-    # sent it our project state (with the stored key) and the plugin check called it ours; a missing llama-server was a Python traceback
+    # audit 2026-10-29 L2: checked before any helper thread starts, as learn and check do: with another server on the port the restore thread
+    # sent it our project state (with the stored key) and the plugin check called it ours (a missing llama-server is refused further up)
     if port_busy(port):
         raise SystemExit(f"moe-cache: port {port} is already in use (another llama-server, or on-demand: moe_cache.py on-demand --status); "
                          f"stop it or pick another with --port")
-    if not (os.path.isfile(cmd[0]) or shutil.which(cmd[0])):
-        raise SystemExit(f"moe-cache: llama-server not found: {cmd[0]}. Pass --llama-server PATH or set LLAMA_SERVER"
-                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama)' if WINDOWS else "")
-                         + " (moe_cache.py check tells what is missing)")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
@@ -1899,6 +1913,11 @@ def check(argv):
             fail("plugin", "not built and no g++ found; use the prebuilt release or install g++")
     else:
         ok("plugin", lib)
+        want, have = (ls_api(lsp), lib_api(lib)) if lsp else (None, None)
+        if want and have and want != have:      # the docs send tarball / kit users here to learn which build fits (audit 2026-10-29 V1)
+            fail("plugin build", f"made for ggml backend API {have}, this llama-server uses API {want}: {api_advice(want)}")
+        elif want and have:
+            ok("plugin build", f"ggml backend API {have}, the same as this llama-server")
         if lsp:
             load, method = load_env(lsp, lib)
             probe = ""
