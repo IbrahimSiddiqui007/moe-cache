@@ -2326,7 +2326,8 @@ def diffusion_plan(a, extra, cli, lib, stock, size, avail):
     if a.prompt is not None:
         cmd += ["-p", a.prompt]
     cmd += extra
-    notes.insert(0, f"moe-cache: diffusion: canvas {a.canvas} tokens (-ub; prompt + answer must fit), {a.steps} steps, {"timestep schedule eps " + str(a.eps) if a.eps else "blocks of " + str(a.block)}; each step is a prefill of the "
+    sched = ("timestep schedule eps " + str(a.eps)) if a.eps else ("blocks of " + str(a.block))
+    notes.insert(0, f"moe-cache: diffusion: canvas {a.canvas} tokens (-ub; prompt + answer must fit), {a.steps} steps, {sched}; each step is a prefill of the "
                     f"whole canvas, so every expert of every layer is read each step (the model is {size / 1e9:.1f} GB, memory it may use {avail / 1e9:.1f} GB)"
                     if size and avail else f"moe-cache: diffusion: canvas {a.canvas} tokens, {a.steps} steps")
     notes.append("moe-cache: " + ("running stock llama-diffusion-cli (the model fits in the memory it may use; --always-plugin to use the plugin anyway)" if stock and not a.stock
