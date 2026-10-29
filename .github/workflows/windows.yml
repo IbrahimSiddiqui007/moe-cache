@@ -215,6 +215,8 @@ jobs:
           python tests/desk_margin_test.py
           python tests/oom_retry_test.py
           if ($LASTEXITCODE -ne 0) { throw "doctor test failed" }
+          python tests/diffusion_test.py
+          if ($LASTEXITCODE -ne 0) { throw "diffusion test failed" }
 
       - name: On-demand endpoint (fake server, then Granite; then autostart in the Startup folder, installed and removed)
         run: |

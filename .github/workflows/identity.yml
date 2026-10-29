@@ -76,6 +76,7 @@ jobs:
           if grep -q "moe-cache-mib" launcher_gcache_path.txt; then echo "FAIL: --moe-cache-mib passed on path loading (T7)"; exit 1; fi    # "! grep" alone never fails under bash -e
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
           python3 tests/picker_test.py       # model picker (spec -> model table on fake machines, settings it writes); no model, no download
+          python3 tools/check_model_links.py   # every model the picker can recommend still exists on Hugging Face (metadata only; an HF outage only warns)
           python3 tests/gguf_hostile_test.py   # hostile GGUF headers are refused, not allocated (security fix S1)
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
           python3 tests/on_demand_test.py    # on-demand endpoint: key, CORS, start on first request, SSE pass-through, idle stop, restart; fake server
@@ -83,6 +84,7 @@ jobs:
           python3 tests/doctor_test.py       # doctor/check overview (N34)
           python3 tests/desk_margin_test.py   # GPU margin scales with what the desktop holds
           python3 tests/oom_retry_test.py   # GPU out of memory at load: one retry with a new plan
+          python3 tests/diffusion_test.py    # moe_cache.py diffusion: command, environment, asserts (S3)
           python3 tests/warm_test.py         # warm-session saver (N27): waits by file size and change, restore, no save while busy; fake server
 
       - name: Control page with the model (GUI1; start, one request, live hit rate, stop through the page)

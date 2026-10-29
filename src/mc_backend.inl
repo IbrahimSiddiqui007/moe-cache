@@ -104,6 +104,8 @@ struct moe_cache_backend_ctx {
     ggml_backend_buffer_t hb_buf = nullptr;
     bool               hb_dropped = false;   // the bank was freed so a long prompt's GPU block fits; it is loaded again at the next decode step
     bool               seg_nomem = false;    // the last gpu_segment() call failed for lack of free GPU memory
+    ggml_backend_buffer_t rb_buf = nullptr;  // N22: the long-prompt block's result is read back into this pinned host buffer (the GPU device's own type)
+    bool               rb_failed = false;    // no pinned host buffer type, or it could not be allocated: plain blocking read-back
     // MOE_CACHE_HYBRID_ADAPT=N,K (default 8,16; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert of their layer's bank
     struct hb_layer_t {
         std::vector<int>   tidx;       // weight tensors of this layer that have a bank (gate, up, down)
@@ -147,6 +149,9 @@ void be_free(ggml_backend_t backend) {
     }
     if (c->hb_ctx) {
         ggml_free(c->hb_ctx);
+    }
+    if (c->rb_buf) {                  // pinned read-back buffer: freed before its backend
+        ggml_backend_buffer_free(c->rb_buf);
     }
     if (c->gpu) {
         ggml_backend_free(c->gpu);
@@ -463,6 +468,31 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     }
     // idea I2 kill check (MOE_CACHE_SEG_TIMES=1): upload vs compute time per block; overlap can only pay if compute is a real share of the block
     static const bool seg_times = getenv("MOE_CACHE_SEG_TIMES") != nullptr;
+    // N22 (on by default; MOE_CACHE_GPU_READBACK=0 = old path): the result goes into a pinned host buffer of the GPU device, queued right after
+    // the compute with one synchronize for both, then one memcpy into the CPU tensor. A blocking read into ordinary memory goes through the
+    // backend's staging copy (~1.6 GB/s on the 9070 XT, 18 % of a block). Same bytes either way.
+    static const bool rb_env = !getenv("MOE_CACHE_GPU_READBACK") || atoi(getenv("MOE_CACHE_GPU_READBACK")) > 0;
+    const size_t out_bytes = ggml_nbytes(out);
+    void * rb = nullptr;
+    if (rb_env && !c->rb_failed) {
+        if (!c->rb_buf || ggml_backend_buffer_get_size(c->rb_buf) < out_bytes) {
+            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(s.gpu_dev);
+            if (c->rb_buf) {
+                ggml_backend_buffer_free(c->rb_buf);
+                c->rb_buf = nullptr;
+            }
+            const size_t want = (out_bytes + ((size_t) 16 << 20) - 1) & ~(((size_t) 16 << 20) - 1);     // 16 MiB steps: few re-allocations
+            c->rb_buf = hbt ? ggml_backend_buft_alloc_buffer(hbt, want) : nullptr;
+            if (!c->rb_buf) {
+                c->rb_failed = true;
+                fprintf(stderr, "moe-cache: no pinned host buffer for the long-prompt block's result (%s): it is read back the plain way\n",
+                        hbt ? "allocation failed" : "the GPU device has none");
+            }
+        }
+        if (c->rb_buf) {
+            rb = ggml_backend_buffer_get_base(c->rb_buf);
+        }
+    }
     double up_ns = 0, comp_ns = 0, get_ns = 0;
     std::vector<uint8_t> pack, part;
     for (size_t ch = 0; ch < n_chunk; ch++) {
@@ -526,25 +556,40 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         const auto t_c0 = std::chrono::steady_clock::now();
         const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
-        ggml_backend_synchronize(c->gpu);
+        if (!rb || seg_times) {
+            ggml_backend_synchronize(c->gpu);     // seg_times: the compute is timed on its own
+        }
         if (st != GGML_STATUS_SUCCESS) {
+            ggml_backend_synchronize(c->gpu);
             ggml_free(ctx);
             return false;
         }
         const auto t_g0 = std::chrono::steady_clock::now();
+        const char * res = nullptr;           // the block's result on the host (all parts: the part's result)
+        if (rb) {
+            ggml_backend_tensor_get_async(c->gpu, gout, rb, 0, out_bytes);
+            ggml_backend_synchronize(c->gpu);
+            res = (const char *) rb;
+        } else if (n_chunk > 1) {
+            part.resize(out_bytes);
+            ggml_backend_tensor_get(gout, part.data(), 0, part.size());
+            res = (const char *) part.data();
+        }
         if (n_chunk == 1) {
-            ggml_backend_tensor_get(gout, out->data, 0, ggml_nbytes(out));
+            if (res) {
+                memcpy(out->data, res, out_bytes);
+            } else {
+                ggml_backend_tensor_get(gout, out->data, 0, out_bytes);
+            }
         } else {
             // keep the rows (one per token and expert slot) whose expert is in this part
-            part.resize(ggml_nbytes(out));
-            ggml_backend_tensor_get(gout, part.data(), 0, part.size());
             const size_t row = ggml_row_size(out->type, out->ne[0]);
             for (int64_t i1 = 0; i1 < pack_ids->ne[1]; i1++) {
                 for (int64_t i0 = 0; i0 < pack_ids->ne[0]; i0++) {
                     const size_t v = (size_t) pack_map[(size_t) *(const int32_t *) ((const char *) pack_ids->data + i0 * pack_ids->nb[0] + i1 * pack_ids->nb[1])];
                     if (v >= lo && v < hi) {
                         const size_t off = (size_t) i0 * out->nb[1] + (size_t) i1 * out->nb[2];
-                        memcpy((char *) out->data + off, part.data() + off, row);
+                        memcpy((char *) out->data + off, res + off, row);
                     }
                 }
             }

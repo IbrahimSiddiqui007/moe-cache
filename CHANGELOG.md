@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **`moe_cache.py diffusion` / `moe-cache-diffusion`** (diffusion plan S3): runs `llama-diffusion-cli` (LLaDA-MoE, RND1; `llama-server` has no diffusion path) with the
+  plugin, the cache size (`--ram`), the memory cap (`--max-ram`) and the same stock-when-it-fits rule as the server. A diffusion step is a prefill of the whole
+  canvas (`--canvas`, default 256 tokens), so every expert is read each step; LLaDA-MoE-7B-A1B at a 3 GB limit: 14-16 % faster per step than stock, text
+  identical (RESULTS 70). It keeps the experts on the CPU side with `-ngl 0` because `llama-diffusion-cli` ignores `--n-cpu-moe`; `--steps`, `--block` (LLaDA) or
+  `--eps` (RND1), `--algorithm`, `--temp`, `--seed`. Prints canvas and steps. Official Windows llama.cpp zips do not contain `llama-diffusion-cli`: `--cli PATH`.
 - **The machine stays awake while the server runs** (idea I47; a PC that slept 7 minutes in the middle of a benchmark stalled it): Windows sets a
   power request on the launcher (`SetThreadExecutionState`, the display may still turn off), Linux holds a `systemd-inhibit --what=sleep:idle`
   lock in a small helper that ends with the launcher however it ends (kill -9 included); llama-server itself is not wrapped. No power setting is
