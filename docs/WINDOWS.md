@@ -37,6 +37,8 @@ python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llam
 `check --run` starts llama-server with the plugin and a small cache for one short request and reports "cache runs: yes". Two warnings are normal today:
 "Windows experimental" and, on a llama.cpp other than b11669, "ggml version". `server` prints the command (add `--dry-run` to only print it); `--open`
 opens llama-server's chat page. The model also works with any OpenAI-compatible client at `http://127.0.0.1:8080/v1`.
+`--llama-server` can be left out when llama.cpp is unpacked to `C:\llama` (or `LLAMA_SERVER` is set, or llama-server is on the PATH). Run `check` first: it looks at the GPU,
+RAM, the model's drive and llama-server, and says what to fix. If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2`.
 
 ## 3. The control page (GUI): one click
 
