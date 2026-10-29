@@ -342,7 +342,17 @@ struct state_t {
                 file_shard[nm] = (int) si;
             }
             gguf_free(g);
-            const plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
+            plat::file_t f = plat::file_open(shards[si].c_str(), !win_buffered, win_random);
+#ifndef _WIN32
+            if (!f.ok() && !win_buffered && errno == EINVAL) {
+                // a file system without O_DIRECT (ntfs-3g and other FUSE mounts, e.g. a dual-boot model folder): the same aligned reads work
+                // through the page cache; before, the whole plugin was turned off (audit 2026-10-29 N8)
+                f = plat::file_open(shards[si].c_str(), false, win_random);
+                if (f.ok()) {
+                    fprintf(stderr, "moe-cache: %s: this file system refuses O_DIRECT; reading through the page cache instead\n", shards[si].c_str());
+                }
+            }
+#endif
             if (!f.ok()) {
                 fail("cannot open " + shards[si] + (win_buffered ? std::string() : std::string(" with O_DIRECT")));
                 return;
