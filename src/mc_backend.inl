@@ -172,6 +172,21 @@ bool gpu_graph_supported(moe_cache_backend_ctx * c, ggml_cgraph * g) {
     return true;
 }
 
+// N23-F3: experts e0..e0+n of weight t may still be filled by the reader threads (cache fill queued, not waited for): wait for their flags
+static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t n) {
+    const auto it = s.by_tensor.find(t);
+    if (it == s.by_tensor.end()) {
+        return;
+    }
+    const tinfo_t & ti = *s.tensors[it->second];
+    for (int64_t e = e0; e < e0 + n && e < ti.n_expert; e++) {
+        const bool * f = &s.nodes[(size_t) (ti.node0 + e)].loading;
+        while (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
+            std::this_thread::yield();
+        }
+    }
+}
+
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
 // to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
 bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
@@ -425,6 +440,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             continue;
         }
         const tinfo_t & ti = *s.tensors[it->second];
+        wait_experts(s, u.first, 0, ti.n_expert);      // N23-F3: not under the lock (the readers take it to clear the flags)
         std::lock_guard<std::mutex> lk(s.mu);
         for (int64_t e = 0; e < ti.n_expert; e++) {
             const auto & nd = s.nodes[(size_t) ti.node0 + (size_t) e];
@@ -466,6 +482,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     while (k + r < hi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
                         r++;
                     }
+                    wait_experts(s, t, pack_used[k], (int64_t) r);
                     ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, (k - lo) * nb2, r * nb2);
                     k += r;
                 }
@@ -484,6 +501,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 continue;
             }
             if (ggml_is_contiguous(t)) {
+                wait_experts(s, t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
                 ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
                 s.gpu_up_bytes += ggml_nbytes(d);
             } else {
