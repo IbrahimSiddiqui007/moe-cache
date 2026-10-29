@@ -82,6 +82,8 @@ listener that loads the model on the first request and unloads it when idle (`--
 python3 bin/moe_cache.py on-demand /path/to/model.gguf --llama-server /path/to/llama-server --install-autostart
 python3 bin/moe_cache.py connect hermes --write      # and/or: connect opencode --write (writes URL, model, 65k context, API key); connect claude prints the lines for Claude Code
 ```
+**Agent context limit.** `connect --write` gives the agent the server's whole window (65536 unless you start the server with `--ctx`): OpenCode `limit.context`, Hermes `model.context_length`. An agent that fills that window gets a "context too large" error from llama-server instead of a smooth summary, because the answer needs room inside it too. Keep the agent's limit below the server's: for OpenCode lower `limit.context` (for example 56000 at 65536); Hermes needs at least 64,000, so keep its 65536 and start the server with a bigger window (`--ctx 81920`). This follows from how the limits work and from Strata's agent chat (its authors report the peak prompt in a 64K-window test falling from 83 % to 61 %, their number); we have not measured it ourselves. Details: [docs/AGENTS.md](docs/AGENTS.md).
+
 Several models: `on-demand /path/to/model2.gguf --add` adds one; the request's `"model"` picks it, one is loaded at a time (`connect opencode` lists them all).
 Or start a server yourself with `bin/moe-cache-server /path/to/model.gguf --agent` and run the same `connect` line. Measured on a Windows desktop
 (RESULTS 60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
