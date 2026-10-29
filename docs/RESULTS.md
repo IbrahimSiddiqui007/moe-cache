@@ -2572,7 +2572,8 @@ recurrent state 450; compute 1403 (`-ub 512`), 2983 (1024), 3979 (2048); 128k `-
 | Flash-Next Q2_0, moe-cache, 128k (46 CPU layers, `-ub 2048`) | 16.2 s | 197 / 221 / 197 / 191 / 179 / 170, 172, 170, 161 up to 130.6k | 18.97 (96.6 %) | - | **15.27 at 130.6k** (93.9 %) |
 | Qwen3.5-122B, moe-cache, 128k (47 CPU layers, `-ub 2048`) | 15.2 s | 190 / 215 / 209 / 198 / 193 / 180, 187, 180, 176 up to 130.6k | 15.54 (95.9 %) | - | **11.27 at 130.6k** (89.3 %) |
 | Qwen3.6-35B (stock, fits), 128k | 14.1 s | 474 / 936 / 1014 / 955 / 895 / 798, 812, 704, 697 up to 130.5k | 55.08 | - | **45.76 at 130.5k** |
-| Qwen3.5-122B, moe-cache, 256k setting | 15.1 s | 113 / 115 / 104 / 103 / 103 / 97, 99, 96, 97 up to 138k | 13.92 (93.3 %) | - | 12.65 at 138k (93.6 %); **timed out at 35 min** after the 138k save (most likely the whole prompt processed again, finding 5) |
+| Qwen3.5-122B, moe-cache, 256k setting (overnight build: launcher 28b022b, DLL f478564) | 15.1 s | 113 / 115 / 104 / 103 / 103 / 97, 99, 96, 97 up to 138k | 13.92 (93.3 %) | - | 12.65 at 138k (93.6 %); **timed out at 35 min** after the 138k save (most likely the whole prompt processed again, finding 5) |
+| Qwen3.5-122B, moe-cache, 256k setting, **rerun on experimental f310c28** (46 CPU layers, `-ub 512`; hold 1 of a split run, T4) | 17.8 s | 96 / 100 / 88.5 / 89 / 90, 87, 82, 84, 85 up to 135k | 13.50 (90.2 %) | **12.85 at 62.7k** (88.2 %) | 12.01 at 130.5k (85.4 %); hold 1 stopped at 135k by its 29-min budget; **holds 2-3 (to ~250k) queued** (C:\dl\afternoon item 70) |
 | Qwen3.6-35B (stock, fits), 256k setting (`-ub 512`) | 13.1 s | 182 / 263 / 260 / 266 / 255 / 259, 249, 234, 235 up to 138k, 217-225 up to 227.8k | 49.03 | - | 35.75 at 138k, **41.74 at 227.8k** |
 | GLM-5.3-Flash IQ2_XXS, moe-cache, 64k | 26.1 s | 35.4 / 35.2 (to 20.3k), then **timed out at 35 min** (15 min of it waiting for a cool-down break) | 2.08 (32.7 %) | - | - |
 Whole 63.5k prompt: Flash-Next moe-cache ~289 s vs stock ~525 s (**1.8x**); decode at 63.5k **+23 %** (20.65 vs 16.83). Free RAM during the runs:
@@ -2606,7 +2607,11 @@ too late). Coder IQ1_M and GLM: removed from the PC by the owner. Queued for the
 **Update 2026-10-29 (overnight chain, RESULTS 67):** Flash-Next Q2_0, the 122B and Qwen3.6 at 128k and Qwen3.6 at 256k are in the tables above.
 Finding 5 reproduced on Qwen3.6 at 256k: after the 138k save and the slot-1 request, the next chunk processed all 157,806 tokens again (625 s);
 the 122B at 256k reached 138k in ~23 min and then timed out at the chain's 35-min limit, most likely in the same re-processing. GLM at 64k timed
-out too (35 tok/s prompts; 15 of its 35 min went to a cool-down break). Still open: GLM 64k and the 122B at 256k with a longer limit.
+out too (35 tok/s prompts; 15 of its 35 min went to a cool-down break). **T4 (2026-10-29, f310c28, split into holds of 29 min or less, slot 0 saved and restored between holds, no slot-1 request):** why 35 min was
+too little: the 122B at 256k fills ~254k tokens at 82-100 tok/s = ~50 min of prefill alone, and GLM's 63.5k prompt at 35 tok/s = ~30 min plus a
+2 tok/s decode; neither was a stall (the 122B's last stretch is the known re-processing, finding 5). Hold 1 of the 122B (cap 21 GiB because the owner's
+own work used 6.9 GiB of RAM: not clean) reached 135k in 27.1 min, slot save 4.4 s / 4.73 GB. Still open, queued on the PC for the afternoon runner
+(items 70-72, results in C:\dl\afternoon\ and C:\dl\t4\t4.log; method and commands: handover/parts/longctx_20261029.md): 122B 256k holds 2-3, GLM 64k, Flash-Next Q2_0 256k on the current build.
 
 **Addendum: N25 executor chunk size** (MOE_CACHE_EXEC_CHUNK, DLL 31ac159, Flash-Next Q2_0 on D:, launcher defaults, cold, ABBA 32 / 128 / 512 / 512 / 128 / 32,
 256-token water and code decodes, a 3.5k-token prompt; C:\dl\pcb_chunk.ps1)
