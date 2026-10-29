@@ -179,8 +179,11 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
     return st;
 }
 
+void be_sync(ggml_backend_t backend);
+
 enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     auto * c = (moe_cache_backend_ctx *) backend->context;
+    be_sync(backend);   // N15: inputs read asynchronously from the GPU (be_cpy_tensor_async) must have arrived
     state_t & s = S();
     const auto t_in = std::chrono::steady_clock::now();
     struct total_t { state_t & s; std::chrono::steady_clock::time_point t; ~total_t() { s.ns_total += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count(); } } total_guard{ s, t_in };
@@ -503,6 +506,54 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     return st;
 }
 
+// N15: without cpy_tensor_async the scheduler copies each input of our split from the GPU with its own blocking read (one GPU round trip per tensor,
+// ~3 per expert layer). Here the reads are queued on the GPU backend and waited for once, at the start of our compute (or in be_sync).
+// MOE_CACHE_ASYNC_IN=1 on, 0 off, unset: on for AMD GPUs on Vulkan only (PC microbench: 210 -> 137 us per layer; no gain on NVIDIA / Intel).
+bool async_in_on(ggml_backend_t src) {
+    static const int mode = [] {
+        const char * e = getenv("MOE_CACHE_ASYNC_IN");
+        return e ? (atoi(e) != 0 ? 1 : 0) : -1;
+    }();
+    if (mode >= 0) {
+        return mode == 1;
+    }
+    ggml_backend_dev_t dev = ggml_backend_get_device(src);
+    const char * desc = dev ? ggml_backend_dev_description(dev) : nullptr;
+    return strncmp(ggml_backend_name(src), "Vulkan", 6) == 0 && desc && (strstr(desc, "AMD") || strstr(desc, "Radeon"));
+}
+
+void be_sync(ggml_backend_t backend) {
+    auto * c = (moe_cache_backend_ctx *) backend->context;
+    for (ggml_backend_t b : c->async_src) {
+        ggml_backend_synchronize(b);
+    }
+    c->async_src.clear();
+}
+
+bool be_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
+    auto * c = (moe_cache_backend_ctx *) backend_dst->context;
+    if (!src->buffer || !dst->buffer || ggml_backend_buffer_is_host(src->buffer) || dst->buffer->buft->iface.get_name != buft_name ||
+        src->buffer->buft != ggml_backend_get_default_buffer_type(backend_src) || !async_in_on(backend_src)) {
+        return false;
+    }
+    const size_t n = ggml_nbytes(src);
+    if (n != ggml_nbytes(dst) || !ggml_is_contiguous(src) || !ggml_is_contiguous(dst) || (dst->ne[2] > 1 && strncmp(dst->name, "blk.", 4) == 0)) {
+        return false;   // expert weights go through buf_set (cache registration)
+    }
+    if (n == 0) {
+        return true;
+    }
+    if (!plat::mem_commit(dst->data, n)) {   // same as buf_set: the compute buffer is reserved address space on Windows in cache mode
+        commit_fatal(dst->name, n);
+    }
+    ggml_backend_tensor_get_async(backend_src, src, dst->data, 0, n);
+    S().async_in++;
+    if (std::find(c->async_src.begin(), c->async_src.end(), backend_src) == c->async_src.end()) {
+        c->async_src.push_back(backend_src);
+    }
+    return true;
+}
+
 const ggml_backend_i g_backend_i = {
     /* .get_name           = */ be_name,
     /* .free               = */ be_free,
@@ -510,8 +561,8 @@ const ggml_backend_i g_backend_i = {
     /* .get_tensor_async   = */ nullptr,
     /* .set_tensor_2d_async= */ nullptr,
     /* .get_tensor_2d_async= */ nullptr,
-    /* .cpy_tensor_async   = */ nullptr,
-    /* .synchronize        = */ nullptr,
+    /* .cpy_tensor_async   = */ be_cpy_tensor_async,
+    /* .synchronize        = */ be_sync,
     /* .graph_plan_create  = */ nullptr,
     /* .graph_plan_free    = */ nullptr,
     /* .graph_plan_update  = */ nullptr,
