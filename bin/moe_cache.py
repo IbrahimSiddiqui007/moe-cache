@@ -1012,6 +1012,7 @@ MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this py
 
 
 STOCK_HEADROOM = 1.5e9     # stock when model + this fits in the memory the server may use
+STOCK_OFFLOAD_MIN_BATCH = 512     # stock runs with CPU expert layers: batches below this stay on the CPU (llama.cpp: 32; T5, RESULTS 68)
 
 
 def decide(model, ram_gb=None, plugin_wanted=False, stock_wanted=False):
@@ -1332,6 +1333,10 @@ def server(argv):
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
         method = "none (stock)"
+        if ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):
+            # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
+            # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
+            env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
     if method == "none (stock)":
         pass

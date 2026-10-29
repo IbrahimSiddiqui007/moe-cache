@@ -75,6 +75,14 @@ for args, what in ((("--ram", "8"), "fits in RAM"), (("--ram", "8", "--stock"), 
     rc, out = dry_nolib(*args)
     check(rc == 0 and "does not exist" not in out and "running stock llama-server" in out and "GGML_BACKEND_PATH" not in out and "LD_PRELOAD" not in out,
           f"launcher, plugin missing, {what}: runs stock without asking for the plugin (rc {rc})")
+# stock with CPU expert layers: short batches stay on the CPU (GGML_OP_OFFLOAD_MIN_BATCH; T5); a user's own value wins; the plugin run never gets it
+rc, out = dry_nolib("--ram", "8", "--vram", "0.3")
+check(rc == 0 and (ncmoe(out) or 0) > 0 and "GGML_OP_OFFLOAD_MIN_BATCH=512" in out, f"launcher stock, {ncmoe(out)} CPU expert layers: GGML_OP_OFFLOAD_MIN_BATCH=512 set")
+os.environ["GGML_OP_OFFLOAD_MIN_BATCH"] = "77"
+rc, out = dry_nolib("--ram", "8", "--vram", "0.3")
+del os.environ["GGML_OP_OFFLOAD_MIN_BATCH"]
+check(rc == 0 and "GGML_OP_OFFLOAD_MIN_BATCH=512" not in out, "launcher stock: the user's GGML_OP_OFFLOAD_MIN_BATCH is kept")
+check("GGML_OP_OFFLOAD_MIN_BATCH" not in dry("--vram", "0.3"), "launcher plugin run: no GGML_OP_OFFLOAD_MIN_BATCH")
 rc, out = dry_nolib("--ram", "4", "--always-plugin")
 check(rc != 0 and "MOE_CACHE_LIB points to a file that does not exist" in out, "launcher, plugin missing, --always-plugin: stops with the missing-file message")
 
