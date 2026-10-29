@@ -364,6 +364,11 @@
                 uint64_t mj = 0;
                 const uint64_t f = process_faults(&mj);
                 j += ",\"faults\":" + std::to_string(f) + ",\"major_faults\":" + std::to_string(mj);
+                j += ",\"gap_faults\":" + std::to_string(gap_faults.load()) + ",\"in_faults\":" + std::to_string(in_faults.load()) + ",\"top_gaps\":[";
+                for (int k = 0; k < 4; k++) {
+                    j += std::string(k ? "," : "") + "[" + std::to_string(top_gap_ns[k].load()) + "," + std::to_string(top_gap_graph[k].load()) + "," + std::to_string(top_gap_faults[k].load()) + "]";
+                }
+                j += "]";
             }
             if (pool && pool->times) {      // MOE_CACHE_EXEC_TIMES
                 j += ",\"ex\":{\"runs\":" + std::to_string(pool->n_runs.load()) + ",\"run_ns\":" + std::to_string(ex_run_ns.load()) + ",\"quant_ns\":" + std::to_string(ex_quant_ns.load()) +
@@ -564,6 +569,11 @@
                 static const char * bn[4] = { "<0.2 ms", "<1 ms", "<5 ms", ">=5 ms" };
                 fprintf(stderr, "moe-cache: seg-times: between our graph splits %.2fs over %llu gaps; waiting for async GPU inputs %.2fs; long-prompt GPU blocks %.2fs\n",
                         ns_gap / 1e9, (unsigned long long) n_gap.load(), ns_sync / 1e9, ns_gpu_seg / 1e9);
+                int top = 0;
+                for (int k = 1; k < 4; k++) { if (top_gap_ns[k] > top_gap_ns[top]) top = k; }
+                fprintf(stderr, "moe-cache: seg-times: page faults of the process: %llu inside the gaps, %llu inside our backend; longest gap %.0f ms (graph %llu, %llu faults)\n",
+                        (unsigned long long) gap_faults.load(), (unsigned long long) in_faults.load(), top_gap_ns[top] / 1e6,
+                        (unsigned long long) top_gap_graph[top].load(), (unsigned long long) top_gap_faults[top].load());
                 for (int b = 0; b < 4; b++) {
                     fprintf(stderr, "moe-cache: seg-times: gaps %s: %llu, %.2fs\n", bn[b], (unsigned long long) gap_b_n[b].load(), gap_b_ns[b] / 1e9);
                 }

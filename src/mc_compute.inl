@@ -192,6 +192,12 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             const uint64_t d = t - last;
             const int b = d < 200000 ? 0 : d < 1000000 ? 1 : d < 5000000 ? 2 : 3;
             s.ns_gap += d; s.n_gap++; s.gap_b_ns[b] += d; s.gap_b_n[b]++;
+            const uint64_t f = state_t::process_faults(), df = f - s.last_exit_faults.load();
+            s.gap_faults += df;
+            s.entry_faults = f;
+            int lo = 0;
+            for (int k = 1; k < 4; k++) { if (s.top_gap_ns[k] < s.top_gap_ns[lo]) lo = k; }
+            if (d > s.top_gap_ns[lo]) { s.top_gap_ns[lo] = d; s.top_gap_graph[lo] = s.graphs.load(); s.top_gap_faults[lo] = df; }
         }
     }
     const uint64_t sy0 = seg_times ? now_ns() : 0;
@@ -202,7 +208,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     const auto t_in = std::chrono::steady_clock::now();
     struct total_t { state_t & s; std::chrono::steady_clock::time_point t; bool times;
                      ~total_t() { s.ns_total += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count();
-                                  if (times) s.last_exit_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); } } total_guard{ s, t_in, seg_times };
+                                  if (times) { s.last_exit_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); const uint64_t f = state_t::process_faults(); s.last_exit_faults = f; if (s.entry_faults) s.in_faults += f - s.entry_faults; } } } total_guard{ s, t_in, seg_times };
     if (!c->cpu) {
         c->cpu = ggml_backend_dev_init(CPU().dev, nullptr);
     }

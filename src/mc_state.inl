@@ -225,6 +225,7 @@ struct state_t {
     // time of the split before us), gpu_seg = long-prompt GPU blocks incl. uploads. gap buckets: < 0.2 ms, < 1 ms, < 5 ms, >= 5 ms.
     std::atomic<uint64_t> ns_gap{0}, ns_sync{0}, ns_gpu_seg{0}, n_gap{0}, last_exit_ns{0};
     std::atomic<uint64_t> gap_b_ns[4]{}, gap_b_n[4]{};
+    std::atomic<uint64_t> gap_faults{0}, in_faults{0}, last_exit_faults{0}, entry_faults{0}, top_gap_ns[4]{}, top_gap_graph[4]{}, top_gap_faults[4]{};   // faults of the process inside the gaps / inside our backend; the 4 longest gaps
     std::atomic<uint64_t> ex_quant_ns{0}, ex_build_ns{0}, ex_run_ns{0}, ex_part_ns[3]{}, ex_part_bytes[3]{}, ex_part_n[3]{};   // MOE_CACHE_EXEC_TIMES: executor phases; part 0 gate, 1 up, 2 down
 
     // io workers
