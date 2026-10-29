@@ -1842,7 +1842,8 @@ def check(argv):
             if g:
                 ok("gpu", f"{g[0]}: {g[1]}" + (f", {g[2]} MiB free" if g[2] else ""))
             else:
-                warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower)")
+                warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower). For a GPU: " +
+                     ("the llama.cpp release zip ...-bin-win-vulkan-x64.zip" if WINDOWS else "./install.sh --vulkan, or a llama.cpp built with -DGGML_VULKAN=ON / -DGGML_CUDA=ON"))
     memav = cg = None
     if WINDOWS:
         t, av = win_memory()
