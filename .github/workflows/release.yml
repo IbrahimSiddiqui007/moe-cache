@@ -121,6 +121,8 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false   # as in the build job: the write token must not sit in .git/config while the kit is built
 
       - name: mingw-w64 (UCRT when available, as windows.yml)
         run: |
@@ -139,6 +141,7 @@ jobs:
           python3 packaging/fill_manifests.py "dist/moe-cache-v$V-windows-x64.zip"   # scoop / winget manifests for the owner to submit (never submitted here)
 
       - name: Attest build provenance
+        if: github.ref_type == 'tag'   # as in the build job: a manual run on a branch must not get the same signature as a release
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: dist/moe-cache-v*-windows-x64.zip
