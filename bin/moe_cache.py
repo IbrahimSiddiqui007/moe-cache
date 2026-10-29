@@ -9,6 +9,7 @@
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode|claude [--url URL] [--write]        point Hermes Agent, OpenCode or Claude Code at a running server (start it with --agent)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
+  moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
   moe_cache.py --version                                                   print the moe-cache version
@@ -2284,6 +2285,99 @@ def run_check(lsp, model, load, port=8097):
                 p.kill()
 
 
+def default_diffusion_cli():
+    """llama-diffusion-cli when --cli is not given: LLAMA_DIFFUSION_CLI, else the one on the PATH, else next to llama-server."""
+    if os.environ.get("LLAMA_DIFFUSION_CLI"):
+        return os.environ["LLAMA_DIFFUSION_CLI"]
+    if shutil.which("llama-diffusion-cli"):
+        return "llama-diffusion-cli"
+    d = os.path.dirname(shutil.which(default_llama_server()) or "")
+    for n in ("llama-diffusion-cli", "llama-diffusion-cli.exe"):
+        if d and os.path.isfile(os.path.join(d, n)):
+            return os.path.join(d, n)
+    return "llama-diffusion-cli"
+
+
+def diffusion_plan(a, extra, cli, lib, stock, size, avail):
+    """Command, environment and notes for one llama-diffusion-cli run (no side effects, so tests can call it). A diffusion step is a prefill of
+    the whole canvas with no KV cache (every expert of a layer is used in every step: cache hit rate ~0 %, RESULTS 70); what the plugin still
+    gives is merged expert reads and the GPU block that computes a layer's experts after one upload. llama-diffusion-cli ignores --n-cpu-moe
+    (examples/diffusion/diffusion-cli.cpp fills only n_gpu_layers), so experts are kept on the CPU side with -ngl 0 (default; --ngl N changes it)."""
+    notes = []
+    if not a.eps:       # block schedule (LLaDA): llama.cpp asserts both
+        if a.canvas % a.block:
+            raise SystemExit(f"moe-cache: --canvas {a.canvas} must be a multiple of --block {a.block} (llama.cpp asserts it)")
+        if a.steps % (a.canvas // a.block):
+            raise SystemExit(f"moe-cache: --steps {a.steps} must be a multiple of the number of blocks ({a.canvas // a.block} = canvas / block; llama.cpp asserts it)")
+    if any(x in ("--n-cpu-moe", "-ncmoe", "--cpu-moe", "--override-tensor", "-ot") for x in extra):
+        notes.append("moe-cache: WARNING: llama-diffusion-cli ignores --n-cpu-moe / --override-tensor; use --ngl 0 (the default) to keep the experts on the CPU side")
+    env = []
+    method = "none (stock)"
+    if not stock:
+        load, method = load_env(cli, lib, a.load_method)
+        env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", a.model)]
+        if a.ram:
+            env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
+        if a.max_ram:
+            env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    cmd = [cli, "-m", a.model, "-ngl", str(a.ngl), "-ub", str(a.canvas), "-b", str(a.canvas), "-c", str(a.canvas), "-fa", "on", "-lm", "mmap",
+           "-s", str(a.seed), "--temp", str(a.temp), "--diffusion-steps", str(a.steps),
+           "--diffusion-algorithm", str(a.algorithm)] + (["--diffusion-eps", str(a.eps)] if a.eps else ["--diffusion-block-length", str(a.block)])
+    if a.prompt is not None:
+        cmd += ["-p", a.prompt]
+    cmd += extra
+    notes.insert(0, f"moe-cache: diffusion: canvas {a.canvas} tokens (-ub; prompt + answer must fit), {a.steps} steps, {"timestep schedule eps " + str(a.eps) if a.eps else "blocks of " + str(a.block)}; each step is a prefill of the "
+                    f"whole canvas, so every expert of every layer is read each step (the model is {size / 1e9:.1f} GB, memory it may use {avail / 1e9:.1f} GB)"
+                    if size and avail else f"moe-cache: diffusion: canvas {a.canvas} tokens, {a.steps} steps")
+    notes.append("moe-cache: " + ("running stock llama-diffusion-cli (the model fits in the memory it may use; --always-plugin to use the plugin anyway)" if stock and not a.stock
+                                  else "--stock: running without the plugin, as asked" if stock else f"plugin loaded by {method}"))
+    return cmd, env, notes, method
+
+
+def diffusion(argv):
+    ap = argparse.ArgumentParser(prog="moe_cache.py diffusion", description="run llama-diffusion-cli (diffusion language models: LLaDA-MoE, RND1) with the expert-cache plugin")
+    ap.add_argument("model"); ap.add_argument("-p", "--prompt"); ap.add_argument("--canvas", type=int, default=256, help="tokens per step (prompt + answer), default 256")
+    ap.add_argument("--steps", type=int, default=64); ap.add_argument("--block", type=int, default=32, help="block length of the LLaDA schedule (default 32)")
+    ap.add_argument("--eps", type=float, default=0.0, help="timestep schedule instead of blocks (RND1, Dream: 0.001)")
+    ap.add_argument("--algorithm", type=int, default=4, help="0 origin, 1 entropy (RND1), 2 margin, 3 random, 4 confidence (default)")
+    ap.add_argument("--temp", type=float, default=0.0); ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--ngl", type=int, default=0, help="GPU layers; default 0: experts stay on the CPU side (llama-diffusion-cli ignores --n-cpu-moe)")
+    ap.add_argument("--ram", type=gb_arg); ap.add_argument("--max-ram", type=lambda v: "0" if v.strip() in ("0", "0.0") else gb_arg(v))
+    ap.add_argument("--cli", default=default_diffusion_cli()); ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
+    ap.add_argument("--stock", action="store_true"); ap.add_argument("--always-plugin", action="store_true"); ap.add_argument("--dry-run", action="store_true")
+    extra = []
+    if "--" in argv:
+        i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
+    a = ap.parse_args(argv)
+    if not os.path.isfile(a.model):
+        raise SystemExit(f"usage: moe-cache-diffusion MODEL.gguf -p PROMPT [options]  (model file not found: '{a.model}')")
+    if a.stock and a.always_plugin:
+        raise SystemExit("--stock runs without the plugin: it cannot go with --always-plugin")
+    if a.canvas < 8 or a.block < 1 or a.steps < 1:
+        raise SystemExit("--canvas, --block and --steps must be positive (canvas at least 8)")
+    if a.max_ram:
+        os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram
+    stock, size, avail = decide(a.model, a.ram, plugin_wanted=a.always_plugin, stock_wanted=a.stock)
+    lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(a.cli)
+    if not a.dry_run and not (os.path.isfile(a.cli) or shutil.which(a.cli)):
+        raise SystemExit(f"moe-cache: llama-diffusion-cli not found: {a.cli}. Pass --cli PATH or set LLAMA_DIFFUSION_CLI "
+                         "(official llama.cpp Windows zips do not contain it: build the diffusion example, or use a Linux package that does)")
+    if not stock and not a.dry_run:
+        want, have = ls_api(a.cli), lib_api(lib)
+        if want and have and want != have:
+            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {a.cli} uses API {want}: the plugin will refuse to load; " + api_advice(want), err=True)
+        if not os.path.isfile(lib):
+            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    cmd, env, notes, method = diffusion_plan(a, extra, a.cli, lib, stock, size, avail)
+    for n in notes:
+        say(n)
+    if a.dry_run:
+        shown = " ".join(f'"{c}"' if " " in c else c for c in cmd)
+        say(("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + shown) if WINDOWS else (("env " + " ".join(f"{k}={v}" for k, v in env) + " ") if env else "") + shown)
+        return 0
+    return subprocess.call(cmd, env=dict(os.environ, **dict(env)))
+
+
 def key_cmd(argv):
     """moe_cache.py key: print the stable API key of agent / project servers (made on first use); the file is KEY_FILE."""
     ap = argparse.ArgumentParser(prog="moe_cache.py key", description="print the API key that agent mode and --project servers use")
@@ -2294,7 +2388,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
+    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0

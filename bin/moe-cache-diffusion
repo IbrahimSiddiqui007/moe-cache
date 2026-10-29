@@ -1,0 +1,3 @@
+#!/bin/sh
+# moe-cache-diffusion: llama-diffusion-cli (diffusion language models) with the plugin; the launcher is bin/moe_cache.py. Options: moe-cache-diffusion --help
+exec "${MOE_CACHE_PYTHON:-python3}" "$(dirname "$0")/moe_cache.py" diffusion "$@"
