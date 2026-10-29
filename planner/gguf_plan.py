@@ -273,6 +273,38 @@ def _kv_or_flat(path, ctx, kv_q8=False):
     return kv if kv is not None else ctx * 40e3 * (0.53 if kv_q8 else 1.0)
 
 
+def gpu_total_free_bytes():
+    """(total, free) bytes of the GPU the planner uses (NVIDIA first, else the AMD GPU with the most VRAM); None when there is none."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+        out = out.strip().splitlines()[0].split(",")
+        return float(out[0]) * 1048576, (float(out[0]) - float(out[1])) * 1048576
+    except Exception:
+        pass
+    best = None
+    for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
+        try:
+            if open(d + "/vendor").read().strip() != "0x1002":
+                continue
+            tot = int(open(d + "/mem_info_vram_total").read()); used = int(open(d + "/mem_info_vram_used").read())
+        except Exception:
+            continue
+        if tot >= 2**30 and (best is None or tot > best[0]):
+            best = (tot, tot - used)
+    return (float(best[0]), float(best[1])) if best else None
+
+
+def desk_reserve_gb(total, free, base=0.5):
+    """VRAM (GB) to keep free next to everything the tuner places, scaled with what other programs already hold (the desktop compositor, a browser).
+    Their use grows while the server runs (a browser tab, a video): the more the desktop already takes, the more room is left so the long-prompt GPU
+    block still finds its room (PC 2026-10-29: dwm 1.2 GB + browser 0.9 GB held 2.8 GB of 16; the block found 697 of 791 MiB and ran on the CPU,
+    73 instead of ~290 tok/s). Returns (reserve_gb, used_by_others_gb). A headless card (under ~0.5 GB used) keeps the default `base`; at most 2.5 GB."""
+    if not total or free is None:
+        return base, 0.0
+    used = max(0.0, (total - free) / 2**30)
+    return min(2.5, max(base, 0.25 + 0.5 * used)), used
+
+
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
     try:

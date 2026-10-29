@@ -290,16 +290,21 @@ def win_driver_version(name):
 
 
 def pick_gpu(listing):
-    """(device, name, free MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
+    g = pick_gpu_full(listing)
+    return g[:3] if g else None
+
+
+def pick_gpu_full(listing):
+    """(device, name, free MiB, total MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
     llama.cpp skips an integrated GPU when a discrete one exists, but --list-devices lists both (on a Ryzen 7000 desktop the built-in Radeon
     comes first and reports shared RAM as its memory). Windows: the adapter with the most dedicated VRAM in the registry wins; else the most free memory."""
     devs = re.findall(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+?) \((\d+) MiB, (\d+) MiB free\)", listing, re.M)
     if not devs:
         m = re.search(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+)$", listing, re.M)     # a device line without memory figures
-        return (m.group(1), m.group(2).strip(), 0) if m else None
+        return (m.group(1), m.group(2).strip(), 0, 0) if m else None
     ded = win_dedicated_vram()
     d = max(devs, key=lambda x: (ded.get(x[1].strip(), -1), int(x[3])))
-    return d[0], d[1].strip(), int(d[3])
+    return d[0], d[1].strip(), int(d[3]), int(d[2])
 
 
 def nvidia_reports():
@@ -1213,7 +1218,7 @@ def server(argv):
                 raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
             raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     listing = list_devices(ls) if WINDOWS else None
-    gpu = pick_gpu(listing) if WINDOWS else None
+    gpu = pick_gpu_full(listing) if WINDOWS else None
     if WINDOWS and not a.vram and not nvidia_reports():
         # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
         # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
@@ -1377,6 +1382,7 @@ def server(argv):
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
     tuned = None
+    desk_kw = None
     ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
     if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
         try:
@@ -1384,6 +1390,16 @@ def server(argv):
             from gguf_plan import tune
             free = float(a.vram) * 2**30 if a.vram else None          # GiB, the same unit as the planner's --vram-gib
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
+            if a.gpu_margin is None:
+                # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
+                from gguf_plan import desk_reserve_gb, gpu_total_free_bytes
+                tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
+                if tf:
+                    res, used = desk_reserve_gb(*tf)
+                    if res > 0.5:
+                        desk_kw = kw["reserve_gb"] = res
+                        say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
+                            f"(--gpu-margin GiB to change)")
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
@@ -1407,7 +1423,7 @@ def server(argv):
             try:
                 from gguf_plan import fast_kv_hint
                 h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else None, ub=int(ub) if (ub or "").isdigit() else None,
-                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}))
+                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
                 if h:
                     say("moe-cache: " + h)
             except Exception:
