@@ -353,7 +353,8 @@
     // Give the cache's RAM back to the system but keep the process, so the next request needs no restart (PC: +0.5 s instead of a 34 s start).
     // File-view experts (Windows) stay marked resident: the hard minimum is dropped and the working set emptied, so their pages move to the
     // standby list, still in RAM unless another program needs it (a page taken meanwhile is read from the file again: slower, never wrong).
-    // Private-memory experts (Linux, MOE_CACHE_WIN_VIEW=0) are evicted and read again when used. The next graph sets the minimum again.
+    // On Linux the view pages are unmapped from the process (MADV_COLD + DONTNEED), the same effect. Private-memory experts (MOE_CACHE_WIN_VIEW=0,
+    // or repacked experts next to the view) are evicted and read again when used. The next graph sets the minimum again.
     void idle_release() {
         std::lock_guard<std::mutex> lk(mu);
         const size_t before = resident_bytes;
@@ -362,6 +363,35 @@
             plat::ws_release();
             ws_min_cur = 0;
             freed = view_bytes;
+#ifndef _WIN32
+            // Linux has no working set to empty (ws_release is a no-op there): take the view pages out of this process instead, the same effect as
+            // on Windows. The experts stay marked resident; their pages stay in the page cache and are mapped again on use (audit 2026-10-29 N1:
+            // the Linux view default made idle release a no-op that still said "given back")
+            for (const auto & tp : tensors) {
+                const tinfo_t & ti = *tp;
+                if (ti.view && ti.n_expert > 0) {
+                    const uintptr_t a = ((uintptr_t) ti.data + PAGE - 1) / PAGE * PAGE;
+                    const uintptr_t b = ((uintptr_t) ti.data + (size_t) ti.n_expert * ti.nb2) / PAGE * PAGE;
+                    if (b > a) {
+                        plat::file_view_drop((void *) a, b - a);
+                    }
+                }
+            }
+#endif
+            // experts in private memory next to the view (repacked ones) are evicted as without the view, on both systems
+            for (const auto & tp : tensors) {
+                const tinfo_t & ti = *tp;
+                if (ti.view) {
+                    continue;
+                }
+                for (int64_t e = 0; e < ti.n_expert; e++) {
+                    const int v = ti.node0 + (int) e;
+                    if (nodes[v].resident && !in_use(nodes[v])) {
+                        freed += ti.nb2;
+                        evict(v);
+                    }
+                }
+            }
         } else {
             for (int v = lru; v >= 0;) {
                 const int prev = nodes[v].prev;

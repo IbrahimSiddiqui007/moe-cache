@@ -725,13 +725,21 @@ struct state_t {
 };
 
 // The state lives on the heap; a static guard ends it at exit. Normally (threads alive) it is deleted: threads joined, profile saved. When the
-// process is exiting on Windows, the other threads are already gone and the state is only asked to save and report (see exit_without_threads).
+// process is exiting on Windows, the other threads are already gone, or (both systems) exit came while a graph held the cache lock, the state is
+// only asked to report (see exit_without_threads).
 struct state_exit_t {
     state_t * s;
     ~state_exit_t() {
         if (plat::process_exiting()) {
             s->exit_without_threads();
+        } else if (!s->mu.try_lock()) {
+            // exit() called while a graph holds the cache lock (Linux: llama-server's second Ctrl+C calls exit(1) from its signal handler, in the
+            // middle of a prompt). Joining the readers would wait for ever (they need the lock) and the save would lock it again: leave the state
+            // as the Windows exit does; the system takes the memory back (audit 2026-10-29 N2)
+            fprintf(stderr, "moe-cache: exit during a computation: threads left to the system, usage profile not saved this time\n");
+            s->exit_without_threads();
         } else {
+            s->mu.unlock();
             delete s;
         }
     }
