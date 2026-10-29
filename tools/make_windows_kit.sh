@@ -28,11 +28,17 @@ for d in "$K"/ggml-moe-cache-api*.dll "$K/moe-cache.exe"; do
   if echo "$i" | grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32"; then echo "FAIL: $d imports a non-system DLL"; exit 1; fi
 done
 mkdir -p "$K/bin" "$K/tools" "$K/docs"
-cp "$X"/bin/moe_cache.py "$X"/bin/moe_cache_ui.py "$X"/bin/moe_cache_on_demand.py "$X"/bin/moe-cache-ui.bat "$K/bin/"
+cp "$X"/bin/*.py "$X"/bin/moe-cache-ui.bat "$K/bin/"     # every launcher module (v0.3.0 left out moe_cache_pick.py: the control page did not start)
 cp -r "$X/planner" "$X/ui" "$X/profiles" "$K/"
 cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$K/tools/"
-cp "$X"/docs/WINDOWS.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$K/docs/"
+cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$K/docs/"   # WINDOWS.md links WINDOWS_TEST.md
 cp "$X/LICENSE" "$X/CHANGELOG.md" "$K/"
+# every module of the kit's bin\ imports from there alone (nothing from the repository): catches a launcher file left out of the copy above
+( cd "$K/bin" && XDG_CACHE_HOME="$X/xdg" python3 -I -c "import sys; sys.path.insert(0, '.'); import moe_cache, moe_cache_ui, moe_cache_on_demand, moe_cache_pick" ) \
+  || { echo "FAIL: a launcher module does not import from the kit's bin\\ (a file missing from the copy?)"; exit 1; }
+for m in "$K"/bin/*.py; do grep -oE "^\s*(import|from) moe_cache[a-z_]*" "$m"; done | awk '{print $NF}' | sort -u | while read -r mod; do
+  [ -f "$K/bin/$mod.py" ] || { echo "FAIL: $mod.py is imported but not in the kit"; exit 1; }
+done
 sed "s/@VERSION@/$V/g; s/@COMMIT@/$(git rev-parse --short HEAD)/g" "$X/tools/README_WINDOWS.txt" | sed 's/$/\r/' > "$K/README_WINDOWS.txt"
 printf '@echo off\r\nrem moe-cache control page: double-click. "moe-cache.bat --shortcut" adds it to the Start menu.\r\ncall "%%~dp0bin\\moe-cache-ui.bat" %%*\r\n' > "$K/moe-cache.bat"
 find "$K" -name __pycache__ -prune -exec rm -rf {} +
