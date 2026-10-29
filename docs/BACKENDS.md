@@ -8,7 +8,7 @@ moe-cache talks to llama.cpp only through ggml's generic backend interface, so i
 | CUDA (NVIDIA) | **tested** (RTX 4060 Laptop, CUDA 13) | plugin, executor, llama.cpp GPU expert cache, identity |
 | Vulkan on an Intel iGPU | **tested** earlier (llama.cpp 7fe450e19, loadable backends) | plugin and identity; not re-run on the newer commit |
 | Vulkan on AMD / Intel Arc / NVIDIA | untested | expected to behave like the Intel iGPU case |
-| ROCm / HIP (AMD) | **untested** | generic ggml calls only; the llama.cpp GPU expert cache is backend-neutral upstream code |
+| ROCm / HIP (AMD) | **loads, not identity-checked** (Windows, official b11669 HIP zip, RX 9070 XT; RESULTS 67) | generic ggml calls only; the llama.cpp GPU expert cache is backend-neutral upstream code. On that card HIP is 2.4x slower than Vulkan even without the plugin, and the launcher reads no GPU memory from a HIP build (it plans every expert layer on the CPU) |
 | SYCL (Intel Arc, Intel GPUs) | **untested** | same as above |
 | Intel NPU (Core Ultra, Lunar Lake) | **untested** | llama.cpp has an OpenVINO backend (`-DGGML_OPENVINO=ON`, `GGML_OPENVINO_DEVICE=NPU`), labelled a preview. Its formats are FP16, Q8_0, Q4_0/Q4_1/Q4_K (Q5_K/Q6_K converted at load), so IQ2 / Q2_0 models such as Qwen3.8-Flash-Next cannot use it; a Q4_K MoE can. Not tried with this plugin |
 | AMD NPU (XDNA, Ryzen AI) | not supported | no ggml backend for it; AMD's own Ryzen AI software is separate |
