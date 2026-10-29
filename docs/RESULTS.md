@@ -2894,6 +2894,14 @@ stopped after 11 s), and the runner lost its own log lines until 14:47 (`$o` and
 
 Peak RAM in use on the PC during the 128k runs: 28.7-29.5 GiB including the owner's ~7 GiB (logged; nothing stopped).
 
+**Evening additions to 69 (2026-10-29 20:16-21:32, not clean: the owner's desktop held ~2.8 GB VRAM: dwm 1.2 GB, a browser 0.9 GB):**
+| Item | A | B | Runs | Verdict |
+|---|---|---|---|---|
+| G3 MTP head on Flash-Next Q2_0 (ctx 40960, f310c28 DLL; unsloth `mtp-Qwen3.8-Flash-Next-Q8_0.gguf`, `-md ... --spec-type draft-mtp --spec-draft-n-max 2 -ngld 99`) | no head | head | decode water/code: A 17.7 / 17.65 and 19.36 / 19.67, **B 10.43 / 9.78 and 11.34 / 10.32**; p34k prefill A 72.9 / 80.4, B 57.4 / 57.5; expert hits A 95-97 %, **B 4-54 %** | **killed again (-40 % decode)**: the head and its draft context take RAM from the expert cache and hits collapse; MTP is not the lever on Flash-Next at 32 GB |
+| Prefill 73-80 tok/s at 34k in both arms (vs ~290 on a clean PC) | - | - | "a long-prompt block needs 791 MiB of GPU memory but only 697 MiB are free: it stays on the CPU" | **desktop VRAM problem**: the planner's reserve is taken by other processes after the plan; fix in progress (session bigfix: block split / re-plan, margin from the desktop's own use) |
+| n23-pipe-only (809505c) | - | - | every valid pair won (+8-11 % prefill, text identical); the one lost pair ran out of RAM | **merged 5e6ecd0** without a rerun (owner) |
+| N22 read-back | - | - | +3-5 % at 34k, mixed at 128k | **parked** (owner: no more reruns for small gains) |
+
 ## 70. Diffusion MoE: prefill proxy and LLaDA-MoE (laptop, 2026-10-29 night, "not clean"; plan S0-S1, scripts tests/diffusion_proxy.sh and tests/diffusion_identity.sh)
 A diffusion step is a no-cache prefill of the whole canvas (`-ub` tokens), so S0 times prefill passes of canvas size under a memory limit. Flash-Next IQ3_XXS (75.8 GB), 24 GB scope, `llama-bench -p N -b N -ub N -r 2`:
 

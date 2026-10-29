@@ -104,6 +104,8 @@ struct moe_cache_backend_ctx {
     ggml_backend_buffer_t hb_buf = nullptr;
     bool               hb_dropped = false;   // the bank was freed so a long prompt's GPU block fits; it is loaded again at the next decode step
     bool               seg_nomem = false;    // the last gpu_segment() call failed for lack of free GPU memory
+    ggml_backend_buffer_t rb_buf = nullptr;  // N22: the long-prompt block's result is read back into this pinned host buffer (the GPU device's own type)
+    bool               rb_failed = false;    // no pinned host buffer type, or it could not be allocated: plain blocking read-back
     // MOE_CACHE_HYBRID_ADAPT=N,K (default 8,16; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert of their layer's bank
     struct hb_layer_t {
         std::vector<int>   tidx;       // weight tensors of this layer that have a bank (gate, up, down)
@@ -148,6 +150,9 @@ void be_free(ggml_backend_t backend) {
     if (c->hb_ctx) {
         ggml_free(c->hb_ctx);
     }
+    if (c->rb_buf) {                  // pinned read-back buffer: freed before its backend
+        ggml_backend_buffer_free(c->rb_buf);
+    }
     if (c->gpu) {
         ggml_backend_free(c->gpu);
     }
@@ -170,6 +175,21 @@ bool gpu_graph_supported(moe_cache_backend_ctx * c, ggml_cgraph * g) {
         }
     }
     return true;
+}
+
+// N23-F3: experts e0..e0+n of weight t may still be filled by the reader threads (cache fill queued, not waited for): wait for their flags
+static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t n) {
+    const auto it = s.by_tensor.find(t);
+    if (it == s.by_tensor.end()) {
+        return;
+    }
+    const tinfo_t & ti = *s.tensors[it->second];
+    for (int64_t e = e0; e < e0 + n && e < ti.n_expert; e++) {
+        const bool * f = &s.nodes[(size_t) (ti.node0 + e)].loading;
+        while (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
+            std::this_thread::yield();
+        }
+    }
 }
 
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
@@ -364,6 +384,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             continue;
         }
         const tinfo_t & ti = *s.tensors[it->second];
+        wait_experts(s, u.first, 0, ti.n_expert);      // N23-F3: not under the lock (the readers take it to clear the flags)
         std::lock_guard<std::mutex> lk(s.mu);
         for (int64_t e = 0; e < ti.n_expert; e++) {
             const auto & nd = s.nodes[(size_t) ti.node0 + (size_t) e];
@@ -402,6 +423,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 while (k + r < pack_used.size() && pack_used[k + r] == pack_used[k] + (int32_t) r) {
                     r++;
                 }
+                wait_experts(s, t, pack_used[k], (int64_t) r);
                 ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, k * nb2, r * nb2);
                 k += r;
             }
@@ -419,6 +441,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             continue;
         }
         if (ggml_is_contiguous(t)) {
+            wait_experts(s, t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
             ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
             s.gpu_up_bytes += ggml_nbytes(d);
         } else {
@@ -444,15 +467,49 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     if (seg_times) {
         ggml_backend_synchronize(c->gpu);
     }
+    // N22 (on by default; MOE_CACHE_GPU_READBACK=0 = old path): the result goes into a pinned host buffer of the GPU device, queued right after
+    // the compute with one synchronize for both, then one memcpy into the CPU tensor. A blocking read into ordinary memory goes through the
+    // backend's staging copy (~1.6 GB/s on the 9070 XT, 18 % of a block). Same bytes either way.
+    static const bool rb_env = !getenv("MOE_CACHE_GPU_READBACK") || atoi(getenv("MOE_CACHE_GPU_READBACK")) > 0;
+    const size_t out_bytes = ggml_nbytes(out);
+    void * rb = nullptr;
+    if (rb_env && !c->rb_failed) {
+        if (!c->rb_buf || ggml_backend_buffer_get_size(c->rb_buf) < out_bytes) {
+            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(s.gpu_dev);
+            if (c->rb_buf) {
+                ggml_backend_buffer_free(c->rb_buf);
+                c->rb_buf = nullptr;
+            }
+            const size_t want = (out_bytes + ((size_t) 16 << 20) - 1) & ~(((size_t) 16 << 20) - 1);     // 16 MiB steps: few re-allocations
+            c->rb_buf = hbt ? ggml_backend_buft_alloc_buffer(hbt, want) : nullptr;
+            if (!c->rb_buf) {
+                c->rb_failed = true;
+                fprintf(stderr, "moe-cache: no pinned host buffer for the long-prompt block's result (%s): it is read back the plain way\n",
+                        hbt ? "allocation failed" : "the GPU device has none");
+            }
+        }
+        if (c->rb_buf) {
+            rb = ggml_backend_buffer_get_base(c->rb_buf);
+        }
+    }
     const auto t_c0 = std::chrono::steady_clock::now();
     const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
-    ggml_backend_synchronize(c->gpu);
+    if (!rb || seg_times) {
+        ggml_backend_synchronize(c->gpu);     // seg_times: the compute is timed on its own
+    }
     if (st != GGML_STATUS_SUCCESS) {
+        ggml_backend_synchronize(c->gpu);
         ggml_free(ctx);
         return false;
     }
     const auto t_g0 = std::chrono::steady_clock::now();
-    ggml_backend_tensor_get(gout, out->data, 0, ggml_nbytes(out));
+    if (rb) {
+        ggml_backend_tensor_get_async(c->gpu, gout, rb, 0, out_bytes);
+        ggml_backend_synchronize(c->gpu);
+        memcpy(out->data, rb, out_bytes);
+    } else {
+        ggml_backend_tensor_get(gout, out->data, 0, out_bytes);
+    }
     ggml_free(ctx);
     s.gpu_segments++;
     if (seg_times) {

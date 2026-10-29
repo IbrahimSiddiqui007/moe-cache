@@ -27,15 +27,15 @@ MODELS = {
     "bolt": dict(name="Nemotron 3.5 Bolt 74B-A9B (NVIDIA 2-bit QAT)", size=22_018_326_528, pattern=r"Nemotron-3\.5-Bolt-74B.*24GB\.gguf$",
                  repo="nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF", include="NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf"),
     "flash-next-q2_0": dict(name="Qwen3.8-Flash-Next Q2_0 (GSQ-RCO)", size=66_423_878_624, pattern=r"Flash-Next-GSQ-RCO-Q2_0[-.]",
-                            repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="*Q2_0*"),
+                            repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="Q2_0/*.gguf"),
     "flash-next-iq3_xxs": dict(name="Qwen3.8-Flash-Next IQ3_XXS (GSQ-RCO)", size=75_839_998_528, pattern=r"Flash-Next-GSQ-RCO-IQ3_XXS[-.]",
-                               repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="*IQ3_XXS*"),
+                               repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="IQ3_XXS/*.gguf"),
     "qwen3.6-35b": dict(name="Qwen3.6-35B-A3B Q4_K_M", size=21_718_480_960, pattern=r"(?i)qwen3\.6(-35b-a3b)?([-_.].*Q4_K_M)?.*\.gguf$",
                         repo="unsloth/Qwen3.6-35B-A3B-GGUF", include="*Q4_K_M*", ollama="qwen3.6:35b-a3b"),
     "qwen3.5-122b": dict(name="Qwen3.5-122B-A10B UD-IQ2_XXS", size=36_637_668_544, pattern=r"Qwen3\.5-122B-A10B-UD-IQ2_XXS[-.]",
                          repo="unsloth/Qwen3.5-122B-A10B-GGUF", include="*UD-IQ2_XXS*"),
     "glm-5.3": dict(name="GLM-5.3-Flash UD-IQ2_XXS", size=101_845_506_400, pattern=r"GLM-5\.3-Flash-UD-IQ2_XXS[-.]",
-                    repo="unsloth/GLM-5.3-Flash-GGUF", include="*UD-IQ2_XXS*"),
+                    repo="unsloth/GLM-5.3-Flash-GGUF", include="UD-IQ2_XXS/*.gguf"),
 }
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
