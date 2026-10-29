@@ -173,7 +173,7 @@ def machine_specs(folders=None, ls=None):
         free = None
     return {"os": "Windows" if WINDOWS else sys.platform, "ram_total": mc.mem_total(), "ram_cap": mc.mem_cap(), "gpu": name, "vram": vram,
             "disk_path": disk_at, "disk_free": free, "disk_kind": disk_kind(disk_at), "avx2": avx2, "avx512": avx512,
-            "llama_build": llama_build(ls or os.environ.get("LLAMA_SERVER", "llama-server")), "local": find_local(folders)}
+            "llama_build": llama_build(ls or mc.default_llama_server()), "local": find_local(folders)}
 
 
 # ---- the rules (pure: unit-tested with fake specs, tests/picker_test.py) ----
@@ -355,21 +355,65 @@ def load_settings():
         return {}
 
 
+class _settings_lock:
+    """An exclusive lock on ui.json.lock (fcntl on Linux, msvcrt on Windows): the control page and `pick --apply` take turns."""
+    def __enter__(self):
+        os.makedirs(mc.CACHE_DIR, exist_ok=True)
+        self.f = open(SETTINGS_FILE + ".lock", "a+b")
+        if WINDOWS:
+            import msvcrt
+            self.f.seek(0)
+            for _ in range(200):                       # LK_LOCK itself retries for 10 s only
+                try:
+                    msvcrt.locking(self.f.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            import fcntl
+            fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if WINDOWS:
+                import msvcrt
+                self.f.seek(0)
+                msvcrt.locking(self.f.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        self.f.close()
+
+
+def update_settings(change):
+    """Read ui.json, let change(dict) edit it and write it back, under the lock and atomically (a temporary file, then replace), private to this
+    user (0600). Each writer changes only its own keys: `pick --apply` and the open control page no longer lose each other's settings, and a
+    reader never sees a half-written file (audit 2026-10-29: the page wrote in place; a pick reading it then wrote back only its own keys).
+    Returns the new settings."""
+    with _settings_lock():
+        s = load_settings()
+        change(s)
+        tmp = f"{SETTINGS_FILE}.{os.getpid()}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(s, f, indent=1)
+        os.replace(tmp, SETTINGS_FILE)
+    return s
+
+
 def apply(rec, settings=None):
-    """Write the recommendation into ui.json: "pick" (what was chosen and why) and, when the file is here, "last" (what Start, `server` and
-    `on-demand` without a model use). Returns the new settings. settings: the control page's own copy (it saves it itself)."""
-    s = settings if settings is not None else load_settings()
+    """Put the recommendation into the settings: "pick" (what was chosen and why) and, when the file is here, "last" (what Start, `server` and
+    `on-demand` without a model use). settings=None: written to ui.json (update_settings). A dict: changed in place only (the control page saves
+    the two keys itself). Returns the settings."""
+    if settings is None:
+        return update_settings(lambda s: apply(rec, s))
+    s = settings
     s["pick"] = {"id": rec["id"], "name": rec["name"], "use": rec["use"], "ctx": rec["ctx"], "args": rec["args"], "model": rec["local"],
                  "time": time.strftime("%Y-%m-%d %H:%M")}
     if rec["local"]:
         last = dict(s.get("last") or {})
         last.update({"model": rec["local"], "ctx": rec["ctx"], "agent": rec["use"] == "agents", "mode": "exact", "engine": "auto"})
         s["last"] = last
-    if settings is None:
-        os.makedirs(mc.CACHE_DIR, exist_ok=True)
-        with open(SETTINGS_FILE + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(s, f, indent=1)
-        os.replace(SETTINGS_FILE + ".tmp", SETTINGS_FILE)
     return s
 
 
@@ -380,6 +424,16 @@ def picked():
     if not path or not os.path.isfile(path):
         return None
     return path, int(p.get("ctx") or 65536), p.get("use") == "agents"
+
+
+def pick_missing():
+    """A line for `server` / `on-demand` without a model when a model was picked but its file is not here (not downloaded yet, or moved),
+    else "" (audit 2026-10-29 P1: they said "none picked" right after a pick)."""
+    p = load_settings().get("pick") or {}
+    if not p.get("id") or picked():
+        return ""
+    return (f"you picked {p.get('name') or p['id']} ({p.get('use')}), but its file is not here yet: `moe_cache.py pick --use {p.get('use')}` "
+            "offers the download (or put the .gguf in a model folder), then `moe_cache.py pick --use " + str(p.get("use")) + " --apply` again")
 
 
 # ---- output ----
@@ -428,7 +482,7 @@ def pick(argv):
     ap.add_argument("--gpu-margin", type=float, help="GiB of VRAM counted as left free (the launcher's --gpu-margin; default 0.5)")
     ap.add_argument("--apply", action="store_true", help="write the choice into the launcher's settings (server / on-demand without a model use it)")
     ap.add_argument("--models-dir", action="append", default=[], help="another folder with .gguf files (repeatable)")
-    ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
+    ap.add_argument("--llama-server", default=mc.default_llama_server())     # as server / check: LLAMA_SERVER, PATH, C:\\llama or install.sh's folder
     ap.add_argument("--json", action="store_true", help="print the machine and the recommendations as JSON")
     a = ap.parse_args(argv)
     spec = machine_specs(a.models_dir, a.llama_server)

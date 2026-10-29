@@ -20,7 +20,7 @@ extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If
 **More info** > **Run anyway**. To check that your zip is the one CI built, compare its SHA256 with `SHA256SUMS-windows` on the release page:
 `Get-FileHash moe-cache-vX-windows-x64.zip` in PowerShell (or `gh attestation verify moe-cache-vX-windows-x64.zip -R IbrahimSiddiqui007/moe-cache`).
 
-The launcher finds the DLL by itself when it is `ggml-moe-cache-api3.dll` next to `moe_cache.py` or `build\win*\`; otherwise point to it:
+The launcher finds the DLL by itself when it is `ggml-moe-cache-api3.dll` next to `moe-cache.bat` (the kit folder) or in `build\win*\`; otherwise point to it:
 
 ```
 set MOE_CACHE_LIB=C:\moe-cache-kit\ggml-moe-cache-api3.dll
@@ -38,7 +38,7 @@ python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llam
 "Windows experimental" and, on a llama.cpp other than b11669, "ggml version". `server` prints the command (add `--dry-run` to only print it); `--open`
 opens llama-server's chat page. The model also works with any OpenAI-compatible client at `http://127.0.0.1:8080/v1`.
 `--llama-server` can be left out when llama.cpp is unpacked to `C:\llama` (or `LLAMA_SERVER` is set, or llama-server is on the PATH). Run `check` first: it looks at the GPU,
-RAM, the model's drive and llama-server, and says what to fix. If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2`.
+RAM, the model's drive and llama-server, and says what to fix. If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command.
 
 ## 3. The control page (GUI): one click
 

@@ -713,6 +713,16 @@ def on_demand(argv):
                            env=dict(os.environ, **env), timeout=600)
         if r.returncode:
             raise SystemExit("the launcher refused these options:\n" + (r.stderr or r.stdout).strip()[-1500:])
+        # the dry run does not start llama-server: check it exists now, not at the first agent request (a 503 then; audit 2026-10-29 A1), and
+        # keep its full path, since autostart has no shell PATH
+        ls = (next((args[i + 1] for i, x in enumerate(args[:-1]) if x == "--llama-server"), None)
+              or next((x.split("=", 1)[1] for x in args if x.startswith("--llama-server=")), None) or env.get("LLAMA_SERVER") or mc.default_llama_server())
+        found = ls if os.path.isfile(ls) else mc.shutil.which(ls)
+        if not found:
+            raise SystemExit(f"llama-server not found: {ls}. Pass --llama-server PATH (after the model)" +
+                             (r' or set it once: setx LLAMA_SERVER "C:\path\to\llama-server.exe" and open a new window' if mc.WINDOWS else " or set LLAMA_SERVER"))
+        if "--llama-server" not in " ".join(args):
+            env["LLAMA_SERVER"] = os.path.abspath(found)
         if a.add:
             alias = model_alias(model, args)
             if alias == model_alias(c["model"], c.get("args", [])):
@@ -734,7 +744,9 @@ def on_demand(argv):
                 + (f"; the added models ({', '.join(model_alias(e['model'], e.get('args', [])) for e in old.get('extra') or [])}) are forgotten"
                    if old.get("extra") else ""))
     elif not c:
-        raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options] (or let moe_cache.py pick choose one)")
+        from moe_cache_pick import pick_missing
+        raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options] (" +
+                         (pick_missing() or "or let moe_cache.py pick choose one") + ")")
     elif a.port or a.idle or a.idle_release is not None:
         c.update({k: v for k, v in (("port", a.port), ("idle", a.idle)) if v})
         if a.idle_release is not None:

@@ -44,7 +44,7 @@ if defined LLAMA_SERVER goto have_ls
 for /f "delims=" %%L in ('%WHERE% $PATH:llama-server.exe 2^>nul') do if not defined LLAMA_SERVER set "LLAMA_SERVER=%%~fL"
 if not defined LLAMA_SERVER if exist "C:\llama\llama-server.exe" set "LLAMA_SERVER=C:\llama\llama-server.exe"
 :have_ls
-if defined LLAMA_SERVER (echo llama-server: "%LLAMA_SERVER%") else (echo llama-server: not found: unpack the llama.cpp release to C:\llama or set LLAMA_SERVER)
+if defined LLAMA_SERVER (echo llama-server: "%LLAMA_SERVER%") else (echo llama-server: not found: unpack the llama.cpp release to C:\llama, or run once: setx LLAMA_SERVER "D:\path\to\llama-server.exe" and start this again)
 
 %PY% "%HERE%moe_cache.py" ui %*
 if errorlevel 1 pause

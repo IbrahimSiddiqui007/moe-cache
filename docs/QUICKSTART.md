@@ -3,7 +3,7 @@
 **The short version** (details below):
 
 ```bash
-tar xzf moe-cache-vX.Y.Z-linux-x86_64.tar.gz && cd moe-cache-vX.Y.Z-linux-x86_64        # 1. get it (Releases page)
+tar xzf moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz && cd moe-cache-vX.Y.Z-ggml0.26-linux-x86_64   # 1. get it (Releases page; llama.cpp with ggml 0.25: the file without -ggml0.26)
 bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server              # 2. check
 bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open   # 3. run
 ```
@@ -109,7 +109,7 @@ If it does not fit, we measured 2x to 12x stock (the table in the README). Examp
 
 ## Update, uninstall
 
-Update: download the newer tarball (or `git pull && ./build.sh`). Uninstall: delete the folder; the only other files are profiles in `~/.cache/moe-cache/` and benchmark results in `~/.local/share/moe-cache-bench/`.
+Update: download the newer tarball (or `git pull && ./build.sh`). Uninstall: first `python3 bin/moe_cache.py on-demand --remove-autostart` if you set up the on-demand endpoint (its service would keep starting from the deleted folder), then delete the folder. Other files: `~/.cache/moe-cache/` (usage profiles, control-page settings `ui.json`, the API key `api.key`), benchmark results in `~/.local/share/moe-cache-bench/`, and agent configs that `connect --write` changed (their old versions are kept as `.bak` next to them).
 
 ## Troubleshooting
 
