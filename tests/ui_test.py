@@ -953,5 +953,24 @@ finally:
         if v is not None: os.environ[k] = v
     mc.default_llama_server(refresh=True)
 
+# switching models while a server runs: the top bar offers "Switch to <name>" when the selection differs; the list marks the running one; confirm when busy
+page = open(ui.PAGE, encoding="utf-8").read()
+check('id="switch"' in page and "Running: " in page and 'badge stock">running' in page and "switchModel" in page, "the page has the Switch button, the 'Running:' label and the running mark in the list")
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"function runningState\(st\).*?\n", r"function switchInfo\(st, sel, models\) \{.*?\n\}\n", r"function switchNeedsConfirm.*?\n"))
+    harness = ("const shortName = n => n.replace(/\\.gguf$/, '');\n" + fn + "const M = [{path:'/m/a.gguf',name:'granite-a'},{path:'/m/b.gguf',name:'qwen-b'}];\n"
+               "console.log(JSON.stringify([switchInfo({state:'idle',model:null},'/m/b.gguf',M), switchInfo({state:'ready',model:'/m/a.gguf'},'/m/a.gguf',M),\n"
+               "  switchInfo({state:'ready',model:'/m/a.gguf'},'/m/b.gguf',M), switchInfo({state:'starting',model:'/m/a.gguf'},'/m/b.gguf',M), switchInfo({state:'stopping',model:'/m/a.gguf'},'/m/b.gguf',M),\n"
+               "  switchInfo({state:'ready',model:'/m/a.gguf'},'/m/zzz.gguf',M), switchNeedsConfirm([{processing:true}], false), switchNeedsConfirm([{processing:false}], false), switchNeedsConfirm([], true), switchNeedsConfirm(undefined, false)]));\n")
+    hf = os.path.join(TMP, "switch.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and [x["show"] for x in r_[:6]] == [False, False, True, True, False, False] and r_[2]["label"] == "Switch to qwen-b",
+          f"Switch to <name> only when a server is up and another model is selected ({r_ and [x['show'] for x in r_[:6]]})")
+    check(r_ is not None and r_[6:] == [True, False, True, False], "confirm only when a request is running (agent slot processing or the chat)")
+
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

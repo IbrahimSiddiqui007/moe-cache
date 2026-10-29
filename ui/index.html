@@ -53,7 +53,8 @@ p.whysum { margin:4px 0 6px; font-size:13px; line-height:1.45; }
 .modelpick .badge { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:240px; }
 .state { white-space:nowrap; font-size:13px; overflow:hidden; text-overflow:ellipsis; min-width:0; }
 .startgrp { display:inline-flex; flex:0 0 auto; }
-.startgrp > button:first-child, .startgrp > button:nth-child(2) { border-top-right-radius:0; border-bottom-right-radius:0; }
+.startgrp > button:not(#startmenu) { border-radius:4px; margin-right:6px; }
+.startgrp > button:first-child, .startgrp > button:nth-child(2) { margin-right:0; border-top-right-radius:0; border-bottom-right-radius:0; }
 .startgrp #startmenu { border-top-left-radius:0; border-bottom-left-radius:0; border-left:1px solid color-mix(in srgb, #fff 30%, transparent); padding:5px 7px; }
 .menu { position:absolute; top:44px; right:12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:6px; z-index:70; width:320px; box-shadow:0 8px 24px rgba(0,0,0,.35); }
 .menu button { display:block; width:100%; text-align:left; background:transparent; border:0; white-space:normal; }
@@ -280,7 +281,7 @@ button.danger { border-color:var(--ink); }
     <div class="seg only-wide" data-seg="mode" title="Exact: same output as stock llama.cpp · Fast: about 10 % faster, about 1 token in 40-50 comes out different · Hybrid: experimental"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <span class="grow"></span>
     <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
-    <span class="startgrp"><button class="primary" id="start">Start</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
+    <span class="startgrp"><button class="primary" id="start">Start</button><button class="primary" id="switch" hidden title="Stop the running model and start the selected one with the settings shown">Switch</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
     <button class="icon" id="tglRight" title="Status, context, files, agents, log">◧</button>
     <div class="menu" id="menu" hidden>
       <button data-m="now"><b>Start now</b><span class="small">load the model with the settings and keep it loaded</span></button>
@@ -561,7 +562,7 @@ function paintModels() {
   $("nomodels").hidden = S.models.length > 0;
   $("nomodels").textContent = "No .gguf models found: add a folder in Settings, or let Settings → Which model? suggest one for this machine.";
   $("models").innerHTML = S.models.map((m, i) => { const p = S.plans[planKey(m.path)];
-    return `<div class="item${m.path == S.sel ? " sel" : ""}" data-i="${i}" title="${esc(m.path)}"><div><span class="t">${esc(shortName(m.name))}</span>
+    return `<div class="item${m.path == S.sel ? " sel" : ""}" data-i="${i}" title="${esc(m.path)}"><div><span class="t">${esc(shortName(m.name))}${S.runKey && S.runKey == m.path ? ` <span class="badge stock">running</span>` : ""}</span>
       <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span></span></div></div>`; }).join("");
   const m = S.models.find(x => x.path == S.sel), p = S.sel && S.plans[planKey(S.sel)];
   $("topmodel").textContent = m ? shortName(m.name) : "no model";
@@ -666,6 +667,25 @@ function chart(id, pts, max, color, pct) {
   g.stroke();
   g.fillStyle = css.getPropertyValue("--muted"); g.font = "11px system-ui"; g.fillText(pct ? "100 %" : top.toFixed(0), 4, 11);
 }
+/* switching models: the list changes the selection, the running server keeps its model until Stop. When they differ the top bar offers one click for both. */
+function runningState(st) { return st.state == "starting" || st.state == "ready" || st.state == "stopping"; }
+function switchInfo(st, sel, models) {
+  const m = (models || []).find(x => x.path == sel);
+  return { show: !!(st && (st.state == "starting" || st.state == "ready") && sel && st.model && sel != st.model && m), label: m ? "Switch to " + shortName(m.name) : "" };
+}
+function switchNeedsConfirm(live, chatBusy) { return !!chatBusy || (Array.isArray(live) && live.some(x => x.processing)); }
+async function switchModel() {
+  const st = S.status || {}, info = switchInfo(st, S.sel, S.models);
+  if (!info.show) return;
+  if (switchNeedsConfirm(S.live, C.busy) && !confirm("The running model is still answering a request (an agent or the chat). Switching stops it now. Switch anyway?")) return;
+  showErr("");
+  try {
+    await api("/api/stop", {});
+    for (let i = 0; i < 120; i++) { await new Promise(r => setTimeout(r, 500)); await poll(); if (!runningState(S.status)) break; }
+    if (runningState(S.status)) { showErr("the running server did not stop in time: press Stop, then Start"); return; }
+    await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll();
+  } catch (e) { showErr(e.message); }
+}
 async function poll() {
   let st;
   try { st = await api("/api/status"); } catch (e) { $("state").textContent = "page server not reachable"; $("statedot").className = "dot bad"; return; }
@@ -673,7 +693,9 @@ async function poll() {
   const running = st.state == "starting" || st.state == "ready" || st.state == "stopping";
   $("state").textContent = { idle: "idle", starting: "starting…", ready: "running", stopping: "stopping…", stopped: "stopped", exited: "ended (see Log)" }[st.state] || st.state;
   $("statedot").className = "dot " + (st.state == "ready" ? "ok" : st.state == "exited" ? "bad" : running ? "warn" : "");
-  $("statemodel").textContent = st.model ? shortName(st.model) + (st.state == "ready" ? ` · ${st.url.replace("http://", "")}` : "") + (st.agent ? " · Agent mode" : "") : "";
+  $("statemodel").textContent = st.model ? (running ? "Running: " : "Last: ") + shortName(st.model) + (st.state == "ready" ? ` · ${st.url.replace("http://", "")}` : "") + (st.agent ? " · Agent mode" : "") : "";
+  const sw = switchInfo(st, S.sel, S.models); $("switch").hidden = !sw.show; $("switch").textContent = sw.label; $("switch").disabled = false;
+  const runKey = running ? st.model : ""; if (runKey !== S.runKey) { S.runKey = runKey; paintModels(); }
   $("start").hidden = running; $("stop").hidden = !running;
   $("start").disabled = !S.sel; $("stop").disabled = st.state == "stopping";
   $("startmenu").className = running ? "danger" : "primary";
@@ -734,7 +756,7 @@ function paintSessions(j) {
   const st = S.status || {}, ev = (st.warm || {}).events || [];
   S.sessionsDir = j.dir;
   const t = x => new Date(x * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const live = Array.isArray(j.live) ? j.live : [];
+  const live = Array.isArray(j.live) ? j.live : []; S.live = live;
   const state = f => f.restored ? `<span class="stock">restored at start</span>` : f.restore_failed ? `<span class="error">restore failed</span>` :
     !j.running ? "saved " + t(f.t) : f.this_server ? "this server's model, saved " + t(f.t) : "another model or setting";
   let h = j.no_warm ? `<div class="small" style="margin:0 8px 4px">This server was started with --no-warm: nothing is restored or saved.</div>` : "";
@@ -1077,6 +1099,7 @@ $("start").onclick = async () => {
   if (S.sys && S.sys.llama_found === false) { askLlama(); return; }
   try { await api("/api/start", settings()); S.logSeq = 0; $("log").textContent = ""; poll(); } catch (e) { showErr(e.message); }
 };
+$("switch").onclick = switchModel;
 $("stop").onclick = async () => { try { await api("/api/stop", {}); poll(); } catch (e) { showErr(e.message); } };
 $("startmenu").onclick = e => { e.stopPropagation(); $("menu").hidden = !$("menu").hidden; };
 document.addEventListener("click", e => { if (!e.target.closest("#menu")) $("menu").hidden = true; });

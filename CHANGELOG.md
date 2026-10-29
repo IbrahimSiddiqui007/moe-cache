@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Switching models while a server runs is visible**: when the selected model differs from the running one, the top bar shows "Switch to <name>" (Stop, then Start with the settings shown; asks first when an agent or the chat is mid-request); the top bar says "Running: <name>" and the model list marks the running one.
 - **llama-server is found in more places, by one function** (launcher, `check`, the picker and the control page share `default_llama_server`): `LLAMA_SERVER` in the process
   environment, on Windows also as stored in the registry (user, then machine: `setx` writes there and an Explorer started earlier never passes it on), the path the control page
   saved, the PATH (also the registry's), `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build and `~/llama.cpp/build/bin`.
