@@ -109,6 +109,8 @@ python3 bin/moe_cache.py connect hermes --write        # and/or: connect opencod
 
 The Linux commands were checked against `hermes --help` and `opencode --help` (2026-10-26); they were not started against a moe-cache server for this page.
 
+**Checked on the Linux laptop with a running agent-mode server (2026-10-29, Hermes Agent 0.22.5, OpenCode 1.19.4, Qwen3.6-35B-A3B, 64k):** `connect hermes --write` and `connect opencode --write` wrote correct configs (OpenCode: into the existing `opencode.jsonc`, old file kept as `.bak`). Both CLIs fixed a bug in a small git repo over two turns (run tests, edit, commit): `hermes chat -Q -t terminal,file,todo -q "..."` (then `-c` for the next turn) and `opencode run --auto "..." < /dev/null` (then `-c`). Flash-Next IQ3_XXS at 64k also fixed it with Hermes (373 s, cold first turn 5.8k tokens in 167 s). Hermes sends one `GET /v1/models` without the API key after each chat; the server logs "unauthorized: Invalid API Key" for it. That comes from Hermes and is harmless. The web UIs (`hermes dashboard`, `opencode web`) were not started.
+
 **How each is pointed at moe-cache** (read from `connect()` in `bin/moe_cache.py`):
 
 | Agent | What `connect ... --write` does | Windows | Do the GUIs read it? |
