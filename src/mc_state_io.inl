@@ -298,6 +298,27 @@
         reserve_and_read(nl, idx);
     }
 
+    // MOE_CACHE_EXEC_TIMES summary; called before the pool is destroyed
+    void print_exec_times() {
+    if (exec_on && pool && pool->times && pool->n_runs) {
+        const double wall = ex_run_ns / 1e9, nt = (double) pool->th.size() + 1;
+        fprintf(stderr, "moe-cache: exec-times: %llu pool runs, %.2fs inside the pool (%.1f ms each); quantise %.2fs, task setup %.2fs; "
+                        "caller: publish+wake %.2fs, own chunks %.2fs, barrier wait %.2fs\n", (unsigned long long) pool->n_runs.load(), wall,
+                1e3 * wall / (double) pool->n_runs.load(), ex_quant_ns / 1e9, ex_build_ns / 1e9, pool->t_disp_ns / 1e9, pool->t_main_ns / 1e9, pool->t_tail_ns / 1e9);
+        fprintf(stderr, "moe-cache: exec-times: threads %.0f: busy in dot products %.2fs = %.0f %% of thread time inside the pool, spinning for experts still read %.2fs, "
+                        "worker wake-up %.2fs over %llu starts (%.1f us each), chunks %llu, parks %llu\n", nt, pool->busy_ns / 1e9,
+                wall > 0 ? 100.0 * (pool->busy_ns / 1e9) / (wall * nt) : 0.0, pool->flagwait_ns / 1e9, pool->wake_ns / 1e9, (unsigned long long) pool->n_wake.load(),
+                pool->n_wake ? pool->wake_ns / 1e3 / (double) pool->n_wake.load() : 0.0, (unsigned long long) pool->chunks.load(), (unsigned long long) pool->parks.load());
+        static const char * pn[3] = { "gate", "up", "down" };
+        for (int k = 0; k < 3; k++) {
+            if (ex_part_n[k]) {
+                fprintf(stderr, "moe-cache: exec-times: %-4s ops=%llu %.2fs, expert data %.1f GB = %.1f GB/s\n", pn[k], (unsigned long long) ex_part_n[k].load(),
+                        ex_part_ns[k] / 1e9, ex_part_bytes[k] / 1e9, ex_part_ns[k] ? (double) ex_part_bytes[k] / (double) ex_part_ns[k] : 0.0);
+            }
+        }
+    }
+    }
+
     // one line of cumulative counters on stderr (see MOE_CACHE_STATS_SIGNAL)
     void print_snapshot() {
         std::string j;
@@ -366,6 +387,7 @@
         for (auto & t : readers) {
             t.join();
         }
+        if (stats) { print_exec_times(); }
         pool.reset();
 #ifdef __linux__
         g_stats_stop = true;
@@ -493,23 +515,6 @@
                     if (exec_type_ops[ty]) {
                         fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu time=%.2fs expert data=%.1f GB (%.2f GB/s incl. waits)\n", ggml_type_name((ggml_type) ty),
                                 (unsigned long long) exec_type_ops[ty], exec_type_ns[ty] / 1e9, exec_type_bytes[ty] / 1e9, exec_type_ns[ty] ? (double) exec_type_bytes[ty] / exec_type_ns[ty] : 0.0);
-                    }
-                }
-            }
-            if (exec_on && pool && pool->times && pool->n_runs) {
-                const double wall = ex_run_ns / 1e9, nt = (double) pool->th.size() + 1;
-                fprintf(stderr, "moe-cache: exec-times: %llu pool runs, %.2fs inside the pool (%.1f ms each); quantise %.2fs, task setup %.2fs; "
-                                "caller: publish+wake %.2fs, own chunks %.2fs, barrier wait %.2fs\n", (unsigned long long) pool->n_runs.load(), wall,
-                        1e3 * wall / (double) pool->n_runs.load(), ex_quant_ns / 1e9, ex_build_ns / 1e9, pool->t_disp_ns / 1e9, pool->t_main_ns / 1e9, pool->t_tail_ns / 1e9);
-                fprintf(stderr, "moe-cache: exec-times: threads %.0f: busy in dot products %.2fs = %.0f %% of thread time inside the pool, spinning for experts still read %.2fs, "
-                                "worker wake-up %.2fs over %llu starts (%.1f us each), chunks %llu, parks %llu\n", nt, pool->busy_ns / 1e9,
-                        wall > 0 ? 100.0 * (pool->busy_ns / 1e9) / (wall * nt) : 0.0, pool->flagwait_ns / 1e9, pool->wake_ns / 1e9, (unsigned long long) pool->n_wake.load(),
-                        pool->n_wake ? pool->wake_ns / 1e3 / (double) pool->n_wake.load() : 0.0, (unsigned long long) pool->chunks.load(), (unsigned long long) pool->parks.load());
-                static const char * pn[3] = { "gate", "up", "down" };
-                for (int k = 0; k < 3; k++) {
-                    if (ex_part_n[k]) {
-                        fprintf(stderr, "moe-cache: exec-times: %-4s ops=%llu %.2fs, expert data %.1f GB = %.1f GB/s\n", pn[k], (unsigned long long) ex_part_n[k].load(),
-                                ex_part_ns[k] / 1e9, ex_part_bytes[k] / 1e9, ex_part_ns[k] ? (double) ex_part_bytes[k] / (double) ex_part_ns[k] : 0.0);
                     }
                 }
             }
