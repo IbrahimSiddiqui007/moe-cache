@@ -952,7 +952,31 @@ def keep_awake(cmd, allow_sleep=False):
     return cmd, (lambda: None), ""
 
 
-def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False):
+GPU_OOM_RE = re.compile(r"ErrorOutOfDeviceMemory|Device memory allocation .* failed|cudaMalloc failed|CUDA error: out of memory|hipMalloc failed|"
+                        r"(failed to allocate|unable to allocate) (Vulkan|CUDA|ROCm|HIP|SYCL)\w* (compute )?buffer", re.I)
+
+
+def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None):
+    """run_child_once, and when llama-server stops before it is ready because the GPU ran out of memory at load (another program took the memory
+    after the plan was made: desktop PC 2026-10-30, the control page planned with 13.4 GiB free), ask `oom_retry()` for a new command (it measures the
+    free GPU memory again and plans again) and start once more. One retry only."""
+    rc, seen = run_child_once(cmd, env, port, expect_plugin, mem_limit, allow_sleep)
+    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)
+    if rc not in (0, None) and not quiet and oom_retry and seen["oom"] and not seen["ready"]:
+        new = oom_retry()
+        if new:
+            return run_child_once(new, env, port, expect_plugin, mem_limit, allow_sleep, final=True)[0]
+    say_exit(rc, seen, expect_plugin and port)
+    return rc
+
+
+def say_exit(rc, seen, with_ready):
+    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
+    if rc not in (0, None) and not quiet:
+        say("moe-cache: " + exit_reason(rc, seen["ready"] if with_ready else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
+
+
+def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, final=False):
     """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code.
     The child dies with the launcher. Its log is passed through; when the plugin was meant to load and the server becomes ready without a single
     'moe-cache:' line, a warning says it is running stock (found on the MSI Claw, 2026-10-15: the plugin failed to load and nothing said so)."""
@@ -975,11 +999,13 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sl
                 if p.poll() is None:
                     win_request_save(p.pid, env["MOE_CACHE_PROFILE"], timeout=0)
         threading.Thread(target=save_now_and_then, daemon=True).start()
-    seen = {"plugin": False, "disabled": "", "last": "", "ready": False}
+    seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": False}
     def pump():
         out = sys.stderr.buffer
         for line in iter(p.stderr.readline, b""):
             out.write(line); out.flush()
+            if GPU_OOM_RE.search(line.decode(errors="replace")):
+                seen["oom"] = True
             if b"moe-cache:" in line:
                 seen["plugin"] = True
                 seen["last"] = line.decode(errors="replace").strip()
@@ -1023,10 +1049,9 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sl
             continue
     release_awake()
     pump_t.join(timeout=5)             # the last lines llama-server printed (why it stopped) come before the launcher's own verdict
-    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
-    if rc not in (0, None) and not quiet:
-        say("moe-cache: " + exit_reason(rc, seen["ready"] if (expect_plugin and port) else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
-    return rc
+    if final:
+        say_exit(rc, seen, expect_plugin and port)
+    return rc, seen
 
 
 def exit_reason(rc, ready):
@@ -1555,8 +1580,43 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
+    def oom_retry():
+        """llama-server could not allocate GPU memory at load: measure the free memory again, plan again with it (never fewer CPU expert layers than
+        before + 1) and return the new command; None when nothing can be changed (the user fixed --n-cpu-moe, or there is no GPU figure)."""
+        if ncmoe_user is not None or "--n-cpu-moe" not in cmd:
+            say("moe-cache: llama-server ran out of GPU memory while loading: free some GPU memory, or give a larger --n-cpu-moe / smaller -ub / --gpu-margin", err=True)
+            return None
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes, model_layout
+            if WINDOWS:
+                g = pick_gpu_full(list_devices(ls))
+                tf = (g[3] * 2**20, g[2] * 2**20) if g and g[3] > 0 else None
+            else:
+                tf = gpu_total_free_bytes()
+            if not tf:
+                return None
+            reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0)
+            t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve)
+            lay = model_layout(model)
+            old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])
+            new_n = min(lay["n_layers"] or 999, max(int(t["n_cpu_moe"]), old_n + 1)) if lay["n_layers"] else old_n + 1
+            new = list(cmd)
+            new[new.index("--n-cpu-moe") + 1] = str(new_n)
+            new_ub = None
+            if "-ub" in new and t["ub"] < int(new[new.index("-ub") + 1]):
+                new_ub = str(t["ub"])
+                new[new.index("-ub") + 1] = new_ub
+                if "-b" in new:
+                    new[new.index("-b") + 1] = str(max(int(new_ub), 2048))
+            say(f"moe-cache: llama-server ran out of GPU memory while loading (now {tf[1] / 2**30:.1f} GiB free, another program took some after the plan): "
+                f"trying again once with {new_n} layers of experts on the CPU (was {old_n})" + (f" and -ub {new_ub}" if new_ub else ""))
+            return new
+        except Exception as e:
+            say(f"moe-cache: llama-server ran out of GPU memory while loading; could not plan again ({e})", err=True)
+            return None
     return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit,
-                     allow_sleep=a.allow_sleep)
+                     allow_sleep=a.allow_sleep, oom_retry=oom_retry)
 
 
 def warm_save_wait(n_tokens, last_tokens, bytes_per_token, poll=10, idle_polls=2, per_gb=20, small_wait=180, small_per_gb=30, small_cap=600):
