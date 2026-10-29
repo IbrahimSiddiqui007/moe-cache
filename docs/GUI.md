@@ -113,7 +113,7 @@ documents): the page lists what it read (RAM and the server's cap, VRAM, free di
 recommended model with size, context and options, the measurement behind it or "untested on this class of machine", and one alternative. **Use it**
 selects the file (when it is in a model folder), the context, Agent mode and writes them to the page's settings, where `moe-cache-server` without a file
 name and `connect hermes|opencode` find them; if the file is not on this machine the page shows the download command (size, source) and never runs it.
-With no model found at all, the panel opens by itself at the first start.
+Ollama's downloaded models are found and listed as local (agents see them under their tag, e.g. `qwen3.6-35b-a3b`). If the disk is too small for the recommended model, the panel says which model it is and how much disk is missing, and offers no download. With no model found at all, the panel opens by itself at the first start.
 
 ## 5. Start, stop and the live numbers
 

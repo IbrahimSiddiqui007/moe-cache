@@ -8,9 +8,12 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-pick-test-")
 os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")          # before the import: the launcher reads it once
 os.environ.pop("MOE_CACHE_MAX_RAM_GB", None)
+os.environ["HOME"] = os.environ["USERPROFILE"] = os.path.join(TMP, "home")      # not this machine's ~/.ollama or ~/models
+os.environ.pop("OLLAMA_MODELS", None)
 sys.path.insert(0, os.path.join(HERE, "bin"))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as pk  # noqa: E402
+pk.OLLAMA_SYSTEM_ROOTS = []                                  # the Linux service's stores of this machine do not count
 
 fails = []
 def check(ok, what):
@@ -104,7 +107,19 @@ check(r["id"] == "bolt" and any("hard disk" in w for w in r["warnings"]), f"HDD:
 r = pk.recommend(machine(32, 16, disk_gb=50), "chat")
 check(r["id"] == "qwen3.5-122b" and any("free disk" in w for w in r["warnings"]), f"50 GB free disk: the 122B instead of Flash-Next ({r['id']})")
 r = pk.recommend(machine(32, 16, disk_gb=10), "chat")
-check(r["id"] == "qwen3.6-35b", f"10 GB free disk: falls through to the smallest, with warnings ({r['id']}, {len(r['warnings'])} warnings)")
+check(r["id"] == "flash-next-q2_0" and r["fits_disk"] is False and r["download"] is None and r["local"] is None,
+      f"10 GB free disk, nothing local: still the model that suits the machine, but no download is offered ({r['id']})")
+check(abs(r["disk_missing"] - (pk.MODELS["flash-next-q2_0"]["size"] + 2e9 - 10e9)) < 1 and "disk is too small" in r["why"][0] and "missing" in r["why"][0]
+      and any("GB of disk missing" in w for w in r["warnings"]), f"10 GB free disk: says plainly how much disk is missing ({r['disk_missing'] / 1e9:.1f} GB)")
+check(any("not on this machine and" in l and "no download is offered" in l for l in pk.rec_lines(r)) and not any("download (you run it" in l for l in pk.rec_lines(r)),
+      "10 GB free disk: the text output has no download line")
+r = pk.recommend(machine(32, 16, disk_gb=10, local={"qwen3.6-35b": "/m/q36.gguf"}), "chat")
+check(r["id"] == "qwen3.6-35b" and r["fits_disk"] and r["local"], "no disk for the best fit but a smaller model is already here: that one, no shortage message")
+r = pk.recommend(machine(32, 16, disk_gb=10, local={"glm-5.3": "/m/glm-00001-of-00004.gguf"}), "agents")
+check(r["id"] == "bolt" and not r["fits_disk"] and any(a["id"] == "glm-5.3" and "already on this machine" in a["why"] for a in r["alternatives"]),
+      "a local model that is not the best fit is listed as 'already here' next to the shortage message")
+r = pk.recommend(machine(32, 16, disk_gb=10), "agents", model="flash-next-q2_0")
+check(r["id"] == "flash-next-q2_0" and not r["fits_disk"] and r["download"] is None, "a model chosen by the user without disk space: used, warned, no download line")
 r = pk.recommend(machine(32, 16, disk_gb=10, local={"flash-next-q2_0": "/m/Q2_0-00001-of-00002.gguf"}), "chat")
 check(r["id"] == "flash-next-q2_0" and r["local"] and r["download"] is None, "a model already here needs no disk and no download")
 r = pk.recommend(machine(32, 8, local={"flash-next-iq3_xxs": "/m/IQ3.gguf"}), "chat")
@@ -181,6 +196,39 @@ s = json.load(open(pk.SETTINGS_FILE))
 check(s["pick"]["id"] == "bolt" and s["folders"] == ["/x", "/y"] and _st.saved["pick"]["id"] == "bolt",
       f"the page's save keeps the pick made meanwhile and takes it in ({s['pick']['id']}, {s['folders']})")
 _st.saved["folders"] = ["/x"]; _st.save("folders")
+
+# ---- Ollama: its manifests map a tag to a GGUF blob that llama-server reads; found and listed as local ----
+import hashlib
+oroot = os.path.join(TMP, "ollama", "models")
+def ollama_model(tag_path, payload):
+    dg = "sha256:" + hashlib.sha256(payload).hexdigest()
+    os.makedirs(os.path.join(oroot, "blobs"), exist_ok=True)
+    blob = os.path.join(oroot, "blobs", dg.replace(":", "-"))
+    open(blob, "wb").write(payload)
+    man = os.path.join(oroot, "manifests", *tag_path.split("/"))
+    os.makedirs(os.path.dirname(man), exist_ok=True)
+    json.dump({"schemaVersion": 2, "layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": dg, "size": len(payload)},
+                                              {"mediaType": "application/vnd.ollama.image.params", "digest": "sha256:" + "0" * 64, "size": 1}]}, open(man, "w"))
+    return blob
+b36 = ollama_model("registry.ollama.ai/library/qwen3.6/35b-a3b", b"GGUF" + b"\0" * 5000)
+bhf = ollama_model("hf.co/someone/Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF/Q2_K", b"GGUF" + b"\0" * 7000)
+open(os.path.join(oroot, "blobs", "sha256-" + "f" * 64), "wb").write(b"GGUF")      # a blob no manifest names
+check(pk.ollama_manifests(oroot) and sorted(n for n, _ in pk.ollama_manifests(oroot)) == ["library/qwen3.6:35b-a3b", "someone/Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF:Q2_K"],
+      f"ollama manifests: tag -> blob, the unnamed blob is ignored ({[n for n, _ in pk.ollama_manifests(oroot)]})")
+check(pk.ollama_name(b36) == "qwen3.6:35b-a3b" and pk.ollama_name(os.path.join(oroot, "blobs", "sha256-" + "f" * 64)) is None, "ollama_name: the tag of a blob; None for an unnamed one")
+found = pk.find_ollama(roots=[oroot])
+check(found == {"qwen3.6-35b": b36, "bolt": bhf}, f"find_ollama: Qwen3.6 and Bolt tags are recognised ({sorted(found)})")
+os.environ["OLLAMA_MODELS"] = oroot
+check(pk.ollama_roots() == [oroot], "ollama_roots: $OLLAMA_MODELS first")
+check(pk.find_local([os.path.join(TMP, "empty-folder")])["qwen3.6-35b"] == b36, "find_local: Ollama's blob counts as local")
+fl = pk.find_local([os.path.dirname(model)])
+check(fl["bolt"] == model and fl["qwen3.6-35b"] == b36, "find_local: a file in the model folders wins over Ollama's copy")
+check(pk.size_of("qwen3.6-35b", {"qwen3.6-35b": b36}) == os.path.getsize(b36) and pk.size_of("bolt", {}) == pk.MODELS["bolt"]["size"], "size_of: the file's own size when it is here")
+ro = pk.recommend(machine(16, 6, local={"qwen3.6-35b": b36}), "agents")
+check(ro["id"] == "qwen3.6-35b" and ro["local"] == b36 and ro["download"] is None and ro["size"] == os.path.getsize(b36), "a picked Ollama model is local: no download offered")
+check(mc.default_alias(b36) == "qwen3.6-35b-a3b" and mc.default_alias("/m/Big-00001-of-00002.gguf") == "Big" and mc.default_alias("/m/sha256-" + "e" * 64) == "sha256-" + "e" * 64,
+      "launcher alias: an Ollama blob gets its tag as the name; ordinary files as before")
+del os.environ["OLLAMA_MODELS"]
 
 # `connect claude`: the env block, never a file without --write, a merge with the first backup kept, a private file
 env = mc.claude_env("http://127.0.0.1:8080/", "my-model", "KEY123")

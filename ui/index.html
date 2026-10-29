@@ -569,9 +569,9 @@ async function loadPick() {
     $("pickres").innerHTML = `<div>${j.lines.map(esc).join("<br>")}</div><div style="margin-top:6px"><b>${esc(r.name)}</b> (${fmtGB(r.size)}, ${esc(r.engine)})<br>` +
       `context ${esc(r.ctx.toLocaleString())} · <code>${esc(r.args.join(" "))}</code><br>memory: model ${fmtGB(r.memory.model)} + KV cache ${fmtGB(r.memory.kv)} (${esc(r.memory.kv_how)}) = ${fmtGB(r.memory.total)}; this machine ${fmtGB(r.memory.available)} (RAM cap + VRAM)<br>measured: ${esc(r.measured)}<br>` + r.why.map(w => "why: " + esc(w)).join("<br>") +
       r.alternatives.map(a => `<br>or: ${esc(a.name)}: ${esc(a.why)}`).join("") + r.warnings.map(w => `<br><span class="err">note: ${esc(w)}</span>`).join("") +
-      (r.local ? `<br>file: <code>${esc(r.local)}</code>` : `<br>not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code><br>download it yourself:<br><code>${esc(d.command)}</code>` +
+      (r.local ? `<br>file: <code>${esc(r.local)}</code>` : r.fits_disk === false ? `<br><span class="err">not on this machine and ${fmtGB(r.disk_missing)} of disk missing: no download is offered</span>` : `<br>not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code><br>download it yourself:<br><code>${esc(d.command)}</code>` +
         (d.ollama ? `<br>(Ollama: <code>${esc(d.ollama)}</code>)` : "") + "<br>then add its folder above and press Use it again") + "</div>";
-    $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice";
+    $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice"; $("pickapply").hidden = !r.local && r.fits_disk === false;
   } catch (e) { $("pickres").textContent = "could not read this machine: " + e.message; }
 }
 async function applyPick() {

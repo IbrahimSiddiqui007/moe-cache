@@ -168,7 +168,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-p
 It reads your RAM (and the hard cap the server keeps: RAM minus max(4 GiB, 12.5 %)), dedicated VRAM, free disk, SSD or HDD, CPU (AVX2 / AVX-512) and your
 llama-server's build, asks what it is for (agents / coding at 64k-256k, plain chat, long documents), and recommends one model, file, context and options.
 It never downloads by itself: it prints the command with size and source, and `--apply` (or the page's *Use it*) makes `moe-cache-server`,
-`on-demand` and the page start that model by default, so `connect hermes|opencode|claude` points the agent at it. `--gpu-margin GiB` (default 0.5) is taken off the VRAM in its memory estimate, as the launcher does; if the GPU also draws your screen, start with `--gpu-margin 2`. Where we have no number for your class of
+`on-demand` and the page start that model by default, so `connect hermes|opencode|claude` points the agent at it. `--gpu-margin GiB` (default 0.5) is taken off the VRAM in its memory estimate, as the launcher does; if the GPU also draws your screen, start with `--gpu-margin 2`. Models Ollama has already downloaded (its manifests in `~/.ollama/models`, `%USERPROFILE%\\.ollama\\models` or `$OLLAMA_MODELS`) count as local: llama-server reads the blobs directly. If the disk is too small for the model that suits your machine, the picker says which model that is and how much disk is missing, offers no download, and prefers a model that is already here. Where we have no number for your class of
 machine it says "untested on this class of machine". The rules, from the measurements (RESULTS 44-45, 53, 59-67; the PC is 32 GB RAM + 16 GB GPU):
 
 | Your machine | Agents / coding (64k-256k) | Plain chat | Long documents |

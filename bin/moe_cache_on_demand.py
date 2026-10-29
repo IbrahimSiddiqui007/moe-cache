@@ -57,7 +57,7 @@ def save_choice(c):
 def model_alias(model, args):
     """The model name the launcher gives llama-server in agent mode (its --alias, else the file name without .gguf and the shard suffix)."""
     extra = args[args.index("--") + 1:] if "--" in args else []
-    return mc.arg_after(extra, "-a", "--alias") or re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(model))
+    return mc.arg_after(extra, "-a", "--alias") or mc.default_alias(model)
 
 
 def model_ctx(args):

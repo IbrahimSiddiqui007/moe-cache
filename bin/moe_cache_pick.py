@@ -147,8 +147,63 @@ def model_folders(extra=None):
     return [f for f in dict.fromkeys((extra or []) + out) if f]
 
 
-def find_local(folders):
-    """{model id: path of the first file} for the candidates found in the folders (depth 2)."""
+def ollama_roots():
+    """Ollama's model stores that exist here: $OLLAMA_MODELS, ~/.ollama/models (Linux; Windows: %USERPROFILE%\\.ollama\\models) and the Linux service's folders."""
+    c = [os.environ.get("OLLAMA_MODELS"), os.path.join(os.path.expanduser("~"), ".ollama", "models")] + OLLAMA_SYSTEM_ROOTS
+    return [p for p in dict.fromkeys(x for x in c if x) if os.path.isdir(os.path.join(p, "manifests"))]
+
+
+OLLAMA_SYSTEM_ROOTS = ["/usr/share/ollama/.ollama/models", "/var/lib/ollama/.ollama/models"]      # the Linux service's stores (tests empty this)
+
+
+def ollama_manifests(root):
+    """[(name, blob path)] of the models in one Ollama store: manifests/<registry>/<namespace>/<model>/<tag> names the model layer's blob
+    (blobs/sha256-<hex>, a plain GGUF file without an extension that llama-server reads). name = 'library/qwen3.6:35b-a3b' style, registry left out."""
+    out = []
+    for man in glob.glob(os.path.join(root, "manifests", "*", "*", "*", "*")) + glob.glob(os.path.join(root, "manifests", "*", "*", "*", "*", "*")):
+        try:
+            layers = json.load(open(man, encoding="utf-8")).get("layers", [])
+        except Exception:
+            continue
+        for l in layers if isinstance(layers, list) else []:
+            if isinstance(l, dict) and l.get("mediaType") == "application/vnd.ollama.image.model":
+                dg = str(l.get("digest", ""))
+                if not re.fullmatch(r"sha256:[0-9a-f]{64}", dg):
+                    continue
+                blob = os.path.join(root, "blobs", dg.replace(":", "-"))
+                if os.path.isfile(blob):
+                    parts = os.path.relpath(man, os.path.join(root, "manifests")).replace(os.sep, "/").split("/")[1:]
+                    out.append(("/".join(parts[:-1]) + ":" + parts[-1], blob))
+    return out
+
+
+def ollama_name(blob):
+    """The Ollama tag of a blob path ('qwen3.6:35b-a3b'), None when it is not in a store here."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(blob)))
+    for name, b in ollama_manifests(root):
+        if os.path.abspath(b) == os.path.abspath(blob):
+            return name.split("/")[-1] if name.startswith("library/") else name
+    return None
+
+
+# which Ollama tags are which candidate (matched on the whole tag, lower case)
+OLLAMA_TAGS = {"bolt": r"nemotron.*bolt", "flash-next-q2_0": r"flash-next.*q2_0", "flash-next-iq3_xxs": r"flash-next.*iq3_xxs",
+               "qwen3.6-35b": r"qwen3\.6.*35b", "qwen3.5-122b": r"qwen3\.5.*122b", "glm-5.3": r"glm-?5\.3"}
+
+
+def find_ollama(found=None, roots=None):
+    """Candidates that Ollama has already downloaded: {model id: blob path} (added to `found`; files in the model folders win)."""
+    found = {} if found is None else found
+    for root in ollama_roots() if roots is None else roots:
+        for name, blob in ollama_manifests(root):
+            for k, rx in OLLAMA_TAGS.items():
+                if k not in found and re.search(rx, name.lower()):
+                    found[k] = blob
+    return found
+
+
+def find_local(folders, ollama_stores=None):
+    """{model id: path of the first file} for the candidates found in the folders (depth 2) and in Ollama's stores."""
     found = {}
     for f in folders:
         for p in glob.glob(os.path.join(f, "*.gguf")) + glob.glob(os.path.join(f, "*", "*.gguf")):
@@ -158,7 +213,7 @@ def find_local(folders):
             for k, m in MODELS.items():
                 if k not in found and re.search(m["pattern"], b):
                     found[k] = os.path.abspath(p)
-    return found
+    return find_ollama(found, ollama_stores)
 
 
 def machine_specs(folders=None, ls=None):
@@ -178,6 +233,17 @@ def machine_specs(folders=None, ls=None):
 
 # ---- the rules (pure: unit-tested with fake specs, tests/picker_test.py) ----
 
+def size_of(k, local):
+    """Bytes of model k: the file's own size when it is here as one file (Ollama's Q4_K_M is not the unsloth one we measured), else the candidate's."""
+    p = (local or {}).get(k)
+    try:
+        if p and not re.search(r"-\d{5}-of-\d{5}\.gguf$", p):
+            return os.path.getsize(p)
+    except OSError:
+        pass
+    return MODELS[k]["size"]
+
+
 def recommend(spec, use, model=None):
     """One recommendation for `use` (agents | chat | docs) on the machine `spec` (machine_specs()). Returns
     {id, name, file, ctx, args, measured, untested, why[], warnings[], alternatives[{id, name, why}], local, download, memory}.
@@ -194,7 +260,7 @@ def recommend(spec, use, model=None):
     warn = []
 
     def fits(k):           # the launcher's own rule (moe_cache.decide): stock llama-server when model + 1.5 GB fits, else the plugin
-        return MODELS[k]["size"] + mc.STOCK_HEADROOM <= cap * 1e9
+        return size_of(k, local) + mc.STOCK_HEADROOM <= cap * 1e9
 
     def placeable(k):      # already here, or enough free disk for it (2 GB to spare); unknown free disk does not block
         return k in local or free is None or free >= MODELS[k]["size"] + 2e9
@@ -253,7 +319,7 @@ def recommend(spec, use, model=None):
             return True
         if not placeable(k):
             warn.append(f"{MODELS[k]['name']} needs {MODELS[k]['size'] / 1e9:.1f} GB of free disk ({(free or 0) / 1e9:.1f} GB free at "
-                        f"{spec.get('disk_path')}): skipped")
+                        f"{spec.get('disk_path')}): not suggested")
             return False
         return True
 
@@ -266,8 +332,8 @@ def recommend(spec, use, model=None):
         chosen = (model, True, rule[2] if rule else {"chat": 32768}.get(use, 65536), rule[3] if rule else None,
                   "chosen by you" + ("" if rule else f" (not one of the picks for {USES[use]} on this machine)"))
     chosen = chosen or next((r for r in R if r[1] and placed(r[0])), None)
-    if not chosen:      # nothing fits on the disk: the smallest candidate, with the disk warnings
-        chosen = min(R, key=lambda r: MODELS[r[0]]["size"])
+    if not chosen:      # no candidate that suits the machine is here or fits the disk: still the one that suits the machine (warn, never block), said plainly below
+        chosen = next(r for r in R if r[1])
     k, _, ctx, measured, why = chosen
     sib = SIBLINGS.get(k)
     if sib and not model and k not in local and sib in local and drive_ok(sib):     # the other Flash-Next file is already here: no 66-76 GB download
@@ -275,6 +341,14 @@ def recommend(spec, use, model=None):
         k = sib
         chosen = (k, True, ctx, measured, why)
     m = MODELS[k]
+    need_disk = m["size"] + 2e9
+    fits_disk = k in local or free is None or free >= need_disk
+    missing = 0.0 if fits_disk else need_disk - free
+    if not fits_disk:
+        why = (f"This is the model that suits your machine, but it is not downloaded and the disk is too small: {m['size'] / 1e9:.1f} GB (+2 GB to spare) needed, "
+               f"{free / 1e9:.1f} GB free at {spec.get('disk_path')}, {missing / 1e9:.1f} GB missing. Nothing is downloaded. Free that space or add a model folder on a "
+               f"bigger drive; the numbers below are for this model once it is there. " + why)
+        warn.append(f"{m['name']}: {missing / 1e9:.1f} GB of disk missing at {spec.get('disk_path')}")
     if k == "bolt" and build is None:
         warn.append(f"Nemotron needs llama.cpp b{BOLT_BUILD} or newer; your llama-server's build could not be read (`llama-server --version`)")
     if build is not None and build < BOLT_BUILD and use in ("agents", "docs") and fits("bolt"):
@@ -308,12 +382,16 @@ def recommend(spec, use, model=None):
     for r in R:
         if r is not chosen and r[1] and r[0] != k and r[0] not in (a["id"] for a in alts) and placeable(r[0]):
             alts.append({"id": r[0], "name": MODELS[r[0]]["name"], "why": r[4] + ("" if r[3] else " (untested on this class of machine)")})
+    for lk in local:      # a model that is already here is worth knowing about even when it is not the best fit
+        if lk != k and lk not in (a["id"] for a in alts) and len(alts) < 2:
+            alts.append({"id": lk, "name": MODELS[lk]["name"], "why": "already on this machine (not the best fit for it)"})
     if use == "agents" and k != "flash-next-q2_0" and cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0") and placeable("flash-next-q2_0"):
         alts.append({"id": "flash-next-q2_0", "name": MODELS["flash-next-q2_0"]["name"],
                      "why": f"the documented default line: {PC} 20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s, moe-cache"})
-    out = {"id": k, "name": m["name"], "use": use, "size": m["size"], "ctx": ctx, "args": args, "engine": engine,
+    out = {"id": k, "name": m["name"], "use": use, "size": size_of(k, local), "ctx": ctx, "args": args, "engine": engine,
            "measured": measured or "untested on this class of machine", "untested": not measured, "why": [why], "warnings": warn,
-           "alternatives": alts[:2], "memory": memory, "local": local.get(k), "download": None if k in local else download_cmd(k)}
+           "alternatives": alts[:2], "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,
+           "download": None if (k in local or not fits_disk) else download_cmd(k)}
     return out
 
 
@@ -461,6 +539,8 @@ def rec_lines(r):
     out += [f"  note: {w}" for w in r["warnings"]]
     if r["local"]:
         out.append(f"  file: {r['local']}")
+    elif not r["fits_disk"]:
+        out.append(f"  not on this machine and {r['disk_missing'] / 1e9:.1f} GB of disk missing: no download is offered")
     else:
         d = r["download"]
         out.append(f"  not on this machine: {d['size'] / 1e9:.1f} GB from {d['source']}")

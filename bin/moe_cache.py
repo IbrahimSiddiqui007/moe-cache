@@ -1080,6 +1080,21 @@ def prompt_cache_note(cram, extra, agent):
     return f"moe-cache: prompt cache: {mem}; {slots}{cps}. To change it: moe-cache-server ... -- --cache-ram MiB"
 
 
+def default_alias(model):
+    """The model name agent mode gives llama-server: the file name without .gguf and the shard suffix; for an Ollama blob (sha256-<hex>, no
+    extension) the Ollama tag with ':' and '/' turned into '-' ('qwen3.6-35b-a3b'), so agents and saved conversations get a readable name."""
+    base = os.path.basename(model)
+    if re.fullmatch(r"sha256-[0-9a-f]{64}", base):
+        try:
+            from moe_cache_pick import ollama_name
+            n = ollama_name(model)
+        except Exception:
+            n = None
+        if n:
+            return re.sub(r"[^A-Za-z0-9._-]", "-", n)
+    return re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", base)
+
+
 def server(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1201,7 +1216,7 @@ def server(argv):
             extra += ["--ctx-checkpoints", "8"]
         alias = arg_after(extra, "-a", "--alias")
         if alias is None:
-            alias = re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(model))
+            alias = default_alias(model)
             extra += ["--alias", alias]
         if not a.no_warm and not a.project:
             if arg_after(extra, "--slot-save-path") is None:

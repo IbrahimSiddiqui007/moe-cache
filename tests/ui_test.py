@@ -607,6 +607,18 @@ req("/api/stop", {})
 deadline = time.time() + 30
 while time.time() < deadline and json.loads(req("/api/status")[1])["state"] not in ("stopped", "exited"):
     time.sleep(0.3)
+# Ollama's store (shared code with the picker): the page lists a manifest's blob under its tag
+import hashlib
+oroot = os.path.join(TMP, "ollama-ui")
+payload = b"GGUF" + b"\0" * 4000
+dg = "sha256:" + hashlib.sha256(payload).hexdigest()
+os.makedirs(os.path.join(oroot, "blobs")); open(os.path.join(oroot, "blobs", dg.replace(":", "-")), "wb").write(payload)
+man = os.path.join(oroot, "manifests", "registry.ollama.ai", "library", "qwen3.6", "35b-a3b"); os.makedirs(os.path.dirname(man))
+json.dump({"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": dg}]}, open(man, "w"))
+so = ui.scan_ollama(oroot)
+check(len(so) == 1 and so[0]["name"] == "qwen3.6:35b-a3b" and so[0]["size"] == len(payload) and so[0]["path"].endswith(dg.replace(":", "-")),
+      f"the page lists an Ollama model under its tag ({so and so[0]['name']})")
+
 # "Which model?" (bin/moe_cache_pick.py): /api/pick and /api/pick/use with a fake machine (32 GB RAM, 16 GB GPU, the Bolt file here)
 bolt = os.path.join(TMP, "pickmodels", "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf")
 os.makedirs(os.path.dirname(bolt)); open(bolt, "wb").write(b"GGUF" + b"\0" * 60)

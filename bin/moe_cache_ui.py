@@ -35,11 +35,7 @@ def default_folders():
     return out
 
 
-def ollama_roots():
-    """Ollama's model stores that exist here (its blobs are GGUF files without an extension; the manifests name them)."""
-    c = [os.environ.get("OLLAMA_MODELS"), os.path.join(os.path.expanduser("~"), ".ollama", "models"), "/usr/share/ollama/.ollama/models",
-         "/var/lib/ollama/.ollama/models"]
-    return [p for p in dict.fromkeys(x for x in c if x) if os.path.isdir(os.path.join(p, "manifests"))]
+ollama_roots = picker.ollama_roots      # one implementation for the page and the picker (bin/moe_cache_pick.py)
 
 
 QUANT_RE = re.compile(r"(?i)(?:^|[-_.])((?:UD-)?I?Q\d(?:_[0-9A-Z]+)*|MXFP4(?:_MOE)?|BF16|F16|F32)(?=[-_.]|$)")
@@ -110,18 +106,9 @@ def scan_folder(folder, depth=4):
 
 def scan_ollama(root):
     out = []
-    for man in glob.glob(os.path.join(root, "manifests", "*", "*", "*", "*")):
-        try:
-            layers = json.load(open(man, encoding="utf-8")).get("layers", [])
-        except Exception:
-            continue
-        for l in layers:
-            if l.get("mediaType") == "application/vnd.ollama.image.model":
-                p = os.path.join(root, "blobs", l.get("digest", "").replace(":", "-"))
-                if os.path.isfile(p):
-                    parts = man.replace(os.sep, "/").split("/")
-                    name = parts[-2] + ":" + parts[-1]
-                    out.append({"path": p, "name": name, "size": os.path.getsize(p), "quant": header_quant(p), "source": "Ollama (" + root + ")"})
+    for name, p in picker.ollama_manifests(root):
+        out.append({"path": p, "name": name.replace("library/", "", 1) if name.startswith("library/") else name, "size": os.path.getsize(p),
+                    "quant": header_quant(p), "source": "Ollama (" + root + ")"})
     return out
 
 
@@ -757,7 +744,7 @@ def slot_dir():
 
 def session_tag(s):
     """The tag the launcher gives this server's saved conversations (moe_cache.server: alias, context, KV types; --fast stores the KV as q8_0)."""
-    alias = re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(s.get("model") or ""))
+    alias = mc.default_alias(s.get("model") or "")
     ctx = int(s.get("ctx") or (65536 if s.get("agent") else 8192))
     kv = "-q8_0-q8_0" if s.get("mode") == "fast" else ""
     return re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-c{ctx}{kv}").rstrip("-_")
