@@ -1505,6 +1505,17 @@ class Store:
         self.models, self.models_at = [], 0
         self.plans = {}
 
+    def fresh(self):
+        """The settings, read again when ui.json changed on disk (`pick --apply` while the page is open)."""
+        try:
+            m = os.path.getmtime(SETTINGS_FILE)
+        except OSError:
+            return self.saved
+        if m != getattr(self, "_mtime", None):
+            self._mtime = m
+            self.saved = picker.load_settings() or self.saved
+        return self.saved
+
     def folders(self):
         return list(dict.fromkeys(default_folders() + self.saved.get("folders", [])))
 
@@ -1514,11 +1525,11 @@ class Store:
             self._spec = (time.time(), picker.machine_specs(self.folders(), self.ls))
         return self._spec[1]
 
-    def save(self):
+    def save(self, *keys):
+        """Write these keys of the page's settings into ui.json, keeping what others wrote meanwhile (`pick --apply`), and take the file's
+        other keys back in (picker.update_settings: locked, atomic, 0600)."""
         try:
-            os.makedirs(mc.CACHE_DIR, exist_ok=True)
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(self.saved, f, indent=1)
+            self.saved = picker.update_settings(lambda d: d.update({k: self.saved[k] for k in keys if k in self.saved}))
         except OSError:
             pass
 
@@ -1654,6 +1665,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
             if u.path == "/api/system":
+                self.store.fresh()                         # `pick --apply` may have changed ui.json while the page is open
                 return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}), pick=self.store.saved.get("pick"),
                                            llama_server=self.store.ls, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
             if u.path == "/api/pick":                      # "Which model?": this machine and one recommendation per use (bin/moe_cache_pick.py)
@@ -1740,14 +1752,14 @@ class Handler(BaseHTTPRequestHandler):
                         lst.append(f)
                 elif f in lst:
                     lst.remove(f)
-                self.store.save()
+                self.store.save("folders")
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(True)})
             if self.path == "/api/start":
                 if body.get("on_demand") and not ON_DEMAND:
                     raise ValueError("Start on first request is not in this version yet")
                 s = self.settings(body)
                 self.store.saved["last"] = {k: v for k, v in s.items() if k != "api_key"}
-                self.store.save()
+                self.store.save("last")
                 self.runner.start(s)
                 return self.send(200, self.runner.status())
             if self.path == "/api/pick/use":               # "Use it": the same settings `moe_cache.py pick --apply` writes (no download here)
@@ -1755,7 +1767,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("use: " + ", ".join(picker.USES))
                 rec = picker.recommend(self.store.pick_specs(True), body["use"], body.get("model") or None)
                 picker.apply(rec, self.store.saved)
-                self.store.save()
+                self.store.save("pick", "last")
                 self.store.models_at = 0                   # the list shows the file at once
                 return self.send(200, {"recommendation": rec, "last": self.store.saved.get("last", {}), "pick": self.store.saved.get("pick")})
             if self.path == "/api/command":

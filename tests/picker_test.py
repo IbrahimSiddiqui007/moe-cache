@@ -152,6 +152,28 @@ check(s["pick"]["id"] == "flash-next-q2_0" and s["pick"]["model"] is None and s[
       "apply of a model not downloaded yet: remembered, but Start keeps the last file")
 check(pk.picked() is None, "picked(): None while the picked file is not here")
 pk.apply(r)
+# audit 2026-10-29 R4-2: ui.json private, written atomically under a lock; the page's save keeps what `pick --apply` wrote meanwhile
+if os.name != "nt":
+    check(os.stat(pk.SETTINGS_FILE).st_mode & 0o777 == 0o600, f"apply: ui.json is private (0600, {oct(os.stat(pk.SETTINGS_FILE).st_mode & 0o777)})")
+import threading
+def _writer(i):
+    for j in range(25):
+        pk.update_settings(lambda d, i=i, j=j: d.__setitem__(f"w{i}", j))
+_ts = [threading.Thread(target=_writer, args=(i,)) for i in range(4)]
+[t.start() for t in _ts]; [t.join() for t in _ts]
+s = json.load(open(pk.SETTINGS_FILE))
+check(all(s.get(f"w{i}") == 24 for i in range(4)) and s["folders"] == ["/x"] and s["pick"]["id"] == "bolt",
+      f"update_settings: 4 writers x 25 updates, none lost, other keys kept ({ {k: v for k, v in s.items() if k != 'last'} })")
+for i in range(4):
+    pk.update_settings(lambda d, i=i: d.pop(f"w{i}", None))
+import moe_cache_ui as _ui
+_st = _ui.Store("llama-server")                      # the page opened before the pick below
+pk.apply(r)                                          # `pick --apply` while the page is open
+_st.saved.setdefault("folders", []).append("/y"); _st.save("folders")
+s = json.load(open(pk.SETTINGS_FILE))
+check(s["pick"]["id"] == "bolt" and s["folders"] == ["/x", "/y"] and _st.saved["pick"]["id"] == "bolt",
+      f"the page's save keeps the pick made meanwhile and takes it in ({s['pick']['id']}, {s['folders']})")
+_st.saved["folders"] = ["/x"]; _st.save("folders")
 
 # `server` without a model uses the pick (stops right after the model check: MOE_CACHE_LIB points to a missing file)
 import io, contextlib
