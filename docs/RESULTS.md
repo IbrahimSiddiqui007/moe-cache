@@ -2568,6 +2568,13 @@ recurrent state 450; compute 1403 (`-ub 512`), 2983 (1024), 3979 (2048); 128k `-
 | Flash-Next Q2_0, moe-cache, 256k setting | 15.1 s | 143 / 142 / 112 / 109 / 111 / 105, 113, 108 up to 138k | 18.52 (97.0 %) | - | **15.93 at 138k** (95.3 %) |
 | Qwen3.5-122B, moe-cache, 64k | 19.2 s | 209 / 266 / 255 / 237 / 217 | 19.69 (99.1 %) | **17.26** (95.3 %) | - |
 | Qwen3.6-35B (stock, fits), 64k | 16.2 s | 477 / 848 / 814 / 792 / 739 | 67.21 | **59.09** | - |
+| *Added from the overnight chain (RESULTS 67, same driver and builds, cold, single runs; 128k points: the 5th chunk ends at 68.5k, then 85k / 101k / 118k / 130.6k)* | | | | | |
+| Flash-Next Q2_0, moe-cache, 128k (46 CPU layers, `-ub 2048`) | 16.2 s | 197 / 221 / 197 / 191 / 179 / 170, 172, 170, 161 up to 130.6k | 18.97 (96.6 %) | - | **15.27 at 130.6k** (93.9 %) |
+| Qwen3.5-122B, moe-cache, 128k (47 CPU layers, `-ub 2048`) | 15.2 s | 190 / 215 / 209 / 198 / 193 / 180, 187, 180, 176 up to 130.6k | 15.54 (95.9 %) | - | **11.27 at 130.6k** (89.3 %) |
+| Qwen3.6-35B (stock, fits), 128k | 14.1 s | 474 / 936 / 1014 / 955 / 895 / 798, 812, 704, 697 up to 130.5k | 55.08 | - | **45.76 at 130.5k** |
+| Qwen3.5-122B, moe-cache, 256k setting | 15.1 s | 113 / 115 / 104 / 103 / 103 / 97, 99, 96, 97 up to 138k | 13.92 (93.3 %) | - | 12.65 at 138k (93.6 %); **timed out at 35 min** after the 138k save (most likely the whole prompt processed again, finding 5) |
+| Qwen3.6-35B (stock, fits), 256k setting (`-ub 512`) | 13.1 s | 182 / 263 / 260 / 266 / 255 / 259, 249, 234, 235 up to 138k, 217-225 up to 227.8k | 49.03 | - | 35.75 at 138k, **41.74 at 227.8k** |
+| GLM-5.3-Flash IQ2_XXS, moe-cache, 64k | 26.1 s | 35.4 / 35.2 (to 20.3k), then **timed out at 35 min** (15 min of it waiting for a cool-down break) | 2.08 (32.7 %) | - | - |
 Whole 63.5k prompt: Flash-Next moe-cache ~289 s vs stock ~525 s (**1.8x**); decode at 63.5k **+23 %** (20.65 vs 16.83). Free RAM during the runs:
 2.8-4.6 GB (moe-cache), 0.3 GB (stock: the file cache fills the rest), 10.5-14.6 GB at ready.
 
@@ -2578,6 +2585,11 @@ Whole 63.5k prompt: Flash-Next moe-cache ~289 s vs stock ~525 s (**1.8x**); deco
 | Qwen3.5-122B 64k | 63.5k | 1.9 s | 2.66 GB (894 MiB) | 2.4 s |
 | Qwen3.6 64k | 63.5k | 1.7 s | 1.90 GB (377 MiB) | 2.2 s |
 | Flash-Next Q2_0 256k setting | 138k | 5.5 s | 5.31 GB | 6.6 s |
+| Flash-Next Q2_0 128k (RESULTS 67) | 130.6k | 5.2 s | 5.08 GB (8 checkpoints, 901 MiB) | 6.1 s |
+| Qwen3.5-122B 128k (RESULTS 67) | 130.6k | 4.0 s | 4.62 GB (1193 MiB) | 4.9 s |
+| Qwen3.6 128k (RESULTS 67) | 130.5k | 3.0 s | 3.54 GB (503 MiB) | 3.2 s |
+| Qwen3.5-122B 256k setting (RESULTS 67) | 138k | 4.0 s | 4.81 GB | 5.1 s |
+| Qwen3.6 256k setting (RESULTS 67) | 138k | 3.1 s | 3.71 GB | 3.2 s; restoring this file later: 1.7 s |
 
 **Findings**
 | # | Finding | Next |
@@ -2591,6 +2603,10 @@ Whole 63.5k prompt: Flash-Next moe-cache ~289 s vs stock ~525 s (**1.8x**); deco
 Not run tonight (time; owner's stop 23:30): Qwen3.6 and the 122B at 256k, the 122B stock at 64k (its C: copy was gone, the D: one was queued
 too late). Coder IQ1_M and GLM: removed from the PC by the owner. Queued for the next PC session: N29 256k ABBA (fixes), N15 (shader), N22
 (laptop-h1-s9), N30 (fixes), with ready scripts (handover/parts/pc-bench.md).
+**Update 2026-10-29 (overnight chain, RESULTS 67):** Flash-Next Q2_0, the 122B and Qwen3.6 at 128k and Qwen3.6 at 256k are in the tables above.
+Finding 5 reproduced on Qwen3.6 at 256k: after the 138k save and the slot-1 request, the next chunk processed all 157,806 tokens again (625 s);
+the 122B at 256k reached 138k in ~23 min and then timed out at the chain's 35-min limit, most likely in the same re-processing. GLM at 64k timed
+out too (35 tok/s prompts; 15 of its 35 min went to a cool-down break). Still open: GLM 64k and the 122B at 256k with a longer limit.
 
 **Addendum: N25 executor chunk size** (MOE_CACHE_EXEC_CHUNK, DLL 31ac159, Flash-Next Q2_0 on D:, launcher defaults, cold, ABBA 32 / 128 / 512 / 512 / 128 / 32,
 256-token water and code decodes, a 3.5k-token prompt; C:\dl\pcb_chunk.ps1)
@@ -2650,3 +2666,178 @@ ctx 8192, cold every run, both arms the plugin, ABBABAAB:
 Tokens identical in all 8 runs; granite identity 4/4 (GPU, CPU, CPU --no-repack) and 2/2 long through the view. Never map it MADV_RANDOM (Linux >= 6.3
 reclaim ignores accessed bits of such mappings: 3.4-4.0 tok/s). Open lead: the compute time doubles because reclaimed view pages fault back;
 a private cache read as fast as page-cache read-ahead would keep both gains.
+
+## 67. Overnight chain on the Windows PC (pc-bench, 2026-10-28 23:32 -> 10-29 08:01): N29, N22, N15, N30, N26, N27, N23, long context, Bolt, HIP, N25c, N18
+
+Same PC (7950X, RX 9070 XT 16 GB, 32 GB, AMD driver 32.0.32015.7029), llama.cpp Vulkan 620d2225c unless named, Flash-Next Q2_0 on D: unless named.
+Scripts C:\dl\pcb_overnight.ps1 (+ pcb_ovlib.ps1) and the follow-up C:\dl\pcb_followup.ps1; one run = C:\dl\pcb\pcb_ov_run.py (launcher C:\moe-cache-ov
+= experimental 15e09b1 unless named, `server MODEL`, own cache dir), cold (file cache flushed before every run), under the PC's timed lock, nothing
+else running ("others running: none" before every run, 25.0-26.0 GB available). ABBA = runs A, B, B, A; text = each run's replies compared byte for
+byte with run 1. Raw files: C:\dl\overnight\ (summary.csv, chain.log, followup.log, `<item>.jsonl`, `<item>_N.*`). RAM peak = the highest "in use"
+of the log-only 28 GiB watch (C:\dl\overnight\ramcap.log, started 01:04, so N29 and N22 runs 1-2 are not covered; "< 28" = never logged over 28 GiB).
+Cool-down breaks (owner): 03:13-03:28 (inside N27 run 3's lock wait) and 06:06-06:21 (inside GLM 64k's time limit); this PC exposes no CPU temperature.
+
+**Summary**
+| Item | Result | Verdict |
+|---|---|---|
+| N15 async reads of the plugin split's inputs | decode **+12 %** (22.7 -> 25.6 after 34k), water +12 %, code +12 %, 34k prompt +2 %, every pair, text identical | **merged** (f310c28) |
+| N26 256k: old plan vs head 15e09b1 | head 72 vs old 139 tok/s prefill, decode 16.2 vs 19.1 | **T0a**: regression of the merged N26 plan at 256k; fixed on head (378cc26, 2963cc5), below |
+| N29 256k: `-ub 1024`, block off | prefill +3.5 % at 4k, equal at 34k, decode at 4k -13 % | **killed** (but both arms ran every prompt on the CPU, below) |
+| N22 pinned / async read-back | 34k prompt +3 % (+2.4, +3.6 % per pair), 128k mixed (-2.0, +5.1 %), read-back time per block unchanged | not merged; session "abba" repeats it |
+| N27 warm saves at 64k / 128k | prefill 149 -> 201 (64k), 92 -> 176 (128k); follow-up after 90 s idle equal | already merged (cd625ba); the prefill gain is a layer-plan difference, not the save (below) |
+| N30 executor pool spin | spin 2-5 ms: parks -97 %, decode -0.8 to -2 %, CPU time +14-23 % | **killed** |
+| N23 where a long prompt's time goes | 34k 233 tok/s, 128k 113 tok/s with the Vulkan per-op logger on | logs for session "n23" |
+| Long context (RESULTS 64 gaps) | FN Q2_0 / 122B / Qwen3.6 at 128k, Qwen3.6 at 256k done; 122B 256k and GLM 64k **timed out at 35 min** | in RESULTS 64's tables |
+| Bolt | OpenCode replay at 256k 70.7 s (47.8 s at the default context); tiny-request test did not run (harness bug) | recorded; session "bolt" reruns |
+| I31 stock HIP vs stock Vulkan | HIP decode 7.7 vs 18.7 tok/s, 3.5k prompt 45 vs 122 | **killed** |
+| moe-cache under HIP | the plugin loads and runs; HIP is slow anyway. Vulkan: plugin 22.9 vs stock 17.5 tok/s (water) | Vulkan stays |
+| N25c executor timers | pool matmul 26.4 s of the plugin's 52.9 s CPU time (32 GB/s incl. waits), cold short run | open: split the other half (below) |
+| N18 split reads | not run: the script looked for the GLM shard on C: (it is on D:) | stays parked |
+| Driver timeout of ~21:40 | event logs dumped to C:\dl\overnight\tdr_dump.txt | session "tdr" analyses it |
+
+**N15: async reads of the plugin split's inputs** (DLL C:\dl\n15 = claude/n15-async, `--ctx 40960`; A = `MOE_CACHE_ASYNC_IN=0`, the old blocking
+copies; B = default; 256-token water and code decodes, then a 34k-token prompt + decode; 37 CPU expert layers)
+| Run | arm | water tok/s | code tok/s | 34k prompt tok/s | decode after 34k | async reads | RAM peak GiB |
+|---|---|---|---|---|---|---|---|
+| 1 | A | 22.02 | 22.40 | 286.6 | 22.69 | 0 | 28.57 |
+| 2 | B | 24.64 | 25.06 | 297.2 | 25.46 | 18,944 | 28.53 |
+| 3 | B | 24.72 | 25.08 | 292.8 | 25.67 | 18,944 | 28.53 |
+| 4 | A | 22.11 | 22.49 | 290.3 | 22.80 | 0 | 28.55 |
+| B vs A | | **+11.9 %** | **+11.7 %** | +2.3 % | **+12.4 %** | | |
+Text identical in all 4 runs. Twice the +6 % the microbench predicted (ledger N15). Every pair wins with identical text: merged into experimental
+(f310c28, `MOE_CACHE_ASYNC_IN`, on by default for AMD Vulkan). Every run passed 28 GiB in use (log only).
+
+**N26 at 256k: old layer plan vs the merged one (T0a)** (`--ctx 262144 --agent`, 4k and 34k prompts; A = launcher 28b022b + DLL f478564, the plan of
+RESULTS 64; B = experimental 15e09b1, which has N26's KV from the header)
+| Run | arm | plan | 4k prompt tok/s | decode after | 34k prompt tok/s | decode after | GPU blocks (34k) | RAM peak GiB |
+|---|---|---|---|---|---|---|---|---|
+| 1 | A | 48 CPU expert layers, `-ub 512` | 138.9 | 19.17 | 153.1 | 18.49 | 3,149 | < 28 |
+| 2 | B | 45 CPU expert layers, `-ub 512` | 71.7 | 16.25 | 73.7 | 15.45 | **0** | < 28 |
+| 3 | B | same | 73.1 | 16.21 | 75.6 | 15.39 | **0** | 30.35 |
+| 4 | A | same as 1 | 139.8 | 18.97 | 154.6 | 18.30 | 3,149 | 29.10 |
+| B vs A | | | **-48 %** | -15 % | **-51 %** | -16 % | | |
+Text: A vs A identical; B differs from A (different layer split). Main's reading (T0a): the slow arm is the **new** plan at 15e09b1. It had no
+compute-buffer row for 256k and used a 0.55 GB fallback, so it put 3 expert layers on the GPU; the long-prompt block then found 0 MiB free and every
+prompt ran on the CPU (0 GPU blocks). 378cc26 (the N29 data: measured 256k compute rows) already makes head plan 48 CPU layers at 256k like the
+fast arm, and 2963cc5 scales the largest measured row for contexts beyond the table instead of the flat 0.55 GB. RESULTS 64's 256k numbers (old
+plan) stay the right ones for head.
+
+**N29 at 256k: `-ub 1024` with the long-prompt block off** (DLL and launcher 15e09b1, `--ctx 262144 --agent`; A = defaults: `-ub 512`, block on,
+45 CPU expert layers; B = `--ub 1024`, `MOE_CACHE_GPU_MIN_TOKENS=999999`, 47 CPU expert layers)
+| Run | arm | 4k prompt tok/s | decode after | 34k prompt tok/s | decode after | GPU blocks |
+|---|---|---|---|---|---|---|
+| 1 | A | 81.3 | 19.89 | 86.7 | 19.29 | 0 |
+| 2 | B | 86.2 | 17.66 | 87.1 | 19.57 | 0 |
+| 3 | B | 85.9 | 17.80 | 88.2 | 19.53 | 0 |
+| 4 | A | 85.0 | 20.77 | 89.0 | 19.45 | 0 |
+| B vs A | | +3.5 % | **-12.8 %** | -0.2 % | +0.9 % | |
+Text: A vs A identical, B differs from A. RAM: before the watch started. **Killed** (main): no prompt gain, decode at 4k lower. Caveat: this ran on
+the same 15e09b1 plan as N26's slow arm, so arm A's block also found no GPU memory (0 blocks) and the ABBA compared two CPU-only prompt paths; what
+`-ub 1024` does next to working GPU blocks at 256k was not measured (head now plans 48 CPU layers with `-ub 512` at 256k, 378cc26).
+
+**N22: pinned + async read-back of the long-prompt block** (DLL 77e6e09 = claude/n22-readback, launcher 15e09b1, `--ctx 131072`: 44 CPU expert
+layers, `-ub 2048`; A = `MOE_CACHE_GPU_READBACK=0`, the old path; B = default; both `MOE_CACHE_SEG_TIMES=1`)
+| Run | arm | 34k prompt tok/s | decode after | 128k prompt tok/s | decode after | GPU blocks (128k) | read back per block | RAM peak GiB |
+|---|---|---|---|---|---|---|---|---|
+| 1 | A | 241.5 | 19.86 | 129.8 | - (reply ended after 3 tokens) | 1,358 | 13.1 ms | not logged |
+| 2 | B | 247.4 | 19.40 | 127.2 | 15.39 | 1,242 | 13.8 ms | not logged |
+| 3 | B | 253.7 | 19.77 | 123.4 | 15.10 | 1,180 | 13.5 ms | 29.74 |
+| 4 | A | 244.8 | 19.69 | 117.4 | - (reply ended after 3 tokens) | 978 | 13.1 ms | 28.87 |
+| B vs A | | +3.0 % (pairs +2.4, +3.6) | | +1.4 % (pairs -2.0, +5.1) | | | unchanged | |
+Read back per block = the block timer's total "read back" ms / blocks over the whole run (upload ~59 %, compute ~16 % of block time in both arms).
+The number of 128k blocks that found GPU memory varies from run to run (978-1,358), which moves the 128k prompt more than the arm does. Text:
+**DIFFERENT in all three comparisons, including A vs A** (runs 1 and 4 already differ in the 34k reply's thinking): flagged for session "abba",
+not investigated here. Verdict: no clear gain and the read-back time it targets did not fall; not merged, "abba" repeats the ABBA.
+
+**N27: warm-session saves** (`--ctx 131072 --agent --warm`, a 64k-token conversation, 90 s idle, a follow-up request, then the conversation grown
+to 128k (58,975 new tokens), 90 s idle, a follow-up; A = experimental 15e09b1; B = launcher claude/n27-warm-save 2188d79; same DLL 15e09b1)
+| Run | arm | plan | 64k prompt tok/s | follow-up after idle | 128k step tok/s | follow-up after idle | GPU blocks 64k / 128k | RAM peak GiB |
+|---|---|---|---|---|---|---|---|---|
+| 1 | A | 44 CPU layers, `-ub 2048` | 147.8 | 0.41 s | 91.7 | 1.13 s | 879 / **0** | 28.48 |
+| 2 | B | 46 CPU layers, `-ub 2048` | 203.2 | 0.42 s | 175.0 | 1.18 s | 1,426 / 1,334 | 28.79 |
+| 3 | B | same | 199.4 | 0.43 s | 176.9 | 1.12 s | 1,426 / 1,334 | 28.73 |
+| 4 | A | same as 1 | 151.1 | 0.42 s | 91.7 | 1.25 s | 878 / **0** | 28.50 |
+2188d79 branches from before N26 (3cd1023), so B ran the **old** flat-KV plan (2 more CPU expert layers, so more free VRAM) and A the N26 plan:
+the +35 % (64k) and +92 % (128k) prefill come from the long-prompt blocks finding GPU memory in B and not (128k) or only partly (64k) in A, not
+from the warm save. The follow-up after idle is the same in both arms. N27 is merged already (cd625ba). The 128k case is T0a's pattern at 128k: head
+changed the 128k plan again (378cc26: no `-ub 2048` at 128k+), so a head check at 128k in agent mode is still needed. Text: DIFFERENT in all
+three comparisons, including A vs A (flagged for "abba").
+
+**N30: executor pool spin** (DLL 8451a87 = claude/n30-pool-spin, launcher 28b022b defaults, `MOE_CACHE_POOL_SPIN_US` unset = the old 40,000
+`pause`s; order unset / 500 / 2000 / 5000 / 5000 / 2000 / 500 / unset; water and code decodes, a 3.5k prompt; C:\dl\pcb_spin.ps1)
+| Spin | water tok/s | code tok/s | 3.5k prompt tok/s | pool parks over the two decodes | llama-server CPU s |
+|---|---|---|---|---|---|
+| unset | 23.45, 23.50 | 23.71, 23.79 | 332.8, 320.1 | 265,920, 265,705 | 279, 281 |
+| 500 us | 23.13, 23.27 | 23.51, 23.68 | 330.4, 326.0 | 288,825, 288,475 | 269, 267 |
+| 2000 us | 22.97, 23.06 | 23.31, 23.45 | 325.7, 318.0 | 7,744, 7,756 | 327, 319 |
+| 5000 us | 23.17, 23.02 | 23.31, 23.37 | 328.8, 329.8 | 7,680, 7,701 | 344, 345 |
+Text identical in all 8 runs; no run logged over 28 GiB. 500 us changes nothing (parks +9 %); 2-5 ms removes 97 % of the parks, but decode is
+0.8-2 % lower than unset in every pair and the server uses 14-23 % more CPU time. Workers sleeping between layers are not the N25 gap: **killed**.
+
+**N23: where a long prompt's time goes** (DLL 15e09b1, `--ctx 131072`, `GGML_VK_PERF_LOGGER=1`, `MOE_CACHE_SEG_TIMES=1`, one run each)
+| Run | prompt | prompt tok/s | decode after (logger on) | GPU blocks | block time: upload / compute / read back | RAM peak GiB |
+|---|---|---|---|---|---|---|
+| 1 | 34k | 233.0 | 10.59 | 748 | 58 / 16 / ~25 % | 28.23 |
+| 2 | 128k | 113.1 | 10.18 | 837 | 60 / 16 / ~24 % | 29.14 |
+The per-op logs (n23_perf_1/2.err.txt, 20 and 24 MB) are analysed by session "n23"; the decode numbers are slowed by the logger and are not speeds.
+
+**Long context** (pcb_lc.ps1, launcher 28b022b + DLL f478564 as in RESULTS 64, 35-min limit per point): the numbers are in RESULTS 64's tables.
+| Point | Result | RAM peak GiB |
+|---|---|---|
+| Flash-Next Q2_0 128k | done, 768 s; decode 18.97 at 4k, 15.27 at 130.6k | 28.67 |
+| Qwen3.5-122B 128k | done, 735 s; decode 15.54 at 4k, 11.27 at 130.6k | < 28 |
+| Qwen3.6 128k (stock) | done, 196 s; decode 55.08 / 45.76 | 28.37 |
+| Qwen3.5-122B 256k setting | **timed out at 35 min** after reaching 138k (decode 12.65 there) and its save | < 28 |
+| Qwen3.6 256k setting (stock) | stopped feeding at its 1500 s budget at 227.8k (decode 41.74); after the 138k save the next chunk processed all 157.8k tokens again | < 28 |
+| GLM-5.3-Flash 64k | **timed out at 35 min** (15 min waiting for the 06:06 cool-down break; 35 tok/s prompts, decode 2.08 at 4k, hit 32.7 %) | < 28 |
+Qwen3.6 (C:) runs warned that the flush's other files (22.8 GB) were smaller than RAM, so its file may have been partly cached.
+
+**Bolt (Nemotron 3.5 Bolt 74B-A9B, llama.cpp b11966, stock = the launcher's default for a model that fits)**
+| Measure | 256k (`--ctx 262144`, launcher plan `--n-cpu-moe 88 -ub 512`) | default context (RESULTS 65) |
+|---|---|---|
+| OpenCode replay, whole task | **70.7 s** | 47.8 s |
+| first token (7,634-token first prompt) | 35.0 s (218 tok/s) | 18.3 s |
+| follow-up first token, median | 2.09 s | 1.53 s |
+| decode, median | 25.5 tok/s | 28.4 tok/s |
+One cold run, errors 0; in 4 of 5 requests the model stopped 11-26 tokens before the recorded length (replay warning).
+The Hermes replay did not run: C:\dl\glm\sess_oc holds only the OpenCode recording. **Tiny requests** (default / `--reasoning-budget 0` / no
+thinking, on 620d2225c and on b11966): none ran. The harness started a stock run (`--largs=--stock`) through the launcher in C:\moe-cache-ov,
+which looked for the plugin DLL in C:\moe-cache-ov\build\win and stopped ("plugin not built"). Session "bolt" fixes it and reruns.
+
+**I31: stock HIP vs stock Vulkan** (raw llama-server, Flash-Next Q2_0, `-ngl 99 --n-cpu-moe 39 -c 8192 -fa on -ub 2048`; A = C:\llama-vk
+(Vulkan 620d2225c), B = C:\llama-hip (official b11669 ROCm/HIP zip, no SDK installed))
+| Run | arm | water tok/s | 3.5k prompt tok/s | decode after | RAM peak GiB |
+|---|---|---|---|---|---|
+| 1 | Vulkan | 18.70 | 122.7 | 16.98 | 28.92 |
+| 2 | HIP | 7.74 | 45.5 | 5.99 | 30.85 |
+| 3 | HIP | 7.68 | 45.8 | 5.84 | 30.85 |
+| 4 | Vulkan | 18.65 | 122.0 | 16.53 | 28.84 |
+Text: Vulkan vs Vulkan identical, HIP differs. HIP is 2.4x slower in decode and 2.7x in prompts on this card: **killed**.
+
+**moe-cache under HIP** (follow-up item 14: the plugin DLL 15e09b1 in C:\llama-hip's llama-server, `--ctx 65536`, water + 34k prompt)
+| Run | arm | plan | water tok/s | 34k prompt tok/s | decode after | RAM peak GiB |
+|---|---|---|---|---|---|---|
+| 0 | plugin, HIP (load check) | 48 CPU layers, `-ub 512` | 7.82 | - | - | not logged |
+| 1 | stock, HIP | `-ub 512` | 7.66 | 30.0 | 6.74 | 30.86 |
+| 2 | plugin, HIP | 48 CPU layers, `-ub 512` | 7.79 | 39.8 | 6.60 | 28.23 |
+| 3 | stock, Vulkan | `-ub 1024` | 17.52 | 179.9 | 23.37 | 30.85 |
+| 4 | plugin, Vulkan | 38 CPU layers, `-ub 1024` | **22.88** | **199.0** | 23.28 | 28.64 |
+The plugin loads and runs under HIP ("moe-cache: active"), but the launcher reads no GPU memory from the HIP build and plans every expert layer on
+the CPU; HIP itself is slow either way. Vulkan: the plugin is +31 % on the short decode and +11 % on the 34k prompt, equal after 34k. Vulkan stays
+the only GPU route on Windows AMD.
+
+**N25c: executor timers on decode-like batches** (llama-perplexity, DLL 15e09b1, 6 chunks of 512 tokens at `-b 8 -ub 8`, `--n-cpu-moe 39`, cold,
+`MOE_CACHE_STATS=1`): 2.0 min, PPL 5.2407; 15,015 graphs, hits 97.7 % (46,833 misses, 21.6 GB read, budget 24.2 GiB). The plugin's CPU time
+(`cpu_compute`, the whole executor graph) 52.90 s of 53.97 s in the backend; inside it the pool's q2_0 matmuls (`executor by type`) **26.39 s**
+for 854.2 GB of expert rows = 32.4 GB/s including waits (the 7950X reads ~50-55 GB/s, RESULTS 64 addendum). So half the executor's time is outside
+its matmuls (waits for the cold run's 46,833 misses, routing, the other ops). Verdict: the timers work now; to tell waits from work, the next
+run should be warm and longer, or the executor needs a wait timer. Not a decode result (batches of 8 tokens).
+
+**N18: split expert reads** (C:\dl\pcb_n18.ps1): did not run. It flushes and reads `C:\models\GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf` first,
+which does not exist (GLM is on D:), and the flush script stopped there. N18 stays parked (killed on Linux; owner parked it on Windows).
+
+**Text check (flag only).** A vs A differs in N22 (runs 1 and 4, ctx 131072, already in the 34k reply) and N27 (64k+); it is identical in N15, N26,
+N29, N30 and I31. Session "abba" owns the question whether this is the check or the runs.
+
+**RAM watch.** Past 28 GiB in use (log only, nothing stopped): every logged N15, N22, N26 (runs 3-4), N27, N23, I31 and HIP-item run, Flash-Next
+and Qwen3.6 at 128k; peak **30.86 GiB** (hip_plugin run 1). Never past 28 GiB: N30, the 122B at 128k and 256k, Qwen3.6 at 256k, GLM, Bolt, N25c. The product's hard cap (RAM minus max(4 GiB, 12.5 %)) was merged since (e708462).

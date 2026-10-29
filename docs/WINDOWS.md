@@ -141,7 +141,9 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   (bit-exact but 0.60-0.77x of llama.cpp's own kernels on Zen 4).
 - `--gpu-cache` is not available (needs `LD_PRELOAD`); the launcher uses static GPU expert layers. A path-loading version exists on a branch, but
   llama.cpp's own GPU expert cache loses on this Vulkan PC (9.7 vs 13.7 tok/s without it) and aborts at load above about 5.9 GiB (RESULTS 59), so it is parked.
-- HIP / ROCm: needs AMD's HIP SDK, untested. Intel GPUs on Windows: untested.
+- HIP / ROCm (RESULTS 67): llama.cpp's official b11669 HIP zip runs on the RX 9070 XT without the HIP SDK, and the plugin loads into it, but HIP
+  is much slower than Vulkan on this card (stock Flash-Next Q2_0: decode 7.7 vs 18.7 tok/s, 3.5k prompt 45 vs 122 tok/s), so use Vulkan. Intel GPUs
+  on Windows: untested.
 - The bash wrappers (`moe-cache-server` ...) do not run on Windows: use `python bin\moe_cache.py <command>`.
 - GLM-5.3-Flash (102 GB) runs, long-prompt GPU blocks included (3,020-token prompt at 54.8 tok/s, RESULTS 60); the earlier crash in that path is fixed.
 - Run as a normal user (not elevated), Windows may refuse the file-view cache's working-set minimum (error 1314 in the log); the cache still works
@@ -171,7 +173,7 @@ from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (decode 1.52 -> 2.02 tok/s, RESU
 | q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045 on the laptop's CUDA, RESULTS 53; **0.0120 on this PC's Vulkan**, `--fast` as shipped 0.0145, RESULTS 61 R11), so it is part of `--fast` (the owner kept it there), not the default. Measured on this desktop at context 8192 (RESULTS 60, R11): decode 22.01 vs 22.12 tok/s, a 2,950-token prompt 170.6 vs 164.6: no speed difference; it matters only for memory at long agent contexts |
 | WSL2 | untested; GPU access from WSL2 still goes through the Windows driver. Native Linux with the RADV Vulkan driver is the tested route for AMD cards (GitHub issue #1, RX 9070 XT) |
 
-Still to try (owner's machine): the HIP SDK, Linux/RADV on the same PC. A newer Adrenalin driver (32.0.32015.7029) was tried: it fixed the Flash-Next
+Still to try (owner's machine): Linux/RADV on the same PC. A newer Adrenalin driver (32.0.32015.7029) was tried: it fixed the Flash-Next
 checkpoint crash but not the RAM use, which is the loader's (RESULTS 56, I37).
 
 ## 7. Fair stock-vs-plugin timings: empty the file cache first
