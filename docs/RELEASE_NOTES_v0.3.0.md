@@ -74,6 +74,10 @@ These numbers come from one PC. Your speed depends on RAM, the SSD and the GPU. 
 | Linux | The expert cache lives in read-only mappings of the model file too (as on Windows): steady decode +4.7 %, first request +49 %, tokens identical. `MOE_CACHE_LINUX_VIEW=0` goes back |
 | Sampling | The launcher passes the model card's sampling settings for Qwen3/3.5/3.6/3.8 and GLM; `--no-sampling-defaults` turns it off |
 | Launcher | `--version`; finds `C:\llama\llama-server.exe` (Windows) or install.sh's build (Linux) without `--llama-server` |
+| **Model picker** | `moe_cache.py pick` and the control page read your machine (RAM, VRAM, free disk, SSD or not, CPU) and ask what it is for (agents and coding, chat, long documents), then recommend one model, file, context and flags and can use it (`--apply`; `connect` picks it up). It warns but never blocks, its memory estimate includes the chosen context, and it says "untested" where we have no measurement. README: "Which model for my machine?" |
+| Agent setup | `connect hermes\|opencode --write` keeps a `.bak` of your own config (also a local Ollama or LM Studio setup) and prints what it replaced; the control page reads back `opencode.jsonc`. Tested end to end on Windows and Linux with Hermes and OpenCode (two-turn coding tasks; follow-up turns reuse the prompt and process only the new tokens) |
+| Stock runs | A model that fits in RAM + VRAM (e.g. Nemotron 3.5 Bolt) runs stock llama-server without needing the plugin build, and short requests stay on the CPU when expert layers are there (`GGML_OP_OFFLOAD_MIN_BATCH=512`): a tiny request 1.32 -> 0.6 s, answers identical |
+| Fixes from a full code audit | The tuner reserved too little GPU memory for `-ub 2048` at 128k+ contexts (long prompts lost their GPU block); the control page's port scan could send its API key to another local server; the on-demand listener read request bodies before checking the key; Linux idle release did nothing (now 1656 -> 967 MiB); a second Ctrl+C during a prompt could hang the exit; two NVIDIA GPUs were treated as none; the release job's Windows kit build is locked down like the Linux one; about a dozen smaller ones (CHANGELOG) |
 | CI | The Windows runner unzips the kit and runs `check --run` and `on-demand` from it, as a user would. Releases are published only after identity and Windows CI passed on the tagged commit |
 
 Full list: [CHANGELOG.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/CHANGELOG.md).
@@ -87,7 +91,8 @@ Full list: [CHANGELOG.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/m
 | Working-set privilege | the hard minimum that keeps experts in RAM needs SeIncreaseWorkingSetPrivilege (a normal desktop login has it); without it the cache still runs at full speed, but Windows may trim it under memory pressure |
 | Flash-Next on AMD, driver older than 32.0.32015.7029 | context checkpoints are off (the driver crashes); update Adrenalin |
 | Replacing llama.cpp's own CPU functions outside the executor, `--gpu-cache` | Linux only (they need `LD_PRELOAD`); the executor's Q2_0 and IQ3_XXS kernels run on Windows too |
-| HIP / ROCm on Windows | untested |
+| HIP / ROCm on Windows | loads and gives the same answers, but is about 2.4x slower than Vulkan on the RX 9070 XT: use the Vulkan build |
+| Nemotron 3.5 Bolt | needs llama.cpp b11966 or newer; the picker says so when your llama-server is older |
 
 ## Known issues
 
