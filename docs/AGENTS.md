@@ -93,6 +93,26 @@ Use PowerShell. `LS` is your llama-server folder, `MODEL` your .gguf. Each step 
 
 If a step fails, send: `python bin\moe_cache.py on-demand --status`, the last 30 lines of `on-demand-listener.log` and `on-demand.log` (both in `%USERPROFILE%\.cache\moe-cache\`), and the text of the app's error.
 
+## T8: Hermes Desktop and OpenCode Desktop through the control page (Windows, owner click-through)
+
+Both desktop apps are already installed on the test PC (Hermes Desktop; OpenCode Desktop 2.1.4 in `%LOCALAPPDATA%\Programs\@opencodedesktop`). This path needs no on-demand listener: the control page starts the server and writes both configs. Use a small model first (Qwen3.6, 20 GB). Each step says what you should see; if not, stop and note it.
+
+| # | Do | You should see |
+|---|---|---|
+| 1 | Double-click `bin\moe-cache-ui.bat` (the console prints `plugin: ...dll`, `llama-server: ...`, and the page opens) | the control page; the header shows RAM and the GPU |
+| 2 | Pick the model, turn **Agent mode** on, context 65536, press **Start** | status goes to ready; Why list has no warning in red; the key line says "the launcher's agent key" |
+| 3 | Agents tab: **Connect OpenCode**, then **Connect Hermes** | each says "written": OpenCode with the file path (`%USERPROFILE%\.config\opencode\opencode.json`, or `opencode.jsonc` if OpenCode Desktop made one), Hermes "now uses NAME at http://127.0.0.1:PORT/v1 (context 65536)" and a line `before: provider ..., model ...; old config kept as ...config.yaml.bak`. Your own Hermes setup (OpenRouter etc.) is in `%LOCALAPPDATA%\hermes\config.yaml.bak`: copy it back over `config.yaml` to undo |
+| 4 | **Hermes Desktop**: open it, Settings -> Model -> Main model | provider `custom`, URL `http://127.0.0.1:PORT/v1`, model = the file name without `.gguf`, context 65536. If it asks at first run, choose "Local / custom endpoint" and type those values (key: **Copy key** on the page) |
+| 5 | Hermes Desktop: new chat: "Use your terminal to list the files in this folder." | the answer streams, a terminal tool call runs; the page's Status tab shows prompt tokens and decode tok/s; first turn is the slow one |
+| 6 | Hermes Desktop: a second message | much quicker: only the new tokens are processed |
+| 7 | **OpenCode Desktop**: open it, open a project folder, open the model picker | `moe-cache/NAME` is listed and selected. If it is not: Settings -> Providers -> add OpenAI-compatible, base URL `http://127.0.0.1:PORT/v1`, key from **Copy key**, model NAME |
+| 8 | OpenCode Desktop: "Run ls and read a file, tell me what it says." | a bash and a read tool call, then the answer |
+| 9 | Control page, Agents tab | the two conversations appear as saved sessions after they have been idle for a while (warm sessions) |
+| 10 | Press **Stop** on the page, then **Start** again, send one more message in either app | the old conversation is picked up (restored at start) |
+| 11 | Close the apps; the page's **Stop** ends the server | llama-server is gone from Task Manager |
+
+If a step fails, send the page's Log tab (or `ui.log` of the console) and the text of the app's error.
+
 ## Using the agents with a GUI
 
 Both agents come with a graphical front end. The steps are the same everywhere: start the server in agent mode, write the agent's config, open the GUI.
@@ -113,7 +133,7 @@ The Linux commands were checked against `hermes --help` and `opencode --help` (2
 
 | Agent | What `connect ... --write` does | Windows | Do the GUIs read it? |
 |---|---|---|---|
-| Hermes | runs `hermes config set` for `model.provider=custom`, `model.base_url`, `model.default`, `model.context_length`, `model.api_key`. It looks for `hermes` on `PATH` and fails if it is not there | The Hermes Desktop installer puts the CLI in `%LOCALAPPDATA%\hermes\bin`: add that directory to `PATH` (or run the command from it) so `connect` finds it. `hermes config set` writes the dotted `model.*` keys (the key too) to `%LOCALAPPDATA%\hermes\config.yaml`: on Windows Hermes' home is `%LOCALAPPDATA%\hermes` (`HERMES_HOME` overrides it), not `%USERPROFILE%\.hermes` (hermes_constants.py; read 2026-10-27) | Yes (source and docs, 2026-10-27; not yet tried on the PC): Hermes Desktop (apps/desktop, Electron) runs the same Python backend on the same `HERMES_HOME`, so it reads that `config.yaml`. Its model picker in the chat box is remembered per device and does not change the default; the default is Settings → Model → Main model, which is the same `config.yaml` entry |
+| Hermes | runs `hermes config set` for `model.provider=custom`, `model.base_url`, `model.default`, `model.context_length`, `model.api_key`. It looks for `hermes` on `PATH` and fails if it is not there. Before the first change it copies `config.yaml` to `config.yaml.bak` and prints the model you had (a config that already points at a local server is not copied over the backup) | The Hermes Desktop installer puts the CLI in `%LOCALAPPDATA%\hermes\bin`: add that directory to `PATH` (or run the command from it) so `connect` finds it. `hermes config set` writes the dotted `model.*` keys (the key too) to `%LOCALAPPDATA%\hermes\config.yaml`: on Windows Hermes' home is `%LOCALAPPDATA%\hermes` (`HERMES_HOME` overrides it), not `%USERPROFILE%\.hermes` (hermes_constants.py; read 2026-10-27) | Yes (source and docs, 2026-10-27; not yet tried on the PC): Hermes Desktop (apps/desktop, Electron) runs the same Python backend on the same `HERMES_HOME`, so it reads that `config.yaml`. Its model picker in the chat box is remembered per device and does not change the default; the default is Settings → Model → Main model, which is the same `config.yaml` entry |
 | OpenCode | merges a `moe-cache` provider into `opencode.json` and sets `model` to `moe-cache/NAME`; the old file is kept as `.bak`. Default file: `$XDG_CONFIG_HOME/opencode/opencode.json`, else `~/.config/opencode/opencode.json`; `--config PATH` writes another one | `%USERPROFILE%\.config\opencode\opencode.json` (the launcher does not use `%APPDATA%`). OpenCode Desktop reads it too: its server runs inside the app on the same global folder (it only moves its state folder). OpenCode merges `config.json`, `opencode.json`, then `opencode.jsonc` (later wins) and creates `opencode.jsonc` on first run, so `connect` writes into `opencode.jsonc` when that is plain JSON, and warns when a `.jsonc` with comments sets its own `model`. `OPENCODE_CONFIG` (a file merged after these) is reported too | Yes for `opencode web` and the Desktop app (same server code, same global folder; source read 2026-10-27, not yet tried on the PC) |
 
 If a GUI does not show the model, add the provider by hand in its settings: type OpenAI-compatible, base URL `http://127.0.0.1:8080/v1` (your `--port`), model name = the file name, context 65536, API key `none` (or your `--api-key`). `connect` without `--write` prints these values. Keep the server on `127.0.0.1`. In agent mode the key is in the config that `connect --write` wrote (or print it with `python3 bin/moe_cache.py key`); llama-server's own web page asks for it once.
