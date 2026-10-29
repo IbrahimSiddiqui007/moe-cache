@@ -172,7 +172,7 @@ def machine_specs(folders=None, ls=None):
         free = None
     return {"os": "Windows" if WINDOWS else sys.platform, "ram_total": mc.mem_total(), "ram_cap": mc.mem_cap(), "gpu": name, "vram": vram,
             "disk_path": disk_at, "disk_free": free, "disk_kind": disk_kind(disk_at), "avx2": avx2, "avx512": avx512,
-            "llama_build": llama_build(ls or os.environ.get("LLAMA_SERVER", "llama-server")), "local": find_local(folders)}
+            "llama_build": llama_build(ls or mc.default_llama_server()), "local": find_local(folders)}
 
 
 # ---- the rules (pure: unit-tested with fake specs, tests/picker_test.py) ----
@@ -418,7 +418,7 @@ def pick(argv):
     ap.add_argument("--model", choices=list(MODELS), help="use this candidate instead of the recommendation (only warned about, never refused)")
     ap.add_argument("--apply", action="store_true", help="write the choice into the launcher's settings (server / on-demand without a model use it)")
     ap.add_argument("--models-dir", action="append", default=[], help="another folder with .gguf files (repeatable)")
-    ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
+    ap.add_argument("--llama-server", default=mc.default_llama_server())     # as server / check: LLAMA_SERVER, PATH, C:\\llama or install.sh's folder
     ap.add_argument("--json", action="store_true", help="print the machine and the recommendations as JSON")
     a = ap.parse_args(argv)
     spec = machine_specs(a.models_dir, a.llama_server)
