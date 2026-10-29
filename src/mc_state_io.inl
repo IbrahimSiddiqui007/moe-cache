@@ -318,7 +318,21 @@
             j = b;
             j += ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
                  ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases) +
-                 ",\"pool_parks\":" + std::to_string(pool ? pool->parks.load() : 0) + ",\"async_in\":" + std::to_string(async_in.load());
+                 ",\"pool_parks\":" + std::to_string(pool ? pool->parks.load() : 0) + ",\"async_in\":" + std::to_string(async_in.load()) +
+                 ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
+                 ",\"n_gap\":" + std::to_string(n_gap.load()) + ",\"gap_b_ns\":[" + std::to_string(gap_b_ns[0].load()) + "," + std::to_string(gap_b_ns[1].load()) + "," +
+                 std::to_string(gap_b_ns[2].load()) + "," + std::to_string(gap_b_ns[3].load()) + "]";
+            if (pool && pool->times) {      // MOE_CACHE_EXEC_TIMES
+                j += ",\"ex\":{\"runs\":" + std::to_string(pool->n_runs.load()) + ",\"run_ns\":" + std::to_string(ex_run_ns.load()) + ",\"quant_ns\":" + std::to_string(ex_quant_ns.load()) +
+                     ",\"build_ns\":" + std::to_string(ex_build_ns.load()) + ",\"disp_ns\":" + std::to_string(pool->t_disp_ns.load()) + ",\"main_ns\":" + std::to_string(pool->t_main_ns.load()) +
+                     ",\"tail_ns\":" + std::to_string(pool->t_tail_ns.load()) + ",\"busy_ns\":" + std::to_string(pool->busy_ns.load()) + ",\"flagwait_ns\":" + std::to_string(pool->flagwait_ns.load()) +
+                     ",\"wake_ns\":" + std::to_string(pool->wake_ns.load()) + ",\"n_wake\":" + std::to_string(pool->n_wake.load()) + ",\"chunks\":" + std::to_string(pool->chunks.load()) +
+                     ",\"threads\":" + std::to_string(pool->th.size() + 1);
+                for (int k = 0; k < 3; k++) {
+                    j += ",\"p" + std::to_string(k) + "\":[" + std::to_string(ex_part_n[k].load()) + "," + std::to_string(ex_part_ns[k].load()) + "," + std::to_string(ex_part_bytes[k].load()) + "]";
+                }
+                j += "}";
+            }
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
             j += "],\"layer_misses\":[";
@@ -482,6 +496,23 @@
                     }
                 }
             }
+            if (exec_on && pool && pool->times && pool->n_runs) {
+                const double wall = ex_run_ns / 1e9, nt = (double) pool->th.size() + 1;
+                fprintf(stderr, "moe-cache: exec-times: %llu pool runs, %.2fs inside the pool (%.1f ms each); quantise %.2fs, task setup %.2fs; "
+                                "caller: publish+wake %.2fs, own chunks %.2fs, barrier wait %.2fs\n", (unsigned long long) pool->n_runs.load(), wall,
+                        1e3 * wall / (double) pool->n_runs.load(), ex_quant_ns / 1e9, ex_build_ns / 1e9, pool->t_disp_ns / 1e9, pool->t_main_ns / 1e9, pool->t_tail_ns / 1e9);
+                fprintf(stderr, "moe-cache: exec-times: threads %.0f: busy in dot products %.2fs = %.0f %% of thread time inside the pool, spinning for experts still read %.2fs, "
+                                "worker wake-up %.2fs over %llu starts (%.1f us each), chunks %llu, parks %llu\n", nt, pool->busy_ns / 1e9,
+                        wall > 0 ? 100.0 * (pool->busy_ns / 1e9) / (wall * nt) : 0.0, pool->flagwait_ns / 1e9, pool->wake_ns / 1e9, (unsigned long long) pool->n_wake.load(),
+                        pool->n_wake ? pool->wake_ns / 1e3 / (double) pool->n_wake.load() : 0.0, (unsigned long long) pool->chunks.load(), (unsigned long long) pool->parks.load());
+                static const char * pn[3] = { "gate", "up", "down" };
+                for (int k = 0; k < 3; k++) {
+                    if (ex_part_n[k]) {
+                        fprintf(stderr, "moe-cache: exec-times: %-4s ops=%llu %.2fs, expert data %.1f GB = %.1f GB/s\n", pn[k], (unsigned long long) ex_part_n[k].load(),
+                                ex_part_ns[k] / 1e9, ex_part_bytes[k] / 1e9, ex_part_ns[k] ? (double) ex_part_bytes[k] / (double) ex_part_ns[k] : 0.0);
+                    }
+                }
+            }
             if (route_mode) {
                 fprintf(stderr, "moe-cache: approximate routing (%s): %llu low-ranked picks looked at, %llu given up, %llu replaced by a resident expert\n",
                         route_mode == 1 ? "skip" : "subst", (unsigned long long) route_considered, (unsigned long long) route_skipped, (unsigned long long) route_substituted);
@@ -502,6 +533,14 @@
                 fprintf(stderr, "moe-cache: inputs read from the GPU asynchronously: %llu\n", (unsigned long long) async_in);
             }
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
+            if (n_gap) {
+                static const char * bn[4] = { "<0.2 ms", "<1 ms", "<5 ms", ">=5 ms" };
+                fprintf(stderr, "moe-cache: seg-times: between our graph splits %.2fs over %llu gaps; waiting for async GPU inputs %.2fs; long-prompt GPU blocks %.2fs\n",
+                        ns_gap / 1e9, (unsigned long long) n_gap.load(), ns_sync / 1e9, ns_gpu_seg / 1e9);
+                for (int b = 0; b < 4; b++) {
+                    fprintf(stderr, "moe-cache: seg-times: gaps %s: %llu, %.2fs\n", bn[b], (unsigned long long) gap_b_n[b].load(), gap_b_ns[b] / 1e9);
+                }
+            }
             fprintf(stderr, "moe-cache: graphs=%llu groups=%llu ops=%llu hits=%llu misses=%llu (hit %.1f%%) read=%.1f MB evictions=%llu resident=%.2f GiB%s\n",
                     (unsigned long long) graphs, (unsigned long long) groups, (unsigned long long) ops, (unsigned long long) h, (unsigned long long) m,
                     h + m ? 100.0 * h / (h + m) : 0.0, bytes / 1e6, (unsigned long long) evictions, resident_bytes / (double) (1u << 30),

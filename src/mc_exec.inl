@@ -378,6 +378,8 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
     const size_t row_size = ggml_row_size(vdt, ne10);
     static thread_local std::vector<uint8_t> wbuf;
     static thread_local std::vector<uint8_t> pbuf;
+    static const bool etimes = getenv("MOE_CACHE_EXEC_TIMES") != nullptr;
+    const uint64_t eq0 = etimes ? exec_now_ns() : 0;
     const char * base;
     size_t stride_i11, stride_tok;       // column (token t, activation row i11) = base + i11 * stride_i11 + t * stride_tok
     ggml_vec_dot_t dot = tt->vec_dot;
@@ -432,6 +434,10 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
             dot = q2_0_ys_dot;
         }
 #endif
+    }
+    const uint64_t eb0 = etimes ? exec_now_ns() : 0;
+    if (etimes) {
+        s.ex_quant_ns += eb0 - eq0;
     }
     // one task per expert: the tokens that picked it share its weight rows
     std::vector<exec_task_t> all;
@@ -524,7 +530,17 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
         }
     }
     const auto tp0 = std::chrono::steady_clock::now();
+    if (etimes) {
+        s.ex_build_ns += exec_now_ns() - eb0;
+    }
     s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, s.exec_chunk, nd->name);
+    if (etimes) {
+        const uint64_t rn = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
+        const int part = strstr(nd->name, "gate") ? 0 : strstr(nd->name, "up") ? 1 : 2;
+        s.ex_run_ns += rn;
+        s.ex_part_ns[part] += rn; s.ex_part_n[part]++;
+        s.ex_part_bytes[part] += (uint64_t) tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
+    }
     if ((unsigned) w->type < 64) {
         s.exec_type_ns[w->type] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
         s.exec_type_ops[w->type]++;
