@@ -1356,6 +1356,13 @@ def server(argv):
         else:
             say(("env " + " ".join(f"{k}={v}" for k, v in shown) + " " if shown else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
         return 0
+    # audit 2026-10-29 L2/L3: checked before any helper thread starts, as learn and check do: with another server on the port the restore thread
+    # sent it our project state (with the stored key) and the plugin check called it ours; a missing llama-server was a Python traceback
+    if port_busy(port):
+        raise SystemExit(f"moe-cache: port {port} is already in use (another llama-server, or on-demand: moe_cache.py on-demand --status); "
+                         f"stop it or pick another with --port")
+    if not (os.path.isfile(cmd[0]) or shutil.which(cmd[0])):
+        raise SystemExit(f"moe-cache: llama-server not found: {cmd[0]}. Pass --llama-server PATH or set LLAMA_SERVER (moe_cache.py check tells what is missing)")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
