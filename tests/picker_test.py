@@ -72,6 +72,28 @@ check(d and d["size"] == pk.MODELS["bolt"]["size"] and "huggingface.co/nvidia/" 
       f"download command with size and source ({d and d['command']})")
 check("ollama" in recs[("32 GB, no GPU", "chat")]["download"], "Qwen3.6: the Ollama alternative is printed too")
 
+# ---- memory with the context, and a model of the user's own choosing is warned about, never refused ----
+r = pk.recommend(machine(32, 16), "agents")
+mem = r["memory"]
+check(mem["model"] == pk.MODELS["bolt"]["size"] and mem["kv"] > 0 and abs(mem["total"] - mem["model"] - mem["kv"]) < 1 and mem["available"] > mem["total"],
+      f"memory estimate = model + KV at the chosen context ({mem['kv'] / 1e9:.1f} GB, {mem['kv_how']})")
+fn = pk.kv_estimate("flash-next-q2_0", 262144)["bytes"] / 2**20
+check(abs(fn - (6144 + 1536 + 450)) < 1, f"Flash-Next KV at 256k = the PC's measured buffers ({fn:.0f} MiB)")
+check(pk.kv_estimate("bolt", 131072)["bytes"] > pk.kv_estimate("bolt", 65536)["bytes"], "KV grows with the context")
+r = pk.recommend(machine(16, 6), "chat", model="glm-5.3")
+check(r["id"] == "glm-5.3" and r["ctx"] > 0 and r["untested"], f"a model the user picks is used even if too big for the machine ({r['id']})")
+r = pk.recommend(machine(16, 6, disk_gb=20), "agents", model="flash-next-iq3_xxs")
+check(r["id"] == "flash-next-iq3_xxs" and any("free disk" in w for w in r["warnings"]) and "chosen by you" in r["why"][0],
+      "chosen model without disk space: used, with the disk warning")
+r = pk.recommend(machine(32, 16, build=9000), "agents", model="bolt")
+check(r["id"] == "bolt" and any("b11966" in w for w in r["warnings"]), "chosen Bolt on an old llama.cpp: used, with the version warning")
+r = pk.recommend(machine(16, 6), "chat", model="bolt")
+check(r["id"] == "bolt", "chosen model not in the rules for this machine: still used")
+try:
+    pk.recommend(machine(32, 16), "chat", model="gpt-5"); check(False, "unknown model refused")
+except ValueError:
+    check(True, "unknown model id refused")
+
 # ---- special cases ----
 r = pk.recommend(machine(32, 16, build=9000), "agents")
 check(r["id"] == "qwen3.6-35b" and any("b11966" in w for w in r["warnings"]), f"llama.cpp older than b11966: no Bolt, and why ({r['id']})")

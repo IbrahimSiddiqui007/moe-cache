@@ -175,9 +175,11 @@ def machine_specs(folders=None, ls=None):
 
 # ---- the rules (pure: unit-tested with fake specs, tests/picker_test.py) ----
 
-def recommend(spec, use):
+def recommend(spec, use, model=None):
     """One recommendation for `use` (agents | chat | docs) on the machine `spec` (machine_specs()). Returns
-    {id, name, file, ctx, args, measured, untested, why[], warnings[], alternatives[{id, name, why}], local, download}."""
+    {id, name, file, ctx, args, measured, untested, why[], warnings[], alternatives[{id, name, why}], local, download, memory}.
+    model: a candidate id the user chose instead: it is used as asked and only warned about (too big for the memory or the disk, old llama.cpp,
+    hard disk), never refused."""
     if use not in USES:
         raise ValueError(f"use: one of {', '.join(USES)}")
     cap = (spec.get("ram_cap") or 0) / 1e9                       # what the whole server may use (RAM minus max(4 GiB, 12.5 %)), GB
@@ -252,12 +254,20 @@ def recommend(spec, use):
             return False
         return True
 
-    chosen = next((r for r in R if r[1] and placed(r[0])), None)
+    if model is not None and model not in MODELS:
+        raise ValueError("model: one of " + ", ".join(MODELS))
+    chosen = None
+    if model:      # the user's own choice: the rule's context and numbers when it has a rule, else a plain default; warnings only
+        rule = next((r for r in R if r[0] == model), None)
+        placed(model)
+        chosen = (model, True, rule[2] if rule else {"chat": 32768}.get(use, 65536), rule[3] if rule else None,
+                  "chosen by you" + ("" if rule else f" (not one of the picks for {USES[use]} on this machine)"))
+    chosen = chosen or next((r for r in R if r[1] and placed(r[0])), None)
     if not chosen:      # nothing fits on the disk: the smallest candidate, with the disk warnings
         chosen = min(R, key=lambda r: MODELS[r[0]]["size"])
     k, _, ctx, measured, why = chosen
     sib = SIBLINGS.get(k)
-    if sib and k not in local and sib in local and drive_ok(sib):     # the other Flash-Next file is already here: no 66-76 GB download
+    if sib and not model and k not in local and sib in local and drive_ok(sib):     # the other Flash-Next file is already here: no 66-76 GB download
         why = f"{MODELS[sib]['name']} is already on this machine (same model, {SIBLINGS_WHY[sib]}); otherwise: {why}"
         k = sib
         chosen = (k, True, ctx, measured, why)
@@ -275,6 +285,12 @@ def recommend(spec, use):
         warn.append("no GPU with its own memory found: everything runs on the CPU (set --vram if the GPU was not detected)")
     if use == "agents" and not spec.get("vram"):
         warn.append("agents send 5-20k-token prompts; without a GPU the first answer can take minutes (untested at 64k on such a machine)")
+    kv = kv_estimate(k, ctx, local.get(k))
+    need = m["size"] + kv["bytes"]
+    memory = {"model": m["size"], "kv": kv["bytes"], "kv_how": kv["how"], "total": need, "available": cap * 1e9 + vram * GIB}
+    if need > memory["available"] and fits(k):
+        warn.append(f"model {m['size'] / 1e9:.1f} GB + KV cache {kv['bytes'] / 1e9:.1f} GB at context {ctx} ({kv['how']}) is more than RAM cap + VRAM "
+                    f"({memory['available'] / 1e9:.1f} GB): a smaller context may be needed")
     engine = "stock llama.cpp (fits in RAM)" if fits(k) else "moe-cache (bigger than the memory the server may use)"
     args = (["--agent"] if use == "agents" else []) + ["--ctx", str(ctx)]
     alts = []
@@ -286,8 +302,26 @@ def recommend(spec, use):
                      "why": f"the documented default line: {PC} 20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s, moe-cache"})
     out = {"id": k, "name": m["name"], "use": use, "size": m["size"], "ctx": ctx, "args": args, "engine": engine,
            "measured": measured or "untested on this class of machine", "untested": not measured, "why": [why], "warnings": warn,
-           "alternatives": alts[:2], "local": local.get(k), "download": None if k in local else download_cmd(k)}
+           "alternatives": alts[:2], "memory": memory, "local": local.get(k), "download": None if k in local else download_cmd(k)}
     return out
+
+
+def kv_estimate(k, ctx, path=None):
+    """Bytes of KV cache + recurrent state at `ctx` (f16): from the model's header when the file is here (planner/gguf_plan.kv_bytes, the planner's
+    own numbers), else Flash-Next from the PC's measured 256k buffers (KV 6144 + indexer 1536 + state 450 MiB), else the planner's flat 40 KB
+    per token (an over-estimate for hybrid models)."""
+    if path:
+        try:
+            sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+            import gguf_plan
+            v = gguf_plan.kv_bytes(path, ctx)
+            if v:
+                return {"bytes": float(v), "how": "from the model's header"}
+        except Exception:
+            pass
+    if k.startswith("flash-next"):
+        return {"bytes": (6144 + 1536) * 2**20 * ctx / 262144 + 450 * 2**20, "how": "measured on the PC at 256k, scaled"}
+    return {"bytes": 40_000.0 * ctx, "how": "flat 40 KB per token, an over-estimate"}
 
 
 def download_cmd(k):
@@ -355,6 +389,8 @@ def spec_lines(spec):
 def rec_lines(r):
     out = [f"{USES[r['use']]}: {r['name']}  ({r['size'] / 1e9:.1f} GB, {r['engine']})",
            f"  context {r['ctx']}, options: {' '.join(r['args'])}",
+           f"  memory: model {r['memory']['model'] / 1e9:.1f} GB + KV cache {r['memory']['kv'] / 1e9:.1f} GB ({r['memory']['kv_how']}) = {r['memory']['total'] / 1e9:.1f} GB; "
+           f"this machine: RAM cap + VRAM = {r['memory']['available'] / 1e9:.1f} GB",
            f"  measured: {r['measured']}"] + [f"  why: {w}" for w in r["why"]]
     out += [f"  or: {a['name']}: {a['why']}" for a in r["alternatives"]]
     out += [f"  note: {w}" for w in r["warnings"]]
@@ -377,6 +413,7 @@ def ask(q, default=""):
 def pick(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py pick", description="recommend a model for this machine and what it is for; --apply uses it")
     ap.add_argument("--use", choices=list(USES), help="agents (coding agents, 64k-256k context), chat, docs (long documents); asked when left out")
+    ap.add_argument("--model", choices=list(MODELS), help="use this candidate instead of the recommendation (only warned about, never refused)")
     ap.add_argument("--apply", action="store_true", help="write the choice into the launcher's settings (server / on-demand without a model use it)")
     ap.add_argument("--models-dir", action="append", default=[], help="another folder with .gguf files (repeatable)")
     ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
@@ -390,7 +427,7 @@ def pick(argv):
         mc.say("What is it for?  1) agents / coding (Hermes, OpenCode)  2) plain chat  3) long documents")
         use = {"1": "agents", "2": "chat", "3": "docs"}.get(ask("choose 1-3 [1]: ", "1"), "agents")
     uses = [use] if use else list(USES)
-    recs = [recommend(spec, u) for u in uses]
+    recs = [recommend(spec, u, a.model) for u in uses]
     if a.json:
         print(json.dumps({"machine": spec, "recommendations": recs}, indent=1))
     else:
@@ -411,7 +448,7 @@ def pick(argv):
             rc = subprocess.call(["hf", "download", MODELS[r["id"]]["repo"], "--include", MODELS[r["id"]]["include"], "--local-dir", d["folder"]])
             if rc:
                 raise SystemExit(f"download failed (exit {rc}); nothing was changed")
-            r = recommend(dict(spec, local=find_local(model_folders(a.models_dir))), r["use"])
+            r = recommend(dict(spec, local=find_local(model_folders(a.models_dir))), r["use"], a.model)
     elif not r["local"] and tty and r["download"]:
         mc.say("  (the hf command comes with: pip install -U huggingface_hub)")
     do = a.apply or (tty and not a.json and ask("use it (the launcher and the control page start this model by default)? [Y/n] ", "y") == "y")

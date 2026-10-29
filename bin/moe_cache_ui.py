@@ -1641,7 +1641,7 @@ class Handler(BaseHTTPRequestHandler):
                 spec = self.store.pick_specs(q.get("fresh") == "1")
                 uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)
                 return self.send(200, {"machine": spec, "lines": picker.spec_lines(spec), "uses": picker.USES,
-                                       "recommendations": [picker.recommend(spec, x) for x in uses], "pick": self.store.saved.get("pick")})
+                                       "recommendations": [picker.recommend(spec, x, q.get("model") or None) for x in uses], "pick": self.store.saved.get("pick")})
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
@@ -1734,7 +1734,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/pick/use":               # "Use it": the same settings `moe_cache.py pick --apply` writes (no download here)
                 if body.get("use") not in picker.USES:
                     raise ValueError("use: " + ", ".join(picker.USES))
-                rec = picker.recommend(self.store.pick_specs(True), body["use"])
+                rec = picker.recommend(self.store.pick_specs(True), body["use"], body.get("model") or None)
                 picker.apply(rec, self.store.saved)
                 self.store.save()
                 self.store.models_at = 0                   # the list shows the file at once

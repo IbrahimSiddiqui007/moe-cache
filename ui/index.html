@@ -374,6 +374,9 @@ button.danger { border-color:var(--ink); }
     <h4>Which model?</h4>
     <div class="hint">Reads this machine (RAM, VRAM, disk, CPU) and recommends one model from our measurements. It never downloads anything.</div>
     <div class="seg" id="pickuse"><button data-v="agents">Agents / coding</button><button data-v="chat">Chat</button><button data-v="docs">Long documents</button></div>
+    <div class="row small" style="margin-top:6px"><label for="pickmodel">Or choose one yourself (only warned about, never refused):</label>
+      <select id="pickmodel"><option value="">the recommended one</option><option value="bolt">Nemotron 3.5 Bolt 74B</option><option value="flash-next-q2_0">Flash-Next Q2_0</option>
+        <option value="flash-next-iq3_xxs">Flash-Next IQ3_XXS</option><option value="qwen3.5-122b">Qwen3.5-122B</option><option value="qwen3.6-35b">Qwen3.6-35B</option><option value="glm-5.3">GLM-5.3-Flash</option></select></div>
     <div class="small" id="pickres" style="margin-top:6px"></div>
     <div class="row" style="margin-top:6px"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div>
     <h4>Memory</h4>
@@ -562,9 +565,9 @@ function settingsChanged() { paintRanges(); paintModels(); planAll(); $("dry").h
 async function loadPick() {
   $("pickres").textContent = "reading this machine…"; $("pickapply").hidden = true; $("pickmsg").textContent = "";
   try {
-    const j = await api("/api/pick?use=" + S.pickuse), r = j.recommendations[0], d = r.download;
+    const j = await api("/api/pick?use=" + S.pickuse + "&model=" + encodeURIComponent($("pickmodel").value)), r = j.recommendations[0], d = r.download;
     $("pickres").innerHTML = `<div>${j.lines.map(esc).join("<br>")}</div><div style="margin-top:6px"><b>${esc(r.name)}</b> (${fmtGB(r.size)}, ${esc(r.engine)})<br>` +
-      `context ${esc(r.ctx.toLocaleString())} · <code>${esc(r.args.join(" "))}</code><br>measured: ${esc(r.measured)}<br>` + r.why.map(w => "why: " + esc(w)).join("<br>") +
+      `context ${esc(r.ctx.toLocaleString())} · <code>${esc(r.args.join(" "))}</code><br>memory: model ${fmtGB(r.memory.model)} + KV cache ${fmtGB(r.memory.kv)} (${esc(r.memory.kv_how)}) = ${fmtGB(r.memory.total)}; this machine ${fmtGB(r.memory.available)} (RAM cap + VRAM)<br>measured: ${esc(r.measured)}<br>` + r.why.map(w => "why: " + esc(w)).join("<br>") +
       r.alternatives.map(a => `<br>or: ${esc(a.name)}: ${esc(a.why)}`).join("") + r.warnings.map(w => `<br><span class="err">note: ${esc(w)}</span>`).join("") +
       (r.local ? `<br>file: <code>${esc(r.local)}</code>` : `<br>not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code><br>download it yourself:<br><code>${esc(d.command)}</code>` +
         (d.ollama ? `<br>(Ollama: <code>${esc(d.ollama)}</code>)` : "") + "<br>then add its folder above and press Use it again") + "</div>";
@@ -573,7 +576,7 @@ async function loadPick() {
 }
 async function applyPick() {
   try {
-    const j = await api("/api/pick/use", { use: S.pickuse }), l = j.last || {}, r = j.recommendation;
+    const j = await api("/api/pick/use", { use: S.pickuse, model: $("pickmodel").value }), l = j.last || {}, r = j.recommendation;
     if (r.local) {
       S.sel = l.model; S.ctx = l.ctx; S.mode = l.mode; S.engine = l.engine; $("agent").checked = !!l.agent;
       segPainters.forEach(p => p()); await loadModels(true); settingsChanged();
@@ -1064,7 +1067,7 @@ window.addEventListener("hashchange", openHash);
   seg("#theme", "theme", () => { document.documentElement.dataset.theme = S.theme; pref("theme", S.theme); });
   newChat();
   await loadSystem();
-  S.pickuse = (S.sys.pick || {}).use || "agents"; seg("#pickuse", "pickuse", loadPick); $("pickapply").onclick = applyPick;
+  S.pickuse = (S.sys.pick || {}).use || "agents"; seg("#pickuse", "pickuse", loadPick); $("pickapply").onclick = applyPick; $("pickmodel").onchange = loadPick;
   $("openSettings").addEventListener("click", () => { if (!S.pickLoaded) { S.pickLoaded = true; loadPick(); } });
   seg("#ctx", "ctx", settingsChanged); seg("[data-seg=mode]", "mode", settingsChanged); seg("#engine", "engine", settingsChanged); seg("#mtp", "mtp", settingsChanged);
   paintRanges();
