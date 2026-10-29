@@ -11,7 +11,7 @@ set -e
 # LLAMA_SHA=23b0202a1... (any full sha starting 23b0202a1, ggml 0.26.0, API 3: GLM-5.3-Flash and MTP support) selects the matching plugin build.
 LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
 case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
-MOE_CACHE_REF="${MOE_CACHE_REF:-v0.2.3.5}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
+MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.0}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 VULKAN=0; PREFIX="$HOME/moe-cache-setup"; JOBS=$(nproc); APT=1
 while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;;
@@ -19,7 +19,7 @@ while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX
 say() { printf '\n== %s\n' "$*"; }
 [ "$(uname -s)" = Linux ] || { echo "Linux only"; exit 1; }
 [ "$(id -u)" != 0 ] || { echo "run as a normal user, not root"; exit 1; }
-mkdir -p "$PREFIX"
+mkdir -p "$PREFIX"; PREFIX="$(cd "$PREFIX" && pwd)"     # absolute: env.sh / env.fish are sourced from other folders (a relative --prefix broke them)
 
 if [ $APT = 1 ]; then
   say "1/5 packages (sudo needed)"

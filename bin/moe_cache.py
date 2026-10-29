@@ -9,11 +9,13 @@
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
+  moe_cache.py --version                                                   print the moe-cache version
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
 import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
+VERSION = "0.3.0"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
@@ -26,6 +28,20 @@ def say(msg, err=False):
 
 def which(prog):
     return shutil.which(prog) or prog
+
+
+def default_llama_server():
+    """llama-server when --llama-server is not given: LLAMA_SERVER, else the one on the PATH, else where the docs put it (Windows: the official
+    release unpacked to C:\\llama; Linux: install.sh's default prefix), else plain "llama-server" (check then says it is missing)."""
+    if os.environ.get("LLAMA_SERVER"):
+        return os.environ["LLAMA_SERVER"]
+    if shutil.which("llama-server"):
+        return "llama-server"
+    for c in ([r"C:\llama\llama-server.exe"] if WINDOWS else
+              [os.path.join(os.path.expanduser("~"), "moe-cache-setup", "llama.cpp", "build", "bin", "llama-server")]):
+        if os.path.isfile(c):
+            return c
+    return "llama-server"
 
 
 # ---- how a llama-server loads the plugin ----
@@ -1012,6 +1028,7 @@ MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this py
 
 
 STOCK_HEADROOM = 1.5e9     # stock when model + this fits in the memory the server may use
+STOCK_OFFLOAD_MIN_BATCH = 512     # stock runs with CPU expert layers: batches below this stay on the CPU (llama.cpp: 32; T5, RESULTS 68)
 
 
 def decide(model, ram_gb=None, plugin_wanted=False, stock_wanted=False):
@@ -1034,7 +1051,7 @@ def server(argv):
     ap.add_argument("--project"); ap.add_argument("--profile"); ap.add_argument("--ram", type=gb_arg); ap.add_argument("--vram", type=gb_arg)
     ap.add_argument("--max-ram", type=gb_arg)
     ap.add_argument("--ctx", type=int); ap.add_argument("--n-cpu-moe"); ap.add_argument("--port", type=int, default=8080)
-    ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
+    ap.add_argument("--llama-server", default=default_llama_server())
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2"]); ap.add_argument("--hybrid", action="store_true")
@@ -1060,15 +1077,19 @@ def server(argv):
         say("moe-cache: --hybrid replaces --gpu-cache: the GPU memory goes to the hybrid bank"); gcache = "off"
     if not os.path.isfile(model):
         raise SystemExit(f"usage: moe-cache-server MODEL.gguf [options]  (model file not found: '{model}')")
+    if a.stock and (a.fast or a.hybrid or a.always_plugin):
+        raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
+    stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock)
     lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(ls)
-    want, have = ls_api(ls), lib_api(lib)
-    if want and have and want != have:
-        say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load "
-            "(build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)", err=True)
-    if not os.path.isfile(lib):
-        if os.environ.get("MOE_CACHE_LIB"):
-            raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
-        raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
+        want, have = ls_api(ls), lib_api(lib)
+        if want and have and want != have:
+            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load "
+                "(build with GGML_API=3 ./build.sh for llama.cpp 23b0202a1 or newer)", err=True)
+        if not os.path.isfile(lib):
+            if os.environ.get("MOE_CACHE_LIB"):
+                raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
+            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     listing = list_devices(ls) if WINDOWS else None
     gpu = pick_gpu(listing) if WINDOWS else None
     if WINDOWS and not a.vram and not nvidia_reports():
@@ -1160,10 +1181,7 @@ def server(argv):
                 say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
         except Exception as e:
             say(f"moe-cache: could not use a starter profile ({e})", err=True)
-    load, method = load_env(ls, lib, a.load_method)
-    if a.stock and (a.fast or a.hybrid or a.always_plugin):
-        raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
-    stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock)
+    load, method = ([], "none (stock)") if stock else load_env(ls, lib, a.load_method)
     if gcache != "off" and not stock and method == "path":
         # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
         say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
@@ -1331,6 +1349,10 @@ def server(argv):
                 "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
         env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
         method = "none (stock)"
+        if ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):
+            # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
+            # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
+            env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
     if method == "none (stock)":
         pass
@@ -1680,7 +1702,7 @@ def learn(argv):
                                  "moe-cache-server loads it automatically (same default path)")
     ap.add_argument("model"); ap.add_argument("--name", default=""); ap.add_argument("--ram", default="20"); ap.add_argument("--n-cpu-moe", default="999")
     ap.add_argument("--tokens", type=int, default=150); ap.add_argument("--prompts", default=os.path.join(HERE, "tools", "learn_prompts.txt"))
-    ap.add_argument("--out"); ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server")); ap.add_argument("--port", type=int, default=8097)
+    ap.add_argument("--out"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--port", type=int, default=8097)
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     a = ap.parse_args(argv)
     if not WINDOWS:
@@ -1767,7 +1789,7 @@ def project(argv):
 
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
-    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server")); ap.add_argument("--ram")
+    ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram")
     ap.add_argument("--run", action="store_true", help="also start llama-server with the plugin and a small cache for one short request (about a minute): "
                     "proves the cache really computes on this machine")
     a = ap.parse_args(argv)
@@ -1776,7 +1798,7 @@ def check(argv):
     def ok(k, m): say(f"  [ OK ] {k:<22} {m}")
     def warn(k, m): say(f"  [WARN] {k:<22} {m}"); n["warn"] += 1
     def fail(k, m): say(f"  [FAIL] {k:<22} {m}"); n["fail"] += 1
-    say("moe-cache check")
+    say(f"moe-cache {VERSION} check")
     import platform
     if sys.platform.startswith("linux"):
         ok("system", "Linux " + platform.release())
@@ -1805,7 +1827,8 @@ def check(argv):
             ok("cpu pinning", "no hybrid cores: no pinning")
     lsp = shutil.which(a.llama_server)
     if not lsp:
-        fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH")
+        fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH" +
+             (r" (or unpack the official llama.cpp release to C:\llama)" if WINDOWS else " (or run ./install.sh, or put llama-server on the PATH)"))
     else:
         try:
             v = subprocess.run([lsp, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
@@ -1853,7 +1876,8 @@ def check(argv):
             if g:
                 ok("gpu", f"{g[0]}: {g[1]}" + (f", {g[2]} MiB free" if g[2] else ""))
             else:
-                warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower)")
+                warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower). For a GPU: " +
+                     ("the llama.cpp release zip ...-bin-win-vulkan-x64.zip" if WINDOWS else "./install.sh --vulkan, or a llama.cpp built with -DGGML_VULKAN=ON / -DGGML_CUDA=ON"))
     memav = cg = None
     if WINDOWS:
         t, av = win_memory()
@@ -2001,6 +2025,9 @@ def main():
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
+    if sys.argv[1:2] in (["--version"], ["-V"], ["version"]):
+        say(f"moe-cache {VERSION}")
+        return 0
     if len(sys.argv) < 2 or sys.argv[1] not in cmds:
         say(__doc__.strip())
         return 0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 1
