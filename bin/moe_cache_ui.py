@@ -1889,7 +1889,7 @@ def connect_agent(agent, url, api_key, write):
 
 
 def make_server(port=8070, ls=None, token=None):
-    store = Store(ls or os.environ.get("LLAMA_SERVER", "llama-server"))
+    store = Store(ls or mc.default_llama_server())
     h = type("H", (Handler,), {"store": store, "runner": Runner(), "token": token or secrets.token_urlsafe(24)})
     srv = ThreadingHTTPServer(("127.0.0.1", port), h)
     srv.daemon_threads = True
@@ -1899,7 +1899,7 @@ def make_server(port=8070, ls=None, token=None):
 def ui(argv):
     ap = argparse.ArgumentParser(prog="moe-cache-server --ui", description="local control page for moe-cache (this machine only)")
     ap.add_argument("--ui-port", type=int, default=8070)
-    ap.add_argument("--llama-server", default=os.environ.get("LLAMA_SERVER", "llama-server"))
+    ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--no-browser", action="store_true", help="do not open the page in the browser")
     a = ap.parse_args(argv)
     if not WINDOWS:

@@ -53,6 +53,30 @@ jobs:
             build/win/platform_test.exe
             build/win/win_read_bench.exe
             build/win/kernel_check.exe
+      - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
+        run: tools/make_windows_kit.sh 0.0.0-ci
+      - name: scoop / winget manifests filled from the kit (valid JSON / YAML, hash = the zip's; nothing submitted)
+        run: |
+          python3 packaging/fill_manifests.py dist/moe-cache-v0.0.0-ci-windows-x64.zip
+          H=$(sha256sum dist/moe-cache-v0.0.0-ci-windows-x64.zip | cut -d' ' -f1)
+          python3 -c "import json,sys; j=json.load(open('dist/packaging/scoop/moe-cache.json')); assert j['architecture']['64bit']['hash']==sys.argv[1]" "$H"
+          python3 - "$H" <<'PY'
+          import glob, sys
+          fs = glob.glob("dist/packaging/winget/manifests/i/IbrahimSiddiqui007/MoeCache/0.0.0-ci/*.yaml"); assert len(fs) == 3, fs
+          inst = open([f for f in fs if f.endswith(".installer.yaml")][0]).read()
+          assert f'InstallerSha256: "{sys.argv[1].upper()}"' in inst and "moe-cache-v0.0.0-ci-windows-x64\\moe-cache.exe" in inst, inst
+          try:
+              import yaml
+              for f in fs: yaml.safe_load(open(f))
+          except ImportError:
+              print("PyYAML not installed: YAML not parsed (the PC's winget validate is the full check)")
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: win-kit
+          path: |
+            dist/moe-cache-v0.0.0-ci-windows-x64.zip
+            dist/SHA256SUMS-windows
 
   windows:
     needs: dll
@@ -67,6 +91,10 @@ jobs:
         with:
           name: win-dll
           path: dll
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: win-kit
+          path: kitzip
 
       - name: Q2_0 kernels as built for Windows are bit-identical to llama.cpp's plain C loop (the executor uses them when llama.cpp has no SIMD Q2_0 kernel)
         run: |
@@ -93,6 +121,28 @@ jobs:
           $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
           if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
 
+      - name: The kit as a user gets it (unzipped elsewhere, no MOE_CACHE_LIB, no repository) - check finds the kit's API 3 DLL and the cache runs
+        run: |
+          Expand-Archive kitzip\moe-cache-v0.0.0-ci-windows-x64.zip -DestinationPath $env:RUNNER_TEMP\kit
+          $k = "$env:RUNNER_TEMP\kit\moe-cache-v0.0.0-ci-windows-x64"
+          Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
+          Push-Location $k
+          python bin\moe_cache.py check "$env:GITHUB_WORKSPACE\granite.gguf" --llama-server "$env:LLAMA_DIR\llama-server.exe" --run | Tee-Object $env:RUNNER_TEMP\kit_check.txt
+          Pop-Location
+          if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "ggml-moe-cache-api3.dll" -SimpleMatch -Quiet)) { throw "kit: check did not pick the kit's API 3 DLL" }
+          if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "plugin loads .*yes" -Quiet)) { throw "kit: the plugin does not load" }
+          if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "cache runs .*yes" -Quiet)) { throw "kit: the cache did not compute" }
+          Push-Location $k
+          $od = (python bin\moe_cache.py on-demand --status 2>&1) -join "`n"
+          Pop-Location
+          if ($od -notmatch "No model chosen yet") { throw "kit: on-demand does not run from the kit: $od" }
+          # moe-cache.exe (winget's command) through a symlink, as winget starts it: must run the kit's moe-cache.bat (here: --shortcut, a Start-menu entry)
+          New-Item -ItemType Directory -Force $env:RUNNER_TEMP\links | Out-Null
+          New-Item -ItemType SymbolicLink -Path $env:RUNNER_TEMP\links\moe-cache.exe -Target $k\moe-cache.exe | Out-Null
+          $sc = (& $env:RUNNER_TEMP\links\moe-cache.exe --shortcut 2>&1) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $sc -notmatch "Added") { throw "kit: moe-cache.exe through a symlink did not run moe-cache.bat ($LASTEXITCODE): $sc" }
+          $global:LASTEXITCODE = 0   # on-demand --status exits 1 when no model is chosen; that is the expected answer here
+
       - name: Launcher on Windows (check, dry run, core detection for pinning)
         run: |
           $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
@@ -103,6 +153,12 @@ jobs:
           python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 4 --always-plugin --gpu-cache 1000 --dry-run 2>&1 | Tee-Object launcher_dry.txt
           if (-not (Select-String launcher_dry.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { throw "dry run: no GGML_BACKEND_PATH" }
           if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
+          # a model that fits runs stock: no plugin build needed (T5: Nemotron Bolt stopped with "plugin not built")
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\no-such-dir\ggml-moe-cache.dll"
+          python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 8 --dry-run 2>&1 | Out-File launcher_stock_nolib.txt
+          $rc = $LASTEXITCODE
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
+          if ($rc -ne 0 -or -not (Select-String launcher_stock_nolib.txt -Pattern "running stock llama-server" -SimpleMatch -Quiet) -or (Select-String launcher_stock_nolib.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { Get-Content launcher_stock_nolib.txt; throw "a model that fits must run stock without a plugin build" }
           python -c "import importlib.util as u, sys; sys.argv=['x']; s=u.spec_from_file_location('m','bin/moe_cache.py'); m=u.module_from_spec(s); s.loader.exec_module(m); c=m.win_cores(); print('cores (efficiency class, cpus):', c); print('hybrid masks:', m.hybrid_masks(c)); print('ggml API of the server:', m.ls_api(r'$ls')); sys.exit(0 if c else 1)"
           if ($LASTEXITCODE -ne 0) { throw "win_cores: no CPU cores found (pwsh fails a step only on its last command)" }
           python tests/ui_test.py       # control page (GUI1) without a model

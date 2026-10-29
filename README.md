@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.2.3.5%20beta-orange">
+<img alt="status" src="https://img.shields.io/badge/status-v0.3.0%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-23b0202a1%20(ggml%200.26.0)%20and%207fe450e19%20(0.25.1)-green">
@@ -46,11 +46,11 @@ Ollama user? The models in `ollama list` are plain GGUF files: the path is on th
 
 | | Best if | What you do |
 |---|---|---|
-| **A. Prebuilt** (2 minutes) | you already have a matching `llama-server` (Arch `llama.cpp-cuda`, a build from commit 7fe450e19) | download `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases), then `tar xzf` it and `cd` into the folder. Releases built by CI can be verified: `gh attestation verify FILE.tar.gz -R IbrahimSiddiqui007/moe-cache` |
+| **A. Prebuilt** (2 minutes) | you already have a `llama-server` built with shared ggml libraries | download from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` (llama.cpp 23b0202a1 and newer: ggml 0.26 / 0.27, current releases) or `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` (older: ggml 0.24 / 0.25, up to commit 7fe450e19, e.g. Arch `llama.cpp-cuda`; `bin/moe-cache-check` tells which fits), then `tar xzf` it and `cd` into the folder. Releases built by CI can be verified: `gh attestation verify FILE.tar.gz -R IbrahimSiddiqui007/moe-cache` |
 | **B. One script** (10 to 20 minutes) | fresh Ubuntu / Debian, nothing installed | `git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache && ./install.sh` (add `--vulkan` for AMD / Intel / NVIDIA through Vulkan). It builds the matching llama.cpp and the plugin and prints the next commands. It has only been tried on Arch with `--no-apt` so far: please report problems. |
 | **C. From source** | you want to build it yourself | `git clone ... && cd moe-cache && ./build.sh` (needs g++; finds `libggml-base.so` next to your llama-server, or set `GGML_LIB_DIR`) |
 
-**Windows (experimental)**: the Windows kit zip from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) (from the next release on) or this repository; steps in [docs/WINDOWS.md](docs/WINDOWS.md).
+**Windows (experimental)**: the Windows kit zip `moe-cache-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) (v0.3.0 is the first with a kit); steps below and in [docs/WINDOWS.md](docs/WINDOWS.md).
 **Windows may warn: "unknown publisher".** The kit's DLLs and `.bat` files are not code-signed (a certificate costs money every year; the code is
 open source and the zip is built by GitHub Actions from the tagged commit), so Windows treats the downloaded zip as untrusted. Before you
 extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If SmartScreen still says "Windows protected your PC", click
@@ -63,7 +63,8 @@ extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If
 bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server
 ```
 Every line says OK, WARN or FAIL and what to do about it (it also times a short read test on the model's drive and warns when the drive is too slow). Add `--run` to also start llama-server with the plugin for one short request (about a
-minute): "cache runs: yes" means the cache really computed on your machine.
+minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too**: it checks the GPU, RAM, the model's drive and llama-server.
+If the GPU also drives your screen and answers slow down sharply, the card is too full: start with `--gpu-margin 2` (GiB of VRAM left free; default about 0.5).
 
 ### 3. Run your model
 
@@ -88,6 +89,19 @@ two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details
 chat app: left your chats and models (each with the planner's verdict: fits in RAM, needs the cache or fits on the GPU, and why in one sentence),
 centre the chat with a speed chip per answer, right live tok/s, cache hit rate, SSD reads, RAM and VRAM, plus a settings drawer (RAM/VRAM budget,
 context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one click, the same on stock llama-server for comparison. See [docs/GUI.md](docs/GUI.md).
+
+### Windows quick start (experimental)
+
+| Step | What to do |
+|---|---|
+| 1. llama.cpp | Download the official release `llama-bNNNNN-bin-win-vulkan-x64.zip` from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) (tested: b11669) and unpack it to `C:\llama` |
+| 2. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH") |
+| 3. The kit | Download `moe-cache-vX-windows-x64.zip` from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
+| 4. Check | In a command prompt in the kit folder: `python bin\moe_cache.py check D:\models\model.gguf` (finds `C:\llama\llama-server.exe` by itself; `--version` prints the version). Every line says OK, WARN or FAIL and what to do |
+| 5. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |
+| 6. Agents | Add `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`); the page also has Connect buttons |
+
+Keep the Windows page file at "system managed" (or 14 GB or more): the cache costs no commit (it keeps experts in read-only views of the model file), but Windows counts the GPU's memory against RAM + page file. Details and known limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 ### 4. Optional: prove it is correct and measure it on your machine
 
@@ -212,6 +226,17 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
   The `moe-cache: active: ...` line in the server log says which parts are on.
 - Needs a llama.cpp with shared ggml libraries; tested with commits `23b0202a1` (ggml 0.26.0) and `7fe450e19` (ggml 0.25.1). The plugin refuses to load into a ggml with a different backend API than it was built for (it prints why and the model loads normally). Linux; Windows is experimental (identity-tested on a Windows 11 + RX 9070 XT desktop and in CI, see [COMPATIBILITY](docs/COMPATIBILITY.md) and the [Windows quick start](docs/WINDOWS.md)).
 
+## Known issues in v0.3.0 (honest list)
+
+| Issue | Detail |
+|---|---|
+| Windows zip is unsigned | Windows shows "unknown publisher" / SmartScreen: Unblock the zip, More info > Run anyway (steps above). Check the SHA256 or `gh attestation verify` |
+| Windows tested on one desktop | Ryzen 9 7950X + RX 9070 XT 16 GB + 32 GB, Windows 11, Vulkan, plus a GitHub Windows runner (CPU). NVIDIA, Intel GPUs and Windows 10 are untested; HIP loads but is slower than Vulkan |
+| Models measured | Qwen3.8-Flash-Next (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Coder IQ1_M), Qwen3.5-122B IQ2_XXS, GLM-5.3-Flash, Qwen3.6-35B, Nemotron 3.5 Bolt 74B (agent speed; plugin forced slower than stock in one test), Granite 1B (CI). Other MoE models should work but are not measured. Long context (64k-256k) is measured on Flash-Next and a few more, single runs |
+| Linux | Tested on Intel + NVIDIA, CPU-only, Vulkan, and a user's RX 9070 XT. `install.sh` has been tried on Arch (`--no-apt`) and, for this release, from a clean clone on that machine; a fresh Ubuntu/Debian run with apt is not tested. macOS: no |
+| Not tested for this release | `winget install` and `scoop install` (manifests exist but are not submitted); Hermes Desktop and OpenCode Desktop on Windows (click-through still open); a full model run from the final zip |
+| Speed numbers | One PC, cold runs, mostly single series; yours depends on RAM, SSD and GPU. The Linux table is older (v0.2.3.5) |
+
 ## FAQ
 
 **Do I need this if my model fits in RAM?** No. Use stock llama.cpp with `--moe-cache-mib` (see "When to use something else" above). The gain is when memory is short or the model is larger than your RAM. _work in progress though, I'm currently seeing different ways to improve speed and efficiency_
@@ -228,7 +253,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 **Does it work with Ollama or LM Studio?** Not directly: both ship their own bundled copy of llama.cpp, and the plugin needs a `llama-server` built with shared ggml libraries from a tested commit. Their model files are plain GGUF, so you can run the same file with `moe-cache-server` (see "Ollama user?" above) and point any OpenAI-compatible client at `http://localhost:8080/v1`.
 
-**On Windows llama-server uses a lot of RAM with GPU layers, should I add `--no-mmap`, `--mlock` or `--moe-cache-mib`?** No. llama.cpp's Windows loader leaves the model-file pages of the GPU tensors in llama-server's working set (about as much RAM as the GPU layers; RESULTS 56 I37). It is not the GPU driver. The plugin releases those pages at the first graph (the log says "released N GiB of model-file pages from the working set"). `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. A small page file also limits the cache. Details: [docs/WINDOWS.md](docs/WINDOWS.md), "Windows: where the RAM goes".
+**On Windows llama-server uses a lot of RAM with GPU layers, should I add `--no-mmap`, `--mlock` or `--moe-cache-mib`?** No. llama.cpp's Windows loader leaves the model-file pages of the GPU tensors in llama-server's working set (about as much RAM as the GPU layers; RESULTS 56 I37). It is not the GPU driver. The plugin releases those pages at the first graph (the log says "released N GiB of model-file pages from the working set"). `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. Keep the page file system-managed: the cache costs no commit, but Vulkan's GPU memory does. Details: [docs/WINDOWS.md](docs/WINDOWS.md), "Windows: where the RAM goes".
 
 **Mac?** No. The plugin uses Linux (and Windows) memory and direct-I/O calls, and on Apple Silicon the GPU and CPU share one memory, which changes the problem.
 
