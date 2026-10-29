@@ -164,6 +164,7 @@ check("--jinja" not in dry(), "no --agent: the command is unchanged (no --jinja 
 check("MOE_CACHE_RAM_GIB=3.725" in dry(), "--ram 4 (GB) reaches the plugin as MOE_CACHE_RAM_GIB=3.725 (GiB), not 4 (B1)")
 check("-ctk q8_0 -ctv q8_0" in dry("--fast") and "-ctk" not in dry(), "--fast adds a q8_0 KV cache (I6); the exact default does not")
 check("-ctk q8_0 -ctv q8_0" in dry("--fast=kv") and "MOE_CACHE_ROUTE" not in dry("--fast=kv"), "--fast=kv adds the q8_0 KV cache and no route skip")
+check("MOE_CACHE_FEWER=2" in dry("--fast=fewer") and "MOE_CACHE_ROUTE=skip" in dry("--fast=fewer") and "MOE_CACHE_FEWER" not in dry("--fast"), "--fast=fewer sets MOE_CACHE_FEWER=2 on top of --fast; --fast does not")
 check(dry("--fast", "--", "-ctk", "f16").count("-ctk") == 1, "--fast keeps a -ctk given after the --")
 check("MOE_CACHE_ROUTE_DROP=4" in dry("--fast=2") and "MOE_CACHE_ROUTE_DROP" not in dry("--fast"), "--fast=2 sets MOE_CACHE_ROUTE_DROP=4, --fast does not")
 snip = L.agent_snippets(8099, "m1", 65536, None)
