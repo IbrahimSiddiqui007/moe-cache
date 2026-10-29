@@ -5,6 +5,10 @@
 ### Agents
 - **Warm-session saves scale with the file** (idea N27): a save rewrites the whole slot (~1.7 GB at 64k, ~7 GB at 256k on Flash-Next) and llama-server answers nothing while it writes. The saver now waits 20 s + 20 s per GB of idle time, and a conversation that grew only a little since its last save waits 3 min + 30 s per GB (at most 10 min); the older file restores exactly (llama-server processes only the newer tokens). tests/warm_test.py (fake server) in both CIs.
 
+- **Short prompts on stock runs: about 2x faster to the first token when some experts stay on the CPU.** llama.cpp copies every CPU-held expert
+  to the GPU for any batch of 32+ tokens, and llama-server cuts each prompt 4 tokens before its end for a checkpoint, so every prompt of 36+
+  tokens paid about 1 s (Nemotron 3.5 Bolt on the PC). The launcher now sets `GGML_OP_OFFLOAD_MIN_BATCH=512` for stock runs with CPU expert
+  layers (your own value wins): 51-465-token prompts 1.2-1.7 s -> 0.4-1.3 s, the 202 tasks' requests 1.32 -> 0.60 s, tokens identical (RESULTS 68).
 - **Fixed: a model that fits in memory no longer needs a plugin build.** The launcher stopped with "plugin not built" before it decided to run
   stock llama-server (seen with Nemotron 3.5 Bolt on the PC); it now decides first and looks for the plugin only when it will use it (Linux and Windows).
 
