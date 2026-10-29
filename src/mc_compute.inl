@@ -270,6 +270,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         }
     }
     size_t exec_jobs = 0;          // reads queued for this graph
+    bool piped = false;            // N23-F3: some group's reads were queued for the reader threads (long-prompt block)
     bool exec_heavy = false;       // weights whose dot product is compute-bound (IQ types, Q2_0)
     if (s.cache_on) {
         if (!s.preload_done) {
@@ -394,7 +395,14 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 }
                 s.route_ids[ids] = std::move(eff);
             }
-            exec_jobs += s.prepare_group(tidx, used, exec_graph);
+            // N23-F3: a long-prompt block's misses are read by the reader threads while gpu_segment uploads the experts already in RAM (it waits for
+            // each expert's flag before copying it); before this the whole fill finished first (34k prompt, PC: fill 32 s, then upload 22 s, serial).
+            // MOE_CACHE_GPU_PIPE=0: off. A block that ends up on the CPU waits for all of its experts first (below).
+            static const bool pipe_env = !getenv("MOE_CACHE_GPU_PIPE") || atoi(getenv("MOE_CACHE_GPU_PIPE")) != 0;
+            const bool pipe = pipe_env && !exec_graph && s.gpu_dev && !c->gpu_failed && s.gpu_min_tokens > 0 && n_tok >= s.gpu_min_tokens &&
+                              s.graphs.load() >= c->gpu_retry_at && !s.route_mode;
+            exec_jobs += s.prepare_group(tidx, used, exec_graph || pipe);
+            piped = piped || pipe;
             if (s.lookahead && n_tok == 1) {
                 const ggml_tensor * xin = node->src[1];
                 if (xin && xin->type == GGML_TYPE_F32 && xin->nb[0] == sizeof(float) && xin->data) {
@@ -481,6 +489,16 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             if (it != s.by_tensor.end() && s.tensors[it->second]->repack && node->src[0]->buffer != s.repack_tag) {
                 tagged.emplace_back(node->src[0], node->src[0]->buffer);
                 node->src[0]->buffer = s.repack_tag;
+            }
+        }
+    }
+    if (piped) {
+        // N23-F3: a block that stayed on the CPU (or a group that was not a block) must not read experts the reader threads are still filling
+        const int n_all = ggml_graph_n_nodes(cg);
+        for (int i = 0; i < n_all; i++) {
+            const ggml_tensor * nd = ggml_graph_node(cg, i);
+            if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end()) {
+                exec_wait_loaded(s, nd);
             }
         }
     }
