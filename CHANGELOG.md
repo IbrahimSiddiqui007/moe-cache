@@ -119,6 +119,18 @@
   Qwen3.5 / 3.6 / 3.8 and GLM, thinking or non-thinking as chosen; `--agent` takes the card's coding values. Values after `--`, in the GGUF or
   in a request still win; `--no-sampling-defaults` turns it off (I45).
 - docs/WINDOWS.md: what to do after a driver timeout, LiveKernelEvent 141 or sleep during a long run (T6).
+- **Release audit (2026-10-29), fixes**: the Linux tarball now ships the control page (`ui/`; `--ui` failed without it) and `CHANGELOG.md`, and the
+  build fails without `ui/index.html`; the release gate checks the library's glibc / libstdc++ needs (both tarballs need glibc 2.34 and
+  GLIBCXX 3.4.30, the docs said 2.14); `-ub 2048` at 128k-256k no longer under-guesses the compute buffer (too many GPU expert layers left no
+  VRAM for the long-prompt block); two NVIDIA GPUs are seen by the tuner; on-demand reads no request body before the key check, caps its size
+  and times idle sockets out, and refuses a foreign Host header; the control page never sends the stored API key to another local server;
+  the idle release really gives memory back with the Linux file view; a second Ctrl+C during a prompt no longer deadlocks the exit; the IQ3_XXS
+  executor kernel is checked bit for bit against the library; a missing llama-server is one clear line instead of a traceback; `--project`
+  restore checks the port first.
+- Stock runs (no plugin) with CPU expert layers keep batches under 512 tokens on the CPU, so a short prompt no longer copies every CPU expert to
+  the GPU (Nemotron Bolt tiny requests 1.32 -> ~0.6 s; T5). The launcher decides stock vs plugin before it looks for the plugin build.
+- Model picker (`bin/moe_cache_pick.py`, the control page and `server` / `on-demand`): chooses a model file by this machine's specs and use.
+- `connect` keeps the user's own agent setup (Hermes backup, OpenCode `.bak`, `opencode.jsonc`).
 - **Fixed: a program with the plugin could hang at exit on Windows and could not be killed** (llama-perplexity, found by R11; llama-server is
   normally killed, so it never showed there): Windows ends every other thread before the DLL's teardown ran, which then locked, notified and joined
   threads that were already gone. While the process exits the plugin now only saves the profile and prints its summary; otherwise (Linux exit,
