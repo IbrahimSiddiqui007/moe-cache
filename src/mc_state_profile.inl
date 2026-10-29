@@ -117,10 +117,13 @@
 
     // true when the profile file was written
     bool save_profile() {
-        if (profile_path.empty() || session.empty()) {
+        if (profile_path.empty()) {
             return false;
         }
         std::lock_guard<std::mutex> lk(mu);
+        if (session.empty()) {               // read under the lock: prepare_group resizes it (audit N9)
+            return false;
+        }
         int nl = std::max<int>(learned.n_layers, (int) session.size());
         int ne = learned.n_exp;
         for (const auto & v : session) {
