@@ -68,6 +68,8 @@ If the GPU also drives your screen and answers slow down sharply, the card is to
 
 ### 3. Run your model
 
+Not sure which model fits your machine? `python3 bin/moe_cache.py pick` recommends one (see **Which model for my machine?** below); `pick --apply` makes it the default for `moe-cache-server` without a file name.
+
 ```bash
 bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open
 ```
@@ -159,6 +161,23 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-p
 | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 21.2 (agent session) | - | 189 | coding agents: half the experts (256 of 512); OpenCode session 55.5 s vs 73.4 s on IQ2_XS. General knowledge not checked beyond the task set |
 | IQ2_XS | 68.0 GB | 21.0 (same day as Q2_0; 21.9 in RESULTS 59) | 253 / 242 | 187 | superseded by Q2_0 (older rows above that say IQ2_XS were measured on IQ2_XS) |
 | IQ3_S | 83.6 GB | 17.3 | - | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |
+
+**Which model for my machine?** Run `python3 bin/moe_cache.py pick` (Windows: `python bin\moe_cache.py pick`) or open the control page's Settings > **Which model?**.
+It reads your RAM (and the hard cap the server keeps: RAM minus max(4 GiB, 12.5 %)), dedicated VRAM, free disk, SSD or HDD, CPU (AVX2 / AVX-512) and your
+llama-server's build, asks what it is for (agents / coding at 64k-256k, plain chat, long documents), and recommends one model, file, context and options.
+It never downloads by itself: it prints the command with size and source, and `--apply` (or the page's *Use it*) makes `moe-cache-server`,
+`on-demand` and the page start that model by default, so `connect hermes|opencode` points the agent at it. Where we have no number for your class of
+machine it says "untested on this class of machine". The rules, from the measurements (RESULTS 44-45, 53, 59-67; the PC is 32 GB RAM + 16 GB GPU):
+
+| Your machine | Agents / coding (64k-256k) | Plain chat | Long documents |
+|---|---|---|---|
+| **32 GB RAM + 16 GB GPU** (measured) | **Nemotron 3.5 Bolt 74B** at 128k, stock: decode 27.9 (24.9 at 114k), OpenCode session 47.8 s | **Flash-Next Q2_0**: 22-25 tok/s, 191/202 tasks (IQ3_XXS 193/202 is the accuracy pick, about 10 % slower) | **Bolt**: prompts 595 tok/s at 57k, 721 at 114k (Flash-Next Q2_0 170-220 at 128k) |
+| 32 GB + 8 GB GPU | Bolt at 64k (untested with 8 GB) | Flash-Next Q2_0 (untested; the IQ2_XS file of the same size gave 12.5 tok/s on 24 GB + 8 GB) | Bolt at 64k (untested) |
+| 64 GB + 16 GB GPU | Bolt | Flash-Next IQ3_XXS (untested here) | Bolt |
+| 128 GB+ | Bolt | GLM-5.3-Flash (fits; untested) | Bolt |
+| 16 GB + 6 GB GPU, or no GPU | Qwen3.6-35B-A3B (22.6 tok/s with moe-cache at 12 GB RAM + 8 GB GPU; 9.9-10.6 tok/s without a GPU; agents on such a machine untested at 64k) | Qwen3.6-35B-A3B | Qwen3.6-35B-A3B |
+Bolt needs llama.cpp **b11966 or newer** (the picker checks `llama-server --version` and says so); models bigger than RAM are not suggested when they sit
+on a hard disk, and a model is skipped when the disk has less free space than its size. Bolt's general knowledge beyond our 202 tasks is not checked.
 
 **Long context (Windows PC, RESULTS 64; agent mode, one cold run per point, not ABBA).** Flash-Next Q2_0 at a 64k setting: moe-cache reads a 63.5k-token
 prompt 1.8x faster than stock (about 289 vs 525 s; prefill 266 / 195 tok/s at 4-21k / 53-63k vs 171 / 106) and decodes 20.7 vs 16.8 tok/s at that depth

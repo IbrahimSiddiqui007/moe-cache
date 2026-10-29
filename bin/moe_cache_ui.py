@@ -15,6 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
+import moe_cache_pick as picker  # noqa: E402
 
 HERE = mc.HERE
 WINDOWS = mc.WINDOWS
@@ -1507,6 +1508,12 @@ class Store:
     def folders(self):
         return list(dict.fromkeys(default_folders() + self.saved.get("folders", [])))
 
+    def pick_specs(self, fresh=False):
+        """The picker's view of this machine (kept 5 minutes: it asks nvidia-smi, PowerShell and llama-server --version)."""
+        if fresh or not getattr(self, "_spec", None) or time.time() - self._spec[0] > 300:
+            self._spec = (time.time(), picker.machine_specs(self.folders(), self.ls))
+        return self._spec[1]
+
     def save(self):
         try:
             os.makedirs(mc.CACHE_DIR, exist_ok=True)
@@ -1647,8 +1654,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
             if u.path == "/api/system":
-                return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}),
+                return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}), pick=self.store.saved.get("pick"),
                                            llama_server=self.store.ls, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
+            if u.path == "/api/pick":                      # "Which model?": this machine and one recommendation per use (bin/moe_cache_pick.py)
+                spec = self.store.pick_specs(q.get("fresh") == "1")
+                uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)
+                return self.send(200, {"machine": spec, "lines": picker.spec_lines(spec), "uses": picker.USES,
+                                       "recommendations": [picker.recommend(spec, x, q.get("model") or None) for x in uses], "pick": self.store.saved.get("pick")})
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
@@ -1738,6 +1750,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.store.save()
                 self.runner.start(s)
                 return self.send(200, self.runner.status())
+            if self.path == "/api/pick/use":               # "Use it": the same settings `moe_cache.py pick --apply` writes (no download here)
+                if body.get("use") not in picker.USES:
+                    raise ValueError("use: " + ", ".join(picker.USES))
+                rec = picker.recommend(self.store.pick_specs(True), body["use"], body.get("model") or None)
+                picker.apply(rec, self.store.saved)
+                self.store.save()
+                self.store.models_at = 0                   # the list shows the file at once
+                return self.send(200, {"recommendation": rec, "last": self.store.saved.get("last", {}), "pick": self.store.saved.get("pick")})
             if self.path == "/api/command":
                 s = self.settings(body)
                 return self.send(200, {"launcher": shown_command(s), "lines": dry_run(s)})
