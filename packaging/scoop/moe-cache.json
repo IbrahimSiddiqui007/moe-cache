@@ -1,0 +1,41 @@
+{
+    "version": "@VERSION@",
+    "description": "Plugin for llama.cpp's llama-server that runs MoE models bigger than your RAM (experts cached in RAM, the rest read from the SSD; output identical to stock). Experimental on Windows.",
+    "homepage": "https://github.com/IbrahimSiddiqui007/moe-cache",
+    "license": "MIT",
+    "notes": [
+        "Needs llama.cpp's official Windows release (llama-bNNNNN-bin-win-vulkan-x64.zip, tested b11669) and Python 3.8+.",
+        "Run 'moe-cache' to open the control page (http://127.0.0.1:8070). Command line: python \"$dir\\bin\\moe_cache.py\" check MODEL.gguf --run",
+        "Read $dir\\README_WINDOWS.txt first."
+    ],
+    "suggest": {
+        "Python": "main/python"
+    },
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/v@VERSION@/moe-cache-v@VERSION@-windows-x64.zip",
+            "hash": "@SHA256@",
+            "extract_dir": "moe-cache-v@VERSION@-windows-x64"
+        }
+    },
+    "bin": [
+        [
+            "moe-cache.bat",
+            "moe-cache"
+        ]
+    ],
+    "checkver": {
+        "github": "https://github.com/IbrahimSiddiqui007/moe-cache"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/v$version/moe-cache-v$version-windows-x64.zip",
+                "hash": {
+                    "url": "$baseurl/SHA256SUMS-windows"
+                },
+                "extract_dir": "moe-cache-v$version-windows-x64"
+            }
+        }
+    }
+}

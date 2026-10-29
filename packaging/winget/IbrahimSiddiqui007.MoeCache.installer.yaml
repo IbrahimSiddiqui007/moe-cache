@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: IbrahimSiddiqui007.MoeCache
+PackageVersion: "@VERSION@"
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+  - RelativeFilePath: moe-cache-v@VERSION@-windows-x64\moe-cache.exe
+    PortableCommandAlias: moe-cache
+Dependencies:
+  PackageDependencies:
+    - PackageIdentifier: Python.Python.3.12
+ReleaseDate: "@DATE@"
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/v@VERSION@/moe-cache-v@VERSION@-windows-x64.zip
+    InstallerSha256: "@SHA256_UPPER@"
+ManifestType: installer
+ManifestVersion: 1.6.0
