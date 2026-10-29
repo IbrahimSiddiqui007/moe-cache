@@ -153,6 +153,12 @@ jobs:
           python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 4 --always-plugin --gpu-cache 1000 --dry-run 2>&1 | Tee-Object launcher_dry.txt
           if (-not (Select-String launcher_dry.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { throw "dry run: no GGML_BACKEND_PATH" }
           if (Select-String launcher_dry.txt -Pattern "moe-cache-mib" -SimpleMatch -Quiet) { throw "dry run: --gpu-cache must be dropped on path loading (wrong tokens there)" }
+          # a model that fits runs stock: no plugin build needed (T5: Nemotron Bolt stopped with "plugin not built")
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\no-such-dir\ggml-moe-cache.dll"
+          python bin/moe_cache.py server granite.gguf --llama-server $ls --ram 8 --dry-run 2>&1 | Out-File launcher_stock_nolib.txt
+          $rc = $LASTEXITCODE
+          $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"
+          if ($rc -ne 0 -or -not (Select-String launcher_stock_nolib.txt -Pattern "running stock llama-server" -SimpleMatch -Quiet) -or (Select-String launcher_stock_nolib.txt -Pattern "GGML_BACKEND_PATH" -SimpleMatch -Quiet)) { Get-Content launcher_stock_nolib.txt; throw "a model that fits must run stock without a plugin build" }
           python -c "import importlib.util as u, sys; sys.argv=['x']; s=u.spec_from_file_location('m','bin/moe_cache.py'); m=u.module_from_spec(s); s.loader.exec_module(m); c=m.win_cores(); print('cores (efficiency class, cpus):', c); print('hybrid masks:', m.hybrid_masks(c)); print('ggml API of the server:', m.ls_api(r'$ls')); sys.exit(0 if c else 1)"
           python tests/ui_test.py       # control page (GUI1) without a model
           if ($LASTEXITCODE -ne 0) { throw "control page test failed" }

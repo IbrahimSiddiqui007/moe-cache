@@ -2572,7 +2572,8 @@ recurrent state 450; compute 1403 (`-ub 512`), 2983 (1024), 3979 (2048); 128k `-
 | Flash-Next Q2_0, moe-cache, 128k (46 CPU layers, `-ub 2048`) | 16.2 s | 197 / 221 / 197 / 191 / 179 / 170, 172, 170, 161 up to 130.6k | 18.97 (96.6 %) | - | **15.27 at 130.6k** (93.9 %) |
 | Qwen3.5-122B, moe-cache, 128k (47 CPU layers, `-ub 2048`) | 15.2 s | 190 / 215 / 209 / 198 / 193 / 180, 187, 180, 176 up to 130.6k | 15.54 (95.9 %) | - | **11.27 at 130.6k** (89.3 %) |
 | Qwen3.6-35B (stock, fits), 128k | 14.1 s | 474 / 936 / 1014 / 955 / 895 / 798, 812, 704, 697 up to 130.5k | 55.08 | - | **45.76 at 130.5k** |
-| Qwen3.5-122B, moe-cache, 256k setting | 15.1 s | 113 / 115 / 104 / 103 / 103 / 97, 99, 96, 97 up to 138k | 13.92 (93.3 %) | - | 12.65 at 138k (93.6 %); **timed out at 35 min** after the 138k save (most likely the whole prompt processed again, finding 5) |
+| Qwen3.5-122B, moe-cache, 256k setting (overnight build: launcher 28b022b, DLL f478564) | 15.1 s | 113 / 115 / 104 / 103 / 103 / 97, 99, 96, 97 up to 138k | 13.92 (93.3 %) | - | 12.65 at 138k (93.6 %); **timed out at 35 min** after the 138k save (most likely the whole prompt processed again, finding 5) |
+| Qwen3.5-122B, moe-cache, 256k setting, **rerun on experimental f310c28** (46 CPU layers, `-ub 512`; hold 1 of a split run, T4) | 17.8 s | 96 / 100 / 88.5 / 89 / 90, 87, 82, 84, 85 up to 135k | 13.50 (90.2 %) | **12.85 at 62.7k** (88.2 %) | 12.01 at 130.5k (85.4 %); hold 1 stopped at 135k by its 29-min budget; **holds 2-3 (to ~250k) queued** (C:\dl\afternoon item 70) |
 | Qwen3.6-35B (stock, fits), 256k setting (`-ub 512`) | 13.1 s | 182 / 263 / 260 / 266 / 255 / 259, 249, 234, 235 up to 138k, 217-225 up to 227.8k | 49.03 | - | 35.75 at 138k, **41.74 at 227.8k** |
 | GLM-5.3-Flash IQ2_XXS, moe-cache, 64k | 26.1 s | 35.4 / 35.2 (to 20.3k), then **timed out at 35 min** (15 min of it waiting for a cool-down break) | 2.08 (32.7 %) | - | - |
 Whole 63.5k prompt: Flash-Next moe-cache ~289 s vs stock ~525 s (**1.8x**); decode at 63.5k **+23 %** (20.65 vs 16.83). Free RAM during the runs:
@@ -2606,7 +2607,11 @@ too late). Coder IQ1_M and GLM: removed from the PC by the owner. Queued for the
 **Update 2026-10-29 (overnight chain, RESULTS 67):** Flash-Next Q2_0, the 122B and Qwen3.6 at 128k and Qwen3.6 at 256k are in the tables above.
 Finding 5 reproduced on Qwen3.6 at 256k: after the 138k save and the slot-1 request, the next chunk processed all 157,806 tokens again (625 s);
 the 122B at 256k reached 138k in ~23 min and then timed out at the chain's 35-min limit, most likely in the same re-processing. GLM at 64k timed
-out too (35 tok/s prompts; 15 of its 35 min went to a cool-down break). Still open: GLM 64k and the 122B at 256k with a longer limit.
+out too (35 tok/s prompts; 15 of its 35 min went to a cool-down break). **T4 (2026-10-29, f310c28, split into holds of 29 min or less, slot 0 saved and restored between holds, no slot-1 request):** why 35 min was
+too little: the 122B at 256k fills ~254k tokens at 82-100 tok/s = ~50 min of prefill alone, and GLM's 63.5k prompt at 35 tok/s = ~30 min plus a
+2 tok/s decode; neither was a stall (the 122B's last stretch is the known re-processing, finding 5). Hold 1 of the 122B (cap 21 GiB because the owner's
+own work used 6.9 GiB of RAM: not clean) reached 135k in 27.1 min, slot save 4.4 s / 4.73 GB. Still open, queued on the PC for the afternoon runner
+(items 70-72, results in C:\dl\afternoon\ and C:\dl\t4\t4.log; method and commands: handover/parts/longctx_20261029.md): 122B 256k holds 2-3, GLM 64k, Flash-Next Q2_0 256k on the current build.
 
 **Addendum: N25 executor chunk size** (MOE_CACHE_EXEC_CHUNK, DLL 31ac159, Flash-Next Q2_0 on D:, launcher defaults, cold, ABBA 32 / 128 / 512 / 512 / 128 / 32,
 256-token water and code decodes, a 3.5k-token prompt; C:\dl\pcb_chunk.ps1)
@@ -2841,3 +2846,34 @@ N29, N30 and I31. Session "abba" owns the question whether this is the check or 
 
 **RAM watch.** Past 28 GiB in use (log only, nothing stopped): every logged N15, N22, N26 (runs 3-4), N27, N23, I31 and HIP-item run, Flash-Next
 and Qwen3.6 at 128k; peak **30.86 GiB** (hip_plugin run 1). Never past 28 GiB: N30, the 122B at 128k and 256k, Qwen3.6 at 256k, GLM, Bolt, N25c. The product's hard cap (RAM minus max(4 GiB, 12.5 %)) was merged since (e708462).
+
+## 68. Nemotron 3.5 Bolt: the "3.5 s per tiny request" explained, and short prompts on stock runs (T5, Windows PC, 2026-10-29)
+
+Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp b11966, Bolt stock (launcher default: it fits), cold (file cache flushed), one server per arm.
+**Not clean: owner work running** (Edge open; 22.7-24.4 GB free RAM at each start). Data: PC C:\dl\t5\out\.
+
+**The 202-task run of RESULTS 65 (701 s):** 431 s were one request stuck from 21:36:42 to 21:43:51, the window of the PC's driver timeout and
+network drop (T6); 227 s prompt processing; 27 s decoding (4 tokens per answer, as Q2_0; thinking was off); 16 s other. Without the stall 1.34 s
+per request (Q2_0 0.84 s). Prompts of 33-35 tokens took ~0.4 s, prompts of 36+ tokens ~1.2 s: llama.cpp moves an op to the GPU for batches of
+32+ tokens (`GGML_OP_OFFLOAD_MIN_BATCH`, default 32; Vulkan, CUDA, SYCL, Metal, CANN), which for Bolt copies every CPU-held expert to the GPU
+(~1 s), and llama-server processes a prompt as (n - 4) + 4 tokens for its checkpoint.
+
+| Arm (tiny requests) | chat, template default (thinking on) | chat, enable_thinking off | 202-task requests (first 60) | tokens vs default |
+|---|---|---|---|---|
+| default | 3.36 s (68 tokens, reasoning) | 0.71 s | 1.32 s | - |
+| `--reasoning-budget 0` | 0.87 s | - | 1.31 s | 60/60 identical |
+| `GGML_OP_OFFLOAD_MIN_BATCH` 64 / 128 / 256 | - | 0.83-0.85 s | 0.61 / 0.59 / 0.60 s | 60/60 identical |
+
+Prompt time (ms) by size, nothing cached:
+| Prompt tokens | 32 (llama.cpp) | 64 | 128 | 256 | 512 |
+|---|---|---|---|---|---|
+| 51 | 1223 | 435 | 421 | 437 | - |
+| 105 | 1377 | 1391 | 588 | 586 | - |
+| 159 | 1439 | 1482 | 1468 | 683 | - |
+| 303 | 1748 | - | - | 1787 | **962** |
+| 375 | 1613 | - | - | 1763 | **1102** |
+| 465 | 1657 | - | - | 1817 | **1266** |
+| 555 / 735 | 1697 / 1784 | - | - | 1733 / 1796 | 1688 / 1774 |
+Answers identical in every arm (90 prompts). **Launcher default since this section:** stock runs whose model fits and that keep expert layers on
+the CPU get `GGML_OP_OFFLOAD_MIN_BATCH=512` (a user's value wins; plugin runs unchanged). Not proven bit-exact (CPU and GPU sums may round
+differently); tokens were identical everywhere it was checked. Thinking stays as the model card sets it (on for agents).
