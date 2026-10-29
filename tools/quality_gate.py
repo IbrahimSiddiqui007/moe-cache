@@ -49,7 +49,7 @@ def run_ppl(a, base_file, test, env, extra, log):
 
 
 def num(text, pat):
-    m = re.search(pat + r"\s*:?\s*(-?[0-9.]+)(?:\s*±\s*([0-9.]+))?", text)
+    m = re.search(pat + r"\s*:\s*(-?[0-9.]+)(?:\s*±\s*([0-9.]+))?", text)
     return (float(m.group(1)), float(m.group(2)) if m.group(2) else None) if m else (None, None)
 
 
@@ -58,7 +58,7 @@ def serve_and_run_tasks(a, env, extra, tag, port):
     cmd = [a.llama_server, "-m", a.model, "-ngl", str(a.ngl), "--n-cpu-moe", str(a.n_cpu_moe), "-c", str(a.ctx), "-np", "1", "-fa", "on",
            "--no-warmup", "--port", str(port), "--seed", "42"] + a.common_args.split() + extra
     logf = open(os.path.join(a.out, f"server_{tag}.log"), "w")
-    e = dict(os.environ, MOE_CACHE_STATS="1", **env)
+    e = dict(os.environ, MOE_CACHE_STATS="1"); e.update(env)
     srv = subprocess.Popen(cmd, env=e, stdout=logf, stderr=subprocess.STDOUT)
     try:
         for _ in range(300):
@@ -116,7 +116,8 @@ def main():
     cand_args = list(largs) + a.args.split()
     both_env = dict(kv.split("=", 1) for kv in a.ram_env)
     load = plugin_env(a.llama_server, a.lib)
-    plug = dict(load, MOE_CACHE_GGUF=a.model, MOE_CACHE_SIZE_GIB=both_env.pop("MOE_CACHE_SIZE_GIB", "auto"), MOE_CACHE_STATS="1", **both_env)
+    plug = dict(load, MOE_CACHE_GGUF=a.model, MOE_CACHE_SIZE_GIB=both_env.pop("MOE_CACHE_SIZE_GIB", "auto"), MOE_CACHE_STATS="1")
+    plug.update(both_env)
     print(f"quality gate, level {a.level}{' (smoke limits)' if a.smoke else ''}: KLD <= {kld_max}, top-1 >= {top_min} %, tasks >= stock - {tol}; out {a.out}")
     print(f"candidate: env {cand_env}, args {cand_args}")
     res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args}, []
