@@ -1887,7 +1887,11 @@ def check(argv):
                 fail("shared ggml", "this llama-server has ggml built in; the plugin cannot be loaded (use a build with BUILD_SHARED_LIBS=ON)")
     lib = os.environ.get("MOE_CACHE_LIB") or (pick_lib(lsp) if lsp else default_lib())
     if not os.path.isfile(lib):
-        if shutil.which("g++"):
+        if not lsp:
+            warn("plugin", "not checked: which build fits depends on llama-server, which was not found (see above)")
+        elif WINDOWS:
+            fail("plugin", "ggml-moe-cache-api3.dll (or -api2.dll) not found next to the launcher: unzip the whole kit and run from its folder")
+        elif shutil.which("g++"):
             warn("plugin", "not built yet: run ./build.sh (g++ found)")
         else:
             fail("plugin", "not built and no g++ found; use the prebuilt release or install g++")
