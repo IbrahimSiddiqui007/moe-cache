@@ -417,12 +417,12 @@ jobs:
           IDENT_IDLE: "1"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_idle_view.txt
 
-      - name: Identity, idle release with the private-memory cache (MOE_CACHE_WIN_VIEW=0)
+      - name: Identity, idle release with the private-memory cache (MOE_CACHE_LINUX_VIEW=0)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
           MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
           IDENT_IDLE: "1"
-          IDENT_PLUGIN_ENV: "MOE_CACHE_WIN_VIEW=0"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_LINUX_VIEW=0"
         run: tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_idle_private.txt
 
       - name: Keep the logs
