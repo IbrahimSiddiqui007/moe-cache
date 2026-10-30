@@ -107,7 +107,7 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   | Flash-Next IQ3_XXS (76 GB) | 9 | 15.14 | **19.86** | +31 % |
   | Flash-Next IQ3_S (84 GB) | 7 | 12.92 | **17.28** | +34 % |
   | Qwen3.5-122B UD-IQ2_XXS (34 GB), re-measured 2026-10-28 (RESULTS 61) | 12 | 15.95 | **19.73** | +24 % |
-  | GLM-5.3-Flash UD-IQ2_XXS (102 GB), one pair | 3 | 2.21 | **4.44**; **6.92 with `--mtp`** | 2.0x; 3.1x |
+  | GLM-5.3-Flash UD-IQ2_XXS (102 GB); moe-cache ABBA on drive D: (RESULTS 62), stock and MTP single runs on C: | 3 | 2.21 | **5.89**; **6.92 with `--mtp`** | 2.7x; 3.1x |
 
   Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
   IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). The
