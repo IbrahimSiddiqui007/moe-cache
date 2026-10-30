@@ -39,7 +39,7 @@ check(mb.summarize([run("stock", "a"), {"mode": "moe-cache", "error": "x"}], exa
 
 # 4. the whole command with fakes: sections in order, privacy, files, exit codes
 tmp = tempfile.mkdtemp(prefix="bench report ")                     # a space in the path
-user = "zqxuser"; host = socket.gethostname()
+user = "zqxüser"; host = socket.gethostname()
 os.environ["USER"] = os.environ["USERNAME"] = user
 model_dir = os.path.join(tmp, f"{user} models")
 os.makedirs(model_dir)
@@ -57,7 +57,7 @@ def fake_run(model_, mode, a, port, text="Once upon a time"):
 
 FAKE_TEXT = {"stock": "same", "moe-cache": "same"}
 facts = {"system": "Linux 6.8", "cpu": "Test CPU", "ram": "32 GB total", "gpu": f"Vulkan0 (Test GPU), driver 1.2 on {host}", "moe-cache": "0.3.2",
-         "disk": f"files in {os.path.expanduser('~')}/models", "drive speed": "3.1 GB/s"}
+         "disk": f"files in {os.path.expanduser('~')}/models", "drive speed": "3.1 GB/s", "model": r"D:\Private Stuff\models\x.gguf, 66 GB"}
 mb.doctor_facts = lambda m, ls, ram: (False, dict(facts), [])
 mb.server_info = lambda ls: (dev("Vulkan0"), "version: 11669 (620d2225c)")
 mb.run_one = fake_run
@@ -79,7 +79,8 @@ try:
     pos = [md.find(x) for x in order_]
     check(all(p >= 0 for p in pos) and pos == sorted(pos), "report sections present and in order")
     check("**COLD**" in md and calls == ["stock", "moe-cache", "moe-cache", "stock"], "COLD, and the runs went stock, moe-cache, moe-cache, stock")
-    for bad, what in ((user, "user name"), (host, "host name"), (os.path.expanduser("~"), "home folder"), (model_dir, "model folder"), ("same", "answer text")):
+    for bad, what in ((user, "user name"), (host, "host name"), (os.path.expanduser("~"), "home folder"), (model_dir, "model folder"), ("same", "answer text"),
+                      ("Private Stuff", "another folder (Windows path)")):
         check(bad not in md and bad not in js, f"privacy: no {what} in the report or the .json")
     json.loads(js)
     check("2.0x" in md, "decode ratio 2.0x in the result line")
@@ -87,7 +88,7 @@ try:
     calls.clear(); flush_ok[0] = False
     rc = mb.bench_report([model, "--out", out, "--llama-server", "llama-server", "--flush-from", ""])
     md = open(os.path.join(out, sorted(f for f in os.listdir(out) if f.endswith(".md"))[-1]), encoding="utf-8").read()
-    check("**WARM**" in md and "cold start failed" in md, "WARM stamp and a note when the cold start fails")
+    check("**WARM**" in md and md.count("cold start failed") == 1, "WARM stamp and one note (not one per run) when the cold start fails")
     flush_ok[0] = True
 
     FAKE_TEXT["moe-cache"] = "other"

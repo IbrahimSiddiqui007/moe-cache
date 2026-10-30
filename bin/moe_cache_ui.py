@@ -525,6 +525,8 @@ def server_args(s):
         a.append("--hybrid")
     elif s.get("engine") == "plugin":
         a.append("--always-plugin")
+    if s.get("engine") != "stock" and s.get("mode", "exact") == "exact":
+        a.append("--exact")                # the page says "same output as stock": no q8_0 KV default at 128k+ (audit 2026-10-30)
     if s.get("mtp") in (True, False):
         a.append("--mtp" if s["mtp"] else "--no-mtp")
     if s.get("agent"):

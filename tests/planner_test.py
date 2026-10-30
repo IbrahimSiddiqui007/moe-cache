@@ -97,6 +97,10 @@ check("-ctk f16" in dry("--ctx", "131072", "--vram", "4", "--", "-ctk", "f16") a
 import importlib.util, struct  # noqa: E402
 _sp = importlib.util.spec_from_file_location("moe_cache_launcher", os.path.join(HERE, "bin", "moe_cache.py"))
 L = importlib.util.module_from_spec(_sp); _sp.loader.exec_module(L)
+# the 128k+ q8_0 default skips --stock (plain llama.cpp to compare against) and machines without a GPU (q8_0 KV aborted on the CPU-only build)
+check("-ctk q8_0" not in dry_nolib("--ctx", "131072", "--ram", "8", "--stock")[1], "launcher ctx 128k --stock: f16 KV")
+if L.pick_gpu(L.list_devices(L.default_llama_server())) is None:          # CPU-only machine (CI)
+    check("-ctk q8_0" not in dry("--ctx", "131072"), "launcher ctx 128k, no GPU listed and no --vram: f16 KV kept")
 # AMD driver version for the checkpoint message (I44): fake winreg with two display adapters
 _keys = {"": ["0000", "0001", "Properties"], "0000": {"DriverDesc": "AMD Radeon(TM) Graphics", "DriverVersion": "31.0.1.1"},
          "0001": {"DriverDesc": "AMD Radeon RX 9070 XT", "DriverVersion": "32.0.23034.4"}}

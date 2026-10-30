@@ -1519,13 +1519,16 @@ def server(argv):
             say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
-    # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): it passes the quality gate (KL 0.0079, tasks = stock, RESULTS 72) and
-    # doubles prefill at 256k on a 16 GB card; --exact (or your own -ctk/-ctv after --) keeps llama.cpp's f16 KV
-    if (not a.fast and not a.exact and ctx >= 131072
-            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)):
+    # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock,
+    # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (prompts about 2x). Not with --stock (that compares
+    # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
+    # -ctk/-ctv after --) keeps llama.cpp's f16 KV
+    if (not a.fast and not a.exact and not a.stock and ctx >= 131072
+            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
+            and (a.vram or pick_gpu(listing if listing is not None else list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
-        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k, same answers in the quality "
-            "gate, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
+            "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
     if kv_q8:
         extra += ["-ctk", "q8_0", "-ctv", "q8_0"]

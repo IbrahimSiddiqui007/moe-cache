@@ -43,8 +43,21 @@ def scrubber():
                 text = re.sub(re.escape(h), "~", text, flags=re.I)
         for w in words:
             text = re.sub(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])", "<name>", text, flags=re.I)
+        # any other folder path down to its last part: drive-letter paths may have spaces in folder names (D:\\Private Stuff\\x.gguf),
+        # / and ~/ paths may not (so "a / b" text stays); URLs (://) are left alone
+        text = re.sub(r"(?<![\w:/])[A-Za-z]:[\\/](?:[^\n|`'\"<>()\\/:]+[\\/])+([^\s|`'\"<>()\\/,;]*)", r"\1", text)
+        text = re.sub(r"(?<![\w:/])(?:~[\\/]|/)(?:[^\s|`'\"<>()\\/]+[\\/])+([^\s|`'\"<>()\\/]*)", r"\1", text)
         return text
     return scrub
+
+
+def scrub_all(x, scrub):
+    """scrub() on every string inside a dict / list (before json.dumps, which would double the backslashes of Windows paths)."""
+    if isinstance(x, dict):
+        return {k: scrub_all(v, scrub) for k, v in x.items()}
+    if isinstance(x, list):
+        return [scrub_all(v, scrub) for v in x]
+    return scrub(x) if isinstance(x, str) else x
 
 
 def doctor_facts(model, ls, ram):
@@ -157,6 +170,10 @@ def run_one(model, mode, a, port):
                 p.wait(timeout=30)
             except subprocess.TimeoutExpired:
                 p.kill()
+        for _ in range(60):          # Windows: llama-server ends a moment after the launcher; the next run needs the port
+            if not mc.port_busy(port):
+                break
+            time.sleep(1)
 
 
 def server_info(ls):
@@ -290,10 +307,11 @@ def bench_report(argv):
         if not a.warm:
             ok_, why = ui.flush_model_cache(a.model, other)
             if not ok_:
+                if start == "COLD":
+                    notes.append(f"cold start failed ({why}): stock and moe-cache are not comparable with the README rows (WARM)")
                 start = "WARM"
-                notes.append(f"cold start failed before run {i + 1} ({why}): stock and moe-cache may not be comparable with the README rows")
         mc.say(f"bench-report: run {i + 1}/{len(order(a.pairs))}: {mode} ...")
-        r = run_one(a.model, mode, a, a.port)
+        r = {"mode": mode, "error": f"port {a.port} still in use by the previous server"} if mc.port_busy(a.port) else run_one(a.model, mode, a, a.port)
         if r.get("error"):
             notes.append(f"run {i + 1} ({mode}): {r['error']}")
             mc.say(f"bench-report: run {i + 1} failed: {r['error']}", err=True)
@@ -324,7 +342,7 @@ def bench_report(argv):
     os.makedirs(a.out, exist_ok=True)
     base = os.path.join(a.out, "moe-cache-report-" + datetime.datetime.now().strftime("%Y%m%d-%H%M"))
     open(base + ".md", "w", encoding="utf-8").write(md)
-    open(base + ".json", "w", encoding="utf-8").write(scrub(json.dumps(d, indent=1)))
+    open(base + ".json", "w", encoding="utf-8").write(json.dumps(scrub_all(d, scrub), indent=1, ensure_ascii=False))
     mc.say("")
     mc.say(md)
     mc.say(f"bench-report: written {base}.md and .json. Paste the .md into a new issue: https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml")

@@ -1,4 +1,4 @@
-moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama-server`. By default the answers mean the same as stock llama.cpp's: up to 128k context the output is identical; at 128k and above the KV cache is stored as q8_0 (`--fast=kv`), which passes the quality gate (`docs/QUALITY_GATE.md`) and `--exact` turns off. **On Windows it is faster than stock** on every model we measured; the **Windows kit** is experimental.
+moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama-server`. By default the answers mean the same as stock llama.cpp's: below 128k context the output is identical to stock with the same layer split (CI); at 128k and above the KV cache is stored as q8_0 (`--fast=kv`), which passed the quality gate at 4k context (`docs/QUALITY_GATE.md`) and `--exact` turns off. **On Windows it is faster than stock** on every model we measured; the **Windows kit** is experimental.
 
 **v0.3.2 is the first release for public testing.** Please try it on your Windows or Linux machine: `python bin/moe_cache.py bench-report MODEL.gguf` (a model bigger than your RAM) measures stock and moe-cache and writes a report to paste into a [Benchmark report issue](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml); the recipe is [docs/SHARE_YOUR_NUMBERS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/SHARE_YOUR_NUMBERS.md). Problems: the Bug report template, with what `doctor` prints.
 
@@ -7,8 +7,8 @@ moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama
 | Area | Change |
 |---|---|
 | Long prompts with a browser open | When the GPU also draws the desktop, the desktop and a browser hold VRAM; the planner's GPU margin now grows with what other programs hold, and the long-prompt GPU block runs in parts when VRAM is short. Flash-Next Q2_0 with a browser open: prompts at 34k tokens 109-110 instead of 67-68 tok/s, at 128k 79-95 instead of 67-75 (PC, RESULTS 71) |
-| Faster prompts | The long-prompt GPU block reads back into pinned memory inside its loop (N22, +3-5 %) and fills the expert cache while the block uploads (N23, +8-11 %); tokens identical |
-| 128k+ context | The KV cache is q8_0 by default there (`--fast=kv`): prompts about 2x faster at 256k on a 16 GB card, KL 0.0079 against stock, top-1 96.7 %, 202-task score equal to stock. `--exact` keeps llama.cpp's f16 KV |
+| Faster prompts | The long-prompt GPU block reads back into pinned memory inside its loop (N22, +2-5 %) and fills the expert cache while the block uploads (N23, +8-11 %); tokens identical |
+| 128k+ context | The KV cache is q8_0 by default there (`--fast=kv`): prompts about 2x faster at 256k on a 16 GB card (the smaller KV leaves room for a bigger GPU plan); quality gate at 4k context: KL 0.0079 against stock, top-1 96.7 %, 202-task score equal to stock. Not on CPU-only machines or with `--stock`; the control page's Exact mode keeps f16. `--exact` keeps llama.cpp's f16 KV |
 | Quality gate | `docs/QUALITY_GATE.md`, `tools/quality_gate.py`: every approximate mode is measured against stock (KL divergence, top-1, the 202 tasks) with thresholds fixed before measuring. New opt-in `--fast=fewer` (decode +2-6 % at 4k, KL 0.034; unproven at 64k-256k) |
 | Control page | Readable selected and primary buttons in both themes; "Which model?" is a card with your machine, one recommendation and its numbers; MTP draft-head files are no longer listed as models; "Switch to <name>" in the top bar and a menu on every model (right-click, Shift+F10 or ⋮: Start, Switch, Stop, Plan / Why, Show in folder, Copy path); a "llama.cpp not found" dialog that remembers the path |
 | Newer llama.cpp | Fixed a crash at start with llama.cpp builds after b12000 (ggml changed a struct layout without a version bump), and b11966+ (ggml 0.28) now gets the plugin instead of a "DLL not found" message |
@@ -125,7 +125,7 @@ Full list: [CHANGELOG.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/m
 | Issue | Note |
 |---|---|
 | Unsigned Windows zip | see "unknown publisher" above |
-| Not byte-identical at 128k+ by default | the q8_0 KV cache there gives the same answers in the quality gate, not the same bytes as stock; `--exact` keeps f16 |
+| Not byte-identical at 128k+ by default | the q8_0 KV cache there passed the quality gate at 4k context, but does not give the same bytes as stock; `--exact` keeps f16 |
 | Diffusion | preview: LLaDA-MoE-7B tested, RND1 30B not yet |
 | Tested hardware | Windows: one desktop plus a CPU-only GitHub runner. Linux: Intel + NVIDIA, CPU-only, Vulkan; a user's RX 9070 XT. macOS no |
 | Models measured | Qwen3.8-Flash-Next (5 files), Qwen3.5-122B, GLM-5.3-Flash, Qwen3.6-35B, Nemotron 3.5 Bolt 74B (agents), Granite 1B (CI). Others untested |

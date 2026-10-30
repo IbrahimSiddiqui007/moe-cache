@@ -3,11 +3,11 @@
 ## 0.3.2 (2026-10-30)
 
 - **Docs**: new `docs/TROUBLESHOOTING.md` (answers look wrong or loop, slow, does not start); FAQ entries on answer quality and cache policy; `--moe-cache-mib` is marked as llama.cpp's own GPU cache (slower on our Vulkan PC, RESULTS 59); long prompts at 63k still take minutes.
-- At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, passes the quality gate, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30.
+- At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, from the bigger GPU plan; quality gate passed at 4k context, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30. Not with `--stock` or without a GPU (q8_0 KV aborted on the CPU-only build); the control page's Exact mode passes `--exact`.
 - **Long prompts with a browser open** (N23 split, N31): when the desktop and a browser hold VRAM, the GPU margin grows with what other programs hold and the
   long-prompt GPU block runs in parts instead of falling back to the CPU. Flash-Next Q2_0 on the PC with a browser open: 34k prompt 109-110 vs 67-68 tok/s, 128k 79-95 vs 67-75 (RESULTS 71, ABBA).
 - **Long-prompt block: +8-11 % prefill** (N23-F3): the block fills the expert cache while it uploads; every valid ABBA pair at 34k and 128k, text identical (RESULTS 69).
-- **Long-prompt block: +3-5 % prefill at 34k** (N22): its result is read back through a pinned host buffer, asynchronously, inside the per-part loop; every pair, 128k even.
+- **Long-prompt block: +2-5 % prefill at 34k** (N22): its result is read back through a pinned host buffer, asynchronously, inside the per-part loop; every pair, 128k even.
 - **GPU out of memory at load**: the launcher measures free VRAM again, plans again and starts llama-server once more instead of stopping (tests/oom_retry_test.py).
 - **Picker**: no download offered when the disk is too small (it says which model suits and how much disk is missing, and prefers a local file); models Ollama downloaded are
   found as local files (with a readable name); download patterns match only the model's own .gguf files. `tools/check_model_links.py` checks in CI that every model the picker

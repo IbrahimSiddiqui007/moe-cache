@@ -30,8 +30,8 @@ done
 mkdir -p "$K/bin" "$K/tools" "$K/docs"
 cp "$X"/bin/*.py "$X"/bin/moe-cache-ui.bat "$K/bin/"     # every launcher module (v0.3.0 left out moe_cache_pick.py: the control page did not start)
 cp -r "$X/planner" "$X/ui" "$X/profiles" "$K/"
-cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$K/tools/"
-cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$X"/docs/SHARE_YOUR_NUMBERS.md "$K/docs/"   # WINDOWS.md links WINDOWS_TEST.md
+cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$X"/tools/loop_check.py "$K/tools/"
+cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$X"/docs/SHARE_YOUR_NUMBERS.md "$X"/docs/TROUBLESHOOTING.md "$K/docs/"   # WINDOWS.md links WINDOWS_TEST.md
 cp "$X/LICENSE" "$X/CHANGELOG.md" "$K/"
 # every module of the kit's bin\ imports from there alone (nothing from the repository): catches a launcher file left out of the copy above
 ( cd "$K/bin" && XDG_CACHE_HOME="$X/xdg" python3 -I -c "import sys; sys.path.insert(0, '.'); import moe_cache, moe_cache_ui, moe_cache_on_demand, moe_cache_pick" ) \

@@ -736,6 +736,8 @@ check("--stock" in ui.server_args(dict(base, engine="stock", mode="fast")) and "
       "server args: Stock wins over Fast (they cannot go together)")
 check("--always-plugin" in ui.server_args(dict(base, engine="plugin")) and "--always-plugin" not in ui.server_args(dict(base, engine="plugin", mode="fast")),
       "server args: moe-cache adds --always-plugin (not needed with --fast)")
+check("--exact" in ui.server_args(dict(base)) and "--exact" in ui.server_args(dict(base, engine="plugin")) and "--exact" not in ui.server_args(dict(base, mode="fast"))
+      and "--exact" not in ui.server_args(dict(base, engine="stock")), "Exact mode passes --exact (no q8_0 KV default at 128k+); fast and stock do not")
 check("--mtp" in ui.server_args(dict(base, mtp=True)) and "--no-mtp" in ui.server_args(dict(base, mtp=False))
       and not any("mtp" in x for x in ui.server_args(dict(base, mtp=None))), "server args: MTP On / Off / Auto")
 # MTP line in the plan: the launcher's own mtp_decide(); the head is faked here (the real reader is tested in planner_test)

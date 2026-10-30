@@ -6,7 +6,9 @@ Still stuck? Open a [Bug report](https://github.com/IbrahimSiddiqui007/moe-cache
 
 ## Answers look wrong, misspelled or loop
 
-moe-cache is exact by default: its output is token-identical to stock llama.cpp (`tests/identity.sh`, CI on Linux and Windows). So when answers look wrong, first find out
+moe-cache is exact by default: with the same layer split its output is token-identical to stock llama.cpp (`tests/identity.sh`, CI on Linux and Windows). With long
+prompts, how much work runs on the GPU can change from run to run with the free VRAM, which can change the last digits and then a token (stock llama.cpp too).
+So when answers look wrong, first find out
 whether stock llama.cpp does the same (last row of the table). Go down the table in this order; each row is a cheap check.
 
 | # | Check | Why it matters | How |
@@ -14,7 +16,7 @@ whether stock llama.cpp does the same (last row of the table). Go down the table
 | 1 | **Does stock llama-server do the same?** | If stock gives the same text, the cause is the model file, the settings or the build, not moe-cache | Run the same prompt, same flags, with plain `llama-server` (no plugin). Use temperature 0 and a fixed seed (`--seed 42`) |
 | 2 | **Temperature-0 twice** | The same prompt at temperature 0 must give identical text twice. If it does not, suspect unstable hardware (a RAM overclock such as XMP / EXPO at its limit) or a broken build. This is general knowledge, not something we measured | Send the same request twice with `"temperature": 0, "seed": 42`, compare the two answers |
 | 3 | **Sampling settings** | Low-bit quants (IQ2, IQ3, Q2) tend to loop on long answers without the model card's settings (temperature, top-p, top-k, min-p, presence penalty). The launcher passes them for Qwen3 / 3.5 / 3.6 / 3.8 and GLM models; plain `llama-server` does not, and your client may send its own values (they win) | The launcher prints the settings it passes. `--no-sampling-defaults` turns them off. Set the card's values in your client if you start `llama-server` yourself |
-| 4 | **KV cache type** | q8_0 KV is approximate (passes the quality gate: KL 0.0079, top-1 96.7 %, tasks = stock, Flash-Next Q2_0). At `--ctx 131072` and above it is the default. q4_0 KV is not tested by us | Look at the launcher's start lines or your `-ctk` / `-ctv` flags. `--exact` keeps llama.cpp's f16 KV (and costs VRAM and long-prompt speed) |
+| 4 | **KV cache type** | q8_0 KV is approximate (passed the quality gate at 4k context: KL 0.0079, top-1 96.7 %, tasks = stock, Flash-Next Q2_0). At `--ctx 131072` and above it is the default. q4_0 KV is not tested by us | Look at the launcher's start lines or your `-ctk` / `-ctv` flags. `--exact` keeps llama.cpp's f16 KV (and costs VRAM and long-prompt speed) |
 | 5 | **An approximate mode** | `--fast`, `--fast=2`, `--fast=fewer` and `--hybrid` change the output on purpose and only when you ask. `fewer` is unproven at 64k-256k ([QUALITY_GATE.md](QUALITY_GATE.md)) | Start without them (`--exact` also forces exact output) and compare |
 | 6 | **The model file** | A broken or truncated download, or a different upload of the same quant, gives odd text | Compare the sha256 of your file with the one on the model's Hugging Face page ("Files" > the file > "Copy SHA256"): Linux `sha256sum MODEL.gguf`, Windows `certutil -hashfile MODEL.gguf SHA256` (PowerShell: `Get-FileHash MODEL.gguf`). Download again if it differs |
 | 7 | **llama.cpp build, backend, driver** | An old build may lack the model's fixes; CUDA, Vulkan and HIP are different code. AMD on Windows: a Vulkan driver older than 32.0.32015.7029 crashes on Flash-Next checkpoints | `doctor` lists build, backend and driver and says what to fix. Update llama.cpp (tested: b11669, and b11966 or newer) and the GPU driver |
@@ -55,7 +57,7 @@ Our own task runs (202 exact-answer tasks) answer in 128 tokens or less, which i
 | Not faster than stock, or the launcher says it started stock | The model fits in your RAM, so stock llama.cpp already runs from the file cache with the same kernels. moe-cache helps when memory is short or the model is larger than RAM | Use stock llama.cpp (README, "When to use something else"). |
 | Answers slow down sharply, or very slow prompts, while a browser or game is open | They hold GPU memory, so the card is too full | Close them, or add `--gpu-margin 2` (GiB of VRAM left free; the default is about 0.5) |
 | Misses (experts read from the drive) are slow | The model sits on a SATA SSD, hard disk or USB drive | Run `doctor`: its "drive speed" line times random reads and warns when the drive is slow. Move the model to an NVMe drive |
-| Very long prompts take minutes | Reading a 63k-token prompt took about 290 s on our Windows PC (RESULTS 64). Decode is faster than prompt reading, but a long prompt is still a wait | Keep the context as short as the task allows. Closing the browser helps long prompts too (34k: 109-110 vs 67-68 tok/s with a browser open, RESULTS 71) |
+| Very long prompts take minutes | Reading a 63k-token prompt took about 290 s on our Windows PC (RESULTS 64). A long prompt is a wait even at that speed | Keep the context as short as the task allows. Closing the browser helps long prompts too (34k: 109-110 vs 67-68 tok/s with a browser open, RESULTS 71) |
 
 ## Does not start
 
