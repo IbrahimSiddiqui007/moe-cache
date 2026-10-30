@@ -400,7 +400,7 @@ button.danger { border-color:var(--ink); }
   <p>moe-cache runs on top of llama.cpp's <code>llama-server</code>, and it was not found on this machine. Download the official release, unpack it, and enter the path of
     <code id="llamaexe">llama-server</code> here (or the folder that holds it).</p>
   <p><a id="llamalink" href="https://github.com/ggml-org/llama.cpp/releases" target="_blank" rel="noopener">Official llama.cpp releases</a>
-    <span class="small">(Windows: the file whose name ends in <code>-bin-win-vulkan-x64.zip</code> for an AMD or Intel GPU, <code>-bin-win-cuda-…</code> for NVIDIA)</span></p>
+    <span class="small">(Windows: the file whose name ends in <code>-bin-win-vulkan-x64.zip</code>, for AMD, Intel and NVIDIA cards. Linux: the official Linux build of llama.cpp, <code>llama-bNNNNN-bin-ubuntu-*.tar.gz</code>, or your own build with <code>-DBUILD_SHARED_LIBS=ON</code>.)</span></p>
   <label for="llamapath" class="small">Path of llama-server</label>
   <input type="text" id="llamapath" placeholder="C:\llama\llama-server.exe" autocomplete="off" spellcheck="false">
   <div class="small err" id="llamaerr" style="min-height:1.4em"></div>
@@ -1002,7 +1002,7 @@ function paintChat() {
   $("chattitle").textContent = c.title || "New chat";
   $("chatinfo").textContent = c.messages.length ? `· ${shortName(c.model) || "?"}` + (c.system ? " · own system prompt" : "") : "";
   $("inner").innerHTML = c.messages.length ? c.messages.map((m, i) => msgHTML(m, i, C.busy && i == c.messages.length - 1 && m.role == "assistant")).join("") :
-    `<div class="empty"><svg viewBox="0 0 21 32" shape-rendering="crispEdges" aria-hidden="true"><g fill="currentColor"><rect x="10" y="0" width="1" height="6"/><rect x="8" y="5" width="5" height="3"/><rect x="9" y="8" width="3" height="24"/><rect x="3" y="10" width="15" height="1"/><rect x="2" y="11" width="3" height="6"/><rect x="16" y="11" width="3" height="6"/><rect x="5" y="19" width="11" height="1"/><rect x="4" y="20" width="3" height="5"/><rect x="14" y="20" width="3" height="5"/></g><g class="c" fill="currentColor"><rect x="9" y="12" width="3" height="1"/><rect x="9" y="24" width="3" height="1"/><rect x="2" y="13" width="1" height="2"/></g></svg><b>What are we working on?</b>${S.status.state == "ready" ? "Type below. Speed, MTP and cache hits show under each answer." : "Pick a model on the left and press Start (top right)."}</div>`;
+    `<div class="empty"><svg viewBox="0 0 21 32" shape-rendering="crispEdges" aria-hidden="true"><g fill="currentColor"><rect x="10" y="0" width="1" height="6"/><rect x="8" y="5" width="5" height="3"/><rect x="9" y="8" width="3" height="24"/><rect x="3" y="10" width="15" height="1"/><rect x="2" y="11" width="3" height="6"/><rect x="16" y="11" width="3" height="6"/><rect x="5" y="19" width="11" height="1"/><rect x="4" y="20" width="3" height="5"/><rect x="14" y="20" width="3" height="5"/></g><g class="c" fill="currentColor"><rect x="9" y="12" width="3" height="1"/><rect x="9" y="24" width="3" height="1"/><rect x="2" y="13" width="1" height="2"/></g></svg><b>What are we working on?</b>${S.status.state == "ready" ? "Type below. Speed, MTP and cache hits show under each answer." : (S.models.length ? "Pick a model on the left and press Start (top right)." : "No model found yet. Open Settings > Which model? for a recommendation and the download command, or put a .gguf file in a model folder and press Rescan.")}</div>`;
   paintAttached(); paintContext();
   $("msgs").scrollTop = $("msgs").scrollHeight;
 }

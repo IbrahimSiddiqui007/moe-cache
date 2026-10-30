@@ -10,8 +10,8 @@ test. If you only need to run models on Windows, use a stock llama.cpp release; 
 ## What to run
 1. `tools/windows_test.ps1` (PowerShell). It starts an official `llama-server.exe` twice on the same GGUF (stock, then with the plugin DLL through `GGML_BACKEND_PATH`),
    sends 4 prompts at temperature 0 and prints PASS / FAIL, decode speed, and the plugin's `moe-cache:` log lines.
-2. Use a model that **fits in RAM** for the first test (an 18 GB Qwen3-Coder 30B-A3B Q4_K_M on a 31 GB machine). Windows has no memory-limit scope in this script:
-   a model larger than RAM can freeze the machine.
+2. Use a model that **fits in RAM** for the first test (an 18 GB Qwen3-Coder 30B-A3B Q4_K_M on a 31 GB machine). This script sets no memory limit and is the identity test,
+   not the way to run big models (that is [WINDOWS.md](WINDOWS.md): the launcher watches Windows' memory budget there); with a model larger than RAM, close other programs first.
 
 ## How to install
 On Linux, before rebooting (the Windows disk is NTFS, the Linux disk is btrfs: Windows cannot read your Linux files):

@@ -7,27 +7,31 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 <img alt="status" src="https://img.shields.io/badge/status-v0.3.2%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
-<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-23b0202a1%20(ggml%200.26.0)%20and%207fe450e19%20(0.25.1)-green">
+<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b11669%20%2F%20b11966%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
 <a href="https://ko-fi.com/ibrumm"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white"></a>
 </p>
 
 <p align="center"><img src="docs/img/results.svg" alt="speed with and without moe-cache" width="860"></p>
 
-## Why
+## What it is
+
+**moe-cache lets a normal PC run big Mixture-of-Experts AI models** (files of 60-120 GB) that are bigger than its RAM, with the **same answers as plain llama.cpp**: token-identical below 128k context with the same layer split; from 128k context a q8_0 KV cache is used (`--exact` keeps f16), see [EXACTNESS](docs/EXACTNESS.md). Chat in your browser, or connect coding tools (OpenCode, Hermes, Claude Code). Windows 11 and Linux. Free (MIT), no account.
+
+**Example (measured on one Windows 11 desktop, 32 GB RAM + 16 GB graphics card, Vulkan):** Qwen3.8-Flash-Next IQ3_XXS (75.8 GB, the default file) writes **19.9 tokens per second** with moe-cache and 15.1 with plain llama.cpp; the faster Q2_0 file (66.4 GB) 22.2 against 18.4 (RESULTS 59, 63). More machines and models: [Results](#results-measured-clean-runs).
+
+| You need | |
+|---|---|
+| Memory | 32 GB RAM for the big models (16 GB works for smaller ones such as Qwen3.6-35B); a graphics card is optional but recommended |
+| Disk | an SSD (NVMe is best) with the model size plus about 10 GB free; most models here are 20-120 GB |
+| Software | Python 3.8 or newer, and llama.cpp's official `llama-server` download |
+| Time | about 20 minutes of setup, plus the model download |
+
+If your model already fits in RAM, plain llama.cpp is as fast or faster; moe-cache then steps aside on its own.
+
+### Why it is needed
 
 MoE models such as Qwen3, gpt-oss or DeepSeek only use a few "experts" per token, but stock llama.cpp keeps all expert weights in memory-mapped files.
 When they do not fit in RAM, the OS page cache thrashes and speed falls off a cliff.
-
-moe-cache manages the CPU-side experts itself:
-
-- keeps the **hot experts in RAM** and reads the rest from your SSD with large, parallel direct reads;
-- **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
-- **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
-- produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](docs/RESULTS.md); the Hunyuan test was short only);
-- works with speculative decoding (MTP; it helps when the model or most of it fits: Qwen3.6 at 12 GB 21.7 -> 24.0 tok/s, but it was 17 % slower on Qwen3.8-Flash-Next with an 8 GB card), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
-- runs long prompts on the GPU like stock llama.cpp does;
-- **expert executor** (on by default): while missing experts load from the SSD it already computes the ones in RAM, and on hybrid Intel CPUs it can use the efficiency cores too. Results are bit-identical (every output was compared byte for byte with llama.cpp's own on the test models);
-- **faster Q2_0 kernel**: llama.cpp has no SIMD Q2_0 dot product on x86; the plugin supplies one (bit-identical, about 3x faster), which matters for models whose down projections are Q2_0 (for example Qwen3.8-Flash-Next).
 
 ### When to use something else
 
@@ -35,46 +39,79 @@ moe-cache manages the CPU-side experts itself:
 |---|---|
 | The model **fits in your RAM** | **Stock llama.cpp**, ideally with its GPU expert cache (`--moe-cache-mib N`). That flag is llama.cpp's own GPU expert cache, not moe-cache's: on our Windows Vulkan PC it was slower than without it (RESULTS 59), and its output can differ slightly from stock (not measured by us). On Qwen3.6-35B (21.7 GB) at a 24 GB limit, both with the same 5000 MiB GPU cache: stock 42 tok/s, moe-cache 30-34 (RESULTS section 29). moe-cache adds nothing here but its CPU pinning, which stock gets with `-C MASK --cpu-strict 1`. |
 | You want **Qwen3.8-Flash-Next or Qwen3.6-35B as fast as possible** and have **12 GB+ VRAM and 32 GB+ RAM** (more RAM is better) | [Strata](https://github.com/Niko1221/Strata), an engine with its own kernels for those models (its authors report 94 tok/s on an RTX 5070 with 64 GB RAM; see "Strata and Maya today" below). We have not run it ourselves. |
-| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: 2x to 12x stock decode speed in our Linux measurements (table below; the 12x is the oldest row, gpt-oss-120b; the clean runs since 2026-10-15 are 2.4x to 5.2x). On Windows (since 2026-10-27, RESULTS 59) 1.2x to 2x stock decode on the same models (GLM-5.3 3.1x with MTP), and coding-agent sessions 2x to 2.4x faster. |
+| The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: about **1.2-2x faster than plain llama.cpp on Windows and 2-5x on Linux** when the model is bigger than your RAM (Windows since 2026-10-27, RESULTS 59: 1.2x to 2x on the same models, GLM-5.3 3.1x with MTP, coding-agent sessions 2x to 2.4x faster; Linux clean runs since 2026-10-15: 2.4x to 5.2x, the oldest row gpt-oss-120b 12x; tables below). No gain when the model fits in RAM. |
 
 ## Get started
 
-**You need:** Linux on x86-64 (Windows 11 is experimental: [docs/WINDOWS_TEST.md](docs/WINDOWS_TEST.md)), a `llama-server` built with shared ggml libraries (tested with llama.cpp commits `23b0202a1` (ggml 0.26.0, backend API 3) and `7fe450e19` (ggml 0.25.1, API 2); each needs its own plugin build, see [docs/QUICKSTART.md](docs/QUICKSTART.md)), and a MoE model as a `.gguf` file. A GPU is optional.
+**Windows 11?** Go to the [Windows quick start](#windows-quick-start-experimental) below (7 steps, [docs/WINDOWS.md](docs/WINDOWS.md) has the details). **Linux?** Read on.
+
+**You need:** a `llama-server` from llama.cpp's official downloads (the Windows `.zip` and the Linux `llama-bNNNNN-bin-ubuntu-*.tar.gz` files are built with the shared ggml libraries moe-cache needs; we tested the Windows ones, not the Linux ones) or your own build with `-DBUILD_SHARED_LIBS=ON`; Python 3.8 or newer; and a MoE model as a `.gguf` file (step 2 below). A GPU is optional. Tested llama.cpp: b11669 and b11966 (Windows); commits `23b0202a1` (ggml 0.26.0, backend API 3) and `7fe450e19` (ggml 0.25.1, API 2) (Linux), each Linux API needs its own plugin build, see [docs/QUICKSTART.md](docs/QUICKSTART.md). Other versions may work; `check` tells you.
 Ollama user? The models in `ollama list` are plain GGUF files: the path is on the line starting with `FROM` in `ollama show NAME --modelfile`.
 
 ### 1. Install (pick one)
 
 | | Best if | What you do |
 |---|---|---|
-| **A. Prebuilt** (2 minutes) | you already have a `llama-server` built with shared ggml libraries | download from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` (llama.cpp 23b0202a1 and newer: ggml 0.26 / 0.27, current releases) or `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` (older: ggml 0.24 / 0.25, up to commit 7fe450e19, e.g. Arch `llama.cpp-cuda`; `bin/moe-cache-check` tells which fits), then `tar xzf` it and `cd` into the folder. Releases built by CI can be verified: `gh attestation verify FILE.tar.gz -R IbrahimSiddiqui007/moe-cache` |
-| **B. One script** (10 to 20 minutes) | fresh Ubuntu / Debian, nothing installed | `git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache && ./install.sh` (add `--vulkan` for AMD / Intel / NVIDIA through Vulkan). It builds the matching llama.cpp and the plugin and prints the next commands. It has only been tried on Arch with `--no-apt` so far: please report problems. |
+| **A. Prebuilt** (2 minutes) | you already have a `llama-server` built with shared ggml libraries (see above) | download the file for your system from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) (table below), then `tar xzf` it and `cd` into the folder. Releases built by CI can be verified: `gh attestation verify FILE.tar.gz -R IbrahimSiddiqui007/moe-cache` |
+| **B. One script** (10 to 20 minutes) | fresh Ubuntu / Debian, nothing installed | `git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache && ./install.sh` (add `--vulkan` for AMD / Intel / NVIDIA through Vulkan). It builds the matching llama.cpp and the plugin and prints the next commands. We have not tried it on Ubuntu or Debian yet (only on Arch with `--no-apt`): please report problems, and prefer A with the official llama.cpp download if it fits you. |
 | **C. From source** | you want to build it yourself | `git clone ... && cd moe-cache && ./build.sh` (needs g++; finds `libggml-base.so` next to your llama-server, or set `GGML_LIB_DIR`) |
 
-**Windows (experimental)**: the Windows kit zip `moe-cache-vX.Y.Z-windows-x64.zip` from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) (v0.3.0 is the first with a kit); steps below and in [docs/WINDOWS.md](docs/WINDOWS.md).
+Which file to download (the names show version 0.3.2; take the newest version on the page):
+
+| Your system | File on the Releases page |
+|---|---|
+| Windows 11 | `moe-cache-v0.3.2-windows-x64.zip` |
+| Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.28) | `moe-cache-v0.3.2-ggml0.26-linux-x86_64.tar.gz` |
+| Linux, older llama.cpp (ggml 0.24 / 0.25, up to commit `7fe450e19`, e.g. Arch `llama.cpp-cuda`) | `moe-cache-v0.3.2-linux-x86_64.tar.gz` |
+
+Not sure? Run `check` (step 3): it says which file fits.
+
+**Windows (experimental)**: steps below and in [docs/WINDOWS.md](docs/WINDOWS.md).
 **Windows may warn: "unknown publisher".** The kit's DLLs and `.bat` files are not code-signed (a certificate costs money every year; the code is
 open source and the zip is built by GitHub Actions from the tagged commit), so Windows treats the downloaded zip as untrusted. Before you
 extract it: right-click the zip > **Properties** > tick **Unblock** > **OK**. If SmartScreen still says "Windows protected your PC", click
 **More info** > **Run anyway**. To check that your zip is the one CI built, compare its SHA256 with `SHA256SUMS-windows` on the release page:
 `Get-FileHash moe-cache-vX-windows-x64.zip` in PowerShell (or `gh attestation verify moe-cache-vX-windows-x64.zip -R IbrahimSiddiqui007/moe-cache`).
 
-### 2. Check your setup (changes nothing)
+### 2. Get a model (once)
 
-```bash
-bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server
-```
+Models are single `.gguf` files from Hugging Face, 20-120 GB each. **Not sure which one?** `python3 bin/moe_cache.py pick` (Windows: `python bin\moe_cache.py pick`) reads your RAM, graphics card and free disk, names one model and prints the download command; it never downloads by itself. That command starts with `hf`: install it once with `pip install -U huggingface_hub`. You need free disk space of the file size plus about 10 GB. Keep the file on an SSD, for example in `D:\models`. Any MoE GGUF you already have works too (Ollama's models are plain GGUF files, see above).
+
+### 3. Check your setup (changes nothing)
+
+| System | Command |
+|---|---|
+| Linux | `bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server` |
+| Windows | `python bin\moe_cache.py check D:\models\model.gguf --llama-server C:\llama\llama-server.exe` |
+
 Every line says OK, WARN or FAIL and what to do about it (it also times a short read test on the model's drive and warns when the drive is too slow). Add `--run` to also start llama-server with the plugin for one short request (about a
-minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too** (also called `doctor`; it ends with a table of your GPU, driver, RAM, disk and llama-server and a list of what to fix): it checks the GPU, RAM, the model's drive and llama-server.
+minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too.** `check` and `doctor` are the same command; it checks the GPU, RAM, the model's drive and llama-server, and ends with a table of your GPU, driver, RAM, disk and llama-server and a list of what to fix.
 If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command (GiB of VRAM left free; default about 0.5).
 
-### 3. Run your model
+### 4. Run your model
 
 Not sure which model fits your machine? `python3 bin/moe_cache.py pick` recommends one (see **Which model for my machine?** below); `pick --apply` makes it the default for `moe-cache-server` without a file name.
 
 ```bash
 bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open
 ```
-`--ram 12` is the memory (GB) it may use; leave it out to use what is free. Add `--fast` for about +10 % on models much bigger than your RAM, at the cost of output that is no longer identical to stock (the launcher suggests it when it would help); `--fast=2` is a stronger level for memory far below the model size (Flash-Next at 12 GB: +43 % over `--fast`, same answers in different words); `--fast=kv` is only the q8_0 KV cache (Flash-Next Q2_0 at ctx 262144: prefill 2x, decode +11-13 % at 64k, KL 0.0079, 190/202 tasks = stock; RESULTS 72); `--fast=fewer` is `--fast` plus two fewer experts per token on the CPU-held layers (KL 0.034, 192/202 tasks; faster at 4k, **unproven at 64k-256k**). The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page
-(the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
+`--ram 12` is the memory (GB) it may use; leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
+
+**The first start is slow.** The server is ready after about 20 seconds (RESULTS 64: 14-19 s); the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens took 186 s on our laptop, [docs/AGENTS.md](docs/AGENTS.md); a 63k-token prompt about 5 minutes on our Windows PC, RESULTS 64). The chat page shows progress. Later turns are much faster because the conversation is kept.
+
+**Speed options that change the answers a little (all off by default; the launcher suggests `--fast` when it would help):**
+
+| Option | What it does | Cost |
+|---|---|---|
+| `--fast` | about +10 % on models much bigger than your RAM | output no longer identical to stock |
+| `--fast=2` | a stronger level for memory far below the model size (Flash-Next at 12 GB: +43 % over `--fast`) | same answers in different words |
+| `--fast=kv` | only the q8_0 KV cache (Flash-Next Q2_0 at ctx 262144: prefill 2x, decode +11-13 % at 64k) | KL 0.0079, 190/202 tasks = stock (RESULTS 72); it is the default from 128k context, `--exact` turns it off |
+| `--fast=fewer` | `--fast` plus two fewer experts per token on the CPU-held layers | KL 0.034, 192/202 tasks; faster at 4k, **unproven at 64k-256k** |
+
+**Easiest: the control page**: `bin/moe-cache-server --ui` (Windows: double-click `moe-cache.bat` in the kit folder) opens http://127.0.0.1:8070, a three-pane
+chat app: left your chats and models (each with the planner's verdict: fits in RAM, needs the cache or fits on the GPU, and why in one sentence),
+centre the chat with a speed chip per answer, right live tok/s, cache hit rate, SSD reads, RAM and VRAM, plus a settings drawer (RAM/VRAM budget,
+context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one click, the same on stock llama-server for comparison. See [docs/GUI.md](docs/GUI.md).
 
 **Coding agents (Hermes Agent, OpenCode).** They only talk to an OpenAI-compatible address; moe-cache provides it. Easiest, Ollama-style: a small
 listener that loads the model on the first request and unloads it when idle (`--install-autostart` starts it at every login):
@@ -82,32 +119,28 @@ listener that loads the model on the first request and unloads it when idle (`--
 python3 bin/moe_cache.py on-demand /path/to/model.gguf --llama-server /path/to/llama-server --install-autostart
 python3 bin/moe_cache.py connect hermes --write      # and/or: connect opencode --write (writes URL, model, 65k context, API key); connect claude prints the lines for Claude Code
 ```
-**Agent context limit.** `connect --write` gives the agent the server's whole window (65536 unless you start the server with `--ctx`): OpenCode `limit.context`, Hermes `model.context_length`. An agent that fills that window gets a "context too large" error from llama-server instead of a smooth summary, because the answer needs room inside it too. Keep the agent's limit below the server's: for OpenCode lower `limit.context` (for example 56000 at 65536); Hermes needs at least 64,000, so keep its 65536 and start the server with a bigger window (`--ctx 81920`). This follows from how the limits work and from Strata's agent chat (its authors report the peak prompt in a 64K-window test falling from 83 % to 61 %, their number); we have not measured it ourselves. Details: [docs/AGENTS.md](docs/AGENTS.md).
+**Agent context limit.** Keep the agent's own context limit below the server's window (65536 by default); the reason and the numbers are in [docs/AGENTS.md](docs/AGENTS.md#keep-the-agents-own-context-limit-below-the-servers).
 
 Several models: `on-demand /path/to/model2.gguf --add` adds one; the request's `"model"` picks it, one is loaded at a time (`connect opencode` lists them all).
 Or start a server yourself with `bin/moe-cache-server /path/to/model.gguf --agent` and run the same `connect` line. Measured on a Windows desktop
 (RESULTS 60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
 two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details and the Desktop-app steps: [docs/AGENTS.md](docs/AGENTS.md).
 
-**Or use the control page**: `bin/moe-cache-server --ui` (Windows: double-click `bin\moe-cache-ui.bat`) opens http://127.0.0.1:8070, a three-pane
-chat app: left your chats and models (each with the planner's verdict: fits in RAM, needs the cache or fits on the GPU, and why in one sentence),
-centre the chat with a speed chip per answer, right live tok/s, cache hit rate, SSD reads, RAM and VRAM, plus a settings drawer (RAM/VRAM budget,
-context, mode, MTP). "Quick benchmark" runs a short fixed request and, in one click, the same on stock llama-server for comparison. See [docs/GUI.md](docs/GUI.md).
-
 ### Windows quick start (experimental)
 
 | Step | What to do |
 |---|---|
-| 1. llama.cpp | Download the official release `llama-bNNNNN-bin-win-vulkan-x64.zip` from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) (tested: b11669) and unpack it to `C:\llama` |
-| 2. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH") |
-| 3. The kit | Download `moe-cache-vX-windows-x64.zip` from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
-| 4. Check | In a command prompt in the kit folder: `python bin\moe_cache.py check D:\models\model.gguf` (finds `C:\llama\llama-server.exe` by itself; `--version` prints the version). Every line says OK, WARN or FAIL and what to do |
-| 5. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |
-| 6. Agents | Add `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`); the page also has Connect buttons |
+| 1. llama.cpp | Download the **Vulkan** zip, the file whose name ends in `-bin-win-vulkan-x64.zip`, from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) and unpack it to `C:\llama`. Use it for AMD, Intel and NVIDIA cards; the CUDA zip is untested with moe-cache, skip the HIP and SYCL zips. We tested b11669 and b11966; newer builds should work and `check` (step 5) tells you if not |
+| 2. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH"). If typing `python` opens the Microsoft Store instead, use `py` in its place |
+| 3. The kit | Download `moe-cache-v0.3.2-windows-x64.zip` (take the newest version) from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
+| 4. A model | Not sure which? `python bin\moe_cache.py pick` names one and prints the download command (see **2. Get a model** above; `pip install -U huggingface_hub` first). Keep the file on an SSD, e.g. `D:\models`, with the file size plus 10 GB free |
+| 5. Check | In a command prompt in the kit folder: `python bin\moe_cache.py check D:\models\model.gguf` (finds `C:\llama\llama-server.exe` by itself; `--version` prints the version). Every line says OK, WARN or FAIL and what to do |
+| 6. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. The first start is slow, see "The first start is slow" above. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |
+| 7. Agents | Add `--agent`, then `python bin\moe_cache.py connect opencode --write` (or `hermes`); the page also has Connect buttons |
 
 Keep the Windows page file at "system managed" (or 14 GB or more): the cache costs no commit (it keeps experts in read-only views of the model file), but Windows counts the GPU's memory against RAM + page file. Details and known limits: [docs/WINDOWS.md](docs/WINDOWS.md).
 
-### 4. Optional: prove it is correct and measure it on your machine
+### 5. Optional: prove it is correct and measure it on your machine
 
 Linux (from the tarball or a checkout; the Windows kit has `tools\windows_test.ps1` instead, see docs/WINDOWS_TEST.md):
 
@@ -217,6 +250,19 @@ The full benchmark tool (Linux) (web page, standard protocol, many-model matrix,
 Clone it next to this folder (or set `MOE_CACHE_DIR`) and it finds the plugin and the planner by itself.
 
 ## How it works
+
+In short, moe-cache manages the CPU-side experts itself:
+
+- keeps the **hot experts in RAM** and reads the rest from your SSD with large, parallel direct reads;
+- **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
+- **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
+- produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](docs/RESULTS.md); the Hunyuan test was short only);
+- works with speculative decoding (MTP; it helps when the model or most of it fits: Qwen3.6 at 12 GB 21.7 -> 24.0 tok/s, but it was 17 % slower on Qwen3.8-Flash-Next with an 8 GB card), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
+- runs long prompts on the GPU like stock llama.cpp does;
+- **expert executor** (on by default): while missing experts load from the SSD it already computes the ones in RAM, and on hybrid Intel CPUs it can use the efficiency cores too. Results are bit-identical (every output was compared byte for byte with llama.cpp's own on the test models);
+- **faster Q2_0 kernel**: llama.cpp has no SIMD Q2_0 dot product on x86; the plugin supplies one (bit-identical, about 3x faster), which matters for models whose down projections are Q2_0 (for example Qwen3.8-Flash-Next).
+
+The path of one operation:
 
 ```
  llama.cpp builds the graph of the model

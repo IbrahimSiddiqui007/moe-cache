@@ -1,7 +1,7 @@
 # Share your numbers
 
 One command measures stock llama.cpp and moe-cache on your machine and writes a report you paste into a GitHub issue. It takes 5-20 minutes, only
-measures (nothing is downloaded, uploaded or changed), and the report holds no prompts, answers, user name, host name or folder names.
+measures (the report itself downloads, uploads and changes nothing; you need a model file, see "Get a model" in the README), and the report holds no prompts, answers, user name, host name or folder names.
 
 ## Windows (10 / 11)
 
@@ -9,10 +9,10 @@ measures (nothing is downloaded, uploaded or changed), and the report holds no p
 |---|---|
 | 1 | **llama.cpp for your GPU**: from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases), `llama-bNNNNN-bin-win-vulkan-x64.zip` for AMD, Intel and most NVIDIA cards (tested: b11669, and b11966 or newer). AMD: use Vulkan, not HIP (HIP was 2.4x slower on the test PC). NVIDIA: the CUDA zip should work but is untested on Windows. Unzip it to `C:\llama` |
 | 2 | **Python 3.8 or newer** (tick "Add python.exe to PATH") and the **moe-cache kit**: right-click the zip > Properties > Unblock, then unzip it |
-| 3 | **A model bigger than your RAM.** When the model fits, the launcher runs stock llama.cpp and the report would only say so. `python bin\moe_cache.py pick` suggests one for your machine; the README has the table |
+| 3 | **A model bigger than your RAM.** When the model fits, the launcher runs stock llama.cpp and the report would only say so. `python bin\moe_cache.py pick` suggests one for your machine and prints the download command (`pip install -U huggingface_hub` first); the README has the table. Models are 20-120 GB: keep the size plus about 10 GB of disk free |
 | 4 | **Leave the PC alone while it runs**: close the browser and games (they hold GPU memory and slow long prompts), plug in a laptop, no other big program |
 | 5 | `python bin\moe_cache.py doctor D:\models\MODEL.gguf` and fix what it lists (AMD: driver 32.0.32015.7029 or newer) |
-| 6 | `python bin\moe_cache.py bench-report D:\models\MODEL.gguf --flush-from D:\other-big-files` |
+| 6 | `python bin\moe_cache.py bench-report D:\models\MODEL.gguf --flush-from D:\other-big-files` (no folder of other big files? leave `--flush-from` out; the report then says WARM) |
 | 7 | Open a [Benchmark report issue](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml), paste the `moe-cache-report-....md` file, tick the privacy box |
 
 `--flush-from` names a folder with other big files (other models, videos, about as much as your RAM). Reading them pushes the model out of

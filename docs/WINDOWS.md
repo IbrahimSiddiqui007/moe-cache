@@ -1,6 +1,6 @@
 # Windows quick start (experimental)
 
-What follows is the set-up that worked on 2026-10-26 on a Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM): identity 4/4 on four models, launcher
+Tested on one Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM; other cards are untested, reports welcome): identity 4/4 on four models, launcher
 and chat working; speed numbers updated 2026-10-27 with the file-view cache (RESULTS 59-61). Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM, stock llama.cpp is all you need; the plugin
 helps with models bigger than RAM.
 
@@ -8,11 +8,11 @@ helps with models bigger than RAM.
 
 | Piece | What worked | Notes |
 |---|---|---|
-| llama.cpp | the official release zip **b11669, Vulkan** (`llama-b11669-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). The zip with HIP (ROCm) listed no device on the test PC: it most likely needs AMD's HIP SDK (untested). Use Vulkan |
+| llama.cpp | the official release zip **b11669, Vulkan** (`llama-b11669-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was 2.4x slower in our test (RESULTS 67; we ran it without AMD's HIP SDK) |
 | The plugin | `ggml-moe-cache-api3.dll` (api3 for ggml 0.26/0.27, api2 for 0.25) | from the kit, or build it on Linux: `GGML_API=3 ./build.sh --windows` (mingw-w64) -> `build/win/ggml-moe-cache.dll` |
 | Python 3 | 3.8 or newer, standard library only | run the launcher with `python` |
 | This repository (or the kit with `moe_cache.py`) | `C:\moe-cache` | the launcher needs the `planner\`, `ui\` and `tools\` folders: keep the whole repository |
-| A GGUF model | any MoE model | Windows has no memory-limit scope in the test script: a model bigger than RAM can slow the machine down, so start with one that fits |
+| A GGUF model | any MoE model | A MoE model bigger than your RAM is what moe-cache is for. Since 0.3.2 the launcher watches Windows' memory budget (commit) and shrinks its own caches to fit; close browsers and games first and keep the page file on "system managed". Not sure which model? `python bin\moe_cache.py pick` |
 
 **Windows may warn: "unknown publisher".** The kit's DLLs and `.bat` files are not code-signed (a certificate costs money every year; the code is
 open source and the zip is built by GitHub Actions from the tagged commit), so Windows treats the downloaded zip as untrusted. Before you
@@ -42,11 +42,11 @@ RAM, the model's drive and llama-server, and says what to fix. If the GPU also d
 
 ## 3. The control page (GUI): one click
 
-Double-click **`bin\moe-cache-ui.bat`**. It opens http://127.0.0.1:8070 (this machine only): your models with the planner's verdict and why, start/stop,
+Double-click **`moe-cache.bat`** in the kit folder (from a git checkout: `bin\moe-cache-ui.bat`). It opens http://127.0.0.1:8070 (this machine only): your models with the planner's verdict and why, start/stop,
 live speed, cache hit rate, SSD reads, RAM and VRAM, the chat, and Connect buttons for OpenCode and Hermes. To get it in the Start menu, run once:
 
 ```
-bin\moe-cache-ui.bat --shortcut
+moe-cache.bat --shortcut
 ```
 
 What the `.bat` finds by itself (set the variable to override):

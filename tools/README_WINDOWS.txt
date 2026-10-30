@@ -6,18 +6,24 @@ identical to stock llama.cpp. If your model fits in RAM, stock llama.cpp is fast
 launcher then runs it stock by itself.
 
 1. What you need
-   - llama.cpp, the official release zip "llama-bNNNNN-bin-win-vulkan-x64.zip"
-     (github.com/ggml-org/llama.cpp/releases; tested: b11669), unpacked to C:\llama
+   - llama.cpp, the official release zip whose name ends in -bin-win-vulkan-x64.zip
+     (github.com/ggml-org/llama.cpp/releases; use it for AMD, Intel and NVIDIA cards; tested:
+     b11669 and b11966), unpacked to C:\llama
      Unpacked somewhere else (for example in Downloads)? Run this once in a Command Prompt,
      then open a new window:  setx LLAMA_SERVER "D:\path\to\llama-server.exe"
-   - Python 3.8 or newer (python.org; tick "Add python.exe to PATH")
-   - a MoE model in GGUF format, on an SSD
+   - Python 3.8 or newer (python.org; tick "Add python.exe to PATH"; if typing python opens the
+     Microsoft Store, use py instead)
+   - a MoE model in GGUF format, on an SSD, with its size plus 10 GB of disk free (most are
+     20-120 GB). Not sure which? python bin\moe_cache.py pick  names one and prints the download
+     command (it starts with hf: pip install -U huggingface_hub)
    - for an AMD GPU: Adrenalin driver 32.0.32015.7029 or newer is best
      (older drivers crash on Flash-Next checkpoints; the launcher then turns them off)
 
    Windows may warn "unknown publisher": the kit is not code-signed (open source, built by
-   GitHub Actions from the tagged commit). Before unzipping: right-click the zip > Properties >
-   tick "Unblock" > OK. If SmartScreen says "Windows protected your PC": More info > Run anyway.
+   GitHub Actions from the tagged commit). If Windows asked you to confirm anything when you
+   unzipped this, open PowerShell and run once (change the folder to where you unzipped):
+     Get-ChildItem C:\moe-cache -Recurse | Unblock-File
+   If SmartScreen says "Windows protected your PC": More info > Run anyway.
    Check the zip: Get-FileHash moe-cache-v@VERSION@-windows-x64.zip (PowerShell) must equal the
    line in SHA256SUMS-windows on the release page.
 
@@ -45,9 +51,9 @@ launcher then runs it stock by itself.
    - Keep the Windows page file at "system managed" (or 14 GB or more): the cache itself
      costs no commit (it keeps experts in read-only views of the model file), but
      Windows counts the GPU's memory against RAM + page file.
-   - The plugin DLL is ggml-moe-cache-api3.dll (llama.cpp with ggml 0.26 or newer, b11966+ included);
-     ggml-moe-cache-api2.dll is for older llama.cpp (ggml 0.25): moe-cache.bat uses api3; for an
-     older llama.cpp run once:  setx MOE_CACHE_LIB "%CD%\ggml-moe-cache-api2.dll"  (in the kit folder).
+   - You do not need to choose a plugin DLL: moe-cache.bat picks the right one. Only if check says
+     the plugin and your llama.cpp do not match (an old llama.cpp with ggml 0.25), run once in the kit
+     folder:  setx MOE_CACHE_LIB "%CD%\ggml-moe-cache-api2.dll"
    - Problems: docs\WINDOWS.md. Report issues at github.com/IbrahimSiddiqui007/moe-cache/issues
      with the output of "python bin\moe_cache.py check MODEL.gguf --run".
    - Share your speed: python bin\moe_cache.py bench-report D:\models\model.gguf --flush-from D:\other-big-files

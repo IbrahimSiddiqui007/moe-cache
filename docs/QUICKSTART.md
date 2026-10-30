@@ -8,6 +8,8 @@ bin/moe-cache-check /path/to/model.gguf --llama-server /path/to/llama-server    
 bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open   # 3. run
 ```
 
+No model yet? `python3 bin/moe_cache.py pick` names one for your machine and prints the download command (`pip install -U huggingface_hub` gives you the `hf` command). Models are 20-120 GB: keep the file size plus about 10 GB of disk free.
+
 **Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
 
 You need: Linux, `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release), `g++`, `python3`, and a MoE model in GGUF format.
@@ -44,7 +46,7 @@ The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_
 
 **Option A, prebuilt plugin (no compiler needed):** download the newest `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` from the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases), check it against `SHA256SUMS`, unpack it and `cd` into the folder. Releases built by GitHub Actions (v0.1.3 and later) can also be verified with `gh attestation verify moe-cache-vX.Y.Z-linux-x86_64.tar.gz -R IbrahimSiddiqui007/moe-cache`, which proves the file was built from the tagged commit.
 The plugin in it needs glibc 2.34 or newer and a libstdc++ from GCC 12 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later; RHEL 9 has an older libstdc++; the release workflow checks both) and a llama.cpp built with shared ggml libraries.
-Each release has two Linux files; take the one that matches your llama.cpp's ggml: `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` for ggml 0.26 / 0.27 (llama.cpp 23b0202a1 and newer, current official releases), `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` for ggml 0.24 / 0.25 (up to commit 7fe450e19). `bin/moe-cache-check` says so when the plugin and your llama-server do not match.
+Each release has two Linux files; take the one that matches your llama.cpp's ggml: `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` for ggml 0.26 and newer (llama.cpp 23b0202a1 and newer, including today's ggml 0.28 releases), `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` for ggml 0.24 / 0.25 (up to commit 7fe450e19). `bin/moe-cache-check` says so when the plugin and your llama-server do not match.
 
 **Option B, build it yourself:**
 
@@ -97,7 +99,7 @@ The benchmark tool runs stock llama.cpp and moe-cache on your model and prompts 
 
 ## What speed to expect
 
-Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (with `--moe-cache-mib` if you have a GPU; that is llama.cpp's own GPU expert cache, slower on our Vulkan PC, RESULTS 59, and its output can differ slightly from stock): moe-cache adds nothing there.
+Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (llama.cpp's own GPU expert cache, `--moe-cache-mib`, is optional there; it was slower on our Vulkan PC, RESULTS 59): moe-cache adds nothing there.
 If it does not fit, we measured 2x to 12x stock (the table in the README). Example: a 48 GB model in a 20 GB memory limit ran at 9.3 tok/s instead of 1.3.
 
 ## Which llama-server do I use?
@@ -105,7 +107,7 @@ If it does not fit, we measured 2x to 12x stock (the table in the README). Examp
 | Your situation | Use |
 |---|---|
 | Arch / CachyOS with the AUR package `llama.cpp-cuda` | `/usr/bin/llama-server` (this is what we test with) |
-| Anything else | build the matching commit with `./install.sh`, or section 0 above; official release binaries may differ from commits 7fe450e19 / 23b0202a1 and then the plugin prints a version warning |
+| Anything else | the official llama.cpp download for your system (`llama-bNNNNN-bin-ubuntu-*.tar.gz`; built with shared libraries; not tested by us on Linux; the plugin prints a version warning if the version differs), or build the matching commit with `./install.sh` or section 0 above |
 
 ## Update, uninstall
 

@@ -25,9 +25,9 @@ python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write 
 
 | Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin; RESULTS 60, 63) |
 |---|---|---|
-| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB) | decode 22.2 tok/s, prompts 281 tok/s at 3k and 287 at 34k tokens (vs IQ2_XS: +5 % decode, +11 % / +19 % prompts), 191/202 tasks |
+| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default since 0.3.2 | decode 19.9 tok/s, 193/202 tasks, reads best for coding (RESULTS 63) |
+| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB) | decode 22.2 tok/s (about 10 % more than IQ3_XXS), prompts 281 tok/s at 3k and 287 at 34k tokens (vs IQ2_XS: +5 % decode, +11 % / +19 % prompts), 191/202 tasks |
 | coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
-| accuracy first | GSQ-RCO IQ3_XXS (75.8 GB) | 193/202 tasks, about 10 % slower decode |
 
 No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
 IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC (RESULTS 60).
