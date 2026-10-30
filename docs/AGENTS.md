@@ -178,6 +178,17 @@ model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.
 
+### Keep the reuse working
+
+The reuse above only works while the start of the prompt stays byte for byte the same. What breaks it, and what to do:
+
+| Breaks the reuse | Do instead |
+|---|---|
+| adding or removing a tool or an MCP server in the middle of a session (the tool list sits at the start of the prompt) | set up tools before the session; a change means one slow turn while the whole prompt is read again |
+| more conversations than slots (agent + title request + sub-agents + a second agent) | `--agent` gives 4 slots; with two agents and sub-agents raise them (`-- -np 6`) or run one agent at a time |
+| an editor's autocomplete on the same server (many tiny requests) | give autocomplete its own small model or server |
+| the agent's window larger than the server's | keep the agent's limit below the server's (section above); `connect opencode` writes it, and for windows of 64k+ a 30-minute reply timeout (OpenCode's default is 5 minutes, a 63k first turn took 289 s) |
+
 ## Measuring it yourself: replay a recorded agent session (tools/agent_bench.py)
 
 Decode tok/s says little about agents; what they wait for is the time to the first token of each turn and the whole task. `tools/agent_bench.py`
