@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, subprocess, sys, threading, time, urllib.parse
+import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, subprocess, sys, threading, time, urllib.parse, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1451,6 +1451,14 @@ def list_chats():
     return sorted(out, key=lambda c: -c["t"])
 
 
+_CHAT_LOCKS, _CHAT_LOCKS_GUARD = {}, threading.Lock()
+
+
+def _chat_lock(path):
+    with _CHAT_LOCKS_GUARD:
+        return _CHAT_LOCKS.setdefault(path, threading.Lock())
+
+
 def save_chat(c):
     path = chat_path(c.get("id"))
     msgs = c.get("messages")
@@ -1461,10 +1469,18 @@ def save_chat(c):
     os.makedirs(CHAT_DIR, mode=0o700, exist_ok=True)
     if not WINDOWS:
         os.chmod(CHAT_DIR, 0o700)       # a folder made 0755 by an older version: the chats inside become private too
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(keep, fh)
-    os.replace(tmp, path)
+    with _chat_lock(path):             # one save of a conversation at a time; each write has its own temp file in the same folder
+        fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", suffix=".tmp", dir=CHAT_DIR)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(keep, fh)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
     return {"id": keep["id"], "t": keep["t"]}
 
 

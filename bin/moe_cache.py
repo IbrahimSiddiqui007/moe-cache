@@ -743,36 +743,115 @@ def http(url, body=None, api_key=None, timeout=10):
 KEY_FILE = os.path.join(CACHE_DIR, "api.key")
 
 
+def model_identity(model, ctx=None, ctk=None, ctv=None):
+    """A short id of the exact model file and KV settings a saved slot state belongs to: file name, size, a hash of the GGUF header (first 1 MiB)
+    and of three 64 KiB samples inside the file (a fine-tune with the same header still differs), plus context size and KV cache types.
+    Same on Linux and Windows; reads about 1.2 MiB. "" when the file cannot be read (then nothing is saved under it or restored)."""
+    import hashlib
+    try:
+        size = os.path.getsize(model)
+        h = hashlib.sha256()
+        with open(model, "rb") as f:
+            h.update(f.read(1 << 20))
+            for frac in (0.5, 0.75, 1.0):
+                f.seek(max(0, min(int(size * frac), size - (64 << 10)) - (32 << 10)))
+                h.update(f.read(64 << 10))
+    except OSError:
+        return ""
+    return "-".join([re.sub(r"[^A-Za-z0-9_]", "_", os.path.basename(model))[:40], str(size), h.hexdigest()[:16], f"c{ctx}", ctk or "f16", ctv or "f16"])
+
+
+def project_id_ok(slotdir, name):
+    """True when the saved project file `name`.bin was written by a server with the model identity now recorded in server.id; files without an identity are not trusted."""
+    try:
+        want = open(os.path.join(slotdir, "server.id")).read().strip()
+        have = open(os.path.join(slotdir, name + ".bin.id")).read().strip()
+    except OSError:
+        return False
+    return bool(want) and want == have
+
+
+def _read_key(wait=0.0):
+    """The stored key, "" when there is none; waits up to `wait` seconds for a writer that has created the file but not finished it."""
+    end = time.time() + wait
+    while True:
+        try:
+            k = open(KEY_FILE).read().strip()
+            if k:
+                return k
+        except OSError:
+            pass
+        if time.time() >= end:
+            return ""
+        time.sleep(0.02)
+
+
 def stored_key(create=False):
     """The stable per-user API key kept in the cache folder (mode 0600 on Linux; on Windows the user profile is private); "" when there is none yet.
     create=True makes one on first use (secrets.token_urlsafe(24)). Agent mode and --project servers use it, so a web page in the browser cannot
-    use or read the server's slots and conversations (RESULTS/SECURITY: DECISION_LLAMA_SERVER_KEY, option C)."""
-    try:
-        k = open(KEY_FILE).read().strip()
-        if k:
-            return k
-    except OSError:
-        pass
-    if not create:
-        return ""
-    import secrets
+    use or read the server's slots and conversations (RESULTS/SECURITY: DECISION_LLAMA_SERVER_KEY, option C).
+    The key is written completely to a private temp file and then published under its final name with os.link, which fails if the name exists:
+    exactly one launcher wins, every other one reads the winner's key, and nobody ever sees a half-written file."""
+    k = _read_key()
+    if k or not create:
+        return k
+    import secrets, tempfile
     k = secrets.token_urlsafe(24)
     while k.startswith("-"):              # a key starting with "-" breaks `connect --api-key KEY` (argparse reads it as an option)
         k = secrets.token_urlsafe(24)
     os.makedirs(os.path.dirname(KEY_FILE), mode=0o700, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix="api.key.", suffix=".tmp", dir=os.path.dirname(KEY_FILE))      # mkstemp: mode 0600
     try:
-        fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:                      # another launcher made it in the meantime: use that one
-        return open(KEY_FILE).read().strip() or k
-    with os.fdopen(fd, "w") as f:
-        f.write(k + "\n")
-    return k
+        with os.fdopen(fd, "w") as f:
+            f.write(k + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            os.link(tmp, KEY_FILE)
+            return k
+        except FileExistsError:
+            w = _read_key(5.0)
+            if w:
+                return w
+            os.replace(tmp, KEY_FILE)         # an empty leftover (a launcher that died between creating and writing): replace it with the complete file
+            return k
+        except OSError:                   # a file system without hard links: create the final name exclusively; readers wait for the content
+            try:
+                fd2 = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            except FileExistsError:
+                return _read_key(5.0) or k
+            with os.fdopen(fd2, "w") as f:
+                f.write(k + "\n")
+            return k
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def loopback_url(url):
+    """True when the URL's host is localhost or a loopback address (127.0.0.0/8, ::1), compared exactly."""
+    import ipaddress
+    try:
+        h = (urllib.parse.urlsplit(url if "://" in url else "http://" + url).hostname or "").lower()
+    except ValueError:
+        return False
+    if h == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def key_for(url, given=None):
-    """The key to send to the server at `url`: the given one, else (only when the server answers 401/403 without a key) the stored one."""
+    """The key to send to the server at `url`: the given one, else (only for a server on this machine that answers 401/403 without a key) the
+    stored one. A remote URL never gets the stored key, however it answers: it would hand our local secret to whoever runs that host."""
     if given:
         return given
+    if not loopback_url(url):
+        return None
     st = http(url.rstrip("/") + "/v1/models", timeout=3)[0]
     return stored_key() if st in (401, 403) else None
 
@@ -1486,6 +1565,12 @@ def server(argv):
         pname = pname or a.project
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
         extra += ["--slot-save-path", slotdir]
+        if not a.dry_run:
+            try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same
+                with open(os.path.join(slotdir, "server.id"), "w") as fh:
+                    fh.write(model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
+            except OSError:
+                pass
     profile = os.path.join(CACHE_DIR, os.path.basename(model) + "." + (pname + "." if pname else "") + "usage")
     if not os.path.isfile(profile) and not a.no_starter and not a.dry_run:
         # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
@@ -1730,7 +1815,10 @@ def server(argv):
     if port_busy(port):
         raise SystemExit(f"moe-cache: port {port} is already in use (another llama-server, or on-demand: moe_cache.py on-demand --status); "
                          f"stop it or pick another with --port")
-    if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
+    if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")) and not project_id_ok(slotdir, a.project):
+        say(f"moe-cache: not restoring the saved state of project {a.project}: it has no record of the model, context and cache types it was made with, "
+            "or they differ from this server's (a state is only valid for the same model file); save it again with `moe_cache.py project save`", err=True)
+    elif a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")):
         def restore():
             for _ in range(900):
                 if healthy(port, api_key):
@@ -1744,8 +1832,9 @@ def server(argv):
         threading.Thread(target=restore, daemon=True).start()
     if a.agent and not a.no_warm and not a.project and slotdir:
         # a saved state is only valid for the same model file, context and KV settings: all of them go into the name
-        tag = re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-c{ctx}-" + "-".join(x for x in (arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) if x))
-        threading.Thread(target=warm_keeper, args=(port, api_key, slotdir, tag.rstrip("-_")), daemon=True).start()
+        ident = model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v"))
+        tag = re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-{ident}")      # file name + size + content fingerprint + ctx + KV types: files of another model never match
+        if ident: threading.Thread(target=warm_keeper, args=(port, api_key, slotdir, tag.rstrip("-_")), daemon=True).start()
     if a.agent:
         def snippets():
             for _ in range(1800):
@@ -2236,7 +2325,17 @@ def project(argv):
         return 0
     if not a.name or not NAME_RE.match(a.name):
         raise SystemExit("usage: moe-cache-project save|restore NAME [--url URL] [--api-key KEY]")
+    sdir = os.path.join(d, a.name)
+    if a.cmd == "restore" and os.path.isfile(os.path.join(sdir, a.name + ".bin")) and not project_id_ok(sdir, a.name):
+        raise SystemExit(f"restore refused: {a.name}.bin has no record of the model it was saved with, or it differs from the server started with "
+                         f"--project {a.name}; a state only fits the same model file. Save it again with `project save`.")
     st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, key_for(a.url, a.api_key), timeout=600)
+    if a.cmd == "save" and st == 200:
+        try:
+            with open(os.path.join(sdir, a.name + ".bin.id"), "w") as fh:
+                fh.write(open(os.path.join(sdir, "server.id")).read().strip() + "\n")
+        except OSError:
+            say("moe-cache: note: saved, but the model identity could not be recorded (is the server started with --project " + a.name + "?); a restore will be refused", err=True)
     say(body.strip())
     if st != 200:
         raise SystemExit(f"{a.cmd} failed: HTTP {st}" if st else f"{a.cmd} failed: no server at {a.url}")

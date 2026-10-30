@@ -15,7 +15,7 @@ Model listing (/v1/models, /props) is answered without starting the model, so ag
   moe_cache.py on-demand [MODEL ...] --install-autostart                         start it at login (systemd --user unit / Windows Startup folder)
   moe_cache.py on-demand --remove-autostart | --stop | --status
 """
-import argparse, hmac, http.client, json, os, re, signal, socket, subprocess, sys, threading, time
+import argparse, hmac, ipaddress, http.client, json, os, re, signal, socket, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -71,7 +71,15 @@ def model_ctx(args):
 def local_origin(origin):
     """True for pages served from this machine (http(s)://localhost, 127.x, [::1]): the same rule as llama-server's `--cors-origins localhost`."""
     m = re.match(r"^https?://(\[[^\]]+\]|[^:/]+)(:\d+)?/?$", origin or "")
-    return bool(m) and (m.group(1) in ("localhost", "[::1]") or m.group(1).startswith("127."))
+    if not m:
+        return False
+    h = m.group(1)
+    if h == "localhost" or h == "[::1]":
+        return True
+    try:                                  # an exact 127.0.0.0/8 address, not any name that merely starts with "127." (127.attacker.example)
+        return ipaddress.IPv4Address(h).is_loopback
+    except ValueError:
+        return False
 
 
 def free_port():
@@ -86,7 +94,8 @@ class Backend:
     def __init__(self, choice, launcher=None, idle_min=15.0, start_timeout=900, log=log, release_min=5.0):
         self.c, self.launcher, self.idle, self.start_timeout, self.log = choice, launcher or LAUNCHER, idle_min * 60, start_timeout, log
         self.release, self.released = release_min * 60, False      # N3: earlier idle stage, the cache's RAM goes back but the server stays
-        self.key = mc.stored_key(create=True)
+        self.args = list(choice.get("args", []))
+        self.key = mc.take_api_key_from_args(self.args) or mc.stored_key(create=True)       # a configured custom key is THE key (listener and backend)
         self.lock = threading.Lock()             # held while starting / stopping
         self.count = threading.Lock()
         self.p, self.port, self.state, self.active, self.last, self.t0 = None, None, "idle", 0, time.time(), 0.0
@@ -96,7 +105,7 @@ class Backend:
         self.seen = choice.get("seen") or {}     # the real /v1/models and /props answers, kept from the last start
 
     def cmd(self, port):
-        return self.launcher + [self.c["model"], "--agent", "--port", str(port)] + list(self.c.get("args", []))
+        return self.launcher + [self.c["model"], "--agent", "--port", str(port)] + list(self.args)
 
     def busy(self, delta):
         with self.count:
@@ -276,6 +285,8 @@ class Pool:
     def __init__(self, backends, drain_timeout=600):
         self.bs, self.drain = list(backends), drain_timeout
         self.key = self.bs[0].key
+        for b in self.bs:
+            b.key = self.key                       # one key for the listener and every backend behind it
         self.lock = threading.Lock()
 
     @property

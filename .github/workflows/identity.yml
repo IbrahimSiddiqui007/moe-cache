@@ -81,6 +81,7 @@ jobs:
           python3 tools/check_model_links.py   # every model the picker can recommend still exists on Hugging Face (metadata only; an HF outage only warns)
           python3 tests/gguf_hostile_test.py   # hostile GGUF headers are refused, not allocated (security fix S1)
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
+          python3 tests/security_test.py     # external-audit regressions: key race, key disclosure, chat saves, custom key, CORS loopback, wrong-model state
           python3 tests/on_demand_test.py    # on-demand endpoint: key, CORS, start on first request, SSE pass-through, idle stop, restart; fake server
           python3 tests/awake_test.py        # keep-awake lock (I47)
           python3 tests/doctor_test.py       # doctor/check overview (N34)

@@ -2,6 +2,13 @@
 
 ## 0.3.2 (2026-10-30)
 
+- **Security and saved-state fixes (external audit of v0.3.1, six confirmed bugs; tests/security_test.py)**:
+  - Two first launches at once could end with different API keys (one never saved): the key is now written completely to a private temp file and published atomically (`os.link`), the loser reads the winner's key.
+  - The stored local key was sent to any URL that answered 401/403 (`connect`, `project`): it now goes only to localhost / loopback addresses.
+  - Overlapping saves of one chat in the control page shared a temp file (FileNotFoundError, damaged JSON): each save has its own temp file and saves of one conversation are serialised.
+  - On-demand: a custom `--api-key` in the model's arguments was refused by the listener (it checked the stored key); listener and every backend now use the same configured key, and it is kept off the backend's command line.
+  - On-demand CORS accepted any name starting with `127.` (`127.attacker.example` could read the model list): origins are compared exactly (localhost, a 127.0.0.0/8 address, `[::1]`).
+  - A saved warm session or `--project` state could be loaded into another model: saved files are now keyed by model file name, size, a content fingerprint (GGUF header + three samples), context and KV types; files made by older versions are not restored (project states need one new `project save`).
 - **Docs**: new `docs/TROUBLESHOOTING.md` (answers look wrong or loop, slow, does not start); FAQ entries on answer quality and cache policy; `--moe-cache-mib` is marked as llama.cpp's own GPU cache (slower on our Vulkan PC, RESULTS 59); long prompts at 63k still take minutes.
 - At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, from the bigger GPU plan; quality gate passed at 4k context, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30. Not with `--stock` or without a GPU (q8_0 KV aborted on the CPU-only build); the control page's Exact mode passes `--exact`.
 - **Long prompts with a browser open** (N23 split, N31): when the desktop and a browser hold VRAM, the GPU margin grows with what other programs hold and the

@@ -242,6 +242,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "on-demand test failed" }
           python tests/warm_test.py
           if ($LASTEXITCODE -ne 0) { throw "warm-session test failed" }
+          python tests/security_test.py
+          if ($LASTEXITCODE -ne 0) { throw "security test failed" }
           python tests/on_demand_live.py granite.gguf --llama-server $ls
           if ($LASTEXITCODE -ne 0) { throw "on-demand live test failed" }
           $env:XDG_CACHE_HOME = "$env:RUNNER_TEMP\od-cache"; $env:APPDATA = "$env:RUNNER_TEMP\od-appdata"
