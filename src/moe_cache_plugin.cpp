@@ -115,7 +115,9 @@ static int moe_cache_api_of_ggml(const char * v) {
     int maj = 0, min = 0;
     if (sscanf(v, "%d.%d", &maj, &min) != 2) return -1;
     if (maj == 0 && min <= 25) return 2;
-    if (maj == 0 && min == 26) return 3;
+    // 0.26 and newer 0.x: API 3, as the launcher says (bin/moe_cache.py ggml_api_of; ggml 0.28 did not bump it). A future API 4 is not guessed here: ggml's
+    // loader compares reg.api_version for GGML_BACKEND_PATH, and ggml_struct_layout_mismatch() (start-up, also LD_PRELOAD) refuses a changed struct layout.
+    if (maj == 0 && min >= 26) return 3;
     return -1;
 }
 

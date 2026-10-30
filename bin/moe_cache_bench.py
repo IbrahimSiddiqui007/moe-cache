@@ -15,7 +15,7 @@ DECODE_PROMPT = "Write a short story about a lighthouse keeper who finds a messa
 PARA = ("The history of computing spans centuries, from mechanical calculators and punched cards to vacuum tubes, transistors, integrated "
         "circuits and the microprocessors in every phone. ")          # about 37 tokens with the usual tokenizers
 # device names in `llama-server --list-devices` ("  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 15890 MiB free)") -> backend
-BACKENDS = (("CUDA", "CUDA"), ("ROCm", "ROCm-HIP"), ("HIP", "ROCm-HIP"), ("Vulkan", "Vulkan"), ("SYCL", "SYCL"), ("Metal", "Metal"), ("OpenCL", "OpenCL"))
+BACKENDS = (("CUDA", "CUDA"), ("ROCm", "ROCm-HIP"), ("HIP", "ROCm-HIP"), ("Vulkan", "Vulkan"), ("SYCL", "SYCL"), ("Metal", "Metal"), ("MTL", "Metal"), ("MUSA", "MUSA"), ("CANN", "CANN"), ("RPC", "RPC (remote)"), ("OpenCL", "OpenCL"))
 
 
 def backend_of(list_devices):
@@ -23,12 +23,13 @@ def backend_of(list_devices):
     if not list_devices or "Available devices" not in list_devices:
         return "UNKNOWN - please state it"
     found = []
-    for line in list_devices.splitlines():
-        m = re.match(r"\s*([A-Za-z]+)\d+\s*:", line)
-        if m:
-            for key, name in BACKENDS:
-                if m.group(1).upper().startswith(key.upper()) and name not in found:
-                    found.append(name)
+    listing = list_devices.split("Available devices", 1)[1]       # only the device lines (the log above it has "name0:" lookalikes)
+    for line in listing.splitlines():
+        m = re.match(r"\s*([A-Za-z]+)\d*\s*:", line)
+        if m and m.group(1).upper() != "CPU":
+            name = next((n for key, n in BACKENDS if m.group(1).upper().startswith(key.upper())), m.group(1))    # an unknown backend is named as printed
+            if name not in found:
+                found.append(name)
     return " + ".join(found) if found else "CPU only"
 
 
