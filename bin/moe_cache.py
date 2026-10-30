@@ -800,21 +800,18 @@ KEY_FILE = os.path.join(CACHE_DIR, "api.key")
 
 
 def model_identity(model, ctx=None, ctk=None, ctv=None):
-    """A short id of the exact model file and KV settings a saved slot state belongs to: file name, size, a hash of the GGUF header (first 1 MiB)
-    and of three 64 KiB samples inside the file (a fine-tune with the same header still differs), plus context size and KV cache types.
-    Same on Linux and Windows; reads about 1.2 MiB. "" when the file cannot be read (then nothing is saved under it or restored)."""
-    import hashlib
-    try:
-        size = os.path.getsize(model)
-        h = hashlib.sha256()
-        with open(model, "rb") as f:
-            h.update(f.read(1 << 20))
-            for frac in (0.5, 0.75, 1.0):
-                f.seek(max(0, min(int(size * frac), size - (64 << 10)) - (32 << 10)))
-                h.update(f.read(64 << 10))
-    except OSError:
-        return ""
-    return "-".join([re.sub(r"[^A-Za-z0-9_]", "_", os.path.basename(model))[:40], str(size), h.hexdigest()[:16], f"c{ctx}", ctk or "f16", ctv or "f16"])
+    """The key of a saved prompt state (warm sessions, --project slots): bin/moe_cache_model.py slot_id, the one place that says what a model is (XA-1). The string is
+    the same as before that module existed, so states saved earlier are still found. "" when the file cannot be read."""
+    sys.path.insert(0, os.path.join(HERE, "bin"))
+    from moe_cache_model import slot_id
+    return slot_id(model, ctx, ctk, ctv)
+
+
+def model_profile(model, name, dry=False):
+    """The usage profile file of this model (bin/moe_cache_model.py profile_path): the old <file>.usage unless the profile there was learned on another file."""
+    sys.path.insert(0, os.path.join(HERE, "bin"))
+    from moe_cache_model import profile_path
+    return profile_path(model, name, CACHE_DIR, dry=dry, say=say)
 
 
 def project_id_ok(slotdir, name):
@@ -1778,7 +1775,7 @@ def _launch_plan(a, extra, argv, machine):
                     fh.write(model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
             except OSError:
                 pass
-    profile = os.path.join(CACHE_DIR, os.path.basename(model) + "." + (pname + "." if pname else "") + "usage")
+    profile = model_profile(model, pname, dry=dry)
     if not os.path.isfile(profile) and not a.no_starter and not dry:
         # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
         try:
@@ -2498,7 +2495,7 @@ def learn(argv):
         raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     if a.name and not NAME_RE.match(a.name):
         raise SystemExit("--name may only contain letters, digits, _ and -")
-    out = a.out or os.path.join(CACHE_DIR, os.path.basename(a.model) + "." + (a.name + "." if a.name else "") + "usage")
+    out = a.out or model_profile(a.model, a.name or "")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     if port_busy(a.port):
         raise SystemExit(f"port {a.port} is already in use (another server?): stop it or pass --port, so the prompts go to the right server")
