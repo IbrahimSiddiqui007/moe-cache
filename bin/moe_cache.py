@@ -2567,6 +2567,11 @@ def check(argv):
     tot = win_memory()[0] / 1e9 if WINDOWS and win_memory()[0] else meminfo_total_gb()
     facts["ram"] = (f"{tot:.0f} GB total, " if tot else "") + (f"{memav:.1f} GB available" if memav else "available unknown") + (f", cgroup limit {cg:.1f} GB" if cg else "")
     ok("memory", (f"--ram {a.ram} GB; " if a.ram else "") + (f"available {memav:.1f} GB" if memav else "available: unknown") + (f", cgroup limit {cg:.1f} GB" if cg else ""))
+    ctot, cfree = win_commit()
+    if ctot and cfree:      # XA-3: Windows refuses memory when commit (RAM + page file) is used up, even with RAM free; llama-server then stops
+        facts["ram"] += f"; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB"
+        (ok if cfree >= 20e9 else warn)("commit", f"{cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)" + ("" if cfree >= 20e9 else
+            ": tight for a 16 GB GPU plus llama-server's buffers; close big programs or let Windows manage the page file size (docs/TROUBLESHOOTING.md)"))
     try:
         sw = next(int(l.split()[1]) * 1024 / 1e9 for l in open("/proc/meminfo") if l.startswith("SwapTotal"))
         if sw >= 1:
