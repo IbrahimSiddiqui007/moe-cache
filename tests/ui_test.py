@@ -72,7 +72,7 @@ PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe"
 TUNE = {"n_cpu_moe": 38, "ub": 1024, "gpu_cache_mib": 0, "why": ["10 layers of experts stay on the GPU", "micro-batch 1024"]}
 # the page asks the launcher for its plan (ui.launcher_view -> mc.launch_plan); here the plan's planner answer and tuner answer are mocked, the stock-or-plugin rule is the launcher's own
 _planner = [lambda path, ctx, ram, vram, kv="f16": dict(PLAN)]
-def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls):
+def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False):
     info = _planner[0](path, ctx, ram, vram)          # a RuntimeError here is the planner's refusal
     stock = ui.mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
     t = dict(TUNE)
@@ -437,6 +437,11 @@ if sys.platform.startswith("linux"):
     par.kill(); par.wait()
 check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-1] == "--no-warm" and "--no-warm" not in ui.server_args({"model": "m.gguf", "no_warm": True}),
       "Don't restore: --no-warm (agent mode only)")
+check("--leave-room" in ui.server_args({"model": "m.gguf", "leave_room": True}) and "--leave-room" not in ui.server_args({"model": "m.gguf"}),
+      "Leave room for me: --leave-room on the Start command (owner 2026-10-30)")
+_html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "index.html")).read()
+check('id="leaveroom"' in _html and "leave_room: $(\"leaveroom\").checked" in _html and "&leave_room=" in _html and "last.leave_room" in _html,
+      "Leave room for me: the box, sent with Start and the plan, remembered")
 
 # connect buttons: preview, then write (into the temporary XDG_CONFIG_HOME)
 st, body = req("/api/connect", {"agent": "opencode", "write": False})

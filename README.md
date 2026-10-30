@@ -89,6 +89,7 @@ Models are single `.gguf` files from Hugging Face, 20-120 GB each. **Not sure wh
 Every line says OK, WARN or FAIL and what to do about it (it also times a short read test on the model's drive and warns when the drive is too slow). Add `--run` to also start llama-server with the plugin for one short request (about a
 minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too.** `check` and `doctor` are the same command; it checks the GPU, RAM, the model's drive and llama-server, and ends with a table of your GPU, driver, RAM, disk and llama-server and a list of what to fix.
 If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command (GiB of VRAM left free; default about 0.5).
+**Using the PC while a model runs?** By default moe-cache takes almost everything (RAM up to total minus 4 GiB, the GPU, all cores), so the desktop can stutter. Tick **Leave room for me** on the control page, or add `--leave-room`: the server then keeps 8 GiB or 25 % of the RAM (whichever is more), 2 GB of GPU memory and 2 CPU cores free and runs at a lower priority; smoother PC, slower model (`MOE_CACHE_LEAVE_ROOM=1` makes it the default). A desktop with a CPU that has its own graphics (most Ryzen 7000/9000, Intel non-F): plug the monitor into the **motherboard**, so the graphics card holds no desktop memory at all.
 
 ### 4. Run your model
 

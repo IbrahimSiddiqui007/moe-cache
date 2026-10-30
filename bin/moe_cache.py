@@ -19,7 +19,7 @@
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
-import argparse, glob, json, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import argparse, glob, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
 VERSION = "0.3.3"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -697,6 +697,47 @@ def win_cores():
         return []
 
 
+def physical_cores():
+    """Physical CPU cores: Windows from the core records (win_cores), Linux from the distinct (package, core id) pairs in /proc/cpuinfo;
+    half the logical CPUs when neither answers (SMT is the common case)."""
+    if WINDOWS:
+        c = win_cores()
+        if c:
+            return len(c)
+    else:
+        try:
+            seen, pkg = set(), "0"
+            for line in open("/proc/cpuinfo"):
+                k, _, v = line.partition(":")
+                k = k.strip()
+                if k == "physical id":
+                    pkg = v.strip()
+                elif k == "core id":
+                    seen.add((pkg, v.strip()))
+            if seen:
+                return len(seen)
+        except OSError:
+            pass
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+# --leave-room (owner 2026-10-30: a big-model test made the desktop PC stutter while the owner used it; a friend using the PC while a model runs hits
+# the same): more RAM, GPU memory and CPU left to the user's own programs, the server at a lower priority. Same rule on Linux and Windows.
+LEAVE_ROOM_KEEP_GIB, LEAVE_ROOM_KEEP_FRAC = 8, 0.25     # RAM kept free: max(8 GiB, 25 %) instead of the normal cap's max(4 GiB, 12.5 %): 24 GiB of 32
+LEAVE_ROOM_VRAM_GB = 2.0                                # GPU memory kept free for the desktop and browser, at least (normal: about 0.5 GB)
+LEAVE_ROOM_FREE_CORES = 2                               # physical cores the server's threads leave free
+
+
+def leave_room_ram_gb(machine):
+    """--leave-room's --ram (decimal GB, as text) when none was given: total RAM minus max(8 GiB, 25 %), and never above what may be used now. None if unknown."""
+    total = machine.mem_total()
+    if not total:
+        return None
+    keep = max(LEAVE_ROOM_KEEP_GIB * 2**30, total * LEAVE_ROOM_KEEP_FRAC)
+    budget = min(total - keep if total > keep else total / 2, machine.mem_for_server(None) or float("inf"))
+    return f"{math.floor(budget / 1e8) / 10:.1f}"
+
+
 def mem_total():
     if WINDOWS:
         return win_memory()[0]
@@ -1005,6 +1046,15 @@ if sys.platform.startswith("linux"):
         _PRCTL = None
 
 
+def _child_low_linux():
+    """preexec_fn for --leave-room: as _die_with_parent_linux, at nice 10."""
+    _die_with_parent_linux()
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+
+
 def _die_with_parent_linux():
     """preexec_fn: the child gets SIGTERM when the launcher dies, even if the launcher is killed with SIGKILL."""
     if _PRCTL is not None:
@@ -1279,8 +1329,11 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
     if awake_note:
         say(awake_note)
     kw = {"env": env, "stderr": subprocess.PIPE}
+    low = env.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0")       # --leave-room: the user's own programs come first
     if sys.platform.startswith("linux"):
-        kw["preexec_fn"] = _die_with_parent_linux
+        kw["preexec_fn"] = _child_low_linux if low else _die_with_parent_linux
+    elif low and WINDOWS:
+        kw["creationflags"] = 0x00004000      # BELOW_NORMAL_PRIORITY_CLASS
     p = subprocess.Popen(cmd, **kw)
     if WINDOWS:
         try:
@@ -1385,6 +1438,8 @@ SERVER_HELP = """\
 --project NAME  its own profile plus a saved prompt state (KV cache) restored at start; save it with: moe_cache.py project save NAME
 --gpu-cache off|auto|MIB  (Linux, preload method only) llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
            Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
+--leave-room  I use this PC while the model runs: RAM for the server = total minus max(8 GiB, 25 %) instead of max(4 GiB, 12.5 %), at least 2 GB of
+           GPU memory kept free for the desktop, 2 CPU cores left free, lower priority. Smoother PC, slower model. MOE_CACHE_LEAVE_ROOM=1 turns it on for good
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
 --ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it. On Windows it is also set as a
@@ -1483,6 +1538,7 @@ class Machine:
         return WINDOWS
 
     def mem_total(self): return mem_total()
+    def physical_cores(self): return physical_cores()
     def mem_cap(self): return mem_cap()
     def mem_for_server(self, ram_gb): return mem_for_server(ram_gb)
     def win_memory(self): return win_memory()
@@ -1593,6 +1649,7 @@ def parse_server(argv):
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
+    ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
@@ -1664,6 +1721,13 @@ def _launch_plan(a, extra, argv, machine):
             "(moe_cache.py key) keep it private", err=True)
     if not win:
         os.umask(0o077)       # the usage profile is private to this user
+    if a.leave_room:
+        if a.ram:
+            say(f"moe-cache: --leave-room: --ram {a.ram} GB as given")
+        elif (lr := leave_room_ram_gb(machine)):
+            a.ram = lr
+            say(f"moe-cache: --leave-room: the server may use {lr} GB of RAM (the rest stays for your own programs), keeps {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU "
+                f"memory free for the desktop, leaves {LEAVE_ROOM_FREE_CORES} CPU cores free and runs at a lower priority: smoother PC, slower model")
     ls, model, port = a.llama_server, a.model, a.port
     ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
     gcache = a.gpu_cache
@@ -1901,6 +1965,8 @@ def _launch_plan(a, extra, argv, machine):
                         desk_kw = kw["reserve_gb"] = res
                         say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
                             f"(--gpu-margin GiB to change)")
+                if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
+                    desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
@@ -2008,6 +2074,10 @@ def _launch_plan(a, extra, argv, machine):
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
             # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
             env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
+    if a.leave_room:
+        env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
+        if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
+            extra = extra + ["-t", str(max(1, machine.physical_cores() - LEAVE_ROOM_FREE_CORES))]    # hybrid CPUs keep their performance-core pinning
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
     if method == "none (stock)":
         pass
@@ -2106,7 +2176,7 @@ def run_launch_plan(plan):
                 tf = gpu_total_free_bytes()
             if not tf:
                 return None
-            reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0)
+            reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0, LEAVE_ROOM_VRAM_GB if a.leave_room else 0)
             t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve)
             lay = model_layout(model)
             old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])
