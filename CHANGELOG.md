@@ -26,6 +26,12 @@
   answers. No prompts, answers, user name, host name or folder names in it. A model that fits in RAM exits with a hint (`--force-plugin` measures anyway).
   GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). tests/bench_report_test.py; both CIs run a
   real report on Granite.
+- **Executor: gate and up of a layer run as one pool job** (E3): one barrier and one wake-up fewer per layer, same arithmetic per output value. Flash-Next Q2_0
+  on the PC: decode +0.3-2.6 % in all 6 ABBA pairs (e.g. 17.61 -> 18.06), text identical (RESULTS 73; runs "not clean": the owner's programs were open). On by default;
+  `MOE_CACHE_EXEC_FUSE=0` turns it off.
+- **Opt-in frequency-aware cache replacement** `MOE_CACHE_POLICY=classlru` (llama.cpp #31233 style: decayed use counts, 4 classes): replay of saved traces +1.0-2.8
+  hit-rate points at 10-30 % cache (tools/policy_replay.py); PC ABBA: the miss-heavy Qwen3.5-122B +1.3-2.9 % decode in every pair (hit rate +1.5-2.1 points), Flash-Next
+  (95 % hits) within noise both ways, so LRU stays the default. Text identical.
 - **Fixed: crash at start with llama.cpp newer than b12000** (master 418f905a4, 2026-10-29): ggml lengthened its buffer interface without a backend
   API bump, which moved the fields of every ggml buffer; the plugin, built with older headers, read the wrong field and llama-server crashed in its
   memory-fit pass (SIGSEGV in `dev_supports_op`, CI master row). The plugin now reads no field of a ggml buffer (`ggml_backend_buffer_get_type()`, its

@@ -160,7 +160,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-p
 
 | File | Size | Decode tok/s | Prompt tok/s (3k / 34k tokens) | Tasks /202 | Use it |
 |---|---|---|---|---|---|
-| **Q2_0** | 66.4 GB | **22.2**; **24.7-25.5** with the async reads (N15, +12 %, RESULTS 67) | **281 / 287**; long prompts **+8-11 %** (N23 pipelined block) and **+2-5 %** at 34k (N22), RESULTS 69 | 191 | **recommended default**: vs IQ2_XS +5 % decode (part of it may be the faster drive it ran from), prompts +11 % / +19 %, smaller |
+| **Q2_0** | 66.4 GB | **22.2**; **24.7-25.5** with the async reads (N15, +12 %, RESULTS 67) | **281 / 287**; long prompts **+8-11 %** (N23 pipelined block) and **+2-5 %** at 34k (N22), RESULTS 69; decode **+0.3-2.6 %** with the fused gate+up job (E3, RESULTS 73, every pair, not clean) | 191 | **recommended default**: vs IQ2_XS +5 % decode (part of it may be the faster drive it ran from), prompts +11 % / +19 %, smaller |
 | IQ3_XXS | 75.8 GB | 19.9 | - | **193** | when accuracy matters: most tasks right, about 10 % slower decode |
 | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 21.2 (agent session) | - | 189 | coding agents: half the experts (256 of 512); OpenCode session 55.5 s vs 73.4 s on IQ2_XS. General knowledge not checked beyond the task set |
 | IQ2_XS | 68.0 GB | 21.0 (same day as Q2_0; 21.9 in RESULTS 59) | 253 / 242 | 187 | superseded by Q2_0 (older rows above that say IQ2_XS were measured on IQ2_XS) |
@@ -327,6 +327,8 @@ Where they are the better choice: you have a card and RAM they list, and you wan
 | `MOE_CACHE_GGUF` | model file (split models: the first part) |
 | `MOE_CACHE_PROFILE` / `MOE_CACHE_WARM` | learn expert usage here and warm-start from it / warm start only |
 | `MOE_CACHE_STATS=1` | print hit rate, reads and evictions at exit |
+| `MOE_CACHE_EXEC_FUSE=0` | turn off the fused gate+up executor job (on by default since 0.3.2: decode +0.3-2.6 % in every PC pair, same text; RESULTS 73) |
+| `MOE_CACHE_POLICY=classlru` | frequency-aware cache replacement instead of LRU (opt-in; on the miss-heavy 122B +1.3-2.9 % decode in every pair, on Flash-Next within noise; RESULTS 73) |
 | `MOE_CACHE_STATS_SIGNAL=1` | print one `moe-cache-stats {json}` line of the running counters on request: Linux `kill -USR1 <pid>`, Windows set the named event `Local\moe-cache-stats-<pid>` |
 | `MOE_CACHE_DISABLE=1` | load nothing: the server behaves exactly like stock |
 | `MOE_CACHE_EXEC=0` | switch the expert executor off (default on) |

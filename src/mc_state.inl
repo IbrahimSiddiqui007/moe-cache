@@ -208,7 +208,7 @@ struct state_t {
     bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
     bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
     int    exec_chunk = 128;                            // MOE_CACHE_EXEC_CHUNK=N: weight rows per pool chunk; 128 decodes +3.9 % over 32 on the PC (N25, every ABBA pair), the arithmetic per row is unchanged
-    bool   exec_fuse = false;                           // MOE_CACHE_EXEC_FUSE=1: gate and up of one layer share one pool job (same arithmetic, one barrier fewer)
+    bool   exec_fuse = true;                            // gate and up of one layer share one pool job (same arithmetic, one barrier fewer): decode +0.3-2.6 % in every PC ABBA pair, text identical (E3, RESULTS 73); MOE_CACHE_EXEC_FUSE=0 turns it off
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
     int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes

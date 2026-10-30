@@ -368,7 +368,7 @@ struct exec_last_t {
 exec_last_t g_exec_last;
 
 // One expert op, prepared for the pool: quantised activation columns, one task per expert (tasks that are already in RAM first, `n_ready` of them).
-// MOE_CACHE_EXEC_FUSE=1 runs the prepared tasks of two independent ops (gate and up: same input, same shape, own outputs) as ONE pool job: the arithmetic of
+// By default (MOE_CACHE_EXEC_FUSE=0 turns it off) the prepared tasks of two independent ops run (gate and up: same input, same shape, own outputs) as ONE pool job: the arithmetic of
 // every output value is the same, only one barrier and one wake-up fewer per layer (RESULTS 71: 32 % of pool thread time was idle at the barrier).
 struct exec_prep_t {
     ggml_tensor *          nd = nullptr;

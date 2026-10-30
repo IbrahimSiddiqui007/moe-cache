@@ -2986,3 +2986,19 @@ B3 passes the gate (KLD in the `--fast` range, tasks not worse) but its speed is
 The A arms at 128k run into the 30-minute limit: the default plan at ctx 262144 is slow there, which is part of what B4 fixes.
 CI (`quality.yml`, granite): `exact` enforced (KLD 0, 100 %, 93/93 tasks); stock llama-perplexity at the API 3 pin aborts with `-ctk q8_0` on the CPU-only build (stock too), so approximate levels there are report-only smoke without KV.
 Runner bug found on the way: `runner.ps1` `$o = Get-CimInstance` overwrites `$O`, which kills `Script1` items at once.
+
+## 73. v0.3.2 checks on the Windows PC (2026-10-30 afternoon; all "not clean": the owner's programs held ~15 GB RAM and some VRAM; one queue, kits e212dfa / b3a6e45)
+
+Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan b11669 (C:\llama-vk) unless noted. Decode = tok/s after the prompt, 256 greedy tokens. ABBA = A, B, B, A; pair 1 = runs 1/2, pair 2 = runs 4/3.
+
+| Test | Result |
+|---|---|
+| Crash A/B (old 673fa23 vs new e212dfa DLL, Flash-Next Q2_0, ctx 40960, 2 requests) | no crash in 8 runs; text identical in every pair; decode 17.1-17.4 both. The buffer-layout fix (e212dfa) changes nothing on b11669 |
+| README numbers (item 96/98za, one cold run each) | **not usable**: at 5-7 GB "available" llama-server's prompt cache failed to allocate ("bad allocation", ~230 MB) and llama.cpp then wrote through NULL (memcpy in ggml-base from llama.dll; the plugin's crash handler: outside the expert cache and its graphs) at the 3rd request: Windows commit (RAM + page file) was exhausted. 256k: prompts 77-82 tok/s, decode 11 (README 108-110 / 21.9) with a 11.9 GiB cache. README tables unchanged; clean rerun pending |
+| b11966 (C:\llama-new, ggml 0.28) | new launcher picks the API 3 DLL and the cache runs (granite, check --run); the 673fa23 launcher reported the misleading "DLL not found" |
+| D5 lookahead 122B, ctx 40960 (MOE_CACHE_LOOKAHEAD=2) | pair 1 9.36 -> 9.77, pair 2 13.32 -> 10.86: not kept |
+| E3 fused gate+up (MOE_CACHE_EXEC_FUSE) | water 17.31 -> 17.62 / 17.29 -> 17.34; code 17.61 -> 18.06 / 17.57 -> 17.69; timing run 17.26 -> 17.64 / 17.22 -> 17.52: **all 6 pairs**, text identical: on by default |
+| ClassLRU (MOE_CACHE_POLICY=classlru) | 122B: water 10.93 -> 11.21 / 10.89 -> 11.02, code 10.45 -> 10.75 / 10.40 -> 10.60, hit +1.5-2.1 points; Flash-Next (95 % hits): -0.4 to +1.4 %, mixed; text identical everywhere: opt-in |
+| BO-1 read size (tests/win_read_bench.cpp, random unbuffered reads, Flash-Next Q2_0 file on D:) | 896 KiB 1.90 GB/s (~2,070 ops/s at 4 and 8 threads), 1792 KiB 3.04, 2688 KiB 3.47 GB/s: whole-expert reads +83 % |
+| Final kit (b3a6e45 CI zip, unzipped fresh) | version, control page, pick, server without a model, on-demand status, check --run (granite), bench-report (granite, forced, warm): 7/7 pass |
+
