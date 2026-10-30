@@ -1229,7 +1229,8 @@ SERVER_HELP = """\
 --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
            also a q8_0 KV cache (half the KV memory; KL 0.0045 on its own, RESULTS 53).
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31).
---fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv)
+--fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
+--exact    keep the f16 KV cache at 128k+ (no --fast=kv default)
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
            Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
@@ -1339,6 +1340,7 @@ def server(argv):
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
+    ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
@@ -1507,6 +1509,13 @@ def server(argv):
             say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
+    # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): it passes the quality gate (KL 0.0079, tasks = stock, RESULTS 72) and
+    # doubles prefill at 256k on a 16 GB card; --exact (or your own -ctk/-ctv after --) keeps llama.cpp's f16 KV
+    if (not a.fast and not a.exact and ctx >= 131072
+            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)):
+        a.fast = "kv"
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k, same answers in the quality "
+            "gate, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
     if kv_q8:
         extra += ["-ctk", "q8_0", "-ctv", "q8_0"]

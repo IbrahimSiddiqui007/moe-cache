@@ -86,6 +86,13 @@ check("GGML_OP_OFFLOAD_MIN_BATCH" not in dry("--vram", "0.3"), "launcher plugin 
 rc, out = dry_nolib("--ram", "4", "--always-plugin")
 check(rc != 0 and "MOE_CACHE_LIB points to a file that does not exist" in out, "launcher, plugin missing, --always-plugin: stops with the missing-file message")
 
+# 128k+ context: q8_0 KV by default (--fast=kv, owner 2026-10-30); --exact and an explicit -ctk keep f16; below 128k nothing changes
+_d = dry("--ctx", "131072", "--vram", "4")
+check("-ctk q8_0" in _d and "q8_0 KV cache by default" in _d, "launcher ctx 128k: q8_0 KV by default")
+check("-ctk q8_0" not in dry("--ctx", "131072", "--vram", "4", "--exact"), "launcher ctx 128k --exact: f16 KV kept")
+check("-ctk q8_0" not in dry("--ctx", "65536", "--vram", "4"), "launcher ctx 64k: f16 KV (default unchanged below 128k)")
+check("-ctk f16" in dry("--ctx", "131072", "--vram", "4", "--", "-ctk", "f16") and "q8_0 KV cache by default" not in dry("--ctx", "131072", "--vram", "4", "--", "-ctk", "f16"), "launcher ctx 128k with -ctk f16: the user's value wins")
+
 # Windows core pinning (WINPIN): the launcher's parser of GetLogicalProcessorInformationEx records, on synthetic records (no Windows needed)
 import importlib.util, struct  # noqa: E402
 _sp = importlib.util.spec_from_file_location("moe_cache_launcher", os.path.join(HERE, "bin", "moe_cache.py"))

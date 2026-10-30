@@ -31,6 +31,10 @@
   space and read speed, llama-server, plugin, model) and a "what to fix" list that repeats the WARN / FAIL lines with their remedy. A GPU driver
   older than AMD's 32.0.32015.7029 on Windows is a WARN. Run it first: `python bin/moe_cache.py doctor MODEL.gguf`.
 
+## Unreleased (0.3.2)
+
+- At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, passes the quality gate, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30.
+
 ## 0.3.1 (2026-10-29)
 
 - Windows kit: ships every launcher module. v0.3.0's zip left out `bin/moe_cache_pick.py`, so the control page (`moe-cache.bat`), `pick`, and `server` / `on-demand` without a model failed with `ModuleNotFoundError`. The kit build now fails if a launcher module does not import, and windows.yml starts the control page and runs `pick --json` from the unzipped kit (found by the release audit). Linux tarballs unchanged.
