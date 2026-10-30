@@ -2982,7 +2982,7 @@ Speed, ABBA with the text check, ctx 262144, `--gpu-margin 1.5` on both arms (to
 | prefill | 156 / 135 / 129 | 158 / 136 / 129 | equal (only decode batches are affected) |
 
 Reading: B4 passes the gate with room to spare and doubles prefill at ctx 262144 (that comes from the tuner's layer/micro-batch plan, not from the q8 arithmetic); decode gain +11-13 % at 64k, equal at 4k.
-B3 passes the gate (KLD in the `--fast` range, tasks not worse) but its speed is shown only at 4k (+2-6 %); the 64k / 128k pairs lost their decode value, so it stays opt-in and unproven.
+B3 passes the gate (KLD in the `--fast` range, tasks not worse) but its speed is shown only at 4k (+2-6 %); the 64k / 128k pairs lost their decode value, so it stays opt-in and **unproven at 64k-256k**.
 The A arms at 128k run into the 30-minute limit: the default plan at ctx 262144 is slow there, which is part of what B4 fixes.
 CI (`quality.yml`, granite): `exact` enforced (KLD 0, 100 %, 93/93 tasks); stock llama-perplexity at the API 3 pin aborts with `-ctk q8_0` on the CPU-only build (stock too), so approximate levels there are report-only smoke without KV.
 Runner bug found on the way: `runner.ps1` `$o = Get-CimInstance` overwrites `$O`, which kills `Script1` items at once.
