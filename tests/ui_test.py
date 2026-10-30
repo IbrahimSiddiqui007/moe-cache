@@ -888,7 +888,8 @@ finally:
     ui.subprocess.run = real_run
     ui.launcher_view = fake_view
 planner_cmds = [c for c in seen if isinstance(c, list) and any(str(x).endswith("plan.py") for x in c)]
-check(planner_cmds and planner_cmds[0][planner_cmds[0].index("--ram-gib") + 1] == "18.626", f"the page passes --ram 20 GB to the planner as 18.626 GiB, through the launcher's plan ({planner_cmds})")
+want_gib = f"{mc.mem_for_server('20') / 2**30:.3f}"   # 18.626, or less on a machine with less RAM (the launcher's RAM cap; CI runners have 16 GB)
+check(planner_cmds and planner_cmds[0][planner_cmds[0].index("--ram-gib") + 1] == want_gib, f"the page passes --ram 20 GB to the planner as {want_gib} GiB (capped GB -> GiB), through the launcher's plan ({planner_cmds})")
 
 # ---- v0.3.2 page fixes: draft heads are not models, the verdict is not an error, readable selected buttons, the "Which model?" card ----
 import re, shutil, subprocess
