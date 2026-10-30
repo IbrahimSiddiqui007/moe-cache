@@ -189,8 +189,20 @@ struct state_t {
     std::vector<std::unique_ptr<tinfo_t>> tensors;
     std::unordered_map<const ggml_tensor *, int> by_tensor;
     std::vector<node_t> nodes;
-    int    mru = -1;
-    int    lru = -1;
+    // Replacement policy. MOE_CACHE_POLICY=lru (default): one list, evict the least recently used. MOE_CACHE_POLICY=classlru (llama.cpp #31233):
+    // nclass LRU lists; a node's decayed use count crf (half-life classlru_hl decode tokens, kept after eviction) picks its list
+    // (class = min(nclass-1, floor(log2 crf))); the victim is the oldest evictable node of each list with the largest age / 2^class.
+    // Only the choice of victim changes, never what is computed. The plain policy is the same code with one list.
+    static constexpr int MAXCLS = 8;
+    int    mruc[MAXCLS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+    int    lruc[MAXCLS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+    bool   classlru = false;
+    int    nclass = 1;
+    double classlru_hl = 128.0;
+    std::vector<float> decay_tab;                       // 2^(-dt / half-life) for dt = 0 .. size-1 (beyond: 0)
+    uint32_t tok = 0;                                   // decode token counter (classlru clock)
+    int    last_dec_layer = -1;
+    uint64_t cls_promotions = 0, cls_demotions = 0;     // touches that moved a node to a higher / lower class list
     int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
     // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
     bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
@@ -623,6 +635,19 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHUNK")) {
             exec_chunk = std::max(1, std::min(4096, atoi(v)));
+        }
+        {
+            bool cl = false;
+            if (const char * v = getenv("MOE_CACHE_POLICY")) {
+                if (strcmp(v, "classlru") == 0) {
+                    cl = true;
+                } else if (*v && strcmp(v, "lru") != 0) {
+                    fprintf(stderr, "moe-cache: warning: MOE_CACHE_POLICY=%s is not known (lru, classlru): using lru\n", v);
+                }
+            }
+            const char * kc = getenv("MOE_CACHE_CLASSES");
+            const char * hl = getenv("MOE_CACHE_HALFLIFE");
+            set_policy(cl, kc ? atoi(kc) : 4, hl ? atof(hl) : 128.0);
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE")) {
             route_mode = strcmp(v, "skip") == 0 ? 1 : (strcmp(v, "subst") == 0 ? 2 : 0);

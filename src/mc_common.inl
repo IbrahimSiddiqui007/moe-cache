@@ -114,6 +114,10 @@ struct node_t {
     int      prev = -1;
     int      next = -1;
     uint64_t epoch = 0;
+    float    crf = 0.0f;           // classlru: decayed use count (kept after eviction)
+    uint32_t crf_tok = 0;          // classlru: decode token of the last scored use
+    uint32_t last_tok = 0;         // classlru: decode token of the last use of any kind (age for the victim choice)
+    uint8_t  cls = 0;              // classlru: which class list the node sits in (always 0 with the plain LRU policy)
     bool     resident = false;
     bool     loading = false;      // a lookahead read is still filling this expert
     bool     prefetched = false;   // loaded ahead of time and not used yet

@@ -308,10 +308,7 @@
                 }
             }
             while (resident_bytes > budget) {
-                int v = lru;
-                while (v >= 0 && in_use(nodes[v])) {
-                    v = nodes[v].prev;
-                }
+                int v = pick_victim();
                 if (v < 0) {
                     break;
                 }
@@ -400,12 +397,14 @@
                 }
             }
         } else {
-            for (int v = lru; v >= 0;) {
-                const int prev = nodes[v].prev;
-                if (!in_use(nodes[v])) {
-                    evict(v);
+            for (int c = 0; c < nclass; c++) {
+                for (int v = lruc[c]; v >= 0;) {
+                    const int prev = nodes[v].prev;
+                    if (!in_use(nodes[v])) {
+                        evict(v);
+                    }
+                    v = prev;
                 }
-                v = prev;
             }
             freed = before - resident_bytes;
         }
