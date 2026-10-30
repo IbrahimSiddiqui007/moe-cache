@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.3.3)
+## 0.3.3 (2026-10-30)
 
 - **The Linux `-ggml0.26` tarball includes llama.cpp** (the twin of the Windows kit): the official, unmodified llama.cpp b11966 `ubuntu-vulkan-x64` build (Vulkan + CPU backends)
   sits in the tarball's `llama/` folder (sha256 pinned and checked when the tarball is built, `tools/bundle_llama_linux.sh`; llama.cpp's MIT licence and a note next to it).

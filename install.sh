@@ -15,7 +15,7 @@ set -e
 LLAMA_SHA_GIVEN="${LLAMA_SHA:-}"                     # set by the user: build that commit, never the bundled build
 LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
 case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
-MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.2}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
+MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.3}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 VULKAN=0; PREFIX="$HOME/moe-cache-setup"; JOBS=$(nproc); APT=1; OWN=0; DRY=0
 while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;;
