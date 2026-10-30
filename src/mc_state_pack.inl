@@ -5,9 +5,9 @@
 
     // ---- opening and checking the pack (constructor, after the model files are open) ----
     void pack_try_open() {
-        // opt-in (2026-10-30): MOE_CACHE_PACK=1 (MODEL.moepack next to the model) or =PATH. A pack found next to the model is NOT used on its own:
-        // in CI a leftover pack was picked up by a later step and that step's tokens differed from stock (under investigation), so nothing changes
-        // for a user who did not ask for it
+        // opt-in while experimental (2026-10-30): MOE_CACHE_PACK=1 (MODEL.moepack next to the model) or =PATH. A pack found next to the model is
+        // not used on its own: in CI a leftover pack silently replaced the file-view cache in a later step (tokens stayed identical, 4/4), so a user
+        // who did not ask for the pack gets the tested default path
         const char * env = getenv("MOE_CACHE_PACK");
         if (shard_paths.empty() || !env || !*env || strcmp(env, "0") == 0) {
             return;
