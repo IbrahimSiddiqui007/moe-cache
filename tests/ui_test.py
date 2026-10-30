@@ -70,8 +70,15 @@ check(ui.measured(blob, 30e9) == [], "no measured speeds for another size of the
 PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe": 40, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0,
         "free_vram_GiB": 7.5, "note": ""}
 TUNE = {"n_cpu_moe": 38, "ub": 1024, "gpu_cache_mib": 0, "why": ["10 layers of experts stay on the GPU", "micro-batch 1024"]}
-real_planner, ui.run_planner = ui.run_planner, lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
-ui.run_tuner = lambda path, ctx, vram, kv_q8: dict(TUNE)
+# the page asks the launcher for its plan (ui.launcher_view -> mc.launch_plan); here the plan's planner answer and tuner answer are mocked, the stock-or-plugin rule is the launcher's own
+_planner = [lambda path, ctx, ram, vram, kv="f16": dict(PLAN)]
+def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls):
+    info = _planner[0](path, ctx, ram, vram)          # a RuntimeError here is the planner's refusal
+    stock = ui.mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
+    t = dict(TUNE)
+    return type("LP", (), {"engine": "stock" if stock else "plugin", "n_cpu_moe": str(t["n_cpu_moe"]), "ub": str(t["ub"]), "kv": "q8_0" if mode == "fast" else "f16",
+                           "planner_info": info, "tuned": t, "planner_error": None})()
+real_view, ui.launcher_view = ui.launcher_view, fake_view
 
 p = ui.plan_model(small["path"], ram="2")
 check(p["kind"] == "stock" and "fits in RAM" in p["verdict"], f"model + 1.5 GB under the RAM budget: stock ({p['verdict']})")
@@ -93,11 +100,11 @@ TUNE["n_cpu_moe"] = 0
 p = ui.plan_model(small["path"], ram="1")
 check(p["kind"] == "gpu" and "nothing to do" in p["summary"], f"every expert layer on the GPU ({p['verdict']}; {p['summary']})")
 TUNE["n_cpu_moe"] = 38
-ui.run_planner = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF"))
+_planner[0] = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF"))
 p = ui.plan_model(small["path"], ram="1")
 check(p["kind"] == "error" and any("not a MoE model" in r for r in p["reasons"]), "planner error: shown with the planner's own words")
 check(p["summary"].startswith("The planner could not read"), f"summary: planner error ({p['summary']})")
-ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
+_planner[0] = lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
 
 args = ui.server_args({"model": "m.gguf", "port": 8123, "ctx": 32768, "ram": 12, "mode": "fast", "agent": True})
 check(args[:2] == ["m.gguf", "--port"] and "--fast" in args and "--agent" in args and args[-2:] == ["--", "--metrics"] and "12.0" in args,
@@ -770,7 +777,7 @@ check(ui.windows_amd_rules(amd, blob, windows=True) == [], "Qwen3.6: no AMD rule
 check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 4060"}, fn, windows=True) == [], "NVIDIA: no AMD rule")
 check(ui.windows_amd_rules(amd, fn, windows=False) == [], "Linux: no AMD rule")
 ui.WINDOWS, ui._GPU["gpu"] = True, dict(amd, free=15 * 2**30, integrated=False)
-ui.run_planner = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
+_planner[0] = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
 real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False, stock_wanted=False: (stock_wanted, 68e9, 24e9))
 p = ui.plan_model(fn, ram="24")
 ui.WINDOWS, ui.mc.decide = os.name == "nt", real_decide
@@ -781,11 +788,17 @@ check(p["numbers"]["free_vram_GiB"] == 15.0 and not any("system RAM" in r or "st
 check(mc.ram_gib("20") == "18.626" and abs(float(mc.ram_gib(12.5)) * 2**30 - 12.5e9) < 1e6, f"ram_gib: GB -> GiB ({mc.ram_gib('20')})")
 seen = []
 real_run, ui.subprocess.run = ui.subprocess.run, (lambda p, **k: seen.append(p) or type("R", (), {"stdout": "{}", "stderr": ""})())
+ui.launcher_view = real_view
 try:
-    real_planner(fn, 8192, "20", None)
+    try:
+        ui.launcher_view(fn, "20", None, 8192, "exact", False, "plugin", None, None)
+    except RuntimeError:
+        pass            # the mocked planner answers {}: only the command it was given matters here
 finally:
     ui.subprocess.run = real_run
-check(seen and seen[0][seen[0].index("--ram-gib") + 1] == "18.626", f"the page passes --ram 20 GB to the planner as 18.626 GiB ({seen})")
+    ui.launcher_view = fake_view
+planner_cmds = [c for c in seen if isinstance(c, list) and any(str(x).endswith("plan.py") for x in c)]
+check(planner_cmds and planner_cmds[0][planner_cmds[0].index("--ram-gib") + 1] == "18.626", f"the page passes --ram 20 GB to the planner as 18.626 GiB, through the launcher's plan ({planner_cmds})")
 
 # ---- v0.3.2 page fixes: draft heads are not models, the verdict is not an error, readable selected buttons, the "Which model?" card ----
 import re, shutil, subprocess

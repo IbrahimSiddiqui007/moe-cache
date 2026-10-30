@@ -33,7 +33,7 @@ UNIT = "moe-cache-on-demand.service"
 LINK = "moe-cache on-demand.lnk"
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding", "upgrade", "host",
        "content-length"}
-OWN = ("--port", "--agent", "--dry-run", "--open")      # options the listener sets itself
+OWN = ("--port", "--agent", "--dry-run", "--plan-json", "--open")      # options the listener sets itself
 
 
 def log(msg):
@@ -719,8 +719,8 @@ def on_demand(argv):
             raise SystemExit(f"model file not found: {a.model}")
         args = rest + extra
         env = {k: os.environ[k] for k in ("LLAMA_SERVER", "MOE_CACHE_LIB") if os.environ.get(k)}   # autostart has no shell environment
-        # check the options now (a dry run plans the model from its header) rather than on the first agent request
-        r = subprocess.run(LAUNCHER + [model, "--agent", "--dry-run", "--port", "1"] + args, capture_output=True, text=True,
+        # check the options now (the launcher's plan, --plan-json, reads the model's header and refuses what it would refuse at start) rather than on the first agent request
+        r = subprocess.run(LAUNCHER + [model, "--agent", "--plan-json", "--port", "1"] + args, capture_output=True, text=True,
                            env=dict(os.environ, **env), timeout=600)
         if r.returncode:
             raise SystemExit("the launcher refused these options:\n" + (r.stderr or r.stdout).strip()[-1500:])

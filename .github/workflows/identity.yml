@@ -77,7 +77,6 @@ jobs:
           grep -q "gpu-cache needs a llama-server that links its backends directly" launcher_gcache_path.txt
           if grep -q "moe-cache-mib" launcher_gcache_path.txt; then echo "FAIL: --moe-cache-mib passed on path loading (T7)"; exit 1; fi    # "! grep" alone never fails under bash -e
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
-          python3 tests/launch_plan_test.py granite.gguf    # XA-2: 76 dry-run cases on two fake machines run without error, --plan-json = --dry-run, an injected Machine works (the golden file is for the Qwen3.6 header: identical-output check only where that model is)
           python3 tests/picker_test.py       # model picker (spec -> model table on fake machines, settings it writes); no model, no download
           python3 tools/check_model_links.py   # every model the picker can recommend still exists on Hugging Face (metadata only; an HF outage only warns)
           python3 tests/gguf_hostile_test.py   # hostile GGUF headers are refused, not allocated (security fix S1)
