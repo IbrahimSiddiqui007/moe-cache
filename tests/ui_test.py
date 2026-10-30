@@ -961,6 +961,15 @@ finally:
         if v is not None: os.environ[k] = v
     mc.default_llama_server(refresh=True)
 
+# linked model folders are scanned (scout 13 R13-3; Strata #3487), a link loop does not hang the scan
+if hasattr(os, "symlink") and not mc.WINDOWS:
+    lk = os.path.join(TMP, "linkscan"); real_d = os.path.join(TMP, "linkscan_real", "sub"); os.makedirs(lk); os.makedirs(real_d)
+    open(os.path.join(real_d, "Linked-Model-Q4_K_M.gguf"), "wb").write(b"GGUF" + b"\0" * 64)
+    os.symlink(os.path.join(TMP, "linkscan_real"), os.path.join(lk, "drive2"))
+    os.symlink(lk, os.path.join(lk, "loop"))
+    found = [m["name"] for m in ui.scan_folder(lk, depth=6)]
+    check(found.count("Linked-Model-Q4_K_M") == 1, f"scan: a model inside a linked folder is found once, a link loop is walked once ({found})")
+
 # Windows commit (XA-3): the prompt cache shrinks so llama-server's GPU allocations + prompt cache + 2 GiB fit in the free commit; too tight -> warn
 GiB = 2**30
 check(mc.commit_plan(40 * GiB, 15.5, 2048) == (2048, False), "commit plan: plenty of commit keeps the 2 GiB prompt cache")

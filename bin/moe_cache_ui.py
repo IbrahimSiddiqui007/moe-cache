@@ -89,7 +89,13 @@ def scan_folder(folder, depth=4):
     if not os.path.isdir(folder):
         return out
     base = folder.rstrip(os.sep).count(os.sep)
-    for root, dirs, files in os.walk(folder):
+    seen = set()       # real paths already walked: linked folders are followed (models on another drive, /var/home), a link loop is walked once
+    for root, dirs, files in os.walk(folder, followlinks=True):
+        real = os.path.realpath(root)
+        if real in seen:
+            dirs[:] = []
+            continue
+        seen.add(real)
         if root.count(os.sep) - base >= depth:
             dirs[:] = []
         dirs[:] = [d for d in dirs if not d.startswith(".")]
