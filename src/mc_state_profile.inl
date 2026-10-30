@@ -107,6 +107,7 @@
             }
         }
         sscanf(t->name, "blk.%d.", &ti->layer);
+        pack_tag(*ti);
         ti->node0 = (int) nodes.size();
         nodes.resize(nodes.size() + (size_t) t->ne[2]);
         const int idx = (int) tensors.size();
@@ -246,11 +247,14 @@
                 push_mru(s);
                 max_nb2 = std::max(max_nb2, ti.nb2);
                 jobs.push_back({ ti.data + (size_t) take[i].e * ti.nb2, ti.file_off + (size_t) take[i].e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr });
+                jobs.back().node = s;      // the pack groups the three slices of an expert by node
                 n_taken++;
             }
         }
         const auto r0 = std::chrono::steady_clock::now();
-        do_reads(jobs, max_nb2);
+        std::vector<pack_job_t *> pjs;
+        pack_extract(jobs, pjs);
+        do_reads(jobs, max_nb2, &pjs);
         fprintf(stderr, "moe-cache: warm start loaded %zu expert tensors (%.2f GiB, %.0f%% of the cache) in %.1f s\n", n_taken, acc / (double) (1u << 30),
                 100.0 * acc / (double) budget, std::chrono::duration<double>(std::chrono::steady_clock::now() - r0).count());
     }

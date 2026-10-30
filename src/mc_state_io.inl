@@ -30,6 +30,20 @@
                 std::this_thread::sleep_for(std::chrono::microseconds(test_read_delay_us));
             }
             const auto r0 = std::chrono::steady_clock::now();
+            if (j.pk) {
+                std::unique_ptr<pack_job_t> pj(j.pk);
+                read_pack_job(*pj);
+                ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+                {
+                    std::lock_guard<std::mutex> lk(mu);
+                    for (int i = 0; i < pj->n; i++) {
+                        pending_bytes = pending_bytes > pj->j[i].nb2 ? pending_bytes - pj->j[i].nb2 : 0;
+                        __atomic_store_n(&nodes[(size_t) pj->j[i].node].loading, false, __ATOMIC_RELEASE);
+                    }
+                }
+                load_cv.notify_all();
+                continue;
+            }
             read_job(j, bounce);
             ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
             {
@@ -351,7 +365,7 @@
                      (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
                      (unsigned long long) small_mapped, (unsigned long long) small_over, classlru ? "classlru" : "lru", (unsigned long long) cls_promotions, (unsigned long long) cls_demotions);
             j = b;
-            j += ",\"exec_fused\":" + std::to_string(exec_fused.load()) + ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
+            j += ",\"pack\":[" + std::to_string(pack_reads.load()) + "," + std::to_string(pack_bytes.load()) + "," + std::to_string(pack_slices.load()) + "," + std::to_string(pack_fallbacks.load()) + "]" + ",\"exec_fused\":" + std::to_string(exec_fused.load()) + ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
                  ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases) +
                  ",\"pool_parks\":" + std::to_string(pool ? pool->parks.load() : 0) + ",\"async_in\":" + std::to_string(async_in.load()) +
                  ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
@@ -562,6 +576,10 @@
             if (cpu_check_reloads) {
                 fprintf(stderr, "moe-cache: internal: %llu experts were loaded again right before llama.cpp's kernels (please report)\n", (unsigned long long) cpu_check_reloads);
             }
+            if (pack_on) {
+                fprintf(stderr, "moe-cache: pack: %llu reads of %.1f GB carried %llu expert slices (%llu fallbacks to the model file)\n", (unsigned long long) pack_reads.load(),
+                        pack_bytes.load() / 1e9, (unsigned long long) pack_slices.load(), (unsigned long long) pack_fallbacks.load());
+            }
             fprintf(stderr, "moe-cache: reads straight into place %llu, via bounce buffer %llu, repacked %llu\n", (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs);
             if (async_in) {
                 fprintf(stderr, "moe-cache: inputs read from the GPU asynchronously: %llu\n", (unsigned long long) async_in);
@@ -766,8 +784,10 @@
         bytes += len;
     }
 
-    void do_reads(const std::vector<io_job_t> & jobs, size_t max_nb2) {
+    // read the jobs (and the pack jobs, which this function deletes) on the reader threads and the caller; returns when all are done
+    void do_reads(const std::vector<io_job_t> & jobs, size_t max_nb2, std::vector<pack_job_t *> * pjs = nullptr) {
         std::atomic<size_t> next{0};
+        const size_t n_pack = pjs ? pjs->size() : 0;
         auto fn = [&](int) {
             static thread_local char * bounce = nullptr;
             static thread_local size_t bounce_size = 0;
@@ -782,16 +802,25 @@
             }
             for (;;) {
                 const size_t i = next.fetch_add(1);
-                if (i >= jobs.size()) {
+                if (i >= n_pack + jobs.size()) {
                     break;
                 }
-                read_job(jobs[i], bounce);
+                if (i < n_pack) {
+                    read_pack_job(*(*pjs)[i]);
+                } else {
+                    read_job(jobs[i - n_pack], bounce);
+                }
             }
         };
-        if (jobs.size() <= 1) {
+        if (n_pack + jobs.size() <= 1) {
             fn(0);
         } else {
             run_parallel(fn);
         }
+        for (size_t i = 0; i < n_pack; i++) {
+            delete (*pjs)[i];
+        }
+        if (pjs) {
+            pjs->clear();
+        }
     }
-

@@ -362,10 +362,18 @@
         }
         if (async) {
             // hand the reads to the reader threads and return: the executor waits for each expert's flag when it needs it
-            const size_t njobs = jobs.size();
-            if (!jobs.empty()) {
+            std::vector<pack_job_t *> pjs;
+            pack_extract(jobs, pjs);
+            const size_t njobs = jobs.size() + pjs.size();
+            if (njobs) {
                 {
                     std::lock_guard<std::mutex> ql(rq_mu);
+                    for (pack_job_t * pj : pjs) {
+                        io_job_t pjob;                  // a queue entry that stands for the pack job (the reader that dequeues it owns it)
+                        pjob.dst = nullptr; pjob.off = 0; pjob.nb2 = 0; pjob.fdi = 0; pjob.direct = false;
+                        pjob.pk = pj;
+                        rq.push_back(pjob);
+                    }
                     for (const auto & j : jobs) {
                         rq.push_back(j);
                     }
@@ -386,6 +394,8 @@
     // read the queued experts, then (auto mode) look at the real memory use again
     void flush_reads(std::vector<io_job_t> & jobs, size_t max_nb2) {
         const bool did_reads = !jobs.empty();
+        std::vector<pack_job_t *> pjs;
+        pack_extract(jobs, pjs);       // BO-1: experts with two or more slices to read come from the pack, one read each
         if (coalesce_bytes && jobs.size() > 1) {
             // long prompts need nearly every expert of a layer, and neighbouring experts of a tensor are neighbours in the file and in memory:
             // one large read instead of many half-megabyte ones (the drive reaches its speed only with large or many parallel reads)
@@ -409,9 +419,9 @@
                 max_nb2 = std::max(max_nb2, j.nb2);
             }
         }
-        if (!jobs.empty()) {
+        if (!jobs.empty() || !pjs.empty()) {
             const auto r0 = std::chrono::steady_clock::now();
-            do_reads(jobs, max_nb2);
+            do_reads(jobs, max_nb2, &pjs);
             ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
             jobs.clear();
         }

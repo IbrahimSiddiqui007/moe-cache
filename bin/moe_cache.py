@@ -11,6 +11,7 @@
   moe_cache.py connect hermes|opencode|claude [--url URL] [--write]        point Hermes Agent, OpenCode or Claude Code at a running server (start it with --agent)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
+  moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read (BO-1)
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
   moe_cache.py --version                                                   print the moe-cache version
@@ -2750,6 +2751,13 @@ def diffusion(argv):
     return subprocess.call(cmd, env=dict(os.environ, **dict(env)))
 
 
+def pack_cmd(argv):
+    """moe_cache.py pack MODEL.gguf: write MODEL.moepack (one block per expert; the plugin reads a missing expert with one large unbuffered read)."""
+    sys.path.insert(0, os.path.join(HERE, "bin"))
+    from moe_cache_pack import pack_main
+    return pack_main(argv)
+
+
 def key_cmd(argv):
     """moe_cache.py key: print the stable API key of agent / project servers (made on first use); the file is KEY_FILE."""
     ap = argparse.ArgumentParser(prog="moe_cache.py key", description="print the API key that agent mode and --project servers use")
@@ -2760,7 +2768,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion}
+    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion, "pack": pack_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0

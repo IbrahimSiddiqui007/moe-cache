@@ -124,6 +124,49 @@ jobs:
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_evict.txt
           grep -qE "evictions=[1-9]" ident_evict/plugin.log || { echo "FAIL: no evictions: the 0.2 GiB cache did not cycle experts (as windows.yml checks)"; grep "moe-cache: graphs=" ident_evict/plugin.log; exit 1; }
 
+      - name: Expert pack (BO-1) - pack format test, then identity with experts read from MODEL.moepack (private memory, forced eviction, executor byte-checked)
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_KEEP: ident_pack
+          IDENT_EXTRA: "--no-repack"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_PACK=${{ github.workspace }}/granite.moepack"
+        run: |
+          python3 tests/pack_test.py
+          python3 bin/moe_cache.py pack granite.gguf --out granite.moepack
+          python3 bin/moe_cache.py pack granite.gguf --out granite.moepack --verify      # every slice of the pack equals the model's bytes
+          tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_pack.txt
+          grep -qE "moe-cache: pack: [1-9][0-9]* reads" ident_pack/plugin.log || { echo "FAIL: no read came from the pack"; grep "moe-cache: .*pack" ident_pack/plugin.log; exit 1; }
+          grep -q "(0 fallbacks to the model file)" ident_pack/plugin.log || { echo "FAIL: a pack read fell back to the model file"; exit 1; }
+          grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_pack/plugin.log
+
+      - name: Expert pack - a pack of another model is refused, MOE_CACHE_PACK=0 turns it off
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+        run: |
+          # a pack whose recorded model size is wrong (as for another file): the plugin must say so and read from the model (identity then holds as before)
+          cp granite.moepack wrong.moepack && printf 'X' | dd of=wrong.moepack bs=1 seek=33 conv=notrunc 2>/dev/null     # inside the recorded size of the model file
+          IDENT_KEEP=ident_pack_bad IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=$PWD/wrong.moepack" tests/identity.sh granite.gguf --tokens 12 --ctx 2048 --n-cpu-moe 999 | tee identity_pack_bad.txt
+          grep -q "not used" ident_pack_bad/plugin.log || { echo "FAIL: a damaged pack was not refused"; exit 1; }
+          IDENT_KEEP=ident_pack_off IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=0" tests/identity.sh granite.gguf --tokens 12 --ctx 2048 --n-cpu-moe 999 | tee identity_pack_off.txt
+          if grep -q "expert pack" ident_pack_off/plugin.log; then echo "FAIL: MOE_CACHE_PACK=0 still used the pack"; exit 1; fi
+
+      - name: Mutation check - a build that copies the pack's slices from a wrong offset must FAIL the pack identity step
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_STATS: "1"
+        run: |
+          if [ "${{ matrix.api }}" = 3 ]; then export GGML_API=3; fi
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_PACK_OFFSET BUILD_DIR=build-mut-pack ./build.sh --portable
+          if MOE_CACHE_LIB=$PWD/build-mut-pack/libggml-moe-cache.so IDENT_EXTRA="--no-repack" IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_PACK=$PWD/granite.moepack" \
+             tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_mut_pack.txt; then
+            echo "FAIL: the wrong-offset mutant passed, so the pack identity step does not cover the copy offsets"; exit 1; fi
+          grep -qE "^identical prompts: [0-3]/4" identity_mut_pack.txt || { echo "FAIL: the pack mutant failed for another reason (no token comparison)"; exit 1; }
+          echo "OK: the pack mutant fails as it should"
+
       - name: llama.cpp built the way install.sh, official releases and Windows are (backends as files, CPU variants) - 0.26 row only
         if: matrix.name == 'ggml-0.26-api3'
         run: |

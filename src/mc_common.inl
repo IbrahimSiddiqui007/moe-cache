@@ -135,6 +135,8 @@ struct tinfo_t {
     int     fdi = 0;          // model file index (split GGUF)
     bool    direct = false;   // can be read straight into place
     bool    repack = false;   // stored in llama.cpp's repacked CPU layout (faster CPU kernels)
+    int     pack_rec = -1;    // BO-1: layer record of the .moepack file this tensor is stored in (-1: not in the pack) and its slot in the expert block
+    int     pack_k = -1;
     bool    view = false;     // Windows file-view cache: data points into the plugin's read-only view of the model file (no reads, no commit)
     char *  buf_addr = nullptr;   // view: the address the buffer gave this tensor (forget_range matches the buffer by it)
     ggml_tensor * tensor = nullptr;
@@ -341,7 +343,34 @@ struct io_job_t {
     bool   direct;   // memory address matches the file offset (mod 4096): read straight into place
     const ggml_tensor * rtensor = nullptr;   // set: repack this expert while loading it
     int    node = -1;        // index in the node table (asynchronous loads clear its "loading" flag when done)
+    struct pack_job_t * pk = nullptr;   // set: a read from the .moepack file that fills several slices of one expert (owned by whoever dequeues the job)
 };
+
+// BO-1: one expert's slices (gate, up, down...) read from the pack file with ONE unbuffered read, then copied to their destinations.
+struct pack_job_t {
+    uint64_t off = 0;        // pack file offset of the first byte to read (4096-aligned)
+    size_t   len = 0;        // bytes to read (multiple of 4096)
+    size_t   lo = 0;         // offset inside the expert block where `off` starts
+    int      n = 0;          // slices wanted (2..4)
+    io_job_t j[4];           // the per-slice jobs (destination, size, node, and the fallback if the pack read fails)
+    size_t   in_off[4] = {}; // offset of each slice inside the block
+};
+
+inline uint32_t crc32_update(uint32_t crc, const void * data, size_t n) {
+    static const std::vector<uint32_t> tab = [] {
+        std::vector<uint32_t> t(256);
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) { c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1; }
+            t[i] = c;
+        }
+        return t;
+    }();
+    uint32_t c = crc ^ 0xffffffffu;
+    const unsigned char * p = (const unsigned char *) data;
+    for (size_t i = 0; i < n; i++) { c = tab[(c ^ p[i]) & 0xff] ^ (c >> 8); }
+    return c ^ 0xffffffffu;
+}
 
 // Windows refused to commit memory the plugin must write (RAM + page file full, or another commit error): stop with a message that says so,
 // instead of writing into pages that do not exist (a fault, or a read failing with error 998 that looks like a disk error)
