@@ -61,10 +61,12 @@ Which file to download (the names show version 0.3.2; take the newest version on
 | Your system | File on the Releases page |
 |---|---|
 | Windows 11 | `moe-cache-v0.3.2-windows-x64.zip` |
-| Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.28) | `moe-cache-v0.3.2-ggml0.26-linux-x86_64.tar.gz` |
-| Linux, older llama.cpp (ggml 0.24 / 0.25, up to commit `7fe450e19`, e.g. Arch `llama.cpp-cuda`) | `moe-cache-v0.3.2-linux-x86_64.tar.gz` |
+| Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.28) | `moe-cache-v0.3.2-ggml0.26-linux-x86_64.tar.gz`: **includes the official llama.cpp b11966 (Vulkan + CPU build) in its `llama/` folder**, so there is nothing else to download |
+| Linux, older llama.cpp (ggml 0.24 / 0.25, up to commit `7fe450e19`, e.g. Arch `llama.cpp-cuda`) | `moe-cache-v0.3.2-linux-x86_64.tar.gz` (no llama.cpp inside: it needs your own build of that era) |
 
 Not sure? Run `check` (step 3): it says which file fits.
+
+**Linux, the `-ggml0.26` file:** the launcher, `check`, the picker and the control page find the bundled `llama/llama-server` by themselves (llama.cpp's MIT licence and a note are next to it; the files are unmodified, sha256-checked against the release asset when the tarball is built). A `llama-server` of your own wins when it is on the `PATH` or named in `LLAMA_SERVER`, and among the default folders the newest build wins: use that for a CUDA or ROCm card (the bundled build is the Vulkan + CPU one: AMD, Intel and NVIDIA through Vulkan; it needs `sudo apt install libvulkan1 mesa-vulkan-drivers` on Ubuntu / Debian). `./install.sh` in that folder builds nothing and needs no compiler; `./install.sh --own-llama` builds llama.cpp as before.
 
 **Windows (experimental)**: steps below and in [docs/WINDOWS.md](docs/WINDOWS.md).
 **Windows may warn: "unknown publisher".** The kit's DLLs and `.bat` files are not code-signed (a certificate costs money every year; the code is

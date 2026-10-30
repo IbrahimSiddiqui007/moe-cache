@@ -2,6 +2,13 @@
 
 ## Unreleased (0.3.3)
 
+- **The Linux `-ggml0.26` tarball includes llama.cpp** (the twin of the Windows kit): the official, unmodified llama.cpp b11966 `ubuntu-vulkan-x64` build (Vulkan + CPU backends)
+  sits in the tarball's `llama/` folder (sha256 pinned and checked when the tarball is built, `tools/bundle_llama_linux.sh`; llama.cpp's MIT licence and a note next to it).
+  The launcher, `check`, the picker and the control page find it; a `llama-server` of your own (PATH, `LLAMA_SERVER`) still wins, and a newer build in a default folder is preferred.
+  `./install.sh` in the tarball builds nothing (no compiler, no apt) unless `--own-llama` or `LLAMA_SHA=` is given; `install.sh --dry-run` prints its plan. The release workflow unpacks the
+  built tarball and checks that `moe_cache.py check` finds the bundled llama-server and that the API-2 tarball carries none (that one keeps needing your own llama.cpp of the 7fe450e19 era).
+  The tarball grows by about 35 MB. `MOE_CACHE_RELEASE_NO_LLAMA=1` builds the old one. **Fixed in the same step: the Windows kit looked for `llama\` next to the kit's parent folder, not
+  inside the kit** (`llama_search_dirs`), so the bundled build was not found; tests/linux_bundle_test.py covers both.
 - **Idle cache refill on by default** (BO-2): while an agent pauses (a tool running), the plugin refills its RAM cache toward the experts recent turns used. PC, recorded
   OpenCode session with its pauses x4, ABBA: decode 12.61 -> 13.0 and 13.15 -> 13.53 tok/s, follow-up waits 26.3 -> 26.1 and 32.0 -> 23.9 s, whole task 171.7 -> 171.6 and
   197.4 -> 165.1 s (every pair; it only changes which experts are in RAM, so answers cannot change). Never after an idle release. `MOE_CACHE_IDLE_REBALANCE=0` turns it off.

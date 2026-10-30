@@ -33,7 +33,7 @@ jobs:
       - name: Model-free tests (fake servers; same files the full CI runs)
         run: |
           set -e
-          for t in ui_test security_test bench_report_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test; do
+          for t in ui_test security_test bench_report_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test; do
             echo "::group::$t"; python3 tests/$t.py; echo "::endgroup::"
           done
 

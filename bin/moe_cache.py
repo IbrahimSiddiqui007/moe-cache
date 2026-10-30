@@ -119,8 +119,9 @@ def llama_search_dirs():
         up = os.environ.get("USERPROFILE") or home
         return ([r"C:\llama"] + sorted(glob.glob(r"C:\llama*")) + sorted(glob.glob(os.path.join(up, "llama*")))
                 + sorted(glob.glob(os.path.join(up, "Downloads", "llama-b*-bin-win-*"))) + [HERE, os.path.dirname(HERE),
-                os.path.join(os.path.dirname(HERE), "llama")])       # the kit's bundled official llama.cpp (one download for friends)
-    return [os.path.join(home, "moe-cache-setup", "llama.cpp", "build", "bin"), os.path.join(home, "llama.cpp", "build", "bin"), HERE, os.path.dirname(HERE)]
+                os.path.join(HERE, "llama")])       # the kit's bundled official llama.cpp (one download for friends)
+    return [os.path.join(home, "moe-cache-setup", "llama.cpp", "build", "bin"), os.path.join(home, "llama.cpp", "build", "bin"), HERE, os.path.dirname(HERE),
+            os.path.join(HERE, "llama")]            # the tarball's bundled official llama.cpp (the -ggml0.26 file)
 
 
 def ls_build(ls):

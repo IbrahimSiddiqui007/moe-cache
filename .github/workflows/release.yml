@@ -68,6 +68,22 @@ jobs:
           V: ${{ steps.v.outputs.version }}
         run: tools/make_release.sh "$V"
 
+      - name: The ggml0.26 tarball carries the official llama.cpp and the launcher finds it (no model); the API-2 tarball does not
+        run: |
+          set -e
+          if command -v llama-server >/dev/null; then echo "FAIL: a llama-server is on this runner's PATH: the test would not prove the bundled one is found"; exit 1; fi
+          t=$(ls dist/moe-cache-v*-ggml0.26-linux-x86_64.tar.gz); d=$(mktemp -d); tar -C "$d" -xzf "$t"; r=$(ls -d "$d"/moe-cache-v*)
+          test -x "$r/llama/llama-server" && test -f "$r/llama/LICENSE-llama.cpp.txt" && test -f "$r/llama/README-moe-cache.txt" || { echo "FAIL: llama/ is incomplete in $t"; ls "$r/llama" | head; exit 1; }
+          out=$(cd "$r" && env -u LLAMA_SERVER HOME="$d/home" XDG_CACHE_HOME="$d/xdg" python3 bin/moe_cache.py check 2>&1 || true)
+          echo "$out" | head -20
+          echo "$out" | grep -Eq 'llama-server +[^ ]*/llama/llama-server' || { echo "FAIL: moe_cache.py check did not find the bundled llama-server"; exit 1; }
+          if echo "$out" | grep -Eq '\[FAIL\] +(llama-server|ggml version|shared ggml)'; then echo "FAIL: check rejects the bundled llama.cpp"; exit 1; fi
+          for t2 in dist/moe-cache-v*-linux-x86_64.tar.gz; do
+            case "$t2" in *-ggml0.26-*) continue;; esac
+            if tar -tzf "$t2" | grep -q '/llama/llama-server'; then echo "FAIL: the API-2 tarball must not carry a llama.cpp build"; exit 1; fi
+          done
+          rm -rf "$d"
+
       - name: The prebuilt libraries need no newer glibc / libstdc++ than README and QUICKSTART say (glibc 2.34, libstdc++ of GCC 12)
         run: |
           for t in dist/moe-cache-v*-linux-x86_64.tar.gz; do

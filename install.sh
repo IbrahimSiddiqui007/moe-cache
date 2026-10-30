@@ -5,23 +5,41 @@
 #     --vulkan   also build the Vulkan backend (use an AMD / Intel / NVIDIA GPU or integrated GPU)
 #     --prefix   where everything goes (default: ~/moe-cache-setup)
 #     --no-apt   do not install packages (you already have cmake, g++, git, python3-venv)
+#     --own-llama  build llama.cpp even when this folder has the official one in llama/ (the -ggml0.26 release tarball does)
+#     --dry-run  print what it would do and stop
+# In a release tarball with llama/ (official llama.cpp, unmodified) it builds nothing: no compiler, no apt, about a minute. LLAMA_SHA=... or --own-llama builds instead.
 # Takes about 10-20 minutes, almost all of it compiling llama.cpp. Needs about 3 GB of disk. Run it as a normal user (it asks for sudo only for apt).
 set -e
 # The llama.cpp commit moe-cache was built and tested against. Default: 7fe450e19 (ggml 0.25.1, backend API 2).
 # LLAMA_SHA=23b0202a1... (any full sha starting 23b0202a1, ggml 0.26.0, API 3: GLM-5.3-Flash and MTP support) selects the matching plugin build.
+LLAMA_SHA_GIVEN="${LLAMA_SHA:-}"                     # set by the user: build that commit, never the bundled build
 LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
 case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
 MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.2}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
-VULKAN=0; PREFIX="$HOME/moe-cache-setup"; JOBS=$(nproc); APT=1
-while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;;
-  -h|--help) sed -n 2,9p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
+VULKAN=0; PREFIX="$HOME/moe-cache-setup"; JOBS=$(nproc); APT=1; OWN=0; DRY=0
+while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;;
+  -h|--help) sed -n 2,13p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
 say() { printf '\n== %s\n' "$*"; }
+# the official llama.cpp bundled in this folder (release tarball): used instead of building one
+BUNDLED=""
+if [ $OWN = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ]; then
+  HERE_="$(cd "$(dirname "$0")" && pwd)"
+  for d in "$HERE_/llama" "$HERE_/llama/bin"; do [ -x "$d/llama-server" ] && { BUNDLED="$d"; break; }; done
+fi
+if [ $DRY = 1 ]; then
+  if [ -n "$BUNDLED" ]; then echo "install.sh: would use the bundled llama.cpp in $BUNDLED (no build, no apt); plugin: the prebuilt one if present"
+  else echo "install.sh: would build llama.cpp $LLAMA_SHA (CPU$([ $VULKAN = 1 ] && echo ' + Vulkan')) and the plugin"; fi
+  exit 0
+fi
 [ "$(uname -s)" = Linux ] || { echo "Linux only"; exit 1; }
 [ "$(id -u)" != 0 ] || { echo "run as a normal user, not root"; exit 1; }
+[ -n "$BUNDLED" ] && VULKAN=1                      # the bundled build is the Vulkan one: the device check at the end applies
 mkdir -p "$PREFIX"; PREFIX="$(cd "$PREFIX" && pwd)"     # absolute: env.sh / env.fish are sourced from other folders (a relative --prefix broke them)
 
-if [ $APT = 1 ]; then
+if [ -n "$BUNDLED" ]; then
+  say "1/5 packages: not needed (this tarball has llama.cpp and the plugin ready)"
+elif [ $APT = 1 ]; then
   say "1/5 packages (sudo needed)"
   command -v apt-get >/dev/null || { echo "apt-get not found: install cmake, g++, git, python3-venv yourself and use --no-apt"; exit 1; }
   PK="build-essential cmake git curl ca-certificates python3 python3-venv python3-pip ninja-build"
@@ -32,8 +50,12 @@ if [ $APT = 1 ]; then
 else
   say "1/5 packages: skipped (--no-apt)"
 fi
-for c in cmake g++ git python3; do command -v $c >/dev/null || { echo "missing: $c"; exit 1; }; done
+NEED="cmake g++ git python3"; [ -n "$BUNDLED" ] && NEED=python3
+for c in $NEED; do command -v $c >/dev/null || { echo "missing: $c"; exit 1; }; done
 
+if [ -n "$BUNDLED" ]; then
+  BIN="$BUNDLED"; say "2/5 and 3/5 llama.cpp: using the bundled official build in $BIN"
+else
 say "2/5 llama.cpp at the tested commit"
 L="$PREFIX/llama.cpp"
 if [ ! -d "$L/.git" ]; then mkdir -p "$L"; git -C "$L" init -q; git -C "$L" remote add origin https://github.com/ggml-org/llama.cpp.git; fi
@@ -47,6 +69,7 @@ GEN=(); command -v ninja >/dev/null && GEN=(-G Ninja)
 cmake -S "$L" -B "$L/build" "${GEN[@]}" "${FLAGS[@]}" >/dev/null
 cmake --build "$L/build" --target llama-server llama-bench llama-perplexity -j "$JOBS"
 BIN="$L/build/bin"; [ -x "$BIN/llama-server" ] || { echo "llama-server was not built"; exit 1; }
+fi
 
 say "4/5 moe-cache plugin"
 if [ -f "$(dirname "$0")/build.sh" ] && [ -d "$(dirname "$0")/src" ]; then M="$(cd "$(dirname "$0")" && pwd)"; else
@@ -54,11 +77,15 @@ if [ -f "$(dirname "$0")/build.sh" ] && [ -d "$(dirname "$0")/src" ]; then M="$(
   if [ -d "$M/.git" ]; then git -C "$M" fetch -q --tags origin && git -C "$M" checkout -q "$MOE_CACHE_REF"
   else git clone -q --branch "$MOE_CACHE_REF" https://github.com/IbrahimSiddiqui007/moe-cache "$M"; fi
 fi
-GGML_LIB_DIR="$BIN" "$M/build.sh"
+if [ -n "$BUNDLED" ] && [ -f "$M/build/libggml-moe-cache.so" ]; then echo "plugin: the prebuilt one in $M/build (nothing to compile)"
+else GGML_LIB_DIR="$BIN" "$M/build.sh"; fi
 
 say "5/5 python environment for the planner"
-python3 -m venv "$PREFIX/venv" && "$PREFIX/venv/bin/pip" install -q "gguf==$GGUF_PY_VERSION"
-PY="$PREFIX/venv/bin/python3"
+if python3 -m venv "$PREFIX/venv" >/dev/null 2>&1 && "$PREFIX/venv/bin/pip" install -q "gguf==$GGUF_PY_VERSION"; then PY="$PREFIX/venv/bin/python3"
+else
+  echo "note: no python venv or no network for pip (Ubuntu: sudo apt install python3-venv): using the system python3; the planner has its own GGUF reader, so this is fine"
+  PY="$(command -v python3)"
+fi
 
 {
   echo "# source this file:  . $(printf '%q' "$PREFIX/env.sh")"
