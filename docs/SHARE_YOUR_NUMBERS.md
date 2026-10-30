@@ -3,6 +3,9 @@
 One command measures stock llama.cpp and moe-cache on your machine and writes a report you paste into a GitHub issue. It takes 5-20 minutes, only
 measures (the report itself downloads, uploads and changes nothing; you need a model file, see "Get a model" in the README), and the report holds no prompts, answers, user name, host name or folder names.
 
+**No command line?** Use the control page (Windows: double-click `moe-cache.bat`): select the model in the list, open the **Benchmark** card and press
+**Share my numbers**. It does the steps below for you, shows the report in a box with **Copy** and **Open the issue page**, and uploads nothing.
+
 ## Windows (10 / 11)
 
 | Step | What to do |

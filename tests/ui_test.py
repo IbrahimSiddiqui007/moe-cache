@@ -676,6 +676,96 @@ _sp.run = real_run
 _d = json.load(open(ui.SETTINGS_FILE, encoding="utf-8")); _d.pop("llama_server", None); json.dump(_d, open(ui.SETTINGS_FILE, "w", encoding="utf-8"))   # the search tests below start clean
 check("llamadlg" in open(ui.PAGE, encoding="utf-8").read() and "askLlama" in open(ui.PAGE, encoding="utf-8").read(), "the page has the llama.cpp not found dialog")
 
+# ---- "Share my numbers": bench-report as a child process (a fake one: no model, no servers of its own) ----
+share_models = os.path.join(TMP, "share-models"); os.makedirs(share_models)
+def gguf_file(name):
+    pth = os.path.join(share_models, name)
+    with open(pth, "wb") as f:
+        f.write(b"GGUF" + b"\0" * 1020)
+    return pth
+fake_br = os.path.join(TMP, "fake_bench_report.py")
+with open(fake_br, "w", encoding="utf-8") as f:
+    f.write("""
+import os, sys, time
+a = sys.argv[1:]
+model, out = a[0], a[a.index("--out") + 1]
+name = os.path.basename(model)
+print("moe-cache bench-report: about 5-20 minutes; leave the machine alone", flush=True)
+if name.startswith("Fail"):
+    print("bench-report: the doctor found a problem; fix it first:", file=sys.stderr, flush=True)
+    print("  [FAIL] llama-server not found", file=sys.stderr, flush=True); sys.exit(2)
+if name.startswith("Fits") and "--force-plugin" not in a:
+    print("bench-report: this model fits in your RAM, so moe-cache would not be used (the launcher runs stock llama.cpp). Pick a bigger model (`moe_cache.py pick`) or pass --force-plugin.", file=sys.stderr, flush=True); sys.exit(3)
+for i in range(1, 5):
+    print("bench-report: run %d/4: %s ..." % (i, "stock" if i in (1, 4) else "moe-cache"), flush=True)
+    time.sleep(30 if name.startswith("Slow") else 0.2)
+os.makedirs(out, exist_ok=True)
+base = os.path.join(out, "moe-cache-report-20261030-1200")
+md = "# moe-cache report\\n\\n| decode tok/s | 12.3 |\\n|---|---|\\nargs: " + " ".join(x for x in a[1:] if not os.path.isabs(x)) + "\\n"
+open(base + ".md", "w").write(md); open(base + ".json", "w").write("{}")
+print(md, flush=True)
+print("bench-report: written %s.md and .json. Paste the .md into a new issue: https://example.invalid" % base, flush=True)
+print("bench-report: no prompts, answers, user name, host name or folder names are in the report; nothing was uploaded.", flush=True)
+""")
+saved_share = (ui.SHARE_CMD, ui.REPORT_DIR)
+ui.SHARE_CMD = [sys.executable, fake_br]; ui.REPORT_DIR = os.path.join(TMP, "reports")
+def share_state(states, t=40):
+    end = time.time() + t
+    while True:
+        sh = json.loads(req("/api/status")[1])["share"]
+        if sh["state"] in states or time.time() > end:
+            return sh
+        time.sleep(0.2)
+check(req("/api/share", {"model": small["path"]}, headers={"X-MoeCache-Token": None})[0] == 403, "share: POST without the token: 403")
+plain = os.path.join(TMP, "plain.txt"); open(plain, "wb").write(b"not a model")
+st, body = req("/api/share", {"model": plain}); check(st == 400 and "pick a model" in body, f"share: not a GGUF file: 400 ({st})")
+st, body = req("/api/share", {"model": os.path.join(TMP, "nowhere.gguf")}); check(st == 400, "share: missing file: 400")
+st, body = req("/api/share", {"model": small["path"], "other": "x"}); check(st == 400, "share: 'other' must be a list: 400")
+# a running server is stopped first; agent mode and the folders are passed on; the markdown comes back
+with socket.socket() as so:
+    so.bind(("127.0.0.1", 0)); port3 = so.getsockname()[1]
+req("/api/start", {"model": small["path"], "port": port3, "ram": "1"})
+deadline = time.time() + 30
+while time.time() < deadline and json.loads(req("/api/status")[1])["state"] != "ready":
+    time.sleep(0.3)
+check(json.loads(req("/api/status")[1])["state"] == "ready", "share: a server is running before the report")
+big_one = gguf_file("Big-One-Q4_K_M.gguf")
+st, body = req("/api/share", {"model": big_one, "agent": True, "other": [share_models]})
+check(st == 200 and json.loads(body)["state"] == "running", f"POST /api/share starts the child ({st})")
+st2, body2 = req("/api/start", {"model": small["path"], "port": port3})
+check(st2 == 400 and "Share my numbers" in body2, "a Start while the report runs is refused with the reason")
+sh = share_state({"done", "failed"})
+check(sh["state"] == "done" and sh["has_markdown"] and "markdown" not in sh, f"the report finishes; /api/status carries no markdown ({sh['state']})")
+check(json.loads(req("/api/status")[1])["state"] in ("stopped", "exited", "idle"), "share: the running server was stopped first")
+full = json.loads(req("/api/share")[1])
+check("args: --out --flush-from --scenario agent" in full["markdown"], f"agent mode becomes --scenario agent, the folders --flush-from ({full['markdown'].splitlines()[-1]})")
+check(full["path"].startswith(ui.REPORT_DIR) and os.path.isfile(full["path"]) and full["issue_url"].endswith("template=benchmark_report.yml") and full["report_dir"] == ui.REPORT_DIR,
+      "the report file is in the reports folder; the issue page link is the benchmark template")
+lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
+check(any(l == "share: bench-report: run 2/4: moe-cache ..." for l in lg) and any(l.startswith("ui: share my numbers") for l in lg), "the child's lines are in the log pane")
+# exit 3: the model fits; 'measure anyway' passes --force-plugin
+fits = gguf_file("Fits-In-RAM.gguf")
+req("/api/share", {"model": fits}); sh = share_state({"fits", "done", "failed"})
+check(sh["state"] == "fits" and "fits in your RAM" in sh["error"] and "Measure anyway" in sh["error"], f"exit 3: the 'fits in RAM' message with the way out ({sh.get('error', '')[:80]})")
+req("/api/share", {"model": fits, "force": True}); sh = share_state({"done", "failed", "fits"})
+check(sh["state"] == "done" and "--force-plugin" in json.loads(req("/api/share")[1])["markdown"], "measure anyway: --force-plugin is passed and the report comes back")
+# a failure keeps the reason
+req("/api/share", {"model": gguf_file("Fail-Doctor.gguf")}); sh = share_state({"failed", "done", "fits"})
+check(sh["state"] == "failed" and "exit code 2" in sh["error"] and "doctor found a problem" in sh["error"] and "llama-server not found" in sh["error"], f"a failing bench-report shows why ({sh.get('error', '')[:100]})")
+# cancel
+slow = gguf_file("Slow-One.gguf")
+st, _ = req("/api/share", {"model": slow}); check(st == 200, "share: the slow report starts")
+st, body = req("/api/share", {"model": slow}); check(st == 400 and "already" in body, "a second report while one runs: 400")
+check(json.loads(req("/api/share/cancel", {})[1])["ok"] is True, "cancel stops the child")
+sh = share_state({"cancelled"}, 10); check(sh["state"] == "cancelled", f"the state says cancelled ({sh['state']})")
+check(json.loads(req("/api/share/cancel", {})[1])["ok"] is False, "cancel with nothing running: ok false")
+st, _ = req("/api/share", {"model": fits, "force": True}); check(st == 200, "after a cancel a new report can start")
+share_state({"done", "failed", "fits"})
+ui.SHARE_CMD, ui.REPORT_DIR = saved_share
+page_html = open(ui.PAGE, encoding="utf-8").read()
+check(all(x in page_html for x in ('id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
+      "the page has the Share my numbers button, the report box, Copy, the issue button, Cancel, 'measure anyway' and says nothing is uploaded")
+
 srv.shutdown()
 
 # Windows without nvidia-smi: VRAM through the launcher's helpers (mocked: they need Windows and a llama-server)

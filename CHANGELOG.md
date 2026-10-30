@@ -2,6 +2,7 @@
 
 ## 0.3.2 (2026-10-30)
 
+- **"Share my numbers" button on the control page**: the Benchmark card runs `bench-report` for the selected model (stops the running server first, with the Switch button's confirmation when something is still answering), streams its lines into the log, and shows the report in a box with Copy and "Open the issue page"; a model that fits in RAM shows the exit-3 message and a "Measure anyway" tick; Cancel stops it; nothing is uploaded; the report is also saved in `reports` in the cache folder. Same on Linux and Windows. Tests: tests/ui_test.py with a fake bench-report.
 - **Security and saved-state fixes (external audit of v0.3.1, six confirmed bugs; tests/security_test.py)**:
   - Two first launches at once could end with different API keys (one never saved): the key is now written completely to a private temp file and published atomically (`os.link`), the loser reads the winner's key.
   - The stored local key was sent to any URL that answered 401/403 (`connect`, `project`): it now goes only to localhost / loopback addresses.
