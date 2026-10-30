@@ -238,14 +238,23 @@ def load_env(ls, lib, method="auto"):
 GGML_API_OF = {(0, 24): "2", (0, 25): "2", (0, 26): "3", (0, 27): "3"}
 
 
+def ggml_api_of(major, minor):
+    """Backend API of a ggml version. Newer 0.x versions than the table keep API 3 until ggml bumps GGML_BACKEND_API_VERSION (0.28 = llama.cpp
+    b11966+ did not): without this, b11966 got no plugin match and `check` said the DLL was missing (task Q). The plugin's own start-up layout
+    check still refuses a ggml whose ops really changed."""
+    if (major, minor) in GGML_API_OF:
+        return GGML_API_OF[(major, minor)]
+    return "3" if major == 0 and minor > max(n for _, n in GGML_API_OF) else None
+
+
 def ls_api(ls):
-    """Backend API of the ggml this llama-server uses, from its libggml-base version (0.24-0.25 -> 2, 0.26-0.27 -> 3); None when unknown."""
+    """Backend API of the ggml this llama-server uses, from its libggml-base version (0.24-0.25 -> 2, 0.26 and newer -> 3); None when unknown."""
     if WINDOWS:
         # no ldd there (the warning never fired on the Claw): ggml-base.dll next to llama-server.exe holds its version as a plain string ("0.27.0")
         try:
             data = open(os.path.join(os.path.dirname(which(ls)), "ggml-base.dll"), "rb").read()
             for m in re.finditer(rb"\x00(\d+)\.(\d+)\.(\d+)\x00", data):
-                v = GGML_API_OF.get((int(m.group(1)), int(m.group(2))))
+                v = ggml_api_of(int(m.group(1)), int(m.group(2)))
                 if v:
                     return v
         except OSError:
@@ -257,7 +266,7 @@ def ls_api(ls):
             m = re.search(r"(\d+)\.(\d+)\.(\d+)", os.path.basename(os.path.realpath(path)))
             if m:
                 v = (int(m.group(1)), int(m.group(2)))
-                return GGML_API_OF.get(v)
+                return ggml_api_of(*v)
     return None
 
 
@@ -2336,6 +2345,9 @@ def check(argv):
     if not os.path.isfile(lib):
         if not lsp:
             warn("plugin", "not checked: which build fits depends on llama-server, which was not found (see above)")
+        elif WINDOWS and shipped_apis() and not ls_api(lsp):
+            fail("plugin", f"could not tell which ggml backend API {lsp} uses (no known version in its ggml-base.dll), so no plugin DLL was picked: "
+                 f"set MOE_CACHE_LIB to the kit's ggml-moe-cache-api3.dll (API {'/'.join(sorted(shipped_apis()))} ship here)")
         elif WINDOWS:
             fail("plugin", "ggml-moe-cache-api3.dll (or -api2.dll) not found next to the launcher: unzip the whole kit and run from its folder")
         elif shutil.which("g++"):

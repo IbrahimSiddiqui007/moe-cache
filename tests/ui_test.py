@@ -959,6 +959,16 @@ finally:
         if v is not None: os.environ[k] = v
     mc.default_llama_server(refresh=True)
 
+# ggml versions newer than the table keep API 3 (task Q: llama.cpp b11966 = ggml 0.28 got no plugin and `check` said the DLL was missing)
+check([mc.ggml_api_of(0, n) for n in (24, 25, 26, 27, 28, 31)] == ["2", "2", "3", "3", "3", "3"] and mc.ggml_api_of(0, 20) is None and mc.ggml_api_of(1, 0) is None,
+      "ggml version -> backend API: 0.24-0.25 -> 2, 0.26 and newer 0.x -> 3, older or 1.x unknown")
+d28 = os.path.join(TMP, "ggml028"); os.makedirs(d28); open(os.path.join(d28, "ggml-base.dll"), "wb").write(b"MZ\x00junk\x000.8.0\x00more\x000.28.0\x00tail")
+saved_win = mc.WINDOWS; mc.WINDOWS = True
+try:
+    check(mc.ls_api(os.path.join(d28, "llama-server.exe")) == "3", "windows: a ggml-base.dll that says 0.28.0 (b11966) is API 3; llama.cpp's own 0.8.0 is skipped")
+finally:
+    mc.WINDOWS = saved_win
+
 # switching models while a server runs: the top bar offers "Switch to <name>" when the selection differs; the list marks the running one; confirm when busy
 page = open(ui.PAGE, encoding="utf-8").read()
 check('id="switch"' in page and "Running: " in page and 'badge stock">running' in page and "switchModel" in page, "the page has the Switch button, the 'Running:' label and the running mark in the list")

@@ -11,6 +11,9 @@
 - **Picker**: no download offered when the disk is too small (it says which model suits and how much disk is missing, and prefers a local file); models Ollama downloaded are
   found as local files (with a readable name); download patterns match only the model's own .gguf files. `tools/check_model_links.py` checks in CI that every model the picker
   can recommend still exists on Hugging Face (metadata only).
+- **Fixed: llama.cpp b11966 and newer (ggml 0.28) got no plugin**: the launcher knew ggml versions only up to 0.27, so it picked no DLL and `check` said
+  `ggml-moe-cache-api3.dll` was missing although it was there. Newer 0.x versions now map to backend API 3 (ggml did not bump it); the plugin's start-up layout
+  check still refuses a ggml whose ops changed. When the version cannot be read at all, `check` says so and names `MOE_CACHE_LIB`.
 - Timers for profiling, off by default: `MOE_CACHE_SEG_TIMES=1` (gaps between the plugin's graph splits, async-input waits), `MOE_CACHE_EXEC_TIMES=1` (executor phases).
 - **Quality gate for the approximate modes** (`docs/QUALITY_GATE.md`, `tools/quality_gate.py`, CI `quality`): KL divergence and top-1 against stock plus the 202 tasks, thresholds fixed before
   measuring. New opt-in levels: `--fast=kv` (q8_0 KV only: on Flash-Next Q2_0 at ctx 262144 prefill 2x, decode +11-13 % at 64k, KL 0.0079, top-1 96.7 %, tasks 190/190)
