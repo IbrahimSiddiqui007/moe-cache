@@ -97,7 +97,7 @@ The benchmark tool runs stock llama.cpp and moe-cache on your model and prompts 
 
 ## What speed to expect
 
-Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (with `--moe-cache-mib` if you have a GPU): moe-cache adds nothing there.
+Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (with `--moe-cache-mib` if you have a GPU; that is llama.cpp's own GPU expert cache, slower on our Vulkan PC, RESULTS 59, and its output can differ slightly from stock): moe-cache adds nothing there.
 If it does not fit, we measured 2x to 12x stock (the table in the README). Example: a 48 GB model in a 20 GB memory limit ran at 9.3 tok/s instead of 1.3.
 
 ## Which llama-server do I use?

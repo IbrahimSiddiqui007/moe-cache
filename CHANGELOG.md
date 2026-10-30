@@ -2,6 +2,7 @@
 
 ## 0.3.2 (2026-10-30)
 
+- **Docs**: new `docs/TROUBLESHOOTING.md` (answers look wrong or loop, slow, does not start); FAQ entries on answer quality and cache policy; `--moe-cache-mib` is marked as llama.cpp's own GPU cache (slower on our Vulkan PC, RESULTS 59); long prompts at 63k still take minutes.
 - At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, passes the quality gate, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30.
 - **Long prompts with a browser open** (N23 split, N31): when the desktop and a browser hold VRAM, the GPU margin grows with what other programs hold and the
   long-prompt GPU block runs in parts instead of falling back to the CPU. Flash-Next Q2_0 on the PC with a browser open: 34k prompt 109-110 vs 67-68 tok/s, 128k 79-95 vs 67-75 (RESULTS 71, ABBA).

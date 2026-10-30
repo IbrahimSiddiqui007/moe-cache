@@ -38,3 +38,5 @@ comparable with the README rows.
 
 The runs go stock, moe-cache, moe-cache, stock (`--pairs 2` repeats that), so both sides see the same warm-up. Options: `--ram GB` (cache size),
 `--ctx`, `--tokens`, `--prompt-tokens`, `--fast` (measures an approximate mode; identity is then n/a), `--force-plugin` (measure a model that fits).
+
+Answers look wrong, loop, or the speed is far from the README? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) before you open an issue.
