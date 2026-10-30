@@ -46,33 +46,13 @@ def quant_of(name):
     return m[-1].upper() if m else ""
 
 
-# llama.cpp's llama_ftype numbers (general.file_type) -> the usual quant names
-FILE_TYPES = {0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0", 9: "Q5_1", 10: "Q2_K", 11: "Q3_K_S", 12: "Q3_K_M", 13: "Q3_K_L",
-              14: "Q4_K_S", 15: "Q4_K_M", 16: "Q5_K_S", 17: "Q5_K_M", 18: "Q6_K", 19: "IQ2_XXS", 20: "IQ2_XS", 21: "Q2_K_S", 22: "IQ3_XS",
-              23: "IQ3_XXS", 24: "IQ1_S", 25: "IQ4_NL", 26: "IQ3_S", 27: "IQ3_M", 28: "IQ2_S", 29: "IQ2_M", 30: "IQ4_XS", 31: "IQ1_M", 32: "BF16",
-              36: "TQ1_0", 37: "TQ2_0", 38: "MXFP4_MOE"}
+import moe_cache_model as mm      # noqa: E402  (bin/: the one model identity)
+FILE_TYPES = mm.FILE_TYPES
 
 
 def header_quant(path):
     """The quant named in the GGUF header (general.file_type), for files whose name says nothing (Ollama's blobs); "" when unknown."""
-    try:
-        sys.path.insert(0, os.path.join(HERE, "planner"))
-        import struct
-        from gguf_plan import _read_str, _skip_value, _FMT
-        with open(path, "rb") as f:
-            if f.read(4) != b"GGUF":
-                return ""
-            f.read(4)
-            _, n_kv = struct.unpack("<QQ", f.read(16))
-            for _ in range(n_kv):
-                key = _read_str(f)
-                t = struct.unpack("<I", f.read(4))[0]
-                if key == "general.file_type" and t in (4, 5):
-                    return FILE_TYPES.get(struct.unpack(_FMT[t], f.read(4))[0], "")
-                _skip_value(f, t)
-    except Exception:
-        pass
-    return ""
+    return mm.file_quant(path)
 
 
 def size_of(path):
@@ -456,6 +436,10 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
         vram = f"{gpu['free'] / GIB:.2f}"          # as the launcher: on Windows without nvidia-smi it passes the free VRAM it found to the planner
     amd_reasons = windows_amd_rules(gpu, path, agent, windows=WINDOWS)
     out = {"path": path, "size": size, "avail": avail, "reasons": [], "numbers": {}, "measured": measured(path, size), "here": measured_here(path)}
+    try:
+        out["identity"] = mm.identity(path).to_dict(paths=False)        # the same facts bench-report and the saved sessions use: arch, experts, quant, header hash
+    except Exception:
+        out["identity"] = None
     R = out["reasons"]
     if avail:
         R.append(f"model {gb(size)} {'+' if stock_fits else 'plus'} {HEADROOM / 1e9:.1f} GB headroom "

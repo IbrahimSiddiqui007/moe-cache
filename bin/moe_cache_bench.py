@@ -116,6 +116,21 @@ def plan_summary(line):
     return ", ".join(keep) or "launcher defaults"
 
 
+def model_section(model, size_gb, ram_total_gb):
+    """The report's model part, from the one model identity (bin/moe_cache_model.py): file, size, quant, and what the header says (architecture, experts, the
+    experts' quant, a short hash of the header and tensor table). No path."""
+    import moe_cache_model as mm
+    d = {"file": os.path.basename(model), "size_gb": round(size_gb, 1), "ratio": round(size_gb / ram_total_gb, 2) if ram_total_gb else "-", "quant": "-"}
+    try:
+        ident = mm.identity(model)
+        d["quant"] = ident.file_quant or ident.expert_quant or "-"
+        d["identity"] = ident.summary()
+        d["header_fp"] = ident.header_fp
+    except Exception:
+        d["quant"] = mm.file_quant(model) or "-"
+    return d
+
+
 def run_one(model, mode, a, port):
     """One server start through `moe_cache.py server` (stock: --stock, moe-cache: --always-plugin), one long prompt and one greedy answer.
     {'mode', 'decode', 'prefill', 'prompt_tokens', 'ttft_s', 'text', 'plugin_active', 'hit_rate', 'gb_read', 'load_s', 'error'}."""
@@ -278,6 +293,7 @@ def report_md(d):
              f"| File | {d['model']['file']} |",
              f"| Size | {d['model']['size_gb']} GB ({d['model']['ratio']}x the RAM) |",
              f"| Quant | {d['model']['quant']} |",
+             f"| Identity | {d['model'].get('identity', '-')} |",
              f"| Launcher plan | {d['plan']} |",
              f"| Stock plan | {d.get('stock_plan', '-')} |",
              f"| Fits in RAM | {d['fits']} |",
@@ -373,8 +389,7 @@ def bench_report(argv):
     d = {"schema": SCHEMA, "version": mc.VERSION, "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M"), "start": start,
          "mode": f"fast={a.fast}" if a.fast else "exact", "os": f"{platform.system()} {platform.release()} ({platform.version()})", "facts": facts,
          "backend": backend_of(devices), "llama": llama,
-         "model": {"file": os.path.basename(a.model), "size_gb": round(size, 1), "ratio": round(size / ram_total, 2) if ram_total else "-",
-                   "quant": ui.header_quant(a.model) or "-"},
+         "model": model_section(a.model, size, ram_total),
          "plan": plan_summary(plan_line), "scenario": a.scenario, "gap": a.gap, "fits": "yes (forced)" if fits else "no", "prompt_tokens": a.prompt_tokens, "order": order(a.pairs),
          "summary": s_, "notes": notes, "stock_plan": plan_summary(stock_line),
          "runs": [{k: v for k, v in r.items() if k != "text"} for r in runs]}

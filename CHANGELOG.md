@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **One model identity** (`bin/moe_cache_model.py`): the launcher, saved prompt states, usage profiles, bench-report and the control page now ask one function what a model is (architecture, layers, experts and their quant, every shard, a hash of the GGUF header and tensor table). The key of saved sessions is unchanged (earlier sessions are still found). A usage profile keeps its name; a note next to it records the header it was learned on, and a profile learned on another file with the same name is no longer reused: a new one starts, with a message. bench-report has an Identity row.
+
 ## 0.3.2 (2026-10-30)
 
 - **Security and saved-state fixes (external audit of v0.3.1, six confirmed bugs; tests/security_test.py)**:

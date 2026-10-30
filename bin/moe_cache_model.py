@@ -218,26 +218,34 @@ def profile_path(model, name, cache_dir, dry=True, say=None):
         ident = identity(model)
     except (OSError, ValueError, struct.error):
         return base
-    for path in (base, base[:-len(".usage")] + "." + ident.header_fp[:8] + ".usage"):
-        note = _note_path(path)
+
+    def note_of(path):
         try:
-            rec = json.load(open(note, encoding="utf-8"))
+            return json.load(open(_note_path(path), encoding="utf-8"))
         except (OSError, ValueError):
-            rec = None
-        if rec is None:
-            if not dry:
-                try:
-                    os.makedirs(cache_dir, exist_ok=True)
-                    json.dump({"header_fp": ident.header_fp, "id": ident.id, "arch": ident.arch, "size": ident.size, "experts": ident.n_expert}, open(note, "w", encoding="utf-8"))
-                except OSError:
-                    pass
-            return path
-        if rec.get("header_fp") == ident.header_fp:
-            return path
-        if path != base:
-            break
+            return None
+
+    def write_note(path):
+        if not dry:
+            try:
+                os.makedirs(cache_dir, exist_ok=True)
+                json.dump({"header_fp": ident.header_fp, "id": ident.id, "arch": ident.arch, "size": ident.size, "experts": ident.n_expert},
+                          open(_note_path(path), "w", encoding="utf-8"))
+            except OSError:
+                pass
+
+    rec = note_of(base)
+    if rec is None:                           # a profile from before the notes (or none yet): it is this model's, adopt it
+        write_note(base)
+        return base
+    if rec.get("header_fp") == ident.header_fp:
+        return base
+    alt = base[:-len(".usage")] + "." + ident.header_fp[:8] + ".usage"
+    arec = note_of(alt)
+    if arec is None or arec.get("header_fp") != ident.header_fp:      # the first start with this file: say why the profile there is not used
         if say:
             say(f"moe-cache: the usage profile {os.path.basename(base)} was learned on another model file with the same name "
                 f"({rec.get('size', 0) / 1e9:.1f} GB, header {str(rec.get('header_fp'))[:8]}; this one is {ident.size / 1e9:.1f} GB, header {ident.header_fp[:8]}): "
-                f"not used; a new profile is started ({os.path.basename(base[:-len('.usage')] + '.' + ident.header_fp[:8] + '.usage')})", err=True)
-    return base[:-len(".usage")] + "." + ident.header_fp[:8] + ".usage"
+                f"not used; a new profile is started ({os.path.basename(alt)})", err=True)
+        write_note(alt)
+    return alt
