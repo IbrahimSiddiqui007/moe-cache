@@ -2,8 +2,8 @@
     // ---- LRU over resident experts ----
     void unlink(int s) {
         node_t & n = nodes[s];
-        if (n.prev >= 0) { nodes[n.prev].next = n.next; } else { mru = n.next; }
-        if (n.next >= 0) { nodes[n.next].prev = n.prev; } else { lru = n.prev; }
+        if (n.prev >= 0) { nodes[n.prev].next = n.next; } else { mruc[n.cls] = n.next; }
+        if (n.next >= 0) { nodes[n.next].prev = n.prev; } else { lruc[n.cls] = n.prev; }
         n.prev = n.next = -1;
     }
 
@@ -11,19 +11,83 @@
     void push_lru(int s) {
         node_t & n = nodes[s];
         n.next = -1;
-        n.prev = lru;
-        if (lru >= 0) { nodes[lru].next = s; }
-        lru = s;
-        if (mru < 0) { mru = s; }
+        n.prev = lruc[n.cls];
+        if (lruc[n.cls] >= 0) { nodes[lruc[n.cls]].next = s; }
+        lruc[n.cls] = s;
+        if (mruc[n.cls] < 0) { mruc[n.cls] = s; }
     }
 
     void push_mru(int s) {
         node_t & n = nodes[s];
         n.prev = -1;
-        n.next = mru;
-        if (mru >= 0) { nodes[mru].prev = s; }
-        mru = s;
-        if (lru < 0) { lru = s; }
+        n.next = mruc[n.cls];
+        if (mruc[n.cls] >= 0) { nodes[mruc[n.cls]].prev = s; }
+        mruc[n.cls] = s;
+        if (lruc[n.cls] < 0) { lruc[n.cls] = s; }
+    }
+
+    void set_policy(bool cl, int classes, double half_life) {
+        classlru = cl;
+        nclass = cl ? std::max(2, std::min(MAXCLS, classes)) : 1;
+        classlru_hl = std::max(1.0, half_life);
+        if (cl) {
+            const size_t n = (size_t) std::min(65536.0, classlru_hl * 24.0 + 1.0);
+            decay_tab.resize(n);
+            for (size_t i = 0; i < n; i++) { decay_tab[i] = (float) std::exp2(-(double) i / classlru_hl); }
+        }
+    }
+
+    // classlru: the node was used by a decode step: decay its count, add the use, move it to the list of its new class (not yet in a list when
+    // in_list is false: a miss that has just been given a slot). Prefill batches do not score (as in #31233); they only refresh the age.
+    void score_use(int s, bool in_list) {
+        node_t & n = nodes[s];
+        uint8_t c = n.cls;
+        if (cur_decode && !cur_scan) {
+            const uint32_t dt = tok - n.crf_tok;
+            n.crf = n.crf * (dt < decay_tab.size() ? decay_tab[dt] : 0.0f) + 1.0f;
+            n.crf_tok = tok;
+            c = (uint8_t) std::min(nclass - 1, std::ilogb(n.crf));      // crf >= 1: ilogb >= 0
+            if (c > n.cls) { cls_promotions++; } else if (c < n.cls) { cls_demotions++; }
+        }
+        if (in_list) { unlink(s); }
+        n.cls = c;
+        n.last_tok = tok;
+        push_mru(s);
+    }
+
+    // a hit (or a freshly loaded miss, in_list false) in the counted path: move to the most recently used end
+    void touch_use(int s, bool in_list) {
+        if (classlru) {
+            score_use(s, in_list);
+        } else {
+            if (in_list) { unlink(s); }
+            push_mru(s);
+        }
+    }
+
+    // the node to evict next that this graph does not need, or -1. Plain policy: the least recently used. classlru: the oldest evictable node of
+    // every class list competes by age / 2^class (a high class has to stay unused 2^class times as long); ties go to the lower class.
+    int pick_victim() const {
+        int best = -1;
+        double best_sc = -1.0;
+        for (int c = 0; c < nclass; c++) {
+            int v = lruc[c];
+            for (int k = 0; k < 100000 && v >= 0 && in_use(nodes[v]); k++) {
+                v = nodes[v].prev;
+            }
+            if (v < 0 || in_use(nodes[v])) {
+                continue;
+            }
+            if (nclass == 1) {
+                return v;
+            }
+            const double sc = (double) (uint32_t) (tok - nodes[v].last_tok) / (double) (1 << c);
+            if (sc > best_sc) {
+                best_sc = sc;
+                best = v;
+            }
+        }
+        return best;
     }
 
     // give the physical pages of one expert back to the system (pages shared with a neighbour expert stay)
@@ -99,10 +163,7 @@
         // the system as a whole is low on commit (llama.cpp or other programs took it): give an LRU expert back instead of growing
         const size_t low = plat::commit_keep() / 2;
         while (plat::commit_available() < low + n) {
-            int v = lru;
-            while (v >= 0 && in_use(nodes[v])) {
-                v = nodes[v].prev;
-            }
+            int v = pick_victim();
             if (v < 0) {
                 break;       // nothing to give back: load anyway (this step needs it), the commit below still has to succeed
             }
@@ -117,10 +178,7 @@
                 }
                 return true;
             }
-            int v = lru;
-            while (v >= 0 && in_use(nodes[v])) {
-                v = nodes[v].prev;
-            }
+            int v = pick_victim();
             if (v < 0) {
                 return false;
             }
@@ -140,6 +198,13 @@
     size_t prepare_group(const std::vector<int> & tidx, const std::vector<int> & cnt, bool async = false) {
         std::unique_lock<std::mutex> lk(mu);
         epoch++;
+        if (classlru && cur_decode) {
+            const int dl = tensors[tidx[0]]->layer;        // layers ascend within a decode token: a lower layer than the last one starts the next token
+            if (dl >= 0) {
+                if (dl < last_dec_layer) { tok++; }
+                last_dec_layer = dl;
+            }
+        }
         std::vector<int> wait_list;       // experts a lookahead read is still filling
         if (lookahead && cur_decode) {
             auto pf = pred_flags.find(tensors[tidx[0]]->layer);
@@ -209,10 +274,7 @@
                     }
                     sibling_loads++;
                     while (resident_bytes + ti.nb2 > budget) {
-                        int v = lru;
-                        for (int k = 0; k < 100000 && v >= 0 && in_use(nodes[v]); k++) {
-                            v = nodes[v].prev;
-                        }
+                        int v = pick_victim();
                         if (v < 0 || in_use(nodes[v])) {
                             break;     // no room without evicting what this group needs: leave it to the sibling's own call
                         }
@@ -250,8 +312,7 @@
                     }
                     if (n.loading) { wait_list.push_back(s); }
                     if (!cur_scan) {          // a long prompt uses (nearly) everything: it does not make an expert "recently used"
-                        unlink(s);
-                        push_mru(s);
+                        touch_use(s, true);
                     }
                     n.epoch = epoch;
                     continue;
@@ -260,10 +321,7 @@
                 if (cur_decode) { misses_dec++; }
                 bool fits = true;
                 while (resident_bytes + ti.nb2 > budget) {
-                    int v = lru;
-                    for (int k = 0; k < 100000 && v >= 0 && in_use(nodes[v]); k++) {
-                        v = nodes[v].prev;
-                    }
+                    int v = pick_victim();
                     if (v < 0 || in_use(nodes[v])) {
                         fits = false;      // everything left is needed by this op: the cache is smaller than one op (fixed MOE_CACHE_SIZE_GIB)
                         break;
@@ -294,7 +352,7 @@
                 n.epoch = epoch;
                 resident_bytes += ti.nb2;
                 if (ti.view) { view_bytes += ti.nb2; }
-                if (cur_scan) { push_lru(s); } else { push_mru(s); }
+                if (cur_scan) { push_lru(s); } else { touch_use(s, false); }
                 { io_job_t jb{ ti.data + (size_t) e * ti.nb2, ti.file_off + (size_t) e * ti.nb2, ti.nb2, ti.fdi, ti.direct, ti.repack ? ti.tensor : nullptr }; jb.node = s; if (async) { __atomic_store_n(&n.loading, true, __ATOMIC_RELEASE); } jobs.push_back(jb); }
                 pending_bytes += ti.nb2;
                 if (!async && auto_mode && pending_bytes >= ((size_t) 256 << 20)) {
