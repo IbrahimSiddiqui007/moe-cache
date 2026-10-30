@@ -130,6 +130,13 @@ jobs:
           python bin\moe_cache.py check "$env:GITHUB_WORKSPACE\granite.gguf" --llama-server "$env:LLAMA_DIR\llama-server.exe" --run | Tee-Object $env:RUNNER_TEMP\kit_check.txt
           Pop-Location
           if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "ggml-moe-cache-api3.dll" -SimpleMatch -Quiet)) { throw "kit: check did not pick the kit's API 3 DLL" }
+          # the kit ships the official llama.cpp in llama\ (v0.3.3): without --llama-server and LLAMA_SERVER, check must find that one
+          if (-not (Test-Path "$k\llama\llama-server.exe")) { throw "kit: no bundled llama\llama-server.exe" }
+          Push-Location $k
+          $env:LLAMA_SERVER = $null; Remove-Item Env:LLAMA_SERVER -ErrorAction SilentlyContinue
+          $bundled = (python bin\moe_cache.py check 2>&1) -join "`n"
+          Pop-Location
+          if ($bundled -notmatch [regex]::Escape("llama\llama-server.exe")) { throw "kit: check did not find the bundled llama\llama-server.exe: $bundled" }
           if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "plugin loads .*yes" -Quiet)) { throw "kit: the plugin does not load" }
           if (-not (Select-String $env:RUNNER_TEMP\kit_check.txt -Pattern "cache runs .*yes" -Quiet)) { throw "kit: the cache did not compute" }
           Push-Location $k

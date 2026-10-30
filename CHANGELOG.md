@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (0.3.3)
+
+- **The Windows kit includes llama.cpp**: the official, unmodified llama.cpp b11966 Vulkan build sits in the kit's `llama\` folder (sha256-checked against the
+  release asset when the kit is built; llama.cpp's MIT licence next to it), so a friend downloads one zip. The launcher, `check`, the picker and the control page
+  find it by themselves; `LLAMA_SERVER` still picks another build. The kit grows from about 2.4 MB to 49 MB. `MOE_CACHE_KIT_NO_LLAMA=1` builds the old kit.
+
 ## 0.3.2 (2026-10-30)
 
 - **Security and saved-state fixes (external audit of v0.3.1, six confirmed bugs; tests/security_test.py)**:

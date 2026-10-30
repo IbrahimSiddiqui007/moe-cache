@@ -951,6 +951,7 @@ try:
     dl = os.path.join(win, "Downloads", "llama-b12000-bin-win-vulkan-x64"); os.makedirs(dl); open(os.path.join(dl, mc.llama_exe()), "wb").write(b"x")
     mc.llama_search_dirs = saved_fns[1]; got = [d for d in mc.llama_search_dirs()]
     check(dl in got and r"C:\llama" in got and mc.HERE in got, "windows: the default folders include Downloads\\llama-b*-bin-win-* and the kit")
+    check(os.path.join(os.path.dirname(mc.HERE), "llama") in got, "windows: the kit's bundled llama\\ folder is searched (one-download kit, v0.3.3)")
     os.makedirs(os.path.join(win, "llama-vk")); check(os.path.join(win, "llama-vk") in mc.llama_search_dirs(), "windows: every %USERPROFILE%\\llama* folder")
     mc.WINDOWS = False; check(mc.win_registry_env("LLAMA_SERVER") == [], "off Windows: the registry is not read")
 finally:

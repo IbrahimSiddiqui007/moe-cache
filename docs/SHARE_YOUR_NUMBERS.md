@@ -7,7 +7,7 @@ measures (the report itself downloads, uploads and changes nothing; you need a m
 
 | Step | What to do |
 |---|---|
-| 1 | **llama.cpp for your GPU**: from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases), `llama-bNNNNN-bin-win-vulkan-x64.zip` for AMD, Intel and most NVIDIA cards (tested: b11669, and b11966 or newer). AMD: use Vulkan, not HIP (HIP was 2.4x slower on the test PC). NVIDIA: the CUDA zip should work but is untested on Windows. Unzip it to `C:\llama` |
+| 1 | **llama.cpp**: included in the kit from v0.3.3 (`llama\` folder, Vulkan). Older kit or another GPU backend: from the [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases), `llama-bNNNNN-bin-win-vulkan-x64.zip` for AMD, Intel and most NVIDIA cards (tested: b11669, and b11966 or newer). AMD: use Vulkan, not HIP (HIP was 2.4x slower on the test PC). NVIDIA: the CUDA zip should work but is untested on Windows. Unzip it to `C:\llama` |
 | 2 | **Python 3.8 or newer** (tick "Add python.exe to PATH") and the **moe-cache kit**: right-click the zip > Properties > Unblock, then unzip it |
 | 3 | **A model bigger than your RAM.** When the model fits, the launcher runs stock llama.cpp and the report would only say so. `python bin\moe_cache.py pick` suggests one for your machine and prints the download command (`pip install -U huggingface_hub` first); the README has the table. Models are 20-120 GB: keep the size plus about 10 GB of disk free |
 | 4 | **Leave the PC alone while it runs**: close the browser and games (they hold GPU memory and slow long prompts), plug in a laptop, no other big program |
