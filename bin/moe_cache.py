@@ -5,6 +5,7 @@
   moe_cache.py pick    [--use agents|chat|docs] [--apply]                  recommend a model for this machine (RAM, VRAM, disk, CPU) and use; --apply uses it
   moe_cache.py doctor  [MODEL.gguf] [--llama-server PATH] [--ram GB]       the same as check (preflight: GPU, driver, RAM, disk, llama-server; what to fix)
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
+  moe_cache.py update --check                                            is a newer moe-cache or llama.cpp out? (downloads nothing)
   moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md)
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
@@ -2822,6 +2823,61 @@ def pack_cmd(argv):
     return pack_main(argv)
 
 
+REPO_API = "https://api.github.com/repos/IbrahimSiddiqui007/moe-cache/releases?per_page=10"     # list: /latest skips pre-releases (ours are beta)
+LLAMA_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"     # newest bNNNNN build tag (the /latest one is an old v0.x tag)
+
+
+def version_tuple(v):
+    """'v0.3.2' / '0.3.2-beta' -> (0, 3, 2); unknown parts -> 0."""
+    nums = re.findall(r"\d+", str(v).split("-")[0])
+    return tuple(int(x) for x in nums[:4]) or (0,)
+
+
+def update_advice(mine, latest_tag, ls_b, llama_tag):
+    """Lines for `update --check` (pure, tested): is a newer moe-cache out, and how far behind is this llama-server."""
+    out = []
+    if latest_tag:
+        if version_tuple(latest_tag) > version_tuple(mine):
+            out.append(f"moe-cache {latest_tag.lstrip('v')} is out (you have {mine}): https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest")
+        elif version_tuple(latest_tag) == version_tuple(mine):
+            out.append(f"moe-cache {mine} is the newest release")
+        else:
+            out.append(f"moe-cache {mine} is newer than the newest release ({latest_tag.lstrip('v')}): a development copy")
+    else:
+        out.append("moe-cache: could not read the newest release (offline?)")
+    m = re.fullmatch(r"b(\d+)", llama_tag or "")
+    if ls_b and m:
+        behind = int(m.group(1)) - ls_b
+        out.append(f"llama.cpp: your llama-server is build {ls_b}, the newest release is {llama_tag}" +
+                   (f" ({behind} builds newer; newer builds are supported: the plugin checks ggml's layout at start)" if behind > 0 else " (up to date)"))
+    elif ls_b:
+        out.append(f"llama.cpp: your llama-server is build {ls_b}; the newest release could not be read")
+    return out
+
+
+def update_cmd(argv):
+    """moe_cache.py update --check: tells whether a newer moe-cache or llama.cpp release exists. Downloads and installs nothing; asks GitHub only now."""
+    ap = argparse.ArgumentParser(prog="moe_cache.py update", description="check for a newer moe-cache and llama.cpp release (nothing is downloaded or installed)")
+    ap.add_argument("--check", action="store_true", help="the only mode: ask GitHub's release API once and print what is newer")
+    ap.add_argument("--llama-server", default=default_llama_server())
+    a = ap.parse_args(argv)
+    def tag(url):
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": f"moe-cache/{VERSION}"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                j = json.loads(r.read().decode())
+            if isinstance(j, list):         # newest published release, pre-releases included; llama.cpp: its bNNNNN build tags
+                j = next((x for x in j if not x.get("draft") and ("llama.cpp" not in url or re.fullmatch(r"b\d+", x.get("tag_name", "")))), {})
+            return j.get("tag_name")
+        except Exception:
+            return None
+    lsp = shutil.which(a.llama_server)
+    for line in update_advice(VERSION, tag(REPO_API), ls_build(lsp) if lsp else None, tag(LLAMA_API)):
+        say(line)
+    say("nothing was downloaded or installed")
+    return 0
+
+
 def key_cmd(argv):
     """moe_cache.py key: print the stable API key of agent / project servers (made on first use); the file is KEY_FILE."""
     ap = argparse.ArgumentParser(prog="moe_cache.py key", description="print the API key that agent mode and --project servers use")
@@ -2832,7 +2888,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion, "pack": pack_cmd}
+    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion, "pack": pack_cmd, "update": update_cmd}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0

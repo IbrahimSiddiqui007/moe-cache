@@ -31,6 +31,9 @@
   GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). `--scenario agent`: a 3-turn coding conversation with pauses
   (`--gap`), time to the first token per turn. tests/bench_report_test.py; both CIs run a
   real report on Granite.
+- **`moe_cache.py update --check`**: says whether a newer moe-cache release is out and how many builds your llama-server is behind llama.cpp's newest release
+  (asks GitHub's release API once, only when you run it; downloads and installs nothing).
+- The model list follows linked folders (models on another drive, `/var/home`); a link loop is walked once.
 - Docs: `docs/EXACTNESS.md`, one page on what "same tokens as stock" means, every identity check CI runs (incl. mutant builds and llama.cpp master), the PC A/B rule and its limits.
 - **Windows: memory planned against commit, not only free RAM** (XA-3): with a browser and other programs open, Windows' commit (RAM + page file) ran out while
   RAM still looked free; llama-server's prompt cache failed to allocate and llama.cpp crashed (PC, RESULTS 73). The launcher now prints "Windows memory: RAM ... free;
