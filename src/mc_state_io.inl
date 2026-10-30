@@ -529,9 +529,10 @@
                         pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
             }
             if (exec_on) {
+                // ", checked N, mismatches M" stays right after "itself": CI greps that exact sequence (identity.yml, executor byte-check)
                 fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s%s\n", (unsigned long long) exec_ops,
-                        exec_fuse ? (std::string(", ") + std::to_string(exec_fused.load()) + " gate+up pairs as one pool job").c_str() : "",
-                        exec_check ? (std::string(", checked ") + std::to_string(exec_checked.load()) + ", mismatches " + std::to_string(exec_mismatch.load())).c_str() : "");
+                        exec_check ? (std::string(", checked ") + std::to_string(exec_checked.load()) + ", mismatches " + std::to_string(exec_mismatch.load())).c_str() : "",
+                        exec_fuse ? (std::string("; ") + std::to_string(exec_fused.load()) + " gate+up pairs as one pool job").c_str() : "");
                 fprintf(stderr, "moe-cache: executor stepped aside (all resident) in %llu graphs; %llu of them waited for experts still loading\n",
                         (unsigned long long) stepaside_graphs, (unsigned long long) stepaside_waits);
             }
