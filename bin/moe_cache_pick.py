@@ -39,8 +39,8 @@ MODELS = {
 }
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
-SIBLINGS_WHY = {"flash-next-iq3_xxs": "the accuracy pick: 193/202 tasks, about 10 % slower decode than Q2_0",
-                "flash-next-q2_0": "the default file: about 10 % faster decode than IQ3_XXS, 191/202 tasks"}
+SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default file on a 16 GB GPU (owner 2026-10-30): 3-bit, the most tasks right (193/202), reads best for coding; about 10 % slower decode than Q2_0",
+                "flash-next-q2_0": "faster: about 10 % more tokens per second than IQ3_XXS (e.g. for long thinking), 191/202 tasks, 9 GB smaller"}
 
 
 # ---- this machine ----
@@ -306,11 +306,14 @@ def recommend(spec, use, model=None):
                "the smallest candidate (3B active): the one that still runs agents at 64k on this machine")]
     elif use == "chat":
         R += [("glm-5.3", fits("glm-5.3"), 32768, None, "fits in your RAM: the biggest candidate, stock llama.cpp"),
-              ("flash-next-iq3_xxs", cap >= 50 and vram >= 12 and drive_ok("flash-next-iq3_xxs"), 32768, None,
-               f"the accuracy pick (193/202 tasks, the most); measured {PC}: 19.9 tok/s; with your RAM more of it stays in memory"),
+              # IQ3_XXS is the default Flash-Next file on a 16 GB GPU (owner 2026-10-30: 3-bit reads better, most use it for coding); Q2_0 is the faster sibling
+              ("flash-next-iq3_xxs", cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs"), 32768,
+               f"{PC}: 19.9 tok/s decode, 193/202 tasks (the most)",
+               "the default Flash-Next file: 3-bit, reads best and the most tasks right; bigger than your RAM, moe-cache keeps the hot experts in RAM. "
+               "Q2_0 is about 10 % faster (more tokens per second, e.g. for long thinking)"),
               ("flash-next-q2_0", cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0"), 32768,
                f"{PC}: 22-25 tok/s decode, 281-287 tok/s prompts, 191/202 tasks",
-               "the documented default: bigger than your RAM, moe-cache keeps the hot experts in RAM and reads the rest from the SSD"),
+               "faster: about 10 % more tokens per second than IQ3_XXS, 9 GB smaller"),
               ("flash-next-q2_0", cap >= 24 and vram >= 6 and drive_ok("flash-next-q2_0"), 32768, None,
                f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size: 12.5 tok/s"),
               ("qwen3.5-122b", cap >= 24 and vram >= 6 and drive_ok("qwen3.5-122b"), 32768,
@@ -405,9 +408,10 @@ def recommend(spec, use, model=None):
     for lk in local:      # a model that is already here is worth knowing about even when it is not the best fit
         if lk != k and lk not in (a["id"] for a in alts) and len(alts) < 2:
             alts.append({"id": lk, "name": MODELS[lk]["name"], "why": "already on this machine (not the best fit for it)"})
-    if use == "agents" and k != "flash-next-q2_0" and cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0") and placeable("flash-next-q2_0"):
-        alts.append({"id": "flash-next-q2_0", "name": MODELS["flash-next-q2_0"]["name"],
-                     "why": f"the documented default line: {PC} 20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s, moe-cache"})
+    if use == "agents" and k != "flash-next-iq3_xxs" and cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs") and placeable("flash-next-iq3_xxs"):
+        alts.append({"id": "flash-next-iq3_xxs", "name": MODELS["flash-next-iq3_xxs"]["name"],
+                     "why": f"the default Flash-Next file for coding (3-bit, 193/202 tasks), moe-cache; long context measured with Q2_0 on {PC}: "
+                            "20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (Q2_0 is about 10 % faster)"})
     out = {"id": k, "name": m["name"], "use": use, "size": size_of(k, local), "ctx": ctx, "args": args, "engine": engine,
            "measured": measured or "untested on this class of machine", "untested": not measured, "key": key_numbers(measured), "why": [why], "warnings": warn,
            "alternatives": alts[:2], "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,

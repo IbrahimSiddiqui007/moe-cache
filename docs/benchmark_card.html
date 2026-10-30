@@ -103,7 +103,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <table>
         <thead><tr><th>Model (file size)</th><th class="n">GPU expert layers</th><th class="n">stock</th><th class="n">moe-cache</th><th class="n">change</th></tr></thead>
         <tbody>
-          <tr><td><b>Flash-Next Q2_0</b> (recommended file)<span class="sub">66.4 GB, drive D:, two runs each, not interleaved; stock = launcher <code>--stock</code> defaults</span></td><td class="n">12 (moe-cache)</td><td class="n">18.41</td><td class="n">22.16</td><td class="n up">+20 %</td></tr>
+          <tr><td><b>Flash-Next Q2_0</b> (the faster file)<span class="sub">66.4 GB, drive D:, two runs each, not interleaved; stock = launcher <code>--stock</code> defaults</span></td><td class="n">12 (moe-cache)</td><td class="n">18.41</td><td class="n">22.16</td><td class="n up">+20 %</td></tr>
           <tr><td>Qwen3-Next “Flash-Next” IQ2_XS<span class="sub">68 GB, drive C:</span></td><td class="n">12</td><td class="n">14.89</td><td class="n">21.94</td><td class="n up">+47 %</td></tr>
           <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:</span></td><td class="n">9</td><td class="n">15.14</td><td class="n">19.86</td><td class="n up">+31 %</td></tr>
           <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive C:</span></td><td class="n">7</td><td class="n">12.92</td><td class="n">17.28</td><td class="n up">+34 %</td></tr>
@@ -147,8 +147,8 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <table>
         <thead><tr><th>File</th><th class="n">size</th><th class="n">decode tok/s</th><th class="n">prompt tok/s<br>3k / 34k</th><th class="n">tasks /202</th><th>verdict</th></tr></thead>
         <tbody>
-          <tr><td><b>Q2_0</b></td><td class="n">66.4 GB</td><td class="n"><b>22.2</b></td><td class="n"><b>281 / 287</b></td><td class="n">191</td><td><b>recommended default.</b> vs IQ2_XS: +1.2 tok/s (+5 %), prompts +11 % / +19 %, 1.6 GB smaller, +4 tasks (not proven)</td></tr>
-          <tr><td>IQ3_XXS</td><td class="n">75.8 GB</td><td class="n">19.9</td><td class="n">–</td><td class="n"><b>193</b></td><td><b>when accuracy matters.</b> vs Q2_0: −2.3 tok/s (−10 %) for +2 tasks (not proven)</td></tr>
+          <tr><td><b>Q2_0</b></td><td class="n">66.4 GB</td><td class="n"><b>22.2</b></td><td class="n"><b>281 / 287</b></td><td class="n">191</td><td><b>the faster file</b> (about 10 % faster than IQ3_XXS). vs IQ2_XS: +1.2 tok/s (+5 %), prompts +11 % / +19 %, 1.6 GB smaller, +4 tasks (not proven)</td></tr>
+          <tr><td>IQ3_XXS</td><td class="n">75.8 GB</td><td class="n">19.9</td><td class="n">–</td><td class="n"><b>193</b></td><td><b>recommended default</b> (3-bit, reads best, popular for coding). vs Q2_0: −2.3 tok/s (−10 %) for +2 tasks (not proven)</td></tr>
           <tr><td>Coder IQ1_M<span class="sub">ISTA GSQ-RCO, 256 of 512 experts</span></td><td class="n">58.4 GB</td><td class="n">21.2<span class="sub">agent session</span></td><td class="n">–</td><td class="n">189</td><td><b>coding agents.</b> OpenCode session 55.5 s vs 73.4 s on IQ2_XS (−24 %, one run); general knowledge not checked beyond the task set</td></tr>
           <tr><td>IQ2_XS</td><td class="n">68.0 GB</td><td class="n">21.0<span class="sub">21.9 in the ABBA above</span></td><td class="n">253 / 242</td><td class="n">187</td><td>superseded by Q2_0: slower everywhere, bigger, 4 fewer tasks (not proven)</td></tr>
           <tr><td>IQ3_S</td><td class="n">83.6 GB</td><td class="n">17.3</td><td class="n">–</td><td class="n">192</td><td><b>not worth it.</b> vs IQ3_XXS: −2.6 tok/s (−13 %), 7.8 GB bigger, −1 task</td></tr>

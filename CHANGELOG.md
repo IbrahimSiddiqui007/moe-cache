@@ -26,6 +26,8 @@
   answers. No prompts, answers, user name, host name or folder names in it. A model that fits in RAM exits with a hint (`--force-plugin` measures anyway).
   GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). tests/bench_report_test.py; both CIs run a
   real report on Granite.
+- **Default Flash-Next file: IQ3_XXS** (owner 2026-10-30): the picker recommends it on a 16 GB GPU (3-bit, 193/202 tasks, popular for coding), with Q2_0 as the faster
+  alternative (about 10 % more tokens per second); the agents' Flash-Next alternative is IQ3_XXS too; README, WINDOWS.md and the card relabelled. Smaller GPUs keep Q2_0.
 - **Executor: gate and up of a layer run as one pool job** (E3): one barrier and one wake-up fewer per layer, same arithmetic per output value. Flash-Next Q2_0
   on the PC: decode +0.3-2.6 % in all 6 ABBA pairs (e.g. 17.61 -> 18.06), text identical (RESULTS 73; runs "not clean": the owner's programs were open). On by default;
   `MOE_CACHE_EXEC_FUSE=0` turns it off.
