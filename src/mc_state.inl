@@ -196,6 +196,7 @@ struct state_t {
     bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
     bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
     int    exec_chunk = 128;                            // MOE_CACHE_EXEC_CHUNK=N: weight rows per pool chunk; 128 decodes +3.9 % over 32 on the PC (N25, every ABBA pair), the arithmetic per row is unchanged
+    bool   exec_fuse = false;                           // MOE_CACHE_EXEC_FUSE=1: gate and up of one layer share one pool job (same arithmetic, one barrier fewer)
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
     int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes
@@ -207,7 +208,7 @@ struct state_t {
     std::condition_variable rq_cv;
     std::deque<io_job_t> rq;
     bool   rq_stop = false;
-    std::atomic<uint64_t> exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
+    std::atomic<uint64_t> exec_fused{0}, exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
     uint64_t stepaside_graphs = 0, stepaside_waits = 0;   // executor graphs handed back to llama.cpp with everything resident / of them, graphs that had to wait for a load
     // per weight type: wall time of the expert products (includes waiting for experts still loading), ops, expert bytes touched
     std::atomic<uint64_t> exec_type_ns[64] = {}, exec_type_ops[64] = {}, exec_type_bytes[64] = {};
@@ -616,6 +617,9 @@ struct state_t {
         if (const char * ex = getenv("MOE_CACHE_EXEC")) {
             exec_on = strcmp(ex, "0") != 0;
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
+        }
+        if (const char * v = getenv("MOE_CACHE_EXEC_FUSE")) {
+            exec_fuse = atoi(v) != 0;
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHUNK")) {
             exec_chunk = std::max(1, std::min(4096, atoi(v)));
