@@ -453,6 +453,7 @@ button.danger { border-color:var(--ink); }
     <h4>Agents</h4>
     <label class="check"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
     <label class="check"><input type="checkbox" id="nowarm"> Don't restore saved agent sessions <span class="small">(--no-warm: nothing is saved either)</span></label>
+    <label class="check"><input type="checkbox" id="leaveroom"> Leave room for me <span class="small">(--leave-room: I use this PC while the model runs; more RAM, GPU memory and CPU stay mine, the model is slower)</span></label>
     <h4>Server</h4>
     <div class="row">
       <div><label>Port</label><input type="number" id="port" value="8080" min="1" max="65535"></div>
@@ -511,9 +512,9 @@ $("aboutsessions").onclick = () => alert("In Agent mode the launcher saves each 
 /* ---------- settings (unchanged rules from the GUI1/GUI2 page) ---------- */
 function settings() {
   return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.engine == "stock" ? "exact" : S.mode,
-           engine: S.engine, mtp: S.mtp, agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, port: $("port").value, api_key: $("apikey").value };
+           engine: S.engine, mtp: S.mtp, agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, leave_room: $("leaveroom").checked, port: $("port").value, api_key: $("apikey").value };
 }
-function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent, s.engine, s.mtp].join("|"); }
+function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent, s.engine, s.mtp, s.leave_room].join("|"); }
 const segPainters = [];
 function seg(sel, key, cb) {
   const els = [...document.querySelectorAll(sel)];
@@ -541,7 +542,7 @@ async function loadSystem() {
     S.inited = true;
     $("ram").value = last.ram || 0;
     $("vram").value = last.vram || 0;      // auto: the planner and the launcher read the free VRAM at start (a running server would lower it here)
-    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.engine) S.engine = last.engine; if (last.mtp != null) S.mtp = last.mtp ? "on" : "off"; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm;
+    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.engine) S.engine = last.engine; if (last.mtp != null) S.mtp = last.mtp ? "on" : "off"; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm; $("leaveroom").checked = !!last.leave_room;
     if (last.model) S.sel = last.model;
   }
   $("m-ondemand").disabled = !s.on_demand;
@@ -606,7 +607,7 @@ async function planAll() {
       const k = planKey(path);
       if (S.plans[k]) continue;
       const s = settings();
-      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}&engine=${s.engine}&mtp=${s.mtp}&agent=${s.agent ? 1 : 0}`); }
+      try { S.plans[k] = await api(`/api/plan?model=${encodeURIComponent(path)}&ram=${s.ram}&vram=${s.vram}&ctx=${s.ctx}&mode=${s.mode}&engine=${s.engine}&mtp=${s.mtp}&agent=${s.agent ? 1 : 0}&leave_room=${s.leave_room ? 1 : 0}`); }
       catch (e) { S.plans[k] = { kind: "error", verdict: "error", reasons: [e.message] }; }
       paintModels();
     }
@@ -1254,6 +1255,7 @@ window.addEventListener("hashchange", openHash);
   seg("#ctx", "ctx", settingsChanged); seg("[data-seg=mode]", "mode", settingsChanged); seg("#engine", "engine", settingsChanged); seg("#mtp", "mtp", settingsChanged);
   paintRanges();
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; segPainters.forEach(p => p()); } settingsChanged(); };
+  $("leaveroom").onchange = () => settingsChanged();
   await loadModels(false);
   if (S.sys.llama_found === false) askLlama();
   else if (!S.models.length && !(S.sys.last || {}).model && !S.sys.pick) { openS(); S.pickLoaded = true; loadPick(); }   // first run: suggest a model

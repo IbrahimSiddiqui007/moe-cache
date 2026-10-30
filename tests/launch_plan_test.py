@@ -241,6 +241,44 @@ def injection_test(model):
     return bad
 
 
+def leave_room_test(model):
+    """--leave-room (owner 2026-10-30): RAM = total minus max(8 GiB, 25 %), 2 GB of GPU memory kept free, -t = physical cores - 2, the low-priority marker;
+    a --ram or -t the user gave is kept."""
+    bad = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in ("llama-server", "libggml-moe-cache.so"):
+            open(os.path.join(tmp, f), "w").close()
+        saved = (mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS)
+        mc.CACHE_DIR = os.path.join(tmp, "cache"); mc.KEY_FILE = os.path.join(mc.CACHE_DIR, "api.key")
+        mc.WINDOWS = False
+        mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
+
+        class M(FakeMachine):
+            def physical_cores(self): return 16
+
+        def plan(*more):
+            a, extra, argv = mc.parse_server([model, "--llama-server", os.path.join(tmp, "llama-server"), "--no-pin", "--always-plugin", "--plan-json", *more])
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                return mc.launch_plan(a, extra, argv, machine=M(tmp, 16304, 15000, avail=30e9), quiet=True)
+        try:
+            base, lr, lr_ram, lr_t = plan(), plan("--leave-room"), plan("--leave-room", "--ram", "12"), plan("--leave-room", "--", "-t", "4")
+            checks = [
+                (base.a.ram is None and "MOE_CACHE_LEAVE_ROOM" not in dict(base.env) and "-t" not in base.cmd, "without it: no --ram, no -t, no marker"),
+                (lr.a.ram == "25.7", f"RAM: 32 GiB minus 8 GiB = 25.7 GB ({lr.a.ram})"),
+                (dict(lr.env).get("MOE_CACHE_LEAVE_ROOM") == "1", "low-priority marker in the environment"),
+                (lr.cmd[lr.cmd.index("-t") + 1] == "14" if "-t" in lr.cmd else False, "-t 14 on 16 physical cores"),
+                (int(lr.n_cpu_moe) >= int(base.n_cpu_moe), f"2 GB of GPU memory kept free: no more GPU expert layers than without ({base.n_cpu_moe} -> {lr.n_cpu_moe} on the CPU)"),
+                (lr_ram.a.ram == "12", "--ram 12 given: kept"),
+                (lr_t.cmd.count("-t") == 1 and lr_t.cmd[lr_t.cmd.index("-t") + 1] == "4", "-t 4 given: kept, no second -t"),
+            ]
+            for ok, what in checks:
+                print("  " + ("ok  " if ok else "FAIL") + " --leave-room: " + what)
+                bad += not ok
+        finally:
+            mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS = saved
+    return bad
+
+
 def page_test(model):
     """The control page's plan (ui.plan_model) comes from the launcher's plan: same engine, same GPU layers, same micro-batch, same KV type as `server --plan-json`
     for the arguments the page's Start button passes, on both fake machines, for exact / fast / hybrid, stock / plugin, 8k..256k."""
@@ -297,7 +335,7 @@ def main():
             for cname, opts, extra in CASES:
                 results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
     fp = fingerprint(model)
-    inj_bad = injection_test(model) + page_test(model)
+    inj_bad = injection_test(model) + leave_room_test(model) + page_test(model)
     # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
     consistent_bad = 0
     with tempfile.TemporaryDirectory() as tmp:

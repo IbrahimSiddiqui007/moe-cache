@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+| Area | Change |
+|---|---|
+| Leave room for me | `--leave-room` and a control-page box for using the PC while a model runs (owner 2026-10-30: a big-model run made the desktop PC stutter): the server keeps max(8 GiB, 25 %) of the RAM free instead of max(4 GiB, 12.5 %), at least 2 GB of GPU memory, 2 physical cores, and runs at a lower priority (Windows below normal, Linux nice 10). Same rule on Linux and Windows; `MOE_CACHE_LEAVE_ROOM=1` turns it on for good. README and TROUBLESHOOTING: plug the monitor into the motherboard when the CPU has graphics |
+
 ## 0.3.3 (2026-10-30)
 
 - **The Linux `-ggml0.26` tarball includes llama.cpp** (the twin of the Windows kit): the official, unmodified llama.cpp b11966 `ubuntu-vulkan-x64` build (Vulkan + CPU backends)

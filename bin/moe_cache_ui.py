@@ -219,10 +219,10 @@ class PagePlanMachine(mc.Machine):
         return text
 
 
-def launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls):
+def launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False):
     """The launcher's own plan for these settings (XA-2): the same arguments the Start button passes, planned quietly in this process with
     mc.launch_plan; nothing is started or written. Raises RuntimeError with the planner's own words when the model cannot be planned."""
-    s = {"model": path, "ctx": ctx, "ram": ram, "vram": vram, "mode": mode, "agent": agent, "engine": engine, "mtp": mtp, "llama_server": ls}
+    s = {"model": path, "ctx": ctx, "ram": ram, "vram": vram, "mode": mode, "agent": agent, "engine": engine, "mtp": mtp, "llama_server": ls, "leave_room": leave_room}
     args = server_args(s)
     i = args.index("--")
     a, extra, argv = mc.parse_server(args[:i] + ["--plan-json"] + args[i:])
@@ -424,11 +424,13 @@ def windows_amd_rules(gpu, path, agent=False, windows=WINDOWS):
     return reasons
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None):
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None, leave_room=False):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units).
     engine: auto (the launcher decides), plugin (--always-plugin) or stock (--stock). mtp: None (auto), True, False; ls: llama-server for its MTP check."""
     if engine == "stock":
         mode = "exact"                             # --fast and --hybrid need the plugin
+    if leave_room and not ram:
+        ram = mc.leave_room_ram_gb(mc.Machine())    # the launcher's --leave-room budget, so the fit decision below is the one the start makes
     stock_fits, size, avail = mc.decide(path, ram)     # the launcher's own stock-or-plugin rule: does it fit?
     size = size or 0
     gpu = _GPU["gpu"] if WINDOWS else None
@@ -448,7 +450,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     else:
         R.append("free RAM unknown: set a RAM budget")
     try:
-        lp = launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls)     # engine, GPU layers, micro-batch, KV: what the launcher would start with
+        lp = launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room)     # engine, GPU layers, micro-batch, KV: what the launcher would start with
         plan, tuned, stock = lp.planner_info, lp.tuned, lp.engine == "stock"
     except Exception as e:
         stock = mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
@@ -532,6 +534,8 @@ def server_args(s):
         a.append("--agent")
         if s.get("no_warm"):
             a.append("--no-warm")          # neither restores nor saves agent conversations
+    if s.get("leave_room"):
+        a.append("--leave-room")
     if s.get("llama_server"):
         a += ["--llama-server", s["llama_server"]]
     return a + ["--", "--metrics"]          # the API key goes to the launcher in LLAMA_API_KEY (child_env), never on a command line
@@ -1849,12 +1853,12 @@ class Handler(BaseHTTPRequestHandler):
                 m = self.known(q.get("model"))
                 ps = self.settings(dict(q, model=m))             # the same checks as Start (numbers in range, no nan / inf)
                 q = {"ram": str(ps["ram"]) if "ram" in ps else "", "vram": str(ps["vram"]) if "vram" in ps else "", "ctx": str(ps.get("ctx", 8192)),
-                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"], "mtp": ps["mtp"]}
-                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"])
+                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"], "mtp": ps["mtp"], "leave_room": ps["leave_room"]}
+                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"], q["leave_room"])
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
-                                                                             q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls))
+                                                                             q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls, q["leave_room"]))
                 return self.send(200, dict(hit[1], here=measured_here(m)))       # the benchmark lines are fresh even when the plan is cached
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
@@ -2054,7 +2058,8 @@ class Handler(BaseHTTPRequestHandler):
         s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("exact", "fast", "hybrid") else "exact",
              "engine": d.get("engine") if d.get("engine") in ("auto", "plugin", "stock") else "auto",
              "mtp": {"on": True, "off": False}.get(str(d.get("mtp")).lower()),
-             "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+             "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"),
+             "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
         if s["engine"] == "stock":
             s["mode"] = "exact"                   # --fast and --hybrid need the plugin
         for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),
