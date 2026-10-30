@@ -13,10 +13,11 @@ No model yet? `python3 bin/moe_cache.py pick` names one for your machine and pri
 **Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
 
 You need: Linux, `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release), `g++`, `python3`, and a MoE model in GGUF format.
-The plugin is built and tested against two llama.cpp versions, and **a plugin build only works with the ggml backend API it was compiled for**:
+The plugin is built and tested against three llama.cpp versions, and **a plugin build only works with the ggml backend API it was compiled for**:
 
 | llama.cpp | ggml | backend API | build the plugin with |
 |---|---|---|---|
+| release **b11966** = commit `ff0d396e3` (2026-10-28; the build the Windows kit bundles; the vendored headers differ from it by new declarations only, `tools/check_ggml_headers.py`) | 0.28.0 | 3 | `GGML_API=3 ./build.sh` |
 | commit `23b0202a1` (2026-10-10; GLM-5.3-Flash and its MTP support are in) | 0.26.0 | 3 | `GGML_API=3 ./build.sh` (add `BUILD_DIR=build-v3` to keep both builds) |
 | commit `7fe450e19` (2026-09-23; Arch `llama.cpp-cuda` 0.5.0-1) | 0.25.1 | 2 | `./build.sh` |
 

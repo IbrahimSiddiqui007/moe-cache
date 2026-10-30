@@ -18,7 +18,7 @@ jobs:
   identity:
     runs-on: ubuntu-22.04
     timeout-minutes: 75
-    continue-on-error: ${{ matrix.name == 'master-api3' }}
+    continue-on-error: ${{ matrix.tested == 'no' }}      # builds the plugin is not (yet) pinned to: reported, never blocking
     defaults:
       run:
         shell: bash          # bash -eo pipefail: a FAIL from identity.sh must fail the step even through tee
@@ -26,9 +26,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "ggml-0.25-api2", sha: "7fe450e19305b828c199d602c23a8337aaa1f03b", api: "2" }
-          - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3" }
-          - { name: "master-api3", sha: "master", api: "3" }
+          - { name: "ggml-0.25-api2", sha: "7fe450e19305b828c199d602c23a8337aaa1f03b", api: "2", tested: "yes" }
+          - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3", tested: "yes" }
+          # release b11966 = ggml 0.28.0 (the build the Windows kit bundles); named by commit in MOE_CACHE_TESTED_GGML. The vendored headers (third_party/ggml-v3, from 0.26) differ from it
+          # by new declarations only (tools/check_ggml_headers.py)
+          - { name: "ggml-0.28-b11966-api3", sha: "ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1", api: "3", tested: "yes" }
+          # the newest release at the time of writing: a candidate for the next pin (the plugin may warn "tested with ggml" here: that is the point)
+          - { name: "ggml-b12015-api3", sha: "a34de8618b25dfc32ee43749db47d767a9f0a25d", api: "3", tested: "no" }
+          - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -220,7 +225,7 @@ jobs:
           grep -q "moe-cache: exec-times: .* pool runs" ident_exec/plugin.log && grep -q "moe-cache: seg-times: between our graph splits" ident_exec/plugin.log || { echo "FAIL: the N23-F6 / N25 timers printed nothing"; exit 1; }
           grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_exec/plugin.log    # the executor really ran (it steps aside silently on repacked weights)
           grep -q "read-only mappings of the model file" ident_exec/plugin.log || { echo "FAIL: the file-view cache (Linux default) was not used"; exit 1; }
-          if [ "${{ matrix.name }}" != master-api3 ] && grep "tested with ggml" ident_exec/plugin.log; then echo "FAIL: the plugin calls this pinned (tested) ggml untested (MOE_CACHE_TESTED_GGML)"; exit 1; fi
+          if [ "${{ matrix.tested }}" = yes ] && grep "tested with ggml" ident_exec/plugin.log; then echo "FAIL: the plugin calls this pinned (tested) ggml untested (MOE_CACHE_TESTED_GGML)"; exit 1; fi
 
       - name: Identity with GGML_CPU_TILED_MM_FORCE=1 (stock tiles every expert, so the executor must hand every op back) - API 3 rows
         if: matrix.api == '3'

@@ -39,6 +39,7 @@
 #include <unordered_set>
 #include "platform.h"
 #include "mc_args.h"
+#include "mc_tested.h"
 #include "mc_rebalance.h"
 #ifndef _WIN32
 #include <fcntl.h>
@@ -76,33 +77,20 @@ static FILE * fopen_private(const char * path) {
 #endif
 }
 
-// ggml versions CI runs this build against (comma-separated): API 2 = identity CI at 7fe450e19; API 3 = identity CI at 23b0202a1 (0.26.0)
-// and Windows CI + the Windows test PC at release b11669 (0.27.0)
+// ggml builds CI runs this build against (comma-separated, src/mc_tested.h): API 2 = identity CI at 7fe450e19 (0.25.1); API 3 = identity CI at 23b0202a1
+// (0.26.0), Windows CI + the Windows test PC at release b11669 (0.27.0, any build of it) and identity + Windows CI at release b11966 (0.28.0, named by
+// commit because later 0.28.0 builds changed a struct layout without a version bump)
 #ifndef MOE_CACHE_TESTED_GGML
 #if GGML_BACKEND_API_VERSION >= 3
-#define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0"
+#define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0, 0.28.0@ff0d396e3"
 #else
 #define MOE_CACHE_TESTED_GGML "0.25.1"
 #endif
 #endif
 
-// true when v is one of the comma-separated versions in MOE_CACHE_TESTED_GGML
+// true when this ggml build is in MOE_CACHE_TESTED_GGML
 static bool moe_cache_tested_ggml(const char * v) {
-    const size_t n = strlen(v);
-    for (const char * p = MOE_CACHE_TESTED_GGML; *p; ) {
-        while (*p == ' ' || *p == ',') {
-            p++;
-        }
-        const char * e = p;
-        while (*e && *e != ',') {
-            e++;
-        }
-        if (n > 0 && (size_t)(e - p) == n && strncmp(p, v, n) == 0) {
-            return true;
-        }
-        p = e;
-    }
-    return false;
+    return mctested::tested(MOE_CACHE_TESTED_GGML, v, ggml_commit());
 }
 
 // readable without loading the library (grep -a): lets the launcher pick the build that matches a llama-server's ggml
