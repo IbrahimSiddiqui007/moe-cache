@@ -113,6 +113,15 @@ struct state_t {
 #else
     static constexpr bool win_buffered = false, win_random = false;
 #endif
+    // BO-1 (MOE_CACHE_PACK, see bin/moe_cache_pack.py): MODEL.moepack holds each expert's gate/up/down slices in one 4 KiB-aligned block; a missing expert is
+    // then one large unbuffered read instead of three. Replaces the file-view cache while it is in use (reads fill private memory).
+    struct pack_layer_t { uint64_t base = 0, stride = 0; int n_expert = 0, n = 0; std::string name[4]; size_t nb2[4] = {}, in_off[4] = {}; };
+    bool   pack_on = false;
+    plat::file_t pack_fd;
+    std::string pack_path;
+    std::vector<pack_layer_t> pack_layers;
+    std::unordered_map<std::string, std::pair<int, int>> pack_by_name;   // tensor name -> (layer record, slot)
+    std::atomic<uint64_t> pack_reads{0}, pack_bytes{0}, pack_slices{0}, pack_fallbacks{0};
     bool   win_view = false;                    // file-view cache (default on Windows and Linux; MOE_CACHE_WIN_VIEW=0 / MOE_CACHE_LINUX_VIEW=0 turn it off; see the constructor)
     std::vector<const char *> views;            // win_view: one read-only view per model file (split GGUF)
     std::vector<size_t> view_sizes;
@@ -388,6 +397,7 @@ struct state_t {
             shard_paths.push_back(shards[si]);
             fds_buf.push_back(plat::file_t());
         }
+        pack_try_open();
 #ifdef _WIN32
         // Windows default (idea I47; MOE_CACHE_WIN_VIEW=0 goes back to private memory): keep the cached experts in read-only views of the model files.
         // PC cold ABBA vs stock at launcher defaults (RESULTS 59): Flash-Next IQ3_XXS 19.86 vs 15.14 tok/s, IQ2_XS 21.94 vs 14.89.
@@ -399,6 +409,9 @@ struct state_t {
         win_view = true;
         if (const char * v = getenv("MOE_CACHE_WIN_VIEW")) {
             win_view = strcmp(v, "0") != 0;
+        }
+        if (pack_on) {
+            win_view = false;       // the pack's reads fill private memory
         }
         if (win_view) {
             for (const std::string & sp : shard_paths) {
@@ -427,6 +440,9 @@ struct state_t {
         win_view = true;
         if (const char * v = getenv("MOE_CACHE_LINUX_VIEW")) {
             win_view = strcmp(v, "0") != 0;
+        }
+        if (pack_on) {
+            win_view = false;       // the pack's reads fill private memory
         }
         if (win_view) {
             for (const std::string & sp : shard_paths) {
@@ -784,6 +800,7 @@ struct state_t {
 #include "mc_state_io.inl"
 #include "mc_state_profile.inl"
 #include "mc_state_lru.inl"
+#include "mc_state_pack.inl"
 };
 
 // The state lives on the heap; a static guard ends it at exit. Normally (threads alive) it is deleted: threads joined, profile saved. When the

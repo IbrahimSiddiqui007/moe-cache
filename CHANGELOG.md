@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Expert pack (BO-1, off until a pack exists)**: `moe_cache.py pack MODEL.gguf` writes `MODEL.moepack` next to the model (the GGUF is untouched): for every (layer, expert) one 4 KiB-aligned block with its gate, up and down slices. When the pack is there and matches the model (tensor table, file sizes, 16 sampled pages), a missing expert is ONE unbuffered read instead of three (the PC's SSD reads 2688 KiB at 3.47 GB/s but 896 KiB at 1.90 GB/s, RESULTS 73); the slices are copied to the same places, so the tokens are the same. The pack replaces the file-view cache while it is in use. `MOE_CACHE_PACK=0` turns it off, `MOE_CACHE_PACK=PATH` names another file. Not measured on the PC yet; tests/pack_test.py, CI identity steps with a wrong-offset mutant.
+
 ## 0.3.2 (2026-10-30)
 
 - **Security and saved-state fixes (external audit of v0.3.1, six confirmed bugs; tests/security_test.py)**:

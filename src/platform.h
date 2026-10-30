@@ -183,6 +183,22 @@ inline FILE * fopen_utf8(const char * path, const char * mode) {
 #endif
 }
 
+// 64-bit seek / tell of a FILE (the pack file and the model shards are far over 2 GiB)
+inline int fseek64(FILE * f, long long off, int whence) {
+#ifdef _WIN32
+    return _fseeki64(f, off, whence);
+#else
+    return fseeko(f, (off_t) off, whence);
+#endif
+}
+inline long long ftell64(FILE * f) {
+#ifdef _WIN32
+    return _ftelli64(f);
+#else
+    return (long long) ftello(f);
+#endif
+}
+
 // ---- files ----
 // direct = bypass the OS page cache (O_DIRECT / FILE_FLAG_NO_BUFFERING). Offsets, lengths and buffers must then be 4096-aligned.
 // random = Windows, buffered: FILE_FLAG_RANDOM_ACCESS (no read-ahead around each read); ignored elsewhere
