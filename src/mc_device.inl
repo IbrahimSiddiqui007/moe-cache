@@ -114,8 +114,10 @@ const char * reg_name(ggml_backend_reg_t) {
     return "MOE_CACHE";
 }
 
+bool g_layout_bad = false;   // set by ggml_backend_init when the running ggml lays out one of our structs differently: the registry then lists no device
+
 size_t reg_count(ggml_backend_reg_t) {
-    return 1;
+    return g_layout_bad ? 0 : 1;
 }
 
 ggml_backend_dev_t reg_get(ggml_backend_reg_t reg, size_t) {
@@ -139,6 +141,43 @@ const ggml_backend_reg_i g_reg_i = {
     /* .get_proc_address = */ reg_proc,
 };
 
+// Layout self-test (audit row 10). ggml reads three of the structs the plugin builds through the plugin's own pointer: ggml_backend_buffer_type,
+// ggml_backend_device and ggml_backend. Each is `interface (a row of function pointers), then data fields`. If ggml appends a slot to such an interface
+// without a backend API bump (it did for ggml_backend_buffer, master 418f905a4), the data fields move: ggml reads `device` / `reg` from a slot where
+// the plugin has something else, and a new function slot reads the plugin's next field as a function. Padding cannot help (the plugin owns the struct),
+// so the plugin asks ggml where it reads the field: it hands the accessor an array of distinct numbers and sees which one comes back. The reg struct
+// is only read for its interface (ggml_backend_init pads it with zeros instead). Returns "" when ggml agrees with the headers.
+std::string ggml_struct_layout_mismatch() {
+    constexpr int N = 96;
+    constexpr uintptr_t B = 0x10000;
+    void * a[N];
+    for (int i = 0; i < N; i++) {
+        a[i] = (void *) (B + (uintptr_t) i * sizeof(void *));
+    }
+    auto slot = [&](const void * r) -> long {
+        const uintptr_t v = (uintptr_t) r;
+        return (v >= B && v < B + N * sizeof(void *) && (v - B) % sizeof(void *) == 0) ? (long) ((v - B) / sizeof(void *)) : -1;
+    };
+#ifdef MOE_CACHE_TEST_MUTANT_LAYOUT      // CI only: a build that expects another layout must refuse to run
+    const long skew = 1;
+#else
+    const long skew = 0;
+#endif
+    struct { const char * what; long got, want; } t[] = {
+        { "ggml_backend_buffer_type.device", slot(ggml_backend_buft_get_device((ggml_backend_buffer_type_t) a)),
+          (long) (offsetof(ggml_backend_buffer_type, device) / sizeof(void *)) + skew },
+        { "ggml_backend.device", slot(ggml_backend_get_device((ggml_backend_t) a)), (long) (offsetof(ggml_backend, device) / sizeof(void *)) },
+        { "ggml_backend_device.reg", slot(ggml_backend_dev_backend_reg((ggml_backend_dev_t) a)), (long) (offsetof(ggml_backend_device, reg) / sizeof(void *)) },
+    };
+    for (const auto & x : t) {
+        if (x.got != x.want) {
+            return std::string("the running ggml reads ") + x.what + " at slot " + std::to_string(x.got) + ", the plugin's headers put it at slot " + std::to_string(x.want) +
+                   " (ggml changed a struct without a backend API bump)";
+        }
+    }
+    return "";
+}
+
 }
 
 extern "C" MOE_CACHE_EXPORT ggml_backend_reg_t ggml_backend_init(void) {
@@ -146,8 +185,19 @@ extern "C" MOE_CACHE_EXPORT ggml_backend_reg_t ggml_backend_init(void) {
     // the DLL has its own C runtime state; unbuffered, so our lines reach the log even when the process dies right after (a crash in CI left none)
     setvbuf(stderr, nullptr, _IONBF, 0);
 #endif
-    static ggml_backend_reg reg = { GGML_BACKEND_API_VERSION, g_reg_i, nullptr };
-    return &reg;
+    // reg is read by ggml for its interface only; zeros after it make every slot a newer ggml appends read as "not supported"
+    struct reg_padded { ggml_backend_reg r; void * spare[16]; };
+    static reg_padded reg = { { GGML_BACKEND_API_VERSION, g_reg_i, nullptr }, {} };
+    static const bool once = [] {
+        const std::string m = ggml_struct_layout_mismatch();
+        if (!m.empty()) {
+            g_layout_bad = true;
+            fprintf(stderr, "moe-cache: %s: plugin not loaded, the model loads the normal way. Use the plugin build that matches your llama.cpp (docs/QUICKSTART.md)\n", m.c_str());
+        }
+        return true;
+    }();
+    (void) once;
+    return &reg.r;
 }
 
 // LD_PRELOAD=libggml-moe-cache.so registers the backend at start-up. Needed for builds that link their backends directly,

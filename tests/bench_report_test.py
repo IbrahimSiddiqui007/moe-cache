@@ -22,6 +22,9 @@ dev = lambda *names: "Available devices:\n" + "".join(f"  {n}: Some GPU (16304 M
 for names, want in ((("CUDA0",), "CUDA"), (("Vulkan0",), "Vulkan"), (("ROCm0",), "ROCm-HIP"), (("SYCL0",), "SYCL"), ((), "CPU only"),
                     (("Vulkan0", "Vulkan1"), "Vulkan"), (("CUDA0", "Vulkan0"), "CUDA + Vulkan")):
     check(mb.backend_of(dev(*names)) == want, f"backend: {list(names) or 'no device'} -> {want}")
+for names, want in ((("MTL0",), "Metal"), (("MUSA0",), "MUSA"), (("CANN0",), "CANN"), (("RPC0",), "RPC (remote)"), (("Foo0",), "Foo")):
+    check(mb.backend_of(dev(*names)) == want, f"backend: {list(names)} -> {want}")
+check(mb.backend_of("ggml_vulkan: Found 1 devices:\nAvailable devices:\n  CPU: x\n") == "CPU only", "backend: a CPU line is not a GPU")
 check(mb.backend_of("") == "UNKNOWN - please state it" and mb.backend_of("error: unknown option") == "UNKNOWN - please state it", "backend: unreadable -> UNKNOWN")
 
 # 2. order and plan summary

@@ -970,6 +970,10 @@ try:
     check(mc.ls_api(os.path.join(d28, "llama-server.exe")) == "3", "windows: a ggml-base.dll that says 0.28.0 (b11966) is API 3; llama.cpp's own 0.8.0 is skipped")
 finally:
     mc.WINDOWS = saved_win
+# a stray version string in front of ggml's own (audit row 12): the one followed by the commit string wins; without a pair the highest known one
+check(mc.ggml_api_in_dll(b"MZ\x000.30.1\x00junk\x000.25.1\x00abc1234def\x00tail") == "2", "windows: stray 0.30.1 before ggml 0.25.1 + its commit string -> API 2")
+check(mc.ggml_api_in_dll(b"MZ\x000.8.0\x000.28.0\x00unknown\x00") == "3", "windows: adjacent version strings are all seen (0.8.0 skipped, 0.28.0 + unknown -> API 3)")
+check(mc.ggml_api_in_dll(b"\x000.25.1\x00x\x000.27.0\x00") == "3" and mc.ggml_api_in_dll(b"\x001.2.3\x00") is None, "windows: no commit pair -> the highest known version; none -> None")
 
 # switching models while a server runs: the top bar offers "Switch to <name>" when the selection differs; the list marks the running one; confirm when busy
 page = open(ui.PAGE, encoding="utf-8").read()

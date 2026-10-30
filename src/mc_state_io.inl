@@ -754,7 +754,8 @@
                 v.nb[3] = v.nb[2];
                 v.data = j.dst;
                 v.view_src = nullptr;
-                repack_buf->iface.set_tensor(repack_buf, &v, bounce + shift, 0, j.nb2);
+                v.buffer = repack_buf;          // ggml_backend_tensor_set writes through the tensor's own buffer
+                ggml_backend_tensor_set(&v, bounce + shift, 0, j.nb2);
                 repack_jobs++;
             } else {
                 memcpy(j.dst, bounce + shift, j.nb2);

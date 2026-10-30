@@ -248,17 +248,28 @@ def ggml_api_of(major, minor):
     return "3" if major == 0 and minor > max(n for _, n in GGML_API_OF) else None
 
 
+def ggml_api_in_dll(data):
+    """Backend API from the bytes of ggml-base.dll. ggml's version string ("0.27.0") sits next to its commit string (hex digits or "unknown"), so a
+    version followed by one of those wins over any other version-looking string in the file (a stray "0.30.1" from a library must not pick API 3 for a
+    ggml 0.25). Without such a pair: the highest known version in the file. None when there is no usable version."""
+    found = []
+    for m in re.finditer(rb"\x00(\d+)\.(\d+)\.(\d+)(?=\x00((?:[0-9a-fA-F]{7,40}|unknown)\x00)?)", data):
+        v = (int(m.group(1)), int(m.group(2)))
+        if ggml_api_of(*v):
+            found.append((v, m.group(4) is not None))
+    for v, anchored in found:
+        if anchored:
+            return ggml_api_of(*v)
+    return ggml_api_of(*max(v for v, _ in found)) if found else None
+
+
 def ls_api(ls):
     """Backend API of the ggml this llama-server uses, from its libggml-base version (0.24-0.25 -> 2, 0.26 and newer -> 3); None when unknown."""
     if WINDOWS:
         # no ldd there (the warning never fired on the Claw): ggml-base.dll next to llama-server.exe holds its version as a plain string ("0.27.0")
         try:
-            data = open(os.path.join(os.path.dirname(which(ls)), "ggml-base.dll"), "rb").read()
-            for m in re.finditer(rb"\x00(\d+)\.(\d+)\.(\d+)\x00", data):
-                v = ggml_api_of(int(m.group(1)), int(m.group(2)))
-                if v:
-                    return v
-        except OSError:
+            return ggml_api_in_dll(open(os.path.join(os.path.dirname(which(ls)), "ggml-base.dll"), "rb").read())
+        except (OSError, TypeError):
             pass
         return None
     for line in ldd(ls).splitlines():
