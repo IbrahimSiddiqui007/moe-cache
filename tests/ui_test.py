@@ -845,6 +845,12 @@ for nm, t in (("light", light), ("dark", dark)):
     for nm2 in ("warn", "muted", "text", "bad"):
         for bg in ("panel", "bg"):
             c = contrast(t[bg], t[nm2]); check(c >= 4.5, f"{nm} theme, --{nm2} on --{bg} (card, model list): contrast {c:.1f}")
+    for sel in ("button.primary", ".msg.user"):     # Start, Remember the choice, the user's chat bubble: text on the accent (was ~3:1 in the dark theme)
+        r_ = {}
+        for m in re.finditer(r"(?:^|\})\s*" + re.escape(sel) + r"\s*\{([^}]*)\}", html):    # every rule in order, later declarations win (a width-only rule comes last)
+            r_.update((k.strip(), v.strip()) for k, v in (d.split(":", 1) for d in m.group(1).split(";") if ":" in d))
+        c = contrast(resolve(r_["background"], t), resolve(r_["color"], t))
+        check(c >= 4.5, f"{nm} theme, {sel} text on the accent: contrast {c:.1f} (>= 4.5)")
 check(resolve(rule(".cache")["color"], light) == light["text"], "the 'runs with moe-cache' class is neutral text, not the warning colour")
 check("seg button.on { background:var(--accent); color:#fff" not in html and "color:var(--bg)" not in rule(".seg button.on").get("color", ""), "no leftover selected rule with the page background as text colour")
 

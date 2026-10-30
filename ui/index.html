@@ -5,16 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moe-cache</title>
 <style>
-:root { --bg:#f8efc9; --panel:#fffbe8; --line:#d8c98f; --text:#2a1b14; --muted:#645241; --accent:#c8442a; --ok:#2f7a45; --warn:#9a5a10; --bad:#b32e1c; --gpu:#5f4796; --code:#efe2aa; --side:#a9c4d4; --top:#6b99b3; --ink:#2a1b14; --on-ink:#fffbe8; --shade:rgba(42,27,20,.28); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --shade:rgba(0,0,0,.45); } }
-:root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --shade:rgba(0,0,0,.45); }
+:root { --bg:#f8efc9; --panel:#fffbe8; --line:#d8c98f; --text:#2a1b14; --muted:#645241; --accent:#c8442a; --ok:#2f7a45; --warn:#9a5a10; --bad:#b32e1c; --gpu:#5f4796; --code:#efe2aa; --side:#a9c4d4; --top:#6b99b3; --ink:#2a1b14; --on-ink:#fffbe8; --on-accent:#fffbe8; --shade:rgba(42,27,20,.28); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --shade:rgba(0,0,0,.45); } }
+:root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --shade:rgba(0,0,0,.45); }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
 html, body { height:100%; }
 body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
 a { color:var(--accent); }
 button { font:inherit; color:var(--text); background:var(--code); border:1px solid var(--line); border-radius:6px; padding:5px 10px; cursor:pointer; white-space:nowrap; }
-button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
 button.danger { background:var(--bad); border-color:var(--bad); color:#fff; }
 button.ghost { background:transparent; border-color:transparent; }
 button.icon { padding:4px 8px; background:transparent; border-color:transparent; font-size:16px; line-height:1; }
@@ -188,7 +188,7 @@ button { border:1.5px solid var(--ink); border-radius:4px; background:var(--pane
 button:hover:not(:disabled) { transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--shade); }
 button:active:not(:disabled) { transform:translate(2px,2px); box-shadow:0 0 0 var(--shade); }
 button.ghost, button.icon, .item .x, .menu button, .chips .acts button, .seg button, .drawer header button { box-shadow:none; transform:none; }
-button.primary { background:var(--accent); border-color:var(--ink); color:#fffbe8; font-weight:600; }
+button.primary { background:var(--accent); border-color:var(--ink); color:var(--on-accent); font-weight:600; }
 button.danger { border-color:var(--ink); }
 .seg { border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); }
 .seg button.on { background:var(--ink); color:var(--on-ink); }
@@ -229,7 +229,7 @@ button.danger { border-color:var(--ink); }
 .stat b { font-family:ui-monospace, "SF Mono", Consolas, monospace; }
 .chathead { background:var(--bg); border-bottom:2px solid var(--ink); }
 .msgs { background:var(--bg); }
-.msg.user { background:var(--accent); color:#fffbe8; border:1.5px solid var(--ink); border-radius:10px 10px 2px 10px; box-shadow:3px 3px 0 var(--shade); }
+.msg.user { background:var(--accent); color:var(--on-accent); border:1.5px solid var(--ink); border-radius:10px 10px 2px 10px; box-shadow:3px 3px 0 var(--shade); }
 .msg.user .file { color:var(--text); }
 .chip { border-radius:3px; border:1px solid var(--line); background:var(--panel); font-family:ui-monospace, "SF Mono", Consolas, monospace; }
 .composer { background:var(--bg); }
