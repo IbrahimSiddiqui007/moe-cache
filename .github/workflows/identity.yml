@@ -88,6 +88,11 @@ jobs:
           python3 tests/oom_retry_test.py   # GPU out of memory at load: one retry with a new plan
           python3 tests/diffusion_test.py    # moe_cache.py diffusion: command, environment, asserts (S3)
           python3 tests/warm_test.py         # warm-session saver (N27): waits by file size and change, restore, no save while busy; fake server
+          python3 tests/bench_report_test.py   # bench-report (R2-1): sections, backend line, privacy, fit rule, identity; fakes
+          # bench-report for real (stock / moe-cache / moe-cache / stock on Granite, which fits: plugin forced; no systemd-run needed)
+          bin/moe-cache-bench-report granite.gguf --force-plugin --warm --tokens 16 --prompt-tokens 300 --ctx 2048 --out "bench out" | tail -30
+          grep -q "Checks: tokens IDENTICAL; plugin active yes" "bench out"/*.md
+          grep -q '| \*\*Backend\*\* | \*\*CPU only\*\* |' "bench out"/*.md
 
       - name: Control page with the model (GUI1; start, one request, live hit rate, stop through the page)
         env:

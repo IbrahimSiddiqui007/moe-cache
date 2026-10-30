@@ -1,6 +1,6 @@
 moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama-server`. By default the answers mean the same as stock llama.cpp's: up to 128k context the output is identical; at 128k and above the KV cache is stored as q8_0 (`--fast=kv`), which passes the quality gate (`docs/QUALITY_GATE.md`) and `--exact` turns off. **On Windows it is faster than stock** on every model we measured; the **Windows kit** is experimental.
 
-**v0.3.2 is the first release for public testing.** Please try it on your Windows or Linux machine and open an issue with what `python bin/moe_cache.py doctor MODEL.gguf` prints and the speed you see.
+**v0.3.2 is the first release for public testing.** Please try it on your Windows or Linux machine: `python bin/moe_cache.py bench-report MODEL.gguf` (a model bigger than your RAM) measures stock and moe-cache and writes a report to paste into a [Benchmark report issue](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml); the recipe is [docs/SHARE_YOUR_NUMBERS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/SHARE_YOUR_NUMBERS.md). Problems: the Bug report template, with what `doctor` prints.
 
 ## What is new in v0.3.2
 
@@ -13,6 +13,7 @@ moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama
 | Control page | Readable selected and primary buttons in both themes; "Which model?" is a card with your machine, one recommendation and its numbers; MTP draft-head files are no longer listed as models; "Switch to <name>" in the top bar and a menu on every model (right-click, Shift+F10 or ⋮: Start, Switch, Stop, Plan / Why, Show in folder, Copy path); a "llama.cpp not found" dialog that remembers the path |
 | Newer llama.cpp | Fixed a crash at start with llama.cpp builds after b12000 (ggml changed a struct layout without a version bump), and b11966+ (ggml 0.28) now gets the plugin instead of a "DLL not found" message |
 | Finding llama-server | One search for the launcher, `check`, the picker and the page: `LLAMA_SERVER` (on Windows also from the registry, where `setx` writes it), the page's saved path, PATH, `C:\llama*`, your user folder, Downloads; the newest build a shipped plugin supports wins, one log line names it |
+| Share your numbers | `bench-report` (Windows and Linux): stock vs moe-cache on your machine, a privacy-safe report for a GitHub issue; issue templates for benchmarks and bugs |
 | GPU out of memory at load | The launcher measures free VRAM again, plans again and starts once more instead of stopping |
 | Model picker | Says when the disk is too small for the recommended file, and finds models you already have as Ollama blobs |
 | `doctor` | `check` under a second name; both end with an overview table (system, CPU, RAM, GPU and driver, disk, llama-server, plugin, model) and a "what to fix" list |

@@ -11,6 +11,13 @@
 - **Picker**: no download offered when the disk is too small (it says which model suits and how much disk is missing, and prefers a local file); models Ollama downloaded are
   found as local files (with a readable name); download patterns match only the model's own .gguf files. `tools/check_model_links.py` checks in CI that every model the picker
   can recommend still exists on Hugging Face (metadata only).
+- **`bench-report`: share your numbers** (Reddit feedback): `python bin/moe_cache.py bench-report MODEL.gguf` on Linux and Windows (standard library only,
+  no systemd-run) runs the doctor, then stock and moe-cache through the launcher (stock, moe-cache, moe-cache, stock; cold start by default: page-cache
+  drop on Linux, `--flush-from DIR` on Windows, else stamped WARM) and writes `moe-cache-report-*.md` / `.json`: verdict line, machine, the GPU **backend**
+  read from `llama-server --list-devices`, llama.cpp build, model and quant, both launcher plans, decode / prompt / first token / hit rate, identity of the
+  answers. No prompts, answers, user name, host name or folder names in it. A model that fits in RAM exits with a hint (`--force-plugin` measures anyway).
+  GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). tests/bench_report_test.py; both CIs run a
+  real report on Granite.
 - **Fixed: crash at start with llama.cpp newer than b12000** (master 418f905a4, 2026-10-29): ggml lengthened its buffer interface without a backend
   API bump, which moved the fields of every ggml buffer; the plugin, built with older headers, read the wrong field and llama-server crashed in its
   memory-fit pass (SIGSEGV in `dev_supports_op`, CI master row). The plugin now reads no field of a ggml buffer (`ggml_backend_buffer_get_type()`, its

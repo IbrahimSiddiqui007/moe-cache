@@ -5,6 +5,7 @@
   moe_cache.py pick    [--use agents|chat|docs] [--apply]                  recommend a model for this machine (RAM, VRAM, disk, CPU) and use; --apply uses it
   moe_cache.py doctor  [MODEL.gguf] [--llama-server PATH] [--ram GB]       the same as check (preflight: GPU, driver, RAM, disk, llama-server; what to fix)
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
+  moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md)
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode|claude [--url URL] [--write]        point Hermes Agent, OpenCode or Claude Code at a running server (start it with --agent)
@@ -2650,6 +2651,9 @@ def main():
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
+    if sys.argv[1:2] == ["bench-report"]:     # R2-1: stock vs moe-cache on this machine, a report to paste into a GitHub issue
+        from moe_cache_bench import bench_report
+        return bench_report(sys.argv[2:]) or 0
     if sys.argv[1:2] in (["--version"], ["-V"], ["version"]):
         say(f"moe-cache {VERSION}")
         return 0

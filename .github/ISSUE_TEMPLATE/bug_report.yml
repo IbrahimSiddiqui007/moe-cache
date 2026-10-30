@@ -1,0 +1,40 @@
+name: Bug report
+description: Something does not work, crashes, or the answers look wrong
+labels: ["bug"]
+body:
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of doctor
+      description: "`python bin/moe_cache.py doctor MODEL.gguf` (it checks GPU, driver, RAM, disk, llama-server and the plugin). Remove anything private."
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command you ran (or what you clicked on the control page)
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: The last 40 lines of the output or log
+      render: text
+  - type: dropdown
+    id: stock
+    attributes:
+      label: Does stock llama-server (without moe-cache, same model and settings) do the same?
+      options: ["Yes, stock does it too", "No, only with moe-cache", "Not tried"]
+    validations:
+      required: true
+  - type: input
+    id: llama
+    attributes:
+      label: llama.cpp build and backend
+      placeholder: "b11669 Vulkan zip / own build of commit abc1234 with CUDA"
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else (what you expected, how often it happens)

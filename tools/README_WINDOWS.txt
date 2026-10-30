@@ -45,10 +45,13 @@ launcher then runs it stock by itself.
    - Keep the Windows page file at "system managed" (or 14 GB or more): the cache itself
      costs no commit (it keeps experts in read-only views of the model file), but
      Windows counts the GPU's memory against RAM + page file.
-   - The plugin DLL is ggml-moe-cache-api3.dll (llama.cpp with ggml 0.26 / 0.27);
+   - The plugin DLL is ggml-moe-cache-api3.dll (llama.cpp with ggml 0.26 or newer, b11966+ included);
      ggml-moe-cache-api2.dll is for older llama.cpp (ggml 0.25): moe-cache.bat uses api3; for an
      older llama.cpp run once:  setx MOE_CACHE_LIB "%CD%\ggml-moe-cache-api2.dll"  (in the kit folder).
    - Problems: docs\WINDOWS.md. Report issues at github.com/IbrahimSiddiqui007/moe-cache/issues
      with the output of "python bin\moe_cache.py check MODEL.gguf --run".
+   - Share your speed: python bin\moe_cache.py bench-report D:\models\model.gguf --flush-from D:\other-big-files
+     (a model bigger than your RAM; 5-20 minutes) writes a report to paste into a "Benchmark report"
+     issue. Recipe: docs\SHARE_YOUR_NUMBERS.md. The report holds no prompts, answers or names.
 
 License: see LICENSE.

@@ -209,7 +209,11 @@ Hardware for the other measurements above (not this file table): Intel i7-13620H
 
 ## Benchmark it on your own model and your own use case
 
-The benchmark tool (web page, standard protocol, many-model matrix, quality harness) now lives in its own repository: [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark).
+**Quick, on Windows or Linux:** `python bin/moe_cache.py bench-report MODEL.gguf` runs stock llama.cpp and moe-cache (stock, moe-cache, moe-cache, stock)
+on a model bigger than your RAM and writes a report to paste into a [Benchmark report issue](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml).
+It only measures, and the report holds no prompts, answers or names. Recipe: [docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md). Reports from other machines are very welcome.
+
+The full benchmark tool (Linux) (web page, standard protocol, many-model matrix, quality harness) now lives in its own repository: [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark).
 Clone it next to this folder (or set `MOE_CACHE_DIR`) and it finds the plugin and the planner by itself.
 
 ## How it works

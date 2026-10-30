@@ -152,6 +152,22 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $sc -notmatch "Added") { throw "kit: moe-cache.exe through a symlink did not run moe-cache.bat ($LASTEXITCODE): $sc" }
           $global:LASTEXITCODE = 0   # on-demand --status exits 1 when no model is chosen; that is the expected answer here
 
+      - name: bench-report from the kit (R2-1; real servers stock / moe-cache / moe-cache / stock, Granite fits so the plugin is forced, warm) and its test
+        run: |
+          python tests\bench_report_test.py
+          if ($LASTEXITCODE -ne 0) { throw "bench_report_test failed" }
+          $k = "$env:RUNNER_TEMP\kit\moe-cache-v0.0.0-ci-windows-x64"
+          Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
+          Push-Location $k
+          python bin\moe_cache.py bench-report "$env:GITHUB_WORKSPACE\granite.gguf" --llama-server "$env:LLAMA_DIR\llama-server.exe" --force-plugin --warm --tokens 16 --prompt-tokens 300 --ctx 2048 --out "$env:RUNNER_TEMP\bench out" 2>&1 | Tee-Object $env:RUNNER_TEMP\bench_report.txt
+          $rc = $LASTEXITCODE
+          Pop-Location
+          $md = Get-Content (Get-ChildItem "$env:RUNNER_TEMP\bench out\*.md" | Select-Object -First 1).FullName -Raw
+          if ($rc -ne 0) { throw "bench-report exit $rc" }
+          if ($md -notmatch "Checks: tokens IDENTICAL; plugin active yes") { throw "bench-report: tokens not identical or the plugin was not active" }
+          if ($md -notmatch "\*\*Backend\*\* \| \*\*CPU only\*\*") { throw "bench-report: backend line wrong for the CPU release" }
+          if ($md -match [regex]::Escape($env:USERNAME) -or $md -match [regex]::Escape($env:USERPROFILE)) { throw "bench-report: user name or home folder in the report" }
+
       - name: Launcher on Windows (check, dry run, core detection for pinning)
         run: |
           $env:MOE_CACHE_LIB = "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll"

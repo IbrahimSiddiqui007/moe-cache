@@ -1,0 +1,48 @@
+name: Benchmark report
+description: Share your numbers from `bench-report` (stock llama.cpp vs moe-cache on your machine)
+title: "Benchmark: <model> on <GPU> / <RAM>"
+labels: ["benchmark"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for testing. How to make a report: [docs/SHARE_YOUR_NUMBERS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/SHARE_YOUR_NUMBERS.md).
+        Run `python bin/moe_cache.py bench-report MODEL.gguf` and paste the `.md` file it writes.
+  - type: textarea
+    id: report
+    attributes:
+      label: The report
+      description: Paste the whole moe-cache-report-....md file here.
+      render: markdown
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: GPU backend of your llama.cpp
+      description: The report names it; pick it again here in case it says UNKNOWN.
+      options: ["Vulkan", "CUDA", "ROCm / HIP", "SYCL", "Metal", "CPU only", "other / not sure"]
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU and driver version
+      placeholder: "RX 9070 XT, Adrenalin 25.10.2 / RTX 4060, driver 581.15 / none"
+  - type: input
+    id: os
+    attributes:
+      label: Windows or Linux version
+      placeholder: "Windows 11 24H2 / Ubuntu 24.04"
+  - type: textarea
+    id: unusual
+    attributes:
+      label: Anything unusual during the run
+      description: Browser or game open, laptop on battery, another big program, the model on a USB or SATA drive, ...
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Privacy
+      options:
+        - label: I read the report; it has no private information (it holds no prompts, answers, user name, host name or folder names by design).
+          required: true

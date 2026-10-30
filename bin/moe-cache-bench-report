@@ -1,0 +1,3 @@
+#!/bin/sh
+# moe-cache-bench-report: stock vs moe-cache on this machine, a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md). Windows: python bin\moe_cache.py bench-report ...
+exec "${MOE_CACHE_PYTHON:-python3}" "$(dirname "$0")/moe_cache.py" bench-report "$@"
