@@ -202,6 +202,25 @@ struct state_t {
     std::vector<float> decay_tab;                       // 2^(-dt / half-life) for dt = 0 .. size-1 (beyond: 0)
     uint32_t tok = 0;                                   // decode token counter (classlru clock)
     int    last_dec_layer = -1;
+    bool   track_crf = false;                           // keep the decayed use counts (classlru, or the idle rebalance wants them)
+    // idle rebalance (BO-2): while no graph runs for rb_idle_ms, read the experts with the highest decayed use count that are missing into free room or
+    // the room of the lowest-count resident ones (rb_choose), at most rb_cap_bytes per idle period, one expert at a time, stopping as soon as a graph starts
+    bool   rb_on = false;
+    int    rb_idle_ms = 1500;
+    size_t rb_cap_bytes = (size_t) 512 << 20;
+    double rb_gain = 2.0, rb_min_score = 0.75;
+    std::thread rb_th;
+    std::condition_variable rb_cv;
+    bool   rb_stop = false;
+    int    graph_active = 0;                            // be_compute calls in flight (mu)
+    uint64_t graph_seq = 0;                             // graphs started (mu)
+    uint64_t rb_round_seq = ~0ull;                      // graph_seq of the last rebalance round: one round per idle period
+    std::atomic<uint64_t> last_end_ns{0};               // steady clock, end of the last graph
+    bool   rb_acted = false;                            // the last round read something: measure the next graphs
+    bool   rb_armed_dec = false, rb_armed_pre = false;  // count the hits of the first decode / prefill graph after a rebalance
+    bool   g_saw_dec = false, g_saw_pre = false;
+    uint64_t rb_rounds = 0, rb_reads = 0, rb_bytes_read = 0, rb_swaps = 0, rb_cancelled = 0, rb_evicted_bytes = 0;
+    uint64_t rb_dec_hits = 0, rb_dec_miss = 0, rb_pre_hits = 0, rb_pre_miss = 0;
     uint64_t cls_promotions = 0, cls_demotions = 0;     // touches that moved a node to a higher / lower class list
     int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
     // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
@@ -645,9 +664,26 @@ struct state_t {
                     fprintf(stderr, "moe-cache: warning: MOE_CACHE_POLICY=%s is not known (lru, classlru): using lru\n", v);
                 }
             }
+            if (const char * v = getenv("MOE_CACHE_IDLE_REBALANCE")) {
+                rb_on = strcmp(v, "0") != 0;
+            }
+            if (const char * v = getenv("MOE_CACHE_IDLE_REBALANCE_MS")) {
+                rb_idle_ms = std::max(0, atoi(v));
+                rb_on = rb_on && rb_idle_ms > 0;      // 0 = off
+            }
+            if (const char * v = getenv("MOE_CACHE_IDLE_REBALANCE_MB")) {
+                rb_cap_bytes = (size_t) std::max(1, atoi(v)) << 20;
+            }
+            if (const char * v = getenv("MOE_CACHE_IDLE_REBALANCE_GAIN")) {
+                rb_gain = std::max(1.0, atof(v));
+            }
             const char * kc = getenv("MOE_CACHE_CLASSES");
             const char * hl = getenv("MOE_CACHE_HALFLIFE");
             set_policy(cl, kc ? atoi(kc) : 4, hl ? atof(hl) : 128.0);
+            if (rb_on) {
+                rb_th = std::thread([this] { rb_main(); });
+                fprintf(stderr, "moe-cache: idle rebalance on (after %d ms without a graph, at most %zu MB per idle period)\n", rb_idle_ms, rb_cap_bytes >> 20);
+            }
         }
         if (const char * v = getenv("MOE_CACHE_ROUTE")) {
             route_mode = strcmp(v, "skip") == 0 ? 1 : (strcmp(v, "subst") == 0 ? 2 : 0);
@@ -784,6 +820,7 @@ struct state_t {
 #include "mc_state_io.inl"
 #include "mc_state_profile.inl"
 #include "mc_state_lru.inl"
+#include "mc_state_rebalance.inl"
 };
 
 // The state lives on the heap; a static guard ends it at exit. Normally (threads alive) it is deleted: threads joined, profile saved. When the
