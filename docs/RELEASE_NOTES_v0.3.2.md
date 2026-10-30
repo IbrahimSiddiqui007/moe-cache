@@ -29,7 +29,7 @@ moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama
 
 | Option | What it does | Turn on |
 |---|---|---|
-| Expert pack | `moe_cache.py pack MODEL.gguf` writes a side file with each expert in one block, so a missing expert is one read instead of three (the PC's SSD reads whole experts 83 % faster). Exact. A first version made the cache smaller on Windows; being reworked | `MOE_CACHE_PACK=1` |
+| Expert pack | `moe_cache.py pack MODEL.gguf` writes a side file with each expert in one block, so a missing expert is one read instead of three. Exact. It helps only when the file-view cache is off (`MOE_CACHE_WIN_VIEW=0` / `MOE_CACHE_LINUX_VIEW=0`, private memory): there it read experts 3x faster on the PC. With the default file views, reads are already as fast and the pack gains nothing | `MOE_CACHE_PACK=1` |
 | Idle cache refill | while an agent pauses (a tool running), the plugin refills its RAM cache toward the experts recent turns used | `MOE_CACHE_IDLE_REBALANCE=1` |
 | Frequency-aware cache | ClassLRU replacement instead of LRU: helped the miss-heavy 122B (+1.3-2.9 % decode), within noise on Flash-Next | `MOE_CACHE_POLICY=classlru` |
 
