@@ -26,6 +26,7 @@
   answers. No prompts, answers, user name, host name or folder names in it. A model that fits in RAM exits with a hint (`--force-plugin` measures anyway).
   GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). tests/bench_report_test.py; both CIs run a
   real report on Granite.
+- Docs: `docs/EXACTNESS.md`, one page on what "same tokens as stock" means, every identity check CI runs (incl. mutant builds and llama.cpp master), the PC A/B rule and its limits.
 - **Windows: memory planned against commit, not only free RAM** (XA-3): with a browser and other programs open, Windows' commit (RAM + page file) ran out while
   RAM still looked free; llama-server's prompt cache failed to allocate and llama.cpp crashed (PC, RESULTS 73). The launcher now prints "Windows memory: RAM ... free;
   commit ... free of ..." at start, shrinks its own prompt cache (--cache-ram, only when it chose it) so GPU allocations + prompt cache + 2 GiB fit, and warns when even
