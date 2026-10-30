@@ -55,7 +55,8 @@ saved = (mb.doctor_facts, mb.launcher_plan, mb.run_one, mb.server_info, ui.flush
 def fake_run(model_, mode, a, port, text="Once upon a time"):
     calls.append(mode)
     return {"mode": mode, "decode": 10.0 if mode == "stock" else 20.0, "prefill": 100.0, "prompt_tokens": 2000, "ttft_s": 1.0, "text": FAKE_TEXT[mode],
-            "plugin_active": mode == "moe-cache", "hit_rate": 90.0 if mode == "moe-cache" else None, "load_s": 5.0, "error": ""}
+            "plugin_active": mode == "moe-cache", "hit_rate": 90.0 if mode == "moe-cache" else None, "load_s": 5.0, "error": "",
+            **({"agent_ttft_s": [9.0, 1.0, 0.5] if mode == "stock" else [4.0, 0.8, 0.4], "agent_decode": [10.0, 10.0, 10.0]} if getattr(a, "scenario", "") == "agent" else {})}
 
 
 FAKE_TEXT = {"stock": "same", "moe-cache": "same"}
@@ -104,6 +105,13 @@ try:
     check(mb.bench_report([model, "--out", out, "--warm"]) == 3 and calls == [], "model fits in RAM -> exit 3, nothing run")
     check(mb.bench_report([model, "--out", out, "--warm", "--force-plugin"]) == 0 and len(calls) == 4, "--force-plugin measures anyway")
     plan[0] = "plugin"
+
+    rc = mb.bench_report([model, "--out", out, "--warm", "--scenario", "agent", "--gap", "0"])
+    md = open(os.path.join(out, sorted(f for f in os.listdir(out) if f.endswith(".md"))[-1]), encoding="utf-8").read()
+    check(rc == 0 and "agent turns: time to first token" in md and "9.0 / 1.0 / 0.5" in md and "4.0 / 0.8 / 0.4" in md, "--scenario agent: per-turn time to first token, stock and moe-cache")
+    rc = mb.bench_report([model, "--out", out, "--warm"])
+    md = open(os.path.join(out, sorted(f for f in os.listdir(out) if f.endswith(".md"))[-1]), encoding="utf-8").read()
+    check("agent turns" not in md, "default scenario: no agent row")
 
     mb.doctor_facts = lambda m, ls, ram: (True, {}, ["[FAIL] plugin  not found"])
     check(mb.bench_report([model, "--out", out]) == 2, "a doctor FAIL stops with exit 2")

@@ -147,6 +147,8 @@ def run_one(model, mode, a, port):
         j = json.loads(body); tm = j.get("timings", {})
         res["decode"], res["text"] = tm.get("predicted_per_second"), j.get("content", "")
         res["ttft_s"] = round(tm.get("prompt_ms", 0) / 1000, 2) if tm.get("prompt_ms") is not None else round(time.time() - t1, 2)
+        if getattr(a, "scenario", "") == "agent":
+            res.update(agent_turns(url, a))
         res["plugin_active"] = any("moe-cache: cache mode" in l for l in lines)
         if mode == "moe-cache":
             pid = ui.child_pid(p.pid)
@@ -187,6 +189,31 @@ def server_info(ls):
         return "", "unknown"
 
 
+AGENT_TURNS = ["Read the material above. List the three most important functions it describes and what each one does.",
+               "Now write a short Python function that would test the first of them, with a docstring.",
+               "Shorten that function to the essential lines and explain the change in one sentence."]
+
+
+def agent_turns(url, a):
+    """--scenario agent: one conversation of len(AGENT_TURNS) turns on a long first message (about --prompt-tokens), each later turn adds the answer and a
+    short request (cache_prompt: only the new tokens are processed, as with OpenCode / Hermes), with --gap seconds between turns (a tool running).
+    Returns {'agent_ttft_s': [...], 'agent_decode': [...]}: time to the first token and decode speed per turn."""
+    msgs = [{"role": "system", "content": "Material:\n" + PARA * max(1, a.prompt_tokens // 37)}]
+    ttft, dec = [], []
+    for i, q in enumerate(AGENT_TURNS):
+        if i:
+            time.sleep(a.gap)
+        msgs.append({"role": "user", "content": q})
+        st, body = mc.http(url.replace("/completion", "/v1/chat/completions"),
+                           {"messages": msgs, "max_tokens": a.tokens, "temperature": 0, "seed": 42, "cache_prompt": True}, timeout=3600)
+        if st != 200:
+            break
+        j = json.loads(body); tm = j.get("timings", {})
+        ttft.append(round(tm.get("prompt_ms", 0) / 1000, 2)); dec.append(round(tm.get("predicted_per_second") or 0, 2))
+        msgs.append({"role": "assistant", "content": (j.get("choices") or [{}])[0].get("message", {}).get("content", "")})
+    return {"agent_ttft_s": ttft, "agent_decode": dec}
+
+
 def order(pairs):
     """stock, moe-cache, moe-cache, stock for each pair (both sides see the same warm-up and drift)."""
     return [m for _ in range(pairs) for m in ("stock", "moe-cache", "moe-cache", "stock")]
@@ -204,6 +231,8 @@ def summarize(runs, exact):
     for m, rs in side.items():
         out[m] = {k: mean([r.get(k) for r in rs]) for k in ("decode", "prefill", "ttft_s", "hit_rate", "gb_read", "load_s")}
         out[m]["decode_runs"] = [round(r["decode"], 2) for r in rs if isinstance(r.get("decode"), (int, float))]
+        turns = [r["agent_ttft_s"] for r in rs if r.get("agent_ttft_s")]
+        out[m]["agent_ttft_s"] = [mean([t_[i] for t_ in turns if len(t_) > i]) for i in range(max((len(t_) for t_ in turns), default=0))]
     texts = {m: {r.get("text", "") for r in rs} for m, rs in side.items()}
     if not exact:
         out["identity"] = "n/a (approximate mode)"
@@ -251,6 +280,8 @@ def report_md(d):
              f"| prompt tok/s ({d['prompt_tokens']} tokens) | {v(s['stock']['prefill'])} | {v(s['moe-cache']['prefill'])} | {v(s['prefill_x'], 'x')} |",
              f"| time to first token, s | {v(s['stock']['ttft_s'])} | {v(s['moe-cache']['ttft_s'])} | |",
              f"| server start, s | {v(s['stock']['load_s'])} | {v(s['moe-cache']['load_s'])} | |",
+             *([f"| agent turns: time to first token, s (turn 1 / 2 / 3, {d.get('gap', 0)} s gaps) | {' / '.join(map(str, s['stock'].get('agent_ttft_s') or ['-']))} | "
+                f"{' / '.join(map(str, s['moe-cache'].get('agent_ttft_s') or ['-']))} | |"] if d.get("scenario") == "agent" else []),
              f"| cache hit rate | | {v(s['moe-cache']['hit_rate'], ' %')} | |",
              f"| read from the drive | | {v(s['moe-cache']['gb_read'], ' GB')} | |",
              "",
@@ -277,6 +308,8 @@ def bench_report(argv):
     ap.add_argument("--warm", action="store_true", help="skip the cold start (the report says WARM)")
     ap.add_argument("--force-plugin", action="store_true", help="also measure when the model fits in RAM (the launcher would run stock)")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"], help="measure an approximate mode (identity is then n/a)")
+    ap.add_argument("--scenario", choices=["chat", "agent"], default="chat", help="agent: also a 3-turn conversation with --gap seconds between turns (coding agents)")
+    ap.add_argument("--gap", type=float, default=5.0, help="seconds between agent turns (a tool running)")
     ap.add_argument("--port", type=int, default=8099)
     ap.add_argument("--load-timeout", type=int, default=1800)
     a = ap.parse_args(argv)
@@ -335,7 +368,7 @@ def bench_report(argv):
          "backend": backend_of(devices), "llama": llama,
          "model": {"file": os.path.basename(a.model), "size_gb": round(size, 1), "ratio": round(size / ram_total, 2) if ram_total else "-",
                    "quant": ui.header_quant(a.model) or "-"},
-         "plan": plan_summary(plan_line), "fits": "yes (forced)" if fits else "no", "prompt_tokens": a.prompt_tokens, "order": order(a.pairs),
+         "plan": plan_summary(plan_line), "scenario": a.scenario, "gap": a.gap, "fits": "yes (forced)" if fits else "no", "prompt_tokens": a.prompt_tokens, "order": order(a.pairs),
          "summary": s_, "notes": notes, "stock_plan": plan_summary(stock_line),
          "runs": [{k: v for k, v in r.items() if k != "text"} for r in runs]}
     scrub = scrubber()

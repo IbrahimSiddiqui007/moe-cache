@@ -24,7 +24,8 @@
   drop on Linux, `--flush-from DIR` on Windows, else stamped WARM) and writes `moe-cache-report-*.md` / `.json`: verdict line, machine, the GPU **backend**
   read from `llama-server --list-devices`, llama.cpp build, model and quant, both launcher plans, decode / prompt / first token / hit rate, identity of the
   answers. No prompts, answers, user name, host name or folder names in it. A model that fits in RAM exits with a hint (`--force-plugin` measures anyway).
-  GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). tests/bench_report_test.py; both CIs run a
+  GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). `--scenario agent`: a 3-turn coding conversation with pauses
+  (`--gap`), time to the first token per turn. tests/bench_report_test.py; both CIs run a
   real report on Granite.
 - Docs: `docs/EXACTNESS.md`, one page on what "same tokens as stock" means, every identity check CI runs (incl. mutant builds and llama.cpp master), the PC A/B rule and its limits.
 - **Windows: memory planned against commit, not only free RAM** (XA-3): with a browser and other programs open, Windows' commit (RAM + page file) ran out while

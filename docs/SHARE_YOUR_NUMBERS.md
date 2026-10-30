@@ -36,7 +36,8 @@ comparable with the README rows.
 | COLD / WARM | whether the model was pushed out of the file cache before each run |
 | Backend | the GPU backend of your llama.cpp (Vulkan, CUDA, ROCm, CPU only); please correct it in the issue if it says UNKNOWN |
 
-The runs go stock, moe-cache, moe-cache, stock (`--pairs 2` repeats that), so both sides see the same warm-up. Options: `--ram GB` (cache size),
+The runs go stock, moe-cache, moe-cache, stock (`--pairs 2` repeats that), so both sides see the same warm-up. Coding agents (OpenCode, Hermes, Claude Code): add `--scenario agent` for a 3-turn conversation with 5 s pauses (a tool running); the report then shows
+the wait for the first token of every turn. Options: `--ram GB` (cache size),
 `--ctx`, `--tokens`, `--prompt-tokens`, `--fast` (measures an approximate mode; identity is then n/a), `--force-plugin` (measure a model that fits).
 
 Answers look wrong, loop, or the speed is far from the README? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) before you open an issue.
