@@ -182,7 +182,7 @@ def injection_test(model):
         try:
             plans = []
             for vram, free in ((8188, 7600), (24576, 23000)):
-                a, extra, argv = mc.parse_server([model, "--llama-server", os.path.join(tmp, "llama-server"), "--ram", "12", "--no-pin", "--plan-json"])
+                a, extra, argv = mc.parse_server([model, "--llama-server", os.path.join(tmp, "llama-server"), "--ram", "12", "--no-pin", "--always-plugin", "--plan-json"])
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
                     plan = mc.launch_plan(a, extra, argv, machine=FakeMachine(tmp, vram, free), quiet=True)
@@ -190,7 +190,8 @@ def injection_test(model):
                 ok = out.getvalue() == "" and plan.engine == "plugin" and plan.reasons and plan.cmd[0].endswith("llama-server") and "--n-cpu-moe" in plan.cmd
                 print("  " + ("ok  " if ok else "FAIL") + f" injected machine ({vram} MiB GPU): engine {plan.engine}, --n-cpu-moe {plan.n_cpu_moe}, -ub {plan.ub}, nothing printed")
                 bad += not ok
-            ok = int(plans[1].n_cpu_moe) < int(plans[0].n_cpu_moe)
+            # strictly fewer CPU layers, unless the small GPU already holds every layer (a tiny model such as CI's granite)
+            ok = int(plans[1].n_cpu_moe) < int(plans[0].n_cpu_moe) or int(plans[0].n_cpu_moe) == 0
             print("  " + ("ok  " if ok else "FAIL") + f" a bigger GPU keeps more expert layers on the GPU ({plans[0].n_cpu_moe} -> {plans[1].n_cpu_moe} on the CPU)")
             bad += not ok
         finally:
@@ -226,6 +227,13 @@ def main():
             for cname, opts, extra in CASES:
                 r = run_case(mname, opts, extra, model, tmp, flag="--plan-json")
                 base = results[f"{mname}/{cname}"]
+                if base["rc"] not in (None, 0):          # the dry run stops with an error (e.g. --mtp on a model without an MTP head): same error, same code
+                    err_b = [l for l in base["stderr"].splitlines() if l.startswith("SystemExit:")]
+                    err_r = [l for l in r["stderr"].splitlines() if l.startswith("SystemExit:")]
+                    if r["rc"] != base["rc"] or err_r != err_b:
+                        consistent_bad += 1
+                        print("  FAIL", f"{mname}/{cname}", "--plan-json does not stop like --dry-run:", err_b[:1], err_r[:1])
+                    continue
                 want = [l for l in (base["stdout"] + base["stderr"]).splitlines() if l.strip()]
                 try:
                     plan = json.loads(r["stdout"])
