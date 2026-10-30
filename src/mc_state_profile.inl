@@ -93,7 +93,7 @@
             ti->tensor = const_cast<ggml_tensor *>(t);
             if (repack_buf) {
                 ti->tensor->extra = nullptr;
-                repack_buf->iface.init_tensor(repack_buf, ti->tensor);     // llama.cpp picks the layout, or none for types it cannot repack
+                ggml_backend_buffer_init_tensor(repack_buf, ti->tensor);     // llama.cpp picks the layout, or none for types it cannot repack
                 ti->repack = ti->tensor->extra != nullptr;
             }
             ti->direct = direct_ok && !ti->repack && ((uintptr_t) ti->data % PAGE) == (ti->file_off % PAGE);
