@@ -22,6 +22,14 @@ moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama
 | Sleep | The machine stays awake while the server runs (Windows power request, Linux `systemd-inhibit`); `--allow-sleep` turns it off |
 | CI | Every model link the picker can recommend is checked against Hugging Face |
 
+## Experimental, off by default
+
+| Option | What it does | Turn on |
+|---|---|---|
+| Expert pack | `moe_cache.py pack MODEL.gguf` writes a side file with each expert in one block, so a missing expert is one read instead of three (the PC's SSD reads whole experts 83 % faster). Exact. A first version made the cache smaller on Windows; being reworked | `MOE_CACHE_PACK=1` |
+| Idle cache refill | while an agent pauses (a tool running), the plugin refills its RAM cache toward the experts recent turns used | `MOE_CACHE_IDLE_REBALANCE=1` |
+| Frequency-aware cache | ClassLRU replacement instead of LRU: helped the miss-heavy 122B (+1.3-2.9 % decode), within noise on Flash-Next | `MOE_CACHE_POLICY=classlru` |
+
 ## In progress: diffusion MoE models
 
 `moe-cache-diffusion` (`python bin/moe_cache.py diffusion`) runs llama.cpp's `llama-diffusion-cli` with the plugin, the cache size and the memory cap. LLaDA-MoE-7B passed: at a 3 GB limit each step is 14-16 % faster than stock and the text is identical. RND1 30B and the GPU-block tests come after v0.3.2; until then treat diffusion as a preview. Official Windows llama.cpp zips do not contain `llama-diffusion-cli` (`--cli PATH`).

@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- **Expert pack (BO-1, experimental, opt-in: `MOE_CACHE_PACK=1` or a path)**: `moe_cache.py pack MODEL.gguf` writes `MODEL.moepack` next to the model (the GGUF is untouched): for every (layer, expert) one 4 KiB-aligned block with its gate, up and down slices. With `MOE_CACHE_PACK` set and a pack that matches the model (tensor table, file sizes, 16 sampled pages), a missing expert is ONE unbuffered read instead of three (the PC's SSD reads 2688 KiB at 3.47 GB/s but 896 KiB at 1.90 GB/s, RESULTS 73); the slices are copied to the same places, so the tokens are the same. The pack replaces the file-view cache while it is in use. `MOE_CACHE_PACK=0` turns it off, `MOE_CACHE_PACK=PATH` names another file. Not measured on the PC yet; tests/pack_test.py, CI identity steps with a wrong-offset mutant.
-
 ## 0.3.2 (2026-10-30)
 
 - **Security and saved-state fixes (external audit of v0.3.1, six confirmed bugs; tests/security_test.py)**:
@@ -89,6 +85,10 @@
 - **`doctor`** (N34) is `check` under a second name, and both now end with an overview table (system, CPU, RAM, GPU with driver version, disk
   space and read speed, llama-server, plugin, model) and a "what to fix" list that repeats the WARN / FAIL lines with their remedy. A GPU driver
   older than AMD's 32.0.32015.7029 on Windows is a WARN. Run it first: `python bin/moe_cache.py doctor MODEL.gguf`.
+
+### Experimental (off by default; turn on to test, results welcome)
+
+- **Expert pack (BO-1, experimental, opt-in: `MOE_CACHE_PACK=1` or a path)**: `moe_cache.py pack MODEL.gguf` writes `MODEL.moepack` next to the model (the GGUF is untouched): for every (layer, expert) one 4 KiB-aligned block with its gate, up and down slices. With `MOE_CACHE_PACK` set and a pack that matches the model (tensor table, file sizes, 16 sampled pages), a missing expert is ONE unbuffered read instead of three (the PC's SSD reads 2688 KiB at 3.47 GB/s but 896 KiB at 1.90 GB/s, RESULTS 73); the slices are copied to the same places, so the tokens are the same. The pack replaces the file-view cache while it is in use. `MOE_CACHE_PACK=0` turns it off, `MOE_CACHE_PACK=PATH` names another file. Not measured on the PC yet; tests/pack_test.py, CI identity steps with a wrong-offset mutant.
 
 ## 0.3.1 (2026-10-29)
 
