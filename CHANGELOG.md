@@ -1,11 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.3.2 (2026-10-30)
 
+- At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, passes the quality gate, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30.
+- **Long prompts with a browser open** (N23 split, N31): when the desktop and a browser hold VRAM, the GPU margin grows with what other programs hold and the
+  long-prompt GPU block runs in parts instead of falling back to the CPU. Flash-Next Q2_0 on the PC with a browser open: 34k prompt 109-110 vs 67-68 tok/s, 128k 79-95 vs 67-75 (RESULTS 71, ABBA).
+- **Long-prompt block: +8-11 % prefill** (N23-F3): the block fills the expert cache while it uploads; every valid ABBA pair at 34k and 128k, text identical (RESULTS 69).
+- **Long-prompt block: +3-5 % prefill at 34k** (N22): its result is read back through a pinned host buffer, asynchronously, inside the per-part loop; every pair, 128k even.
+- **GPU out of memory at load**: the launcher measures free VRAM again, plans again and starts llama-server once more instead of stopping (tests/oom_retry_test.py).
+- **Picker**: no download offered when the disk is too small (it says which model suits and how much disk is missing, and prefers a local file); models Ollama downloaded are
+  found as local files (with a readable name); download patterns match only the model's own .gguf files. `tools/check_model_links.py` checks in CI that every model the picker
+  can recommend still exists on Hugging Face (metadata only).
+- Timers for profiling, off by default: `MOE_CACHE_SEG_TIMES=1` (gaps between the plugin's graph splits, async-input waits), `MOE_CACHE_EXEC_TIMES=1` (executor phases).
 - **Quality gate for the approximate modes** (`docs/QUALITY_GATE.md`, `tools/quality_gate.py`, CI `quality`): KL divergence and top-1 against stock plus the 202 tasks, thresholds fixed before
   measuring. New opt-in levels: `--fast=kv` (q8_0 KV only: on Flash-Next Q2_0 at ctx 262144 prefill 2x, decode +11-13 % at 64k, KL 0.0079, top-1 96.7 %, tasks 190/190)
   and `--fast=fewer` (`--fast` plus `MOE_CACHE_FEWER=2`: the 2 lowest-ranked experts are not computed on CPU-held layers; KL 0.034, top-1 92 %, tasks 192 vs 190; speed shown at 4k only: **unproven at 64k-256k**, the decode pairs lost their values).
-  Defaults are unchanged.
+  `--fast=fewer` stays opt-in; `--fast=kv` became the 128k+ default (first line).
 - **A menu on every model in the list** (right-click, Shift+F10 or the menu key, or the ⋮ button on the row): Start (nothing runs), Switch to this model, Stop (the running one), Plan / Why, Show in folder (the file's folder and name), Copy path. Rows can be focused with the keyboard; arrows move in the menu, Esc closes it.
 - **Switching models while a server runs is visible**: when the selected model differs from the running one, the top bar shows "Switch to <name>" (Stop, then Start with the settings shown; asks first when an agent or the chat is mid-request); the top bar says "Running: <name>" and the model list marks the running one.
 - **llama-server is found in more places, by one function** (launcher, `check`, the picker and the control page share `default_llama_server`): `LLAMA_SERVER` in the process
@@ -30,10 +40,6 @@
 - **`doctor`** (N34) is `check` under a second name, and both now end with an overview table (system, CPU, RAM, GPU with driver version, disk
   space and read speed, llama-server, plugin, model) and a "what to fix" list that repeats the WARN / FAIL lines with their remedy. A GPU driver
   older than AMD's 32.0.32015.7029 on Windows is a WARN. Run it first: `python bin/moe_cache.py doctor MODEL.gguf`.
-
-## Unreleased (0.3.2)
-
-- At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, passes the quality gate, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30.
 
 ## 0.3.1 (2026-10-29)
 
