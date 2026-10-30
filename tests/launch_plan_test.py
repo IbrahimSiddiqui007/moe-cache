@@ -141,7 +141,7 @@ def fake_machine(m, tmp):
         calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else cmd)
         out = ""
         if isinstance(cmd, (list, tuple)) and len(cmd) > 1 and str(cmd[1]).endswith("plan.py"):
-            out = '{"n_cpu_moe": 21}'
+            out = '{"arch": "qwen35moe", "layers": 40, "experts": 256, "used": 8, "n_cpu_moe": 21, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0, "free_vram_GiB": 7.5, "note": ""}'
         elif isinstance(cmd, (list, tuple)) and "--help" in cmd:
             out = HELP_TEXT
         return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
@@ -149,13 +149,14 @@ def fake_machine(m, tmp):
     return calls, real_access
 
 
-def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run"):
+def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None):
     m = MACHINES[machine_name]
     saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy())
     for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH")]:
         del os.environ[k]
     out, err = io.StringIO(), io.StringIO()
     rc = None
+    extra_result = None
     calls, _ = fake_machine(m, tmp)
     ls = os.path.join(tmp, "llama-server")
     lib = os.path.join(tmp, "libggml-moe-cache.so")
@@ -163,6 +164,8 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run"):
     mc.pick_lib = lambda ls_: lib
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            if call:
+                extra_result = call()
             try:
                 rc = mc.server([model, "--llama-server", ls, flag, *opts] + (["--"] + extra if extra else []))
             except SystemExit as e:
@@ -176,7 +179,10 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run"):
         for a, b in ((model, "<MODEL>"), (tmp, "<TMP>"), (HERE, "<HERE>")):
             s = s.replace(a, b)
         return s
-    return {"rc": rc, "stdout": norm(out.getvalue()), "stderr": norm(err.getvalue()), "calls": [norm(" ".join(map(str, c))) for c in calls]}
+    res = {"rc": rc, "stdout": norm(out.getvalue()), "stderr": norm(err.getvalue()), "calls": [norm(" ".join(map(str, c))) for c in calls]}
+    if call:
+        res["call"] = extra_result
+    return res
 
 
 class FakeMachine(mc.Machine):
@@ -234,6 +240,36 @@ def injection_test(model):
     return bad
 
 
+def page_test(model):
+    """The control page's plan (ui.plan_model) comes from the launcher's plan: same engine, same GPU layers, same micro-batch, same KV type as `server --plan-json`
+    for the arguments the page's Start button passes, on both fake machines, for exact / fast / hybrid, stock / plugin, 8k..256k."""
+    tmpd = tempfile.mkdtemp(prefix="launch-plan-")
+    os.environ["XDG_CACHE_HOME"] = os.path.join(tmpd, "xdg"); os.environ["XDG_CONFIG_HOME"] = os.path.join(tmpd, "cfg")
+    import moe_cache_ui as ui
+    bad = 0
+    settings = [dict(mode="exact", engine="auto", ctx=8192, ram="12"), dict(mode="exact", engine="auto", ctx=131072, ram="12"), dict(mode="exact", engine="auto", ctx=262144, ram="12"),
+                dict(mode="fast", engine="auto", ctx=131072, ram="12"), dict(mode="hybrid", engine="auto", ctx=8192, ram="12"), dict(mode="exact", engine="stock", ctx=8192, ram="12"),
+                dict(mode="exact", engine="plugin", ctx=65536, ram="32"), dict(mode="exact", engine="auto", ctx=8192, ram="32"), dict(mode="exact", engine="auto", ctx=65536, ram="12", agent=True)]
+    for mname in MACHINES:
+        for st in settings:
+            args = ui.server_args(dict(model=model, ctx=st["ctx"], ram=st["ram"], mode=st["mode"], engine=st["engine"], agent=st.get("agent", False)))
+            i = args.index("--")
+            ui.PagePlanMachine._devices.clear()
+            r = run_case(mname, args[1:i], args[i + 1:], model, tmpd, flag="--plan-json",
+                         call=lambda: (lambda o: {"kind": o.get("kind"), "numbers": o.get("numbers")})(ui.plan_model(model, st["ram"], None, st["ctx"], st["mode"], st.get("agent", False), st["engine"], None, None)))
+            try:
+                plan = json.loads(r["stdout"])
+                page = r["call"]
+                kv = plan["kv_cache"]
+                ok = ((page["kind"] == "stock") == (plan["engine"] == "stock") and page["numbers"]["n_cpu_moe"] == int(plan["n_cpu_moe"]) and
+                      page["numbers"]["ub"] == int(plan["micro_batch"]) and page["numbers"]["kv_cache"] == kv)
+            except Exception as e:
+                ok, plan, page = False, {}, {"err": repr(e), "r": r}
+            print("  " + ("ok  " if ok else "FAIL") + f" page = launcher: {mname} {st['mode']}/{st['engine']} ctx {st['ctx']}" + ("" if ok else f"   page {page}   launcher {plan.get('engine')} {plan.get('n_cpu_moe')} {plan.get('micro_batch')} {plan.get('kv_cache')}"))
+            bad += not ok
+    return bad
+
+
 def fingerprint(model):
     import hashlib
     h = hashlib.sha256()
@@ -260,7 +296,7 @@ def main():
             for cname, opts, extra in CASES:
                 results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
     fp = fingerprint(model)
-    inj_bad = injection_test(model)
+    inj_bad = injection_test(model) + page_test(model)
     # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
     consistent_bad = 0
     with tempfile.TemporaryDirectory() as tmp:
