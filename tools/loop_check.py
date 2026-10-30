@@ -6,6 +6,7 @@ presence penalty) are the usual cure. This sends the prompts WITHOUT any samplin
 run it once against `moe_cache.py server MODEL` and once against `moe_cache.py server MODEL --no-sampling-defaults`, same seed.
 
   python3 tools/loop_check.py --url http://127.0.0.1:8080 [--n 20] [--max-tokens 1500] [--json out.json] [--label NAME]
+  ... --prefix-file docs.txt --prefix-tokens 60000      (loops at depth: the same long system text before every prompt, read once by llama-server)
 
 Per answer: words, the share of 8-word sequences that already appeared earlier in the same answer (repeat share), the most repeated 8-word sequence,
 and LOOP when the answer ends in a repeat (the last 200 words are more than half repeats) or hit max_tokens while doing so. Summary: loops / answers,
@@ -55,7 +56,9 @@ def repeat_stats(text):
 
 def ask(url, key, prompt, a):
     u = urllib.parse.urlparse(url)
-    body = {"messages": [{"role": "user", "content": prompt}], "max_tokens": a.max_tokens, "seed": a.seed, "stream": False}
+    msgs = ([{"role": "system", "content": a.prefix}] if a.prefix else []) + [{"role": "user", "content": prompt}]
+    # the same long system text in front of every prompt: llama-server reads it once (cache_prompt) and every answer is generated at that depth
+    body = {"messages": msgs, "max_tokens": a.max_tokens, "seed": a.seed, "stream": False, "cache_prompt": True}
     if a.temperature is not None:
         body["temperature"] = a.temperature
     hdr = {"Content-Type": "application/json"}
@@ -77,7 +80,14 @@ def main():
     p.add_argument("--n", type=int, default=20); p.add_argument("--max-tokens", type=int, default=1500); p.add_argument("--seed", type=int, default=1)
     p.add_argument("--temperature", type=float, help="send this temperature (default: send none, the server's default applies)")
     p.add_argument("--json", default=""); p.add_argument("--label", default=""); p.add_argument("--timeout", type=float, default=1800)
+    p.add_argument("--prefix-file", default="", help="long text put in front of every prompt as the system message (loops at depth, scout 12 #9)")
+    p.add_argument("--prefix-tokens", type=int, default=60000, help="about this many tokens of --prefix-file (4 characters per token; the file repeats if short)")
     a = p.parse_args()
+    a.prefix = ""
+    if a.prefix_file:
+        src = open(a.prefix_file, encoding="utf-8", errors="replace").read() or "x "
+        want = a.prefix_tokens * 4
+        a.prefix = "Background material (read it, then answer the question after it):\n" + (src * (want // len(src) + 1))[:want]
     key = a.api_key or _key_for(a.url)
     rows = []
     for i, pr in enumerate(PROMPTS[:a.n]):
