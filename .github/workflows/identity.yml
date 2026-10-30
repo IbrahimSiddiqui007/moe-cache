@@ -166,6 +166,12 @@ jobs:
             echo "FAIL: the wrong-offset mutant passed, so the pack identity step does not cover the copy offsets"; exit 1; fi
           grep -qE "^identical prompts: [0-3]/4" identity_mut_pack.txt || { echo "FAIL: the pack mutant failed for another reason (no token comparison)"; exit 1; }
           echo "OK: the pack mutant fails as it should"
+          rm -f granite.moepack wrong.moepack      # no pack may be left next to the model for later steps (one was, and a later step used it)
+          # opt-in: a pack next to the model is not used without MOE_CACHE_PACK
+          python3 bin/moe_cache.py pack granite.gguf --out granite.moepack
+          IDENT_KEEP=ident_pack_noenv IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2" tests/identity.sh granite.gguf --tokens 12 --ctx 2048 --n-cpu-moe 999 | tee identity_pack_noenv.txt
+          if grep -q "expert pack" ident_pack_noenv/plugin.log; then echo "FAIL: a pack was used without MOE_CACHE_PACK"; exit 1; fi
+          rm -f granite.moepack
 
       - name: llama.cpp built the way install.sh, official releases and Windows are (backends as files, CPU variants) - 0.26 row only
         if: matrix.name == 'ggml-0.26-api3'

@@ -269,8 +269,8 @@ def pack_main(argv):
         os.remove(prog)
     except OSError:
         pass
-    print(f"moe-cache pack: wrote {out}: {n_exp} experts, {gib:.1f} GiB, {time.time() - t0:.0f} s. The plugin uses it when it sits next to the model "
-          f"(MOE_CACHE_PACK=0 turns it off, MOE_CACHE_PACK=PATH picks another file).")
+    print(f"moe-cache pack: wrote {out}: {n_exp} experts, {gib:.1f} GiB, {time.time() - t0:.0f} s. Experimental: the plugin uses it only when asked: "
+          f"MOE_CACHE_PACK=1 (this file next to the model) or MOE_CACHE_PACK=PATH.")
     return 0
 
 
