@@ -968,6 +968,8 @@ check(mc.commit_plan((15.5 + 2) * GiB + 1000 * 2**20, 15.5, 2048) == (1000, Fals
 check(mc.commit_plan(15 * GiB, 15.5, 2048) == (0, True), "commit plan: not even the GPU allocations fit: prompt cache off and a warning")
 check(mc.commit_plan(10 * GiB, None, 2048) == (2048, False), "commit plan: no GPU figure: only the margin counts")
 check(mc.win_commit() == (None, None) or mc.WINDOWS, "win_commit: (None, None) off Windows")
+check(mc.vram_for_commit(15.5, 40 * GiB) == 15.5 and mc.vram_for_commit(15.5, None) == 15.5, "GPU plan: full when commit is plentiful or unknown")
+check(abs(mc.vram_for_commit(15.5, 12 * GiB) - 8.0) < 1e-9 and mc.vram_for_commit(15.5, 3 * GiB) == 0.0, "GPU plan: capped to free commit minus 4 GiB (8 GiB), never below 0")
 
 # ggml versions newer than the table keep API 3 (task Q: llama.cpp b11966 = ggml 0.28 got no plugin and `check` said the DLL was missing)
 check([mc.ggml_api_of(0, n) for n in (24, 25, 26, 27, 28, 31)] == ["2", "2", "3", "3", "3", "3"] and mc.ggml_api_of(0, 20) is None and mc.ggml_api_of(1, 0) is None,

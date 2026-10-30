@@ -433,6 +433,14 @@ def win_commit():
     return None, None
 
 
+def vram_for_commit(vram_gib, commit_free, host_gib=4.0):
+    """GPU memory (GiB) to plan when Vulkan's allocations count against Windows commit: at most the free commit minus llama-server's host side
+    (prompt cache, buffers, the process: host_gib); never below 0. commit_free None (not Windows / unknown): vram_gib unchanged. Pure, tested."""
+    if not commit_free:
+        return vram_gib
+    return max(0.0, min(vram_gib, commit_free / 2**30 - host_gib))
+
+
 def commit_plan(commit_free, vram_gib, cram_mib, margin_gib=2.0):
     """How much prompt cache (MiB) fits in Windows' free commit next to the GPU allocations (Vulkan charges them to commit) and a margin:
     (cache-ram MiB to use, short: True when even with no prompt cache the commit is too tight). Pure, so it is tested without Windows."""
@@ -1542,6 +1550,14 @@ def server(argv):
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
+            # XA-3: Vulkan's GPU allocations are charged to Windows commit; plan no more GPU memory than the free commit can carry next to llama-server's
+            # host buffers, so a desktop with a browser open gets a slower start instead of a crash (RESULTS 73)
+            cfree = win_commit()[1]
+            capped = vram_for_commit(float(a.vram), cfree)
+            if capped < float(a.vram):
+                say(f"moe-cache: GPU plan {a.vram} -> {capped:.2f} GiB: Windows' free commit ({cfree / 1e9:.1f} GB, RAM + page file) must also carry "
+                    "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
+                a.vram = f"{capped:.2f}"
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
     if ncmoe is None:
