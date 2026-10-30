@@ -419,7 +419,7 @@ button.danger { border-color:var(--ink); }
     <div class="seg" id="pickuse"><button data-v="agents">Agents / coding</button><button data-v="chat">Chat</button><button data-v="docs">Long documents</button></div>
     <div class="row small" style="margin-top:6px"><label for="pickmodel">Or choose one yourself (only warned about, never refused):</label>
       <select id="pickmodel"><option value="">the recommended one</option><option value="bolt">Nemotron 3.5 Bolt 74B</option><option value="flash-next-q2_0">Flash-Next Q2_0</option>
-        <option value="flash-next-iq3_xxs">Flash-Next IQ3_XXS</option><option value="qwen3.5-122b">Qwen3.5-122B</option><option value="qwen3.6-35b">Qwen3.6-35B</option><option value="glm-5.3">GLM-5.3-Flash</option></select></div>
+        <option value="flash-next-iq3_xxs">Flash-Next IQ3_XXS</option><option value="qwen3.5-122b">Qwen3.5-122B</option><option value="qwen3.6-35b">Qwen3.6-35B</option><option value="glm-5.3">GLM-5.3-Flash</option><option value="gpt-oss-120b">gpt-oss-120b (untested)</option><option value="deepseek-v41-flash">DeepSeek-V4.1-Flash IQ1_M (untested, 231 GB)</option></select></div>
     <div class="pickcard"><div id="pickres"></div>
       <div class="pickact"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div></div>
     <h4>Memory</h4>
@@ -635,7 +635,7 @@ async function loadPick() {
       `<div class="nums">${key || `<span class="small">${esc(r.measured)}</span>`}</div><div class="why">${r.why.map(esc).join(" ")}</div></div>` +
       (r.alternatives.length ? `<h5 style="margin-top:12px">Other options</h5><ul class="alts">${r.alternatives.map(a => `<li><b>${esc(a.name)}</b>: ${esc(a.why)}</li>`).join("")}</ul>` : "") +
       (noDisk ? `<div class="get pwarn">Not on this machine, and ${fmtGB(r.disk_missing)} of disk is missing: no download is offered.</div>`
-        : !r.local ? `<div class="get">Not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code>. Download it yourself, then add its folder above and press Use it again:<div><code>${esc(d.command)}</code></div>` +
+        : !r.local ? `<div class="get">Not on this machine: ${fmtGB(d.size)} from <code>${esc(d.source)}</code>. Download it yourself, then add its folder above and press Use it again:${(d.steps || [d.command]).map(x => `<div><code>${esc(x)}</code></div>`).join("")}${d.note ? `<div class="small">${esc(d.note)}</div>` : ""}` +
           (d.ollama ? `<div>Ollama: <code>${esc(d.ollama)}</code></div>` : "") + `</div>` : "") +
       `<details><summary>Memory, measurements and notes${r.warnings.length ? ` (${r.warnings.length} ${r.warnings.length == 1 ? "warning" : "warnings"})` : ""}</summary><div>${notes}</div></details>`;
     $("pickapply").hidden = false; $("pickapply").textContent = r.local ? "Use it" : "Remember the choice"; $("pickapply").hidden = !r.local && r.fits_disk === false;

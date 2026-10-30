@@ -134,6 +134,56 @@ try:
 except ValueError:
     check(True, "unknown use refused")
 
+# ---- gpt-oss-120b and DeepSeek-V4.1-Flash: untested on this class of machine, chat only, DeepSeek needs disk, a fast drive and b11870+ ----
+g, d = pk.MODELS["gpt-oss-120b"], pk.MODELS["deepseek-v41-flash"]
+check(g["size"] == 63_387_346_208 and g["repo"] == "ggml-org/gpt-oss-120b-GGUF" and g["include"] == "gpt-oss-120b-MXFP4.gguf" and g["sha256"].startswith("582bd40f"), "gpt-oss-120b: repo, file, size and sha256 from the model card")
+check(d["size"] == sum((5_780_704, 39_340_012_896, 38_698_805_888, 39_707_055_008, 2_969_539_840, 110_595_290_816)) and d["include"] == ["*IQ1_M*", "*Engram*"]
+      and d["min_free"] == 240e9, "DeepSeek: the six files' bytes (231.3 GB), the two include patterns, 240 GB free")
+import re as _re
+check(_re.search(g["pattern"], "gpt-oss-120b-MXFP4.gguf") and _re.search(d["pattern"], "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006.gguf")
+      and not _re.search(d["pattern"], "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00002-of-00006.gguf"), "file patterns find the file / the first shard only")
+for use in ("agents", "docs", "chat"):
+    for label, m in (("PC", machine(32, 16)), ("128 GB", machine(128, 24, disk_gb=900))):
+        check(pk.recommend(m, use)["id"] not in ("gpt-oss-120b", "deepseek-v41-flash"), f"{label}, {use}: neither untested model is the automatic pick")
+r = pk.recommend(machine(32, 16), "chat", model="gpt-oss-120b")
+check(r["id"] == "gpt-oss-120b" and r["untested"] and r["measured"] == "untested on this class of machine" and not r["key"] and r["engine"].startswith("moe-cache"),
+      "gpt-oss-120b chosen: untested, no speed quoted, moe-cache (63 GB > the memory)")
+check(r["download"]["steps"][0].startswith("hf download ggml-org/gpt-oss-120b-GGUF --include \"gpt-oss-120b-MXFP4.gguf\"") and len(r["download"]["steps"]) == 1
+      and r["download"]["sha256"] == g["sha256"], f"gpt-oss-120b download: one hf command and the sha256 ({r['download']['steps']})")
+check(any("reasoning" in w for w in pk.recommend(machine(32, 16), "agents", model="gpt-oss-120b")["warnings"]), "gpt-oss-120b for agents: warned (untested)")
+ok_ds = machine(32, 16, disk_gb=500, kind="SSD", build=12012)
+r = pk.recommend(ok_ds, "chat", model="deepseek-v41-flash")
+check(r["id"] == "deepseek-v41-flash" and r["untested"] and r["fits_disk"] and r["ctx"] == 8192 and not [w for w in r["warnings"] if "b11870" in w or "SSD" in w or "free disk" in w],
+      f"DeepSeek on a big SSD with a new build: chosen, untested, no disk / drive / build warning ({r['warnings']})")
+steps = r["download"]["steps"]
+check(len(steps) == 2 and steps[0].startswith("hf download ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF --include \"*IQ1_M*\" --include \"*Engram*\"")
+      and ("mklink /H" in steps[1] or steps[1].startswith("ln ")) and "00006-of-00006.gguf" in steps[1] and "Engram-IQ4_NL.gguf" in steps[1], f"DeepSeek download: the files, then the hard link for shard 6 ({steps})")
+check(any("then:" in l and "00006-of-00006" in l for l in pk.rec_lines(r)) and "\n" in r["download"]["command"], "DeepSeek: the text output and the command show the link step")
+for kw, want, label in ((dict(disk_gb=200), "free disk", "200 GB free"), (dict(build=11800), "b11870", "llama-server b11800"), (dict(build=None), "b11870", "build unknown"),
+                        (dict(kind="HDD"), "hard disk", "an HDD"), (dict(kind=None), "SSD", "drive kind unknown")):
+    m = dict(machine(32, 16, disk_gb=500, kind="SSD", build=12012)); mm = machine(32, 16, **{**dict(disk_gb=500, kind="SSD", build=12012), **kw})
+    r = pk.recommend(mm, "chat", model="deepseek-v41-flash")
+    check(r["id"] == "deepseek-v41-flash" and any(want in w for w in r["warnings"]), f"DeepSeek, {label}: used as asked, warned ({[w[:60] for w in r['warnings']]})")
+r = pk.recommend(machine(32, 16, disk_gb=235), "chat", model="deepseek-v41-flash")
+check(not r["fits_disk"] and r["download"] is None and abs(r["disk_missing"] - (240e9 - 235e9)) < 1 and "240 GB free needed" in r["why"][0], "DeepSeek with 235 GB free: 240 GB needed, 5 GB missing, no download offered")
+r = pk.recommend(machine(32, 16, disk_gb=235, local={"deepseek-v41-flash": "/m/DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006.gguf"}), "chat", model="deepseek-v41-flash")
+check(r["fits_disk"] and r["download"] is None and r["local"], "DeepSeek already here: no disk needed, no download")
+for use in ("agents", "docs"):
+    r = pk.recommend(ok_ds, use, model="deepseek-v41-flash")
+    check(any("chat and short answers only" in w and "--agent" in w for w in r["warnings"]), f"DeepSeek for {use}: warned, never for agents")
+check(not any(a["id"] == "deepseek-v41-flash" for use in ("agents", "docs") for a in pk.recommend(machine(128, 24, disk_gb=900, kind="SSD", build=12012), use)["alternatives"]),
+      "DeepSeek is never offered as an alternative for agents or documents")
+r = pk.recommend(machine(32, 16, disk_gb=100, kind="SSD", build=12012), "chat")
+check(all(a["id"] != "deepseek-v41-flash" for a in r["alternatives"]), "DeepSeek is not offered as an alternative with 100 GB free")
+r = pk.recommend(machine(32, 16, disk_gb=500, kind="HDD", build=12012), "chat")
+check(all(a["id"] != "deepseek-v41-flash" for a in r["alternatives"]), "DeepSeek is not offered as an alternative on an HDD")
+# the link step on this OS, and the files found in a model folder (only the first shard counts)
+fdir = os.path.join(TMP, "dsmodels"); os.makedirs(fdir)
+for n in ("DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006.gguf", "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00002-of-00006.gguf", "gpt-oss-120b-MXFP4.gguf"):
+    open(os.path.join(fdir, n), "wb").close()
+loc = pk.find_local([fdir])
+check(set(loc) == {"deepseek-v41-flash", "gpt-oss-120b"} and loc["deepseek-v41-flash"].endswith("00001-of-00006.gguf"), f"find_local: the first DeepSeek shard and gpt-oss ({sorted(loc)})")
+
 # llama-server's build number from --version (the PC's own output, and a distro build with no number)
 import subprocess
 class _R:

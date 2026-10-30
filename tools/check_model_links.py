@@ -19,9 +19,10 @@ for key, m in pick.MODELS.items():
         print(f"FAIL {key}: {m['repo']} answers HTTP {e.code}"); bad += 1; continue
     except Exception as e:
         print(f"warn {key}: could not reach Hugging Face ({e})"); continue
-    hit = [f for f in files if f.get("type") == "file" and f["path"].endswith(".gguf") and fnmatch.fnmatch(f["path"], m["include"])]
+    pats = [m["include"]] if isinstance(m["include"], str) else list(m["include"])
+    hit = [f for f in files if f.get("type") == "file" and f["path"].endswith(".gguf") and any(fnmatch.fnmatch(f["path"], x) for x in pats)]
     if not hit:
-        print(f"FAIL {key}: no .gguf in {m['repo']} matches --include {m['include']}"); bad += 1; continue
+        print(f"FAIL {key}: no .gguf in {m['repo']} matches --include {pats}"); bad += 1; continue
     total = sum((f.get("lfs") or {}).get("size") or f.get("size", 0) for f in hit)
     note = "" if abs(total - m["size"]) <= 0.05 * m["size"] else f" (warn: {total / 1e9:.1f} GB on HF vs {m['size'] / 1e9:.1f} GB in the picker)"
     print(f"ok   {key}: {len(hit)} file(s), {total / 1e9:.1f} GB{note}")

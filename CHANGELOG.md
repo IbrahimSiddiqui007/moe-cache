@@ -2,6 +2,7 @@
 
 ## 0.3.2 (2026-10-30)
 
+- **Picker: gpt-oss-120b MXFP4 and DeepSeek-V4.1-Flash-1017 IQ1_M + Engram** (both "untested on this class of machine": no speeds until the PC runs; neither is ever the automatic pick, they are offered as alternatives or chosen with `--model` / the page's list). gpt-oss: 63.4 GB, one file, sha256 shown, a reasoning model. DeepSeek: six files (231.3 GB; 111 GB of it the Engram table read from the drive), needs 240 GB free, an SSD and llama.cpp b11870 or newer, chat and short answers only (never for `--agent`, llama.cpp #31292); the download shows the `hf download` command and the second step, a hard link that makes the Engram file also shard 6 (`mklink /H` on Windows, `ln` elsewhere); the interactive download makes the link itself. `tools/check_model_links.py` checks both repos (patterns, sizes).
 - **Security and saved-state fixes (external audit of v0.3.1, six confirmed bugs; tests/security_test.py)**:
   - Two first launches at once could end with different API keys (one never saved): the key is now written completely to a private temp file and published atomically (`os.link`), the loser reads the winner's key.
   - The stored local key was sent to any URL that answered 401/403 (`connect`, `project`): it now goes only to localhost / loopback addresses.

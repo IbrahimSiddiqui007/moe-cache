@@ -19,6 +19,7 @@ SETTINGS_FILE = os.path.join(mc.CACHE_DIR, "ui.json")      # the control page's 
 GPU_MARGIN_GIB = 0.5 * 1e9 / GIB      # the launcher's --gpu-margin default (the tuner's 0.5 GB): VRAM it leaves free next to everything it places
 USES = {"agents": "agents and coding (Hermes, OpenCode) at 64k-256k context", "chat": "plain chat", "docs": "long documents (64k-128k prompts)"}
 BOLT_BUILD = 11966          # Nemotron needs llama.cpp b11966 or newer (tokenizer fix #30960, RESULTS 65)
+DSV4_BUILD = 11870          # DeepSeek-V4.1-Flash needs llama.cpp b11870 or newer (the release of 25 Oct with "model: DSV4.1 flash (#31086)"; the card says so)
 PC = "32 GB RAM + 16 GB GPU (Windows desktop, RESULTS 59-67)"
 LAPTOP = "31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop, RESULTS 44-45)"
 
@@ -36,6 +37,15 @@ MODELS = {
                          repo="unsloth/Qwen3.5-122B-A10B-GGUF", include="*UD-IQ2_XXS*"),
     "glm-5.3": dict(name="GLM-5.3-Flash UD-IQ2_XXS", size=101_845_506_400, pattern=r"GLM-5\.3-Flash-UD-IQ2_XXS[-.]",
                     repo="unsloth/GLM-5.3-Flash-GGUF", include="UD-IQ2_XXS/*.gguf"),
+    # the next two are untested on this class of machine until the PC runs give numbers (handover/parts/scout16 section 1, scout17 section 3)
+    "gpt-oss-120b": dict(name="gpt-oss-120b MXFP4 (OpenAI, ggml-org)", size=63_387_346_208, pattern=r"gpt-oss-120b-MXFP4\.gguf$",
+                         repo="ggml-org/gpt-oss-120b-GGUF", include="gpt-oss-120b-MXFP4.gguf",
+                         sha256="582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"),
+    # six files: the backbone in five shards (120.7 GB) and the Engram lookup table (110.6 GB), which must also be shard 6 under the series' name (a hard link)
+    "deepseek-v41-flash": dict(name="DeepSeek-V4.1-Flash-1017 IQ1_M + Engram (GSQ-RCO)", size=231_316_485_152,
+                               pattern=r"DeepSeek-V4\.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006\.gguf$",
+                               repo="ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF", include=["*IQ1_M*", "*Engram*"], min_free=240e9,
+                               link=("DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00006-of-00006.gguf", "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf")),
 }
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
@@ -264,6 +274,17 @@ def size_of(k, local):
     return MODELS[k]["size"]
 
 
+def need_free(k):
+    """Free disk a download of model k needs: its size + 2 GB, or the model's own minimum (DeepSeek: 240 GB, the Engram file is read from the drive)."""
+    m = MODELS[k]
+    return max(m["size"] + 2e9, m.get("min_free", 0.0))
+
+
+def includes(m):
+    """The --include patterns of a model as a list (one string or a list)."""
+    return [m["include"]] if isinstance(m["include"], str) else list(m["include"])
+
+
 def recommend(spec, use, model=None):
     """One recommendation for `use` (agents | chat | docs) on the machine `spec` (machine_specs()). Returns
     {id, name, file, ctx, args, measured, untested, why[], warnings[], alternatives[{id, name, why}], local, download, memory}.
@@ -282,11 +303,14 @@ def recommend(spec, use, model=None):
     def fits(k):           # the launcher's own rule (moe_cache.decide): stock llama-server when model + 1.5 GB fits, else the plugin
         return size_of(k, local) + mc.STOCK_HEADROOM <= cap * 1e9
 
-    def placeable(k):      # already here, or enough free disk for it (2 GB to spare); unknown free disk does not block
-        return k in local or free is None or free >= MODELS[k]["size"] + 2e9
+    def placeable(k):      # already here, or enough free disk for it (2 GB to spare, or the model's own minimum); unknown free disk does not block
+        return k in local or free is None or free >= need_free(k)
 
     def drive_ok(k):       # a model bigger than memory reads experts from the drive all the time: not from an HDD
         return fits(k) or not hdd
+
+    def ds_ok():           # DeepSeek-V4.1-Flash: llama.cpp b11870+, 240 GB free (or already here) and a drive known to be an SSD (110 GB of it is read from the drive)
+        return (build is None or build >= DSV4_BUILD) and placeable("deepseek-v41-flash") and spec.get("disk_kind") == "SSD"
 
     def bolt_ok():
         return build is None or build >= BOLT_BUILD
@@ -327,7 +351,14 @@ def recommend(spec, use, model=None):
                "the smallest candidate (21.7 GB, 3B active)"),
               ("flash-next-q2_0", cap >= 11 and vram >= 6 and drive_ok("flash-next-q2_0"), 16384,
                "12 GB RAM + 8 GB GPU (laptop, RESULTS 53): 9.5 tok/s with --fast, 13.7 with --fast=2 (both change some tokens)",
-               "a much bigger model through moe-cache; on this much RAM only with --fast (approximate)")]
+               "a much bigger model through moe-cache; on this much RAM only with --fast (approximate)"),
+              # never the automatic pick (the rows above always match first): offered as alternatives, or chosen with --model; untested here, so no speed is quoted
+              ("gpt-oss-120b", cap >= 24 and vram >= 6 and drive_ok("gpt-oss-120b"), 32768, None,
+               "OpenAI's gpt-oss-120b (63.4 GB): general chat and short answers. A reasoning model: if answers come back empty, give it room or lower its effort "
+               "(--reasoning-budget); sampling temperature 1.0, top-p 1.0; coding agents at 64k are not tested"),
+              ("deepseek-v41-flash", cap >= 24 and vram >= 12 and ds_ok(), 8192, None,
+               "DeepSeek-V4.1-Flash-1017 IQ1_M (231 GB, of which 111 GB is the Engram lookup table read from the SSD): chat and short answers only; "
+               "long prompts are slow (a llama.cpp user measured about 31 tok/s prompt); needs 240 GB free and a fast drive")]
     else:
         R += [("bolt", fits("bolt") and vram >= 12 and bolt_ok(), 131072,
                f"{PC}: prompts 595 tok/s at 57k and 721 at 114k tokens, decode 24.9 at 114k (Flash-Next Q2_0: 170 tok/s prompts at 128k)",
@@ -341,7 +372,7 @@ def recommend(spec, use, model=None):
         if k in local:
             return True
         if not placeable(k):
-            warn.append(f"{MODELS[k]['name']} needs {MODELS[k]['size'] / 1e9:.1f} GB of free disk ({(free or 0) / 1e9:.1f} GB free at "
+            warn.append(f"{MODELS[k]['name']} needs {(need_free(k) if 'min_free' in MODELS[k] else MODELS[k]['size']) / 1e9:.1f} GB of free disk ({(free or 0) / 1e9:.1f} GB free at "
                         f"{spec.get('disk_path')}): not suggested")
             return False
         return True
@@ -364,16 +395,32 @@ def recommend(spec, use, model=None):
         k = sib
         chosen = (k, True, ctx, measured, why)
     m = MODELS[k]
-    need_disk = m["size"] + 2e9
+    need_disk = need_free(k)
     fits_disk = k in local or free is None or free >= need_disk
     missing = 0.0 if fits_disk else need_disk - free
     if not fits_disk:
-        why = (f"This is the model that suits your machine, but it is not downloaded and the disk is too small: {m['size'] / 1e9:.1f} GB (+2 GB to spare) needed, "
+        why = (f"This is the model that suits your machine, but it is not downloaded and the disk is too small: "
+               + (f"{need_disk / 1e9:.0f} GB free needed ({m['size'] / 1e9:.1f} GB of files)" if "min_free" in m else f"{m['size'] / 1e9:.1f} GB (+2 GB to spare) needed")
+               + f", "
                f"{free / 1e9:.1f} GB free at {spec.get('disk_path')}, {missing / 1e9:.1f} GB missing. Nothing is downloaded. Free that space or add a model folder on a "
                f"bigger drive; the numbers below are for this model once it is there. " + why)
         warn.append(f"{m['name']}: {missing / 1e9:.1f} GB of disk missing at {spec.get('disk_path')}")
     if k == "bolt" and build is None:
         warn.append(f"Nemotron needs llama.cpp b{BOLT_BUILD} or newer; your llama-server's build could not be read (`llama-server --version`)")
+    if k == "deepseek-v41-flash":
+        if build is None:
+            warn.append(f"DeepSeek-V4.1-Flash needs llama.cpp b{DSV4_BUILD} or newer; your llama-server's build could not be read (`llama-server --version`)")
+        elif build < DSV4_BUILD:
+            warn.append(f"your llama-server is b{build}: DeepSeek-V4.1-Flash needs b{DSV4_BUILD} or newer (update llama.cpp first, the older ones cannot load it)")
+        if hdd:
+            warn.append("DeepSeek-V4.1-Flash on a hard disk: 111 GB of it (the Engram table) is read from the drive; it needs a fast SSD")
+        elif spec.get("disk_kind") != "SSD":
+            warn.append("could not tell whether the models' drive is an SSD: DeepSeek-V4.1-Flash reads its 111 GB Engram table from the drive and needs a fast one")
+        if use in ("agents", "docs"):
+            warn.append("DeepSeek-V4.1-Flash is for chat and short answers only: long prompts are slow (about 31 tok/s prompt in a llama.cpp user's report) and "
+                        "saved prompt state is unreliable until llama.cpp #31292; do not use it with --agent")
+    if k == "gpt-oss-120b" and use in ("agents", "docs"):
+        warn.append("gpt-oss-120b with coding agents or 64k prompts is not tested here (a reasoning model: check that the agent handles its reasoning_content)")
     if build is not None and build < BOLT_BUILD and use in ("agents", "docs") and fits("bolt"):
         warn.append(f"your llama-server is b{build}: Nemotron 3.5 Bolt (the faster pick here) needs b{BOLT_BUILD} or newer")
     if vram and spec.get("gpu_margin") is not None and float(spec["gpu_margin"]) > GPU_MARGIN_GIB + 0.01:
@@ -454,11 +501,21 @@ def kv_estimate(k, ctx, path=None):
 
 
 def download_cmd(k):
-    """What to run to get model k (printed or asked for; never run without the user's yes)."""
+    """What to run to get model k (printed or asked for; never run without the user's yes). "command" is every step, one per line; "steps" the same as a
+    list. A model made of several files that must be linked (DeepSeek: the Engram file is also shard 6) gets the linking step after the download."""
     m = MODELS[k]
     d = os.path.join(os.path.expanduser("~"), "models")
-    out = {"size": m["size"], "source": f"https://huggingface.co/{m['repo']}", "folder": d,
-           "command": f'hf download {m["repo"]} --include "{m["include"]}" --local-dir "{d}"'}
+    steps = [f'hf download {m["repo"]} ' + " ".join(f'--include "{x}"' for x in includes(m)) + f' --local-dir "{d}"']
+    if m.get("link"):
+        shard, target = m["link"]
+        a, b = os.path.join(d, shard), os.path.join(d, target)
+        steps.append(f'mklink /H "{a}" "{b}"' if WINDOWS else f'ln "{b}" "{a}"')
+    out = {"size": m["size"], "source": f"https://huggingface.co/{m['repo']}", "folder": d, "steps": steps, "command": "\n".join(steps)}
+    if m.get("link"):
+        out["note"] = ("the second step makes the Engram file also answer to the name of shard 6 of 6 (a hard link: same drive, no extra disk); "
+                       "llama-server is started with the first shard and opens the rest")
+    if m.get("sha256"):
+        out["sha256"] = m["sha256"]
     if m.get("ollama"):
         out["ollama"] = f"ollama pull {m['ollama']}"
     return out
@@ -584,7 +641,13 @@ def rec_lines(r):
     else:
         d = r["download"]
         out.append(f"  not on this machine: {d['size'] / 1e9:.1f} GB from {d['source']}")
-        out.append(f"  download (you run it, or answer yes below): {d['command']}" + (f"   (Ollama: {d['ollama']})" if d.get("ollama") else ""))
+        first, *more = d["steps"]
+        out.append(f"  download (you run it, or answer yes below): {first}" + (f"   (Ollama: {d['ollama']})" if d.get("ollama") else ""))
+        out += [f"  then: {step}" for step in more]
+        if d.get("note"):
+            out.append(f"  ({d['note']})")
+        if d.get("sha256"):
+            out.append(f"  sha256 of the file: {d['sha256']}")
     return out
 
 
@@ -634,9 +697,18 @@ def pick(argv):
         d = r["download"]
         if ask(f"download {d['size'] / 1e9:.1f} GB from {d['source']} into {d['folder']} now? [y/N] ", "n") == "y":
             os.makedirs(d["folder"], exist_ok=True)
-            rc = subprocess.call(["hf", "download", MODELS[r["id"]]["repo"], "--include", MODELS[r["id"]]["include"], "--local-dir", d["folder"]])
+            m_ = MODELS[r["id"]]
+            rc = subprocess.call(["hf", "download", m_["repo"], "--include", *includes(m_), "--local-dir", d["folder"]])
             if rc:
                 raise SystemExit(f"download failed (exit {rc}); nothing was changed")
+            if m_.get("link"):          # the Engram file is shard 6 as well: a hard link (same drive, no extra disk)
+                shard, target = (os.path.join(d["folder"], x) for x in m_["link"])
+                try:
+                    if not os.path.exists(shard):
+                        os.link(target, shard)
+                    mc.say(f"moe-cache: linked {os.path.basename(shard)} -> {os.path.basename(target)}")
+                except OSError as e:
+                    raise SystemExit(f"the download is done, but the link failed ({e}); run: {d['steps'][1]}")
             r = recommend(dict(spec, local=find_local(model_folders(a.models_dir))), r["use"], a.model)
     elif not r["local"] and tty and r["download"]:
         mc.say("  (the hf command comes with: pip install -U huggingface_hub)")
