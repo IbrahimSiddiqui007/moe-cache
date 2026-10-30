@@ -88,8 +88,15 @@ def doctor_facts(model, ls, ram):
 
 def launcher_plan(model, ls, ram, ctx, extra):
     """The launcher's own decision for this model (a dry run): ('plugin' or 'stock', the llama-server command line it would run)."""
-    cmd = [sys.executable, os.path.join(HERE, "moe_cache.py"), "server", model, "--llama-server", ls, "--ctx", str(ctx), "--dry-run"]
+    cmd = [sys.executable, os.path.join(HERE, "moe_cache.py"), "server", model, "--llama-server", ls, "--ctx", str(ctx), "--plan-json"]
     cmd += (["--ram", str(ram)] if ram else []) + list(extra)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+    try:        # XA-2: the launcher's plan as data (engine and command line), not text parsed from a dry run
+        plan = json.loads(r.stdout)
+        return plan["engine"], plan["command_line"]
+    except Exception:
+        pass
+    cmd[cmd.index("--plan-json")] = "--dry-run"       # a launcher from before --plan-json
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     out = r.stdout + r.stderr
     line = next((l for l in out.splitlines() if "llama-server" in l and " -m " in l), "")

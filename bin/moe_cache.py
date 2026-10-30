@@ -1505,6 +1505,11 @@ class Machine:
     def vk_cache_cap(self, ls, model, listing=None): return vk_cache_cap(ls, model, listing)
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
 
+    def free_vram_bytes(self):
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import free_vram_bytes
+        return free_vram_bytes()
+
     def gpu_total_free_bytes(self):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import gpu_total_free_bytes
@@ -1550,9 +1555,21 @@ class LaunchPlan:
     def command_line(self, windows=None):
         """The line --dry-run prints: environment settings, then the command (PowerShell form on Windows); the API key is never shown."""
         shown = [(k, "(hidden)" if k == "LLAMA_API_KEY" else v) for k, v in self.env + self.key_env]
-        if WINDOWS if windows is None else windows:
+        if self.machine.windows if windows is None else windows:
             return "".join(f'$env:{k}="{v}"; ' for k, v in shown) + "& " + " ".join(f'"{c}"' if " " in c else c for c in self.cmd)
         return ("env " + " ".join(f"{k}={v}" for k, v in shown) + " " if shown else "") + " ".join(self.cmd)
+
+    def job_limit_note(self):
+        return f"moe-cache: (would set a Windows job memory limit of {self.win_limit / 1e9:.1f} GB on llama-server)" if self.win_limit else None
+
+    def dry_run_lines(self):
+        """What --dry-run shows, as one list: the reasons (stdout), the job-limit note, the command, then the warnings (stderr)."""
+        out = [t for t, e in self.notes if not e]
+        if self.job_limit_note():
+            out.append(self.job_limit_note())
+        out.append(self.command_line())
+        out += [t for t, e in self.notes if e]
+        return [l for l in "\n".join(out).splitlines() if l.strip()]
 
     def to_dict(self):
         return {"engine": self.engine, "method": self.method, "model": self.model, "llama_server": self.ls, "ctx": self.ctx, "port": self.port,
@@ -1560,10 +1577,12 @@ class LaunchPlan:
                 "model_bytes": self.size, "memory_bytes": self.avail, "profile": self.profile, "alias": self.alias,
                 "windows_job_limit_bytes": self.win_limit, "argv": list(self.cmd),
                 "env": [[k, "(hidden)" if k == "LLAMA_API_KEY" else v] for k, v in self.env + self.key_env],
-                "command_line": self.command_line(), "reasons": self.reasons, "warnings": self.warnings}
+                "command_line": self.command_line(), "reasons": self.reasons, "warnings": self.warnings,
+                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines()}
 
 
-def server(argv):
+def parse_server(argv):
+    """-> (options, arguments for llama-server after --, the launcher's own argument list): the command line of `moe_cache.py server`."""
     ap = argparse.ArgumentParser(prog="moe_cache.py server", description="run llama-server with the expert-cache plugin",
                                  epilog=SERVER_HELP, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("model", nargs="?", help="the .gguf file (leave out to use the one `moe_cache.py pick --apply` chose)")
@@ -1587,6 +1606,11 @@ def server(argv):
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
     a = ap.parse_args(argv)
+    return a, extra, argv
+
+
+def server(argv):
+    a, extra, argv = parse_server(argv)
     plan = launch_plan(a, extra, argv, quiet=a.plan_json)
     if a.plan_json:
         print(json.dumps(plan.to_dict(), indent=1))
@@ -1615,6 +1639,7 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
 
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
+    dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
     if not a.model:
         from moe_cache_pick import picked       # bin/moe_cache_pick.py
         p = picked()
@@ -1645,7 +1670,7 @@ def _launch_plan(a, extra, argv, machine):
         raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock, machine=machine)
     lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
-    if not a.dry_run and not (os.path.isfile(ls) or shutil.which(ls)):
+    if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
         # tarball users the wrong way (audit 2026-10-29 K2)
         raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
@@ -1747,14 +1772,14 @@ def _launch_plan(a, extra, argv, machine):
         pname = pname or a.project
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
         extra += ["--slot-save-path", slotdir]
-        if not a.dry_run:
+        if not dry:
             try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same
                 with open(os.path.join(slotdir, "server.id"), "w") as fh:
                     fh.write(model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
             except OSError:
                 pass
     profile = os.path.join(CACHE_DIR, os.path.basename(model) + "." + (pname + "." if pname else "") + "usage")
-    if not os.path.isfile(profile) and not a.no_starter and not a.dry_run:
+    if not os.path.isfile(profile) and not a.no_starter and not dry:
         # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
         try:
             sys.path.insert(0, os.path.join(HERE, "planner"))
@@ -1856,7 +1881,7 @@ def _launch_plan(a, extra, argv, machine):
         try:
             sys.path.insert(0, os.path.join(HERE, "planner"))
             from gguf_plan import tune
-            free = float(a.vram) * 2**30 if a.vram else None          # GiB, the same unit as the planner's --vram-gib
+            free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
             if a.gpu_margin is None:
                 # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
@@ -1890,7 +1915,7 @@ def _launch_plan(a, extra, argv, machine):
         if not kv_q8 and not a.fast:
             try:
                 from gguf_plan import fast_kv_hint
-                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else None, ub=int(ub) if (ub or "").isdigit() else None,
+                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
                                  **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
                 if h:
                     say("moe-cache: " + h)
@@ -2010,13 +2035,9 @@ def run_launch_plan(plan):
     cmd, env, key_env, method, win_limit = plan.cmd, plan.env, plan.key_env, plan.method, plan.win_limit
     api_key, alias, slotdir, kv_q8, ncmoe_user = plan.api_key, plan.alias, plan.slotdir, plan.kv_q8, plan.ncmoe_user
     if a.dry_run:
-        if win_limit:
-            say(f"moe-cache: (would set a Windows job memory limit of {win_limit / 1e9:.1f} GB on llama-server)")
-        shown = [(k, "(hidden)" if k == "LLAMA_API_KEY" else v) for k, v in env + key_env]     # never print the key
-        if WINDOWS:   # PowerShell form, so it can be pasted there
-            say("".join(f'$env:{k}="{v}"; ' for k, v in shown) + "& " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
-        else:
-            say(("env " + " ".join(f"{k}={v}" for k, v in shown) + " " if shown else "") + " ".join(cmd))   # stock mode: nothing to set (T7)
+        if plan.job_limit_note():
+            say(plan.job_limit_note())
+        say(plan.command_line())
         return 0
     # audit 2026-10-29 L2: checked before any helper thread starts, as learn and check do: with another server on the port the restore thread
     # sent it our project state (with the stored key) and the plugin check called it ours (a missing llama-server is refused further up)

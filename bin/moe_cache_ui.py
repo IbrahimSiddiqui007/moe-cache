@@ -550,11 +550,21 @@ def shown_command(s):
 
 
 def dry_run(s):
+    """The launcher's decision for these settings, as the lines the page shows: the launch plan (--plan-json: the reasons, the command, the warnings);
+    a launcher from before --plan-json is asked with --dry-run and its text is shown as it comes."""
     a = server_args(s)
-    a.insert(a.index("--"), "--dry-run")          # a launcher option: after the -- it would go to llama-server
-    r = subprocess.run(LAUNCHER + a, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, env=child_env(s.get("api_key")))
     key = s.get("api_key")
-    return [l.replace(key, "KEY") if key else l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+    def run(flag):
+        b = list(a)
+        b.insert(b.index("--"), flag)          # a launcher option: after the -- it would go to llama-server
+        return subprocess.run(LAUNCHER + b, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300, env=child_env(key))
+    r = run("--plan-json")
+    try:
+        lines = json.loads(r.stdout)["dry_run_lines"]
+    except Exception:
+        r = run("--dry-run")
+        lines = [l for l in (r.stdout + r.stderr).splitlines() if l.strip()]
+    return [l.replace(key, "KEY") if key else l for l in lines]
 
 
 # ---- the running server ----

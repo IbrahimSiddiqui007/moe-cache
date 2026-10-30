@@ -113,7 +113,7 @@ def fake_machine(m, tmp):
     return calls, real_access
 
 
-def run_case(machine_name, opts, extra, model, tmp):
+def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run"):
     m = MACHINES[machine_name]
     saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy())
     for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH")]:
@@ -128,7 +128,7 @@ def run_case(machine_name, opts, extra, model, tmp):
     try:
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
-                rc = mc.server([model, "--llama-server", ls, "--dry-run", *opts] + (["--"] + extra if extra else []))
+                rc = mc.server([model, "--llama-server", ls, flag, *opts] + (["--"] + extra if extra else []))
             except SystemExit as e:
                 rc = e.code if isinstance(e.code, int) else 1
                 print("SystemExit:", e.code, file=sys.stderr)
@@ -141,6 +141,61 @@ def run_case(machine_name, opts, extra, model, tmp):
             s = s.replace(a, b)
         return s
     return {"rc": rc, "stdout": norm(out.getvalue()), "stderr": norm(err.getvalue()), "calls": [norm(" ".join(map(str, c))) for c in calls]}
+
+
+class FakeMachine(mc.Machine):
+    """Fixed answers, no probes: what a test (or a caller that already measured the machine) passes to launch_plan."""
+    def __init__(self, tmp, vram_mib=8188, free_mib=7600, avail=24e9):
+        self.tmp, self.vram_mib, self.free_mib, self.avail = tmp, vram_mib, free_mib, avail
+    windows = False
+    def mem_total(self): return 32 * GIB
+    def mem_cap(self): return 28 * GIB
+    def mem_for_server(self, ram_gb): return float(ram_gb) * 1e9 if ram_gb else self.avail
+    def list_devices(self, ls): return f"Available devices:\n  CUDA0: Fake GPU ({self.vram_mib} MiB, {self.free_mib} MiB free)\n"
+    def nvidia_reports(self): return True
+    def pick_lib(self, ls): return os.path.join(self.tmp, "libggml-moe-cache.so")
+    def ls_found_line(self, ls): return None
+    def ls_looked(self): return "(fake)"
+    def ls_api(self, ls): return "3"
+    def lib_api(self, lib): return "3"
+    def load_env(self, ls, lib, method="auto"): return [("LD_PRELOAD", lib), ("MOE_CACHE_PRELOAD", "1")], "preload"
+    def vk_cache_cap(self, ls, model, listing=None): return None, None
+    def free_vram_bytes(self): return self.free_mib * 2**20
+    def gpu_total_free_bytes(self): return (self.vram_mib * 2**20, self.free_mib * 2**20)
+    def has_cpu_atom(self): return False
+    def has_cpu_core(self): return False
+    def run(self, cmd, **kw):
+        out = '{"n_cpu_moe": 21}' if str(cmd[1]).endswith("plan.py") else "--cache-ram N\n"
+        return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+
+
+def injection_test(model):
+    """launch_plan() takes its facts from the Machine it is given, prints nothing when quiet, and a bigger GPU changes the plan."""
+    bad = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in ("llama-server", "libggml-moe-cache.so"):
+            open(os.path.join(tmp, f), "w").close()
+        saved = (mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS)
+        mc.CACHE_DIR = os.path.join(tmp, "cache"); mc.KEY_FILE = os.path.join(mc.CACHE_DIR, "api.key")
+        mc.WINDOWS = False
+        mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
+        try:
+            plans = []
+            for vram, free in ((8188, 7600), (24576, 23000)):
+                a, extra, argv = mc.parse_server([model, "--llama-server", os.path.join(tmp, "llama-server"), "--ram", "12", "--no-pin", "--plan-json"])
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+                    plan = mc.launch_plan(a, extra, argv, machine=FakeMachine(tmp, vram, free), quiet=True)
+                plans.append(plan)
+                ok = out.getvalue() == "" and plan.engine == "plugin" and plan.reasons and plan.cmd[0].endswith("llama-server") and "--n-cpu-moe" in plan.cmd
+                print("  " + ("ok  " if ok else "FAIL") + f" injected machine ({vram} MiB GPU): engine {plan.engine}, --n-cpu-moe {plan.n_cpu_moe}, -ub {plan.ub}, nothing printed")
+                bad += not ok
+            ok = int(plans[1].n_cpu_moe) < int(plans[0].n_cpu_moe)
+            print("  " + ("ok  " if ok else "FAIL") + f" a bigger GPU keeps more expert layers on the GPU ({plans[0].n_cpu_moe} -> {plans[1].n_cpu_moe} on the CPU)")
+            bad += not ok
+        finally:
+            mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS = saved
+    return bad
 
 
 def fingerprint(model):
@@ -163,10 +218,35 @@ def main():
             for cname, opts, extra in CASES:
                 results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
     fp = fingerprint(model)
+    inj_bad = injection_test(model)
+    # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
+    consistent_bad = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for mname in MACHINES:
+            for cname, opts, extra in CASES:
+                r = run_case(mname, opts, extra, model, tmp, flag="--plan-json")
+                base = results[f"{mname}/{cname}"]
+                want = [l for l in (base["stdout"] + base["stderr"]).splitlines() if l.strip()]
+                try:
+                    plan = json.loads(r["stdout"])
+                    got = [l.replace(tmp, "<TMP>").replace(model, "<MODEL>").replace(HERE, "<HERE>") for l in plan["dry_run_lines"]]
+                    ok = got == want and r["stderr"] == "" and plan["engine"] in ("stock", "plugin") and plan["argv"]
+                except Exception as e:
+                    ok = False
+                    got = [str(e)]
+                if not ok:
+                    consistent_bad += 1
+                    print("  FAIL", f"{mname}/{cname}", "--plan-json differs from --dry-run")
+                    for x, y in zip(want + [""] * len(got), got + [""] * len(want)):
+                        if x != y:
+                            print("      dry-run :", x[:200]); print("      plan-json:", y[:200]); break
+    consistent_bad += inj_bad
+    if consistent_bad:
+        print(f"{consistent_bad} checks failed (--plan-json vs --dry-run, injected machine)")
     if record:
         json.dump({"model": fp, "cases": results}, open(GOLDEN, "w"), indent=1, sort_keys=True)
         print(f"recorded {len(results)} cases for model {fp}")
-        return 0
+        return 1 if consistent_bad else 0
     gold = json.load(open(GOLDEN))
     bad = 0
     # every case must at least run (no traceback) on any model
@@ -175,7 +255,7 @@ def main():
             print("  FAIL", k, "traceback"); bad += 1
     if gold["model"] != fp:
         print(f"  note: the golden file is for model {gold['model']}, this one is {fp}: smoke test only ({len(results)} cases ran)")
-        return 1 if bad else 0
+        return 1 if (bad or consistent_bad) else 0
     for k, r in sorted(results.items()):
         g = gold["cases"].get(k)
         if g != r:
@@ -188,8 +268,8 @@ def main():
                         if x != y:
                             print(f"      {key}: golden  {x[:240]}\n      {key}: now     {y[:240]}")
                             break
-    print(f"{len(results) - bad} of {len(results)} cases identical to the golden file")
-    return 1 if bad else 0
+    print(f"{len(results) - bad} of {len(results)} cases identical to the golden file; --plan-json agrees with --dry-run in {len(results) - consistent_bad}")
+    return 1 if (bad or consistent_bad) else 0
 
 
 if __name__ == "__main__":

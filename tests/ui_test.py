@@ -110,7 +110,8 @@ seen = []
 ui.subprocess.run, real_run = (lambda cmd, **kw: seen.append(cmd) or type("R", (), {"stdout": "", "stderr": ""})()), ui.subprocess.run
 ui.dry_run({"model": "m.gguf"})
 ui.subprocess.run = real_run
-check(seen and seen[0].index("--dry-run") < seen[0].index("--"), "--dry-run goes to the launcher, before the --")
+check(seen and seen[0].index("--plan-json") < seen[0].index("--"), "--plan-json (the launch plan) goes to the launcher, before the --")
+check(len(seen) == 2 and seen[1].index("--dry-run") < seen[1].index("--"), "a launcher without --plan-json is asked with --dry-run, before the --")
 
 # ---- a fake launcher: serves /health and /slots, prints the plugin's lines, runs until stopped ----
 fake = os.path.join(TMP, "fake_launcher.py")
