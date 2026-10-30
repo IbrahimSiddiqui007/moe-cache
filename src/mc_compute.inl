@@ -183,10 +183,32 @@ void be_sync(ggml_backend_t backend);
 
 enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     auto * c = (moe_cache_backend_ctx *) backend->context;
-    be_sync(backend);   // N15: inputs read asynchronously from the GPU (be_cpy_tensor_async) must have arrived
     state_t & s = S();
+    static const bool seg_times = getenv("MOE_CACHE_SEG_TIMES") != nullptr;
+    auto now_ns = [] { return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
+    if (seg_times) {
+        const uint64_t t = now_ns(), last = s.last_exit_ns.load();
+        if (last && t - last < 5000000000ull) {       // longer: the server was idle between two requests
+            const uint64_t d = t - last;
+            const int b = d < 200000 ? 0 : d < 1000000 ? 1 : d < 5000000 ? 2 : 3;
+            s.ns_gap += d; s.n_gap++; s.gap_b_ns[b] += d; s.gap_b_n[b]++;
+            const uint64_t f = state_t::process_faults(), df = f - s.last_exit_faults.load();
+            s.gap_faults += df;
+            s.entry_faults = f;
+            int lo = 0;
+            for (int k = 1; k < 4; k++) { if (s.top_gap_ns[k] < s.top_gap_ns[lo]) lo = k; }
+            if (d > s.top_gap_ns[lo]) { s.top_gap_ns[lo] = d; s.top_gap_graph[lo] = s.graphs.load(); s.top_gap_faults[lo] = df; }
+        }
+    }
+    const uint64_t sy0 = seg_times ? now_ns() : 0;
+    be_sync(backend);   // N15: inputs read asynchronously from the GPU (be_cpy_tensor_async) must have arrived
+    if (seg_times) {
+        s.ns_sync += now_ns() - sy0;
+    }
     const auto t_in = std::chrono::steady_clock::now();
-    struct total_t { state_t & s; std::chrono::steady_clock::time_point t; ~total_t() { s.ns_total += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count(); } } total_guard{ s, t_in };
+    struct total_t { state_t & s; std::chrono::steady_clock::time_point t; bool times;
+                     ~total_t() { s.ns_total += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count();
+                                  if (times) { s.last_exit_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); const uint64_t f = state_t::process_faults(); s.last_exit_faults = f; if (s.entry_faults) s.in_faults += f - s.entry_faults; } } } total_guard{ s, t_in, seg_times };
     if (!c->cpu) {
         c->cpu = ggml_backend_dev_init(CPU().dev, nullptr);
     }
@@ -469,11 +491,15 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
             std::vector<ggml_tensor *> seg;
             c->seg_nomem = false;
+            const uint64_t gs0 = seg_times ? now_ns() : 0;
             bool ok = gpu_segment(c, s, cg, gr.first, gr.last, seg);
             if (!ok && c->seg_nomem && c->hb_buf) {
                 hybrid_drop(c, s);         // the hybrid bank holds the memory the long-prompt block needs: free it now, load it again at the next decode step
                 seg.clear();
                 ok = gpu_segment(c, s, cg, gr.first, gr.last, seg);
+            }
+            if (seg_times) {
+                s.ns_gpu_seg += now_ns() - gs0;
             }
             if (ok) {
                 for (ggml_tensor * n : seg) {

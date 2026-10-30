@@ -45,7 +45,7 @@ struct state_t {
     std::atomic<uint64_t> hyb_groups{0}, hyb_picks{0}, hyb_hits{0};   // MOE_CACHE_HYBRID: layers split between GPU bank and CPU, picks, picks served by the bank
     std::atomic<uint64_t> hyb_drops{0}, hyb_reloads{0}, hyb_reload_ns{0};
     std::atomic<uint64_t> hyb_swaps{0}, hyb_swap_ns{0}, hyb_reverts{0};   // MOE_CACHE_HYBRID_ADAPT: experts swapped into the bank, time spent uploading them   // bank freed for a long prompt's GPU block, loaded again at the next decode step
-    std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory
+    std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0}, gpu_split_blocks{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory; gpu_split_blocks: blocks run in parts (N23)
     std::atomic<uint64_t> gpu_up_bytes{0};
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
     std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
@@ -225,6 +225,13 @@ struct state_t {
 
     std::atomic<uint64_t> hits{0}, misses{0}, bytes{0}, groups{0}, ops{0}, graphs{0};
     std::atomic<uint64_t> ns_prep{0}, ns_cpu{0}, ns_total{0}, ns_read{0}, evictions{0}, direct_jobs{0}, bounce_jobs{0}, async_in{0};
+    // MOE_CACHE_SEG_TIMES=1 (N23-F6): where the time outside our own work goes. gap = from the end of one of our graph splits to the start of the next
+    // (llama.cpp's other splits, the scheduler, copies, GPU waits), sync = the wait for inputs read asynchronously from the GPU (it contains the GPU
+    // time of the split before us), gpu_seg = long-prompt GPU blocks incl. uploads. gap buckets: < 0.2 ms, < 1 ms, < 5 ms, >= 5 ms.
+    std::atomic<uint64_t> ns_gap{0}, ns_sync{0}, ns_gpu_seg{0}, n_gap{0}, last_exit_ns{0};
+    std::atomic<uint64_t> gap_b_ns[4]{}, gap_b_n[4]{};
+    std::atomic<uint64_t> gap_faults{0}, in_faults{0}, last_exit_faults{0}, entry_faults{0}, top_gap_ns[4]{}, top_gap_graph[4]{}, top_gap_faults[4]{};   // faults of the process inside the gaps / inside our backend; the 4 longest gaps
+    std::atomic<uint64_t> ex_quant_ns{0}, ex_build_ns{0}, ex_run_ns{0}, ex_part_ns[3]{}, ex_part_bytes[3]{}, ex_part_n[3]{};   // MOE_CACHE_EXEC_TIMES: executor phases; part 0 gate, 1 up, 2 down
 
     // io workers
     std::vector<std::thread> workers;

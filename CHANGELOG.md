@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A menu on every model in the list** (right-click, Shift+F10 or the menu key, or the ⋮ button on the row): Start (nothing runs), Switch to this model, Stop (the running one), Plan / Why, Show in folder (the file's folder and name), Copy path. Rows can be focused with the keyboard; arrows move in the menu, Esc closes it.
+- **Switching models while a server runs is visible**: when the selected model differs from the running one, the top bar shows "Switch to <name>" (Stop, then Start with the settings shown; asks first when an agent or the chat is mid-request); the top bar says "Running: <name>" and the model list marks the running one.
+- **llama-server is found in more places, by one function** (launcher, `check`, the picker and the control page share `default_llama_server`): `LLAMA_SERVER` in the process
+  environment, on Windows also as stored in the registry (user, then machine: `setx` writes there and an Explorer started earlier never passes it on), the path the control page
+  saved, the PATH (also the registry's), `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build and `~/llama.cpp/build/bin`.
+  Among several folders the newest build a shipped plugin supports (API match) is used, and one log line names it. The launcher's "not found" message lists where it looked. When
+  nothing is found the control page shows a "llama.cpp not found" dialog (path input checked with `--version`, link to the official release) and remembers the path in its settings.
+- **Control page fixes (owner's Windows test of v0.3.1)**: the selected button of every button group keeps readable text in the dark and light theme (contrast >= 4.5, also hover and
+  disabled); "Which model?" is a card (a "Your machine" table, the recommendation with its key numbers, Why, other options, notes collapsed, one warning colour, the Use it button
+  inside the card); MTP / draft-head GGUFs (`mtp-` names, files with only the head's tensors) are no longer listed as models or taken as candidates; "does not fit: moe-cache exact"
+  now reads "runs with moe-cache (bigger than free RAM)" in a neutral colour; the Mode help says "Exact: same output as stock llama.cpp (default)" and what Fast changes.
+- **`moe_cache.py diffusion` / `moe-cache-diffusion`** (diffusion plan S3): runs `llama-diffusion-cli` (LLaDA-MoE, RND1; `llama-server` has no diffusion path) with the
+  plugin, the cache size (`--ram`), the memory cap (`--max-ram`) and the same stock-when-it-fits rule as the server. A diffusion step is a prefill of the whole
+  canvas (`--canvas`, default 256 tokens), so every expert is read each step; LLaDA-MoE-7B-A1B at a 3 GB limit: 14-16 % faster per step than stock, text
+  identical (RESULTS 70). It keeps the experts on the CPU side with `-ngl 0` because `llama-diffusion-cli` ignores `--n-cpu-moe`; `--steps`, `--block` (LLaDA) or
+  `--eps` (RND1), `--algorithm`, `--temp`, `--seed`. Prints canvas and steps. Official Windows llama.cpp zips do not contain `llama-diffusion-cli`: `--cli PATH`.
 - **The machine stays awake while the server runs** (idea I47; a PC that slept 7 minutes in the middle of a benchmark stalled it): Windows sets a
   power request on the launcher (`SetThreadExecutionState`, the display may still turn off), Linux holds a `systemd-inhibit --what=sleep:idle`
   lock in a small helper that ends with the launcher however it ends (kill -9 included); llama-server itself is not wrapped. No power setting is

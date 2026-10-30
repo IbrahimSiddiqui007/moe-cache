@@ -2893,3 +2893,63 @@ stopped after 11 s), and the runner lost its own log lines until 14:47 (`$o` and
 | 122B 256k, GLM 64k, Flash-Next 256k | - | - | queued after it (until 22:00 at the latest) | - | next session |
 
 Peak RAM in use on the PC during the 128k runs: 28.7-29.5 GiB including the owner's ~7 GiB (logged; nothing stopped).
+
+**Evening additions to 69 (2026-10-29 20:16-21:32, not clean: the owner's desktop held ~2.8 GB VRAM: dwm 1.2 GB, a browser 0.9 GB):**
+| Item | A | B | Runs | Verdict |
+|---|---|---|---|---|
+| G3 MTP head on Flash-Next Q2_0 (ctx 40960, f310c28 DLL; unsloth `mtp-Qwen3.8-Flash-Next-Q8_0.gguf`, `-md ... --spec-type draft-mtp --spec-draft-n-max 2 -ngld 99`) | no head | head | decode water/code: A 17.7 / 17.65 and 19.36 / 19.67, **B 10.43 / 9.78 and 11.34 / 10.32**; p34k prefill A 72.9 / 80.4, B 57.4 / 57.5; expert hits A 95-97 %, **B 4-54 %** | **killed again (-40 % decode)**: the head and its draft context take RAM from the expert cache and hits collapse; MTP is not the lever on Flash-Next at 32 GB |
+| Prefill 73-80 tok/s at 34k in both arms (vs ~290 on a clean PC) | - | - | "a long-prompt block needs 791 MiB of GPU memory but only 697 MiB are free: it stays on the CPU" | **desktop VRAM problem**: the planner's reserve is taken by other processes after the plan; fix in progress (session bigfix: block split / re-plan, margin from the desktop's own use) |
+| n23-pipe-only (809505c) | - | - | every valid pair won (+8-11 % prefill, text identical); the one lost pair ran out of RAM | **merged 5e6ecd0** without a rerun (owner) |
+| N22 read-back | - | - | +3-5 % at 34k, mixed at 128k | **parked** (owner: no more reruns for small gains) |
+
+## 70. Diffusion MoE: prefill proxy and LLaDA-MoE (laptop, 2026-10-29 night, "not clean"; plan S0-S1, scripts tests/diffusion_proxy.sh and tests/diffusion_identity.sh)
+A diffusion step is a no-cache prefill of the whole canvas (`-ub` tokens), so S0 times prefill passes of canvas size under a memory limit. Flash-Next IQ3_XXS (75.8 GB), 24 GB scope, `llama-bench -p N -b N -ub N -r 2`:
+
+| Canvas | stock s/pass | plugin s/pass | plugin / stock | experts per layer used (of 512) |
+|---|---|---|---|---|
+| 128 | 12.2 | 2.9 | 4.3x | ~211 |
+| 256 | 11.1 | 3.1 | 3.6x | ~259 |
+| 512 | 10.7 | 4.5 | 2.4x | ~287 |
+| 1024 | 14.6 | 7.0 | 2.1x | ~323 |
+
+Decode of the same model at 24 GB (64 tokens, cold): plugin 5.85 tok/s, stock 1.60. Ten 1024-token passes (70 s with the plugin) cost less than 1.5x the decode of 1024 tokens (263 s): the plan's kill rule is not triggered.
+S1, LLaDA-MoE-7B-A1B Instruct Q4_K_M (4.5 GB, 16 layers, 64 experts, top 8), `llama-diffusion-cli -ngl 0 -ub 256 --diffusion-steps 64`, 3 GB scope: plugin 1596 / 1299 ms per step vs stock 1846 / 1548 (-14 / -16 %, two orders), text identical. Every expert is used in every step (cache hit 0 %); both arms are read-bound.
+`llama-diffusion-cli` ignores `--n-cpu-moe` (it fills only n_gpu_layers), so a model that fits VRAM runs entirely on the GPU and the plugin sees nothing; `-ngl 0` keeps experts on the CPU side and the plugin's GPU block does the compute.
+S3: `moe_cache.py diffusion` (launcher wrapper, merged). S2 (RND1-Base-0910 Q8_0, 32.5 GB, PC) and S4 (GPU block at canvas sizes) are queued as PC items 80 and 81; their results are not in this section yet.
+
+## 71. bigfix: desktop GPU memory, time between our graph splits, executor phases, depth decode (Windows PC, 2026-10-29 night, all "not clean": owner work took 3-6 GB of RAM; branch claude/bigfix)
+
+Flash-Next Q2_0 (D:), ctx 131072, launcher defaults, a separate Edge window open (about 1.2 GiB of VRAM). Raw logs on the PC: C:\dl\abba\bigfix_*.
+
+**1. Long-prompt block with the desktop holding GPU memory** (A = experimental 5e6ecd0, B = bigfix ff30110, ABBA, prefill tok/s):
+| Prompt | A | B | GPU blocks A -> B |
+|---|---|---|---|
+| p34k pair 1 | 68.3 | 110.2 | 78 -> 1428 |
+| p34k pair 2 | 67.4 | 109.0 | 14 -> 1428 |
+| p128k pair 1 | 75.4 | 94.6 | 2092 -> 4956 |
+| p128k pair 2 | 66.6 | 79.4 | 0 -> 4956 |
+B is faster in every pair. Cause (A's log): "a long-prompt block needs 256 MiB of GPU memory but only 171 MiB are free: it stays on the CPU". B splits the block into 2-3 parts of 211-238 experts (329-408 MiB free). Text: B vs B identical at both sizes; A vs A already differs (its GPU/CPU split differs run to run); all answers summarise the same document with the same meaning. Absolute speeds are far below the clean ~290 tok/s (memory pressure): read the ratios, not the numbers. The launcher change (margin 0.25 + 0.5 x VRAM that other programs already hold, 0.5-2.5 GB) is unit-tested only (tests/desk_margin_test.py); this run does not separate it from the split.
+
+**2. Where the time outside our backend goes (p34k, B, 101.8 tok/s, wall 335 s, MOE_CACHE_SEG_TIMES):**
+| Part | Seconds | Share of 346 s |
+|---|---|---|
+| inside our backend | 210 | 61 % |
+| of which GPU blocks (upload+compute+read-back) | 180 | |
+| of which cache fill (prep) | 26 | |
+| of which llama.cpp's own CPU path | 4 | |
+| between our splits (gaps) | 136 | 39 % |
+| of which gaps >= 5 ms | 131 | |
+Page faults of the process in the prompt: 125M, 88M inside our backend (uploads read the mapped model file) and 37M inside the gaps. The longest gaps (0.58 s) carry 31-32k faults each, which is the PLE table (about 16 rows per token x 2048 tokens = 32k lookups per micro-batch, deepdive row SM1): at 17 micro-batches that is about 10 s, 3 % of the prompt. The other 120 s in the gaps is llama.cpp's other splits and GPU waiting (the earlier perf-logger run named 22 s of Vulkan kernels at 34k): not resolved. The first run (51) was polluted (hit rate 45 %, 128k timed out at 45 min) and is not used.
+
+**3. Executor phases in decode (4k run, 16 threads, MOE_CACHE_EXEC_TIMES; hit rate 66 %, so many experts were still being read):**
+| Phase | Share |
+|---|---|
+| dot products (busy) | 36 % of thread time inside the pool |
+| spinning for experts still being read | 32 % |
+| idle at the barrier / wake-up | 32 % (caller waits 68 us per op for the slowest worker, wake-up 11 us per start) |
+| quantise + task setup | under 1 % of the pool time |
+Per part: gate 408 us per op, up 195 us, down 187 us for the same 4.7 MB: gate absorbs the waits for experts still loading. Up and down run at 24-25 GB/s. So the missing half of the bandwidth is not quantising or dispatch; it is (a) waiting for reads on a RAM-limited machine and (b) the barrier: ops are small (about 40 chunks of 128 rows over 16 threads). Idea, not built: run gate and up in one pool job (same input, independent, same arithmetic) to halve the barriers.
+
+**4. Decode at depth (N41b).** Flash attention per call: 35-42 us at 4k (k = 4096-4352) vs 154 us at 120k (k = 120832): the whole KV is scanned (123 MB per layer at about 800 GB/s), nothing is skipped. With 12 attention layers that is about +1.4 ms per token (about +2-3 % of a token), not the -14 % in the README. The 128k decode follow-up generated 1 token (EOS), so no 128k decode figure from this run. The rest of the -14 % is probably the ctx-dependent plan (131072 ctx leaves fewer GPU expert layers than the 8k-ctx run it was compared with); same-ctx clean runs would show it. Sparse-skip in Vulkan flash attention is upstream, not ours.
+
+Timers added (off by default): MOE_CACHE_SEG_TIMES (gaps, faults, longest gaps in the stats JSON and exit lines), MOE_CACHE_EXEC_TIMES ("ex" in the stats JSON, "exec-times" exit lines).

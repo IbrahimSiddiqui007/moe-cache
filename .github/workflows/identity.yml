@@ -76,11 +76,15 @@ jobs:
           if grep -q "moe-cache-mib" launcher_gcache_path.txt; then echo "FAIL: --moe-cache-mib passed on path loading (T7)"; exit 1; fi    # "! grep" alone never fails under bash -e
           python3 tests/planner_test.py granite.gguf | tee launcher_planner.txt
           python3 tests/picker_test.py       # model picker (spec -> model table on fake machines, settings it writes); no model, no download
+          python3 tools/check_model_links.py   # every model the picker can recommend still exists on Hugging Face (metadata only; an HF outage only warns)
           python3 tests/gguf_hostile_test.py   # hostile GGUF headers are refused, not allocated (security fix S1)
           python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
           python3 tests/on_demand_test.py    # on-demand endpoint: key, CORS, start on first request, SSE pass-through, idle stop, restart; fake server
           python3 tests/awake_test.py        # keep-awake lock (I47)
           python3 tests/doctor_test.py       # doctor/check overview (N34)
+          python3 tests/desk_margin_test.py   # GPU margin scales with what the desktop holds
+          python3 tests/oom_retry_test.py   # GPU out of memory at load: one retry with a new plan
+          python3 tests/diffusion_test.py    # moe_cache.py diffusion: command, environment, asserts (S3)
           python3 tests/warm_test.py         # warm-session saver (N27): waits by file size and change, restore, no save while busy; fake server
 
       - name: Control page with the model (GUI1; start, one request, live hit rate, stop through the page)
@@ -153,9 +157,10 @@ jobs:
           MOE_CACHE_STATS: "1"
           IDENT_EXTRA: "--no-repack"      # CPU weight repacking would make the executor step aside (repacked weights); both servers get the flag
           IDENT_KEEP: ident_exec
-          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_SEG_TIMES=1 MOE_CACHE_EXEC_TIMES=1"     # the timers must not change a token
         run: |
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_exec.txt
+          grep -q "moe-cache: exec-times: .* pool runs" ident_exec/plugin.log && grep -q "moe-cache: seg-times: between our graph splits" ident_exec/plugin.log || { echo "FAIL: the N23-F6 / N25 timers printed nothing"; exit 1; }
           grep -E "executor ran [1-9][0-9]* expert ops itself, checked [1-9][0-9]*, mismatches 0" ident_exec/plugin.log    # the executor really ran (it steps aside silently on repacked weights)
           grep -q "read-only mappings of the model file" ident_exec/plugin.log || { echo "FAIL: the file-view cache (Linux default) was not used"; exit 1; }
           if [ "${{ matrix.name }}" != master-api3 ] && grep "tested with ggml" ident_exec/plugin.log; then echo "FAIL: the plugin calls this pinned (tested) ggml untested (MOE_CACHE_TESTED_GGML)"; exit 1; fi

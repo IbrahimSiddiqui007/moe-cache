@@ -9,6 +9,7 @@
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode|claude [--url URL] [--write]        point Hermes Agent, OpenCode or Claude Code at a running server (start it with --agent)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
+  moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
   moe_cache.py --version                                                   print the moe-cache version
@@ -42,18 +43,168 @@ def api_advice(want):
             f"{'GGML_API=3 ' if want == 3 else ''}./build.sh")
 
 
-def default_llama_server():
-    """llama-server when --llama-server is not given: LLAMA_SERVER, else the one on the PATH, else where the docs put it (Windows: the official
-    release unpacked to C:\\llama; Linux: install.sh's default prefix), else plain "llama-server" (check then says it is missing)."""
-    if os.environ.get("LLAMA_SERVER"):
-        return os.environ["LLAMA_SERVER"]
-    if shutil.which("llama-server"):
-        return "llama-server"
-    for c in ([r"C:\llama\llama-server.exe"] if WINDOWS else
-              [os.path.join(os.path.expanduser("~"), "moe-cache-setup", "llama.cpp", "build", "bin", "llama-server")]):
-        if os.path.isfile(c):
-            return c
-    return "llama-server"
+RELEASES_URL = "https://github.com/ggml-org/llama.cpp/releases"
+_LS = {}        # the last search: {"path", "source", "build", "api", "looked": [places], "others": [paths]} (see find_llama_server)
+
+
+def llama_exe():
+    return "llama-server.exe" if WINDOWS else "llama-server"
+
+
+def expand_win_vars(v):
+    """%NAME% as the registry stores it (REG_EXPAND_SZ), from the process environment; unknown names stay as they are."""
+    return re.sub(r"%([^%]+)%", lambda m: os.environ.get(m.group(1), m.group(0)), v)
+
+
+def win_registry_env(name):
+    """[(where, value)] of an environment variable as Windows stores it: the user's, then the machine's. `setx` writes here, and a program started
+    earlier (Explorer, so moe-cache.bat started from it) never sees the new value in its own environment. [] off Windows."""
+    out = []
+    if not WINDOWS:
+        return out
+    try:
+        import winreg
+    except ImportError:
+        return out
+    for where, root, sub_ in (("the user environment (registry)", winreg.HKEY_CURRENT_USER, "Environment"),
+                              ("the machine environment (registry)", winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")):
+        try:
+            with winreg.OpenKey(root, sub_) as k:
+                v = winreg.QueryValueEx(k, name)[0]
+            if isinstance(v, str) and v.strip():
+                out.append((where, expand_win_vars(v.strip())))
+        except OSError:
+            pass
+    return out
+
+
+def saved_llama_server():
+    """The path the control page saved (ui.json, key llama_server) when it could not find one itself; "" when none."""
+    try:
+        v = json.load(open(os.path.join(CACHE_DIR, "ui.json"), encoding="utf-8")).get("llama_server")
+        return v if isinstance(v, str) else ""
+    except Exception:
+        return ""
+
+
+def resolve_llama_server(v):
+    """A path to llama-server: the file itself, or a folder that holds it (also bin / build\\bin below it); None when there is none."""
+    if not v:
+        return None
+    v = os.path.expanduser(v.strip().strip('"'))
+    if os.path.isfile(v):
+        return os.path.abspath(v)
+    if os.path.isdir(v):
+        for sub_ in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release")):
+            c = os.path.join(v, sub_, llama_exe())
+            if os.path.isfile(c):
+                return os.path.abspath(c)
+    return None
+
+
+def llama_search_dirs():
+    """Folders that may hold llama-server, in the order they are looked at (only existing files count)."""
+    home = os.path.expanduser("~")
+    if WINDOWS:
+        up = os.environ.get("USERPROFILE") or home
+        return ([r"C:\llama"] + sorted(glob.glob(r"C:\llama*")) + sorted(glob.glob(os.path.join(up, "llama*")))
+                + sorted(glob.glob(os.path.join(up, "Downloads", "llama-b*-bin-win-*"))) + [HERE, os.path.dirname(HERE)])
+    return [os.path.join(home, "moe-cache-setup", "llama.cpp", "build", "bin"), os.path.join(home, "llama.cpp", "build", "bin"), HERE, os.path.dirname(HERE)]
+
+
+def ls_build(ls):
+    """llama-server's build number (`--version`: 'version: 11966 (ff0d396e3)'), None when unknown."""
+    try:
+        r = subprocess.run([ls, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+        text = r.stdout + r.stderr
+        m = re.search(r"\(build (\d+)", text) or re.search(r"version:\s*(\d+)\s*\(", text)     # '0.7.0-dev (build 11669, commit ...)' or the old 'version: 4567 (abc)'
+        n = int(m.group(1)) if m else 0
+        return n if n >= 100 else None        # distro builds report 'build 1' / 0: no usable number
+    except Exception:
+        return None
+
+
+def shipped_apis():
+    """Backend APIs of the plugin builds that ship with (or were built next to) this launcher."""
+    pats = [default_lib(), os.path.join(HERE, "build", "win*", "ggml-moe-cache*.dll"), os.path.join(HERE, "build-*", "ggml-moe-cache*.dll"),
+            os.path.join(HERE, "ggml-moe-cache*.dll"), os.path.join(HERE, "..", "ggml-moe-cache*.dll"), os.path.join(HERE, "build-*", "libggml-moe-cache.so")]
+    return {a for pat in pats for c in glob.glob(pat) for a in [lib_api(c)] if a}
+
+
+def find_llama_server(saved=None):
+    """Looks for llama-server (the same code for the launcher, check, the picker and the control page). Order: LLAMA_SERVER in the process
+    environment; on Windows LLAMA_SERVER as stored in the registry (user, then machine); the control page's saved path; the PATH (process, and on
+    Windows the registry's); then every default folder (Windows: C:\\llama*, %USERPROFILE%\\llama*, Downloads\\llama-b*-bin-win-*, the kit; Linux:
+    install.sh's build, ~/llama.cpp/build/bin, the kit). An explicit setting that points at a file wins; among the folders the newest build whose
+    ggml API a shipped plugin supports wins. Returns {"path", "source", "build", "api", "others", "looked"}; "path" is None when nothing was found."""
+    looked = []
+    res = {"path": None, "source": None, "build": None, "api": None, "others": [], "looked": looked}
+    def hit(path, source):
+        res.update(path=path, source=source, api=ls_api(path) if os.path.isabs(path) else None)
+        return res
+    explicit = [("LLAMA_SERVER", os.environ.get("LLAMA_SERVER"))] + [("LLAMA_SERVER in " + w, v) for w, v in win_registry_env("LLAMA_SERVER")]
+    explicit.append(("the control page's saved path", saved if saved is not None else saved_llama_server()))
+    for src, v in explicit:
+        if v:
+            r = resolve_llama_server(v) or shutil.which(v)
+            looked.append(f"{src}: {v}" + ("" if r else " (no llama-server there)"))
+            if r:
+                return hit(r, src)
+        else:
+            looked.append(f"{src}: not set")
+    w = shutil.which("llama-server")
+    looked.append("PATH: " + ("llama-server" if w else "not on it"))
+    if w:
+        return hit("llama-server", "PATH")
+    if WINDOWS:
+        for where, v in win_registry_env("PATH"):
+            for d in v.split(";"):
+                r = resolve_llama_server(d) if d and os.path.isdir(d) and os.path.isfile(os.path.join(d, llama_exe())) else None
+                if r:
+                    looked.append(f"PATH in {where}: {d}")
+                    return hit(r, "PATH in " + where)
+        looked.append("PATH in the registry: not on it")
+    found = []
+    for d in llama_search_dirs():
+        r = next((os.path.join(d, x, llama_exe()) for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release"))
+                  if os.path.isfile(os.path.join(d, x, llama_exe()))), None)
+        looked.append(f"folder {d}: " + ("found" if r else "no llama-server"))
+        if r and os.path.abspath(r) not in found:
+            found.append(os.path.abspath(r))
+    if found:
+        apis = shipped_apis()
+        def rank(c):
+            api = ls_api(c)
+            return (2 if (not apis or api in apis) and api else 1 if api is None else 0, ls_build(c) or 0, os.path.getmtime(c))
+        best = max(found, key=rank) if len(found) > 1 else found[0]
+        hit(best, "a default folder")
+        res["build"] = ls_build(best)
+        res["others"] = [c for c in found if c != best]
+    return res
+
+
+def default_llama_server(refresh=False):
+    """llama-server when --llama-server is not given (see find_llama_server; kept per process, refresh=True looks again). When nothing is found:
+    LLAMA_SERVER as set, else plain "llama-server" (the callers then say it is missing and where this looked: ls_looked())."""
+    if refresh or "done" not in _LS:
+        _LS.clear()
+        _LS.update(find_llama_server(), done=True)
+    return _LS["path"] or os.environ.get("LLAMA_SERVER") or "llama-server"
+
+
+def ls_looked():
+    default_llama_server()
+    return "; ".join(_LS.get("looked") or [])
+
+
+def ls_found_line(ls):
+    """One log line saying which llama-server was found by the search (None when it came from --llama-server or LLAMA_SERVER)."""
+    default_llama_server()
+    if _LS.get("path") != ls or _LS.get("source") in (None, "LLAMA_SERVER"):
+        return None
+    return (f"moe-cache: llama-server: {which(ls) if ls != 'llama-server' else ls} (found by {_LS['source']}"
+            + (f", build b{_LS['build']}" if _LS.get("build") else "") + (f", ggml API {_LS['api']}" if _LS.get("api") else "")
+            + (f"; also found, not used: {', '.join(_LS['others'])}" if _LS.get("others") else "") + ")")
 
 
 # ---- how a llama-server loads the plugin ----
@@ -290,16 +441,21 @@ def win_driver_version(name):
 
 
 def pick_gpu(listing):
-    """(device, name, free MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
+    g = pick_gpu_full(listing)
+    return g[:3] if g else None
+
+
+def pick_gpu_full(listing):
+    """(device, name, free MiB, total MiB) of the GPU llama.cpp will use, from `llama-server --list-devices` output; None without a GPU.
     llama.cpp skips an integrated GPU when a discrete one exists, but --list-devices lists both (on a Ryzen 7000 desktop the built-in Radeon
     comes first and reports shared RAM as its memory). Windows: the adapter with the most dedicated VRAM in the registry wins; else the most free memory."""
     devs = re.findall(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+?) \((\d+) MiB, (\d+) MiB free\)", listing, re.M)
     if not devs:
         m = re.search(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+)$", listing, re.M)     # a device line without memory figures
-        return (m.group(1), m.group(2).strip(), 0) if m else None
+        return (m.group(1), m.group(2).strip(), 0, 0) if m else None
     ded = win_dedicated_vram()
     d = max(devs, key=lambda x: (ded.get(x[1].strip(), -1), int(x[3])))
-    return d[0], d[1].strip(), int(d[3])
+    return d[0], d[1].strip(), int(d[3]), int(d[2])
 
 
 def nvidia_reports():
@@ -947,7 +1103,31 @@ def keep_awake(cmd, allow_sleep=False):
     return cmd, (lambda: None), ""
 
 
-def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False):
+GPU_OOM_RE = re.compile(r"ErrorOutOfDeviceMemory|Device memory allocation .* failed|cudaMalloc failed|CUDA error: out of memory|hipMalloc failed|"
+                        r"(failed to allocate|unable to allocate) (Vulkan|CUDA|ROCm|HIP|SYCL)\w* (compute )?buffer", re.I)
+
+
+def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None):
+    """run_child_once, and when llama-server stops before it is ready because the GPU ran out of memory at load (another program took the memory
+    after the plan was made: desktop PC 2026-10-30, the control page planned with 13.4 GiB free), ask `oom_retry()` for a new command (it measures the
+    free GPU memory again and plans again) and start once more. One retry only."""
+    rc, seen = run_child_once(cmd, env, port, expect_plugin, mem_limit, allow_sleep)
+    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)
+    if rc not in (0, None) and not quiet and oom_retry and seen["oom"] and not seen["ready"]:
+        new = oom_retry()
+        if new:
+            return run_child_once(new, env, port, expect_plugin, mem_limit, allow_sleep, final=True)[0]
+    say_exit(rc, seen, expect_plugin and port)
+    return rc
+
+
+def say_exit(rc, seen, with_ready):
+    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
+    if rc not in (0, None) and not quiet:
+        say("moe-cache: " + exit_reason(rc, seen["ready"] if with_ready else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
+
+
+def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, final=False):
     """Run llama-server as a child (so helper threads can keep working), pass Ctrl-C / SIGTERM on and return its exit code.
     The child dies with the launcher. Its log is passed through; when the plugin was meant to load and the server becomes ready without a single
     'moe-cache:' line, a warning says it is running stock (found on the MSI Claw, 2026-10-15: the plugin failed to load and nothing said so)."""
@@ -970,11 +1150,13 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sl
                 if p.poll() is None:
                     win_request_save(p.pid, env["MOE_CACHE_PROFILE"], timeout=0)
         threading.Thread(target=save_now_and_then, daemon=True).start()
-    seen = {"plugin": False, "disabled": "", "last": "", "ready": False}
+    seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": False}
     def pump():
         out = sys.stderr.buffer
         for line in iter(p.stderr.readline, b""):
             out.write(line); out.flush()
+            if GPU_OOM_RE.search(line.decode(errors="replace")):
+                seen["oom"] = True
             if b"moe-cache:" in line:
                 seen["plugin"] = True
                 seen["last"] = line.decode(errors="replace").strip()
@@ -1018,10 +1200,9 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sl
             continue
     release_awake()
     pump_t.join(timeout=5)             # the last lines llama-server printed (why it stopped) come before the launcher's own verdict
-    quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
-    if rc not in (0, None) and not quiet:
-        say("moe-cache: " + exit_reason(rc, seen["ready"] if (expect_plugin and port) else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
-    return rc
+    if final:
+        say_exit(rc, seen, expect_plugin and port)
+    return rc, seen
 
 
 def exit_reason(rc, ready):
@@ -1203,8 +1384,10 @@ def server(argv):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
         # tarball users the wrong way (audit 2026-10-29 K2)
         raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
-                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama)' if WINDOWS else "")
-                         + " (moe_cache.py check tells what is missing)")
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if WINDOWS else "")
+                         + f". Looked: {ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
+    if (line := ls_found_line(ls)):
+        say(line)
     if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
         want, have = ls_api(ls), lib_api(lib)
         if want and have and want != have:
@@ -1215,7 +1398,7 @@ def server(argv):
                 raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
             raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
     listing = list_devices(ls) if WINDOWS else None
-    gpu = pick_gpu(listing) if WINDOWS else None
+    gpu = pick_gpu_full(listing) if WINDOWS else None
     if WINDOWS and not a.vram and not nvidia_reports():
         # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
         # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
@@ -1385,6 +1568,7 @@ def server(argv):
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
     tuned = None
+    desk_kw = None
     ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
     if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
         try:
@@ -1392,6 +1576,16 @@ def server(argv):
             from gguf_plan import tune
             free = float(a.vram) * 2**30 if a.vram else None          # GiB, the same unit as the planner's --vram-gib
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
+            if a.gpu_margin is None:
+                # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
+                from gguf_plan import desk_reserve_gb, gpu_total_free_bytes
+                tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
+                if tf:
+                    res, used = desk_reserve_gb(*tf)
+                    if res > 0.5:
+                        desk_kw = kw["reserve_gb"] = res
+                        say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
+                            f"(--gpu-margin GiB to change)")
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
@@ -1415,7 +1609,7 @@ def server(argv):
             try:
                 from gguf_plan import fast_kv_hint
                 h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else None, ub=int(ub) if (ub or "").isdigit() else None,
-                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}))
+                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
                 if h:
                     say("moe-cache: " + h)
             except Exception:
@@ -1547,8 +1741,43 @@ def server(argv):
                     return
                 time.sleep(1)
         threading.Thread(target=opener, daemon=True).start()
+    def oom_retry():
+        """llama-server could not allocate GPU memory at load: measure the free memory again, plan again with it (never fewer CPU expert layers than
+        before + 1) and return the new command; None when nothing can be changed (the user fixed --n-cpu-moe, or there is no GPU figure)."""
+        if ncmoe_user is not None or "--n-cpu-moe" not in cmd:
+            say("moe-cache: llama-server ran out of GPU memory while loading: free some GPU memory, or give a larger --n-cpu-moe / smaller -ub / --gpu-margin", err=True)
+            return None
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import tune, desk_reserve_gb, gpu_total_free_bytes, model_layout
+            if WINDOWS:
+                g = pick_gpu_full(list_devices(ls))
+                tf = (g[3] * 2**20, g[2] * 2**20) if g and g[3] > 0 else None
+            else:
+                tf = gpu_total_free_bytes()
+            if not tf:
+                return None
+            reserve = (a.gpu_margin * 2**30 / 1e9) if a.gpu_margin is not None else max(desk_reserve_gb(*tf)[0], 1.0)
+            t = tune(model, ctx, free=tf[1], want_cache=False, kv_q8=kv_q8, reserve_gb=reserve)
+            lay = model_layout(model)
+            old_n = int(cmd[cmd.index("--n-cpu-moe") + 1])
+            new_n = min(lay["n_layers"] or 999, max(int(t["n_cpu_moe"]), old_n + 1)) if lay["n_layers"] else old_n + 1
+            new = list(cmd)
+            new[new.index("--n-cpu-moe") + 1] = str(new_n)
+            new_ub = None
+            if "-ub" in new and t["ub"] < int(new[new.index("-ub") + 1]):
+                new_ub = str(t["ub"])
+                new[new.index("-ub") + 1] = new_ub
+                if "-b" in new:
+                    new[new.index("-b") + 1] = str(max(int(new_ub), 2048))
+            say(f"moe-cache: llama-server ran out of GPU memory while loading (now {tf[1] / 2**30:.1f} GiB free, another program took some after the plan): "
+                f"trying again once with {new_n} layers of experts on the CPU (was {old_n})" + (f" and -ub {new_ub}" if new_ub else ""))
+            return new
+        except Exception as e:
+            say(f"moe-cache: llama-server ran out of GPU memory while loading; could not plan again ({e})", err=True)
+            return None
     return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit,
-                     allow_sleep=a.allow_sleep)
+                     allow_sleep=a.allow_sleep, oom_retry=oom_retry)
 
 
 def warm_save_wait(n_tokens, last_tokens, bytes_per_token, poll=10, idle_polls=2, per_gb=20, small_wait=180, small_per_gb=30, small_cap=600):
@@ -2073,7 +2302,7 @@ def check(argv):
             ok("cpu pinning", "no hybrid cores: no pinning")
     lsp = shutil.which(a.llama_server)
     if not lsp:
-        fail("llama-server", f"not found ('{a.llama_server}'); pass --llama-server PATH" +
+        fail("llama-server", f"not found ('{a.llama_server}'); looked: {ls_looked()}; pass --llama-server PATH" +
              (r' (or unpack the official llama.cpp release to C:\llama, or set it once: setx LLAMA_SERVER "D:\path\to\llama-server.exe" and open a new window)' if WINDOWS else " (or run ./install.sh, or put llama-server on the PATH)"))
     else:
         try:
@@ -2292,6 +2521,100 @@ def run_check(lsp, model, load, port=8097):
                 p.kill()
 
 
+def default_diffusion_cli():
+    """llama-diffusion-cli when --cli is not given: LLAMA_DIFFUSION_CLI, else the one on the PATH, else next to llama-server."""
+    if os.environ.get("LLAMA_DIFFUSION_CLI"):
+        return os.environ["LLAMA_DIFFUSION_CLI"]
+    if shutil.which("llama-diffusion-cli"):
+        return "llama-diffusion-cli"
+    d = os.path.dirname(shutil.which(default_llama_server()) or "")
+    for n in ("llama-diffusion-cli", "llama-diffusion-cli.exe"):
+        if d and os.path.isfile(os.path.join(d, n)):
+            return os.path.join(d, n)
+    return "llama-diffusion-cli"
+
+
+def diffusion_plan(a, extra, cli, lib, stock, size, avail):
+    """Command, environment and notes for one llama-diffusion-cli run (no side effects, so tests can call it). A diffusion step is a prefill of
+    the whole canvas with no KV cache (every expert of a layer is used in every step: cache hit rate ~0 %, RESULTS 70); what the plugin still
+    gives is merged expert reads and the GPU block that computes a layer's experts after one upload. llama-diffusion-cli ignores --n-cpu-moe
+    (examples/diffusion/diffusion-cli.cpp fills only n_gpu_layers), so experts are kept on the CPU side with -ngl 0 (default; --ngl N changes it)."""
+    notes = []
+    if not a.eps:       # block schedule (LLaDA): llama.cpp asserts both
+        if a.canvas % a.block:
+            raise SystemExit(f"moe-cache: --canvas {a.canvas} must be a multiple of --block {a.block} (llama.cpp asserts it)")
+        if a.steps % (a.canvas // a.block):
+            raise SystemExit(f"moe-cache: --steps {a.steps} must be a multiple of the number of blocks ({a.canvas // a.block} = canvas / block; llama.cpp asserts it)")
+    if any(x in ("--n-cpu-moe", "-ncmoe", "--cpu-moe", "--override-tensor", "-ot") for x in extra):
+        notes.append("moe-cache: WARNING: llama-diffusion-cli ignores --n-cpu-moe / --override-tensor; use --ngl 0 (the default) to keep the experts on the CPU side")
+    env = []
+    method = "none (stock)"
+    if not stock:
+        load, method = load_env(cli, lib, a.load_method)
+        env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", a.model)]
+        if a.ram:
+            env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
+        if a.max_ram:
+            env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    cmd = [cli, "-m", a.model, "-ngl", str(a.ngl), "-ub", str(a.canvas), "-b", str(a.canvas), "-c", str(a.canvas), "-fa", "on", "-lm", "mmap",
+           "-s", str(a.seed), "--temp", str(a.temp), "--diffusion-steps", str(a.steps),
+           "--diffusion-algorithm", str(a.algorithm)] + (["--diffusion-eps", str(a.eps)] if a.eps else ["--diffusion-block-length", str(a.block)])
+    if a.prompt is not None:
+        cmd += ["-p", a.prompt]
+    cmd += extra
+    sched = ("timestep schedule eps " + str(a.eps)) if a.eps else ("blocks of " + str(a.block))
+    notes.insert(0, f"moe-cache: diffusion: canvas {a.canvas} tokens (-ub; prompt + answer must fit), {a.steps} steps, {sched}; each step is a prefill of the "
+                    f"whole canvas, so every expert of every layer is read each step (the model is {size / 1e9:.1f} GB, memory it may use {avail / 1e9:.1f} GB)"
+                    if size and avail else f"moe-cache: diffusion: canvas {a.canvas} tokens, {a.steps} steps")
+    notes.append("moe-cache: " + ("running stock llama-diffusion-cli (the model fits in the memory it may use; --always-plugin to use the plugin anyway)" if stock and not a.stock
+                                  else "--stock: running without the plugin, as asked" if stock else f"plugin loaded by {method}"))
+    return cmd, env, notes, method
+
+
+def diffusion(argv):
+    ap = argparse.ArgumentParser(prog="moe_cache.py diffusion", description="run llama-diffusion-cli (diffusion language models: LLaDA-MoE, RND1) with the expert-cache plugin")
+    ap.add_argument("model"); ap.add_argument("-p", "--prompt"); ap.add_argument("--canvas", type=int, default=256, help="tokens per step (prompt + answer), default 256")
+    ap.add_argument("--steps", type=int, default=64); ap.add_argument("--block", type=int, default=32, help="block length of the LLaDA schedule (default 32)")
+    ap.add_argument("--eps", type=float, default=0.0, help="timestep schedule instead of blocks (RND1, Dream: 0.001)")
+    ap.add_argument("--algorithm", type=int, default=4, help="0 origin, 1 entropy (RND1), 2 margin, 3 random, 4 confidence (default)")
+    ap.add_argument("--temp", type=float, default=0.0); ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--ngl", type=int, default=0, help="GPU layers; default 0: experts stay on the CPU side (llama-diffusion-cli ignores --n-cpu-moe)")
+    ap.add_argument("--ram", type=gb_arg); ap.add_argument("--max-ram", type=lambda v: "0" if v.strip() in ("0", "0.0") else gb_arg(v))
+    ap.add_argument("--cli", default=default_diffusion_cli()); ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
+    ap.add_argument("--stock", action="store_true"); ap.add_argument("--always-plugin", action="store_true"); ap.add_argument("--dry-run", action="store_true")
+    extra = []
+    if "--" in argv:
+        i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
+    a = ap.parse_args(argv)
+    if not os.path.isfile(a.model):
+        raise SystemExit(f"usage: moe-cache-diffusion MODEL.gguf -p PROMPT [options]  (model file not found: '{a.model}')")
+    if a.stock and a.always_plugin:
+        raise SystemExit("--stock runs without the plugin: it cannot go with --always-plugin")
+    if a.canvas < 8 or a.block < 1 or a.steps < 1:
+        raise SystemExit("--canvas, --block and --steps must be positive (canvas at least 8)")
+    if a.max_ram:
+        os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram
+    stock, size, avail = decide(a.model, a.ram, plugin_wanted=a.always_plugin, stock_wanted=a.stock)
+    lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(a.cli)
+    if not a.dry_run and not (os.path.isfile(a.cli) or shutil.which(a.cli)):
+        raise SystemExit(f"moe-cache: llama-diffusion-cli not found: {a.cli}. Pass --cli PATH or set LLAMA_DIFFUSION_CLI "
+                         "(official llama.cpp Windows zips do not contain it: build the diffusion example, or use a Linux package that does)")
+    if not stock and not a.dry_run:
+        want, have = ls_api(a.cli), lib_api(lib)
+        if want and have and want != have:
+            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {a.cli} uses API {want}: the plugin will refuse to load; " + api_advice(want), err=True)
+        if not os.path.isfile(lib):
+            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    cmd, env, notes, method = diffusion_plan(a, extra, a.cli, lib, stock, size, avail)
+    for n in notes:
+        say(n)
+    if a.dry_run:
+        shown = " ".join(f'"{c}"' if " " in c else c for c in cmd)
+        say(("".join(f'$env:{k}="{v}"; ' for k, v in env) + "& " + shown) if WINDOWS else (("env " + " ".join(f"{k}={v}" for k, v in env) + " ") if env else "") + shown)
+        return 0
+    return subprocess.call(cmd, env=dict(os.environ, **dict(env)))
+
+
 def key_cmd(argv):
     """moe_cache.py key: print the stable API key of agent / project servers (made on first use); the file is KEY_FILE."""
     ap = argparse.ArgumentParser(prog="moe_cache.py key", description="print the API key that agent mode and --project servers use")
@@ -2302,7 +2625,7 @@ def key_cmd(argv):
 
 
 def main():
-    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd}
+    cmds = {"server": server, "pick": pick_cmd, "check": check, "doctor": check, "learn": learn, "project": project, "connect": connect, "key": key_cmd, "on-demand": on_demand_cmd, "diffusion": diffusion}
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0

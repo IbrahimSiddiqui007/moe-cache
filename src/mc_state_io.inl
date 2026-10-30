@@ -298,6 +298,44 @@
         reserve_and_read(nl, idx);
     }
 
+    // MOE_CACHE_EXEC_TIMES summary; called before the pool is destroyed
+    void print_exec_times() {
+    if (exec_on && pool && pool->times && pool->n_runs) {
+        const double wall = ex_run_ns / 1e9, nt = (double) pool->th.size() + 1;
+        fprintf(stderr, "moe-cache: exec-times: %llu pool runs, %.2fs inside the pool (%.1f ms each); quantise %.2fs, task setup %.2fs; "
+                        "caller: publish+wake %.2fs, own chunks %.2fs, barrier wait %.2fs\n", (unsigned long long) pool->n_runs.load(), wall,
+                1e3 * wall / (double) pool->n_runs.load(), ex_quant_ns / 1e9, ex_build_ns / 1e9, pool->t_disp_ns / 1e9, pool->t_main_ns / 1e9, pool->t_tail_ns / 1e9);
+        fprintf(stderr, "moe-cache: exec-times: threads %.0f: busy in dot products %.2fs = %.0f %% of thread time inside the pool, spinning for experts still read %.2fs, "
+                        "worker wake-up %.2fs over %llu starts (%.1f us each), chunks %llu, parks %llu\n", nt, pool->busy_ns / 1e9,
+                wall > 0 ? 100.0 * (pool->busy_ns / 1e9) / (wall * nt) : 0.0, pool->flagwait_ns / 1e9, pool->wake_ns / 1e9, (unsigned long long) pool->n_wake.load(),
+                pool->n_wake ? pool->wake_ns / 1e3 / (double) pool->n_wake.load() : 0.0, (unsigned long long) pool->chunks.load(), (unsigned long long) pool->parks.load());
+        static const char * pn[3] = { "gate", "up", "down" };
+        for (int k = 0; k < 3; k++) {
+            if (ex_part_n[k]) {
+                fprintf(stderr, "moe-cache: exec-times: %-4s ops=%llu %.2fs, expert data %.1f GB = %.1f GB/s\n", pn[k], (unsigned long long) ex_part_n[k].load(),
+                        ex_part_ns[k] / 1e9, ex_part_bytes[k] / 1e9, ex_part_ns[k] ? (double) ex_part_bytes[k] / (double) ex_part_ns[k] : 0.0);
+            }
+        }
+    }
+    }
+
+    // page faults of this process so far (Windows: all faults of GetProcessMemoryInfo; Linux: minor + major): with MOE_CACHE_SEG_TIMES the stats
+    // lines carry it, so the faults of a prompt (lazy mmap reads of tables such as Flash-Next's per-layer embedding, SM1) can be counted
+    static uint64_t process_faults(uint64_t * major = nullptr) {
+#ifdef _WIN32
+        PROCESS_MEMORY_COUNTERS pmc = {};
+        pmc.cb = sizeof(pmc);
+        GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc));
+        if (major) *major = 0;
+        return (uint64_t) pmc.PageFaultCount;
+#else
+        struct rusage ru = {};
+        getrusage(RUSAGE_SELF, &ru);
+        if (major) *major = (uint64_t) ru.ru_majflt;
+        return (uint64_t) ru.ru_minflt + (uint64_t) ru.ru_majflt;
+#endif
+    }
+
     // one line of cumulative counters on stderr (see MOE_CACHE_STATS_SIGNAL)
     void print_snapshot() {
         std::string j;
@@ -306,19 +344,43 @@
             char b[1600];
             snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,"
                      "\"resident_bytes\":%llu,\"budget\":%llu,\"ns_prep\":%llu,\"ns_read\":%llu,\"ns_cpu\":%llu,\"ns_total\":%llu,\"graphs\":%llu,"
-                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu",
+                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu",
                      (unsigned long long) hits, (unsigned long long) misses, (unsigned long long) hits_dec, (unsigned long long) misses_dec, (unsigned long long) bytes,
                      (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) resident_bytes, (unsigned long long) budget,
                      (unsigned long long) ns_prep, (unsigned long long) ns_read, (unsigned long long) ns_cpu, (unsigned long long) ns_total, (unsigned long long) graphs,
                      (unsigned long long) direct_jobs, (unsigned long long) bounce_jobs, (unsigned long long) repack_jobs, (unsigned long long) gpu_segments,
-                     (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
+                     (unsigned long long) gpu_split_blocks, (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
                      (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
                      (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
                      (unsigned long long) small_mapped, (unsigned long long) small_over);
             j = b;
             j += ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
                  ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases) +
-                 ",\"pool_parks\":" + std::to_string(pool ? pool->parks.load() : 0) + ",\"async_in\":" + std::to_string(async_in.load());
+                 ",\"pool_parks\":" + std::to_string(pool ? pool->parks.load() : 0) + ",\"async_in\":" + std::to_string(async_in.load()) +
+                 ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
+                 ",\"n_gap\":" + std::to_string(n_gap.load()) + ",\"gap_b_ns\":[" + std::to_string(gap_b_ns[0].load()) + "," + std::to_string(gap_b_ns[1].load()) + "," +
+                 std::to_string(gap_b_ns[2].load()) + "," + std::to_string(gap_b_ns[3].load()) + "]";
+            if (getenv("MOE_CACHE_SEG_TIMES")) {
+                uint64_t mj = 0;
+                const uint64_t f = process_faults(&mj);
+                j += ",\"faults\":" + std::to_string(f) + ",\"major_faults\":" + std::to_string(mj);
+                j += ",\"gap_faults\":" + std::to_string(gap_faults.load()) + ",\"in_faults\":" + std::to_string(in_faults.load()) + ",\"top_gaps\":[";
+                for (int k = 0; k < 4; k++) {
+                    j += std::string(k ? "," : "") + "[" + std::to_string(top_gap_ns[k].load()) + "," + std::to_string(top_gap_graph[k].load()) + "," + std::to_string(top_gap_faults[k].load()) + "]";
+                }
+                j += "]";
+            }
+            if (pool && pool->times) {      // MOE_CACHE_EXEC_TIMES
+                j += ",\"ex\":{\"runs\":" + std::to_string(pool->n_runs.load()) + ",\"run_ns\":" + std::to_string(ex_run_ns.load()) + ",\"quant_ns\":" + std::to_string(ex_quant_ns.load()) +
+                     ",\"build_ns\":" + std::to_string(ex_build_ns.load()) + ",\"disp_ns\":" + std::to_string(pool->t_disp_ns.load()) + ",\"main_ns\":" + std::to_string(pool->t_main_ns.load()) +
+                     ",\"tail_ns\":" + std::to_string(pool->t_tail_ns.load()) + ",\"busy_ns\":" + std::to_string(pool->busy_ns.load()) + ",\"flagwait_ns\":" + std::to_string(pool->flagwait_ns.load()) +
+                     ",\"wake_ns\":" + std::to_string(pool->wake_ns.load()) + ",\"n_wake\":" + std::to_string(pool->n_wake.load()) + ",\"chunks\":" + std::to_string(pool->chunks.load()) +
+                     ",\"threads\":" + std::to_string(pool->th.size() + 1);
+                for (int k = 0; k < 3; k++) {
+                    j += ",\"p" + std::to_string(k) + "\":[" + std::to_string(ex_part_n[k].load()) + "," + std::to_string(ex_part_ns[k].load()) + "," + std::to_string(ex_part_bytes[k].load()) + "]";
+                }
+                j += "}";
+            }
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
             j += "],\"layer_misses\":[";
@@ -352,6 +414,7 @@
         for (auto & t : readers) {
             t.join();
         }
+        if (stats) { print_exec_times(); }
         pool.reset();
 #ifdef __linux__
         g_stats_stop = true;
@@ -456,7 +519,7 @@
             if (coalesced) {
                 fprintf(stderr, "moe-cache: %llu expert reads merged into their neighbours (MOE_CACHE_COALESCE_MIB)\n", (unsigned long long) coalesced.load());
             }
-            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
+            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (in parts %llu, uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, (unsigned long long) gpu_split_blocks, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
         }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
@@ -505,6 +568,19 @@
                 fprintf(stderr, "moe-cache: inputs read from the GPU asynchronously: %llu\n", (unsigned long long) async_in);
             }
             fprintf(stderr, "moe-cache: time prep=%.2fs (of which reads %.2fs) cpu_compute=%.2fs total_in_backend=%.2fs\n", ns_prep / 1e9, ns_read / 1e9, ns_cpu / 1e9, ns_total / 1e9);
+            if (n_gap) {
+                static const char * bn[4] = { "<0.2 ms", "<1 ms", "<5 ms", ">=5 ms" };
+                fprintf(stderr, "moe-cache: seg-times: between our graph splits %.2fs over %llu gaps; waiting for async GPU inputs %.2fs; long-prompt GPU blocks %.2fs\n",
+                        ns_gap / 1e9, (unsigned long long) n_gap.load(), ns_sync / 1e9, ns_gpu_seg / 1e9);
+                int top = 0;
+                for (int k = 1; k < 4; k++) { if (top_gap_ns[k] > top_gap_ns[top]) top = k; }
+                fprintf(stderr, "moe-cache: seg-times: page faults of the process: %llu inside the gaps, %llu inside our backend; longest gap %.0f ms (graph %llu, %llu faults)\n",
+                        (unsigned long long) gap_faults.load(), (unsigned long long) in_faults.load(), top_gap_ns[top] / 1e6,
+                        (unsigned long long) top_gap_graph[top].load(), (unsigned long long) top_gap_faults[top].load());
+                for (int b = 0; b < 4; b++) {
+                    fprintf(stderr, "moe-cache: seg-times: gaps %s: %llu, %.2fs\n", bn[b], (unsigned long long) gap_b_n[b].load(), gap_b_ns[b] / 1e9);
+                }
+            }
             fprintf(stderr, "moe-cache: graphs=%llu groups=%llu ops=%llu hits=%llu misses=%llu (hit %.1f%%) read=%.1f MB evictions=%llu resident=%.2f GiB%s\n",
                     (unsigned long long) graphs, (unsigned long long) groups, (unsigned long long) ops, (unsigned long long) h, (unsigned long long) m,
                     h + m ? 100.0 * h / (h + m) : 0.0, bytes / 1e6, (unsigned long long) evictions, resident_bytes / (double) (1u << 30),

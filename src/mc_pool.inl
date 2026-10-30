@@ -48,7 +48,10 @@ struct exec_job_t {
     ggml_vec_dot_t dot = nullptr;
     std::atomic<int> next{0};
     std::atomic<int> done{0};
+    uint64_t t_pub_ns = 0;     // MOE_CACHE_EXEC_TIMES: when run() published the job
 };
+
+inline uint64_t exec_now_ns() { return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 struct exec_pool_t {
     std::vector<std::thread> th;
@@ -61,18 +64,31 @@ struct exec_pool_t {
     // MOE_CACHE_POOL_SPIN_US=N: a worker keeps spinning N microseconds after its last job before it sleeps (0 = the fixed 40,000 pauses).
     // The GPU part between two CPU expert layers can outlast the fixed spin, so every layer may wake the workers through the OS (N30)
     const int spin_us = [] { const char * v = getenv("MOE_CACHE_POOL_SPIN_US"); return v ? std::max(0, std::min(1000000, atoi(v))) : 0; }();
+    // MOE_CACHE_EXEC_TIMES=1 (idea N25): where the executor's wall time goes. busy = threads inside the dot products, flagwait = spinning for an expert
+    // still being read, wake = from publish to the moment a worker starts on the job (sum over workers), n_wake = workers that did.
+    const bool times = getenv("MOE_CACHE_EXEC_TIMES") != nullptr;
+    std::atomic<uint64_t> busy_ns{0}, flagwait_ns{0}, wake_ns{0}, n_wake{0}, chunks{0}, t_disp_ns{0}, t_main_ns{0}, t_tail_ns{0}, n_runs{0};
     std::mutex m;
     std::condition_variable cv;
     exec_job_t jobs[2];
     int which = 0;
 
-    static void work(exec_job_t * j) {
+    static void work(exec_job_t * j, exec_pool_t * pool = nullptr, bool worker = false) {
         exec_where_t & wh = g_exec_where;
         wh.op = j->name;
+        const bool tm = pool && pool->times;
+        uint64_t busy = 0, fw = 0, nch_done = 0;
+        if (tm && worker) {
+            pool->wake_ns += exec_now_ns() - j->t_pub_ns;
+            pool->n_wake++;
+        }
         for (;;) {
             const int c = j->next.fetch_add(1, std::memory_order_relaxed);
             if (c >= j->total) {
                 wh.op = nullptr;
+                if (tm) {
+                    pool->busy_ns += busy; pool->flagwait_ns += fw; pool->chunks += nch_done;
+                }
                 return;
             }
             const exec_task_t & t = j->tasks[c / j->nch];
@@ -80,11 +96,16 @@ struct exec_pool_t {
             const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
 #ifndef MOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT     // CI only: a build without this wait must fail the delayed-read Q2_0 gpt-oss step
             if (t.flag) {
+                const uint64_t f0 = tm && __atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? exec_now_ns() : 0;
                 while (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE)) {
                     cpu_relax();
                 }
+                if (f0) {
+                    fw += exec_now_ns() - f0;
+                }
             }
 #endif
+            const uint64_t b0 = tm ? exec_now_ns() : 0;
             for (int64_t r = r0; r < r1; r++) {
                 const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
                 for (int k = 0; k < t.ncol; k++) {
@@ -94,6 +115,10 @@ struct exec_pool_t {
                     wh.dst = &t.dsts[k][r];
                     j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
                 }
+            }
+            if (tm) {
+                busy += exec_now_ns() - b0;
+                nch_done++;
             }
             j->done.fetch_add(1, std::memory_order_release);
         }
@@ -152,7 +177,7 @@ struct exec_pool_t {
                     inside.fetch_add(1);
                     exec_job_t * j = cur.load(std::memory_order_acquire);
                     if (j) {
-                        work(j);
+                        work(j, this, true);
                     }
                     inside.fetch_sub(1);
                 }
@@ -180,15 +205,24 @@ struct exec_pool_t {
         j->dot = dot;
         j->next.store(0, std::memory_order_relaxed);
         j->done.store(0, std::memory_order_relaxed);
+        j->t_pub_ns = times ? exec_now_ns() : 0;
         cur.store(j, std::memory_order_release);
         gen.fetch_add(1);              // sequentially consistent, as the parked count: see the worker's idle wait
         if (parked.load() > 0) {
             std::lock_guard<std::mutex> lk(m);
             cv.notify_all();
         }
-        work(j);
+        const uint64_t w0 = times ? exec_now_ns() : 0;
+        n_runs += times;
+        work(j, this);
+        const uint64_t w1 = times ? exec_now_ns() : 0;
         while (j->done.load(std::memory_order_acquire) < j->total || inside.load() > 0) {
             cpu_relax();
+        }
+        if (times) {
+            t_disp_ns += w0 - j->t_pub_ns;     // publish + wake-up call
+            t_main_ns += w1 - w0;              // the calling thread's share of the chunks
+            t_tail_ns += exec_now_ns() - w1;   // the calling thread waiting for the others to finish (barrier)
         }
     }
 

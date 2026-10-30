@@ -27,15 +27,15 @@ MODELS = {
     "bolt": dict(name="Nemotron 3.5 Bolt 74B-A9B (NVIDIA 2-bit QAT)", size=22_018_326_528, pattern=r"Nemotron-3\.5-Bolt-74B.*24GB\.gguf$",
                  repo="nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF", include="NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf"),
     "flash-next-q2_0": dict(name="Qwen3.8-Flash-Next Q2_0 (GSQ-RCO)", size=66_423_878_624, pattern=r"Flash-Next-GSQ-RCO-Q2_0[-.]",
-                            repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="*Q2_0*"),
+                            repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="Q2_0/*.gguf"),
     "flash-next-iq3_xxs": dict(name="Qwen3.8-Flash-Next IQ3_XXS (GSQ-RCO)", size=75_839_998_528, pattern=r"Flash-Next-GSQ-RCO-IQ3_XXS[-.]",
-                               repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="*IQ3_XXS*"),
+                               repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="IQ3_XXS/*.gguf"),
     "qwen3.6-35b": dict(name="Qwen3.6-35B-A3B Q4_K_M", size=21_718_480_960, pattern=r"(?i)qwen3\.6(-35b-a3b)?([-_.].*Q4_K_M)?.*\.gguf$",
                         repo="unsloth/Qwen3.6-35B-A3B-GGUF", include="*Q4_K_M*", ollama="qwen3.6:35b-a3b"),
     "qwen3.5-122b": dict(name="Qwen3.5-122B-A10B UD-IQ2_XXS", size=36_637_668_544, pattern=r"Qwen3\.5-122B-A10B-UD-IQ2_XXS[-.]",
                          repo="unsloth/Qwen3.5-122B-A10B-GGUF", include="*UD-IQ2_XXS*"),
     "glm-5.3": dict(name="GLM-5.3-Flash UD-IQ2_XXS", size=101_845_506_400, pattern=r"GLM-5\.3-Flash-UD-IQ2_XXS[-.]",
-                    repo="unsloth/GLM-5.3-Flash-GGUF", include="*UD-IQ2_XXS*"),
+                    repo="unsloth/GLM-5.3-Flash-GGUF", include="UD-IQ2_XXS/*.gguf"),
 }
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
@@ -127,15 +127,8 @@ def disk_kind(path):
 
 
 def llama_build(ls):
-    """llama-server's build number (`--version`: 'version: 11966 (ff0d396e3)'), None when unknown."""
-    try:
-        r = subprocess.run([ls, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
-        text = r.stdout + r.stderr
-        m = re.search(r"\(build (\d+)", text) or re.search(r"version:\s*(\d+)\s*\(", text)     # '0.7.0-dev (build 11669, commit ...)' or the old 'version: 4567 (abc)'
-        n = int(m.group(1)) if m else 0
-        return n if n >= 100 else None        # distro builds report 'build 1' / 0: no usable number
-    except Exception:
-        return None
+    """llama-server's build number, None when unknown (moe_cache.ls_build)."""
+    return mc.ls_build(ls)
 
 
 def model_folders(extra=None):
@@ -202,6 +195,31 @@ def find_ollama(found=None, roots=None):
     return found
 
 
+_HEADS = {}
+
+
+def is_draft_head(path):
+    """True for a GGUF that is only a draft / MTP head, not a model: its name starts with `mtp-`, or every layer that has ordinary tensors also has
+    blk.N.nextn.* ones (and at least one does). Reads the tensor names from the header (kept per file, size and time); False when unreadable."""
+    if os.path.basename(path).lower().startswith("mtp-"):
+        return True
+    try:
+        st = os.stat(path)
+        k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+        if k not in _HEADS:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "planner"))
+            from gguf_plan import read_tensors
+            heads, plain = set(), set()
+            for name, _ in read_tensors(path):
+                m = re.match(r"blk\.(\d+)\.(nextn\.)?", name)
+                if m:
+                    (heads if m.group(2) else plain).add(m.group(1))
+            _HEADS[k] = bool(heads) and plain <= heads
+        return _HEADS[k]
+    except Exception:
+        return False
+
+
 def find_local(folders, ollama_stores=None):
     """{model id: path of the first file} for the candidates found in the folders (depth 2) and in Ollama's stores."""
     found = {}
@@ -209,6 +227,8 @@ def find_local(folders, ollama_stores=None):
         for p in glob.glob(os.path.join(f, "*.gguf")) + glob.glob(os.path.join(f, "*", "*.gguf")):
             b = os.path.basename(p)
             if re.search(r"-\d{5}-of-\d{5}\.gguf$", b) and not re.search(r"-00001-of-\d{5}\.gguf$", b):
+                continue
+            if is_draft_head(p):
                 continue
             for k, m in MODELS.items():
                 if k not in found and re.search(m["pattern"], b):
@@ -389,9 +409,25 @@ def recommend(spec, use, model=None):
         alts.append({"id": "flash-next-q2_0", "name": MODELS["flash-next-q2_0"]["name"],
                      "why": f"the documented default line: {PC} 20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s, moe-cache"})
     out = {"id": k, "name": m["name"], "use": use, "size": size_of(k, local), "ctx": ctx, "args": args, "engine": engine,
-           "measured": measured or "untested on this class of machine", "untested": not measured, "why": [why], "warnings": warn,
+           "measured": measured or "untested on this class of machine", "untested": not measured, "key": key_numbers(measured), "why": [why], "warnings": warn,
            "alternatives": alts[:2], "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,
            "download": None if (k in local or not fits_disk) else download_cmd(k)}
+    return out
+
+
+def key_numbers(measured):
+    """[(label, value)] for the card's one-line summary, from the first machine in the measured text: decode and prompt speed (tok/s), tasks passed."""
+    num = r"(\d+(?:\.\d+)?(?:-\d+(?:\.\d+)?)?)"
+    out = []
+    for label, rxs in (("decode", (r"decode " + num + r"(?: tok/s| at)", num + " tok/s decode", r"(?<![\w/])" + num + r" tok/s(?! (?:prompts|at 64k))(?!.*decode)")),
+                       ("prompt", (r"prompts? " + num + " tok/s", num + " tok/s prompts"))):
+        for rx in rxs:
+            m = re.search(rx, measured or "")
+            if m:
+                out.append((label, m.group(1) + " tok/s")); break
+    m = re.search(r"(\d+/\d+) tasks", measured or "")
+    if m:
+        out.append(("tasks", m.group(1)))
     return out
 
 
