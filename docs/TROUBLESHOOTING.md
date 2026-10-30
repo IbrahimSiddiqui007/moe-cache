@@ -77,3 +77,15 @@ used up, new allocations fail even though RAM still shows as free, and llama-ser
 | Let the page file grow | Windows: System > About > Advanced system settings > Performance > Advanced > Virtual memory: "Automatically manage paging file size" (or a size of at least 16 GB) |
 | Use less GPU memory | `--gpu-margin 2` (Vulkan's GPU memory is charged to commit too) |
 
+## Vulkan "out of memory" with GPU memory free (AMD on Windows)
+
+| Symptom | Try |
+|---|---|
+| `vkQueueSubmit` / `ErrorOutOfDeviceMemory` although the GPU shows several GB free (reported on AMD Windows PCs without Resizable BAR, llama.cpp #30888) | turn on Resizable BAR / "Smart Access Memory" in the BIOS and Adrenalin, or start once with `GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1` (Windows: `set GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM=1`, then start again) and compare |
+| the GPU also drives your screen and answers slow down | `--gpu-margin 2` (GiB kept free) |
+
+## A thinking model writes for a very long time
+
+Qwen3 / GLM thinking models can think for thousands of tokens before they answer. llama-server can cap it: add `-- --reasoning-budget N` (tokens; llama.cpp
+#30333, #31093), or use the model's no-think mode for coding agents. This changes how long the model thinks, not the plugin.
+
