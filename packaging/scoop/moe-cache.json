@@ -4,7 +4,7 @@
     "homepage": "https://github.com/IbrahimSiddiqui007/moe-cache",
     "license": "MIT",
     "notes": [
-        "Needs llama.cpp's official Windows release (llama-bNNNNN-bin-win-vulkan-x64.zip, tested b11669) and Python 3.8+.",
+        "Needs Python 3.8+. From v0.3.3 the kit includes the official llama.cpp Windows build (Vulkan) in its llama folder; your own llama-server (LLAMA_SERVER, PATH) still wins.",
         "Run 'moe-cache' to open the control page (http://127.0.0.1:8070). Command line: python \"$dir\\bin\\moe_cache.py\" check MODEL.gguf --run",
         "Read $dir\\README_WINDOWS.txt first."
     ],

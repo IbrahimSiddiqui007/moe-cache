@@ -57,7 +57,7 @@ def main(argv=None):
     print(f"version {ver}, sha256 {sha}")
     print(f"  {os.path.join(out, 'scoop', 'moe-cache.json')}")
     print(f"  {wdir}{os.sep}*.yaml (3 files)")
-    print("Nothing submitted: the scoop bucket and the winget-pkgs pull request need the owner's OK.")
+    print("Nothing submitted here: .github/workflows/packages.yml publishes them after a release.")
 
 
 if __name__ == "__main__":

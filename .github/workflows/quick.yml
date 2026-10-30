@@ -38,5 +38,14 @@ jobs:
             echo "::group::$t"; python3 tests/$t.py; echo "::endgroup::"
           done
 
+      - name: Scoop bucket push (local empty bucket repo; first push, unchanged, next version)
+        run: |
+          set -e; T=$(mktemp -d); git init -q --bare -b main "$T/b.git"
+          sed 's/@VERSION@/9.9.8/g;s/@SHA256@/0/g' packaging/scoop/moe-cache.json > "$T/m.json"
+          tools/publish_scoop.sh "file://$T/b.git" "$T/m.json" | grep -q "9.9.8 pushed"
+          tools/publish_scoop.sh "file://$T/b.git" "$T/m.json" | grep -q "nothing to push"
+          sed -i 's/9\.9\.8/9.9.9/g' "$T/m.json"; tools/publish_scoop.sh "file://$T/b.git" "$T/m.json" | grep -q "9.9.9 pushed"
+          [ "$(git --git-dir="$T/b.git" rev-list --count main)" = 2 ] && git --git-dir="$T/b.git" show main:bucket/moe-cache.json | grep -q '"version": "9.9.9"'
+
       - name: Shell scripts parse
         run: for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do case "$f" in *.bat) continue;; esac; bash -n "$f"; done

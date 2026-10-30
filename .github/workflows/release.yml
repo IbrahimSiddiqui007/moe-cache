@@ -154,7 +154,7 @@ jobs:
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then V="${GITHUB_REF_NAME#v}"; else V=0.0.0-ci; fi
           tools/make_windows_kit.sh "$V"
-          python3 packaging/fill_manifests.py "dist/moe-cache-v$V-windows-x64.zip"   # scoop / winget manifests for the owner to submit (never submitted here)
+          python3 packaging/fill_manifests.py "dist/moe-cache-v$V-windows-x64.zip"   # scoop / winget manifests (a check here; packages.yml publishes them after the release)
 
       - name: Attest build provenance
         if: github.ref_type == 'tag'   # as in the build job: a manual run on a branch must not get the same signature as a release

@@ -1,0 +1,100 @@
+# Package managers, after a release (owner's OK 2026-10-30): fills the scoop and winget manifests from the PUBLISHED Windows zip (sha256 and build
+# attestation checked first), pushes the scoop manifest to our bucket and, once switched on, sends the winget manifests to microsoft/winget-pkgs.
+#   automatic: when the release workflow succeeded on a tag      by hand: Actions tab -> packages -> Run workflow -> tag (e.g. v0.3.3)
+# Owner's setup (each part is skipped with a notice until it is there):
+#   scoop   repo IbrahimSiddiqui007/scoop-moe-cache (may be empty) + secret SCOOP_BUCKET_TOKEN (fine-grained token: that repo only, Contents read/write)
+#   winget  first version submitted once by hand, then secret WINGET_TOKEN (classic token with the repo scope, as wingetcreate's README asks) + variable WINGET_SUBMIT=true;
+#           pre-releases are skipped unless variable WINGET_PRERELEASE=true (winget-pkgs normally lists stable versions only)
+# The templates come from this workflow's commit (the default branch), so a fixed template also applies to an older tag sent by hand.
+name: packages
+
+on:
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release tag, e.g. v0.3.3"
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  manifests:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Which release
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isPrerelease,publishedAt --jq '"prerelease=\(.isPrerelease)\npublished=\(.publishedAt[0:10])"' >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Download the published Windows zip, check sha256 and attestation
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/rel" && cd "$RUNNER_TEMP/rel"
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "moe-cache-$TAG-windows-x64.zip" -p SHA256SUMS-windows
+          sha256sum -c SHA256SUMS-windows
+          gh attestation verify "moe-cache-$TAG-windows-x64.zip" -R "$GITHUB_REPOSITORY"
+
+      - name: Fill the manifests
+        run: python3 packaging/fill_manifests.py "$RUNNER_TEMP/rel/moe-cache-${{ steps.tag.outputs.tag }}-windows-x64.zip" --out dist/packaging --date "${{ steps.tag.outputs.published }}"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: package-manifests
+          path: dist/packaging/
+
+      - name: Scoop bucket
+        env:
+          SCOOP_BUCKET_TOKEN: ${{ secrets.SCOOP_BUCKET_TOKEN }}
+        run: |
+          if [ -z "$SCOOP_BUCKET_TOKEN" ]; then echo "::notice::scoop skipped: no SCOOP_BUCKET_TOKEN secret yet"; exit 0; fi
+          tools/publish_scoop.sh "https://github.com/${GITHUB_REPOSITORY_OWNER}/scoop-moe-cache.git" dist/packaging/scoop/moe-cache.json
+
+  winget:
+    needs: manifests
+    if: vars.WINGET_SUBMIT == 'true' && (needs.manifests.outputs.prerelease == 'false' || vars.WINGET_PRERELEASE == 'true')
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: package-manifests
+          path: packaging
+
+      - name: Submit to winget-pkgs
+        shell: pwsh
+        env:
+          WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}   # read by wingetcreate itself: the token never sits on a command line
+          TAG: ${{ needs.manifests.outputs.tag }}
+        run: |
+          if (-not $env:WINGET_CREATE_GITHUB_TOKEN) { Write-Output "::notice::winget skipped: no WINGET_TOKEN secret"; exit 0 }
+          $exe = "$env:RUNNER_TEMP\wingetcreate.exe"
+          Invoke-WebRequest https://github.com/microsoft/winget-create/releases/download/v1.12.13.0/wingetcreate.exe -OutFile $exe
+          if ((Get-FileHash $exe -Algorithm SHA256).Hash -ne '24042BD37915805615E6CF969AC57C6439124C3FE85823327F5F3FB24BD9FFEA') { throw "wingetcreate.exe: wrong sha256" }
+          $ver = $env:TAG.TrimStart('v')
+          $dir = "packaging\winget\manifests\i\IbrahimSiddiqui007\MoeCache\$ver"
+          & $exe submit --no-open --prtitle "New version: IbrahimSiddiqui007.MoeCache version $ver" $dir
+          if ($LASTEXITCODE -ne 0) { throw "wingetcreate submit failed ($LASTEXITCODE)" }

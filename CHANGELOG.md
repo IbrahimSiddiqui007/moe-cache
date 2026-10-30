@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+| Area | Change |
+|---|---|
+| Package managers | New `packages` workflow: after each release it fills the scoop and winget manifests from the published Windows zip (sha256 and build attestation checked first), pushes the scoop manifest to the `scoop-moe-cache` bucket and, once switched on, sends the winget manifests to winget-pkgs. Each part waits for the owner's token; it can also be run by hand for a tag |
+
 ## 0.3.3 (2026-10-30)
 
 - **The Linux `-ggml0.26` tarball includes llama.cpp** (the twin of the Windows kit): the official, unmodified llama.cpp b11966 `ubuntu-vulkan-x64` build (Vulkan + CPU backends)
