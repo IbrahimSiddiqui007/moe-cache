@@ -30,7 +30,7 @@ The kit is not code-signed, so Windows may warn. Before you extract the zip: rig
 
 | Issue | Note |
 |---|---|
-| Bigger downloads | the kit is about 49 MB and the `-ggml0.26` tarball about 35 MB larger, because llama.cpp is inside |
+| Bigger downloads | the Windows kit is about 38 MB and the `-ggml0.26` tarball about 36 MB (was 2-3 MB), because llama.cpp is inside |
 | Not byte-identical at 128k+ by default | the q8_0 KV cache there passed the quality gate at 4k context; `--exact` keeps f16 |
 | Tested hardware | one Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB) plus CI runners; NVIDIA and Intel GPUs on Windows untested |
 | New picker models | gpt-oss-120b and DeepSeek V4.1 are not measured yet on our PC |
