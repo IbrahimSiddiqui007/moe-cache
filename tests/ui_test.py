@@ -976,6 +976,11 @@ check("0.3.3 is out" in adv[0] and "build 11669" in adv[1] and "341 builds newer
 check("newest release" in mc.update_advice("0.3.2", "v0.3.2", None, None)[0] and len(mc.update_advice("0.3.2", "v0.3.2", None, None)) == 1, "update advice: up to date, no llama-server")
 check("offline" in mc.update_advice("0.3.2", None, None, None)[0] and mc.version_tuple("v0.3.10") > mc.version_tuple("0.3.9"), "update advice: offline; versions compare as numbers")
 
+# connect opencode: a 30-min headerTimeout for windows of 64k+ (OpenCode's 5-min default cut a 289 s first turn short; scout 14)
+check(mc.opencode_header_timeout(65536) == 1800000 and mc.opencode_header_timeout(32768) is None, "opencode headerTimeout: 30 min at 64k+, default below")
+check('"headerTimeout": 1800000' in mc.agent_snippets(8080, "m", 131072, None, only="opencode") and "headerTimeout" not in mc.agent_snippets(8080, "m", 8192, None, only="opencode"),
+      "opencode snippet carries the timeout only for long windows")
+
 # Windows commit (XA-3): the prompt cache shrinks so llama-server's GPU allocations + prompt cache + 2 GiB fit in the free commit; too tight -> warn
 GiB = 2**30
 check(mc.commit_plan(40 * GiB, 15.5, 2048) == (2048, False), "commit plan: plenty of commit keeps the 2 GiB prompt cache")

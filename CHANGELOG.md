@@ -31,6 +31,8 @@
   GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). `--scenario agent`: a 3-turn coding conversation with pauses
   (`--gap`), time to the first token per turn. tests/bench_report_test.py; both CIs run a
   real report on Granite.
+- `connect opencode` sets OpenCode's `headerTimeout` to 30 minutes for server windows of 64k and more: OpenCode's 5-minute default could cut off a first
+  turn that fills a long window (a 63k first turn took 289 s on the PC).
 - **`moe_cache.py update --check`**: says whether a newer moe-cache release is out and how many builds your llama-server is behind llama.cpp's newest release
   (asks GitHub's release API once, only when you run it; downloads and installs nothing).
 - The model list follows linked folders (models on another drive, `/var/home`); a link loop is walked once.

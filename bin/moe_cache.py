@@ -2079,6 +2079,12 @@ def server_models(url, api_key=None):
         return []
 
 
+def opencode_header_timeout(ctx):
+    """OpenCode waits headerTimeout ms (default 300000, 5 min) for a reply to start. A first turn that fills a 64k window took 289 s on the PC
+    (RESULTS 64), longer at 128k+, so for windows of 64k and more connect sets 30 min; None keeps OpenCode's default (scout 14, opencode.ai docs)."""
+    return 1800000 if ctx and int(ctx) >= 65536 else None
+
+
 def opencode_config_target(cfg):
     """The global opencode.json to write, and warnings. OpenCode (and OpenCode Desktop, whose server reads the same global folder) merges config.json,
     opencode.json, then opencode.jsonc, later files winning, and creates opencode.jsonc on first run: write into that one when it is plain JSON,
@@ -2228,7 +2234,8 @@ def connect(argv):
     if not a.config:
         cfg, warn = opencode_config_target(cfg)
     names = [name] + [n for n in server_models(a.url, a.api_key) if n != name]       # on-demand with several models (N9): all of them
-    entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache", "options": dict({"baseURL": base}, **({"apiKey": a.api_key} if a.api_key else {})),
+    entry = {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache", "options": dict({"baseURL": base}, **({"apiKey": a.api_key} if a.api_key else {}),
+                                                                                  **({"headerTimeout": opencode_header_timeout(ctx)} if opencode_header_timeout(ctx) else {})),
              "models": {n: {"name": n, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}} for n in names}}
     if not a.write:
         say(agent_snippets(None, name, ctx, a.api_key, base=base, only="opencode"))
@@ -2304,7 +2311,8 @@ def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None, hid
     opencode = [
         "  OpenCode, opencode.json:",
         '    {"$schema": "https://opencode.ai/config.json", "provider": {"moe-cache": {"npm": "@ai-sdk/openai-compatible", "name": "moe-cache",',
-        f'      "options": {{"baseURL": "{base}"' + (f', "apiKey": "{api_key}"' if api_key else "") + '},',
+        f'      "options": {{"baseURL": "{base}"' + (f', "apiKey": "{api_key}"' if api_key else "") +
+        (f', "headerTimeout": {opencode_header_timeout(ctx)}' if opencode_header_timeout(ctx) else "") + '},',
         f'      "models": {{"{model}": {{"name": "{model}", "tool_call": true, "limit": {{"context": {ctx}, "output": {out}}}}}}}}}}},',
         f'     "model": "moe-cache/{model}"}}']
     if only == "hermes":
