@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Quality gate for the approximate modes** (`docs/QUALITY_GATE.md`, `tools/quality_gate.py`, CI `quality`): KL divergence and top-1 against stock plus the 202 tasks, thresholds fixed before
+  measuring. New opt-in levels: `--fast=kv` (q8_0 KV only: on Flash-Next Q2_0 at ctx 262144 prefill 2x, decode +11-13 % at 64k, KL 0.0079, top-1 96.7 %, tasks 190/190)
+  and `--fast=fewer` (`--fast` plus `MOE_CACHE_FEWER=2`: the 2 lowest-ranked experts are not computed on CPU-held layers; KL 0.034, top-1 92 %, tasks 192 vs 190; speed shown at 4k only).
+  Defaults are unchanged.
 - **A menu on every model in the list** (right-click, Shift+F10 or the menu key, or the ⋮ button on the row): Start (nothing runs), Switch to this model, Stop (the running one), Plan / Why, Show in folder (the file's folder and name), Copy path. Rows can be focused with the keyboard; arrows move in the menu, Esc closes it.
 - **Switching models while a server runs is visible**: when the selected model differs from the running one, the top bar shows "Switch to <name>" (Stop, then Start with the settings shown; asks first when an agent or the chat is mid-request); the top bar says "Running: <name>" and the model list marks the running one.
 - **llama-server is found in more places, by one function** (launcher, `check`, the picker and the control page share `default_llama_server`): `LLAMA_SERVER` in the process

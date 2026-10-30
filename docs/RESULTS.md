@@ -2953,3 +2953,36 @@ Per part: gate 408 us per op, up 195 us, down 187 us for the same 4.7 MB: gate a
 **4. Decode at depth (N41b).** Flash attention per call: 35-42 us at 4k (k = 4096-4352) vs 154 us at 120k (k = 120832): the whole KV is scanned (123 MB per layer at about 800 GB/s), nothing is skipped. With 12 attention layers that is about +1.4 ms per token (about +2-3 % of a token), not the -14 % in the README. The 128k decode follow-up generated 1 token (EOS), so no 128k decode figure from this run. The rest of the -14 % is probably the ctx-dependent plan (131072 ctx leaves fewer GPU expert layers than the 8k-ctx run it was compared with); same-ctx clean runs would show it. Sparse-skip in Vulkan flash attention is upstream, not ours.
 
 Timers added (off by default): MOE_CACHE_SEG_TIMES (gaps, faults, longest gaps in the stats JSON and exit lines), MOE_CACHE_EXEC_TIMES ("ex" in the stats JSON, "exec-times" exit lines).
+
+## 72. Approximate package B behind a quality gate: q8_0 KV (B4) and fewer experts (B3) on Flash-Next Q2_0 (Windows PC, 2026-10-30 night, all "not clean": owner desktop used VRAM; branch claude/approx)
+
+Rule change (owner 2026-10-29): token identity to stock is no longer required; the meaning has to match. Thresholds were written before measuring (`docs/QUALITY_GATE.md`).
+Gate = `tools/quality_gate.py`: mean KL divergence and same-top-token against stock (3 x 512 tokens of long30k.txt, batch 8, f16-KV stock as base) and the 202 tasks of `tools/quality_tasks.json`.
+Flash-Next Q2_0, `--n-cpu-moe 46`, ctx 4096, thinking off.
+
+| Level | Settings | Mean KLD (limit) | Same top token (limit) | Tasks right (stock 190/202; limit) | Loops | Verdict |
+|---|---|---|---|---|---|---|
+| kv (B4) | q8_0 KV | **0.0079** +- 0.0005 (0.015) | **96.7 %** +- 0.6 (95) | 190 (>= 188) | 0 | **PASS** |
+| fewer (B3) | `--fast` (route skip) + q8_0 KV + 2 lowest-ranked experts dropped on CPU-held layers | **0.0338** +- 0.0021 (0.060) | **92.0 %** +- 1.0 (88) | 192 (>= 185) | 0 | **PASS** |
+
+Speed, ABBA with the text check, ctx 262144, `--gpu-margin 1.5` on both arms (tok/s; pair = A, B, B, A):
+| B4: default (A) vs `--fast=kv` (B) | A | B | Verdict |
+|---|---|---|---|
+| prefill 4k | 84.9, 86.3 | 169.2, 167.4 | B 2.0x (the tuner puts the freed KV into more GPU layers and -ub 1024: 184 instead of 376 long-prompt segments) |
+| prefill 64k | 72.7, 72.9 | 144.0, 145.7 | B 2.0x |
+| prefill 128k | > 30 min (timed out twice) | 136.1, 135.0 (about 16 min) | B at least 2x |
+| decode 4k | 16.95, 17.23 | 17.05, 17.0 | equal (pair 1 +0.6 %, pair 2 -1.3 %: noise) |
+| decode 64k | 14.17, 14.05 | 15.68, 15.92 | B +11 % / +13 % |
+| decode 128k | not measured (A timed out) | - | - |
+
+| B3: `--fast` (A) vs `--fast=fewer` (B) | A | B | Verdict |
+|---|---|---|---|
+| decode 4k | 17.97, 18.51 | 19.05, 18.95 | B +6 % / +2 % |
+| decode 64k, 128k | 16.54, 16.82 / 6.7 | no value (the continuation ended at once: 0 tokens) / 10.73, 10.39 | no clean pair: unproven |
+| prefill | 156 / 135 / 129 | 158 / 136 / 129 | equal (only decode batches are affected) |
+
+Reading: B4 passes the gate with room to spare and doubles prefill at ctx 262144 (that comes from the tuner's layer/micro-batch plan, not from the q8 arithmetic); decode gain +11-13 % at 64k, equal at 4k.
+B3 passes the gate (KLD in the `--fast` range, tasks not worse) but its speed is shown only at 4k (+2-6 %); the 64k / 128k pairs lost their decode value, so it stays opt-in and unproven.
+The A arms at 128k run into the 30-minute limit: the default plan at ctx 262144 is slow there, which is part of what B4 fixes.
+CI (`quality.yml`, granite): `exact` enforced (KLD 0, 100 %, 93/93 tasks); stock llama-perplexity at the API 3 pin aborts with `-ctk q8_0` on the CPU-only build (stock too), so approximate levels there are report-only smoke without KV.
+Runner bug found on the way: `runner.ps1` `$o = Get-CimInstance` overwrites `$O`, which kills `Script1` items at once.
