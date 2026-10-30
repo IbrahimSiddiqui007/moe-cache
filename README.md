@@ -374,6 +374,7 @@ Where they are the better choice: you have a card and RAM they list, and you wan
 | `MOE_CACHE_PROFILE` / `MOE_CACHE_WARM` | learn expert usage here and warm-start from it / warm start only |
 | `MOE_CACHE_STATS=1` | print hit rate, reads and evictions at exit |
 | `MOE_CACHE_EXEC_FUSE=0` | turn off the fused gate+up executor job (on by default since 0.3.2: decode +0.3-2.6 % in every PC pair, same text; RESULTS 73) |
+| `MOE_CACHE_IDLE_REBALANCE=0` | turn off the idle cache refill (on since 0.3.3: refills the RAM cache while an agent pauses; every PC pair won) |
 | `MOE_CACHE_POLICY=classlru` | frequency-aware cache replacement instead of LRU (opt-in; on the miss-heavy 122B +1.3-2.9 % decode in every pair, on Flash-Next within noise; RESULTS 73) |
 | `MOE_CACHE_STATS_SIGNAL=1` | print one `moe-cache-stats {json}` line of the running counters on request: Linux `kill -USR1 <pid>`, Windows set the named event `Local\moe-cache-stats-<pid>` |
 | `MOE_CACHE_DISABLE=1` | load nothing: the server behaves exactly like stock |

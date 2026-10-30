@@ -214,7 +214,7 @@ struct state_t {
     bool   track_crf = false;                           // keep the decayed use counts (classlru, or the idle rebalance wants them)
     // idle rebalance (BO-2): while no graph runs for rb_idle_ms, read the experts with the highest decayed use count that are missing into free room or
     // the room of the lowest-count resident ones (rb_choose), at most rb_cap_bytes per idle period, one expert at a time, stopping as soon as a graph starts
-    bool   rb_on = false;
+    bool   rb_on = true;                                // BO-2 idle refill: on since 0.3.3 (won every PC pair, RESULTS 73); MOE_CACHE_IDLE_REBALANCE=0 turns it off
     int    rb_idle_ms = 1500;
     size_t rb_cap_bytes = (size_t) 512 << 20;
     double rb_gain = 2.0, rb_min_score = 0.75;

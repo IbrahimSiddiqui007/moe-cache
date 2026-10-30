@@ -2,6 +2,9 @@
 
 ## Unreleased (0.3.3)
 
+- **Idle cache refill on by default** (BO-2): while an agent pauses (a tool running), the plugin refills its RAM cache toward the experts recent turns used. PC, recorded
+  OpenCode session with its pauses x4, ABBA: decode 12.61 -> 13.0 and 13.15 -> 13.53 tok/s, follow-up waits 26.3 -> 26.1 and 32.0 -> 23.9 s, whole task 171.7 -> 171.6 and
+  197.4 -> 165.1 s (every pair; it only changes which experts are in RAM, so answers cannot change). Never after an idle release. `MOE_CACHE_IDLE_REBALANCE=0` turns it off.
 - **The Windows kit includes llama.cpp**: the official, unmodified llama.cpp b11966 Vulkan build sits in the kit's `llama\` folder (sha256-checked against the
   release asset when the kit is built; llama.cpp's MIT licence next to it), so a friend downloads one zip. The launcher, `check`, the picker and the control page
   find it by themselves; `LLAMA_SERVER` still picks another build. The kit grows from about 2.4 MB to 49 MB. `MOE_CACHE_KIT_NO_LLAMA=1` builds the old kit.

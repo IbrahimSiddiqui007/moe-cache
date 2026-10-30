@@ -49,7 +49,7 @@
             if (rb_stop) {
                 break;
             }
-            if (graph_active > 0 || graph_seq == 0 || rb_round_seq == graph_seq || !cache_on || tensors.empty()) {
+            if (graph_active > 0 || graph_seq == 0 || rb_round_seq == graph_seq || !cache_on || tensors.empty() || idle_released) {   // never refill a cache that idle release just gave back
                 continue;
             }
             const uint64_t now = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
