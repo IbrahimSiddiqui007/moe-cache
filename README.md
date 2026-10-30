@@ -19,6 +19,10 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 **Example (measured on one Windows 11 desktop, 32 GB RAM + 16 GB graphics card, Vulkan):** Qwen3.8-Flash-Next IQ3_XXS (75.8 GB, the default file) writes **19.9 tokens per second** with moe-cache and 15.1 with plain llama.cpp; the faster Q2_0 file (66.4 GB) 22.2 against 18.4 (RESULTS 59, 63). More machines and models: [Results](#results-measured-clean-runs).
 
+<a href="docs/benchmark_card.html"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmark_card-dark.png"><img src="docs/benchmark_card.png" width="720" alt="Benchmark card: decode tokens per second, stock llama.cpp vs moe-cache, on a Windows PC with 32 GB RAM and a 16 GB graphics card"></picture></a>
+
+<sub>The top of the [benchmark card](docs/benchmark_card.html) (full card: long context, other models, agents). Numbers and methods: [docs/RESULTS.md](docs/RESULTS.md).</sub>
+
 | You need | |
 |---|---|
 | Memory | 32 GB RAM for the big models (16 GB works for smaller ones such as Qwen3.6-35B); a graphics card is optional but recommended |
@@ -188,7 +192,7 @@ When the model fits in the memory llama-server may use, stock llama.cpp is faste
 
 **Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](docs/RESULTS.md), section 11.
 
-Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-page summary of the Windows desktop results: [docs/benchmark_card.html](docs/benchmark_card.html).
+Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-page summary of the Windows desktop results: [docs/benchmark_card.html](docs/benchmark_card.html) (its top is the image at the start of this page; `python3 tools/card_image.py` remakes the image after a change to the card).
 
 **Which Flash-Next file?** Default: **IQ3_XXS** (3-bit: reads best, most tasks right, popular for coding); **Q2_0** when you want speed (about 10 % more tokens per second, e.g. for long thinking). Measured with moe-cache on a 16 GB GPU + 32 GB RAM PC (RESULTS 59, 60, 63; Qwen3.8-Flash-Next GSQ-RCO files; tasks = our
 202 exact-answer tasks; **no quality difference between any two files is proven**, all paired sign tests p > 0.05):

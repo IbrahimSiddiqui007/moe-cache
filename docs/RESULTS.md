@@ -3002,3 +3002,13 @@ Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan b11669 (C:\llama-vk) 
 | BO-1 read size (tests/win_read_bench.cpp, random unbuffered reads, Flash-Next Q2_0 file on D:) | 896 KiB 1.90 GB/s (~2,070 ops/s at 4 and 8 threads), 1792 KiB 3.04, 2688 KiB 3.47 GB/s: whole-expert reads +83 % |
 | Final kit (b3a6e45 CI zip, unzipped fresh) | version, control page, pick, server without a model, on-demand status, check --run (granite), bench-report (granite, forced, warm): 7/7 pass |
 
+## 74. Idle cache refill (BO-2) and the expert pack with file views (BO-1b) (Windows PC, 2026-10-30 evening; "not clean": the owner's programs were running)
+
+Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan b11669, Flash-Next Q2_0, ABBA pairs, text compared in every run.
+
+| Test | Result | Kept |
+|---|---|---|
+| BO-2 idle refill (`MOE_CACHE_IDLE_REBALANCE`), the recorded OpenCode session with its tool pauses x4 | decode 12.6 -> 13.0 and 13.2 -> 13.5 tok/s; wait for the follow-up answers 26.3 -> 26.1 and 32.0 -> 23.9 s; text identical | **yes**: on by default since 0.3.3 (it only changes which experts sit in RAM) |
+| BO-1 expert pack, private-memory cache | reader speed 0.21 -> 1.19 GB/s per thread, decode 1.7-2.1 -> 5.7-6.6 tok/s | opt-in only: the private-memory cache is not the default |
+| BO-1b expert pack with the default file-view cache | reader speed 1.11 -> 1.17, decode 15.6-16.1 -> 14.5-15.1 tok/s, short prompts slower | **no**: views already read near full speed |
+
