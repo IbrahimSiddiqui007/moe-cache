@@ -211,7 +211,16 @@ good here, and you can restore it from the Trash. To start once without them, ti
 
 The files are in `~/.cache/moe-cache/slots/agent/` (Windows: `%USERPROFILE%\.cache\moe-cache\slots\agent\`).
 
-## 9. Quick benchmark
+## 9. Quick benchmark and Share my numbers
+
+**Share my numbers** (the Benchmark card, no command line needed) runs `bench-report` for the model selected in the list: it stops a running server (it asks
+first when an agent or the chat is still answering), measures stock llama.cpp and moe-cache (stock, moe-cache, moe-cache, stock; Agent mode on adds the
+agent scenario), shows the progress lines in the log and, at the end, the report in a box with **Copy** and **Open the issue page**. The report is saved
+in `reports` in the cache folder. Nothing is uploaded and the report holds no prompts, answers, user name, host name or folder names. A model that fits in
+RAM is not measured (moe-cache would not be used): pick a bigger one or tick **Measure anyway**. **Cancel** stops it. The server stays stopped afterwards;
+press Start. The text on the page and the recipe: [SHARE_YOUR_NUMBERS.md](SHARE_YOUR_NUMBERS.md).
+
+### Quick benchmark
 
 With a model running, **Quick benchmark** measures it the way our own speed tests do: a short warm-up, two answers of 256 tokens and one prompt of
 about 3,500 tokens (fixed settings, so runs compare). It takes one to a few minutes and shows decode speed (both answers and the mean), prefill

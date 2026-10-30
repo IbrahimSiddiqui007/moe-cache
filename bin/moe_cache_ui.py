@@ -582,6 +582,10 @@ def dry_run(s):
 # The page asks the launcher for it (stdout: the key alone, exit 0), keeps it in memory, sends it in headers and to `connect` through the
 # environment; never in a URL, a log line or the status JSON (the page fetches it from /api/key only for the Copy button).
 KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]
+SHARE_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "bench-report"]    # "Share my numbers"; tests replace it with a fake
+REPORT_DIR = os.path.join(mc.CACHE_DIR, "reports")
+ISSUE_URL = "https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml"
+MAX_REPORT = 200000
 
 
 def launcher_key():
@@ -1060,6 +1064,8 @@ class Runner:
     def __init__(self):
         self.lock = threading.Lock()
         self.p = None
+        self.share = {"state": "idle"}      # "Share my numbers": bench-report as a child process (survives a server Start / Stop)
+        self.share_p = None
         self.reset({})
 
     def reset(self, s):
@@ -1088,6 +1094,8 @@ class Runner:
     # -- control --
     def start(self, s):
         with self.lock:
+            if self.share.get("state") == "running":
+                raise ValueError("\"Share my numbers\" is measuring: wait for it to finish or cancel it first")
             if self.p and self.p.poll() is None:
                 raise ValueError("a server is already running: stop it first")
             port = int(s.get("port") or 8080)
@@ -1309,11 +1317,130 @@ class Runner:
             self.hist.append([round(time.time(), 1), self.live_tps, self.cache.get("hit_rate")])
             time.sleep(1)
 
+    # -- "Share my numbers": `moe_cache.py bench-report MODEL` as a child process, its lines in the log, its markdown for the page --
+    def start_share(self, model, other=(), agent=False, force=False):
+        if self.share.get("state") == "running":
+            raise ValueError("a report is already being made")
+        if self.bench.get("state") == "running":
+            raise ValueError("the quick benchmark is running: wait for it")
+        magic = b""
+        if isinstance(model, str) and os.path.isfile(model):
+            try:
+                with open(model, "rb") as f:
+                    magic = f.read(4)
+            except OSError:
+                pass
+        if magic != b"GGUF":
+            raise ValueError("pick a model file (.gguf) in the list first")
+        self.share = {"state": "running", "started": time.time(), "model": os.path.basename(model), "step": "starting", "lines": [], "agent": bool(agent),
+                      "force": bool(force)}
+        threading.Thread(target=self.run_share, args=(model, list(other), bool(agent), bool(force), self.share), daemon=True).start()
+
+    def run_share(self, model, other, agent, force, sh):
+        cmd = SHARE_CMD + [model, "--out", REPORT_DIR]
+        if other:
+            cmd += ["--flush-from", ",".join(other)]
+        if agent:
+            cmd += ["--scenario", "agent"]
+        if force:
+            cmd += ["--force-plugin"]
+        env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+        env.pop("LLAMA_API_KEY", None)
+        lines, p = [], None
+        try:
+            if self.state in ("starting", "ready", "stopping"):       # bench-report starts its own servers; the page's server would hold the memory
+                sh["step"] = "stopping the server"
+                self.stop()
+                for _ in range(240):
+                    if self.state not in ("starting", "ready", "stopping"):
+                        break
+                    time.sleep(0.25)
+            kw = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "stdin": subprocess.DEVNULL, "env": env}
+            if sys.platform.startswith("linux"):
+                kw["preexec_fn"] = mc._die_with_parent_linux
+            elif not WINDOWS:
+                kw["start_new_session"] = True
+            p = self.share_p = subprocess.Popen(cmd, **kw)
+            if WINDOWS:
+                try:
+                    mc._kill_with_parent_windows(p)
+                except Exception:
+                    pass
+            self.add_line("ui: share my numbers: bench-report " + os.path.basename(model) + (" (agent scenario)" if agent else "") + (" (measure anyway)" if force else ""))
+            for raw in iter(p.stdout.readline, b""):
+                line = raw.decode("utf-8", errors="replace").rstrip()
+                lines.append(line)
+                self.add_line("share: " + line)
+                if line.startswith("bench-report:"):
+                    sh["step"] = line[len("bench-report:"):].strip()[:200]
+            rc = p.wait()
+        except Exception as e:
+            sh.update(state="failed", error=f"could not run bench-report: {e}", step="")
+            return
+        if sh.get("state") == "cancelled":
+            return
+        sh["lines"] = lines[-60:]
+        sh["rc"] = rc
+        err = [l[len("bench-report:"):].strip() for l in lines if l.startswith("bench-report:") and ("fits" in l or "problem" in l or "not found" in l or "port" in l or "failed" in l or "[FAIL]" in l)]
+        if rc == 0:
+            base = None
+            for l in reversed(lines):
+                m = re.match(r"bench-report: written (.+?)\.md and \.json", l)
+                if m:
+                    base = m.group(1)
+                    break
+            path = (base + ".md") if base else None
+            if not path or not os.path.isfile(path):
+                try:
+                    cand = sorted(glob.glob(os.path.join(REPORT_DIR, "moe-cache-report-*.md")), key=os.path.getmtime)
+                    path = cand[-1] if cand and os.path.getmtime(cand[-1]) >= sh["started"] - 2 else None
+                except OSError:
+                    path = None
+            if not path:
+                return sh.update(state="failed", error="bench-report finished but the report file was not found", step="")
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    md = f.read(MAX_REPORT)
+            except OSError as e:
+                return sh.update(state="failed", error=f"could not read the report: {e}", step="")
+            return sh.update(state="done", path=path, markdown=md, step="")
+        if rc == 3:
+            return sh.update(state="fits", error="This model fits in your RAM, so moe-cache would not be used (the launcher runs stock llama.cpp). Pick a bigger model in the list (Settings > Which model?) or tick \"Measure anyway\".", step="")
+        err += [l.strip() for l in lines if "[FAIL]" in l]                  # the doctor's lines that say what to fix
+        why = " ".join(err[-4:]) if err else " ".join(l for l in lines[-3:] if l)
+        sh.update(state="failed", error=f"bench-report stopped (exit code {rc}): {why}".strip()[:600], step="")
+
+    def cancel_share(self):
+        sh, p = self.share, self.share_p
+        if sh.get("state") != "running" or not p or p.poll() is not None:
+            return False
+        sh.update(state="cancelled", step="")
+        try:
+            if WINDOWS:
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True, timeout=30)
+            elif sys.platform.startswith("linux"):
+                p.send_signal(signal.SIGTERM)
+            else:
+                os.killpg(p.pid, signal.SIGTERM)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        return True
+
+    def share_public(self):
+        sh = dict(self.share)
+        sh["has_markdown"] = "markdown" in sh
+        sh.pop("markdown", None)
+        sh["lines"] = sh.get("lines", [])[-6:]
+        return sh
+
     # -- quick benchmark --
     def start_bench(self, cold=False, other=None, compare=False):
         if self.state != "ready":
             raise ValueError("start a model first")
-        if self.bench.get("state") == "running":
+        if self.bench.get("state") == "running" or self.share.get("state") == "running":
             raise ValueError("a benchmark is already running")
         if cold and not cold_start_support()["available"]:
             raise ValueError("cold start: " + cold_start_support()["why"])
@@ -1443,7 +1570,7 @@ class Runner:
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode + (" + MTP" if self.mode and self.mtp else ""), "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
-                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "api_key": self.key_info(), "warm": {"events": self.warm},
+                "history": list(self.hist), "warnings": self.warnings, "decisions": self.decisions, "bench": self.bench, "share": self.share_public(), "api_key": self.key_info(), "warm": {"events": self.warm},
                 "system": system_info()}
 
 
@@ -1748,6 +1875,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
+            if u.path == "/api/share":                      # the finished report (markdown) for the box on the page
+                return self.send(200, dict(self.runner.share, issue_url=ISSUE_URL, report_dir=REPORT_DIR))
             if u.path == "/api/bench":
                 rows = read_bench_rows(500)
                 return self.send(200, {"csv": BENCH_CSV, "rows": rows[-20:], "compare": bench_compare(rows)})
@@ -1854,6 +1983,16 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError(f"no such folder or file: {x}")
                 self.runner.start_bench(cold=bool(body.get("cold")), other=other or self.store.folders(), compare=bool(body.get("compare")))
                 return self.send(200, self.runner.bench)
+            if self.path == "/api/share":
+                other = body.get("other") or []
+                if not isinstance(other, list) or len(other) > 20 or not all(isinstance(x, str) and len(x) < 1000 for x in other):
+                    raise ValueError("other: a list of folders")
+                other = [os.path.abspath(os.path.expanduser(x)) for x in other if x.strip()] or self.store.folders()
+                other = [x for x in other if os.path.exists(x)]
+                self.runner.start_share(str(body.get("model") or ""), other=other, agent=bool(body.get("agent")), force=bool(body.get("force")))
+                return self.send(200, self.runner.share_public())
+            if self.path == "/api/share/cancel":
+                return self.send(200, {"ok": self.runner.cancel_share()})
             if self.path == "/api/stop":
                 threading.Thread(target=self.runner.stop, daemon=True).start()
                 return self.send(200, {"ok": True})

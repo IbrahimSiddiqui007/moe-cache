@@ -101,6 +101,8 @@ p.whysum { margin:4px 0 6px; font-size:13px; line-height:1.45; }
 #chatinfo { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:0 1 auto; min-width:0; }
 .msgs { flex:1; overflow:auto; padding:18px 16px 8px; }
 .msgs .inner { max-width:800px; margin:0 auto; display:flex; flex-direction:column; gap:18px; }
+.sharebox { margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
+#sharemd { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:4px; background:var(--code); color:var(--text); font:12px/1.4 ui-monospace, Menlo, Consolas, monospace; resize:vertical; }
 .empty { text-align:center; color:var(--muted); margin-top:12vh; }
 .empty b { color:var(--text); font-size:18px; display:block; margin-bottom:6px; }
 .msg.user { align-self:flex-end; max-width:85%; background:var(--panel); border:1px solid var(--line); border-radius:12px 12px 2px 12px; padding:8px 12px; white-space:pre-wrap; word-break:break-word; }
@@ -385,6 +387,15 @@ button.danger { border-color:var(--ink); }
         <div class="small" style="margin-top:4px"><label><input type="checkbox" id="compare"> Compare with the other side: then run it again as stock llama-server (or as moe-cache, if this is stock), and go back to your settings at the end (twice the time; with Cold start for a fair result)</label></div>
         <div class="small" id="otherrow" hidden><span>Other big files to read (folders, separated by ;):</span><input type="text" id="other" style="width:100%"></div>
         <div id="benchres" class="scrollx"></div>
+        <div class="sharebox" id="sharebox">
+          <div class="row"><button id="share" class="primary" title="Measures stock llama.cpp and moe-cache on the selected model and writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button></div>
+          <div class="small" id="sharestate"></div>
+          <div class="small" style="margin-top:4px"><label><input type="checkbox" id="shareforce"> Measure anyway when the model fits in RAM (moe-cache would not be used otherwise)</label></div>
+          <div id="shareout" hidden>
+            <textarea id="sharemd" rows="12" readonly spellcheck="false" aria-label="The report"></textarea>
+            <div class="row" style="margin-top:4px"><button id="sharecopy">Copy</button><button id="shareissue" class="primary">Open the issue page</button><span class="small" id="sharemsg"></span></div>
+          </div>
+        </div>
       </div></details>
 
       <details class="card" open id="c-warn" hidden><summary>Warnings <span class="badge cache" id="warncount"></span></summary><div class="body"><div id="warnings"></div></div></details>
@@ -754,6 +765,7 @@ async function poll() {
   $("keyrow").hidden = !k.in_use || !(st.state == "starting" || st.state == "ready");
   if (k.in_use) { $("keyends").textContent = "••••" + k.ends; $("keysrc").textContent = "(" + k.source + ")"; }
   paintBench(st);
+  paintShare(st);
   const dk = JSON.stringify(st.decisions || []), de = $("decisions");
   if (de.dataset.k != dk) {
     de.dataset.k = dk; de.hidden = !(st.decisions || []).length;
@@ -834,6 +846,29 @@ function compareTable(rows, model) {
       <td class="num">${r.hit_rate ? (r.hit_rate * 100).toFixed(1) + " %" : "–"}</td></tr>`).join("") + "</table>" +
     (rows.some(r => r.ram_gb != "auto") ? `<div class="hint">A RAM budget limits moe-cache only: stock llama-server still uses all free RAM through the file cache,
     so rows with a RAM number favour stock. The fair test is RAM on <b>auto</b> with a model bigger than this computer's RAM.</div>` : "");
+}
+const SHARE_DEFAULT = "Measures stock llama.cpp and moe-cache on the model selected in the list (5-20 minutes; a running server is stopped first) and writes a report you can paste into a GitHub issue. Nothing is uploaded: the report holds no prompts, answers, user name, host name or folder names.";
+let shareKey = "", shareUrl = "";
+async function paintShare(st) {
+  const sh = st.share || {}, key = [sh.state, sh.started, sh.step, sh.has_markdown, !!S.sel].join("|"), running = sh.state == "running";
+  $("share").disabled = running || !S.sel || (st.bench || {}).state == "running";
+  $("sharecancel").hidden = !running;
+  $("shareforce").disabled = running;
+  if (shareKey == key) return; shareKey = key;
+  const box = $("sharestate");
+  if (running) { box.textContent = "measuring " + (sh.model || "") + ": " + (sh.step || "starting") + " (5-20 minutes; the progress lines are in the log below)"; $("shareout").hidden = true; return; }
+  if (sh.state == "fits") { box.innerHTML = `<span class="err">${esc(sh.error || "")}</span>`; $("shareout").hidden = true; return; }
+  if (sh.state == "failed") { box.innerHTML = `<span class="err">${esc(sh.error || "failed")}</span>`; $("shareout").hidden = true; return; }
+  if (sh.state == "cancelled") { box.textContent = "cancelled. The server is stopped: press Start to run a model again."; $("shareout").hidden = true; return; }
+  if (sh.state == "done") {
+    const j = await api("/api/share");
+    shareUrl = j.issue_url || "";
+    $("sharemd").value = j.markdown || "";
+    $("shareout").hidden = false;
+    box.textContent = "done. The report is saved in " + (j.path || "the reports folder") + ". Nothing was uploaded: copy it, press the issue button and paste it there. The server is stopped; press Start to use it again.";
+    return;
+  }
+  box.textContent = SHARE_DEFAULT; $("shareout").hidden = true;
 }
 async function paintBench(st) {
   const b = st.bench || {}, key = [b.state, b.step, st.state].join("|");
@@ -1151,6 +1186,21 @@ $("bench").onclick = async () => {
   const compare = $("compare").checked;
   try { await api("/api/bench", { cold, other, compare }); poll(); } catch (e) { showErr(e.message); }
 };
+$("share").onclick = async () => {
+  if (!S.sel) { showErr("Pick a model in the list first."); return; }
+  const up = ["starting", "ready", "stopping"].includes(S.status.state);
+  if (up && switchNeedsConfirm(S.live, C.busy) && !confirm("The running model is still answering a request (an agent or the chat). Measuring stops it now. Go on anyway?")) return;
+  const other = $("other").value.split(";").map(x => x.trim()).filter(Boolean);
+  try { await api("/api/share", { model: S.sel, force: $("shareforce").checked, agent: !!$("agent").checked, other }); poll(); } catch (e) { showErr(e.message); }
+};
+$("sharecancel").onclick = async () => { try { await api("/api/share/cancel", {}); poll(); } catch (e) { showErr(e.message); } };
+$("sharecopy").onclick = async () => {
+  const t = $("sharemd");
+  try { await navigator.clipboard.writeText(t.value); $("sharemsg").textContent = "copied"; }
+  catch (e) { t.select(); try { document.execCommand("copy"); $("sharemsg").textContent = "copied"; } catch (e2) { $("sharemsg").textContent = "select the text and copy it by hand"; } }
+  setTimeout(() => $("sharemsg").textContent = "", 3000);
+};
+$("shareissue").onclick = () => { if (shareUrl) window.open(shareUrl, "_blank", "noopener"); };
 $("copykey").onclick = async () => {
   try {
     const j = await api("/api/key");             // fetched only now, never kept in the page or shown
