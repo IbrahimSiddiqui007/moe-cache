@@ -3,6 +3,7 @@
 
 Replaces token identity for the approximate levels. Standard library only (Linux and Windows).
   quality_gate.py --llama-server BIN --perplexity BIN --model GGUF --lib PLUGIN --level kv|fast|fewer|exact [--smoke]
+  quality_gate.py ... --no-plugin --level exact --args "--moe-cache-mib 1024" --report-only     (a llama.cpp option alone against stock, R2-7)
                   [--n-cpu-moe N] [--ngl 99] [--ctx 4096] [--chunks 3] [--text FILE] [--tasks-file FILE] [--no-tasks] [--no-kl] [--out DIR]
                   [--env K=V ...] [--args "..."] [--common-args=ARGS] [--ram-env K=V ...]     (extra plugin environment / llama.cpp arguments for the candidate only, on top of the level)
 Exit status: 0 = pass, 1 = a limit missed, 2 = the plugin was not active or a run failed.
@@ -91,7 +92,8 @@ def serve_and_run_tasks(a, env, extra, tag, port):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--llama-server", required=True); ap.add_argument("--perplexity", required=True); ap.add_argument("--model", required=True)
-    ap.add_argument("--lib", required=True, help="the plugin library (libggml-moe-cache.so / ggml-moe-cache.dll)")
+    ap.add_argument("--lib", default="", help="the plugin library (libggml-moe-cache.so / ggml-moe-cache.dll); not needed with --no-plugin")
+    ap.add_argument("--no-plugin", action="store_true", help="candidate = stock llama.cpp with --args (e.g. upstream --moe-cache-mib 1024), no plugin: measures a llama.cpp option against stock")
     ap.add_argument("--level", required=True, choices=sorted(LEVELS)); ap.add_argument("--smoke", action="store_true", help="CI smoke limits (small model)")
     ap.add_argument("--n-cpu-moe", default="999"); ap.add_argument("--ngl", default="99"); ap.add_argument("--ctx", type=int, default=4096)
     ap.add_argument("--chunks", type=int, default=3); ap.add_argument("--text", help="text for the KL run (default: README + docs of this repo)")
@@ -107,6 +109,8 @@ def main():
     a = ap.parse_args()
     if a.stock_only and not a.cache_dir:
         sys.exit("--stock-only needs --cache-dir")
+    if not a.lib and not a.no_plugin:
+        sys.exit("--lib is needed unless --no-plugin")
     a.out = a.out or tempfile.mkdtemp(prefix="qgate_")
     os.makedirs(a.out, exist_ok=True)
     if a.cache_dir:
@@ -117,12 +121,15 @@ def main():
     cand_env = dict(lenv); cand_env.update(kv.split("=", 1) for kv in a.env)
     cand_args = ([] if a.no_kv else list(largs)) + a.args.split()
     both_env = dict(kv.split("=", 1) for kv in a.ram_env)
-    load = plugin_env(a.llama_server, a.lib)
-    plug = dict(load, MOE_CACHE_GGUF=a.model, MOE_CACHE_SIZE_GIB=both_env.pop("MOE_CACHE_SIZE_GIB", "auto"), MOE_CACHE_STATS="1")
-    plug.update(both_env)
+    if a.no_plugin:          # R2-7: a llama.cpp option alone against stock; nothing of moe-cache is loaded
+        plug = {}
+    else:
+        load = plugin_env(a.llama_server, a.lib)
+        plug = dict(load, MOE_CACHE_GGUF=a.model, MOE_CACHE_SIZE_GIB=both_env.pop("MOE_CACHE_SIZE_GIB", "auto"), MOE_CACHE_STATS="1")
+        plug.update(both_env)
     print(f"quality gate, level {a.level}{' (smoke limits)' if a.smoke else ''}: KLD <= {kld_max}, top-1 >= {top_min} %, tasks >= stock - {tol}; out {a.out}")
     print(f"candidate: env {cand_env}, args {cand_args}")
-    res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args}, []
+    res, fails = {"level": a.level, "smoke": a.smoke, "model": os.path.basename(a.model), "env": cand_env, "args": cand_args, "no_plugin": a.no_plugin}, []
     if not a.no_kl:
         if not a.text:
             a.text = os.path.join(a.out, "text.txt")
@@ -140,7 +147,7 @@ def main():
     if not a.no_kl:
         print("2. KL: candidate")
         txt = run_ppl(a, base, True, dict(plug, **cand_env), cand_args, os.path.join(a.out, "kl_candidate.log"))
-        if not re.search(r"moe-cache: (cache mode|pass-through mode)", txt):
+        if not a.no_plugin and not re.search(r"moe-cache: (cache mode|pass-through mode)", txt):
             print("FAIL: the plugin was not active in the candidate run"); sys.exit(2)
         kld, kerr = num(txt, r"Mean +KLD"); top, terr = num(txt, r"Same top p"); mx, _ = num(txt, r"Maximum KLD")
         res.update(kld=kld, kld_err=kerr, top1=top, top1_err=terr, kld_max=mx)
@@ -162,7 +169,7 @@ def main():
             print("stock task run ready"); sys.exit(0)
         print("4. tasks: candidate server")
         c_out, slog = serve_and_run_tasks(a, dict(plug, **cand_env), cand_args, "candidate", a.port)
-        if not re.search(r"moe-cache: (cache mode|pass-through mode)", slog):
+        if not a.no_plugin and not re.search(r"moe-cache: (cache mode|pass-through mode)", slog):
             print("FAIL: the plugin was not active in the candidate server"); sys.exit(2)
         sys.path.insert(0, HERE)
         import quality_yardstick as qy
