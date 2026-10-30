@@ -8,7 +8,7 @@ helps with models bigger than RAM.
 
 | Piece | What worked | Notes |
 |---|---|---|
-| llama.cpp | the official release zip, **Vulkan** (tested b11669 and b11966; newer builds are supported, `moe_cache.py update --check` shows the newest) (`llama-b11669-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was 2.4x slower in our test (RESULTS 67; we ran it without AMD's HIP SDK) |
+| llama.cpp | the official release zip, **Vulkan** (tested b11669 and b11966; newer builds are supported, `moe_cache.py update --check` shows the newest) (`llama-b11966-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 and 0.28.0 (b11966) = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was 2.4x slower in our test (RESULTS 67; we ran it without AMD's HIP SDK) |
 | The plugin | `ggml-moe-cache-api3.dll` (api3 for ggml 0.26 and newer, api2 for 0.25) | from the kit, or build it on Linux: `GGML_API=3 ./build.sh --windows` (mingw-w64) -> `build/win/ggml-moe-cache.dll` |
 | Python 3 | 3.8 or newer, standard library only | run the launcher with `python` |
 | This repository (or the kit with `moe_cache.py`) | `C:\moe-cache` | the launcher needs the `planner\`, `ui\` and `tools\` folders: keep the whole repository |

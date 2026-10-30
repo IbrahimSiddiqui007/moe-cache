@@ -25,7 +25,7 @@ if [ "$1" = "--windows" ]; then
   $M-dlltool -d $W/ggml.def -l $W/libggml.dll.a -D ggml.dll
   # -static links the mingw threads runtime in: a DLL that needs libwinpthread-1.dll does not load on a normal Windows machine (found on the Claw)
   $CXX -shared ${MOE_CACHE_CXXFLAGS:-} -o $W/ggml-moe-cache.dll $W/plugin.o $W/libggml-base.dll.a $W/libggml.dll.a -static -static-libgcc -static-libstdc++ -Wl,--exclude-all-symbols
-  echo "built $W/ggml-moe-cache.dll (tested on Windows 11 + AMD, llama.cpp b11669)"
+  echo "built $W/ggml-moe-cache.dll (tested on Windows 11 + AMD, llama.cpp b11669 and b11966)"
   exit 0
 fi
 # MOE_CACHE_CXXFLAGS: extra compiler flags (CI uses it for a test-only mutant build)

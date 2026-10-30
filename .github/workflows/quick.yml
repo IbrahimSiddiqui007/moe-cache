@@ -28,6 +28,7 @@ jobs:
           for H in third_party/ggml third_party/ggml-v3; do g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp; done
           if grep -nE '\w*(buffer|buf)->(buft|context|size|usage|iface)\b|->buffer->' src/*.inl src/*.cpp; then echo "FAIL: read ggml buffer fields through the public API"; exit 1; fi
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/args_test.cpp -o /tmp/args_test && /tmp/args_test
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/tested_ggml_test.cpp -o /tmp/tested_ggml_test && /tmp/tested_ggml_test    # which ggml builds count as tested (version or version@commit)
           g++ -std=c++17 -O1 -Wall -Werror -Isrc -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src tests/rebalance_test.cpp -o /tmp/rebalance_test -lpthread && /tmp/rebalance_test   # BO-2 choice logic
 
       - name: Model-free tests (fake servers; same files the full CI runs)

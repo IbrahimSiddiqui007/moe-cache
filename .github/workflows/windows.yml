@@ -15,7 +15,7 @@ permissions:
   contents: read
 
 env:
-  LLAMA_RELEASE: b11669       # the release the MSI Claw used (ggml 0.27.0, backend API 3)
+  LLAMA_RELEASE: b11966       # the release the kit bundles (ggml 0.28.0, backend API 3); b11669 (0.27.0) is what the MSI Claw and the first PC runs used
 
 jobs:
   dll:
@@ -342,7 +342,7 @@ jobs:
           $log = "$env:TEMP\moe-cache-test\plugin.err.txt"
           Select-String $log -Pattern "executor=|moe-cache: CPU weight" | ForEach-Object { $_.Line }
           if (Select-String $log -Pattern "CPU weight repacking on" -SimpleMatch -Quiet) { throw "the plugin repacked although llama-server had --no-repack (stock did not)" }
-          if (Select-String $log -Pattern "tested with ggml" -SimpleMatch -Quiet) { throw "the plugin calls ggml of $env:LLAMA_RELEASE (0.27.0, tested) untested (MOE_CACHE_TESTED_GGML)" }
+          if (Select-String $log -Pattern "tested with ggml" -SimpleMatch -Quiet) { throw "the plugin calls ggml of $env:LLAMA_RELEASE (0.28.0 at ff0d396e3, tested) untested (MOE_CACHE_TESTED_GGML)" }
           if (-not (Select-String $log -Pattern "executor=on" -Quiet)) { throw "the executor did not run" }
           $m = Select-String $log -Pattern '"exec_checked":(\d+),"exec_mismatch":(\d+)' | Select-Object -Last 1
           if (-not $m -or [int64]$m.Matches[0].Groups[1].Value -eq 0 -or [int64]$m.Matches[0].Groups[2].Value -ne 0) { throw "executor byte check: none checked or mismatches ($($m.Line))" }
