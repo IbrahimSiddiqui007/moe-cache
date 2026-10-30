@@ -64,3 +64,16 @@ Our own task runs (202 exact-answer tasks) answer in 128 tokens or less, which i
 1. Run `doctor` on your model: Linux `python3 bin/moe_cache.py doctor MODEL.gguf`, Windows `python bin\moe_cache.py doctor D:\models\MODEL.gguf`. Every line says OK, WARN or FAIL and what to do.
 2. Fix the FAIL lines first (typical ones: a llama.cpp build without shared ggml libraries, an AMD driver that is too old, not enough free VRAM or RAM).
 3. Still failing: open a [Bug report](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=bug_report.yml) and paste the doctor output and the last lines of the server log.
+
+## Crashes on Windows with other programs open
+
+Windows promises memory to programs out of its **commit** budget (RAM + page file, "Committed" in Task Manager > Performance > Memory). When that budget is
+used up, new allocations fail even though RAM still shows as free, and llama-server can stop mid-request. The launcher prints the budget at start
+(`moe-cache: Windows memory: RAM ... GB free; commit ... GB free of ... GB`), shrinks its own prompt cache to fit, and warns when it is still too tight.
+
+| Fix | How |
+|---|---|
+| Close big programs | browsers with many tabs, games, other model servers |
+| Let the page file grow | Windows: System > About > Advanced system settings > Performance > Advanced > Virtual memory: "Automatically manage paging file size" (or a size of at least 16 GB) |
+| Use less GPU memory | `--gpu-margin 2` (Vulkan's GPU memory is charged to commit too) |
+

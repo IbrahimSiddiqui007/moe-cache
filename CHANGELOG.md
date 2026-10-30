@@ -26,6 +26,10 @@
   answers. No prompts, answers, user name, host name or folder names in it. A model that fits in RAM exits with a hint (`--force-plugin` measures anyway).
   GitHub issue templates (benchmark report, bug report) and `docs/SHARE_YOUR_NUMBERS.md` (the Windows recipe). tests/bench_report_test.py; both CIs run a
   real report on Granite.
+- **Windows: memory planned against commit, not only free RAM** (XA-3): with a browser and other programs open, Windows' commit (RAM + page file) ran out while
+  RAM still looked free; llama-server's prompt cache failed to allocate and llama.cpp crashed (PC, RESULTS 73). The launcher now prints "Windows memory: RAM ... free;
+  commit ... free of ..." at start, shrinks its own prompt cache (--cache-ram, only when it chose it) so GPU allocations + prompt cache + 2 GiB fit, and warns when even
+  that does not fit (close programs or use a system-managed / larger page file). The file-view expert cache costs no commit and is unchanged.
 - **Default Flash-Next file: IQ3_XXS** (owner 2026-10-30): the picker recommends it on a 16 GB GPU (3-bit, 193/202 tasks, popular for coding), with Q2_0 as the faster
   alternative (about 10 % more tokens per second); the agents' Flash-Next alternative is IQ3_XXS too; README, WINDOWS.md and the card relabelled. Smaller GPUs keep Q2_0.
 - **Executor: gate and up of a layer run as one pool job** (E3): one barrier and one wake-up fewer per layer, same arithmetic per output value. Flash-Next Q2_0

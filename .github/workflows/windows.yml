@@ -215,6 +215,7 @@ jobs:
           Remove-Item Env:MOE_CACHE_WIN_VIEW
           if (-not (Select-String launcher_joblimit.txt -Pattern "would set a Windows job memory limit of 3.0 GB" -SimpleMatch -Quiet)) { throw "MOE_CACHE_WIN_VIEW=0 --ram did not plan a job memory limit" }
           if (-not (Select-String launcher_real.err -Pattern "cache mode" -SimpleMatch -Quiet)) { throw "the plugin's cache was not on" }
+          if (-not (Select-String launcher_real.err, launcher_real.out -Pattern "Windows memory: RAM .* GB free; commit .* GB free of" -Quiet)) { throw "the launcher did not report Windows commit headroom (XA-3)" }
           if (-not (Select-String "$env:RUNNER_TEMP\opencode.json" -Pattern '"tool_call": true' -SimpleMatch -Quiet)) { throw "connect opencode wrote no model entry" }
 
       - name: Control page with the model (GUI1; start, one request, live hit rate via the named event, stop through the page)

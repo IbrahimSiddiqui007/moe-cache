@@ -413,6 +413,34 @@ def win_memory():
     return None, None
 
 
+def win_commit():
+    """(commit limit, commit still free) bytes on Windows: RAM + page file that programs may still be promised (GlobalMemoryStatusEx ullTotalPageFile /
+    ullAvailPageFile); (None, None) elsewhere. When it runs out, allocations fail although RAM looks free: llama-server's prompt cache then failed
+    ("bad allocation") and llama.cpp crashed (PC, RESULTS 73). Vulkan's GPU allocations count here; the plugin's file-view expert cache does not."""
+    if not WINDOWS:
+        return None, None
+    try:
+        import ctypes
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32), ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64), ("ullTotalVirtual", ctypes.c_uint64),
+                        ("ullAvailVirtual", ctypes.c_uint64), ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+        m = MS(); m.dwLength = ctypes.sizeof(MS)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            return float(m.ullTotalPageFile), float(m.ullAvailPageFile)
+    except Exception:
+        pass
+    return None, None
+
+
+def commit_plan(commit_free, vram_gib, cram_mib, margin_gib=2.0):
+    """How much prompt cache (MiB) fits in Windows' free commit next to the GPU allocations (Vulkan charges them to commit) and a margin:
+    (cache-ram MiB to use, short: True when even with no prompt cache the commit is too tight). Pure, so it is tested without Windows."""
+    need_base = (float(vram_gib or 0) + margin_gib) * 2**30
+    room_mib = int(max(0.0, commit_free - need_base) / 2**20)
+    return min(int(cram_mib), room_mib), commit_free < need_base
+
+
 def win_dedicated_vram():
     """{adapter name: dedicated VRAM bytes} from the Windows registry (display adapter class); {} elsewhere or on failure."""
     out = {}
@@ -1769,6 +1797,7 @@ def server(argv):
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
     cram = arg_after(extra, "--cache-ram", "-cram")
+    cram_auto = False             # True when the launcher chose it (yours after -- always wins)
     if cram is None:
         try:
             if "--cache-ram" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout:
@@ -1777,8 +1806,22 @@ def server(argv):
                 lim = mem_for_server(a.ram)
                 cram = "0" if lim and lim < 16e9 else "2048"
                 extra += ["--cache-ram", cram]
+                cram_auto = True
         except Exception:
             pass
+    if WINDOWS:     # XA-3: llama-server's own buffers and Vulkan's GPU memory need Windows commit (RAM + page file), not only free RAM
+        ctot, cfree = win_commit()
+        if ctot and cfree:
+            say(f"moe-cache: Windows memory: RAM {(win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
+            if cram_auto and re.fullmatch(r"[0-9]+", str(cram)):
+                fit, short = commit_plan(cfree, a.vram, int(cram))
+                if fit < int(cram):
+                    extra[len(extra) - 1 - extra[::-1].index("--cache-ram") + 1] = str(fit)
+                    say(f"moe-cache: prompt cache {cram} -> {fit} MiB so llama-server stays inside Windows' free commit (other programs hold the rest)", err=True)
+                    cram = str(fit)
+                if short:
+                    say(f"moe-cache: WARNING: Windows commit is nearly full ({cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB): llama-server may fail to allocate "
+                        "memory and stop. Close big programs, or set the page file to system-managed (or larger) in Windows' Advanced system settings", err=True)
     say(prompt_cache_note(cram, extra, a.agent))
     if cram is not None and re.fullmatch(r"[0-9-]+", cram):
         env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
