@@ -57,7 +57,7 @@
   check still refuses a ggml whose ops changed. When the version cannot be read at all, `check` says so and names `MOE_CACHE_LIB`.
 - Timers for profiling, off by default: `MOE_CACHE_SEG_TIMES=1` (gaps between the plugin's graph splits, async-input waits), `MOE_CACHE_EXEC_TIMES=1` (executor phases).
 - **Quality gate for the approximate modes** (`docs/QUALITY_GATE.md`, `tools/quality_gate.py`, CI `quality`): KL divergence and top-1 against stock plus the 202 tasks, thresholds fixed before
-  measuring. New opt-in levels: `--fast=kv` (q8_0 KV only: on Flash-Next Q2_0 at ctx 262144 prefill 2x, decode +11-13 % at 64k, KL 0.0079, top-1 96.7 %, tasks 190/190)
+  measuring. New opt-in levels: `--fast=kv` (q8_0 KV only: on Flash-Next Q2_0 at ctx 262144 prefill 2x, decode +11-13 % at 64k, KL 0.0079, top-1 96.7 %, tasks 190/202 = stock)
   and `--fast=fewer` (`--fast` plus `MOE_CACHE_FEWER=2`: the 2 lowest-ranked experts are not computed on CPU-held layers; KL 0.034, top-1 92 %, tasks 192 vs 190; speed shown at 4k only: **unproven at 64k-256k**, the decode pairs lost their values).
   `--fast=fewer` stays opt-in; `--fast=kv` became the 128k+ default (first line).
 - **A menu on every model in the list** (right-click, Shift+F10 or the menu key, or the ⋮ button on the row): Start (nothing runs), Switch to this model, Stop (the running one), Plan / Why, Show in folder (the file's folder and name), Copy path. Rows can be focused with the keyboard; arrows move in the menu, Esc closes it.

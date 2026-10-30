@@ -43,9 +43,9 @@ Everything below is what v0.3.0 and v0.3.1 brought, plus the speed numbers measu
 
 | File | For |
 |---|---|
-| `moe-cache-v0.3.2-windows-x64.zip` | Windows 10/11 x64 with the official llama.cpp release (Vulkan, CPU; tested b11669). Unzip, double-click `moe-cache.bat`. Read `README_WINDOWS.txt` first |
+| `moe-cache-v0.3.2-windows-x64.zip` | Windows 10/11 x64 with the official llama.cpp release (Vulkan, CPU; tested b11669 and b11966). Unzip, double-click `moe-cache.bat`. Read `README_WINDOWS.txt` first |
 | `moe-cache-v0.3.2-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 7fe450e19 (ggml 0.25) |
-| `moe-cache-v0.3.2-ggml0.26-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 23b0202a1 or newer (ggml 0.26 / 0.27) |
+| `moe-cache-v0.3.2-ggml0.26-linux-x86_64.tar.gz` | Linux x86-64, llama.cpp 23b0202a1 or newer (ggml 0.26 and newer) |
 
 Check a download: `gh attestation verify <file> -R IbrahimSiddiqui007/moe-cache` (`SHA256SUMS` and `SHA256SUMS-windows` only detect corruption).
 
@@ -72,12 +72,12 @@ One desktop: Ryzen 9 7950X, 32 GB DDR5, RX 9070 XT 16 GB, Windows 11, llama.cpp 
 | Qwen3.8-Flash-Next IQ2_XS (68 GB) | 14.9 | **21.9** | +47 % |
 | Qwen3.8-Flash-Next IQ3_XXS (76 GB) | 15.1 | **19.9** | +31 % |
 | Qwen3.8-Flash-Next IQ3_S (84 GB) | 12.9 | **17.3** | +34 % |
-| Qwen3.5-122B UD-IQ2_XXS (37 GB) | 15.9 | **19.7** | +24 % |
+| Qwen3.5-122B UD-IQ2_XXS (36.6 GB) | 16.0 | **19.7** | +24 % |
 | GLM-5.3-Flash UD-IQ2_XXS (102 GB) | 2.2 | **4.4**; **6.9 with `--mtp`** | 2.0x; 3.1x |
 
 The text is byte-identical to stock on every model checked (Flash-Next IQ2_XS and IQ3_S, the 122B, GLM, also with MTP).
 
-**Which Flash-Next file**: **Q2_0** for speed (as fast as IQ2_XS or faster everywhere, prompts 11-19 % faster, 191 of 202 test tasks right), IQ3_XXS when accuracy matters (193/202, ~10 % slower decode), the **Coder IQ1_M** file for coding agents (an OpenCode session 55.5 s instead of 73.4 s). IQ3_S is not worth it. **GLM-5.3-Flash**: put the model on your fastest drive (+4-13 %) and keep the launcher's default layers; `--mtp` helps chat (+10-23 %) but not code.
+**Which Flash-Next file**: **IQ3_XXS** is the default since 0.3.2 (193 of 202 test tasks right, reads best, popular for coding); **Q2_0** when you want speed (about 10 % faster decode, prompts 11-19 % faster than IQ2_XS, 191/202), the **Coder IQ1_M** file for coding agents (an OpenCode session 55.5 s instead of 73.4 s). IQ3_S is not worth it. **GLM-5.3-Flash**: put the model on your fastest drive (+4-13 %) and keep the launcher's default layers; `--mtp` helps chat (+10-23 %) but not code.
 
 **Coding agents** (recorded OpenCode and Hermes Agent sessions replayed against the server, Flash-Next IQ2_XS):
 

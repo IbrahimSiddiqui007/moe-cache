@@ -193,7 +193,7 @@ Methods, all numbers and every caveat: [docs/RESULTS.md](docs/RESULTS.md). One-p
 
 | File | Size | Decode tok/s | Prompt tok/s (3k / 34k tokens) | Tasks /202 | Use it |
 |---|---|---|---|---|---|
-| **Q2_0** | 66.4 GB | **22.2**; **24.7-25.5** with the async reads (N15, +12 %, RESULTS 67) | **281 / 287**; long prompts **+8-11 %** (N23 pipelined block) and **+2-5 %** at 34k (N22), RESULTS 69; decode **+0.3-2.6 %** with the fused gate+up job (E3, RESULTS 73, every pair, not clean) | 191 | **the faster file**: about 10 % more tokens per second than IQ3_XXS (e.g. for long thinking), 9 GB smaller; vs IQ2_XS +5 % decode, prompts +11 % / +19 % |
+| **Q2_0** | 66.4 GB | **22.2**; **24.7-25.7** with the async reads (N15, +12 %, RESULTS 67) | **281 / 287**; long prompts **+8-11 %** (N23 pipelined block) and **+2-5 %** at 34k (N22), RESULTS 69; decode **+0.3-2.6 %** with the fused gate+up job (E3, RESULTS 73, every pair, not clean) | 191 | **the faster file**: about 10 % more tokens per second than IQ3_XXS (e.g. for long thinking), 9 GB smaller; vs IQ2_XS +5 % decode, prompts +11 % / +19 % |
 | **IQ3_XXS** | 75.8 GB | 19.9 | - | **193** | **recommended default** (since 0.3.2): 3-bit, the most tasks right, reads best for coding; about 10 % slower decode than Q2_0 |
 | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 21.2 (agent session) | - | 189 | coding agents: half the experts (256 of 512); OpenCode session 55.5 s vs 73.4 s on IQ2_XS. General knowledge not checked beyond the task set |
 | IQ2_XS | 68.0 GB | 21.0 (same day as Q2_0; 21.9 in RESULTS 59) | 253 / 242 | 187 | superseded by Q2_0 (older rows above that say IQ2_XS were measured on IQ2_XS) |
@@ -247,7 +247,7 @@ on a model bigger than your RAM and writes a report to paste into a [Benchmark r
 It only measures, and the report holds no prompts, answers or names. Recipe: [docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md). Reports from other machines are very welcome.
 
 The full benchmark tool (Linux) (web page, standard protocol, many-model matrix, quality harness) now lives in its own repository: [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark).
-Clone it next to this folder (or set `MOE_CACHE_DIR`) and it finds the plugin and the planner by itself.
+Clone it next to this folder (or set `MOE_CACHE_DIR` for the benchmark tool) and it finds the plugin and the planner by itself.
 
 ## How it works
 
@@ -333,7 +333,7 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 **Does it work with Ollama or LM Studio?** Not directly: both ship their own bundled copy of llama.cpp, and the plugin needs a `llama-server` built with shared ggml libraries from a tested commit. Their model files are plain GGUF, so you can run the same file with `moe-cache-server` (see "Ollama user?" above) and point any OpenAI-compatible client at `http://localhost:8080/v1`.
 
-**On Windows llama-server uses a lot of RAM with GPU layers, should I add `--no-mmap`, `--mlock` or `--moe-cache-mib`?** No. llama.cpp's Windows loader leaves the model-file pages of the GPU tensors in llama-server's working set (about as much RAM as the GPU layers; RESULTS 56 I37). It is not the GPU driver. The plugin releases those pages at the first graph (the log says "released N GiB of model-file pages from the working set"). `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. Keep the page file system-managed: the cache costs no commit, but Vulkan's GPU memory does. Details: [docs/WINDOWS.md](docs/WINDOWS.md), "Windows: where the RAM goes".
+**On Windows llama-server uses a lot of RAM with GPU layers, should I add `--no-mmap`, `--mlock` (newer llama.cpp: `--load-mode none` / `mlock`) or `--moe-cache-mib`?** No. llama.cpp's Windows loader leaves the model-file pages of the GPU tensors in llama-server's working set (about as much RAM as the GPU layers; RESULTS 56 I37). It is not the GPU driver. The plugin releases those pages at the first graph (the log says "released N GiB of model-file pages from the working set"). `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. Keep the page file system-managed: the cache costs no commit, but Vulkan's GPU memory does. Details: [docs/WINDOWS.md](docs/WINDOWS.md), "Windows: where the RAM goes".
 
 **Mac?** No. The plugin uses Linux (and Windows) memory and direct-I/O calls, and on Apple Silicon the GPU and CPU share one memory, which changes the problem.
 

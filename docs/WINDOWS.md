@@ -8,8 +8,8 @@ helps with models bigger than RAM.
 
 | Piece | What worked | Notes |
 |---|---|---|
-| llama.cpp | the official release zip **b11669, Vulkan** (`llama-b11669-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was 2.4x slower in our test (RESULTS 67; we ran it without AMD's HIP SDK) |
-| The plugin | `ggml-moe-cache-api3.dll` (api3 for ggml 0.26/0.27, api2 for 0.25) | from the kit, or build it on Linux: `GGML_API=3 ./build.sh --windows` (mingw-w64) -> `build/win/ggml-moe-cache.dll` |
+| llama.cpp | the official release zip, **Vulkan** (tested b11669 and b11966; newer builds are supported, `moe_cache.py update --check` shows the newest) (`llama-b11669-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was 2.4x slower in our test (RESULTS 67; we ran it without AMD's HIP SDK) |
+| The plugin | `ggml-moe-cache-api3.dll` (api3 for ggml 0.26 and newer, api2 for 0.25) | from the kit, or build it on Linux: `GGML_API=3 ./build.sh --windows` (mingw-w64) -> `build/win/ggml-moe-cache.dll` |
 | Python 3 | 3.8 or newer, standard library only | run the launcher with `python` |
 | This repository (or the kit with `moe_cache.py`) | `C:\moe-cache` | the launcher needs the `planner\`, `ui\` and `tools\` folders: keep the whole repository |
 | A GGUF model | any MoE model | A MoE model bigger than your RAM is what moe-cache is for. Since 0.3.2 the launcher watches Windows' memory budget (commit) and shrinks its own caches to fit; close browsers and games first and keep the page file on "system managed". Not sure which model? `python bin\moe_cache.py pick` |
@@ -168,8 +168,8 @@ from 16.1 to 9.6 GiB, a 14 GB one held 14.9 GiB (decode 1.52 -> 2.02 tok/s, RESU
 
 | Suggestion often made | What it does here |
 |---|---|
-| `--no-mmap` | loads the whole model into RAM: impossible for a model bigger than RAM |
-| `--mlock` | pins memory so Windows cannot page it out: less RAM for everything else |
+| `--no-mmap` (newer llama.cpp: `--load-mode none`) | loads the whole model into RAM: impossible for a model bigger than RAM |
+| `--mlock` (newer llama.cpp: `--load-mode mlock`) | pins memory so Windows cannot page it out: less RAM for everything else |
 | `--moe-cache-mib N` | this is **llama.cpp's GPU expert cache**, not moe-cache's RAM cache, and it is not available with the plugin on Windows (`--gpu-cache` needs `LD_PRELOAD`). On this Vulkan PC it aborts at load above about 5.9 GiB even without the plugin (each cache bank is one tensor over Vulkan's ~2 GiB buffer limit) and, where it loads, it was slower (RESULTS 59). moe-cache's cache size follows `--ram` (the launcher sets `MOE_CACHE_SIZE_GIB` itself) |
 | "the plugin's cache shrink causes thrashing" | the other way round: when the rest of llama-server's memory grows, the cache shrinks to stay under the memory limit, so that Windows does not page; the cost is more SSD reads (a lower hit rate), and the log says so ("the expert cache shrank from ..."). With the file-view cache this no longer happens for commit (1 resize per request instead of 226 on IQ3_XXS, RESULTS 59) |
 | q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | saves VRAM (the KV part only), not RAM; it is approximate (KL 0.0045 on the laptop's CUDA, RESULTS 53; **0.0120 on this PC's Vulkan**, `--fast` as shipped 0.0145, RESULTS 61 R11), so it is part of `--fast` (the owner kept it there), not the default. Measured on this desktop at context 8192 (RESULTS 60, R11): decode 22.01 vs 22.12 tok/s, a 2,950-token prompt 170.6 vs 164.6: no speed difference; it matters only for memory at long agent contexts |
