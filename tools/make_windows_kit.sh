@@ -8,6 +8,7 @@
 #   README_WINDOWS.txt            what to install and the first commands
 #   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 / 0.27 (b11669 and newer); -api2.dll for ggml 0.25
 #   bin\ planner\ ui\ tools\ profiles\ docs\ LICENSE   the launcher, the page and what they read (Python 3.8+, standard library only)
+#   llama\                        the official llama.cpp Vulkan build (b11966, unmodified, MIT), so a friend downloads one zip
 set -e
 cd "$(dirname "$0")/.."
 V="$1"; [ -n "$V" ] || { echo "usage: tools/make_windows_kit.sh VERSION"; exit 1; }
@@ -33,6 +34,20 @@ cp -r "$X/planner" "$X/ui" "$X/profiles" "$K/"
 cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$X"/tools/loop_check.py "$K/tools/"
 cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$X"/docs/SHARE_YOUR_NUMBERS.md "$X"/docs/TROUBLESHOOTING.md "$X"/docs/EXACTNESS.md "$K/docs/"   # WINDOWS.md links WINDOWS_TEST.md
 cp "$X/LICENSE" "$X/CHANGELOG.md" "$K/"
+# one download for friends: the official, unmodified llama.cpp Vulkan build in llama\ (MIT; its licence is copied next to it). Pinned and checked
+# against the release asset's sha256; MOE_CACHE_KIT_NO_LLAMA=1 builds the kit without it (the launcher then searches C:\llama and the rest as before)
+LLAMA_TAG=b11966; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=977dc4569c0a3f644c5855f1bb836b66e45fe6aefbe739adac0928ea607bebf9
+if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ]; then
+  Z="${LLAMA_ZIP_CACHE:-$X}/$LLAMA_ZIP"
+  [ -f "$Z" ] || curl -fsSL -o "$Z" "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_ZIP"
+  echo "$LLAMA_SHA  $Z" | sha256sum -c - >/dev/null || { echo "FAIL: $LLAMA_ZIP sha256 does not match the release asset"; exit 1; }
+  mkdir -p "$K/llama"
+  python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$Z" "$K/llama"
+  [ -f "$K/llama/llama-server.exe" ] || { echo "FAIL: no llama-server.exe in $LLAMA_ZIP"; exit 1; }
+  curl -fsSL -o "$K/llama/LICENSE-llama.cpp.txt" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$LLAMA_TAG/LICENSE"
+  printf 'Official llama.cpp %s Vulkan build for Windows x64, unmodified (%s, sha256 %s), from\r\nhttps://github.com/ggml-org/llama.cpp/releases/tag/%s\r\nLicence: MIT (LICENSE-llama.cpp.txt). moe-cache finds it here; set LLAMA_SERVER to use another build.\r\n' \
+    "$LLAMA_TAG" "$LLAMA_ZIP" "$LLAMA_SHA" "$LLAMA_TAG" > "$K/llama/README-moe-cache.txt"
+fi
 # every module of the kit's bin\ imports from there alone (nothing from the repository): catches a launcher file left out of the copy above
 ( cd "$K/bin" && XDG_CACHE_HOME="$X/xdg" python3 -I -c "import sys; sys.path.insert(0, '.'); import moe_cache, moe_cache_ui, moe_cache_on_demand, moe_cache_pick, moe_cache_pack" ) \
   || { echo "FAIL: a launcher module does not import from the kit's bin\\ (a file missing from the copy?)"; exit 1; }
