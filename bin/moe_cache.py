@@ -1501,6 +1501,7 @@ class Machine:
     def load_env(self, ls, lib, method="auto"): return load_env(ls, lib, method)
     def vk_cache_cap(self, ls, model, listing=None): return vk_cache_cap(ls, model, listing)
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
+    def lib_exists(self, lib): return os.path.isfile(lib)
 
     def free_vram_bytes(self):
         sys.path.insert(0, os.path.join(HERE, "planner"))
@@ -1625,11 +1626,16 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
     notes = []
     _NOTES.append(notes)
     _QUIET[0] += 1 if quiet else 0
+    old_umask = None
+    if quiet and not WINDOWS:
+        old_umask = os.umask(0o077)       # the plan builder sets 0077 for the files a launch writes; a caller that only describes a launch keeps its own
     try:
         plan = _launch_plan(a, extra, argv, machine)
     finally:
         _NOTES.remove(notes)
         _QUIET[0] -= 1 if quiet else 0
+        if old_umask is not None:
+            os.umask(old_umask)
     plan.notes = notes
     return plan
 
@@ -1680,7 +1686,7 @@ def _launch_plan(a, extra, argv, machine):
         if want and have and want != have:
             say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load; "
                 + api_advice(want), err=True)
-        if not os.path.isfile(lib):
+        if not machine.lib_exists(lib):
             if os.environ.get("MOE_CACHE_LIB"):
                 raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
             raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
@@ -1709,6 +1715,7 @@ def _launch_plan(a, extra, argv, machine):
                 a.vram = f"{capped:.2f}"
     ncmoe_user = a.n_cpu_moe
     ncmoe = a.n_cpu_moe
+    planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
     if ncmoe is None:
         p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
         if a.ram or machine.mem_cap():
@@ -1717,10 +1724,12 @@ def _launch_plan(a, extra, argv, machine):
         r = None
         try:
             r = machine.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-            ncmoe = str(json.loads(r.stdout)["n_cpu_moe"])
+            planner_info = json.loads(r.stdout)
+            ncmoe = str(planner_info["n_cpu_moe"])
         except Exception as e:
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
             why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
+            planner_info, planner_error = None, why or str(e)
             say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
     # API key (DECISION_LLAMA_SERVER_KEY, option C): a key given on our command line or after `--` goes to llama-server through the environment
     # (LLAMA_API_KEY), not its argument list; agent mode and --project always get the stable per-user key. Plain chat servers get none, but a CORS
@@ -2022,6 +2031,7 @@ def _launch_plan(a, extra, argv, machine):
     plan.cache_ram, plan.profile, plan.alias, plan.slotdir, plan.host = cram, profile, alias, slotdir, host
     plan.api_key, plan.cmd, plan.env, plan.key_env, plan.win_limit = api_key, cmd, env, key_env, win_limit
     plan.machine = machine
+    plan.tuned, plan.planner_info, plan.planner_error = tuned, planner_info, planner_error
     return plan
 
 

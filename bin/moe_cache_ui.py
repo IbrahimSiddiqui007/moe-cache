@@ -223,24 +223,36 @@ def system_info():
 
 # ---- the plan and why (I33): the same rules and tools as the launcher ----
 
-def run_planner(path, ctx, ram, vram, kv="f16"):
-    """planner/plan.py --json, exactly as the launcher calls it; raises with the planner's own last line on failure."""
-    p = [mc.python_cmd(), os.path.join(HERE, "planner", "plan.py"), path, "--ctx", str(ctx), "--kv", kv, "--json"]
-    if ram:
-        p += ["--ram-gib", mc.ram_gib(ram)]       # ram is GB, the planner takes GiB
-    if vram:
-        p += ["--vram-gib", str(vram)]
-    r = subprocess.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+class PagePlanMachine(mc.Machine):
+    """The machine for plans built inside the page: the plugin build need not exist yet (the page only describes what a start would do) and
+    `llama-server --list-devices` is asked once per llama-server for 30 s, not once per model of the list."""
+    _devices = {}
+
+    def lib_exists(self, lib):
+        return True
+
+    def list_devices(self, ls):
+        t, text = self._devices.get(ls, (0.0, ""))
+        if time.time() - t > 30:
+            text = mc.list_devices(ls)
+            self._devices[ls] = (time.time(), text)
+        return text
+
+
+def launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls):
+    """The launcher's own plan for these settings (XA-2): the same arguments the Start button passes, planned quietly in this process with
+    mc.launch_plan; nothing is started or written. Raises RuntimeError with the planner's own words when the model cannot be planned."""
+    s = {"model": path, "ctx": ctx, "ram": ram, "vram": vram, "mode": mode, "agent": agent, "engine": engine, "mtp": mtp, "llama_server": ls}
+    args = server_args(s)
+    i = args.index("--")
+    a, extra, argv = mc.parse_server(args[:i] + ["--plan-json"] + args[i:])
     try:
-        return json.loads(r.stdout)
-    except ValueError:
-        raise RuntimeError((r.stderr.strip().splitlines() or ["planner failed"])[-1])
-
-
-def run_tuner(path, ctx, vram, kv_q8):
-    sys.path.insert(0, os.path.join(HERE, "planner"))
-    from gguf_plan import tune
-    return tune(path, ctx, free=float(vram) * GIB if vram else None, want_cache=False, kv_q8=kv_q8)
+        plan = mc.launch_plan(a, extra, argv, machine=PagePlanMachine(), quiet=True)
+    except SystemExit as e:
+        raise RuntimeError(str(e.code))
+    if plan.planner_error or not plan.planner_info:
+        raise RuntimeError(plan.planner_error or "planner failed")
+    return plan
 
 
 _MTP_SERVER = {}
@@ -438,7 +450,6 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     if engine == "stock":
         mode = "exact"                             # --fast and --hybrid need the plugin
     stock_fits, size, avail = mc.decide(path, ram)     # the launcher's own stock-or-plugin rule: does it fit?
-    stock = mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]   # what it will run
     size = size or 0
     gpu = _GPU["gpu"] if WINDOWS else None
     if vram is None and gpu and gpu.get("free") and not gpu.get("integrated"):
@@ -453,23 +464,21 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     else:
         R.append("free RAM unknown: set a RAM budget")
     try:
-        plan = run_planner(path, ctx, ram, vram, kv="q8_0" if mode == "fast" else "f16")
+        lp = launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls)     # engine, GPU layers, micro-batch, KV: what the launcher would start with
+        plan, tuned, stock = lp.planner_info, lp.tuned, lp.engine == "stock"
     except Exception as e:
+        stock = mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
         out.update(kind="stock" if stock else "error", verdict=("stock llama-server" + ("" if stock_fits else ", as asked (--stock)")) if stock else "cannot plan this model")
         R.append(f"planner: {e}" + (" (not a MoE model: moe-cache has nothing to manage; llama-server runs it stock)" if "MoE" in str(e) else ""))
         out["summary"] = ("Stock llama-server: this is not a MoE model, so moe-cache has nothing to manage." if "MoE" in str(e) and stock
                           else summary(out, mode, engine))
         return out
-    try:
-        tuned = run_tuner(path, ctx, vram, mode == "fast")
-    except Exception:
-        tuned = None
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))
-    ncmoe = tuned["n_cpu_moe"] if tuned and not no_vram else plan["n_cpu_moe"]       # the launcher's choice with --gpu-cache off, --ub auto
+    ncmoe = int(lp.n_cpu_moe) if str(lp.n_cpu_moe).isdigit() else plan["n_cpu_moe"]       # the launcher's choice
     layers = plan["layers"]
     gpu_layers = max(0, layers - min(ncmoe, layers))
     out["numbers"] = {"layers": layers, "gpu_expert_layers": gpu_layers, "n_cpu_moe": ncmoe, "cache_GiB": plan["cache_GiB"],
-                      "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": tuned["ub"] if tuned else None,
+                      "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": int(lp.ub) if str(lp.ub).isdigit() else (tuned["ub"] if tuned else None), "kv_cache": lp.kv,
                       "experts": plan["experts"], "used": plan["used"], "arch": plan["arch"]}
     if stock and not stock_fits:
         out.update(kind="stock", verdict="runs stock llama-server, as asked (bigger than free RAM; to compare)")
