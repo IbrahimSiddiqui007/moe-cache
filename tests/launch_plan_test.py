@@ -3,6 +3,7 @@
 move into one LaunchPlan. A matrix of option sets runs in-process on two FAKE machines (a Linux box with an 8 GB NVIDIA card, a Windows PC with a 16 GB AMD
 card); every outside fact (memory, GPU list, commit, driver, CPU topology, the planner and llama-server child processes) is replaced, so the output depends
 only on the launcher's code and on the model's GGUF header.
+   python3 tests/launch_plan_test.py                       the same on a synthetic 18 GB MoE header (sparse file, no download): tests/launch_plan_golden_synth.json
    python3 tests/launch_plan_test.py MODEL.gguf            compare with tests/launch_plan_golden.json (skipped when the model is not the recorded one)
    python3 tests/launch_plan_test.py MODEL.gguf --record   write the golden file from the current code
 The recorded model is Qwen3.6-35B-A3B (Ollama blob sha256-d372de8e...): reading its header is cheap, nothing is loaded."""
@@ -70,6 +71,41 @@ CASES = [
     ("no_ram_arg", [], []),
     ("profile_name", ["--ram", "12", "--profile", "work"], []),
 ]
+
+
+def make_synthetic_model(path, n_layers=40, n_expert=256, ne0=2048, ne1=512):
+    """A MoE GGUF with a real header and no data: the file is sparse (its size is what the launcher's decisions read), 40 layers x 3 expert tensors of
+    [2048, 512, 256] Q4_K (18 GB in all, like a mid-size MoE), so every decision (fits or not, GPU layers, micro-batch) can be recorded without a download."""
+    import struct
+    def string(x):
+        b = x.encode()
+        return struct.pack("<Q", len(b)) + b
+    infos, off = [], 0
+    def add(name, dims, ty, nbytes):
+        nonlocal off
+        infos.append((name, dims, ty, off))
+        off += (nbytes + 31) // 32 * 32
+    add("token_embd.weight", [ne0, 32000], 1, ne0 * 32000 * 2)
+    for l in range(n_layers):
+        add(f"blk.{l}.attn_norm.weight", [ne0], 0, ne0 * 4)
+        add(f"blk.{l}.attn_q.weight", [ne0, ne0], 12, ne0 // 256 * 144 * ne0)
+        add(f"blk.{l}.ffn_gate_inp.weight", [ne0, n_expert], 0, ne0 * n_expert * 4)
+        for nm in ("ffn_gate_exps", "ffn_up_exps", "ffn_down_exps"):
+            add(f"blk.{l}.{nm}.weight", [ne0, ne1, n_expert], 12, ne0 // 256 * 144 * ne1 * n_expert)
+    kv = [("general.architecture", 8, string("qwen35moe")), ("general.name", 8, string("synthetic-moe")),
+          ("qwen35moe.block_count", 4, struct.pack("<I", n_layers)), ("qwen35moe.expert_count", 4, struct.pack("<I", n_expert)),
+          ("qwen35moe.expert_used_count", 4, struct.pack("<I", 8)), ("qwen35moe.context_length", 4, struct.pack("<I", 262144)),
+          ("qwen35moe.embedding_length", 4, struct.pack("<I", ne0)), ("qwen35moe.attention.head_count", 4, struct.pack("<I", 16)),
+          ("qwen35moe.attention.head_count_kv", 4, struct.pack("<I", 2))]
+    head = b"GGUF" + struct.pack("<IQQ", 3, len(infos), len(kv))
+    for k, t, v in kv:
+        head += string(k) + struct.pack("<I", t) + v
+    for name, dims, ty, o in infos:
+        head += string(name) + struct.pack("<I", len(dims)) + b"".join(struct.pack("<Q", d) for d in dims) + struct.pack("<IQ", ty, o)
+    head += b"\0" * ((-len(head)) % 32)
+    with open(path, "wb") as f:
+        f.write(head)
+        f.truncate(len(head) + off)        # sparse: the tensor data is never written
 
 
 def fake_machine(m, tmp):
@@ -209,9 +245,15 @@ def fingerprint(model):
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     record = "--record" in sys.argv
-    if not args:
-        raise SystemExit(__doc__)
-    model = args[0]
+    global GOLDEN
+    synth_dir = None
+    if args:
+        model = args[0]
+    else:                                      # no model: the synthetic one (CI, any machine); its golden file is tests/launch_plan_golden_synth.json
+        synth_dir = tempfile.mkdtemp(prefix="launch-plan-")
+        model = os.path.join(synth_dir, "synthetic-moe.gguf")
+        make_synthetic_model(model)
+        GOLDEN = os.path.join(HERE, "tests", "launch_plan_golden_synth.json")
     results = {}
     with tempfile.TemporaryDirectory() as tmp:
         for mname in MACHINES:
@@ -227,6 +269,12 @@ def main():
                 r = run_case(mname, opts, extra, model, tmp, flag="--plan-json")
                 base = results[f"{mname}/{cname}"]
                 want = [l for l in (base["stdout"] + base["stderr"]).splitlines() if l.strip()]
+                if base["rc"] not in (0, None):      # a refusal (SystemExit) is the same refusal, with the same message, and no plan
+                    msg = lambda x: [l for l in x["stderr"].splitlines() if l.startswith("SystemExit")]
+                    if r["rc"] != base["rc"] or msg(r) != msg(base):
+                        consistent_bad += 1
+                        print("  FAIL", f"{mname}/{cname}", "--plan-json refuses differently from --dry-run")
+                    continue
                 try:
                     plan = json.loads(r["stdout"])
                     got = [l.replace(tmp, "<TMP>").replace(model, "<MODEL>").replace(HERE, "<HERE>") for l in plan["dry_run_lines"]]
@@ -273,4 +321,10 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        rc = main()
+    finally:
+        import shutil
+        for d in [d for d in os.listdir(tempfile.gettempdir()) if d.startswith('launch-plan-')]:
+            shutil.rmtree(os.path.join(tempfile.gettempdir(), d), ignore_errors=True)
+    sys.exit(rc)
