@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -44,6 +45,7 @@
 #endif
 #include <filesystem>
 #include <condition_variable>
+#include <cstddef>
 #include <deque>
 #include <fstream>
 #if defined(__x86_64__)

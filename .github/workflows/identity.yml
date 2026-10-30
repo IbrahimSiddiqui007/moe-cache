@@ -378,6 +378,13 @@ jobs:
             { echo "FAIL: the mutant did not refuse"; grep "moe-cache:" mut_abi/plugin.log | head -5; exit 1; }
           if grep -q "does not match the ggml headers" ident_exec/plugin.log; then echo "FAIL: the real build refused"; exit 1; fi
           echo "OK: the layout check refuses a mismatch and passes the real build"
+          # struct-layout probe (ggml_struct_layout_mismatch): a build that expects another slot for ggml_backend_buffer_type.device must not register a device
+          MOE_CACHE_CXXFLAGS=-DMOE_CACHE_TEST_MUTANT_LAYOUT BUILD_DIR=build-mut-lay ./build.sh --portable
+          MOE_CACHE_LIB=$PWD/build-mut-lay/libggml-moe-cache.so IDENT_KEEP=mut_lay tests/identity.sh granite.gguf --tokens 8 --ctx 2048 --n-cpu-moe 999 | tee lay_mutant.txt || true
+          grep -q "the running ggml reads ggml_backend_buffer_type.device at slot" mut_lay/plugin.log ||
+            { echo "FAIL: the layout mutant did not refuse"; grep "moe-cache:" mut_lay/plugin.log | head -5; exit 1; }
+          if grep -q "changed a struct without a backend API bump" ident_exec/plugin.log; then echo "FAIL: the real build failed the struct-layout probe"; exit 1; fi
+          echo "OK: the struct-layout probe refuses a mismatch and passes the real build"
 
       - name: Reads straight into place, each read's range poisoned while it is in flight (what Windows shows other threads), executor byte-checked
         env:
