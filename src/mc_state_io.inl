@@ -352,10 +352,10 @@
         std::string j;
         {
             std::lock_guard<std::mutex> lk(mu);
-            char b[1800];
+            char b[2200];
             snprintf(b, sizeof(b), "{\"hits\":%llu,\"misses\":%llu,\"hits_dec\":%llu,\"misses_dec\":%llu,\"read_bytes\":%llu,\"evictions\":%llu,\"evict_age_sum\":%llu,"
                      "\"resident_bytes\":%llu,\"budget\":%llu,\"ns_prep\":%llu,\"ns_read\":%llu,\"ns_cpu\":%llu,\"ns_total\":%llu,\"graphs\":%llu,"
-                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu,\"policy\":\"%s\",\"cls_promotions\":%llu,\"cls_demotions\":%llu",
+                     "\"direct\":%llu,\"bounce\":%llu,\"repack\":%llu,\"gpu_segments\":%llu,\"gpu_split\":%llu,\"gpu_up_bytes\":%llu,\"fallbacks\":%llu,\"shrinks\":%llu,\"grows\":%llu,\"pf_issued\":%llu,\"pf_used\":%llu,\"pf_wasted\":%llu,\"pf_late\":%llu,\"pf_pred_total\":%llu,\"pf_pred_hit\":%llu,\"pf_skipped\":%llu,\"sibling_loads\":%llu,\"small_mapped\":%llu,\"small_over\":%llu,\"policy\":\"%s\",\"cls_promotions\":%llu,\"cls_demotions\":%llu,\"rb_rounds\":%llu,\"rb_reads\":%llu,\"rb_bytes\":%llu,\"rb_swaps\":%llu,\"rb_cancelled\":%llu,\"rb_dec_hits\":%llu,\"rb_dec_miss\":%llu,\"rb_pre_hits\":%llu,\"rb_pre_miss\":%llu",
                      (unsigned long long) hits, (unsigned long long) misses, (unsigned long long) hits_dec, (unsigned long long) misses_dec, (unsigned long long) bytes,
                      (unsigned long long) evictions, (unsigned long long) evict_age_sum, (unsigned long long) resident_bytes, (unsigned long long) budget,
                      (unsigned long long) ns_prep, (unsigned long long) ns_read, (unsigned long long) ns_cpu, (unsigned long long) ns_total, (unsigned long long) graphs,
@@ -363,7 +363,9 @@
                      (unsigned long long) gpu_split_blocks, (unsigned long long) gpu_up_bytes, (unsigned long long) read_fallbacks, (unsigned long long) tune_shrinks, (unsigned long long) tune_grows,
                      (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
                      (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
-                     (unsigned long long) small_mapped, (unsigned long long) small_over, classlru ? "classlru" : "lru", (unsigned long long) cls_promotions, (unsigned long long) cls_demotions);
+                     (unsigned long long) small_mapped, (unsigned long long) small_over, classlru ? "classlru" : "lru", (unsigned long long) cls_promotions, (unsigned long long) cls_demotions,
+                     (unsigned long long) rb_rounds, (unsigned long long) rb_reads, (unsigned long long) rb_bytes_read, (unsigned long long) rb_swaps, (unsigned long long) rb_cancelled,
+                     (unsigned long long) rb_dec_hits, (unsigned long long) rb_dec_miss, (unsigned long long) rb_pre_hits, (unsigned long long) rb_pre_miss);
             j = b;
             j += ",\"pack\":[" + std::to_string(pack_reads.load()) + "," + std::to_string(pack_bytes.load()) + "," + std::to_string(pack_slices.load()) + "," + std::to_string(pack_fallbacks.load()) + "]" + ",\"exec_fused\":" + std::to_string(exec_fused.load()) + ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
                  ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases) +
@@ -417,6 +419,14 @@
     }
 
     void stop_threads() {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            rb_stop = true;
+        }
+        rb_cv.notify_all();
+        if (rb_th.joinable()) {
+            rb_th.join();
+        }
         {
             std::lock_guard<std::mutex> lk(rq_mu);
             rq_stop = true;
@@ -598,11 +608,12 @@
                     fprintf(stderr, "moe-cache: seg-times: gaps %s: %llu, %.2fs\n", bn[b], (unsigned long long) gap_b_n[b].load(), gap_b_ns[b] / 1e9);
                 }
             }
-            fprintf(stderr, "moe-cache: graphs=%llu groups=%llu ops=%llu hits=%llu misses=%llu (hit %.1f%%) read=%.1f MB evictions=%llu resident=%.2f GiB%s%s\n",
+            fprintf(stderr, "moe-cache: graphs=%llu groups=%llu ops=%llu hits=%llu misses=%llu (hit %.1f%%) read=%.1f MB evictions=%llu resident=%.2f GiB%s%s%s\n",
                     (unsigned long long) graphs, (unsigned long long) groups, (unsigned long long) ops, (unsigned long long) h, (unsigned long long) m,
                     h + m ? 100.0 * h / (h + m) : 0.0, bytes / 1e6, (unsigned long long) evictions, resident_bytes / (double) (1u << 30),
                     classlru ? (" | policy classlru (" + std::to_string(nclass) + " classes, half-life " + std::to_string((int) classlru_hl) + " tokens): promotions " +
                                 std::to_string(cls_promotions) + ", demotions " + std::to_string(cls_demotions)).c_str() : "",
+                    rb_on ? rb_summary().c_str() : "",
                     auto_mode ? (std::string(" | auto: final budget ") + std::to_string(budget / 1073741824.0).substr(0, 5) + " GiB, shrinks " + std::to_string(tune_shrinks) + ", grows " + std::to_string(tune_grows)).c_str() : "");
         }
     }

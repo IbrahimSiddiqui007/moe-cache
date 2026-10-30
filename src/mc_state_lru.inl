@@ -30,7 +30,8 @@
         classlru = cl;
         nclass = cl ? std::max(2, std::min(MAXCLS, classes)) : 1;
         classlru_hl = std::max(1.0, half_life);
-        if (cl) {
+        track_crf = cl || rb_on;
+        if (track_crf) {
             const size_t n = (size_t) std::min(65536.0, classlru_hl * 24.0 + 1.0);
             decay_tab.resize(n);
             for (size_t i = 0; i < n; i++) { decay_tab[i] = (float) std::exp2(-(double) i / classlru_hl); }
@@ -60,6 +61,12 @@
         if (classlru) {
             score_use(s, in_list);
         } else {
+            if (track_crf && cur_decode && !cur_scan) {      // the idle rebalance wants the counts, the list order stays plain LRU
+                node_t & n = nodes[s];
+                const uint32_t dt = tok - n.crf_tok;
+                n.crf = n.crf * (dt < decay_tab.size() ? decay_tab[dt] : 0.0f) + 1.0f;
+                n.crf_tok = tok;
+            }
             if (in_list) { unlink(s); }
             push_mru(s);
         }
@@ -198,7 +205,7 @@
     size_t prepare_group(const std::vector<int> & tidx, const std::vector<int> & cnt, bool async = false) {
         std::unique_lock<std::mutex> lk(mu);
         epoch++;
-        if (classlru && cur_decode) {
+        if (track_crf && cur_decode) {
             const int dl = tensors[tidx[0]]->layer;        // layers ascend within a decode token: a lower layer than the last one starts the next token
             if (dl >= 0) {
                 if (dl < last_dec_layer) { tok++; }
@@ -219,6 +226,7 @@
             }
         }
         groups++;
+        (cur_decode ? g_saw_dec : g_saw_pre) = true;
         if (auto_mode && (groups % (async ? 4 : 32)) == 1) {
             tune();
         }
@@ -305,6 +313,7 @@
                 if (n.resident) {
                     hits++;
                     if (cur_decode) { hits_dec++; }
+                    if (cur_decode ? rb_armed_dec : rb_armed_pre) { (cur_decode ? rb_dec_hits : rb_pre_hits)++; }
                     if (n.prefetched) {
                         n.prefetched = false;
                         pf_used++;
@@ -319,6 +328,7 @@
                 }
                 misses++;
                 if (cur_decode) { misses_dec++; }
+                if (cur_decode ? rb_armed_dec : rb_armed_pre) { (cur_decode ? rb_dec_miss : rb_pre_miss)++; }
                 bool fits = true;
                 while (resident_bytes + ti.nb2 > budget) {
                     int v = pick_victim();
