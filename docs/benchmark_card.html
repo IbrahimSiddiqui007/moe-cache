@@ -110,6 +110,9 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
           <tr><td>Qwen3.5-122B UD-IQ2_XXS<span class="sub">36.6 GB, drive D:, re-measured 2026-10-28; replaces 13.88 vs 16.13 (+16 %), which ran during a slowdown of the whole PC</span></td><td class="n">12</td><td class="n">15.95</td><td class="n">19.73</td><td class="n up">+24 %</td></tr>
           <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB; moe-cache: ABBA on drive D:, launcher defaults (RESULTS 62); stock: one run on drive C:, not yet re-run on D:</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">5.89</td><td class="n up">2.7×</td></tr>
           <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">one run; drafts accepted 61–100 %</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">6.92</td><td class="n up">3.1×</td></tr>
+          <tr><td>Nemotron 3.5 Bolt 74B-A9B<span class="sub">22.0 GB, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced here to compare (one run each)</span></td><td class="n">–</td><td class="n">27.9</td><td class="n">22.8</td><td class="n">−18 %</td></tr>
+          <tr><td>Qwen3.6-35B-A3B Q4_K_M<span class="sub">20 GB, <b>fits in RAM</b>: stock is the right choice; moe-cache forced (two runs each, RESULTS 58)</span></td><td class="n">–</td><td class="n">46.06</td><td class="n">45.60</td><td class="n">−1 %</td></tr>
+          <tr><td>Qwen3.6-35B, moe-cache with MTP<span class="sub">stock with MTP: 68.6 (+49 %); about 78 % of drafts accepted</span></td><td class="n">–</td><td class="n">46.06</td><td class="n">70.25</td><td class="n up">+53 %</td></tr>
         </tbody>
       </table>
     </div>
@@ -306,16 +309,21 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     { m: "Flash-Next IQ3_XXS", s: "76 GB", stock: 15.14, mc: 19.86 },
     { m: "Flash-Next IQ3_S", s: "83.6 GB", stock: 12.92, mc: 17.28 },
     { m: "Qwen3.5-122B IQ2_XXS", s: "36.6 GB", stock: 15.95, mc: 19.73 },
-    { m: "GLM-5.3-Flash IQ2_XXS", s: "102 GB", stock: 2.21, mc: 5.89, mtp: 6.92 }
+    { m: "GLM-5.3-Flash IQ2_XXS", s: "102 GB", stock: 2.21, mc: 5.89, mtp: 6.92 },
+    { m: "Nemotron 3.5 Bolt 74B", s: "22 GB, fits", stock: 27.9, mc: 22.8 },
+    { m: "Qwen3.6-35B Q4_K_M", s: "20 GB, fits", stock: 46.06, mc: 45.60, mtp: 70.25 }
   ];
   var NS = "http://www.w3.org/2000/svg", svg = document.getElementById("bars"), tip = document.getElementById("tip"), box = document.getElementById("chart");
-  var W = 860, left = 190, right = 60, top = 8, max = 25, bh = 14, gap = 2;
+  var top_v = Math.max.apply(null, data.map(function (d) { return Math.max(d.stock, d.mc, d.mtp || 0); }));
+  var step = top_v > 40 ? 10 : 5, max = Math.ceil(top_v * 1.05 / step) * step;      // the axis grows with the fastest bar
+  var W = 860, left = 190, right = 60, top = 8, bh = 14, gap = 2;
   var x = function (v) { return left + (W - left - right) * v / max; };
   function el(n, a, txt) { var e = document.createElementNS(NS, n); for (var k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; }
   var rowH = 74, y0 = top;
   var H = top + data.length * rowH + 30;
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
-  [0, 5, 10, 15, 20, 25].forEach(function (t) {
+  var ticks = []; for (var t0 = 0; t0 <= max; t0 += step) ticks.push(t0);
+  ticks.forEach(function (t) {
     el("line", { x1: x(t), x2: x(t), y1: top, y2: H - 26, stroke: "var(--rule)", "stroke-width": 1 });
     el("text", { x: x(t), y: H - 8, "text-anchor": "middle", "font-size": 12, fill: "var(--ink-3)" }, t);
   });
@@ -337,7 +345,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   data.forEach(function (d, i) {
     var y = y0 + i * rowH + 6;
     el("text", { x: 0, y: y + 12, "font-size": 14, "font-weight": 600, fill: "var(--ink)" }, d.m);
-    el("text", { x: 0, y: y + 30, "font-size": 12, fill: "var(--ink-3)" }, d.s + " · " + (d.mc / d.stock >= 1.95 ? (d.mc / d.stock).toFixed(1) + "×" : "+" + Math.round((d.mc / d.stock - 1) * 100) + " %"));
+    el("text", { x: 0, y: y + 30, "font-size": 12, fill: "var(--ink-3)" }, d.s + " · " + (d.mc / d.stock >= 1.95 ? (d.mc / d.stock).toFixed(1) + "×" : (d.mc >= d.stock ? "+" : "−") + Math.abs(Math.round((d.mc / d.stock - 1) * 100)) + " %"));
     bar(y, d.stock, "var(--stock)", d.m + ", stock");
     bar(y + bh + gap, d.mc, "var(--plugin)", d.m + ", moe-cache");
     if (d.mtp) bar(y + 2 * (bh + gap), d.mtp, "var(--mtp)", d.m + ", moe-cache + MTP");
