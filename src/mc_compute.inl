@@ -116,6 +116,22 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
         if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && !stock_uses_tiled(nd)) {
             st = exec_run_nodes(c, cg, batch);
             batch.clear();
+            const int j2 = s.exec_fuse && !s.exec_check && s.pool ? exec_fuse_partner(s, cg, i, n) : -1;
+            if (j2 >= 0) {
+                exec_prep_t two[2];
+                exec_prep_op(s, nd, nullptr, 0, two[0]);
+                exec_prep_op(s, ggml_graph_node(cg, j2), nullptr, 1, two[1]);
+                const bool same = two[0].dot == two[1].dot;
+                exec_run_prepared(s, two, same ? 2 : 1);
+                if (!same) {
+                    exec_run_prepared(s, two + 1, 1);
+                }
+                for (int k = i + 1; k < j2; k++) {
+                    batch.push_back(k);        // views in between: no work, kept in graph order
+                }
+                i = j2;
+                continue;
+            }
             exec_one_op(s, nd);
             if (s.exec_check) {
                 const size_t nb = ggml_nbytes(nd);

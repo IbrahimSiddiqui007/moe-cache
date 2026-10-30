@@ -367,7 +367,19 @@ struct exec_last_t {
 };
 exec_last_t g_exec_last;
 
-void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {
+// One expert op, prepared for the pool: quantised activation columns, one task per expert (tasks that are already in RAM first, `n_ready` of them).
+// MOE_CACHE_EXEC_FUSE=1 runs the prepared tasks of two independent ops (gate and up: same input, same shape, own outputs) as ONE pool job: the arithmetic of
+// every output value is the same, only one barrier and one wake-up fewer per layer (RESULTS 71: 32 % of pool thread time was idle at the barrier).
+struct exec_prep_t {
+    ggml_tensor *          nd = nullptr;
+    const ggml_tensor *    w = nullptr;
+    ggml_vec_dot_t         dot = nullptr;
+    std::vector<exec_task_t> tasks;
+    size_t                 n_ready = 0;
+    uint64_t               eb0 = 0;
+};
+
+void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip, int slot, exec_prep_t & pr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
     const ggml_type_traits_cpu * tt = cpu_traits(w->type);
@@ -376,8 +388,10 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
     const int n_tok = (int) ids->ne[1];
     const int64_t ne10 = a->ne[0], ne11 = a->ne[1];
     const size_t row_size = ggml_row_size(vdt, ne10);
-    static thread_local std::vector<uint8_t> wbuf;
-    static thread_local std::vector<uint8_t> pbuf;
+    static thread_local std::vector<uint8_t> wbufs[2];     // one activation buffer per op of a fused pair (slot 0 / 1)
+    static thread_local std::vector<uint8_t> pbufs[2];
+    std::vector<uint8_t> & wbuf = wbufs[slot];
+    std::vector<uint8_t> & pbuf = pbufs[slot];
     static const bool etimes = getenv("MOE_CACHE_EXEC_TIMES") != nullptr;
     const uint64_t eq0 = etimes ? exec_now_ns() : 0;
     const char * base;
@@ -529,24 +543,89 @@ void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip =
             }
         }
     }
-    const auto tp0 = std::chrono::steady_clock::now();
     if (etimes) {
         s.ex_build_ns += exec_now_ns() - eb0;
     }
-    s.pool->run(tasks.data(), (int) tasks.size(), w->ne[1], w->ne[0], w->nb[1], dot, s.exec_chunk, nd->name);
-    if (etimes) {
-        const uint64_t rn = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
-        const int part = strstr(nd->name, "gate") ? 0 : strstr(nd->name, "up") ? 1 : 2;
-        s.ex_run_ns += rn;
-        s.ex_part_ns[part] += rn; s.ex_part_n[part]++;
-        s.ex_part_bytes[part] += (uint64_t) tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
+    pr.nd = nd;
+    pr.w = w;
+    pr.dot = dot;
+    pr.n_ready = tasks.size() - late.size();
+    pr.eb0 = eb0;
+    pr.tasks = std::move(tasks);
+}
+
+// runs one prepared op (n = 1) or a fused pair (n = 2, only when both have the same weight type, rows, columns, row stride and kernel)
+void exec_run_prepared(state_t & s, exec_prep_t * p, int n) {
+    static const bool etimes = getenv("MOE_CACHE_EXEC_TIMES") != nullptr;
+    const ggml_tensor * w = p[0].w;
+    const std::vector<exec_task_t> * single = &p[0].tasks;
+    std::vector<exec_task_t> both;
+    if (n == 2) {
+        both.reserve(p[0].tasks.size() + p[1].tasks.size());
+        both.insert(both.end(), p[0].tasks.begin(), p[0].tasks.begin() + (ptrdiff_t) p[0].n_ready);
+        both.insert(both.end(), p[1].tasks.begin(), p[1].tasks.begin() + (ptrdiff_t) p[1].n_ready);
+        both.insert(both.end(), p[0].tasks.begin() + (ptrdiff_t) p[0].n_ready, p[0].tasks.end());
+        both.insert(both.end(), p[1].tasks.begin() + (ptrdiff_t) p[1].n_ready, p[1].tasks.end());
+        single = &both;
+        s.exec_fused++;
     }
-    if ((unsigned) w->type < 64) {
-        s.exec_type_ns[w->type] += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
-        s.exec_type_ops[w->type]++;
-        s.exec_type_bytes[w->type] += (uint64_t) tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
+    const auto tp0 = std::chrono::steady_clock::now();
+    s.pool->run(single->data(), (int) single->size(), w->ne[1], w->ne[0], w->nb[1], p[0].dot, s.exec_chunk, p[0].nd->name);
+    const uint64_t rn = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
+    for (int k = 0; k < n; k++) {
+        const uint64_t bytes = (uint64_t) p[k].tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
+        if (etimes) {
+            const int part = strstr(p[k].nd->name, "gate") ? 0 : strstr(p[k].nd->name, "up") ? 1 : 2;
+            if (k == 0) {                     // a fused pair's time is booked on its first op (the second only counts ops and bytes)
+                s.ex_run_ns += rn;
+                s.ex_part_ns[part] += rn;
+            }
+            s.ex_part_n[part]++;
+            s.ex_part_bytes[part] += bytes;
+        }
+        if ((unsigned) w->type < 64) {
+            if (k == 0) {
+                s.exec_type_ns[w->type] += (int64_t) rn;
+            }
+            s.exec_type_ops[w->type]++;
+            s.exec_type_bytes[w->type] += bytes;
+        }
+        s.exec_ops++;
     }
-    s.exec_ops++;
+}
+
+void exec_one_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip = nullptr) {
+    exec_prep_t pr;
+    exec_prep_op(s, nd, skip, 0, pr);
+    exec_run_prepared(s, &pr, 1);
+}
+
+// The op after `nd` (only views in between) that can run in the same pool job as `nd`, or -1. Both must be independent, with the same weight type and shape.
+int exec_fuse_partner(state_t & s, ggml_cgraph * cg, int i, int n_nodes) {
+    ggml_tensor * a = ggml_graph_node(cg, i);
+    for (int j = i + 1; j < n_nodes; j++) {
+        ggml_tensor * b = ggml_graph_node(cg, j);
+        if (exec_view_op(b->op)) {
+            continue;
+        }
+        if (b->op != GGML_OP_MUL_MAT_ID || s.by_tensor.find(b->src[0]) == s.by_tensor.end() || stock_uses_tiled(b)) {
+            return -1;
+        }
+        const ggml_tensor * wa = a->src[0], * wb = b->src[0];
+        if (wa == wb || wa->type != wb->type || wa->ne[0] != wb->ne[0] || wa->ne[1] != wb->ne[1] || wa->ne[2] != wb->ne[2] || wa->nb[1] != wb->nb[1] ||
+            a->src[1]->type != b->src[1]->type || a->src[2]->ne[0] != b->src[2]->ne[0] || a->src[2]->ne[1] != b->src[2]->ne[1]) {
+            return -1;
+        }
+        for (int k = 0; k < GGML_MAX_SRC; k++) {       // b must not read a's result (directly or through a view of it)
+            for (const ggml_tensor * t = b->src[k]; t; t = t->view_src) {
+                if (t == a) {
+                    return -1;
+                }
+            }
+        }
+        return j;
+    }
+    return -1;
 }
 
 // set by the AVX-512 kernel block further down (C linkage: independent of the namespace the kernels live in)

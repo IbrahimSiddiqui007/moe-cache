@@ -354,7 +354,7 @@
                      (unsigned long long) pf_pred_total, (unsigned long long) pf_pred_hit, (unsigned long long) pf_skipped, (unsigned long long) sibling_loads,
                      (unsigned long long) small_mapped, (unsigned long long) small_over);
             j = b;
-            j += ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
+            j += ",\"exec_fused\":" + std::to_string(exec_fused.load()) + ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
                  ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases) +
                  ",\"pool_parks\":" + std::to_string(pool ? pool->parks.load() : 0) + ",\"async_in\":" + std::to_string(async_in.load()) +
                  ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
@@ -532,7 +532,8 @@
                         pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
             }
             if (exec_on) {
-                fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s\n", (unsigned long long) exec_ops,
+                fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s%s\n", (unsigned long long) exec_ops,
+                        exec_fuse ? (std::string(", ") + std::to_string(exec_fused.load()) + " gate+up pairs as one pool job").c_str() : "",
                         exec_check ? (std::string(", checked ") + std::to_string(exec_checked.load()) + ", mismatches " + std::to_string(exec_mismatch.load())).c_str() : "");
                 fprintf(stderr, "moe-cache: executor stepped aside (all resident) in %llu graphs; %llu of them waited for experts still loading\n",
                         (unsigned long long) stepaside_graphs, (unsigned long long) stepaside_waits);
