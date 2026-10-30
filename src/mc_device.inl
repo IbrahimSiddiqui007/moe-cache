@@ -80,7 +80,7 @@ bool dev_supports_op(ggml_backend_dev_t, const ggml_tensor * op) {
             return false;
     }
     const ggml_tensor * w = op->src[0];
-    if (!w || !w->buffer || w->buffer->buft->iface.get_name != buft_name) {
+    if (!w || !w->buffer || ggml_backend_buffer_get_type(w->buffer)->iface.get_name != buft_name) {
         return false;
     }
     return w->ne[2] > 1 && layer_ok(w);

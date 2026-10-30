@@ -42,12 +42,55 @@ void buf_commit_once(moe_cache_buffer_ctx * c, const void * p, size_t size) {
     }
 }
 
+// ggml_backend_buffer's layout is private to ggml and changes without a backend API bump: llama.cpp master 418f905a4 (2026-10-29) appended three
+// slots to its interface, which moved `buft` and `context` 24 bytes; a plugin built with older headers read the wrong fields and crashed in
+// llama-server's memory-fit pass (CI master row, 2026-10-30). So the plugin reads no field of a ggml buffer: the type through
+// ggml_backend_buffer_get_type(), our own context through this registry, and buffer_init_padded() hands ggml an interface followed by zeros.
+std::mutex g_bufs_mu;
+std::vector<std::pair<ggml_backend_buffer_t, moe_cache_buffer_ctx *>> g_bufs;   // a handful of buffers, created at load
+
+moe_cache_buffer_ctx * buf_ctx(ggml_backend_buffer_t buffer) {
+    std::lock_guard<std::mutex> lk(g_bufs_mu);
+    for (const auto & b : g_bufs) {
+        if (b.first == buffer) {
+            return b.second;
+        }
+    }
+    fprintf(stderr, "moe-cache: internal error: unknown buffer %p\n", (void *) buffer);
+    abort();
+}
+
+// ggml_backend_buffer_init takes the interface by value; a newer ggml with a longer interface reads past the end of ours. Our interface followed by
+// zeros makes every slot it added NULL ("optional, not supported"). Same calling convention for both struct sizes: SysV x86-64 copies a large struct
+// onto the stack (the callee reads its own size from the start), Win64 passes a pointer to the caller's copy; the other arguments keep their registers.
+struct buffer_i_padded {
+    ggml_backend_buffer_i i;
+    void * spare[24];
+};
+
+ggml_backend_buffer_t buffer_init_padded(ggml_backend_buffer_type_t buft, const ggml_backend_buffer_i & i, void * context, size_t size) {
+    buffer_i_padded p;
+    memset(&p, 0, sizeof(p));
+    p.i = i;
+    using init_fn = ggml_backend_buffer_t (*)(ggml_backend_buffer_type_t, buffer_i_padded, void *, size_t);
+    return ((init_fn) (void *) &ggml_backend_buffer_init)(buft, p, context, size);
+}
+
 const char * buft_name(ggml_backend_buffer_type_t) {
     return "MOE_CACHE";
 }
 
 void buf_free(ggml_backend_buffer_t buffer) {
-    auto * c = (moe_cache_buffer_ctx *) buffer->context;
+    auto * c = buf_ctx(buffer);
+    {
+        std::lock_guard<std::mutex> lk(g_bufs_mu);
+        for (size_t k = 0; k < g_bufs.size(); k++) {
+            if (g_bufs[k].first == buffer) {
+                g_bufs.erase(g_bufs.begin() + (long) k);
+                break;
+            }
+        }
+    }
     if (S().cache_on) {
         S().forget_range((const char *) c->base, c->size);
     }
@@ -56,7 +99,7 @@ void buf_free(ggml_backend_buffer_t buffer) {
 }
 
 void * buf_base(ggml_backend_buffer_t buffer) {
-    return ((moe_cache_buffer_ctx *) buffer->context)->base;
+    return buf_ctx(buffer)->base;
 }
 
 void buf_memset(ggml_backend_buffer_t, ggml_tensor * t, uint8_t v, size_t off, size_t size) {
@@ -88,7 +131,7 @@ void buf_get(ggml_backend_buffer_t, const ggml_tensor * t, void * data, size_t o
 }
 
 void buf_clear(ggml_backend_buffer_t buffer, uint8_t v) {
-    auto * c = (moe_cache_buffer_ctx *) buffer->context;
+    auto * c = buf_ctx(buffer);
     if (S().cache_on) {
         return;   // the buffer is address space only; experts get their data from the file
     }
@@ -102,7 +145,7 @@ bool is_expert_tensor(const ggml_tensor * t) {
 
 ggml_status buf_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * t) {
     if (S().cache_on && !(t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0)) {
-        buf_commit_once((moe_cache_buffer_ctx *) buffer->context, t->data, ggml_nbytes(t));
+        buf_commit_once(buf_ctx(buffer), t->data, ggml_nbytes(t));
     }
     if (is_expert_tensor(t)) {
         auto ft = S().file_tensors.find(t->name);
@@ -145,7 +188,11 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
             return nullptr;              // llama.cpp reports the failed allocation
         }
     }
-    return ggml_backend_buffer_init(buft, g_buf_i, new moe_cache_buffer_ctx{ p, size, {}, {} }, size);
+    auto * c = new moe_cache_buffer_ctx{ p, size, {}, {} };
+    ggml_backend_buffer_t b = buffer_init_padded(buft, g_buf_i, c, size);
+    std::lock_guard<std::mutex> lk(g_bufs_mu);
+    g_bufs.emplace_back(b, c);
+    return b;
 }
 
 size_t buft_align(ggml_backend_buffer_type_t) {

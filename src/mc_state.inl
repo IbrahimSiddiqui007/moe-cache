@@ -3,6 +3,8 @@
 
 namespace {
 
+ggml_backend_buffer_t buffer_init_padded(ggml_backend_buffer_type_t buft, const ggml_backend_buffer_i & i, void * context, size_t size);   // mc_buffer.inl
+
 // llama-server's own settings that decide where its CPU weights go (read once: environment, then the command line, the last occurrence winning)
 static const mcargs::server_args & server_args() {
     static const mcargs::server_args a = mcargs::parse_server_args(plat::command_line(), getenv("LLAMA_ARG_REPACK"), getenv("LLAMA_ARG_NO_HOST"),
@@ -499,7 +501,7 @@ struct state_t {
                     repack_buf = ggml_backend_buft_alloc_buffer(repack_buft, 64);
                     ggml_backend_buffer_i empty;
                     memset(&empty, 0, sizeof(empty));
-                    repack_tag = ggml_backend_buffer_init(repack_buft, empty, nullptr, 0);
+                    repack_tag = buffer_init_padded(repack_buft, empty, nullptr, 0);
                 }
                 fprintf(stderr, "moe-cache: CPU weight repacking %s\n", repack_buf && repack_tag ? "on (faster CPU kernels)" : "requested but not available in this llama.cpp");
                 if (!repack_buf || !repack_tag) {

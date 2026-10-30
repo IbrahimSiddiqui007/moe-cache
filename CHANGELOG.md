@@ -11,6 +11,11 @@
 - **Picker**: no download offered when the disk is too small (it says which model suits and how much disk is missing, and prefers a local file); models Ollama downloaded are
   found as local files (with a readable name); download patterns match only the model's own .gguf files. `tools/check_model_links.py` checks in CI that every model the picker
   can recommend still exists on Hugging Face (metadata only).
+- **Fixed: crash at start with llama.cpp newer than b12000** (master 418f905a4, 2026-10-29): ggml lengthened its buffer interface without a backend
+  API bump, which moved the fields of every ggml buffer; the plugin, built with older headers, read the wrong field and llama-server crashed in its
+  memory-fit pass (SIGSEGV in `dev_supports_op`, CI master row). The plugin now reads no field of a ggml buffer (`ggml_backend_buffer_get_type()`, its
+  own registry for its buffers) and hands ggml its interface followed by zeros, so slots a newer ggml adds read as "not supported". One DLL works with
+  the old and the new layout (checked on 23b0202a1 and master e0f142d5d); CI fails if plugin code reads buffer fields directly.
 - **Fixed: llama.cpp b11966 and newer (ggml 0.28) got no plugin**: the launcher knew ggml versions only up to 0.27, so it picked no DLL and `check` said
   `ggml-moe-cache-api3.dll` was missing although it was there. Newer 0.x versions now map to backend API 3 (ggml did not bump it); the plugin's start-up layout
   check still refuses a ggml whose ops changed. When the version cannot be read at all, `check` says so and names `MOE_CACHE_LIB`.
