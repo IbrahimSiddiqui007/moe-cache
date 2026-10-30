@@ -24,7 +24,7 @@ if ! grep -qE "moe-cache: (cache mode|pass-through mode)" "$TMP/plugin.txt"; the
 fi
 grep "moe-cache:" "$TMP/plugin.txt" | grep -E "executor ran|hit |active:" || true
 # executor forced on: it must really have run (it steps aside silently, e.g. on repacked weights); the line needs MOE_CACHE_STATS=1
-if [[ " $KL_PLUGIN_ENV " == *" MOE_CACHE_EXEC=2 "* ]] && ! grep -qE "moe-cache: executor ran [1-9][0-9]* expert ops itself(, checked [0-9]+, mismatches 0)?$" "$TMP/plugin.txt"; then
+if [[ " $KL_PLUGIN_ENV " == *" MOE_CACHE_EXEC=2 "* ]] && ! grep -qE "moe-cache: executor ran [1-9][0-9]* expert ops itself(, checked [0-9]+, mismatches 0)?(; [0-9]+ gate\+up pairs as one pool job)?$" "$TMP/plugin.txt"; then
   echo "FAIL: MOE_CACHE_EXEC=2 but the executor ran no expert ops or had mismatches (MOE_CACHE_STATS=1 set?)"; exit 2
 fi
 grep -E "Mean +KLD|Maximum KLD|Same top p" "$TMP/plugin.txt"
