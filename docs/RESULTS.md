@@ -7,6 +7,68 @@ Method: "clean" = CPU <= 58 C at start, no background load, fresh page cache, pr
 4 prompts, temperature 0, seed 42, forward and reverse order; "steady" = mean of requests 2-4. Unclean runs are not reported.
 "Stock" = the same llama.cpp without the plugin. Raw data and scripts: `work/t7-plugin/` of the research repo.
 
+
+## Summary tables (moved from the README on 2026-10-30, unchanged)
+
+The README now shows the Windows desktop chart; the laptop tables and the long-context and other-model notes that were there are kept here.
+
+### Results (measured, clean runs)
+
+Re-measured on 2026-10-15 with the current code where the model is still on the test machine (RESULTS section 44); older rows say which version they come from.
+
+| Situation | Stock llama.cpp | moe-cache | Measured with |
+|---|---|---|---|
+| **GLM-5.3-Flash (102 GB, 4x the memory limit)**, 24 GB RAM, 8 GB GPU | 0.32 tok/s | **1.75 tok/s** exact, 2.1 with `--fast` | v0.2.3.2 (§26) |
+| **Qwen3.8-Flash-Next IQ2_XS (68 GB)**, 24 GB RAM, 8 GB GPU, launcher defaults | 5.2 tok/s | **12.5 tok/s**; 13.1 with `--gpu-cache auto`; 17.6 with `--hybrid` (approximate) | v0.2.3.5 (§44, §28, §31) |
+| **Qwen3.5-122B-A10B**, 24 GB RAM, 8 GB GPU, launcher defaults: IQ2_XXS (36.6 GB) / IQ3_XXS (44.7 GB) / IQ4_XS (60.2 GB) | 1.89 / 1.10 / 0.91 tok/s | **7.7 / 5.7 / 3.7 tok/s** (4-5x, same tokens); 9.0 / 6.8 / 4.5 with `--fast` | v0.2.3.5 (§45) |
+| **gpt-oss-120b (63 GB)**, 24 GB RAM, 2 expert layers on the GPU, ctx 8k, one run each | 0.37 tok/s | **4.47 tok/s** | v0.1 (§12b, §12d): stock and plugin from different sessions, stock flagged not clean; the clean all-CPU pair of §12 is 0.34 vs 2.71 (8x) |
+| Qwen3-Next-80B (48.5 GB), 24 GB RAM, ~2.6 GB GPU use | 2.3 tok/s | **10.6 tok/s** | v0.1 (§6) |
+| Same model, 20 GB RAM | 1.3 tok/s | **9.3 tok/s** | v0.1 (§6) |
+| Qwen3.6-35B (21.7 GB), 12 GB RAM, 6 expert layers on the GPU | 6.9 tok/s | **22.6 tok/s** | v0.2.3.5 (§44) |
+| Qwen3.6-35B, 12 GB RAM, **no GPU at all** | 3.1 tok/s | **9.9 tok/s** | v0.1 (§5) |
+| **Model fits in RAM** (Qwen3.6-35B, 24 GB, warm) | **42.9 tok/s** | 36.6 tok/s | v0.2.3.5 (§44): the launcher now runs stock llama.cpp here |
+
+#### Prompt processing (prefill)
+
+| Model, memory limit | Stock llama.cpp | moe-cache | Measured with |
+|---|---|---|---|
+| Qwen3.6-35B (21.7 GB), 12 GB RAM, 2-5k token prompts | 132.8 tok/s (2.4k prompt) | **136.5 tok/s** first prompt, **186 to 206 tok/s** on the next ones | v0.2.3.5 (§46) |
+| Qwen3.8-Flash-Next IQ2_XS (68 GB), 24 GB RAM, 2-5k token prompts | 65.9 tok/s (2.4k prompt) | **90 to 103 tok/s** | stock v0.2.3.5 (§46), moe-cache v0.2.3.3 (§38) |
+| Qwen3.8-Flash-Next IQ2_XS (68 GB), 24 GB RAM, context 8192, 2-6k token prompts | - | **93 to 135 tok/s** (two runs) | experimental 2026-10-26, with the tuner fix (§52) |
+
+For long prompts llama.cpp already computes the experts on the GPU, so the prefill gain is smaller than the decode gain; it grows with how far the model
+exceeds RAM. Bigger prompt chunks on a 12-16 GB card are the next step (BIGGER_MACHINES B13).
+
+"Stock" is the same `llama-server` binary with the same command line (same context, same number of expert layers on the GPU through `--n-cpu-moe`, its default memory-mapped loading), only without the plugin. moe-cache does not replace `--n-cpu-moe`; it manages the experts that `--n-cpu-moe` leaves on the CPU.
+
+Conditions: "RAM" is a memory limit set with a cgroup on a 31 GB machine; before every limited stock run the model file is dropped from the page cache (otherwise
+stock can read it from cache that does not count against the limit and looks up to 4.6x faster than it is, RESULTS 44). One run per row unless the section says paired.
+When the model fits in the memory llama-server may use, stock llama.cpp is faster (its page cache holds the whole file and stays warm across restarts), so
+`moe-cache-server` starts stock llama-server then and says so.
+
+**Tip for Intel 12th gen and newer laptops (performance + efficiency cores):** pin llama.cpp to one thread per performance core, e.g. `-C 0x555 --cpu-strict 1` on a 6-performance-core CPU (this alone gave stock llama.cpp +15 % decode speed on our laptop; `moe-cache-server` does it for you). Details in [docs/RESULTS.md](RESULTS.md), section 11.
+
+Methods, all numbers and every caveat: [docs/RESULTS.md](RESULTS.md). One-page summary of the Windows desktop results: [docs/benchmark_card.html](benchmark_card.html) (its top is the image at the start of this page; `python3 tools/card_image.py` remakes the image after a change to the card).
+
+#### Laptop results (older versions)
+
+Measured on the Linux laptop (i7-13620H, RTX 4060 8 GB, memory limited with a cgroup) with v0.1 to v0.2.3.5; the plugin has changed a lot since, so read these as history, not as today's speed.
+
+<p align="center"><img src="img/results.svg" alt="laptop speed with and without moe-cache, v0.1 to v0.2.3.5" width="760"></p>
+
+**Long context (Windows PC, RESULTS 64; agent mode, one cold run per point, not ABBA).** Flash-Next Q2_0 at a 64k setting: moe-cache reads a 63.5k-token
+prompt 1.8x faster than stock (about 289 vs 525 s; prefill 266 / 195 tok/s at 4-21k / 53-63k vs 171 / 106) and decodes 20.7 vs 16.8 tok/s at that depth
+(+23 %). Qwen3.5-122B with moe-cache at 64k: prefill 266 / 217, decode 17.3 at 63.5k. Qwen3.6 (fits, stock): 848 / 739, decode 59.1. At the 256k setting the
+planner now keeps the long-prompt GPU block its room (RESULTS 67 / 69, paired runs): Flash-Next prefill 108-110 tok/s at 4-34k and decode **21.9 vs 18.5 tok/s** at 4k (+18 %) over the old plan; decode at 138k depth was 15.9 with the old plan (not re-measured).
+
+**Other models (Windows PC, RESULTS 65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
+so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
+57k and 721 at 114k, 190/202 tasks (Flash-Next Q2_0 191, not proven), OpenCode session 47.8 s (the fastest measured). moe-cache forced on it is slower
+(decode 22.1, prompt 329 at 57k): the plugin is for models bigger than memory. DeepSeek V4-Flash: not tested.
+
+Hardware for the other measurements above (not this file table): Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
+
+
 ## 1. Token identity (4 prompts x 250 tokens vs stock)
 
 | Model | Variant | Result |
