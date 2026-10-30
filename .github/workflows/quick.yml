@@ -1,0 +1,40 @@
+# Quick checks on every push (external audit XA-6, 2026-10-30): a few minutes, no model, no llama.cpp build. The full identity / windows / sanitize
+# workflows stay one batch before a release (owner's rule); this tier catches broken tests, syntax and the buffer-field guard right away.
+name: quick
+
+on:
+  push:
+    branches: [experimental, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Python compiles
+        run: python3 -m py_compile bin/*.py tools/*.py tests/*.py planner/*.py
+
+      - name: Plugin syntax with both header sets (warnings are errors), buffer-field guard
+        run: |
+          for H in third_party/ggml third_party/ggml-v3; do g++ -std=c++17 -Wall -Werror -Wno-unused-function -I$H/include -I$H/src -fsyntax-only src/moe_cache_plugin.cpp; done
+          if grep -nE '\w*(buffer|buf)->(buft|context|size|usage|iface)\b|->buffer->' src/*.inl src/*.cpp; then echo "FAIL: read ggml buffer fields through the public API"; exit 1; fi
+          g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/args_test.cpp -o /tmp/args_test && /tmp/args_test
+
+      - name: Model-free tests (fake servers; same files the full CI runs)
+        run: |
+          set -e
+          for t in ui_test security_test bench_report_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test diffusion_test picker_test gguf_hostile_test; do
+            echo "::group::$t"; python3 tests/$t.py; echo "::endgroup::"
+          done
+
+      - name: Shell scripts parse
+        run: for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do case "$f" in *.bat) continue;; esac; bash -n "$f"; done
