@@ -2075,6 +2075,11 @@ def _launch_plan(a, extra, argv, machine):
                 # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
                 lim = machine.mem_for_server(a.ram)
                 cram = "0" if lim and lim < 16e9 else "2048"
+                # idea L05 (MOE_CACHE_PROMPT_CACHE_MIB=N, unset = the rule above): set the prompt cache from evidence instead of the fixed split (0 = off); the number
+                # to use is the one where the saved reprocessing stops paying for the expert-cache RAM it takes (tools/agent_bench.py at two settings)
+                pcm = os.environ.get("MOE_CACHE_PROMPT_CACHE_MIB", "")
+                if re.fullmatch(r"[0-9]+", pcm):
+                    cram = pcm
                 extra += ["--cache-ram", cram]
                 cram_auto = True
         except Exception:
