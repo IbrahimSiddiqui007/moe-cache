@@ -24,6 +24,8 @@ struct exec_task_t {
     float *      dsts[EXEC_MAXCOL];   // outputs (rows floats each)
     const uint8_t * flag;  // non-null: the expert is still being read while *flag is non-zero
     int64_t      rows;
+    ggml_vec_dot_t dot = nullptr;   // idea D04: this task's own kernel and row stride (the job's when null / 0), so ops of different weight types can share one job
+    size_t       nb01 = 0;
 };
 
 // what this thread's executor work is computing right now: the Windows crash report prints it (a fault inside a pool worker otherwise says only
@@ -115,12 +117,14 @@ struct exec_pool_t {
                 const uint64_t b0 = tm ? exec_now_ns() : 0;
                 wh.task = &t;          // idea D16: the task is the same for every row of the chunk, so it is stored once, the row once per row
                 for (int64_t r = r0; r < r1; r++) {
-                    const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
+                    const size_t nb01 = t.nb01 ? t.nb01 : j->nb01;
+                const ggml_vec_dot_t dotf = t.dot ? t.dot : j->dot;
+                const char * wr = t.w + (size_t) r * nb01;       // the weight row stays in L1 while every token column uses it
                     wh.r = r;
                     for (int k = 0; k < t.ncol; k++) {
                         wh.k = k;
                         wh.dst = &t.dsts[k][r];
-                        j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
+                        dotf((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
                     }
                 }
                 if (tm) {

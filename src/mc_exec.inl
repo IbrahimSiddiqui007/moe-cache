@@ -517,6 +517,8 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
                 nt.ncol = 0;
                 nt.flag = (const uint8_t *) &s.nodes[(size_t) (ti.node0 + e)].loading;
                 nt.rows = w->ne[1];
+                nt.dot = dot;
+                nt.nb01 = w->nb[1];
                 ti_ = (int) all.size();
                 all.push_back(nt);
             }
@@ -649,8 +651,10 @@ int exec_fuse_partner(state_t & s, ggml_cgraph * cg, int i, int n_nodes) {
             return -1;
         }
         const ggml_tensor * wa = a->src[0], * wb = b->src[0];
-        if (wa == wb || wa->type != wb->type || wa->ne[0] != wb->ne[0] || wa->ne[1] != wb->ne[1] || wa->ne[2] != wb->ne[2] || wa->nb[1] != wb->nb[1] ||
-            a->src[1]->type != b->src[1]->type || a->src[2]->ne[0] != b->src[2]->ne[0] || a->src[2]->ne[1] != b->src[2]->ne[1]) {
+        // idea D04 (MOE_CACHE_EXEC_FUSE_ANY=1, default off): gate and up may differ in weight type and row stride (the tasks carry their own kernel and stride)
+        static const bool fuse_any = getenv("MOE_CACHE_EXEC_FUSE_ANY") && atoi(getenv("MOE_CACHE_EXEC_FUSE_ANY")) > 0;
+        if (wa == wb || (!fuse_any && (wa->type != wb->type || wa->nb[1] != wb->nb[1] || a->src[1]->type != b->src[1]->type)) || wa->ne[0] != wb->ne[0] || wa->ne[1] != wb->ne[1] ||
+            wa->ne[2] != wb->ne[2] || a->src[2]->ne[0] != b->src[2]->ne[0] || a->src[2]->ne[1] != b->src[2]->ne[1]) {
             return -1;
         }
         for (int k = 0; k < GGML_MAX_SRC; k++) {       // b must not read a's result (directly or through a view of it)
