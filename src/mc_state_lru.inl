@@ -396,6 +396,7 @@
             }
             const size_t njobs = jobs.size() + pjs.size();
             if (njobs) {
+                demand_pending.fetch_add((int) njobs, std::memory_order_relaxed);
                 {
                     std::lock_guard<std::mutex> ql(rq_mu);
                     for (pack_job_t * pj : pjs) {

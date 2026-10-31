@@ -248,6 +248,7 @@ struct state_t {
     std::mutex rq_mu;
     std::condition_variable rq_cv;
     std::deque<io_job_t> rq;
+    std::atomic<int> demand_pending{0};          // idea I02: demand reads queued or running in the reader threads (advisory prefetch reads wait while this is above 0)
     bool   rq_stop = false;
     std::atomic<uint64_t> exec_fused{0}, exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
     uint64_t stepaside_graphs = 0, stepaside_waits = 0;   // executor graphs handed back to llama.cpp with everything resident / of them, graphs that had to wait for a load

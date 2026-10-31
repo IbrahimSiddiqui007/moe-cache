@@ -42,6 +42,7 @@
                     }
                 }
                 load_cv.notify_all();
+                demand_pending.fetch_sub(1, std::memory_order_relaxed);
                 continue;
             }
             read_job(j, bounce);
@@ -58,6 +59,7 @@
             }
             delete j.more;
             load_cv.notify_all();
+            demand_pending.fetch_sub(1, std::memory_order_relaxed);
         }
     }
 
@@ -262,6 +264,14 @@
                         abort();
                     }
                     bounce_size = need;
+                }
+                // idea I02 (MOE_CACHE_DEMAND_FIRST=1, default off): an advisory read waits (at most ~5 ms) while demand reads are queued or running, so a guess never
+                // delays an expert the executor is waiting for.
+                static const bool demand_first = getenv("MOE_CACHE_DEMAND_FIRST") && atoi(getenv("MOE_CACHE_DEMAND_FIRST")) > 0;
+                if (demand_first) {
+                    for (int w = 0; w < 100 && demand_pending.load(std::memory_order_relaxed) > 0; w++) {
+                        std::this_thread::sleep_for(std::chrono::microseconds(50));
+                    }
                 }
                 read_job(j, bounce);
                 {
