@@ -395,6 +395,41 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             pack_ids = full_ids;
             pack_used = full_used;
             n_chunk = std::min(n_chunk, pack_used.size());
+            // idea P17 (MOE_CACHE_GPU_BALANCE=1, default off): the parts hold the same number of experts (what fits), but not the same number of picks. Experts are
+            // dealt to the parts heaviest first (each to the lightest part with room), so the parts' rows, and with MOE_CACHE_GPU_COMPACT their work, are even.
+            static const bool balance = getenv("MOE_CACHE_GPU_BALANCE") && atoi(getenv("MOE_CACHE_GPU_BALANCE")) > 0;
+            if (balance && n_chunk > 1 && pack_ids) {
+                std::vector<uint32_t> cnt(pack_map.size(), 0);
+                for (int64_t i1 = 0; i1 < pack_ids->ne[1]; i1++) {
+                    for (int64_t i0 = 0; i0 < pack_ids->ne[0]; i0++) {
+                        cnt[(size_t) *(const int32_t *) ((const char *) pack_ids->data + i0 * pack_ids->nb[0] + i1 * pack_ids->nb[1])]++;
+                    }
+                }
+                std::vector<int32_t> order = pack_used;
+                std::stable_sort(order.begin(), order.end(), [&](int32_t a, int32_t b) { return cnt[(size_t) a] > cnt[(size_t) b]; });
+                const size_t per = (pack_used.size() + n_chunk - 1) / n_chunk;
+                std::vector<size_t> cap(n_chunk, per), load(n_chunk, 0);
+                cap[n_chunk - 1] = pack_used.size() > (n_chunk - 1) * per ? pack_used.size() - (n_chunk - 1) * per : 0;
+                std::vector<std::vector<int32_t>> parts(n_chunk);
+                for (int32_t e : order) {
+                    size_t best = n_chunk;
+                    for (size_t k = 0; k < n_chunk; k++) {
+                        if (parts[k].size() < cap[k] && (best == n_chunk || load[k] < load[best])) {
+                            best = k;
+                        }
+                    }
+                    parts[best].push_back(e);
+                    load[best] += cnt[(size_t) e];
+                }
+                pack_used.clear();
+                for (auto & pt : parts) {
+                    std::sort(pt.begin(), pt.end());
+                    pack_used.insert(pack_used.end(), pt.begin(), pt.end());
+                }
+                for (size_t i = 0; i < pack_used.size(); i++) {
+                    pack_map[(size_t) pack_used[i]] = (int32_t) i;
+                }
+            }
             static std::atomic<int> said_ch{0};
             if (said_ch++ < 3) {
                 fprintf(stderr, "moe-cache: long-prompt block split into %zu parts of %zu experts to fit in GPU memory (%.0f MiB free, %.0f MiB held)\n",
