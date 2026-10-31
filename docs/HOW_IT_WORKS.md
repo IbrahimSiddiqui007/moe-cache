@@ -34,3 +34,7 @@ The path of one operation:
 
 Each expert keeps its normal address inside one large reserved block of memory; moe-cache decides which experts have real memory behind them.
 It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.cpp runs through its expert multiplication should work; the architectures that were actually tested are listed in [COMPATIBILITY](COMPATIBILITY.md) and [RESULTS](RESULTS.md).
+
+## The patched llama.cpp build
+
+Alongside the plugin there is room for a small set of changes to llama.cpp itself (`patches/llama.cpp/`), applied to the exact release the Windows kit bundles. It is optional: the plugin runs on stock llama.cpp, and every change has its own switch that is off until a paired run shows it helps. At the moment the set is empty; the patched build is a manual CI job and is not what the releases ship.

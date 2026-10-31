@@ -1,0 +1,73 @@
+# Builds llama-server from llama.cpp b11966 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux CPU).
+# Manual only: nothing here runs by itself and release.yml does not use it. See patches/llama.cpp/README.md.
+# Not yet run. The cmake flags follow llama.cpp's own release workflow from memory; compare with its release.yml at the pin on the first run.
+name: llama-patched
+on:
+  workflow_dispatch:
+
+env:
+  LLAMA_COMMIT: ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1   # b11966
+  VULKAN_SDK_VERSION: "1.4.313.2"                           # a guess at llama.cpp's choice: check on the first run
+
+permissions:
+  contents: read
+
+jobs:
+  windows-vulkan:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_COMMIT }}
+          path: llama.cpp
+      - name: Apply the patches
+        shell: bash
+        run: tools/apply_llama_patches.sh llama.cpp
+      - name: Vulkan SDK
+        shell: pwsh
+        run: |
+          $v = $env:VULKAN_SDK_VERSION
+          Invoke-WebRequest -UseBasicParsing "https://sdk.lunarg.com/sdk/download/$v/windows/vulkansdk-windows-X64-$v.exe" -OutFile vulkan.exe
+          .\vulkan.exe --accept-licenses --default-answer --confirm-command install
+          "VULKAN_SDK=C:\VulkanSDK\$v" | Out-File -Append $env:GITHUB_ENV
+          "C:\VulkanSDK\$v\Bin" | Out-File -Append $env:GITHUB_PATH
+      - name: Build
+        shell: pwsh
+        working-directory: llama.cpp
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON
+          cmake --build build --target llama-server -j
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llama-patched-win-vulkan-x64
+          path: |
+            llama.cpp/build/bin/*.exe
+            llama.cpp/build/bin/*.dll
+
+  linux:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: ${{ env.LLAMA_COMMIT }}
+          path: llama.cpp
+      - name: Apply the patches
+        run: tools/apply_llama_patches.sh llama.cpp
+      - name: Build
+        working-directory: llama.cpp
+        run: |
+          sudo apt-get update && sudo apt-get install -y build-essential cmake ninja-build libssl-dev
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=ON
+          cmake --build build --target llama-server -j
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llama-patched-linux-x64
+          path: |
+            llama.cpp/build/bin/llama-server
+            llama.cpp/build/bin/*.so
