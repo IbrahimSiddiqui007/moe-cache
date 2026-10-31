@@ -595,7 +595,7 @@
             if (coalesced) {
                 fprintf(stderr, "moe-cache: %llu expert reads merged into their neighbours (MOE_CACHE_COALESCE_MIB)\n", (unsigned long long) coalesced.load());
             }
-            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (in parts %llu, uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, (unsigned long long) gpu_split_blocks, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
+            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (in parts %llu, uploaded %.1f GB, %.1f GB saved by held GPU copies), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, (unsigned long long) gpu_split_blocks, gpu_up_bytes / 1e9, gpu_up_saved.load() / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
         }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
