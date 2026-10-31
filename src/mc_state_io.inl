@@ -14,6 +14,23 @@
                 j = rq.front();
                 rq.pop_front();
             }
+#ifdef __linux__
+            static thread_local int aff_seen = 0;
+            if (aff_seen != reader_aff_gen.load()) {
+                std::vector<int> cp;
+                {
+                    std::lock_guard<std::mutex> lk(rq_mu);
+                    cp = reader_cpus;
+                    aff_seen = reader_aff_gen.load();
+                }
+                if (!cp.empty()) {
+                    cpu_set_t set;
+                    CPU_ZERO(&set);
+                    for (int c : cp) { if (c < CPU_SETSIZE) { CPU_SET(c, &set); } }
+                    sched_setaffinity(0, sizeof(set), &set);
+                }
+            }
+#endif
             const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
             if (bounce_size < need) {
                 plat::aligned_free_page(bounce);

@@ -283,6 +283,25 @@ struct state_t {
     std::mutex rq_mu;
     std::condition_variable rq_cv;
     std::deque<io_job_t> rq;
+    // idea I13 (MOE_CACHE_READER_AFFINITY=1, Linux, default off): once the executor pool exists, the reader threads move to the CPUs the pool does not use
+    // (if any are left), so a read's completion is not queued behind a compute thread
+    std::vector<int> reader_cpus;
+    std::atomic<int> reader_aff_gen{0};
+    void set_reader_cpus(const std::vector<int> & pool_cpus) {
+        static const bool on = getenv("MOE_CACHE_READER_AFFINITY") && atoi(getenv("MOE_CACHE_READER_AFFINITY")) > 0;
+        if (!on) {
+            return;
+        }
+        std::lock_guard<std::mutex> lk(rq_mu);
+        reader_cpus.clear();
+        const int n = (int) std::thread::hardware_concurrency();
+        for (int c = 0; c < n; c++) {
+            if (std::find(pool_cpus.begin(), pool_cpus.end(), c) == pool_cpus.end()) {
+                reader_cpus.push_back(c);
+            }
+        }
+        reader_aff_gen++;
+    }
     std::atomic<int> demand_pending{0};          // idea I02: demand reads queued or running in the reader threads (advisory prefetch reads wait while this is above 0)
     bool   rq_stop = false;
     std::atomic<uint64_t> exec_fused{0}, exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};

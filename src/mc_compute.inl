@@ -94,6 +94,7 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
 #endif
         s.pool.reset(new exec_pool_t());
         s.pool->start(cpus, (int) cpus.size());
+        s.set_reader_cpus(cpus);
         fprintf(stderr, "moe-cache: executor pool: %d compute threads (%d on efficiency cores)\n", (int) cpus.size() + 1, extra);
     }
     if (CPU().set_n_threads) {
