@@ -99,6 +99,7 @@ class Backend:
         self.lock = threading.Lock()             # held while starting / stopping
         self.count = threading.Lock()
         self.p, self.port, self.state, self.active, self.last, self.t0 = None, None, "idle", 0, time.time(), 0.0
+        self.gaps = []         # S05: recent pauses between one request ending and the next starting (seconds)
         self.profile = None
         self.alias = model_alias(choice["model"], choice.get("args", []))
         self.ctx = model_ctx(choice.get("args", []))
@@ -107,8 +108,18 @@ class Backend:
     def cmd(self, port):
         return self.launcher + [self.c["model"], "--agent", "--port", str(port)] + list(self.args)
 
+    def release_after(self):
+        """Idea S05 (MOE_CACHE_IDLE_ADAPT=1, default off): after 8 requests, release the cache's RAM after 1.5x the 90th-percentile pause between requests
+        (at least 30 s, never later than the configured time), so the RAM goes back sooner in a workload with short pauses."""
+        if os.environ.get("MOE_CACHE_IDLE_ADAPT") == "1" and len(self.gaps) >= 8:
+            g = sorted(self.gaps)
+            return max(30.0, min(self.release, 1.5 * g[int(0.9 * (len(g) - 1))]))
+        return self.release
+
     def busy(self, delta):
         with self.count:
+            if delta > 0 and self.active == 0 and self.t0:
+                self.gaps = (self.gaps + [time.time() - self.last])[-32:]
             self.active += delta
             self.last = time.time()
             self.released = False
@@ -256,7 +267,7 @@ class Backend:
                 finally:
                     self.lock.release()
             elif (self.release and self.release < self.idle and not self.released and self.state == "ready" and self.active == 0
-                  and time.time() - self.last > self.release):
+                  and time.time() - self.last > self.release_after()):
                 self.released = True
                 self.idle_release()
 
