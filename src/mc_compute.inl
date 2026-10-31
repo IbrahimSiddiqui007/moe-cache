@@ -120,7 +120,7 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
             if (j2 >= 0) {
                 exec_prep_t two[2];
                 exec_prep_op(s, nd, nullptr, 0, two[0]);
-                exec_prep_op(s, ggml_graph_node(cg, j2), nullptr, 1, two[1]);
+                exec_prep_op(s, ggml_graph_node(cg, j2), nullptr, 1, two[1], &two[0]);
                 const bool same = two[0].dot == two[1].dot;
                 exec_run_prepared(s, two, same ? 2 : 1);
                 if (!same) {

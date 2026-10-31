@@ -377,9 +377,11 @@ struct exec_prep_t {
     std::vector<exec_task_t> tasks;
     size_t                 n_ready = 0;
     uint64_t               eb0 = 0;
+    const char *           base = nullptr;       // the prepared activation columns (idea D03: a fused partner with the same input reuses them)
+    size_t                 stride_i11 = 0, stride_tok = 0;
 };
 
-void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip, int slot, exec_prep_t & pr) {
+void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip, int slot, exec_prep_t & pr, const exec_prep_t * share = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
     const ggml_type_traits_cpu * tt = cpu_traits(w->type);
@@ -405,7 +407,15 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
         dot = fast_iq3_dot();
     }
 #endif
-    if (a->type == vdt) {
+    // idea D03 (MOE_CACHE_EXEC_SHARE_IN=0 turns it off): gate and up of a fused pair read the same activation with the same weight type, so the second
+    // op takes the first op's quantised columns (the same values it would compute itself; they stay valid, the buffer is per thread and slot)
+    static const bool share_in = !getenv("MOE_CACHE_EXEC_SHARE_IN") || atoi(getenv("MOE_CACHE_EXEC_SHARE_IN")) != 0;
+    if (share_in && share && share->base && share->nd->src[1] == a && share->w->type == w->type && a->type != vdt && share->nd->src[1]->data == a->data) {
+        base = share->base;
+        stride_i11 = share->stride_i11;
+        stride_tok = share->stride_tok;
+        dot = share->dot;
+    } else if (a->type == vdt) {
         base = (const char *) a->data;
         stride_i11 = a->nb[1];
         stride_tok = a->nb[2];
@@ -554,6 +564,9 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
     pr.dot = dot;
     pr.n_ready = tasks.size() - late.size();
     pr.eb0 = eb0;
+    pr.base = base;
+    pr.stride_i11 = stride_i11;
+    pr.stride_tok = stride_tok;
     pr.tasks = std::move(tasks);
 }
 
