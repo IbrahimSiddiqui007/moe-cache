@@ -2601,7 +2601,13 @@ def learn(argv):
     cmd = [a.llama_server, "-m", a.model, "-ngl", "99", "--n-cpu-moe", a.n_cpu_moe, "-c", "4096", "-fa", "on", "--load-mode", "mmap", "--no-warmup",
            "--port", str(a.port), "--seed", "42"]
     cmd += amd_windows_checkpoint_args(pick_gpu(list_devices(a.llama_server)) if WINDOWS else None, a.model, cmd)
-    p = subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT)
+    kw = {"preexec_fn": _die_with_parent_linux} if sys.platform.startswith("linux") else {}      # a SIGTERM / closed terminal must not leave llama-server behind
+    p = subprocess.Popen(cmd, env=env, stdout=logf, stderr=subprocess.STDOUT, **kw)
+    if WINDOWS:
+        try:
+            _kill_with_parent_windows(p)
+        except Exception:
+            pass
     try:
         for _ in range(300):
             if p.poll() is not None:
