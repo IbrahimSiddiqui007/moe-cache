@@ -114,6 +114,18 @@ struct moe_cache_backend_ctx {
         std::vector<ggml_tensor *> ext_clones;      // the input clones, in order of first use
     };
     std::vector<gpu_tmpl_t> tmpls;
+    // idea P11 (MOE_CACHE_GPU_KEEP_MIB=N, default 0 = off): whole expert tensors uploaded for a block stay in GPU memory (up to N MiB, least recently used out)
+    // and a later block that needs the same tensor (the next micro-batch of the same prompt) skips the upload: model weights never change, so a held copy is valid
+    struct gpu_held_t {
+        const ggml_tensor * src = nullptr;
+        ggml_context * ctx = nullptr;
+        ggml_backend_buffer_t buf = nullptr;
+        size_t bytes = 0;
+        bool filled = false;
+        uint64_t used = 0;
+    };
+    std::vector<gpu_held_t> held;
+    uint64_t held_serial = 0;
     ggml_backend_buffer_t up_buf = nullptr;  // P05: pinned staging area for the weights of one part
     bool               rb_failed = false;    // no pinned host buffer type, or it could not be allocated: plain blocking read-back
     // MOE_CACHE_HYBRID_ADAPT=N,K (default 8,16; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert of their layer's bank
@@ -153,6 +165,10 @@ void be_free(ggml_backend_t backend) {
     }
     for (auto & t : c->tmpls) {
         ggml_free(t.ctx);
+    }
+    for (auto & h : c->held) {      // GPU buffers are freed before their backend
+        ggml_backend_buffer_free(h.buf);
+        ggml_free(h.ctx);
     }
     if (c->galloc) {
         ggml_gallocr_free(c->galloc);
@@ -600,7 +616,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     const size_t per_alloc = pack_ids ? (per_chunk + bucket_n - 1) / bucket_n * bucket_n : per_chunk;
     std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
     std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
-    static const bool tmpl_env = getenv("MOE_CACHE_GPU_TMPL") && atoi(getenv("MOE_CACHE_GPU_TMPL")) > 0;
+    static const bool tmpl_env = getenv("MOE_CACHE_GPU_TMPL") && atoi(getenv("MOE_CACHE_GPU_TMPL")) > 0 && !(getenv("MOE_CACHE_GPU_KEEP_MIB") && atoi(getenv("MOE_CACHE_GPU_KEEP_MIB")) > 0);
     std::string tkey;
     if (tmpl_env) {      // the block's shape signature: ops, types, shapes, parameters, how the nodes read each other, and the split
         std::vector<const ggml_tensor *> exts;
@@ -664,6 +680,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             break;
         }
     }
+    static const size_t keep_mib = getenv("MOE_CACHE_GPU_KEEP_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_GPU_KEEP_MIB"))) : 0;
+    std::unordered_map<const ggml_tensor *, const ggml_tensor *> held_for;      // input clone -> source tensor whose GPU copy it sits in
+    if (keep_mib > 0) {
+        c->held_serial++;
+    }
     auto ext = [&](const ggml_tensor * t) {
         auto it = clone.find(t);
         if (it != clone.end()) {
@@ -677,6 +698,49 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         ggml_set_input(nt);
         clone[t] = nt;
         uploads.emplace_back(t, nt);
+        if (keep_mib > 0 && !pack_weights.count(t) && s.by_tensor.count(t) && ggml_is_contiguous(t)) {
+            moe_cache_backend_ctx::gpu_held_t * h = nullptr;
+            for (auto & x : c->held) {
+                if (x.src == t) { h = &x; break; }
+            }
+            const size_t nbytes = ggml_nbytes(nt);
+            if (!h && nbytes <= keep_mib * (size_t) 1048576) {
+                size_t tot = 0;
+                for (auto & x : c->held) { tot += x.bytes; }
+                while (tot + nbytes > keep_mib * (size_t) 1048576) {          // make room: least recently used first, never one this block already uses
+                    size_t vi = c->held.size();
+                    for (size_t i = 0; i < c->held.size(); i++) {
+                        if (c->held[i].used != c->held_serial && (vi == c->held.size() || c->held[i].used < c->held[vi].used)) { vi = i; }
+                    }
+                    if (vi == c->held.size()) { break; }
+                    tot -= c->held[vi].bytes;
+                    ggml_backend_buffer_free(c->held[vi].buf);
+                    ggml_free(c->held[vi].ctx);
+                    c->held.erase(c->held.begin() + (long) vi);
+                }
+                size_t fr = 0, tt = 0;
+                ggml_backend_dev_memory(s.gpu_dev, &fr, &tt);
+                if (tot + nbytes <= keep_mib * (size_t) 1048576 && (tt == 0 || fr >= nbytes + ((size_t) 512 << 20))) {
+                    ggml_init_params hp = { ggml_tensor_overhead() * 2 + 1024, nullptr, true };
+                    ggml_context * hc = ggml_init(hp);
+                    ggml_tensor * ht = hc ? ggml_new_tensor(hc, t->type, GGML_MAX_DIMS, ne) : nullptr;
+                    ggml_backend_buffer_t hb = ht ? ggml_backend_alloc_ctx_tensors(hc, c->gpu) : nullptr;
+                    if (hb) {
+                        moe_cache_backend_ctx::gpu_held_t nh;
+                        nh.src = t; nh.ctx = hc; nh.buf = hb; nh.bytes = ggml_backend_buffer_get_size(hb);
+                        c->held.push_back(nh);
+                        h = &c->held.back();
+                    } else if (hc) {
+                        ggml_free(hc);
+                    }
+                }
+            }
+            if (h) {
+                h->used = c->held_serial;
+                ggml_backend_tensor_alloc(h->buf, nt, ggml_backend_buffer_get_base(h->buf));
+                held_for[nt] = h->src;
+            }
+        }
         return nt;
     };
     if (!from_tmpl) {
@@ -824,7 +888,23 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         auto do_run = [&](const std::pair<const ggml_tensor *, size_t> & st, size_t k, size_t r) {
             wait_experts(s, st.first, pack_used[k], (int64_t) r);
             if (stage) {
-                memcpy(stage + st.second + (k - plo) * st.first->nb[2], (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2], r * st.first->nb[2]);
+                char * dst = stage + st.second + (k - plo) * st.first->nb[2];
+                const char * src = (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2];
+                const size_t nbytes = r * st.first->nb[2];
+                // idea P06 (MOE_CACHE_GPU_STAGE_THREADS=N, default 1): a copy of 8 MiB or more is split over N threads (the calling one and N-1 short-lived helpers)
+                static const int nth = getenv("MOE_CACHE_GPU_STAGE_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_STAGE_THREADS")))) : 1;
+                if (nth > 1 && nbytes >= ((size_t) 8 << 20)) {
+                    std::vector<std::thread> hs;
+                    const size_t part = (nbytes / (size_t) nth + 4095) / 4096 * 4096;
+                    for (int ti2 = 1; ti2 < nth; ti2++) {
+                        const size_t o = std::min(nbytes, part * (size_t) ti2), n2 = std::min(nbytes - o, part);
+                        hs.emplace_back([=] { memcpy(dst + o, src + o, n2); });
+                    }
+                    memcpy(dst, src, std::min(nbytes, part));
+                    for (auto & h : hs) { h.join(); }
+                } else {
+                    memcpy(dst, src, nbytes);
+                }
             }
         };
         if (interleave) {
@@ -938,6 +1018,20 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 continue;
             }
             if (ggml_is_contiguous(t)) {
+                bool held_has = false;
+                if (!held_for.empty() && held_for.count(d)) {
+                    for (auto & x : c->held) {
+                        if (x.src == t) {
+                            held_has = x.filled;
+                            x.filled = true;
+                            break;
+                        }
+                    }
+                }
+                if (held_has) {
+                    s.gpu_up_saved += ggml_nbytes(d);          // the held copy already has these bytes
+                    continue;
+                }
                 wait_experts(s, t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
                 ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
                 s.gpu_up_bytes += ggml_nbytes(d);
