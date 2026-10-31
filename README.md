@@ -39,7 +39,7 @@ MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. W
 | 4. Run | Double-click `moe-cache.bat`: the control page opens; pick the model, press Start. The first start takes a minute or two |
 | 5. Agents | Tick Agent mode, then the page's Connect buttons (Hermes, OpenCode) |
 
-If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says what to fix. Details: [docs/WINDOWS.md](docs/WINDOWS.md).
+If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says what to fix. Every install option: [docs/INSTALL.md](docs/INSTALL.md#windows-quick-start-experimental); Windows details: [docs/WINDOWS.md](docs/WINDOWS.md).
 
 **Using the PC while the model runs?** Tick **Leave room for me** on the control page (or `--leave-room`): the model leaves more RAM, GPU memory and CPU to your own programs and gets a little slower. A CPU with its own graphics: plug the monitor into the motherboard.
 
