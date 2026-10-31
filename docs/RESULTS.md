@@ -3096,3 +3096,17 @@ A sampler on the graph thread found 35 % of the time between plugin graphs in `g
 
 One model, 34k tokens only. Other models and depths are not measured.
 
+
+## 77. Baseline guard, DeepSeek, GLM MTP, HOST_OUT at 64k, and the batch slowdown stair (Windows PC, 2026-10-31; healthy PC, baseline 48.1 tok/s at 12:29, PC up 1-5 h; **not chart numbers**)
+
+Source: handover section 4 of 2026-11-01. One run per row unless stated; these are checks, not chart numbers.
+
+| Item | Result | State |
+|---|---|---|
+| B1 baseline guard | `baseline_guard.ps1`: the faster of 2 stock Qwen3.6 runs, limit 44 tok/s; a fail stops the queue. First real run passed | done |
+| B2 DeepSeek | Not a bug: the raw `/completion` call hits the end token, chat is correct (114 tokens, 6.1 tok/s, one run). The 0xFFFFFFFF exit code was our own Stop-Process | done, the launcher names it |
+| B3 GLM MTP, ABBA | water prompt 5.91 -> 7.83 tok/s (+32 %), code prompt 2.65 -> 2.59 (-2.3 %). The code text was **different** with the same split, so the launcher's "same output" was wrong | default unchanged (on in `--agent`); wording now says the output can differ slightly for some models |
+| B4 buffered reads, private path | see section 75 | merged, Windows only |
+| HOST_OUT (E1 fix) | Flash-Next: 34k prompt 286 -> 395 / 396 tok/s, wall 119 -> 86.5 s, text identical; 64k prompt 229 -> 299 / 306 tok/s. Section 76 covers the 34k row only | merged, default on, `MOE_CACHE_HOST_OUT=0` turns it off |
+| Open worry | Decode after a 64k prompt: 25.39 tok/s off vs 24.59 / 24.33 on (-3.5 %), one off-run. At 34k it was +0.7 %. To repeat in the next chain | not settled |
+| Batch slowdown 1.7 %, stair | **D08** (pool counters on separate cache lines) cost **-1.3 / -1.5 %** in both pairs; D12 about 0; up to D03 about 0; C15 + B05 about -0.3 % from one clean run; D10, D16, D07 about 0 | D08 reverted |
