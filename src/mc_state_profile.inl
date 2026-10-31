@@ -252,6 +252,11 @@
                 n_taken++;
             }
         }
+        // idea I17 (MOE_CACHE_WARM_SORT=1, default off): the warm-start reads go out in file order (per file, by offset), so the drive reads forward
+        static const bool warm_sort = getenv("MOE_CACHE_WARM_SORT") && atoi(getenv("MOE_CACHE_WARM_SORT")) > 0;
+        if (warm_sort) {
+            std::stable_sort(jobs.begin(), jobs.end(), [](const io_job_t & a, const io_job_t & b) { return a.fdi != b.fdi ? a.fdi < b.fdi : a.off < b.off; });
+        }
         const auto r0 = std::chrono::steady_clock::now();
         std::vector<pack_job_t *> pjs;
         pack_extract(jobs, pjs);
