@@ -23,6 +23,16 @@ for d in ("plain", "models [new]", "a*b", "q?x"):
     open(os.path.join(tmp, d, f"{stem}-00001-of-00004.gguf"), "wb").write(b"x")      # another split of the same name: not a part
     got = mc.model_parts(os.path.join(tmp, d, names[0]))
     check(sorted(os.path.basename(p) for p in got) == names, f"all 3 shards found in '{d}' ({len(got)})")
+sys.path.insert(0, os.path.join(ROOT, "planner"))
+import gguf_plan  # noqa: E402
+import moe_cache_pick as picker  # noqa: E402
+d = os.path.join(tmp, "models [new]")
+first = os.path.join(d, "Big [Q4]-00001-of-00003.gguf")
+check(len(gguf_plan.shards(first)) == 3, "the planner's shards() finds all 3 in a folder with brackets")
+open(os.path.join(d, "Other [x].gguf"), "wb").write(b"x")
+picker.MODELS = dict(picker.MODELS, probe=dict(name="p", size=1, pattern=r"^Other \[x\]\.gguf$", repo="r", include="i"))
+picker.is_draft_head = lambda p: False
+check("probe" in picker.find_local([d], ollama_stores=[]), "the picker finds a model in a folder whose name has brackets")
 single = os.path.join(tmp, "plain", "one.gguf")
 check(mc.model_parts(single) == [single], "a single file is itself")
 sys.exit(1 if fails else 0)

@@ -174,7 +174,7 @@ def mtp_layers(path):
 
 def shards(path):
     m = re.match(r"(.*)-(\d+)-of-(\d+)\.gguf$", path)
-    return sorted(glob.glob(f"{m.group(1)}-*-of-{m.group(3)}.gguf")) if m else [path]
+    return sorted(glob.glob(glob.escape(m.group(1)) + f"-*-of-{m.group(3)}.gguf")) if m else [path]      # the folder and name are the user's text
 
 
 def model_layout(path):

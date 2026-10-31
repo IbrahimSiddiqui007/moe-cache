@@ -807,7 +807,7 @@ def guess_agent(text):
 def warm_files():
     """Saved agent conversations (newest first), with what the file names and headers say."""
     out = []
-    for f in glob.glob(os.path.join(slot_dir(), "*-s*.bin")):
+    for f in glob.glob(os.path.join(glob.escape(slot_dir()), "*-s*.bin")):
         name = os.path.basename(f)
         m = SESSION_RE.match(name)
         if not m or name.endswith(".new.bin"):
@@ -1389,7 +1389,7 @@ class Runner:
             path = (base + ".md") if base else None
             if not path or not os.path.isfile(path):
                 try:
-                    cand = sorted(glob.glob(os.path.join(REPORT_DIR, "moe-cache-report-*.md")), key=os.path.getmtime)
+                    cand = sorted(glob.glob(os.path.join(glob.escape(REPORT_DIR), "moe-cache-report-*.md")), key=os.path.getmtime)
                     path = cand[-1] if cand and os.path.getmtime(cand[-1]) >= sh["started"] - 2 else None
                 except OSError:
                     path = None
@@ -1589,7 +1589,7 @@ def chat_path(cid):
 
 def list_chats():
     out = []
-    for f in glob.glob(os.path.join(CHAT_DIR, "*.json")):
+    for f in glob.glob(os.path.join(glob.escape(CHAT_DIR), "*.json")):
         try:
             with open(f, encoding="utf-8") as fh:
                 c = json.load(fh)

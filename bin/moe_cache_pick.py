@@ -234,7 +234,7 @@ def find_local(folders, ollama_stores=None):
     """{model id: path of the first file} for the candidates found in the folders (depth 2) and in Ollama's stores."""
     found = {}
     for f in folders:
-        for p in glob.glob(os.path.join(f, "*.gguf")) + glob.glob(os.path.join(f, "*", "*.gguf")):
+        for p in glob.glob(os.path.join(glob.escape(f), "*.gguf")) + glob.glob(os.path.join(glob.escape(f), "*", "*.gguf")):
             b = os.path.basename(p)
             if re.search(r"-\d{5}-of-\d{5}\.gguf$", b) and not re.search(r"-00001-of-\d{5}\.gguf$", b):
                 continue

@@ -2239,7 +2239,7 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
         return
     saved_tokens = {}           # slot -> token count of its file on disk (N27)
     bytes_per_token = None      # from the last save or restore (file size / tokens); sets the waits of warm_save_wait()
-    files = [f for f in glob.glob(os.path.join(slotdir, tag + "-s*.bin")) if re.search(r"-s(\d+)\.bin$", f) and not f.endswith(".new.bin")]
+    files = [f for f in glob.glob(os.path.join(glob.escape(slotdir), tag + "-s*.bin")) if re.search(r"-s(\d+)\.bin$", f) and not f.endswith(".new.bin")]
     for f in sorted(files, key=os.path.getsize, reverse=True)[:keep]:
         to = int(re.search(r"-s(\d+)\.bin$", f).group(1))      # back into the slot it came from, so later saves replace this file
         t0 = time.time()
@@ -2651,7 +2651,7 @@ def project(argv):
     a = ap.parse_args(argv)
     d = os.path.join(CACHE_DIR, "slots")
     if a.cmd == "list":
-        files = sorted(glob.glob(os.path.join(d, "*", "*.bin")))
+        files = sorted(glob.glob(os.path.join(glob.escape(d), "*", "*.bin")))
         for f in files:
             say(f"{os.path.getsize(f) / 1e6:10.1f} MB  {time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(f)))}  {f}")
         if not files:
