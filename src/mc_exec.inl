@@ -600,7 +600,14 @@ void exec_run_prepared(state_t & s, exec_prep_t * p, int n) {
         s.exec_fused++;
     }
     const uint64_t tp0 = etimes ? exec_now_ns() : 0;       // idea D13: the per-type time is kept only with MOE_CACHE_EXEC_TIMES (two clock reads less per op)
-    s.pool->run(single->data(), (int) single->size(), w->ne[1], w->ne[0], w->nb[1], p[0].dot, s.exec_chunk, p[0].nd->name);
+    // idea D06 (MOE_CACHE_POOL_CHUNK_ADAPT=1, default off): a job too small to give every thread about 4 chunks of the usual size gets a smaller chunk (>= 16 rows)
+    static const bool chunk_adapt = getenv("MOE_CACHE_POOL_CHUNK_ADAPT") && atoi(getenv("MOE_CACHE_POOL_CHUNK_ADAPT")) > 0;
+    int chunk = s.exec_chunk;
+    if (chunk_adapt) {
+        const int64_t want = (int64_t) single->size() * w->ne[1] / (4 * (int64_t) (s.pool->th.size() + 1));
+        chunk = (int) std::max<int64_t>(16, std::min<int64_t>(s.exec_chunk, want));
+    }
+    s.pool->run(single->data(), (int) single->size(), w->ne[1], w->ne[0], w->nb[1], p[0].dot, chunk, p[0].nd->name);
     const uint64_t rn = etimes ? exec_now_ns() - tp0 : 0;
     for (int k = 0; k < n; k++) {
         const uint64_t bytes = (uint64_t) p[k].tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
