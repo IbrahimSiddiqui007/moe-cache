@@ -110,11 +110,11 @@ struct exec_pool_t {
             }
 #endif
             const uint64_t b0 = tm ? exec_now_ns() : 0;
+            wh.task = &t;          // idea D16: the task is the same for every row of the chunk, so it is stored once, the row once per row
             for (int64_t r = r0; r < r1; r++) {
                 const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
+                wh.r = r;
                 for (int k = 0; k < t.ncol; k++) {
-                    wh.task = &t;
-                    wh.r = r;
                     wh.k = k;
                     wh.dst = &t.dsts[k][r];
                     j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
