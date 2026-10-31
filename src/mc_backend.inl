@@ -493,6 +493,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             rb = ggml_backend_buffer_get_base(c->rb_buf);
         }
     }
+    static const bool share_up = getenv("MOE_CACHE_GPU_SHARE_UP") && atoi(getenv("MOE_CACHE_GPU_SHARE_UP")) > 0;
+    // idea P02 (MOE_CACHE_GPU_RB_ROWS=1): in a split block read back only the rows of this part's experts (runs of neighbouring rows in one copy)
+    static const bool rb_rows = getenv("MOE_CACHE_GPU_RB_ROWS") && atoi(getenv("MOE_CACHE_GPU_RB_ROWS")) > 0;
     double up_ns = 0, comp_ns = 0, get_ns = 0;
     std::vector<uint8_t> pack, part;
     for (size_t ch = 0; ch < n_chunk; ch++) {
@@ -501,6 +504,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         for (auto & u : uploads) {
             const ggml_tensor * t = u.first;
             ggml_tensor * d = u.second;
+            // idea P09 (MOE_CACHE_GPU_SHARE_UP=1): in a split block everything but the part's experts and ids is the same for every part, and the
+            // clones are set_input tensors (the allocator never reuses them): upload them with the first part only
+            if (share_up && ch > 0 && !pack_weights.count(t) && t != pack_ids) {
+                continue;
+            }
             if (pack_weights.count(t)) {
                 // the used experts (of this part), in runs of neighbours, into their packed places
                 const size_t nb2 = t->nb[2];
@@ -566,7 +574,31 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         const auto t_g0 = std::chrono::steady_clock::now();
         const char * res = nullptr;           // the block's result on the host (all parts: the part's result)
-        if (rb) {
+        if (rb && rb_rows && n_chunk > 1 && pack_ids && ggml_is_contiguous(out) && out->nb[1] == ggml_row_size(out->type, out->ne[0])) {
+            const size_t row = out->nb[1];
+            size_t run_start = 0, run_len = 0;
+            auto flush = [&] {
+                if (run_len) {
+                    ggml_backend_tensor_get_async(c->gpu, gout, (char *) rb + run_start * row, run_start * row, run_len * row);
+                    run_len = 0;
+                }
+            };
+            for (int64_t i1 = 0; i1 < pack_ids->ne[1]; i1++) {
+                for (int64_t i0 = 0; i0 < pack_ids->ne[0]; i0++) {
+                    const size_t v = (size_t) pack_map[(size_t) *(const int32_t *) ((const char *) pack_ids->data + i0 * pack_ids->nb[0] + i1 * pack_ids->nb[1])];
+                    const size_t ri = (size_t) i0 + (size_t) i1 * (size_t) pack_ids->ne[0];     // row index in memory order (out->nb[2] == ne[1] * row)
+                    if (v >= lo && v < hi) {
+                        if (run_len == 0) { run_start = ri; }
+                        run_len++;
+                    } else {
+                        flush();
+                    }
+                }
+            }
+            flush();
+            ggml_backend_synchronize(c->gpu);
+            res = (const char *) rb;
+        } else if (rb) {
             ggml_backend_tensor_get_async(c->gpu, gout, rb, 0, out_bytes);
             ggml_backend_synchronize(c->gpu);
             res = (const char *) rb;
