@@ -22,6 +22,7 @@
         {
             std::lock_guard<std::mutex> lk(mu);
             graph_active--;
+            last_long = cur_scan;       // idea C07: the graph that just ended was a long prompt batch
             if (g_saw_dec) { rb_armed_dec = false; }
             if (g_saw_pre) { rb_armed_pre = false; }
         }
@@ -53,7 +54,11 @@
                 continue;
             }
             const uint64_t now = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
-            if (now - last_end_ns.load() < (uint64_t) rb_idle_ms * 1000000ull) {
+            // idea C07 (MOE_CACHE_REFILL_AFTER_PROMPT=1, default off): after a long prompt batch the refill starts after an eighth of the idle time, so the decode
+            // working set is being arranged while the prompt's last chunks finish and the first tokens run
+            static const bool after_prompt = getenv("MOE_CACHE_REFILL_AFTER_PROMPT") && atoi(getenv("MOE_CACHE_REFILL_AFTER_PROMPT")) > 0;
+            const uint64_t wait_ms = (after_prompt && last_long) ? (uint64_t) std::max(20, rb_idle_ms / 8) : (uint64_t) rb_idle_ms;
+            if (now - last_end_ns.load() < wait_ms * 1000000ull) {
                 continue;
             }
             rb_round(lk);

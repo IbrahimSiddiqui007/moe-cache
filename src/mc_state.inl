@@ -260,6 +260,7 @@ struct state_t {
     int    graph_active = 0;                            // be_compute calls in flight (mu)
     uint64_t graph_seq = 0;                             // graphs started (mu)
     uint64_t rb_round_seq = ~0ull;                      // graph_seq of the last rebalance round: one round per idle period
+    bool last_long = false;                             // idea C07: the last graph ended on a long prompt batch (under mu)
     std::atomic<uint64_t> last_end_ns{0};               // steady clock, end of the last graph
     bool   rb_acted = false;                            // the last round read something: measure the next graphs
     bool   rb_armed_dec = false, rb_armed_pre = false;  // count the hits of the first decode / prefill graph after a rebalance
