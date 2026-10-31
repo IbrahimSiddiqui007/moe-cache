@@ -470,7 +470,10 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
     all.clear();
     late.clear();
     all.reserve((size_t) n_ids * (size_t) n_tok);
-    task_of.assign((size_t) w->ne[2], -1);
+    // idea D12: the slot table stays all -1 between ops; only the slots this op touched (the experts in `all`) are reset at the end
+    if (task_of.size() < (size_t) w->ne[2]) {
+        task_of.resize((size_t) w->ne[2], -1);
+    }
     const std::vector<int32_t> * routed = nullptr;
     if (s.route_mode || s.fewer > 0) {
         auto rit = s.route_ids.find(ids);
@@ -514,6 +517,9 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
             tk.dsts[tk.ncol] = (float *) ((char *) nd->data + (size_t) slot * nd->nb[1] + (size_t) t * nd->nb[2]);
             tk.ncol++;
         }
+    }
+    for (const auto & t : all) {
+        task_of[(size_t) ((t.w - (const char *) w->data) / (ptrdiff_t) w->nb[2])] = -1;
     }
     std::vector<exec_task_t> tasks;
     tasks.reserve(all.size());
