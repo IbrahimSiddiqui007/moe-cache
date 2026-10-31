@@ -978,6 +978,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     for (size_t ch = 0; ch < n_chunk; ch++) {
         const size_t lo = ch * per_chunk, hi = std::min(pack_used.size(), lo + per_chunk);
         const auto t_up0 = std::chrono::steady_clock::now();
+        const uint64_t f_up0 = e1 ? state_t::process_faults() : 0;
         if (stage && staged_ch != ch) {
             stage_part(ch);
         }
