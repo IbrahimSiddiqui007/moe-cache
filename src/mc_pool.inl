@@ -48,8 +48,8 @@ struct exec_job_t {
     int64_t  ne00 = 0;
     size_t   nb01 = 0;
     ggml_vec_dot_t dot = nullptr;
-    alignas(64) std::atomic<int> next{0};      // idea D08: the chunk claim counter, the done counter and the fields above sit on separate cache lines
-    alignas(64) std::atomic<int> done{0};
+    std::atomic<int> next{0};
+    std::atomic<int> done{0};
     uint64_t t_pub_ns = 0;     // MOE_CACHE_EXEC_TIMES: when run() published the job
 };
 
@@ -57,10 +57,10 @@ inline uint64_t exec_now_ns() { return (uint64_t) std::chrono::duration_cast<std
 
 struct exec_pool_t {
     std::vector<std::thread> th;
-    alignas(64) std::atomic<uint32_t> gen{0};       // idea D08: read by every spinning worker, kept off the line that `inside` and `parked` write
+    std::atomic<uint32_t> gen{0};
     std::atomic<bool> stop{false};
     std::atomic<exec_job_t *> cur{nullptr};
-    alignas(64) std::atomic<int> inside{0};
+    std::atomic<int> inside{0};
     std::atomic<int> parked{0};
     std::atomic<uint64_t> parks{0};    // times a worker fell asleep (stats "pool_parks"; idea N30: each one costs an OS wake-up at the next layer)
     // MOE_CACHE_POOL_SPIN_US=N: a worker keeps spinning N microseconds after its last job before it sleeps (0 = the fixed 40,000 pauses).
