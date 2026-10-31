@@ -48,7 +48,7 @@ struct state_t {
     std::atomic<uint64_t> hyb_drops{0}, hyb_reloads{0}, hyb_reload_ns{0};
     std::atomic<uint64_t> hyb_swaps{0}, hyb_swap_ns{0}, hyb_reverts{0};   // MOE_CACHE_HYBRID_ADAPT: experts swapped into the bank, time spent uploading them   // bank freed for a long prompt's GPU block, loaded again at the next decode step
     std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0}, gpu_split_blocks{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory; gpu_split_blocks: blocks run in parts (N23)
-    std::atomic<uint64_t> gpu_up_bytes{0};
+    std::atomic<uint64_t> gpu_up_bytes{0}, gpu_up_saved{0};     // gpu_up_saved: idea P11, bytes whose upload a held GPU copy made unnecessary
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
     std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
     bool cur_decode = false;                            // the group being prepared is a single-token (decode) step
@@ -186,8 +186,43 @@ struct state_t {
         update_ws_min();
     }
 #endif
+    // idea C13 (MOE_CACHE_RESIDENCY_CHECK=N, Linux, default off): every N graphs, ask the kernel (mincore) whether 16 experts marked resident are really in RAM;
+    // the exit line "residency check" reports how many were not (the OS reclaimed them under memory pressure). A diagnostic: it changes nothing else.
+    uint64_t res_checked = 0, res_missing = 0, res_graphs = 0;
+    void residency_sample() {
+#ifdef __linux__
+        static const int every = getenv("MOE_CACHE_RESIDENCY_CHECK") ? atoi(getenv("MOE_CACHE_RESIDENCY_CHECK")) : 0;
+        if (every <= 0 || (++res_graphs % (uint64_t) every) != 0 || tensors.empty()) {
+            return;
+        }
+        static uint64_t rng = 88172645463325252ull;
+        for (int k = 0; k < 16; k++) {
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            const tinfo_t & ti = *tensors[rng % tensors.size()];
+            const int64_t e = (int64_t) ((rng >> 20) % (uint64_t) ti.n_expert);
+            if (!nodes[(size_t) (ti.node0 + e)].resident || nodes[(size_t) (ti.node0 + e)].loading) {
+                continue;
+            }
+            const uintptr_t a0 = (uintptr_t) ti.data + (size_t) e * ti.nb2;
+            const uintptr_t a = (a0 + PAGE - 1) / PAGE * PAGE, b = (a0 + ti.nb2) / PAGE * PAGE;
+            if (b <= a) {
+                continue;
+            }
+            std::vector<unsigned char> vec((b - a) / PAGE);
+            if (mincore((void *) a, b - a, vec.data()) != 0) {
+                continue;
+            }
+            size_t out = 0;
+            for (unsigned char v : vec) { out += (v & 1) ? 0 : 1; }
+            res_checked += vec.size();
+            res_missing += out;
+        }
+#endif
+    }
+
     void begin_graph() {
         std::lock_guard<std::mutex> lk(mu);
+        residency_sample();
         protect_epoch = epoch + 1;
         if (idle_released) {
             idle_released = false;
@@ -198,6 +233,7 @@ struct state_t {
     std::vector<std::unique_ptr<tinfo_t>> tensors;
     std::unordered_map<const ggml_tensor *, int> by_tensor;
     std::vector<node_t> nodes;
+    std::vector<uint32_t> node_owner;           // index in `tensors` of the tensor that owns each node (same size as nodes)
     // Replacement policy. MOE_CACHE_POLICY=lru (default): one list, evict the least recently used. MOE_CACHE_POLICY=classlru (llama.cpp #31233):
     // nclass LRU lists; a node's decayed use count crf (half-life classlru_hl decode tokens, kept after eviction) picks its list
     // (class = min(nclass-1, floor(log2 crf))); the victim is the oldest evictable node of each list with the largest age / 2^class.
@@ -224,6 +260,32 @@ struct state_t {
     int    graph_active = 0;                            // be_compute calls in flight (mu)
     uint64_t graph_seq = 0;                             // graphs started (mu)
     uint64_t rb_round_seq = ~0ull;                      // graph_seq of the last rebalance round: one round per idle period
+    // idea P20 (MOE_CACHE_PREFILL_LEND_MIB=N, default 0 = off): while long prompt batches run, the expert cache gives N MiB back to the system (the cache is cut by N and
+    // the surplus evicted), and takes them back at the first small (decode) graph
+    size_t lent_bytes = 0;
+    void prefill_lend(int64_t max_tok) {
+        static const size_t lend = getenv("MOE_CACHE_PREFILL_LEND_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_PREFILL_LEND_MIB"))) << 20 : 0;
+        if (!lend) {
+            return;
+        }
+        std::lock_guard<std::mutex> lk(mu);
+        if (max_tok >= scan_tokens && !lent_bytes && budget > lend) {
+            lent_bytes = lend;
+            budget -= lend;
+            while (resident_bytes > budget) {
+                int v = pick_victim();
+                if (v < 0) { break; }
+                evict(v);
+            }
+            fprintf(stderr, "moe-cache: long prompt: the expert cache lends %.0f MiB to the system until decode (MOE_CACHE_PREFILL_LEND_MIB)\n", lend / 1048576.0);
+        } else if (max_tok < scan_tokens && lent_bytes) {
+            budget += lent_bytes;
+            if (max_budget && budget > max_budget) { budget = max_budget; }
+            lent_bytes = 0;
+        }
+    }
+
+    bool last_long = false;                             // idea C07: the last graph ended on a long prompt batch (under mu)
     std::atomic<uint64_t> last_end_ns{0};               // steady clock, end of the last graph
     bool   rb_acted = false;                            // the last round read something: measure the next graphs
     bool   rb_armed_dec = false, rb_armed_pre = false;  // count the hits of the first decode / prefill graph after a rebalance
@@ -247,6 +309,26 @@ struct state_t {
     std::mutex rq_mu;
     std::condition_variable rq_cv;
     std::deque<io_job_t> rq;
+    // idea I13 (MOE_CACHE_READER_AFFINITY=1, Linux, default off): once the executor pool exists, the reader threads move to the CPUs the pool does not use
+    // (if any are left), so a read's completion is not queued behind a compute thread
+    std::vector<int> reader_cpus;
+    std::atomic<int> reader_aff_gen{0};
+    void set_reader_cpus(const std::vector<int> & pool_cpus) {
+        static const bool on = getenv("MOE_CACHE_READER_AFFINITY") && atoi(getenv("MOE_CACHE_READER_AFFINITY")) > 0;
+        if (!on) {
+            return;
+        }
+        std::lock_guard<std::mutex> lk(rq_mu);
+        reader_cpus.clear();
+        const int n = (int) std::thread::hardware_concurrency();
+        for (int c = 0; c < n; c++) {
+            if (std::find(pool_cpus.begin(), pool_cpus.end(), c) == pool_cpus.end()) {
+                reader_cpus.push_back(c);
+            }
+        }
+        reader_aff_gen++;
+    }
+    std::atomic<int> demand_pending{0};          // idea I02: demand reads queued or running in the reader threads (advisory prefetch reads wait while this is above 0)
     bool   rq_stop = false;
     std::atomic<uint64_t> exec_fused{0}, exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
     uint64_t stepaside_graphs = 0, stepaside_waits = 0;   // executor graphs handed back to llama.cpp with everything resident / of them, graphs that had to wait for a load

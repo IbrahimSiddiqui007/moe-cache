@@ -49,10 +49,21 @@ void buf_commit_once(moe_cache_buffer_ctx * c, const void * p, size_t size) {
 std::mutex g_bufs_mu;
 std::vector<std::pair<ggml_backend_buffer_t, moe_cache_buffer_ctx *>> g_bufs;   // a handful of buffers, created at load
 
+std::atomic<uint64_t> g_bufs_gen{1};     // bumped whenever the registry changes: invalidates the per-thread last-hit cache (idea B05)
+
 moe_cache_buffer_ctx * buf_ctx(ggml_backend_buffer_t buffer) {
+    static thread_local ggml_backend_buffer_t last_buf = nullptr;
+    static thread_local moe_cache_buffer_ctx * last_ctx = nullptr;
+    static thread_local uint64_t last_gen = 0;
+    if (last_buf == buffer && last_gen == g_bufs_gen.load(std::memory_order_acquire)) {
+        return last_ctx;
+    }
     std::lock_guard<std::mutex> lk(g_bufs_mu);
     for (const auto & b : g_bufs) {
         if (b.first == buffer) {
+            last_buf = buffer;
+            last_ctx = b.second;
+            last_gen = g_bufs_gen.load(std::memory_order_acquire);
             return b.second;
         }
     }
@@ -87,6 +98,7 @@ void buf_free(ggml_backend_buffer_t buffer) {
         for (size_t k = 0; k < g_bufs.size(); k++) {
             if (g_bufs[k].first == buffer) {
                 g_bufs.erase(g_bufs.begin() + (long) k);
+                g_bufs_gen.fetch_add(1, std::memory_order_release);
                 break;
             }
         }
@@ -201,6 +213,7 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     ggml_backend_buffer_t b = buffer_init_padded(buft, g_buf_i, c, size);
     std::lock_guard<std::mutex> lk(g_bufs_mu);
     g_bufs.emplace_back(b, c);
+    g_bufs_gen.fetch_add(1, std::memory_order_release);
     return b;
 }
 

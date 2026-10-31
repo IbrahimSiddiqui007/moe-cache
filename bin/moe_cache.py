@@ -619,12 +619,35 @@ def vk_cache_cap(ls, model, listing=None):
     vkdevs = [n.strip() for n in re.findall(r"^\s+Vulkan\d+: (.+?) \(\d+ MiB", listing or list_devices(ls), re.M)]
     if not vkdevs:
         return None, None
+    # idea L03 (MOE_CACHE_PROBE_CACHE=1, default off): the device limits are kept in a file by device names and llama-server file (size + date), so a restart
+    # does not run the probe again; any change of device list or binary reads them fresh
+    pc_file = os.path.join(CACHE_DIR, "vk_limits.json")
     try:
+        st_ls = os.stat(ls)
+        pc_key = "|".join(sorted(vkdevs)) + f"|{st_ls.st_size}|{int(st_ls.st_mtime)}"
+    except OSError:
+        pc_key = None
+    lim = None
+    if os.environ.get("MOE_CACHE_PROBE_CACHE") == "1" and pc_key:
+        try:
+            lim = json.load(open(pc_file)).get(pc_key)
+        except (OSError, ValueError):
+            lim = None
+    if lim is None:
+      try:
         r = subprocess.run([python_cmd(), "-c", "import json, sys; sys.path.insert(0, sys.argv[1]); import moe_cache as m; print(json.dumps(m.vk_tensor_limits()))",
                             os.path.join(HERE, "bin")], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
                            creationflags=0x08000000 if WINDOWS else 0)          # CREATE_NO_WINDOW: no console flash under pythonw
         lim = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
+        if os.environ.get("MOE_CACHE_PROBE_CACHE") == "1" and pc_key and lim:
+            try:
+                d = json.load(open(pc_file)) if os.path.isfile(pc_file) else {}
+                d[pc_key] = lim
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                json.dump(d, open(pc_file, "w"))
+            except (OSError, ValueError):
+                pass
+      except Exception:
         lim = []
     match = [b for n, b in lim if n.strip() in vkdevs] or [b for n, b in lim]     # the listed devices by name, else all
     if not match:
@@ -1830,7 +1853,18 @@ def _launch_plan(a, extra, argv, machine):
             extra.append("--jinja")         # the default in current llama.cpp; explicit for older builds (tool calls need the model's own template)
         if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None:
             # models with recurrent layers keep a copy of that state per checkpoint in host RAM (about 60 MiB on Qwen3.6-35B), outside the cache's budget
-            extra += ["--ctx-checkpoints", "8"]
+            # idea S03 (MOE_CACHE_CKPT=N, default 8): how many recurrent checkpoints each conversation keeps; more cost host RAM, fewer cost reprocessing
+            ck = os.environ.get("MOE_CACHE_CKPT", "8")
+            extra += ["--ctx-checkpoints", ck if ck.isdigit() else "8"]
+        # idea S02 (MOE_CACHE_SLOT_SIMILARITY=0..1, default unset = the server's own): a request takes a busy conversation's slot only if its prompt is at least
+        # this similar to what the slot holds, so a short request from another agent goes to a free slot instead of displacing a long conversation
+        sps = os.environ.get("MOE_CACHE_SLOT_SIMILARITY")
+        if sps and arg_after(extra, "-sps", "--slot-prompt-similarity") is None:
+            try:
+                if 0.0 <= float(sps) <= 1.0:
+                    extra += ["--slot-prompt-similarity", sps]
+            except ValueError:
+                pass
         alias = arg_after(extra, "-a", "--alias")
         if alias is None:
             alias = default_alias(model)
@@ -2052,6 +2086,11 @@ def _launch_plan(a, extra, argv, machine):
                 # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
                 lim = machine.mem_for_server(a.ram)
                 cram = "0" if lim and lim < 16e9 else "2048"
+                # idea L05 (MOE_CACHE_PROMPT_CACHE_MIB=N, unset = the rule above): set the prompt cache from evidence instead of the fixed split (0 = off); the number
+                # to use is the one where the saved reprocessing stops paying for the expert-cache RAM it takes (tools/agent_bench.py at two settings)
+                pcm = os.environ.get("MOE_CACHE_PROMPT_CACHE_MIB", "")
+                if re.fullmatch(r"[0-9]+", pcm):
+                    cram = pcm
                 extra += ["--cache-ram", cram]
                 cram_auto = True
         except Exception:
@@ -2230,6 +2269,9 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
     big files and for small changes). Each agent keeps
     its own slot (llama-server picks the slot whose prompt matches best), so Hermes and OpenCode both start warm after a restart. Saves go to a
     temporary name first, so a stop during a save never leaves a broken file. When the shared KV pool fills, llama-server clears idle slots itself."""
+    # idea S09 (MOE_CACHE_WARM_KEEP=N, default 2): restore only the N longest saved conversations at start (0 = none), not the two largest states every time
+    kv = os.environ.get("MOE_CACHE_WARM_KEEP", "")
+    keep = int(kv) if kv.isdigit() else keep
     url = f"http://127.0.0.1:{port}"
     for _ in range(3600):
         if healthy(port, api_key):

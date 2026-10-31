@@ -94,6 +94,7 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
 #endif
         s.pool.reset(new exec_pool_t());
         s.pool->start(cpus, (int) cpus.size());
+        s.set_reader_cpus(cpus);
         fprintf(stderr, "moe-cache: executor pool: %d compute threads (%d on efficiency cores)\n", (int) cpus.size() + 1, extra);
     }
     if (CPU().set_n_threads) {
@@ -120,8 +121,9 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
             if (j2 >= 0) {
                 exec_prep_t two[2];
                 exec_prep_op(s, nd, nullptr, 0, two[0]);
-                exec_prep_op(s, ggml_graph_node(cg, j2), nullptr, 1, two[1]);
-                const bool same = two[0].dot == two[1].dot;
+                exec_prep_op(s, ggml_graph_node(cg, j2), nullptr, 1, two[1], &two[0]);
+                static const bool fuse_any = getenv("MOE_CACHE_EXEC_FUSE_ANY") && atoi(getenv("MOE_CACHE_EXEC_FUSE_ANY")) > 0;
+                const bool same = fuse_any || two[0].dot == two[1].dot;
                 exec_run_prepared(s, two, same ? 2 : 1);
                 if (!same) {
                     exec_run_prepared(s, two + 1, 1);
@@ -318,7 +320,32 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 #ifdef _WIN32
             s.release_model_pages();
 #endif
-            s.preload();
+            // idea C20 (MOE_CACHE_PRELOAD_SKIP_TOKENS=N, default off): a first graph of N or more tokens is a long cold prefill that reads nearly every
+            // expert itself, so the startup fill is skipped instead of read twice / displaced; the cache then fills from the prompt
+            static const int skip_tok = getenv("MOE_CACHE_PRELOAD_SKIP_TOKENS") ? atoi(getenv("MOE_CACHE_PRELOAD_SKIP_TOKENS")) : 0;
+            bool skip_preload = false;
+            if (skip_tok > 0) {
+                const int nn = ggml_graph_n_nodes(cg);
+                for (int i = 0; i < nn && !skip_preload; i++) {
+                    const ggml_tensor * q = ggml_graph_node(cg, i);
+                    skip_preload = q->op == GGML_OP_MUL_MAT_ID && q->src[2] && q->src[2]->ne[1] >= skip_tok;
+                }
+            }
+            if (skip_preload) {
+                s.preload_done = true;
+                fprintf(stderr, "moe-cache: the first graph is a long prompt (>= %d tokens): the startup fill is skipped (MOE_CACHE_PRELOAD_SKIP_TOKENS)\n", skip_tok);
+            } else {
+                s.preload();
+            }
+        }
+        static const bool lend_on = getenv("MOE_CACHE_PREFILL_LEND_MIB") != nullptr;
+        if (lend_on) {
+            int64_t mt = 0;
+            for (int i = 0, nn = ggml_graph_n_nodes(cg); i < nn; i++) {
+                const ggml_tensor * q = ggml_graph_node(cg, i);
+                if (q->op == GGML_OP_MUL_MAT_ID && q->src[2]) { mt = std::max<int64_t>(mt, q->src[2]->ne[1]); }
+            }
+            s.prefill_lend(mt);
         }
         s.begin_graph();       // the experts of every group below stay protected until the next graph
         const int n_nodes = ggml_graph_n_nodes(cg);

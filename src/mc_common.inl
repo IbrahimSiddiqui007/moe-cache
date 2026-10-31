@@ -110,7 +110,13 @@ size_t round_up(size_t x, size_t a = PAGE) {
     return (x + a - 1) / a * a;
 }
 
+// idea D25 (build with MOE_CACHE_CXXFLAGS=-DMOE_CACHE_NODE_PAD=1, default off): one node per cache line, so a worker spinning on `loading` does not
+// share a line with the replacement fields of its neighbour (about 40 bytes more per node)
+#ifdef MOE_CACHE_NODE_PAD
+struct alignas(64) node_t {
+#else
 struct node_t {
+#endif
     int      prev = -1;
     int      next = -1;
     uint64_t epoch = 0;
@@ -343,6 +349,7 @@ struct io_job_t {
     bool   direct;   // memory address matches the file offset (mod 4096): read straight into place
     const ggml_tensor * rtensor = nullptr;   // set: repack this expert while loading it
     int    node = -1;        // index in the node table (asynchronous loads clear its "loading" flag when done)
+    std::vector<int> * more = nullptr;  // idea I01: nodes of the neighbours merged into this queued read (owned by the reader that dequeues it)
     struct pack_job_t * pk = nullptr;   // set: a read from the .moepack file that fills several slices of one expert (owned by whoever dequeues the job)
 };
 

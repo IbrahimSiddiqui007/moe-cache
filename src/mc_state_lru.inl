@@ -1,6 +1,18 @@
 // moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): LRU over resident experts, eviction, prepare_group, read flushing.
     // ---- LRU over resident experts ----
+    // idea C04 (MOE_CACHE_LAYER_SHARE=K, default 0 = off, plain LRU policy only): of the K oldest idle experts the victim comes from the layer that holds the most
+    // experts in the cache, so one layer cannot keep most of the capacity while another stalls on every token
+    int layer_share_k = [] { const char * v = getenv("MOE_CACHE_LAYER_SHARE"); return v ? std::max(0, std::min(64, atoi(v))) : 0; }();
+    std::vector<int> layer_cnt;
+    void layer_adj(int s, int d) {
+        const int L = tensors[node_owner[(size_t) s]]->layer;
+        if (L < 0) { return; }
+        if ((size_t) L >= layer_cnt.size()) { layer_cnt.resize((size_t) L + 1, 0); }
+        layer_cnt[(size_t) L] += d;
+    }
+
     void unlink(int s) {
+        if (layer_share_k) { layer_adj(s, -1); }
         node_t & n = nodes[s];
         if (n.prev >= 0) { nodes[n.prev].next = n.next; } else { mruc[n.cls] = n.next; }
         if (n.next >= 0) { nodes[n.next].prev = n.prev; } else { lruc[n.cls] = n.prev; }
@@ -9,6 +21,7 @@
 
     // evict-first insertion: a long prompt's experts recycle their own slots instead of pushing out what was cached before (MOE_CACHE_SCAN_TOKENS)
     void push_lru(int s) {
+        if (layer_share_k) { layer_adj(s, 1); }
         node_t & n = nodes[s];
         n.next = -1;
         n.prev = lruc[n.cls];
@@ -18,6 +31,7 @@
     }
 
     void push_mru(int s) {
+        if (layer_share_k) { layer_adj(s, 1); }
         node_t & n = nodes[s];
         n.prev = -1;
         n.next = mruc[n.cls];
@@ -77,6 +91,17 @@
     int pick_victim() const {
         int best = -1;
         double best_sc = -1.0;
+        if (layer_share_k && nclass == 1) {
+            int v = lruc[0], pick = -1, seen = 0, pick_cnt = -1;
+            for (int k = 0; k < 100000 && v >= 0 && seen < layer_share_k; k++, v = nodes[v].prev) {
+                if (in_use(nodes[v])) { continue; }
+                seen++;
+                const int L = tensors[node_owner[(size_t) v]]->layer;
+                const int cnt = (L >= 0 && (size_t) L < layer_cnt.size()) ? layer_cnt[(size_t) L] : 0;
+                if (cnt > pick_cnt) { pick_cnt = cnt; pick = v; }
+            }
+            return pick;
+        }
         for (int c = 0; c < nclass; c++) {
             int v = lruc[c];
             for (int k = 0; k < 100000 && v >= 0 && in_use(nodes[v]); k++) {
@@ -100,12 +125,7 @@
     // give the physical pages of one expert back to the system (pages shared with a neighbour expert stay)
     void evict(int s) {
         // find the tensor that owns node s
-        size_t lo_t = 0, hi_t = tensors.size();
-        while (lo_t + 1 < hi_t) {
-            const size_t mid = (lo_t + hi_t) / 2;
-            if (tensors[mid]->node0 <= s) { lo_t = mid; } else { hi_t = mid; }
-        }
-        tinfo_t & ti = *tensors[lo_t];
+        tinfo_t & ti = *tensors[node_owner[(size_t) s]];
         const size_t e = (size_t) (s - ti.node0);
         const uintptr_t start = (uintptr_t) ti.data + e * ti.nb2;
         const uintptr_t a = (start + PAGE - 1) / PAGE * PAGE;
@@ -128,6 +148,28 @@
         resident_bytes -= ti.nb2;
         if (ti.view) { view_bytes -= ti.nb2; }
         evictions++;
+        // idea C05 (MOE_CACHE_EVICT_SIBLINGS=1, default off): the other slices (gate, up, down) of the same expert go with it when they are idle, so an expert is
+        // either whole or gone and a later read does not find two of three slices missing
+        static const bool sib = getenv("MOE_CACHE_EVICT_SIBLINGS") && atoi(getenv("MOE_CACHE_EVICT_SIBLINGS")) > 0;
+        static thread_local bool in_sib = false;
+        if (sib && !in_sib && ti.layer >= 0) {
+            in_sib = true;
+            auto lt = layer_tensors.find(ti.layer);
+            if (lt != layer_tensors.end()) {
+                for (int tix : lt->second) {
+                    const tinfo_t & ot = *tensors[(size_t) tix];
+                    if (&ot == &ti || (int64_t) e >= ot.n_expert) {
+                        continue;
+                    }
+                    const int sn = ot.node0 + (int) e;
+                    const node_t & nd = nodes[(size_t) sn];
+                    if (nd.resident && !nd.loading && !in_use(nd)) {
+                        evict(sn);
+                    }
+                }
+            }
+            in_sib = false;
+        }
     }
 
     // cache smaller than one op: map expert e of ti straight from the model file over its own address (copy-on-write file pages, the way stock
@@ -374,8 +416,42 @@
             // hand the reads to the reader threads and return: the executor waits for each expert's flag when it needs it
             std::vector<pack_job_t *> pjs;
             pack_extract(jobs, pjs);
+            // idea I01 (MOE_CACHE_ASYNC_COALESCE=1, default off): neighbouring experts of a tensor (neighbours in the file and in memory) are queued as ONE read,
+            // as the synchronous path does; the reader clears the loading flag of every expert in it. The first expert of a merge waits for the whole read.
+            static const bool async_co = getenv("MOE_CACHE_ASYNC_COALESCE") && atoi(getenv("MOE_CACHE_ASYNC_COALESCE")) > 0;
+            if (async_co && coalesce_bytes && jobs.size() > 1) {
+                std::sort(jobs.begin(), jobs.end(), [](const io_job_t & a, const io_job_t & b) { return a.fdi != b.fdi ? a.fdi < b.fdi : a.off < b.off; });
+                std::vector<io_job_t> merged;
+                merged.reserve(jobs.size());
+                for (const auto & j : jobs) {
+                    if (!merged.empty()) {
+                        io_job_t & m = merged.back();
+                        if (m.direct && j.direct && !m.rtensor && !j.rtensor && !m.pk && !j.pk && m.node >= 0 && j.node >= 0 && m.fdi == j.fdi &&
+                            m.off + m.nb2 == j.off && m.dst + m.nb2 == j.dst && m.nb2 + j.nb2 <= coalesce_bytes) {
+                            if (!m.more) {
+                                m.more = new std::vector<int>();
+                            }
+                            m.more->push_back(j.node);
+                            m.nb2 += j.nb2;
+                            coalesced++;
+                            continue;
+                        }
+                    }
+                    merged.push_back(j);
+                }
+                jobs.swap(merged);
+            }
+            // idea C10 (MOE_CACHE_SIBLING_ORDER=1, default off): reads for gate/up go to the queue before the reads for down (the layer needs them first), the
+            // order inside each kind unchanged; has no effect when MOE_CACHE_ASYNC_COALESCE sorts the queue by file offset
+            static const bool sib_order = getenv("MOE_CACHE_SIBLING_ORDER") && atoi(getenv("MOE_CACHE_SIBLING_ORDER")) > 0;
+            if (sib_order && !async_co) {
+                std::stable_partition(jobs.begin(), jobs.end(), [&](const io_job_t & j) {
+                    return j.node < 0 || tensors[node_owner[(size_t) j.node]]->name.find("down") == std::string::npos;
+                });
+            }
             const size_t njobs = jobs.size() + pjs.size();
             if (njobs) {
+                demand_pending.fetch_add((int) njobs, std::memory_order_relaxed);
                 {
                     std::lock_guard<std::mutex> ql(rq_mu);
                     for (pack_job_t * pj : pjs) {

@@ -24,6 +24,8 @@ struct exec_task_t {
     float *      dsts[EXEC_MAXCOL];   // outputs (rows floats each)
     const uint8_t * flag;  // non-null: the expert is still being read while *flag is non-zero
     int64_t      rows;
+    ggml_vec_dot_t dot = nullptr;   // idea D04: this task's own kernel and row stride (the job's when null / 0), so ops of different weight types can share one job
+    size_t       nb01 = 0;
 };
 
 // what this thread's executor work is computing right now: the Windows crash report prints it (a fault inside a pool worker otherwise says only
@@ -78,49 +80,60 @@ struct exec_pool_t {
         wh.op = j->name;
         const bool tm = pool && pool->times;
         uint64_t busy = 0, fw = 0, nch_done = 0;
+        static const int claim_n = getenv("MOE_CACHE_POOL_CLAIM") ? std::max(1, std::min(64, atoi(getenv("MOE_CACHE_POOL_CLAIM")))) : 1;
+        int fin = 0;       // idea D10: finished chunks are counted once per worker when it runs out of chunks, not one atomic add per chunk
         if (tm && worker) {
             pool->wake_ns += exec_now_ns() - j->t_pub_ns;
             pool->n_wake++;
         }
         for (;;) {
-            const int c = j->next.fetch_add(1, std::memory_order_relaxed);
-            if (c >= j->total) {
+            const int c0 = j->next.fetch_add(claim_n, std::memory_order_relaxed);      // idea D09 (MOE_CACHE_POOL_CLAIM=N, default 1): N chunks per claim
+            if (c0 >= j->total) {
+                if (fin) {
+                    j->done.fetch_add(fin, std::memory_order_release);
+                }
                 wh.op = nullptr;
                 if (tm) {
                     pool->busy_ns += busy; pool->flagwait_ns += fw; pool->chunks += nch_done;
                 }
                 return;
             }
-            const exec_task_t & t = j->tasks[c / j->nch];
-            const int64_t r0 = (int64_t) (c % j->nch) * j->chunk;
-            const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
-#ifndef MOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT     // CI only: a build without this wait must fail the delayed-read Q2_0 gpt-oss step
-            if (t.flag) {
-                const uint64_t f0 = tm && __atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? exec_now_ns() : 0;
-                while (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE)) {
-                    cpu_relax();
+            const int c1 = std::min(c0 + claim_n, j->total);
+            for (int c = c0; c < c1; c++) {
+                const exec_task_t & t = j->tasks[c / j->nch];
+                const int64_t r0 = (int64_t) (c % j->nch) * j->chunk;
+                const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
+    #ifndef MOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT     // CI only: a build without this wait must fail the delayed-read Q2_0 gpt-oss step
+                if (t.flag) {
+                    const uint64_t f0 = tm && __atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? exec_now_ns() : 0;
+                    while (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE)) {
+                        cpu_relax();
+                    }
+                    if (f0) {
+                        fw += exec_now_ns() - f0;
+                    }
                 }
-                if (f0) {
-                    fw += exec_now_ns() - f0;
-                }
-            }
-#endif
-            const uint64_t b0 = tm ? exec_now_ns() : 0;
-            for (int64_t r = r0; r < r1; r++) {
-                const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
-                for (int k = 0; k < t.ncol; k++) {
-                    wh.task = &t;
+    #endif
+                const uint64_t b0 = tm ? exec_now_ns() : 0;
+                wh.task = &t;          // idea D16: the task is the same for every row of the chunk, so it is stored once, the row once per row
+                for (int64_t r = r0; r < r1; r++) {
+                    const size_t nb01 = t.nb01 ? t.nb01 : j->nb01;
+                const ggml_vec_dot_t dotf = t.dot ? t.dot : j->dot;
+                const char * wr = t.w + (size_t) r * nb01;       // the weight row stays in L1 while every token column uses it
                     wh.r = r;
-                    wh.k = k;
-                    wh.dst = &t.dsts[k][r];
-                    j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
+                    for (int k = 0; k < t.ncol; k++) {
+                        wh.k = k;
+                        wh.dst = &t.dsts[k][r];
+                        dotf((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
+                    }
                 }
+                if (tm) {
+                    busy += exec_now_ns() - b0;
+                    nch_done++;
+                }
+
+                fin++;
             }
-            if (tm) {
-                busy += exec_now_ns() - b0;
-                nch_done++;
-            }
-            j->done.fetch_add(1, std::memory_order_release);
         }
     }
 
@@ -188,6 +201,24 @@ struct exec_pool_t {
     // runs the job on the pool and the calling thread; returns when every chunk is done and no worker is inside the job any more.
     // One caller only (the backend's compute thread).
     void run(const exec_task_t * tasks, int n_tasks, int64_t rows, int64_t ne00, size_t nb01, ggml_vec_dot_t dot, int chunk, const char * name) {
+        if (n_tasks <= 0 || rows <= 0) {     // idea D17: no chunks, so no publish, no wake-up, no barrier
+            return;
+        }
+        // idea D07 (MOE_CACHE_POOL_TINY=0 turns it off): a job of one chunk is run by the calling thread alone on a local job: no publish, no wake-up, no barrier
+        static const bool tiny_inline = !getenv("MOE_CACHE_POOL_TINY") || atoi(getenv("MOE_CACHE_POOL_TINY")) != 0;
+        if (tiny_inline && n_tasks == 1 && rows <= chunk) {
+            exec_job_t lj;
+            lj.name = name;
+            lj.tasks = tasks;
+            lj.nch = 1;
+            lj.total = 1;
+            lj.chunk = chunk;
+            lj.ne00 = ne00;
+            lj.nb01 = nb01;
+            lj.dot = dot;
+            work(&lj, nullptr, false);
+            return;
+        }
         // a worker that saw the previous generation late may only now be entering (it counts itself in `inside` before it reads `cur`):
         // wait for it to leave before this job slot is rewritten, so no worker ever reads a job while it is being filled
         while (inside.load() > 0) {
@@ -213,7 +244,9 @@ struct exec_pool_t {
             cv.notify_all();
         }
         const uint64_t w0 = times ? exec_now_ns() : 0;
-        n_runs += times;
+        if (times) {
+            n_runs.fetch_add(1, std::memory_order_relaxed);     // idea D14: no atomic read-modify-write when timing is off
+        }
         work(j, this);
         const uint64_t w1 = times ? exec_now_ns() : 0;
         while (j->done.load(std::memory_order_acquire) < j->total || inside.load() > 0) {

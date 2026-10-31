@@ -264,11 +264,19 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
         return GGML_STATUS_SUCCESS;
     }
     const int n = ggml_graph_n_nodes(cg);
-    std::vector<char> keep((size_t) n, 0);
+    // idea D18 (MOE_CACHE_EXEC_SCRATCH=0 turns it off): the keep list and the saved-op list are per-thread scratch, not allocated for every small CPU batch
+    static const bool scratch = !getenv("MOE_CACHE_EXEC_SCRATCH") || atoi(getenv("MOE_CACHE_EXEC_SCRATCH")) != 0;
+    static thread_local std::vector<char> keep_s;
+    static thread_local std::vector<std::pair<ggml_tensor *, ggml_op>> saved_s;
+    std::vector<char> keep_l;
+    std::vector<std::pair<ggml_tensor *, ggml_op>> saved_l;
+    std::vector<char> & keep = scratch ? keep_s : keep_l;
+    std::vector<std::pair<ggml_tensor *, ggml_op>> & saved = scratch ? saved_s : saved_l;
+    keep.assign((size_t) n, 0);
+    saved.clear();
     for (int i : which) {
         keep[(size_t) i] = 1;
     }
-    std::vector<std::pair<ggml_tensor *, ggml_op>> saved;
     for (int i = 0; i < n; i++) {
         ggml_tensor * nd = ggml_graph_node(cg, i);
         if (!keep[(size_t) i] && nd->op != GGML_OP_NONE) {
@@ -377,9 +385,11 @@ struct exec_prep_t {
     std::vector<exec_task_t> tasks;
     size_t                 n_ready = 0;
     uint64_t               eb0 = 0;
+    const char *           base = nullptr;       // the prepared activation columns (idea D03: a fused partner with the same input reuses them)
+    size_t                 stride_i11 = 0, stride_tok = 0;
 };
 
-void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip, int slot, exec_prep_t & pr) {
+void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip, int slot, exec_prep_t & pr, const exec_prep_t * share = nullptr) {
     const ggml_tensor * w = nd->src[0], * a = nd->src[1], * ids = nd->src[2];
     const tinfo_t & ti = *s.tensors[s.by_tensor.at(w)];
     const ggml_type_traits_cpu * tt = cpu_traits(w->type);
@@ -405,7 +415,15 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
         dot = fast_iq3_dot();
     }
 #endif
-    if (a->type == vdt) {
+    // idea D03 (MOE_CACHE_EXEC_SHARE_IN=0 turns it off): gate and up of a fused pair read the same activation with the same weight type, so the second
+    // op takes the first op's quantised columns (the same values it would compute itself; they stay valid, the buffer is per thread and slot)
+    static const bool share_in = !getenv("MOE_CACHE_EXEC_SHARE_IN") || atoi(getenv("MOE_CACHE_EXEC_SHARE_IN")) != 0;
+    if (share_in && share && share->base && share->nd->src[1] == a && share->w->type == w->type && a->type != vdt && share->nd->src[1]->data == a->data) {
+        base = share->base;
+        stride_i11 = share->stride_i11;
+        stride_tok = share->stride_tok;
+        dot = share->dot;
+    } else if (a->type == vdt) {
         base = (const char *) a->data;
         stride_i11 = a->nb[1];
         stride_tok = a->nb[2];
@@ -454,9 +472,16 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
         s.ex_quant_ns += eb0 - eq0;
     }
     // one task per expert: the tokens that picked it share its weight rows
-    std::vector<exec_task_t> all;
+    // idea D11: scratch kept per thread (used only inside this call, so a fused pair's second op reuses it safely), not allocated for every op
+    static thread_local std::vector<exec_task_t> all, late;
+    static thread_local std::vector<int> task_of;
+    all.clear();
+    late.clear();
     all.reserve((size_t) n_ids * (size_t) n_tok);
-    std::vector<int> task_of((size_t) w->ne[2], -1);
+    // idea D12: the slot table stays all -1 between ops; only the slots this op touched (the experts in `all`) are reset at the end
+    if (task_of.size() < (size_t) w->ne[2]) {
+        task_of.resize((size_t) w->ne[2], -1);
+    }
     const std::vector<int32_t> * routed = nullptr;
     if (s.route_mode || s.fewer > 0) {
         auto rit = s.route_ids.find(ids);
@@ -492,6 +517,8 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
                 nt.ncol = 0;
                 nt.flag = (const uint8_t *) &s.nodes[(size_t) (ti.node0 + e)].loading;
                 nt.rows = w->ne[1];
+                nt.dot = dot;
+                nt.nb01 = w->nb[1];
                 ti_ = (int) all.size();
                 all.push_back(nt);
             }
@@ -501,9 +528,11 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
             tk.ncol++;
         }
     }
+    for (const auto & t : all) {
+        task_of[(size_t) ((t.w - (const char *) w->data) / (ptrdiff_t) w->nb[2])] = -1;
+    }
     std::vector<exec_task_t> tasks;
     tasks.reserve(all.size());
-    std::vector<exec_task_t> late;
     for (const auto & t : all) {
         (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? late : tasks).push_back(t);   // experts already in RAM first
     }
@@ -551,6 +580,9 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
     pr.dot = dot;
     pr.n_ready = tasks.size() - late.size();
     pr.eb0 = eb0;
+    pr.base = base;
+    pr.stride_i11 = stride_i11;
+    pr.stride_tok = stride_tok;
     pr.tasks = std::move(tasks);
 }
 
@@ -569,9 +601,16 @@ void exec_run_prepared(state_t & s, exec_prep_t * p, int n) {
         single = &both;
         s.exec_fused++;
     }
-    const auto tp0 = std::chrono::steady_clock::now();
-    s.pool->run(single->data(), (int) single->size(), w->ne[1], w->ne[0], w->nb[1], p[0].dot, s.exec_chunk, p[0].nd->name);
-    const uint64_t rn = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
+    const uint64_t tp0 = etimes ? exec_now_ns() : 0;       // idea D13: the per-type time is kept only with MOE_CACHE_EXEC_TIMES (two clock reads less per op)
+    // idea D06 (MOE_CACHE_POOL_CHUNK_ADAPT=1, default off): a job too small to give every thread about 4 chunks of the usual size gets a smaller chunk (>= 16 rows)
+    static const bool chunk_adapt = getenv("MOE_CACHE_POOL_CHUNK_ADAPT") && atoi(getenv("MOE_CACHE_POOL_CHUNK_ADAPT")) > 0;
+    int chunk = s.exec_chunk;
+    if (chunk_adapt) {
+        const int64_t want = (int64_t) single->size() * w->ne[1] / (4 * (int64_t) (s.pool->th.size() + 1));
+        chunk = (int) std::max<int64_t>(16, std::min<int64_t>(s.exec_chunk, want));
+    }
+    s.pool->run(single->data(), (int) single->size(), w->ne[1], w->ne[0], w->nb[1], p[0].dot, chunk, p[0].nd->name);
+    const uint64_t rn = etimes ? exec_now_ns() - tp0 : 0;
     for (int k = 0; k < n; k++) {
         const uint64_t bytes = (uint64_t) p[k].tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
         if (etimes) {
@@ -612,8 +651,10 @@ int exec_fuse_partner(state_t & s, ggml_cgraph * cg, int i, int n_nodes) {
             return -1;
         }
         const ggml_tensor * wa = a->src[0], * wb = b->src[0];
-        if (wa == wb || wa->type != wb->type || wa->ne[0] != wb->ne[0] || wa->ne[1] != wb->ne[1] || wa->ne[2] != wb->ne[2] || wa->nb[1] != wb->nb[1] ||
-            a->src[1]->type != b->src[1]->type || a->src[2]->ne[0] != b->src[2]->ne[0] || a->src[2]->ne[1] != b->src[2]->ne[1]) {
+        // idea D04 (MOE_CACHE_EXEC_FUSE_ANY=1, default off): gate and up may differ in weight type and row stride (the tasks carry their own kernel and stride)
+        static const bool fuse_any = getenv("MOE_CACHE_EXEC_FUSE_ANY") && atoi(getenv("MOE_CACHE_EXEC_FUSE_ANY")) > 0;
+        if (wa == wb || (!fuse_any && (wa->type != wb->type || wa->nb[1] != wb->nb[1] || a->src[1]->type != b->src[1]->type)) || wa->ne[0] != wb->ne[0] || wa->ne[1] != wb->ne[1] ||
+            wa->ne[2] != wb->ne[2] || a->src[2]->ne[0] != b->src[2]->ne[0] || a->src[2]->ne[1] != b->src[2]->ne[1]) {
             return -1;
         }
         for (int k = 0; k < GGML_MAX_SRC; k++) {       // b must not read a's result (directly or through a view of it)

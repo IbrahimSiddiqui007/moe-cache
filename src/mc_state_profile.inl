@@ -111,6 +111,7 @@
         ti->node0 = (int) nodes.size();
         nodes.resize(nodes.size() + (size_t) t->ne[2]);
         const int idx = (int) tensors.size();
+        node_owner.resize(nodes.size(), (uint32_t) idx);        // idea C15: which tensor owns each node, so evict() needs no search
         if (ti->layer >= 0) {
             layer_tensors[ti->layer].push_back(idx);
         }
@@ -250,6 +251,11 @@
                 jobs.back().node = s;      // the pack groups the three slices of an expert by node
                 n_taken++;
             }
+        }
+        // idea I17 (MOE_CACHE_WARM_SORT=1, default off): the warm-start reads go out in file order (per file, by offset), so the drive reads forward
+        static const bool warm_sort = getenv("MOE_CACHE_WARM_SORT") && atoi(getenv("MOE_CACHE_WARM_SORT")) > 0;
+        if (warm_sort) {
+            std::stable_sort(jobs.begin(), jobs.end(), [](const io_job_t & a, const io_job_t & b) { return a.fdi != b.fdi ? a.fdi < b.fdi : a.off < b.off; });
         }
         const auto r0 = std::chrono::steady_clock::now();
         std::vector<pack_job_t *> pjs;

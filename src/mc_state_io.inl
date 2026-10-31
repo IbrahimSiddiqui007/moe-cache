@@ -14,7 +14,24 @@
                 j = rq.front();
                 rq.pop_front();
             }
-            const size_t need = round_up(max_nb2_all) + 2 * PAGE;
+#ifdef __linux__
+            static thread_local int aff_seen = 0;
+            if (aff_seen != reader_aff_gen.load()) {
+                std::vector<int> cp;
+                {
+                    std::lock_guard<std::mutex> lk(rq_mu);
+                    cp = reader_cpus;
+                    aff_seen = reader_aff_gen.load();
+                }
+                if (!cp.empty()) {
+                    cpu_set_t set;
+                    CPU_ZERO(&set);
+                    for (int c : cp) { if (c < CPU_SETSIZE) { CPU_SET(c, &set); } }
+                    sched_setaffinity(0, sizeof(set), &set);
+                }
+            }
+#endif
+            const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
             if (bounce_size < need) {
                 plat::aligned_free_page(bounce);
                 bounce = (char *) plat::aligned_alloc_page(need);
@@ -29,11 +46,13 @@
                 // loading flag reads stale data every time instead of only when the timing is unlucky (CI regression test for T39/T45)
                 std::this_thread::sleep_for(std::chrono::microseconds(test_read_delay_us));
             }
-            const auto r0 = std::chrono::steady_clock::now();
+            // idea D15 (MOE_CACHE_STATS_LITE=1, default off): no clock reads and no read-time counter in the reader threads (the read-time line then shows 0)
+            static const bool lite = getenv("MOE_CACHE_STATS_LITE") && atoi(getenv("MOE_CACHE_STATS_LITE")) > 0;
+            const auto r0 = lite ? std::chrono::steady_clock::time_point() : std::chrono::steady_clock::now();
             if (j.pk) {
                 std::unique_ptr<pack_job_t> pj(j.pk);
                 read_pack_job(*pj);
-                ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+                if (!lite) ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
                 {
                     std::lock_guard<std::mutex> lk(mu);
                     for (int i = 0; i < pj->n; i++) {
@@ -42,16 +61,24 @@
                     }
                 }
                 load_cv.notify_all();
+                demand_pending.fetch_sub(1, std::memory_order_relaxed);
                 continue;
             }
             read_job(j, bounce);
-            ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+            if (!lite) ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
             {
                 std::lock_guard<std::mutex> lk(mu);
                 pending_bytes = pending_bytes > j.nb2 ? pending_bytes - j.nb2 : 0;
                 __atomic_store_n(&nodes[(size_t) j.node].loading, false, __ATOMIC_RELEASE);
+                if (j.more) {
+                    for (int nd : *j.more) {
+                        __atomic_store_n(&nodes[(size_t) nd].loading, false, __ATOMIC_RELEASE);
+                    }
+                }
             }
+            delete j.more;
             load_cv.notify_all();
+            demand_pending.fetch_sub(1, std::memory_order_relaxed);
         }
     }
 
@@ -247,7 +274,7 @@
             pf_submit([this, j = td.first, s = td.second] {
                 static thread_local char * bounce = nullptr;
                 static thread_local size_t bounce_size = 0;
-                const size_t need = round_up(max_nb2_all) + 2 * PAGE;
+                const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
                 if (bounce_size < need) {
                     plat::aligned_free_page(bounce);
                     bounce = (char *) plat::aligned_alloc_page(need);
@@ -256,6 +283,14 @@
                         abort();
                     }
                     bounce_size = need;
+                }
+                // idea I02 (MOE_CACHE_DEMAND_FIRST=1, default off): an advisory read waits (at most ~5 ms) while demand reads are queued or running, so a guess never
+                // delays an expert the executor is waiting for.
+                static const bool demand_first = getenv("MOE_CACHE_DEMAND_FIRST") && atoi(getenv("MOE_CACHE_DEMAND_FIRST")) > 0;
+                if (demand_first) {
+                    for (int w = 0; w < 100 && demand_pending.load(std::memory_order_relaxed) > 0; w++) {
+                        std::this_thread::sleep_for(std::chrono::microseconds(50));
+                    }
                 }
                 read_job(j, bounce);
                 {
@@ -285,12 +320,32 @@
             return;
         }
         router_t * rc = get_router(layer, n_embd, n_exp);
-        std::vector<float> xs(n_embd);
+        // idea C19 (MOE_CACHE_PRED_FAST=1, default off): the norm-weight ratios of a layer pair are computed once, and the work vectors are per-thread scratch
+        static const bool fast = getenv("MOE_CACHE_PRED_FAST") && atoi(getenv("MOE_CACHE_PRED_FAST")) > 0;
+        static thread_local std::vector<float> xs_s, logit_s;
+        static thread_local std::unordered_map<int, std::vector<float>> ratio_s;      // layer -> ratio (empty: no scaling)
+        std::vector<float> xs_l, logit_l;
+        std::vector<float> & xs = fast ? xs_s : xs_l;
+        std::vector<float> & logit = fast ? logit_s : logit_l;
+        xs.resize(n_embd);
         const bool scale = rc && rn->normw.size() == n_embd && rc->normw.size() == n_embd;
-        for (size_t i = 0; i < n_embd; i++) {
-            xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
+        if (fast && scale) {
+            std::vector<float> & ra = ratio_s[layer];
+            if (ra.size() != n_embd) {
+                ra.resize(n_embd);
+                for (size_t i = 0; i < n_embd; i++) {
+                    ra[i] = fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f;
+                }
+            }
+            for (size_t i = 0; i < n_embd; i++) {
+                xs[i] = x[i] * ra[i];
+            }
+        } else {
+            for (size_t i = 0; i < n_embd; i++) {
+                xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
+            }
         }
-        std::vector<float> logit(n_exp);
+        logit.resize(n_exp);
         for (size_t e = 0; e < n_exp; e++) {
             const float * w = rn->w.data() + e * n_embd;
             logit[e] = (rn->bias.size() == n_exp ? rn->bias[e] : 0.0f) + dot_f32(w, xs.data(), n_embd);
@@ -540,7 +595,7 @@
             if (coalesced) {
                 fprintf(stderr, "moe-cache: %llu expert reads merged into their neighbours (MOE_CACHE_COALESCE_MIB)\n", (unsigned long long) coalesced.load());
             }
-            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (in parts %llu, uploaded %.1f GB), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, (unsigned long long) gpu_split_blocks, gpu_up_bytes / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
+            fprintf(stderr, "moe-cache: long-prompt blocks computed on the GPU %llu (in parts %llu, uploaded %.1f GB, %.1f GB saved by held GPU copies), fell back to the CPU %llu (of which too little free GPU memory: %llu)\n", (unsigned long long) gpu_segments, (unsigned long long) gpu_split_blocks, gpu_up_bytes / 1e9, gpu_up_saved.load() / 1e9, (unsigned long long) gpu_fallbacks, (unsigned long long) gpu_nomem);
         }
         if (cache_on && stats) {
             const uint64_t h = hits, m = misses;
@@ -551,6 +606,10 @@
                 fprintf(stderr, "moe-cache: lookahead: prefetched %llu experts, used %llu, wasted %llu, late %llu; prediction recall %.1f%% (%llu of %llu), skipped %llu\n",
                         (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
                         pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
+            }
+            if (res_checked) {
+                fprintf(stderr, "moe-cache: residency check: %llu of %llu sampled pages of experts marked resident were not in RAM (%.2f %%)\n", (unsigned long long) res_missing,
+                        (unsigned long long) res_checked, 100.0 * (double) res_missing / (double) res_checked);
             }
             if (exec_on) {
                 // ", checked N, mismatches M" stays right after "itself": CI greps that exact sequence (identity.yml, executor byte-check)
@@ -563,8 +622,13 @@
             if (exec_on) {
                 for (int ty = 0; ty < 64; ty++) {
                     if (exec_type_ops[ty]) {
-                        fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu time=%.2fs expert data=%.1f GB (%.2f GB/s incl. waits)\n", ggml_type_name((ggml_type) ty),
-                                (unsigned long long) exec_type_ops[ty], exec_type_ns[ty] / 1e9, exec_type_bytes[ty] / 1e9, exec_type_ns[ty] ? (double) exec_type_bytes[ty] / exec_type_ns[ty] : 0.0);
+                        if (exec_type_ns[ty]) {      // time is recorded only with MOE_CACHE_EXEC_TIMES (idea D13)
+                            fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu time=%.2fs expert data=%.1f GB (%.2f GB/s incl. waits)\n", ggml_type_name((ggml_type) ty),
+                                    (unsigned long long) exec_type_ops[ty], exec_type_ns[ty] / 1e9, exec_type_bytes[ty] / 1e9, (double) exec_type_bytes[ty] / exec_type_ns[ty]);
+                        } else {
+                            fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu expert data=%.1f GB\n", ggml_type_name((ggml_type) ty),
+                                    (unsigned long long) exec_type_ops[ty], exec_type_bytes[ty] / 1e9);
+                        }
                     }
                 }
             }
@@ -669,13 +733,12 @@
 
     // read one expert slice into place (or through the bounce buffer); retries, then falls back to a buffered read, then stops
     void read_job(const io_job_t & j, char * bounce) {
-        for (size_t v = 0; v < views.size(); v++) {
-            if (j.dst >= views[v] && j.dst < views[v] + view_sizes[v]) {
-                plat::file_view_load(j.dst, j.nb2);     // Windows file-view cache: bring the expert's file pages into the working set
-                direct_jobs++;
-                bytes += j.nb2;
-                return;
-            }
+        // idea I08: a job's expert lives in the view of its own file (ti->data = views[ti->fdi] + offset), so test that one view instead of searching all
+        if ((size_t) j.fdi < views.size() && j.dst >= views[(size_t) j.fdi] && j.dst < views[(size_t) j.fdi] + view_sizes[(size_t) j.fdi]) {
+            plat::file_view_load(j.dst, j.nb2);     // Windows file-view cache: bring the expert's file pages into the working set
+            direct_jobs++;
+            bytes += j.nb2;
+            return;
         }
         const size_t aoff = j.off / PAGE * PAGE;
         const size_t shift = j.off - aoff;
