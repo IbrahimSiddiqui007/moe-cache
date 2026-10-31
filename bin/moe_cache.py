@@ -617,12 +617,35 @@ def vk_cache_cap(ls, model, listing=None):
     vkdevs = [n.strip() for n in re.findall(r"^\s+Vulkan\d+: (.+?) \(\d+ MiB", listing or list_devices(ls), re.M)]
     if not vkdevs:
         return None, None
+    # idea L03 (MOE_CACHE_PROBE_CACHE=1, default off): the device limits are kept in a file by device names and llama-server file (size + date), so a restart
+    # does not run the probe again; any change of device list or binary reads them fresh
+    pc_file = os.path.join(CACHE_DIR, "vk_limits.json")
     try:
+        st_ls = os.stat(ls)
+        pc_key = "|".join(sorted(vkdevs)) + f"|{st_ls.st_size}|{int(st_ls.st_mtime)}"
+    except OSError:
+        pc_key = None
+    lim = None
+    if os.environ.get("MOE_CACHE_PROBE_CACHE") == "1" and pc_key:
+        try:
+            lim = json.load(open(pc_file)).get(pc_key)
+        except (OSError, ValueError):
+            lim = None
+    if lim is None:
+      try:
         r = subprocess.run([python_cmd(), "-c", "import json, sys; sys.path.insert(0, sys.argv[1]); import moe_cache as m; print(json.dumps(m.vk_tensor_limits()))",
                             os.path.join(HERE, "bin")], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
                            creationflags=0x08000000 if WINDOWS else 0)          # CREATE_NO_WINDOW: no console flash under pythonw
         lim = json.loads(r.stdout.strip().splitlines()[-1])
-    except Exception:
+        if os.environ.get("MOE_CACHE_PROBE_CACHE") == "1" and pc_key and lim:
+            try:
+                d = json.load(open(pc_file)) if os.path.isfile(pc_file) else {}
+                d[pc_key] = lim
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                json.dump(d, open(pc_file, "w"))
+            except (OSError, ValueError):
+                pass
+      except Exception:
         lim = []
     match = [b for n, b in lim if n.strip() in vkdevs] or [b for n, b in lim]     # the listed devices by name, else all
     if not match:
