@@ -454,9 +454,13 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
         s.ex_quant_ns += eb0 - eq0;
     }
     // one task per expert: the tokens that picked it share its weight rows
-    std::vector<exec_task_t> all;
+    // idea D11: scratch kept per thread (used only inside this call, so a fused pair's second op reuses it safely), not allocated for every op
+    static thread_local std::vector<exec_task_t> all, late;
+    static thread_local std::vector<int> task_of;
+    all.clear();
+    late.clear();
     all.reserve((size_t) n_ids * (size_t) n_tok);
-    std::vector<int> task_of((size_t) w->ne[2], -1);
+    task_of.assign((size_t) w->ne[2], -1);
     const std::vector<int32_t> * routed = nullptr;
     if (s.route_mode || s.fewer > 0) {
         auto rit = s.route_ids.find(ids);
@@ -503,7 +507,6 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
     }
     std::vector<exec_task_t> tasks;
     tasks.reserve(all.size());
-    std::vector<exec_task_t> late;
     for (const auto & t : all) {
         (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? late : tasks).push_back(t);   // experts already in RAM first
     }
