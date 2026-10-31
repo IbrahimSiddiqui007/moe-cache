@@ -570,6 +570,10 @@
                         (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
                         pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
             }
+            if (res_checked) {
+                fprintf(stderr, "moe-cache: residency check: %llu of %llu sampled pages of experts marked resident were not in RAM (%.2f %%)\n", (unsigned long long) res_missing,
+                        (unsigned long long) res_checked, 100.0 * (double) res_missing / (double) res_checked);
+            }
             if (exec_on) {
                 // ", checked N, mismatches M" stays right after "itself": CI greps that exact sequence (identity.yml, executor byte-check)
                 fprintf(stderr, "moe-cache: executor ran %llu expert ops itself%s%s\n", (unsigned long long) exec_ops,

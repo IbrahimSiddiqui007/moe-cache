@@ -186,8 +186,43 @@ struct state_t {
         update_ws_min();
     }
 #endif
+    // idea C13 (MOE_CACHE_RESIDENCY_CHECK=N, Linux, default off): every N graphs, ask the kernel (mincore) whether 16 experts marked resident are really in RAM;
+    // the exit line "residency check" reports how many were not (the OS reclaimed them under memory pressure). A diagnostic: it changes nothing else.
+    uint64_t res_checked = 0, res_missing = 0, res_graphs = 0;
+    void residency_sample() {
+#ifdef __linux__
+        static const int every = getenv("MOE_CACHE_RESIDENCY_CHECK") ? atoi(getenv("MOE_CACHE_RESIDENCY_CHECK")) : 0;
+        if (every <= 0 || (++res_graphs % (uint64_t) every) != 0 || tensors.empty()) {
+            return;
+        }
+        static uint64_t rng = 88172645463325252ull;
+        for (int k = 0; k < 16; k++) {
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            const tinfo_t & ti = *tensors[rng % tensors.size()];
+            const int64_t e = (int64_t) ((rng >> 20) % (uint64_t) ti.n_expert);
+            if (!nodes[(size_t) (ti.node0 + e)].resident || nodes[(size_t) (ti.node0 + e)].loading) {
+                continue;
+            }
+            const uintptr_t a0 = (uintptr_t) ti.data + (size_t) e * ti.nb2;
+            const uintptr_t a = (a0 + PAGE - 1) / PAGE * PAGE, b = (a0 + ti.nb2) / PAGE * PAGE;
+            if (b <= a) {
+                continue;
+            }
+            std::vector<unsigned char> vec((b - a) / PAGE);
+            if (mincore((void *) a, b - a, vec.data()) != 0) {
+                continue;
+            }
+            size_t out = 0;
+            for (unsigned char v : vec) { out += (v & 1) ? 0 : 1; }
+            res_checked += vec.size();
+            res_missing += out;
+        }
+#endif
+    }
+
     void begin_graph() {
         std::lock_guard<std::mutex> lk(mu);
+        residency_sample();
         protect_epoch = epoch + 1;
         if (idle_released) {
             idle_released = false;
