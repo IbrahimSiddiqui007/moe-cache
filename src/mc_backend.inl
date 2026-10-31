@@ -594,6 +594,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             return true;
         }
     }
+    // idea P08 (MOE_CACHE_GPU_BUCKET=N, default off): the packed weight tensors are allocated for the part's expert count rounded up to a multiple of N, so
+    // blocks that use a few more or fewer experts share one graph shape (with MOE_CACHE_GPU_TMPL); only the used experts are uploaded, the padding is never read
+    static const size_t bucket_n = getenv("MOE_CACHE_GPU_BUCKET") ? (size_t) std::max(1, atoi(getenv("MOE_CACHE_GPU_BUCKET"))) : 1;
+    const size_t per_alloc = pack_ids ? (per_chunk + bucket_n - 1) / bucket_n * bucket_n : per_chunk;
     std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
     std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
     static const bool tmpl_env = getenv("MOE_CACHE_GPU_TMPL") && atoi(getenv("MOE_CACHE_GPU_TMPL")) > 0;
@@ -601,7 +605,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     if (tmpl_env) {      // the block's shape signature: ops, types, shapes, parameters, how the nodes read each other, and the split
         std::vector<const ggml_tensor *> exts;
         tkey += pack_ids ? 'P' : 'p';
-        tkey += std::to_string(per_chunk);
+        tkey += std::to_string(per_alloc);
         for (ggml_tensor * n : seg) {
             tkey += '|';
             tkey += std::to_string((int) n->op) + ',' + std::to_string((int) n->type) + ',' + std::to_string(n->ne[0]) + ',' + std::to_string(n->ne[1]) + ',' +
@@ -667,7 +671,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         int64_t ne[GGML_MAX_DIMS] = { t->ne[0], t->ne[1], t->ne[2], t->ne[3] };
         if (pack_weights.count(t)) {
-            ne[2] = (int64_t) per_chunk;
+            ne[2] = (int64_t) per_alloc;
         }
         ggml_tensor * nt = ggml_new_tensor(ctx, t->type, GGML_MAX_DIMS, ne);
         ggml_set_input(nt);
