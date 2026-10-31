@@ -110,7 +110,13 @@ size_t round_up(size_t x, size_t a = PAGE) {
     return (x + a - 1) / a * a;
 }
 
+// idea D25 (build with MOE_CACHE_CXXFLAGS=-DMOE_CACHE_NODE_PAD=1, default off): one node per cache line, so a worker spinning on `loading` does not
+// share a line with the replacement fields of its neighbour (about 40 bytes more per node)
+#ifdef MOE_CACHE_NODE_PAD
+struct alignas(64) node_t {
+#else
 struct node_t {
+#endif
     int      prev = -1;
     int      next = -1;
     uint64_t epoch = 0;
