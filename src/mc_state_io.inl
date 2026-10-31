@@ -29,11 +29,13 @@
                 // loading flag reads stale data every time instead of only when the timing is unlucky (CI regression test for T39/T45)
                 std::this_thread::sleep_for(std::chrono::microseconds(test_read_delay_us));
             }
-            const auto r0 = std::chrono::steady_clock::now();
+            // idea D15 (MOE_CACHE_STATS_LITE=1, default off): no clock reads and no read-time counter in the reader threads (the read-time line then shows 0)
+            static const bool lite = getenv("MOE_CACHE_STATS_LITE") && atoi(getenv("MOE_CACHE_STATS_LITE")) > 0;
+            const auto r0 = lite ? std::chrono::steady_clock::time_point() : std::chrono::steady_clock::now();
             if (j.pk) {
                 std::unique_ptr<pack_job_t> pj(j.pk);
                 read_pack_job(*pj);
-                ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+                if (!lite) ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
                 {
                     std::lock_guard<std::mutex> lk(mu);
                     for (int i = 0; i < pj->n; i++) {
@@ -46,7 +48,7 @@
                 continue;
             }
             read_job(j, bounce);
-            ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+            if (!lite) ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
             {
                 std::lock_guard<std::mutex> lk(mu);
                 pending_bytes = pending_bytes > j.nb2 ? pending_bytes - j.nb2 : 0;
