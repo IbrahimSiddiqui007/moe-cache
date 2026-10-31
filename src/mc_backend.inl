@@ -114,6 +114,7 @@ struct moe_cache_backend_ctx {
         std::vector<ggml_tensor *> ext_clones;      // the input clones, in order of first use
     };
     std::vector<gpu_tmpl_t> tmpls;
+    ggml_backend_buffer_t up_buf = nullptr;  // P05: pinned staging area for the weights of one part
     bool               rb_failed = false;    // no pinned host buffer type, or it could not be allocated: plain blocking read-back
     // MOE_CACHE_HYBRID_ADAPT=N,K (default 8,16; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert of their layer's bank
     struct hb_layer_t {
@@ -161,6 +162,9 @@ void be_free(ggml_backend_t backend) {
     }
     if (c->hb_ctx) {
         ggml_free(c->hb_ctx);
+    }
+    if (c->up_buf) {
+        ggml_backend_buffer_free(c->up_buf);
     }
     if (c->rb_buf) {                  // pinned read-back buffer: freed before its backend
         ggml_backend_buffer_free(c->rb_buf);
@@ -744,6 +748,59 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             rb = ggml_backend_buffer_get_base(c->rb_buf);
         }
     }
+    // idea P05 (MOE_CACHE_GPU_STAGE=1): the weights of a part are first copied into one pinned host buffer and uploaded from there in one copy per
+    // tensor; the next part is staged while the GPU computes this one. idea P04 (MOE_CACHE_GPU_OVERLAP=1, without staging): only the wait for the next
+    // part's experts (SSD reads) is moved into that window. Both need the pinned read-back path (the window exists only while the result copy is queued).
+    static const bool stage_env = getenv("MOE_CACHE_GPU_STAGE") && atoi(getenv("MOE_CACHE_GPU_STAGE")) > 0;
+    static const bool overlap_env = getenv("MOE_CACHE_GPU_OVERLAP") && atoi(getenv("MOE_CACHE_GPU_OVERLAP")) > 0;
+    char * stage = nullptr;
+    size_t staged_ch = (size_t) -1;
+    std::vector<std::pair<const ggml_tensor *, size_t>> stage_tensors;     // weight tensor, offset in the staging buffer
+    if ((stage_env || overlap_env) && pack_ids && n_chunk > 1) {
+        size_t total = 0;
+        for (auto & u : uploads) {
+            if (pack_weights.count(u.first)) {
+                stage_tensors.emplace_back(u.first, total);
+                total += per_chunk * u.first->nb[2];
+            }
+        }
+        if (stage_env && total && !c->up_buf) {
+            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(s.gpu_dev);
+            c->up_buf = hbt ? ggml_backend_buft_alloc_buffer(hbt, total) : nullptr;
+        }
+        if (c->up_buf && ggml_backend_buffer_get_size(c->up_buf) < total) {
+            ggml_backend_buffer_free(c->up_buf);
+            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(s.gpu_dev);
+            c->up_buf = hbt ? ggml_backend_buft_alloc_buffer(hbt, total + ((size_t) 64 << 20)) : nullptr;
+        }
+        if (c->up_buf && stage_env) {
+            stage = (char *) ggml_backend_buffer_get_base(c->up_buf);
+        }
+    }
+    auto stage_part = [&](size_t pch) {         // wait for and copy the part's experts into the staging buffer
+        const size_t plo = pch * per_chunk, phi = std::min(pack_used.size(), plo + per_chunk);
+        for (auto & st : stage_tensors) {
+            for (size_t k = plo; k < phi;) {
+                size_t r = 1;
+                while (k + r < phi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
+                    r++;
+                }
+                wait_experts(s, st.first, pack_used[k], (int64_t) r);
+                if (stage) {
+                    memcpy(stage + st.second + (k - plo) * st.first->nb[2], (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2], r * st.first->nb[2]);
+                }
+                k += r;
+            }
+        }
+        if (stage) {
+            staged_ch = pch;
+        }
+    };
+    auto next_window = [&](size_t ch) {         // the result copy of part ch is queued: use the GPU's compute time to prepare part ch + 1
+        if (rb && ch + 1 < n_chunk && !stage_tensors.empty()) {
+            stage_part(ch + 1);
+        }
+    };
     static const bool res_first = getenv("MOE_CACHE_GPU_RES_FIRST") && atoi(getenv("MOE_CACHE_GPU_RES_FIRST")) > 0;
     std::vector<std::pair<size_t, size_t>> runs;
     static const bool share_up = getenv("MOE_CACHE_GPU_SHARE_UP") && atoi(getenv("MOE_CACHE_GPU_SHARE_UP")) > 0;
@@ -754,12 +811,25 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     for (size_t ch = 0; ch < n_chunk; ch++) {
         const size_t lo = ch * per_chunk, hi = std::min(pack_used.size(), lo + per_chunk);
         const auto t_up0 = std::chrono::steady_clock::now();
+        if (stage && staged_ch != ch) {
+            stage_part(ch);
+        }
         for (auto & u : uploads) {
             const ggml_tensor * t = u.first;
             ggml_tensor * d = u.second;
             // idea P09 (MOE_CACHE_GPU_SHARE_UP=1): in a split block everything but the part's experts and ids is the same for every part, and the
             // clones are set_input tensors (the allocator never reuses them): upload them with the first part only
             if (share_up && ch > 0 && !pack_weights.count(t) && t != pack_ids) {
+                continue;
+            }
+            if (stage && staged_ch == ch && pack_weights.count(t)) {
+                for (auto & st : stage_tensors) {
+                    if (st.first == t) {
+                        ggml_backend_tensor_set(d, stage + st.second, 0, (hi - lo) * t->nb[2]);
+                        s.gpu_up_bytes += (hi - lo) * t->nb[2];
+                        break;
+                    }
+                }
                 continue;
             }
             if (pack_weights.count(t)) {
@@ -870,10 +940,12 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 }
             }
             flush();
+            next_window(ch);
             ggml_backend_synchronize(c->gpu);
             res = (const char *) rb;
         } else if (rb) {
             ggml_backend_tensor_get_async(c->gpu, gout, rb, 0, out_bytes);
+            next_window(ch);
             ggml_backend_synchronize(c->gpu);
             res = (const char *) rb;
         } else if (n_chunk > 1) {
