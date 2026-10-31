@@ -341,6 +341,9 @@ class Pool:
             b.stop(reason)
 
 
+_conns = threading.local()      # S06: kept-alive connections to the model server, per client thread
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "moe-cache-on-demand"
@@ -457,13 +460,28 @@ class Handler(BaseHTTPRequestHandler):
             b.busy(-1)
 
     def proxy(self, port, data):
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+        # idea S06 (MOE_CACHE_PROXY_KEEPALIVE=1, default off): one kept-alive connection per client thread and server port is reused for the next request;
+        # a reused connection the server had closed is replaced once (nothing of the request was processed then)
+        keep = os.environ.get("MOE_CACHE_PROXY_KEEPALIVE") == "1"
+        pool = getattr(_conns, "pool", None)
+        if pool is None:
+            pool = _conns.pool = {}
+        conn = pool.pop(port, None) if keep else None
+        reused = conn is not None
+        if conn is None:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
         hdrs = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
         if data is not None:
             hdrs["Content-Length"] = str(len(data))
         try:
-            conn.request(self.command, self.path, body=data, headers=hdrs)
-            r = conn.getresponse()
+            try:
+                conn.request(self.command, self.path, body=data, headers=hdrs)
+                r = conn.getresponse()
+            except (http.client.RemoteDisconnected, http.client.CannotSendRequest, BrokenPipeError, ConnectionResetError) if reused else () :
+                conn.close()
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+                conn.request(self.command, self.path, body=data, headers=hdrs)
+                r = conn.getresponse()
         except OSError as e:
             conn.close()
             return self.reply(502, {"error": {"message": f"the model server did not answer: {e}", "type": "unavailable_error", "code": 502}})
@@ -496,7 +514,10 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:                                 # BrokenPipe / ConnectionReset / (Windows) ConnectionAborted
             self.close_connection = True                # the agent hung up: closing ours makes llama-server stop generating
         finally:
-            conn.close()
+            if keep and not r.will_close and r.isclosed():
+                pool[port] = conn           # the response was read to its end: the connection can serve the next request
+            else:
+                conn.close()
 
     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_HEAD = handle_any
 
