@@ -1854,12 +1854,6 @@ def _launch_plan(a, extra, argv, machine):
         pname = pname or a.project
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
         extra += ["--slot-save-path", slotdir]
-        if not dry:
-            try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same
-                with open(os.path.join(slotdir, "server.id"), "w") as fh:
-                    fh.write(model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
-            except OSError:
-                pass
     profile = model_profile(model, pname, dry=dry)
     if not os.path.isfile(profile) and not a.no_starter and not dry:
         # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
@@ -1906,6 +1900,12 @@ def _launch_plan(a, extra, argv, machine):
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
     if kv_q8:
         extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
+    if a.project and not dry:
+        try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same (after the KV types above are final)
+            with open(os.path.join(slotdir, "server.id"), "w") as fh:
+                fh.write(model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
+        except OSError:
+            pass
     if a.fast == "kv":
         say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
     elif a.fast:
