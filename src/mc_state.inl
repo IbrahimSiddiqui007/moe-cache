@@ -260,6 +260,31 @@ struct state_t {
     int    graph_active = 0;                            // be_compute calls in flight (mu)
     uint64_t graph_seq = 0;                             // graphs started (mu)
     uint64_t rb_round_seq = ~0ull;                      // graph_seq of the last rebalance round: one round per idle period
+    // idea P20 (MOE_CACHE_PREFILL_LEND_MIB=N, default 0 = off): while long prompt batches run, the expert cache gives N MiB back to the system (the cache is cut by N and
+    // the surplus evicted), and takes them back at the first small (decode) graph
+    size_t lent_bytes = 0;
+    void prefill_lend(int64_t max_tok) {
+        static const size_t lend = getenv("MOE_CACHE_PREFILL_LEND_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_PREFILL_LEND_MIB"))) << 20 : 0;
+        if (!lend) {
+            return;
+        }
+        std::lock_guard<std::mutex> lk(mu);
+        if (max_tok >= scan_tokens && !lent_bytes && budget > lend) {
+            lent_bytes = lend;
+            budget -= lend;
+            while (resident_bytes > budget) {
+                int v = pick_victim();
+                if (v < 0) { break; }
+                evict(v);
+            }
+            fprintf(stderr, "moe-cache: long prompt: the expert cache lends %.0f MiB to the system until decode (MOE_CACHE_PREFILL_LEND_MIB)\n", lend / 1048576.0);
+        } else if (max_tok < scan_tokens && lent_bytes) {
+            budget += lent_bytes;
+            if (max_budget && budget > max_budget) { budget = max_budget; }
+            lent_bytes = 0;
+        }
+    }
+
     bool last_long = false;                             // idea C07: the last graph ended on a long prompt batch (under mu)
     std::atomic<uint64_t> last_end_ns{0};               // steady clock, end of the last graph
     bool   rb_acted = false;                            // the last round read something: measure the next graphs

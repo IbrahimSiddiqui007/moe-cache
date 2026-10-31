@@ -338,6 +338,15 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 s.preload();
             }
         }
+        static const bool lend_on = getenv("MOE_CACHE_PREFILL_LEND_MIB") != nullptr;
+        if (lend_on) {
+            int64_t mt = 0;
+            for (int i = 0, nn = ggml_graph_n_nodes(cg); i < nn; i++) {
+                const ggml_tensor * q = ggml_graph_node(cg, i);
+                if (q->op == GGML_OP_MUL_MAT_ID && q->src[2]) { mt = std::max<int64_t>(mt, q->src[2]->ne[1]); }
+            }
+            s.prefill_lend(mt);
+        }
         s.begin_graph();       // the experts of every group below stay protected until the next graph
         const int n_nodes = ggml_graph_n_nodes(cg);
         std::vector<char> done((size_t) n_nodes, 0);
