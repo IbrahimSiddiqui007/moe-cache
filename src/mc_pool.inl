@@ -78,14 +78,15 @@ struct exec_pool_t {
         wh.op = j->name;
         const bool tm = pool && pool->times;
         uint64_t busy = 0, fw = 0, nch_done = 0;
+        static const int claim_n = getenv("MOE_CACHE_POOL_CLAIM") ? std::max(1, std::min(64, atoi(getenv("MOE_CACHE_POOL_CLAIM")))) : 1;
         int fin = 0;       // idea D10: finished chunks are counted once per worker when it runs out of chunks, not one atomic add per chunk
         if (tm && worker) {
             pool->wake_ns += exec_now_ns() - j->t_pub_ns;
             pool->n_wake++;
         }
         for (;;) {
-            const int c = j->next.fetch_add(1, std::memory_order_relaxed);
-            if (c >= j->total) {
+            const int c0 = j->next.fetch_add(claim_n, std::memory_order_relaxed);      // idea D09 (MOE_CACHE_POOL_CLAIM=N, default 1): N chunks per claim
+            if (c0 >= j->total) {
                 if (fin) {
                     j->done.fetch_add(fin, std::memory_order_release);
                 }
@@ -95,36 +96,40 @@ struct exec_pool_t {
                 }
                 return;
             }
-            const exec_task_t & t = j->tasks[c / j->nch];
-            const int64_t r0 = (int64_t) (c % j->nch) * j->chunk;
-            const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
-#ifndef MOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT     // CI only: a build without this wait must fail the delayed-read Q2_0 gpt-oss step
-            if (t.flag) {
-                const uint64_t f0 = tm && __atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? exec_now_ns() : 0;
-                while (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE)) {
-                    cpu_relax();
+            const int c1 = std::min(c0 + claim_n, j->total);
+            for (int c = c0; c < c1; c++) {
+                const exec_task_t & t = j->tasks[c / j->nch];
+                const int64_t r0 = (int64_t) (c % j->nch) * j->chunk;
+                const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
+    #ifndef MOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT     // CI only: a build without this wait must fail the delayed-read Q2_0 gpt-oss step
+                if (t.flag) {
+                    const uint64_t f0 = tm && __atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? exec_now_ns() : 0;
+                    while (__atomic_load_n(t.flag, __ATOMIC_ACQUIRE)) {
+                        cpu_relax();
+                    }
+                    if (f0) {
+                        fw += exec_now_ns() - f0;
+                    }
                 }
-                if (f0) {
-                    fw += exec_now_ns() - f0;
+    #endif
+                const uint64_t b0 = tm ? exec_now_ns() : 0;
+                wh.task = &t;          // idea D16: the task is the same for every row of the chunk, so it is stored once, the row once per row
+                for (int64_t r = r0; r < r1; r++) {
+                    const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
+                    wh.r = r;
+                    for (int k = 0; k < t.ncol; k++) {
+                        wh.k = k;
+                        wh.dst = &t.dsts[k][r];
+                        j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
+                    }
                 }
-            }
-#endif
-            const uint64_t b0 = tm ? exec_now_ns() : 0;
-            wh.task = &t;          // idea D16: the task is the same for every row of the chunk, so it is stored once, the row once per row
-            for (int64_t r = r0; r < r1; r++) {
-                const char * wr = t.w + (size_t) r * j->nb01;       // the weight row stays in L1 while every token column uses it
-                wh.r = r;
-                for (int k = 0; k < t.ncol; k++) {
-                    wh.k = k;
-                    wh.dst = &t.dsts[k][r];
-                    j->dot((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
+                if (tm) {
+                    busy += exec_now_ns() - b0;
+                    nch_done++;
                 }
+
+                fin++;
             }
-            if (tm) {
-                busy += exec_now_ns() - b0;
-                nch_done++;
-            }
-            fin++;
         }
     }
 
