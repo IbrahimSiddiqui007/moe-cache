@@ -395,6 +395,154 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
         }
     }
+    // idea P01 (MOE_CACHE_GPU_COMPACT=1, default off): a split block computes, for each part, only the (token, slot) rows whose expert is in that part
+    // (a graph of 1 x R rows, built per part) instead of the whole n_ids x n_tok shape with the other rows thrown away. Each row is the same
+    // expert matrix times the same input row, but the GPU kernel sees another shape, so the rounding may differ: it needs the logit check.
+    static const bool compact_env = getenv("MOE_CACHE_GPU_COMPACT") && atoi(getenv("MOE_CACHE_GPU_COMPACT")) > 0;
+    if (compact_env && n_chunk > 1 && pack_ids && pack_weights.size() > 0) {
+        const int64_t n_ids = pack_ids->ne[0], n_tok = pack_ids->ne[1];
+        bool ok = ggml_is_contiguous(out) && out->ne[1] == n_ids && out->ne[2] == n_tok && out->ne[3] == 1;
+        for (ggml_tensor * n : seg) {
+            ok = ok && n->ne[1] == n_ids && n->ne[2] == n_tok && n->ne[3] == 1;
+            for (int k = 0; ok && k < GGML_MAX_SRC; k++) {
+                const ggml_tensor * src = n->src[k];
+                if (!src || inside.count(src)) {
+                    continue;
+                }
+                if (n->op == GGML_OP_MUL_MAT_ID && k == 0) {
+                    ok = pack_weights.count(src) > 0;
+                } else if (n->op == GGML_OP_MUL_MAT_ID && k == 2) {
+                    ok = src == pack_ids;
+                } else if (n->op == GGML_OP_MUL_MAT_ID && k == 1) {
+                    ok = src->type == GGML_TYPE_F32 && src->ne[2] == n_tok && src->ne[3] == 1 && (src->ne[1] == 1 || src->ne[1] == n_ids) && src->nb[0] == sizeof(float);
+                } else {
+                    ok = false;
+                }
+            }
+            if (n->op == GGML_OP_MUL_MAT_ID) {
+                const ggml_tensor * b = n->src[1];
+                ok = ok && (inside.count(b) ? (b->ne[1] == n_ids && b->ne[2] == n_tok) : true);
+            }
+        }
+        if (ok) {
+            static std::atomic<int> said_c{0};
+            if (said_c++ < 3) {
+                fprintf(stderr, "moe-cache: split long-prompt block: computing only the rows of each part (MOE_CACHE_GPU_COMPACT)\n");
+            }
+            std::vector<std::pair<int32_t, int32_t>> rows;       // (token, slot)
+            std::vector<uint8_t> hostbuf;
+            for (size_t ch = 0; ch < n_chunk; ch++) {
+                const size_t lo = ch * per_chunk, hi = std::min(pack_used.size(), lo + per_chunk);
+                if (lo >= hi) {
+                    continue;
+                }
+                rows.clear();
+                std::vector<int32_t> cids;
+                for (int64_t i1 = 0; i1 < n_tok; i1++) {
+                    for (int64_t i0 = 0; i0 < n_ids; i0++) {
+                        const size_t v = (size_t) pack_map[(size_t) *(const int32_t *) ((const char *) pack_ids->data + i0 * pack_ids->nb[0] + i1 * pack_ids->nb[1])];
+                        if (v >= lo && v < hi) {
+                            rows.emplace_back((int32_t) i1, (int32_t) i0);
+                            cids.push_back((int32_t) (v - lo));
+                        }
+                    }
+                }
+                if (rows.empty()) {
+                    continue;
+                }
+                const int64_t R = (int64_t) rows.size();
+                ggml_context * pctx = ggml_init(ip);
+                if (!pctx) {
+                    return false;
+                }
+                std::unordered_map<const ggml_tensor *, ggml_tensor *> pc;
+                std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> pup;
+                auto pext = [&](const ggml_tensor * t) {
+                    auto it = pc.find(t);
+                    if (it != pc.end()) {
+                        return it->second;
+                    }
+                    int64_t ne[GGML_MAX_DIMS] = { t->ne[0], 1, R, 1 };
+                    if (pack_weights.count(t)) {
+                        ne[1] = t->ne[1];
+                        ne[2] = (int64_t) (hi - lo);
+                    } else if (t == pack_ids) {
+                        ne[0] = 1;
+                    }
+                    ggml_tensor * nt = ggml_new_tensor(pctx, t->type, GGML_MAX_DIMS, ne);
+                    ggml_set_input(nt);
+                    pc[t] = nt;
+                    pup.emplace_back(t, nt);
+                    return nt;
+                };
+                for (ggml_tensor * n : seg) {
+                    int64_t ne[GGML_MAX_DIMS] = { n->ne[0], 1, R, 1 };
+                    ggml_tensor * nn = ggml_new_tensor(pctx, n->type, GGML_MAX_DIMS, ne);
+                    nn->op = n->op;
+                    memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
+                    for (int k = 0; k < GGML_MAX_SRC; k++) {
+                        if (n->src[k]) {
+                            nn->src[k] = inside.count(n->src[k]) ? pc[n->src[k]] : pext(n->src[k]);
+                        }
+                    }
+                    pc[n] = nn;
+                }
+                ggml_tensor * pout = pc[out];
+                ggml_set_output(pout);
+                ggml_cgraph * pg = ggml_new_graph(pctx);
+                ggml_build_forward_expand(pg, pout);
+                if (!gpu_graph_supported(c, pg) || !ggml_gallocr_alloc_graph(c->galloc, pg)) {
+                    ggml_free(pctx);
+                    return false;
+                }
+                for (auto & u : pup) {
+                    const ggml_tensor * t = u.first;
+                    ggml_tensor * d = u.second;
+                    if (pack_weights.count(t)) {
+                        const size_t nb2 = t->nb[2];
+                        for (size_t k = lo; k < hi;) {
+                            size_t r = 1;
+                            while (k + r < hi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
+                                r++;
+                            }
+                            wait_experts(s, t, pack_used[k], (int64_t) r);
+                            ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, (k - lo) * nb2, r * nb2);
+                            k += r;
+                        }
+                        s.gpu_up_bytes += (hi - lo) * nb2;
+                    } else if (t == pack_ids) {
+                        ggml_backend_tensor_set(d, cids.data(), 0, cids.size() * sizeof(int32_t));
+                    } else {
+                        const size_t rb_bytes = (size_t) t->ne[0] * sizeof(float);       // one input row per picked (token, slot)
+                        hostbuf.resize(rb_bytes * (size_t) R);
+                        for (int64_t r = 0; r < R; r++) {
+                            const int64_t i11 = t->ne[1] == 1 ? 0 : rows[(size_t) r].second;
+                            memcpy(hostbuf.data() + (size_t) r * rb_bytes, (const char *) t->data + i11 * t->nb[1] + (int64_t) rows[(size_t) r].first * t->nb[2], rb_bytes);
+                        }
+                        ggml_backend_tensor_set(d, hostbuf.data(), 0, hostbuf.size());
+                        s.gpu_up_bytes += hostbuf.size();
+                    }
+                }
+                const enum ggml_status st = ggml_backend_graph_compute(c->gpu, pg);
+                if (st != GGML_STATUS_SUCCESS) {
+                    ggml_backend_synchronize(c->gpu);
+                    ggml_free(pctx);
+                    return false;
+                }
+                const size_t row = ggml_row_size(out->type, out->ne[0]);
+                hostbuf.resize(row * (size_t) R);
+                ggml_backend_tensor_get(pout, hostbuf.data(), 0, hostbuf.size());
+                for (int64_t r = 0; r < R; r++) {
+                    memcpy((char *) out->data + (size_t) rows[(size_t) r].second * out->nb[1] + (size_t) rows[(size_t) r].first * out->nb[2], hostbuf.data() + (size_t) r * row, row);
+                }
+                ggml_free(pctx);
+            }
+            ggml_free(ctx);
+            s.gpu_segments++;
+            s.gpu_split_blocks++;
+            return true;
+        }
+    }
     std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
     std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
     auto ext = [&](const ggml_tensor * t) {
