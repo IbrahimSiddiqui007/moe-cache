@@ -569,9 +569,9 @@ void exec_run_prepared(state_t & s, exec_prep_t * p, int n) {
         single = &both;
         s.exec_fused++;
     }
-    const auto tp0 = std::chrono::steady_clock::now();
+    const uint64_t tp0 = etimes ? exec_now_ns() : 0;       // idea D13: the per-type time is kept only with MOE_CACHE_EXEC_TIMES (two clock reads less per op)
     s.pool->run(single->data(), (int) single->size(), w->ne[1], w->ne[0], w->nb[1], p[0].dot, s.exec_chunk, p[0].nd->name);
-    const uint64_t rn = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - tp0).count();
+    const uint64_t rn = etimes ? exec_now_ns() - tp0 : 0;
     for (int k = 0; k < n; k++) {
         const uint64_t bytes = (uint64_t) p[k].tasks.size() * (uint64_t) w->nb[1] * (uint64_t) w->ne[1];
         if (etimes) {

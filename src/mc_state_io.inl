@@ -563,8 +563,13 @@
             if (exec_on) {
                 for (int ty = 0; ty < 64; ty++) {
                     if (exec_type_ops[ty]) {
-                        fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu time=%.2fs expert data=%.1f GB (%.2f GB/s incl. waits)\n", ggml_type_name((ggml_type) ty),
-                                (unsigned long long) exec_type_ops[ty], exec_type_ns[ty] / 1e9, exec_type_bytes[ty] / 1e9, exec_type_ns[ty] ? (double) exec_type_bytes[ty] / exec_type_ns[ty] : 0.0);
+                        if (exec_type_ns[ty]) {      // time is recorded only with MOE_CACHE_EXEC_TIMES (idea D13)
+                            fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu time=%.2fs expert data=%.1f GB (%.2f GB/s incl. waits)\n", ggml_type_name((ggml_type) ty),
+                                    (unsigned long long) exec_type_ops[ty], exec_type_ns[ty] / 1e9, exec_type_bytes[ty] / 1e9, (double) exec_type_bytes[ty] / exec_type_ns[ty]);
+                        } else {
+                            fprintf(stderr, "moe-cache: executor by type %-8s ops=%llu expert data=%.1f GB\n", ggml_type_name((ggml_type) ty),
+                                    (unsigned long long) exec_type_ops[ty], exec_type_bytes[ty] / 1e9);
+                        }
                     }
                 }
             }
