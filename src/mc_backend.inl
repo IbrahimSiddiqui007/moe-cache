@@ -818,17 +818,36 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     }
     auto stage_part = [&](size_t pch) {         // wait for and copy the part's experts into the staging buffer
         const size_t plo = pch * per_chunk, phi = std::min(pack_used.size(), plo + per_chunk);
-        for (auto & st : stage_tensors) {
+        // idea P10 (MOE_CACHE_GPU_INTERLEAVE=1, default off): by run of neighbouring experts, all of its weight tensors (gate, up, down) before the next run,
+        // instead of one whole tensor after the other, so the first runs are complete while the reads of the later ones still go on
+        static const bool interleave = getenv("MOE_CACHE_GPU_INTERLEAVE") && atoi(getenv("MOE_CACHE_GPU_INTERLEAVE")) > 0;
+        auto do_run = [&](const std::pair<const ggml_tensor *, size_t> & st, size_t k, size_t r) {
+            wait_experts(s, st.first, pack_used[k], (int64_t) r);
+            if (stage) {
+                memcpy(stage + st.second + (k - plo) * st.first->nb[2], (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2], r * st.first->nb[2]);
+            }
+        };
+        if (interleave) {
             for (size_t k = plo; k < phi;) {
                 size_t r = 1;
                 while (k + r < phi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
                     r++;
                 }
-                wait_experts(s, st.first, pack_used[k], (int64_t) r);
-                if (stage) {
-                    memcpy(stage + st.second + (k - plo) * st.first->nb[2], (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2], r * st.first->nb[2]);
+                for (auto & st : stage_tensors) {
+                    do_run(st, k, r);
                 }
                 k += r;
+            }
+        } else {
+            for (auto & st : stage_tensors) {
+                for (size_t k = plo; k < phi;) {
+                    size_t r = 1;
+                    while (k + r < phi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
+                        r++;
+                    }
+                    do_run(st, k, r);
+                    k += r;
+                }
             }
         }
         if (stage) {
