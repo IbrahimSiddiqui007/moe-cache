@@ -2230,6 +2230,9 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
     big files and for small changes). Each agent keeps
     its own slot (llama-server picks the slot whose prompt matches best), so Hermes and OpenCode both start warm after a restart. Saves go to a
     temporary name first, so a stop during a save never leaves a broken file. When the shared KV pool fills, llama-server clears idle slots itself."""
+    # idea S09 (MOE_CACHE_WARM_KEEP=N, default 2): restore only the N longest saved conversations at start (0 = none), not the two largest states every time
+    kv = os.environ.get("MOE_CACHE_WARM_KEEP", "")
+    keep = int(kv) if kv.isdigit() else keep
     url = f"http://127.0.0.1:{port}"
     for _ in range(3600):
         if healthy(port, api_key):
