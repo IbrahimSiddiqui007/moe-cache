@@ -105,6 +105,15 @@ struct moe_cache_backend_ctx {
     bool               hb_dropped = false;   // the bank was freed so a long prompt's GPU block fits; it is loaded again at the next decode step
     bool               seg_nomem = false;    // the last gpu_segment() call failed for lack of free GPU memory
     ggml_backend_buffer_t rb_buf = nullptr;  // N22: the long-prompt block's result is read back into this pinned host buffer (the GPU device's own type)
+    // idea P07 (MOE_CACHE_GPU_TMPL=1): finished long-prompt block graphs, kept by shape signature and reused by later blocks of the same shape
+    struct gpu_tmpl_t {
+        std::string key;
+        ggml_context * ctx = nullptr;
+        ggml_cgraph * g = nullptr;
+        std::vector<ggml_tensor *> node_clones;     // the clone of each segment node, in segment order
+        std::vector<ggml_tensor *> ext_clones;      // the input clones, in order of first use
+    };
+    std::vector<gpu_tmpl_t> tmpls;
     bool               rb_failed = false;    // no pinned host buffer type, or it could not be allocated: plain blocking read-back
     // MOE_CACHE_HYBRID_ADAPT=N,K (default 8,16; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert of their layer's bank
     struct hb_layer_t {
@@ -140,6 +149,9 @@ void be_free(ggml_backend_t backend) {
     }
     if (c->tp2 && CPU().tp_free) {
         CPU().tp_free(c->tp2);
+    }
+    for (auto & t : c->tmpls) {
+        ggml_free(t.ctx);
     }
     if (c->galloc) {
         ggml_gallocr_free(c->galloc);
@@ -545,6 +557,70 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     }
     std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
     std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
+    static const bool tmpl_env = getenv("MOE_CACHE_GPU_TMPL") && atoi(getenv("MOE_CACHE_GPU_TMPL")) > 0;
+    std::string tkey;
+    if (tmpl_env) {      // the block's shape signature: ops, types, shapes, parameters, how the nodes read each other, and the split
+        std::vector<const ggml_tensor *> exts;
+        tkey += pack_ids ? 'P' : 'p';
+        tkey += std::to_string(per_chunk);
+        for (ggml_tensor * n : seg) {
+            tkey += '|';
+            tkey += std::to_string((int) n->op) + ',' + std::to_string((int) n->type) + ',' + std::to_string(n->ne[0]) + ',' + std::to_string(n->ne[1]) + ',' +
+                    std::to_string(n->ne[2]) + ',' + std::to_string(n->ne[3]) + ',';
+            tkey.append((const char *) n->op_params, sizeof(n->op_params));
+            for (int k = 0; k < GGML_MAX_SRC; k++) {
+                const ggml_tensor * src = n->src[k];
+                if (!src) {
+                    continue;
+                }
+                tkey += ';' + std::to_string(k) + ':';
+                if (inside.count(src)) {
+                    tkey += 'i' + std::to_string(std::find(seg.begin(), seg.end(), src) - seg.begin());
+                } else {
+                    size_t o = std::find(exts.begin(), exts.end(), src) - exts.begin();
+                    if (o == exts.size()) {
+                        exts.push_back(src);
+                    }
+                    tkey += 'e' + std::to_string(o) + ',' + std::to_string((int) src->type) + ',' + std::to_string(src->ne[0]) + ',' + std::to_string(src->ne[1]) + ',' +
+                            std::to_string(src->ne[2]) + ',' + std::to_string(src->ne[3]) + (pack_weights.count(src) ? 'w' : 'n');
+                }
+            }
+        }
+    }
+    std::vector<ggml_tensor *> node_clones;
+    ggml_tensor * gout = nullptr;
+    ggml_cgraph * g = nullptr;
+    bool from_tmpl = false;
+    if (tmpl_env) {
+        for (size_t i = 0; i < c->tmpls.size(); i++) {
+            if (c->tmpls[i].key != tkey) {
+                continue;
+            }
+            auto t = std::move(c->tmpls[i]);        // taken out while in use: an early return below frees it
+            c->tmpls.erase(c->tmpls.begin() + (long) i);
+            ggml_free(ctx);
+            ctx = t.ctx;
+            g = t.g;
+            node_clones = t.node_clones;
+            std::unordered_set<const ggml_tensor *> seen;
+            size_t ei = 0;
+            for (ggml_tensor * n : seg) {
+                for (int k = 0; k < GGML_MAX_SRC; k++) {
+                    const ggml_tensor * src = n->src[k];
+                    if (src && !inside.count(src) && seen.insert(src).second) {
+                        uploads.emplace_back(src, t.ext_clones[ei++]);
+                        clone[src] = uploads.back().second;
+                    }
+                }
+            }
+            for (size_t j = 0; j < seg.size(); j++) {
+                clone[seg[j]] = node_clones[j];
+            }
+            gout = clone[out];
+            from_tmpl = true;
+            break;
+        }
+    }
     auto ext = [&](const ggml_tensor * t) {
         auto it = clone.find(t);
         if (it != clone.end()) {
@@ -560,22 +636,24 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         uploads.emplace_back(t, nt);
         return nt;
     };
-    for (ggml_tensor * n : seg) {
-        ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, n->ne);
-        nn->op = n->op;
-        memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
-        for (int k = 0; k < GGML_MAX_SRC; k++) {
-            if (n->src[k]) {
-                nn->src[k] = inside.count(n->src[k]) ? clone[n->src[k]] : ext(n->src[k]);
+    if (!from_tmpl) {
+        for (ggml_tensor * n : seg) {
+            ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, n->ne);
+            nn->op = n->op;
+            memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
+            for (int k = 0; k < GGML_MAX_SRC; k++) {
+                if (n->src[k]) {
+                    nn->src[k] = inside.count(n->src[k]) ? clone[n->src[k]] : ext(n->src[k]);
+                }
             }
+            clone[n] = nn;
         }
-        clone[n] = nn;
+        gout = clone[out];
+        ggml_set_output(gout);
+        g = ggml_new_graph(ctx);
+        ggml_build_forward_expand(g, gout);
     }
-    ggml_tensor * gout = clone[out];
-    ggml_set_output(gout);
-    ggml_cgraph * g = ggml_new_graph(ctx);
-    ggml_build_forward_expand(g, gout);
-    if (!gpu_graph_supported(c, g)) {
+    if (!from_tmpl && !gpu_graph_supported(c, g)) {
         ggml_free(ctx);
         return false;
     }
@@ -833,7 +911,21 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         ss.ema = ss.n == 0 ? v : 0.7 * ss.ema + 0.3 * v;
         ss.n++;
     }
-    ggml_free(ctx);
+    if (tmpl_env && c->tmpls.size() < 4) {      // keep the finished graph for the next block of this shape (at most 4 shapes)
+        moe_cache_backend_ctx::gpu_tmpl_t t;
+        t.key = tkey;
+        t.ctx = ctx;
+        t.g = g;
+        for (ggml_tensor * n : seg) {
+            t.node_clones.push_back(clone[n]);
+        }
+        for (auto & u : uploads) {
+            t.ext_clones.push_back(u.second);
+        }
+        c->tmpls.push_back(std::move(t));
+    } else {
+        ggml_free(ctx);
+    }
     s.gpu_segments++;
     if (n_chunk > 1) {
         s.gpu_split_blocks++;
