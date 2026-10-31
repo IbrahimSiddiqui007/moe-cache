@@ -322,6 +322,8 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         const size_t extra = need > held ? need - held : 0;
         return gpu_tot == 0 || (chunks_env != 0 && extra == 0) || gpu_free >= extra + headroom;
     };
+    struct split_stat_t { double ema = 0; int n = 0; };
+    static split_stat_t split_stat[17];     // idea P12: per number of parts, nanoseconds per used expert
     size_t n_chunk = 1;
     if (chunks_env != 0 && full_ids && out->ne[1] == full_ids->ne[0] && out->ne[2] == full_ids->ne[1] && out->ne[3] == 1) {
         auto need_for = [&](size_t n_w) {      // bytes of the block's graph with n_w experts per weight tensor (0: whole tensors)
@@ -347,6 +349,29 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 if (fits(need_for((full_used.size() + k - 1) / k))) {
                     n_chunk = k;
                     break;
+                }
+            }
+            // idea P12 (MOE_CACHE_GPU_SPLIT_ADAPT=1, default off): the first split that fits and the next two are tried in turn, then the one with the
+            // lowest measured time per used expert (running average) is used; the block's time is booked at the end of this function
+            static const bool adapt = getenv("MOE_CACHE_GPU_SPLIT_ADAPT") && atoi(getenv("MOE_CACHE_GPU_SPLIT_ADAPT")) > 0;
+            if (adapt && n_chunk > 1) {
+                size_t pick = 0;
+                double bestv = 0;
+                for (size_t k = n_chunk; k <= std::min<size_t>(n_chunk + 2, 16); k++) {
+                    if (!fits(need_for((full_used.size() + k - 1) / k))) {
+                        continue;
+                    }
+                    if (split_stat[k].n < 2) {          // not measured yet: measure it (twice)
+                        pick = k;
+                        break;
+                    }
+                    if (!pick || split_stat[k].ema < bestv) {
+                        pick = k;
+                        bestv = split_stat[k].ema;
+                    }
+                }
+                if (pick) {
+                    n_chunk = pick;
                 }
             }
         }
@@ -653,6 +678,12 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         up_ns += std::chrono::duration<double, std::nano>(t_c0 - t_up0).count();
         comp_ns += std::chrono::duration<double, std::nano>(t_g0 - t_c0).count();
         get_ns += std::chrono::duration<double, std::nano>(t_end - t_g0).count();
+    }
+    if (n_chunk > 1 && n_chunk <= 16 && !pack_used.empty()) {
+        split_stat_t & ss = split_stat[n_chunk];
+        const double v = (up_ns + comp_ns + get_ns) / (double) pack_used.size();
+        ss.ema = ss.n == 0 ? v : 0.7 * ss.ema + 0.3 * v;
+        ss.n++;
     }
     ggml_free(ctx);
     s.gpu_segments++;
