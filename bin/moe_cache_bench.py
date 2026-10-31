@@ -141,6 +141,8 @@ def run_one(model, mode, a, port):
     kw = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     if mc.WINDOWS:
         kw["creationflags"] = 0x00000200                  # CREATE_NEW_PROCESS_GROUP
+    elif sys.platform.startswith("linux"):
+        kw["preexec_fn"] = mc._die_with_parent_linux      # "Cancel" on the control page SIGTERMs this process alone: the server must not stay behind
     t0 = time.time()
     p = subprocess.Popen(cmd, **kw)
     lines = []
