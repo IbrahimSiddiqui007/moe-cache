@@ -231,7 +231,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     std::unordered_set<const ggml_tensor *> inside;
     for (int i = first; i <= last; i++) {
         ggml_tensor * n = ggml_graph_node(cg, i);
-        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu) {
+        // idea P16 (MOE_CACHE_GPU_EXTRA_OPS=1, default off): plain element-wise nodes between the expert matrices (clamp, scale) may stay in the GPU block
+        // instead of sending the whole block back to the CPU; they read only nodes of the block
+        static const bool extra_ops = getenv("MOE_CACHE_GPU_EXTRA_OPS") && atoi(getenv("MOE_CACHE_GPU_EXTRA_OPS")) > 0;
+        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu && !(extra_ops && i > first && (n->op == GGML_OP_CLAMP || n->op == GGML_OP_SCALE))) {
             return false;
         }
         inside.insert(n);
@@ -934,6 +937,21 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             staged_ch = pch;
         }
     };
+    // idea P18 (MOE_CACHE_GPU_EVENTS=1, default off): the wait for the queued result copy uses an event recorded right after it, not a synchronize of the whole
+    // backend (same wait on one stream; it only differs where the backend has events and other work is queued). Falls back to synchronize without events.
+    static const bool ev_env = getenv("MOE_CACHE_GPU_EVENTS") && atoi(getenv("MOE_CACHE_GPU_EVENTS")) > 0;
+    auto sync_result = [&] {
+        if (ev_env) {
+            ggml_backend_event_t ev = ggml_backend_event_new(s.gpu_dev);
+            if (ev) {
+                ggml_backend_event_record(ev, c->gpu);
+                ggml_backend_event_synchronize(ev);
+                ggml_backend_event_free(ev);
+                return;
+            }
+        }
+        ggml_backend_synchronize(c->gpu);
+    };
     auto next_window = [&](size_t ch) {         // the result copy of part ch is queued: use the GPU's compute time to prepare part ch + 1
         if (rb && ch + 1 < n_chunk && !stage_tensors.empty()) {
             stage_part(ch + 1);
@@ -1093,12 +1111,12 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
             flush();
             next_window(ch);
-            ggml_backend_synchronize(c->gpu);
+            sync_result();
             res = (const char *) rb;
         } else if (rb) {
             ggml_backend_tensor_get_async(c->gpu, gout, rb, 0, out_bytes);
             next_window(ch);
-            ggml_backend_synchronize(c->gpu);
+            sync_result();
             res = (const char *) rb;
         } else if (n_chunk > 1) {
             part.resize(out_bytes);
