@@ -3083,3 +3083,16 @@ Same PC. The buffered row comes from the night chain of 10-31, when the PC ran a
 | Flash-Next Q2_0, `MOE_CACHE_WIN_VIEW=0`, ABBA: unbuffered vs `MOE_CACHE_WIN_BUFFERED=1` | reader speed 0.26 / 0.26 -> 0.84 / 0.84 GB/s per reader thread; decode +39 %, prompts about 2x | **yes**: the default whenever the file views are not used |
 | Qwen3.6-35B, default views + repacked weights, same switch | reader speed 8.3-8.6 GB/s in all four runs: no difference | nothing changes on the default path |
 | DeepSeek-V4.1-Flash-1017 IQ1_M + Engram, v0.3.3 kit, b11966, ctx 4096, one run on the restarted PC | a chat request gives a correct, complete answer (114 tokens, `finish=stop`). The "stop after 10 tokens" was the model's own end token: the check sent raw `/completion` text with no chat template, and the top-5 next tokens show that end token first (probability 0.44) on the water prompt. The server's exit code 0xFFFFFFFF was the test script's own `Stop-Process` | **no bug**: use chat requests for this model. The launcher now names that exit code |
+
+## 76. Long prompts: plugin outputs skip the slow copy (Windows PC, 2026-10-31; baseline 48.1 tok/s that day, PC up about 4 h, so not chart numbers yet)
+
+A sampler on the graph thread found 35 % of the time between plugin graphs in `ggml_backend_tensor_copy`'s slowest path (malloc, get, set, free), because the plugin's buffer type did not report host. Compute buffers now report host after the first copy; weights do not.
+
+| Flash-Next Q2_0, ctx 40960, same DLL, 34k-token prompt | Prompt tok/s | Prompt wall s | Decode after, tok/s | Text |
+|---|---|---|---|---|
+| Fix on | 395.4 | 86.6 | 28.56 | identical |
+| Fix off | 286.3 | 119.3 | 28.34 | identical |
+| Fix on | 396.4 | 86.3 | 28.53 | identical |
+
+One model, 34k tokens only. Other models and depths are not measured.
+
