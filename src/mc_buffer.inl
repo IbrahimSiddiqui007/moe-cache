@@ -137,16 +137,7 @@ void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t o
 
 void gpu_cache_ensure(const void * p, size_t size);
 
-ggml_backend_buffer_type_t get_buft_host();
-
-// E1 (on by default, MOE_CACHE_HOST_OUT=0 off; RESULTS 76): our compute buffers are plain memory, but a type that is not host sends every output through ggml_backend_tensor_copy's slowest path:
-// malloc, this get, tensor_set, free (a 34k prompt: 35 % of the time between our graphs, plus the page faults of each fresh malloc). After the first such copy the
-// compute buffer reports host, so the scheduler sets the tensor from its data directly. Weights keep the plain type: their bytes may not be loaded. Same bytes.
-void buf_get(ggml_backend_buffer_t buffer, const ggml_tensor * t, void * data, size_t off, size_t size) {
-    static const bool host_out = [] { const char * e = getenv("MOE_CACHE_HOST_OUT"); return !e || atoi(e) != 0; }();
-    if (host_out && buffer->usage == GGML_BACKEND_BUFFER_USAGE_COMPUTE) {
-        buffer->buft = get_buft_host();
-    }
+void buf_get(ggml_backend_buffer_t, const ggml_tensor * t, void * data, size_t off, size_t size) {
     gpu_cache_ensure((const char *) t->data + off, size);     // expert bytes: load them first (an evicted expert has no data in place)
     memcpy(data, (const char *) t->data + off, size);
 }
@@ -197,6 +188,8 @@ const ggml_backend_buffer_i g_buf_i = {
     /* .reset         = */ nullptr,
 };
 
+ggml_backend_buffer_type_t get_buft_host();
+
 ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     size = round_up(std::max<size_t>(size, 1));
     void * p = plat::mem_reserve(size);
@@ -210,7 +203,11 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
         }
     }
     auto * c = new moe_cache_buffer_ctx{ p, size, {}, {} };
-    ggml_backend_buffer_t b = buffer_init_padded(buft, g_buf_i, c, size);
+    // E1 (on by default, MOE_CACHE_HOST_OUT=0 off; RESULTS 76): our compute buffers are plain memory, but a type that is not host sends every output through
+    // ggml_backend_tensor_copy's slowest path: malloc, get, tensor_set, free (a 34k prompt: 35 % of the time between our graphs, plus the page faults of each fresh malloc).
+    // Weights are registered before any compute buffer is allocated and keep the plain type: their bytes may not be loaded. Same bytes either way.
+    static const bool host_out = [] { const char * e = getenv("MOE_CACHE_HOST_OUT"); return !e || atoi(e) != 0; }();
+    ggml_backend_buffer_t b = buffer_init_padded(host_out && S().cache_on && !S().by_tensor.empty() ? get_buft_host() : buft, g_buf_i, c, size);
     std::lock_guard<std::mutex> lk(g_bufs_mu);
     g_bufs.emplace_back(b, c);
     g_bufs_gen.fetch_add(1, std::memory_order_release);

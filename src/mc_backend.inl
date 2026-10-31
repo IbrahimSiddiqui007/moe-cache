@@ -1030,7 +1030,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 }
                 for (const auto & q : runs) {
                     const size_t k = q.first, r = q.second;
-                    wait_experts(s, t, pack_used[k], (int64_t) r);
+                    timed_wait(t, pack_used[k], (int64_t) r);
                     ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, (k - lo) * nb2, r * nb2);
                 }
                 s.gpu_up_bytes += (hi - lo) * nb2;
@@ -1062,7 +1062,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     s.gpu_up_saved += ggml_nbytes(d);          // the held copy already has these bytes
                     continue;
                 }
-                wait_experts(s, t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
+                timed_wait(t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
                 ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
                 s.gpu_up_bytes += ggml_nbytes(d);
             } else {

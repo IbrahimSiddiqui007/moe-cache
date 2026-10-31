@@ -3086,7 +3086,7 @@ Same PC. The buffered row comes from the night chain of 10-31, when the PC ran a
 
 ## 76. Long prompts: plugin outputs skip the slow copy (Windows PC, 2026-10-31; baseline 48.1 tok/s that day, PC up about 4 h, so not chart numbers yet)
 
-A sampler on the graph thread found 35 % of the time between plugin graphs in `ggml_backend_tensor_copy`'s slowest path (malloc, get, set, free), because the plugin's buffer type did not report host. Compute buffers now report host after the first copy; weights do not.
+A sampler on the graph thread found 35 % of the time between plugin graphs in `ggml_backend_tensor_copy`'s slowest path (malloc, get, set, free), because the plugin's buffer type did not report host. The table is the first version, which changed the type after the first copy. The shipped version picks the type when the buffer is created, through the public API (compute buffers are host, weights are not); it has not been re-measured on the PC.
 
 | Flash-Next Q2_0, ctx 40960, same DLL, 34k-token prompt | Prompt tok/s | Prompt wall s | Decode after, tok/s | Text |
 |---|---|---|---|---|
