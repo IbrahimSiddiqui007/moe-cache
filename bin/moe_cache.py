@@ -1819,7 +1819,18 @@ def _launch_plan(a, extra, argv, machine):
             extra.append("--jinja")         # the default in current llama.cpp; explicit for older builds (tool calls need the model's own template)
         if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None:
             # models with recurrent layers keep a copy of that state per checkpoint in host RAM (about 60 MiB on Qwen3.6-35B), outside the cache's budget
-            extra += ["--ctx-checkpoints", "8"]
+            # idea S03 (MOE_CACHE_CKPT=N, default 8): how many recurrent checkpoints each conversation keeps; more cost host RAM, fewer cost reprocessing
+            ck = os.environ.get("MOE_CACHE_CKPT", "8")
+            extra += ["--ctx-checkpoints", ck if ck.isdigit() else "8"]
+        # idea S02 (MOE_CACHE_SLOT_SIMILARITY=0..1, default unset = the server's own): a request takes a busy conversation's slot only if its prompt is at least
+        # this similar to what the slot holds, so a short request from another agent goes to a free slot instead of displacing a long conversation
+        sps = os.environ.get("MOE_CACHE_SLOT_SIMILARITY")
+        if sps and arg_after(extra, "-sps", "--slot-prompt-similarity") is None:
+            try:
+                if 0.0 <= float(sps) <= 1.0:
+                    extra += ["--slot-prompt-similarity", sps]
+            except ValueError:
+                pass
         alias = arg_after(extra, "-a", "--alias")
         if alias is None:
             alias = default_alias(model)
