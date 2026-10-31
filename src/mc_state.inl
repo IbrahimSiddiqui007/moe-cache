@@ -444,6 +444,13 @@ struct state_t {
                 view_sizes.push_back(n);
             }
             win_view = views.size() == shard_paths.size();
+            if (!win_view) {            // a later file failed to map: nothing keeps the earlier views, so they must not stay mapped (and counted) beside the private-memory cache
+                for (size_t vi = 0; vi < views.size(); vi++) {
+                    plat::file_view_unmap(views[vi], view_sizes[vi]);
+                }
+                views.clear();
+                view_sizes.clear();
+            }
             if (win_view) {
                 plat::count_file_cache() = false;      // the views' pages are counted as the cache's own (view_bytes), not as available file cache
                 fprintf(stderr, "moe-cache: experts are kept in read-only views of the model file (%zu), held in RAM by a hard "
@@ -504,6 +511,13 @@ struct state_t {
                 view_sizes.push_back(n);
             }
             win_view = views.size() == shard_paths.size();
+            if (!win_view) {            // a later file failed to map: nothing keeps the earlier views, so they must not stay mapped (and counted) beside the private-memory cache
+                for (size_t vi = 0; vi < views.size(); vi++) {
+                    plat::file_view_unmap(views[vi], view_sizes[vi]);
+                }
+                views.clear();
+                view_sizes.clear();
+            }
             if (win_view) {
                 fprintf(stderr, "moe-cache: experts are kept in read-only mappings of the model file (%zu, page cache; MOE_CACHE_LINUX_VIEW=0: private memory)\n", views.size());
             }

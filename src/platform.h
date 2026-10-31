@@ -357,6 +357,15 @@ inline bool mem_map_file(void * p, size_t size, const file_t & f, uint64_t off) 
 // memory; Vulkan's GPU allocations are charged to commit too, which squeezed the private cache to 8-11 GiB on the PC (RESULTS 59). PC test
 // 2026-10-27: 15 GB of model-file pages held by a hard working-set minimum, system commit +0 (VirtualLock: +15 GB). Every address always shows
 // the file's bytes: a page that is not in RAM is read again on access, never garbage. Linux: not used (nullptr).
+inline void file_view_unmap(const char * p, size_t size) {
+#ifdef _WIN32
+    (void) size;
+    UnmapViewOfFile(p);
+#else
+    munmap((void *) p, size);
+#endif
+}
+
 inline const char * file_view_map(const char * path, size_t * size) {
 #ifdef _WIN32
     HANDLE f = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
