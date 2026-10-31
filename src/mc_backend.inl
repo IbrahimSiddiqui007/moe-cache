@@ -195,6 +195,7 @@ static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
 // to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
 bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
+    const auto t_fn0 = std::chrono::steady_clock::now();     // MOE_CACHE_E1_TIMES: start of the block (before the graph is built)
     const int n_all = ggml_graph_n_nodes(cg);
     std::unordered_set<const ggml_tensor *> inside;
     for (int i = first; i <= last; i++) {
@@ -494,10 +495,21 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
     }
     double up_ns = 0, comp_ns = 0, get_ns = 0;
+    static const bool e1 = seg_times && getenv("MOE_CACHE_E1_TIMES") != nullptr;
+    double wait_ns = 0;
+    uint64_t up_faults = 0;
+    auto timed_wait = [&](const ggml_tensor * t, int64_t e0, int64_t n) {
+        if (!e1) { wait_experts(s, t, e0, n); return; }
+        const auto w0 = std::chrono::steady_clock::now();
+        wait_experts(s, t, e0, n);
+        wait_ns += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - w0).count();
+    };
     std::vector<uint8_t> pack, part;
+    const auto t_first_up = std::chrono::steady_clock::now();
     for (size_t ch = 0; ch < n_chunk; ch++) {
         const size_t lo = ch * per_chunk, hi = std::min(pack_used.size(), lo + per_chunk);
         const auto t_up0 = std::chrono::steady_clock::now();
+        const uint64_t f_up0 = e1 ? state_t::process_faults() : 0;
         for (auto & u : uploads) {
             const ggml_tensor * t = u.first;
             ggml_tensor * d = u.second;
@@ -509,7 +521,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     while (k + r < hi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
                         r++;
                     }
-                    wait_experts(s, t, pack_used[k], (int64_t) r);
+                    timed_wait(t, pack_used[k], (int64_t) r);
                     ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, (k - lo) * nb2, r * nb2);
                     k += r;
                 }
@@ -528,7 +540,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 continue;
             }
             if (ggml_is_contiguous(t)) {
-                wait_experts(s, t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
+                timed_wait(t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
                 ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
                 s.gpu_up_bytes += ggml_nbytes(d);
             } else {
@@ -554,6 +566,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         if (seg_times) {
             ggml_backend_synchronize(c->gpu);
         }
+        if (e1) { up_faults += state_t::process_faults() - f_up0; }
         const auto t_c0 = std::chrono::steady_clock::now();
         const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
         if (!rb || seg_times) {
@@ -603,6 +616,15 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     s.gpu_segments++;
     if (n_chunk > 1) {
         s.gpu_split_blocks++;
+    }
+    if (e1) {
+        const int k = n_chunk > 1 ? 1 : 0;
+        const uint64_t rows = pack_ids ? (uint64_t) (pack_ids->ne[0] * pack_ids->ne[1]) : 0;
+        s.e1_blk_n[k]++; s.e1_parts[k] += n_chunk;
+        s.e1_prep_ns[k] += (uint64_t) std::chrono::duration<double, std::nano>(t_first_up - t_fn0).count();
+        s.e1_up_ns[k] += (uint64_t) up_ns; s.e1_wait_ns[k] += (uint64_t) wait_ns; s.e1_up_faults[k] += up_faults;
+        s.e1_comp_ns[k] += (uint64_t) comp_ns; s.e1_get_ns[k] += (uint64_t) get_ns;
+        s.e1_rows_comp[k] += rows * n_chunk; s.e1_rows_use[k] += rows;
     }
     if (seg_times) {
         static double up_ms = 0, comp_ms = 0, get_ms = 0;
