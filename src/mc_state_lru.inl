@@ -416,6 +416,14 @@
                 }
                 jobs.swap(merged);
             }
+            // idea C10 (MOE_CACHE_SIBLING_ORDER=1, default off): reads for gate/up go to the queue before the reads for down (the layer needs them first), the
+            // order inside each kind unchanged; has no effect when MOE_CACHE_ASYNC_COALESCE sorts the queue by file offset
+            static const bool sib_order = getenv("MOE_CACHE_SIBLING_ORDER") && atoi(getenv("MOE_CACHE_SIBLING_ORDER")) > 0;
+            if (sib_order && !async_co) {
+                std::stable_partition(jobs.begin(), jobs.end(), [&](const io_job_t & j) {
+                    return j.node < 0 || tensors[node_owner[(size_t) j.node]]->name.find("down") == std::string::npos;
+                });
+            }
             const size_t njobs = jobs.size() + pjs.size();
             if (njobs) {
                 demand_pending.fetch_add((int) njobs, std::memory_order_relaxed);
