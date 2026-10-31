@@ -327,8 +327,10 @@ def pick_lib(ls):
 # ---- small helpers ----
 
 def model_parts(model):
-    if re.search(r"-\d{5}-of-\d{5}\.gguf$", model):
-        return glob.glob(re.sub(r"-\d{5}-of-(\d{5})\.gguf$", r"-*-of-\1.gguf", model))
+    m = re.search(r"-\d{5}-of-(\d{5})\.gguf$", model)
+    if m:
+        # the folder and file name are the user's text: '[', '*' and '?' in them match themselves, only the shard number is a wildcard
+        return sorted(glob.glob(glob.escape(model[:m.start()]) + "-[0-9][0-9][0-9][0-9][0-9]-of-" + m.group(1) + ".gguf"))
     return [model]
 
 
