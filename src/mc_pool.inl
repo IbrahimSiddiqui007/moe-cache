@@ -195,6 +195,21 @@ struct exec_pool_t {
         if (n_tasks <= 0 || rows <= 0) {     // idea D17: no chunks, so no publish, no wake-up, no barrier
             return;
         }
+        // idea D07 (MOE_CACHE_POOL_TINY=0 turns it off): a job of one chunk is run by the calling thread alone on a local job: no publish, no wake-up, no barrier
+        static const bool tiny_inline = !getenv("MOE_CACHE_POOL_TINY") || atoi(getenv("MOE_CACHE_POOL_TINY")) != 0;
+        if (tiny_inline && n_tasks == 1 && rows <= chunk) {
+            exec_job_t lj;
+            lj.name = name;
+            lj.tasks = tasks;
+            lj.nch = 1;
+            lj.total = 1;
+            lj.chunk = chunk;
+            lj.ne00 = ne00;
+            lj.nb01 = nb01;
+            lj.dot = dot;
+            work(&lj, nullptr, false);
+            return;
+        }
         // a worker that saw the previous generation late may only now be entering (it counts itself in `inside` before it reads `cur`):
         // wait for it to leave before this job slot is rewritten, so no worker ever reads a job while it is being filled
         while (inside.load() > 0) {
