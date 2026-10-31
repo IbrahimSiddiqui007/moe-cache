@@ -669,13 +669,12 @@
 
     // read one expert slice into place (or through the bounce buffer); retries, then falls back to a buffered read, then stops
     void read_job(const io_job_t & j, char * bounce) {
-        for (size_t v = 0; v < views.size(); v++) {
-            if (j.dst >= views[v] && j.dst < views[v] + view_sizes[v]) {
-                plat::file_view_load(j.dst, j.nb2);     // Windows file-view cache: bring the expert's file pages into the working set
-                direct_jobs++;
-                bytes += j.nb2;
-                return;
-            }
+        // idea I08: a job's expert lives in the view of its own file (ti->data = views[ti->fdi] + offset), so test that one view instead of searching all
+        if ((size_t) j.fdi < views.size() && j.dst >= views[(size_t) j.fdi] && j.dst < views[(size_t) j.fdi] + view_sizes[(size_t) j.fdi]) {
+            plat::file_view_load(j.dst, j.nb2);     // Windows file-view cache: bring the expert's file pages into the working set
+            direct_jobs++;
+            bytes += j.nb2;
+            return;
         }
         const size_t aoff = j.off / PAGE * PAGE;
         const size_t shift = j.off - aoff;
