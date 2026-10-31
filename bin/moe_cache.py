@@ -1148,7 +1148,7 @@ MTP_GAIN = "Qwen3.6 on the PC: decode +54 %, prompt processing -5..-8 %"
 
 def mtp_decide(want, agent, head, declared, server_has, user_spec):
     """Multi-token prediction (I43): the model's own draft head (blk.N.nextn.*) guesses the next 2 tokens, the model checks them in one step; the
-    output is the same. want: True (--mtp), False (--no-mtp), None (default: on in --agent mode). -> (on, one-line reason or None)."""
+    output can differ slightly for some models (GLM-5.3 code text did). want: True (--mtp), False (--no-mtp), None (default: on in --agent mode). -> (on, one-line reason or None)."""
     if user_spec:
         return False, "moe-cache: MTP: speculative decoding set by your own arguments (--spec-type / --model-draft): left as given"
     if want is False:
@@ -1166,7 +1166,7 @@ def mtp_decide(want, agent, head, declared, server_has, user_spec):
                        if agent else None)
     if want or agent:
         return True, (f"moe-cache: MTP on: the model has an MTP head ({head} layer) and llama-server has draft-mtp: {' '.join(MTP_ARGS)} "
-                      f"(same output; {MTP_GAIN}){'' if want else '; --no-mtp turns it off'}")
+                      f"(the output can differ slightly for some models; {MTP_GAIN}){'' if want else '; --no-mtp turns it off'}")
     return False, f"moe-cache: this model has an MTP head: --mtp for faster decode ({MTP_GAIN})"
 
 

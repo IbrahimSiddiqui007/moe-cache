@@ -524,7 +524,7 @@ function seg(sel, key, cb) {
 }
 const MODEHINT = { exact: "Exact: same output as stock llama.cpp (default).", fast: "Fast (--fast): skips experts that are rarely needed and not in RAM. About 10 % faster; about 1 token in 40-50 comes out different.",
                    hybrid: "Hybrid (--hybrid, experimental): the most used experts run on the GPU, the rest on the CPU; some tokens come out different from stock." };
-const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (same output, faster decode); the plan's Why list says what it will do.",
+const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (faster decode; the output can differ slightly for some models); the plan's Why list says what it will do.",
                   on: "--mtp: always use the model's MTP head (Start stops with a message when the model or llama-server cannot).",
                   off: "--no-mtp: never." };
 const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM (faster then), moe-cache when it does not (recommended).",
