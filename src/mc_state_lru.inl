@@ -369,6 +369,31 @@
             // hand the reads to the reader threads and return: the executor waits for each expert's flag when it needs it
             std::vector<pack_job_t *> pjs;
             pack_extract(jobs, pjs);
+            // idea I01 (MOE_CACHE_ASYNC_COALESCE=1, default off): neighbouring experts of a tensor (neighbours in the file and in memory) are queued as ONE read,
+            // as the synchronous path does; the reader clears the loading flag of every expert in it. The first expert of a merge waits for the whole read.
+            static const bool async_co = getenv("MOE_CACHE_ASYNC_COALESCE") && atoi(getenv("MOE_CACHE_ASYNC_COALESCE")) > 0;
+            if (async_co && coalesce_bytes && jobs.size() > 1) {
+                std::sort(jobs.begin(), jobs.end(), [](const io_job_t & a, const io_job_t & b) { return a.fdi != b.fdi ? a.fdi < b.fdi : a.off < b.off; });
+                std::vector<io_job_t> merged;
+                merged.reserve(jobs.size());
+                for (const auto & j : jobs) {
+                    if (!merged.empty()) {
+                        io_job_t & m = merged.back();
+                        if (m.direct && j.direct && !m.rtensor && !j.rtensor && !m.pk && !j.pk && m.node >= 0 && j.node >= 0 && m.fdi == j.fdi &&
+                            m.off + m.nb2 == j.off && m.dst + m.nb2 == j.dst && m.nb2 + j.nb2 <= coalesce_bytes) {
+                            if (!m.more) {
+                                m.more = new std::vector<int>();
+                            }
+                            m.more->push_back(j.node);
+                            m.nb2 += j.nb2;
+                            coalesced++;
+                            continue;
+                        }
+                    }
+                    merged.push_back(j);
+                }
+                jobs.swap(merged);
+            }
             const size_t njobs = jobs.size() + pjs.size();
             if (njobs) {
                 {

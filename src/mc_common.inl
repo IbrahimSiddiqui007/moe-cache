@@ -343,6 +343,7 @@ struct io_job_t {
     bool   direct;   // memory address matches the file offset (mod 4096): read straight into place
     const ggml_tensor * rtensor = nullptr;   // set: repack this expert while loading it
     int    node = -1;        // index in the node table (asynchronous loads clear its "loading" flag when done)
+    std::vector<int> * more = nullptr;  // idea I01: nodes of the neighbours merged into this queued read (owned by the reader that dequeues it)
     struct pack_job_t * pk = nullptr;   // set: a read from the .moepack file that fills several slices of one expert (owned by whoever dequeues the job)
 };
 

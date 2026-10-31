@@ -14,7 +14,7 @@
                 j = rq.front();
                 rq.pop_front();
             }
-            const size_t need = round_up(max_nb2_all) + 2 * PAGE;
+            const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
             if (bounce_size < need) {
                 plat::aligned_free_page(bounce);
                 bounce = (char *) plat::aligned_alloc_page(need);
@@ -50,7 +50,13 @@
                 std::lock_guard<std::mutex> lk(mu);
                 pending_bytes = pending_bytes > j.nb2 ? pending_bytes - j.nb2 : 0;
                 __atomic_store_n(&nodes[(size_t) j.node].loading, false, __ATOMIC_RELEASE);
+                if (j.more) {
+                    for (int nd : *j.more) {
+                        __atomic_store_n(&nodes[(size_t) nd].loading, false, __ATOMIC_RELEASE);
+                    }
+                }
             }
+            delete j.more;
             load_cv.notify_all();
         }
     }
@@ -247,7 +253,7 @@
             pf_submit([this, j = td.first, s = td.second] {
                 static thread_local char * bounce = nullptr;
                 static thread_local size_t bounce_size = 0;
-                const size_t need = round_up(max_nb2_all) + 2 * PAGE;
+                const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
                 if (bounce_size < need) {
                     plat::aligned_free_page(bounce);
                     bounce = (char *) plat::aligned_alloc_page(need);
