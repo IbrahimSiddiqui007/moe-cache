@@ -78,6 +78,7 @@ struct exec_pool_t {
         wh.op = j->name;
         const bool tm = pool && pool->times;
         uint64_t busy = 0, fw = 0, nch_done = 0;
+        int fin = 0;       // idea D10: finished chunks are counted once per worker when it runs out of chunks, not one atomic add per chunk
         if (tm && worker) {
             pool->wake_ns += exec_now_ns() - j->t_pub_ns;
             pool->n_wake++;
@@ -85,6 +86,9 @@ struct exec_pool_t {
         for (;;) {
             const int c = j->next.fetch_add(1, std::memory_order_relaxed);
             if (c >= j->total) {
+                if (fin) {
+                    j->done.fetch_add(fin, std::memory_order_release);
+                }
                 wh.op = nullptr;
                 if (tm) {
                     pool->busy_ns += busy; pool->flagwait_ns += fw; pool->chunks += nch_done;
@@ -120,7 +124,7 @@ struct exec_pool_t {
                 busy += exec_now_ns() - b0;
                 nch_done++;
             }
-            j->done.fetch_add(1, std::memory_order_release);
+            fin++;
         }
     }
 
