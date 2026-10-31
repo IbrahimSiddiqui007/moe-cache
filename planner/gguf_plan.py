@@ -503,8 +503,11 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
     best = None
     fixed_ub = ub
+    plan_cost = os.environ.get("MOE_CACHE_PLAN_COST") not in (None, "", "0")
     for ub in ((fixed_ub,) if fixed_ub else (2048, 1024, 512)):
-        buf = cbm(ub, bool(fixed_ub))
+        # idea L02 (MOE_CACHE_PLAN_COST=1, default off): from 64k context on a long prompt dominates the request and -ub 2048 is the fastest measured
+        # (RESULTS 61: 128k and 256k), so 2048 is a candidate there with its measured or estimated (high) buffer, not skipped for lack of a table row
+        buf = cbm(ub, bool(fixed_ub) or (plan_cost and ctx >= 65536))
         if buf is None:
             continue
         block = block_for(ub)
