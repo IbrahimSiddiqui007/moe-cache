@@ -493,6 +493,8 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             rb = ggml_backend_buffer_get_base(c->rb_buf);
         }
     }
+    static const bool res_first = getenv("MOE_CACHE_GPU_RES_FIRST") && atoi(getenv("MOE_CACHE_GPU_RES_FIRST")) > 0;
+    std::vector<std::pair<size_t, size_t>> runs;
     static const bool share_up = getenv("MOE_CACHE_GPU_SHARE_UP") && atoi(getenv("MOE_CACHE_GPU_SHARE_UP")) > 0;
     // idea P02 (MOE_CACHE_GPU_RB_ROWS=1): in a split block read back only the rows of this part's experts (runs of neighbouring rows in one copy)
     static const bool rb_rows = getenv("MOE_CACHE_GPU_RB_ROWS") && atoi(getenv("MOE_CACHE_GPU_RB_ROWS")) > 0;
@@ -512,14 +514,35 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             if (pack_weights.count(t)) {
                 // the used experts (of this part), in runs of neighbours, into their packed places
                 const size_t nb2 = t->nb[2];
+                runs.clear();
                 for (size_t k = lo; k < hi;) {
                     size_t r = 1;
                     while (k + r < hi && pack_used[k + r] == pack_used[k] + (int32_t) r) {
                         r++;
                     }
+                    runs.emplace_back(k, r);
+                    k += r;
+                }
+                if (res_first) {
+                    // idea P03 (MOE_CACHE_GPU_RES_FIRST=1): runs whose experts are all in RAM go first, so the reads still running finish while those upload
+                    const auto bi = s.by_tensor.find(t);
+                    if (bi != s.by_tensor.end()) {
+                        const tinfo_t & ti = *s.tensors[bi->second];
+                        auto in_ram = [&](const std::pair<size_t, size_t> & q) {
+                            for (size_t x = 0; x < q.second; x++) {
+                                if (__atomic_load_n(&s.nodes[(size_t) ti.node0 + (size_t) pack_used[q.first + x]].loading, __ATOMIC_ACQUIRE)) {
+                                    return false;
+                                }
+                            }
+                            return true;
+                        };
+                        std::stable_partition(runs.begin(), runs.end(), in_ram);
+                    }
+                }
+                for (const auto & q : runs) {
+                    const size_t k = q.first, r = q.second;
                     wait_experts(s, t, pack_used[k], (int64_t) r);
                     ggml_backend_tensor_set(d, (const char *) t->data + (size_t) pack_used[k] * nb2, (k - lo) * nb2, r * nb2);
-                    k += r;
                 }
                 s.gpu_up_bytes += (hi - lo) * nb2;
                 continue;
