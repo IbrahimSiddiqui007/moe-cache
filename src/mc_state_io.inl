@@ -320,12 +320,32 @@
             return;
         }
         router_t * rc = get_router(layer, n_embd, n_exp);
-        std::vector<float> xs(n_embd);
+        // idea C19 (MOE_CACHE_PRED_FAST=1, default off): the norm-weight ratios of a layer pair are computed once, and the work vectors are per-thread scratch
+        static const bool fast = getenv("MOE_CACHE_PRED_FAST") && atoi(getenv("MOE_CACHE_PRED_FAST")) > 0;
+        static thread_local std::vector<float> xs_s, logit_s;
+        static thread_local std::unordered_map<int, std::vector<float>> ratio_s;      // layer -> ratio (empty: no scaling)
+        std::vector<float> xs_l, logit_l;
+        std::vector<float> & xs = fast ? xs_s : xs_l;
+        std::vector<float> & logit = fast ? logit_s : logit_l;
+        xs.resize(n_embd);
         const bool scale = rc && rn->normw.size() == n_embd && rc->normw.size() == n_embd;
-        for (size_t i = 0; i < n_embd; i++) {
-            xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
+        if (fast && scale) {
+            std::vector<float> & ra = ratio_s[layer];
+            if (ra.size() != n_embd) {
+                ra.resize(n_embd);
+                for (size_t i = 0; i < n_embd; i++) {
+                    ra[i] = fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f;
+                }
+            }
+            for (size_t i = 0; i < n_embd; i++) {
+                xs[i] = x[i] * ra[i];
+            }
+        } else {
+            for (size_t i = 0; i < n_embd; i++) {
+                xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
+            }
         }
-        std::vector<float> logit(n_exp);
+        logit.resize(n_exp);
         for (size_t e = 0; e < n_exp; e++) {
             const float * w = rn->w.data() + e * n_embd;
             logit[e] = (rn->bias.size() == n_exp ? rn->bias[e] : 0.0f) + dot_f32(w, xs.data(), n_embd);
