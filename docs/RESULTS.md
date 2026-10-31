@@ -3074,3 +3074,12 @@ Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan b11669, Flash-Next Q2
 | BO-1 expert pack, private-memory cache | reader speed 0.21 -> 1.19 GB/s per thread, decode 1.7-2.1 -> 5.7-6.6 tok/s | opt-in only: the private-memory cache is not the default |
 | BO-1b expert pack with the default file-view cache | reader speed 1.11 -> 1.17, decode 15.6-16.1 -> 14.5-15.1 tok/s, short prompts slower | **no**: views already read near full speed |
 
+## 75. Buffered reads on the private-memory path, and the DeepSeek V4.1 "stop after 10 tokens" (Windows PC, 2026-10-31)
+
+Same PC. The buffered row comes from the night chain of 10-31, when the PC ran about 18 % slow (fixed by a restart): stock and moe-cache alike, so only the relative result counts, no absolute number here is for a chart.
+
+| Test | Result | Kept |
+|---|---|---|
+| Flash-Next Q2_0, `MOE_CACHE_WIN_VIEW=0`, ABBA: unbuffered vs `MOE_CACHE_WIN_BUFFERED=1` | reader speed 0.26 / 0.26 -> 0.84 / 0.84 GB/s per reader thread; decode +39 %, prompts about 2x | **yes**: the default whenever the file views are not used |
+| Qwen3.6-35B, default views + repacked weights, same switch | reader speed 8.3-8.6 GB/s in all four runs: no difference | nothing changes on the default path |
+| DeepSeek-V4.1-Flash-1017 IQ1_M + Engram, v0.3.3 kit, b11966, ctx 4096, one run on the restarted PC | a chat request gives a correct, complete answer (114 tokens, `finish=stop`). The "stop after 10 tokens" was the model's own end token: the check sent raw `/completion` text with no chat template, and the top-5 next tokens show that end token first (probability 0.44) on the water prompt. The server's exit code 0xFFFFFFFF was the test script's own `Stop-Process` | **no bug**: use chat requests for this model. The launcher now names that exit code |

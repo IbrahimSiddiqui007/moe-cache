@@ -108,7 +108,7 @@ struct state_t {
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
 #ifdef _WIN32
-    bool   win_buffered = false;                // MOE_CACHE_WIN_BUFFERED=1: model files opened without FILE_FLAG_NO_BUFFERING (see the constructor)
+    bool   win_buffered = false;                // model files opened without FILE_FLAG_NO_BUFFERING: MOE_CACHE_WIN_BUFFERED=1, or the private-memory path by default (see the constructor)
     bool   win_random = false;                  // MOE_CACHE_WIN_BUFFERED=2: and with FILE_FLAG_RANDOM_ACCESS
 #else
     static constexpr bool win_buffered = false, win_random = false;
@@ -345,7 +345,7 @@ struct state_t {
             return;
         }
 #ifdef _WIN32
-        // MOE_CACHE_WIN_BUFFERED=1 (opt-in, Windows only; idea I38): read the experts through the Windows file cache instead of FILE_FLAG_NO_BUFFERING.
+        // MOE_CACHE_WIN_BUFFERED=1 (Windows only; idea I38; the default without the file views, below): read the experts through the Windows file cache instead of FILE_FLAG_NO_BUFFERING.
         // Unbuffered reads never warm the file cache, so every start reads the SSD, while stock llama-server (mmap) starts warm from it (Flash-Next on
         // a 32 GB PC: 3-5 tok/s first session vs 13-16 warm stock). Same aligned offsets and lengths, so the same bytes. An expert then sits twice in
         // RAM (cache + file cache), but the file-cache copy moves to the standby list, which Windows counts as available and gives back on demand:
@@ -449,6 +449,20 @@ struct state_t {
                 fprintf(stderr, "moe-cache: experts are kept in read-only views of the model file (%zu), held in RAM by a hard "
                                 "working-set minimum; they use no commit (RAM + page file; MOE_CACHE_WIN_VIEW=0: private memory)\n", views.size());
             }
+        }
+        // Private memory (MOE_CACHE_WIN_VIEW=0, the expert pack, a failed view map): read through the Windows file cache by default too, as the views do.
+        // Flash-Next Q2_0 on the PC, ABBA: reader speed 0.26 -> 0.84 GB/s, decode +39 %, prompts 2x, text identical (RESULTS 75). MOE_CACHE_WIN_BUFFERED=0: unbuffered.
+        if (!win_view && !win_buffered && !getenv("MOE_CACHE_WIN_BUFFERED")) {
+            win_buffered = true;
+            plat::count_file_cache() = true;
+            for (size_t si = 0; si < fds.size(); si++) {
+                plat::file_t f = plat::file_open(shard_paths[si].c_str(), false, win_random);
+                if (f.ok()) {
+                    CloseHandle(fds[si].h);
+                    fds[si] = f;
+                }
+            }
+            fprintf(stderr, "moe-cache: private-memory cache: experts are read through the Windows file cache (MOE_CACHE_WIN_BUFFERED=0: unbuffered)\n");
         }
 #elif defined(__linux__)
         // Linux default too (same as Windows; MOE_CACHE_LINUX_VIEW=0 goes back to private memory + O_DIRECT reads): the same file-view cache.

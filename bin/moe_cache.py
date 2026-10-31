@@ -1408,7 +1408,8 @@ def exit_reason(rc, ready):
     if WINDOWS:
         code = rc & 0xFFFFFFFF
         names = {0xC0000005: "access violation", 0xC0000409: "stack buffer overrun / fast fail", 0xC000001D: "illegal instruction (CPU lacks an instruction set)",
-                 0xC0000135: "a DLL was not found", 0xC0000139: "a DLL entry point was not found", 0xC00000FD: "stack overflow", 0xC0000017: "out of memory"}
+                 0xC0000135: "a DLL was not found", 0xC0000139: "a DLL entry point was not found", 0xC00000FD: "stack overflow", 0xC0000017: "out of memory",
+                 0xFFFFFFFF: "stopped from outside (Stop-Process, Task Manager), not a crash"}
         return f"llama-server exited{when} with code 0x{code:08X}" + (f" ({names[code]})" if code in names else "")
     if rc < 0:
         try:
