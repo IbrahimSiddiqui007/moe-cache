@@ -353,9 +353,11 @@ sd = ui.slot_dir(); os.makedirs(sd, exist_ok=True)
 def slot_file(name, n, first, pad=1000):
     with open(os.path.join(sd, name), "wb") as f:
         f.write(struct.pack("<III", 0x67677371, 4, n) + struct.pack(f"<{len(first)}i", *first) + b"\0" * pad)
-tag = ui.session_tag({"model": small["path"], "ctx": 8192, "agent": True})
-check(tag == "Small-MoE-Q4_K_M-c8192" and ui.session_tag({"model": "/m/Big-00001-of-00002.gguf", "agent": True, "mode": "fast"}) == "Big-c65536-q8_0-q8_0",
-      f"the launcher's tag for saved sessions (alias, context, q8_0 KV with --fast) ({tag})")
+tag0 = ui.session_tag({"model": small["path"], "ctx": 8192, "agent": True})
+tag = ui.mc.re.sub(r"[^A-Za-z0-9_-]", "_", f"{ui.mc.default_alias(small['path'])}-{ui.mc.model_identity(small['path'], 8192, None, None)}")      # what the launcher builds
+check(tag.startswith(tag0 + "-") and tag0.startswith("Small-MoE-Q4_K_M-") and "-c8192" in tag0 and ui.tag_is_ours(tag, tag0) and not ui.tag_is_ours(tag, tag0 + "0")
+      and ui.session_tag({"model": "/m/Big-00001-of-00002.gguf", "agent": True}) == "Big-c65536",
+      f"the page's tag matches the launcher's tag for saved sessions: alias, model identity, context ({tag0} vs {tag})")
 slot_file(tag + "-s0.bin", 4096, [11, 22, 33]); slot_file(tag + "-s1.bin", 2500, [5, 6, 7])
 slot_file("Other-Model-c65536-s0.bin", 9000, [1, 2]); slot_file(tag + "-s2.new.bin", 10, [1])
 open(os.path.join(sd, "notes.bin"), "wb").write(b"x"); open(os.path.join(sd, "Weird-c8192-s3.bin"), "wb").write(b"not a slot file")
@@ -393,7 +395,7 @@ ss = json.loads(body)
 byname = {f["name"]: f for f in ss["files"]}
 check(st == 200 and set(byname) == {tag + "-s0.bin", tag + "-s1.bin", "Other-Model-c65536-s0.bin", "Weird-c8192-s3.bin"}, f"saved sessions listed, half-written and foreign names not ({sorted(byname)})")
 f0 = byname[tag + "-s0.bin"]
-check(f0["tokens"] == 4096 and f0["slot"] == 0 and f0["ctx"] == 8192 and f0["model"] == "Small-MoE-Q4_K_M" and byname["Weird-c8192-s3.bin"]["tokens"] is None,
+check(f0["tokens"] == 4096 and f0["slot"] == 0 and f0["ctx"] == 8192 and f0["model"] == "Small-MoE-Q4_K_M" and f0["kv"] == "f16" and f0["this_server"] and byname["Weird-c8192-s3.bin"]["tokens"] is None,
       "token count from the file header; model, context and slot from the name")
 check(f0["restored"] and not byname[tag + "-s1.bin"]["restored"] and not byname["Other-Model-c65536-s0.bin"]["this_server"], "restored at start: slot 0 of this server's tag only")
 check(f0["agent"] == "OpenCode" and byname[tag + "-s1.bin"]["agent"] is None and byname["Other-Model-c65536-s0.bin"]["agent"] is None,

@@ -754,7 +754,7 @@ def is_warning(line):
 # version, token count, tokens, KV state) with the context checkpoints appended to the same file. The launcher restores the two largest files of
 # the same model and settings at start; a half-written save is <name>.new.bin.
 SESSION_RE = re.compile(r"^(?P<tag>.+)-s(?P<slot>\d+)\.bin$")
-TAG_RE = re.compile(r"^(?P<model>.+?)-c(?P<ctx>\d+)(?:-(?P<kv>.+))?$")
+TAG_RE = re.compile(r"^(?P<model>.+?)(?:-[A-Za-z0-9_]+-\d+-[0-9a-f]{16})?-c(?P<ctx>\d+)(?:-(?P<kv>.+))?$")      # alias[-file-size-fingerprint]-c<ctx>[-K-V]
 AGENT_WORDS = [("opencode", "OpenCode"), ("hermes", "Hermes"), ("claude code", "Claude Code"), ("aider", "Aider"), ("cline", "Cline"),
                ("continue.dev", "Continue"), ("roo code", "Roo Code"), ("goose", "Goose")]
 
@@ -764,11 +764,20 @@ def slot_dir():
 
 
 def session_tag(s):
-    """The tag the launcher gives this server's saved conversations (moe_cache.server: alias, context, KV types; --fast stores the KV as q8_0)."""
-    alias = mc.default_alias(s.get("model") or "")
+    """The start of the tag the launcher gives this server's saved conversations (moe_cache.server: alias, then the model identity - file name, size,
+    content fingerprint - then -c<context>, then the KV types, which the page does not know: a --fast or 128k-context server and an f16 one both match).
+    Files of this server: tag_is_ours(file tag, session_tag(settings))."""
+    model = s.get("model") or ""
+    alias = mc.default_alias(model)
     ctx = int(s.get("ctx") or (65536 if s.get("agent") else 8192))
-    kv = "-q8_0-q8_0" if s.get("mode") == "fast" else ""
-    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-c{ctx}{kv}").rstrip("-_")
+    ident = mc.model_identity(model, ctx).rsplit("-", 2)[0] if model else ""       # "<file>-<size>-<fp>-c<ctx>" (the two KV types dropped)
+    if not ident:
+        return re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-c{ctx}").rstrip("-_")        # an unreadable model: nothing of it was saved under an identity
+    return re.sub(r"[^A-Za-z0-9_-]", "_", f"{alias}-{ident}")
+
+
+def tag_is_ours(file_tag, tag):
+    return bool(tag) and (file_tag == tag or file_tag.startswith(tag + "-"))
 
 
 def session_tokens(path, n_ids=0):
@@ -810,7 +819,7 @@ def warm_files():
             continue
         out.append({"name": name, "size": st.st_size, "t": st.st_mtime, "slot": int(m.group("slot")), "tag": m.group("tag"),
                     "model": t.group("model") if t else m.group("tag"), "ctx": int(t.group("ctx")) if t else None,
-                    "kv": t.group("kv") if t and t.group("kv") else "f16", "tokens": session_tokens(f)[0]})
+                    "kv": (lambda kv: kv.split("-")[0] if len(set(kv.split("-"))) == 1 else kv)(t.group("kv")) if t and t.group("kv") else "f16", "tokens": session_tokens(f)[0]})
     return sorted(out, key=lambda x: -x["t"])
 
 
@@ -1134,7 +1143,7 @@ class Runner:
         failed = {m.group(1) for e in self.warm for m in [re.search(r"could not restore (\S+)", e["line"])] if m}
         port = int(s.get("port") or 8080)
         for f in files:
-            f["this_server"] = bool(tag) and f["tag"] == tag
+            f["this_server"] = tag_is_ours(f["tag"], tag)
             f["restored"] = f["this_server"] and self.state in ("starting", "ready") and f["slot"] in restored_slots
             f["restore_failed"] = f["name"] in failed
             f["agent"] = None
@@ -1960,7 +1969,7 @@ class Handler(BaseHTTPRequestHandler):
                 where = move_to_trash(os.path.join(slot_dir(), name))
                 self.runner.add_line(f"ui: moved the saved agent session {name} to {where}")
                 return self.send(200, {"ok": True, "where": where, "running_note": "the running server keeps it in memory and may save it again"
-                                       if self.runner.state == "ready" and f.get("tag") == session_tag(self.runner.settings) else ""})
+                                       if self.runner.state == "ready" and tag_is_ours(f.get("tag") or "", session_tag(self.runner.settings)) else ""})
             if self.path == "/api/bench":
                 other = body.get("other") or []
                 if not isinstance(other, list) or len(other) > 20 or not all(isinstance(x, str) and len(x) < 1000 for x in other):
