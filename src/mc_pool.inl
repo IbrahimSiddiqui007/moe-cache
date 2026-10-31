@@ -216,7 +216,9 @@ struct exec_pool_t {
             cv.notify_all();
         }
         const uint64_t w0 = times ? exec_now_ns() : 0;
-        n_runs += times;
+        if (times) {
+            n_runs.fetch_add(1, std::memory_order_relaxed);     // idea D14: no atomic read-modify-write when timing is off
+        }
         work(j, this);
         const uint64_t w1 = times ? exec_now_ns() : 0;
         while (j->done.load(std::memory_order_acquire) < j->total || inside.load() > 0) {
