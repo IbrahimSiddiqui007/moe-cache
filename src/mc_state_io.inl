@@ -402,6 +402,19 @@
 #endif
     }
 
+    // CPU time of the process (all threads) or of the calling thread, in ns (MOE_CACHE_E1_TIMES)
+    static uint64_t cpu_ns(bool thread) {
+#ifdef _WIN32
+        FILETIME c, e, k, u;
+        if (thread ? !GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u) : !GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u)) return 0;
+        return ((((uint64_t) k.dwHighDateTime << 32) | k.dwLowDateTime) + (((uint64_t) u.dwHighDateTime << 32) | u.dwLowDateTime)) * 100;
+#else
+        struct timespec ts;
+        clock_gettime(thread ? CLOCK_THREAD_CPUTIME_ID : CLOCK_PROCESS_CPUTIME_ID, &ts);
+        return (uint64_t) ts.tv_sec * 1000000000ull + (uint64_t) ts.tv_nsec;
+#endif
+    }
+
     // one line of cumulative counters on stderr (see MOE_CACHE_STATS_SIGNAL)
     void print_snapshot() {
         std::string j;
@@ -432,6 +445,18 @@
                 uint64_t mj = 0;
                 const uint64_t f = process_faults(&mj);
                 j += ",\"faults\":" + std::to_string(f) + ",\"major_faults\":" + std::to_string(mj);
+                if (getenv("MOE_CACHE_E1_TIMES")) {
+                    j += e1s::json();
+                    j += ",\"e1\":{\"gap_cpu_ns\":" + std::to_string(e1_gap_cpu_ns.load()) + ",\"in_cpu_ns\":" + std::to_string(e1_in_cpu_ns.load()) +
+                         ",\"gap_tcpu_ns\":" + std::to_string(e1_gap_tcpu_ns.load()) + ",\"in_tcpu_ns\":" + std::to_string(e1_in_tcpu_ns.load()) + ",\"blk\":[";
+                    for (int k = 0; k < 2; k++) {
+                        j += std::string(k ? "," : "") + "{\"n\":" + std::to_string(e1_blk_n[k].load()) + ",\"parts\":" + std::to_string(e1_parts[k].load()) +
+                             ",\"prep_ns\":" + std::to_string(e1_prep_ns[k].load()) + ",\"up_ns\":" + std::to_string(e1_up_ns[k].load()) + ",\"wait_ns\":" + std::to_string(e1_wait_ns[k].load()) +
+                             ",\"up_faults\":" + std::to_string(e1_up_faults[k].load()) + ",\"comp_ns\":" + std::to_string(e1_comp_ns[k].load()) + ",\"get_ns\":" + std::to_string(e1_get_ns[k].load()) +
+                             ",\"rows_comp\":" + std::to_string(e1_rows_comp[k].load()) + ",\"rows_use\":" + std::to_string(e1_rows_use[k].load()) + "}";
+                    }
+                    j += "]}";
+                }
                 j += ",\"gap_faults\":" + std::to_string(gap_faults.load()) + ",\"in_faults\":" + std::to_string(in_faults.load()) + ",\"top_gaps\":[";
                 for (int k = 0; k < 4; k++) {
                     j += std::string(k ? "," : "") + "[" + std::to_string(top_gap_ns[k].load()) + "," + std::to_string(top_gap_graph[k].load()) + "," + std::to_string(top_gap_faults[k].load()) + "]";
@@ -668,6 +693,18 @@
                 fprintf(stderr, "moe-cache: seg-times: page faults of the process: %llu inside the gaps, %llu inside our backend; longest gap %.0f ms (graph %llu, %llu faults)\n",
                         (unsigned long long) gap_faults.load(), (unsigned long long) in_faults.load(), top_gap_ns[top] / 1e6,
                         (unsigned long long) top_gap_graph[top].load(), (unsigned long long) top_gap_faults[top].load());
+                if (getenv("MOE_CACHE_E1_TIMES")) {
+                    fprintf(stderr, "moe-cache: e1: CPU time inside the gaps: process %.2fs, graph thread %.2fs (of %.2fs wall); inside our backend: process %.2fs, graph thread %.2fs (of %.2fs wall)\n",
+                            e1_gap_cpu_ns / 1e9, e1_gap_tcpu_ns / 1e9, ns_gap / 1e9, e1_in_cpu_ns / 1e9, e1_in_tcpu_ns / 1e9, ns_total / 1e9);
+                    for (int k = 0; k < 2; k++) {
+                        const double n = (double) e1_blk_n[k].load();
+                        fprintf(stderr, "moe-cache: e1: GPU blocks %s: %llu blocks, %llu parts; prep %.2fs, upload %.2fs (waiting for experts %.2fs, %llu faults), compute %.2fs, read back %.2fs; rows computed %llu, kept %llu (%.0f %%)\n",
+                                k ? "split" : "whole", (unsigned long long) e1_blk_n[k].load(), (unsigned long long) e1_parts[k].load(), e1_prep_ns[k] / 1e9, e1_up_ns[k] / 1e9,
+                                e1_wait_ns[k] / 1e9, (unsigned long long) e1_up_faults[k].load(), e1_comp_ns[k] / 1e9, e1_get_ns[k] / 1e9,
+                                (unsigned long long) e1_rows_comp[k].load(), (unsigned long long) e1_rows_use[k].load(), e1_rows_comp[k] ? 100.0 * e1_rows_use[k] / e1_rows_comp[k] : 0.0);
+                        (void) n;
+                    }
+                }
                 for (int b = 0; b < 4; b++) {
                     fprintf(stderr, "moe-cache: seg-times: gaps %s: %llu, %.2fs\n", bn[b], (unsigned long long) gap_b_n[b].load(), gap_b_ns[b] / 1e9);
                 }

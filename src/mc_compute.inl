@@ -203,6 +203,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     auto * c = (moe_cache_backend_ctx *) backend->context;
     state_t & s = S();
     static const bool seg_times = getenv("MOE_CACHE_SEG_TIMES") != nullptr;
+    static const bool e1 = seg_times && getenv("MOE_CACHE_E1_TIMES") != nullptr;
     auto now_ns = [] { return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
     if (seg_times) {
         const uint64_t t = now_ns(), last = s.last_exit_ns.load();
@@ -213,6 +214,12 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             const uint64_t f = state_t::process_faults(), df = f - s.last_exit_faults.load();
             s.gap_faults += df;
             s.entry_faults = f;
+            if (e1) {
+                const uint64_t cp = state_t::cpu_ns(false), ct = state_t::cpu_ns(true);
+                s.e1_gap_cpu_ns += cp - s.e1_last_cpu.load(); s.e1_gap_tcpu_ns += ct - s.e1_last_tcpu.load();
+                s.e1_ent_cpu = cp; s.e1_ent_tcpu = ct;
+                e1s::enter();
+            }
             int lo = 0;
             for (int k = 1; k < 4; k++) { if (s.top_gap_ns[k] < s.top_gap_ns[lo]) lo = k; }
             if (d > s.top_gap_ns[lo]) { s.top_gap_ns[lo] = d; s.top_gap_graph[lo] = s.graphs.load(); s.top_gap_faults[lo] = df; }
@@ -224,9 +231,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         s.ns_sync += now_ns() - sy0;
     }
     const auto t_in = std::chrono::steady_clock::now();
-    struct total_t { state_t & s; std::chrono::steady_clock::time_point t; bool times;
+    struct total_t { state_t & s; std::chrono::steady_clock::time_point t; bool times; bool e1;
                      ~total_t() { s.ns_total += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t).count();
-                                  if (times) { s.last_exit_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); const uint64_t f = state_t::process_faults(); s.last_exit_faults = f; if (s.entry_faults) s.in_faults += f - s.entry_faults; } } } total_guard{ s, t_in, seg_times };
+                                  if (times) { e1s::exit_graph(); s.last_exit_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); const uint64_t f = state_t::process_faults(); s.last_exit_faults = f; if (s.entry_faults) s.in_faults += f - s.entry_faults; if (e1) { const uint64_t cp = state_t::cpu_ns(false), ct = state_t::cpu_ns(true); s.e1_last_cpu = cp; s.e1_last_tcpu = ct; if (s.e1_ent_cpu) { s.e1_in_cpu_ns += cp - s.e1_ent_cpu.load(); s.e1_in_tcpu_ns += ct - s.e1_ent_tcpu.load(); } } } } } total_guard{ s, t_in, seg_times, e1 };
     struct graph_scope_t { state_t & s; bool on;
                            graph_scope_t(state_t & st) : s(st), on(st.rb_on) { if (on) { s.graph_enter(); } }
                            ~graph_scope_t() { if (on) { s.graph_leave(); } } } graph_scope{ s };   // BO-2: the idle rebalance stops while a graph runs
