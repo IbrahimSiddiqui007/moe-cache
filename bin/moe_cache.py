@@ -824,14 +824,23 @@ def arg_after(args, *names):
     return v
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """urllib copies the Authorization header (our API key) onto a redirect to another host; a redirect is returned as the answer instead."""
+    def redirect_request(self, *a, **k):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def http(url, body=None, api_key=None, timeout=10):
-    """(status, text) of a request; status 0 when the server cannot be reached."""
+    """(status, text) of a request; status 0 when the server cannot be reached. Redirects are not followed (they would carry the API key along)."""
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, json.dumps(body).encode() if body is not None else None, headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with _OPENER.open(req, timeout=timeout) as r:
             return r.status, r.read().decode(errors="replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(errors="replace")
