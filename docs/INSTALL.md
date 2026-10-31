@@ -21,7 +21,7 @@ Which file to download (the names show version 0.3.2; take the newest version on
 
 | Your system | File on the Releases page |
 |---|---|
-| Windows 11 | `moe-cache-v0.3.3-windows-x64.zip` |
+| Windows 11 | `moe-cache-v0.3.4-windows-x64.zip` |
 | Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.28) | `moe-cache-v0.3.3-ggml0.26-linux-x86_64.tar.gz`: **includes the official llama.cpp b11966 (Vulkan + CPU build) in its `llama/` folder**, so there is nothing else to download |
 | Linux, older llama.cpp (ggml 0.24 / 0.25, up to commit `7fe450e19`, e.g. Arch `llama.cpp-cuda`) | `moe-cache-v0.3.3-linux-x86_64.tar.gz` (no llama.cpp inside: it needs your own build of that era) |
 
@@ -96,7 +96,7 @@ two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details
 |---|---|
 | 1. llama.cpp | **Included in the kit from v0.3.3** (folder `llama\`: the official llama.cpp b11966 Vulkan build, unmodified). With an older kit: download the **Vulkan** zip, the file whose name ends in `-bin-win-vulkan-x64.zip`, from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) and unpack it to `C:\llama`. Use it for AMD, Intel and NVIDIA cards; the CUDA zip is untested with moe-cache, skip the HIP and SYCL zips. We tested b11669 and b11966; newer builds should work and `check` (step 5) tells you if not |
 | 2. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH"). If typing `python` opens the Microsoft Store instead, use `py` in its place |
-| 3. The kit | Download `moe-cache-v0.3.3-windows-x64.zip` (take the newest version) from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
+| 3. The kit | Download `moe-cache-v0.3.4-windows-x64.zip` (take the newest version) from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
 | 4. A model | Not sure which? `python bin\moe_cache.py pick` names one and prints the download command (see **2. Get a model** above; `pip install -U huggingface_hub` first). Keep the file on an SSD, e.g. `D:\models`, with the file size plus 10 GB free |
 | 5. Check | In a command prompt in the kit folder: `python bin\moe_cache.py check D:\models\model.gguf` (finds the kit's `llama\llama-server.exe`, or `C:\llama\llama-server.exe`, by itself; `--version` prints the version). Every line says OK, WARN or FAIL and what to do |
 | 6. Run | Double-click `moe-cache.bat`: the control page opens; pick a model and press Start. The first start is slow, see "The first start is slow" above. `moe-cache.bat --shortcut` adds it to the Start menu. Or in a command prompt: `python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llama-server.exe --open` |

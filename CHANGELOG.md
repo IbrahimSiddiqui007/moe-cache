@@ -1,7 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.3.4 (2026-10-31)
 
+| Area | Change |
+|---|---|
+| Long prompts | Plugin outputs go straight to the GPU instead of through llama.cpp's slowest copy path (`MOE_CACHE_HOST_OUT=0` turns it off; RESULTS 76) |
+| Windows | When the file views are not used, experts are read through the file cache (`MOE_CACHE_WIN_BUFFERED=0` turns it off; RESULTS 75) |
+| Bug fixes | The API key no longer follows redirects; `--project` records q8_0 KV correctly; saved agent conversations match by their real tag; `bench-report` and `learn` servers die with their parent; `[`, `*`, `?` in model paths; failed file reopen or view mapping cleans up fully |
+| Launcher | Exit code 0xFFFFFFFF is named as stopped from outside |
+| Experiments | Many small executor, read and cache changes from the optimization audit (docs/moe-cache-optimization-audit-2026-10-31.md); the ones not proven exact are off by default behind `MOE_CACHE_*` switches and untested |
 | Area | Change |
 |---|---|
 | Leave room for me | `--leave-room` and a control-page box for using the PC while a model runs (owner 2026-10-30: a big-model run made the desktop PC stutter): the server keeps max(8 GiB, 25 %) of the RAM free instead of max(4 GiB, 12.5 %), at least 2 GB of GPU memory, 2 physical cores, and runs at a lower priority (Windows below normal, Linux nice 10). Same rule on Linux and Windows; `MOE_CACHE_LEAVE_ROOM=1` turns it on for good. README and TROUBLESHOOTING: plug the monitor into the motherboard when the CPU has graphics |

@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.3.3%20beta-orange">
+<img alt="status" src="https://img.shields.io/badge/status-v0.3.4%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b11669%20%2F%20b11966%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
@@ -79,7 +79,7 @@ The chart at the top is the Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32
 Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html), [docs/RESULTS.md](docs/RESULTS.md). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md)).
 
 
-## Known issues in v0.3.3 (honest list)
+## Known issues in v0.3.4 (honest list)
 
 | Issue | Detail |
 |---|---|

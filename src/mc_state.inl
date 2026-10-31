@@ -376,7 +376,7 @@ struct state_t {
 
     state_t() {
         stats = getenv("MOE_CACHE_STATS") != nullptr;
-        fprintf(stderr, "moe-cache: plugin v0.3.3 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
+        fprintf(stderr, "moe-cache: plugin v0.3.4 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
         if (!moe_cache_tested_ggml(ggml_version())) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only (this is %s); if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML, ggml_version());
         }
