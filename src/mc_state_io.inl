@@ -391,6 +391,7 @@
                 const uint64_t f = process_faults(&mj);
                 j += ",\"faults\":" + std::to_string(f) + ",\"major_faults\":" + std::to_string(mj);
                 if (getenv("MOE_CACHE_E1_TIMES")) {
+                    j += e1s::json();
                     j += ",\"e1\":{\"gap_cpu_ns\":" + std::to_string(e1_gap_cpu_ns.load()) + ",\"in_cpu_ns\":" + std::to_string(e1_in_cpu_ns.load()) +
                          ",\"gap_tcpu_ns\":" + std::to_string(e1_gap_tcpu_ns.load()) + ",\"in_tcpu_ns\":" + std::to_string(e1_in_tcpu_ns.load()) + ",\"blk\":[";
                     for (int k = 0; k < 2; k++) {
