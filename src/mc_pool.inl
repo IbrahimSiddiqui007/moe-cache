@@ -188,6 +188,9 @@ struct exec_pool_t {
     // runs the job on the pool and the calling thread; returns when every chunk is done and no worker is inside the job any more.
     // One caller only (the backend's compute thread).
     void run(const exec_task_t * tasks, int n_tasks, int64_t rows, int64_t ne00, size_t nb01, ggml_vec_dot_t dot, int chunk, const char * name) {
+        if (n_tasks <= 0 || rows <= 0) {     // idea D17: no chunks, so no publish, no wake-up, no barrier
+            return;
+        }
         // a worker that saw the previous generation late may only now be entering (it counts itself in `inside` before it reads `cur`):
         // wait for it to leave before this job slot is rewritten, so no worker ever reads a job while it is being filled
         while (inside.load() > 0) {
