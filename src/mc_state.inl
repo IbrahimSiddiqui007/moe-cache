@@ -453,16 +453,31 @@ struct state_t {
         // Private memory (MOE_CACHE_WIN_VIEW=0, the expert pack, a failed view map): read through the Windows file cache by default too, as the views do.
         // Flash-Next Q2_0 on the PC, ABBA: reader speed 0.26 -> 0.84 GB/s, decode +39 %, prompts 2x, text identical (RESULTS 75). MOE_CACHE_WIN_BUFFERED=0: unbuffered.
         if (!win_view && !win_buffered && !getenv("MOE_CACHE_WIN_BUFFERED")) {
-            win_buffered = true;
-            plat::count_file_cache() = true;
+            // all shards or none: a mix of buffered and unbuffered handles would make the budget (count_file_cache) wrong for the unbuffered ones
+            std::vector<plat::file_t> nf;
             for (size_t si = 0; si < fds.size(); si++) {
                 plat::file_t f = plat::file_open(shard_paths[si].c_str(), false, win_random);
-                if (f.ok()) {
-                    CloseHandle(fds[si].h);
-                    fds[si] = f;
+                if (!f.ok()) {
+                    break;
                 }
+                nf.push_back(f);
             }
-            fprintf(stderr, "moe-cache: private-memory cache: experts are read through the Windows file cache (MOE_CACHE_WIN_BUFFERED=0: unbuffered)\n");
+            if (nf.size() == fds.size()) {
+                for (size_t si = 0; si < fds.size(); si++) {
+                    CloseHandle(fds[si].h);
+                    fds[si] = nf[si];
+                }
+                win_buffered = true;
+                plat::count_file_cache() = true;
+            } else {
+                for (plat::file_t & f : nf) {
+                    CloseHandle(f.h);
+                }
+                fprintf(stderr, "moe-cache: private-memory cache: cannot reopen the model files through the Windows file cache: reads stay unbuffered\n");
+            }
+            if (win_buffered) {
+                fprintf(stderr, "moe-cache: private-memory cache: experts are read through the Windows file cache (MOE_CACHE_WIN_BUFFERED=0: unbuffered)\n");
+            }
         }
 #elif defined(__linux__)
         // Linux default too (same as Windows; MOE_CACHE_LINUX_VIEW=0 goes back to private memory + O_DIRECT reads): the same file-view cache.
