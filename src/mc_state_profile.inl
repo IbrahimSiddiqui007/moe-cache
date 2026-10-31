@@ -111,6 +111,7 @@
         ti->node0 = (int) nodes.size();
         nodes.resize(nodes.size() + (size_t) t->ne[2]);
         const int idx = (int) tensors.size();
+        node_owner.resize(nodes.size(), (uint32_t) idx);        // idea C15: which tensor owns each node, so evict() needs no search
         if (ti->layer >= 0) {
             layer_tensors[ti->layer].push_back(idx);
         }

@@ -198,6 +198,7 @@ struct state_t {
     std::vector<std::unique_ptr<tinfo_t>> tensors;
     std::unordered_map<const ggml_tensor *, int> by_tensor;
     std::vector<node_t> nodes;
+    std::vector<uint32_t> node_owner;           // index in `tensors` of the tensor that owns each node (same size as nodes)
     // Replacement policy. MOE_CACHE_POLICY=lru (default): one list, evict the least recently used. MOE_CACHE_POLICY=classlru (llama.cpp #31233):
     // nclass LRU lists; a node's decayed use count crf (half-life classlru_hl decode tokens, kept after eviction) picks its list
     // (class = min(nclass-1, floor(log2 crf))); the victim is the oldest evictable node of each list with the largest age / 2^class.

@@ -100,12 +100,7 @@
     // give the physical pages of one expert back to the system (pages shared with a neighbour expert stay)
     void evict(int s) {
         // find the tensor that owns node s
-        size_t lo_t = 0, hi_t = tensors.size();
-        while (lo_t + 1 < hi_t) {
-            const size_t mid = (lo_t + hi_t) / 2;
-            if (tensors[mid]->node0 <= s) { lo_t = mid; } else { hi_t = mid; }
-        }
-        tinfo_t & ti = *tensors[lo_t];
+        tinfo_t & ti = *tensors[node_owner[(size_t) s]];
         const size_t e = (size_t) (s - ti.node0);
         const uintptr_t start = (uintptr_t) ti.data + e * ti.nb2;
         const uintptr_t a = (start + PAGE - 1) / PAGE * PAGE;
