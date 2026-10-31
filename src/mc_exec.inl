@@ -264,11 +264,19 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
         return GGML_STATUS_SUCCESS;
     }
     const int n = ggml_graph_n_nodes(cg);
-    std::vector<char> keep((size_t) n, 0);
+    // idea D18 (MOE_CACHE_EXEC_SCRATCH=0 turns it off): the keep list and the saved-op list are per-thread scratch, not allocated for every small CPU batch
+    static const bool scratch = !getenv("MOE_CACHE_EXEC_SCRATCH") || atoi(getenv("MOE_CACHE_EXEC_SCRATCH")) != 0;
+    static thread_local std::vector<char> keep_s;
+    static thread_local std::vector<std::pair<ggml_tensor *, ggml_op>> saved_s;
+    std::vector<char> keep_l;
+    std::vector<std::pair<ggml_tensor *, ggml_op>> saved_l;
+    std::vector<char> & keep = scratch ? keep_s : keep_l;
+    std::vector<std::pair<ggml_tensor *, ggml_op>> & saved = scratch ? saved_s : saved_l;
+    keep.assign((size_t) n, 0);
+    saved.clear();
     for (int i : which) {
         keep[(size_t) i] = 1;
     }
-    std::vector<std::pair<ggml_tensor *, ggml_op>> saved;
     for (int i = 0; i < n; i++) {
         ggml_tensor * nd = ggml_graph_node(cg, i);
         if (!keep[(size_t) i] && nd->op != GGML_OP_NONE) {
