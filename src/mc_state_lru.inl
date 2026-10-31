@@ -123,6 +123,28 @@
         resident_bytes -= ti.nb2;
         if (ti.view) { view_bytes -= ti.nb2; }
         evictions++;
+        // idea C05 (MOE_CACHE_EVICT_SIBLINGS=1, default off): the other slices (gate, up, down) of the same expert go with it when they are idle, so an expert is
+        // either whole or gone and a later read does not find two of three slices missing
+        static const bool sib = getenv("MOE_CACHE_EVICT_SIBLINGS") && atoi(getenv("MOE_CACHE_EVICT_SIBLINGS")) > 0;
+        static thread_local bool in_sib = false;
+        if (sib && !in_sib && ti.layer >= 0) {
+            in_sib = true;
+            auto lt = layer_tensors.find(ti.layer);
+            if (lt != layer_tensors.end()) {
+                for (int tix : lt->second) {
+                    const tinfo_t & ot = *tensors[(size_t) tix];
+                    if (&ot == &ti || (int64_t) e >= ot.n_expert) {
+                        continue;
+                    }
+                    const int sn = ot.node0 + (int) e;
+                    const node_t & nd = nodes[(size_t) sn];
+                    if (nd.resident && !nd.loading && !in_use(nd)) {
+                        evict(sn);
+                    }
+                }
+            }
+            in_sib = false;
+        }
     }
 
     // cache smaller than one op: map expert e of ti straight from the model file over its own address (copy-on-write file pages, the way stock
