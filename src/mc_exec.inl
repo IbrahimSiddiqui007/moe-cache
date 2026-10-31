@@ -297,12 +297,17 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
     return st;
 }
 
+// D19: set from state_t at start-up; the run counter changes at every executor graph run
+static bool g_tiled_cache = false;
+static thread_local uint64_t g_tiled_run = 0;
+
 // llama.cpp (ggml 0.26) computes an expert with a separate tiled routine once it has 8 or more rows (tokens) in the batch (ggml-cpu/tiled, rows >= 8),
 // which adds up in another order than the one-row kernel. Such ops are left to llama.cpp so the result stays identical (found on GLM-5.3-Flash:
 // one expert picked by all 8 tokens of a prompt batch). Older ggml has no tiled routine; handing the op back is exact there too.
 // Counted for every batch size: a token can list the same expert more than once (likely a GPU top-k fed NaN router scores, which can repeat an index), so
 // 2 tokens can already give one expert 8+ rows. Such an op must not reach the executor either: its tasks hold at most EXEC_MAXCOL columns
 // (Windows crash at request 2, 2026-10-27: Qwen3.5-122B on the GPU router, a 4-token prompt tail, a pool worker writing through a garbage pointer).
+bool stock_tiled_scan(const ggml_tensor * ids);
 bool stock_uses_tiled(const ggml_tensor * nd) {
     const ggml_tensor * ids = nd->src[2];
 #ifdef MOE_CACHE_TEST_MUTANT_DUP_IDS    // CI only: the old count (batches of 8+ tokens only); with the no-split below it must fail tests/dup_ids.sh
@@ -326,6 +331,28 @@ bool stock_uses_tiled(const ggml_tensor * nd) {
     if (ids->ne[0] * ids->ne[1] < 8) {
         return false;
     }
+    // D19 (MOE_CACHE_TILED_CACHE=1): gate, up and down of a layer read the same ids tensor within one graph run; the answer of the first is reused.
+    // The key is the tensor, its data pointer and its shape plus the graph-run counter (bumped by exec_run_graph), so the next token never sees an old answer.
+    struct tiled_memo_t { const ggml_tensor * ids = nullptr; const void * data = nullptr; int64_t n0 = 0, n1 = 0; uint64_t run = 0; bool v = false; };
+    static thread_local tiled_memo_t memo[4];
+    static thread_local unsigned memo_next = 0;
+    tiled_memo_t * slot = nullptr;
+    if (g_tiled_cache) {
+        for (auto & m : memo) {
+            if (m.ids == ids && m.data == ids->data && m.n0 == ids->ne[0] && m.n1 == ids->ne[1] && m.run == g_tiled_run) {
+                return m.v;
+            }
+        }
+        slot = &memo[memo_next++ & 3];
+    }
+    const bool dup = stock_tiled_scan(ids);
+    if (slot) {
+        *slot = tiled_memo_t{ ids, ids->data, ids->ne[0], ids->ne[1], g_tiled_run, dup };
+    }
+    return dup;
+}
+
+bool stock_tiled_scan(const ggml_tensor * ids) {
     static thread_local std::vector<int32_t> v;   // runs for every expert op of a decode step: no allocation after the first
     v.clear();
     for (int64_t t = 0; t < ids->ne[1]; t++) {

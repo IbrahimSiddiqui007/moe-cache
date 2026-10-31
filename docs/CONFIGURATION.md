@@ -20,6 +20,7 @@
 | `MOE_CACHE_EXEC_THREADS=N`, `MOE_CACHE_EXEC_READERS=N` | compute threads (default: what llama.cpp asks for) and background reader threads (default 4) |
 | `MOE_CACHE_HOST_OUT=0` | turn off the direct copy of plugin outputs to the GPU (on by default; RESULTS 76) |
 | `MOE_CACHE_EXEC_CHECK=1` | recompute every expert op the stock way and compare (slow; for testing) |
+| `MOE_CACHE_TILED_CACHE=1` | audit idea D19, off by default, not measured: the duplicate-expert scan that decides whether llama.cpp would use its tiled routine runs once per ids tensor and graph run instead of for gate, up and down (same answer; per-op saving only for batches with 8+ picks) |
 | `MOE_CACHE_FAST_KERNELS=0` | use llama.cpp's own Q2_0 kernel instead of the plugin's |
 | `MOE_CACHE_IQ3_KERNEL=1` / `=0` | use the plugin's IQ3_XXS gather kernel (bit-identical) on any AVX2 CPU / turn it off; off by default on AMD, where gathers are slow (Zen 4: about 0.6x llama.cpp's own function) |
 | `MOE_CACHE_ROUTE=skip` (`moe-cache-server --fast`; `--fast` also sets a q8_0 KV cache: KL 0.0045 alone on the laptop (CUDA), **0.0120 on the PC (Vulkan)**, `--fast` as shipped 0.0145 there; kept in `--fast` by the owner's choice, RESULTS 61 R11) | opt-in approximate routing: skip a low-ranked expert that is not in RAM. About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012; RESULTS section 31). Off by default |

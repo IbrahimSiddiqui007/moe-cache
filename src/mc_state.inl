@@ -296,6 +296,7 @@ struct state_t {
     int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
     // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
     bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
+    bool   tiled_cache = false;                         // MOE_CACHE_TILED_CACHE=1 (D19, default off): the tiled/duplicate-id scan runs once per ids tensor and graph run instead of for gate, up and down
     bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
     int    exec_chunk = 128;                            // MOE_CACHE_EXEC_CHUNK=N: weight rows per pool chunk; 128 decodes +3.9 % over 32 on the PC (N25, every ABBA pair), the arithmetic per row is unchanged
     bool   exec_fuse = true;                            // gate and up of one layer share one pool job (same arithmetic, one barrier fewer): decode +0.3-2.6 % in every PC ABBA pair, text identical (E3, RESULTS 73); MOE_CACHE_EXEC_FUSE=0 turns it off
@@ -847,6 +848,9 @@ struct state_t {
         }
         if (const char * v = getenv("MOE_CACHE_SCAN_TOKENS")) {
             scan_tokens = std::max(0, atoi(v));
+        }
+        if (const char * v = getenv("MOE_CACHE_TILED_CACHE")) {
+            tiled_cache = strcmp(v, "0") != 0;
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHECK")) {
             exec_check = strcmp(v, "0") != 0;

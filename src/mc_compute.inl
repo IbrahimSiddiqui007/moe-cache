@@ -51,6 +51,8 @@ void cpu_path_check(state_t & s, ggml_cgraph * cg) {
 }
 
 enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg) {
+    g_tiled_cache = s.tiled_cache;
+    g_tiled_run++;
     if (!s.pool) {
         const int n = s.exec_threads > 0 ? s.exec_threads : std::max(1, c->n_threads);
         static const std::vector<int> pins = pin_cpus();
