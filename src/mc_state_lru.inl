@@ -1,6 +1,18 @@
 // moe-cache plugin part: state_t (continued, included inside the class body by mc_state.inl): LRU over resident experts, eviction, prepare_group, read flushing.
     // ---- LRU over resident experts ----
+    // idea C04 (MOE_CACHE_LAYER_SHARE=K, default 0 = off, plain LRU policy only): of the K oldest idle experts the victim comes from the layer that holds the most
+    // experts in the cache, so one layer cannot keep most of the capacity while another stalls on every token
+    int layer_share_k = [] { const char * v = getenv("MOE_CACHE_LAYER_SHARE"); return v ? std::max(0, std::min(64, atoi(v))) : 0; }();
+    std::vector<int> layer_cnt;
+    void layer_adj(int s, int d) {
+        const int L = tensors[node_owner[(size_t) s]]->layer;
+        if (L < 0) { return; }
+        if ((size_t) L >= layer_cnt.size()) { layer_cnt.resize((size_t) L + 1, 0); }
+        layer_cnt[(size_t) L] += d;
+    }
+
     void unlink(int s) {
+        if (layer_share_k) { layer_adj(s, -1); }
         node_t & n = nodes[s];
         if (n.prev >= 0) { nodes[n.prev].next = n.next; } else { mruc[n.cls] = n.next; }
         if (n.next >= 0) { nodes[n.next].prev = n.prev; } else { lruc[n.cls] = n.prev; }
@@ -9,6 +21,7 @@
 
     // evict-first insertion: a long prompt's experts recycle their own slots instead of pushing out what was cached before (MOE_CACHE_SCAN_TOKENS)
     void push_lru(int s) {
+        if (layer_share_k) { layer_adj(s, 1); }
         node_t & n = nodes[s];
         n.next = -1;
         n.prev = lruc[n.cls];
@@ -18,6 +31,7 @@
     }
 
     void push_mru(int s) {
+        if (layer_share_k) { layer_adj(s, 1); }
         node_t & n = nodes[s];
         n.prev = -1;
         n.next = mruc[n.cls];
@@ -77,6 +91,17 @@
     int pick_victim() const {
         int best = -1;
         double best_sc = -1.0;
+        if (layer_share_k && nclass == 1) {
+            int v = lruc[0], pick = -1, seen = 0, pick_cnt = -1;
+            for (int k = 0; k < 100000 && v >= 0 && seen < layer_share_k; k++, v = nodes[v].prev) {
+                if (in_use(nodes[v])) { continue; }
+                seen++;
+                const int L = tensors[node_owner[(size_t) v]]->layer;
+                const int cnt = (L >= 0 && (size_t) L < layer_cnt.size()) ? layer_cnt[(size_t) L] : 0;
+                if (cnt > pick_cnt) { pick_cnt = cnt; pick = v; }
+            }
+            return pick;
+        }
         for (int c = 0; c < nclass; c++) {
             int v = lruc[c];
             for (int k = 0; k < 100000 && v >= 0 && in_use(nodes[v]); k++) {
