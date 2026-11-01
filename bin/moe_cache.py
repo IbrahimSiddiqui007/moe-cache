@@ -1689,6 +1689,7 @@ def parse_server(argv):
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
+    ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
@@ -1708,6 +1709,68 @@ def server(argv):
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
     return run_launch_plan(plan)
+
+
+def multi_gpu_start(a, extra, machine, ls, listing, vram_user, win):
+    """--multi-gpu, first half (PROTOTYPE): read the cards and, when the planner will be asked for one card's number anyway, make that the card the launcher
+    names (MG4: the planner took line 0 of nvidia-smi, the launcher's pick_gpu the card with most free memory). Returns the facts for multi_gpu_apply."""
+    say("moe-cache: --multi-gpu is a PROTOTYPE: planned from the device list, not speed-tested on a machine with two discrete GPUs (docs/PLATFORMS.md)")
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import multigpu
+    listing = listing if listing is not None else machine.list_devices(ls)
+    cards = multigpu.list_cards(listing, machine.win_dedicated_vram() if win else None)
+    mg = {"cards": cards, "listing": listing, "vram_user": vram_user}
+    left = multigpu.skipped_igpus(listing, cards)
+    if cards:
+        say("moe-cache: GPUs: " + "; ".join(f"{c['dev']} {c['name']} ({c['free_mib'] / 1024:.1f} GiB free)" for c in cards) + (f"; left out: {', '.join(left)}" if left else ""))
+    if len(cards) >= 2 and not vram_user and not multigpu.user_split_flags(extra):
+        c = cards[0]
+        a.vram = f"{c['free_mib'] / 1024:.2f}"            # until the split is known, plan with the card the plugin's GPU work will use (the largest, listed first)
+    elif len(cards) >= 2 and not vram_user:
+        dev = arg_after(extra, "--device", "-dev")
+        first = next((c for c in cards if dev and c["dev"] == dev.split(",")[0]), None)
+        if first:
+            a.vram = f"{first['free_mib'] / 1024:.2f}"     # the user named the card: plan with that one
+    return mg
+
+
+def multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win):
+    """--multi-gpu, second half: replace the one-card answer with the split plan when 2+ cards are usable and nothing the user chose is in the way.
+    Returns (ncmoe, extra)."""
+    import multigpu
+    cards = mg["cards"]
+    why = None
+    if len(cards) < 2:
+        why = f"{len(cards)} usable GPU(s)"
+    elif mg["vram_user"]:
+        why = "--vram given (one pool of memory)"
+    elif ncmoe_user is not None:
+        why = "--n-cpu-moe given"
+    elif multigpu.user_split_flags(extra):
+        why = "--device / -ts / -sm / --main-gpu given after --"
+    elif gcache != "off" or a.hybrid:
+        why = "--gpu-cache / --hybrid manage one GPU"
+    elif ncmoe == "0" or ncmoe == "999" and not tuned:
+        why = "nothing to place"
+    if why:
+        if len(cards) >= 2 or a.multi_gpu:
+            say(f"moe-cache: --multi-gpu: not applied ({why}): the one-card plan stands")
+        return ncmoe, extra
+    free = [c["free_mib"] * 2**20 for c in cards]
+    if win:       # Windows commit carries Vulkan allocations: shrink the pool the same way as the one-card plan, each card by the same share
+        cfree = machine.win_commit()[1]
+        pool = sum(free) / 2**30
+        capped = vram_for_commit(pool, cfree)
+        if capped < pool:
+            free = [f * capped / pool for f in free]
+            say(f"moe-cache: GPU plan {pool:.2f} -> {capped:.2f} GiB: Windows' free commit must also carry llama-server's own buffers", err=True)
+    kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}
+    res = multigpu.launch_args([dict(c, free_mib=f / 2**20) for c, f in zip(cards, free)], model, ctx, kv_q8=kv_q8, ub=int(ub) if (ub or "").isdigit() else None, **kw)
+    if "skip" in res:
+        say(f"moe-cache: --multi-gpu: not applied ({res['skip']}): the one-card plan stands")
+        return ncmoe, extra
+    say("moe-cache: --multi-gpu (PROTOTYPE, estimate not measured): " + res["line"])
+    return str(res["n_cpu_moe"]), extra + res["args"]
 
 
 def launch_plan(a, extra, argv, machine=None, quiet=False):
@@ -1791,6 +1854,7 @@ def _launch_plan(a, extra, argv, machine):
             if os.environ.get("MOE_CACHE_LIB"):
                 raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
             raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    vram_user = a.vram
     listing = machine.list_devices(ls) if win else None
     gpu = machine.pick_gpu_full(listing) if win else None
     if win and not a.vram and not machine.nvidia_reports():
@@ -1815,6 +1879,7 @@ def _launch_plan(a, extra, argv, machine):
                     "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
                 a.vram = f"{capped:.2f}"
     ncmoe_user = a.n_cpu_moe
+    mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
     ncmoe = a.n_cpu_moe
     planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
     if ncmoe is None:
@@ -2129,6 +2194,8 @@ def _launch_plan(a, extra, argv, machine):
         env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
         if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
             extra = extra + ["-t", str(max(1, machine.physical_cores() - LEAVE_ROOM_FREE_CORES))]    # hybrid CPUs keep their performance-core pinning
+    if mg:
+        ncmoe, extra = multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win)
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
     if method == "none (stock)":
         pass

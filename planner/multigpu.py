@@ -75,3 +75,58 @@ def plan(path, ctx, frees, kv_q8=False, ub=None, reserve_gb=0.5, layout=None, kv
     used = [k for k, c in enumerate(counts) if c]
     why.append(f"{L - n} of {L} layers of experts on the GPUs; layers per card (of {L + 1} slots incl. the output layer): {counts}; planned use per card GiB: {per}")
     return {"n_cpu_moe": n, "ub": u, "tensor_split": ",".join(str(c) for c in counts), "per_card_gib": per, "cards_used": used, "gpu_cache_mib": 0, "why": why}
+
+
+# ---- launcher side (PROTOTYPE, behind `--multi-gpu`; pure functions so a test can fake the devices) ---------------------------------------------------
+
+import re
+
+DEVICE_RE = re.compile(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+?) \((\d+) MiB, (\d+) MiB free\)", re.M)
+MIN_OWN_MIB = 2048                 # a GPU with less memory of its own is an iGPU / display adapter (the rule the Windows branch of the launcher uses)
+USER_SPLIT_FLAGS = ("--device", "-dev", "-ts", "--tensor-split", "-sm", "--split-mode", "-mg", "--main-gpu")
+
+
+def list_cards(listing, own_mib=None):
+    """Discrete cards from `llama-server --list-devices` text: [{dev, name, total_mib, free_mib}], largest free memory first (ties keep the listed order).
+    One backend only (the one with the most usable cards, then the most free memory): a card that two backends both list (CUDA0 and Vulkan0) is not two
+    cards. own_mib: {name: dedicated MiB} (Windows registry), used instead of the listed total, because an iGPU reports shared RAM there."""
+    own_mib = own_mib or {}
+    cards = []
+    for dev, name, total, free in DEVICE_RE.findall(listing or ""):
+        name = name.strip()
+        own = own_mib.get(name, int(total))
+        own = own // 2**20 if own > 2**24 else own            # bytes (registry) or MiB
+        if own >= MIN_OWN_MIB:
+            cards.append({"dev": dev, "name": name, "total_mib": int(total), "free_mib": int(free), "backend": re.sub(r"\d+$", "", dev)})
+    by = {}
+    for c in cards:
+        by.setdefault(c["backend"], []).append(c)
+    if not by:
+        return []
+    best = max(by.values(), key=lambda cs: (len(cs), sum(c["free_mib"] for c in cs)))
+    return sorted(best, key=lambda c: -c["free_mib"])
+
+
+def skipped_igpus(listing, cards):
+    """Listed devices that list_cards left out (names), for the one-line report."""
+    used = {c["dev"] for c in cards}
+    return [f"{d} ({n.strip()})" for d, n, _, _ in DEVICE_RE.findall(listing or "") if d not in used]
+
+
+def user_split_flags(extra):
+    """The multi-GPU flags the user passed to llama-server after `--` (then their choice stands and nothing is added)."""
+    return [x for x in extra if x in USER_SPLIT_FLAGS or any(x.startswith(f + "=") for f in USER_SPLIT_FLAGS if f.startswith("--"))]
+
+
+def launch_args(cards, path, ctx, kv_q8=False, ub=None, reserve_gb=0.5):
+    """What the launcher adds for 2+ cards: {"n_cpu_moe": N, "args": ["--device", "A,B", "-ts", "a,b"], "line": str}, or {"skip": reason}."""
+    if len(cards) < 2:
+        return {"skip": "fewer than two usable cards"}
+    p = plan(path, ctx, [c["free_mib"] * MIB for c in cards], kv_q8=kv_q8, ub=ub, reserve_gb=reserve_gb)
+    if p is None:
+        return {"skip": "no expert layers to place (dense model or unreadable header): llama.cpp splits the layers itself"}
+    if not p["tensor_split"]:
+        return {"skip": p["why"][0]}
+    devs = ",".join(c["dev"] for c in cards)
+    return {"n_cpu_moe": p["n_cpu_moe"], "args": ["--device", devs, "-ts", p["tensor_split"]], "plan": p,
+            "line": f"--device {devs} -ts {p['tensor_split']} --n-cpu-moe {p['n_cpu_moe']}: " + p["why"][0]}
