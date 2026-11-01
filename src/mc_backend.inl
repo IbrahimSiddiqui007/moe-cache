@@ -224,6 +224,52 @@ static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t
     }
 }
 
+// R2-05 (MOE_CACHE_VRAM_LINE=1, default off, log only): the lowest free GPU memory seen before a long-prompt block, and the block compute times of the prompt.
+// One line when the prompt ends (the first decode graph after blocks), and one warning per process when a block takes more than 3x the median of the first
+// 20 blocks while less than 600 MiB is free (a nearly full card: on Windows the driver may move memory to system RAM and the GPU waits). Reads the same
+// ggml_backend_dev_memory call the block already makes; changes nothing it computes.
+struct vram_watch_t {
+    bool on = getenv("MOE_CACHE_VRAM_LINE") && atoi(getenv("MOE_CACHE_VRAM_LINE")) > 0;
+    std::mutex mu;
+    size_t min_free = (size_t) -1, first_free = 0, total = 0;
+    std::vector<float> ms;            // compute time (ms) of each block of this prompt
+    double first_med = -1;            // median of the first 20 blocks of the process
+    bool warned = false;
+    std::atomic<int> pending{0};      // blocks since the last line
+    void block(size_t fr, size_t tot, double comp_ms) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (tot == 0) { return; }
+        if (min_free == (size_t) -1) { first_free = fr; }
+        min_free = std::min(min_free, fr);
+        total = tot;
+        if (ms.size() < 1000000) { ms.push_back((float) comp_ms); }
+        if (first_med < 0 && ms.size() == 20) { first_med = median(ms); }
+        if (!warned && first_med > 0 && ms.size() > 20 && comp_ms > 3 * first_med && fr < ((size_t) 600 << 20)) {
+            warned = true;
+            fprintf(stderr, "moe-cache: WARNING: a long-prompt block took %.0f ms (3x the %.0f ms median of the first 20) with only %zu MiB of GPU memory free: "
+                    "the card is nearly full; --n-cpu-moe +4 frees about 2.8 GB (or a smaller -ub)\n", comp_ms, first_med, fr >> 20);
+        }
+        pending++;
+    }
+    static double median(std::vector<float> v) {
+        if (v.empty()) { return 0; }
+        const size_t m = v.size() / 2;
+        std::nth_element(v.begin(), v.begin() + (long) m, v.end());
+        return v[m];
+    }
+    void end_prompt() {
+        if (!on || pending.load() == 0) { return; }
+        std::lock_guard<std::mutex> lk(mu);
+        pending = 0;
+        const double worst = *std::max_element(ms.begin(), ms.end());
+        fprintf(stderr, "moe-cache: VRAM: min free %zu MiB of %zu MiB (%zu MiB free at the first block); %zu long-prompt blocks, compute median %.0f ms, worst %.0f ms\n",
+                min_free >> 20, total >> 20, first_free >> 20, ms.size(), median(ms), worst);
+        ms.clear();
+        min_free = (size_t) -1;
+    }
+};
+static vram_watch_t g_vram_watch;
+
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
 // to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
 bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
@@ -1163,6 +1209,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         up_ns += std::chrono::duration<double, std::nano>(t_c0 - t_up0).count();
         comp_ns += std::chrono::duration<double, std::nano>(t_g0 - t_c0).count();
         get_ns += std::chrono::duration<double, std::nano>(t_end - t_g0).count();
+    }
+    if (g_vram_watch.on) {
+        g_vram_watch.block(gpu_free, gpu_tot, comp_ns / 1e6);
     }
     if (n_chunk > 1 && n_chunk <= 16 && !pack_used.empty()) {
         split_stat_t & ss = split_stat[n_chunk];

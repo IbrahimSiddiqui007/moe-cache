@@ -1393,6 +1393,13 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
     elif low and WINDOWS:
         kw["creationflags"] = 0x00004000      # BELOW_NORMAL_PRIORITY_CLASS
     p = subprocess.Popen(cmd, **kw)
+    if env.get("MOE_CACHE_GPU_MEM_LOG", "") not in ("", "0"):         # R2-06, default off: dedicated / shared GPU memory of llama-server, once a second
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import start_gpu_mem_log
+            start_gpu_mem_log(p.pid, lambda m: say(m, err=True), WINDOWS, env, lambda: p.poll() is None)
+        except Exception:
+            pass
     if WINDOWS:
         try:
             _kill_with_parent_windows(p, mem_limit)
@@ -2214,6 +2221,14 @@ def _launch_plan(a, extra, argv, machine):
                     desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
+            from gguf_plan import plan_rule_on
+            if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
+                from gguf_plan import find_fit_params, plan_table, plan_table_lines
+                kw["fit_params"] = find_fit_params(ls)
+                say("moe-cache: plan rule: compute-buffer reserve " + ("measured with " + kw["fit_params"] if kw["fit_params"] else "from the formula (no llama-fit-params found)"))
+                if a.dry_run and free:
+                    for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):
+                        say(line)
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
         except Exception:
             tuned = None

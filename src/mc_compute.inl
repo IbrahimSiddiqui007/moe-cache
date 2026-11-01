@@ -417,6 +417,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
             const auto p0 = std::chrono::steady_clock::now();
             s.cur_decode = n_tok == 1;
+            if (n_tok == 1 && g_vram_watch.on) {
+                g_vram_watch.end_prompt();
+            }
             s.cur_scan = s.scan_tokens > 0 && n_tok >= s.scan_tokens;
             if (s.trace_f && n_tok == 1) {
                 int16_t hdr[2] = { (int16_t) s.tensors[tidx[0]]->layer, (int16_t) n_used };
