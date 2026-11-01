@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch`, `0024-vulkan-submit-flops-div` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -138,6 +138,18 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled and run (Linux, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 with `GGML_VK_MMID_SMALL_TILE=1` (this changes the pipelines used) and 1109/1109 with `GGML_VK_AMD_LARGE_TILE=1` (a no-op on this NVIDIA card, so the AMD branch is NOT exercised here).
 
 **Test (under 20 minutes, Windows PC):** (1) `test-backend-ops test -o MUL_MAT -o MUL_MAT_ID -b Vulkan0` with each switch: all pass (NMSE check on the AMD card, mandatory before any speed run); (2) `test-backend-ops perf -o MUL_MAT -o MUL_MAT_ID`, unset / `GGML_VK_AMD_LARGE_TILE=1` / `GGML_VK_MMID_SMALL_TILE=1`, us/run on the real shapes; (3) the winner only: Flash-Next 34k A B B A, text identical. Accept only if faster in both pairs by more than the A-vs-A spread.
+
+## 0024-vulkan-submit-flops-div (VK09)
+
+**What:** `ggml_backend_vk_graph_compute` cuts a graph into several `vkQueueSubmit`s after `min(200 GFLOP, flops of the previous graph / 40)`. The plugin's GPU block graph has three or four nodes, each `MUL_MAT_ID` alone is more than 1/40 of it, so a block is probably submitted node by node, and every submit costs CPU time and a gap on the AMD Windows driver. Switch: `GGML_VK_SUBMIT_FLOPS_DIV=N` (default 40 = stock). `1` cuts after the previous graph's whole flops (about one submit per graph), `0` turns the flop-based cut off (only `GGML_VK_MAX_NODES_PER_SUBMIT` and the almost-ready rule still cut). Unset = stock.
+
+**Soundness:** scheduling only; the shaders and their order are the same. Risk: very large submits on weak AMD GPUs can hit the driver timeout (the reason for the cut); the 9070 XT has 64 CUs and is not in the weak list. The first graph of a run has no previous flops and is not cut by this rule in stock either.
+
+**Compiled and run (Linux, RTX 4060 laptop):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 with `GGML_VK_SUBMIT_FLOPS_DIV=1` and with `=0`.
+
+**Honest expectation:** the scout guesses 0 to 1 ms per block (at most about 1 s over a 34k prompt), probably the small end.
+
+**Test (under 20 minutes, Windows PC):** Flash-Next 34k with `MOE_CACHE_SEG_TIMES=1`, A B B A with A = unset, B = `GGML_VK_SUBMIT_FLOPS_DIV=1` (add `=0` as a third arm if time is left). Compare prompt tok/s and the compute and gap lines; output tokens identical. Accept only if B is faster in both pairs by more than the A-vs-A spread.
 
 ## Not written, and why
 
