@@ -849,6 +849,23 @@ def arg_after(args, *names):
     return v
 
 
+def adopt_user_flags(extra):
+    """Flags the launcher also sets, when the user gives them after `--`: llama-server takes the user's (the last one wins), so the plan, the health
+    checks and the VRAM maths must use the same value. -> ({"port": int, "ctx": int, "ncmoe": str} for the ones found as plain numbers, extra without
+    them: the launcher puts the value back itself). A value that is not a plain positive number (-c 0 = the model's own length) is left alone."""
+    found, keep, i = {}, [], 0
+    names = {"--port": "port", "-c": "ctx", "--ctx-size": "ctx", "--n-cpu-moe": "ncmoe", "-ncmoe": "ncmoe"}
+    while i < len(extra):
+        key = names.get(extra[i])
+        if key and i + 1 < len(extra) and re.fullmatch(r"[0-9]+", extra[i + 1]) and (int(extra[i + 1]) > 0 or key == "ncmoe"):
+            found[key] = int(extra[i + 1]) if key != "ncmoe" else str(int(extra[i + 1]))
+            i += 2
+            continue
+        keep.append(extra[i])
+        i += 1
+    return found, keep
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     """urllib copies the Authorization header (our API key) onto a redirect to another host; a redirect is returned as the answer instead."""
     def redirect_request(self, *a, **k):
@@ -1966,6 +1983,15 @@ def _launch_plan(a, extra, argv, machine):
                 f"memory free for the desktop, leaves {LEAVE_ROOM_FREE_CORES} CPU cores free and runs at a lower priority: smoother PC, slower model")
     if a.share_ram:
         share_ram_start(a, machine)
+    user_flags, extra = adopt_user_flags(extra)
+    if "port" in user_flags and user_flags["port"] != a.port:
+        say(f"moe-cache: port {user_flags['port']} from the flags after '--' (the health checks, warm sessions and agent snippets use it)")
+        a.port = user_flags["port"]
+    if "ctx" in user_flags and user_flags["ctx"] != a.ctx:
+        say(f"moe-cache: context {user_flags['ctx']} from the flags after '--' (the GPU plan uses it)")
+        a.ctx = user_flags["ctx"]
+    if "ncmoe" in user_flags and a.n_cpu_moe is None:
+        a.n_cpu_moe = user_flags["ncmoe"]
     ls, model, port = a.llama_server, a.model, a.port
     ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
     gcache = a.gpu_cache

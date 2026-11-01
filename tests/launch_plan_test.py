@@ -57,6 +57,9 @@ CASES = [
     ("ub1024", ["--ram", "12", "--ub", "1024"], []),
     ("ub2048_vram8", ["--ram", "12", "--ub", "2048", "--vram", "8"], []),
     ("ub_user_after", ["--ram", "12"], ["-ub", "256"]),
+    ("port_user_after", ["--ram", "12"], ["--port", "9000"]),             # A3-03: the plan, health checks and snippets must use the user's port
+    ("ctx_user_after", ["--ram", "12"], ["-c", "65536"]),                 # A3-03: the VRAM plan must use the user's context
+    ("ncmoe_user_after", ["--ram", "12"], ["--n-cpu-moe", "20"]),         # A3-03: counts as a user-fixed value
     ("gpu_cache_auto", ["--ram", "12", "--vram", "8", "--gpu-cache", "auto"], []),
     ("gpu_cache_2000", ["--ram", "12", "--vram", "8", "--gpu-cache", "2000"], []),
     ("n_cpu_moe_20", ["--ram", "12", "--n-cpu-moe", "20"], []),
