@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters` (below). Nothing is measured yet.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -48,3 +48,15 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 - A: `GGML_VK_FENCE_SPIN_ITERS` unset.
 - B: `GGML_VK_FENCE_SPIN_ITERS=10` (try 1 if time is left).
 Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 output (the per-block time between compute end and readback end should drop slightly; upload and compute timers should not change). Accept only if B is faster in both pairs by more than the A-vs-A spread and the output tokens are identical (fixed seed, temperature 0). Otherwise leave it off. Watch CPU use of the graph thread: it should stay at 100 % either way.
+
+## 0002-server-adaptive-draft-length (L08)
+
+**What:** `llama-server` asks the drafter for a fixed `n_max` tokens each step. With `LLAMA_SPEC_ADAPT=1` each slot picks a cap from {0, 1, 2, 4} before every draft step (`get_n_draft_max()` in `tools/server/server-context.cpp`). The generic code already truncates a draft to that cap, so every drafter (draft model, MTP, n-gram) is covered. Switches: `LLAMA_SPEC_ADAPT=1`, `LLAMA_SPEC_ADAPT_COST` (relative cost of one extra drafted token in a verification step, default 0.15), `LLAMA_SPEC_ADAPT_PROBE` (steps at length 0 before one probe step at length 1, default 16).
+
+**Rule:** per slot a decayed (x0.9 per step) count of accepted draft tokens and tested positions gives a per-position acceptance rate `a`. The cap is the k in {1,2,4} (or 0) that maximises `(1 + a + ... + a^k) / (1 + cost * k)`; 0 wins when nothing beats 1. With cost 0.15 the table is: a < 0.2 -> 0, 0.2-0.4 -> 1, 0.5-0.6 -> 2, >= 0.7 -> 4 (computed from the formula, not measured). Start at 4 until something is observed. Replay steps after a checkpoint restore and synthetic-acceptance steps are not counted. Cost is a guess to be fitted: it is not measured verification time.
+
+**Soundness:** the verifier is unchanged, so the output distribution is the same. A different draft length changes batch shapes, so tokens can differ from a fixed-length run through rounding (not bit-identical, same as changing `--draft-max`). With the switch unset nothing changes. Risk: a stale rate (text switches from prose to code) costs a few steps; the probe at length 0 limits that. Drafting is still done at full `n_max` and then truncated, so the draft cost is not saved, only verification width.
+
+**Compiled:** `llama-server` (Linux, Release). Not run (no draft/MTP model on the laptop that is used here).
+
+**Test (under 20 minutes, Windows PC or any box with an MTP or draft model):** same model, three prompts (prose, code, agent-like JSON), temperature 0, `--draft-max 4`. Runs A B B A per prompt, A = unset, B = `LLAMA_SPEC_ADAPT=1`; 200 tokens each is enough. Compare generated tokens per second (server `timings`) and the printed acceptance per position. Accept only if B is not slower on any prompt by more than the A-vs-A spread and faster on at least one. Try `LLAMA_SPEC_ADAPT_COST=0.3` if B is slower where acceptance is high.

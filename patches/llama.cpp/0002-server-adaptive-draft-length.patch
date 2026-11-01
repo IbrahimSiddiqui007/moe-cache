@@ -1,0 +1,127 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 2bd1ab9ec..c6d5fccd8 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -24,6 +24,7 @@
+ #include "base64.hpp"
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <cstddef>
+ #include <cinttypes>
+ #include <deque>
+@@ -256,6 +257,27 @@ struct server_batch {
+     }
+ };
+ 
++// moe-cache patch 0002 (L08): adaptive draft length. Off unless LLAMA_SPEC_ADAPT=1.
++//   LLAMA_SPEC_ADAPT_COST  relative cost of one extra drafted token in a verification step (default 0.15)
++//   LLAMA_SPEC_ADAPT_PROBE steps spent at draft length 0 before one probe step at length 1 (default 16)
++struct server_spec_adapt_env {
++    bool   on    = false;
++    double cost  = 0.15;
++    int    probe = 16;
++
++    server_spec_adapt_env() {
++        const char * e = getenv("LLAMA_SPEC_ADAPT");
++        on = e != nullptr && atoi(e) != 0;
++        if ((e = getenv("LLAMA_SPEC_ADAPT_COST")) != nullptr && atof(e) >= 0.0) { cost  = atof(e); }
++        if ((e = getenv("LLAMA_SPEC_ADAPT_PROBE")) != nullptr && atoi(e) > 0)   { probe = atoi(e); }
++    }
++};
++
++static const server_spec_adapt_env & server_spec_adapt_get() {
++    static const server_spec_adapt_env env;
++    return env;
++}
++
+ struct server_slot {
+     int id;
+ 
+@@ -302,6 +324,46 @@ struct server_slot {
+     bool spec_is_replay = false;
+     std::mt19937 spec_synth_rng;
+ 
++    // moe-cache patch 0002 (L08): decayed acceptance counts, used only when LLAMA_SPEC_ADAPT=1
++    double spec_adapt_succ   = 0.0; // accepted draft tokens
++    double spec_adapt_trials = 0.0; // draft positions that were tested (accepted ones + the first rejected one)
++    int    spec_adapt_idle   = 0;   // steps spent at length 0
++
++    // draft length cap from {0, 1, 2, 4}: maximise expected tokens per step / (1 + cost * length),
++    // with a per-position acceptance rate alpha and E(k) = 1 + alpha + ... + alpha^k
++    int spec_adapt_cap() {
++        const auto & env = server_spec_adapt_get();
++        if (!env.on) {
++            return INT32_MAX;
++        }
++        if (spec_adapt_trials < 1.0) {
++            return 4; // nothing observed yet
++        }
++        const double alpha = std::min(0.999, spec_adapt_succ / spec_adapt_trials);
++        int    best       = 0;
++        double best_score = 1.0;
++        for (int k : { 1, 2, 4 }) {
++            const double score = (1.0 - std::pow(alpha, k + 1)) / (1.0 - alpha) / (1.0 + env.cost * k);
++            if (score > best_score * (1.0 + 1e-9)) {
++                best       = k;
++                best_score = score;
++            }
++        }
++        if (best == 0 && ++spec_adapt_idle >= env.probe) {
++            spec_adapt_idle = 0;
++            return 1; // probe, so a change of the text can be noticed
++        }
++        return best;
++    }
++
++    void spec_adapt_update(size_t n_draft, size_t n_accepted) {
++        if (!server_spec_adapt_get().on || n_draft == 0) {
++            return;
++        }
++        spec_adapt_succ   = spec_adapt_succ   * 0.9 + (double) n_accepted;
++        spec_adapt_trials = spec_adapt_trials * 0.9 + (double) (n_accepted < n_draft ? n_accepted + 1 : n_draft);
++    }
++
+     // TODO: move members that belong to the task (such as `generated`, `has_new_line`) to task_results_state
+     //       see https://github.com/ggml-org/llama.cpp/pull/18283#issuecomment-3710175837
+     std::unique_ptr<const server_task> task;
+@@ -424,6 +486,10 @@ struct server_slot {
+ 
+         spec_is_replay = false;
+ 
++        spec_adapt_succ   = 0.0;
++        spec_adapt_trials = 0.0;
++        spec_adapt_idle   = 0;
++
+         last_nl_pos    = 0;
+         generated      = {};
+         has_new_line   = false;
+@@ -576,7 +642,7 @@ struct server_slot {
+         generated_token_probs.push_back(token);
+     }
+ 
+-    int get_n_draft_max() const {
++    int get_n_draft_max() {
+         GGML_ASSERT(task);
+ 
+         if (!can_speculate()) {
+@@ -592,6 +658,8 @@ struct server_slot {
+             n_draft_max = std::min(n_draft_max, n_remaining() - 1);
+         }
+ 
++        n_draft_max = std::min(n_draft_max, spec_adapt_cap());
++
+         SLT_DBG(*this, "max possible draft: %d\n", n_draft_max);
+ 
+         return n_draft_max;
+@@ -4956,6 +5024,10 @@ private:
+ 
+                 GGML_ASSERT(accepted.size() >= 1);
+ 
++                if (!slot.spec_is_replay && synth_probs.empty()) {
++                    slot.spec_adapt_update(n_draft, accepted.size() - 1);
++                }
++
+                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();
+ 
+                 const bool use_ckpt_tgt =
