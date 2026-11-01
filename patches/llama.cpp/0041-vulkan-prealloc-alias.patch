@@ -1,0 +1,560 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-types.h b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+index 614df25ea..16353df5e 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-types.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+@@ -1236,6 +1236,12 @@ class vk_perf_logger {
+     uint32_t print_count {};
+ };
+ 
++// GGML_VK_PREALLOC_LOG: the largest scratch bytes one op asked for (x, y, split-k, and x plus split-k together) and which op
++struct vk_prealloc_stats {
++    uint64_t max_x = 0, max_y = 0, max_sk = 0, max_xsk = 0;
++    std::string who_x, who_y, who_sk, who_xsk;
++};
++
+ struct ggml_backend_vk_context {
+     std::string name;
+ 
+@@ -1243,6 +1249,7 @@ struct ggml_backend_vk_context {
+ 
+     size_t semaphore_idx, event_idx;
+     ggml_vk_garbage_collector gc;
++    vk_prealloc_stats prealloc_stats;
+     size_t prealloc_size_x, prealloc_size_y, prealloc_size_split_k, prealloc_size_add_rms_partials, prealloc_size_add_rms_partials_offset;
+     vk_buffer prealloc_x, prealloc_y, prealloc_split_k, prealloc_add_rms_partials, sync_staging;
+     vk::Fence fence, almost_ready_fence;
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 252af5068..10253a2af 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -5975,6 +5975,99 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
+     return split_k;
+ }
+ 
++// GGML_VK_PREALLOC_ALIAS=1: the split-k scratch lives inside prealloc_x, after the x bytes the same op uses, so the two
++// need the largest sum of one op instead of the sum of two separate maxima. prealloc_y stays its own buffer: it is a
++// cache (prealloc_y_last_tensor_used) and keeping it out of the shared region leaves that logic untouched.
++// Every use of x or split-k is then ordered against the other (the two need_sync flags are always set together).
++// GGML_VK_PREALLOC_LOG=1 prints the sizes and the saving at exit (works with the switch off).
++static bool ggml_vk_prealloc_alias() {
++    static const bool v = getenv("GGML_VK_PREALLOC_ALIAS") && atoi(getenv("GGML_VK_PREALLOC_ALIAS")) > 0;
++    return v;
++}
++static bool ggml_vk_prealloc_log() {
++    static const bool v = getenv("GGML_VK_PREALLOC_LOG") && atoi(getenv("GGML_VK_PREALLOC_LOG")) > 0;
++    return v;
++}
++static uint64_t ggml_vk_prealloc_align(const ggml_backend_vk_context * ctx) {
++    return std::max<uint64_t>(256, ctx->device->properties.limits.minStorageBufferOffsetAlignment);
++}
++// offset of the split-k region in prealloc_x for an op that uses x_used bytes of x
++static uint64_t ggml_vk_sk_offset(const ggml_backend_vk_context * ctx, uint64_t x_used) {
++    const uint64_t a = ggml_vk_prealloc_align(ctx);
++    return (x_used + a - 1) / a * a;
++}
++static vk_subbuffer ggml_vk_sk_subbuffer(ggml_backend_vk_context * ctx, uint64_t x_used, uint64_t size) {
++    if (!ggml_vk_prealloc_alias()) {
++        return { ctx->prealloc_split_k, 0, size };
++    }
++    const uint64_t off = ggml_vk_sk_offset(ctx, x_used);
++    GGML_ASSERT(ctx->prealloc_x != nullptr);
++    return { ctx->prealloc_x, off, std::min<uint64_t>(size, ctx->prealloc_x->size > off ? ctx->prealloc_x->size - off : 0) };
++}
++// the whole-buffer range some kernels are bound with; never above the device limit
++static vk_subbuffer ggml_vk_x_whole(ggml_backend_vk_context * ctx) {
++    return { ctx->prealloc_x, 0, std::min<uint64_t>(ctx->prealloc_x->size, ctx->device->properties.limits.maxStorageBufferRange) };
++}
++static void ggml_vk_prealloc_x_used(ggml_backend_vk_context * ctx) {
++    ctx->prealloc_x_need_sync = true;
++    if (ggml_vk_prealloc_alias()) {
++        ctx->prealloc_split_k_need_sync = true;
++    }
++}
++static void ggml_vk_prealloc_sk_used(ggml_backend_vk_context * ctx) {
++    ctx->prealloc_split_k_need_sync = true;
++    if (ggml_vk_prealloc_alias()) {
++        ctx->prealloc_x_need_sync = true;
++    }
++}
++// Called by every op before it uses scratch: x_used / y_used / sk_used are the bytes this one op needs (0 = unused).
++// Grows the buffers like the per-site code did; with the switch on, x and split-k share one buffer.
++static void ggml_vk_prealloc_need(ggml_backend_vk_context * ctx, vk_context& subctx, const char * label, uint64_t x_used, uint64_t y_used, uint64_t sk_used) {
++    if (ggml_vk_prealloc_log()) {
++        vk_prealloc_stats & st = ctx->prealloc_stats;
++        const uint64_t xs = x_used + sk_used ? ggml_vk_sk_offset(ctx, x_used) + sk_used : 0;
++        const auto upd = [&](uint64_t v, uint64_t & mx, std::string & who) { if (v > mx) { mx = v; who = label; } };
++        upd(x_used, st.max_x, st.who_x);
++        upd(y_used, st.max_y, st.who_y);
++        upd(sk_used, st.max_sk, st.who_sk);
++        upd(xs, st.max_xsk, st.who_xsk);
++    }
++    if (ggml_vk_prealloc_alias()) {
++        const uint64_t need = x_used + sk_used ? ggml_vk_sk_offset(ctx, x_used) + sk_used : 0;
++        if (need > 0 && ctx->prealloc_size_x < need) {
++            ctx->prealloc_size_x = need;
++            ggml_vk_preallocate_buffers(ctx, subctx);
++        }
++    } else {
++        if (x_used > 0 && ctx->prealloc_size_x < x_used) {
++            ctx->prealloc_size_x = x_used;
++            ggml_vk_preallocate_buffers(ctx, subctx);
++        }
++    }
++    if (y_used > 0 && ctx->prealloc_size_y < y_used) {
++        ctx->prealloc_size_y = y_used;
++        ggml_vk_preallocate_buffers(ctx, subctx);
++    }
++    if (!ggml_vk_prealloc_alias() && sk_used > 0 && ctx->prealloc_size_split_k < sk_used) {
++        ctx->prealloc_size_split_k = sk_used;
++        ggml_vk_preallocate_buffers(ctx, subctx);
++    }
++}
++static void ggml_vk_prealloc_report(const ggml_backend_vk_context * ctx) {
++    const vk_prealloc_stats & st = ctx->prealloc_stats;
++    if (!ggml_vk_prealloc_log() || st.max_x + st.max_y + st.max_sk == 0) {
++        return;
++    }
++    const double mib = 1024.0 * 1024.0;
++    const uint64_t stock = st.max_x + st.max_y + st.max_sk;
++    const uint64_t shared = st.max_y + st.max_xsk;
++    fprintf(stderr, "ggml_vulkan: %s prealloc: x %.1f MiB (%s), y %.1f MiB (%s), split-k %.1f MiB (%s); stock x+y+sk = %.1f MiB; "
++            "largest x+sk of one op %.1f MiB (%s), so x+sk shared + y = %.1f MiB, saving %.1f MiB; buffers now: alias %s, x %.1f MiB, sk %.1f MiB\n",
++            ctx->name.c_str(), st.max_x / mib, st.who_x.c_str(), st.max_y / mib, st.who_y.c_str(), st.max_sk / mib, st.who_sk.c_str(),
++            stock / mib, st.max_xsk / mib, st.who_xsk.c_str(), shared / mib, (stock > shared ? stock - shared : 0) / mib,
++            ggml_vk_prealloc_alias() ? "on" : "off", ctx->prealloc_size_x / mib, ctx->prealloc_size_split_k / mib);
++}
++
+ void ggml_vk_matmul(
+         ggml_backend_vk_context * ctx, vk_context& subctx, vk_pipeline& pipeline,
+         vk_subbuffer&& a, vk_subbuffer&& b, vk_subbuffer&& d, vk_subbuffer&& split_k_buffer,
+@@ -6037,7 +6130,7 @@ void ggml_vk_matmul(
+     ggml_vk_sync_buffers(ctx, subctx);
+     const std::array<uint32_t, 2> pc2 = { (uint32_t)(m * n * batch), split_k };
+     ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_matmul_split_k_reduce, { split_k_buffer, d }, pc2, { m * n * batch, 1, 1 });
+-    ctx->prealloc_split_k_need_sync = true;
++    ggml_vk_prealloc_sk_used(ctx);
+ }
+ 
+ static bool ggml_vk_src1_prec_allows_q8(const ggml_tensor * dst) {
+@@ -6527,18 +6620,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
+                 (split_k > 1 && split_k_size > ctx->device->properties.limits.maxStorageBufferRange)) {
+             GGML_ABORT("Requested preallocation size is too large");
+         }
+-        if (qx_needs_dequant && ctx->prealloc_size_x < x_sz) {
+-            ctx->prealloc_size_x = x_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
+-        if ((qy_needs_dequant || quantize_y) && ctx->prealloc_size_y < y_sz) {
+-            ctx->prealloc_size_y = y_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
+-        if (split_k > 1 && ctx->prealloc_size_split_k < split_k_size) {
+-            ctx->prealloc_size_split_k = split_k_size;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, ggml_op_name(dst->op), qx_needs_dequant ? x_sz : 0, (qy_needs_dequant || quantize_y) ? y_sz : 0, split_k > 1 ? split_k_size : 0);
+ 
+         // Request descriptor sets
+         if (qx_needs_dequant) {
+@@ -6658,7 +6740,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
+     ggml_vk_matmul(
+         ctx, subctx, pipeline,
+         { d_X, x_buf_offset, x_range }, { d_Y, y_buf_offset, y_range },
+-        ggml_vk_subbuffer(ctx, d_D, d_buf_offset), { ctx->prealloc_split_k, 0, d_sz * split_k },
++        ggml_vk_subbuffer(ctx, d_D, d_buf_offset), ggml_vk_sk_subbuffer(ctx, qx_needs_dequant ? x_sz : 0, d_sz * split_k),
+         ne01, ne11, ne10,
+         ne10, ne10, stride_d, stride_batch_x, stride_batch_y, stride_batch_d,
+         split_k, ne12*ne13, ne02, ne12, r2, r3, padded_n,
+@@ -6666,7 +6748,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
+     );  // NOLINT
+ 
+     if (x_non_contig || qx_needs_dequant) {
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+     }
+     if (y_needs_reformat || quantize_y) {
+         ctx->prealloc_y_need_sync = true;
+@@ -6855,14 +6937,7 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+                 (qy_needs_dequant && y_sz > ctx->device->properties.limits.maxStorageBufferRange)) {
+             GGML_ABORT("Requested preallocation size is too large");
+         }
+-        if (qx_needs_dequant && ctx->prealloc_size_x < x_sz) {
+-            ctx->prealloc_size_x = x_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
+-        if ((qy_needs_dequant || quantize_y) && ctx->prealloc_size_y < y_sz) {
+-            ctx->prealloc_size_y = y_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, ggml_op_name(dst->op), qx_needs_dequant ? x_sz : 0, (qy_needs_dequant || quantize_y) ? y_sz : 0, 0);
+ 
+         // Request descriptor sets
+         if (qx_needs_dequant) {
+@@ -6882,7 +6957,7 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+     vk_subbuffer d_X, d_Y;
+ 
+     if (qx_needs_dequant) {
+-        d_X = { ctx->prealloc_x, 0, ctx->prealloc_x->size };
++        d_X = ggml_vk_x_whole(ctx);
+     } else {
+         d_X = d_Qx;
+         GGML_ASSERT(qx_sz == x_sz);
+@@ -6997,7 +7072,7 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+     }
+ 
+     if (x_non_contig) {
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+     }
+     if (y_non_contig || quantize_y) {
+         ctx->prealloc_y_need_sync = true;
+@@ -7601,18 +7676,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context&
+                 (qy_needs_dequant && y_sz > ctx->device->properties.limits.maxStorageBufferRange)) {
+             GGML_ABORT("Requested preallocation size is too large");
+         }
+-        if (qx_needs_dequant && ctx->prealloc_size_x < x_sz) {
+-            ctx->prealloc_size_x = x_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
+-        if ((qy_needs_dequant || quantize_y) && ctx->prealloc_size_y < y_sz) {
+-            ctx->prealloc_size_y = y_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
+-        if (ctx->prealloc_size_split_k < expert_data_size) {
+-            ctx->prealloc_size_split_k = expert_data_size;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, ggml_op_name(dst->op), qx_needs_dequant ? x_sz : 0, (qy_needs_dequant || quantize_y) ? y_sz : 0, expert_data_size);
+ 
+         // Request descriptor sets
+         ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+@@ -7673,7 +7737,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context&
+     vk_subbuffer d_ids = ggml_vk_tensor_subbuffer(ctx, ids, true);
+ 
+     // Count how many times each expert is used
+-    vk_subbuffer expert_count_buf = { ctx->prealloc_split_k, 0, expert_data_size };
++    vk_subbuffer expert_count_buf = ggml_vk_sk_subbuffer(ctx, qx_needs_dequant ? x_sz : 0, expert_data_size);
+     if (ctx->prealloc_split_k_need_sync) {
+         ggml_vk_sync_buffers(ctx, subctx);
+     }
+@@ -7772,12 +7836,12 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context&
+     );  // NOLINT
+ 
+     if (x_non_contig || qx_needs_dequant) {
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+     }
+     if (y_needs_reformat || quantize_y) {
+         ctx->prealloc_y_need_sync = true;
+     }
+-    ctx->prealloc_split_k_need_sync = true;
++    ggml_vk_prealloc_sk_used(ctx);
+ }
+ 
+ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
+@@ -7871,14 +7935,7 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
+                 (qy_needs_dequant && y_sz > ctx->device->properties.limits.maxStorageBufferRange)) {
+             GGML_ABORT("Requested preallocation size is too large");
+         }
+-        if (qx_needs_dequant && ctx->prealloc_size_x < x_sz) {
+-            ctx->prealloc_size_x = x_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
+-        if ((qy_needs_dequant || quantize_y) && ctx->prealloc_size_y < y_sz) {
+-            ctx->prealloc_size_y = y_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, ggml_op_name(dst->op), qx_needs_dequant ? x_sz : 0, (qy_needs_dequant || quantize_y) ? y_sz : 0, 0);
+ 
+         // Request descriptor sets
+         if (qx_needs_dequant) {
+@@ -7901,7 +7958,7 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
+     vk_subbuffer d_X, d_Y;
+ 
+     if (qx_needs_dequant) {
+-        d_X = { ctx->prealloc_x, 0, ctx->prealloc_x->size };
++        d_X = ggml_vk_x_whole(ctx);
+     } else {
+         d_X = d_Qx;
+     }
+@@ -8010,7 +8067,7 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
+     }
+ 
+     if (x_non_contig) {
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+     }
+     if (y_non_contig || quantize_y) {
+         ctx->prealloc_y_need_sync = true;
+@@ -8420,10 +8477,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+                 size_group_max = neq1 * neq2 * max_dim * neq3 * sizeof(float);
+                 size_t temp_size = ggml_nelements(q) * sizeof(ggml_fp16_t) + size_p + size_group_max;
+                 fa_copy_qstate = true;
+-                if (ctx->prealloc_size_x < temp_size) {
+-                    ctx->prealloc_size_x = temp_size;
+-                    ggml_vk_preallocate_buffers(ctx, subctx);
+-                }
++                ggml_vk_prealloc_need(ctx, subctx, "FLASH_ATTN_EXT", temp_size, 0, 0);
+ 
+                 if (ctx->prealloc_x_need_sync) {
+                     ggml_vk_sync_buffers(ctx, subctx);
+@@ -8444,10 +8498,9 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+     if (split_k_size > ctx->device->properties.limits.maxStorageBufferRange) {
+         GGML_ABORT("Requested preallocation size is too large");
+     }
+-    if (ctx->prealloc_size_split_k < split_k_size) {
+-        ctx->prealloc_size_split_k = split_k_size;
+-        ggml_vk_preallocate_buffers(ctx, subctx);
+-    }
++    // x bytes this op keeps while split-k scratch is live (the dequantised K and V); the xe path has no split-k
++    const uint64_t fa_kv_x = use_dequant_kv ? ((uint64_t)ggml_nelements(k) + (uint64_t)ggml_nelements(v)) * kv_scratch_ts : 0;
++    ggml_vk_prealloc_need(ctx, subctx, "FLASH_ATTN_EXT", fa_kv_x, 0, xe_fa_opt ? 0 : split_k_size);
+ 
+     const uint32_t mask_opt_num_dwords = CEIL_DIV(nem0, 16 * Bc);
+     const uint64_t mask_opt_size = sizeof(uint32_t) * mask_opt_num_dwords * CEIL_DIV(nem1, Br) * nem2 * nem3;
+@@ -8467,10 +8520,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+         assert(pipeline_fa_mask_opt);
+         ggml_pipeline_request_descriptor_sets(ctx, pipeline_fa_mask_opt, 1);
+ 
+-        if (ctx->prealloc_size_y < mask_opt_size) {
+-            ctx->prealloc_size_y = mask_opt_size;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, "FLASH_ATTN_EXT", 0, mask_opt_size, 0);
+         if (ctx->prealloc_y_need_sync) {
+             ggml_vk_sync_buffers(ctx, subctx);
+         }
+@@ -8485,10 +8535,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+         : ctx->device->pipeline_fa_sparse_compact;
+     if (use_sparse) {
+         ggml_pipeline_request_descriptor_sets(ctx, sparse_compact_pipeline, 1);
+-        if (ctx->prealloc_size_y < sparse_idx_size) {
+-            ctx->prealloc_size_y = sparse_idx_size;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, "FLASH_ATTN_EXT", 0, sparse_idx_size, 0);
+         if (ctx->prealloc_y_need_sync) {
+             ggml_vk_sync_buffers(ctx, subctx);
+         }
+@@ -8516,10 +8563,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+     if (use_dequant_kv) {
+         const uint64_t k_sz = (uint64_t)ggml_nelements(k) * kv_scratch_ts;
+         const uint64_t v_sz = (uint64_t)ggml_nelements(v) * kv_scratch_ts;
+-        if (ctx->prealloc_size_x < k_sz + v_sz) {
+-            ctx->prealloc_size_x = k_sz + v_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, "FLASH_ATTN_EXT", k_sz + v_sz, 0, 0);
+         vk_subbuffer k_dst = vk_subbuffer{ ctx->prealloc_x, 0,    k_sz };
+         vk_subbuffer v_dst = vk_subbuffer{ ctx->prealloc_x, k_sz, v_sz };
+         const uint32_t k_nel = (uint32_t)ggml_nelements(k);
+@@ -8682,7 +8726,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+             { p_temp_buf, v_buf, max_temp_buf, sinks_buf, dst_buf },
+             pc_ph2, { (uint32_t)ph2_wg, (uint32_t)nev2, (uint32_t)neq3 });
+ 
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+     } else if (split_k > 1) {
+         ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_flash_attn_split_k_reduce, 1);
+ 
+@@ -8700,7 +8744,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+             dispatch_x = Tr * split_k * pipeline->wg_denoms[0];
+         }
+ 
+-        vk_subbuffer split_k_buf = ggml_vk_subbuffer(ctx, ctx->prealloc_split_k, 0);
++        vk_subbuffer split_k_buf = ggml_vk_sk_subbuffer(ctx, fa_kv_x, split_k_size);
+         ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+                                     {q_buf, k_buf, v_buf, mask_buf, sinks_buf, split_k_buf, mask_opt_buf, sparse_buf},
+                                     pc, { dispatch_x, workgroups_y, workgroups_z });
+@@ -8710,7 +8754,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+         ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_flash_attn_split_k_reduce,
+                                     {split_k_buf, sinks_buf, dst_buf},
+                                     pc2, { (uint32_t)ne1, HSV, (uint32_t)(ne2 * ne3) });
+-        ctx->prealloc_split_k_need_sync = true;
++        ggml_vk_prealloc_sk_used(ctx);
+     } else {
+         if (gqa_ratio > 1) {
+             // When using gqa, we want one actual workgroup per batch, so cancel out wg_denoms
+@@ -8722,7 +8766,7 @@ void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx, const
+     }
+ 
+     if (use_dequant_kv) {
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+     }
+     if (use_mask_opt || use_sparse) {
+         ctx->prealloc_y_need_sync = true;
+@@ -11311,14 +11355,7 @@ void ggml_vk_soft_max(ggml_backend_vk_context * ctx, vk_context& subctx, const g
+         uint32_t num_wgs = CEIL_DIV(ncols, elems_per_wg);
+         size_t tmp_size = num_wgs * nrows_x * sizeof(float);
+ 
+-        if (ctx->prealloc_size_x < tmp_size) {
+-            ctx->prealloc_size_x = tmp_size;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
+-        if (ctx->prealloc_size_y < tmp_size) {
+-            ctx->prealloc_size_y = tmp_size;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, "SOFT_MAX", tmp_size, tmp_size, 0);
+         if (ctx->prealloc_x_need_sync || ctx->prealloc_y_need_sync) {
+             ggml_vk_sync_buffers(ctx, subctx);
+         }
+@@ -11346,7 +11383,7 @@ void ggml_vk_soft_max(ggml_backend_vk_context * ctx, vk_context& subctx, const g
+         ggml_vk_sync_buffers(ctx, subctx);
+         ggml_vk_dispatch_pipeline(ctx, subctx, pipeline3, { buf_a, buf_b, buf_c, buf_d, buf_x, buf_y }, pc, elements);
+ 
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+         ctx->prealloc_y_need_sync = true;
+     }
+ }
+@@ -11507,14 +11544,11 @@ void ggml_vk_argsort(ggml_backend_vk_context * ctx, vk_context& subctx, const gg
+     if (!use_small) {
+         const size_t x_sz = size_t{ncolsp2} * nrows * 2 * sizeof(int);
+ 
+-        if (ctx->prealloc_size_x < x_sz) {
+-            ctx->prealloc_size_x = x_sz;
+-            ggml_vk_preallocate_buffers(ctx, subctx);
+-        }
++        ggml_vk_prealloc_need(ctx, subctx, "ARGSORT", x_sz, 0, 0);
+         if (ctx->prealloc_x_need_sync) {
+             ggml_vk_sync_buffers(ctx, subctx);
+         }
+-        subbuf1 = { ctx->prealloc_x, 0, ctx->prealloc_x->size };
++        subbuf1 = ggml_vk_x_whole(ctx);
+     }
+ 
+     std::array<uint32_t, 3> elements;
+@@ -11560,7 +11594,7 @@ void ggml_vk_argsort(ggml_backend_vk_context * ctx, vk_context& subctx, const gg
+                 ggml_vk_sync_buffers(ctx, subctx);
+             }
+         }
+-        ctx->prealloc_x_need_sync = true;
++        ggml_vk_prealloc_x_used(ctx);
+     }
+ }
+ 
+@@ -11661,10 +11695,7 @@ void ggml_vk_topk(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_
+             dbl_buf_size = ROUNDUP_POW2(dbl_buf_size, ctx->device->properties.limits.minStorageBufferOffsetAlignment);
+             const size_t x_sz = dbl_buf_size * 2;
+ 
+-            if (ctx->prealloc_size_x < x_sz) {
+-                ctx->prealloc_size_x = x_sz;
+-                ggml_vk_preallocate_buffers(ctx, subctx);
+-            }
++            ggml_vk_prealloc_need(ctx, subctx, "TOP_K", x_sz, 0, 0);
+         }
+ 
+         vk_subbuffer src_buf;
+@@ -11694,7 +11725,7 @@ void ggml_vk_topk(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_
+         }
+         done_one_iter = true;
+     }
+-    ctx->prealloc_x_need_sync = true;
++    ggml_vk_prealloc_x_used(ctx);
+ }
+ 
+ void ggml_vk_topk_qsa(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_cgraph * cgraph, int node_idx) {
+@@ -11723,10 +11754,7 @@ void ggml_vk_topk_qsa(ggml_backend_vk_context * ctx, vk_context& subctx, const g
+ 
+     // scratch holds the gathered+masked input, materialized once and reused across passes
+     const size_t scratch_size = size_t{ n_kv } * nrows * sizeof(float);
+-    if (ctx->prealloc_size_x < scratch_size) {
+-        ctx->prealloc_size_x = scratch_size;
+-        ggml_vk_preallocate_buffers(ctx, subctx);
+-    }
++    ggml_vk_prealloc_need(ctx, subctx, "TOPK_QSA", scratch_size, 0, 0);
+     if (ctx->prealloc_x_need_sync) {
+         ggml_vk_sync_buffers(ctx, subctx);
+     }
+@@ -11737,13 +11765,13 @@ void ggml_vk_topk_qsa(ggml_backend_vk_context * ctx, vk_context& subctx, const g
+         std::min(nrows, ctx->device->properties.limits.maxComputeWorkGroupCount[1]),
+         1,
+     };
+-    vk_subbuffer scratch_buf { ctx->prealloc_x, 0, ctx->prealloc_x->size };
++    vk_subbuffer scratch_buf = ggml_vk_x_whole(ctx);
+     ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
+         { ggml_vk_tensor_subbuffer(ctx, scores), ggml_vk_tensor_subbuffer(ctx, top_k),
+           ggml_vk_tensor_subbuffer(ctx, cell_blk), ggml_vk_tensor_subbuffer(ctx, mask),
+           scratch_buf }, pc, elements);
+-    ctx->prealloc_x_need_sync = true;
++    ggml_vk_prealloc_x_used(ctx);
+ }
+ 
+ void ggml_vk_sum(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {
+@@ -11789,14 +11817,11 @@ void ggml_vk_cumsum(ggml_backend_vk_context * ctx, vk_context& subctx, const ggm
+ 
+     size_t temp_size = sizeof(float) * elements[0] * ggml_nrows(dst);
+ 
+-    if (ctx->prealloc_size_split_k < temp_size) {
+-        ctx->prealloc_size_split_k = temp_size;
+-        ggml_vk_preallocate_buffers(ctx, subctx);
+-    }
++    ggml_vk_prealloc_need(ctx, subctx, "SUM", 0, 0, temp_size);
+ 
+     vk_subbuffer src_buf = ggml_vk_tensor_subbuffer(ctx, src0);
+     vk_subbuffer dst_buf = ggml_vk_tensor_subbuffer(ctx, dst);
+-    vk_subbuffer temp_buf = ggml_vk_subbuffer(ctx, ctx->prealloc_split_k, 0);
++    vk_subbuffer temp_buf = ggml_vk_sk_subbuffer(ctx, 0, temp_size);
+ 
+     if (ctx->prealloc_split_k_need_sync) {
+         ggml_vk_sync_buffers(ctx, subctx);
+@@ -11806,7 +11831,7 @@ void ggml_vk_cumsum(ggml_backend_vk_context * ctx, vk_context& subctx, const ggm
+     ggml_vk_sync_buffers(ctx, subctx);
+     ggml_vk_dispatch_pipeline(ctx, subctx, pipeline2, {src_buf, dst_buf, temp_buf}, pc, elements);
+ 
+-    ctx->prealloc_split_k_need_sync = true;
++    ggml_vk_prealloc_sk_used(ctx);
+ }
+ 
+ static std::array<uint32_t, 3> ggml_vk_nrows_elements(uint32_t nr) {
+@@ -11848,10 +11873,7 @@ void ggml_vk_cross_entropy_loss(ggml_backend_vk_context * ctx, vk_context& subct
+     const vk_op_push_constants pc = { nclasses, nrows, 0.0f, 0.0f, 0.0f, 0.0f };
+ 
+     const size_t tmp_size = (size_t)nrows * sizeof(float);
+-    if (ctx->prealloc_size_x < tmp_size) {
+-        ctx->prealloc_size_x = tmp_size;
+-        ggml_vk_preallocate_buffers(ctx, subctx);
+-    }
++    ggml_vk_prealloc_need(ctx, subctx, "CROSS_ENTROPY_LOSS", tmp_size, 0, 0);
+     if (ctx->prealloc_x_need_sync) {
+         ggml_vk_sync_buffers(ctx, subctx);
+     }
+@@ -11869,7 +11891,7 @@ void ggml_vk_cross_entropy_loss(ggml_backend_vk_context * ctx, vk_context& subct
+     sp.misalign_offsets = get_misalign_bytes(ctx, dst) / ggml_type_size(dst->type);
+ 
+     ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_sum_rows_f32, { tmp_buf, dst_buf }, sp, { 1, 1, 1 });
+-    ctx->prealloc_x_need_sync = true;
++    ggml_vk_prealloc_x_used(ctx);
+ }
+ 
+ void ggml_vk_cross_entropy_loss_back(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst) {
+@@ -12425,7 +12447,7 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
+         ctx->prealloc_y_last_tensor_used = nullptr;
+         ctx->prealloc_y_last_k_padded = false;
+     }
+-    if (ctx->prealloc_split_k == nullptr || (ctx->prealloc_size_split_k > 0 && ctx->prealloc_split_k->size < ctx->prealloc_size_split_k)) {
++    if (!ggml_vk_prealloc_alias() && (ctx->prealloc_split_k == nullptr || (ctx->prealloc_size_split_k > 0 && ctx->prealloc_split_k->size < ctx->prealloc_size_split_k))) {
+         VK_LOG_MEMORY("ggml_vk_preallocate_buffers(split_k_size: " << ctx->prealloc_size_split_k << ")");
+         // Resize buffer
+         if (ctx->prealloc_split_k != nullptr) {
+@@ -12441,6 +12463,9 @@ void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_context subct
+         }
+         ctx->prealloc_add_rms_partials = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_add_rms_partials);
+     }
++    if (ggml_vk_prealloc_log()) {
++        ggml_vk_prealloc_report(ctx);
++    }
+ }
+ 
+ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, int node_idx, ggml_tensor *node_begin, int node_idx_begin, bool last_node, bool almost_ready, bool submit){
+@@ -13123,6 +13148,7 @@ void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
+ 
+     ggml_vk_graph_cleanup(ctx);
+ 
++    ggml_vk_prealloc_report(ctx);
+     ggml_vk_destroy_buffer(ctx->prealloc_x);
+     ggml_vk_destroy_buffer(ctx->prealloc_y);
+     ggml_vk_destroy_buffer(ctx->prealloc_split_k);

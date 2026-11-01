@@ -1,0 +1,78 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index b9e3b5e5b..f4e9257c3 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -17,7 +17,9 @@
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
++#include <algorithm>
+ #include <limits>
++#include <unordered_map>
+ #include <stdexcept>
+ #include <string>
+ #include <unordered_map>
+@@ -879,6 +881,63 @@ void llama_context::sched_reserve() {
+                 val(n_input_tensors_pp, n_input_tensors_tg).c_str());
+     }
+ 
++    // LLAMA_RESERVE_TOP=N: print the N largest tensors alive when the reserved prompt graph holds the most
++    // activation memory (diagnostic only; liveness is estimated from the node order, views are charged to
++    // the tensor they view, in-place reuse and the allocator's block rounding are not modelled).
++    if (const char * e = getenv("LLAMA_RESERVE_TOP")) {
++        const int top_n = atoi(e);
++        ggml_cgraph * gf = top_n > 0 ? get_gf_res_reserve()->get_gf() : nullptr;
++        if (gf) {
++            const int n = ggml_graph_n_nodes(gf);
++            std::unordered_map<const ggml_tensor *, int> last_use;
++            const auto root = [](const ggml_tensor * t) {
++                while (t->view_src) { t = t->view_src; }
++                return t;
++            };
++            for (int i = 0; i < n; ++i) {
++                const ggml_tensor * node = ggml_graph_node(gf, i);
++                for (int j = 0; j < GGML_MAX_SRC; ++j) {
++                    if (node->src[j]) { last_use[root(node->src[j])] = i; }
++                }
++            }
++            struct item { const ggml_tensor * t; int birth; int death; size_t size; };
++            std::vector<item> items;
++            for (int i = 0; i < n; ++i) {
++                const ggml_tensor * node = ggml_graph_node(gf, i);
++                if (node->view_src || node->op == GGML_OP_NONE) {
++                    continue;
++                }
++                const auto it = last_use.find(node);
++                items.push_back({ node, i, it == last_use.end() ? n : it->second, ggml_nbytes(node) });
++            }
++            // sweep: bytes alive after each node (a tensor is alive from its node to its last reader, inclusive)
++            std::vector<int64_t> delta(n + 2, 0);
++            for (const auto & it : items) {
++                delta[it.birth] += (int64_t) it.size;
++                delta[std::min(it.death, n) + 1] -= (int64_t) it.size;
++            }
++            int64_t cur = 0, peak = 0;
++            int peak_at = 0;
++            for (int i = 0; i < n; ++i) {
++                cur += delta[i];
++                if (cur > peak) { peak = cur; peak_at = i; }
++            }
++            std::vector<item> alive;
++            for (const auto & it : items) {
++                if (it.birth <= peak_at && peak_at <= it.death) { alive.push_back(it); }
++            }
++            std::sort(alive.begin(), alive.end(), [](const item & a, const item & b) { return a.size > b.size; });
++            LLAMA_LOG_INFO("%s: LLAMA_RESERVE_TOP: %d nodes, estimated peak %.2f MiB at node %d (%s), %zu tensors alive\n",
++                    __func__, n, peak / 1024.0 / 1024.0, peak_at, ggml_op_name(ggml_graph_node(gf, peak_at)->op), alive.size());
++            for (int i = 0; i < top_n && i < (int) alive.size(); ++i) {
++                const ggml_tensor * t = alive[i].t;
++                LLAMA_LOG_INFO("%s:   %8.2f MiB  %-14s %-32s [%" PRId64 ", %" PRId64 ", %" PRId64 ", %" PRId64 "] %s, node %d..%d\n",
++                        __func__, alive[i].size / 1024.0 / 1024.0, ggml_op_name(t->op), t->name,
++                        t->ne[0], t->ne[1], t->ne[2], t->ne[3], ggml_type_name(t->type), alive[i].birth, alive[i].death);
++            }
++        }
++    }
++
+     const int64_t t_end_us = ggml_time_us();
+ 
+     LLAMA_LOG_INFO("%s: reserve took %.2f ms, sched copies = %d\n",

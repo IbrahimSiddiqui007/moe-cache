@@ -28,3 +28,8 @@ So freed VRAM in decode has **no consumer** today. Freeing the block buffer (R2-
 1. Run T2 (the 2 x 2 test: `-ub` 1024/2048 x `--n-cpu-moe` 37/41) before building anything. If `-ub 1024` with 41 CPU layers also reaches the 2048 prompt speed, the gain was the emptier card, not the chunk size, and A-C are moot.
 2. If the chunk size does matter, build D first (launcher, no patch), then C behind a switch. B and A are only useful as C's prerequisites.
 3. Not built in this round: nothing in R2 section 3 is small. The 20-line diagnostic R2-05 (minimum free VRAM and median versus worst block time in one end-of-prompt line) would make the next sweep readable and is the cheapest next code change.
+
+## Update 2026-11-01 (prompt-memory session)
+- The compute buffer is mostly logits, not activations: on LLaDA at `-ub 2048` the logits matrix is 1228 MiB of 1492 MiB (patch 0040 prints it; Flash-Next would be about 1.9 GiB of 3 GiB by arithmetic). Patch 0042 (`LLAMA_N_OUTPUTS_MAX`) shrinks it with no weight movement; this is a cheaper consumer-free gain than options A-C above and should be tried first.
+- The output head is 417 MiB on Flash-Next (half a layer); `tools/head_lend_math.py` gives the arithmetic. Lending it is not built (patches/llama.cpp/README.md, section U09).
+- P19 scratch sharing is built as 0041 (prototype, off); on LLaDA it saves 0 MiB.
