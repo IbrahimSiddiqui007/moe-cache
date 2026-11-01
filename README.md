@@ -108,6 +108,7 @@ Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html)
 | [Configuration](docs/CONFIGURATION.md) | environment variables |
 | [FAQ](docs/FAQ.md) | questions, and how moe-cache compares with other projects |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | wrong-looking answers, slow runs, start problems |
+| [Coding standards](docs/CODING_STANDARDS.md) | rules for anyone building or testing moe-cache |
 | [Compatibility](docs/COMPATIBILITY.md), [Roadmap](docs/ROADMAP.md), [Security and privacy](docs/SECURITY.md) | |
 
 ## Support
