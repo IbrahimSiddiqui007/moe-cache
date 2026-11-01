@@ -458,6 +458,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
     }
     const size_t per_chunk = n_chunk > 1 ? (pack_used.size() + n_chunk - 1) / n_chunk : pack_used.size();
+    if (n_chunk > 1) {
+        n_chunk = (pack_used.size() + per_chunk - 1) / per_chunk;      // no empty tail part: 100 experts in 16 parts of 7 leave parts 15 with lo=105 > hi=100, (hi - lo) wraps
+    }
     std::unordered_set<const ggml_tensor *> pack_weights;
     if (pack_ids) {
         for (ggml_tensor * n : seg) {
