@@ -1,0 +1,276 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h b/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h
+index 219c477c6..3f37d9645 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-push-constants.h
+@@ -694,6 +694,19 @@ struct vk_op_lightning_indexer_push_constants {
+ 
+ static_assert(sizeof(vk_op_lightning_indexer_push_constants) <= 128);
+ 
++struct vk_op_top_k_mask_push_constants {
++    uint32_t n_kv;
++    uint32_t ne1, ne2;
++    uint32_t mne1, mne2, mne3;
++    uint32_t mnb1, mnb2, mnb3;
++    uint32_t n_top, n_blk, n_pick, n_extra;
++    uint32_t flags;
++    uint32_t tnb0, tnb1, tnb2, tnb3;
++    uint32_t snb0, snb1, snb2, snb3;
++    uint32_t bnb0, bnb1;
++    uint32_t enb0, enb1, enb2, enb3;
++};
++
+ struct vk_op_gated_delta_net_push_constants {
+     uint32_t H;
+     uint32_t n_tokens;
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-types.h b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+index a1505555a..aeb4d14c4 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-types.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+@@ -967,6 +967,7 @@ struct vk_device_struct {
+     vk_pipeline pipeline_lightning_indexer_f32[GGML_TYPE_COUNT];
+     // [size_idx][kda] where size_idx: 0=d16, 1=d32, 2=d64, 3=d128
+     vk_pipeline pipeline_gated_delta_net[4][2];
++    vk_pipeline pipeline_top_k_mask[2];   // GGML_VK_TOP_K_MASK=1: f16, f32 mask
+     vk_pipeline pipeline_ssm_scan_f32_d128;
+     vk_pipeline pipeline_ssm_scan_f32_d256;
+     vk_pipeline pipeline_ssm_conv_f32;
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c0943689f..2c817eb71 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3748,6 +3748,9 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         }
+     }
+ 
++    ggml_vk_create_pipeline(device, device->pipeline_top_k_mask[0], "top_k_mask_f16", top_k_mask_f16_len, top_k_mask_f16_data, "main", 6, sizeof(vk_op_top_k_mask_push_constants), {1, 1, 1}, {}, 1);
++    ggml_vk_create_pipeline(device, device->pipeline_top_k_mask[1], "top_k_mask_f32", top_k_mask_f32_len, top_k_mask_f32_data, "main", 6, sizeof(vk_op_top_k_mask_push_constants), {1, 1, 1}, {}, 1);
++
+     if (device->subgroup_arithmetic && device->subgroup_require_full_support) {
+         ggml_vk_create_pipeline(device, device->pipeline_ssm_scan_f32_d128, "ssm_scan_128_f32", ssm_scan_subgroup_f32_len, ssm_scan_subgroup_f32_data, "main", 8, sizeof(vk_op_ssm_scan_push_constants), {1, 1, 1}, {128, device->subgroup_size}, 1, true, true);
+         ggml_vk_create_pipeline(device, device->pipeline_ssm_scan_f32_d256, "ssm_scan_256_f32", ssm_scan_subgroup_f32_len, ssm_scan_subgroup_f32_data, "main", 8, sizeof(vk_op_ssm_scan_push_constants), {1, 1, 1}, {256, device->subgroup_size}, 1, true, true);
+@@ -9301,6 +9304,11 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const
+             return ctx->device->pipeline_lightning_indexer_f32[src1->type];
+         }
+         return nullptr;
++    case GGML_OP_TOP_K_MASK:
++        if (src0->type == GGML_TYPE_F16 || src0->type == GGML_TYPE_F32) {
++            return ctx->device->pipeline_top_k_mask[src0->type == GGML_TYPE_F32 ? 1 : 0];
++        }
++        return nullptr;
+     case GGML_OP_GATED_DELTA_NET:
+         if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+             const uint32_t S_v = dst->src[2]->ne[0];
+@@ -10373,6 +10381,56 @@ void ggml_vk_lightning_indexer(ggml_backend_vk_context * ctx, vk_context& subctx
+         pc, {n_tiles_kv, n_tiles_t, n_streams});
+ }
+ 
++// GGML_OP_TOP_K_MASK: one workgroup per row of dst (GGML_VK_TOP_K_MASK=1)
++void ggml_vk_top_k_mask(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst) {
++    const ggml_tensor * mask   = dst->src[0];
++    const ggml_tensor * top_k  = dst->src[1];
++    const ggml_tensor * score  = dst->src[2];
++    const ggml_tensor * blocks = dst->src[3];
++    const ggml_tensor * extra  = dst->src[4];
++
++    GGML_ASSERT(dst->buffer != nullptr);
++
++    vk_pipeline pipeline = ggml_vk_op_get_pipeline(ctx, mask, top_k, score, dst, dst->op);
++    GGML_ASSERT(pipeline != nullptr);
++    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
++
++    const uint32_t ts = (uint32_t) ggml_type_size(mask->type);
++    const uint32_t n_rows = (uint32_t) ggml_nrows(dst);
++
++    vk_op_top_k_mask_push_constants pc = {};
++    pc.n_kv = (uint32_t) mask->ne[0];
++    pc.ne1 = (uint32_t) dst->ne[1];
++    pc.ne2 = (uint32_t) dst->ne[2];
++    pc.mne1 = (uint32_t) mask->ne[1]; pc.mne2 = (uint32_t) mask->ne[2]; pc.mne3 = (uint32_t) mask->ne[3];
++    pc.mnb1 = (uint32_t) (mask->nb[1] / ts); pc.mnb2 = (uint32_t) (mask->nb[2] / ts); pc.mnb3 = (uint32_t) (mask->nb[3] / ts);
++    pc.n_top = (uint32_t) top_k->ne[0];
++    pc.n_blk = blocks ? (uint32_t) blocks->ne[0] : 1;
++    pc.n_pick = blocks ? (uint32_t) blocks->ne[1] : score ? (uint32_t) score->ne[0] : pc.n_kv;
++    pc.n_extra = extra ? (uint32_t) extra->ne[0] : 0;
++    pc.flags = (score ? 1u : 0u) | (blocks ? 2u : 0u) | (extra ? 4u : 0u);
++    pc.tnb0 = (uint32_t) (top_k->nb[0] / 4); pc.tnb1 = (uint32_t) (top_k->nb[1] / 4); pc.tnb2 = (uint32_t) (top_k->nb[2] / 4); pc.tnb3 = (uint32_t) (top_k->nb[3] / 4);
++    if (score) {
++        pc.snb0 = (uint32_t) (score->nb[0] / 4); pc.snb1 = (uint32_t) (score->nb[1] / 4); pc.snb2 = (uint32_t) (score->nb[2] / 4); pc.snb3 = (uint32_t) (score->nb[3] / 4);
++    }
++    if (blocks) {
++        pc.bnb0 = (uint32_t) (blocks->nb[0] / 4); pc.bnb1 = (uint32_t) (blocks->nb[1] / 4);
++    }
++    if (extra) {
++        pc.enb0 = (uint32_t) (extra->nb[0] / 4); pc.enb1 = (uint32_t) (extra->nb[1] / 4); pc.enb2 = (uint32_t) (extra->nb[2] / 4); pc.enb3 = (uint32_t) (extra->nb[3] / 4);
++    }
++
++    vk_subbuffer m_buf = ggml_vk_tensor_subbuffer(ctx, mask);
++    vk_subbuffer opt[3] = { m_buf, m_buf, m_buf };     // absent inputs are bound to the mask, the shader does not read them
++    if (score)  { opt[0] = ggml_vk_tensor_subbuffer(ctx, score); }
++    if (blocks) { opt[1] = ggml_vk_tensor_subbuffer(ctx, blocks); }
++    if (extra)  { opt[2] = ggml_vk_tensor_subbuffer(ctx, extra); }
++
++    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline,
++        { m_buf, ggml_vk_tensor_subbuffer(ctx, top_k), opt[0], opt[1], opt[2], ggml_vk_tensor_subbuffer(ctx, dst) },
++        pc, { n_rows, 1, 1 });
++}
++
+ void ggml_vk_gated_delta_net(ggml_backend_vk_context * ctx, vk_context& subctx, ggml_tensor * dst) {
+     const ggml_tensor * src_q     = dst->src[0];
+     const ggml_tensor * src_v     = dst->src[2];
+@@ -12881,6 +12939,11 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
+ 
+         break;
+ 
++    case GGML_OP_TOP_K_MASK:
++        ggml_vk_top_k_mask(ctx, compute_ctx, node);
++
++        break;
++
+     case GGML_OP_GATED_DELTA_NET:
+         ggml_vk_gated_delta_net(ctx, compute_ctx, node);
+ 
+@@ -16070,6 +16133,35 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
+                 }
+                 return true;
+             }
++        case GGML_OP_TOP_K_MASK:
++            {
++                // GGML_VK_TOP_K_MASK=1 (default off): without it llama.cpp builds the mask with the unfused graph
++                static const bool top_k_mask_on = getenv("GGML_VK_TOP_K_MASK") && atoi(getenv("GGML_VK_TOP_K_MASK")) > 0;
++                if (!top_k_mask_on) {
++                    return false;
++                }
++                const ggml_tensor * mask = op->src[0];
++                if ((mask->type != GGML_TYPE_F16 && mask->type != GGML_TYPE_F32) || op->type != mask->type || ggml_nrows(op) > 65535) {
++                    return false;
++                }
++                const size_t ts = ggml_type_size(mask->type);
++                for (int i = 0; i < 5; i++) {
++                    const ggml_tensor * t = op->src[i];
++                    if (t == nullptr) {
++                        continue;
++                    }
++                    const size_t es = i == 0 ? ts : 4;
++                    if (t->nb[0] != es || (vk_tensor_offset(t) + t->view_offs) % device->properties.limits.minStorageBufferOffsetAlignment != 0) {
++                        return false;
++                    }
++                    for (int d = 1; d < GGML_MAX_DIMS; ++d) {
++                        if (t->nb[d] % es != 0) {
++                            return false;
++                        }
++                    }
++                }
++                return (vk_tensor_offset(op) + op->view_offs) % device->properties.limits.minStorageBufferOffsetAlignment == 0;
++            }
+         case GGML_OP_GATED_DELTA_NET:
+             {
+                 const uint32_t S_v = op->src[2]->ne[0];
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/top_k_mask.comp b/ggml/src/ggml-vulkan/vulkan-shaders/top_k_mask.comp
+new file mode 100644
+index 000000000..77d5fbd1e
+--- /dev/null
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/top_k_mask.comp
+@@ -0,0 +1,89 @@
++#version 450
++
++#extension GL_EXT_control_flow_attributes : require
++#ifdef IS_F16
++#extension GL_EXT_shader_16bit_storage : require
++#endif
++
++#define BLOCK_SIZE 256
++
++layout(local_size_x = BLOCK_SIZE, local_size_y = 1, local_size_z = 1) in;
++
++// all strides are in elements of the tensor's own type
++layout(push_constant) uniform parameter
++{
++    uint n_kv;
++    uint ne1, ne2;
++    uint mne1, mne2, mne3;          // mask extents (broadcast over the rows of dst)
++    uint mnb1, mnb2, mnb3;
++    uint n_top;
++    uint n_blk;
++    uint n_pick;
++    uint n_extra;
++    uint flags;                     // 1: score, 2: blocks, 4: extra
++    uint tnb0, tnb1, tnb2, tnb3;    // top_k
++    uint snb0, snb1, snb2, snb3;    // score
++    uint bnb0, bnb1;                // blocks
++    uint enb0, enb1, enb2, enb3;    // extra
++} p;
++
++layout (binding = 0) readonly  buffer M {M_TYPE data_m[];};
++layout (binding = 1) readonly  buffer T {int    data_t[];};
++layout (binding = 2) readonly  buffer S {float  data_s[];};
++layout (binding = 3) readonly  buffer B {int    data_b[];};
++layout (binding = 4) readonly  buffer E {int    data_e[];};
++layout (binding = 5) coherent writeonly buffer D {M_TYPE data_d[];};
++
++// dst row = mask row where a cell is picked, -inf elsewhere (GGML_OP_TOP_K_MASK, same as ggml_compute_forward_top_k_mask)
++void main() {
++    const uint tid = gl_LocalInvocationID.x;
++    const uint ir = gl_WorkGroupID.x;
++    const uint i1 = ir % p.ne1;
++    const uint i2 = (ir / p.ne1) % p.ne2;
++    const uint i3 = ir / (p.ne1 * p.ne2);
++
++    const uint m_row = (i1 % p.mne1) * p.mnb1 + (i2 % p.mne2) * p.mnb2 + (i3 % p.mne3) * p.mnb3;
++    const uint d_row = ir * p.n_kv;
++
++    for (uint c = tid; c < p.n_kv; c += BLOCK_SIZE) {
++        data_d[d_row + c] = NEG_INF;
++    }
++    // every -inf is written before any kept cell
++    memoryBarrierBuffer();
++    barrier();
++
++    const uint t_row = i1 * p.tnb1 + i2 * p.tnb2 + i3 * p.tnb3;
++    const bool has_score  = (p.flags & 1u) != 0u;
++    const bool has_blocks = (p.flags & 2u) != 0u;
++    const bool has_extra  = (p.flags & 4u) != 0u;
++
++    const uint total = p.n_top * p.n_blk;
++    for (uint idx = tid; idx < total; idx += BLOCK_SIZE) {
++        const uint j = idx / p.n_blk;
++        const uint k = idx - j * p.n_blk;
++        const int pick = data_t[t_row + j * p.tnb0];
++        if (pick < 0 || uint(pick) >= p.n_pick) {
++            continue;
++        }
++        if (has_score) {
++            const float s = data_s[uint(pick) * p.snb0 + i1 * p.snb1 + i2 * p.snb2 + i3 * p.snb3];
++            if (!(s > uintBitsToFloat(0xFF800000u))) {
++                continue;
++            }
++        }
++        const int c = has_blocks ? data_b[k * p.bnb0 + uint(pick) * p.bnb1] : pick;
++        if (c >= 0 && uint(c) < p.n_kv) {
++            data_d[d_row + uint(c)] = data_m[m_row + uint(c)];
++        }
++    }
++
++    if (has_extra) {
++        const uint e_row = i1 * p.enb1 + i2 * p.enb2 + i3 * p.enb3;
++        for (uint j = tid; j < p.n_extra; j += BLOCK_SIZE) {
++            const int c = data_e[e_row + j * p.enb0];
++            if (c >= 0 && uint(c) < p.n_kv) {
++                data_d[d_row + uint(c)] = data_m[m_row + uint(c)];
++            }
++        }
++    }
++}
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index 3af09fb48..027e000d6 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -1158,6 +1158,9 @@ void process_shaders() {
+     std::map<std::string, std::string> li_dict = {{"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV4", "vec4"}, {"DATA_A_IQ4_NL", "1"}};
+     string_to_spv("lightning_indexer_f32", "lightning_indexer.comp", li_dict);
+ 
++    string_to_spv("top_k_mask_f16", "top_k_mask.comp", merge_maps(base_dict, {{"M_TYPE", "uint16_t"}, {"IS_F16", "1"}, {"NEG_INF", "uint16_t(0xFC00u)"}}));
++    string_to_spv("top_k_mask_f32", "top_k_mask.comp", merge_maps(base_dict, {{"M_TYPE", "float"}, {"NEG_INF", "uintBitsToFloat(0xFF800000u)"}}));
++
+     string_to_spv("rwkv_wkv7_f32", "wkv7.comp", merge_maps(base_dict, {{"A_TYPE", "float"}}));
+ 
+     string_to_spv("gated_delta_net_f32", "gated_delta_net.comp", merge_maps(base_dict, {{"FLOAT_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}, {"USE_SUBGROUP_CLUSTERED", "1"}}));

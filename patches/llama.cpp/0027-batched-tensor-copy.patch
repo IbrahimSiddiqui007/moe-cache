@@ -1,0 +1,2376 @@
+diff --git a/ggml/include/ggml-backend.h b/ggml/include/ggml-backend.h
+index 7a65d8121..735ed2c2b 100644
+--- a/ggml/include/ggml-backend.h
++++ b/ggml/include/ggml-backend.h
+@@ -70,7 +70,8 @@ extern "C" {
+     GGML_API void                           ggml_backend_buffer_reset         (ggml_backend_buffer_t buffer);
+ 
+     // tensor copy between different backends
+-    GGML_API void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor * dst);
++    GGML_API void ggml_backend_tensor_copy  (const struct ggml_tensor * src, struct ggml_tensor * dst);
++    GGML_API void ggml_backend_tensor_copy_n(const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors);
+ 
+     //
+     // Backend (stream)
+@@ -95,6 +96,8 @@ extern "C" {
+     GGML_API void ggml_backend_tensor_get   (const struct ggml_tensor * tensor,       void * data, size_t offset, size_t size);
+     GGML_API void ggml_backend_tensor_set_2d(      struct ggml_tensor * tensor, const void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
+     GGML_API void ggml_backend_tensor_get_2d(const struct ggml_tensor * tensor,       void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
++    GGML_API void ggml_backend_tensor_set_n (      struct ggml_tensor * const * tensors, const void * data, const size_t * offsets, const size_t * sizes, const size_t * data_offsets, size_t n_tensors);
++    GGML_API void ggml_backend_tensor_get_n (const struct ggml_tensor * const * tensors,       void * data, const size_t * offsets, const size_t * sizes, const size_t * data_offsets, size_t n_tensors);
+     GGML_API void ggml_backend_tensor_memset(      struct ggml_tensor * tensor,     uint8_t value, size_t offset, size_t size);
+ 
+     GGML_API void ggml_backend_synchronize(ggml_backend_t backend);
+diff --git a/ggml/src/ggml-backend-impl.h b/ggml/src/ggml-backend-impl.h
+index dc7367dec..545880b06 100644
+--- a/ggml/src/ggml-backend-impl.h
++++ b/ggml/src/ggml-backend-impl.h
+@@ -47,6 +47,9 @@ extern "C" {
+     // Backend buffer
+     //
+ 
++    // TODO: remove `set_tensor`, `get_tensor`, `set_tensor_2d`, `get_tensor_2d` and `cpy_tensor` from the buffer interface
++    //       they are superseded by the `set_tensor_n`, `get_tensor_n`, `cpy_tensor_n` interface
++    //       ref: https://github.com/ggml-org/llama.cpp/pull/30881#discussion_r4400299490
+     struct ggml_backend_buffer_i {
+         // (optional) free the buffer
+         void         (*free_buffer)  (ggml_backend_buffer_t buffer);
+@@ -68,6 +71,11 @@ extern "C" {
+         void         (*clear)        (ggml_backend_buffer_t buffer, uint8_t value);
+         // (optional) reset any internal state due to tensor initialization, such as tensor extras
+         void         (*reset)        (ggml_backend_buffer_t buffer);
++        // (optional) batched tensor data copies
++        void         (*set_tensor_n) (ggml_backend_buffer_t buffer,       struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors);
++        void         (*get_tensor_n) (ggml_backend_buffer_t buffer, const struct ggml_tensor * const * tensors,       void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors);
++        // (optional) batched tensor copies: returns true if all copies were performed, false if unsupported and no copies were performed
++        bool         (*cpy_tensor_n) (ggml_backend_buffer_t buffer, const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors);
+     };
+ 
+     struct ggml_backend_buffer {
+diff --git a/ggml/src/ggml-backend-meta.cpp b/ggml/src/ggml-backend-meta.cpp
+index fb35be352..2641e1f3a 100644
+--- a/ggml/src/ggml-backend-meta.cpp
++++ b/ggml/src/ggml-backend-meta.cpp
+@@ -1699,6 +1699,9 @@ static const ggml_backend_buffer_i ggml_backend_meta_buffer_iface = {
+     /* .cpy_tensor      = */ nullptr,
+     /* .clear           = */ ggml_backend_meta_buffer_clear,
+     /* .reset           = */ ggml_backend_meta_buffer_reset,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ bool ggml_backend_buffer_is_meta(ggml_backend_buffer_t buf) {
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 22e5fd9c7..a3905336f 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -402,6 +402,62 @@ size_t ggml_backend_get_max_size(ggml_backend_t backend) {
+     return ggml_backend_buft_get_max_size(ggml_backend_get_default_buffer_type(backend));
+ }
+ 
++template <typename cb_get_buffer>
++static void ggml_backend_tensor_buft_groups(size_t n_tensors, cb_get_buffer && get_buffer, std::vector<std::vector<size_t>> & groups) {
++    std::unordered_map<ggml_backend_buffer_type_t, size_t> buft_idx;
++    groups.clear();
++    for (size_t i = 0; i < n_tensors; i++) {
++        ggml_backend_buffer_t buf = get_buffer(i);
++        auto it = buft_idx.find(buf->buft);
++        if (it == buft_idx.end()) {
++            buft_idx[buf->buft] = groups.size();
++            groups.emplace_back();
++        }
++        groups[buft_idx[buf->buft]].push_back(i);
++    }
++}
++
++static bool ggml_backend_tensor_batch_is_2d(
++        const struct ggml_tensor * const * tensors,
++        const size_t * offsets,
++        const size_t * sizes,
++        const size_t * data_offsets,
++        size_t n_tensors,
++        size_t * base_offset,
++        size_t * size,
++        size_t * stride_tensor,
++        size_t * stride_data) {
++    if (n_tensors <= 1) {
++        return false;
++    }
++
++    const struct ggml_tensor * tensor = tensors[0];
++    const size_t size0 = sizes[0];
++
++    if (size0 == 0 || offsets[1] < offsets[0] || data_offsets[1] < data_offsets[0]) {
++        return false;
++    }
++
++    const size_t stride_tensor0 = offsets[1] - offsets[0];
++    const size_t stride_data0   = data_offsets[1] - data_offsets[0];
++
++    for (size_t i = 1; i < n_tensors; i++) {
++        if (tensors[i] != tensor || sizes[i] != size0) {
++            return false;
++        }
++        if (offsets[i] != offsets[0] + i*stride_tensor0 || data_offsets[i] != data_offsets[0] + i*stride_data0) {
++            return false;
++        }
++    }
++
++    *base_offset   = offsets[0];
++    *size          = size0;
++    *stride_tensor = stride_tensor0;
++    *stride_data   = stride_data0;
++
++    return true;
++}
++
+ void ggml_backend_tensor_set_async(ggml_backend_t backend, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
+     GGML_ASSERT(backend);
+     GGML_ASSERT(tensor);
+@@ -546,6 +602,175 @@ void ggml_backend_tensor_get_2d(const struct ggml_tensor * tensor, void * data,
+     buf->iface.get_tensor_2d(buf, tensor, data, offset, size, n_copies, stride_tensor, stride_data);
+ }
+ 
++// GGML_BACKEND_BATCHED_COPY=1 (default off): the _n functions below use the backends' batched copy; unset, each tensor is copied by its own call, in the
++// same order, as before llama.cpp #30881 / #31418 (this switch is the only difference to those PRs)
++static bool ggml_backend_batched_copy_enabled() {
++    static const bool on = getenv("GGML_BACKEND_BATCHED_COPY") && atoi(getenv("GGML_BACKEND_BATCHED_COPY")) > 0;
++    return on;
++}
++
++void ggml_backend_tensor_set_n(struct ggml_tensor * const * tensors, const void * data,
++        const size_t * offsets, const size_t * sizes, const size_t * data_offsets, size_t n_tensors) {
++    if (n_tensors == 0) {
++        return;
++    }
++
++    if (!ggml_backend_batched_copy_enabled()) {
++        for (size_t i = 0; i < n_tensors; i++) {
++            ggml_backend_tensor_set(tensors[i], (const char *) data + data_offsets[i], offsets[i], sizes[i]);
++        }
++        return;
++    }
++
++    std::vector<const void *> data_ptrs(n_tensors);
++    for (size_t i = 0; i < n_tensors; i++) {
++        data_ptrs[i] = (const char *) data + data_offsets[i];
++    }
++
++    ggml_backend_buffer_t buf = NULL;
++    bool same_buft = true;
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        GGML_ASSERT(tensors[i] != NULL);
++        ggml_backend_buffer_t tensor_buf = tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
++        GGML_ASSERT(tensor_buf != NULL && "tensor buffer not set");
++        GGML_ASSERT(tensors[i]->data != NULL && "tensor not allocated");
++        GGML_ASSERT(offsets[i] + sizes[i] <= ggml_nbytes(tensors[i]) && "tensor write out of bounds");
++
++        if (buf == NULL) {
++            buf = tensor_buf;
++        } else if (buf->buft != tensor_buf->buft) {
++            same_buft = false;
++        }
++    }
++
++    if (same_buft && buf->iface.set_tensor_n != NULL) {
++        buf->iface.set_tensor_n(buf, tensors, data_ptrs.data(), offsets, sizes, n_tensors);
++        return;
++    }
++
++    if (!same_buft) {
++        std::vector<std::vector<size_t>> groups;
++        ggml_backend_tensor_buft_groups(n_tensors, [&](size_t i) {
++            return tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
++        }, groups);
++
++        for (size_t g = 0; g < groups.size(); g++) {
++            std::vector<ggml_tensor *> g_tensors;
++            std::vector<size_t> g_offsets;
++            std::vector<size_t> g_sizes;
++            std::vector<size_t> g_data_offsets;
++            g_tensors.reserve(groups[g].size());
++            g_offsets.reserve(groups[g].size());
++            g_sizes.reserve(groups[g].size());
++            g_data_offsets.reserve(groups[g].size());
++
++            for (size_t i : groups[g]) {
++                g_tensors.push_back(tensors[i]);
++                g_offsets.push_back(offsets[i]);
++                g_sizes.push_back(sizes[i]);
++                g_data_offsets.push_back(data_offsets[i]);
++            }
++
++            ggml_backend_tensor_set_n(g_tensors.data(), data, g_offsets.data(), g_sizes.data(), g_data_offsets.data(), g_tensors.size());
++        }
++        return;
++    }
++
++    size_t base_offset = 0, size = 0, stride_tensor = 0, stride_data = 0;
++    if (ggml_backend_tensor_batch_is_2d(tensors, offsets, sizes, data_offsets, n_tensors,
++                &base_offset, &size, &stride_tensor, &stride_data)) {
++        ggml_backend_tensor_set_2d(tensors[0], data_ptrs[0], base_offset, size,
++                n_tensors, stride_tensor, stride_data);
++        return;
++    }
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        ggml_backend_tensor_set(tensors[i], data_ptrs[i], offsets[i], sizes[i]);
++    }
++}
++
++void ggml_backend_tensor_get_n(const struct ggml_tensor * const * tensors, void * data,
++        const size_t * offsets, const size_t * sizes, const size_t * data_offsets, size_t n_tensors) {
++    if (n_tensors == 0) {
++        return;
++    }
++
++    if (!ggml_backend_batched_copy_enabled()) {
++        for (size_t i = 0; i < n_tensors; i++) {
++            ggml_backend_tensor_get(tensors[i], (char *) data + data_offsets[i], offsets[i], sizes[i]);
++        }
++        return;
++    }
++
++    std::vector<void *> data_ptrs(n_tensors);
++    for (size_t i = 0; i < n_tensors; i++) {
++        data_ptrs[i] = (char *) data + data_offsets[i];
++    }
++
++    ggml_backend_buffer_t buf = NULL;
++    bool same_buft = true;
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        GGML_ASSERT(tensors[i] != NULL);
++        ggml_backend_buffer_t tensor_buf = tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
++        GGML_ASSERT(tensor_buf != NULL && "tensor buffer not set");
++        GGML_ASSERT(tensors[i]->data != NULL && "tensor not allocated");
++        GGML_ASSERT(offsets[i] + sizes[i] <= ggml_nbytes(tensors[i]) && "tensor read out of bounds");
++
++        if (buf == NULL) {
++            buf = tensor_buf;
++        } else if (buf->buft != tensor_buf->buft) {
++            same_buft = false;
++        }
++    }
++
++    if (same_buft && buf->iface.get_tensor_n != NULL) {
++        buf->iface.get_tensor_n(buf, tensors, data_ptrs.data(), offsets, sizes, n_tensors);
++        return;
++    }
++
++    if (!same_buft) {
++        std::vector<std::vector<size_t>> groups;
++        ggml_backend_tensor_buft_groups(n_tensors, [&](size_t i) {
++            return tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
++        }, groups);
++
++        for (size_t g = 0; g < groups.size(); g++) {
++            std::vector<const ggml_tensor *> g_tensors;
++            std::vector<size_t> g_offsets;
++            std::vector<size_t> g_sizes;
++            std::vector<size_t> g_data_offsets;
++            g_tensors.reserve(groups[g].size());
++            g_offsets.reserve(groups[g].size());
++            g_sizes.reserve(groups[g].size());
++            g_data_offsets.reserve(groups[g].size());
++
++            for (size_t i : groups[g]) {
++                g_tensors.push_back(tensors[i]);
++                g_offsets.push_back(offsets[i]);
++                g_sizes.push_back(sizes[i]);
++                g_data_offsets.push_back(data_offsets[i]);
++            }
++
++            ggml_backend_tensor_get_n(g_tensors.data(), data, g_offsets.data(), g_sizes.data(), g_data_offsets.data(), g_tensors.size());
++        }
++        return;
++    }
++
++    size_t base_offset = 0, size = 0, stride_tensor = 0, stride_data = 0;
++    if (ggml_backend_tensor_batch_is_2d(tensors, offsets, sizes, data_offsets, n_tensors,
++                &base_offset, &size, &stride_tensor, &stride_data)) {
++        ggml_backend_tensor_get_2d(tensors[0], data_ptrs[0], base_offset, size,
++                n_tensors, stride_tensor, stride_data);
++        return;
++    }
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        ggml_backend_tensor_get(tensors[i], data_ptrs[i], offsets[i], sizes[i]);
++    }
++}
++
+ void ggml_backend_tensor_memset(struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
+     GGML_ASSERT(tensor);
+     ggml_backend_buffer_t buf = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
+@@ -648,6 +873,66 @@ void ggml_backend_tensor_copy(const struct ggml_tensor * src, struct ggml_tensor
+     }
+ }
+ 
++void ggml_backend_tensor_copy_n(const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors) {
++    if (n_tensors == 0) {
++        return;
++    }
++
++    if (!ggml_backend_batched_copy_enabled()) {
++        for (size_t i = 0; i < n_tensors; ++i) {
++            ggml_backend_tensor_copy(srcs[i], dsts[i]);
++        }
++        return;
++    }
++
++    for (size_t i = 0; i < n_tensors; ++i) {
++        GGML_ASSERT(ggml_are_same_layout(srcs[i], dsts[i]) && "cannot copy tensors with different layouts");
++    }
++
++    ggml_backend_buffer_t buf = dsts[0]->view_src ? dsts[0]->view_src->buffer : dsts[0]->buffer;
++    bool same_buft = true;
++    for (size_t i = 0; i < n_tensors; ++i) {
++        ggml_backend_buffer_t dst_buf = dsts[i]->view_src ? dsts[i]->view_src->buffer : dsts[i]->buffer;
++        if (dst_buf->buft != buf->buft) {
++            same_buft = false;
++            break;
++        }
++    }
++
++    // if cpy_tensor_n returns false, it must not have performed any copies
++    if (same_buft && buf->iface.cpy_tensor_n != NULL) {
++        if (buf->iface.cpy_tensor_n(buf, srcs, dsts, n_tensors)) {
++            return;
++        }
++    }
++
++    if (!same_buft) {
++        std::vector<std::vector<size_t>> groups;
++        ggml_backend_tensor_buft_groups(n_tensors, [&](size_t i) {
++            return dsts[i]->view_src ? dsts[i]->view_src->buffer : dsts[i]->buffer;
++        }, groups);
++
++        for (size_t g = 0; g < groups.size(); g++) {
++            std::vector<const ggml_tensor *> g_srcs;
++            std::vector<ggml_tensor *> g_dsts;
++            g_srcs.reserve(groups[g].size());
++            g_dsts.reserve(groups[g].size());
++
++            for (size_t i : groups[g]) {
++                g_srcs.push_back(srcs[i]);
++                g_dsts.push_back(dsts[i]);
++            }
++
++            ggml_backend_tensor_copy_n(g_srcs.data(), g_dsts.data(), g_srcs.size());
++        }
++        return;
++    }
++
++    for (size_t i = 0; i < n_tensors; ++i) {
++        ggml_backend_tensor_copy(srcs[i], dsts[i]);
++    }
++}
++
+ void ggml_backend_tensor_copy_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const struct ggml_tensor * src, struct ggml_tensor * dst) {
+     GGML_ASSERT(ggml_are_same_layout(src, dst) && "cannot copy tensors with different layouts");
+ 
+@@ -853,6 +1138,9 @@ static const struct ggml_backend_buffer_i ggml_backend_multi_buffer_i = {
+     /* .cpy_tensor      = */ NULL,
+     /* .clear           = */ ggml_backend_multi_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ ggml_backend_buffer_t ggml_backend_multi_buffer_alloc_buffer(ggml_backend_buffer_t * buffers, size_t n_buffers) {
+@@ -2532,6 +2820,9 @@ static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_i = {
+     /* .cpy_tensor      = */ ggml_backend_cpu_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_cpu_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_from_ptr_i = {
+@@ -2546,6 +2837,9 @@ static const struct ggml_backend_buffer_i ggml_backend_cpu_buffer_from_ptr_i = {
+     /* .cpy_tensor      = */ ggml_backend_cpu_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_cpu_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ // CPU backend buffer type
+diff --git a/ggml/src/ggml-cann/ggml-cann.cpp b/ggml/src/ggml-cann/ggml-cann.cpp
+index 2c8154300..016d2320d 100644
+--- a/ggml/src/ggml-cann/ggml-cann.cpp
++++ b/ggml/src/ggml-cann/ggml-cann.cpp
+@@ -1478,6 +1478,9 @@ static const ggml_backend_buffer_i ggml_backend_cann_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_cann_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_cann_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ /**
+diff --git a/ggml/src/ggml-cpu/amx/amx.cpp b/ggml/src/ggml-cpu/amx/amx.cpp
+index e90c2797f..554a2066a 100644
+--- a/ggml/src/ggml-cpu/amx/amx.cpp
++++ b/ggml/src/ggml-cpu/amx/amx.cpp
+@@ -116,6 +116,9 @@ static ggml_backend_buffer_i ggml_backend_amx_buffer_interface = {
+     /* .cpy_tensor      = */ nullptr,
+     /* .clear           = */ ggml_backend_amx_buffer_clear,
+     /* .reset           = */ nullptr,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ static const char * ggml_backend_amx_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
+diff --git a/ggml/src/ggml-cpu/spacemit/ime.cpp b/ggml/src/ggml-cpu/spacemit/ime.cpp
+index 7b8012755..0683ff881 100644
+--- a/ggml/src/ggml-cpu/spacemit/ime.cpp
++++ b/ggml/src/ggml-cpu/spacemit/ime.cpp
+@@ -1489,6 +1489,9 @@ static const ggml_backend_buffer_i ggml_backend_riscv64_spacemit_buffer_i = {
+     /* .cpy_tensor      = */ nullptr,
+     /* .clear           = */ ggml_backend_riscv64_spacemit_buffer_clear,
+     /* .reset           = */ nullptr,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ static const char * ggml_backend_cpu_riscv64_spacemit_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 72e961d5c..fcc050fe4 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -861,6 +861,46 @@ static void ggml_backend_cuda_buffer_get_tensor_2d(ggml_backend_buffer_t buffer,
+     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+ }
+ 
++static void ggml_backend_cuda_buffer_set_tensor_n(ggml_backend_buffer_t buffer, struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
++
++    ggml_cuda_set_device(ctx->device);
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        if (sizes[i] == 0) {
++            continue;
++        }
++        CUDA_CHECK(cudaMemcpyAsync(
++            (char *) tensors[i]->data + offsets[i],
++            data[i],
++            sizes[i],
++            cudaMemcpyHostToDevice,
++            cudaStreamPerThread));
++    }
++
++    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++}
++
++static void ggml_backend_cuda_buffer_get_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * tensors, void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
++
++    ggml_cuda_set_device(ctx->device);
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        if (sizes[i] == 0) {
++            continue;
++        }
++        CUDA_CHECK(cudaMemcpyAsync(
++            data[i],
++            (const char *) tensors[i]->data + offsets[i],
++            sizes[i],
++            cudaMemcpyDeviceToHost,
++            cudaStreamPerThread));
++    }
++
++    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++}
++
+ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
+     if (ggml_backend_buffer_is_cuda(src->buffer)) {
+         ggml_backend_cuda_buffer_context * src_ctx = (ggml_backend_cuda_buffer_context *)src->buffer->context;
+@@ -886,6 +926,54 @@ static bool ggml_backend_cuda_buffer_cpy_tensor(ggml_backend_buffer_t buffer, co
+     GGML_UNUSED(buffer);
+ }
+ 
++static bool ggml_backend_cuda_buffer_cpy_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors) {
++    ggml_backend_cuda_buffer_context * dst_ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        ggml_backend_buffer_t src_buf = srcs[i]->view_src ? srcs[i]->view_src->buffer : srcs[i]->buffer;
++        if (!ggml_backend_buffer_is_cuda(src_buf)) {
++            return false;
++        }
++    }
++
++#ifdef GGML_CUDA_NO_PEER_COPY
++    for (size_t i = 0; i < n_tensors; i++) {
++        ggml_backend_buffer_t src_buf = srcs[i]->view_src ? srcs[i]->view_src->buffer : srcs[i]->buffer;
++        ggml_backend_buffer_t dst_buf = dsts[i]->view_src ? dsts[i]->view_src->buffer : dsts[i]->buffer;
++        ggml_backend_cuda_buffer_context * src_ctx = (ggml_backend_cuda_buffer_context *)src_buf->context;
++        ggml_backend_cuda_buffer_context * dst_ctx_i = (ggml_backend_cuda_buffer_context *)dst_buf->context;
++        const int src_physical = ggml_cuda_get_physical_device(src_ctx->device);
++        const int dst_physical = ggml_cuda_get_physical_device(dst_ctx_i->device);
++        if (src_physical != dst_physical) {
++            return false;
++        }
++    }
++#endif
++
++    ggml_cuda_set_device(dst_ctx->device);
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        ggml_backend_buffer_t src_buf = srcs[i]->view_src ? srcs[i]->view_src->buffer : srcs[i]->buffer;
++        ggml_backend_buffer_t dst_buf = dsts[i]->view_src ? dsts[i]->view_src->buffer : dsts[i]->buffer;
++        ggml_backend_cuda_buffer_context * src_ctx = (ggml_backend_cuda_buffer_context *)src_buf->context;
++        ggml_backend_cuda_buffer_context * dst_ctx_i = (ggml_backend_cuda_buffer_context *)dst_buf->context;
++        const int src_physical = ggml_cuda_get_physical_device(src_ctx->device);
++        const int dst_physical = ggml_cuda_get_physical_device(dst_ctx_i->device);
++        if (src_physical == dst_physical) {
++            CUDA_CHECK(cudaMemcpyAsync(dsts[i]->data, srcs[i]->data, ggml_nbytes(srcs[i]), cudaMemcpyDeviceToDevice, cudaStreamPerThread));
++        } else {
++#ifdef GGML_CUDA_NO_PEER_COPY
++            GGML_ABORT("peer copy not supported");
++#else
++            CUDA_CHECK(cudaMemcpyPeerAsync(dsts[i]->data, dst_physical, srcs[i]->data, src_physical, ggml_nbytes(srcs[i]), cudaStreamPerThread));
++#endif
++        }
++    }
++
++    CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
++    return true;
++}
++
+ static void ggml_backend_cuda_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *)buffer->context;
+ 
+@@ -906,6 +994,9 @@ static const ggml_backend_buffer_i ggml_backend_cuda_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_cuda_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_cuda_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ ggml_backend_cuda_buffer_set_tensor_n,
++    /* .get_tensor_n    = */ ggml_backend_cuda_buffer_get_tensor_n,
++    /* .cpy_tensor_n    = */ ggml_backend_cuda_buffer_cpy_tensor_n,
+ };
+ 
+ // cuda buffer type
+diff --git a/ggml/src/ggml-et/ggml-et.cpp b/ggml/src/ggml-et/ggml-et.cpp
+index 54a6d166d..35a9afabf 100644
+--- a/ggml/src/ggml-et/ggml-et.cpp
++++ b/ggml/src/ggml-et/ggml-et.cpp
+@@ -373,6 +373,9 @@ static const struct ggml_backend_buffer_i ggml_backend_et_buffer_i = {
+     /* .cpy_tensor      = */ ggml_backend_et_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_et_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ static const char * ggml_backend_et_buffer_type_get_name(ggml_backend_buffer_type_t buft) {
+diff --git a/ggml/src/ggml-hexagon/ggml-hexagon.cpp b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+index cf2e37aa6..6cbc475a0 100644
+--- a/ggml/src/ggml-hexagon/ggml-hexagon.cpp
++++ b/ggml/src/ggml-hexagon/ggml-hexagon.cpp
+@@ -843,6 +843,9 @@ static ggml_backend_buffer_i ggml_backend_hexagon_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_hexagon_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_hexagon_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ // ** backend buffer type
+@@ -877,6 +880,9 @@ static ggml_backend_buffer_i ggml_backend_hexagon_host_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_hexagon_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_hexagon_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ // ** backend buffer type
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.h b/ggml/src/ggml-metal/ggml-metal-device.h
+index dd7cdb958..1858e7fc5 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.h
++++ b/ggml/src/ggml-metal/ggml-metal-device.h
+@@ -362,7 +362,10 @@ bool   ggml_metal_buffer_is_shared(ggml_metal_buffer_t buf);
+ void   ggml_metal_buffer_memset_tensor(ggml_metal_buffer_t buf, struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size);
+ void   ggml_metal_buffer_set_tensor   (ggml_metal_buffer_t buf, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size);
+ void   ggml_metal_buffer_get_tensor   (ggml_metal_buffer_t buf, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size);
++void   ggml_metal_buffer_set_tensor_n (ggml_metal_buffer_t buf, struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors);
++void   ggml_metal_buffer_get_tensor_n (ggml_metal_buffer_t buf, const struct ggml_tensor * const * tensors,       void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors);
+ bool   ggml_metal_buffer_cpy_tensor   (ggml_metal_buffer_t buf, const struct ggml_tensor * src, struct ggml_tensor * dst);
++bool   ggml_metal_buffer_cpy_tensor_n (ggml_metal_buffer_t buf, const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors);
+ void   ggml_metal_buffer_clear        (ggml_metal_buffer_t buf, uint8_t value);
+ 
+ // finds the Metal buffer that contains the tensor data on the GPU device
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.m b/ggml/src/ggml-metal/ggml-metal-device.m
+index 451f65299..ffcd14dde 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.m
++++ b/ggml/src/ggml-metal/ggml-metal-device.m
+@@ -2436,6 +2436,148 @@ void ggml_metal_buffer_get_tensor(ggml_metal_buffer_t buf, const struct ggml_ten
+     }
+ }
+ 
++static bool ggml_metal_buffer_data_span(const void * const * data, const size_t * sizes, size_t n_tensors, uintptr_t * min_data, uintptr_t * max_data) {
++    bool found = false;
++
++    for (size_t i = 0; i < n_tensors; i++) {
++        if (sizes[i] == 0) {
++            continue;
++        }
++
++        const uintptr_t start = (uintptr_t) data[i];
++        const uintptr_t end   = start + sizes[i];
++        if (!found) {
++            *min_data = start;
++            *max_data = end;
++            found = true;
++        } else {
++            if (start < *min_data) {
++                *min_data = start;
++            }
++            if (end > *max_data) {
++                *max_data = end;
++            }
++        }
++    }
++
++    return found;
++}
++
++void ggml_metal_buffer_set_tensor_n(ggml_metal_buffer_t buf, struct ggml_tensor * const * tensors, const void * const * data,
++        const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    if (buf->is_shared) {
++        for (size_t i = 0; i < n_tensors; i++) {
++            if (sizes[i] == 0) {
++                continue;
++            }
++            memcpy((char *) tensors[i]->data + offsets[i], data[i], sizes[i]);
++        }
++        return;
++    }
++
++    uintptr_t min_data = 0, max_data = 0;
++    if (!ggml_metal_buffer_data_span(data, sizes, n_tensors, &min_data, &max_data)) {
++        return;
++    }
++
++    @autoreleasepool {
++        void * data_ptr = (void *) min_data;
++        id<MTLBuffer> buf_src = [buf->dev->mtl_device newBufferWithBytesNoCopy:data_ptr
++                                                               length:max_data - min_data
++                                                              options:MTLResourceStorageModeShared
++                                                          deallocator:nil];
++
++        GGML_ASSERT(buf_src);
++
++        id<MTLCommandBuffer> cmd_buf = [buf->dev->mtl_queue commandBufferWithUnretainedReferences];
++
++        {
++            id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
++
++            for (size_t i = 0; i < n_tensors; i++) {
++                if (sizes[i] == 0) {
++                    continue;
++                }
++
++                ggml_backend_buffer_t tensor_buf_ggml = tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
++                ggml_metal_buffer_t tensor_buf = (ggml_metal_buffer_t) tensor_buf_ggml->context;
++                struct ggml_metal_buffer_id bid_dst = ggml_metal_buffer_get_id(tensor_buf, tensors[i]);
++                bid_dst.offs += offsets[i];
++
++                [encoder copyFromBuffer:buf_src
++                           sourceOffset:(uintptr_t) data[i] - min_data
++                               toBuffer:bid_dst.metal
++                      destinationOffset:bid_dst.offs
++                                   size:sizes[i]];
++            }
++
++            [encoder endEncoding];
++        }
++
++        [cmd_buf commit];
++        [cmd_buf waitUntilCompleted];
++
++        [buf_src release];
++    }
++}
++
++void ggml_metal_buffer_get_tensor_n(ggml_metal_buffer_t buf, const struct ggml_tensor * const * tensors, void * const * data,
++        const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    if (buf->is_shared) {
++        for (size_t i = 0; i < n_tensors; i++) {
++            if (sizes[i] == 0) {
++                continue;
++            }
++            memcpy(data[i], (const char *) tensors[i]->data + offsets[i], sizes[i]);
++        }
++        return;
++    }
++
++    uintptr_t min_data = 0, max_data = 0;
++    if (!ggml_metal_buffer_data_span((const void * const *) data, sizes, n_tensors, &min_data, &max_data)) {
++        return;
++    }
++
++    @autoreleasepool {
++        id<MTLBuffer> buf_dst = [buf->dev->mtl_device newBufferWithBytesNoCopy:(void *) min_data
++                                                               length:max_data - min_data
++                                                              options:MTLResourceStorageModeShared
++                                                          deallocator:nil];
++
++        GGML_ASSERT(buf_dst);
++
++        id<MTLCommandBuffer> cmd_buf = [buf->dev->mtl_queue commandBufferWithUnretainedReferences];
++
++        {
++            id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
++
++            for (size_t i = 0; i < n_tensors; i++) {
++                if (sizes[i] == 0) {
++                    continue;
++                }
++
++                ggml_backend_buffer_t tensor_buf_ggml = tensors[i]->view_src ? tensors[i]->view_src->buffer : tensors[i]->buffer;
++                ggml_metal_buffer_t tensor_buf = (ggml_metal_buffer_t) tensor_buf_ggml->context;
++                struct ggml_metal_buffer_id bid_src = ggml_metal_buffer_get_id(tensor_buf, tensors[i]);
++                bid_src.offs += offsets[i];
++
++                [encoder copyFromBuffer:bid_src.metal
++                           sourceOffset:bid_src.offs
++                               toBuffer:buf_dst
++                      destinationOffset:(uintptr_t) data[i] - min_data
++                                   size:sizes[i]];
++            }
++
++            [encoder endEncoding];
++        }
++
++        [cmd_buf commit];
++        [cmd_buf waitUntilCompleted];
++
++        [buf_dst release];
++    }
++}
++
+ bool ggml_metal_buffer_cpy_tensor(ggml_metal_buffer_t buf_dst, const struct ggml_tensor * src, struct ggml_tensor * dst) {
+     ggml_metal_buffer_t buf_src = (ggml_metal_buffer_t)src->buffer->context;
+ 
+@@ -2477,6 +2619,74 @@ bool ggml_metal_buffer_cpy_tensor(ggml_metal_buffer_t buf_dst, const struct ggml
+     return true;
+ }
+ 
++bool ggml_metal_buffer_cpy_tensor_n(ggml_metal_buffer_t buf_dst, const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors) {
++    if (n_tensors == 0) {
++        return true;
++    }
++
++    bool all_shared = true;
++    for (size_t i = 0; i < n_tensors; ++i) {
++        ggml_backend_buffer_t src_buf = srcs[i]->view_src ? srcs[i]->view_src->buffer : srcs[i]->buffer;
++        ggml_metal_buffer_t buf_src = (ggml_metal_buffer_t) src_buf->context;
++        if (!buf_dst->is_shared || !buf_src->is_shared) {
++            all_shared = false;
++            break;
++        }
++    }
++
++    if (all_shared) {
++        for (size_t i = 0; i < n_tensors; ++i) {
++            memcpy(dsts[i]->data, srcs[i]->data, ggml_nbytes(srcs[i]));
++        }
++        return true;
++    }
++
++    // for private buffers, we need to use Metal blit commands
++    @autoreleasepool {
++        struct ggml_metal_buffer_id * bid_srcs = malloc(n_tensors * sizeof(struct ggml_metal_buffer_id));
++        struct ggml_metal_buffer_id * bid_dsts = malloc(n_tensors * sizeof(struct ggml_metal_buffer_id));
++
++        for (size_t i = 0; i < n_tensors; ++i) {
++            ggml_backend_buffer_t src_buf = srcs[i]->view_src ? srcs[i]->view_src->buffer : srcs[i]->buffer;
++            ggml_backend_buffer_t dst_buf = dsts[i]->view_src ? dsts[i]->view_src->buffer : dsts[i]->buffer;
++            ggml_metal_buffer_t buf_src = (ggml_metal_buffer_t) src_buf->context;
++            ggml_metal_buffer_t buf_dst_i = (ggml_metal_buffer_t) dst_buf->context;
++            bid_srcs[i] = ggml_metal_buffer_get_id(buf_src, srcs[i]);
++            bid_dsts[i] = ggml_metal_buffer_get_id(buf_dst_i, dsts[i]);
++
++            if (bid_srcs[i].metal == nil || bid_dsts[i].metal == nil) {
++                free(bid_srcs);
++                free(bid_dsts);
++                return false;
++            }
++        }
++
++        id<MTLCommandBuffer> cmd_buf = [buf_dst->dev->mtl_queue commandBufferWithUnretainedReferences];
++
++        {
++            id<MTLBlitCommandEncoder> encoder = [cmd_buf blitCommandEncoder];
++
++            for (size_t i = 0; i < n_tensors; ++i) {
++                [encoder copyFromBuffer:bid_srcs[i].metal
++                           sourceOffset:bid_srcs[i].offs
++                               toBuffer:bid_dsts[i].metal
++                      destinationOffset:bid_dsts[i].offs
++                                   size:ggml_nbytes(srcs[i])];
++            }
++
++            [encoder endEncoding];
++        }
++
++        [cmd_buf commit];
++        [cmd_buf waitUntilCompleted];
++
++        free(bid_srcs);
++        free(bid_dsts);
++    }
++
++    return true;
++}
++
+ void ggml_metal_buffer_clear(ggml_metal_buffer_t buf, uint8_t value) {
+     if (buf->is_shared) {
+         memset(buf->all_data, value, buf->all_size);
+diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
+index d0771eb49..1699a7131 100644
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -68,6 +68,22 @@ static void ggml_backend_metal_buffer_shared_get_tensor(ggml_backend_buffer_t bu
+     ggml_metal_buffer_get_tensor(ctx, tensor, data, offset, size);
+ }
+ 
++static void ggml_backend_metal_buffer_shared_set_tensor_n(ggml_backend_buffer_t buffer, struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
++
++    GGML_ASSERT(ggml_metal_buffer_is_shared(ctx));
++
++    ggml_metal_buffer_set_tensor_n(ctx, tensors, data, offsets, sizes, n_tensors);
++}
++
++static void ggml_backend_metal_buffer_shared_get_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * tensors, void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
++
++    GGML_ASSERT(ggml_metal_buffer_is_shared(ctx));
++
++    ggml_metal_buffer_get_tensor_n(ctx, tensors, data, offsets, sizes, n_tensors);
++}
++
+ static bool ggml_backend_metal_buffer_shared_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
+     ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
+ 
+@@ -80,6 +96,20 @@ static bool ggml_backend_metal_buffer_shared_cpy_tensor(ggml_backend_buffer_t bu
+     return ggml_metal_buffer_cpy_tensor(ctx, src, dst);
+ }
+ 
++static bool ggml_backend_metal_buffer_shared_cpy_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors) {
++    ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
++
++    GGML_ASSERT(ggml_metal_buffer_is_shared(ctx));
++
++    for (size_t i = 0; i < n_tensors; ++i) {
++        if (!ggml_backend_buffer_is_metal(srcs[i]->buffer)) {
++            return false;
++        }
++    }
++
++    return ggml_metal_buffer_cpy_tensor_n(ctx, srcs, dsts, n_tensors);
++}
++
+ static void ggml_backend_metal_buffer_shared_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+     ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
+ 
+@@ -100,6 +130,9 @@ static ggml_backend_buffer_i ggml_backend_metal_buffer_shared_i = {
+     /* .cpy_tensor    = */ ggml_backend_metal_buffer_shared_cpy_tensor,
+     /* .clear         = */ ggml_backend_metal_buffer_shared_clear,
+     /* .reset         = */ NULL,
++    /* .set_tensor_n  = */ ggml_backend_metal_buffer_shared_set_tensor_n,
++    /* .get_tensor_n  = */ ggml_backend_metal_buffer_shared_get_tensor_n,
++    /* .cpy_tensor_n  = */ ggml_backend_metal_buffer_shared_cpy_tensor_n,
+ };
+ 
+ // private buffer
+@@ -144,6 +177,22 @@ static void ggml_backend_metal_buffer_private_get_tensor(ggml_backend_buffer_t b
+     ggml_metal_buffer_get_tensor(ctx, tensor, data, offset, size);
+ }
+ 
++static void ggml_backend_metal_buffer_private_set_tensor_n(ggml_backend_buffer_t buffer, struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
++
++    GGML_ASSERT(!ggml_metal_buffer_is_shared(ctx));
++
++    ggml_metal_buffer_set_tensor_n(ctx, tensors, data, offsets, sizes, n_tensors);
++}
++
++static void ggml_backend_metal_buffer_private_get_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * tensors, void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
++
++    GGML_ASSERT(!ggml_metal_buffer_is_shared(ctx));
++
++    ggml_metal_buffer_get_tensor_n(ctx, tensors, data, offsets, sizes, n_tensors);
++}
++
+ static bool ggml_backend_metal_buffer_private_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst) {
+     ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
+ 
+@@ -156,6 +205,20 @@ static bool ggml_backend_metal_buffer_private_cpy_tensor(ggml_backend_buffer_t b
+     return ggml_metal_buffer_cpy_tensor(ctx, src, dst);
+ }
+ 
++static bool ggml_backend_metal_buffer_private_cpy_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors) {
++    ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
++
++    GGML_ASSERT(!ggml_metal_buffer_is_shared(ctx));
++
++    for (size_t i = 0; i < n_tensors; ++i) {
++        if (!ggml_backend_buffer_is_metal(srcs[i]->buffer)) {
++            return false;
++        }
++    }
++
++    return ggml_metal_buffer_cpy_tensor_n(ctx, srcs, dsts, n_tensors);
++}
++
+ static void ggml_backend_metal_buffer_private_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+     ggml_metal_buffer_t ctx = (ggml_metal_buffer_t)buffer->context;
+ 
+@@ -176,6 +239,9 @@ static ggml_backend_buffer_i ggml_backend_metal_buffer_private_i = {
+     /* .cpy_tensor    = */ ggml_backend_metal_buffer_private_cpy_tensor,
+     /* .clear         = */ ggml_backend_metal_buffer_private_clear,
+     /* .reset         = */ NULL,
++    /* .set_tensor_n  = */ ggml_backend_metal_buffer_private_set_tensor_n,
++    /* .get_tensor_n  = */ ggml_backend_metal_buffer_private_get_tensor_n,
++    /* .cpy_tensor_n  = */ ggml_backend_metal_buffer_private_cpy_tensor_n,
+ };
+ 
+ static bool ggml_backend_buffer_is_metal(ggml_backend_buffer_t buffer) {
+diff --git a/ggml/src/ggml-opencl/ggml-opencl.cpp b/ggml/src/ggml-opencl/ggml-opencl.cpp
+index 67248264e..058c3a181 100644
+--- a/ggml/src/ggml-opencl/ggml-opencl.cpp
++++ b/ggml/src/ggml-opencl/ggml-opencl.cpp
+@@ -14143,6 +14143,9 @@ static ggml_backend_buffer_i ggml_backend_opencl_buffer_interface = {
+     /* .cpy_tensor      = */ NULL,
+     /* .clear           = */ ggml_backend_opencl_buffer_clear,
+     /* .reset           = */ ggml_backend_opencl_buffer_reset,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ //
+diff --git a/ggml/src/ggml-openvino/ggml-openvino.cpp b/ggml/src/ggml-openvino/ggml-openvino.cpp
+index 22b2f45e2..d98c6e208 100644
+--- a/ggml/src/ggml-openvino/ggml-openvino.cpp
++++ b/ggml/src/ggml-openvino/ggml-openvino.cpp
+@@ -638,6 +638,9 @@ static const ggml_backend_buffer_i ggml_backend_openvino_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_openvino_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_openvino_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ // Buffer type interface functions
+diff --git a/ggml/src/ggml-rpc/ggml-rpc.cpp b/ggml/src/ggml-rpc/ggml-rpc.cpp
+index 8cedee7ed..5cf9339bd 100644
+--- a/ggml/src/ggml-rpc/ggml-rpc.cpp
++++ b/ggml/src/ggml-rpc/ggml-rpc.cpp
+@@ -974,6 +974,9 @@ static ggml_backend_buffer_i ggml_backend_rpc_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_rpc_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_rpc_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ static const char * ggml_backend_rpc_buffer_type_name(ggml_backend_buffer_type_t buft) {
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 807736e46..42e432eac 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -1175,6 +1175,9 @@ static const ggml_backend_buffer_i ggml_backend_sycl_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_sycl_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_sycl_buffer_clear,
+     /* .reset           = */ ggml_backend_sycl_buffer_reset,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ // sycl buffer type
+@@ -1683,6 +1686,9 @@ static struct ggml_backend_buffer_i ggml_backend_sycl_split_buffer_interface = {
+     /* .cpy_tensor      = */ NULL,
+     /* .clear           = */ ggml_backend_sycl_split_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ // sycl split buffer type
+diff --git a/ggml/src/ggml-virtgpu/ggml-backend-buffer.cpp b/ggml/src/ggml-virtgpu/ggml-backend-buffer.cpp
+index b6c561cd6..271be9a40 100644
+--- a/ggml/src/ggml-virtgpu/ggml-backend-buffer.cpp
++++ b/ggml/src/ggml-virtgpu/ggml-backend-buffer.cpp
+@@ -106,6 +106,9 @@ const ggml_backend_buffer_i ggml_backend_remoting_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_remoting_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_remoting_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ const ggml_backend_buffer_i ggml_backend_remoting_buffer_from_ptr_interface = {
+@@ -120,4 +123,7 @@ const ggml_backend_buffer_i ggml_backend_remoting_buffer_from_ptr_interface = {
+     /* .cpy_tensor      = */ ggml_backend_remoting_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_remoting_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp b/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
+index 7e9b3fa75..96fd16132 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp
+@@ -404,6 +404,33 @@ void ggml_vk_ensure_sync_staging_buffer(ggml_backend_vk_context * ctx, size_t si
+     }
+ }
+ 
++static vk_context ggml_vk_begin_sync_ctx(vk_device & device, vk_command_pool & pool) {
++    vk_context subctx = ggml_vk_create_temporary_context(pool);
++    ggml_vk_ctx_begin(device, subctx);
++    return subctx;
++}
++
++static void ggml_vk_submit_sync(vk_device & device, vk_context & subctx) {
++    ggml_vk_ctx_end(subctx);
++
++    for (auto & cpy : subctx->in_memcpys) {
++        memcpy(cpy.dst, cpy.src, cpy.n);
++    }
++
++    for (auto & mset : subctx->memsets) {
++        memset(mset.dst, mset.val, mset.n);
++    }
++
++    ggml_vk_submit(subctx, device->fence);
++    VK_CHECK(device->device.waitForFences({ device->fence }, true, UINT64_MAX), "vk_submit_sync waitForFences", device);
++    device->device.resetFences({ device->fence });
++    ggml_vk_queue_command_pools_cleanup(device);
++
++    for (auto & cpy : subctx->out_memcpys) {
++        memcpy(cpy.dst, cpy.src, cpy.n);
++    }
++}
++
+ static void ggml_vk_buffer_write_nc_async(ggml_backend_vk_context * ctx, vk_context& subctx, vk_buffer& dst, size_t offset, const ggml_tensor * tensor, bool sync_staging = false) {
+     VK_LOG_DEBUG("ggml_vk_buffer_write_nc_async(" << tensor << ")");
+     GGML_ASSERT(!ggml_is_contiguous(tensor));
+@@ -590,24 +617,10 @@ void ggml_vk_buffer_write_2d(vk_buffer& dst, size_t offset, const void * src, si
+     } else {
+         std::lock_guard<std::recursive_mutex> guard(dst->device->mutex);
+ 
+-        vk_context subctx = ggml_vk_create_temporary_context(dst->device->transfer_queue->cmd_pool);
+-        ggml_vk_ctx_begin(dst->device, subctx);
++        vk_context subctx = ggml_vk_begin_sync_ctx(dst->device, dst->device->transfer_queue->cmd_pool);
+         bool ret = ggml_vk_buffer_write_2d_async(subctx, dst, offset, src, spitch, dpitch, width, height, true);
+         GGML_ASSERT(ret);
+-        ggml_vk_ctx_end(subctx);
+-
+-        for (auto& cpy : subctx->in_memcpys) {
+-            memcpy(cpy.dst, cpy.src, cpy.n);
+-        }
+-
+-        for (auto& mset : subctx->memsets) {
+-            memset(mset.dst, mset.val, mset.n);
+-        }
+-
+-        ggml_vk_submit(subctx, dst->device->fence);
+-        VK_CHECK(dst->device->device.waitForFences({ dst->device->fence }, true, UINT64_MAX), "vk_buffer_write_2d waitForFences", dst->device);
+-        dst->device->device.resetFences({ dst->device->fence });
+-        ggml_vk_queue_command_pools_cleanup(dst->device);
++        ggml_vk_submit_sync(dst->device, subctx);
+     }
+ }
+ 
+@@ -695,21 +708,24 @@ static bool ggml_vk_buffer_read_async(vk_context subctx, vk_buffer& src, size_t
+     return ggml_vk_buffer_read_2d_async(subctx, src, offset, dst, size, size, size, 1, sync_staging);
+ }
+ 
+-void ggml_vk_buffer_read_2d(vk_buffer& src, size_t offset, void * dst, size_t spitch, size_t dpitch, size_t width, size_t height) {
+-    VK_LOG_DEBUG("ggml_vk_buffer_read_2d(" << src->buffer << ", " << offset << ", " << width << ", " << height << ")");
+-
++static bool ggml_vk_buffer_host_read_direct(const vk_buffer & buf) {
+     // If the device is not an UMA device the memory is host-accessible through rebar. While writing
+     // through PCIe is sufficient fast reading back data from PCIe is slower than going through
+     // the HW device to host copy path.
+     // AMD UMA: uncached host-visible memory is write-combined, CPU reads are slow
+-    const bool slow_host_read = src->device->vendor_id == VK_VENDOR_ID_AMD &&
+-                                !(src->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCached);
+-    if(src->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible && src->device->uma && !slow_host_read) {
++    const bool slow_host_read = buf->device->vendor_id == VK_VENDOR_ID_AMD &&
++                                !(buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCached);
++    return (buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible) && buf->device->uma && !slow_host_read;
++}
++
++void ggml_vk_buffer_read_2d(vk_buffer& src, size_t offset, void * dst, size_t spitch, size_t dpitch, size_t width, size_t height) {
++    VK_LOG_DEBUG("ggml_vk_buffer_read_2d(" << src->buffer << ", " << offset << ", " << width << ", " << height << ")");
++
++    if (ggml_vk_buffer_host_read_direct(src)) {
+         GGML_ASSERT(src->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCoherent);
+ 
+         std::lock_guard<std::recursive_mutex> guard(src->device->mutex);
+-        vk_context subctx = ggml_vk_create_temporary_context(src->device->compute_queue->cmd_pool);
+-        ggml_vk_ctx_begin(src->device, subctx);
++        vk_context subctx = ggml_vk_begin_sync_ctx(src->device, src->device->compute_queue->cmd_pool);
+         subctx->s->buffer->buf.pipelineBarrier(
+             vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer,
+             vk::PipelineStageFlagBits::eHost,
+@@ -717,12 +733,7 @@ void ggml_vk_buffer_read_2d(vk_buffer& src, size_t offset, void * dst, size_t sp
+             { { vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite,
+                 vk::AccessFlagBits::eHostRead } },
+             {}, {});
+-        ggml_vk_ctx_end(subctx);
+-        ggml_vk_submit(subctx, src->device->fence);
+-        VK_CHECK(src->device->device.waitForFences({ src->device->fence }, true, UINT64_MAX),
+-                 "vk_buffer_read_2d uma waitForFences", src->device);
+-        src->device->device.resetFences({ src->device->fence });
+-        ggml_vk_queue_command_pools_cleanup(src->device);
++        ggml_vk_submit_sync(src->device, subctx);
+ 
+         if (width == spitch && width == dpitch) {
+             memcpy(dst, (const uint8_t *) src->ptr + offset, width * height);
+@@ -734,20 +745,10 @@ void ggml_vk_buffer_read_2d(vk_buffer& src, size_t offset, void * dst, size_t sp
+     } else {
+         std::lock_guard<std::recursive_mutex> guard(src->device->mutex);
+ 
+-        vk_context subctx = ggml_vk_create_temporary_context(src->device->transfer_queue->cmd_pool);
+-        ggml_vk_ctx_begin(src->device, subctx);
++        vk_context subctx = ggml_vk_begin_sync_ctx(src->device, src->device->transfer_queue->cmd_pool);
+         bool ret = ggml_vk_buffer_read_2d_async(subctx, src, offset, dst, spitch, dpitch, width, height, true);
+         GGML_ASSERT(ret);
+-        ggml_vk_ctx_end(subctx);
+-
+-        ggml_vk_submit(subctx, src->device->fence);
+-        VK_CHECK(src->device->device.waitForFences({ src->device->fence }, true, UINT64_MAX), "vk_buffer_read_2d waitForFences", src->device);
+-        src->device->device.resetFences({ src->device->fence });
+-        ggml_vk_queue_command_pools_cleanup(src->device);
+-
+-        for (auto& cpy : subctx->out_memcpys) {
+-            memcpy(cpy.dst, cpy.src, cpy.n);
+-        }
++        ggml_vk_submit_sync(src->device, subctx);
+     }
+ }
+ 
+@@ -771,14 +772,9 @@ void ggml_vk_buffer_copy(vk_buffer& dst, size_t dst_offset, vk_buffer& src, size
+         std::lock_guard<std::recursive_mutex> guard(src->device->mutex);
+         VK_LOG_DEBUG("ggml_vk_buffer_copy(SINGLE_DEVICE, " << size << ")");
+         // Copy within the device
+-        vk_context subctx = ggml_vk_create_temporary_context(src->device->transfer_queue->cmd_pool);
+-        ggml_vk_ctx_begin(src->device, subctx);
++        vk_context subctx = ggml_vk_begin_sync_ctx(src->device, src->device->transfer_queue->cmd_pool);
+         ggml_vk_buffer_copy_async(subctx, dst, dst_offset, src, src_offset, size);
+-        ggml_vk_ctx_end(subctx);
+-        ggml_vk_submit(subctx, src->device->fence);
+-        VK_CHECK(src->device->device.waitForFences({ src->device->fence }, true, UINT64_MAX), "vk_buffer_copy waitForFences", src->device);
+-        src->device->device.resetFences({ src->device->fence });
+-        ggml_vk_queue_command_pools_cleanup(src->device);
++        ggml_vk_submit_sync(src->device, subctx);
+     } else {
+         VK_LOG_DEBUG("ggml_vk_buffer_copy(MULTI_DEVICE, " << size << ")");
+         // Copy device to device
+@@ -814,15 +810,210 @@ void ggml_vk_buffer_memset(vk_buffer& dst, size_t offset, uint32_t c, size_t siz
+     }
+ 
+     std::lock_guard<std::recursive_mutex> guard(dst->device->mutex);
+-    vk_context subctx = ggml_vk_create_temporary_context(dst->device->transfer_queue->cmd_pool);
+-    ggml_vk_ctx_begin(dst->device, subctx);
++    vk_context subctx = ggml_vk_begin_sync_ctx(dst->device, dst->device->transfer_queue->cmd_pool);
+     subctx->s->buffer->buf.fillBuffer(dst->buffer, offset, size, c);
+-    ggml_vk_ctx_end(subctx);
++    ggml_vk_submit_sync(dst->device, subctx);
++}
++
++static size_t ggml_vk_staging_size_n(const vk_device & device, const std::vector<vk_buffer_region> & regions) {
++    size_t total = 0;
++    size_t max   = 0;
++    for (const auto & r : regions) {
++        total += r.size;
++        max = std::max(max, r.size);
++    }
++    return std::max(max, std::min(total, (size_t) device->suballocation_block_size));
++}
++
++// returns number of regions recorded, stops when staging is full
++size_t ggml_vk_buffer_write_n_async(vk_context& subctx, const vk_buffer_region * regions, size_t n, vk_buffer * staging, size_t * staging_offset) {
++    VK_LOG_DEBUG("ggml_vk_buffer_write_n_async(" << n << ")");
++    ggml_vk_sync_buffers(nullptr, subctx);
++
++    size_t i = 0;
++    for (; i < n; i++) {
++        const vk_buffer_region & r = regions[i];
++
++        vk_buffer pinned = nullptr;
++        size_t pinned_offset = 0;
++        ggml_vk_host_get(r.buf->device, r.host, pinned, pinned_offset);
++
++        if (pinned != nullptr) {
++            subctx->s->buffer->buf.copyBuffer(pinned->buffer, r.buf->buffer, { vk::BufferCopy{ pinned_offset, r.offset, r.size } });
++            continue;
++        }
++
++        if (staging == nullptr || *staging_offset + r.size > (*staging)->size) {
++            break;
++        }
++
++        subctx->s->buffer->buf.copyBuffer((*staging)->buffer, r.buf->buffer, { vk::BufferCopy{ *staging_offset, r.offset, r.size } });
++        deferred_memcpy((uint8_t *) (*staging)->ptr + *staging_offset, r.host, r.size, &subctx->in_memcpys);
++        *staging_offset += r.size;
++    }
++    return i;
++}
++
++// returns number of regions recorded, stops when staging is full
++size_t ggml_vk_buffer_read_n_async(vk_context& subctx, const vk_buffer_region * regions, size_t n, vk_buffer * staging, size_t * staging_offset) {
++    VK_LOG_DEBUG("ggml_vk_buffer_read_n_async(" << n << ")");
++    ggml_vk_sync_buffers(nullptr, subctx);
++
++    size_t i = 0;
++    for (; i < n; i++) {
++        const vk_buffer_region & r = regions[i];
++
++        vk_buffer pinned = nullptr;
++        size_t pinned_offset = 0;
++        ggml_vk_host_get(r.buf->device, r.host, pinned, pinned_offset);
++
++        if (pinned != nullptr) {
++            subctx->s->buffer->buf.copyBuffer(r.buf->buffer, pinned->buffer, { vk::BufferCopy{ r.offset, pinned_offset, r.size } });
++            continue;
++        }
++
++        if (staging == nullptr || *staging_offset + r.size > (*staging)->size) {
++            break;
++        }
++
++        subctx->s->buffer->buf.copyBuffer(r.buf->buffer, (*staging)->buffer, { vk::BufferCopy{ r.offset, *staging_offset, r.size } });
++        deferred_memcpy(r.host, (const uint8_t *) (*staging)->ptr + *staging_offset, r.size, &subctx->out_memcpys);
++        *staging_offset += r.size;
++    }
++    return i;
++}
++
++void ggml_vk_buffer_copy_n_async(vk_context& subctx, const vk_buffer_copy_region * regions, size_t n) {
++    VK_LOG_DEBUG("ggml_vk_buffer_copy_n_async(" << n << ")");
++    ggml_vk_sync_buffers(nullptr, subctx);
++
++    for (size_t i = 0; i < n; i++) {
++        const vk_buffer_copy_region & r = regions[i];
++        GGML_ASSERT(r.src->device == r.dst->device);
++        subctx->s->buffer->buf.copyBuffer(r.src->buffer, r.dst->buffer, { vk::BufferCopy{ r.src_offset, r.dst_offset, r.size } });
++    }
++}
++
++void ggml_vk_buffer_write_n(const vk_buffer_region * regions, size_t n) {
++    VK_LOG_DEBUG("ggml_vk_buffer_write_n(" << n << ")");
++    std::vector<vk_buffer_region> pending;
++
++    for (size_t i = 0; i < n; i++) {
++        const vk_buffer_region & r = regions[i];
++        if (r.size == 0) {
++            continue;
++        }
++        if (r.buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostVisible) {
++            GGML_ASSERT(r.buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCoherent);
++            memcpy((uint8_t *) r.buf->ptr + r.offset, r.host, r.size);
++            continue;
++        }
++        GGML_ASSERT(pending.empty() || r.buf->device == pending[0].buf->device);
++        pending.push_back(r);
++    }
++
++    if (pending.empty()) {
++        return;
++    }
++
++    vk_device device = pending[0].buf->device;
++    std::lock_guard<std::recursive_mutex> guard(device->mutex);
++    ggml_vk_ensure_sync_staging_buffer(device, ggml_vk_staging_size_n(device, pending));
++
++    for (size_t i = 0; i < pending.size();) {
++        vk_context subctx = ggml_vk_begin_sync_ctx(device, device->transfer_queue->cmd_pool);
++        size_t staging_offset = 0;
++        const size_t recorded = ggml_vk_buffer_write_n_async(subctx, pending.data() + i, pending.size() - i, &device->sync_staging, &staging_offset);
++        GGML_ASSERT(recorded > 0);
++        ggml_vk_submit_sync(device, subctx);
++        i += recorded;
++    }
++}
++
++void ggml_vk_buffer_read_n(const vk_buffer_region * regions, size_t n) {
++    VK_LOG_DEBUG("ggml_vk_buffer_read_n(" << n << ")");
++    std::vector<vk_buffer_region> direct;
++    std::vector<vk_buffer_region> pending;
++
++    for (size_t i = 0; i < n; i++) {
++        const vk_buffer_region & r = regions[i];
++        if (r.size == 0) {
++            continue;
++        }
++        GGML_ASSERT((direct.empty() && pending.empty()) || r.buf->device == (direct.empty() ? pending[0] : direct[0]).buf->device);
++        if (ggml_vk_buffer_host_read_direct(r.buf)) {
++            GGML_ASSERT(r.buf->memory_property_flags & vk::MemoryPropertyFlagBits::eHostCoherent);
++            direct.push_back(r);
++        } else {
++            pending.push_back(r);
++        }
++    }
++
++    if (direct.empty() && pending.empty()) {
++        return;
++    }
++
++    vk_device device = (direct.empty() ? pending[0] : direct[0]).buf->device;
++    std::lock_guard<std::recursive_mutex> guard(device->mutex);
++
++    if (!direct.empty()) {
++        vk_context subctx = ggml_vk_begin_sync_ctx(device, device->compute_queue->cmd_pool);
++        subctx->s->buffer->buf.pipelineBarrier(
++            vk::PipelineStageFlagBits::eComputeShader | vk::PipelineStageFlagBits::eTransfer,
++            vk::PipelineStageFlagBits::eHost,
++            {},
++            { { vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eTransferWrite,
++                vk::AccessFlagBits::eHostRead } },
++            {}, {});
++        ggml_vk_submit_sync(device, subctx);
++
++        for (const auto & r : direct) {
++            memcpy(r.host, (const uint8_t *) r.buf->ptr + r.offset, r.size);
++        }
++    }
++
++    if (pending.empty()) {
++        return;
++    }
++
++    ggml_vk_ensure_sync_staging_buffer(device, ggml_vk_staging_size_n(device, pending));
++
++    for (size_t i = 0; i < pending.size();) {
++        vk_context subctx = ggml_vk_begin_sync_ctx(device, device->transfer_queue->cmd_pool);
++        size_t staging_offset = 0;
++        const size_t recorded = ggml_vk_buffer_read_n_async(subctx, pending.data() + i, pending.size() - i, &device->sync_staging, &staging_offset);
++        GGML_ASSERT(recorded > 0);
++        ggml_vk_submit_sync(device, subctx);
++        i += recorded;
++    }
++}
++
++void ggml_vk_buffer_copy_n(const vk_buffer_copy_region * regions, size_t n) {
++    VK_LOG_DEBUG("ggml_vk_buffer_copy_n(" << n << ")");
++    std::vector<vk_buffer_copy_region> same_device;
++
++    for (size_t i = 0; i < n; i++) {
++        vk_buffer_copy_region r = regions[i];
++        if (r.size == 0) {
++            continue;
++        }
++        if (r.src->device != r.dst->device) {
++            ggml_vk_buffer_copy(r.dst, r.dst_offset, r.src, r.src_offset, r.size);
++            continue;
++        }
++        GGML_ASSERT(same_device.empty() || r.dst->device == same_device[0].dst->device);
++        same_device.push_back(std::move(r));
++    }
++
++    if (same_device.empty()) {
++        return;
++    }
+ 
+-    ggml_vk_submit(subctx, dst->device->fence);
+-    VK_CHECK(dst->device->device.waitForFences({ dst->device->fence }, true, UINT64_MAX), "vk_memset waitForFences", dst->device);
+-    dst->device->device.resetFences({ dst->device->fence });
+-    ggml_vk_queue_command_pools_cleanup(dst->device);
++    vk_device device = same_device[0].dst->device;
++    std::lock_guard<std::recursive_mutex> guard(device->mutex);
++    vk_context subctx = ggml_vk_begin_sync_ctx(device, device->transfer_queue->cmd_pool);
++    ggml_vk_buffer_copy_n_async(subctx, same_device.data(), same_device.size());
++    ggml_vk_submit_sync(device, subctx);
+ }
+ 
+ ggml_backend_buffer_i ggml_backend_vk_buffer_interface = {
+@@ -837,6 +1028,9 @@ ggml_backend_buffer_i ggml_backend_vk_buffer_interface = {
+     /* .cpy_tensor      = */ ggml_backend_vk_buffer_cpy_tensor,
+     /* .clear           = */ ggml_backend_vk_buffer_clear,
+     /* .reset           = */ NULL,
++    /* .set_tensor_n    = */ ggml_backend_vk_buffer_set_tensor_n,
++    /* .get_tensor_n    = */ ggml_backend_vk_buffer_get_tensor_n,
++    /* .cpy_tensor_n    = */ ggml_backend_vk_buffer_cpy_tensor_n,
+ };
+ 
+ vk_buffer ggml_vk_buffer_from_host_ptr(vk_device & device, void * ptr, size_t size) {
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-common.h b/ggml/src/ggml-vulkan/ggml-vulkan-common.h
+index 66b7557be..89548c061 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-common.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-common.h
+@@ -59,6 +59,12 @@ void ggml_vk_buffer_read_2d(vk_buffer& src, size_t offset, void * dst, size_t sp
+ void ggml_vk_buffer_read(vk_buffer& src, size_t offset, void * dst, size_t size);
+ void ggml_vk_buffer_copy_async(vk_context& ctx, vk_buffer& dst, size_t dst_offset, vk_buffer& src, size_t src_offset, size_t size);
+ void ggml_vk_buffer_copy(vk_buffer& dst, size_t dst_offset, vk_buffer& src, size_t src_offset, size_t size);
++size_t ggml_vk_buffer_write_n_async(vk_context& subctx, const vk_buffer_region * regions, size_t n, vk_buffer * staging = nullptr, size_t * staging_offset = nullptr);
++size_t ggml_vk_buffer_read_n_async(vk_context& subctx, const vk_buffer_region * regions, size_t n, vk_buffer * staging = nullptr, size_t * staging_offset = nullptr);
++void ggml_vk_buffer_copy_n_async(vk_context& subctx, const vk_buffer_copy_region * regions, size_t n);
++void ggml_vk_buffer_write_n(const vk_buffer_region * regions, size_t n);
++void ggml_vk_buffer_read_n(const vk_buffer_region * regions, size_t n);
++void ggml_vk_buffer_copy_n(const vk_buffer_copy_region * regions, size_t n);
+ void ggml_vk_buffer_memset_async(vk_context& ctx, vk_buffer& dst, size_t offset, uint32_t c, size_t size);
+ void ggml_vk_buffer_memset(vk_buffer& dst, size_t offset, uint32_t c, size_t size);
+ vk_buffer ggml_vk_buffer_from_host_ptr(vk_device & device, void * ptr, size_t size);
+@@ -226,6 +232,9 @@ void ggml_backend_vk_buffer_set_tensor_2d(ggml_backend_buffer_t buffer, ggml_ten
+ void ggml_backend_vk_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size);
+ void ggml_backend_vk_buffer_get_tensor_2d(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size, size_t n_copies, size_t stride_tensor, size_t stride_data);
+ bool ggml_backend_vk_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * src, ggml_tensor * dst);
++void ggml_backend_vk_buffer_set_tensor_n(ggml_backend_buffer_t buffer, ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors);
++void ggml_backend_vk_buffer_get_tensor_n(ggml_backend_buffer_t buffer, const ggml_tensor * const * tensors, void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors);
++bool ggml_backend_vk_buffer_cpy_tensor_n(ggml_backend_buffer_t buffer, const ggml_tensor * const * srcs, ggml_tensor * const * dsts, size_t n_tensors);
+ void ggml_backend_vk_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value);
+ const char * ggml_backend_vk_buffer_type_name(ggml_backend_buffer_type_t buft);
+ ggml_backend_buffer_t ggml_backend_vk_buffer_type_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size);
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan-types.h b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+index a1505555a..26fba6293 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan-types.h
++++ b/ggml/src/ggml-vulkan/ggml-vulkan-types.h
+@@ -1115,6 +1115,21 @@ struct vk_staging_memset {
+     size_t n;
+ };
+ 
++struct vk_buffer_region {
++    vk_buffer buf;
++    size_t offset;
++    void * host;
++    size_t size;
++};
++
++struct vk_buffer_copy_region {
++    vk_buffer dst;
++    size_t dst_offset;
++    vk_buffer src;
++    size_t src_offset;
++    size_t size;
++};
++
+ struct vk_context_struct {
+     vk_submission * s;
+     std::vector<vk_sequence> seqs;
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c0943689f..23a2324d9 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -13205,6 +13205,54 @@ bool ggml_backend_vk_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const ggml_
+     UNUSED(buffer);
+ }
+ 
++static vk_buffer & ggml_vk_tensor_dev_buffer(const ggml_tensor * tensor) {
++    ggml_backend_buffer_t buffer = tensor->view_src ? tensor->view_src->buffer : tensor->buffer;
++    return ((ggml_backend_vk_buffer_context *) buffer->context)->dev_buffer;
++}
++
++void ggml_backend_vk_buffer_set_tensor_n(ggml_backend_buffer_t buffer, ggml_tensor * const * tensors, const void * const * data,
++                                         const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    VK_LOG_DEBUG("ggml_backend_vk_buffer_set_tensor_n(" << buffer << ", " << n_tensors << ")");
++    std::vector<vk_buffer_region> regions(n_tensors);
++    for (size_t i = 0; i < n_tensors; i++) {
++        regions[i] = { ggml_vk_tensor_dev_buffer(tensors[i]), vk_tensor_offset(tensors[i]) + tensors[i]->view_offs + offsets[i], const_cast<void *>(data[i]), sizes[i] };
++    }
++    ggml_vk_buffer_write_n(regions.data(), n_tensors);
++
++    UNUSED(buffer);
++}
++
++void ggml_backend_vk_buffer_get_tensor_n(ggml_backend_buffer_t buffer, const ggml_tensor * const * tensors, void * const * data,
++                                         const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    VK_LOG_DEBUG("ggml_backend_vk_buffer_get_tensor_n(" << buffer << ", " << n_tensors << ")");
++    std::vector<vk_buffer_region> regions(n_tensors);
++    for (size_t i = 0; i < n_tensors; i++) {
++        regions[i] = { ggml_vk_tensor_dev_buffer(tensors[i]), vk_tensor_offset(tensors[i]) + tensors[i]->view_offs + offsets[i], data[i], sizes[i] };
++    }
++    ggml_vk_buffer_read_n(regions.data(), n_tensors);
++
++    UNUSED(buffer);
++}
++
++bool ggml_backend_vk_buffer_cpy_tensor_n(ggml_backend_buffer_t buffer, const ggml_tensor * const * srcs, ggml_tensor * const * dsts, size_t n_tensors) {
++    VK_LOG_DEBUG("ggml_backend_vk_buffer_cpy_tensor_n(" << buffer << ", " << n_tensors << ")");
++    for (size_t i = 0; i < n_tensors; i++) {
++        if (!ggml_backend_buffer_is_vk(srcs[i]->view_src ? srcs[i]->view_src->buffer : srcs[i]->buffer)) {
++            return false;
++        }
++    }
++
++    std::vector<vk_buffer_copy_region> regions(n_tensors);
++    for (size_t i = 0; i < n_tensors; i++) {
++        regions[i] = { ggml_vk_tensor_dev_buffer(dsts[i]), vk_tensor_offset(dsts[i]) + dsts[i]->view_offs,
++                       ggml_vk_tensor_dev_buffer(srcs[i]), vk_tensor_offset(srcs[i]) + srcs[i]->view_offs, ggml_nbytes(srcs[i]) };
++    }
++    ggml_vk_buffer_copy_n(regions.data(), n_tensors);
++    return true;
++
++    UNUSED(buffer);
++}
++
+ void ggml_backend_vk_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
+     ggml_backend_vk_buffer_context * ctx = (ggml_backend_vk_buffer_context *)buffer->context;
+ 
+diff --git a/ggml/src/ggml-webgpu/ggml-webgpu.cpp b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
+index 65d6d456a..53cf86f81 100644
+--- a/ggml/src/ggml-webgpu/ggml-webgpu.cpp
++++ b/ggml/src/ggml-webgpu/ggml-webgpu.cpp
+@@ -3938,7 +3938,9 @@ static ggml_backend_buffer_i ggml_backend_webgpu_buffer_interface = {
+     /* .cpy_tensor      = */ NULL,  // TODO: optional, implement this
+     /* .clear           = */ ggml_backend_webgpu_buffer_clear,
+     /* .reset           = */ NULL,  // TODO: optional, think it coordinates with
+-                                    // .init_tensor
++    /* .set_tensor_n    = */ NULL,
++    /* .get_tensor_n    = */ NULL,
++    /* .cpy_tensor_n    = */ NULL,
+ };
+ 
+ /* End GGML Backend Buffer Interface */
+diff --git a/ggml/src/ggml-zdnn/ggml-zdnn.cpp b/ggml/src/ggml-zdnn/ggml-zdnn.cpp
+index 40c6516a8..b3536ee28 100644
+--- a/ggml/src/ggml-zdnn/ggml-zdnn.cpp
++++ b/ggml/src/ggml-zdnn/ggml-zdnn.cpp
+@@ -393,6 +393,9 @@ static ggml_backend_buffer_i ggml_backend_zdnn_buffer_i = {
+     /* .cpy_tensor    = */ NULL,
+     /* .clear         = */ ggml_backend_zdnn_buffer_clear,
+     /* .reset         = */ ggml_backend_zdnn_buffer_reset,
++    /* .set_tensor_n  = */ NULL,
++    /* .get_tensor_n  = */ NULL,
++    /* .cpy_tensor_n  = */ NULL,
+ };
+ 
+ //
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 33ad7845f..4141e3c9e 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2926,13 +2926,31 @@ private:
+ class llama_io_write_host : public llama_io_write_i {
+ public:
+     llama_io_write_host(
+-            uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
++            uint8_t * p, size_t len) : ptr(p), base_ptr(p), buf_size(len) {}
+ 
+     ~llama_io_write_host() {
+-        // TODO: add backend support to batch tensor_get? or some other way to speed this up
++        if (winfos.empty()) {
++            return;
++        }
++
++        std::vector<ggml_tensor *> tensors;
++        std::vector<size_t> offsets;
++        std::vector<size_t> sizes;
++        std::vector<size_t> data_offsets;
++        tensors.reserve(winfos.size());
++        offsets.reserve(winfos.size());
++        sizes.reserve(winfos.size());
++        data_offsets.reserve(winfos.size());
++
+         for (const auto & winfo : winfos) {
+-            ggml_backend_tensor_get(winfo.tensor, winfo.ptr, winfo.offset, winfo.size);
++            tensors.push_back(winfo.tensor);
++            offsets.push_back(winfo.offset);
++            sizes.push_back(winfo.size);
++            data_offsets.push_back(winfo.data_offset);
+         }
++
++        std::vector<const ggml_tensor *> const_tensors(tensors.begin(), tensors.end());
++        ggml_backend_tensor_get_n(const_tensors.data(), base_ptr, offsets.data(), sizes.data(), data_offsets.data(), winfos.size());
+     }
+ 
+     void write(const void * src, size_t size) override {
+@@ -2951,7 +2969,7 @@ public:
+         }
+ 
+         // save the write for later during destruction
+-        winfos.push_back({tensor, ptr, size, offset});
++        winfos.push_back({tensor, (size_t) (ptr - base_ptr), size, offset});
+ 
+         ptr += size;
+         size_written += size;
+@@ -2964,12 +2982,13 @@ public:
+ 
+ private:
+     uint8_t * ptr;
++    uint8_t * base_ptr;
+     size_t buf_size = 0;
+     size_t size_written = 0;
+ 
+     struct write_info {
+         ggml_tensor * tensor;
+-        uint8_t * ptr;
++        size_t data_offset;
+         size_t size;
+         size_t offset;
+     };
+@@ -2978,13 +2997,30 @@ private:
+ 
+ class llama_io_read_host : public llama_io_read_i {
+ public:
+-    llama_io_read_host(const uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
++    llama_io_read_host(const uint8_t * p, size_t len) : ptr(p), base_ptr(p), buf_size(len) {}
+ 
+     ~llama_io_read_host() {
+-        // flush the reads
++        if (rinfos.empty()) {
++            return;
++        }
++
++        std::vector<ggml_tensor *> tensors;
++        std::vector<size_t> offsets;
++        std::vector<size_t> sizes;
++        std::vector<size_t> data_offsets;
++        tensors.reserve(rinfos.size());
++        offsets.reserve(rinfos.size());
++        sizes.reserve(rinfos.size());
++        data_offsets.reserve(rinfos.size());
++
+         for (const auto & rinfo : rinfos) {
+-            ggml_backend_tensor_set(rinfo.tensor, rinfo.ptr, rinfo.offset, rinfo.size);
++            tensors.push_back(rinfo.tensor);
++            offsets.push_back(rinfo.offset);
++            sizes.push_back(rinfo.size);
++            data_offsets.push_back(rinfo.data_offset);
+         }
++
++        ggml_backend_tensor_set_n(tensors.data(), base_ptr, offsets.data(), sizes.data(), data_offsets.data(), rinfos.size());
+     }
+ 
+     void read(void * dst, size_t size) override {
+@@ -3003,7 +3039,7 @@ public:
+         }
+ 
+         // save for later during destruction
+-        rinfos.push_back({tensor, ptr, size, offset});
++        rinfos.push_back({tensor, (size_t) (ptr - base_ptr), size, offset});
+ 
+         ptr += size;
+         size_read += size;
+@@ -3020,12 +3056,13 @@ public:
+ 
+ private:
+     const uint8_t * ptr;
++    const uint8_t * base_ptr;
+     size_t buf_size = 0;
+     size_t size_read = 0;
+ 
+     struct read_info {
+         ggml_tensor * tensor;
+-        const uint8_t * ptr;
++        size_t data_offset;
+         size_t size;
+         size_t offset;
+     };
+@@ -3173,9 +3210,9 @@ public:
+                 }
+             }
+ 
+-            for (size_t i = 0; i < mbuf_cur.org.size(); ++i) {
+-                ggml_backend_tensor_copy(mbuf_cur.org[i], mbuf_cur.cpy[i]);
+-            }
++            std::vector<const ggml_tensor *> srcs(mbuf_cur.org.begin(), mbuf_cur.org.end());
++            std::vector<ggml_tensor *> dsts(mbuf_cur.cpy.begin(), mbuf_cur.cpy.end());
++            ggml_backend_tensor_copy_n(srcs.data(), dsts.data(), mbuf_cur.org.size());
+         }
+     }
+ 
+@@ -3272,9 +3309,9 @@ public:
+ 
+                 if (same_chunking) {
+                     // same chunking: copy 1:1 by index
+-                    for (size_t i = 0; i < mbuf_cur.org.size(); ++i) {
+-                        ggml_backend_tensor_copy(mbuf_cur.cpy[i], mbuf.org[i]);
+-                    }
++                    std::vector<const ggml_tensor *> srcs(mbuf_cur.cpy.begin(), mbuf_cur.cpy.end());
++                    std::vector<ggml_tensor *> dsts(mbuf.org.begin(), mbuf.org.end());
++                    ggml_backend_tensor_copy_n(srcs.data(), dsts.data(), mbuf_cur.cpy.size());
+                     continue;
+                 }
+             }
+@@ -3299,6 +3336,11 @@ public:
+             size_t src_base = 0;
+             size_t dst_base = 0;
+ 
++            std::vector<const ggml_tensor *> chunk_srcs;
++            std::vector<ggml_tensor *> chunk_dsts;
++            chunk_srcs.reserve(mbuf_cur.cpy.size() + mbuf.org.size());
++            chunk_dsts.reserve(mbuf_cur.cpy.size() + mbuf.org.size());
++
+             while (src_pos < total) {
+                 const auto & src_t = mbuf_cur.cpy[src_j];
+                 const auto & dst_t = mbuf.org[dst_i];
+@@ -3319,7 +3361,8 @@ public:
+                 auto * dst_v = ggml_view_1d(ctx_scratch, dst_t, n_el, dst_off);
+                 ggml_backend_view_init(dst_v);
+ 
+-                ggml_backend_tensor_copy(src_v, dst_v);
++                chunk_srcs.push_back(src_v);
++                chunk_dsts.push_back(dst_v);
+ 
+                 src_pos += n_copy;
+                 dst_pos += n_copy;
+@@ -3343,6 +3386,8 @@ public:
+                 GGML_ASSERT(ggml_nbytes(mbuf.org[i]) == 0);
+             }
+ 
++            ggml_backend_tensor_copy_n(chunk_srcs.data(), chunk_dsts.data(), chunk_srcs.size());
++
+             ggml_free(ctx_scratch);
+         }
+ 
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 2e768cb38..68b63748e 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -336,6 +336,8 @@ endif()
+ 
+ llama_build(test-backend-ops.cpp LINK ggml)
+ 
++llama_build_and_test(test-backend-tensor.cpp LINK ggml)
++
+ llama_build_and_test(test-tiled-mulmat.cpp  LABEL "main behavior backend"  LINK ggml)
+ llama_build_and_test(test-model-load-cancel.cpp LABEL "model behavior")
+ llama_build_and_test(test-autorelease.cpp       LABEL "model behavior")
+diff --git a/tests/test-backend-tensor.cpp b/tests/test-backend-tensor.cpp
+new file mode 100644
+index 000000000..3e8349c0b
+--- /dev/null
++++ b/tests/test-backend-tensor.cpp
+@@ -0,0 +1,616 @@
++#include "ggml-alloc.h"
++#include "ggml-backend.h"
++#include "ggml-cpp.h"
++#include "ggml.h"
++
++#include "../ggml/src/ggml-backend-impl.h"
++
++#include <cstdint>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <vector>
++
++static size_t align_up(size_t x, size_t align) {
++    return (x + align - 1) / align * align;
++}
++
++// allocate 1D F32 tensors of the given sizes into a buffer of the given buft
++static ggml_backend_buffer_ptr alloc_tensors(ggml_context * ctx, ggml_backend_buffer_type_t buft, const std::vector<size_t> & ne, std::vector<ggml_tensor *> & tensors) {
++    const size_t align = ggml_backend_buft_get_alignment(buft);
++
++    tensors.clear();
++    std::vector<size_t> sizes(ne.size());
++    std::vector<size_t> offsets(ne.size());
++
++    size_t total = 0;
++    for (size_t i = 0; i < ne.size(); i++) {
++        ggml_tensor * t = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, ne[i]);
++        tensors.push_back(t);
++        sizes[i]    = ggml_backend_buft_get_alloc_size(buft, t);
++        offsets[i]  = align_up(total, align);
++        total       = offsets[i] + sizes[i];
++    }
++
++    ggml_backend_buffer_ptr buf(ggml_backend_buft_alloc_buffer(buft, total));
++    if (!buf) {
++        return nullptr;
++    }
++
++    char * base = (char *) ggml_backend_buffer_get_base(buf.get());
++    for (size_t i = 0; i < tensors.size(); i++) {
++        if (ggml_backend_tensor_alloc(buf.get(), tensors[i], base + offsets[i]) != GGML_STATUS_SUCCESS) {
++            return nullptr;
++        }
++    }
++
++    return buf;
++}
++
++static bool run_tensor_n_case(
++        std::vector<ggml_tensor *> & tensors,
++        const std::vector<size_t> & offsets,
++        const std::vector<size_t> & sizes,
++        const std::vector<size_t> & data_offsets) {
++    const size_t n = tensors.size();
++
++    std::vector<uint8_t> data(256, 0);
++    std::vector<uint8_t> out(256, 0);
++
++    for (size_t i = 0; i < n; i++) {
++        if (sizes[i] == 0) {
++            continue;
++        }
++        memset(data.data() + data_offsets[i], (int) (0x40 + i*0x10), sizes[i]);
++    }
++
++    ggml_backend_tensor_set_n(tensors.data(), data.data(), offsets.data(), sizes.data(), data_offsets.data(), n);
++
++    ggml_backend_tensor_get_n(tensors.data(), out.data(), offsets.data(), sizes.data(), data_offsets.data(), n);
++
++    for (size_t i = 0; i < n; i++) {
++        if (sizes[i] == 0) {
++            continue;
++        }
++        if (memcmp(data.data() + data_offsets[i], out.data() + data_offsets[i], sizes[i]) != 0) {
++            return false;
++        }
++    }
++
++    std::vector<uint8_t> slice(256, 0);
++    for (size_t i = 0; i < n; i++) {
++        if (sizes[i] == 0) {
++            continue;
++        }
++        memset(slice.data(), 0, slice.size());
++        ggml_backend_tensor_get(tensors[i], slice.data(), offsets[i], sizes[i]);
++        if (memcmp(slice.data(), data.data() + data_offsets[i], sizes[i]) != 0) {
++            return false;
++        }
++    }
++
++    return true;
++}
++
++// verify batched tensor set/get on a single buffer type
++static bool test_tensor_n(ggml_backend_buffer_type_t buft) {
++    ggml_init_params params = {};
++    params.mem_size = ggml_tensor_overhead()*32 + 1024;
++    params.no_alloc = true;
++
++    ggml_context_ptr ctx(ggml_init(params));
++    if (!ctx) {
++        return false;
++    }
++
++    std::vector<ggml_tensor *> tensors;
++    ggml_backend_buffer_ptr buf = alloc_tensors(ctx.get(), buft, { 3, 2, 4, 3, 6 }, tensors);
++    if (!buf) {
++        return false;
++    }
++
++    ggml_tensor * t0    = tensors[0];
++    ggml_tensor * t1    = tensors[1];
++    ggml_tensor * t2    = tensors[2];
++    ggml_tensor * t3    = tensors[3];
++    ggml_tensor * t_big = tensors[4];
++
++    {
++        std::vector<ggml_tensor *> batch = { t0, t1, t2, t0 };
++        std::vector<size_t> offsets = { 0, 0, 0, 0 };
++        std::vector<size_t> sizes = { 3*4, 2*4, 4*4, 0 };
++        std::vector<size_t> data_offsets = { 0, 3*4, 5*4, 64 };
++
++        if (!run_tensor_n_case(batch, offsets, sizes, data_offsets)) {
++            return false;
++        }
++    }
++
++    {
++        std::vector<ggml_tensor *> batch = { t_big, t_big, t_big };
++        std::vector<size_t> offsets = { 0, 8, 16 };
++        std::vector<size_t> sizes = { 8, 8, 8 };
++        std::vector<size_t> data_offsets = { 0, 8, 16 };
++
++        if (!run_tensor_n_case(batch, offsets, sizes, data_offsets)) {
++            return false;
++        }
++    }
++
++    {
++        std::vector<ggml_tensor *> batch = { t0, t3 };
++        std::vector<size_t> offsets = { 0, 0 };
++        std::vector<size_t> sizes = { 3*4, 3*4 };
++        std::vector<size_t> data_offsets = { 0, 3*4 };
++
++        if (!run_tensor_n_case(batch, offsets, sizes, data_offsets)) {
++            return false;
++        }
++    }
++
++    return true;
++}
++
++// verify batched tensor set/get and copy across two buffer types
++static bool test_tensor_n_mixed_buft(ggml_backend_buffer_type_t buft) {
++    ggml_init_params params = {};
++    params.mem_size = ggml_tensor_overhead()*16 + 2048;
++    params.no_alloc = true;
++
++    ggml_context_ptr ctx(ggml_init(params));
++    if (!ctx) {
++        return false;
++    }
++
++    ggml_tensor * t0 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 3);
++    ggml_tensor * t1 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 2);
++    ggml_tensor * t2 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 4);
++    ggml_tensor * s0 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 3);
++    ggml_tensor * s1 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 2);
++    ggml_tensor * s2 = ggml_new_tensor_1d(ctx.get(), GGML_TYPE_F32, 4);
++
++    const size_t align0 = ggml_backend_buft_get_alignment(buft);
++    const size_t sz_t0 = ggml_backend_buft_get_alloc_size(buft, t0);
++    const size_t sz_t2 = ggml_backend_buft_get_alloc_size(buft, t2);
++    const size_t buf0_size = align_up(sz_t0, align0) + sz_t2;
++
++    ggml_backend_buffer_ptr buf0(ggml_backend_buft_alloc_buffer(buft, buf0_size));
++    if (!buf0) {
++        return false;
++    }
++
++    char * base0 = (char *) ggml_backend_buffer_get_base(buf0.get());
++    if (ggml_backend_tensor_alloc(buf0.get(), t0, base0) != GGML_STATUS_SUCCESS) {
++        return false;
++    }
++    char * p2 = base0 + align_up(sz_t0, align0);
++    if (ggml_backend_tensor_alloc(buf0.get(), t2, p2) != GGML_STATUS_SUCCESS) {
++        return false;
++    }
++
++    const size_t host_align = ggml_backend_buft_get_alignment(ggml_backend_cpu_buffer_type());
++    std::vector<uint8_t> host(1024 + host_align, 0);
++    uint8_t * host_ptr = (uint8_t *)(((uintptr_t)host.data() + host_align - 1) / host_align * host_align);
++    ggml_backend_buffer_ptr buf1(ggml_backend_cpu_buffer_from_ptr(host_ptr, 1024));
++    if (!buf1) {
++        return false;
++    }
++
++    ggml_backend_buffer_type_t cpu_buft = ggml_backend_buffer_get_type(buf1.get());
++    const size_t align1 = ggml_backend_buft_get_alignment(cpu_buft);
++    const size_t sz_t1 = ggml_backend_buft_get_alloc_size(cpu_buft, t1);
++    const size_t sz_s0 = ggml_backend_buft_get_alloc_size(cpu_buft, s0);
++    const size_t sz_s1 = ggml_backend_buft_get_alloc_size(cpu_buft, s1);
++
++    char * base1 = (char *) ggml_backend_buffer_get_base(buf1.get());
++    char * p = base1;
++    if (ggml_backend_tensor_alloc(buf1.get(), t1, p) != GGML_STATUS_SUCCESS) {
++        return false;
++    }
++    p += align_up(sz_t1, align1);
++    if (ggml_backend_tensor_alloc(buf1.get(), s0, p) != GGML_STATUS_SUCCESS) {
++        return false;
++    }
++    p += align_up(sz_s0, align1);
++    if (ggml_backend_tensor_alloc(buf1.get(), s1, p) != GGML_STATUS_SUCCESS) {
++        return false;
++    }
++    p += align_up(sz_s1, align1);
++    if (ggml_backend_tensor_alloc(buf1.get(), s2, p) != GGML_STATUS_SUCCESS) {
++        return false;
++    }
++
++    uint8_t src0[12], src1[8], src2[16];
++    memset(src0, 0xA1, sizeof(src0));
++    memset(src1, 0xB2, sizeof(src1));
++    memset(src2, 0xC3, sizeof(src2));
++
++    ggml_backend_tensor_set(s0, src0, 0, sizeof(src0));
++    ggml_backend_tensor_set(s1, src1, 0, sizeof(src1));
++    ggml_backend_tensor_set(s2, src2, 0, sizeof(src2));
++
++    {
++        std::vector<ggml_tensor *> batch = { t0, t1, t2 };
++        std::vector<size_t> offsets = { 0, 0, 0 };
++        std::vector<size_t> sizes = { sizeof(src0), sizeof(src1), sizeof(src2) };
++        std::vector<size_t> data_offsets = { 0, sizeof(src0), sizeof(src0) + sizeof(src1) };
++
++        if (!run_tensor_n_case(batch, offsets, sizes, data_offsets)) {
++            return false;
++        }
++    }
++
++    {
++        std::vector<const ggml_tensor *> srcs = { s0, s1, s2 };
++        std::vector<ggml_tensor *> dsts = { t0, t1, t2 };
++        ggml_backend_tensor_copy_n(srcs.data(), dsts.data(), srcs.size());
++
++        const uint8_t * expected[3] = { src0, src1, src2 };
++        const size_t sizes[3] = { sizeof(src0), sizeof(src1), sizeof(src2) };
++        std::vector<uint8_t> out(64, 0);
++        for (size_t i = 0; i < 3; i++) {
++            memset(out.data(), 0, out.size());
++            ggml_backend_tensor_get(dsts[i], out.data(), 0, sizes[i]);
++            if (memcmp(out.data(), expected[i], sizes[i]) != 0) {
++                return false;
++            }
++        }
++    }
++
++    return true;
++}
++
++// unified test set run on a single buffer type
++static bool test_buft(ggml_backend_buffer_type_t buft) {
++    return test_tensor_n(buft) && test_tensor_n_mixed_buft(buft);
++}
++
++//
++// Mock buffer type
++//
++// Ad-hoc host-backed buffer type used to exercise the dispatch logic in
++// ggml_backend_tensor_{set,get,copy}_n without relying on real backend hooks.
++//
++
++struct mock_config {
++    bool set_n;
++    bool get_n;
++    bool cpy_n;
++    bool cpy_n_result;
++    int  set_n_calls;
++    int  get_n_calls;
++    int  cpy_n_calls;
++};
++
++static mock_config g_mock = {};
++
++static void mock_config_reset(bool set_n, bool get_n, bool cpy_n, bool cpy_n_result) {
++    g_mock.set_n = set_n;
++    g_mock.get_n = get_n;
++    g_mock.cpy_n = cpy_n;
++    g_mock.cpy_n_result = cpy_n_result;
++    g_mock.set_n_calls = 0;
++    g_mock.get_n_calls = 0;
++    g_mock.cpy_n_calls = 0;
++}
++
++static void mock_buffer_free_buffer(ggml_backend_buffer_t buffer) {
++    free(buffer->context);
++}
++
++static void * mock_buffer_get_base(ggml_backend_buffer_t buffer) {
++    return buffer->context;
++}
++
++static void mock_buffer_memset_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, uint8_t value, size_t offset, size_t size) {
++    memset((char *) tensor->data + offset, value, size);
++
++    GGML_UNUSED(buffer);
++}
++
++static void mock_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
++    memcpy((char *) tensor->data + offset, data, size);
++
++    GGML_UNUSED(buffer);
++}
++
++static void mock_buffer_get_tensor(ggml_backend_buffer_t buffer, const struct ggml_tensor * tensor, void * data, size_t offset, size_t size) {
++    memcpy(data, (const char *) tensor->data + offset, size);
++
++    GGML_UNUSED(buffer);
++}
++
++static bool mock_buffer_cpy_tensor(ggml_backend_buffer_t buffer, const struct ggml_tensor * src, struct ggml_tensor * dst) {
++    memcpy(dst->data, src->data, ggml_nbytes(src));
++    return true;
++
++    GGML_UNUSED(buffer);
++}
++
++static void mock_buffer_clear(ggml_backend_buffer_t buffer, uint8_t value) {
++    memset(buffer->context, value, buffer->size);
++}
++
++static void mock_buffer_set_tensor_n(ggml_backend_buffer_t buffer, struct ggml_tensor * const * tensors, const void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    g_mock.set_n_calls++;
++    for (size_t i = 0; i < n_tensors; i++) {
++        memcpy((char *) tensors[i]->data + offsets[i], data[i], sizes[i]);
++    }
++
++    GGML_UNUSED(buffer);
++}
++
++static void mock_buffer_get_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * tensors, void * const * data, const size_t * offsets, const size_t * sizes, size_t n_tensors) {
++    g_mock.get_n_calls++;
++    for (size_t i = 0; i < n_tensors; i++) {
++        memcpy(data[i], (const char *) tensors[i]->data + offsets[i], sizes[i]);
++    }
++
++    GGML_UNUSED(buffer);
++}
++
++static bool mock_buffer_cpy_tensor_n(ggml_backend_buffer_t buffer, const struct ggml_tensor * const * srcs, struct ggml_tensor * const * dsts, size_t n_tensors) {
++    g_mock.cpy_n_calls++;
++    if (!g_mock.cpy_n_result) {
++        return false;
++    }
++    for (size_t i = 0; i < n_tensors; i++) {
++        memcpy(dsts[i]->data, srcs[i]->data, ggml_nbytes(srcs[i]));
++    }
++    return true;
++
++    GGML_UNUSED(buffer);
++}
++
++static const char * mock_buft_get_name(ggml_backend_buffer_type_t buft) {
++    return "MOCK";
++
++    GGML_UNUSED(buft);
++}
++
++static ggml_backend_buffer_t mock_buft_alloc_buffer(ggml_backend_buffer_type_t buft, size_t size) {
++    void * data = malloc(size);
++    if (data == NULL) {
++        return NULL;
++    }
++
++    struct ggml_backend_buffer_i iface = {
++        /* .free_buffer     = */ mock_buffer_free_buffer,
++        /* .get_base        = */ mock_buffer_get_base,
++        /* .init_tensor     = */ NULL,
++        /* .memset_tensor   = */ mock_buffer_memset_tensor,
++        /* .set_tensor      = */ mock_buffer_set_tensor,
++        /* .get_tensor      = */ mock_buffer_get_tensor,
++        /* .set_tensor_2d   = */ NULL,
++        /* .get_tensor_2d   = */ NULL,
++        /* .cpy_tensor      = */ mock_buffer_cpy_tensor,
++        /* .clear           = */ mock_buffer_clear,
++        /* .reset           = */ NULL,
++        /* .set_tensor_n    = */ NULL,
++        /* .get_tensor_n    = */ NULL,
++        /* .cpy_tensor_n    = */ NULL,
++    };
++    if (g_mock.set_n) iface.set_tensor_n = mock_buffer_set_tensor_n;
++    if (g_mock.get_n) iface.get_tensor_n = mock_buffer_get_tensor_n;
++    if (g_mock.cpy_n) iface.cpy_tensor_n = mock_buffer_cpy_tensor_n;
++
++    return ggml_backend_buffer_init(buft, iface, data, size);
++}
++
++static size_t mock_buft_get_alignment(ggml_backend_buffer_type_t buft) {
++    return 32;
++
++    GGML_UNUSED(buft);
++}
++
++static bool mock_buft_is_host(ggml_backend_buffer_type_t buft) {
++    return true;
++
++    GGML_UNUSED(buft);
++}
++
++static ggml_backend_buffer_type_t mock_buft(void) {
++    static struct ggml_backend_buffer_type buft = {
++        /* .iface = */ {
++            /* .get_name         = */ mock_buft_get_name,
++            /* .alloc_buffer     = */ mock_buft_alloc_buffer,
++            /* .alloc_buffer_n   = */ NULL,
++            /* .get_alignment    = */ mock_buft_get_alignment,
++            /* .get_max_size     = */ NULL,
++            /* .get_alloc_size   = */ NULL,
++            /* .get_alloc_size_n = */ NULL,
++            /* .is_host          = */ mock_buft_is_host,
++        },
++        /* .device  = */ NULL,
++        /* .context = */ NULL,
++    };
++    return &buft;
++}
++
++// verify that set_n/get_n route to the _n hook when installed and to the fallback otherwise
++static bool test_mock_set_get_n(bool with_hooks) {
++    mock_config_reset(with_hooks, with_hooks, false, true);
++
++    ggml_init_params params = {};
++    params.mem_size = ggml_tensor_overhead()*32 + 2048;
++    params.no_alloc = true;
++
++    ggml_context_ptr ctx(ggml_init(params));
++    if (!ctx) {
++        return false;
++    }
++
++    std::vector<ggml_tensor *> tensors;
++    ggml_backend_buffer_ptr buf = alloc_tensors(ctx.get(), mock_buft(), { 3, 2, 4 }, tensors);
++    if (!buf) {
++        return false;
++    }
++
++    const size_t sizes[3]     = { 3*4, 2*4, 4*4 };
++    const size_t data_offs[3] = { 0, 3*4, 5*4 };
++    size_t offsets[3]         = { 0, 0, 0 };
++    std::vector<uint8_t> data(64, 0), out(64, 0);
++
++    for (size_t i = 0; i < 3; i++) {
++        memset(data.data() + data_offs[i], (int) (0x40 + i*0x10), sizes[i]);
++    }
++
++    ggml_backend_tensor_set_n(tensors.data(), data.data(), offsets, sizes, data_offs, 3);
++    ggml_backend_tensor_get_n(tensors.data(), out.data(), offsets, sizes, data_offs, 3);
++
++    for (size_t i = 0; i < 3; i++) {
++        if (memcmp(data.data() + data_offs[i], out.data() + data_offs[i], sizes[i]) != 0) {
++            return false;
++        }
++    }
++
++    const int expected_calls = with_hooks ? 1 : 0;
++    if (g_mock.set_n_calls != expected_calls || g_mock.get_n_calls != expected_calls) {
++        return false;
++    }
++
++    return true;
++}
++
++// verify that copy_n respects the all-or-nothing contract of cpy_tensor_n
++static bool test_mock_copy_n(bool hook_result) {
++    mock_config_reset(false, false, true, hook_result);
++
++    ggml_init_params params = {};
++    params.mem_size = ggml_tensor_overhead()*32 + 2048;
++    params.no_alloc = true;
++
++    ggml_context_ptr ctx(ggml_init(params));
++    if (!ctx) {
++        return false;
++    }
++
++    std::vector<ggml_tensor *> src_tensors;
++    std::vector<ggml_tensor *> dst_tensors;
++    ggml_backend_buffer_ptr sbuf = alloc_tensors(ctx.get(), ggml_backend_cpu_buffer_type(), { 3, 2, 4 }, src_tensors);
++    ggml_backend_buffer_ptr dbuf = alloc_tensors(ctx.get(), mock_buft(), { 3, 2, 4 }, dst_tensors);
++    if (!sbuf || !dbuf) {
++        return false;
++    }
++
++    uint8_t sdata[3][16] = {};
++    memset(sdata[0], 0xA1, 3*4);
++    memset(sdata[1], 0xB2, 2*4);
++    memset(sdata[2], 0xC3, 4*4);
++
++    uint8_t junk[16];
++    memset(junk, 0xEE, sizeof(junk));
++
++    for (size_t i = 0; i < 3; i++) {
++        ggml_backend_tensor_set(src_tensors[i], sdata[i], 0, ggml_nbytes(src_tensors[i]));
++        ggml_backend_tensor_set(dst_tensors[i], junk, 0, ggml_nbytes(dst_tensors[i]));
++    }
++
++    std::vector<const ggml_tensor *> srcs;
++    for (const auto & t : src_tensors) {
++        srcs.push_back(t);
++    }
++
++    ggml_backend_tensor_copy_n(srcs.data(), dst_tensors.data(), 3);
++
++    for (size_t i = 0; i < 3; i++) {
++        std::vector<uint8_t> out(16, 0);
++        ggml_backend_tensor_get(dst_tensors[i], out.data(), 0, ggml_nbytes(dst_tensors[i]));
++        if (memcmp(out.data(), sdata[i], ggml_nbytes(dst_tensors[i])) != 0) {
++            return false;
++        }
++    }
++
++    if (g_mock.cpy_n_calls != 1) {
++        return false;
++    }
++
++    return true;
++}
++
++// verify that a batch spanning multiple buffer types is grouped by buft
++static bool test_mock_grouping() {
++    mock_config_reset(true, true, false, true);
++
++    ggml_init_params params = {};
++    params.mem_size = ggml_tensor_overhead()*32 + 2048;
++    params.no_alloc = true;
++
++    ggml_context_ptr ctx(ggml_init(params));
++    if (!ctx) {
++        return false;
++    }
++
++    std::vector<ggml_tensor *> mock_tensors;
++    std::vector<ggml_tensor *> cpu_tensors;
++    ggml_backend_buffer_ptr mbuf = alloc_tensors(ctx.get(), mock_buft(), { 3, 4 }, mock_tensors);
++    ggml_backend_buffer_ptr cbuf = alloc_tensors(ctx.get(), ggml_backend_cpu_buffer_type(), { 2 }, cpu_tensors);
++    if (!mbuf || !cbuf) {
++        return false;
++    }
++
++    // interleave mock/cpu/mock to exercise grouping
++    std::vector<ggml_tensor *> tensors = { mock_tensors[0], cpu_tensors[0], mock_tensors[1] };
++    std::vector<size_t> sizes       = { 3*4, 2*4, 4*4 };
++    std::vector<size_t> data_offs   = { 0, 3*4, 5*4 };
++    std::vector<size_t> offsets     = { 0, 0, 0 };
++    std::vector<uint8_t> data(64, 0), out(64, 0);
++
++    for (size_t i = 0; i < tensors.size(); i++) {
++        memset(data.data() + data_offs[i], (int) (0x40 + i*0x10), sizes[i]);
++    }
++
++    ggml_backend_tensor_set_n(tensors.data(), data.data(), offsets.data(), sizes.data(), data_offs.data(), tensors.size());
++    ggml_backend_tensor_get_n(tensors.data(), out.data(), offsets.data(), sizes.data(), data_offs.data(), tensors.size());
++
++    for (size_t i = 0; i < tensors.size(); i++) {
++        if (memcmp(data.data() + data_offs[i], out.data() + data_offs[i], sizes[i]) != 0) {
++            return false;
++        }
++    }
++
++    // mock group used the hook once, the cpu group did not
++    if (g_mock.set_n_calls != 1 || g_mock.get_n_calls != 1) {
++        return false;
++    }
++
++    return true;
++}
++
++static bool test_mock() {
++    return
++        test_mock_set_get_n(true)  &&
++        test_mock_set_get_n(false) &&
++        test_mock_copy_n(true)     &&
++        test_mock_copy_n(false)    &&
++        test_mock_grouping();
++}
++
++int main() {
++    ggml_backend_load_all();
++
++    // run the unified test set on each backend buffer type
++    const size_t n_devs = ggml_backend_dev_count();
++    size_t n_ok = 0;
++
++    for (size_t i = 0; i < n_devs; i++) {
++        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++        const char * name = ggml_backend_dev_name(dev);
++        ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
++
++        const bool ok = test_buft(buft);
++        printf("%s %s\n", name, ok ? "PASSED" : "FAILED");
++        if (ok) {
++            n_ok++;
++        }
++    }
++
++    printf("%zu/%zu backends passed\n", n_ok, n_devs);
++
++    // run the unified test set and the dispatch tests on the mock buffer type
++    mock_config_reset(true, true, true, true);
++    const bool mock_ok = test_buft(mock_buft()) && test_mock();
++    printf("MOCK %s\n", mock_ok ? "PASSED" : "FAILED");
++
++    return n_ok == n_devs && mock_ok ? 0 : 1;
++}

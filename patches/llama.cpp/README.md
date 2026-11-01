@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch`, `0024-vulkan-submit-flops-div`, `0025-vulkan-gdn-pipeline` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch`, `0024-vulkan-submit-flops-div`, `0025-vulkan-gdn-pipeline`, `0026-vulkan-top-k-mask`, `0027-batched-tensor-copy` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -142,6 +142,30 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 **Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o GATED_DELTA_NET -b Vulkan1`: 43/43 with the switch unset and 43/43 with `GGML_VK_GDN_PIPELINE=1`. Speed on this NVIDIA card (`perf`, indicative only, the target is AMD): **slower** with the switch, 99 -> 131 us at 64 tokens and 378 -> 500 us at 256 tokens (two runs each, stable), 12.1 -> 12.9 us at 1 token. NVIDIA's compiler most likely hoists the loads already and the extra copies cost. It is kept because the AMD compiler may not, and the PC check is a two-minute perf run; **do not enable it unless the PC perf run shows a win.**
 
 **Test (under 20 minutes, Windows PC):** `test-backend-ops perf -o GATED_DELTA_NET -b Vulkan0` with and without `GGML_VK_GDN_PIPELINE=1` (head_size 128, 64 and 256 tokens, 3 runs each); only if it wins by more than the run-to-run spread, A B B A on the Flash-Next 34k prompt, text identical.
+
+## 0026-vulkan-top-k-mask (VK05 / SC-B01)
+
+**What:** `GGML_OP_TOP_K_MASK` (the sparse-attention mask of Flash-Next, GLM-5 next and similar models: picked cells keep the mask value, all others become -inf) has CPU, CUDA and Metal kernels but none for Vulkan. Without one, `llama_context` probes `supports_op`, logs "fused top-k mask not supported" and builds the mask with `ggml_fill`, `ggml_set_rows` and `ggml_add`, which keeps two extra [n_kv, n_tokens] tensors in the compute buffer (`llm_graph_context`, the `kq_mask_all` branch in `llama-graph.cpp`). The patch adds the Vulkan op: one workgroup per output row fills the row with -inf, then (after a barrier) copies the mask value of every live pick, block cell and extra cell, following `ggml_compute_forward_top_k_mask` line by line (bounds, `score` of -inf or NaN skips a pick, blocks, extras, broadcast of a one-row mask). F16 and F32 masks. Switch: `GGML_VK_TOP_K_MASK=1` (read in `supports_op`). Unset = `supports_op` says no = stock behaviour and the same warning.
+
+**Soundness:** no arithmetic, only copies of mask values and -inf, so the result must equal the CPU result bit for bit; the harness checks the -inf pattern and requires zero error on the finite values (`max_err` 0.0).
+
+**Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o TOP_K_MASK -b Vulkan1`: 28/28 pass with `GGML_VK_TOP_K_MASK=1` (f16 and f32, with and without score, blocks, extras, `nh` and `ns` > 1, broadcast mask); unset: all cases "not supported", as stock. Limit: more than 65535 output rows are refused (falls back).
+
+**Compute buffer saved (arithmetic, not measured):** the fallback keeps one extra [n_kv, n_ubatch] f16 tensor: 268 MB at ctx 131072 and `-ub 1024`, 537 MB at ctx 262144 and `-ub 1024`, 1.07 GB at 262144 and `-ub 2048` (F32 masks double it). Not measured because Flash-Next does not fit the laptop.
+
+**Test (under 20 minutes, Windows PC):** (1) `test-backend-ops test -o TOP_K_MASK -b Vulkan0` with `GGML_VK_TOP_K_MASK=1`: all pass on the AMD card (mandatory); (2) Flash-Next server start at `-c 131072 -ub 1024`, A = unset, B = `GGML_VK_TOP_K_MASK=1`: read the "compute buffer size" line of the Vulkan device, the "not supported" warning must be gone in B; (3) 34k prompt A B B A, text identical, prompt tok/s. The scout expects 0.2 % of time at 34k and about 1 % at 128k; the value is the compute buffer, which the planner trades against `-ub`.
+
+## 0027-batched-tensor-copy (UP6, llama.cpp #30881 + #31418)
+
+**What:** saving or restoring a slot or a context checkpoint copies thousands of small KV ranges one `ggml_backend_tensor_get/set/copy` at a time (`llama_io_write_host`, `llama_io_read_host` and the multi-buffer copies in `llama-context.cpp`). Upstream #30881 (merged 2026-10-29, after the pin) adds batched `ggml_backend_tensor_get_n / set_n / copy_n` with optional backend hooks, and #31418 implements them for Vulkan with one staged transfer for all ranges; its table (R9700, the same RDNA4 family) gives 286-950 ms -> 24-48 ms per 64-73 MiB. The patch is both PRs, applied unchanged to the pin (`git apply --check` clean, in that order), plus one change: the batched path is only used with **`GGML_BACKEND_BATCHED_COPY=1`**. Unset, each `_n` function calls the single-tensor function per tensor, in the same order as before, so behaviour is stock. The new test `tests/test-backend-tensor.cpp` comes with the PRs.
+
+**Plugin:** `#30881` appends three hooks to the end of `ggml_backend_buffer_i`. The plugin already passes its buffer interface padded with zero slots (`buffer_i_padded` in `src/mc_buffer.inl`), so the new hooks stay NULL for its buffers and ggml's generic fallback is used; the plugin reads no ggml buffer field. Not run with the plugin on this laptop.
+
+**Compiled and run (Linux, Vulkan build):** `llama-server`, `test-backend-tensor`. `test-backend-tensor`: Vulkan0, Vulkan1 and CPU pass with the switch unset and set; the MOCK case (it asserts that the batched hooks are called) passes with the switch and **fails without it, as expected** (the hooks are not called then). Slot save and restore on the 1.1 MB `stories260K.gguf` (CPU): the saved files are byte-identical with and without the switch and the restore works. That model has no GPU state, so no speed is measured here.
+
+**Risk:** 1700 lines of upstream code touching every backend; Metal, SYCL and the others compile only on their own platforms (not built here). A Windows Vulkan build is not checked here (CI `llama_patched.yml` builds it).
+
+**Test (under 20 minutes, Windows PC):** Flash-Next with a 64k prompt processed, then `POST /slots/0?action=save` and `restore`, three times each, A = unset, B = `GGML_BACKEND_BATCHED_COPY=1`; read `save_ms` and `restore_ms` from the reply and compare the restored output tokens (identical). Also the checkpoint creation time in the server log during a long agent turn. Accept if B is faster by more than the A-vs-A spread and the output is identical. Note: patch 0020 (`LLAMA_SLOT_SAVE_ASYNC`) writes the file from a memory copy made by `llama_state_seq_get_data_ext`, which is the path this patch speeds up; try the two together.
 
 ## Not written, and why
 
