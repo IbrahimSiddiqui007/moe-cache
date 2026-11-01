@@ -412,7 +412,7 @@ struct state_t {
             fprintf(stderr, "moe-cache: %s - plugin disabled, the model loads the normal way\n", m.c_str());
             disabled = true;
         };
-        if (getenv("MOE_CACHE_DISABLE")) {
+        if (const char * dis = getenv("MOE_CACHE_DISABLE"); dis && *dis && strcmp(dis, "0") != 0) {      // =0 or empty means "not disabled"
             fail("MOE_CACHE_DISABLE is set");
             return;
         }
