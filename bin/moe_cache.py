@@ -1249,7 +1249,7 @@ def mtp_args(want, agent, ls, model, extra):
     server_has = False
     if head and want is not False and not user_spec:
         try:
-            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout
+            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
         except Exception:
             pass
     on, why = mtp_decide(want, agent, head, declared, server_has, user_spec)
