@@ -1460,11 +1460,11 @@ def busy_programs(timeout=30):
 
 
 def busy_note(item):
-    """One sentence for a program from busy_programs(): what Windows measured, and what moe-cache measured about it (only the EA app)."""
-    base = f"{item['name']} is using {item['what']} right now"
+    """One sentence for a program from busy_programs(): what Windows measured, and what closing it is worth (measured only for the EA app)."""
+    base = f"{item['name']} is using {item['what']} right now."
     if item["name"].lower().startswith(("eacef", "eadesktop", "eabackground", "ealocal")):
-        return base + ". The EA app was measured: with it open long prompts ran 23 % slower and decode 14 % slower. Close it for full speed."
-    return base + ". If speed is low, closing it may help (how much it costs moe-cache is not measured for this program)."
+        return base + " Closing it: measured, long prompts 23 % faster and decode 14 % faster (at -ub 1024, Flash-Next 34k)."
+    return base + " Closing it: not measured for this program."
 
 
 def warn_heavy_background():

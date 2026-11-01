@@ -654,13 +654,21 @@ check(st == 200 and len(j["recommendations"]) == 1 and j["recommendations"][0]["
       and any("RAM" in l for l in j["lines"]), f"/api/pick: the machine and one recommendation (Bolt at 128k for agents) ({st})")
 st, j = preq("/api/pick")
 check(st == 200 and [r["use"] for r in j["recommendations"]] == ["agents", "chat", "docs"], "/api/pick without a use: all three")
-# "Other programs": the page asks /api/busy (Windows counters); here the measurement is faked
+# "Other programs": /api/busy answers at once from the last measurement and measures in the background (here faked; Windows only)
 ui.mc.busy_programs = lambda timeout=30: ui.mc.parse_busy("gpu\tEACefSubProcess\t3D\t28.6\nmem\tgame\t2048")
+t0 = time.time()
 st, j = preq("/api/busy")
-check(st == 200 and j["available"] == ui.WINDOWS and (not ui.WINDOWS or [p["name"] for p in j["programs"]] == ["EACefSubProcess", "game"]) and (not ui.WINDOWS or "23 %" in j["programs"][0]["note"]),
-      f"/api/busy: programs using the GPU, named with what was measured ({st})")
+check(st == 200 and j["available"] == ui.WINDOWS and time.time() - t0 < 2, f"/api/busy: answers at once ({st})")
+if ui.WINDOWS:
+    for _ in range(50):
+        time.sleep(0.1)
+        st, j = preq("/api/busy")
+        if j["programs"]:
+            break
+    check([p["name"] for p in j["programs"]] == ["EACefSubProcess", "game"] and "23 % faster" in j["programs"][0]["note"] and "not measured" in j["programs"][1]["note"],
+          "/api/busy: programs using the GPU, each with what closing it is worth (measured only for the EA app)")
 _pg = open(ui.PAGE, encoding="utf-8").read()
-check('id="busybtn"' in _pg and "/api/busy" in _pg, "the page has the 'Check what is using the GPU and CPU' button")
+check('id="busyres"' in _pg and "loadBusy" in _pg and "setInterval(loadBusy" in _pg, "the page has the 'Other programs' list and refreshes it")
 check(preq("/api/pick/use", {"use": "gaming"})[0] == 400, "/api/pick/use: unknown use refused")
 st, j = preq("/api/pick/use", {"use": "agents"})
 check(st == 200 and j["last"]["model"] == bolt and j["last"]["ctx"] == 131072 and j["last"]["agent"] is True and j["pick"]["id"] == "bolt",
