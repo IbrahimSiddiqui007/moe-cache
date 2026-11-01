@@ -1,0 +1,21 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 8a2d3298a..44e2d7b14 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -8010,7 +8010,15 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
+ static bool ggml_vk_use_mul_mat_vec_id(const ggml_tensor * dst) {
+     const ggml_tensor * src0 = dst->src[0];
+     const ggml_tensor * ids = dst->src[2];
+-    return ids->ne[1] <= 8 && (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type));
++    // moe-cache patch 0003: GGML_VK_MMID_VEC_MAX_TOKENS = largest token count that still takes the
++    // per-token mul_mat_vec_id path (more tokens use the matrix path). Unset = 8 (unchanged behaviour).
++    // The two paths round differently, so changing it can change logits slightly.
++    static const int64_t vec_max_tokens = []() {
++        const char * e = getenv("GGML_VK_MMID_VEC_MAX_TOKENS");
++        const long v = e ? atol(e) : 8;
++        return (int64_t) (v >= 0 && v <= 1024 ? v : 8);
++    }();
++    return ids->ne[1] <= vec_max_tokens && (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type));
+ }
+ 
+ bool ggml_vk_use_mul_mat_vec_id(const struct ggml_cgraph * cgraph, int node_idx) {

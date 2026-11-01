@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -60,3 +60,15 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled:** `llama-server` (Linux, Release). Not run (no draft/MTP model on the laptop that is used here).
 
 **Test (under 20 minutes, Windows PC or any box with an MTP or draft model):** same model, three prompts (prose, code, agent-like JSON), temperature 0, `--draft-max 4`. Runs A B B A per prompt, A = unset, B = `LLAMA_SPEC_ADAPT=1`; 200 tokens each is enough. Compare generated tokens per second (server `timings`) and the printed acceptance per position. Accept only if B is not slower on any prompt by more than the A-vs-A spread and faster on at least one. Try `LLAMA_SPEC_ADAPT_COST=0.3` if B is slower where acceptance is high.
+
+## 0003-vulkan-mmid-vec-max-tokens (L10)
+
+**What:** ggml-vulkan runs `MUL_MAT_ID` as one small per-token mat-vec dispatch each when the batch has at most 8 tokens (`ggml_vk_use_mul_mat_vec_id`, hard-coded `ids->ne[1] <= 8`), and as the grouped matrix path above that. A draft of 8 plus the sampled token (9 rows) therefore changes path abruptly. Switch: `GGML_VK_MMID_VEC_MAX_TOKENS=N` (0..1024). Unset = 8 = stock. It is the only place the limit lives; the fused MUL_MAT_ID+scale check and `supports_op` ask the same function. The backend `supports_op` still asks for the matrix path to exist when N is lowered, so values below 8 can send some types to the CPU.
+
+**Scope:** this covers only the Vulkan boundary. The CPU backend and the plugin's own executor limits (`EXEC_MAXCOL`, the tiled-arithmetic switch at 8 rows per expert) are not touched by any patch here.
+
+**Risk:** the two paths round differently, so changing N can change logits slightly (not bit-identical). The vec path issues one dispatch set per token, so a large N can be slower or cost more descriptor sets; it is a tuning knob, not a fix.
+
+**Compiled and checked:** `ggml-vulkan` (Linux, glslc). `test-backend-ops test -o MUL_MAT_ID -b Vulkan1` (RTX 4060 laptop): 1109/1109 pass with the default and 1109/1109 with `GGML_VK_MMID_VEC_MAX_TOKENS=64`. Intel iGPU (Vulkan0) passes with the default only. That is a correctness check of the knob, not a speed result.
+
+**Test (under 20 minutes, Windows PC):** MTP or draft decoding with a fixed `--draft-max` of 6, 8 and 10 (verification batches of 7, 9 and 11 rows), A B B A with A = unset and B = `GGML_VK_MMID_VEC_MAX_TOKENS=16`, 200 generated tokens, temperature 0. Compare time per verification step (server timings) at each draft length. A step at 9 rows should be the one that moves. Accept B only if it is faster at 9 and 11 rows by more than the A-vs-A spread and the generated tokens match A (or differ only after a near-tie, check the logprob gap).
