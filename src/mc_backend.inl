@@ -668,9 +668,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
     }
     // MOE_CACHE_GPU_SUM=1 (mc_device.inl): the nodes right after the experts that the plugin claimed join the block, so only their sum is read back. A block split
-    // into parts (returned above) leaves them to the CPU, as does anything that does not match; the result is the same, only slower.
+    // into parts leaves them to the CPU (the row copy of a split block needs the expert output's shape), as does anything that does not match; the result is the same, only slower.
     static const bool tmpl_off = !getenv("MOE_CACHE_GPU_TMPL") || atoi(getenv("MOE_CACHE_GPU_TMPL")) <= 0;
-    if (gpu_sum_on() && tmpl_off && last + 1 < n_all && is_weighted_experts(ggml_graph_node(cg, last + 1)) && ggml_graph_node(cg, last + 1)->src[0] == out) {
+    if (gpu_sum_on() && tmpl_off && n_chunk == 1 && last + 1 < n_all && is_weighted_experts(ggml_graph_node(cg, last + 1)) && ggml_graph_node(cg, last + 1)->src[0] == out) {
         ggml_tensor * mul = ggml_graph_node(cg, last + 1);
         const ggml_tensor * w = mul->src[1];
         std::vector<ggml_tensor *> tail { mul };
