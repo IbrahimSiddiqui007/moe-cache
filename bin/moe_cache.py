@@ -1407,9 +1407,13 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
         threading.Thread(target=save_now_and_then, daemon=True).start()
     seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": False}
     def pump():
-        out = sys.stderr.buffer
+        out = getattr(sys.stderr, "buffer", None)
         for line in iter(p.stderr.readline, b""):
-            out.write(line); out.flush()
+            if out is not None:
+                try:
+                    out.write(line); out.flush()
+                except (OSError, ValueError):
+                    out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
             if b"moe-cache:" in line:
