@@ -401,6 +401,13 @@ struct state_t {
                 hi = b;
             }
         }
+        if (const char * v = getenv("MOE_CACHE_TIMER_1MS")) {
+            double before = 0;
+            const double now = v[0] == '1' ? plat::timer_1ms(&before) : 0;
+            if (now > 0) {
+                fprintf(stderr, "moe-cache: MOE_CACHE_TIMER_1MS: timer tick %.3f -> %.3f ms for this process\n", before, now);
+            }
+        }
         const char * gib = getenv("MOE_CACHE_SIZE_GIB");
         std::string file_s;
         const char * file = plat::env_utf8("MOE_CACHE_GGUF", file_s) ? file_s.c_str() : nullptr;

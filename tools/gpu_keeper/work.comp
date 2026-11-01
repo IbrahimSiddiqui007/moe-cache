@@ -1,0 +1,10 @@
+#version 450
+// A fixed amount of arithmetic that only the core clock limits: no memory traffic except one small buffer.
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) buffer B { uint v[]; };
+layout(push_constant) uniform P { uint iters; };
+void main() {
+    uint x = gl_GlobalInvocationID.x * 2654435761u + 1u;
+    for (uint i = 0u; i < iters; i++) { x ^= x << 13; x ^= x >> 17; x ^= x << 5; }
+    v[gl_GlobalInvocationID.x & 1023u] = x;
+}
