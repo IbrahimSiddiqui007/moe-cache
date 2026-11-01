@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -108,6 +108,14 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled and run (Linux, Release, Vulkan build):** `llama-server` with the 1.1 MB `stories260K.gguf` (CPU): save with and without the switch gives byte-identical 22476-byte files, restore from the async file works and the next completion reuses the 25 cached tokens, no `.tmp` is left. Timings on that model are meaningless (0.1 ms).
 
 **Test (under 20 minutes, Windows PC):** Flash-Next with a 64k prompt processed, then `POST /slots/0?action=save` while a second request decodes on another slot (or measure decode tok/s of one slot during a save). A B B A, A = unset, B = `LLAMA_SLOT_SAVE_ASYNC=1`; read the longest gap between two streamed tokens of the decoding request and the save reply time. Watch peak RAM. Accept only if the gap shrinks by more than the A-vs-A spread and the saved files restore to the same output.
+
+## 0030-vulkan-global-queue-priority
+
+**What:** other programs that draw on the same GPU (found 2026-11-01: the EA app's embedded browser kept the 3D engine 27-29 % busy and the desktop compositor another 10 %; llama-server's compute and copy queues wait behind that work) get scheduled against ours. The patch asks the Vulkan driver for a global queue priority (`VK_KHR_global_priority`) when the device is created. Switch: `GGML_VK_GLOBAL_PRIORITY=low|medium|high|realtime`. Unset = unchanged. If the driver does not have the extension or refuses the priority (high and realtime can need extra rights), a line is printed and the device is created the normal way. Where it applies: Windows and Linux, any driver with the extension.
+
+**Related switches without a patch:** `GGML_VK_ENABLE_MEMORY_PRIORITY=1` (already in b11966: priority 1.0 on every allocation) and the plugin's `MOE_CACHE_ECOQOS_OFF=1`, `MOE_CACHE_PROC_PRIO=above|high`, `MOE_CACHE_GPU_PRIO=above|high|realtime` (Windows; power throttling, CPU priority class, GPU scheduling class of the process).
+
+**State:** compiles (Linux Vulkan build and the Windows CI build). Paired result: see the test log of the session; default stays off until a paired run wins.
 
 ## Not written, and why
 
