@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -72,3 +72,15 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled and checked:** `ggml-vulkan` (Linux, glslc). `test-backend-ops test -o MUL_MAT_ID -b Vulkan1` (RTX 4060 laptop): 1109/1109 pass with the default and 1109/1109 with `GGML_VK_MMID_VEC_MAX_TOKENS=64`. Intel iGPU (Vulkan0) passes with the default only. That is a correctness check of the knob, not a speed result.
 
 **Test (under 20 minutes, Windows PC):** MTP or draft decoding with a fixed `--draft-max` of 6, 8 and 10 (verification batches of 7, 9 and 11 rows), A B B A with A = unset and B = `GGML_VK_MMID_VEC_MAX_TOKENS=16`, 200 generated tokens, temperature 0. Compare time per verification step (server timings) at each draft length. A step at 9 rows should be the one that moves. Accept B only if it is faster at 9 and 11 rows by more than the A-vs-A spread and the generated tokens match A (or differ only after a near-tie, check the logprob gap).
+
+## 0004-ple-prefetch-ahead (P22)
+
+**What:** b11966 already prefetches the lazily read per-layer-embedding (PLE) rows of a ubatch (`llama_prefetch_rows`, called from `llm_graph_input_gemma4_ple::set_input`, so right before that ubatch computes; `madvise(MADV_WILLNEED)` on Linux, `PrefetchVirtualMemory` on Windows). The reads for the first rows of a ubatch can therefore still stall that ubatch. The patch adds a look-ahead: with `LLAMA_PLE_PREFETCH_AHEAD=1`, `llama_context::decode` hints the rows of every token of the whole batch (up to `n_batch`) once, before the first ubatch, so the reads of ubatch 2, 3, ... overlap with the compute of ubatch 1, 2, ... Only Gemma 4 (row index = token id) with a lazy PLE tensor in a host buffer; any other model or a non-lazy load does nothing. The existing per-ubatch call stays.
+
+**Soundness:** a hint only; the data read and the graph are unchanged, so output cannot change. Risk: on a box short of RAM the read-ahead can push out pages that are still needed (the page cache then holds up to `n_batch` rows of `n_embd_per_layer * n_layer` values each); the time is spent in the syscall (sorted and merged ranges, one `madvise` per merged range), measure it.
+
+**Not here:** token-id lookahead across batches (the server only knows the next chunk when it builds it), and Gemma 3n (loaded without lazy read, so there is nothing to prefetch). The audit notes the old profile attributes only about 3 % of a prompt to these gaps; expect at most that.
+
+**Compiled:** `libllama` (Linux, Release). Not run: no Gemma 4 model on the laptop. The Windows branch is the existing upstream `llama_prefetch`, not compiled here.
+
+**Test (under 20 minutes, Windows PC):** a Gemma 4 GGUF with lazy PLE (the default `--lazy-mode auto` decides; the log line `enabling prefetch for 'per_layer_token_embd.weight'` must appear), same long prompt (about 34k tokens), `MOE_CACHE_SEG_TIMES=1`, A B B A with A = unset and B = `LLAMA_PLE_PREFETCH_AHEAD=1`, cold file cache each run if you can (otherwise the rows are already resident and nothing can be seen). Compare total prompt time and the per-ubatch time of the first rows. Accept only if B is faster by more than the A-vs-A spread; output tokens must be identical.

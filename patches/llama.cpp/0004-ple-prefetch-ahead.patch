@@ -1,0 +1,31 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 33ad7845f..c6535b810 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -1919,6 +1919,26 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+     GGML_ASSERT((cparams.causal_attn || cparams.n_ubatch >= n_tokens_all) && "non-causal attention requires n_ubatch >= n_tokens");
+ 
++    // moe-cache patch 0004 (P22): LLAMA_PLE_PREFETCH_AHEAD=1 asks the OS for the lazily read per-layer
++    // embedding rows of every token of this batch now, so the reads of the later ubatches overlap with the
++    // compute of the first ones. The per-ubatch prefetch in the graph input stays as it is. Hint only.
++    {
++        static const bool ple_ahead = []() {
++            const char * e = getenv("LLAMA_PLE_PREFETCH_AHEAD");
++            return e != nullptr && atoi(e) != 0;
++        }();
++        if (ple_ahead && model.arch == LLM_ARCH_GEMMA4 && model.per_layer_tok_embd && model.can_prefetch.count(model.per_layer_tok_embd)) {
++            std::vector<int32_t> rows;
++            rows.reserve(batch_inp.tokens.size());
++            for (const auto & tok : batch_inp.tokens) {
++                if (!tok.has_embd && tok.id >= 0 && tok.id < n_vocab) {
++                    rows.push_back(tok.id);
++                }
++            }
++            llama_prefetch_rows(model.per_layer_tok_embd, rows.data(), rows.size());
++        }
++    }
++
+     // TODO: this clear of the buffer can easily be forgotten - need something better
+     // sync first so any in-flight async copies into embd_seq complete before it is freed
+     if (!embd_seq.empty()) {
