@@ -2748,8 +2748,11 @@ def connect(argv):
             data = json.load(open(cfg, encoding="utf-8"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
-        if not str(data.get("model", "")).startswith("moe-cache/") or not os.path.isfile(cfg + ".bak"):
-            # keep the backup of the user's own setup: a second connect (already moe-cache) must not replace it with ours
+        if not isinstance(data, dict) or not isinstance(data.get("provider", {}), dict):
+            raise SystemExit(f"{cfg} is not an OpenCode config object (a JSON object with a 'provider' object): add the block printed by 'moe_cache.py connect opencode' by hand")
+        if "moe-cache" not in data.get("provider", {}) or not os.path.isfile(cfg + ".bak"):
+            # keep the backup of the user's own setup: a second connect, or a file that already holds our provider (even with another default
+            # model chosen since), must not replace it with ours
             shutil.copy2(cfg, cfg + ".bak")
             if not WINDOWS:
                 os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
