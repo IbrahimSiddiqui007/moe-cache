@@ -1,0 +1,30 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c0943689f..8a2d3298a 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -346,6 +346,16 @@ void ggml_vk_wait_for_fence(ggml_backend_vk_context * ctx) {
+     }
+ 
+     // Spin (w/pause) waiting for the graph to finish executing.
++    // moe-cache patch 0001: GGML_VK_FENCE_SPIN_ITERS = pause blocks (10 pauses each) between two
++    // getFenceStatus polls. Unset = 100 (unchanged behaviour). Only the poll interval changes.
++    static const uint32_t spin_iters = []() {
++        const char * e = getenv("GGML_VK_FENCE_SPIN_ITERS");
++        if (e == nullptr || *e == '\0') {
++            return 100u;
++        }
++        const unsigned long v = strtoul(e, nullptr, 10);
++        return (uint32_t) (v > 100000ul ? 100000ul : v);
++    }();
+     vk::Result result;
+     for (;;) {
+         try {
+@@ -362,7 +372,7 @@ void ggml_vk_wait_for_fence(ggml_backend_vk_context * ctx) {
+             GGML_LOG_ERROR("ggml_vulkan: error %s at %s:%d\n", to_string(result).c_str(), __FILE__, __LINE__);
+             throw vk::SystemError(vk::make_error_code(result), "ggml_vulkan: getFenceStatus");
+         }
+-        for (uint32_t i = 0; i < 100; ++i) {
++        for (uint32_t i = 0; i < spin_iters; ++i) {
+             YIELD();
+             YIELD();
+             YIELD();
