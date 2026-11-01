@@ -1,6 +1,7 @@
 #!/bin/bash
 # Logit check for LLAMA_LAYERWISE_PREFILL (patches/llama.cpp/0050): stock order against layer-wise order on a tiny random qwen4exp model.
 #   tests/layerwise_check.sh LLAMA_CPP_DIR [N=4] [n_gpu_layers=0]
+# GEN=path/to/test-llama-archs: use that binary to write the model (a build without tests, like a CUDA one, has none).
 # LLAMA_CPP_DIR: a llama.cpp checkout at the pin with 0050 applied and built (build/bin/test-llama-archs and libllama in LLAMA_CPP_DIR/build;
 #   BUILD_DIR=build-cuda for another build directory). No real qwen4exp model is needed: test-llama-archs writes a 68 MB random one (8 layers,
 #   linear and full attention, QSA indexer with a top-k of 32 so it really selects, 8 experts).
@@ -11,7 +12,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 LC="$(cd "${1:?usage: layerwise_check.sh LLAMA_CPP_DIR [N] [n_gpu_layers]}" && pwd)"
 N=${2:-4}; NGL=${3:-0}; B="$LC/${BUILD_DIR:-build}"
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
-(cd "$W" && LLAMA_TEST_QWEN4EXP_LAYERS=8 LLAMA_TEST_QWEN4EXP_CTX=2048 LLAMA_TEST_QWEN4EXP_TOPK=32 "$B/bin/test-llama-archs" -a qwen4exp -o . >/dev/null 2>&1)
+(cd "$W" && LLAMA_TEST_QWEN4EXP_LAYERS=8 LLAMA_TEST_QWEN4EXP_CTX=2048 LLAMA_TEST_QWEN4EXP_TOPK=32 "${GEN:-$B/bin/test-llama-archs}" -a qwen4exp -o . >/dev/null 2>&1)
 M="$W/qwen4exp-moe.gguf"; [ -f "$M" ] || { echo "FAIL: no model written"; exit 1; }
 g++ -O2 -std=c++17 -I"$LC/include" -I"$LC/ggml/include" "$HERE/layerwise_logits.cpp" -L"$B/bin" -lllama -lggml -lggml-base -Wl,-rpath,"$B/bin" -o "$W/lwl"
 fail=0

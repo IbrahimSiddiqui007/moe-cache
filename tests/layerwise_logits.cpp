@@ -8,6 +8,7 @@
 // marked tokens (all, or the last of the prompt) as raw floats. "cmp" prints the largest difference, the NMSE and how many rows
 // have the same best token.
 #include "llama.h"
+#include "ggml-backend.h"
 
 #include <cmath>
 #include <cstdio>
@@ -34,6 +35,12 @@ static int run(int argc, char ** argv) {
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = ngl;
+    // LW_CPU_MOE=1: the expert tensors stay in CPU memory (like --n-cpu-moe 999), which is where the plugin takes them over
+    static llama_model_tensor_buft_override ovr[2] = { { "ffn_.*_exps", nullptr }, { nullptr, nullptr } };
+    if (getenv("LW_CPU_MOE") && atoi(getenv("LW_CPU_MOE")) > 0) {
+        ovr[0].buft = ggml_backend_cpu_buffer_type();
+        mp.tensor_buft_overrides = ovr;
+    }
     llama_model * model = llama_model_load_from_file(path, mp);
     if (!model) {
         fprintf(stderr, "cannot load %s\n", path);

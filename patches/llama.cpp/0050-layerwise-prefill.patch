@@ -1,5 +1,5 @@
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 33ad7845f..9df4616c9 100644
+index 33ad7845f..383ddb448 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -7,6 +7,7 @@
@@ -18,7 +18,7 @@ index 33ad7845f..9df4616c9 100644
  #include <cinttypes>
  #include <cmath>
  #include <cstring>
-@@ -1597,6 +1599,55 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+@@ -1597,6 +1599,71 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
      return res;
  }
  
@@ -38,20 +38,30 @@ index 33ad7845f..9df4616c9 100644
 +    gparams.lw_l1 = il1;
 +    gparams.lw_in = in;
 +
++    int64_t t0 = ggml_time_us();
++    auto lap = [&](int i) {
++        const int64_t t1 = ggml_time_us();
++        lw_us[i] += t1 - t0;
++        t0 = t1;
++    };
++
 +    auto * gf = model.build_graph(gparams);
 +    if (!gf) {
 +        LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
 +        ret = GGML_STATUS_FAILED;
 +        return nullptr;
 +    }
++    lap(0);
 +
 +    if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
 +        LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
 +        ret = GGML_STATUS_ALLOC_FAILED;
 +        return nullptr;
 +    }
++    lap(1);
 +
 +    res->set_inputs(&ubatch);
++    lap(2);
 +
 +    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
 +    if (status != GGML_STATUS_SUCCESS) {
@@ -62,9 +72,15 @@ index 33ad7845f..9df4616c9 100644
 +
 +    if (out) {
 +        GGML_ASSERT(res->t_lw_out != nullptr);
-+        // waits for the compute of this segment
++        // the buffer-level get does not wait for the (asynchronous) compute stream of a GPU backend: wait here
++        ggml_backend_sched_synchronize(sched.get());
++        lap(3);
 +        ggml_backend_tensor_get(res->t_lw_out, out, 0, ggml_nbytes(res->t_lw_out));
++        lap(4);
++    } else {
++        lap(3);
 +    }
++    lw_segments++;
 +
 +    ret = GGML_STATUS_SUCCESS;
 +
@@ -74,7 +90,7 @@ index 33ad7845f..9df4616c9 100644
  int llama_context::encode(const llama_batch_ext & batch_inp) {
      if (batch_inp.tokens.empty()) {
          LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
-@@ -2000,65 +2051,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2000,65 +2067,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
      int64_t n_outputs_prev = 0;
      int64_t n_tokens_prev  = 0;
  
@@ -142,7 +158,7 @@ index 33ad7845f..9df4616c9 100644
          auto * t_logits  = res->get_logits();
          auto * t_embd    = cparams.embeddings       ? res->get_embd()     : nullptr;
          auto * t_h_nextn = cparams.embeddings_nextn ? res->get_h_nextn()  : nullptr;
-@@ -2184,6 +2178,220 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2184,6 +2194,225 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
  
          n_outputs_prev += n_outputs;
          n_tokens_prev  += ubatch.n_tokens;
@@ -299,6 +315,11 @@ index 33ad7845f..9df4616c9 100644
 +            }
 +        }
 +        mctx->lw_clear();
++
++        LLAMA_LOG_INFO("%s: layer-wise prefill: %" PRId64 " segment graphs, build %.0f ms, alloc %.0f ms, set inputs %.0f ms, compute (to the wait) %.0f ms, hidden state out %.0f ms\n",
++                __func__, lw_segments, lw_us[0] / 1e3, lw_us[1] / 1e3, lw_us[2] / 1e3, lw_us[3] / 1e3, lw_us[4] / 1e3);
++        lw_segments = 0;
++        std::fill(std::begin(lw_us), std::end(lw_us), 0);
 +    } else
 +    do {
 +        const auto & ubatch = mctx->get_ubatch();
@@ -364,15 +385,19 @@ index 33ad7845f..9df4616c9 100644
  
      // set to total number of outputs in the batch, for use in llama_get_logits_ith
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 6938fb103..ac8e3d5f6 100644
+index 6938fb103..319948974 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
-@@ -145,6 +145,17 @@ struct llama_context {
+@@ -145,6 +145,21 @@ struct llama_context {
              llama_memory_context_i * mctx,
                         ggml_status & ret);
  
 +    // LLAMA_LAYERWISE_PREFILL: one segment graph (layers il0..il1-1) of one ubatch, no graph reuse. The memory context is
 +    // not applied (lw_load() put it back). in/out: host buffers of the hidden state at the segment's edges (null at the model's)
++    // layer-wise prefill: microseconds spent per stage of one decode() call, and the segments run (logged when the call ends)
++    int64_t lw_us[5] = { 0, 0, 0, 0, 0 };  // build, alloc, set_inputs, compute + wait, hidden-state copy out
++    int64_t lw_segments = 0;
++
 +    llm_graph_result * process_ubatch_lw(
 +                const llama_ubatch & ubatch,
 +            llama_memory_context_i * mctx,

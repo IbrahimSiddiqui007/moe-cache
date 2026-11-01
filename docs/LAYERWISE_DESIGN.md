@@ -60,6 +60,7 @@ decode(batch):                                   (LLAMA_LAYERWISE_PREFILL=N, qwe
 
 - **Segment graph.** `qwen4exp::graph` builds only layers [l0, l1). If l0 > 0 the hidden state (`n_embd*hc` x n_tokens, F32) is an input tensor `llm_graph_input_lw`, filled from the chunk's boundary buffer. If l1 < n_layer the hidden state is `ggml_set_output` and copied to the boundary buffer after the compute. Token embedding and `hc_init` only in the first segment; output cropping, head mixer and logits only in the last.
 - **Unused inputs.** A one-layer graph may not use an input the whole model uses (a recurrent layer has no use for the KV index inputs and the reverse). `set_inputs` crashes on an input that was not allocated (comment at `llama-context.cpp:1566`), so the segment builder adds every always-set input (K/V index, `s_copy`, k-pool inputs) to the graph with `ggml_build_forward_expand`, as the MTP graph already does for `s_copy` (`qwen4exp.cpp:625`).
+- **A group cannot be bigger than one `llama_decode` call.** `llama_decode` takes at most `-b` tokens, so a group is at most `-b / -ub` chunks. The launcher sets `-b max(ub, 2048)`: at `-ub 1024` that is 2 chunks. A PC run needs `-b 8192` (N = 8 at `-ub 1024`). The server already feeds the prompt in `-b` sized batches, so nothing else changes.
 - **No graph reuse.** `can_reuse` stays off in this mode (each segment differs in layer and `n_kv`).
 - **Memory-context snapshots.** `apply()` is not repeatable (it removes and re-adds cells, `find_slot` rewrites the state-source ids), so each chunk is placed once, in order, and what the graph needs afterwards is saved: the KV and indexer `n_kv`; the recurrent `head`, `n`, `rs_z` and the `s_copy` values; the k-pool state of the chunk (which pools are new) and a copy of the k-pool layout at that time (so `pool_cells`, the pool mask and the number of pools are exactly the stock ones). `lw_load(k)` puts them back. The default `lw_save/lw_load` of `llama_memory_context_i` refuse, so any other memory type falls back to stock.
 
@@ -106,4 +107,29 @@ So at 34k the best case is a saving of 22-28 s of upload for a cost of about 5 s
 
 ## 9. Result
 
-(filled in below after the checks)
+Laptop (Linux, RTX 4060 8 GB, 16 threads), patch 0050 on the pin, tiny random qwen4exp from `test-llama-archs` (8 layers: layers 3 and 7 full attention, the rest linear attention; QSA indexer with k-pool 4 and top-k 32 so it selects among 75+ pools; 8 experts, 2 used; vocabulary 128). `tests/layerwise_check.sh`: six prompt shapes (300-1000 random tokens; chunk sizes 17, 30, 50, 64, of which 17 and 30 are not multiples of the pool size 4 so pools straddle chunks; logits of every token or of the last one), groups of N chunks, every logit compared with the stock order.
+
+| Backend | N | Result |
+|---|---|---|
+| CPU | 4 | all six shapes: max\|diff\| 0, same best token on every row (2,600 rows) |
+| CPU + moe-cache plugin (cache mode, executor) | 4 | max\|diff\| 0, and equal to the run without the plugin |
+| CUDA, all layers on the GPU | 4 and 8 | max\|diff\| 0, same best token everywhere |
+| CUDA, 3 of 9 layers on the GPU (scheduler splits) | 4 | max\|diff\| 0 |
+| N = 1 | - | refused with one warning, stock result |
+
+A first CUDA run gave NaN and wrong tokens: the copy of the hidden state out of a segment used the buffer-level `ggml_backend_tensor_get`, which does not wait for the GPU backend's compute stream. Fixed with a `ggml_backend_sched_synchronize` before it. The check caught it; the CPU run could not.
+
+Cost of the machinery on the tiny model (per segment graph, 80 segments): build 0.07 ms, scheduler alloc 0.05 ms (CPU) to 0.12 ms (CUDA), set inputs 0.04-0.07 ms, copy of the hidden state 0.03-0.1 ms. So 1400 segments at 34k cost well under a second here. A real layer graph has more nodes than this one and a real model has far larger tensors, so this is a lower bound, not a prediction; the decode log prints the same breakdown for every `llama_decode` (`layer-wise prefill: N segment graphs, build ... ms`), so the PC run measures it.
+
+**What was not checked, and why:**
+
+| Not checked | Why |
+|---|---|
+| Real Flash-Next (or any real qwen4exp) output | no such model on the laptop; PC test below |
+| Upload volume with the plugin's GPU block and `MOE_CACHE_GPU_KEEP_MIB` | the tiny model's expert block has `VIEW` nodes (fused gate-up tensor), which `gpu_segment` refuses (all 64 blocks fell back to the CPU, with and without the switch), so no upload is measured; PC test |
+| Speed | tiny model; nothing here predicts the PC |
+| 128k memory behaviour | the group holds `N x ub x 40 KiB`; not run at that size |
+| Upstream expert cache (`--moe-cache-mib`) with segments | not run |
+| Other architectures | refused by design (qwen3.x hybrid, glm5-next have the same k-pool memory and could follow with the same `lw_*` hooks; not started) |
+
+**What blocks a real win, honestly:** nothing found in the graph or memory part: it runs and matches. The open question is only cost against gain on the PC: the keeper must hold the layer (`MOE_CACHE_GPU_KEEP_MIB` of about two layers), `-b` must be at least N x `-ub`, the hidden state crosses PCIe twice per layer and chunk, and `set_input_kpool` now runs once per QSA layer and chunk instead of once per chunk (a fill of `n_pool x n_tokens` values: about 8 M at 34k, 33 M at 128k per call; a guess of a few ms each, so up to a few tens of seconds at 128k; if the log shows it, cache the filled inputs per chunk).
