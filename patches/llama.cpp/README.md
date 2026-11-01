@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -108,6 +108,16 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled and run (Linux, Release, Vulkan build):** `llama-server` with the 1.1 MB `stories260K.gguf` (CPU): save with and without the switch gives byte-identical 22476-byte files, restore from the async file works and the next completion reuses the 25 cached tokens, no `.tmp` is left. Timings on that model are meaningless (0.1 ms).
 
 **Test (under 20 minutes, Windows PC):** Flash-Next with a 64k prompt processed, then `POST /slots/0?action=save` while a second request decodes on another slot (or measure decode tok/s of one slot during a save). A B B A, A = unset, B = `LLAMA_SLOT_SAVE_ASYNC=1`; read the longest gap between two streamed tokens of the decoding request and the save reply time. Watch peak RAM. Accept only if the gap shrinks by more than the A-vs-A spread and the saved files restore to the same output.
+
+## 0021-qwen4exp-no-cont (UP2, llama.cpp #31443)
+
+**What:** the conv-state update of Flash-Next (`llama_model_qwen4exp`, `src/models/qwen4exp.cpp`) copies a strided tail of the conv input into the state through `ggml_cpy(ggml_cont(tail), dst)`, once per rollback slot per recurrent layer: an extra full copy first. With `LLAMA_QWEN4EXP_NO_CONT=1` the strided view goes straight into `ggml_cpy`. Unset = stock. Upstream's one-line change; the author reports about 2 % faster generation on Flash-Next and identical output on CUDA, CPU and the meta backend (draft PR, not checked on Vulkan by them).
+
+**Soundness:** bytes only, no arithmetic. Risk: the Vulkan copy shader must accept a strided 3-D source into a 2-D destination of the same element count; if it did not, `supports_op` would send the node to the CPU and the output stays the same but the speed drops (check the log for a new CPU fallback).
+
+**Compiled:** `libllama` (Linux, Release). Not run (no Flash-Next on the laptop that fits).
+
+**Test (under 20 minutes, Windows PC):** Flash-Next, 256 generated tokens, temperature 0, A B B A with A = unset, B = `LLAMA_QWEN4EXP_NO_CONT=1`. Text must be identical; accept B if decode tok/s is higher in both pairs by more than the A-vs-A spread.
 
 ## Not written, and why
 

@@ -1,0 +1,15 @@
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index c3e2b010d..f49d0977e 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -1443,7 +1443,9 @@ ggml_tensor * llama_model_qwen4exp::graph::build_conv_state_at(
+                 conv_states_all->nb[1],
+                 (slot * mem_size + kv_head) * row_size);
+ 
+-        ggml_build_forward_expand(gf, ggml_cpy(ctx0, ggml_cont(ctx0, tail), dst));
++        // LLAMA_QWEN4EXP_NO_CONT=1 (default off): copy the strided tail straight into the state (llama.cpp #31443), no extra contiguous copy first
++        static const bool no_cont = [] { const char * v = getenv("LLAMA_QWEN4EXP_NO_CONT"); return v && atoi(v) > 0; }();
++        ggml_build_forward_expand(gf, ggml_cpy(ctx0, no_cont ? tail : ggml_cont(ctx0, tail), dst));
+     }
+ 
+     return conv_input;
