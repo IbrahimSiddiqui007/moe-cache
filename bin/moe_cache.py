@@ -1984,7 +1984,7 @@ def _launch_plan(a, extra, argv, machine):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
         # tarball users the wrong way (audit 2026-10-29 K2)
         raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
-                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else "")
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else " (Linux: the -ggml0.26 download has llama.cpp inside, or run ./install.sh; with your own llama.cpp the file is build/bin/llama-server)")
                          + f". Looked: {machine.ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
     if (line := machine.ls_found_line(ls)):
         say(line)

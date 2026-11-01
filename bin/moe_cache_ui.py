@@ -328,7 +328,7 @@ MEASURED = {
     ("qwen4exp-48x512", 68.0): [(LAPTOP, 24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31"),
                                 (PC, 32, "16 GB GPU", 14.89, 21.94, "RESULTS 59; agent sessions 2.0-2.4x faster, RESULTS 60"),
                                 (PC, 16, "16 GB GPU, --ram 16", None, 20.03, "RESULTS 60: 92 % of the 24 GB speed")],
-    ("qwen4exp-48x512", 66.4): [(PC, 32, "16 GB GPU", 18.41, 22.16, "RESULTS 63 (Q2_0, the recommended file): prompts 2.33x stock")],
+    ("qwen4exp-48x512", 66.4): [(PC, 32, "16 GB GPU", 18.41, 22.16, "RESULTS 63 (Q2_0, the faster file; IQ3_XXS is the default): prompts 2.33x stock")],
     ("qwen4exp-48x512", 58.4): [(PC, 32, "16 GB GPU, coding agent", None, 21.24, "RESULTS 63 (Coder IQ1_M): agent session 24 % shorter than IQ2_XS")],
     ("qwen4exp-48x512", 76.0): [(PC, 32, "16 GB GPU", 15.14, 19.86, "RESULTS 59")],
     ("qwen4exp-48x512", 83.6): [(PC, 32, "16 GB GPU", 12.92, 17.28, "RESULTS 59")],

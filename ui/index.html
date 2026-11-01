@@ -615,7 +615,7 @@ async function planAll() {
   if (S.models.some(m => !S.plans[planKey(m.path)])) planAll();
 }
 function askLlama() {
-  const sy = S.sys || {}; $("llamalooked").textContent = sy.llama_looked || ""; $("llamaexe").textContent = sy.os == "Windows" ? "llama-server.exe" : "llama-server";
+  const sy = S.sys || {}; $("llamalooked").textContent = sy.llama_looked || ""; $("llamaexe").textContent = sy.os == "Windows" ? "llama-server.exe" : "llama-server"; $("llamapath").placeholder = sy.os == "Windows" ? "C:\\llama\\llama-server.exe" : "/home/you/llama.cpp/build/bin/llama-server";
   $("llamalink").href = sy.llama_releases || $("llamalink").href; $("llamaerr").textContent = ""; $("llamadlg").hidden = false; $("llamapath").focus();
 }
 async function saveLlama() {

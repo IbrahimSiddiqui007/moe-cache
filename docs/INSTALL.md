@@ -17,7 +17,7 @@ Ollama user? The models in `ollama list` are plain GGUF files: the path is on th
 | **B. One script** (10 to 20 minutes) | fresh Ubuntu / Debian, nothing installed | `git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache && ./install.sh` (add `--vulkan` for AMD / Intel / NVIDIA through Vulkan). It builds the matching llama.cpp and the plugin and prints the next commands. We have not tried it on Ubuntu or Debian yet (only on Arch with `--no-apt`): please report problems, and prefer A with the official llama.cpp download if it fits you. |
 | **C. From source** | you want to build it yourself | `git clone ... && cd moe-cache && ./build.sh` (needs g++; finds `libggml-base.so` next to your llama-server, or set `GGML_LIB_DIR`) |
 
-Which file to download (the names show version 0.3.2; take the newest version on the page):
+Which file to download (the names below show the version they were last checked with; take the newest version on the Releases page):
 
 | Your system | File on the Releases page |
 |---|---|
