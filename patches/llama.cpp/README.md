@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch`, `0024-vulkan-submit-flops-div` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch`, `0024-vulkan-submit-flops-div`, `0025-vulkan-gdn-pipeline` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -150,6 +150,16 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Honest expectation:** the scout guesses 0 to 1 ms per block (at most about 1 s over a 34k prompt), probably the small end.
 
 **Test (under 20 minutes, Windows PC):** Flash-Next 34k with `MOE_CACHE_SEG_TIMES=1`, A B B A with A = unset, B = `GGML_VK_SUBMIT_FLOPS_DIV=1` (add `=0` as a third arm if time is left). Compare prompt tok/s and the compute and gap lines; output tokens identical. Accept only if B is faster in both pairs by more than the A-vs-A spread.
+
+## 0025-vulkan-gdn-pipeline (VK02)
+
+**What:** `gated_delta_net.comp` (the recurrent layers of Flash-Next, the top Vulkan op in the prompt phase) loops over the tokens of a ubatch one after the other inside each workgroup, and loads q, k, v, g and beta of token t at the top of iteration t, although none of them depends on the state. With `GGML_VK_GDN_PIPELINE=1` the loads of token t+1 are issued before the math of token t and moved into the working registers at the end of the iteration (a new specialization constant `PIPE`). Unset = the loads stay inside the iteration (the pipeline is built with `PIPE=0`).
+
+**Soundness:** the same operations in the same order on the same values, so the output is identical; only the point where the loads are issued moves. Cost: five more register arrays (about 5 x `S_V / LANES_PER_COLUMN` floats per lane), which can lower occupancy.
+
+**Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o GATED_DELTA_NET -b Vulkan1`: 43/43 with the switch unset and 43/43 with `GGML_VK_GDN_PIPELINE=1`. Speed on this NVIDIA card (`perf`, indicative only, the target is AMD): **slower** with the switch, 99 -> 131 us at 64 tokens and 378 -> 500 us at 256 tokens (two runs each, stable), 12.1 -> 12.9 us at 1 token. NVIDIA's compiler most likely hoists the loads already and the extra copies cost. It is kept because the AMD compiler may not, and the PC check is a two-minute perf run; **do not enable it unless the PC perf run shows a win.**
+
+**Test (under 20 minutes, Windows PC):** `test-backend-ops perf -o GATED_DELTA_NET -b Vulkan0` with and without `GGML_VK_GDN_PIPELINE=1` (head_size 128, 64 and 256 tokens, 3 runs each); only if it wins by more than the run-to-run spread, A B B A on the Flash-Next 34k prompt, text identical.
 
 ## Not written, and why
 
