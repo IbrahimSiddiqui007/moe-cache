@@ -286,7 +286,10 @@
         if (!rss) {
             return;
         }
-        const size_t target = limit_bytes > margin ? limit_bytes - margin : limit_bytes / 2;
+        size_t target = limit_bytes > margin ? limit_bytes - margin : limit_bytes / 2;
+        if (peers_on && peer_ceiling.load() != (size_t) -1) {
+            target = peer_ceiling.load();     // N2: the room the other servers of the registry leave (mc_state_peers.inl)
+        }
         // bytes of expert data that are really in memory (pending ones are marked but not read yet)
         const size_t have = resident_bytes > pending_bytes ? resident_bytes - pending_bytes : 0;
         // Windows: every loaded expert is committed memory; near the commit limit (RAM + page file) a commit fails and the next write crashes.

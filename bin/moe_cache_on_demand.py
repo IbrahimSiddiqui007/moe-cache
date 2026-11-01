@@ -311,8 +311,8 @@ class Pool:
     has no request in flight, stops it, then starts the one asked for. The request's "model" field picks; a name it does not know goes to the
     running model, else the default (as with one model: llama-server itself ignores the field)."""
 
-    def __init__(self, backends, drain_timeout=600, concurrent=False):
-        self.bs, self.drain, self.concurrent = list(backends), drain_timeout, False
+    def __init__(self, backends, drain_timeout=600, concurrent=False, peers=False):
+        self.bs, self.drain, self.concurrent, self.peers = list(backends), drain_timeout, False, peers
         self.key = self.bs[0].key
         for b in self.bs:
             b.key = self.key                       # one key for the listener and every backend behind it
@@ -345,6 +345,8 @@ class Pool:
         for b in self.bs:
             p = g["models"][b.alias]
             b.share_args, b.llama_args = p["launcher"], p["llama"]
+            if self.peers and p["engine"] == "plugin":
+                b.share_args = b.share_args + ["--peers"]      # N2: the share above is the start size; the servers then trade memory through the peer folder
             b.release = min(b.release, 30.0) if b.release else 30.0        # a quiet model gives its cache back after 30 s so a busy one can use it
             log(f"--concurrent: {b.alias}: {' '.join(p['launcher'])} {' '.join(p['llama'])} ({p['engine']})")
         self.concurrent = True
@@ -752,6 +754,8 @@ def on_demand(argv):
                                                       "(the server keeps running, the next request needs no restart; default 5, 0 = off; remembered)")
     ap.add_argument("--concurrent", action="store_true", help="PROTOTYPE: keep all added models running at once, each with a fixed share of the memory cap, "
                                                             "the VRAM and its own CPU cores (default off: one at a time; not speed-tested; remembered)")
+    ap.add_argument("--peers", action="store_true", help="PROTOTYPE, with --concurrent: the servers also trade memory at run time (a quiet one gives to a busy one) "
+                                                       "through a folder of small status files; their share above is the start size (default off; remembered)")
     ap.add_argument("--start-timeout", type=int, default=900, help="seconds to wait for the model to load")
     ap.add_argument("--install-autostart", action="store_true", help="start the listener at login (systemd --user unit / Windows Startup folder)")
     ap.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart and stop the listener")
@@ -856,6 +860,10 @@ def on_demand(argv):
         c["concurrent"] = True
         save_choice(c)
         say("on-demand: --concurrent (PROTOTYPE) remembered: the added models run at the same time, each with its own share of RAM, VRAM and CPU cores")
+    if a.peers and c and not c.get("peers"):
+        c["peers"] = True
+        save_choice(c)
+        say("on-demand: --peers (PROTOTYPE) remembered: with --concurrent the servers trade memory at run time")
     if a.status:
         return status(c)
     if a.install_autostart:
@@ -867,7 +875,7 @@ def on_demand(argv):
     if not WINDOWS:
         os.umask(0o077)
     b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout, release_min=c.get("idle_release", 5)) for e in [c] + list(c.get("extra") or [])],
-             concurrent=bool(c.get("concurrent")) and len(c.get("extra") or []) > 0)
+             concurrent=bool(c.get("concurrent")) and len(c.get("extra") or []) > 0, peers=bool(c.get("peers")))
     srv = serve(b, port, srv=srv)
     with open(PID_FILE, "w") as f:
         f.write(f"{os.getpid()} {port}\n")

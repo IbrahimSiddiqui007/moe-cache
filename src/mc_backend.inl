@@ -128,6 +128,19 @@ struct moe_cache_backend_ctx {
     uint64_t held_serial = 0;
     ggml_backend_buffer_t up_buf = nullptr;  // P05: pinned staging area for the weights of one part
     bool               rb_failed = false;    // no pinned host buffer type, or it could not be allocated: plain blocking read-back
+    // N3/MG5 (MOE_CACHE_GPU_DEV2, default off): the second card's copy of everything above that is tied to one GPU. gpu_segment() swaps the two sets (card_swap)
+    // when a block does not fit on the first card but fits on the second, and swaps back when it ends, so the rest of the code never sees the second card.
+    struct card_t {
+        ggml_backend_t gpu = nullptr;
+        ggml_gallocr_t galloc = nullptr;
+        ggml_backend_buffer_t rb_buf = nullptr, up_buf = nullptr;
+        bool rb_failed = false;
+        std::vector<gpu_tmpl_t> tmpls;
+        std::vector<gpu_held_t> held;
+        uint64_t held_serial = 0;
+    } alt;
+    bool               on_alt = false;       // the sets are swapped now (inside gpu_segment only)
+    bool               alt_failed = false;   // the second card's backend could not be started: it is not tried again
     // MOE_CACHE_HYBRID_ADAPT=N,K (default 8,16; 0 = off): every N tokens up to K of the experts the bank missed most replace the coldest expert of their layer's bank
     struct hb_layer_t {
         std::vector<int>   tidx;       // weight tensors of this layer that have a bank (gate, up, down)
@@ -185,12 +198,54 @@ void be_free(ggml_backend_t backend) {
     if (c->rb_buf) {                  // pinned read-back buffer: freed before its backend
         ggml_backend_buffer_free(c->rb_buf);
     }
+    for (auto & t : c->alt.tmpls) {         // the second card (MOE_CACHE_GPU_DEV2): same order, buffers before their backend
+        ggml_free(t.ctx);
+    }
+    for (auto & h : c->alt.held) {
+        ggml_backend_buffer_free(h.buf);
+        ggml_free(h.ctx);
+    }
+    if (c->alt.galloc) {
+        ggml_gallocr_free(c->alt.galloc);
+    }
+    if (c->alt.up_buf) {
+        ggml_backend_buffer_free(c->alt.up_buf);
+    }
+    if (c->alt.rb_buf) {
+        ggml_backend_buffer_free(c->alt.rb_buf);
+    }
+    if (c->alt.gpu) {
+        ggml_backend_free(c->alt.gpu);
+    }
     if (c->gpu) {
         ggml_backend_free(c->gpu);
     }
     delete c;
     delete backend;
 }
+
+// N3/MG5: exchange the first card's GPU state with the second card's (see card_t). Calling it twice puts everything back.
+void card_swap(moe_cache_backend_ctx * c) {
+    std::swap(c->gpu, c->alt.gpu);
+    std::swap(c->galloc, c->alt.galloc);
+    std::swap(c->rb_buf, c->alt.rb_buf);
+    std::swap(c->up_buf, c->alt.up_buf);
+    std::swap(c->rb_failed, c->alt.rb_failed);
+    std::swap(c->tmpls, c->alt.tmpls);
+    std::swap(c->held, c->alt.held);
+    std::swap(c->held_serial, c->alt.held_serial);
+    c->on_alt = !c->on_alt;
+}
+
+// gives the first card's state back when gpu_segment() ends, whichever way it ends
+struct card_guard {
+    moe_cache_backend_ctx * c;
+    ~card_guard() {
+        if (c->on_alt) {
+            card_swap(c);
+        }
+    }
+};
 
 // llama.cpp gives a GPU backend only the nodes it supports; the plugin's own GPU graphs must ask too, else the backend aborts on such a node
 // (ggml-vulkan refuses for example MUL_MAT_ID at GGML_PREC_F32, or when its shared memory is too small for a type)
@@ -400,13 +455,54 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     // input row as in one block. MOE_CACHE_GPU_CHUNKS=0: off (old behaviour), =N: always N parts (identity checks).
     static const int chunks_env = getenv("MOE_CACHE_GPU_CHUNKS") ? atoi(getenv("MOE_CACHE_GPU_CHUNKS")) : -1;
     const size_t headroom = (size_t) 256 << 20;                                  // pool buffers, graph, fragmentation
-    const size_t held = ggml_gallocr_get_buffer_size(c->galloc, 0);               // already allocated for an earlier block: reused
+    card_guard card_back{c};
+    ggml_backend_dev_t gdev = s.gpu_dev;                                          // the card this block runs on (the second one only with MOE_CACHE_GPU_DEV2)
+    size_t held = ggml_gallocr_get_buffer_size(c->galloc, 0);                     // already allocated for an earlier block: reused
     size_t gpu_free = 0, gpu_tot = 0;
-    ggml_backend_dev_memory(s.gpu_dev, &gpu_free, &gpu_tot);
+    ggml_backend_dev_memory(gdev, &gpu_free, &gpu_tot);
     // a block that needs no more than the held buffer allocates nothing, so it needs no headroom (with chunks off: the old rule, headroom always)
     auto fits = [&](size_t need) {
         const size_t extra = need > held ? need - held : 0;
         return gpu_tot == 0 || (chunks_env != 0 && extra == 0) || gpu_free >= extra + headroom;
+    };
+    // N3/MG5 (MOE_CACHE_GPU_DEV2): the first card is short of room for the block as a whole; if the second card holds it without splitting, the block runs there
+    // (the weights are uploaded to it from the host, the result comes back the same way). The first card keeps its buffers and its place: the next block tries it first.
+    auto try_second_card = [&](size_t need) {
+        if (!s.gpu_dev2 || c->alt_failed || c->on_alt) {
+            return false;
+        }
+        card_swap(c);
+        if (!c->gpu) {
+            c->gpu = ggml_backend_dev_init(s.gpu_dev2, nullptr);
+            if (c->gpu) {
+                c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
+            } else {
+                c->alt_failed = true;
+                fprintf(stderr, "moe-cache: MOE_CACHE_GPU_DEV2: the second card could not be started: long-prompt blocks stay on the first card\n");
+            }
+        }
+        size_t f2 = 0, t2 = 0;
+        const size_t h2 = c->gpu ? ggml_gallocr_get_buffer_size(c->galloc, 0) : 0;
+        if (c->gpu) {
+            ggml_backend_dev_memory(s.gpu_dev2, &f2, &t2);
+        }
+        const size_t extra = need > h2 ? need - h2 : 0;
+        if (!c->gpu || !(t2 == 0 || extra == 0 || f2 >= extra + headroom)) {
+            card_swap(c);                     // no room there either: back to the first card, which splits the block
+            return false;
+        }
+        const size_t f1 = gpu_free;
+        gdev = s.gpu_dev2;
+        held = h2;
+        gpu_free = f2;
+        gpu_tot = t2;
+        s.gpu_alt_blocks++;
+        static std::atomic<int> said_alt{0};
+        if (said_alt++ < 3) {
+            fprintf(stderr, "moe-cache: long-prompt block does not fit on the first card (%.0f MiB free): running it on %s (%.0f MiB free) (MOE_CACHE_GPU_DEV2)\n",
+                    f1 / 1048576.0, ggml_backend_dev_name(s.gpu_dev2), f2 / 1048576.0);
+        }
+        return true;
     };
     struct split_stat_t { double ema = 0; int n = 0; };
     static split_stat_t split_stat[17];     // idea P12: per number of parts, nanoseconds per used expert
@@ -430,7 +526,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         };
         if (chunks_env > 1) {
             n_chunk = (size_t) chunks_env;
-        } else if (!fits(need_for(pack_ids ? pack_used.size() : 0))) {
+        } else if (!fits(need_for(pack_ids ? pack_used.size() : 0)) && !try_second_card(need_for(pack_ids ? pack_used.size() : 0))) {
             for (size_t k = 2; k <= 16; k++) {
                 if (fits(need_for((full_used.size() + k - 1) / k))) {
                     n_chunk = k;
@@ -807,7 +903,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     c->held.erase(c->held.begin() + (long) vi);
                 }
                 size_t fr = 0, tt = 0;
-                ggml_backend_dev_memory(s.gpu_dev, &fr, &tt);
+                ggml_backend_dev_memory(gdev, &fr, &tt);
                 if (tot + nbytes <= keep_mib * (size_t) 1048576 && (tt == 0 || fr >= nbytes + ((size_t) 512 << 20))) {
                     ggml_init_params hp = { ggml_tensor_overhead() * 2 + 1024, nullptr, true };
                     ggml_context * hc = ggml_init(hp);
@@ -928,7 +1024,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     void * rb = nullptr;
     if (rb_env && !c->rb_failed) {
         if (!c->rb_buf || ggml_backend_buffer_get_size(c->rb_buf) < out_bytes) {
-            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(s.gpu_dev);
+            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(gdev);
             if (c->rb_buf) {
                 ggml_backend_buffer_free(c->rb_buf);
                 c->rb_buf = nullptr;
@@ -962,12 +1058,12 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
         }
         if (stage_env && total && !c->up_buf) {
-            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(s.gpu_dev);
+            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(gdev);
             c->up_buf = hbt ? ggml_backend_buft_alloc_buffer(hbt, total) : nullptr;
         }
         if (c->up_buf && ggml_backend_buffer_get_size(c->up_buf) < total) {
             ggml_backend_buffer_free(c->up_buf);
-            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(s.gpu_dev);
+            ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(gdev);
             c->up_buf = hbt ? ggml_backend_buft_alloc_buffer(hbt, total + ((size_t) 64 << 20)) : nullptr;
         }
         if (c->up_buf && stage_env) {
@@ -1033,7 +1129,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     static const bool ev_env = getenv("MOE_CACHE_GPU_EVENTS") && atoi(getenv("MOE_CACHE_GPU_EVENTS")) > 0;
     auto sync_result = [&] {
         if (ev_env) {
-            ggml_backend_event_t ev = ggml_backend_event_new(s.gpu_dev);
+            ggml_backend_event_t ev = ggml_backend_event_new(gdev);
             if (ev) {
                 ggml_backend_event_record(ev, c->gpu);
                 ggml_backend_event_synchronize(ev);
