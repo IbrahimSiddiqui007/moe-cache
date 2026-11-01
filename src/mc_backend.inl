@@ -1108,7 +1108,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         if (e1) { up_faults += state_t::process_faults() - f_up0; }
         const auto t_c0 = std::chrono::steady_clock::now();
-        const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
+        // idea PL01 (MOE_CACHE_GPU_COMPUTE_ASYNC=1, default off): ggml_backend_graph_compute waits for the GPU before it returns, so the staging of the next part
+        // (next_window) and the queued read-back started only after the compute. The async call returns at once; the result copy is queued behind the compute
+        // on the same queue and the wait is unchanged (sync_result). Not with seg_times, which times the compute on its own.
+        static const bool compute_async = getenv("MOE_CACHE_GPU_COMPUTE_ASYNC") && atoi(getenv("MOE_CACHE_GPU_COMPUTE_ASYNC")) > 0;
+        const enum ggml_status st = compute_async && !seg_times ? ggml_backend_graph_compute_async(c->gpu, g) : ggml_backend_graph_compute(c->gpu, g);
         if (!rb || seg_times) {
             ggml_backend_synchronize(c->gpu);     // seg_times: the compute is timed on its own
         }
