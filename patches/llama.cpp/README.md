@@ -23,7 +23,7 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 ## CI
 
-`.github/workflows/llama_patched.yml` is manual only (`workflow_dispatch`). It builds the patched `llama-server` for Windows (Vulkan) and Linux and uploads them as artifacts. It has not been run yet.
+`.github/workflows/llama_patched.yml` runs only when asked: a push to the branch `ci/llama-patched` (manual dispatch needs the file on main). It builds the patched `llama-server` for Windows (Vulkan) and Linux (Vulkan) with the flags, runners and Vulkan SDK of llama.cpp's own release workflow at the pin and uploads them as artifacts. Windows is two artifacts, as upstream: server + CPU backends, and `ggml-vulkan.dll`; put them in one folder. First run 2026-11-01 green with patches 0001-0005 (about 12 min); the version line says build 11966, commit ff0d396e3.
 
 ## What would change to ship it
 
