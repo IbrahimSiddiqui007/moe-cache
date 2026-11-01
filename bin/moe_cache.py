@@ -1689,6 +1689,8 @@ def parse_server(argv):
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
+    ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
+    ap.add_argument("--auto-fit", action="store_true")      # PROTOTYPE (MM6): a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
@@ -1709,6 +1711,52 @@ def server(argv):
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
     return run_launch_plan(plan)
+
+
+MMPROJ_VRAM_HEADROOM = 0.5e9      # compute buffer of the vision encoder, on top of the projector's file size (estimate; llama.cpp's own memory margin does not count it either)
+
+
+def find_mmproj(model):
+    """The vision projector next to a model: mmproj*.gguf in the same folder, the one that shares the model's name when several; None when not exactly clear."""
+    d = os.path.dirname(os.path.abspath(model))
+    try:
+        found = sorted(f for f in os.listdir(d) if f.lower().startswith("mmproj") and f.lower().endswith(".gguf"))
+    except OSError:
+        return None
+    if len(found) == 1:
+        return os.path.join(d, found[0])
+    stem = re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(model)).lower()
+    close = [f for f in found if stem and stem.split("-")[0] in f.lower()]
+    return os.path.join(d, close[0]) if len(close) == 1 else None
+
+
+def vision_dense_start(a, extra, model, stock, size, avail):
+    """MM6 (PROTOTYPE, --mmproj / --auto-fit): find the projector (`--mmproj auto` or a file), pass it to llama-server, count its size in the RAM decision
+    (added to the model's size) and report it for the VRAM plan; detect a dense model. Returns (mmproj file, its bytes, dense, stock, size)."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    mm, mmb = None, 0
+    if a.mmproj:
+        have = arg_after(extra, "--mmproj", "-mm")
+        mm = have or (find_mmproj(model) if a.mmproj == "auto" else a.mmproj)
+        if not mm or not os.path.isfile(mm):
+            raise SystemExit(f"--mmproj {a.mmproj}: " + ("no single mmproj*.gguf next to the model; pass the file: --mmproj FILE" if a.mmproj == "auto" else f"file not found: {a.mmproj}"))
+        mmb = os.path.getsize(mm)
+        if not have:
+            extra += ["--mmproj", mm]
+        size = (size or 0) + mmb
+        if not a.stock and not (a.fast or a.hybrid or a.always_plugin) and size and avail:
+            stock = size + STOCK_HEADROOM <= avail
+        say(f"moe-cache: --mmproj (PROTOTYPE): vision projector {os.path.basename(mm)} ({mmb / 1e9:.2f} GB) counted in the RAM floor and, with {MMPROJ_VRAM_HEADROOM / 1e9:.1f} GB "
+            "for its compute buffer, taken off the GPU memory the planner may use; never run with a real vision model by the author")
+    dense = False
+    if a.auto_fit:
+        try:
+            from gguf_plan import model_layout
+            lay = model_layout(model)
+            dense = not lay["n_layers"] or not lay["expert_bytes_per_layer"]
+        except Exception:
+            dense = False
+    return mm, mmb, dense, stock, size
 
 
 def multi_gpu_start(a, extra, machine, ls, listing, vram_user, win):
@@ -1836,6 +1884,9 @@ def _launch_plan(a, extra, argv, machine):
     if a.stock and (a.fast or a.hybrid or a.always_plugin):
         raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock, machine=machine)
+    mm_file, mm_bytes, dense = None, 0, False
+    if a.mmproj or a.auto_fit:
+        mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
     lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
     if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
@@ -2065,6 +2116,8 @@ def _launch_plan(a, extra, argv, machine):
             sys.path.insert(0, os.path.join(HERE, "planner"))
             from gguf_plan import tune
             free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
+            if mm_bytes and free:
+                free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
             if a.gpu_margin is None:
                 # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
@@ -2197,6 +2250,10 @@ def _launch_plan(a, extra, argv, machine):
     if mg:
         ncmoe, extra = multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win)
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
+    if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
+        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load
+        del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
+        say("moe-cache: --auto-fit (PROTOTYPE): dense model, no experts: no -ngl / --n-cpu-moe given, llama.cpp's --fit places the layers by free GPU memory")
     if method == "none (stock)":
         pass
     elif ncmoe == "0":
