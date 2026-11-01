@@ -1249,7 +1249,7 @@ def mtp_args(want, agent, ls, model, extra):
     server_has = False
     if head and want is not False and not user_spec:
         try:
-            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout
+            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
         except Exception:
             pass
     on, why = mtp_decide(want, agent, head, declared, server_has, user_spec)
@@ -1407,9 +1407,13 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
         threading.Thread(target=save_now_and_then, daemon=True).start()
     seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": False}
     def pump():
-        out = sys.stderr.buffer
+        out = getattr(sys.stderr, "buffer", None)
         for line in iter(p.stderr.readline, b""):
-            out.write(line); out.flush()
+            if out is not None:
+                try:
+                    out.write(line); out.flush()
+                except (OSError, ValueError):
+                    out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
             if b"moe-cache:" in line:
@@ -1525,7 +1529,7 @@ SERVER_HELP = """\
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
-           Same output; Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
+           Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
 --no-sampling-defaults  do not pass the model card's sampling settings. By default, for Qwen3 / 3.5 / 3.6 / 3.8 / Qwen3-Next and GLM models,
            temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:
@@ -2744,8 +2748,11 @@ def connect(argv):
             data = json.load(open(cfg, encoding="utf-8"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
-        if not str(data.get("model", "")).startswith("moe-cache/") or not os.path.isfile(cfg + ".bak"):
-            # keep the backup of the user's own setup: a second connect (already moe-cache) must not replace it with ours
+        if not isinstance(data, dict) or not isinstance(data.get("provider", {}), dict):
+            raise SystemExit(f"{cfg} is not an OpenCode config object (a JSON object with a 'provider' object): add the block printed by 'moe_cache.py connect opencode' by hand")
+        if "moe-cache" not in data.get("provider", {}) or not os.path.isfile(cfg + ".bak"):
+            # keep the backup of the user's own setup: a second connect, or a file that already holds our provider (even with another default
+            # model chosen since), must not replace it with ours
             shutil.copy2(cfg, cfg + ".bak")
             if not WINDOWS:
                 os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
@@ -3154,7 +3161,7 @@ def check(argv):
                     os.close(os.open(a.model, os.O_RDONLY | os.O_DIRECT))
                     ok("direct reads", "O_DIRECT works on this file system")
                 except OSError:
-                    fail("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): put the model on a normal disk")
+                    warn("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): the plugin reads through the page cache instead, which works but is slower; a normal local disk is faster")
             try:
                 du = shutil.disk_usage(os.path.dirname(os.path.abspath(a.model)))
                 facts["disk"] = f"{du.free / 1e9:.0f} GB free of {du.total / 1e9:.0f} GB where the model is"

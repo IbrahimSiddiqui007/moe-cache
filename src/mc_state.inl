@@ -199,6 +199,9 @@ struct state_t {
         for (int k = 0; k < 16; k++) {
             rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
             const tinfo_t & ti = *tensors[rng % tensors.size()];
+            if (ti.n_expert <= 0) {
+                continue;                      // a tensor forgotten after a model unload: no experts, and a modulo by zero below
+            }
             const int64_t e = (int64_t) ((rng >> 20) % (uint64_t) ti.n_expert);
             if (!nodes[(size_t) (ti.node0 + e)].resident || nodes[(size_t) (ti.node0 + e)].loading) {
                 continue;
@@ -412,7 +415,7 @@ struct state_t {
             fprintf(stderr, "moe-cache: %s - plugin disabled, the model loads the normal way\n", m.c_str());
             disabled = true;
         };
-        if (getenv("MOE_CACHE_DISABLE")) {
+        if (const char * dis = getenv("MOE_CACHE_DISABLE"); dis && *dis && strcmp(dis, "0") != 0) {      // =0 or empty means "not disabled"
             fail("MOE_CACHE_DISABLE is set");
             return;
         }

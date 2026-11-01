@@ -37,4 +37,4 @@ It plugs into **ggml**, not into llama.cpp's model code, so a model that llama.c
 
 ## The patched llama.cpp build
 
-Alongside the plugin there is room for a small set of changes to llama.cpp itself (`patches/llama.cpp/`), applied to the exact release the Windows kit bundles. It is optional: the plugin runs on stock llama.cpp, and every change has its own switch that is off until a paired run shows it helps. At the moment the set is empty; the patched build is a manual CI job and is not what the releases ship.
+Alongside the plugin there is room for a small set of changes to llama.cpp itself (`patches/llama.cpp/`), applied to the exact release the Windows kit bundles. It is optional: the plugin runs on stock llama.cpp, and every change has its own switch that is off until a paired run shows it helps. At the moment the folder holds a handful of patches (see patches/llama.cpp/README.md), none measured yet and all off by default; the patched build is a manual CI job and is not what the releases ship.

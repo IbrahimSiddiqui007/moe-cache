@@ -516,7 +516,6 @@
             t.join();
         }
         if (stats) { print_exec_times(); }
-        pool.reset();
 #ifdef __linux__
         g_stats_stop = true;
         // the signals are ignored before their pipes close: the control page sends SIGUSR1 every 2 s until the process is gone, and a handler
@@ -566,6 +565,7 @@
             g_save_event = nullptr;
         }
 #endif
+        pool.reset();                        // after the snapshot thread is joined: its stats JSON reads the pool
         if (idle_th.joinable()) {
             idle_th.join();
         }

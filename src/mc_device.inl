@@ -214,7 +214,7 @@ extern "C" MOE_CACHE_EXPORT void moe_cache_register(void) {
 #ifndef _WIN32
 // LD_PRELOAD loading (Linux builds that link their backends directly); on Windows the library is loaded through GGML_BACKEND_PATH
 __attribute__((constructor)) static void moe_cache_autoload() {
-    if (getenv("MOE_CACHE_PRELOAD") && !getenv("MOE_CACHE_DISABLE")) {
+    if (getenv("MOE_CACHE_PRELOAD") && !(getenv("MOE_CACHE_DISABLE") && *getenv("MOE_CACHE_DISABLE") && strcmp(getenv("MOE_CACHE_DISABLE"), "0") != 0)) {
         const int api = moe_cache_api_of_ggml(ggml_version());
         if (api > 0 && api != GGML_BACKEND_API_VERSION) {   // registering would hand the server a struct of the wrong layout
             fprintf(stderr, "moe-cache: this plugin was built for ggml backend API %d but the server uses ggml %s (API %d): not loaded, the model loads the normal way. "

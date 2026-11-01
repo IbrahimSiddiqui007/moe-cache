@@ -2124,7 +2124,11 @@ def make_server(port=8070, ls=None, token=None):
     if not ls and (line := mc.ls_found_line(store.ls)):
         mc.say(line)
     h = type("H", (Handler,), {"store": store, "runner": Runner(), "token": token or secrets.token_urlsafe(24)})
-    srv = ThreadingHTTPServer(("127.0.0.1", port), h)
+    class _Srv(ThreadingHTTPServer):
+        # http.server sets SO_REUSEADDR; on Windows that lets a second instance bind the same port (a double-clicked moe-cache.bat twice gave two competing
+        # managers on 8070 and "forbidden" pages from the wrong token). Linux needs it to restart on a port in TIME_WAIT, Windows does not.
+        allow_reuse_address = os.name != "nt"
+    srv = _Srv(("127.0.0.1", port), h)
     srv.daemon_threads = True
     return srv
 

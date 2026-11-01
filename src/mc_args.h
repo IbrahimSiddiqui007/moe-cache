@@ -2,6 +2,7 @@
 // Plain C++ without ggml, so tests/args_test.cpp can check it on its own. llama.cpp's common argument parser applies the environment first and
 // then the command line, where the last occurrence wins; flags take their value as the next argument ("--device Vulkan1", no "=" form).
 #pragma once
+#include <algorithm>
 #include <cstring>
 #include <initializer_list>
 #include <string>
@@ -64,7 +65,10 @@ inline server_args parse_server_args(const std::vector<std::string> & args, cons
         set_devices(r, env_device);
     }
     for (size_t i = 1; i < args.size(); i++) {
-        const std::string & a = args[i];
+        std::string a = args[i];
+        if (a.compare(0, 2, "--") == 0) {
+            std::replace(a.begin(), a.end(), '_', '-');       // llama.cpp reads --no_repack as --no-repack (common/arg.cpp:1228)
+        }
         if (is_one_of(a, { "-nr", "--no-repack" })) {
             r.repack = false;
         } else if (a == "--repack") {

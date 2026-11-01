@@ -26,6 +26,8 @@ int main() {
     }
     {   // the last occurrence wins; the command line beats the environment
         CHECK(parse_server_args(V{ "s", "--no-repack", "--repack" }, nullptr, nullptr, nullptr).repack);
+        CHECK(!parse_server_args(V{ "s", "--no_repack" }, nullptr, nullptr, nullptr).repack);          // llama.cpp turns _ into - in -- options
+        CHECK(parse_server_args(V{ "s", "--no_host" }, nullptr, nullptr, nullptr).no_host);
         CHECK(!parse_server_args(V{ "s", "--repack", "-nr" }, nullptr, nullptr, nullptr).repack);
         CHECK(parse_server_args(V{ "s", "--repack" }, "false", nullptr, nullptr).repack);
         CHECK(!parse_server_args(V{ "s", "--device", "Vulkan1" }, nullptr, nullptr, "none").device_none);
