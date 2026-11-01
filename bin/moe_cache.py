@@ -2035,7 +2035,18 @@ def _launch_plan(a, extra, argv, machine):
     mm_file, mm_bytes, dense = None, 0, False
     if a.mmproj or a.auto_fit:
         mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
-    lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
+    lib = os.environ.get("MOE_CACHE_LIB")
+    if lib:
+        # moe-cache.bat sets MOE_CACHE_LIB to the first DLL it finds (the api3 one); for an older llama-server (ggml 0.24 / 0.25) that build refuses to load.
+        # An env value built for another API than the server uses gives way to the matching build the launcher finds itself (audit A4-01)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if want and have and want != have:
+            alt = machine.pick_lib(ls)
+            if alt != lib and machine.lib_exists(alt) and machine.lib_api(alt) == want:
+                say(f"moe-cache: MOE_CACHE_LIB {lib} was built for ggml backend API {have}, {ls} uses API {want}: using {alt} instead", err=True)
+                lib = alt
+    else:
+        lib = machine.pick_lib(ls)
     if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
         # tarball users the wrong way (audit 2026-10-29 K2)
