@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for looking. This project is small; the rules below keep it trustworthy.
+Thank you for looking. This project is small; the rules below keep it trustworthy. The full standards (code, tests, speed work, commits, text) are in [docs/CODING_STANDARDS.md](docs/CODING_STANDARDS.md).
 
 ## The one rule
 **moe-cache must not change the generated tokens.** Any change that touches the plugin has to pass the token-identity test on at least one MoE model before it is merged:

@@ -25,7 +25,7 @@ function Run-One([string]$label, [bool]$plugin) {
   # MOE_CACHE_SIZE_GIB turns the cache on: without it the plugin only passes the weights through and the test would prove nothing
   if ($plugin) { $env:GGML_BACKEND_PATH = (Resolve-Path $Dll).Path; $env:MOE_CACHE_GGUF = (Resolve-Path $Model).Path; $env:MOE_CACHE_STATS = "1"; $env:MOE_CACHE_STATS_SIGNAL = "1"; $env:MOE_CACHE_SIZE_GIB = $CacheGiB }
   else { foreach ($v in "GGML_BACKEND_PATH", "MOE_CACHE_GGUF", "MOE_CACHE_STATS", "MOE_CACHE_STATS_SIGNAL", "MOE_CACHE_SIZE_GIB") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue } }
-  $sargs = @("-m", $Model, "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
+  $sargs = @("-m", "`"$Model`"", "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
   if ($Extra) { $sargs += ($Extra -split " " | Where-Object { $_ }) }
   $p = Start-Process -FilePath $srv -ArgumentList $sargs -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
   $up = $false

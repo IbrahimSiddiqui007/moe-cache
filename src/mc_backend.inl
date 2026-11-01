@@ -224,6 +224,56 @@ static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t
     }
 }
 
+// R2-05 (MOE_CACHE_VRAM_LINE=1, default off, log only): the lowest free GPU memory seen before a long-prompt block, and the block compute times of the prompt.
+// One line when the prompt ends (the first decode graph after blocks), and one warning per process when a block takes more than 3x the median of the first
+// 20 blocks while less than 600 MiB is free (a nearly full card: on Windows the driver may move memory to system RAM and the GPU waits). Reads the same
+// ggml_backend_dev_memory call the block already makes; changes nothing it computes.
+struct vram_watch_t {
+    bool on = getenv("MOE_CACHE_VRAM_LINE") && atoi(getenv("MOE_CACHE_VRAM_LINE")) > 0;
+    std::mutex mu;
+    size_t min_free = (size_t) -1, first_free = 0, total = 0;
+    std::vector<float> ms;            // compute time (ms) of each block of this prompt
+    double first_med = -1;            // median of the first 20 blocks of the process
+    bool warned = false;
+    std::atomic<int> pending{0};      // blocks since the last line
+    void block(size_t fr, size_t tot, double comp_ms) {
+        std::lock_guard<std::mutex> lk(mu);
+        if (tot == 0) { return; }
+        if (min_free == (size_t) -1) { first_free = fr; }
+        min_free = std::min(min_free, fr);
+        total = tot;
+        if (ms.size() < 1000000) { ms.push_back((float) comp_ms); }
+        if (first_med < 0 && ms.size() == 20) { first_med = median(ms); }
+        if (!warned && first_med > 0 && ms.size() > 20 && comp_ms > 3 * first_med && fr < ((size_t) 600 << 20)) {
+            warned = true;
+            fprintf(stderr, "moe-cache: WARNING: a long-prompt block took %.0f ms (3x the %.0f ms median of the first 20) with only %zu MiB of GPU memory free: "
+                    "the card is nearly full; --n-cpu-moe +4 frees about 2.8 GB (or a smaller -ub)\n", comp_ms, first_med, fr >> 20);
+        }
+        pending++;
+    }
+    static double median(std::vector<float> v) {
+        if (v.empty()) { return 0; }
+        const size_t m = v.size() / 2;
+        std::nth_element(v.begin(), v.begin() + (long) m, v.end());
+        return v[m];
+    }
+    void end_prompt() {
+        if (!on || pending.load() == 0) { return; }
+        std::lock_guard<std::mutex> lk(mu);
+        pending = 0;
+        const double worst = *std::max_element(ms.begin(), ms.end());
+        fprintf(stderr, "moe-cache: VRAM: min free %zu MiB of %zu MiB (%zu MiB free at the first block); %zu long-prompt blocks, compute median %.0f ms, worst %.0f ms\n",
+                min_free >> 20, total >> 20, first_free >> 20, ms.size(), median(ms), worst);
+        ms.clear();
+        min_free = (size_t) -1;
+    }
+};
+static vram_watch_t g_vram_watch;
+
+bool gpu_sum_on();                                  // mc_device.inl
+bool is_weighted_experts(const ggml_tensor * t);
+bool is_expert_sum(const ggml_tensor * t);
+
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
 // to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
 bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
@@ -458,6 +508,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
     }
     const size_t per_chunk = n_chunk > 1 ? (pack_used.size() + n_chunk - 1) / n_chunk : pack_used.size();
+    if (n_chunk > 1) {
+        n_chunk = (pack_used.size() + per_chunk - 1) / per_chunk;      // no empty tail part: 100 experts in 16 parts of 7 leave parts 15 with lo=105 > hi=100, (hi - lo) wraps
+    }
     std::unordered_set<const ggml_tensor *> pack_weights;
     if (pack_ids) {
         for (ggml_tensor * n : seg) {
@@ -614,6 +667,37 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             return true;
         }
     }
+    // MOE_CACHE_GPU_SUM=1 (mc_device.inl): the nodes right after the experts that the plugin claimed join the block, so only their sum is read back. A block split
+    // into parts leaves them to the CPU (the row copy of a split block needs the expert output's shape), as does anything that does not match; the result is the same, only slower.
+    static const bool tmpl_off = !getenv("MOE_CACHE_GPU_TMPL") || atoi(getenv("MOE_CACHE_GPU_TMPL")) <= 0;
+    if (gpu_sum_on() && tmpl_off && n_chunk == 1 && last + 1 < n_all && is_weighted_experts(ggml_graph_node(cg, last + 1)) && ggml_graph_node(cg, last + 1)->src[0] == out) {
+        ggml_tensor * mul = ggml_graph_node(cg, last + 1);
+        const ggml_tensor * w = mul->src[1];
+        std::vector<ggml_tensor *> tail { mul };
+        ggml_tensor * sum = nullptr;
+        for (int i = last + 2; i < n_all; i++) {
+            ggml_tensor * n = ggml_graph_node(cg, i);
+            if (n->op == GGML_OP_VIEW && n->view_src == mul) {
+                tail.push_back(n);
+            } else if (is_expert_sum(n) && n->src[1]->view_src == mul) {
+                tail.push_back(n);
+                sum = n;
+            } else {
+                break;
+            }
+        }
+        std::unordered_set<const ggml_tensor *> all_nodes;
+        for (int i = 0; i < n_all; i++) {
+            all_nodes.insert(ggml_graph_node(cg, i));
+        }
+        if (sum && ggml_is_contiguous(sum) && w && w->type == GGML_TYPE_F32 && !w->view_src && !all_nodes.count(w)) {
+            for (ggml_tensor * n : tail) {
+                inside.insert(n);
+                seg.push_back(n);
+            }
+            out = sum;
+        }
+    }
     // idea P08 (MOE_CACHE_GPU_BUCKET=N, default off): the packed weight tensors are allocated for the part's expert count rounded up to a multiple of N, so
     // blocks that use a few more or fewer experts share one graph shape (with MOE_CACHE_GPU_TMPL); only the used experts are uploaded, the padding is never read
     static const size_t bucket_n = getenv("MOE_CACHE_GPU_BUCKET") ? (size_t) std::max(1, atoi(getenv("MOE_CACHE_GPU_BUCKET"))) : 1;
@@ -711,11 +795,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             if (!h && nbytes <= keep_mib * (size_t) 1048576) {
                 size_t tot = 0;
                 for (auto & x : c->held) { tot += x.bytes; }
-                // idea P21 (MOE_CACHE_GPU_KEEP_PIN=1, default off): a long prompt walks the layers in a loop (every micro-batch, layer 0 .. last), and least-recently-used
-                // eviction on a loop longer than the held set never hits (each tensor is evicted just before its next use). With the pin the first tensors that fit stay,
-                // so the held share of the loop is saved on every later micro-batch.
-                static const bool keep_pin = getenv("MOE_CACHE_GPU_KEEP_PIN") && atoi(getenv("MOE_CACHE_GPU_KEEP_PIN")) > 0;
-                while (!keep_pin && tot + nbytes > keep_mib * (size_t) 1048576) {          // make room: least recently used first, never one this block already uses
+                while (tot + nbytes > keep_mib * (size_t) 1048576) {          // make room: least recently used first, never one this block already uses
                     size_t vi = c->held.size();
                     for (size_t i = 0; i < c->held.size(); i++) {
                         if (c->held[i].used != c->held_serial && (vi == c->held.size() || c->held[i].used < c->held[vi].used)) { vi = i; }
@@ -753,6 +833,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     };
     if (!from_tmpl) {
         for (ggml_tensor * n : seg) {
+            if (n->op == GGML_OP_VIEW) {         // MOE_CACHE_GPU_SUM: a view of the weighted experts shares their memory
+                clone[n] = ggml_view_2d(ctx, clone[n->view_src], n->ne[0], n->ne[1], n->nb[1], n->view_offs);
+                continue;
+            }
             ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, n->ne);
             nn->op = n->op;
             memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
@@ -780,7 +864,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             need += ggml_nbytes(u.second);
         }
         for (ggml_tensor * n : seg) {
-            need += ggml_nbytes(clone[n]);
+            if (n->op != GGML_OP_VIEW && n->op != GGML_OP_MUL && n->op != GGML_OP_ADD) {    // MOE_CACHE_GPU_SUM's nodes reuse the memory of the node before them
+                need += ggml_nbytes(clone[n]);
+            }
         }
         const size_t extra = need > held ? need - held : 0;
         const size_t fr = gpu_free;
@@ -967,7 +1053,6 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     static const bool share_up = getenv("MOE_CACHE_GPU_SHARE_UP") && atoi(getenv("MOE_CACHE_GPU_SHARE_UP")) > 0;
     // idea P02 (MOE_CACHE_GPU_RB_ROWS=1): in a split block read back only the rows of this part's experts (runs of neighbouring rows in one copy)
     static const bool rb_rows = getenv("MOE_CACHE_GPU_RB_ROWS") && atoi(getenv("MOE_CACHE_GPU_RB_ROWS")) > 0;
-    static const int rb_pipe = getenv("MOE_CACHE_GPU_RB_PIPE") ? std::max(0, std::min(16, atoi(getenv("MOE_CACHE_GPU_RB_PIPE")))) : 0;
     double up_ns = 0, comp_ns = 0, get_ns = 0;
     static const bool e1 = seg_times && getenv("MOE_CACHE_E1_TIMES") != nullptr;
     double wait_ns = 0;
@@ -1067,21 +1152,47 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     s.gpu_up_saved += ggml_nbytes(d);          // the held copy already has these bytes
                     continue;
                 }
-                // idea P22 (MOE_CACHE_GPU_WHOLE_RUNS=N, default off): a whole expert tensor is uploaded in runs of N experts, each after its own wait, so the copy of the
-                // experts that are in RAM runs while the reader threads still read the rest (one wait for all experts before the first byte moves otherwise). Same bytes.
-                static const int whole_runs = getenv("MOE_CACHE_GPU_WHOLE_RUNS") ? std::max(0, atoi(getenv("MOE_CACHE_GPU_WHOLE_RUNS"))) : 0;
-                if (whole_runs > 0 && t->ne[3] == 1 && t->ne[2] > (int64_t) whole_runs && s.by_tensor.count(t) && (size_t) t->ne[2] * t->nb[2] == ggml_nbytes(d) &&
-                    ggml_nbytes(t) == ggml_nbytes(d)) {
-                    for (int64_t e0 = 0; e0 < t->ne[2]; e0 += whole_runs) {
-                        const int64_t n = std::min<int64_t>(whole_runs, t->ne[2] - e0);
-                        timed_wait(t, e0, n);
-                        ggml_backend_tensor_set(d, (const char *) t->data + (size_t) e0 * t->nb[2], (size_t) e0 * t->nb[2], (size_t) n * t->nb[2]);
-                    }
-                    s.gpu_up_bytes += ggml_nbytes(d);
-                    continue;
-                }
                 timed_wait(t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
-                ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
+                // idea PL03/VK01 (MOE_CACHE_GPU_UPLOAD_THREADS=N, default 1 = off): a whole expert tensor of 32 MiB or more goes up in N disjoint slices copied by N threads
+                // (the calling one and N-1 short-lived helpers). Only worth it if one thread writing through the PCIe window is the limit (the link is Gen5 and the
+                // single-thread rate is below it); a helper-thread failure is a warning and that slice is then copied by the caller.
+                // SAFE ONLY WHEN THE CARD IS WRITTEN THROUGH ITS PCIe WINDOW (resizable BAR on: the Vulkan buffer is device-local AND host-visible and tensor_set is a plain
+                // memcpy, ggml-vulkan-buffers.cpp). Without it tensor_set goes through ONE shared staging buffer and ONE shared fence per device (write_2d: sync_staging,
+                // device->fence, waitForFences, resetFences), so two threads corrupt each other's data or hang (audit, round 4). The plugin has no public way to tell: check
+                // the heap in `vulkaninfo` (a device-local, host-visible type as large as the card) before using this switch.
+                static const int up_threads = []() {
+                    const int n = getenv("MOE_CACHE_GPU_UPLOAD_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_UPLOAD_THREADS")))) : 1;
+                    if (n > 1) {
+                        fprintf(stderr, "moe-cache: MOE_CACHE_GPU_UPLOAD_THREADS=%d: uploads are copied by %d threads. Only safe with resizable BAR on (device-local, host-visible "
+                                        "memory as large as the card); without it the shared staging buffer and fence of the Vulkan backend are used by all threads at once\n", n, n);
+                    }
+                    return n;
+                }();
+                const size_t up_bytes = ggml_nbytes(d);
+                if (up_threads > 1 && up_bytes >= ((size_t) 32 << 20)) {
+                    const size_t per = ((up_bytes / (size_t) up_threads) + 4095) & ~(size_t) 4095;
+                    std::vector<std::thread> hs;
+                    std::vector<std::pair<size_t, size_t>> redo;
+                    std::mutex redo_mu;
+                    for (size_t o = per; o < up_bytes; o += per) {
+                        const size_t n2 = std::min(per, up_bytes - o);
+                        try {
+                            hs.emplace_back([=, &redo, &redo_mu] {
+                                ggml_backend_tensor_set(d, (const char *) t->data + o, o, n2);
+                            });
+                        } catch (const std::exception &) {
+                            std::lock_guard<std::mutex> lk(redo_mu);
+                            redo.emplace_back(o, n2);
+                        }
+                    }
+                    ggml_backend_tensor_set(d, t->data, 0, std::min(per, up_bytes));
+                    for (auto & h : hs) { h.join(); }
+                    for (auto & r : redo) {
+                        ggml_backend_tensor_set(d, (const char *) t->data + r.first, r.first, r.second);
+                    }
+                } else {
+                    ggml_backend_tensor_set(d, t->data, 0, up_bytes);
+                }
                 s.gpu_up_bytes += ggml_nbytes(d);
             } else {
                 // activations / ids that are views: pack row by row
@@ -1108,7 +1219,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         if (e1) { up_faults += state_t::process_faults() - f_up0; }
         const auto t_c0 = std::chrono::steady_clock::now();
-        const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
+        // idea PL01 (MOE_CACHE_GPU_COMPUTE_ASYNC=1, default off): ggml_backend_graph_compute waits for the GPU before it returns, so the staging of the next part
+        // (next_window) and the queued read-back started only after the compute. The async call returns at once; the result copy is queued behind the compute
+        // on the same queue and the wait is unchanged (sync_result). Not with seg_times, which times the compute on its own.
+        static const bool compute_async = getenv("MOE_CACHE_GPU_COMPUTE_ASYNC") && atoi(getenv("MOE_CACHE_GPU_COMPUTE_ASYNC")) > 0;
+        const enum ggml_status st = compute_async && !seg_times ? ggml_backend_graph_compute_async(c->gpu, g) : ggml_backend_graph_compute(c->gpu, g);
         if (!rb || seg_times) {
             ggml_backend_synchronize(c->gpu);     // seg_times: the compute is timed on its own
         }
@@ -1119,7 +1234,6 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         const auto t_g0 = std::chrono::steady_clock::now();
         const char * res = nullptr;           // the block's result on the host (all parts: the part's result)
-        bool out_done = false;                // idea P23: the result is already in out->data
         if (rb && rb_rows && n_chunk > 1 && pack_ids && ggml_is_contiguous(out) && out->nb[1] == ggml_row_size(out->type, out->ne[0])) {
             const size_t row = out->nb[1];
             size_t run_start = 0, run_len = 0;
@@ -1145,24 +1259,6 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             next_window(ch);
             sync_result();
             res = (const char *) rb;
-        } else if (rb && rb_pipe > 1 && n_chunk == 1 && out_bytes >= ((size_t) 8 << 20)) {
-            // idea P23 (MOE_CACHE_GPU_RB_PIPE=N, default off): the result is read back in N slices; the host copy of slice i-1 into the CPU tensor runs while slice i
-            // crosses the bus (copy and transfer add up otherwise). Same bytes; the first synchronize also waits for the compute.
-            const size_t row = ggml_row_size(out->type, out->ne[0]);
-            const size_t per = (out_bytes / (size_t) rb_pipe / row + 1) * row;
-            size_t pend_o = 0, pend_n = 0;
-            for (size_t o = 0; o < out_bytes; o += per) {
-                const size_t n = std::min(per, out_bytes - o);
-                ggml_backend_tensor_get_async(c->gpu, gout, (char *) rb + o, o, n);
-                if (pend_n) {
-                    memcpy((char *) out->data + pend_o, (const char *) rb + pend_o, pend_n);
-                }
-                sync_result();
-                pend_o = o;
-                pend_n = n;
-            }
-            memcpy((char *) out->data + pend_o, (const char *) rb + pend_o, pend_n);
-            out_done = true;
         } else if (rb) {
             ggml_backend_tensor_get_async(c->gpu, gout, rb, 0, out_bytes);
             next_window(ch);
@@ -1174,8 +1270,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             res = (const char *) part.data();
         }
         if (n_chunk == 1) {
-            if (out_done) {
-            } else if (res) {
+            if (res) {
                 memcpy(out->data, res, out_bytes);
             } else {
                 ggml_backend_tensor_get(gout, out->data, 0, out_bytes);
@@ -1197,6 +1292,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         up_ns += std::chrono::duration<double, std::nano>(t_c0 - t_up0).count();
         comp_ns += std::chrono::duration<double, std::nano>(t_g0 - t_c0).count();
         get_ns += std::chrono::duration<double, std::nano>(t_end - t_g0).count();
+    }
+    if (g_vram_watch.on) {
+        g_vram_watch.block(gpu_free, gpu_tot, comp_ns / 1e6);
     }
     if (n_chunk > 1 && n_chunk <= 16 && !pack_used.empty()) {
         split_stat_t & ss = split_stat[n_chunk];

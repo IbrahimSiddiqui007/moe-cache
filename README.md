@@ -100,7 +100,7 @@ Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html)
 | [Windows](docs/WINDOWS.md) | the Windows kit, page file, known limits |
 | [Models](docs/MODELS.md) | which model and which file for your machine |
 | [Coding agents](docs/AGENTS.md) | Hermes, OpenCode, Claude Code, on-demand |
-| [Control page](docs/GUI.md) | the browser app |
+| [Control page](docs/GUI.md), [try it step by step](docs/CONTROL_PAGE_CHECK.md) | the browser app |
 | [How it works](docs/HOW_IT_WORKS.md) | the cache, the plugin, what it changes in llama.cpp (nothing) |
 | [Exactness](docs/EXACTNESS.md) | how "same tokens as stock" is checked |
 | [Results](docs/RESULTS.md) and the [benchmark card](docs/benchmark_card.html) | every measurement |
@@ -108,6 +108,7 @@ Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html)
 | [Configuration](docs/CONFIGURATION.md) | environment variables |
 | [FAQ](docs/FAQ.md) | questions, and how moe-cache compares with other projects |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | wrong-looking answers, slow runs, start problems |
+| [Coding standards](docs/CODING_STANDARDS.md) | rules for anyone building or testing moe-cache |
 | [Compatibility](docs/COMPATIBILITY.md), [Roadmap](docs/ROADMAP.md), [Security and privacy](docs/SECURITY.md) | |
 
 ## Support

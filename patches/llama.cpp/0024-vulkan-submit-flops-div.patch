@@ -1,0 +1,15 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c0943689f..d54f3312a 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -14454,7 +14454,9 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+             flops_cap = 2'000'000'000ULL * ctx->device->shader_core_count;
+         }
+     }
+-    uint64_t flops_per_submit = std::min(flops_cap, ctx->last_total_flops / 40u);
++    // GGML_VK_SUBMIT_FLOPS_DIV=N (default 40, 0 = no flop based cut): a submit is cut after 1/N of the previous graph's flops
++    static const uint32_t flops_div = getenv("GGML_VK_SUBMIT_FLOPS_DIV") ? (uint32_t) std::max(0, atoi(getenv("GGML_VK_SUBMIT_FLOPS_DIV"))) : 40u;
++    uint64_t flops_per_submit = flops_div == 0 ? 0 : std::min(flops_cap, ctx->last_total_flops / flops_div);
+ 
+     auto const submit_after = [&](int start, int end) {
+         if (ctx->device->serialize_submissions) {

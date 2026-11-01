@@ -810,18 +810,48 @@ def mem_for_server(ram_gb):
     return min(v, cap) if v and cap else (v or cap)
 
 
+def cgroup_mem_limit(proc_cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
+    """Smallest memory limit in bytes of this process's cgroup AND its parents (a limit set on a systemd slice or a docker parent applies to a leaf that
+    says "max"), cgroup v2 memory.max and v1 memory.limit_in_bytes; None when nothing limits it. The paths are arguments for tests/cgroup_test.py."""
+    try:
+        lines = open(proc_cgroup).read().strip().splitlines()
+    except OSError:
+        return None
+    best = None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        hier, ctrl, rel = parts
+        if hier == "0" and ctrl == "":
+            base, name = root, "memory.max"
+        elif "memory" in ctrl.split(","):
+            base, name = os.path.join(root, "memory"), "memory.limit_in_bytes"
+        else:
+            continue
+        d = rel or "/"
+        while True:
+            try:
+                v = open(os.path.join(base, d.lstrip("/"), name)).read().strip()
+            except OSError:
+                v = ""
+            if v.isdigit() and int(v) < 2**60:            # v1 says 9223372036854771712 for "no limit"
+                best = int(v) if best is None else min(best, int(v))
+            if d in ("/", ""):
+                break
+            d = os.path.dirname(d.rstrip("/")) or "/"
+    return best
+
+
 def _mem_for_server(ram_gb):
     if ram_gb:
         return float(ram_gb) * 1e9
     if WINDOWS:
         return win_memory()[1]      # found on the MSI Claw: /proc does not exist there, so stock-vs-plugin could not be decided without --ram
+    lim = cgroup_mem_limit()
+    if lim:
+        return float(lim)
     try:
-        rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
-        for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
-            if os.access(f, os.R_OK):
-                v = open(f).read().strip()
-                if v != "max":
-                    return float(v)
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable"):
                 return int(line.split()[1]) * 1024.0
@@ -847,6 +877,23 @@ def arg_after(args, *names):
         if a in names and i + 1 < len(args):
             v = args[i + 1]
     return v
+
+
+def adopt_user_flags(extra):
+    """Flags the launcher also sets, when the user gives them after `--`: llama-server takes the user's (the last one wins), so the plan, the health
+    checks and the VRAM maths must use the same value. -> ({"port": int, "ctx": int, "ncmoe": str} for the ones found as plain numbers, extra without
+    them: the launcher puts the value back itself). A value that is not a plain positive number (-c 0 = the model's own length) is left alone."""
+    found, keep, i = {}, [], 0
+    names = {"--port": "port", "-c": "ctx", "--ctx-size": "ctx", "--n-cpu-moe": "ncmoe", "-ncmoe": "ncmoe"}
+    while i < len(extra):
+        key = names.get(extra[i])
+        if key and i + 1 < len(extra) and re.fullmatch(r"[0-9]+", extra[i + 1]) and (int(extra[i + 1]) > 0 or key == "ncmoe"):
+            found[key] = int(extra[i + 1]) if key != "ncmoe" else str(int(extra[i + 1]))
+            i += 2
+            continue
+        keep.append(extra[i])
+        i += 1
+    return found, keep
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1249,7 +1296,7 @@ def mtp_args(want, agent, ls, model, extra):
     server_has = False
     if head and want is not False and not user_spec:
         try:
-            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, timeout=30).stdout
+            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
         except Exception:
             pass
     on, why = mtp_decide(want, agent, head, declared, server_has, user_spec)
@@ -1458,6 +1505,13 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
     elif low and WINDOWS:
         kw["creationflags"] = 0x00004000      # BELOW_NORMAL_PRIORITY_CLASS
     p = subprocess.Popen(cmd, **kw)
+    if env.get("MOE_CACHE_GPU_MEM_LOG", "") not in ("", "0"):         # R2-06, default off: dedicated / shared GPU memory of llama-server, once a second
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import start_gpu_mem_log
+            start_gpu_mem_log(p.pid, lambda m: say(m, err=True), WINDOWS, env, lambda: p.poll() is None)
+        except Exception:
+            pass
     if WINDOWS:
         try:
             _kill_with_parent_windows(p, mem_limit)
@@ -1472,9 +1526,13 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
         threading.Thread(target=save_now_and_then, daemon=True).start()
     seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": False}
     def pump():
-        out = sys.stderr.buffer
+        out = getattr(sys.stderr, "buffer", None)
         for line in iter(p.stderr.readline, b""):
-            out.write(line); out.flush()
+            if out is not None:
+                try:
+                    out.write(line); out.flush()
+                except (OSError, ValueError):
+                    out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
             if b"moe-cache:" in line:
@@ -1590,7 +1648,7 @@ SERVER_HELP = """\
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
-           Same output; Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
+           Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
            and llama-server has draft-mtp; one line says why it is on or off
 --no-sampling-defaults  do not pass the model card's sampling settings. By default, for Qwen3 / 3.5 / 3.6 / 3.8 / Qwen3-Next and GLM models,
            temperature, top-p, top-k, min-p and presence penalty follow the official card for the mode (thinking unless --reasoning off; --agent:
@@ -2020,6 +2078,15 @@ def _launch_plan(a, extra, argv, machine):
                 f"memory free for the desktop, leaves {LEAVE_ROOM_FREE_CORES} CPU cores free and runs at a lower priority: smoother PC, slower model")
     if a.share_ram:
         share_ram_start(a, machine)
+    user_flags, extra = adopt_user_flags(extra)
+    if "port" in user_flags and user_flags["port"] != a.port:
+        say(f"moe-cache: port {user_flags['port']} from the flags after '--' (the health checks, warm sessions and agent snippets use it)")
+        a.port = user_flags["port"]
+    if "ctx" in user_flags and user_flags["ctx"] != a.ctx:
+        say(f"moe-cache: context {user_flags['ctx']} from the flags after '--' (the GPU plan uses it)")
+        a.ctx = user_flags["ctx"]
+    if "ncmoe" in user_flags and a.n_cpu_moe is None:
+        a.n_cpu_moe = user_flags["ncmoe"]
     ls, model, port = a.llama_server, a.model, a.port
     ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
     gcache = a.gpu_cache
@@ -2033,12 +2100,23 @@ def _launch_plan(a, extra, argv, machine):
     mm_file, mm_bytes, dense = None, 0, False
     if a.mmproj or a.auto_fit:
         mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
-    lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
+    lib = os.environ.get("MOE_CACHE_LIB")
+    if lib:
+        # moe-cache.bat sets MOE_CACHE_LIB to the first DLL it finds (the api3 one); for an older llama-server (ggml 0.24 / 0.25) that build refuses to load.
+        # An env value built for another API than the server uses gives way to the matching build the launcher finds itself (audit A4-01)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if want and have and want != have:
+            alt = machine.pick_lib(ls)
+            if alt != lib and machine.lib_exists(alt) and machine.lib_api(alt) == want:
+                say(f"moe-cache: MOE_CACHE_LIB {lib} was built for ggml backend API {have}, {ls} uses API {want}: using {alt} instead", err=True)
+                lib = alt
+    else:
+        lib = machine.pick_lib(ls)
     if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
         # tarball users the wrong way (audit 2026-10-29 K2)
         raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
-                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else "")
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else " (Linux: the -ggml0.26 download has llama.cpp inside, or run ./install.sh; with your own llama.cpp the file is build/bin/llama-server)")
                          + f". Looked: {machine.ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
     if (line := machine.ls_found_line(ls)):
         say(line)
@@ -2279,6 +2357,14 @@ def _launch_plan(a, extra, argv, machine):
                     desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
+            from gguf_plan import plan_rule_on
+            if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
+                from gguf_plan import find_fit_params, plan_table, plan_table_lines
+                kw["fit_params"] = find_fit_params(ls)
+                say("moe-cache: plan rule: compute-buffer reserve " + ("measured with " + kw["fit_params"] if kw["fit_params"] else "from the formula (no llama-fit-params found)"))
+                if a.dry_run and free:
+                    for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):
+                        say(line)
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
         except Exception:
             tuned = None
@@ -2809,8 +2895,11 @@ def connect(argv):
             data = json.load(open(cfg, encoding="utf-8"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
-        if not str(data.get("model", "")).startswith("moe-cache/") or not os.path.isfile(cfg + ".bak"):
-            # keep the backup of the user's own setup: a second connect (already moe-cache) must not replace it with ours
+        if not isinstance(data, dict) or not isinstance(data.get("provider", {}), dict):
+            raise SystemExit(f"{cfg} is not an OpenCode config object (a JSON object with a 'provider' object): add the block printed by 'moe_cache.py connect opencode' by hand")
+        if "moe-cache" not in data.get("provider", {}) or not os.path.isfile(cfg + ".bak"):
+            # keep the backup of the user's own setup: a second connect, or a file that already holds our provider (even with another default
+            # model chosen since), must not replace it with ours
             shutil.copy2(cfg, cfg + ".bak")
             if not WINDOWS:
                 os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
@@ -3164,15 +3253,10 @@ def check(argv):
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable"):
                 memav = int(line.split()[1]) * 1024 / 1e9
-        rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
-        for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
-            if os.access(f, os.R_OK):
-                v = open(f).read().strip()
-                if v != "max":
-                    cg = int(v) / 1e9
-                    break
     except OSError:
         pass
+    lim = cgroup_mem_limit()
+    cg = lim / 1e9 if lim else None
     tot = win_memory()[0] / 1e9 if WINDOWS and win_memory()[0] else meminfo_total_gb()
     facts["ram"] = (f"{tot:.0f} GB total, " if tot else "") + (f"{memav:.1f} GB available" if memav else "available unknown") + (f", cgroup limit {cg:.1f} GB" if cg else "")
     ok("memory", (f"--ram {a.ram} GB; " if a.ram else "") + (f"available {memav:.1f} GB" if memav else "available: unknown") + (f", cgroup limit {cg:.1f} GB" if cg else ""))
@@ -3219,7 +3303,7 @@ def check(argv):
                     os.close(os.open(a.model, os.O_RDONLY | os.O_DIRECT))
                     ok("direct reads", "O_DIRECT works on this file system")
                 except OSError:
-                    fail("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): put the model on a normal disk")
+                    warn("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): the plugin reads through the page cache instead, which works but is slower; a normal local disk is faster")
             try:
                 du = shutil.disk_usage(os.path.dirname(os.path.abspath(a.model)))
                 facts["disk"] = f"{du.free / 1e9:.0f} GB free of {du.total / 1e9:.0f} GB where the model is"

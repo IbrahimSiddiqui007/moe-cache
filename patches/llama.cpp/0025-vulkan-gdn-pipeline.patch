@@ -1,0 +1,136 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c0943689f..e658a4b98 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3741,9 +3741,11 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             const std::array<uint32_t, 3> wg_denoms = {1u, 1u, cols_per_wg};
+ 
+             for (uint32_t kda = 0; kda < 2; kda++) {
++                // GGML_VK_GDN_PIPELINE=1 (default off): the loads of the next token are issued before the math of this one
++                static const uint32_t gdn_pipe = getenv("GGML_VK_GDN_PIPELINE") && atoi(getenv("GGML_VK_GDN_PIPELINE")) > 0 ? 1 : 0;
+                 ggml_vk_create_pipeline(device, device->pipeline_gated_delta_net[si][kda],
+                     gdn_names[si][kda], gdn_len, gdn_data, "main", 7, sizeof(vk_op_gated_delta_net_push_constants),
+-                    wg_denoms, {S_V, kda, gdn_subgroup_size, lanes_per_column}, 1, true, use_subgroup_ops, gdn_subgroup_size);
++                    wg_denoms, {S_V, kda, gdn_subgroup_size, lanes_per_column, gdn_pipe}, 1, true, use_subgroup_ops, gdn_subgroup_size);
+             }
+         }
+     }
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/gated_delta_net.comp b/ggml/src/ggml-vulkan/vulkan-shaders/gated_delta_net.comp
+index 0e384330b..2066701c6 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/gated_delta_net.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/gated_delta_net.comp
+@@ -15,6 +15,8 @@ layout(constant_id = 0) const uint S_V = 128;
+ layout(constant_id = 1) const uint KDA = 0;
+ layout(constant_id = 2) const uint SUBGROUP_SIZE = 32;
+ layout(constant_id = 3) const uint LANES_PER_COLUMN = 32;
++// 1: the loads of token t+1 are issued before the math of token t (software pipelining, same operations in the same order); 0: loads inside the iteration
++layout(constant_id = 4) const uint PIPE = 0;
+ 
+ const uint COLS_PER_WG = SUBGROUP_SIZE / LANES_PER_COLUMN;
+ const uint ROWS_PER_LANE = S_V / LANES_PER_COLUMN;
+@@ -92,6 +94,38 @@ FLOAT_TYPE reduce_partial(FLOAT_TYPE partial) {
+     }
+ }
+ 
++// loads the inputs of token t for this lane (the state is not involved, so this can run ahead of the math of the previous token)
++void load_token(uint t, uint seq_id, uint head_id, uint col, uint lane, uint iq1, uint iq3,
++                out FLOAT_TYPE k_reg[ROWS_PER_LANE], out FLOAT_TYPE q_reg[ROWS_PER_LANE], out FLOAT_TYPE g_exp[ROWS_PER_LANE],
++                out FLOAT_TYPE v_val, out FLOAT_TYPE beta_val) {
++    const uint q_off = iq3 * sq3 + t * sq2 + iq1 * sq1;
++    const uint k_off = q_off;
++    const uint v_off = seq_id * sv3 + t * sv2 + head_id * sv1;
++    const uint gb_off = seq_id * sb3 + t * sb2 + head_id * sb1;
++    beta_val = FLOAT_TYPE(data_beta[gb_off]);
++
++    [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
++        const uint i = r * LANES_PER_COLUMN + lane;
++        k_reg[r] = FLOAT_TYPE(data_k[k_off + i]);
++        q_reg[r] = FLOAT_TYPE(data_q[q_off + i]);
++    }
++
++    if (KDA == 0) {
++        const FLOAT_TYPE g_val = exp(FLOAT_TYPE(data_g[gb_off]));
++        [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
++            g_exp[r] = g_val;
++        }
++    } else {
++        const uint g_base = gb_off * S_V;
++        [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
++            const uint i = r * LANES_PER_COLUMN + lane;
++            g_exp[r] = exp(FLOAT_TYPE(data_g[g_base + i]));
++        }
++    }
++
++    v_val = FLOAT_TYPE(data_v[v_off + col]);
++}
++
+ void main() {
+     const uint head_id = gl_WorkGroupID.x;
+     const uint seq_id = gl_WorkGroupID.y;
+@@ -118,37 +152,21 @@ void main() {
+ 
+     uint attn_off = (seq_id * n_tokens * H + head_id) * S_V;
+ 
+-    for (uint t = 0; t < n_tokens; t++) {
+-        const uint q_off = iq3 * sq3 + t * sq2 + iq1 * sq1;
+-        const uint k_off = q_off;
+-        const uint v_off = seq_id * sv3 + t * sv2 + head_id * sv1;
+-        const uint gb_off = seq_id * sb3 + t * sb2 + head_id * sb1;
+-        const FLOAT_TYPE beta_val = FLOAT_TYPE(data_beta[gb_off]);
+-
+-        FLOAT_TYPE k_reg[ROWS_PER_LANE];
+-        FLOAT_TYPE q_reg[ROWS_PER_LANE];
+-        [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
+-            const uint i = r * LANES_PER_COLUMN + lane;
+-            k_reg[r] = FLOAT_TYPE(data_k[k_off + i]);
+-            q_reg[r] = FLOAT_TYPE(data_q[q_off + i]);
+-        }
++    FLOAT_TYPE k_reg[ROWS_PER_LANE], q_reg[ROWS_PER_LANE], g_exp[ROWS_PER_LANE];
++    FLOAT_TYPE v_val, beta_val;
++    FLOAT_TYPE k_nxt[ROWS_PER_LANE], q_nxt[ROWS_PER_LANE], g_nxt[ROWS_PER_LANE];
++    FLOAT_TYPE v_nxt, beta_nxt;
++    if (PIPE != 0) {
++        load_token(0, seq_id, head_id, col, lane, iq1, iq3, k_reg, q_reg, g_exp, v_val, beta_val);
++    }
+ 
+-        FLOAT_TYPE g_exp[ROWS_PER_LANE];
+-        if (KDA == 0) {
+-            const FLOAT_TYPE g_val = exp(FLOAT_TYPE(data_g[gb_off]));
+-            [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
+-                g_exp[r] = g_val;
+-            }
+-        } else {
+-            const uint g_base = gb_off * S_V;
+-            [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
+-                const uint i = r * LANES_PER_COLUMN + lane;
+-                g_exp[r] = exp(FLOAT_TYPE(data_g[g_base + i]));
+-            }
++    for (uint t = 0; t < n_tokens; t++) {
++        if (PIPE == 0) {
++            load_token(t, seq_id, head_id, col, lane, iq1, iq3, k_reg, q_reg, g_exp, v_val, beta_val);
++        } else if (t + 1 < n_tokens) {
++            load_token(t + 1, seq_id, head_id, col, lane, iq1, iq3, k_nxt, q_nxt, g_nxt, v_nxt, beta_nxt);
+         }
+ 
+-        const FLOAT_TYPE v_val = FLOAT_TYPE(data_v[v_off + col]);
+-
+         FLOAT_TYPE kv_shard = 0.0;
+         [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
+             kv_shard += g_exp[r] * s_shard[r] * k_reg[r];
+@@ -170,6 +188,16 @@ void main() {
+ 
+         attn_off += S_V * H;
+ 
++        if (PIPE != 0) {
++            [[unroll]] for (uint r = 0; r < ROWS_PER_LANE; r++) {
++                k_reg[r] = k_nxt[r];
++                q_reg[r] = q_nxt[r];
++                g_exp[r] = g_nxt[r];
++            }
++            v_val = v_nxt;
++            beta_val = beta_nxt;
++        }
++
+         if (K > 1u) {
+             const int target_slot = int(n_tokens) - 1 - int(t);
+             if (target_slot >= 0 && target_slot < int(K)) {

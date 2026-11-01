@@ -57,9 +57,47 @@ bool layer_ok(const ggml_tensor * w) {
     return l >= s.lo && l <= s.hi;
 }
 
+// MOE_CACHE_GPU_SUM=1 (default off): a long-prompt block also takes the router-weight MUL and the ADD chain after its last expert node, so only the
+// sum leaves the block ([n_embd, n_tokens] instead of [n_embd, k, n_tokens]) instead of the k rows crossing the bus and the scheduler copying them back up.
+// The same backend does the same ops in the same order. Short batches stay as they are.
+bool gpu_sum_on() {
+    static const bool on = getenv("MOE_CACHE_GPU_SUM") && atoi(getenv("MOE_CACHE_GPU_SUM")) > 0;
+    return on;
+}
+
+bool is_expert_output(const ggml_tensor * t) {
+    if (!t || t->op != GGML_OP_MUL_MAT_ID) {
+        return false;
+    }
+    const ggml_tensor * w = t->src[0];
+    return w && w->buffer && ggml_backend_buffer_get_type(w->buffer)->iface.get_name == buft_name && w->ne[2] > 1 && layer_ok(w);
+}
+
+bool is_weighted_experts(const ggml_tensor * t) {
+    const int min_tok = S().gpu_min_tokens;
+    return t && t->op == GGML_OP_MUL && is_expert_output(t->src[0]) && min_tok > 0 && t->ne[2] >= min_tok && S().gpu_dev;
+}
+
+bool is_expert_sum(const ggml_tensor * t) {
+    if (!t || t->op != GGML_OP_ADD) {
+        return false;
+    }
+    const ggml_tensor * a = t->src[0], * b = t->src[1];
+    if (!b || !b->view_src || !is_weighted_experts(b->view_src)) {
+        return false;
+    }
+    while (a && a->op == GGML_OP_ADD) {
+        a = a->src[0];
+    }
+    return a && a->view_src == b->view_src;
+}
+
 bool dev_supports_op(ggml_backend_dev_t, const ggml_tensor * op) {
     if (S().disabled) {
         return false;
+    }
+    if (gpu_sum_on() && (is_weighted_experts(op) || is_expert_sum(op))) {
+        return true;
     }
     if (getenv("MOE_CACHE_TRACE")) {
         fprintf(stderr, "moe-cache: supports_op %s src0=%s buf=%p\n", ggml_op_name(op->op), op->src[0] ? op->src[0]->name : "-", op->src[0] ? (void *) op->src[0]->buffer : nullptr);
@@ -214,7 +252,7 @@ extern "C" MOE_CACHE_EXPORT void moe_cache_register(void) {
 #ifndef _WIN32
 // LD_PRELOAD loading (Linux builds that link their backends directly); on Windows the library is loaded through GGML_BACKEND_PATH
 __attribute__((constructor)) static void moe_cache_autoload() {
-    if (getenv("MOE_CACHE_PRELOAD") && !getenv("MOE_CACHE_DISABLE")) {
+    if (getenv("MOE_CACHE_PRELOAD") && !(getenv("MOE_CACHE_DISABLE") && *getenv("MOE_CACHE_DISABLE") && strcmp(getenv("MOE_CACHE_DISABLE"), "0") != 0)) {
         const int api = moe_cache_api_of_ggml(ggml_version());
         if (api > 0 && api != GGML_BACKEND_API_VERSION) {   // registering would hand the server a struct of the wrong layout
             fprintf(stderr, "moe-cache: this plugin was built for ggml backend API %d but the server uses ggml %s (API %d): not loaded, the model loads the normal way. "
