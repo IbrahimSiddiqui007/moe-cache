@@ -507,6 +507,7 @@
         if (rb_th.joinable()) {
             rb_th.join();
         }
+        peers_stop();
         {
             std::lock_guard<std::mutex> lk(rq_mu);
             rq_stop = true;

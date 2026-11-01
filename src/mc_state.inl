@@ -760,6 +760,7 @@ struct state_t {
             }
         }
         cache_on = true;
+        peers_start();
         {
             std::vector<std::string> names;
             for (const auto & kv : file_tensors) {
@@ -977,6 +978,7 @@ struct state_t {
 #include "mc_state_lru.inl"
 #include "mc_state_pack.inl"
 #include "mc_state_rebalance.inl"
+#include "mc_state_peers.inl"
 };
 
 // The state lives on the heap; a static guard ends it at exit. Normally (threads alive) it is deleted: threads joined, profile saved. When the

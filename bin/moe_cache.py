@@ -1776,6 +1776,7 @@ def parse_server(argv):
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
     ap.add_argument("--auto-fit", action="store_true")      # PROTOTYPE (MM6): a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; default off
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
+    ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
@@ -2191,6 +2192,14 @@ def _launch_plan(a, extra, argv, machine):
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    if a.peers and not stock:
+        # N2/MM2 (PROTOTYPE): the plugin writes its memory use into this folder once a second and reads the other servers' files; a quiet server gives memory to a busy
+        # one. --ram stays this server's own share. A stock llama-server (no plugin) is not in the folder: --share-ram counts it at start.
+        peers_dir = os.path.join(CACHE_DIR, "peers")
+        env.append(("MOE_CACHE_PEERS", peers_dir))
+        if cap:
+            env.append(("MOE_CACHE_PEER_CAP_GIB", f"{cap / 2**30:.2f}"))
+        say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/PLATFORMS.md)")
     if cap:
         say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
             else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
