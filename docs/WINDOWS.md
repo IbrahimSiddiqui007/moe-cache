@@ -94,6 +94,7 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 
 ## 6. Known limits
 
+- **Game launchers and other apps that draw on the GPU slow it down.** The EA app is the one we measured: while it draws, it keeps the GPU's graphics engine busy and our work waits behind it. Close it before a long prompt, including from the system tray. Others, such as Epic, Battle.net or Ubisoft Connect, are the same kind of program but not measured. See [Troubleshooting](TROUBLESHOOTING.md#slow).
 - **Speed on the test PC** (RESULTS 59-60, 2026-10-27: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, page file 14 GB, llama.cpp Vulkan ggml 0.27;
   every run cold (file cache flushed), stock-plugin-plugin-stock order, launcher defaults, decode of a 256-token greedy request). These numbers need the
   **file-view cache** (the Windows default since 2026-10-27, `MOE_CACHE_WIN_VIEW=0` turns it off): the cache keeps experts in read-only views of the
