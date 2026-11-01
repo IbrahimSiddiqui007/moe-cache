@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -84,3 +84,15 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled:** `libllama` (Linux, Release). Not run: no Gemma 4 model on the laptop. The Windows branch is the existing upstream `llama_prefetch`, not compiled here.
 
 **Test (under 20 minutes, Windows PC):** a Gemma 4 GGUF with lazy PLE (the default `--lazy-mode auto` decides; the log line `enabling prefetch for 'per_layer_token_embd.weight'` must appear), same long prompt (about 34k tokens), `MOE_CACHE_SEG_TIMES=1`, A B B A with A = unset and B = `LLAMA_PLE_PREFETCH_AHEAD=1`, cold file cache each run if you can (otherwise the rows are already resident and nothing can be seen). Compare total prompt time and the per-ubatch time of the first rows. Accept only if B is faster by more than the A-vs-A spread; output tokens must be identical.
+
+## 0005-tokenize-cache (S08)
+
+**What:** `common_tokenize(vocab, text, add_special, parse_special)` (common/common.cpp) is the one place the server tokenizes prompts, including the text that comes out of the chat template. With `LLAMA_TOKENIZE_CACHE=1` it keeps the result of the last 4 texts of at least 4096 bytes. A call with the same text, flags and vocab returns the stored tokens; anything else is tokenized as before. Unset = no cache, no extra copy of any text.
+
+**Soundness:** the key is the whole text (compared byte for byte), both flags, the vocab pointer plus a signature (vocab size, type, the text of 16 tokens spread over the vocab, because a reloaded model can reuse an address). Nothing is reused across different texts: tokenizing a prefix and a suffix separately does not give the tokens of the whole text (merges across the boundary), so a prefix cache is not sound and is not done. Chat templates are not cached: only the tokenizing of their output is. Risk: two vocabs with the same size, type and 16 sampled token texts at the same address would collide (only after unloading and loading a different model in the same process, no case known); a few MB of memory per cached text (text copy + tokens).
+
+**Honest scope:** it only helps when the exact same long text arrives again (retry, regenerate, the same benchmark prompt, n choices of one request). An agent loop that appends to its history changes the text every request and never hits. The prompt-prefix KV reuse in the server is separate and unchanged.
+
+**Compiled and run (Linux):** `llama-common`, `llama-server`. A small program on the vocab-only `ggml-vocab-llama-bpe.gguf` with a 166 KB text: both calls return the same 58001 tokens; the second call took 0.02 ms with the cache and 8.1 ms without (the first call 9.3 ms in both runs); a text with one extra byte and the same text with `add_special=false` give their own results. That is the tokenizer alone, not TTFT.
+
+**Test (under 20 minutes, any box):** with a real model, send the same 100k-token chat request twice to `llama-server` (A: unset, B: `LLAMA_TOKENIZE_CACHE=1`), `--cache-prompt` off so the prompt path is the same, and compare the time before the first prompt token is processed (server log `prompt eval` start vs request arrival). Expect no change on the first request and only a tokenizer-sized saving on the second; if that is not at least a few percent of TTFT the patch is not worth enabling. Output tokens must match.
