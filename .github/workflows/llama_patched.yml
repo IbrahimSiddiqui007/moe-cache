@@ -6,7 +6,7 @@ name: llama-patched
 on:
   workflow_dispatch:
   push:
-    branches: [ci/llama-patched]
+    branches: [ci/llama-patched, 'ci/llama-patched-**']
 
 env:
   LLAMA_COMMIT: ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1   # b11966

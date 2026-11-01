@@ -408,6 +408,12 @@ struct state_t {
                 fprintf(stderr, "moe-cache: MOE_CACHE_TIMER_1MS: timer tick %.3f -> %.3f ms for this process\n", before, now);
             }
         }
+        {
+            const std::string sched = plat::sched_tuning();
+            if (!sched.empty()) {
+                fprintf(stderr, "moe-cache: scheduling: %s\n", sched.c_str());
+            }
+        }
         const char * gib = getenv("MOE_CACHE_SIZE_GIB");
         std::string file_s;
         const char * file = plat::env_utf8("MOE_CACHE_GGUF", file_s) ? file_s.c_str() : nullptr;
