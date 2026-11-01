@@ -15,6 +15,19 @@ Patches that lost a paired run move to `archive/` at the top of the repo, with h
 3. The plugin must still work on stock llama.cpp. Nothing in `src/` may require a patch.
 4. Patches apply to exactly the pinned commit. Moving the pin means re-checking every patch.
 
+## When the pin moves
+
+Owner's decision, 2026-11-02. We do not rebuild for every llama.cpp release. Patches never hold a move back: an upstream fix should not wait for a patch of ours.
+
+| Reason to move | Testing |
+|---|---|
+| Security fix | at once: CI and a short PC check |
+| ggml backend API change | full paired PC run |
+| New model architecture we want | full paired PC run |
+| Upstream speed gain that a paired run confirms | full paired PC run |
+
+Non-security moves wait at most a week, so one test cycle covers everything pending. Before a move, losing patches go to `archive/`, so only patches still in play are re-checked.
+
 ## Apply
 
 ```bash
