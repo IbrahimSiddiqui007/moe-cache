@@ -1,0 +1,134 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 2bd1ab9ec..3fecb3e64 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -1044,6 +1044,13 @@ public:
+     server_queue    queue_tasks;
+     server_response queue_results;
+ 
++    // LLAMA_SLOT_SAVE_ASYNC=1: writer threads of slot saves (joined in the destructor, finished ones are reaped at the next save)
++    struct slot_save_worker {
++        std::thread                  th;
++        std::shared_ptr<std::atomic<bool>> done;
++    };
++    std::vector<slot_save_worker> slot_save_workers;
++
+     // note: chat_params must not be refreshed upon existing sleeping state
+     server_chat_params chat_params;
+ 
+@@ -1054,6 +1061,11 @@ public:
+     }
+ 
+     ~server_context_impl() {
++        for (auto & w : slot_save_workers) {
++            if (w.th.joinable()) {
++                w.th.join();
++            }
++        }
+         if (!sleeping) {
+             // destroy() is already called when entering sleeping state
+             // we don't call it again here to avoid double free
+@@ -3240,6 +3252,103 @@ private:
+                     }
+ 
+                     GGML_ASSERT(packed.size() % sizeof(llama_token) == 0);
++
++                    // LLAMA_SLOT_SAVE_ASYNC=1 (default off): the sequence state is copied into memory here and a thread writes the file (to a temporary
++                    // name, renamed when complete), so the server loop is not held by the disk. The answer to the request is sent when the file is
++                    // complete. States above LLAMA_SLOT_SAVE_ASYNC_MAX_MIB (default 4096, counting checkpoints) and servers with a draft context are
++                    // saved as before.
++                    static const bool save_async = [] { const char * v = getenv("LLAMA_SLOT_SAVE_ASYNC"); return v && atoi(v) > 0; }();
++                    if (save_async && ctx_dft == nullptr) {
++                        static const size_t max_bytes = [] {
++                            const char * v = getenv("LLAMA_SLOT_SAVE_ASYNC_MAX_MIB");
++                            return (size_t) (v && atoi(v) > 0 ? atoi(v) : 4096) << 20;
++                        }();
++                        size_t n_ckpt_bytes = 0;
++                        for (const auto & cur : slot->prompt.checkpoints) {
++                            n_ckpt_bytes += cur.data_tgt.size() + cur.data_dft.size() + cur.data_spec.size();
++                        }
++                        const size_t n_state = llama_state_seq_get_size_ext(ctx_tgt, slot->id, LLAMA_STATE_SEQ_FLAGS_NONE);
++                        if (n_state > 8 && n_state + n_ckpt_bytes <= max_bytes) {
++                            std::vector<uint8_t> state(n_state);
++                            const size_t n_got = llama_state_seq_get_data_ext(ctx_tgt, state.data(), state.size(), slot->id, LLAMA_STATE_SEQ_FLAGS_NONE);
++                            if (n_got == n_state) {
++                                std::vector<uint8_t> data_spec;
++                                common_speculative_get_state(spec.get(), slot->id, data_spec);
++                                // reap the threads that have finished
++                                for (auto it = slot_save_workers.begin(); it != slot_save_workers.end();) {
++                                    if (it->done->load()) { it->th.join(); it = slot_save_workers.erase(it); } else { ++it; }
++                                }
++                                auto done = std::make_shared<std::atomic<bool>>(false);
++                                const int     id_task  = task.id;
++                                const int64_t n_tokens = slot->prompt.tokens.size();
++                                std::list<common_prompt_checkpoint> ckpts = slot->prompt.checkpoints;
++                                slot_save_workers.push_back({ std::thread([this, done, id_task, id_slot, n_tokens, filename, filepath, t_start,
++                                        packed = std::move(packed), state = std::move(state), ckpts = std::move(ckpts), data_spec = std::move(data_spec)]() {
++                                    bool ok = false;
++                                    size_t n_total = 0;
++                                    const std::string tmp = filepath + ".tmp";
++                                    {
++                                        std::ofstream ofs(std::filesystem::u8path(tmp), std::ios::binary | std::ios::trunc);
++                                        const uint32_t magic = LLAMA_STATE_SEQ_MAGIC, version = LLAMA_STATE_SEQ_VERSION;
++                                        const uint32_t n_tok = (uint32_t) (packed.size() / sizeof(llama_token));
++                                        ckpt_write(ofs, &magic,   sizeof(magic),   n_total);
++                                        ckpt_write(ofs, &version, sizeof(version), n_total);
++                                        ckpt_write(ofs, &n_tok,   sizeof(n_tok),   n_total);
++                                        ckpt_write(ofs, packed.data(), packed.size(), n_total);
++                                        // llama_state_seq_get_data_ext() puts a 8 byte header (magic, seq id) in front that the slot file does not have
++                                        ckpt_write(ofs, state.data() + 8, state.size() - 8, n_total);
++                                        if (!ckpts.empty()) {   // same layout as save_slot_checkpoints()
++                                            const uint32_t m = SLOT_CKPT_MAGIC, v = SLOT_CKPT_VERSION, count = (uint32_t) ckpts.size();
++                                            ckpt_write(ofs, &m,     sizeof(m),     n_total);
++                                            ckpt_write(ofs, &v,     sizeof(v),     n_total);
++                                            ckpt_write(ofs, &count, sizeof(count), n_total);
++                                            for (const auto & cur : ckpts) {
++                                                ckpt_write(ofs, &cur.n_tokens, sizeof(cur.n_tokens), n_total);
++                                                ckpt_write(ofs, &cur.pos_min,  sizeof(cur.pos_min),  n_total);
++                                                ckpt_write(ofs, &cur.pos_max,  sizeof(cur.pos_max),  n_total);
++                                                ckpt_write_buf(ofs, cur.data_tgt,  n_total);
++                                                ckpt_write_buf(ofs, cur.data_dft,  n_total);
++                                                ckpt_write_buf(ofs, cur.data_spec, n_total);
++                                            }
++                                        }
++                                        if (!data_spec.empty()) {   // same layout as save_slot_draft() with no draft context
++                                            const uint32_t m = SLOT_DRAFT_MAGIC, v = SLOT_DRAFT_VERSION;
++                                            const std::vector<uint8_t> none;
++                                            ckpt_write(ofs, &m, sizeof(m), n_total);
++                                            ckpt_write(ofs, &v, sizeof(v), n_total);
++                                            ckpt_write_buf(ofs, none,      n_total);
++                                            ckpt_write_buf(ofs, data_spec, n_total);
++                                        }
++                                        ofs.flush();
++                                        ok = (bool) ofs;
++                                    }
++                                    if (ok) {
++                                        std::error_code ec;
++                                        std::filesystem::rename(std::filesystem::u8path(tmp), std::filesystem::u8path(filepath), ec);
++                                        ok = !ec;
++                                    }
++                                    if (!ok) {
++                                        std::error_code ec;
++                                        std::filesystem::remove(std::filesystem::u8path(tmp), ec);
++                                        send_error(id_task, "Unable to save slot", ERROR_TYPE_SERVER);
++                                    } else {
++                                        auto res = std::make_unique<server_task_result_slot_save_load>();
++                                        res->id       = id_task;
++                                        res->id_slot  = id_slot;
++                                        res->filename = filename;
++                                        res->is_save  = true;
++                                        res->n_tokens = n_tokens;
++                                        res->n_bytes  = n_total;
++                                        res->t_ms     = (ggml_time_us() - t_start) / 1000.0;
++                                        queue_results.send(std::move(res));
++                                    }
++                                    done->store(true);
++                                }), done });
++                                break;
++                            }
++                        }
++                    }
++
+                     const size_t nwrite = llama_state_seq_save_file(
+                         ctx_tgt, filepath.c_str(), slot->id,
+                         reinterpret_cast<const llama_token *>(packed.data()), packed.size() / sizeof(llama_token));

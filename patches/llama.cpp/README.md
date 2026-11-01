@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -97,6 +97,18 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 
 **Test (under 20 minutes, any box):** with a real model, send the same 100k-token chat request twice to `llama-server` (A: unset, B: `LLAMA_TOKENIZE_CACHE=1`), `--cache-prompt` off so the prompt path is the same, and compare the time before the first prompt token is processed (server log `prompt eval` start vs request arrival). Expect no change on the first request and only a tokenizer-sized saving on the second; if that is not at least a few percent of TTFT the patch is not worth enabling. Output tokens must match.
 
+## 0020-server-slot-save-async (S04)
+
+**What:** `llama-server` handles `POST /slots/N?action=save` inside its main loop: the sequence state is streamed from the GPU into the file there, and every other slot waits (`SERVER_TASK_TYPE_SLOT_SAVE`, `server-context.cpp`). With `LLAMA_SLOT_SAVE_ASYNC=1` the loop only copies the sequence state (`llama_state_seq_get_data_ext`) and the slot's context checkpoints into memory; a thread writes the file as `NAME.tmp` and renames it when complete, then sends the answer to the request. So the reply still means "the file is complete", the loop is held for the copy only, and a crash or a full disk during the write leaves the old file in place instead of a half-written one. Switches: `LLAMA_SLOT_SAVE_ASYNC=1`, `LLAMA_SLOT_SAVE_ASYNC_MAX_MIB` (default 4096: state plus checkpoints above this are saved the old way, so the extra RAM is bounded). A server with a draft model context (`ctx_dft`) also saves the old way. Unset = stock.
+
+**Soundness:** the file is byte-identical to the stock one (same header, state, checkpoint appendix and speculative appendix; the 8-byte header that `llama_state_seq_get_data_ext` adds is dropped). Threads are joined in the server destructor.
+
+**Honest scope:** the GPU-to-host read of the state stays in the loop, so the pause shrinks by the file-write time only. That is large when the page cache is under pressure (models bigger than RAM) and small when the disk keeps up. Costs: RAM equal to the state size for the duration of the write (this counts against our 28 GB).
+
+**Compiled and run (Linux, Release, Vulkan build):** `llama-server` with the 1.1 MB `stories260K.gguf` (CPU): save with and without the switch gives byte-identical 22476-byte files, restore from the async file works and the next completion reuses the 25 cached tokens, no `.tmp` is left. Timings on that model are meaningless (0.1 ms).
+
+**Test (under 20 minutes, Windows PC):** Flash-Next with a 64k prompt processed, then `POST /slots/0?action=save` while a second request decodes on another slot (or measure decode tok/s of one slot during a save). A B B A, A = unset, B = `LLAMA_SLOT_SAVE_ASYNC=1`; read the longest gap between two streamed tokens of the decoding request and the save reply time. Watch peak RAM. Accept only if the gap shrinks by more than the A-vs-A spread and the saved files restore to the same output.
+
 ## Not written, and why
 
 Each of these was checked against the b11966 source. None has a patch.
@@ -107,3 +119,12 @@ Each of these was checked against the b11966 source. None has a patch.
 - **P23 batch PLE projection.** Already batched upstream: `project_per_layer_inputs` (gemma3n.cpp) and the Gemma 4 graph do one `mul_mat` of `per_layer_model_proj` over all `n_tokens` of the ubatch, then scale, norm, add. Nothing token-at-a-time is left in the stock graph. (If the plugin's own path does it per token, that is a `src/` change, not a patch.)
 - **P21 layer-wise prefill across micro-batches.** It needs the graph for several chunks to be built layer by layer (all chunks through layer l before layer l+1), with the KV and recurrent state written in an order the graph does not use today, plus the scheduler and b11966's own `llama-moe-cache.cpp` (expert upload through the sched copy callback) to agree on residency across chunks. That is a rewrite of the decode loop, not a switchable patch, and the intermediate activations of all chunks have to be held at once. Not understandable in a small patch; skipped.
 - **U03 fused quantized GPU expert kernels.** New shaders per quant type and shape, a numerical comparison per type and a portable fallback, tuned on the target GPU (AMD, which cannot be tested on this laptop). The decision which shapes are hot needs the Windows profile first. Skipped.
+- **P15 grouped GPU work by populated tiles.** Already upstream: `ggml_vk_mul_mat_id_q_f16` counts rows per expert (`count_experts`) and `mul_mm.comp` reads each tile's row count from `data_row_map`, so only populated tiles run.
+- **P24 routing metadata on the GPU.** Needs a GPU-side route compaction plus a resident-slot lookup and a host miss path across the scheduler; days of work, and the router read-back is not among the measured costs.
+- **U10 zero-copy for tiny transfers.** `ggml_vk_buffer_read_2d` already reads host-visible memory directly on UMA; on discrete GPUs upstream deliberately uses the DMA copy because CPU reads over PCIe/ReBAR are slower (comment in the source).
+- **U05 capture/replay command graphs.** The Vulkan backend has no replay object; submit size is already tunable with `GGML_VK_MAX_NODES_PER_SUBMIT` (no patch; sweep it on the PC).
+- **U01 attention kernel tuning.** b11966 already has split-K decode (`flash_attn_decode_phase_1/2`) and sparse mask options; tuning needs the kernel time at depth first: one run with `GGML_VK_PERF_LOGGER=1` at 34k/128k on the PC (5 min) before any shader change.
+- **U04 fused gate/up/activation, U06 tiled CPU fallback.** A new shader / CPU kernel each; GPU compute is 9.3 s of 100 s in the 34k run, and the tiled CPU routine is not used in that run.
+- **U07 overlap shared and routed branch.** The shared FFN is built after the routed sum (`qwen3next.cpp`), the scheduler runs splits one after another on one thread, and the CPU backend is synchronous; needs a per-architecture graph reorder and async CPU splits.
+- **U08 CPU/GPU split by completion time.** Plan only (docs/SCHEDULER_DESIGN.md); needs scheduler hooks and measured per-layer costs.
+- **L06 grow KV only as needed.** The KV cache is one tensor per layer sized for the whole context at creation (`llama-kv-cache.cpp`, cleared once); growing means reallocating, copying and re-reserving the compute buffers. A "skip the clear" trick helps only host-resident KV and only where fresh memory is zero; no measurement shows where the KV sits in our runs.
