@@ -1,0 +1,18 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c8d3b6b23..26fe1e58e 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -3706,6 +3706,13 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+                 device->subgroup_min_size <= 16u && device->subgroup_max_size >= 16u) {
+                 gdn_subgroup_size = 16u;
+             }
++            // GGML_VK_GDN_SUBGROUP=N (default 0 = off): run the gated delta net with subgroup size N when the device can
++            // (RDNA3/RDNA4 report 64 by default, 32 may keep more waves in flight in the serial token loop).
++            static const uint32_t gdn_sg_req = getenv("GGML_VK_GDN_SUBGROUP") ? (uint32_t)atoi(getenv("GGML_VK_GDN_SUBGROUP")) : 0u;
++            if (gdn_sg_req != 0 && device->subgroup_size_control &&
++                device->subgroup_min_size <= gdn_sg_req && device->subgroup_max_size >= gdn_sg_req) {
++                gdn_subgroup_size = gdn_sg_req;
++            }
+             uint32_t lanes_per_column;
+             if (device->vendor_id == VK_VENDOR_ID_INTEL) {
+                 // Intel Xe: full-width reduction (min rows/lane) ~10x over the COLS_PER_WG=8 rule.
