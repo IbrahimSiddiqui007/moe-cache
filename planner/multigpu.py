@@ -130,3 +130,37 @@ def launch_args(cards, path, ctx, kv_q8=False, ub=None, reserve_gb=0.5):
     devs = ",".join(c["dev"] for c in cards)
     return {"n_cpu_moe": p["n_cpu_moe"], "args": ["--device", devs, "-ts", p["tensor_split"]], "plan": p,
             "line": f"--device {devs} -ts {p['tensor_split']} --n-cpu-moe {p['n_cpu_moe']}: " + p["why"][0]}
+
+
+# ---- MG2: ask llama.cpp's own llama-fit-params whether the plan fits (PROTOTYPE, behind `--multi-gpu`, only when the tool is found) ----------------------
+
+def parse_fit_print(text):
+    """`llama-fit-params --fit-print on` lines 'DEVICE model context compute' (MiB) -> {device: (model, context, compute)}; the Host line and noise are skipped."""
+    out = {}
+    for line in (text or "").splitlines():
+        f = line.split()
+        if len(f) == 4 and f[0].lower() != "host" and all(x.isdigit() for x in f[1:]):
+            out[f[0]] = (int(f[1]), int(f[2]), int(f[3]))
+    return out
+
+
+def fit_check(fit_params, path, ctx, ub, args, n_cpu_moe, cards, kv_q8=False, margin_mib=256, timeout=90, runner=None):
+    """Run llama-fit-params with the plan's own flags (--device, -ts, --n-cpu-moe) and compare what llama.cpp itself projects per card (model + context + compute)
+    with the card's free memory. -> {"rows": [(dev, projected_mib, free_mib)], "over": [dev, ...]} or None when the tool failed or printed no card.
+    runner: for tests, a function (cmd) -> stdout text."""
+    cmd = [fit_params, "-m", path, "-c", str(ctx), "-ub", str(ub), "-b", str(max(ub, 2048)), "-ngl", "99", "--n-cpu-moe", str(n_cpu_moe)] + list(args) + ["--fit-print", "on"]
+    if kv_q8:
+        cmd += ["-ctk", "q8_0", "-ctv", "q8_0"]
+    try:
+        if runner is not None:
+            text = runner(cmd)
+        else:
+            import subprocess
+            text = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except Exception:
+        return None
+    got = parse_fit_print(text)
+    rows = [(c["dev"], sum(got[c["dev"]]), c["free_mib"]) for c in cards if c["dev"] in got]
+    if not rows:
+        return None
+    return {"rows": rows, "over": [d for d, need, free in rows if need + margin_mib > free]}

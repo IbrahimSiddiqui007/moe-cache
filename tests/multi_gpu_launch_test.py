@@ -54,6 +54,8 @@ with tempfile.TemporaryDirectory() as tmp:
     ln = plan_line(on)
     check(flag(ln, "--device") == "CUDA0,CUDA1" and flag(ln, "-ts") is not None, f"two cards: --device CUDA0,CUDA1 -ts {flag(ln, '-ts')}")
     check("PROTOTYPE" in on["stdout"], "the launcher says it is a prototype")
+    check("MOE_CACHE_GPU_DEV2=auto" in on["stdout"], "N3: the plugin gets MOE_CACHE_GPU_DEV2=auto when the plan uses two cards")
+    check("MOE_CACHE_GPU_DEV2" not in off["stdout"] and "MOE_CACHE_GPU_DEV2" not in one_on["stdout"], "N3: not set without --multi-gpu, nor with one card")
     check(int(flag(ln, "--n-cpu-moe")) < int(flag(plan_line(off), "--n-cpu-moe")), "the second card keeps more expert layers on the GPU than the one-card plan")
     ts = [int(x) for x in flag(ln, "-ts").split(",")]
     check(sum(ts) == 41, f"-ts counts add up to layers + 1 (40 + 1): {ts}")

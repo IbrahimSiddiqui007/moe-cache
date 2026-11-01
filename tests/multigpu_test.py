@@ -68,6 +68,19 @@ with tempfile.TemporaryDirectory() as tmp:
     # a dense model (no experts) is not this planner's job
     check(multigpu.plan(model, 8192, [8 * GIB], layout={"n_layers": 0, "expert_bytes_per_layer": 0, "other_bytes": 1e9}) is None, "dense model: None (llama-fit-params / --fit)")
 
+# MG2: llama-fit-params output against the plan (fake tool text; the real tool prints 'DEVICE model context compute' in MiB)
+txt = "CUDA0 9000 1500 1300 \nCUDA1 5000 800 900 \nHost 68651 0 222 \nnoise 1 2\n"
+check(multigpu.parse_fit_print(txt) == {"CUDA0": (9000, 1500, 1300), "CUDA1": (5000, 800, 900)}, "fit-print: two cards parsed, Host and noise skipped")
+cards2 = [{"dev": "CUDA0", "free_mib": 14000}, {"dev": "CUDA1", "free_mib": 6900}]
+r = multigpu.fit_check("x", "m.gguf", 8192, 1024, ["--device", "CUDA0,CUDA1", "-ts", "20,21"], 12, cards2, runner=lambda cmd: txt)
+check(r and r["rows"] == [("CUDA0", 11800, 14000), ("CUDA1", 6700, 6900)] and r["over"] == ["CUDA1"], "fit_check: CUDA1 projected 6700 of 6900 MiB leaves under 256 MiB -> over")
+check(multigpu.fit_check("x", "m.gguf", 8192, 1024, [], 0, cards2, runner=lambda cmd: "junk") is None, "fit_check: no figures -> None (the plan stands)")
+def boom(cmd): raise OSError("no tool")
+check(multigpu.fit_check("x", "m.gguf", 8192, 1024, [], 0, cards2, runner=boom) is None, "fit_check: tool error -> None")
+cmdseen = []
+multigpu.fit_check("x", "m.gguf", 8192, 2048, ["--device", "A,B", "-ts", "1,2"], 7, cards2, kv_q8=True, runner=lambda c: cmdseen.append(c) or "")
+check("-ts" in cmdseen[0] and "--n-cpu-moe" in cmdseen[0] and cmdseen[0][cmdseen[0].index("--n-cpu-moe") + 1] == "7" and "-ctk" in cmdseen[0], "fit_check: the plan's own flags are passed")
+
 if fails:
     print(f"\n{len(fails)} FAILED")
     sys.exit(1)

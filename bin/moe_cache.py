@@ -1905,7 +1905,7 @@ def multi_gpu_start(a, extra, machine, ls, listing, vram_user, win):
     import multigpu
     listing = listing if listing is not None else machine.list_devices(ls)
     cards = multigpu.list_cards(listing, machine.win_dedicated_vram() if win else None)
-    mg = {"cards": cards, "listing": listing, "vram_user": vram_user}
+    mg = {"cards": cards, "listing": listing, "vram_user": vram_user, "ls": ls}
     left = multigpu.skipped_igpus(listing, cards)
     if cards:
         say("moe-cache: GPUs: " + "; ".join(f"{c['dev']} {c['name']} ({c['free_mib'] / 1024:.1f} GiB free)" for c in cards) + (f"; left out: {', '.join(left)}" if left else ""))
@@ -1956,6 +1956,16 @@ def multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_us
         say(f"moe-cache: --multi-gpu: not applied ({res['skip']}): the one-card plan stands")
         return ncmoe, extra
     say("moe-cache: --multi-gpu (PROTOTYPE, estimate not measured): " + res["line"])
+    import gguf_plan
+    fp = gguf_plan.find_fit_params(mg.get("ls"))
+    if fp:       # MG2 (PROTOTYPE): llama.cpp's own projection for the same flags, per card, next to our plan; it only reports, the plan stands
+        ubn = int(res["plan"]["ub"]) if res.get("plan") else 1024
+        chk = multigpu.fit_check(fp, model, ctx, ubn, res["args"], res["n_cpu_moe"], cards, kv_q8=kv_q8)
+        if chk:
+            say("moe-cache: --multi-gpu: llama-fit-params projects " + "; ".join(f"{d} {need / 1024:.1f} of {free / 1024:.1f} GiB free" for d, need, free in chk["rows"]) +
+                (f"; {', '.join(chk['over'])} would not leave 256 MiB for the plugin's block: use a smaller --ub or context" if chk["over"] else ""), err=bool(chk["over"]))
+        else:
+            say("moe-cache: --multi-gpu: llama-fit-params gave no figures for this plan; the plan stands")
     return str(res["n_cpu_moe"]), extra + res["args"]
 
 
@@ -2426,7 +2436,12 @@ def _launch_plan(a, extra, argv, machine):
         if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
             extra = extra + ["-t", str(max(1, machine.physical_cores() - LEAVE_ROOM_FREE_CORES))]    # hybrid CPUs keep their performance-core pinning
     if mg:
+        extra_before = extra
         ncmoe, extra = multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win)
+        if extra is not extra_before and not stock and not os.environ.get("MOE_CACHE_GPU_DEV2"):
+            # N3/MG5 (PROTOTYPE): the plugin's long-prompt block may also use the second card of the --device list when it does not fit on the first
+            env.append(("MOE_CACHE_GPU_DEV2", "auto"))
+            say("moe-cache: --multi-gpu: the plugin's long-prompt GPU block may use the second card too (MOE_CACHE_GPU_DEV2=auto, PROTOTYPE)")
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
     if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
         del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load
