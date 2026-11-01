@@ -711,7 +711,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             if (!h && nbytes <= keep_mib * (size_t) 1048576) {
                 size_t tot = 0;
                 for (auto & x : c->held) { tot += x.bytes; }
-                while (tot + nbytes > keep_mib * (size_t) 1048576) {          // make room: least recently used first, never one this block already uses
+                // idea P21 (MOE_CACHE_GPU_KEEP_PIN=1, default off): a long prompt walks the layers in a loop (every micro-batch, layer 0 .. last), and least-recently-used
+                // eviction on a loop longer than the held set never hits (each tensor is evicted just before its next use). With the pin the first tensors that fit stay,
+                // so the held share of the loop is saved on every later micro-batch.
+                static const bool keep_pin = getenv("MOE_CACHE_GPU_KEEP_PIN") && atoi(getenv("MOE_CACHE_GPU_KEEP_PIN")) > 0;
+                while (!keep_pin && tot + nbytes > keep_mib * (size_t) 1048576) {          // make room: least recently used first, never one this block already uses
                     size_t vi = c->held.size();
                     for (size_t i = 0; i < c->held.size(); i++) {
                         if (c->held[i].used != c->held_serial && (vi == c->held.size() || c->held[i].used < c->held[vi].used)) { vi = i; }
