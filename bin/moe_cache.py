@@ -1349,6 +1349,30 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sl
     return rc
 
 
+# Game launchers that keep an embedded browser running. Only the EA app is measured (2026-11-01, paired, Flash-Next 34k: prompts 249 -> 192 tok/s, decode 28 -> 24);
+# the others are the same kind of program and are named as untested.
+HEAVY_BACKGROUND = {"eadesktop.exe": "EA app", "epicgameslauncher.exe": "Epic Games Launcher", "battle.net.exe": "Battle.net", "upc.exe": "Ubisoft Connect"}
+
+
+def heavy_background_apps(csv_text):
+    """Names of the programs in HEAVY_BACKGROUND found in `tasklist /FO CSV /NH` output."""
+    found = {row.split('","')[0].strip('"').lower() for row in csv_text.splitlines()}
+    return [name for exe, name in HEAVY_BACKGROUND.items() if exe in found]
+
+
+def warn_heavy_background():
+    """Windows only; a failed tasklist says nothing."""
+    try:
+        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return
+    for name in heavy_background_apps(r.stdout):
+        if name == "EA app":
+            say("moe-cache: the EA app is open: close it for full speed (measured: long prompts 23 % slower, decode 14 % slower with it open)", err=True)
+        else:
+            say(f"moe-cache: {name} is open: if speed is low, close it (not measured for this program; the EA app costs 14-23 %)", err=True)
+
+
 def say_exit(rc, seen, with_ready):
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:
@@ -2271,6 +2295,8 @@ def _launch_plan(a, extra, argv, machine):
         except Exception:
             pass
     if win:     # XA-3: llama-server's own buffers and Vulkan's GPU memory need Windows commit (RAM + page file), not only free RAM
+        if not dry:
+            warn_heavy_background()
         ctot, cfree = machine.win_commit()
         if ctot and cfree:
             say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
