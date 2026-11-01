@@ -294,6 +294,111 @@ def gpu_total_free_bytes():
     return (float(best[0]), float(best[1])) if best else None
 
 
+# R2-06 (MOE_CACHE_GPU_MEM_LOG=1, default off): the launcher samples how much GPU memory llama-server holds, once a second, and logs it. On Windows the
+# counters "GPU Process Memory" Dedicated Usage and Shared Usage of the process: Shared growing while Dedicated sits at the card's size means the driver
+# moved memory to system RAM (the over-commit that ggml's own free-memory reading cannot see). Linux: the AMD card's VRAM and GTT use (device-wide, sysfs)
+# or, for NVIDIA, nvidia-smi's use by the process. Log only.
+def parse_gpu_process_counters(text, pid=None):
+    """(dedicated MiB, shared MiB) from lines of 'counter path|value;...' (Get-Counter output flattened by the launcher); instances of other processes are
+    skipped when pid is given; (None, None) when no counter matched."""
+    ded = sha = None
+    for item in text.replace("\n", ";").split(";"):
+        path, _, val = item.rpartition("|")
+        path = path.lower()
+        if "gpu process memory" not in path or (pid is not None and f"pid_{pid}_" not in path):
+            continue
+        try:
+            v = float(val) / 1048576
+        except ValueError:
+            continue
+        if path.endswith("dedicated usage"):
+            ded = (ded or 0) + v
+        elif path.endswith("shared usage"):
+            sha = (sha or 0) + v
+    return ded, sha
+
+
+def sample_gpu_mem_linux(pid=None):
+    """(dedicated MiB, shared MiB, what) now: AMD sysfs (whole device: VRAM and GTT use), else nvidia-smi's use by pid (shared None); None when neither."""
+    best = None
+    for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
+        try:
+            if open(d + "/vendor").read().strip() != "0x1002":
+                continue
+            tot = int(open(d + "/mem_info_vram_total").read()); used = int(open(d + "/mem_info_vram_used").read()); gtt = int(open(d + "/mem_info_gtt_used").read())
+        except Exception:
+            continue
+        if best is None or tot > best[0]:
+            best = (tot, used / 1048576, gtt / 1048576)
+    if best:
+        return best[1], best[2], "amdgpu, whole device"
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+        tot = [float(m) for p, m in (l.split(",")[:2] for l in out.splitlines() if "," in l) if pid is None or p.strip() == str(pid)]
+        return (sum(tot), None, "nvidia-smi, this process") if tot else None
+    except Exception:
+        return None
+
+
+def start_gpu_mem_log(pid, say, windows, env=None, alive=None):
+    """Start the sampler thread when MOE_CACHE_GPU_MEM_LOG is set (1 or more); returns the thread or None. A line goes out whenever dedicated or shared use
+    moved 64 MiB since the last one, and one summary (peak values) when the process is gone. say(text) prints a launcher line;
+    alive() says whether the process runs (the launcher passes its Popen's poll: an unwaited child is a zombie that os.kill still finds)."""
+    import threading, time
+    v = (env if env is not None else os.environ).get("MOE_CACHE_GPU_MEM_LOG", "")
+    if v in ("", "0"):
+        return None
+    def alive_os():
+        if windows:
+            return True
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    alive = alive or alive_os
+    def run():
+        peak = [0.0, 0.0]; last = [-1e9, -1e9]; n = 0; shown_what = ""
+        ps = None
+        if windows:
+            cmd = (f"Get-Counter -Counter '\\GPU Process Memory(pid_{pid}_*)\\Dedicated Usage','\\GPU Process Memory(pid_{pid}_*)\\Shared Usage' "
+                   "-SampleInterval 1 -Continuous | ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';'; [Console]::Out.Flush() }")
+            try:
+                ps = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+            except OSError:
+                say("moe-cache: GPU memory log: PowerShell not found, no log")
+                return
+        while True:
+            if windows:
+                line = ps.stdout.readline()
+                if not line:
+                    break
+                d, s_ = parse_gpu_process_counters(line, pid); what = "Windows GPU Process Memory counters"
+            else:
+                time.sleep(1)
+                if not alive():
+                    break
+                r = sample_gpu_mem_linux(pid)
+                if not r:
+                    continue
+                d, s_, what = r
+            if d is None and s_ is None:
+                continue
+            n += 1
+            shown_what = what
+            peak = [max(peak[0], d or 0), max(peak[1], s_ or 0)]
+            if abs((d or 0) - last[0]) >= 64 or abs((s_ or 0) - last[1]) >= 64:
+                last = [d or 0, s_ or 0]
+                say(f"moe-cache: GPU memory ({what}): dedicated {d or 0:.0f} MiB" + (f", shared {s_:.0f} MiB" if s_ is not None else ""))
+        if ps:
+            ps.kill()
+        if n:
+            say(f"moe-cache: GPU memory peak ({shown_what}, {n} samples): dedicated {peak[0]:.0f} MiB, shared {peak[1]:.0f} MiB")
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    return th
+
+
 def desk_reserve_gb(total, free, base=0.5):
     """VRAM (GB) to keep free next to everything the tuner places, scaled with what other programs already hold (the desktop compositor, a browser).
     Their use grows while the server runs (a browser tab, a video): the more the desktop already takes, the more room is left so the long-prompt GPU
@@ -471,7 +576,132 @@ def compute_buffer_guess_mib(ctx, ub):
     return b
 
 
-def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None):
+# MOE_CACHE_PLAN_RULE=1 (default off): one reserve rule for every model and card, replacing the table above for the numbers (the table still decides which
+# micro-batches are candidates). 1) The compute buffer is measured at start with llama-fit-params (graphs built with no_alloc at this context and -ub, about
+# 3 s each, cached for the process); 2) without that tool, or when it fails, a formula fitted to the Flash-Next table, scaled up 1.3x so it errs high;
+# 3) either way the reserve never falls when -ub grows (running maximum over the candidate micro-batches). The table's reserve was not monotone: 920 / 3150 /
+# 1485 / 1980 / 2970 MiB for -ub 1024 / 2048 / 3072 / 4096 / 6144 at 64k, so each -ub got a different number of layers (scout round 2, section 2).
+PLAN_UBS = (512, 1024, 2048, 3072, 4096, 6144)
+_FIT_CACHE = {}
+
+
+def plan_rule_on():
+    return os.environ.get("MOE_CACHE_PLAN_RULE") not in (None, "", "0")
+
+
+def formula_buffer_mib(ctx, ub):
+    """Compute buffer (MiB) by formula, non-decreasing in ctx and ub: least squares through the 11 measured Flash-Next points (a + b ub + c ub ctx + d ctx,
+    ctx in units of 64k) times 1.3, which is the largest ratio of a measured value to the fit. Not model specific: llama-fit-params is the real answer."""
+    c = ctx / 65536
+    return 1.3 * (318 + 0.249 * ub + 0.379 * ub * c + 109.7 * c)
+
+
+def parse_fit_params_compute_mib(text):
+    """Largest compute figure of a GPU in llama-fit-params --fit-print output ('DEVICE model context compute' in MiB per line; 'Host' skipped); None if none."""
+    best = None
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) == 4 and f[0].lower() != "host" and all(x.isdigit() for x in f[1:]):
+            best = max(best or 0, int(f[3]))
+    return float(best) if best is not None else None
+
+
+def find_fit_params(llama_server=None):
+    """Path of llama-fit-params next to llama-server or on PATH (MOE_CACHE_FIT_PARAMS overrides); None when there is none."""
+    import shutil
+    cands = [os.environ.get("MOE_CACHE_FIT_PARAMS")]
+    if llama_server:
+        d = os.path.dirname(os.path.abspath(llama_server))
+        cands += [os.path.join(d, "llama-fit-params"), os.path.join(d, "llama-fit-params.exe")]
+    cands.append(shutil.which("llama-fit-params"))
+    return next((c for c in cands if c and os.path.isfile(c)), None)
+
+
+def fit_params_buffer_mib(fit_params, path, ctx, ub, kv_q8=False, timeout=90):
+    """Compute buffer (MiB) llama.cpp itself would reserve for this model, context and -ub (-b raised to match, or the tool clamps -ub to 2048); None on any failure."""
+    key = (fit_params, path, ctx, ub, bool(kv_q8))
+    if key not in _FIT_CACHE:
+        v = None
+        try:
+            cmd = [fit_params, "-m", path, "-c", str(ctx), "-ub", str(ub), "-b", str(max(ub, 2048)), "-ngl", "99", "--n-cpu-moe", "999", "--fit-print", "on"]
+            if kv_q8:
+                cmd += ["-ctk", "q8_0", "-ctv", "q8_0"]
+            v = parse_fit_params_compute_mib(subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout)
+        except Exception:
+            pass
+        _FIT_CACHE[key] = v
+    return _FIT_CACHE[key]
+
+
+def rule_buffer_mib(path, lay, ctx, ub, kv_q8=False, fit_params=None, ubs=PLAN_UBS):
+    """-> (MiB, source) the planner reserves for the GPU compute buffer under the rule: non-decreasing in ub (running maximum over `ubs` up to this one)."""
+    best, src = 0.0, "formula"
+    for u in sorted(set(ubs) | {ub}):
+        if u > ub:
+            break
+        m = fit_params_buffer_mib(fit_params, path, ctx, u, kv_q8) if fit_params else None
+        if m is None:
+            m, s = formula_buffer_mib(ctx, u), "formula"
+        else:
+            s = "llama-fit-params"
+        d = measured_buffer_mib(lay, ctx, u)       # a buffer logged on this model (MOE_CACHE_COMPUTE_DB) can only raise it
+        if d is not None and d > m:
+            m, s = d, "measured log"
+        if m >= best:
+            best, src = m, s
+    return best, src
+
+
+def rule_block_mib(path, lay, ub):
+    """Room the long-prompt GPU block needs (MiB): one layer of experts + 35 MiB + the batch's intermediate results (per token n_used x (2 n_ff_exp + n_embd) x 4 B x 1.2;
+    Flash-Next 0.18 MiB, measured 923 MiB at -ub 1024 and 1107 at 2048) + the 256 MiB the plugin wants free before it allocates a block."""
+    per_tok = 0.18 * 1048576
+    try:
+        m = read_meta(shards(path)[0]); a = m.get("general.architecture")
+        used, ff, emb = (m.get(f"{a}.{k}") for k in ("expert_used_count", "expert_feed_forward_length", "embedding_length"))
+        if all(isinstance(x, int) and x > 0 for x in (used, ff, emb)):
+            per_tok = used * (2 * ff + emb) * 4 * 1.2
+    except Exception:
+        pass
+    return (lay["expert_bytes_per_layer"] + (35 + 256) * 1048576 + per_tok * ub) / 1048576 if lay["expert_bytes_per_layer"] else 0.0
+
+
+def plan_table(path, ctx=8192, free=None, kv_q8=False, reserve_gb=0.5, fit_params=None, ubs=PLAN_UBS):
+    """One row per micro-batch candidate under the rule, for the launcher's --dry-run: reserve, block room, layers on the GPU and what that costs.
+    decode_pct: decode speed against the candidate with the most GPU layers at ~2.5 % per layer (scout round 2: 1.5-4 %, a GUESS until the 2 x 2 test).
+    prompt_gain: the table's measured prompt speed-up against 512 (6k-token prompt), None above 2048 where nothing is measured."""
+    lay = model_layout(path)
+    free = free if free is not None else free_vram_bytes()
+    if not lay["n_layers"] or free is None or not lay["expert_bytes_per_layer"]:
+        return []
+    fixed = lay["other_bytes"] + _kv_or_flat(path, ctx, kv_q8)
+    rows = []
+    for u in ubs:
+        buf, src = rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params, ubs)
+        blk = rule_block_mib(path, lay, u)
+        room = free - fixed - buf * 1048576 - reserve_gb * 1e9 - blk * 1048576
+        gl = max(0, min(lay["n_layers"], int(max(room, 0) // lay["expert_bytes_per_layer"])))
+        old = compute_buffer_guess_mib(ctx, u)
+        rows.append({"ub": u, "reserve_mib": int(buf), "source": src, "old_reserve_mib": int(old), "block_mib": int(blk), "gpu_layers": gl,
+                     "n_cpu_moe": lay["n_layers"] - gl, "prompt_gain": _PROMPT_GAIN.get(u)})
+    top = max(r["gpu_layers"] for r in rows)
+    for r in rows:
+        r["decode_pct"] = round(100 - 2.5 * (top - r["gpu_layers"]), 1)
+    return rows
+
+
+def plan_table_lines(rows, ctx):
+    out = [f"moe-cache: plan rule (MOE_CACHE_PLAN_RULE=1), context {ctx}: reserve for the GPU compute buffer by micro-batch (old = the table's value)"]
+    out.append("moe-cache:   -ub  reserve MiB  (old)  source            block MiB  GPU layers  --n-cpu-moe  decode vs most layers  prompt vs 512 (table)")
+    for r in rows:
+        pg = f"{r['prompt_gain']:.2f}x" if r["prompt_gain"] else "not measured"
+        out.append(f"moe-cache:   {r['ub']:>4}  {r['reserve_mib']:>11}  {r['old_reserve_mib']:>5}  {r['source']:<16}  {r['block_mib']:>9}  {r['gpu_layers']:>10}  {r['n_cpu_moe']:>11}  "
+                   f"{r['decode_pct']:>19.1f} %  {pg}")
+    out.append("moe-cache:   decode column: ~2.5 % per layer moved to the CPU (a guess, 1.5-4 %); the prompt column is the table's 6k-token figure, long prompts differ")
+    return out
+
+
+def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left.
 
     Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use and a list of reasons. Rules come from measurements
@@ -487,7 +717,13 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     kv = _kv_or_flat(path, ctx, kv_q8)
     fixed = lay["other_bytes"] + kv
 
+    rule = plan_rule_on()
+
     def cbm(u, guess):        # idea L01: the table, raised by a buffer measured on this model when MOE_CACHE_COMPUTE_DB has one
+        if rule:              # MOE_CACHE_PLAN_RULE=1: the table only says whether u is a candidate (as before); the number is the rule's
+            if not guess and compute_buffer_mib(ctx, u) is None:
+                return None
+            return rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params)[0]
         st = compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
         m = measured_buffer_mib(lay, ctx, u)
         if m is None:
@@ -500,6 +736,8 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     # plus the 256 MiB the plugin itself requires free before it allocates a block (gpu_segment's headroom check): without it the reserve had 24 MiB of
     # slack on Flash-Next at -ub 2048, and at ctx 8192 the block found 423 MiB free where it needed 455, so prompts fell back to the CPU (~20 tok/s)
     def block_for(u):
+        if rule:
+            return rule_block_mib(path, lay, u) * 1048576
         return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
     best = None
     fixed_ub = ub
