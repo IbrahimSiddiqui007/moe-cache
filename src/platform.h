@@ -487,30 +487,6 @@ inline void ws_release() {
 }
 // hard working-set minimum: the system does not trim this process below `bytes` (file-backed pages included). Returns false when refused
 // (more than the system can guarantee); the error code is in commit_error().
-// MOE_CACHE_TIMER_1MS=1: ask Windows for a 1 ms timer tick for this process. Since Windows 10 2004 a process only gets a fine tick if it asks itself,
-// whatever other programs ask for. Returns the tick in ms before the request through *before, 0 if nothing was done. Elsewhere it does nothing.
-inline double timer_1ms(double * before) {
-#ifdef _WIN32
-    typedef LONG (NTAPI * query_t)(PULONG, PULONG, PULONG);
-    typedef UINT (WINAPI * begin_t)(UINT);
-    const query_t q = (query_t) (void *) GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryTimerResolution");
-    const HMODULE mm = LoadLibraryA("winmm.dll");
-    const begin_t b = mm ? (begin_t) (void *) GetProcAddress(mm, "timeBeginPeriod") : nullptr;
-    if (!q || !b) {
-        return 0;
-    }
-    ULONG lo = 0, hi = 0, cur = 0;
-    q(&lo, &hi, &cur);
-    *before = cur / 1e4;
-    b(1);
-    q(&lo, &hi, &cur);
-    return cur / 1e4;
-#else
-    (void) before;
-    return 0;
-#endif
-}
-
 inline bool ws_min_set(size_t bytes) {
 #ifdef _WIN32
     const SIZE_T mx = bytes + ((size_t) 1 << 30);

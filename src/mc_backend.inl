@@ -711,11 +711,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             if (!h && nbytes <= keep_mib * (size_t) 1048576) {
                 size_t tot = 0;
                 for (auto & x : c->held) { tot += x.bytes; }
-                // idea P21 (MOE_CACHE_GPU_KEEP_PIN=1, default off): a long prompt walks the layers in a loop (every micro-batch, layer 0 .. last), and least-recently-used
-                // eviction on a loop longer than the held set never hits (each tensor is evicted just before its next use). With the pin the first tensors that fit stay,
-                // so the held share of the loop is saved on every later micro-batch.
-                static const bool keep_pin = getenv("MOE_CACHE_GPU_KEEP_PIN") && atoi(getenv("MOE_CACHE_GPU_KEEP_PIN")) > 0;
-                while (!keep_pin && tot + nbytes > keep_mib * (size_t) 1048576) {          // make room: least recently used first, never one this block already uses
+                while (tot + nbytes > keep_mib * (size_t) 1048576) {          // make room: least recently used first, never one this block already uses
                     size_t vi = c->held.size();
                     for (size_t i = 0; i < c->held.size(); i++) {
                         if (c->held[i].used != c->held_serial && (vi == c->held.size() || c->held[i].used < c->held[vi].used)) { vi = i; }
@@ -967,7 +963,6 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     static const bool share_up = getenv("MOE_CACHE_GPU_SHARE_UP") && atoi(getenv("MOE_CACHE_GPU_SHARE_UP")) > 0;
     // idea P02 (MOE_CACHE_GPU_RB_ROWS=1): in a split block read back only the rows of this part's experts (runs of neighbouring rows in one copy)
     static const bool rb_rows = getenv("MOE_CACHE_GPU_RB_ROWS") && atoi(getenv("MOE_CACHE_GPU_RB_ROWS")) > 0;
-    static const int rb_pipe = getenv("MOE_CACHE_GPU_RB_PIPE") ? std::max(0, std::min(16, atoi(getenv("MOE_CACHE_GPU_RB_PIPE")))) : 0;
     double up_ns = 0, comp_ns = 0, get_ns = 0;
     static const bool e1 = seg_times && getenv("MOE_CACHE_E1_TIMES") != nullptr;
     double wait_ns = 0;
@@ -1067,19 +1062,6 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     s.gpu_up_saved += ggml_nbytes(d);          // the held copy already has these bytes
                     continue;
                 }
-                // idea P22 (MOE_CACHE_GPU_WHOLE_RUNS=N, default off): a whole expert tensor is uploaded in runs of N experts, each after its own wait, so the copy of the
-                // experts that are in RAM runs while the reader threads still read the rest (one wait for all experts before the first byte moves otherwise). Same bytes.
-                static const int whole_runs = getenv("MOE_CACHE_GPU_WHOLE_RUNS") ? std::max(0, atoi(getenv("MOE_CACHE_GPU_WHOLE_RUNS"))) : 0;
-                if (whole_runs > 0 && t->ne[3] == 1 && t->ne[2] > (int64_t) whole_runs && s.by_tensor.count(t) && (size_t) t->ne[2] * t->nb[2] == ggml_nbytes(d) &&
-                    ggml_nbytes(t) == ggml_nbytes(d)) {
-                    for (int64_t e0 = 0; e0 < t->ne[2]; e0 += whole_runs) {
-                        const int64_t n = std::min<int64_t>(whole_runs, t->ne[2] - e0);
-                        timed_wait(t, e0, n);
-                        ggml_backend_tensor_set(d, (const char *) t->data + (size_t) e0 * t->nb[2], (size_t) e0 * t->nb[2], (size_t) n * t->nb[2]);
-                    }
-                    s.gpu_up_bytes += ggml_nbytes(d);
-                    continue;
-                }
                 timed_wait(t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
                 ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
                 s.gpu_up_bytes += ggml_nbytes(d);
@@ -1123,7 +1105,6 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         const auto t_g0 = std::chrono::steady_clock::now();
         const char * res = nullptr;           // the block's result on the host (all parts: the part's result)
-        bool out_done = false;                // idea P23: the result is already in out->data
         if (rb && rb_rows && n_chunk > 1 && pack_ids && ggml_is_contiguous(out) && out->nb[1] == ggml_row_size(out->type, out->ne[0])) {
             const size_t row = out->nb[1];
             size_t run_start = 0, run_len = 0;
@@ -1149,24 +1130,6 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             next_window(ch);
             sync_result();
             res = (const char *) rb;
-        } else if (rb && rb_pipe > 1 && n_chunk == 1 && out_bytes >= ((size_t) 8 << 20)) {
-            // idea P23 (MOE_CACHE_GPU_RB_PIPE=N, default off): the result is read back in N slices; the host copy of slice i-1 into the CPU tensor runs while slice i
-            // crosses the bus (copy and transfer add up otherwise). Same bytes; the first synchronize also waits for the compute.
-            const size_t row = ggml_row_size(out->type, out->ne[0]);
-            const size_t per = (out_bytes / (size_t) rb_pipe / row + 1) * row;
-            size_t pend_o = 0, pend_n = 0;
-            for (size_t o = 0; o < out_bytes; o += per) {
-                const size_t n = std::min(per, out_bytes - o);
-                ggml_backend_tensor_get_async(c->gpu, gout, (char *) rb + o, o, n);
-                if (pend_n) {
-                    memcpy((char *) out->data + pend_o, (const char *) rb + pend_o, pend_n);
-                }
-                sync_result();
-                pend_o = o;
-                pend_n = n;
-            }
-            memcpy((char *) out->data + pend_o, (const char *) rb + pend_o, pend_n);
-            out_done = true;
         } else if (rb) {
             ggml_backend_tensor_get_async(c->gpu, gout, rb, 0, out_bytes);
             next_window(ch);
@@ -1178,8 +1141,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             res = (const char *) part.data();
         }
         if (n_chunk == 1) {
-            if (out_done) {
-            } else if (res) {
+            if (res) {
                 memcpy(out->data, res, out_bytes);
             } else {
                 ggml_backend_tensor_get(gout, out->data, 0, out_bytes);

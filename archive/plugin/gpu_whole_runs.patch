@@ -1,0 +1,24 @@
+diff --git a/src/mc_backend.inl b/src/mc_backend.inl
+index ac766a9..4eb1b2f 100644
+--- a/src/mc_backend.inl
++++ b/src/mc_backend.inl
+@@ -1066,6 +1066,19 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
+                     s.gpu_up_saved += ggml_nbytes(d);          // the held copy already has these bytes
+                     continue;
+                 }
++                // idea P22 (MOE_CACHE_GPU_WHOLE_RUNS=N, default off): a whole expert tensor is uploaded in runs of N experts, each after its own wait, so the copy of the
++                // experts that are in RAM runs while the reader threads still read the rest (one wait for all experts before the first byte moves otherwise). Same bytes.
++                static const int whole_runs = getenv("MOE_CACHE_GPU_WHOLE_RUNS") ? std::max(0, atoi(getenv("MOE_CACHE_GPU_WHOLE_RUNS"))) : 0;
++                if (whole_runs > 0 && t->ne[3] == 1 && t->ne[2] > (int64_t) whole_runs && s.by_tensor.count(t) && (size_t) t->ne[2] * t->nb[2] == ggml_nbytes(d) &&
++                    ggml_nbytes(t) == ggml_nbytes(d)) {
++                    for (int64_t e0 = 0; e0 < t->ne[2]; e0 += whole_runs) {
++                        const int64_t n = std::min<int64_t>(whole_runs, t->ne[2] - e0);
++                        timed_wait(t, e0, n);
++                        ggml_backend_tensor_set(d, (const char *) t->data + (size_t) e0 * t->nb[2], (size_t) e0 * t->nb[2], (size_t) n * t->nb[2]);
++                    }
++                    s.gpu_up_bytes += ggml_nbytes(d);
++                    continue;
++                }
+                 timed_wait(t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
+                 ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
+                 s.gpu_up_bytes += ggml_nbytes(d);
