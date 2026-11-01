@@ -32,6 +32,7 @@
 #  include <fcntl.h>
 #  include <sys/mman.h>
 #  include <sys/stat.h>
+#  include <signal.h>
 #  include <unistd.h>
 #  define MOE_CACHE_EXPORT __attribute__((visibility("default")))
 #endif
@@ -366,6 +367,33 @@ inline void file_view_unmap(const char * p, size_t size) {
 #endif
 }
 
+#ifdef __linux__
+// A file that is cut short, replaced in place or on a network share that drops, while it is mapped, kills the process with SIGBUS at the first page past
+// the new end and no message (audit A1-04). llama.cpp's own loader already refuses a file that is short at load time. This handler only says what
+// probably happened, then lets the default action run (SA_RESETHAND: the faulting instruction runs again and the process dies as before, core dump
+// included). Not installed when something else (a debugger helper, a sanitizer) already handles SIGBUS.
+inline void install_sigbus_message() {
+    static bool done = false;
+    if (done) {
+        return;
+    }
+    done = true;
+    struct sigaction old;
+    if (sigaction(SIGBUS, nullptr, &old) != 0 || old.sa_handler != SIG_DFL) {
+        return;
+    }
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = [](int) {
+        static const char msg[] = "moe-cache: bus error while reading the model file: the file was probably cut short, replaced or deleted while the server "
+                                  "was running, or the disk / network share holding it dropped. Check the file and start again.\n";
+        const ssize_t r = write(2, msg, sizeof(msg) - 1);       // async-signal-safe
+        (void) r;
+    };
+    sa.sa_flags = SA_RESETHAND | SA_NODEFER;
+    sigaction(SIGBUS, &sa, nullptr);
+}
+#endif
 inline const char * file_view_map(const char * path, size_t * size) {
 #ifdef _WIN32
     HANDLE f = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -401,6 +429,7 @@ inline const char * file_view_map(const char * path, size_t * size) {
     if (getenv("MOE_CACHE_LINUX_VIEW_RANDOM")) {
         madvise(v, (size_t) st.st_size, MADV_RANDOM);      // A/B only: the first prototype's setting
     }
+    install_sigbus_message();
     *size = (size_t) st.st_size;
     return (const char *) v;
 #else
