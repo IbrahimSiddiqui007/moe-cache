@@ -1851,6 +1851,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}), pick=self.store.saved.get("pick"),
                                            llama_server=self.store.ls, llama_found=self.store.llama_found(),
                                            llama_looked=mc.ls_looked(), llama_releases=mc.RELEASES_URL, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
+            if u.path == "/api/busy":                      # what uses the GPU and CPU right now (Windows counters, about 3 s); the page's "Check" button
+                items = mc.busy_programs() if WINDOWS else []
+                return self.send(200, {"available": WINDOWS, "programs": [dict(i, note=mc.busy_note(i)) for i in items]})
             if u.path == "/api/pick":                      # "Which model?": this machine and one recommendation per use (bin/moe_cache_pick.py)
                 spec = self.store.pick_specs(q.get("fresh") == "1")
                 uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)

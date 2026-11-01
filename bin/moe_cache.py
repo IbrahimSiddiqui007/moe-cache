@@ -1360,17 +1360,82 @@ def heavy_background_apps(csv_text):
     return [name for exe, name in HEAVY_BACKGROUND.items() if exe in found]
 
 
+# What is using the GPU and the CPU right now (Windows). The numbers are what Windows' own counters say over a few seconds; nothing here claims a
+# program slows moe-cache down except the EA app, which was measured (paired, 2026-11-01; with it open the GPU's graphics engine was 27-29 % busy
+# with it and 10 % with the desktop compositor, prompts ran 23 % slower, decode 14 % slower).
+BUSY_SCRIPT = r"""
+$ErrorActionPreference = 'SilentlyContinue'
+$n = @{}; Get-Process | ForEach-Object { $n[[string]$_.Id] = $_.ProcessName }
+$c1 = @{}; Get-Process | ForEach-Object { $c1[[string]$_.Id] = $_.TotalProcessorTime.TotalSeconds }
+$g = (Get-Counter '\GPU Engine(*)\Utilization Percentage' -SampleInterval 1 -MaxSamples 3).CounterSamples
+$e = @{}
+foreach ($s in $g) { if ($s.InstanceName -match 'pid_(\d+)_.*engtype_(\w+?)(?:_\d+)?$' -or $s.InstanceName -match 'pid_(\d+)_.*engtype_(\w+)') { $k = $Matches[1] + '|' + $Matches[2]; $e[$k] += $s.CookedValue / 3 } }
+foreach ($k in $e.Keys) { $p = $k.Split('|'); if ($e[$k] -ge 0.5) { "gpu`t$($n[$p[0]])`t$($p[1])`t$([math]::Round($e[$k],1))" } }
+(Get-Counter '\GPU Process Memory(*)\Dedicated Usage').CounterSamples | ForEach-Object { if ($_.CookedValue -ge 100MB -and $_.InstanceName -match 'pid_(\d+)_') { "mem`t$($n[$Matches[1]])`t$([int]($_.CookedValue/1MB))" } }
+Get-Process | ForEach-Object { $d = $_.TotalProcessorTime.TotalSeconds - $c1[[string]$_.Id]; if ($c1.ContainsKey([string]$_.Id) -and $d -ge 0.3) { "cpu`t$($_.ProcessName)`t$([math]::Round($d / 3 * 100))" } }
+"""
+BUSY_SKIP = {"idle", "system", "dwm", "csrss", "llama-server", "python", "pythonw", "powershell", "pwsh", "conhost", "moe-cache", "memory compression", "registry"}
+BUSY_LIMITS = {"gpu": 5.0, "mem": 1000.0, "cpu": 50.0}     # % of the engine, MB of GPU memory, % of one core: below these nothing is said
+
+
+def parse_busy(text):
+    """Programs above the limits, from the tab-separated lines of BUSY_SCRIPT, busiest first: [{"name", "kind", "value", "what"}]."""
+    sums = {}
+    for line in text.splitlines():
+        f = line.rstrip("\r").split("\t")
+        if len(f) < 3 or f[0] not in BUSY_LIMITS or f[1].lower() in BUSY_SKIP or not f[1]:
+            continue
+        try:
+            val = float(f[-1])
+        except ValueError:
+            continue
+        key = (f[0], f[1])
+        if f[0] == "gpu" and f[2].lower() not in ("3d", "compute", "computeengine"):
+            continue                   # copy and video engines do not compete with the expert uploads and compute
+        sums[key] = sums.get(key, 0.0) + val
+    out = []
+    for (kind, name), val in sums.items():
+        if val >= BUSY_LIMITS[kind]:
+            what = {"gpu": f"{val:.0f} % of the GPU's graphics and compute engines", "mem": f"{val / 1024:.1f} GB of GPU memory", "cpu": f"{val / 100:.1f} CPU cores"}[kind]
+            out.append({"name": name, "kind": kind, "value": val, "what": what})
+    return sorted(out, key=lambda r: (r["kind"] != "gpu", -r["value"]))
+
+
+def busy_programs(timeout=30):
+    """Windows only: what is using the GPU and CPU for about 3 seconds. [] elsewhere or when PowerShell fails."""
+    if not WINDOWS:
+        return []
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", BUSY_SCRIPT], capture_output=True, text=True, timeout=timeout)
+    except Exception:
+        return []
+    return parse_busy(r.stdout)
+
+
+def busy_note(item):
+    """One sentence for a program from busy_programs(): what Windows measured, and what moe-cache measured about it (only the EA app)."""
+    base = f"{item['name']} is using {item['what']} right now"
+    if item["name"].lower().startswith(("eacef", "eadesktop", "eabackground", "ealocal")):
+        return base + ". The EA app was measured: with it open long prompts ran 23 % slower and decode 14 % slower. Close it for full speed."
+    return base + ". If speed is low, closing it may help (how much it costs moe-cache is not measured for this program)."
+
+
 def warn_heavy_background():
-    """Windows only; a failed tasklist says nothing."""
+    """Windows only; a failed tasklist or PowerShell says nothing."""
     try:
         r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
     except Exception:
         return
-    for name in heavy_background_apps(r.stdout):
+    named = heavy_background_apps(r.stdout)
+    for name in named:
         if name == "EA app":
             say("moe-cache: the EA app is open: close it for full speed (measured: long prompts 23 % slower, decode 14 % slower with it open)", err=True)
         else:
             say(f"moe-cache: {name} is open: if speed is low, close it (not measured for this program; the EA app costs 14-23 %)", err=True)
+    if "EA app" in named:
+        return
+    for item in busy_programs()[:3]:       # not the EA app (already named): programs busy on the GPU or CPU in the last seconds
+        say("moe-cache: " + busy_note(item), err=True)
 
 
 def say_exit(rc, seen, with_ready):

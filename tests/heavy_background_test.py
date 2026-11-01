@@ -17,5 +17,20 @@ for text, want in [("", []), (row.format("notepad.exe"), []), (row.format("EADes
     if got != want:
         ok = False
         print(f"FAIL: {text!r}: {got} != {want}")
+# busy programs: lines of the PowerShell counters -> only what is above the limits, our own and system programs left out
+lines = "\n".join(["gpu\tEACefSubProcess\t3D\t28.6", "gpu\tEACefSubProcess\tCopy\t40", "gpu\tdwm\t3D\t9.9", "gpu\tllama-server\tCompute\t60", "gpu\tgame\tCompute\t3",
+                   "mem\tgame\t2048", "mem\tsmall\t200", "cpu\tbrowser\t120", "cpu\tidle\t3000", "cpu\tquiet\t10", "junk line"])
+got = [(i["name"], i["kind"]) for i in mc.parse_busy(lines)]
+if got != [("EACefSubProcess", "gpu"), ("game", "mem"), ("browser", "cpu")]:
+    ok = False
+    print(f"FAIL: parse_busy: {got}")
+note = mc.busy_note(mc.parse_busy(lines)[0])
+if "23 %" not in note:
+    ok = False
+    print(f"FAIL: EA note: {note}")
+note2 = mc.busy_note(mc.parse_busy(lines)[2])
+if "not measured" not in note2 or "23 %" in note2:
+    ok = False
+    print(f"FAIL: other note: {note2}")
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
