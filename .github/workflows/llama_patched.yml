@@ -1,10 +1,12 @@
 # Builds llama.cpp b11966 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
-# Manual only: nothing here runs by itself and release.yml does not use it. See patches/llama.cpp/README.md.
+# Runs only when asked: push to the branch ci/llama-patched (manual dispatch needs the file on main). release.yml does not use it. See patches/llama.cpp/README.md.
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
 # Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder.
 name: llama-patched
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/llama-patched]
 
 env:
   LLAMA_COMMIT: ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1   # b11966
