@@ -224,6 +224,10 @@ static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t
     }
 }
 
+bool gpu_sum_on();                                  // mc_device.inl
+bool is_weighted_experts(const ggml_tensor * t);
+bool is_expert_sum(const ggml_tensor * t);
+
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
 // to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
 bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
@@ -614,6 +618,37 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             return true;
         }
     }
+    // MOE_CACHE_GPU_SUM=1 (mc_device.inl): the nodes right after the experts that the plugin claimed join the block, so only their sum is read back. A block split
+    // into parts (returned above) leaves them to the CPU, as does anything that does not match; the result is the same, only slower.
+    static const bool tmpl_off = !getenv("MOE_CACHE_GPU_TMPL") || atoi(getenv("MOE_CACHE_GPU_TMPL")) <= 0;
+    if (gpu_sum_on() && tmpl_off && last + 1 < n_all && is_weighted_experts(ggml_graph_node(cg, last + 1)) && ggml_graph_node(cg, last + 1)->src[0] == out) {
+        ggml_tensor * mul = ggml_graph_node(cg, last + 1);
+        const ggml_tensor * w = mul->src[1];
+        std::vector<ggml_tensor *> tail { mul };
+        ggml_tensor * sum = nullptr;
+        for (int i = last + 2; i < n_all; i++) {
+            ggml_tensor * n = ggml_graph_node(cg, i);
+            if (n->op == GGML_OP_VIEW && n->view_src == mul) {
+                tail.push_back(n);
+            } else if (is_expert_sum(n) && n->src[1]->view_src == mul) {
+                tail.push_back(n);
+                sum = n;
+            } else {
+                break;
+            }
+        }
+        std::unordered_set<const ggml_tensor *> all_nodes;
+        for (int i = 0; i < n_all; i++) {
+            all_nodes.insert(ggml_graph_node(cg, i));
+        }
+        if (sum && ggml_is_contiguous(sum) && w && w->type == GGML_TYPE_F32 && !w->view_src && !all_nodes.count(w)) {
+            for (ggml_tensor * n : tail) {
+                inside.insert(n);
+                seg.push_back(n);
+            }
+            out = sum;
+        }
+    }
     // idea P08 (MOE_CACHE_GPU_BUCKET=N, default off): the packed weight tensors are allocated for the part's expert count rounded up to a multiple of N, so
     // blocks that use a few more or fewer experts share one graph shape (with MOE_CACHE_GPU_TMPL); only the used experts are uploaded, the padding is never read
     static const size_t bucket_n = getenv("MOE_CACHE_GPU_BUCKET") ? (size_t) std::max(1, atoi(getenv("MOE_CACHE_GPU_BUCKET"))) : 1;
@@ -753,6 +788,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     };
     if (!from_tmpl) {
         for (ggml_tensor * n : seg) {
+            if (n->op == GGML_OP_VIEW) {         // MOE_CACHE_GPU_SUM: a view of the weighted experts shares their memory
+                clone[n] = ggml_view_2d(ctx, clone[n->view_src], n->ne[0], n->ne[1], n->nb[1], n->view_offs);
+                continue;
+            }
             ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, n->ne);
             nn->op = n->op;
             memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
@@ -780,7 +819,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             need += ggml_nbytes(u.second);
         }
         for (ggml_tensor * n : seg) {
-            need += ggml_nbytes(clone[n]);
+            if (n->op != GGML_OP_VIEW && n->op != GGML_OP_MUL && n->op != GGML_OP_ADD) {    // MOE_CACHE_GPU_SUM's nodes reuse the memory of the node before them
+                need += ggml_nbytes(clone[n]);
+            }
         }
         const size_t extra = need > held ? need - held : 0;
         const size_t fr = gpu_free;
