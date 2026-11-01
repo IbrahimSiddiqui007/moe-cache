@@ -47,6 +47,7 @@
 #include <unistd.h>
 #endif
 #include <filesystem>
+#include <stdexcept>
 #include <condition_variable>
 #include <cstddef>
 #include <deque>

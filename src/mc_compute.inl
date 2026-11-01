@@ -3,6 +3,31 @@
 
 namespace {
 
+// MOE_CACHE_GPU_CATCH=1 (audit A2-03; default off, NOT tested against a real Vulkan failure): ggml-vulkan reports a failed allocation or a lost device by
+// throwing a C++ exception, and nothing in the GPU block catches it, so llama_decode ends the process. With the switch a throw out of the block is caught:
+// the block stays on the CPU (its nodes were not silenced yet), no further GPU blocks are tried, one line says why. It only helps when the GPU is still
+// usable (an allocation that failed); after a lost device llama.cpp's own GPU layers throw too, outside this code. MOE_CACHE_GPU_CATCH=2 throws once at
+// the first block (fault injection for a test run: the prompt must finish on the CPU with the same text).
+bool gpu_segment_guarded(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
+    static const int catch_mode = getenv("MOE_CACHE_GPU_CATCH") ? atoi(getenv("MOE_CACHE_GPU_CATCH")) : 0;
+    if (catch_mode <= 0) {
+        return gpu_segment(c, s, cg, first, last, seg);
+    }
+    static bool injected = false;
+    try {
+        if (catch_mode >= 2 && !injected) {
+            injected = true;
+            throw std::runtime_error("injected by MOE_CACHE_GPU_CATCH=2");
+        }
+        return gpu_segment(c, s, cg, first, last, seg);
+    } catch (const std::exception & e) {
+        fprintf(stderr, "moe-cache: the GPU block threw (%s): long-prompt blocks stay on the CPU from now on (MOE_CACHE_GPU_CATCH)\n", e.what());
+        c->gpu_failed = true;
+        seg.clear();
+        return false;
+    }
+}
+
 // Last check before llama.cpp's own kernels read the experts: every expert a MUL_MAT_ID of this graph uses must be complete and in RAM. Waits for
 // experts still being read; an expert that is not in RAM at all (should never happen: eviction protects the whole graph) is loaded again with a
 // one-time message instead of being read as decommitted memory (Windows: access violation, PC 2026-10-27) or zeros (Linux: wrong output).
@@ -550,11 +575,11 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             std::vector<ggml_tensor *> seg;
             c->seg_nomem = false;
             const uint64_t gs0 = seg_times ? now_ns() : 0;
-            bool ok = gpu_segment(c, s, cg, gr.first, gr.last, seg);
+            bool ok = gpu_segment_guarded(c, s, cg, gr.first, gr.last, seg);
             if (!ok && c->seg_nomem && c->hb_buf) {
                 hybrid_drop(c, s);         // the hybrid bank holds the memory the long-prompt block needs: free it now, load it again at the next decode step
                 seg.clear();
-                ok = gpu_segment(c, s, cg, gr.first, gr.last, seg);
+                ok = gpu_segment_guarded(c, s, cg, gr.first, gr.last, seg);
             }
             if (seg_times) {
                 s.ns_gpu_seg += now_ns() - gs0;

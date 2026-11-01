@@ -57,6 +57,9 @@ CASES = [
     ("ub1024", ["--ram", "12", "--ub", "1024"], []),
     ("ub2048_vram8", ["--ram", "12", "--ub", "2048", "--vram", "8"], []),
     ("ub_user_after", ["--ram", "12"], ["-ub", "256"]),
+    ("port_user_after", ["--ram", "12"], ["--port", "9000"]),             # A3-03: the plan, health checks and snippets must use the user's port
+    ("ctx_user_after", ["--ram", "12"], ["-c", "65536"]),                 # A3-03: the VRAM plan must use the user's context
+    ("ncmoe_user_after", ["--ram", "12"], ["--n-cpu-moe", "20"]),         # A3-03: counts as a user-fixed value
     ("gpu_cache_auto", ["--ram", "12", "--vram", "8", "--gpu-cache", "auto"], []),
     ("gpu_cache_2000", ["--ram", "12", "--vram", "8", "--gpu-cache", "2000"], []),
     ("n_cpu_moe_20", ["--ram", "12", "--n-cpu-moe", "20"], []),
@@ -241,6 +244,47 @@ def injection_test(model):
     return bad
 
 
+def lib_env_test(model):
+    """A4-01: MOE_CACHE_LIB (moe-cache.bat sets it to the api3 DLL) built for another backend API than llama-server uses gives way to the matching build."""
+    bad = 0
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in ("llama-server", "libggml-moe-cache.so", "api2.so", "api3.so"):
+            open(os.path.join(tmp, f), "w").close()
+        saved = (mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS, os.environ.get("MOE_CACHE_LIB"))
+        mc.CACHE_DIR = os.path.join(tmp, "cache"); mc.KEY_FILE = os.path.join(mc.CACHE_DIR, "api.key")
+        mc.WINDOWS = False
+        mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
+
+        class M(FakeMachine):
+            def pick_lib(self, ls): return os.path.join(self.tmp, "api2.so")
+            def ls_api(self, ls): return "2"
+            def lib_api(self, lib): return "3" if lib.endswith("api3.so") else "2"
+
+        def lib_used(env_lib):
+            if env_lib:
+                os.environ["MOE_CACHE_LIB"] = env_lib
+            else:
+                os.environ.pop("MOE_CACHE_LIB", None)
+            a, extra, argv = mc.parse_server([model, "--llama-server", os.path.join(tmp, "llama-server"), "--ram", "12", "--no-pin", "--always-plugin", "--plan-json"])
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                return mc.launch_plan(a, extra, argv, machine=M(tmp), quiet=True).lib
+        try:
+            for name, env_lib, want in (("env lib of another API gives way", os.path.join(tmp, "api3.so"), os.path.join(tmp, "api2.so")),
+                                        ("env lib of the right API is kept", os.path.join(tmp, "libggml-moe-cache.so"), os.path.join(tmp, "libggml-moe-cache.so")),
+                                        ("no env lib: the launcher's pick", None, os.path.join(tmp, "api2.so"))):
+                got = lib_used(env_lib)
+                ok = got == want
+                print("  " + ("ok  " if ok else "FAIL") + f" MOE_CACHE_LIB: {name} ({os.path.basename(got or '')})")
+                bad += not ok
+        finally:
+            mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS = saved[:4]
+            if saved[4] is None:
+                os.environ.pop("MOE_CACHE_LIB", None)
+            else:
+                os.environ["MOE_CACHE_LIB"] = saved[4]
+    return bad
+
+
 def leave_room_test(model):
     """--leave-room (owner 2026-10-30): RAM = total minus max(8 GiB, 25 %), 2 GB of GPU memory kept free, -t = physical cores - 2, the low-priority marker;
     a --ram or -t the user gave is kept."""
@@ -335,7 +379,7 @@ def main():
             for cname, opts, extra in CASES:
                 results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
     fp = fingerprint(model)
-    inj_bad = injection_test(model) + leave_room_test(model) + page_test(model)
+    inj_bad = injection_test(model) + lib_env_test(model) + leave_room_test(model) + page_test(model)
     # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
     consistent_bad = 0
     with tempfile.TemporaryDirectory() as tmp:

@@ -810,18 +810,48 @@ def mem_for_server(ram_gb):
     return min(v, cap) if v and cap else (v or cap)
 
 
+def cgroup_mem_limit(proc_cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
+    """Smallest memory limit in bytes of this process's cgroup AND its parents (a limit set on a systemd slice or a docker parent applies to a leaf that
+    says "max"), cgroup v2 memory.max and v1 memory.limit_in_bytes; None when nothing limits it. The paths are arguments for tests/cgroup_test.py."""
+    try:
+        lines = open(proc_cgroup).read().strip().splitlines()
+    except OSError:
+        return None
+    best = None
+    for line in lines:
+        parts = line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        hier, ctrl, rel = parts
+        if hier == "0" and ctrl == "":
+            base, name = root, "memory.max"
+        elif "memory" in ctrl.split(","):
+            base, name = os.path.join(root, "memory"), "memory.limit_in_bytes"
+        else:
+            continue
+        d = rel or "/"
+        while True:
+            try:
+                v = open(os.path.join(base, d.lstrip("/"), name)).read().strip()
+            except OSError:
+                v = ""
+            if v.isdigit() and int(v) < 2**60:            # v1 says 9223372036854771712 for "no limit"
+                best = int(v) if best is None else min(best, int(v))
+            if d in ("/", ""):
+                break
+            d = os.path.dirname(d.rstrip("/")) or "/"
+    return best
+
+
 def _mem_for_server(ram_gb):
     if ram_gb:
         return float(ram_gb) * 1e9
     if WINDOWS:
         return win_memory()[1]      # found on the MSI Claw: /proc does not exist there, so stock-vs-plugin could not be decided without --ram
+    lim = cgroup_mem_limit()
+    if lim:
+        return float(lim)
     try:
-        rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
-        for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
-            if os.access(f, os.R_OK):
-                v = open(f).read().strip()
-                if v != "max":
-                    return float(v)
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable"):
                 return int(line.split()[1]) * 1024.0
@@ -847,6 +877,23 @@ def arg_after(args, *names):
         if a in names and i + 1 < len(args):
             v = args[i + 1]
     return v
+
+
+def adopt_user_flags(extra):
+    """Flags the launcher also sets, when the user gives them after `--`: llama-server takes the user's (the last one wins), so the plan, the health
+    checks and the VRAM maths must use the same value. -> ({"port": int, "ctx": int, "ncmoe": str} for the ones found as plain numbers, extra without
+    them: the launcher puts the value back itself). A value that is not a plain positive number (-c 0 = the model's own length) is left alone."""
+    found, keep, i = {}, [], 0
+    names = {"--port": "port", "-c": "ctx", "--ctx-size": "ctx", "--n-cpu-moe": "ncmoe", "-ncmoe": "ncmoe"}
+    while i < len(extra):
+        key = names.get(extra[i])
+        if key and i + 1 < len(extra) and re.fullmatch(r"[0-9]+", extra[i + 1]) and (int(extra[i + 1]) > 0 or key == "ncmoe"):
+            found[key] = int(extra[i + 1]) if key != "ncmoe" else str(int(extra[i + 1]))
+            i += 2
+            continue
+        keep.append(extra[i])
+        i += 1
+    return found, keep
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1966,6 +2013,15 @@ def _launch_plan(a, extra, argv, machine):
                 f"memory free for the desktop, leaves {LEAVE_ROOM_FREE_CORES} CPU cores free and runs at a lower priority: smoother PC, slower model")
     if a.share_ram:
         share_ram_start(a, machine)
+    user_flags, extra = adopt_user_flags(extra)
+    if "port" in user_flags and user_flags["port"] != a.port:
+        say(f"moe-cache: port {user_flags['port']} from the flags after '--' (the health checks, warm sessions and agent snippets use it)")
+        a.port = user_flags["port"]
+    if "ctx" in user_flags and user_flags["ctx"] != a.ctx:
+        say(f"moe-cache: context {user_flags['ctx']} from the flags after '--' (the GPU plan uses it)")
+        a.ctx = user_flags["ctx"]
+    if "ncmoe" in user_flags and a.n_cpu_moe is None:
+        a.n_cpu_moe = user_flags["ncmoe"]
     ls, model, port = a.llama_server, a.model, a.port
     ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
     gcache = a.gpu_cache
@@ -1979,7 +2035,18 @@ def _launch_plan(a, extra, argv, machine):
     mm_file, mm_bytes, dense = None, 0, False
     if a.mmproj or a.auto_fit:
         mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
-    lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
+    lib = os.environ.get("MOE_CACHE_LIB")
+    if lib:
+        # moe-cache.bat sets MOE_CACHE_LIB to the first DLL it finds (the api3 one); for an older llama-server (ggml 0.24 / 0.25) that build refuses to load.
+        # An env value built for another API than the server uses gives way to the matching build the launcher finds itself (audit A4-01)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if want and have and want != have:
+            alt = machine.pick_lib(ls)
+            if alt != lib and machine.lib_exists(alt) and machine.lib_api(alt) == want:
+                say(f"moe-cache: MOE_CACHE_LIB {lib} was built for ggml backend API {have}, {ls} uses API {want}: using {alt} instead", err=True)
+                lib = alt
+    else:
+        lib = machine.pick_lib(ls)
     if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
         # tarball users the wrong way (audit 2026-10-29 K2)
@@ -3121,15 +3188,10 @@ def check(argv):
         for line in open("/proc/meminfo"):
             if line.startswith("MemAvailable"):
                 memav = int(line.split()[1]) * 1024 / 1e9
-        rel = open("/proc/self/cgroup").read().strip().split(":")[-1]
-        for f in (f"/sys/fs/cgroup{rel}/memory.max", "/sys/fs/cgroup/memory.max"):
-            if os.access(f, os.R_OK):
-                v = open(f).read().strip()
-                if v != "max":
-                    cg = int(v) / 1e9
-                    break
     except OSError:
         pass
+    lim = cgroup_mem_limit()
+    cg = lim / 1e9 if lim else None
     tot = win_memory()[0] / 1e9 if WINDOWS and win_memory()[0] else meminfo_total_gb()
     facts["ram"] = (f"{tot:.0f} GB total, " if tot else "") + (f"{memav:.1f} GB available" if memav else "available unknown") + (f", cgroup limit {cg:.1f} GB" if cg else "")
     ok("memory", (f"--ram {a.ram} GB; " if a.ram else "") + (f"available {memav:.1f} GB" if memav else "available: unknown") + (f", cgroup limit {cg:.1f} GB" if cg else ""))
