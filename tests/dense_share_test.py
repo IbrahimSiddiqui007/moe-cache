@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""MM6 prototype through the real launcher on FAKE machines (no model download: sparse GGUF headers).
+"""MM6 + MM7 prototypes through the real launcher on FAKE machines (no model download: sparse GGUF headers).
    python3 tests/dense_share_test.py
 MM6 --auto-fit: a dense model gets no -ngl / --n-cpu-moe (llama.cpp's --fit places the layers); a MoE model and a user's own -ngl are untouched.
 MM6 --mmproj: auto-finds mmproj*.gguf next to the model, passes it, counts it in RAM and VRAM; a missing one is an error.
@@ -49,6 +49,8 @@ with tempfile.TemporaryDirectory() as tmp:
     moe = os.path.join(tmp, "moe", "synthetic-moe.gguf"); os.makedirs(os.path.dirname(moe)); lp.make_synthetic_model(moe)
     dense = os.path.join(tmp, "dense", "vision-7b-Q4.gguf"); os.makedirs(os.path.dirname(dense)); make_dense(dense)
     proj = os.path.join(tmp, "dense", "mmproj-vision-7b-f16.gguf"); open(proj, "wb").write(b"GGUF"); os.truncate(proj, 600 * 2**20)
+    other = {"pids": []}
+    mc.other_llama_servers = lambda: other["pids"]
     run = lambda model, opts, extra=(), mach="linux": lp.run_case(mach, ["--ram", "12"] + opts, list(extra), model, tmp)
 
     base = run(moe, [])
@@ -72,6 +74,21 @@ with tempfile.TemporaryDirectory() as tmp:
     fit = str(round((sz + mc.STOCK_HEADROOM) / 1e9 + 0.05, 2))
     a1 = lp.run_case("linux", ["--ram", fit], [], dense, tmp); a2 = lp.run_case("linux", ["--ram", fit, "--mmproj", "auto"], [], dense, tmp)
     check("running stock" in a1["stdout"] and "running stock" not in a2["stdout"], "the projector's size is added to the RAM floor (stock without it, plugin decision with it)")
+
+    # MM7
+    nothing = run(moe, ["--share-ram"])
+    check("no other llama-server" in nothing["stdout"] and cmdline(nothing) == cmdline(base), "--share-ram, nothing else running: one line, same command line")
+    other["pids"] = [(111, 10 * 10**9), (222, 6 * 10**9)]
+    r = lp.run_case("linux", ["--share-ram", "--always-plugin"], [], moe, tmp)
+    check("2 other llama-server(s) hold 16.0 GB" in r["stdout"] and "may use" in r["stdout"], "--share-ram with 16 GB held elsewhere: reported and shrunk")
+    m = re.search(r"this server may use ([\d.]+) GB", r["stdout"])
+    check(bool(m) and float(m.group(1)) <= 28 * GIB / 1e9 - 16 + 0.1, f"the new share ({m.group(1) if m else '?'} GB) fits under the 28 GiB cap next to them")
+    r = run(moe, ["--share-ram"])
+    check("as given" in r["stdout"], "--ram stays as the user gave it")
+    check(cmdline(run(moe, [])) == cmdline(base), "flag off while others run: untouched")
+    other["pids"] = [(1, 30 * 10**9)]
+    r = lp.run_case("linux", ["--share-ram"], [], moe, tmp)
+    check("only" in r["stderr"] + r["stdout"] and "left" in r["stderr"] + r["stdout"], "others hold nearly the whole cap: a warning, not a silent tiny size")
 
 print("FAILED: " + "; ".join(fails) if fails else "all ok")
 sys.exit(1 if fails else 0)

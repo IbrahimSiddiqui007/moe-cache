@@ -1596,6 +1596,8 @@ class Machine:
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
     def lib_exists(self, lib): return os.path.isfile(lib)
 
+    def other_llama_servers(self): return other_llama_servers()
+
     def free_vram_bytes(self):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import free_vram_bytes
@@ -1691,6 +1693,7 @@ def parse_server(argv):
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
     ap.add_argument("--auto-fit", action="store_true")      # PROTOTYPE (MM6): a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; default off
+    ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
@@ -1757,6 +1760,58 @@ def vision_dense_start(a, extra, model, stock, size, avail):
         except Exception:
             dense = False
     return mm, mmb, dense, stock, size
+
+
+def other_llama_servers():
+    """[(pid, bytes of RAM in use)] of the llama-server processes that are not this launcher's own descendants; the same answer on Linux (/proc) and
+    Windows (tasklist)."""
+    out, mine = [], {os.getpid(), os.getppid()}
+    if WINDOWS:
+        try:
+            r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
+            for row in r.stdout.splitlines():
+                f = [x.strip('"') for x in row.split('","')]
+                if len(f) >= 5 and f[0].lower().startswith("llama-server"):
+                    out.append((int(f[1]), int(re.sub(r"[^0-9]", "", f[4]) or 0) * 1024))
+        except Exception:
+            pass
+        return out
+    try:
+        for d in os.listdir("/proc"):
+            if not d.isdigit() or int(d) in mine:
+                continue
+            try:
+                if not open(f"/proc/{d}/comm").read().strip().startswith("llama-server"):
+                    continue
+                for line in open(f"/proc/{d}/status"):
+                    if line.startswith("VmRSS"):
+                        out.append((int(d), int(line.split()[1]) * 1024))
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return out
+
+
+def share_ram_start(a, machine):
+    """MM7 (PROTOTYPE, --share-ram): other llama-servers hold RAM the cap (28 GiB on a 32 GiB PC) is meant to cover once; their use is taken off this server's
+    share unless --ram was given. One line says what was found."""
+    others = machine.other_llama_servers()
+    if not others:
+        say("moe-cache: --share-ram (PROTOTYPE): no other llama-server is running")
+        return
+    held = sum(b for _, b in others)
+    cap = machine.mem_cap() or machine.mem_for_server(None) or 0
+    mine = machine.mem_for_server(None) or cap
+    share = max(min(mine, cap - held) if cap else mine - held, 0)
+    msg = f"moe-cache: --share-ram (PROTOTYPE): {len(others)} other llama-server(s) hold {held / 1e9:.1f} GB"
+    if a.ram:
+        say(msg + f"; --ram {a.ram} GB as given (the cap leaves {share / 1e9:.1f} GB for this one)")
+    elif share >= 2e9:
+        a.ram = f"{share / 1e9:.1f}"
+        say(msg + f": this server may use {a.ram} GB of the {cap / 1e9:.1f} GB cap")
+    else:
+        say(msg + f": only {share / 1e9:.1f} GB of the cap is left; start with --ram GB to force a size", err=True)
 
 
 def multi_gpu_start(a, extra, machine, ls, listing, vram_user, win):
@@ -1874,6 +1929,8 @@ def _launch_plan(a, extra, argv, machine):
             a.ram = lr
             say(f"moe-cache: --leave-room: the server may use {lr} GB of RAM (the rest stays for your own programs), keeps {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU "
                 f"memory free for the desktop, leaves {LEAVE_ROOM_FREE_CORES} CPU cores free and runs at a lower priority: smoother PC, slower model")
+    if a.share_ram:
+        share_ram_start(a, machine)
     ls, model, port = a.llama_server, a.model, a.port
     ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
     gcache = a.gpu_cache
