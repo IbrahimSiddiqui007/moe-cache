@@ -1,0 +1,79 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c25128b19..c8d3b6b23 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -5955,6 +5955,15 @@ static int ggml_vk_rdna_split_k_large() {
+     return mode;
+ }
+ 
++// GGML_VK_RDNA_SPLIT_K_SMALL_N=1 (default off): on RDNA3/RDNA4, a mat-mat with n <= 32 and k >= 2048 gets a
++// wave-aware split-K (aim for 8 workgroups per compute unit), and n <= 64 may use the old rule even though it
++// does not fill one tile column (llama.cpp #30146, measured there on an RDNA3 W7800; RDNA4 unmeasured).
++// 2 = the same rule on any device (a test mode, so the split-K path can be checked on a card that is not AMD).
++static int ggml_vk_rdna_split_k_small_n() {
++    static const int mode = getenv("GGML_VK_RDNA_SPLIT_K_SMALL_N") ? atoi(getenv("GGML_VK_RDNA_SPLIT_K_SMALL_N")) : 0;
++    return mode;
++}
++
+ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m, uint32_t n, uint32_t k, bool disable_split_k, const vk_pipeline& pipeline) {
+     VK_LOG_DEBUG("ggml_vk_guess_split_k(" << m << ", " << n << ", " << k << ", " << disable_split_k << ")");
+ 
+@@ -5962,8 +5971,20 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
+         return 1;
+     }
+ 
++    const int small_n_mode = ggml_vk_rdna_split_k_small_n();
++    const bool rdna_small_n = small_n_mode > 0 &&
++        (small_n_mode == 2 || ctx->device->architecture == AMD_RDNA3 || ctx->device->architecture == AMD_RDNA4);
++
+     uint32_t split_k = 1;
+-    if (ctx->device->shader_core_count != 0 && n >= pipeline->wg_denoms[1]) {
++    if (rdna_small_n && ctx->device->shader_core_count != 0 && k >= 2048 && n <= 32) {
++        // Small n gives too few workgroups to hide latency, aim for 8 per CU. Small tiles are one subgroup each.
++        const uint32_t tiles = CEIL_DIV(m, pipeline->wg_denoms[0]) * CEIL_DIV(n, pipeline->wg_denoms[1]);
++        if (tiles < 4 * ctx->device->shader_core_count) {
++            split_k = std::min(8u, CEIL_DIV(8 * ctx->device->shader_core_count, tiles));
++        }
++    }
++
++    if (split_k == 1 && ctx->device->shader_core_count != 0 && (n >= pipeline->wg_denoms[1] || (rdna_small_n && n <= 64))) {
+         // If k is 'large' and the SMs will fill less than halfway, use split_k.
+         uint32_t m_tiles = CEIL_DIV(m, pipeline->wg_denoms[0]);
+         uint32_t n_tiles = CEIL_DIV(n, pipeline->wg_denoms[1]);
+@@ -5982,22 +6003,22 @@ static uint32_t ggml_vk_guess_split_k(ggml_backend_vk_context * ctx, uint32_t m,
+             }
+             // Cap the split at 8x. Unless k is huge this is a lot of overhead.
+             split_k = std::min(split_k, 8u);
++        }
++    }
+ 
+-            // ggml_vk_matmul will align the splits to be a multiple of 256.
+-            // If this rounded up size would cause the last split to be empty,
+-            // then reduce the split count.
+-            while (true) {
+-                if (split_k == 1) {
+-                    break;
+-                }
+-                uint32_t k_split = CEIL_DIV(k, split_k);
+-                k_split = ROUNDUP_POW2(k_split, 256);
+-                if (k_split * (split_k - 1) < k) {
+-                    break;
+-                }
+-                split_k--;
+-            }
++    // ggml_vk_matmul will align the splits to be a multiple of 256.
++    // If this rounded up size would cause the last split to be empty,
++    // then reduce the split count.
++    while (true) {
++        if (split_k == 1) {
++            break;
++        }
++        uint32_t k_split = CEIL_DIV(k, split_k);
++        k_split = ROUNDUP_POW2(k_split, 256);
++        if (k_split * (split_k - 1) < k) {
++            break;
+         }
++        split_k--;
+     }
+ 
+     return split_k;
