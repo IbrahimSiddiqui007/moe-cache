@@ -10,6 +10,7 @@ struct moe_cache_buffer_ctx {
     size_t size;
     std::vector<uint8_t> committed;   // Windows, cache mode: one flag per 64 KiB chunk already committed (see buf_init_tensor)
     std::mutex cmu;
+    ggml_backend_buffer_t pinned = nullptr;   // MOE_CACHE_PIN_COMPUTE=1: the memory belongs to this pinned host buffer of the GPU device (already committed)
 };
 
 // In cache mode the buffer is reserved address space only. On Linux untouched pages appear zero-filled on first touch; on Windows a reserved page
@@ -17,7 +18,7 @@ struct moe_cache_buffer_ctx {
 // compute buffer: node outputs that ggml's kernels write through tensor->data, with no buffer call) is committed here, once per 64 KiB chunk.
 // Found on the MSI Claw (RESULTS 50): cache mode crashed in the first graph with an access violation inside the compute buffer.
 void buf_commit_once(moe_cache_buffer_ctx * c, const void * p, size_t size) {
-    if (!plat::is_windows || size == 0) {
+    if (!plat::is_windows || size == 0 || c->pinned) {
         return;
     }
     constexpr size_t CH = 64 * 1024;
@@ -106,7 +107,11 @@ void buf_free(ggml_backend_buffer_t buffer) {
     if (S().cache_on) {
         S().forget_range((const char *) c->base, c->size);
     }
-    plat::mem_release(c->base, c->size);
+    if (c->pinned) {
+        ggml_backend_buffer_free(c->pinned);
+    } else {
+        plat::mem_release(c->base, c->size);
+    }
     delete c;
 }
 
@@ -192,7 +197,28 @@ ggml_backend_buffer_type_t get_buft_host();
 
 ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     size = round_up(std::max<size_t>(size, 1));
-    void * p = plat::mem_reserve(size);
+    // idea SC-A02 (MOE_CACHE_PIN_COMPUTE=1, default off): a compute buffer (allocated after the weights are registered, see host_out below) takes its memory from
+    // the GPU device's pinned host buffer type, so the scheduler's copy of a graph output to the GPU is a queued DMA from registered memory instead of the
+    // synchronous staged copy Vulkan falls back to for an unregistered source. Public API only; when the pinned allocation fails (or is over
+    // MOE_CACHE_PIN_COMPUTE_MIB, default 4096) the buffer is the usual reserved memory.
+    static const bool pin_compute = getenv("MOE_CACHE_PIN_COMPUTE") && atoi(getenv("MOE_CACHE_PIN_COMPUTE")) > 0;
+    static const size_t pin_max = (size_t) (getenv("MOE_CACHE_PIN_COMPUTE_MIB") && atoi(getenv("MOE_CACHE_PIN_COMPUTE_MIB")) > 0 ? atoi(getenv("MOE_CACHE_PIN_COMPUTE_MIB")) : 4096) << 20;
+    ggml_backend_buffer_t pinned = nullptr;
+    void * p = nullptr;
+    if (pin_compute && S().cache_on && !S().by_tensor.empty() && S().gpu_dev && size <= pin_max) {
+        if (ggml_backend_buffer_type_t hbt = ggml_backend_dev_host_buffer_type(S().gpu_dev)) {
+            pinned = ggml_backend_buft_alloc_buffer(hbt, size);
+            p = pinned ? ggml_backend_buffer_get_base(pinned) : nullptr;
+            if (p && (uintptr_t) p % PAGE != 0) {      // the plugin's tensors assume page-aligned buffers
+                ggml_backend_buffer_free(pinned);
+                pinned = nullptr;
+                p = nullptr;
+            }
+        }
+    }
+    if (!p) {
+        p = plat::mem_reserve(size);
+    }
     if (!p) {
         return nullptr;
     }
@@ -202,7 +228,7 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
             return nullptr;              // llama.cpp reports the failed allocation
         }
     }
-    auto * c = new moe_cache_buffer_ctx{ p, size, {}, {} };
+    auto * c = new moe_cache_buffer_ctx{ p, size, {}, {}, pinned };
     // E1 (on by default, MOE_CACHE_HOST_OUT=0 off; RESULTS 76): our compute buffers are plain memory, but a type that is not host sends every output through
     // ggml_backend_tensor_copy's slowest path: malloc, get, tensor_set, free (a 34k prompt: 35 % of the time between our graphs, plus the page faults of each fresh malloc).
     // Weights are registered before any compute buffer is allocated and keep the plain type: their bytes may not be loaded. Same bytes either way.
