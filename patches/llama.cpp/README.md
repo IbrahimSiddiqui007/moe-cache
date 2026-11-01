@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -128,6 +128,16 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 pass with the switch unset and 1109/1109 with `GGML_VK_COUNT_EXPERTS_FAST=1` (the suite includes skipped ids, `mask_skipped_ids`). Not run on the AMD card.
 
 **Test (under 20 minutes, Windows PC):** (1) `test-backend-ops perf -o MUL_MAT_ID -b Vulkan0` A and B (unset / switch), compare us/run on the shapes with 128+ tokens; (2) Flash-Next 34k prompt, `GGML_VK_PERF_LOGGER=1` once for MUL_MAT_ID time, then A B B A on prompt tok/s. Accept only if B is faster in both pairs by more than the A-vs-A spread; text identical.
+
+## 0023-vulkan-matmul-tile-switch (VK06)
+
+**What:** for AMD the Vulkan backend turns the large (128x128) matmul tile off on the proprietary driver and always for `MUL_MAT_ID` (`ggml_vk_load_shaders` device setup, `ggml-vulkan.cpp`). RDNA4 has much faster matrix instructions than the cards that rule was tuned for, and a bigger tile halves re-reads of the weights, so it may help; it may also lose to register pressure. Two switches, both default off: `GGML_VK_AMD_LARGE_TILE=1` (AMD with coopmat support: large tile for `MUL_MAT` and `MUL_MAT_ID`) and `GGML_VK_MMID_SMALL_TILE=1` (any vendor: `MUL_MAT_ID` uses only the small tile). Unset = stock.
+
+**Soundness:** only the tile shape changes; the K accumulation order does not depend on it, so results should be equal in practice but are not guaranteed bit-identical (check below).
+
+**Compiled and run (Linux, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 with `GGML_VK_MMID_SMALL_TILE=1` (this changes the pipelines used) and 1109/1109 with `GGML_VK_AMD_LARGE_TILE=1` (a no-op on this NVIDIA card, so the AMD branch is NOT exercised here).
+
+**Test (under 20 minutes, Windows PC):** (1) `test-backend-ops test -o MUL_MAT -o MUL_MAT_ID -b Vulkan0` with each switch: all pass (NMSE check on the AMD card, mandatory before any speed run); (2) `test-backend-ops perf -o MUL_MAT -o MUL_MAT_ID`, unset / `GGML_VK_AMD_LARGE_TILE=1` / `GGML_VK_MMID_SMALL_TILE=1`, us/run on the real shapes; (3) the winner only: Flash-Next 34k A B B A, text identical. Accept only if faster in both pairs by more than the A-vs-A spread.
 
 ## Not written, and why
 
