@@ -29,3 +29,18 @@ Moved here from the README on 2026-10-30, unchanged.
 
   The `moe-cache: active: ...` line in the server log says which parts are on.
 - Needs a llama.cpp with shared ggml libraries; tested with commits `23b0202a1` (ggml 0.26.0) and `7fe450e19` (ggml 0.25.1), and release b11966 (ggml 0.28.0; CI row added 2026-10-30). The plugin refuses to load into a ggml with a different backend API than it was built for (it prints why and the model loads normally). Linux; Windows is experimental (identity-tested on a Windows 11 + RX 9070 XT desktop and in CI, see [COMPATIBILITY](COMPATIBILITY.md) and the [Windows quick start](WINDOWS.md)).
+
+## Prototypes: several GPUs and several models at once (all off by default, untested for speed)
+
+These options exist so a user with more than one GPU, or two models, can try them and report. Each prints "PROTOTYPE" when it is on. Without the flag the launch plan is byte-identical to before (`tests/launch_plan_test.py`, 76 of 76). The unit tests run on fake devices and fake servers; **nothing here has been run on a machine with two discrete GPUs, with two models served together, or with a real vision model, and no speed gain is claimed.**
+
+| Option | What it does | What is untested |
+|---|---|---|
+| `moe-cache-server --multi-gpu` | With 2+ discrete GPUs (same backend; an iGPU or a card under 2 GiB is left out), plans the experts across the cards and passes `--device A,B -ts a,b --n-cpu-moe N` (largest card first). `--dry-run` shows the plan. Your own `--n-cpu-moe`, `--vram`, `--device`, `-ts`, `--gpu-cache` or `--hybrid` keep the one-card plan. One card: no change. | Everything beyond the plan: speed, and whether llama.cpp places the layers as planned on real cards. The plugin's own GPU work still runs on the first card only. |
+| `moe-cache-check` | Names the GPUs llama.cpp will use and the iGPU it leaves out (printed only when 2+ devices are listed). | - |
+| `on-demand --concurrent` | Keeps all added models running at once, each started with a fixed share of one memory cap (`--ram`), of the free VRAM (`--vram`) and its own CPU cores (`-C`, `-t`). A model whose share holds its file runs as plain stock llama-server. If the shares cannot fit, it falls back to one model at a time. The share is static; a quiet model gives its cache back after 30 s idle. | Interference between the servers (page cache, SSD, PCIe), the right split, Windows commit with two GPU servers. |
+| `moe-cache-server --auto-fit` | For a model with no experts, leaves out `-ngl 99` and `--n-cpu-moe` so llama.cpp's `--fit` places the layers by free GPU memory. A MoE model and your own `-ngl` are untouched. | Never run on a real dense model bigger than VRAM. |
+| `moe-cache-server --mmproj auto\|FILE` | Passes the vision projector (`mmproj*.gguf` next to the model), adds its size to the RAM decision and takes it, plus 0.5 GB for its compute buffer, off the GPU memory the planner may use. | Never run with a real vision model; the 0.5 GB is an estimate. |
+| `moe-cache-server --share-ram` | Counts the RAM other `llama-server` processes hold and shrinks this server's share under the one cap (unless `--ram` is given). | Windows `tasklist` figures (working set) were not compared with the Linux ones. |
+
+If a piece below needs llama.cpp itself changed (router-mode memory management, a multi-GPU plugin cache), it is not done here; see `patches/llama.cpp/README.md` for how such patches are kept.

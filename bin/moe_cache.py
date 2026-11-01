@@ -1596,6 +1596,8 @@ class Machine:
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
     def lib_exists(self, lib): return os.path.isfile(lib)
 
+    def other_llama_servers(self): return other_llama_servers()
+
     def free_vram_bytes(self):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import free_vram_bytes
@@ -1689,6 +1691,10 @@ def parse_server(argv):
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
+    ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
+    ap.add_argument("--auto-fit", action="store_true")      # PROTOTYPE (MM6): a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; default off
+    ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
+    ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
@@ -1708,6 +1714,166 @@ def server(argv):
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
     return run_launch_plan(plan)
+
+
+MMPROJ_VRAM_HEADROOM = 0.5e9      # compute buffer of the vision encoder, on top of the projector's file size (estimate; llama.cpp's own memory margin does not count it either)
+
+
+def find_mmproj(model):
+    """The vision projector next to a model: mmproj*.gguf in the same folder, the one that shares the model's name when several; None when not exactly clear."""
+    d = os.path.dirname(os.path.abspath(model))
+    try:
+        found = sorted(f for f in os.listdir(d) if f.lower().startswith("mmproj") and f.lower().endswith(".gguf"))
+    except OSError:
+        return None
+    if len(found) == 1:
+        return os.path.join(d, found[0])
+    stem = re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(model)).lower()
+    close = [f for f in found if stem and stem.split("-")[0] in f.lower()]
+    return os.path.join(d, close[0]) if len(close) == 1 else None
+
+
+def vision_dense_start(a, extra, model, stock, size, avail):
+    """MM6 (PROTOTYPE, --mmproj / --auto-fit): find the projector (`--mmproj auto` or a file), pass it to llama-server, count its size in the RAM decision
+    (added to the model's size) and report it for the VRAM plan; detect a dense model. Returns (mmproj file, its bytes, dense, stock, size)."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    mm, mmb = None, 0
+    if a.mmproj:
+        have = arg_after(extra, "--mmproj", "-mm")
+        mm = have or (find_mmproj(model) if a.mmproj == "auto" else a.mmproj)
+        if not mm or not os.path.isfile(mm):
+            raise SystemExit(f"--mmproj {a.mmproj}: " + ("no single mmproj*.gguf next to the model; pass the file: --mmproj FILE" if a.mmproj == "auto" else f"file not found: {a.mmproj}"))
+        mmb = os.path.getsize(mm)
+        if not have:
+            extra += ["--mmproj", mm]
+        size = (size or 0) + mmb
+        if not a.stock and not (a.fast or a.hybrid or a.always_plugin) and size and avail:
+            stock = size + STOCK_HEADROOM <= avail
+        say(f"moe-cache: --mmproj (PROTOTYPE): vision projector {os.path.basename(mm)} ({mmb / 1e9:.2f} GB) counted in the RAM floor and, with {MMPROJ_VRAM_HEADROOM / 1e9:.1f} GB "
+            "for its compute buffer, taken off the GPU memory the planner may use; never run with a real vision model by the author")
+    dense = False
+    if a.auto_fit:
+        try:
+            from gguf_plan import model_layout
+            lay = model_layout(model)
+            dense = not lay["n_layers"] or not lay["expert_bytes_per_layer"]
+        except Exception:
+            dense = False
+    return mm, mmb, dense, stock, size
+
+
+def other_llama_servers():
+    """[(pid, bytes of RAM in use)] of the llama-server processes that are not this launcher's own descendants; the same answer on Linux (/proc) and
+    Windows (tasklist)."""
+    out, mine = [], {os.getpid(), os.getppid()}
+    if WINDOWS:
+        try:
+            r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
+            for row in r.stdout.splitlines():
+                f = [x.strip('"') for x in row.split('","')]
+                if len(f) >= 5 and f[0].lower().startswith("llama-server"):
+                    out.append((int(f[1]), int(re.sub(r"[^0-9]", "", f[4]) or 0) * 1024))
+        except Exception:
+            pass
+        return out
+    try:
+        for d in os.listdir("/proc"):
+            if not d.isdigit() or int(d) in mine:
+                continue
+            try:
+                if not open(f"/proc/{d}/comm").read().strip().startswith("llama-server"):
+                    continue
+                for line in open(f"/proc/{d}/status"):
+                    if line.startswith("VmRSS"):
+                        out.append((int(d), int(line.split()[1]) * 1024))
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return out
+
+
+def share_ram_start(a, machine):
+    """MM7 (PROTOTYPE, --share-ram): other llama-servers hold RAM the cap (28 GiB on a 32 GiB PC) is meant to cover once; their use is taken off this server's
+    share unless --ram was given. One line says what was found."""
+    others = machine.other_llama_servers()
+    if not others:
+        say("moe-cache: --share-ram (PROTOTYPE): no other llama-server is running")
+        return
+    held = sum(b for _, b in others)
+    cap = machine.mem_cap() or machine.mem_for_server(None) or 0
+    mine = machine.mem_for_server(None) or cap
+    share = max(min(mine, cap - held) if cap else mine - held, 0)
+    msg = f"moe-cache: --share-ram (PROTOTYPE): {len(others)} other llama-server(s) hold {held / 1e9:.1f} GB"
+    if a.ram:
+        say(msg + f"; --ram {a.ram} GB as given (the cap leaves {share / 1e9:.1f} GB for this one)")
+    elif share >= 2e9:
+        a.ram = f"{share / 1e9:.1f}"
+        say(msg + f": this server may use {a.ram} GB of the {cap / 1e9:.1f} GB cap")
+    else:
+        say(msg + f": only {share / 1e9:.1f} GB of the cap is left; start with --ram GB to force a size", err=True)
+
+
+def multi_gpu_start(a, extra, machine, ls, listing, vram_user, win):
+    """--multi-gpu, first half (PROTOTYPE): read the cards and, when the planner will be asked for one card's number anyway, make that the card the launcher
+    names (MG4: the planner took line 0 of nvidia-smi, the launcher's pick_gpu the card with most free memory). Returns the facts for multi_gpu_apply."""
+    say("moe-cache: --multi-gpu is a PROTOTYPE: planned from the device list, not speed-tested on a machine with two discrete GPUs (docs/PLATFORMS.md)")
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import multigpu
+    listing = listing if listing is not None else machine.list_devices(ls)
+    cards = multigpu.list_cards(listing, machine.win_dedicated_vram() if win else None)
+    mg = {"cards": cards, "listing": listing, "vram_user": vram_user}
+    left = multigpu.skipped_igpus(listing, cards)
+    if cards:
+        say("moe-cache: GPUs: " + "; ".join(f"{c['dev']} {c['name']} ({c['free_mib'] / 1024:.1f} GiB free)" for c in cards) + (f"; left out: {', '.join(left)}" if left else ""))
+    if len(cards) >= 2 and not vram_user and not multigpu.user_split_flags(extra):
+        c = cards[0]
+        a.vram = f"{c['free_mib'] / 1024:.2f}"            # until the split is known, plan with the card the plugin's GPU work will use (the largest, listed first)
+    elif len(cards) >= 2 and not vram_user:
+        dev = arg_after(extra, "--device", "-dev")
+        first = next((c for c in cards if dev and c["dev"] == dev.split(",")[0]), None)
+        if first:
+            a.vram = f"{first['free_mib'] / 1024:.2f}"     # the user named the card: plan with that one
+    return mg
+
+
+def multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win):
+    """--multi-gpu, second half: replace the one-card answer with the split plan when 2+ cards are usable and nothing the user chose is in the way.
+    Returns (ncmoe, extra)."""
+    import multigpu
+    cards = mg["cards"]
+    why = None
+    if len(cards) < 2:
+        why = f"{len(cards)} usable GPU(s)"
+    elif mg["vram_user"]:
+        why = "--vram given (one pool of memory)"
+    elif ncmoe_user is not None:
+        why = "--n-cpu-moe given"
+    elif multigpu.user_split_flags(extra):
+        why = "--device / -ts / -sm / --main-gpu given after --"
+    elif gcache != "off" or a.hybrid:
+        why = "--gpu-cache / --hybrid manage one GPU"
+    elif ncmoe == "0" or ncmoe == "999" and not tuned:
+        why = "nothing to place"
+    if why:
+        if len(cards) >= 2 or a.multi_gpu:
+            say(f"moe-cache: --multi-gpu: not applied ({why}): the one-card plan stands")
+        return ncmoe, extra
+    free = [c["free_mib"] * 2**20 for c in cards]
+    if win:       # Windows commit carries Vulkan allocations: shrink the pool the same way as the one-card plan, each card by the same share
+        cfree = machine.win_commit()[1]
+        pool = sum(free) / 2**30
+        capped = vram_for_commit(pool, cfree)
+        if capped < pool:
+            free = [f * capped / pool for f in free]
+            say(f"moe-cache: GPU plan {pool:.2f} -> {capped:.2f} GiB: Windows' free commit must also carry llama-server's own buffers", err=True)
+    kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}
+    res = multigpu.launch_args([dict(c, free_mib=f / 2**20) for c, f in zip(cards, free)], model, ctx, kv_q8=kv_q8, ub=int(ub) if (ub or "").isdigit() else None, **kw)
+    if "skip" in res:
+        say(f"moe-cache: --multi-gpu: not applied ({res['skip']}): the one-card plan stands")
+        return ncmoe, extra
+    say("moe-cache: --multi-gpu (PROTOTYPE, estimate not measured): " + res["line"])
+    return str(res["n_cpu_moe"]), extra + res["args"]
 
 
 def launch_plan(a, extra, argv, machine=None, quiet=False):
@@ -1763,6 +1929,8 @@ def _launch_plan(a, extra, argv, machine):
             a.ram = lr
             say(f"moe-cache: --leave-room: the server may use {lr} GB of RAM (the rest stays for your own programs), keeps {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU "
                 f"memory free for the desktop, leaves {LEAVE_ROOM_FREE_CORES} CPU cores free and runs at a lower priority: smoother PC, slower model")
+    if a.share_ram:
+        share_ram_start(a, machine)
     ls, model, port = a.llama_server, a.model, a.port
     ctx = a.ctx or (65536 if a.agent else 8192)     # agents send 5-20k-token preambles (tools, instructions); Hermes needs at least 64000
     gcache = a.gpu_cache
@@ -1773,6 +1941,9 @@ def _launch_plan(a, extra, argv, machine):
     if a.stock and (a.fast or a.hybrid or a.always_plugin):
         raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock, machine=machine)
+    mm_file, mm_bytes, dense = None, 0, False
+    if a.mmproj or a.auto_fit:
+        mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
     lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
     if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
         # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
@@ -1791,6 +1962,7 @@ def _launch_plan(a, extra, argv, machine):
             if os.environ.get("MOE_CACHE_LIB"):
                 raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
             raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    vram_user = a.vram
     listing = machine.list_devices(ls) if win else None
     gpu = machine.pick_gpu_full(listing) if win else None
     if win and not a.vram and not machine.nvidia_reports():
@@ -1815,6 +1987,7 @@ def _launch_plan(a, extra, argv, machine):
                     "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
                 a.vram = f"{capped:.2f}"
     ncmoe_user = a.n_cpu_moe
+    mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
     ncmoe = a.n_cpu_moe
     planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
     if ncmoe is None:
@@ -2000,6 +2173,8 @@ def _launch_plan(a, extra, argv, machine):
             sys.path.insert(0, os.path.join(HERE, "planner"))
             from gguf_plan import tune
             free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
+            if mm_bytes and free:
+                free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
             if a.gpu_margin is None:
                 # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
@@ -2129,7 +2304,13 @@ def _launch_plan(a, extra, argv, machine):
         env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
         if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
             extra = extra + ["-t", str(max(1, machine.physical_cores() - LEAVE_ROOM_FREE_CORES))]    # hybrid CPUs keep their performance-core pinning
+    if mg:
+        ncmoe, extra = multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win)
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
+    if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
+        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load
+        del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
+        say("moe-cache: --auto-fit (PROTOTYPE): dense model, no experts: no -ngl / --n-cpu-moe given, llama.cpp's --fit places the layers by free GPU memory")
     if method == "none (stock)":
         pass
     elif ncmoe == "0":
@@ -2756,6 +2937,19 @@ def gpu_driver(name):
     return ""
 
 
+def gpu_summary(listing, ok):
+    """moe-cache-check, MG3: when llama.cpp lists more than one device, say which ones it will use and which it leaves out (one line, nothing for one device)."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import multigpu
+    listed = multigpu.DEVICE_RE.findall(listing or "")
+    if len(listed) < 2:
+        return
+    cards = multigpu.list_cards(listing, win_dedicated_vram() if WINDOWS else None)
+    left = multigpu.skipped_igpus(listing, cards)
+    ok("gpus", ", ".join(f"{c['name']} ({c['free_mib'] / 1024:.1f} GiB free)" for c in cards) + (" (llama.cpp splits layers across them; `--multi-gpu` plans the split, prototype)" if len(cards) > 1 else "")
+       + (f"; left out: {', '.join(left)}" if left else ""))
+
+
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
     ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram")
@@ -2858,9 +3052,11 @@ def check(argv):
                 why = [l.strip() for l in probe.splitlines() if "load_backend" in l or "moe-cache:" in l][:3]
                 fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})" + ("; llama-server said: " + " | ".join(why) if why else "")
                      + ("; on Windows an empty 'failed to load' reason usually means a missing DLL dependency or a DLL built for another ggml" if WINDOWS else ""))
-            g = pick_gpu(list_devices(lsp))
+            devlist = list_devices(lsp)
+            g = pick_gpu(devlist)
             if g:
                 ok("gpu", f"{g[0]}: {g[1]}" + (f", {g[2]} MiB free" if g[2] else ""))
+                gpu_summary(devlist, ok)
                 drv = gpu_driver(g[1])
                 facts["gpu"] = f"{g[1]} ({g[0]})" + (f", {g[2]} MiB free" if g[2] else "") + (f", driver {drv}" if drv else "")
                 if "AMD" in g[1] and WINDOWS and drv and driver_older(drv):

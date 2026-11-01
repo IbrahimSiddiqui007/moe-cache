@@ -82,6 +82,19 @@ def local_origin(origin):
         return False
 
 
+def model_facts(b):
+    """What the memory split needs to know about a backend's model: file size, MoE or dense, its fixed part, the projector next to it."""
+    sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+    from gguf_plan import model_layout, _kv_or_flat
+    size = sum(os.path.getsize(p) for p in mc.model_parts(b.c["model"]))
+    lay = model_layout(b.c["model"])
+    moe = bool(lay["n_layers"] and lay["expert_bytes_per_layer"])
+    f = {"name": b.alias, "size": size, "kind": "moe" if moe else "dense"}
+    if moe:
+        f["floor"] = lay["other_bytes"] + _kv_or_flat(b.c["model"], b.ctx)
+    return f
+
+
 def free_port():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -95,6 +108,7 @@ class Backend:
         self.c, self.launcher, self.idle, self.start_timeout, self.log = choice, launcher or LAUNCHER, idle_min * 60, start_timeout, log
         self.release, self.released = release_min * 60, False      # N3: earlier idle stage, the cache's RAM goes back but the server stays
         self.args = list(choice.get("args", []))
+        self.share_args, self.llama_args = [], []        # set by Pool.go_concurrent (MM1)
         self.key = mc.take_api_key_from_args(self.args) or mc.stored_key(create=True)       # a configured custom key is THE key (listener and backend)
         self.lock = threading.Lock()             # held while starting / stopping
         self.count = threading.Lock()
@@ -106,7 +120,11 @@ class Backend:
         self.seen = choice.get("seen") or {}     # the real /v1/models and /props answers, kept from the last start
 
     def cmd(self, port):
-        return self.launcher + [self.c["model"], "--agent", "--port", str(port)] + list(self.args)
+        # concurrent mode (MM1): the share goes in front of the user's options (the launcher's last --ram wins, so the user's own stays), the core slice after --
+        args = list(self.args)
+        if self.llama_args and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range", "-t", "--threads") for x in args):
+            args = args + ([] if "--" in args else ["--"]) + self.llama_args
+        return self.launcher + [self.c["model"], "--agent", "--port", str(port)] + self.share_args + args
 
     def release_after(self):
         """Idea S05 (MOE_CACHE_IDLE_ADAPT=1, default off): after 8 requests, release the cache's RAM after 1.5x the 90th-percentile pause between requests
@@ -293,15 +311,52 @@ class Pool:
     has no request in flight, stops it, then starts the one asked for. The request's "model" field picks; a name it does not know goes to the
     running model, else the default (as with one model: llama-server itself ignores the field)."""
 
-    def __init__(self, backends, drain_timeout=600):
-        self.bs, self.drain = list(backends), drain_timeout
+    def __init__(self, backends, drain_timeout=600, concurrent=False):
+        self.bs, self.drain, self.concurrent = list(backends), drain_timeout, False
         self.key = self.bs[0].key
         for b in self.bs:
             b.key = self.key                       # one key for the listener and every backend behind it
         self.lock = threading.Lock()
+        if concurrent:
+            self.go_concurrent()
+
+    def go_concurrent(self, cap=None, vram=None, cores=None, sizes=None):
+        """MM1 (PROTOTYPE): several servers alive at once, each with a fixed share of the ONE memory cap, of the VRAM and its own CPU cores. Falls back to
+        one at a time (swap) when the floors do not fit. The arguments are for tests; by default the machine's cap, free VRAM and cores are read."""
+        import moe_cache_concurrent as cc
+        log("on-demand --concurrent is a PROTOTYPE: static split, not speed-tested with two models at once (docs/PLATFORMS.md)")
+        try:
+            if cap is None:
+                cap = mc.mem_cap() or mc.mem_for_server(None)
+            if vram is None:
+                sys.path.insert(0, os.path.join(mc.HERE, "planner"))
+                from gguf_plan import free_vram_bytes
+                vram = free_vram_bytes()
+            cores = cores if cores is not None else cc.physical_core_ids()
+            models = sizes or [model_facts(b) for b in self.bs]
+            g = cc.group_plan(models, cap, vram, cores)
+        except Exception as e:
+            log(f"--concurrent: could not plan ({e}): one model at a time")
+            return False
+        for w in g["why"]:
+            log("--concurrent: " + w)
+        if not g["ok"]:
+            return False
+        for b in self.bs:
+            p = g["models"][b.alias]
+            b.share_args, b.llama_args = p["launcher"], p["llama"]
+            b.release = min(b.release, 30.0) if b.release else 30.0        # a quiet model gives its cache back after 30 s so a busy one can use it
+            log(f"--concurrent: {b.alias}: {' '.join(p['launcher'])} {' '.join(p['llama'])} ({p['engine']})")
+        self.concurrent = True
+        return True
 
     @property
     def state(self):
+        if self.concurrent:
+            for want in ("ready", "starting"):
+                if any(b.state == want and b.running() for b in self.bs):
+                    return want
+            return "idle"
         r = self.running()
         return r.state if r else "idle"
 
@@ -321,7 +376,7 @@ class Pool:
         """The port of b, ready; another running model is stopped first (after its requests end). Counts the request as busy on b (the caller
         ends it with b.busy(-1)), inside the lock, so a swap waiting for b to drain sees it."""
         with self.lock:
-            for o in self.bs:
+            for o in ([] if self.concurrent else self.bs):
                 if o is not b and o.running():
                     t = time.time()
                     while o.active > 0 and time.time() - t < self.drain:
@@ -695,6 +750,8 @@ def on_demand(argv):
     ap.add_argument("--idle", type=float, help="stop the model after this many minutes without a request (default 15; remembered)")
     ap.add_argument("--idle-release", type=float, help="before that, give the expert cache's RAM back after this many minutes without a request "
                                                       "(the server keeps running, the next request needs no restart; default 5, 0 = off; remembered)")
+    ap.add_argument("--concurrent", action="store_true", help="PROTOTYPE: keep all added models running at once, each with a fixed share of the memory cap, "
+                                                            "the VRAM and its own CPU cores (default off: one at a time; not speed-tested; remembered)")
     ap.add_argument("--start-timeout", type=int, default=900, help="seconds to wait for the model to load")
     ap.add_argument("--install-autostart", action="store_true", help="start the listener at login (systemd --user unit / Windows Startup folder)")
     ap.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart and stop the listener")
@@ -795,6 +852,10 @@ def on_demand(argv):
         if a.idle_release is not None:
             c["idle_release"] = a.idle_release
         save_choice(c)
+    if a.concurrent and c and not c.get("concurrent"):
+        c["concurrent"] = True
+        save_choice(c)
+        say("on-demand: --concurrent (PROTOTYPE) remembered: the added models run at the same time, each with its own share of RAM, VRAM and CPU cores")
     if a.status:
         return status(c)
     if a.install_autostart:
@@ -805,13 +866,14 @@ def on_demand(argv):
     port = c.get("port", 8080)
     if not WINDOWS:
         os.umask(0o077)
-    b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout, release_min=c.get("idle_release", 5)) for e in [c] + list(c.get("extra") or [])])
+    b = Pool([Backend(e, idle_min=c.get("idle", 15), start_timeout=a.start_timeout, release_min=c.get("idle_release", 5)) for e in [c] + list(c.get("extra") or [])],
+             concurrent=bool(c.get("concurrent")) and len(c.get("extra") or []) > 0)
     srv = serve(b, port, srv=srv)
     with open(PID_FILE, "w") as f:
         f.write(f"{os.getpid()} {port}\n")
     d = b.bs[0]
     log(f"listening on http://127.0.0.1:{port}/v1 for {', '.join(x.alias for x in b.bs)} (context {d.ctx}); the model starts on the first request "
-        f"and stops after {d.idle / 60:g} idle min" + ("; one model at a time, the request's model name picks it" if len(b.bs) > 1 else "")
+        f"and stops after {d.idle / 60:g} idle min" + (("; all models at once (--concurrent, prototype)" if b.concurrent else "; one model at a time") + ", the request's model name picks it" if len(b.bs) > 1 else "")
         + ". Connect agents: moe_cache.py connect hermes|opencode --write")
     def bye(sig, frame):
         raise KeyboardInterrupt
