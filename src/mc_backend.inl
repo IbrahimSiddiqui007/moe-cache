@@ -1115,7 +1115,18 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 // idea PL03/VK01 (MOE_CACHE_GPU_UPLOAD_THREADS=N, default 1 = off): a whole expert tensor of 32 MiB or more goes up in N disjoint slices copied by N threads
                 // (the calling one and N-1 short-lived helpers). Only worth it if one thread writing through the PCIe window is the limit (the link is Gen5 and the
                 // single-thread rate is below it); a helper-thread failure is a warning and that slice is then copied by the caller.
-                static const int up_threads = getenv("MOE_CACHE_GPU_UPLOAD_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_UPLOAD_THREADS")))) : 1;
+                // SAFE ONLY WHEN THE CARD IS WRITTEN THROUGH ITS PCIe WINDOW (resizable BAR on: the Vulkan buffer is device-local AND host-visible and tensor_set is a plain
+                // memcpy, ggml-vulkan-buffers.cpp). Without it tensor_set goes through ONE shared staging buffer and ONE shared fence per device (write_2d: sync_staging,
+                // device->fence, waitForFences, resetFences), so two threads corrupt each other's data or hang (audit, round 4). The plugin has no public way to tell: check
+                // the heap in `vulkaninfo` (a device-local, host-visible type as large as the card) before using this switch.
+                static const int up_threads = []() {
+                    const int n = getenv("MOE_CACHE_GPU_UPLOAD_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_UPLOAD_THREADS")))) : 1;
+                    if (n > 1) {
+                        fprintf(stderr, "moe-cache: MOE_CACHE_GPU_UPLOAD_THREADS=%d: uploads are copied by %d threads. Only safe with resizable BAR on (device-local, host-visible "
+                                        "memory as large as the card); without it the shared staging buffer and fence of the Vulkan backend are used by all threads at once\n", n, n);
+                    }
+                    return n;
+                }();
                 const size_t up_bytes = ggml_nbytes(d);
                 if (up_threads > 1 && up_bytes >= ((size_t) 32 << 20)) {
                     const size_t per = ((up_bytes / (size_t) up_threads) + 4095) & ~(size_t) 4095;
