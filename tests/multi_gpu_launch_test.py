@@ -88,5 +88,13 @@ cards = multigpu.list_cards("Available devices:\n  CUDA0: A (8000 MiB, 7000 MiB 
 check([c["dev"] for c in cards] == ["CUDA0"] or [c["dev"] for c in cards] == ["Vulkan0", "Vulkan1"], f"a card listed by two backends is not counted twice: {[c['dev'] for c in cards]}")
 check(multigpu.list_cards("") == [], "empty device list: no cards")
 
+# MG3: the check summary
+import moe_cache as mc
+lines = []
+mc.gpu_summary(WIN_TWO, lambda k, m: lines.append((k, m)))
+check(len(lines) == 1 and "9070 XT" in lines[0][1] and "left out: Vulkan0" in lines[0][1], f"moe-cache-check names the cards used and the iGPU left out: {lines}")
+lines.clear(); mc.gpu_summary(lp.LINUX_LIST, lambda k, m: lines.append((k, m)))
+check(lines == [], "moe-cache-check: one device lists nothing extra")
+
 print("FAILED: " + "; ".join(fails) if fails else "all ok")
 sys.exit(1 if fails else 0)

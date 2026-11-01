@@ -2823,6 +2823,19 @@ def gpu_driver(name):
     return ""
 
 
+def gpu_summary(listing, ok):
+    """moe-cache-check, MG3: when llama.cpp lists more than one device, say which ones it will use and which it leaves out (one line, nothing for one device)."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import multigpu
+    listed = multigpu.DEVICE_RE.findall(listing or "")
+    if len(listed) < 2:
+        return
+    cards = multigpu.list_cards(listing, win_dedicated_vram() if WINDOWS else None)
+    left = multigpu.skipped_igpus(listing, cards)
+    ok("gpus", ", ".join(f"{c['name']} ({c['free_mib'] / 1024:.1f} GiB free)" for c in cards) + (" (llama.cpp splits layers across them; `--multi-gpu` plans the split, prototype)" if len(cards) > 1 else "")
+       + (f"; left out: {', '.join(left)}" if left else ""))
+
+
 def check(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py check", description="check that this machine, your llama-server and your model are ready for moe-cache. Changes nothing.")
     ap.add_argument("model", nargs="?"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--ram")
@@ -2925,9 +2938,11 @@ def check(argv):
                 why = [l.strip() for l in probe.splitlines() if "load_backend" in l or "moe-cache:" in l][:3]
                 fail("plugin loads", f"llama-server did not list the MOE_CACHE device (method tried: {method})" + ("; llama-server said: " + " | ".join(why) if why else "")
                      + ("; on Windows an empty 'failed to load' reason usually means a missing DLL dependency or a DLL built for another ggml" if WINDOWS else ""))
-            g = pick_gpu(list_devices(lsp))
+            devlist = list_devices(lsp)
+            g = pick_gpu(devlist)
             if g:
                 ok("gpu", f"{g[0]}: {g[1]}" + (f", {g[2]} MiB free" if g[2] else ""))
+                gpu_summary(devlist, ok)
                 drv = gpu_driver(g[1])
                 facts["gpu"] = f"{g[1]} ({g[0]})" + (f", {g[2]} MiB free" if g[2] else "") + (f", driver {drv}" if drv else "")
                 if "AMD" in g[1] and WINDOWS and drv and driver_older(drv):
