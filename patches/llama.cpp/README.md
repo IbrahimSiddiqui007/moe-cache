@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
+Patches: `0001-vulkan-fence-spin-iters`, `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast` (below, more follow). Nothing is measured yet. Every patch is off unless its switch is set.
 
 ## Rules
 
@@ -118,6 +118,16 @@ Compare per run: total prompt time, and the sync/wait timers in the SEG/E1 outpu
 **Compiled:** `libllama` (Linux, Release). Not run (no Flash-Next on the laptop that fits).
 
 **Test (under 20 minutes, Windows PC):** Flash-Next, 256 generated tokens, temperature 0, A B B A with A = unset, B = `LLAMA_QWEN4EXP_NO_CONT=1`. Text must be identical; accept B if decode tok/s is higher in both pairs by more than the A-vs-A spread.
+
+## 0022-vulkan-count-experts-fast (UP1, llama.cpp #31266)
+
+**What:** `count_experts.comp`, the Vulkan pass in front of every `MUL_MAT_ID` matrix kernel, zeroes the rows of skipped slots (expert id -1) with one workgroup that walks all `n_used x n_tokens` ids one after the other (10 x 1024 = 10k ids per call at `-ub 1024`). Upstream #31266 (labelled merge ready) collects the skipped slots once and zeroes their rows with all 256 threads, and skips the work when nothing is skipped; its authors report prompt rates 4333 -> 8061 tok/s on an RTX 5070 Ti. The patch carries that change in the same shader behind a specialization constant. Switch: `GGML_VK_COUNT_EXPERTS_FAST=1`. Unset = the stock loop (the new branch is compiled out of the pipeline).
+
+**Soundness:** the same rows are zeroed, no float arithmetic. The plugin's GPU blocks pass packed ids with skipped slots, so this is on its path.
+
+**Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 pass with the switch unset and 1109/1109 with `GGML_VK_COUNT_EXPERTS_FAST=1` (the suite includes skipped ids, `mask_skipped_ids`). Not run on the AMD card.
+
+**Test (under 20 minutes, Windows PC):** (1) `test-backend-ops perf -o MUL_MAT_ID -b Vulkan0` A and B (unset / switch), compare us/run on the shapes with 128+ tokens; (2) Flash-Next 34k prompt, `GGML_VK_PERF_LOGGER=1` once for MUL_MAT_ID time, then A B B A on prompt tok/s. Accept only if B is faster in both pairs by more than the A-vs-A spread; text identical.
 
 ## Not written, and why
 
