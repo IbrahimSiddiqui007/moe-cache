@@ -3154,7 +3154,7 @@ def check(argv):
                     os.close(os.open(a.model, os.O_RDONLY | os.O_DIRECT))
                     ok("direct reads", "O_DIRECT works on this file system")
                 except OSError:
-                    fail("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): put the model on a normal disk")
+                    warn("direct reads", "O_DIRECT is not supported here (tmpfs/overlay/network disk?): the plugin reads through the page cache instead, which works but is slower; a normal local disk is faster")
             try:
                 du = shutil.disk_usage(os.path.dirname(os.path.abspath(a.model)))
                 facts["disk"] = f"{du.free / 1e9:.0f} GB free of {du.total / 1e9:.0f} GB where the model is"
