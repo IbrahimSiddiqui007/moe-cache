@@ -43,6 +43,8 @@ struct state_t {
     ggml_backend_buffer_t repack_tag = nullptr;         // empty buffer of the repack type, swapped in while an operation runs
     std::atomic<uint64_t> repack_jobs{0};
     ggml_backend_dev_t gpu_dev = nullptr;               // first GPU backend device, used for long prompts
+    ggml_backend_dev_t gpu_dev2 = nullptr;              // MOE_CACHE_GPU_DEV2 (default off, PROTOTYPE): a second card for long-prompt blocks that do not fit on the first
+    std::atomic<uint64_t> gpu_alt_blocks{0};            // blocks that ran on the second card
     int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
     std::atomic<uint64_t> hyb_groups{0}, hyb_picks{0}, hyb_hits{0};   // MOE_CACHE_HYBRID: layers split between GPU bank and CPU, picks, picks served by the bank
     std::atomic<uint64_t> hyb_drops{0}, hyb_reloads{0}, hyb_reload_ns{0};
@@ -656,6 +658,35 @@ struct state_t {
             }
             if (t == GGML_BACKEND_DEVICE_TYPE_IGPU && !gpu_dev) {
                 gpu_dev = d;
+            }
+        }
+        // N3/MG5 (MOE_CACHE_GPU_DEV2=auto|1|DEVICE-NAME, default off): a second card for the long-prompt block. auto: the next discrete GPU of the same backend as the
+        // first (an iGPU only when named); a name: that device. Used only for a block that does not fit on the first card but fits on the second. Never run on two discrete cards.
+        if (const char * v = getenv("MOE_CACHE_GPU_DEV2"); v && *v && strcmp(v, "0") != 0 && gpu_dev) {
+            const bool any = strcmp(v, "1") == 0 || strcmp(v, "auto") == 0;
+            const mcargs::server_args & sa2 = server_args();
+            if (!any) {
+                gpu_dev2 = ggml_backend_dev_by_name(v);
+            } else {
+                for (size_t k = 0; k < ggml_backend_dev_count() && !gpu_dev2; k++) {
+                    ggml_backend_dev_t d = ggml_backend_dev_get(k);
+                    bool listed = sa2.devices.empty();       // with --device A,B only those
+                    for (const auto & nm : sa2.devices) {
+                        listed = listed || nm == ggml_backend_dev_name(d);
+                    }
+                    if (d != gpu_dev && listed && ggml_backend_dev_type(d) == GGML_BACKEND_DEVICE_TYPE_GPU && ggml_backend_dev_backend_reg(d) == ggml_backend_dev_backend_reg(gpu_dev)) {
+                        gpu_dev2 = d;
+                    }
+                }
+            }
+            if (gpu_dev2 == gpu_dev || (gpu_dev2 && ggml_backend_dev_type(gpu_dev2) == GGML_BACKEND_DEVICE_TYPE_CPU)) {
+                gpu_dev2 = nullptr;
+            }
+            if (gpu_dev2) {
+                fprintf(stderr, "moe-cache: MOE_CACHE_GPU_DEV2 (PROTOTYPE, not run on two discrete cards): a long-prompt block that does not fit on %s runs on %s when it fits there\n",
+                        ggml_backend_dev_name(gpu_dev), ggml_backend_dev_name(gpu_dev2));
+            } else {
+                fprintf(stderr, "moe-cache: MOE_CACHE_GPU_DEV2=%s: no second card found: first card only\n", v);
             }
         }
         {
