@@ -516,6 +516,46 @@ inline void ws_release() {
 }
 // hard working-set minimum: the system does not trim this process below `bytes` (file-backed pages included). Returns false when refused
 // (more than the system can guarantee); the error code is in commit_error().
+// Process scheduling switches (Windows; elsewhere they do nothing and return an empty text). Each is off unless its variable is set:
+//   MOE_CACHE_ECOQOS_OFF=1   the process opts out of power throttling (EcoQoS) and of ignored timer requests (SetProcessInformation)
+//   MOE_CACHE_PROC_PRIO=above|high   CPU priority class of the whole process
+//   MOE_CACHE_GPU_PRIO=above|high|realtime   GPU scheduling class of the process (D3DKMTSetProcessSchedulingPriorityClass; realtime needs rights)
+// Returns one line of what was asked and what Windows answered, empty if no variable is set.
+inline std::string sched_tuning() {
+    std::string out;
+#ifdef _WIN32
+    const char * eco = getenv("MOE_CACHE_ECOQOS_OFF");
+    const char * pp = getenv("MOE_CACHE_PROC_PRIO");
+    const char * gp = getenv("MOE_CACHE_GPU_PRIO");
+    char buf[160];
+    if (eco && eco[0] == '1') {
+        // PROCESS_POWER_THROTTLING_STATE {Version 1, ControlMask, StateMask}: mask bit set + state bit clear = "never throttle this"
+        struct { ULONG Version; ULONG ControlMask; ULONG StateMask; } st = { 1, 0x1 | 0x4, 0 };   // EXECUTION_SPEED | IGNORE_TIMER_RESOLUTION
+        typedef BOOL (WINAPI * set_t)(HANDLE, int, LPVOID, DWORD);
+        const set_t f = (set_t) (void *) GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetProcessInformation");
+        const BOOL ok = f ? f(GetCurrentProcess(), 4 /* ProcessPowerThrottling */, &st, sizeof(st)) : FALSE;
+        snprintf(buf, sizeof buf, "EcoQoS off %s%s", ok ? "ok" : "refused, error ", ok ? "" : std::to_string(f ? GetLastError() : 0).c_str());
+        out += buf;
+    }
+    if (pp && pp[0]) {
+        const bool hi = pp[0] == 'h';
+        const BOOL ok = SetPriorityClass(GetCurrentProcess(), hi ? HIGH_PRIORITY_CLASS : ABOVE_NORMAL_PRIORITY_CLASS);
+        snprintf(buf, sizeof buf, "%sCPU priority %s %s", out.empty() ? "" : ", ", hi ? "high" : "above normal", ok ? "ok" : "refused");
+        out += buf;
+    }
+    if (gp && gp[0]) {
+        typedef LONG (WINAPI * gpu_t)(HANDLE, int);
+        const HMODULE g = LoadLibraryA("gdi32.dll");
+        const gpu_t f = g ? (gpu_t) (void *) GetProcAddress(g, "D3DKMTSetProcessSchedulingPriorityClass") : nullptr;
+        const int cls = gp[0] == 'r' ? 5 : gp[0] == 'h' ? 4 : 3;   // D3DKMT_SCHEDULINGPRIORITYCLASS_ABOVE_NORMAL 3, HIGH 4, REALTIME 5
+        const LONG r = f ? f(GetCurrentProcess(), cls) : -1;
+        snprintf(buf, sizeof buf, "%sGPU priority %s %s (status 0x%lX)", out.empty() ? "" : ", ", cls == 5 ? "realtime" : cls == 4 ? "high" : "above normal", r == 0 ? "ok" : "refused", (unsigned long) r);
+        out += buf;
+    }
+#endif
+    return out;
+}
+
 inline bool ws_min_set(size_t bytes) {
 #ifdef _WIN32
     const SIZE_T mx = bytes + ((size_t) 1 << 30);

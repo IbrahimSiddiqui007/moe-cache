@@ -433,6 +433,9 @@ button.danger { border-color:var(--ink); }
         <option value="flash-next-iq3_xxs">Flash-Next IQ3_XXS</option><option value="qwen3.5-122b">Qwen3.5-122B</option><option value="qwen3.6-35b">Qwen3.6-35B</option><option value="glm-5.3">GLM-5.3-Flash</option><option value="gpt-oss-120b">gpt-oss-120b (untested)</option><option value="deepseek-v41-flash">DeepSeek-V4.1-Flash IQ1_M (untested, 231 GB)</option></select></div>
     <div class="pickcard"><div id="pickres"></div>
       <div class="pickact"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div></div>
+    <h4>Other programs</h4>
+    <div class="small" id="busymsg">Looking at what uses the GPU and CPU…</div>
+    <div class="small" id="busyres"></div>
     <h4>Memory</h4>
     <label>RAM budget: <b id="ramv"></b> <span class="small">(empty = what is available when it starts)</span></label>
     <input type="range" id="ram" min="0" max="64" step="1">
@@ -484,6 +487,15 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
 const shortName = p => (p || "").split(/[\\/]/).pop().replace(/(-\d{5}-of-\d{5})?\.gguf$/, "");
 const narrow = () => matchMedia("(max-width: 1180px)").matches, phone = () => matchMedia("(max-width: 760px)").matches;
 const pref = (k, v) => { try { if (v === undefined) return localStorage.getItem("moe." + k); localStorage.setItem("moe." + k, v); } catch (e) { return null; } };
+
+async function loadBusy() {      // never blocks: the page server answers with its last measurement
+  try {
+    const r = await api("/api/busy");
+    if (!r.available) { $("busymsg").textContent = "Checking other programs works on Windows only."; $("busyres").textContent = ""; return; }
+    $("busymsg").textContent = r.measuring ? "Looking at what uses the GPU and CPU…" : r.programs.length ? "Using the GPU or CPU now (closing them may give speed back):" : "Nothing else is using much of the GPU or CPU right now.";
+    $("busyres").innerHTML = r.programs.map(p => "<div>" + esc(p.note) + "</div>").join("");
+  } catch (e) { $("busymsg").textContent = "Could not look: " + e; }
+}
 async function api(path, body) {
   const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const j = await r.json();
@@ -1230,7 +1242,7 @@ $("models").onclick = e => { const rb = e.target.closest(".rowbtn"); if (rb) { c
 $("addfolder").onclick = async () => {
   try { await api("/api/folders", { add: $("folder").value }); $("folder").value = ""; loadModels(true); } catch (e) { alert(e.message); }
 };
-$("rescan").onclick = () => { S.plans = {}; loadSystem().then(() => loadModels(true)); };
+$("rescan").onclick = () => { S.plans = {}; loadBusy(); loadSystem().then(() => loadModels(true)); };
 ["ram", "vram"].forEach(id => { $(id).oninput = paintRanges; $(id).onchange = settingsChanged; });
 const paintTemp = () => $("tempv").textContent = +$("temp").value < 0 ? "server default" : (+$("temp").value).toFixed(1);
 $("temp").oninput = () => { paintTemp(); pref("temp", $("temp").value); };
@@ -1263,6 +1275,7 @@ window.addEventListener("hashchange", openHash);
   poll(); setInterval(poll, 1000);
   setInterval(loadSessions, 10000);
   loadServers(); setInterval(loadServers, 10000);
+  loadBusy(); setInterval(loadBusy, 15000);
   setInterval(() => { if (!S.status.state || S.status.state == "idle") loadSystem(); }, 10000);
 })();
 </script>

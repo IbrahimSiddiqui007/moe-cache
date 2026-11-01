@@ -186,6 +186,29 @@ def watch_windows_gpu(ls, every=10.0):
             time.sleep(1)
 
 
+_BUSY = {"t": 0.0, "items": [], "running": False, "done": False}
+BUSY_MAX_AGE = 15      # seconds; the page asks about every 15 s, the measurement takes about 4 s and runs on its own thread
+
+
+def busy_snapshot():
+    """The last answer of mc.busy_programs() (Windows) with its age; starts a new measurement in the background when it is older than BUSY_MAX_AGE.
+    Elsewhere: available false. The caller never waits."""
+    if not WINDOWS:
+        return {"available": False, "programs": [], "age": None}
+    if not _BUSY["running"] and time.time() - _BUSY["t"] > BUSY_MAX_AGE:
+        _BUSY["running"] = True
+
+        def measure():
+            try:
+                items = mc.busy_programs()
+                _BUSY.update(items=items, t=time.time(), done=True)
+            finally:
+                _BUSY["running"] = False
+        threading.Thread(target=measure, daemon=True).start()
+    return {"available": True, "measuring": _BUSY["running"] and not _BUSY["done"], "age": round(time.time() - _BUSY["t"]) if _BUSY["done"] else None,
+            "programs": [dict(i, note=mc.busy_note(i)) for i in _BUSY["items"]]}
+
+
 def system_info():
     tot, avail = ram_now()
     v = vram_now()
@@ -1851,6 +1874,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, dict(system_info(), folders=self.store.folders(), cold_start=cold_start_support(), last=self.store.saved.get("last", {}), pick=self.store.saved.get("pick"),
                                            llama_server=self.store.ls, llama_found=self.store.llama_found(),
                                            llama_looked=mc.ls_looked(), llama_releases=mc.RELEASES_URL, on_demand=ON_DEMAND, plugin=os.environ.get("MOE_CACHE_LIB") or "found by the launcher (build folder or kit)"))
+            if u.path == "/api/busy":                      # what uses the GPU and CPU right now (Windows counters); never waits: the last measurement, refreshed in the background
+                return self.send(200, busy_snapshot())
             if u.path == "/api/pick":                      # "Which model?": this machine and one recommendation per use (bin/moe_cache_pick.py)
                 spec = self.store.pick_specs(q.get("fresh") == "1")
                 uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)
