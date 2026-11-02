@@ -33,5 +33,13 @@ Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 202
 | plugin/pool_where_lite.patch | `MOE_CACHE_POOL_WHERE_LITE` | 514 / 541 | inside noise | - |
 | plugin/pred_fast.patch, stats_lite.patch, pool_chunk_adapt.patch, sibling_order.patch | `MOE_CACHE_PRED_FAST`, `STATS_LITE`, `POOL_CHUNK_ADAPT`, `SIBLING_ORDER` | together with two others: 560 / 579 vs 557 / 575 | group gained nothing | - |
 
+### PC 2026-11-02 late morning (owner's update running; pairs compared inside each pair)
+
+| File | Switch | Result | Why archived | Retest if |
+|---|---|---|---|---|
+| llama.cpp/0026-vulkan-top-k-mask.patch | `GGML_VK_TOP_K_MASK` | 560 / 569 off, 565 / 571 on; decode same | no gain at 34k; it saves VRAM, which may matter at 256k | VRAM is short at 256k |
+| llama.cpp/0002-server-adaptive-draft-length.patch | `LLAMA_SPEC_ADAPT` | MTP decode 16.35 both | no gain | another draft model |
+| llama.cpp/0003-vulkan-mmid-vec-max-tokens.patch | `GGML_VK_MMID_VEC_MAX_TOKENS` | 16.45 vs 16.2-16.35 | no gain | - |
+
 ## Notes on 0001
 `ggml_vk_wait_for_fence` waits for the last 20 % of a graph by polling `getFenceStatus` with 1000 `pause` instructions between polls. The patch made the count an env value (N blocks of 10 pauses, unset = 100 = stock). Only the poll interval changes, so output cannot change. Tested at N = 10.

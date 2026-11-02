@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0022-vulkan-count-experts-fast`, `0026-vulkan-top-k-mask`, `0027-batched-tensor-copy`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors`, `0042-n-outputs-max`, `0050-layerwise-prefill` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
+Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0022-vulkan-count-experts-fast`, `0027-batched-tensor-copy`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors`, `0042-n-outputs-max`, `0050-layerwise-prefill` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
 
 ## Rules
 
@@ -44,29 +44,7 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 `release.yml` and `windows.yml` currently download the official b11966 release. To ship the patched build they would instead use the artifacts of `llama_patched.yml` (or build it inline), and the bundled `LICENSE-llama.cpp.txt` / `README-moe-cache.txt` would say the build is patched. `release.yml` is not changed here.
 
-## 0002-server-adaptive-draft-length (L08)
 
-**What:** `llama-server` asks the drafter for a fixed `n_max` tokens each step. With `LLAMA_SPEC_ADAPT=1` each slot picks a cap from {0, 1, 2, 4} before every draft step (`get_n_draft_max()` in `tools/server/server-context.cpp`). The generic code already truncates a draft to that cap, so every drafter (draft model, MTP, n-gram) is covered. Switches: `LLAMA_SPEC_ADAPT=1`, `LLAMA_SPEC_ADAPT_COST` (relative cost of one extra drafted token in a verification step, default 0.15), `LLAMA_SPEC_ADAPT_PROBE` (steps at length 0 before one probe step at length 1, default 16).
-
-**Rule:** per slot a decayed (x0.9 per step) count of accepted draft tokens and tested positions gives a per-position acceptance rate `a`. The cap is the k in {1,2,4} (or 0) that maximises `(1 + a + ... + a^k) / (1 + cost * k)`; 0 wins when nothing beats 1. With cost 0.15 the table is: a < 0.2 -> 0, 0.2-0.4 -> 1, 0.5-0.6 -> 2, >= 0.7 -> 4 (computed from the formula, not measured). Start at 4 until something is observed. Replay steps after a checkpoint restore and synthetic-acceptance steps are not counted. Cost is a guess to be fitted: it is not measured verification time.
-
-**Soundness:** the verifier is unchanged, so the output distribution is the same. A different draft length changes batch shapes, so tokens can differ from a fixed-length run through rounding (not bit-identical, same as changing `--draft-max`). With the switch unset nothing changes. Risk: a stale rate (text switches from prose to code) costs a few steps; the probe at length 0 limits that. Drafting is still done at full `n_max` and then truncated, so the draft cost is not saved, only verification width.
-
-**Compiled:** `llama-server` (Linux, Release). Not run (no draft/MTP model on the laptop that is used here).
-
-**Test (under 20 minutes, Windows PC or any box with an MTP or draft model):** same model, three prompts (prose, code, agent-like JSON), temperature 0, `--draft-max 4`. Runs A B B A per prompt, A = unset, B = `LLAMA_SPEC_ADAPT=1`; 200 tokens each is enough. Compare generated tokens per second (server `timings`) and the printed acceptance per position. Accept only if B is not slower on any prompt by more than the A-vs-A spread and faster on at least one. Try `LLAMA_SPEC_ADAPT_COST=0.3` if B is slower where acceptance is high.
-
-## 0003-vulkan-mmid-vec-max-tokens (L10)
-
-**What:** ggml-vulkan runs `MUL_MAT_ID` as one small per-token mat-vec dispatch each when the batch has at most 8 tokens (`ggml_vk_use_mul_mat_vec_id`, hard-coded `ids->ne[1] <= 8`), and as the grouped matrix path above that. A draft of 8 plus the sampled token (9 rows) therefore changes path abruptly. Switch: `GGML_VK_MMID_VEC_MAX_TOKENS=N` (0..1024). Unset = 8 = stock. It is the only place the limit lives; the fused MUL_MAT_ID+scale check and `supports_op` ask the same function. The backend `supports_op` still asks for the matrix path to exist when N is lowered, so values below 8 can send some types to the CPU.
-
-**Scope:** this covers only the Vulkan boundary. The CPU backend and the plugin's own executor limits (`EXEC_MAXCOL`, the tiled-arithmetic switch at 8 rows per expert) are not touched by any patch here.
-
-**Risk:** the two paths round differently, so changing N can change logits slightly (not bit-identical). The vec path issues one dispatch set per token, so a large N can be slower or cost more descriptor sets; it is a tuning knob, not a fix.
-
-**Compiled and checked:** `ggml-vulkan` (Linux, glslc). `test-backend-ops test -o MUL_MAT_ID -b Vulkan1` (RTX 4060 laptop): 1109/1109 pass with the default and 1109/1109 with `GGML_VK_MMID_VEC_MAX_TOKENS=64`. Intel iGPU (Vulkan0) passes with the default only. That is a correctness check of the knob, not a speed result.
-
-**Test (under 20 minutes, Windows PC):** MTP or draft decoding with a fixed `--draft-max` of 6, 8 and 10 (verification batches of 7, 9 and 11 rows), A B B A with A = unset and B = `GGML_VK_MMID_VEC_MAX_TOKENS=16`, 200 generated tokens, temperature 0. Compare time per verification step (server timings) at each draft length. A step at 9 rows should be the one that moves. Accept B only if it is faster at 9 and 11 rows by more than the A-vs-A spread and the generated tokens match A (or differ only after a near-tie, check the logprob gap).
 
 ## 0004-ple-prefetch-ahead (P22)
 
@@ -114,17 +92,6 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 **Test (under 20 minutes, Windows PC):** (1) `test-backend-ops perf -o MUL_MAT_ID -b Vulkan0` A and B (unset / switch), compare us/run on the shapes with 128+ tokens; (2) Flash-Next 34k prompt, `GGML_VK_PERF_LOGGER=1` once for MUL_MAT_ID time, then A B B A on prompt tok/s. Accept only if B is faster in both pairs by more than the A-vs-A spread; text identical.
 
-## 0026-vulkan-top-k-mask (VK05 / SC-B01)
-
-**What:** `GGML_OP_TOP_K_MASK` (the sparse-attention mask of Flash-Next, GLM-5 next and similar models: picked cells keep the mask value, all others become -inf) has CPU, CUDA and Metal kernels but none for Vulkan. Without one, `llama_context` probes `supports_op`, logs "fused top-k mask not supported" and builds the mask with `ggml_fill`, `ggml_set_rows` and `ggml_add`, which keeps two extra [n_kv, n_tokens] tensors in the compute buffer (`llm_graph_context`, the `kq_mask_all` branch in `llama-graph.cpp`). The patch adds the Vulkan op: one workgroup per output row fills the row with -inf, then (after a barrier) copies the mask value of every live pick, block cell and extra cell, following `ggml_compute_forward_top_k_mask` line by line (bounds, `score` of -inf or NaN skips a pick, blocks, extras, broadcast of a one-row mask). F16 and F32 masks. Switch: `GGML_VK_TOP_K_MASK=1` (read in `supports_op`). Unset = `supports_op` says no = stock behaviour and the same warning.
-
-**Soundness:** no arithmetic, only copies of mask values and -inf, so the result must equal the CPU result bit for bit; the harness checks the -inf pattern and requires zero error on the finite values (`max_err` 0.0).
-
-**Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o TOP_K_MASK -b Vulkan1`: 28/28 pass with `GGML_VK_TOP_K_MASK=1` (f16 and f32, with and without score, blocks, extras, `nh` and `ns` > 1, broadcast mask); unset: all cases "not supported", as stock. Limit: more than 65535 output rows are refused (falls back).
-
-**Compute buffer saved (arithmetic, not measured):** the fallback keeps one extra [n_kv, n_ubatch] f16 tensor: 268 MB at ctx 131072 and `-ub 1024`, 537 MB at ctx 262144 and `-ub 1024`, 1.07 GB at 262144 and `-ub 2048` (F32 masks double it). Not measured because Flash-Next does not fit the laptop.
-
-**Test (under 20 minutes, Windows PC):** (1) `test-backend-ops test -o TOP_K_MASK -b Vulkan0` with `GGML_VK_TOP_K_MASK=1`: all pass on the AMD card (mandatory); (2) Flash-Next server start at `-c 131072 -ub 1024`, A = unset, B = `GGML_VK_TOP_K_MASK=1`: read the "compute buffer size" line of the Vulkan device, the "not supported" warning must be gone in B; (3) 34k prompt A B B A, text identical, prompt tok/s. The scout expects 0.2 % of time at 34k and about 1 % at 128k; the value is the compute buffer, which the planner trades against `-ub`.
 
 ## 0027-batched-tensor-copy (UP6, llama.cpp #30881 + #31418)
 
