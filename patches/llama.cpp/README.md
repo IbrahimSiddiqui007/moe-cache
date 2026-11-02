@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0021-qwen4exp-no-cont`, `0022-vulkan-count-experts-fast`, `0023-vulkan-matmul-tile-switch`, `0024-vulkan-submit-flops-div`, `0025-vulkan-gdn-pipeline`, `0026-vulkan-top-k-mask`, `0027-batched-tensor-copy`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors`, `0041-vulkan-prealloc-alias`, `0042-n-outputs-max`, `0050-layerwise-prefill`, `0060-vulkan-q2_0-int8-coopmat`, `0061-vulkan-gdn-subgroup-size`, `0062-vulkan-rdna-split-k-large`, `0063-vulkan-rdna-split-k-small-n` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
+Patches: `0002-server-adaptive-draft-length`, `0003-vulkan-mmid-vec-max-tokens`, `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0022-vulkan-count-experts-fast`, `0026-vulkan-top-k-mask`, `0027-batched-tensor-copy`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors`, `0042-n-outputs-max`, `0050-layerwise-prefill` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
 
 ## Rules
 
@@ -104,16 +104,6 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 **Test (under 20 minutes, Windows PC):** Flash-Next with a 64k prompt processed, then `POST /slots/0?action=save` while a second request decodes on another slot (or measure decode tok/s of one slot during a save). A B B A, A = unset, B = `LLAMA_SLOT_SAVE_ASYNC=1`; read the longest gap between two streamed tokens of the decoding request and the save reply time. Watch peak RAM. Accept only if the gap shrinks by more than the A-vs-A spread and the saved files restore to the same output.
 
-## 0021-qwen4exp-no-cont (UP2, llama.cpp #31443)
-
-**What:** the conv-state update of Flash-Next (`llama_model_qwen4exp`, `src/models/qwen4exp.cpp`) copies a strided tail of the conv input into the state through `ggml_cpy(ggml_cont(tail), dst)`, once per rollback slot per recurrent layer: an extra full copy first. With `LLAMA_QWEN4EXP_NO_CONT=1` the strided view goes straight into `ggml_cpy`. Unset = stock. Upstream's one-line change; the author reports about 2 % faster generation on Flash-Next and identical output on CUDA, CPU and the meta backend (draft PR, not checked on Vulkan by them).
-
-**Soundness:** bytes only, no arithmetic. Risk: the Vulkan copy shader must accept a strided 3-D source into a 2-D destination of the same element count; if it did not, `supports_op` would send the node to the CPU and the output stays the same but the speed drops (check the log for a new CPU fallback).
-
-**Compiled:** `libllama` (Linux, Release). Not run (no Flash-Next on the laptop that fits).
-
-**Test (under 20 minutes, Windows PC):** Flash-Next, 256 generated tokens, temperature 0, A B B A with A = unset, B = `LLAMA_QWEN4EXP_NO_CONT=1`. Text must be identical; accept B if decode tok/s is higher in both pairs by more than the A-vs-A spread.
-
 ## 0022-vulkan-count-experts-fast (UP1, llama.cpp #31266)
 
 **What:** `count_experts.comp`, the Vulkan pass in front of every `MUL_MAT_ID` matrix kernel, zeroes the rows of skipped slots (expert id -1) with one workgroup that walks all `n_used x n_tokens` ids one after the other (10 x 1024 = 10k ids per call at `-ub 1024`). Upstream #31266 (labelled merge ready) collects the skipped slots once and zeroes their rows with all 256 threads, and skips the work when nothing is skipped; its authors report prompt rates 4333 -> 8061 tok/s on an RTX 5070 Ti. The patch carries that change in the same shader behind a specialization constant. Switch: `GGML_VK_COUNT_EXPERTS_FAST=1`. Unset = the stock loop (the new branch is compiled out of the pipeline).
@@ -123,38 +113,6 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 **Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 pass with the switch unset and 1109/1109 with `GGML_VK_COUNT_EXPERTS_FAST=1` (the suite includes skipped ids, `mask_skipped_ids`). Not run on the AMD card.
 
 **Test (under 20 minutes, Windows PC):** (1) `test-backend-ops perf -o MUL_MAT_ID -b Vulkan0` A and B (unset / switch), compare us/run on the shapes with 128+ tokens; (2) Flash-Next 34k prompt, `GGML_VK_PERF_LOGGER=1` once for MUL_MAT_ID time, then A B B A on prompt tok/s. Accept only if B is faster in both pairs by more than the A-vs-A spread; text identical.
-
-## 0023-vulkan-matmul-tile-switch (VK06)
-
-**What:** for AMD the Vulkan backend turns the large (128x128) matmul tile off on the proprietary driver and always for `MUL_MAT_ID` (`ggml_vk_load_shaders` device setup, `ggml-vulkan.cpp`). RDNA4 has much faster matrix instructions than the cards that rule was tuned for, and a bigger tile halves re-reads of the weights, so it may help; it may also lose to register pressure. Two switches, both default off: `GGML_VK_AMD_LARGE_TILE=1` (AMD with coopmat support: large tile for `MUL_MAT` and `MUL_MAT_ID`) and `GGML_VK_MMID_SMALL_TILE=1` (any vendor: `MUL_MAT_ID` uses only the small tile). Unset = stock.
-
-**Soundness:** only the tile shape changes; the K accumulation order does not depend on it, so results should be equal in practice but are not guaranteed bit-identical (check below).
-
-**Compiled and run (Linux, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 with `GGML_VK_MMID_SMALL_TILE=1` (this changes the pipelines used) and 1109/1109 with `GGML_VK_AMD_LARGE_TILE=1` (a no-op on this NVIDIA card, so the AMD branch is NOT exercised here).
-
-**Test (under 20 minutes, Windows PC):** (1) `test-backend-ops test -o MUL_MAT -o MUL_MAT_ID -b Vulkan0` with each switch: all pass (NMSE check on the AMD card, mandatory before any speed run); (2) `test-backend-ops perf -o MUL_MAT -o MUL_MAT_ID`, unset / `GGML_VK_AMD_LARGE_TILE=1` / `GGML_VK_MMID_SMALL_TILE=1`, us/run on the real shapes; (3) the winner only: Flash-Next 34k A B B A, text identical. Accept only if faster in both pairs by more than the A-vs-A spread.
-
-## 0024-vulkan-submit-flops-div (VK09)
-
-**What:** `ggml_backend_vk_graph_compute` cuts a graph into several `vkQueueSubmit`s after `min(200 GFLOP, flops of the previous graph / 40)`. The plugin's GPU block graph has three or four nodes, each `MUL_MAT_ID` alone is more than 1/40 of it, so a block is probably submitted node by node, and every submit costs CPU time and a gap on the AMD Windows driver. Switch: `GGML_VK_SUBMIT_FLOPS_DIV=N` (default 40 = stock). `1` cuts after the previous graph's whole flops (about one submit per graph), `0` turns the flop-based cut off (only `GGML_VK_MAX_NODES_PER_SUBMIT` and the almost-ready rule still cut). Unset = stock.
-
-**Soundness:** scheduling only; the shaders and their order are the same. Risk: very large submits on weak AMD GPUs can hit the driver timeout (the reason for the cut); the 9070 XT has 64 CUs and is not in the weak list. The first graph of a run has no previous flops and is not cut by this rule in stock either.
-
-**Compiled and run (Linux, RTX 4060 laptop):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 with `GGML_VK_SUBMIT_FLOPS_DIV=1` and with `=0`.
-
-**Honest expectation:** the scout guesses 0 to 1 ms per block (at most about 1 s over a 34k prompt), probably the small end.
-
-**Test (under 20 minutes, Windows PC):** Flash-Next 34k with `MOE_CACHE_SEG_TIMES=1`, A B B A with A = unset, B = `GGML_VK_SUBMIT_FLOPS_DIV=1` (add `=0` as a third arm if time is left). Compare prompt tok/s and the compute and gap lines; output tokens identical. Accept only if B is faster in both pairs by more than the A-vs-A spread.
-
-## 0025-vulkan-gdn-pipeline (VK02)
-
-**What:** `gated_delta_net.comp` (the recurrent layers of Flash-Next, the top Vulkan op in the prompt phase) loops over the tokens of a ubatch one after the other inside each workgroup, and loads q, k, v, g and beta of token t at the top of iteration t, although none of them depends on the state. With `GGML_VK_GDN_PIPELINE=1` the loads of token t+1 are issued before the math of token t and moved into the working registers at the end of the iteration (a new specialization constant `PIPE`). Unset = the loads stay inside the iteration (the pipeline is built with `PIPE=0`).
-
-**Soundness:** the same operations in the same order on the same values, so the output is identical; only the point where the loads are issued moves. Cost: five more register arrays (about 5 x `S_V / LANES_PER_COLUMN` floats per lane), which can lower occupancy.
-
-**Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o GATED_DELTA_NET -b Vulkan1`: 43/43 with the switch unset and 43/43 with `GGML_VK_GDN_PIPELINE=1`. Speed on this NVIDIA card (`perf`, indicative only, the target is AMD): **slower** with the switch, 99 -> 131 us at 64 tokens and 378 -> 500 us at 256 tokens (two runs each, stable), 12.1 -> 12.9 us at 1 token. NVIDIA's compiler most likely hoists the loads already and the extra copies cost. It is kept because the AMD compiler may not, and the PC check is a two-minute perf run; **do not enable it unless the PC perf run shows a win.**
-
-**Test (under 20 minutes, Windows PC):** `test-backend-ops perf -o GATED_DELTA_NET -b Vulkan0` with and without `GGML_VK_GDN_PIPELINE=1` (head_size 128, 64 and 256 tokens, 3 runs each); only if it wins by more than the run-to-run spread, A B B A on the Flash-Next 34k prompt, text identical.
 
 ## 0026-vulkan-top-k-mask (VK05 / SC-B01)
 
@@ -190,29 +148,6 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 **Test (5 minutes, Windows PC, no pairing needed):** start the server as in the 34k run at `-ub 2048` and again at `-ub 1024` with `LLAMA_RESERVE_TOP=12`, read the `LLAMA_RESERVE_TOP` lines in the log. It says what fills the 3 GiB; every tensor over 300 MiB is a candidate for the next patch.
 
-## 0041-vulkan-prealloc-alias (P19)
-
-**What:** ggml-vulkan keeps three scratch buffers, `prealloc_x` (dequantised or copied weights, K/V copies, sort scratch), `prealloc_y` (activations converted for a matmul, the mask-opt bits) and `prealloc_split_k`, each sized to the largest request of any op. With `GGML_VK_PREALLOC_ALIAS=1`, split-k lives inside `prealloc_x`, after the x bytes the same op uses, so those two together need the largest *sum of one op* instead of the sum of two maxima. Switches: `GGML_VK_PREALLOC_ALIAS=1` (share), `GGML_VK_PREALLOC_LOG=1` (print, on every growth and at exit, the largest x, y, split-k and x+split-k request and which op asked, and the saving the sharing gives or would give; works with the switch off).
-
-**Design, and how it answers the traps named under "Not written" before:**
-
-| Trap | What the patch does |
-|---|---|
-| `prealloc_y` is a cache (`prealloc_y_last_tensor_used`) | `prealloc_y` stays a separate buffer, so the cache logic is not touched at all. Sharing y too would need the cache cleared on every write into the shared region; the numbers below say it is not worth it |
-| the `*_need_sync` flags assume fixed regions | with the switch on, the x flag and the split-k flag are always set together (`ggml_vk_prealloc_x_used` / `_sk_used`), so a check of either is a check of both and a later user of the region waits for an earlier user of any part of it. The flags are never cleared inside a graph in b11966, so this only adds barriers after the first use |
-| about 10 sizing sites | every site now calls one function, `ggml_vk_prealloc_need(ctx, subctx, op, x_bytes, y_bytes, split_k_bytes)`, with the bytes that one op uses; with the switch off it grows the three buffers exactly as each site did before. Sites: matmul, mat-vec, mat-id, mat-vec-id, flash attention (xe temp, K/V copy, split-k, mask-opt, sparse index), large soft-max, argsort, top-k (multi-pass and QSA), sum, cross-entropy |
-| flash attention uses x and split-k in the same op | the split-k region starts after the K/V copy (`fa_kv_x`), the same value for sizing and for use; the xe path (no split-k) asks for split-k = 0 |
-| kernels bound with the whole `prealloc_x->size` | bound through `ggml_vk_x_whole`, capped at `maxStorageBufferRange` (the shared buffer can be bigger than any one x request) |
-| the debug build path (`ggml-vulkan-debug.cpp`) still names `prealloc_split_k` | not changed; it is compiled only for the `GGML_VULKAN_CHECK_RESULTS`-style debug builds, not used with the switch |
-
-**Result on the laptop (LLaDA-MoE 7B, Q4_K_M, `-ub 2048`, RTX 4060):** all three scratch buffers together are 33.8 MiB (x 0.2, y 32.0 from a mat-id, split-k 1.5) and the largest x+split-k of one op is 1.8 MiB, so the sharing saves **0.0 MiB**. Prompt speed with the switch on and off is the same within noise (pp2048 7140 vs 7130 t/s, tg32 139.6 vs 137.2 t/s; the GPU was shared with other test runs, so this is a smoke check, not a speed result). Generated text is identical (2000-token prompt, temperature 0). The flash-attention scratch is 0 here (F16 KV on this GPU).
-
-**Honest state:** prototype. The code is complete and passes the checks below, but the arithmetic says the sharable part is small: y, which the patch deliberately does not share, is the biggest of the three on this model, and x is only large for ops that dequantise a whole weight, which the quantised mat-mul path avoids. Whether Flash-Next at 128k differs is a question for one log line, below. Do not enable it before that line shows a saving of at least a few hundred MiB.
-
-**Compiled and checked:** `ggml-vulkan` (Linux, glslc). `test-backend-ops test -o MUL_MAT_ID` with the switch on: 1109/1109 on Vulkan1 (RTX 4060) and 1109/1109 on Vulkan0 (Intel). Also with the switch on, `-j 4`: ARGSORT 98/98, TOP_K 533/533, SOFT_MAX 214/214, SUM 10/10, SUM_ROWS 10/10 on both devices; FLASH_ATTN_EXT 5368/5368 on Vulkan0 and 3349 cases without a failure on Vulkan1 before I stopped it (the full run is longer than 25 minutes); MUL_MAT 873/873 on both devices for a filtered subset (`-p 'n=(1|2|8|16|64|200|512|1024),k=(256|1024|4096)'`, not the full set of about 10 000). Not run: the full MUL_MAT and the rest of FLASH_ATTN_EXT on Vulkan1, and any AMD GPU. These ops test one op per graph, so the cross-op ordering (a later op reusing the region an earlier op used) is covered only by the model run above, where the text matched.
-
-**Test (3 minutes first, then 40 only if it pays), Windows PC:** (1) one server start with `GGML_VK_PREALLOC_LOG=1` (switch off) at ctx 128k, `-ub 2048`, and a long prompt (34k is enough to size the matmuls; 128k also sizes flash attention); read the last `prealloc:` line: `saving N MiB`. If N is under about 200 MiB, stop: P19 does not pay. (2) If N is large: A B B A, A = unset, B = `GGML_VK_PREALLOC_ALIAS=1`, same text, compare the free VRAM at the end of the prompt (`GGML_VK_PREALLOC_LOG` line) and prompt tok/s; the text must be identical.
-
 ## 0042-n-outputs-max
 
 **What:** the reserved worst-case graph holds an output row for every token of the ubatch (`n_outputs_max` defaults to `n_batch`), so the logits matrix `n_vocab x n_ubatch x 4 B` is part of the compute buffer, although a prompt needs one row (found with 0040). With `LLAMA_N_OUTPUTS_MAX=N` the context uses `n_outputs_max = max(min(N, n_batch), n_seq_max)`. Unset = stock. The API field `n_outputs_max` already exists (`include/llama.h`); there is no command-line flag, this is the same value set from the environment. It is not used when the caller sets the field itself.
@@ -244,48 +179,6 @@ So the static version (head on the CPU with `--override-tensor`) loses by a fact
 | a consumer | the freed room can only go to the plugin's block buffer, which already takes what is free (`MOE_CACHE_GPU_*`, headroom 256 MiB), or to a bigger compute buffer, which is reserved once at load. 417 MiB is at most the difference between one and two split blocks |
 
 **What helps instead, by size:** the logits matrix of the reserved graph (0042) is about 1.9 GiB for Flash-Next by arithmetic, four times the head, needs no weight movement, and is a one-line switch. After that, 0040 shows what else is big. If the PC log of 0040 still shows a head-sized item that matters, revisit the lend then.
-## 0060-vulkan-q2_0-int8-coopmat (VKA1, approximate)
-
-**What:** on RDNA3/RDNA4 the Q2_0 expert matmul (`MUL_MAT_ID`, about 8 s of the 9 s real GPU work in the 34k prompt) runs the f16 coopmat kernel with a 2-bit dequant in the shader. The patch adds Q2_0 to the int8 coopmat kernels (`mul_mmq_cm1.comp`) that Q4_0, Q8_0, Q3_K, IQ4_XS and others already use there: weights are unpacked to int8 (q - 1, values -1..2), activations are quantised to q8_1, the matrix core does int8 x int8 -> int32. Dense (`MUL_MAT`) and expert (`MUL_MAT_ID`) pipelines both. Switch: `GGML_VK_Q2_0_INT8=1`. Unset = no Q2_0 int8 pipeline is created = stock. Also adds MUL_MAT_ID / MUL_MAT perf cases (Q2_0, Q3_K, IQ4_XS, BF16 at n up to 1024) to `tests/test-backend-ops.cpp`.
-
-**Soundness:** not exact: the activations are rounded to q8_1 (same accuracy class as the CPU path, which quantises activations to q8_0 for Q2_0, and as the existing dp4a `matmul_q2_0_q8_1`); the weight side is exact (integers). Expect small logit differences; the paired run must compare text and, if it differs, the logprob gap.
-
-**Laptop state (honest):** AMD only. The kernel shares `cm_elem_row` with the other int8 coopmat shaders, an AMD accumulator layout; forced onto the RTX 4060 (`GGML_VK_DISABLE_COOPMAT2=1` plus a local hack that enabled the pipelines) the **existing Q4_0 int8 kernel fails the same way** (ERR about 2), so it cannot be checked numerically on this laptop. What was checked: it compiles with glslc (all shader variants); `MUL_MAT_ID` 1109/1109 on the RTX 4060 with the switch unset and set (no effect off AMD); the byte unpack (2-bit values to four int8 lanes minus 1) is exact for all 256 bytes (Python model of the GLSL); the dp4a Q2_0 kernel (`GGML_VK_DISABLE_COOPMAT=1`) passes the Q2_0 `MUL_MAT_ID` cases 78/78, which bounds the q8_1 activation error class. In the forced NVIDIA run the pipeline was chosen (`matmul_id_subgroup_q2_0_q8_1`) and was 11 % faster than the f16 KHR coopmat kernel on a 64-expert shape (4215 vs 4732 us) but the default NVIDIA coopmat2 path is faster than both (3119 us): the numbers say nothing about AMD.
-
-**Test (about 20 minutes, Windows PC):** (1) `test-backend-ops test -o MUL_MAT_ID -b Vulkan0` and `-o MUL_MAT` with `GGML_VK_Q2_0_INT8=1`: all Q2_0 cases must pass (mandatory; if they fail, stop, the shader is wrong on RDNA4); (2) `test-backend-ops perf -o MUL_MAT_ID -b Vulkan0`, Q2_0 rows, unset / `=1`, 3 runs each; (3) only if it wins: Flash-Next 34k prompt A B B A, text identical or within near-ties. Remember RDNA4 may classify as RDNA3 if the driver lacks `VK_EXT_shader_float8` (scout VK07); the switch covers both.
-
-## 0061-vulkan-gdn-subgroup-size (VKA2, approximate)
-
-**What:** the gated delta net pipeline uses the device subgroup size (64 on RDNA3/RDNA4); only Intel is moved to 16. With `GGML_VK_GDN_SUBGROUP=N` the pipeline is built with subgroup size N when the device supports it (`subgroup_size_control`, min <= N <= max). `GGML_VK_GDN_SUBGROUP=32` is the AMD wave32 try; the lanes per column follow from the new size by the existing rule. Unset = stock.
-
-**Soundness:** the sums inside `subgroupAdd` and the clustered reduction group differently, so tiny float differences are possible. Not bit-identical.
-
-**Compiled and run (laptop):** `test-backend-ops test -o GATED_DELTA_NET`: 43/43 on the Intel iGPU and the RTX 4060 with `=16`. The NVIDIA card has fixed size 32 and Intel already uses 16, so the AMD path (64 -> 32) is not exercised here.
-
-**Scope not done:** wave32 for mat-vec and flash attention (the rest of VKA2): their specialisation constants and `required_subgroup_size` are tied to `device->subgroup_size` in many places; changing them blind, with no AMD card to test, is not safe in a small patch.
-
-**Test (under 20 minutes, Windows PC):** `test-backend-ops test -o GATED_DELTA_NET -b Vulkan0` with `GGML_VK_GDN_SUBGROUP=32` (mandatory), then `perf -o GATED_DELTA_NET` unset / `=32` (also together with `GGML_VK_GDN_PIPELINE=1` from 0025), 3 runs each; Flash-Next 34k A B B A only if it wins.
-
-## 0062-vulkan-rdna-split-k-large (UP12, llama.cpp #30280)
-
-**What:** `ggml_vk_guess_split_k` gets one more rule for RDNA3/RDNA4: when the tile grid has at most 2x the compute units and fills at most 2/3 of the last wave on average, split K in 3. Upstream measured it on an RX 9070 XT: pp512 +7.2 % (Q4_K_M, f16 path), +5.4 % (Q4_0), +2.5..4.5 % (int8 path), 0 to -0.2 % on shapes that do not qualify. Switch: `GGML_VK_RDNA_SPLIT_K_LARGE=1`; `=2` applies the rule on any device (test mode). Unset = stock. Dense `MUL_MAT` only.
-
-**Soundness:** split-K changes the order of the float sum: not bit-identical. Our dense share of the prompt is small, so the wall effect is a guess of 0.1-0.5 %.
-
-**Laptop state:** `test-backend-ops test -o MUL_MAT -p type_a=q4_0 -b Vulkan1` with `=2`: 104/104 (split-K code path exercised on NVIDIA; the 2/3-wave rule itself depends on the CU count). The RDNA branch is not exercised.
-
-**Test (about 15 minutes, PC):** `perf -o MUL_MAT` on the dense q3_K, IQ4_XS and BF16 rows (new perf cases at n = 512 and 1024) unset / `=1`, then 34k A B B A if any row wins.
-
-## 0063-vulkan-rdna-split-k-small-n (UP13, llama.cpp #30146)
-
-**What:** for RDNA3/RDNA4 the split-K guess also covers `n <= 32, k >= 2048` (aim for 8 workgroups per CU, small tiles) and lets `n <= 64` use the old rule though it does not fill one tile column. Upstream (W7800, RDNA3): prompt chunks of 13/24/32 tokens +12..20 %; ub 64 and 512 and decode unchanged; **RDNA4 is "unmeasured"** by the author. Relevant to the tail ubatch of a prompt and to MTP verify batches. Switch: `GGML_VK_RDNA_SPLIT_K_SMALL_N=1`; `=2` = any device (test mode). Unset = stock. The shared "reduce split_k until the last split is not empty" loop is moved out of the `k >= 2048` block (no effect when split_k is 1).
-
-**Soundness:** not bit-identical (split-K sums).
-
-**Laptop state:** 104/104 on the RTX 4060 with `=2` (same command as 0062). RDNA branch not exercised.
-
-**Test (about 15 minutes, PC):** `perf -o MUL_MAT` rows at n = 1, 4, 32 (q3_K, IQ4_XS, BF16), unset / `=1`; MTP decode A B B A at the end if a row wins.
-
 ## Not written in this round (kernels)
 
 - **U04 fused gate/up/activation (prompt).** Two weights, one shared input tile and the activation in the store loop means a new MUL_MAT_ID matrix kernel for each of three code paths (coopmat2, coopmat1 f16, coopmat1 int8) plus a graph fusion check; the AMD paths cannot be run here, the laptop's own path (coopmat2) is not the target. The estimate stays under 1 % of a 34k prompt. Not started: building it blind would produce a shader nobody can verify before the PC run.

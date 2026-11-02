@@ -22,7 +22,7 @@ check(all(gp.rule_buffer_mib("/none", lay, c, u2)[0] >= gp.rule_buffer_mib("/non
       "plan rule: reserve non-decreasing in -ub")
 check(all(gp.formula_buffer_mib(c2, u) >= gp.formula_buffer_mib(c1, u) for u in gp.PLAN_UBS for c1, c2 in zip(ctxs, ctxs[1:])), "plan rule: formula non-decreasing in context")
 old = [gp.compute_buffer_guess_mib(65536, u) for u in (1024, 2048, 3072, 4096)]
-check(old != sorted(old), f"the old table is still not monotone at 64k (why the rule exists): {old}")
+check(old == sorted(old), f"the table grows with the micro-batch at 64k (fixed 2026-11-02): {old}")
 check(gp.parse_fit_params_compute_mib("CUDA0 3664 1840 1309 \nHost 68651 0 222 \n") == 1309.0 and gp.parse_fit_params_compute_mib("junk") is None,
       "llama-fit-params output parsed (Host line skipped, no figure -> None)")
 cl = ("\\\\PC\\gpu process memory(pid_42_luid_0x0_phys_0)\\dedicated usage|1073741824;\\\\PC\\gpu process memory(pid_42_luid_0x0_phys_0)\\shared usage|2097152;"

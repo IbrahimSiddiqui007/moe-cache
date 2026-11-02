@@ -81,7 +81,6 @@ struct exec_pool_t {
         const bool tm = pool && pool->times;
         uint64_t busy = 0, fw = 0, nch_done = 0;
         static const int claim_n = getenv("MOE_CACHE_POOL_CLAIM") ? std::max(1, std::min(64, atoi(getenv("MOE_CACHE_POOL_CLAIM")))) : 1;
-        static const bool where_lite = getenv("MOE_CACHE_POOL_WHERE_LITE") && atoi(getenv("MOE_CACHE_POOL_WHERE_LITE")) > 0;
         int fin = 0;       // idea D10: finished chunks are counted once per worker when it runs out of chunks, not one atomic add per chunk
         if (tm && worker) {
             pool->wake_ns += exec_now_ns() - j->t_pub_ns;
@@ -117,23 +116,10 @@ struct exec_pool_t {
     #endif
                 const uint64_t b0 = tm ? exec_now_ns() : 0;
                 wh.task = &t;          // idea D16: the task is the same for every row of the chunk, so it is stored once, the row once per row
-                const size_t nb01 = t.nb01 ? t.nb01 : j->nb01;
-                const ggml_vec_dot_t dotf = t.dot ? t.dot : j->dot;
-                if (where_lite) {
-                    // idea PL15 (MOE_CACHE_POOL_WHERE_LITE=1, default off): the crash report names the first row and column of the chunk instead of the exact
-                    // ones; the three stores per dot product are gone
-                    wh.r = r0;
-                    wh.k = 0;
-                    wh.dst = &t.dsts[0][r0];
-                    for (int64_t r = r0; r < r1; r++) {
-                        const char * wr = t.w + (size_t) r * nb01;
-                        for (int k = 0; k < t.ncol; k++) {
-                            dotf((int) j->ne00, &t.dsts[k][r], 0, wr, 0, t.cols[k], 0, 1);
-                        }
-                    }
-                } else
                 for (int64_t r = r0; r < r1; r++) {
-                    const char * wr = t.w + (size_t) r * nb01;       // the weight row stays in L1 while every token column uses it
+                    const size_t nb01 = t.nb01 ? t.nb01 : j->nb01;
+                const ggml_vec_dot_t dotf = t.dot ? t.dot : j->dot;
+                const char * wr = t.w + (size_t) r * nb01;       // the weight row stays in L1 while every token column uses it
                     wh.r = r;
                     for (int k = 0; k < t.ncol; k++) {
                         wh.k = k;

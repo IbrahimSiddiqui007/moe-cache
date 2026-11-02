@@ -1409,7 +1409,7 @@ def heavy_background_apps(csv_text):
 
 # What is using the GPU and the CPU right now (Windows). The numbers are what Windows' own counters say over a few seconds; nothing here claims a
 # program slows moe-cache down except the EA app, which was measured (paired, 2026-11-01; with it open the GPU's graphics engine was 27-29 % busy
-# with it and 10 % with the desktop compositor, prompts ran 23 % slower, decode 14 % slower).
+# with it and 10 % with the desktop compositor, prompts ran 23 % slower, decode 14 % slower; quiet PC 2026-11-02: prompts the same, decode 8-9 % slower. It depends on how much it draws).
 BUSY_SCRIPT = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $n = @{}; Get-Process | ForEach-Object { $n[[string]$_.Id] = $_.ProcessName }
@@ -1463,7 +1463,7 @@ def busy_note(item):
     """One sentence for a program from busy_programs(): what Windows measured, and what closing it is worth (measured only for the EA app)."""
     base = f"{item['name']} is using {item['what']} right now."
     if item["name"].lower().startswith(("eacef", "eadesktop", "eabackground", "ealocal")):
-        return base + " Closing it: measured, long prompts 23 % faster and decode 14 % faster (at -ub 1024, Flash-Next 34k)."
+        return base + " Closing it: measured on Flash-Next at 34k, decode 8-14 % faster, long prompts the same to 23 % faster, depending on how much it draws."
     return base + " Closing it: not measured for this program."
 
 
@@ -1476,9 +1476,9 @@ def warn_heavy_background():
     named = heavy_background_apps(r.stdout)
     for name in named:
         if name == "EA app":
-            say("moe-cache: the EA app is open: close it for full speed (measured: long prompts 23 % slower, decode 14 % slower with it open)", err=True)
+            say("moe-cache: the EA app is open: close it for full speed (measured with it open: decode 8-14 % slower, long prompts up to 23 % slower, depending on how much it draws)", err=True)
         else:
-            say(f"moe-cache: {name} is open: if speed is low, close it (not measured for this program; the EA app costs 14-23 %)", err=True)
+            say(f"moe-cache: {name} is open: if speed is low, close it (not measured for this program; the EA app costs up to 23 %)", err=True)
     if "EA app" in named:
         return
     for item in busy_programs()[:3]:       # not the EA app (already named): programs busy on the GPU or CPU in the last seconds

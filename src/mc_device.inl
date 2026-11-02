@@ -57,11 +57,11 @@ bool layer_ok(const ggml_tensor * w) {
     return l >= s.lo && l <= s.hi;
 }
 
-// MOE_CACHE_GPU_SUM=1 (default off): a long-prompt block also takes the router-weight MUL and the ADD chain after its last expert node, so only the
+// MOE_CACHE_GPU_SUM (default on since 2026-11-02, =0 turns it off; paired on the PC: 34k +33 %, 128k +22 %, text byte-identical): a long-prompt block also takes the router-weight MUL and the ADD chain after its last expert node, so only the
 // sum leaves the block ([n_embd, n_tokens] instead of [n_embd, k, n_tokens]) instead of the k rows crossing the bus and the scheduler copying them back up.
 // The same backend does the same ops in the same order. Short batches stay as they are.
 bool gpu_sum_on() {
-    static const bool on = getenv("MOE_CACHE_GPU_SUM") && atoi(getenv("MOE_CACHE_GPU_SUM")) > 0;
+    static const bool on = !getenv("MOE_CACHE_GPU_SUM") || atoi(getenv("MOE_CACHE_GPU_SUM")) > 0;
     return on;
 }
 

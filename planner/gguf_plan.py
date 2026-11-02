@@ -487,7 +487,10 @@ def gpu_cache_cap_mib(path, max_tensor_bytes, margin=0.97):
 
 # Measured GPU compute buffers (MiB) of Qwen3.8-Flash-Next with a q8_0 KV cache, by context (rounded up between points) and micro-batch size.
 # Other architectures differ somewhat; the numbers are the best available and the reserve below covers the usual spread.
-_COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: None}, 131072: {512: 960, 1024: 1700, 2048: None},   # 2048 measured 3150 (q8) / 3040 (f16) MiB but slower than 1024 on long prompts
+# Chunk 2048 at long context, 2026-11-02, PC, GPU_SUM on, Flash-Next Q2_0: 34k 607 tok/s at 39 CPU layers and 567-582 at 40, against 394-411 at -ub 1024 with 37; decode 27.4 against 28.5.
+# 49152 is measured at ctx 40960. 65536 and 131072 keep the room of the 3150 MiB measurement (41 CPU layers): 64k 345-348 against 146-158, 128k 415-422 with GPU_SUM. A fuller card has
+# blocks wait far longer, so these rows are room to leave, not only the buffer's size. Earlier "1024 is faster on long prompts" predates HOST_OUT and GPU_SUM.
+_COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 49152: {512: 690, 1024: 920, 2048: 1750}, 65536: {512: 690, 1024: 920, 2048: 3150}, 131072: {512: 960, 1024: 1700, 2048: 3150},
                 # 256k (N29, PC llama-server 620d2225c, same with f16 or q8_0 KV): 512 1403, 1024 2983, 2048 3979 MiB. 2048 left out as at 64k:
                 # at long prompts 1024 is the faster micro-batch (34k: 277 vs 247 tok/s, RESULTS 61), and without this row 256k fell back to 512
                 262144: {512: 1403, 1024: 2983, 2048: None}}
@@ -742,7 +745,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     best = None
     fixed_ub = ub
     plan_cost = os.environ.get("MOE_CACHE_PLAN_COST") not in (None, "", "0")
-    for ub in ((fixed_ub,) if fixed_ub else (2048, 1024, 512)):
+    # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
+    keep_1024 = ctx > 32768 and "gpt-oss" in (sampling_meta(path).get("arch") or "")
+    for ub in ((fixed_ub,) if fixed_ub else ((1024, 512) if keep_1024 else (2048, 1024, 512))):
         # idea L02 (MOE_CACHE_PLAN_COST=1, default off): from 64k context on a long prompt dominates the request and -ub 2048 is the fastest measured
         # (RESULTS 61: 128k and 256k), so 2048 is a candidate there with its measured or estimated (high) buffer, not skipped for lack of a table row
         buf = cbm(ub, bool(fixed_ub) or (plan_cost and ctx >= 65536))

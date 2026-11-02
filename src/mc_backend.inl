@@ -763,7 +763,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             return true;
         }
     }
-    // MOE_CACHE_GPU_SUM=1 (mc_device.inl): the nodes right after the experts that the plugin claimed join the block, so only their sum is read back. A block split
+    // MOE_CACHE_GPU_SUM (mc_device.inl): the nodes right after the experts that the plugin claimed join the block, so only their sum is read back. A block split
     // into parts leaves them to the CPU (the row copy of a split block needs the expert output's shape), as does anything that does not match; the result is the same, only slower.
     static const bool tmpl_off = !getenv("MOE_CACHE_GPU_TMPL") || atoi(getenv("MOE_CACHE_GPU_TMPL")) <= 0;
     if (gpu_sum_on() && tmpl_off && n_chunk == 1 && last + 1 < n_all && is_weighted_experts(ggml_graph_node(cg, last + 1)) && ggml_graph_node(cg, last + 1)->src[0] == out) {
@@ -929,7 +929,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     };
     if (!from_tmpl) {
         for (ggml_tensor * n : seg) {
-            if (n->op == GGML_OP_VIEW) {         // MOE_CACHE_GPU_SUM: a view of the weighted experts shares their memory
+            if (n->op == GGML_OP_VIEW) {         // GPU_SUM: a view of the weighted experts shares their memory
                 clone[n] = ggml_view_2d(ctx, clone[n->view_src], n->ne[0], n->ne[1], n->nb[1], n->view_offs);
                 continue;
             }
@@ -1315,11 +1315,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         if (e1) { up_faults += state_t::process_faults() - f_up0; }
         const auto t_c0 = std::chrono::steady_clock::now();
-        // idea PL01 (MOE_CACHE_GPU_COMPUTE_ASYNC=1, default off): ggml_backend_graph_compute waits for the GPU before it returns, so the staging of the next part
-        // (next_window) and the queued read-back started only after the compute. The async call returns at once; the result copy is queued behind the compute
-        // on the same queue and the wait is unchanged (sync_result). Not with seg_times, which times the compute on its own.
-        static const bool compute_async = getenv("MOE_CACHE_GPU_COMPUTE_ASYNC") && atoi(getenv("MOE_CACHE_GPU_COMPUTE_ASYNC")) > 0;
-        const enum ggml_status st = compute_async && !seg_times ? ggml_backend_graph_compute_async(c->gpu, g) : ggml_backend_graph_compute(c->gpu, g);
+        const enum ggml_status st = ggml_backend_graph_compute(c->gpu, g);
         if (!rb || seg_times) {
             ggml_backend_synchronize(c->gpu);     // seg_times: the compute is timed on its own
         }

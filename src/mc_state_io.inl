@@ -46,13 +46,11 @@
                 // loading flag reads stale data every time instead of only when the timing is unlucky (CI regression test for T39/T45)
                 std::this_thread::sleep_for(std::chrono::microseconds(test_read_delay_us));
             }
-            // idea D15 (MOE_CACHE_STATS_LITE=1, default off): no clock reads and no read-time counter in the reader threads (the read-time line then shows 0)
-            static const bool lite = getenv("MOE_CACHE_STATS_LITE") && atoi(getenv("MOE_CACHE_STATS_LITE")) > 0;
-            const auto r0 = lite ? std::chrono::steady_clock::time_point() : std::chrono::steady_clock::now();
+            const auto r0 = std::chrono::steady_clock::now();
             if (j.pk) {
                 std::unique_ptr<pack_job_t> pj(j.pk);
                 read_pack_job(*pj);
-                if (!lite) ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+                ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
                 {
                     std::lock_guard<std::mutex> lk(mu);
                     for (int i = 0; i < pj->n; i++) {
@@ -65,7 +63,7 @@
                 continue;
             }
             read_job(j, bounce);
-            if (!lite) ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
+            ns_read += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - r0).count();
             {
                 std::lock_guard<std::mutex> lk(mu);
                 pending_bytes = pending_bytes > j.nb2 ? pending_bytes - j.nb2 : 0;
@@ -320,32 +318,12 @@
             return;
         }
         router_t * rc = get_router(layer, n_embd, n_exp);
-        // idea C19 (MOE_CACHE_PRED_FAST=1, default off): the norm-weight ratios of a layer pair are computed once, and the work vectors are per-thread scratch
-        static const bool fast = getenv("MOE_CACHE_PRED_FAST") && atoi(getenv("MOE_CACHE_PRED_FAST")) > 0;
-        static thread_local std::vector<float> xs_s, logit_s;
-        static thread_local std::unordered_map<int, std::vector<float>> ratio_s;      // layer -> ratio (empty: no scaling)
-        std::vector<float> xs_l, logit_l;
-        std::vector<float> & xs = fast ? xs_s : xs_l;
-        std::vector<float> & logit = fast ? logit_s : logit_l;
-        xs.resize(n_embd);
+        std::vector<float> xs(n_embd);
         const bool scale = rc && rn->normw.size() == n_embd && rc->normw.size() == n_embd;
-        if (fast && scale) {
-            std::vector<float> & ra = ratio_s[layer];
-            if (ra.size() != n_embd) {
-                ra.resize(n_embd);
-                for (size_t i = 0; i < n_embd; i++) {
-                    ra[i] = fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f;
-                }
-            }
-            for (size_t i = 0; i < n_embd; i++) {
-                xs[i] = x[i] * ra[i];
-            }
-        } else {
-            for (size_t i = 0; i < n_embd; i++) {
-                xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
-            }
+        for (size_t i = 0; i < n_embd; i++) {
+            xs[i] = x[i] * (scale && fabsf(rc->normw[i]) > 1e-6f ? rn->normw[i] / rc->normw[i] : 1.0f);
         }
-        logit.resize(n_exp);
+        std::vector<float> logit(n_exp);
         for (size_t e = 0; e < n_exp; e++) {
             const float * w = rn->w.data() + e * n_embd;
             logit[e] = (rn->bias.size() == n_exp ? rn->bias[e] : 0.0f) + dot_f32(w, xs.data(), n_embd);
