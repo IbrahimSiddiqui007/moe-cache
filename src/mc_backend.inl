@@ -84,6 +84,113 @@ std::vector<int> pin_cpus() {
     return out;
 }
 
+// idea PL05 (MOE_CACHE_GPU_PREFETCH=1, default off, docs/PREFETCH_DESIGN.md): the whole expert tensors of the block that is expected next are copied into a
+// second GPU buffer by one helper thread while llama.cpp runs its own work between two blocks. The helper only copies (no graph work); the block that uses
+// the tensors finds them already in place, any tensor that is not there is uploaded as before.
+struct gpu_prefetch_t {
+    ggml_context * ctx = nullptr;
+    ggml_backend_buffer_t buf = nullptr;
+    std::vector<const ggml_tensor *> src;       // what the buffer holds (or is being filled with), same order as dst
+    std::vector<ggml_tensor *> dst;
+    size_t bytes = 0;
+    std::unordered_map<const ggml_tensor *, std::vector<const ggml_tensor *>> next_of;   // first weight tensor of a block -> weight tensors of the block that followed it
+    const ggml_tensor * last_first = nullptr;
+    uint64_t retry_at = 0;                      // no room (or the card is tightening): not tried again until this many graphs have run
+    bool off = false;                           // turned itself off (too many wrong guesses)
+    uint64_t launched = 0, used = 0, failed = 0;
+    double wait_ns = 0;                         // graph thread waiting for the helper at the start of a block
+    std::atomic<uint64_t> busy_ns{0};           // helper busy time
+    std::atomic<uint64_t> copied_bytes{0};
+    // helper thread
+    std::thread th;
+    std::mutex mu;
+    std::condition_variable cv;
+    std::function<bool()> job;
+    bool has_job = false, running = false, stop = false, result = false;
+    bool awaiting = false;                      // a job was launched and its end has not been taken yet (graph thread only)
+    bool filled = false;                        // the last taken job copied everything
+    // takes the end of the last job (the wait is booked); afterwards `filled` says whether the buffer holds src
+    void settle() {
+        if (!awaiting) {
+            return;
+        }
+        const auto t0 = std::chrono::steady_clock::now();
+        filled = join();
+        wait_ns += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count();
+        awaiting = false;
+        if (!filled) {
+            failed++;
+        }
+    }
+    bool pending() {
+        std::lock_guard<std::mutex> lk(mu);
+        return has_job || running;
+    }
+    void launch(std::function<bool()> f) {
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            job = std::move(f);
+            has_job = true;
+        }
+        if (!th.joinable()) {
+            th = std::thread([this] {
+                std::unique_lock<std::mutex> lk(mu);
+                for (;;) {
+                    cv.wait(lk, [this] { return has_job || stop; });
+                    if (stop) {
+                        return;
+                    }
+                    std::function<bool()> j = std::move(job);
+                    has_job = false;
+                    running = true;
+                    lk.unlock();
+                    bool ok = false;
+                    try {
+                        ok = j();
+                    } catch (const std::exception &) {
+                        ok = false;
+                    }
+                    lk.lock();
+                    result = ok;
+                    running = false;
+                    cv.notify_all();
+                }
+            });
+        }
+        cv.notify_all();
+    }
+    // waits for the last job; true when it copied everything
+    bool join() {
+        std::unique_lock<std::mutex> lk(mu);
+        cv.wait(lk, [this] { return !has_job && !running; });
+        return result;
+    }
+    void release() {        // frees the buffer (the caller has joined and is sure no block still reads it)
+        if (buf) {
+            ggml_backend_buffer_free(buf);
+            buf = nullptr;
+        }
+        if (ctx) {
+            ggml_free(ctx);
+            ctx = nullptr;
+        }
+        src.clear();
+        dst.clear();
+        bytes = 0;
+    }
+    void shutdown() {
+        if (th.joinable()) {
+            {
+                std::lock_guard<std::mutex> lk(mu);
+                stop = true;
+            }
+            cv.notify_all();
+            th.join();
+        }
+        release();
+    }
+};
+
 struct moe_cache_backend_ctx {
     ggml_backend_t     cpu = nullptr;
     ggml_threadpool_t  tp = nullptr;
@@ -126,6 +233,7 @@ struct moe_cache_backend_ctx {
     };
     std::vector<gpu_held_t> held;
     uint64_t held_serial = 0;
+    gpu_prefetch_t pf;                       // PL05: next block's weights
     ggml_backend_buffer_t up_buf = nullptr;  // P05: pinned staging area for the weights of one part
     bool               rb_failed = false;    // no pinned host buffer type, or it could not be allocated: plain blocking read-back
     // N3/MG5 (MOE_CACHE_GPU_DEV2, default off): the second card's copy of everything above that is tied to one GPU. gpu_segment() swaps the two sets (card_swap)
@@ -179,6 +287,7 @@ void be_free(ggml_backend_t backend) {
     for (auto & t : c->tmpls) {
         ggml_free(t.ctx);
     }
+    c->pf.shutdown();                 // the helper first, then its GPU buffer (before the backend)
     for (auto & h : c->held) {      // GPU buffers are freed before their backend
         ggml_backend_buffer_free(h.buf);
         ggml_free(h.ctx);
@@ -325,6 +434,19 @@ struct vram_watch_t {
 };
 static vram_watch_t g_vram_watch;
 
+// PL05: the helper thread calls ggml_backend_tensor_set while the graph thread uses the same device. Checked: Vulkan at the pinned build (a write takes the device mutex,
+// docs/PREFETCH_DESIGN.md) and CUDA (a per-thread stream). Anything else, or a ggml build the plugin was not tested with, keeps the switch off.
+static bool pf_backend_ok(ggml_backend_dev_t d) {
+    static std::atomic<int> said{0};
+    const char * rn = d ? ggml_backend_reg_name(ggml_backend_dev_backend_reg(d)) : nullptr;
+    const bool dev_ok = rn && (strstr(rn, "Vulkan") || strstr(rn, "CUDA"));
+    const bool ok = dev_ok && moe_cache_tested_ggml(ggml_version());
+    if (!ok && said++ == 0) {
+        fprintf(stderr, "moe-cache: MOE_CACHE_GPU_PREFETCH=1 ignored: %s\n", dev_ok ? "this ggml build is not in the tested list" : "the GPU backend is not Vulkan or CUDA");
+    }
+    return ok;
+}
+
 bool gpu_sum_on();                                  // mc_device.inl
 bool is_weighted_experts(const ggml_tensor * t);
 bool is_expert_sum(const ggml_tensor * t);
@@ -448,6 +570,30 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
         }
     }
+    // idea PL05 (MOE_CACHE_GPU_PREFETCH=1, default off): see gpu_prefetch_t. Weight tensors of this block that the helper has already put (or is putting) into the
+    // second buffer: they are not uploaded again and do not count for the room this block needs. Whole-tensor blocks only (no packing, no split, no template, no held copies).
+    static const bool pf_env = getenv("MOE_CACHE_GPU_PREFETCH") && atoi(getenv("MOE_CACHE_GPU_PREFETCH")) > 0 &&
+                               !(getenv("MOE_CACHE_GPU_TMPL") && atoi(getenv("MOE_CACHE_GPU_TMPL")) > 0) &&
+                               !(getenv("MOE_CACHE_GPU_KEEP_MIB") && atoi(getenv("MOE_CACHE_GPU_KEEP_MIB")) > 0) &&
+                               !(getenv("MOE_CACHE_GPU_DEV2") && atoi(getenv("MOE_CACHE_GPU_DEV2")) > 0) && pf_backend_ok(s.gpu_dev);
+    const bool pf_can = pf_env && !c->pf.off && !c->on_alt;
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> pf_hit;      // weight tensor of this block -> its place in the prefetch buffer
+    size_t pf_bytes = 0;
+    if (pf_can && !pack_ids && c->pf.buf && !c->pf.src.empty()) {
+        for (ggml_tensor * n : seg) {
+            const ggml_tensor * w = n->op == GGML_OP_MUL_MAT_ID ? n->src[0] : nullptr;
+            if (!w || inside.count(w) || pf_hit.count(w)) {
+                continue;
+            }
+            for (size_t i = 0; i < c->pf.src.size(); i++) {
+                if (c->pf.src[i] == w && c->pf.dst[i]->type == w->type && memcmp(c->pf.dst[i]->ne, w->ne, sizeof(w->ne)) == 0) {
+                    pf_hit[w] = c->pf.dst[i];
+                    pf_bytes += ggml_nbytes(c->pf.dst[i]);
+                    break;
+                }
+            }
+        }
+    }
     // N23: at long contexts llama.cpp's own GPU buffers grow during the prompt (attention scratch), the free GPU memory falls and the blocks went
     // back to the CPU one by one (PC, Flash-Next Q2_0 at 128k: from ~40k tokens on every micro-batch took 22 s instead of ~9 s). When the block
     // does not fit, its used experts are split into parts that fit the buffer already held: each part runs the same graph (ids of the other parts point at
@@ -522,7 +668,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     need += ggml_row_size(src->type, src->ne[0]) * (size_t) (src->ne[1] * (w ? (int64_t) n_w : src->ne[2]) * src->ne[3]);
                 }
             }
-            return need;
+            return n_w == 0 && need > pf_bytes ? need - pf_bytes : need;
         };
         if (chunks_env > 1) {
             n_chunk = (size_t) chunks_env;
@@ -606,6 +752,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     const size_t per_chunk = n_chunk > 1 ? (pack_used.size() + n_chunk - 1) / n_chunk : pack_used.size();
     if (n_chunk > 1) {
         n_chunk = (pack_used.size() + per_chunk - 1) / per_chunk;      // no empty tail part: 100 experts in 16 parts of 7 leave parts 15 with lo=105 > hi=100, (hi - lo) wraps
+    }
+    if (n_chunk > 1 || pack_ids || c->on_alt) {
+        pf_hit.clear();
+        pf_bytes = 0;
     }
     std::unordered_set<const ggml_tensor *> pack_weights;
     if (pack_ids) {
@@ -866,6 +1016,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     }
     static const size_t keep_mib = getenv("MOE_CACHE_GPU_KEEP_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_GPU_KEEP_MIB"))) : 0;
     std::unordered_map<const ggml_tensor *, const ggml_tensor *> held_for;      // input clone -> source tensor whose GPU copy it sits in
+    std::unordered_set<const ggml_tensor *> pf_placed;                          // PL05: input clones placed in the prefetch buffer
     if (keep_mib > 0) {
         c->held_serial++;
     }
@@ -882,6 +1033,12 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         ggml_set_input(nt);
         clone[t] = nt;
         uploads.emplace_back(t, nt);
+        const auto ph = pf_hit.find(t);
+        if (ph != pf_hit.end()) {              // PL05: this weight sits (or is being copied) in the prefetch buffer: the clone is placed there
+            ggml_backend_tensor_alloc(c->pf.buf, nt, ph->second->data);
+            pf_placed.insert(nt);
+            return nt;
+        }
         if (keep_mib > 0 && !pack_weights.count(t) && s.by_tensor.count(t) && ggml_is_contiguous(t)) {
             moe_cache_backend_ctx::gpu_held_t * h = nullptr;
             for (auto & x : c->held) {
@@ -957,7 +1114,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         // Check first and keep the block on the CPU instead of letting the allocation (or the CUDA pool) fail hard.
         size_t need = 0;
         for (auto & u : uploads) {
-            need += ggml_nbytes(u.second);
+            if (!pf_placed.count(u.second)) {          // PL05: already in the prefetch buffer, the graph allocator does not give it room
+                need += ggml_nbytes(u.second);
+            }
         }
         for (ggml_tensor * n : seg) {
             if (n->op != GGML_OP_VIEW && n->op != GGML_OP_MUL && n->op != GGML_OP_ADD) {    // MOE_CACHE_GPU_SUM's nodes reuse the memory of the node before them
@@ -1168,9 +1327,16 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         if (stage && staged_ch != ch) {
             stage_part(ch);
         }
+        if (ch == 0 && c->pf.awaiting) {          // PL05: the helper must be done before the block reads the buffer or the buffer is filled again
+            c->pf.settle();
+        }
         for (auto & u : uploads) {
             const ggml_tensor * t = u.first;
             ggml_tensor * d = u.second;
+            if (!pf_placed.empty() && pf_placed.count(d) && c->pf.filled) {
+                s.gpu_up_saved += ggml_nbytes(d);       // prefetched: the bytes are already there (if the helper failed, the normal upload below fills the same place)
+                continue;
+            }
             // idea P09 (MOE_CACHE_GPU_SHARE_UP=1): in a split block everything but the part's experts and ids is the same for every part, and the
             // clones are set_input tensors (the allocator never reuses them): upload them with the first part only
             if (share_up && ch > 0 && !pack_weights.count(t) && t != pack_ids) {
@@ -1409,6 +1575,127 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     } else {
         ggml_free(ctx);
     }
+    if (!pf_placed.empty()) {
+        c->pf.used++;
+    }
+    if (pf_can && n_chunk == 1 && !pack_ids && !from_tmpl) {
+        // PL05: learn which block follows this one, and start copying that block's weights into the prefetch buffer. Everything below is a guess that costs
+        // time at worst: the next block checks the tensors it really needs against the buffer.
+        std::vector<const ggml_tensor *> cur;
+        for (ggml_tensor * n : seg) {
+            const ggml_tensor * w = n->op == GGML_OP_MUL_MAT_ID ? n->src[0] : nullptr;
+            if (w && !inside.count(w) && std::find(cur.begin(), cur.end(), w) == cur.end()) {
+                cur.push_back(w);
+            }
+        }
+        bool plain = !cur.empty();
+        for (const ggml_tensor * w : cur) {
+            plain = plain && s.by_tensor.count(w) && ggml_is_contiguous(w) && !s.tensors[s.by_tensor.find(w)->second]->repack;
+        }
+        if (plain) {
+            if (c->pf.last_first) {
+                c->pf.next_of[c->pf.last_first] = cur;
+            }
+            c->pf.last_first = cur[0];
+            c->pf.settle();
+            const auto nx = c->pf.next_of.find(cur[0]);
+            if (c->pf.launched >= 32 && c->pf.used * 2 < c->pf.launched) {
+                c->pf.off = true;
+                c->pf.release();
+                fprintf(stderr, "moe-cache: prefetch: only %llu of %llu guesses were used: MOE_CACHE_GPU_PREFETCH turns itself off\n", (unsigned long long) c->pf.used,
+                        (unsigned long long) c->pf.launched);
+            } else if (nx != c->pf.next_of.end() && s.graphs.load() >= c->pf.retry_at) {
+                const std::vector<const ggml_tensor *> & want = nx->second;
+                size_t w_bytes = 0;
+                bool same = c->pf.buf && c->pf.src.size() == want.size();
+                for (size_t i = 0; i < want.size(); i++) {
+                    w_bytes += ggml_nbytes(want[i]);
+                    same = same && c->pf.dst[i]->type == want[i]->type && memcmp(c->pf.dst[i]->ne, want[i]->ne, sizeof(want[i]->ne)) == 0;
+                }
+                size_t fr = 0, tt = 0;
+                ggml_backend_dev_memory(gdev, &fr, &tt);
+                if (c->pf.buf && tt != 0 && fr < ((size_t) 512 << 20)) {      // the card is filling up (llama.cpp's buffers grow with the prompt): give the room back
+                    c->pf.release();
+                    c->pf.retry_at = s.graphs.load() + 64;
+                    same = false;
+                    w_bytes = 0;
+                } else if (!same) {
+                    c->pf.release();
+                    if (tt == 0 || fr >= w_bytes + ((size_t) 768 << 20)) {
+                        ggml_init_params pp = { ggml_tensor_overhead() * (want.size() + 2) + 1024, nullptr, true };
+                        c->pf.ctx = ggml_init(pp);
+                        for (size_t i = 0; c->pf.ctx && i < want.size(); i++) {
+                            ggml_tensor * dt = ggml_new_tensor(c->pf.ctx, want[i]->type, GGML_MAX_DIMS, want[i]->ne);
+                            ggml_set_input(dt);
+                            c->pf.dst.push_back(dt);
+                        }
+                        c->pf.buf = c->pf.ctx ? ggml_backend_alloc_ctx_tensors(c->pf.ctx, c->gpu) : nullptr;
+                        if (!c->pf.buf) {
+                            c->pf.release();
+                            c->pf.retry_at = s.graphs.load() + 64;
+                        } else {
+                            c->pf.bytes = ggml_backend_buffer_get_size(c->pf.buf);
+                            static std::atomic<int> said_pf{0};
+                            if (said_pf++ < 3) {
+                                fprintf(stderr, "moe-cache: prefetch: %.0f MiB of GPU memory for the next block's weights (%.0f MiB were free)\n", c->pf.bytes / 1048576.0, fr / 1048576.0);
+                            }
+                        }
+                    } else {
+                        c->pf.retry_at = s.graphs.load() + 64;      // no room: do nothing
+                    }
+                }
+                if (c->pf.buf && w_bytes) {
+                    c->pf.src = want;
+                    std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> todo;
+                    for (size_t i = 0; i < want.size(); i++) {
+                        todo.emplace_back(want[i], c->pf.dst[i]);
+                    }
+                    state_t * sp = &s;
+                    gpu_prefetch_t * pfp = &c->pf;
+                    c->pf.launched++;
+                    c->pf.awaiting = true;
+                    c->pf.filled = false;
+                    c->pf.launch([sp, pfp, todo] {
+                        const auto t0 = std::chrono::steady_clock::now();
+                        bool ok = true;
+                        for (const auto & q : todo) {
+                            const ggml_tensor * t = q.first;
+                            const auto it = sp->by_tensor.find(t);
+                            if (it == sp->by_tensor.end()) {
+                                ok = false;
+                                break;
+                            }
+                            const tinfo_t & ti = *sp->tensors[it->second];
+                            wait_experts(*sp, t, 0, ti.n_expert);
+#ifdef _WIN32
+                            {       // the same rule as the block's own whole-tensor upload: every expert in RAM or mapped, else nothing is copied
+                                std::lock_guard<std::mutex> lk(sp->mu);
+                                for (int64_t e = 0; e < ti.n_expert; e++) {
+                                    const auto & nd = sp->nodes[(size_t) ti.node0 + (size_t) e];
+                                    if (!(nd.resident && !nd.loading) && !nd.mapped) {
+                                        ok = false;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!ok) {
+                                break;
+                            }
+#endif
+                            const size_t total = ggml_nbytes(q.second);
+                            for (size_t o = 0; o < total; o += ((size_t) 32 << 20)) {      // slices: the device lock is held for one slice at a time
+                                const size_t n = std::min<size_t>((size_t) 32 << 20, total - o);
+                                ggml_backend_tensor_set(q.second, (const char *) t->data + o, o, n);
+                            }
+                            pfp->copied_bytes += total;
+                        }
+                        pfp->busy_ns += (uint64_t) std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count();
+                        return ok;
+                    });
+                }
+            }
+        }
+    }
     s.gpu_segments++;
     if (n_chunk > 1) {
         s.gpu_split_blocks++;
@@ -1432,6 +1719,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             const double tot = up_ms + comp_ms + get_ms;
             fprintf(stderr, "moe-cache: long-prompt blocks: %llu (split %llu), upload %.0f ms (%.0f %%), compute %.0f ms (%.0f %%), read back %.0f ms\n", (unsigned long long) n,
                     (unsigned long long) s.gpu_split_blocks.load(), up_ms, 100 * up_ms / tot, comp_ms, 100 * comp_ms / tot, get_ms);
+            if (pf_env) {
+                fprintf(stderr, "moe-cache: prefetch: %llu guesses, %llu used, %llu failed, %.1f GB copied by the helper in %.0f ms, the graph thread waited %.0f ms, %.0f MiB of GPU memory\n",
+                        (unsigned long long) c->pf.launched, (unsigned long long) c->pf.used, (unsigned long long) c->pf.failed, c->pf.copied_bytes.load() / 1e9,
+                        c->pf.busy_ns.load() / 1e6, c->pf.wait_ns / 1e6, c->pf.bytes / 1048576.0);
+            }
         }
     }
     return true;
