@@ -283,7 +283,7 @@ del os.environ["OLLAMA_MODELS"]
 
 # `connect claude`: the env block, never a file without --write, a merge with the first backup kept, a private file
 env = mc.claude_env("http://127.0.0.1:8080/", "my-model", "KEY123")
-check(env == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080", "ANTHROPIC_AUTH_TOKEN": "KEY123", "ANTHROPIC_MODEL": "my-model", "ANTHROPIC_SMALL_FAST_MODEL": "my-model"},
+check(env == {"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080", "ANTHROPIC_AUTH_TOKEN": "KEY123", "ANTHROPIC_MODEL": "my-model", "ANTHROPIC_SMALL_FAST_MODEL": "my-model", "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"},
       f"connect claude: base URL without /v1 or a trailing slash, token, model ({env})")
 check(mc.claude_env("http://h:1", "m", None)["ANTHROPIC_AUTH_TOKEN"] == "none", "connect claude: a server without a key gets the placeholder token 'none'")
 txt = mc.claude_snippets(env, 65536)
