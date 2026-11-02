@@ -2354,10 +2354,6 @@ def _launch_plan(a, extra, argv, machine):
     tuned = None
     desk_kw = None
     ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
-    # agent mode up to 64k keeps -ub 1024 for now (owner, 2026-11-02): -ub 2048 at 64k read prompts 35 % faster but decoded 15 % slower (RESULTS 78),
-    # and agents wait on decode. Lifted once a tuned 64k placement is measured.
-    if a.agent and not ub_asked and 32768 < ctx <= 65536:
-        ub_asked = "1024"
     if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
         try:
             sys.path.insert(0, os.path.join(HERE, "planner"))

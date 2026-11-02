@@ -488,9 +488,9 @@ def gpu_cache_cap_mib(path, max_tensor_bytes, margin=0.97):
 # Measured GPU compute buffers (MiB) of Qwen3.8-Flash-Next with a q8_0 KV cache, by context (rounded up between points) and micro-batch size.
 # Other architectures differ somewhat; the numbers are the best available and the reserve below covers the usual spread.
 # Chunk 2048 at long context, 2026-11-02, PC, GPU_SUM on, Flash-Next Q2_0: 34k 607 tok/s at 39 CPU layers and 567-582 at 40, against 394-411 at -ub 1024 with 37; decode 27.4 against 28.5.
-# 49152 is measured at ctx 40960. 65536 and 131072 keep the room of the 3150 MiB measurement (41 CPU layers): 64k 345-348 against 146-158, 128k 415-422 with GPU_SUM. A fuller card has
+# 65536 (measured at ctx 40960 and 65536): 39 CPU layers; at 64k 455-458 tok/s, decode 26.1-26.8, against 41 layers 454 / 22.3 and -ub 1024 415 / 25.6. 131072 keeps 3150 (41 CPU layers): 128k 415-438. A fuller card has
 # blocks wait far longer, so these rows are room to leave, not only the buffer's size. Earlier "1024 is faster on long prompts" predates HOST_OUT and GPU_SUM.
-_COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 49152: {512: 690, 1024: 920, 2048: 1750}, 65536: {512: 690, 1024: 920, 2048: 3150}, 131072: {512: 960, 1024: 1700, 2048: 3150},
+_COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024: 920, 2048: 1750}, 131072: {512: 960, 1024: 1700, 2048: 3150},
                 # 256k (N29, PC llama-server 620d2225c, same with f16 or q8_0 KV): 512 1403, 1024 2983, 2048 3979 MiB. 2048 is not picked here: not retested at 256k since HOST_OUT and GPU_SUM
                 # (without this row 256k fell back to 512)
                 262144: {512: 1403, 1024: 2983, 2048: None}}
