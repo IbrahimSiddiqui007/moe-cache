@@ -48,6 +48,15 @@ So the precheck does not kill the idea. It is a close call per block (gap about 
 | Predictor for partial blocks | see above |
 | Async copy from the graph thread | see above |
 
+## Built and tested on the laptop (2026-11-02)
+
+| Test | Result |
+|---|---|
+| Both header sets, `-Wall -Werror`; args, tested-ggml, rebalance tests; `bash -n` | pass |
+| Laptop, Vulkan build of the pin (ggml 0.28.0, ff0d396e3, RTX 4060 via Vulkan), Qwen3.6-35B, all experts on the CPU, -ub 2048, 5195-token random-word prompt, `MOE_CACHE_GPU_PACK=0` (so every block is a whole-tensor block, as at 34k Flash-Next), 4 runs A B B A | generated text identical in all 4 (24 tokens, temperature 0). Prefetch: 25 guesses, 24 used (the first micro-batch only learns the order), 0 failed, 11.6 GB copied by the helper, 498 MiB of GPU memory |
+| Speed on the laptop | **not readable**: prompt tok/s 145 / 292 / 227 / 269 for A B B A (cold first run, other sessions using the machine). The counters say the laptop has almost no gap to hide in: the helper was busy 3.2-3.8 s and the graph thread waited 2.6-3.1 s of that (about 80 %), because the blocks follow each other with little work between them. That is the same reason the laptop killed overlap before (ledger I2). It does not decide the PC |
+| Not tested | Windows (the residency check is compiled only there), AMD Vulkan, the "no room" path, a wrong guess (order changing), the self-switch-off |
+
 ## What the PC run needs
 
 See the final report of the session. In short: Flash-Next 34k, `MOE_CACHE_SEG_TIMES=1`, A B B A with and without `MOE_CACHE_GPU_PREFETCH=1`, same prompt, nothing else running; plus `tests/identity.sh`.
