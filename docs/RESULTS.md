@@ -3123,3 +3123,5 @@ Windows 11, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Flash-Next Q2_0 on D:, 
 | 131072, 128k | 306.8 / 306.0 | 436.3 / 437.5 | +43 % | not recorded | not recorded | - |
 
 Decode after a 64k prompt is 15 % lower with the experimental defaults than with v0.3.4, in both pairs; the cause is not found. Prompts are faster at all three depths. Text was not compared in this run. Only this model and these three depths are measured.
+
+**Follow-up, same boot, 16:05-16:26 (64k, `-ub 2048`, patch 0022, one run per arm except two for 39 and 40):** 41 CPU layers 454.3 / decode 22.34; 40 layers 464.3, 476.5 / 23.69, 25.40; **39 layers 457.7, 454.6 / 26.82, 26.13**; `-ub 1024` with the launcher's 38 layers 415.4 / 25.60. So the 64k decode loss was the placement. The planner now reserves for 39 at 64k.
