@@ -491,8 +491,8 @@ def gpu_cache_cap_mib(path, max_tensor_bytes, margin=0.97):
 # 49152 is measured at ctx 40960. 65536 and 131072 keep the room of the 3150 MiB measurement (41 CPU layers): 64k 345-348 against 146-158, 128k 415-422 with GPU_SUM. A fuller card has
 # blocks wait far longer, so these rows are room to leave, not only the buffer's size. Earlier "1024 is faster on long prompts" predates HOST_OUT and GPU_SUM.
 _COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 49152: {512: 690, 1024: 920, 2048: 1750}, 65536: {512: 690, 1024: 920, 2048: 3150}, 131072: {512: 960, 1024: 1700, 2048: 3150},
-                # 256k (N29, PC llama-server 620d2225c, same with f16 or q8_0 KV): 512 1403, 1024 2983, 2048 3979 MiB. 2048 left out as at 64k:
-                # at long prompts 1024 is the faster micro-batch (34k: 277 vs 247 tok/s, RESULTS 61), and without this row 256k fell back to 512
+                # 256k (N29, PC llama-server 620d2225c, same with f16 or q8_0 KV): 512 1403, 1024 2983, 2048 3979 MiB. 2048 is not picked here: not retested at 256k since HOST_OUT and GPU_SUM
+                # (without this row 256k fell back to 512)
                 262144: {512: 1403, 1024: 2983, 2048: None}}
 # Measured but never auto-picked (None above): still the size llama-server takes when the user asks for that micro-batch (audit 2026-10-29 L1:
 # without these, -ub 2048 at 128k/256k was guessed at 990 MiB, about 2-3 GiB short, so the long-prompt block found no room)

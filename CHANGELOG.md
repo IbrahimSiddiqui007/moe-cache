@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+| Area | Change |
+|---|---|
+| Long prompts | A long-prompt block also does the router-weight sum on the GPU, so about a tenth of the data crosses back (`MOE_CACHE_GPU_SUM=0` turns it off) |
+| Launcher | At context above 32k the micro-batch is 2048, with more GPU memory left free. A card filled to the edge was the largest slowdown found on long prompts. gpt-oss stays at 1024 because its decode fell by a third. Numbers to follow from a clean run |
+| Claude Code | `connect claude` also sets `CLAUDE_CODE_ATTRIBUTION_HEADER=0`, so a changing block at the start of the prompt no longer makes the server read everything again each turn |
+| Windows warning | The launcher and the control page name programs using the GPU; the EA app's measured cost depends on how much it draws |
+| Control page | Cancel works right after Share my numbers. New "Other programs" list |
+| Bug fixes | 19 from an independent audit, among them: `--port`, `-c` and `-ngl` after `--` are seen by the launcher; parent cgroup memory limits count; `MOE_CACHE_DISABLE=0` no longer disables the plugin; a second `moe-cache.bat` cannot share the control page's port |
+| Patches | A small patch set for the bundled llama.cpp, each patch off unless its switch is set (`patches/llama.cpp`). Tested losers moved to `archive/` |
+| Docs | `docs/CODING_STANDARDS.md`, `docs/CONTROL_PAGE_CHECK.md`, a warning about apps that draw on the GPU |
+
 ## 0.3.4 (2026-10-31)
 
 | Area | Change |

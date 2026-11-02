@@ -2809,6 +2809,7 @@ def claude_env(url, model, api_key):
     not trigger Claude Code's 'use this API key?' question. The base URL has no /v1: Claude Code adds /v1/messages itself."""
     env = {"ANTHROPIC_BASE_URL": url.rstrip("/"), "ANTHROPIC_AUTH_TOKEN": api_key or "none"}      # Claude Code wants some token even for a server without a key
     env["ANTHROPIC_MODEL"] = model
+    env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"      # a block at the start of the system prompt changes per request, so llama-server would read the whole prompt again each turn
     env["ANTHROPIC_SMALL_FAST_MODEL"] = model       # its background calls (titles, summaries) would otherwise ask for a Haiku the server does not have
     return env
 
