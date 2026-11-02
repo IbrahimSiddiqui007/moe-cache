@@ -74,6 +74,7 @@ The chart at the top is the Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32
 - **+20 to +47 %** decode on the Flash-Next files that do not fit in RAM, **2.7x** on GLM-5.3-Flash (102 GB), 3.1x with MTP.
 - **2.0-2.4x** faster coding-agent sessions (OpenCode, Hermes) on Flash-Next.
 - Models that fit in RAM (Qwen3.6-35B, Nemotron Bolt): plain llama.cpp is as fast or faster, so the launcher runs it by itself.
+- **Experimental, next release (not in v0.3.4):** on Flash-Next Q2_0 prompts of 34k / 64k / 128k tokens are read **+56 % / +35 % / +43 %** faster than with v0.3.4 (637 vs 402, 435 vs 323, 437 vs 306 tok/s), but decode after a 64k prompt is **15 % lower** (22.3 vs 26.2 tok/s). Windows desktop, clean run 2026-11-02, two runs per cell ([RESULTS 78](docs/RESULTS.md)).
 - Same text as stock on every model checked. On Linux (older laptop runs, v0.2.x) the gains were 2.4x to 5.2x.
 
 Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html), [docs/RESULTS.md](docs/RESULTS.md). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md)).

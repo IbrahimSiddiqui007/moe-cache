@@ -144,6 +144,26 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   </section>
 
   <section>
+    <h2>Long prompts: experimental (next release) vs v0.3.4</h2>
+    <p>Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old, new; the PC was restarted that morning and its baseline check passed (clean run, 2026-11-02). "Experimental" is not released yet: larger prompt chunks above 32k context, GPU_SUM on, and llama.cpp patch 0022. Two runs per cell.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Context, prompt</th><th class="n">v0.3.4 prompt tok/s</th><th class="n">experimental prompt tok/s</th><th class="n">v0.3.4 decode tok/s</th><th class="n">experimental decode tok/s</th></tr></thead>
+        <tbody>
+          <tr><td>40960, 34k tokens</td><td class="n">392.2 / 411.0</td><td class="n"><b>637.2 / 619.7</b></td><td class="n">28.55 / 28.48</td><td class="n">27.29 / 27.67</td></tr>
+          <tr><td>65536, 64k</td><td class="n">311.9 / 333.9</td><td class="n"><b>434.4 / 436.6</b></td><td class="n">26.29 / 26.10</td><td class="n"><b>22.95 / 21.72</b></td></tr>
+          <tr><td>131072, 128k</td><td class="n">306.8 / 306.0</td><td class="n"><b>436.3 / 437.5</b></td><td class="n">not recorded</td><td class="n">not recorded</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li>Prompts are 35–56 % faster at the three depths.</li>
+      <li><b>Decode after the 64k prompt is 15 % lower</b> (22.3 vs 26.2 tok/s on average); at 34k it is 4 % lower. The cause is not found.</li>
+      <li>Source: RESULTS 78. Text was not compared in this run.</li>
+    </ul>
+  </section>
+
+  <section>
     <h2>Which Flash-Next file</h2>
     <p>Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.</p>
     <div class="scroll">
