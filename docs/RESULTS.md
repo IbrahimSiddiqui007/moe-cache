@@ -3110,3 +3110,16 @@ Source: handover section 4 of 2026-11-01. One run per row unless stated; these a
 | HOST_OUT (E1 fix) | Flash-Next: 34k prompt 286 -> 395 / 396 tok/s, wall 119 -> 86.5 s, text identical; 64k prompt 229 -> 299 / 306 tok/s. Section 76 covers the 34k row only | merged, default on, `MOE_CACHE_HOST_OUT=0` turns it off |
 | Open worry | Decode after a 64k prompt: 25.39 tok/s off vs 24.59 / 24.33 on (-3.5 %), one off-run. At 34k it was +0.7 %. To repeat in the next chain | not settled |
 | Batch slowdown 1.7 %, stair | **D08** (pool counters on separate cache lines) cost **-1.3 / -1.5 %** in both pairs; D12 about 0; up to D03 about 0; C15 + B05 about -0.3 % from one clean run; D10, D16, D07 about 0 | D08 reverted |
+
+
+## 78. Experimental (next release) vs v0.3.4 on long prompts (Windows PC, 2026-11-02; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13)
+
+Windows 11, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Flash-Next Q2_0 on D:, cold file cache before each run, order new old old new. "v0.3.4" is the released kit with its own llama-server. "Experimental" is the unreleased launcher defaults (prompt chunk 2048 above 32k context, GPU_SUM on) plus llama.cpp patch 0022 (`GGML_VK_COUNT_EXPERTS_FAST=1`) on the patched b11966 server; these defaults are not in any release yet. Two runs per cell, shown as first / second; the averages are my arithmetic.
+
+| Context, prompt | v0.3.4 prompt tok/s | Experimental prompt tok/s | Prompt change (averages) | v0.3.4 decode tok/s | Experimental decode tok/s | Decode change (averages) |
+|---|---|---|---|---|---|---|
+| 40960, 34k tokens | 392.2 / 411.0 | 637.2 / 619.7 | +56 % | 28.55 / 28.48 | 27.29 / 27.67 | -3.6 % |
+| 65536, 64k | 311.9 / 333.9 | 434.4 / 436.6 | +35 % | 26.29 / 26.10 | 22.95 / 21.72 | **-15 %** |
+| 131072, 128k | 306.8 / 306.0 | 436.3 / 437.5 | +43 % | not recorded | not recorded | - |
+
+Decode after a 64k prompt is 15 % lower with the experimental defaults than with v0.3.4, in both pairs; the cause is not found. Prompts are faster at all three depths. Text was not compared in this run. Only this model and these three depths are measured.
