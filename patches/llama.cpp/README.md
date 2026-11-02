@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
 
-Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0022-vulkan-count-experts-fast`, `0027-batched-tensor-copy`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors`, `0042-n-outputs-max` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
+Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0022-vulkan-count-experts-fast`, `0027-batched-tensor-copy`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
 
 ## Rules
 
@@ -115,15 +115,6 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 **Test (5 minutes, Windows PC, no pairing needed):** start the server as in the 34k run at `-ub 2048` and again at `-ub 1024` with `LLAMA_RESERVE_TOP=12`, read the `LLAMA_RESERVE_TOP` lines in the log. It says what fills the 3 GiB; every tensor over 300 MiB is a candidate for the next patch.
 
-## 0042-n-outputs-max
-
-**What:** the reserved worst-case graph holds an output row for every token of the ubatch (`n_outputs_max` defaults to `n_batch`), so the logits matrix `n_vocab x n_ubatch x 4 B` is part of the compute buffer, although a prompt needs one row (found with 0040). With `LLAMA_N_OUTPUTS_MAX=N` the context uses `n_outputs_max = max(min(N, n_batch), n_seq_max)`. Unset = stock. The API field `n_outputs_max` already exists (`include/llama.h`); there is no command-line flag, this is the same value set from the environment. It is not used when the caller sets the field itself.
-
-**Soundness:** a batch with more outputs than N still decodes, since the host buffers are sized from the batch. Its graph is larger than the reserved one, so the compute buffer grows at that moment, and the allocation can fail if the GPU is full by then (the plugin's block buffer fills free VRAM). Backend samplers are limited to N outputs per sequence. So it is meant for prompt-heavy serving where each request asks for the last token only; do not use it for prompt log-probabilities or `--embeddings` with no pooling. With the switch unset nothing changes.
-
-**Laptop check (LLaDA-MoE 7B, `-ub 1024`, ctx 8192, Intel iGPU):** compute buffer 648 MiB with the switch unset, 130 MiB with `LLAMA_N_OUTPUTS_MAX=8`; text identical (2000-token prompt, temperature 0, md5 equal). The same shape on Flash-Next (vocabulary about 248k) would free about 1.9 GiB at `-ub 2048`, which is two to three GPU layers or a bigger `-ub`; that is arithmetic, not measured.
-
-**Test (5 minutes, then about 40, Windows PC):** (1) start the server at `-ub 2048`, ctx 128k with and without `LLAMA_N_OUTPUTS_MAX=8` (at least the slot count): the `compute buffer size` line must drop by about `n_vocab x 2040 x 4 B`. (2) A B B A at 34k: A = today's `--n-cpu-moe`, B = `LLAMA_N_OUTPUTS_MAX=8` with `--n-cpu-moe` lowered by the layers the freed room holds (check with `--dry-run`/`llama-fit-params`). Compare prompt and decode tok/s; the text must be identical. Accept B only if both are not slower than the A-vs-A spread and at least one is faster.
 
 ## U09 lend the output head's memory to the prompt (not built: not safe, and the numbers say it would not pay)
 
