@@ -1352,6 +1352,7 @@ class Runner:
                 pass
         if magic != b"GGUF":
             raise ValueError("pick a model file (.gguf) in the list first")
+        self.share_p = None                 # a finished child of an earlier report must not answer for this one
         self.share = {"state": "running", "started": time.time(), "model": os.path.basename(model), "step": "starting", "lines": [], "agent": bool(agent),
                       "force": bool(force)}
         threading.Thread(target=self.run_share, args=(model, list(other), bool(agent), bool(force), self.share), daemon=True).start()
@@ -1381,6 +1382,8 @@ class Runner:
             elif not WINDOWS:
                 kw["start_new_session"] = True
             p = self.share_p = subprocess.Popen(cmd, **kw)
+            if sh.get("state") == "cancelled":     # Cancel came while the child was starting
+                self._kill_share(p)
             if WINDOWS:
                 try:
                     mc._kill_with_parent_windows(p)
@@ -1432,9 +1435,18 @@ class Runner:
 
     def cancel_share(self):
         sh, p = self.share, self.share_p
-        if sh.get("state") != "running" or not p or p.poll() is not None:
+        if sh.get("state") != "running":
+            return False
+        if not p:                                  # the worker has not started the child yet: it sees this right after it does
+            sh.update(state="cancelled", step="")
+            return True
+        if p.poll() is not None:
             return False
         sh.update(state="cancelled", step="")
+        self._kill_share(p)
+        return True
+
+    def _kill_share(self, p):
         try:
             if WINDOWS:
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True, timeout=30)
@@ -1447,7 +1459,6 @@ class Runner:
                 p.kill()
             except Exception:
                 pass
-        return True
 
     def share_public(self):
         sh = dict(self.share)
