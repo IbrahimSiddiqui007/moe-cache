@@ -38,6 +38,7 @@ Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 202
 | File | Switch | Result | Why archived | Retest if |
 |---|---|---|---|---|
 | llama.cpp/0026-vulkan-top-k-mask.patch | `GGML_VK_TOP_K_MASK` | 560 / 569 off, 565 / 571 on; decode same | no gain at 34k; it saves VRAM, which may matter at 256k | VRAM is short at 256k |
+| llama.cpp/0050-layerwise-prefill.patch (design: llama.cpp/0050-LAYERWISE_DESIGN.md) | `LLAMA_LAYERWISE_PREFILL=N` | 2026-11-02: 344 / 347 vs 395 / 366 and 402 / 407 vs 448 / 448; upload stayed 652 GB with KEEP_MIB 1200, 2400, 4000 | 10 % slower and saved no upload: the plugin's held tensors never cut uploads in layer order | the plugin gets a keeper built for layer order (a day or two of work) |
 | llama.cpp/0002-server-adaptive-draft-length.patch | `LLAMA_SPEC_ADAPT` | MTP decode 16.35 both | no gain | another draft model |
 | llama.cpp/0003-vulkan-mmid-vec-max-tokens.patch | `GGML_VK_MMID_VEC_MAX_TOKENS` | 16.45 vs 16.2-16.35 | no gain | - |
 
