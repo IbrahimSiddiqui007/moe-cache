@@ -1,5 +1,5 @@
 # Windows: download the python.org embeddable zip into src-tauri/resources/python/ and check its SHA-256.
-# Usage: powershell -File scripts\fetch-python-win.ps1 -Version 3.12.8 -Sha256 <hash from python.org>
+# Usage: powershell -File scripts\fetch-python-win.ps1 -Version 3.12.8 -Sha256 <SHA-256 of the zip> (the workflow pins the 3.12.8 hash)
 param([Parameter(Mandatory)][string]$Version, [Parameter(Mandatory)][string]$Sha256)
 $ErrorActionPreference = "Stop"
 $dst = Join-Path $PSScriptRoot "..\src-tauri\resources\python"

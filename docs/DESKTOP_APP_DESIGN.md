@@ -1,6 +1,6 @@
 # Desktop app: design (2026-11-03)
 
-Status: **design + scaffold** (`desktop/`). Owner decision 2026-11-03: build it, after release v0.3.6. Nothing here ships yet.
+Status: **days 1-2 built** (2026-11-03): runs on Linux, CI builds Windows and Linux installers (section 9). Owner decision 2026-11-03: build it, after release v0.3.6. Nothing here ships yet.
 
 ## 1. What the app is
 
@@ -93,12 +93,12 @@ the path. The embeddable zip needs its `python3NN._pth` to list `..\moe-cache\bi
 | Target | Format | Notes |
 |---|---|---|
 | Windows | NSIS `-setup.exe` (per user, no admin) and `.msi` | WebView2: the evergreen runtime ships with Windows 10 1803+/11; the NSIS installer uses Tauri's WebView2 bootstrapper as fallback. Unsigned → SmartScreen "More info → Run anyway", explained in the README. Windows Smart App Control can block unsigned exes outright (competitor issue #735 in strata_compare); the app inherits that limit, the browser page + `install.ps1` stays the fallback |
-| Linux | AppImage and `.deb` | needs `webkit2gtk-4.1`; the AppImage bundles the Tauri libs but not Python |
+| Linux | AppImage and `.deb` | needs `webkit2gtk-4.1` for the deb; the AppImage bundles the GTK / WebKit libs (so it is big) but not Python |
 
 Resources inside the app: `moe-cache/` (bin, ui, planner, models.json, the plugin), `python/` (Windows), and llama.cpp (the same official b12064
 build the kit uses; GPU backends as in the kit: Vulkan for Windows).
 
-**Size budget** (setup file; to be measured by the first CI run):
+**Size budget** (setup file; measured by the first CI run, 2026-11-03, without llama.cpp and the plugin; table below keeps the estimates, the measured row follows):
 
 | Part | Windows | Linux |
 |---|---|---|
@@ -108,7 +108,16 @@ build the kit uses; GPU backends as in the kit: Vulkan for Windows).
 | llama.cpp Vulkan build (compressed) | 40-70 MB | 25-45 MB (kit tarball) |
 | **Total download** | **about 60-90 MB** (ledger estimate 60-100) | **about 30-50 MB** (AppImage 15-25 MB without llama.cpp) |
 
-Budget rule: the app without llama.cpp stays under 25 MB. If the total exceeds 100 MB on Windows, llama.cpp is downloaded on first run instead
+Measured (CI run of PR 3, bundled Python 3.12.8 and kit files, no llama.cpp, no plugin):
+
+| File | Bytes | MB | Against the estimate |
+|---|---|---|---|
+| Windows `moe-cache_0.0.0_x64-setup.exe` (NSIS) | 10,527,894 | 10.5 | under (shell + Python + kit expected 16-18) |
+| Windows `moe-cache_0.0.0_x64_en-US.msi` | 12,976,128 | 13.0 | under |
+| Linux `.deb` | 2,132,814 | 2.1 | under (needs system webkit2gtk) |
+| Linux `.AppImage` | 81,127,928 | 81.1 | **over: the estimate (15-25 MB without llama.cpp) was wrong; the AppImage carries GTK and WebKit** |
+
+Budget rule: the app without llama.cpp stays under 25 MB (holds for Windows; the Linux AppImage is a known exception, the deb is the small Linux file). If the total exceeds 100 MB on Windows, llama.cpp is downloaded on first run instead
 (from the same release, SHA-256 checked, with the owner's OK per file as for models).
 
 ## 6. Updater
@@ -162,18 +171,20 @@ Listed by priority. Items 1-4 are needed for a usable app; the rest can follow.
 
 Estimates assume the audit-fix sessions are merged and v0.3.6 is out. "Day" = a working day including CI round-trips (Windows CI is the slow part).
 
-| Day | Milestone | Done when |
-|---|---|---|
-| 0 (done) | M0 scaffold | this design; `desktop/` compiles on Linux (`cargo check`); CI workflow exists |
-| 1 | **M1a Linux runs** | `tauri dev` on Linux opens the window on the control page; tray Start/Stop/Quit work; the token bootstrap works with section 8 items 1, 2 (small page patches) |
-| 2 | **M1b Windows CI build** | `desktop.yml` builds an NSIS + MSI + AppImage + deb; Python embeddable staged; installer size measured against section 5 |
-| 3 | **M1c Windows run** | install on a Windows machine (friend or the PC), app opens, Start a small model with the bundled llama-server; webview differences found and fixed (item 6) |
-| 4 | **M2 process safety** | Job Object / PDEATHSIG, stdin-EOF watch (item 3), `/api/quit` (item 5), Python-child-died screen, external links (item 7), crash tests |
-| 5 | **M2b polish** | icons and name; first-run text; window state (size, position); start-at-login (item 8); single-instance checked on Windows |
-| 6-7 | **M3 model downloads in the page** (item 9) | pick a model, press Download, progress, checksum, resume; usable by the browser page too |
-| 8 | **M4 updater** | key pair, `latest.json` in the release, "Check for updates" (item 11), update from version N to N+1 tested |
-| 9 | **M5 release wiring** | `release.yml` attaches app files and SHA256SUMS; README / WINDOWS.md install section; SmartScreen text; privacy table row; friend test (docs/FRIEND_TEST.md) |
-| 10 | buffer | fixes from the friend test |
+| Day | Milestone | Done when | State 2026-11-03 | Re-estimate (days, left) |
+|---|---|---|---|---|
+| 0 | M0 scaffold | design; `desktop/` compiles; workflow file | done | 0 |
+| 1 | **M1a Linux runs** | window on the control page; tray; token bootstrap | done: debug app opened the control page in WebKitGTK on Wayland; the launcher printed its address, the page took the `?t=` token and sent the header; real Granite 1B chat streamed and Stop left no llama-server (driven through the launcher API); model-free test `desktop/tests/shell_contract_test.py` and 4 Rust unit tests pass. Not clicked by hand: the tray menu, Quit | 0 |
+| 2 | **M1b Windows CI build** | NSIS + MSI + AppImage + deb; Python staged; sizes | done: `desktop.yml` green on PR 3 (Windows 2022 and Ubuntu 24.04), contract test also ran with the bundled Python on Windows; sizes in section 5 | 0 |
+| 3 | **M1c Windows run** | install on Windows, app opens, Start a small model | open: owner click-through (checklist in PR 3, about 45 min of the owner's time); fixes about 0.5 day. llama.cpp and the plugin are **not** in the installer yet (staged by M2b / M5), so the Windows test uses the user's own llama-server via the page | 0.5-1 |
+| 4 | **M2 process safety** | Job Object / PDEATHSIG, stdin-EOF (item 3), `/api/quit` (item 5), child-died screen, external links (item 7) | not started; items 3, 5, 7 touch `bin/moe_cache_ui.py` / `ui/` (other session) | 1 |
+| 5 | **M2b polish** | icon, name, first-run text, window state, start at login, stage llama.cpp + plugin | not started | 1 (was 1; staging llama.cpp added, window state is small) |
+| 6-7 | **M3 downloads in the page** (item 9) | download card with progress, checksum, resume | not started | 2 |
+| 8 | **M4 updater** | key pair, `latest.json`, About card | not started; needs the owner to create the update key secret | 1 |
+| 9 | **M5 release wiring** | `release.yml` attaches files and SHA256SUMS; docs; friend test | not started | 0.75 |
+| 10 | buffer | fixes from the friend test | not started | 0.5-1 |
+
+Days 1-2 took about one working day (several hours; the CI round trip was 5 minutes). Days 3-10 re-estimated: about 6.75-7.75 working days left, so about 8-9 days in total (was 9-10).
 
 A **first usable app** (a friend installs it, starts a model, chats, quits cleanly) is the end of **day 4**, assuming items 1-5 of section 8 are in.
 Everything after is polish, downloads and updates. Total about 9-10 days, in line with the ledger's 8-10.
@@ -182,10 +193,11 @@ Everything after is polish, downloads and updates. Total about 9-10 days, in lin
 
 | File | Role |
 |---|---|
-| `src-tauri/src/main.rs` (about 280 lines) | spawn the page, read its address, navigate, tray, single instance, clean Quit through the page's API |
+| `src-tauri/src/main.rs` (about 320 lines with 4 unit tests) | spawn the page, read its address, navigate, tray, single instance, clean Quit through the page's API |
 | `src-tauri/tauri.conf.json`, `Cargo.toml`, `capabilities/default.json` | window, bundle targets, resources mapping; no IPC for the remote page |
 | `web/index.html` | splash and error page (the only UI of the shell) |
 | `scripts/stage.sh`, `build-linux.sh`, `fetch-python-win.ps1` | stage kit files; Linux build; Windows Python staging |
-| `.github/workflows/desktop.yml` | manual build, Windows + Linux |
+| `tests/shell_contract_test.py` | model-free: starts the page as the shell does, opens the address like a window, API with the header, fake model, chat stream, stop (Linux and Windows) |
+| `.github/workflows/desktop.yml` | by hand and on pull requests touching `desktop/`: Rust tests, contract test, Windows (NSIS + MSI) and Linux (AppImage + deb) builds, artifacts 7 days |
 
 How to build and run: `desktop/README.md`.
