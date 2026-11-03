@@ -1,0 +1,13 @@
+{
+  "name": "moe-cache-desktop",
+  "private": true,
+  "version": "0.0.0",
+  "description": "moe-cache desktop app (Tauri 2 shell around the control page). Only the Tauri CLI lives here.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

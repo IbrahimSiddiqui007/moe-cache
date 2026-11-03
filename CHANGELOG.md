@@ -14,6 +14,7 @@
 | Docs | Privacy statement (no telemetry, no account, the plugin opens no network connections; a table of every time the launcher or installers use the internet) in docs/SECURITY.md; docs/AI_SETUP.md for setting moe-cache up through a coding agent; question and feature-request forms and a pull-request checklist; README sections for Hermes Agent, OpenCode and the other agents |
 | Tests | The batch-8 logits test reads a fixed text (a docs edit no longer flips it); Windows bench-record samples VRAM in its own thread |
 | Patches | 0022 and 0027 are merged upstream and moved to `archive/`; 0004, 0005, 0020, 0030, 0040 still apply to b12064 |
+| Desktop app | Design and a buildable skeleton for a desktop app (Tauri 2 shell around the control page, tray icon, one instance, bundled Python on Windows): `docs/DESKTOP_APP_DESIGN.md`, `desktop/`, manual workflow `desktop.yml`. Not released; nothing changes for the browser page |
 
 ## 0.3.5 (2026-11-03)
 
