@@ -7,6 +7,7 @@
 #include <vector>
 #ifdef __linux__
 #  include <sys/resource.h>
+#  include <sys/vfs.h>
 #endif
 
 static int fails = 0;
@@ -48,7 +49,15 @@ int main() {
         CHECK(before > 0);
         CHECK(mcram::drop_file_cache(fd));
         const size_t after = cached_pages(fd, len);
-        CHECK(after < before / 4);                  // 0 in practice; the margin keeps a busy kernel from failing the test
+        // On tmpfs / ramfs (a RAM-disk /tmp) the file's pages ARE the file: no page-cache drop can evict them, so the fall in resident pages
+        // cannot be checked there. Put TMPDIR on a disk to run this check (it failed 5 of 5 on a laptop whose /tmp is tmpfs).
+        struct statfs sf;
+        const bool ramfs = fstatfs(fd, &sf) == 0 && (sf.f_type == 0x01021994 /* TMPFS_MAGIC */ || sf.f_type == 0x858458f6 /* RAMFS_MAGIC */);
+        if (ramfs) {
+            printf("the temporary file is on tmpfs/ramfs: the page-cache drop cannot be checked here (set TMPDIR to a disk)\n");
+        } else {
+            CHECK(after < before / 4);              // 0 in practice; the margin keeps a busy kernel from failing the test
+        }
         printf("page cache pages: %zu before, %zu after\n", before, after);
         close(fd);
         unlink(t.data());
