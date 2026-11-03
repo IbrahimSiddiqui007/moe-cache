@@ -28,7 +28,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 - **Web UI**: not built here. `llama-server` already serves a web UI at its address, and `moe-cache-server --open` opens it. Anything that speaks the OpenAI API (for example Open WebUI) can connect to the same address.
 - **Setup GUI** (choose model, RAM, GPU split with sliders): reasonable for v0.4, a small local web page or a terminal menu.
 
-## Status against the v1.0 list (2026-10-30, version 0.3.3)
+## Status against the v1.0 list (as of 2026-10-30, version 0.3.3; v0.3.4 was released after it and v0.3.5 is in preparation: see CHANGELOG.md)
 
 | v1.0 requirement | State |
 |---|---|
@@ -41,4 +41,4 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 | Safety: automatic fallback on a fault | read faults fall back to buffered reads; a wrong model file disables caching instead of aborting; an unrecoverable read still stops the server (never serves wrong data). |
 | Sanitizer runs | whole plugin under ASan + UBSan with the executor, forced evictions and byte checking: clean. |
 
-Summary: not v1.0. The remaining gaps are Windows on more than one machine, a Linux run on the AMD desktop, a moving llama.cpp pin, and CI that can run models. Version 0.3.0 is feature-complete for the Linux NVIDIA/CPU case.
+Summary: not v1.0. The remaining gaps are Windows on more than one machine, a Linux run on the AMD desktop, a moving llama.cpp pin, and CI that can run models. Version 0.3.0 was feature-complete for the Linux NVIDIA/CPU case; the Windows work since then is in CHANGELOG.md.
