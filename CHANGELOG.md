@@ -5,7 +5,7 @@
 | Area | Change |
 |---|---|
 | Long prompts | A long-prompt block also does the router-weight sum on the GPU, so about a tenth of the data crosses back (`MOE_CACHE_GPU_SUM=0` turns it off) |
-| Launcher | At context above 32k the micro-batch is 2048, with more GPU memory left free. A card filled to the edge was the largest slowdown found on long prompts. gpt-oss stays at 1024 because its decode fell by a third. Numbers to follow from a clean run |
+| Launcher | At context above 32k the micro-batch is 2048, with more GPU memory left free; at 256k too (prompts +26 %, 334 vs 264 tok/s on a 222k-token prompt). A card filled to the edge was the largest slowdown found on long prompts. gpt-oss stays at 1024 because its decode fell by a third. Numbers to follow from a clean run |
 | Claude Code | `connect claude` also sets `CLAUDE_CODE_ATTRIBUTION_HEADER=0`, so a changing block at the start of the prompt no longer makes the server read everything again each turn |
 | Windows warning | The launcher and the control page name programs using the GPU; the EA app's measured cost depends on how much it draws |
 | Control page | Cancel works right after Share my numbers. New "Other programs" list |
