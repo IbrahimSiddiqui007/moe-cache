@@ -1034,7 +1034,7 @@ const nextPort = () => { const used = new Set((S.servers.managed || []).map(x =>
 async function loadServers() {
   let j; try { j = await api("/api/servers"); } catch (e) { return; }
   const managed = j.managed || [], other = (j.servers || []).filter(x => !x.started_here);
-  S.servers = { managed, other, max: j.max_extra };
+  S.servers = { managed, other, max: j.max_extra, groupError: j.group_error };
   if (S.chatPort && !managed.concat(other).some(x => x.port == S.chatPort)) S.chatPort = null;
   paintServers(); paintChatTarget();
 }
@@ -1049,6 +1049,7 @@ function paintServers() {
     <br><span class="small">started elsewhere · ${x.health == "ready" ? "ready" : "loading"}${x.ctx ? " · ctx " + x.ctx.toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span>
     ${x.health == "ready" ? chatBtn(x.port, x.key ? "this server wants an API key; the page sends its key only to servers it started" : "") : ""}</div>`).join("") +
     (other.length ? `<div class="hint">Servers started outside this page (a script, the terminal, another page) can be chatted with here when they need no key; Start and Stop act on this page's own servers only.</div>` : "") +
+    (S.servers.groupError ? `<div class="pwarn small">${esc(S.servers.groupError)}</div>` : "") +
     `<div class="row small" style="margin-top:8px"><button id="srvadd" ${can ? "" : "disabled"} title="Starts the model selected on the left, with the settings in Settings, on another port">Start another server</button><input type="number" id="srvport" min="1" max="65535" value="${nextPort()}" style="width:80px" aria-label="Port of the new server"></div>
     <div class="hint">Every server loads its own model into this PC's memory: the plan's numbers are for one model alone. Two big models at once will not fit; two small ones, or one model and a small one, can.</div>` + pairPanel();
 }

@@ -19,11 +19,11 @@ def check(ok, what):
         fails.append(what)
 
 models = os.path.join(TMP, "models"); os.makedirs(models)
-for n in ("Alpha-Q4_K_M.gguf", "Beta-Q4_K_M.gguf"):
+for n in ("Alpha-Q4_K_M.gguf", "Beta-Q4_K_M.gguf", "Gamma-Q4_K_M.gguf", "Delta-Q4_K_M.gguf"):
     open(os.path.join(models, n), "wb").write(b"GGUF" + b"\0" * 1000)
 ui.default_folders = lambda: [models]
 ui.ollama_roots = lambda: []
-alpha, beta = os.path.join(models, "Alpha-Q4_K_M.gguf"), os.path.join(models, "Beta-Q4_K_M.gguf")
+alpha, beta, gamma, delta = (os.path.join(models, n + "-Q4_K_M.gguf") for n in ("Alpha", "Beta", "Gamma", "Delta"))
 
 fake = os.path.join(TMP, "fake_launcher.py")
 open(fake, "w").write(r'''
@@ -89,9 +89,9 @@ st, body = req("/api/servers/start", {"model": beta, "port": P2})
 check(st == 200 and wait_ready(P2), f"a second server starts on {P2} and gets ready")
 m = {x["port"]: x for x in json.loads(req("/api/servers")[1])["managed"]}
 check(set(m) == {P1, P2} and m[P1]["main"] and not m[P2]["main"] and "Beta" in m[P2]["model"], f"managed list: main and extra ({[(p, x['main'], x['state']) for p, x in m.items()]})")
-st, body = req("/api/servers/start", {"model": beta, "port": P3})
+st, body = req("/api/servers/start", {"model": gamma, "port": P3})
 check(st == 200, "a third server (the second extra) is allowed")
-st, body = req("/api/servers/start", {"model": beta, "port": free_port()})
+st, body = req("/api/servers/start", {"model": delta, "port": free_port()})
 check(st == 400 and "at most 2" in body, "a fourth server is refused")
 check(req("/api/servers/start", {"model": "/etc/passwd", "port": free_port()})[0] == 400, "an unlisted model is refused (the same checks as Start)")
 req("/api/servers/stop", {"port": P3}); time.sleep(1)
@@ -202,6 +202,36 @@ req("/api/servers/stop", {"port": G2}); time.sleep(2)
 st, body = req("/api/servers/start", {"model": beta, "port": G2})
 check(st == 200 and json.loads(body)["share_ram"] is True and wait_ready(G2), "next to a running server: started with --share-ram")
 check("--share-ram" in json.load(open(os.path.join(TMP, f"argv-{G2}.json"))), "next to a running server: the launcher got --share-ram")
+
+# ---- rules for two servers at once ----
+st, body = req("/api/servers/start", {"model": alpha, "port": free_port()})
+check(st == 400 and "already running" in body and "overwrite" in body, f"same model as a running server: refused ({body[:90]})")
+st, body = req("/api/servers/plan", {"models": [{"model": alpha, "port": 9101}, {"model": alpha, "port": 9102}]})
+check(st == 400 and "twice" in body, "a group with one model twice: refused")
+_real_held = ui.Handler.held_bytes
+ui.Handler.held_bytes = lambda self: 27 * GIB
+ui.group_inputs = lambda: dict(inp, cap=28 * GIB)
+st, body = req("/api/servers/start", {"model": gamma, "port": free_port()})
+check(st == 400 and "not enough memory next to the running servers" in body and "Stop one" in body, f"third model while the running ones hold 27 of 28 GiB: refused with numbers ({body[:110]})")
+ui.Handler.held_bytes = _real_held
+st, body = req("/api/servers/start", {"model": gamma, "port": free_port(), "ram": 1})
+check(st in (200, 400) and "not enough memory" not in body, "a typed --ram skips the check (the user decided)")
+# stop the main server: the other one keeps running and answers
+st, _ = req("/api/stop", {})
+end = time.time() + 30
+while time.time() < end and json.loads(req("/api/status")[1])["state"] not in ("exited", "idle", "stopped"):
+    time.sleep(0.3)
+mm = {x["port"]: x for x in json.loads(req("/api/servers")[1])["managed"]}
+check(G2 in mm and mm[G2]["state"] == "ready" and G1 not in mm, "stopping the main server leaves the other running")
+st, body = chat(G2)
+check(st == 200 and f"on {G2}" in body, "the other one still answers")
+st, body = req("/api/start", {"model": beta, "port": G1})
+check(st == 400 and "already running" in body, "restarting the main server on the model the other one runs: refused")
+st, body = req("/api/start", {"model": alpha, "port": G1})
+check(st == 200 and wait_ready(G1), "restarting the main server on another model works")
+check("--share-ram" in json.load(open(os.path.join(TMP, f"argv-{G1}.json"))), "the restarted main server counts what the other one holds (--share-ram)")
+check(req("/api/connect", {"agent": "opencode", "port": 4242})[0] == 400, "connect to a port the page did not start: refused")
+check("group_error" in json.loads(req("/api/servers")[1]), "the servers answer carries group_error (empty when fine)")
 page2 = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
 check("/api/servers/plan" in page2 and "/api/servers/group" in page2, "page: the split panel calls plan and group")
 

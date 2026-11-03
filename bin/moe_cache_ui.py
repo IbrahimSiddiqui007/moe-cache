@@ -1954,6 +1954,10 @@ def open_page(url):
 _KIND = {}
 
 
+def shortname(path):
+    return re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", os.path.basename(path))
+
+
 def model_kind(path):
     """"moe" when the GGUF holds expert tensors (the plugin has something to cache), else "dense" (it needs its whole file in memory). Read from the header."""
     try:
@@ -2004,6 +2008,7 @@ class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
     downloads = None
+    group_error = None          # why the last group start stopped half way (class attribute: one page, one group at a time)
     extra = None                # GUI-013: {port: Runner} of the further servers this page started (the main one is `runner`)
     token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in memory
     server_version = "moe-cache-ui"
@@ -2114,7 +2119,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, self.runner.sessions())
             if u.path == "/api/servers":                   # llama-servers on this machine (ports 8080-8089), started here or elsewhere
                 own = int(self.runner.settings.get("port") or 8080) if self.runner.state in ("starting", "ready", "waiting") else None
-                return self.send(200, {"servers": peek_servers(own=own, extra=self.live_extra()), "managed": self.managed(), "max_extra": MAX_EXTRA})
+                return self.send(200, {"servers": peek_servers(own=own, extra=self.live_extra()), "managed": self.managed(), "max_extra": MAX_EXTRA, "group_error": self.group_error})
             if u.path == "/api/peek":                      # one port on 127.0.0.1 (a server started elsewhere, e.g. by a script or the on-demand server)
                 port = number(q.get("port"), 1, 65535, int, "port")
                 if port is None:
@@ -2197,6 +2202,11 @@ class Handler(BaseHTTPRequestHandler):
                     s["agent"] = True            # the listener is for agents: --agent is always on
                 self.store.saved["last"] = {k: v for k, v in s.items() if k != "api_key"}
                 self.store.save("last")
+                if self.live_extra() and not body.get("on_demand"):        # the further servers keep running: count what they hold, do not run the same model twice
+                    self.refuse_same_model(s["model"])
+                    self.fits_next_to_running(s)
+                    if not s.get("ram"):
+                        s["share_ram"] = True
                 self.runner.start(s, on_demand=bool(body.get("on_demand")))
                 return self.send(200, self.runner.status())
             if self.path == "/api/pick/use":               # "Use it": the same settings `moe_cache.py pick --apply` writes (no download here)
@@ -2246,9 +2256,12 @@ class Handler(BaseHTTPRequestHandler):
                 agent = body.get("agent")
                 if agent not in ("opencode", "hermes"):
                     raise ValueError("agents: opencode, hermes")
-                if self.runner.state not in ("ready", "waiting"):
+                r = self.runner if body.get("port") in (None, "") else self.extra.get(number(body.get("port"), 1, 65535, int, "port"))
+                if r is None:
+                    raise ValueError("port: a server this page started")
+                if r.state not in ("ready", "waiting"):
                     raise ValueError("start a server first (with Agent mode on)")
-                return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.key() or "", bool(body.get("write"))))
+                return self.send(200, connect_agent(agent, r.status()["url"], r.key() or "", bool(body.get("write"))))
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:
@@ -2363,12 +2376,44 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError(f"port {port} is used by another server of this page: pick another port")
         if len(self.live_extra()) >= MAX_EXTRA:
             raise ValueError(f"at most {MAX_EXTRA} more servers at once")
+        self.refuse_same_model(s["model"])
+        self.fits_next_to_running(s)
         if used and not s.get("ram"):
             s["share_ram"] = True                  # next to a running server: count the RAM it holds before sizing this one (the running one keeps its plan)
         r = Runner()
         r.start(s)
         self.extra[port] = r
         return {"port": port, "managed": self.managed(), "share_ram": bool(s.get("share_ram"))}
+
+    def running(self):
+        """Runners of this page that are starting or running: the main one and the further ones."""
+        out = [self.runner] if self.runner.state in ("starting", "ready", "waiting", "stopping") else []
+        return out + [self.extra[p] for p in self.live_extra()]
+
+    def refuse_same_model(self, model):
+        """Two servers on one model would save and restore the same warm conversation files (the slot files are named after the model) and overwrite each other."""
+        real = os.path.realpath(model)
+        for r in self.running():
+            if r.settings.get("model") and os.path.realpath(r.settings["model"]) == real:
+                raise ValueError(f"{shortname(model)} is already running on port {int(r.settings.get('port') or 8080)}: two servers on one model would overwrite each other's saved conversations")
+
+    def held_bytes(self):
+        """Resident memory of the servers of this page (what the page reads from the system about once a second)."""
+        return sum(r.rss or 0 for r in self.running())
+
+    def fits_next_to_running(self, s):
+        """Does this model's minimum fit in what the running servers leave of the one memory cap? Uses what they hold now (their resident memory), so it is a
+        plain refusal with numbers instead of a start that ends in an out-of-memory. Skipped when the user typed --ram or nothing is measured yet."""
+        held = self.held_bytes()
+        if not held or s.get("ram"):
+            return
+        listed = {m["path"]: m for m in self.store.list_models()}
+        m = listed[s["model"]]
+        inp = group_inputs()
+        view = group_plan_view([{"name": m["name"], "path": m["path"], "size": m["size"], "weight": 1.0}], dict(inp, cap=max(inp["cap"] - held, 0), cores=[]))
+        if not view["ok"]:
+            raise ValueError(f"not enough memory next to the running servers: they hold {held / 1e9:.1f} GB of the {inp['cap'] / 1e9:.1f} GB cap; " + "; ".join(view["why"]) +
+                             ". Stop one of them first, or pick a smaller model.")
 
     def group_items(self, body):
         """The models of a group request, checked like Start: [(settings, list entry)]. Two or three, each a listed model, distinct ports."""
@@ -2386,6 +2431,8 @@ class Handler(BaseHTTPRequestHandler):
             if s["port"] in ports:
                 raise ValueError(f"port {s['port']} is given twice")
             ports.add(s["port"])
+            if any(os.path.realpath(s["model"]) == os.path.realpath(o["model"]) for o, _ in out):
+                raise ValueError(f"{shortname(s['model'])} twice: two servers on one model would overwrite each other's saved conversations")
             w = number(d.get("weight"), 0.1, 100, float, "weight")
             out.append((s, dict(listed[s["model"]], weight=w or 1.0)))
         return out
@@ -2408,6 +2455,7 @@ class Handler(BaseHTTPRequestHandler):
         for port, _ in [(s["port"], m) for s, m in items]:
             if mc.port_busy(port):
                 raise ValueError(f"port {port} is already in use: pick another port")
+        self.group_error = None
         runs = []
         for (s, _), row in zip(items, view["rows"]):
             s["ram"] = row["ram_gb"]
@@ -2428,6 +2476,7 @@ class Handler(BaseHTTPRequestHandler):
                     r.start(s)
                 except ValueError as e:
                     r.add_line("ui: could not start: " + str(e))
+                    self.group_error = f"{shortname(s['model'])} on port {s['port']} could not start: {e}" + (" (the servers started before it keep running)" if i else "")
                     return
                 end = time.time() + 600
                 while time.time() < end and r.state == "starting":      # one after the other: the next plan reads the VRAM the first one took
