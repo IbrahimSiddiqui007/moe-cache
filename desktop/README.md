@@ -45,6 +45,7 @@ the design); the app uses the ones the page finds, as the browser page does.
 | `CLICK_THROUGH.md` | the Windows click-through for the owner (about 45 minutes) |
 | `tests/` | `shell_contract_test.py`, no model |
 | `scripts/` | `stage.sh` (kit files into the bundle), `build-linux.sh`, `fetch-python-win.ps1` |
-| `icons/` | the new app icon, pixel art: `icon32.txt` (32x32 master) and `icon16.txt` (hand-placed 16x16) are text pixel maps; `make_icon.py` renders `icon.svg`, `icon-small.svg`, `preview.png` and `out/*.png` (nearest-neighbour only). Not yet in `src-tauri/icons/` (the owner judges the preview first; then `npx tauri icon icons/out/1024.png`, and `icon.ico` from out/16, 32, 48, 64, 128, 256 with ImageMagick) |
+| `icons/` | the app icon: the owner's curled dragon holding a red cache block, pixel art. `make_app_icon.py` builds `src-tauri/icons/` from the maps in `icons/concepts/D/` (64x64 for 64 px and up, 32x32 for 32-48 px, hand-made 16x16 for 16-24 px; nearest-neighbour only). `icons/concepts/` keeps the other concepts (A-E, draft 1) for history |
+| `src-tauri/icons/` | the generated files (`icon.icns` came from `npx tauri icon` on a 1024 px nearest-neighbour render; macOS is not in version 1) |
 
 Control-page changes the app needs are listed in section 8 of the design; they are not made here.
