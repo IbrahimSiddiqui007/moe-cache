@@ -30,7 +30,8 @@ void remove_crash_report();
 #endif
 
 #include "mc_state_route.h"
-struct state_t : state_route_t {
+#include "mc_state_testfault.h"
+struct state_t : state_route_t, state_testfault_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -41,11 +42,6 @@ struct state_t : state_route_t {
     std::vector<plat::file_t> fds_buf;          // buffered (no O_DIRECT) handles, opened only if a direct read keeps failing
     std::mutex fds_buf_mu;
     std::vector<std::atomic<bool>> direct_broken;   // per file: direct reads fail on this file system (EINVAL/EOPNOTSUPP): buffered reads from then on (AUD-011)
-    int    test_read_delay_us = 0;              // MOE_CACHE_TEST_READ_DELAY_US=N: test switch, background expert reads start N us late
-    int    fault_every = 0;                     // MOE_CACHE_FAULT_EVERY=N: test switch, every Nth expert read fails all its direct attempts
-    bool   test_poison = false;                 // MOE_CACHE_TEST_POISON_READS=1: test switch, a read first fills what it will write with 0xFF and waits
-                                                //   MOE_CACHE_TEST_READ_DELAY_US (what a page under an unbuffered Windows read looks like to other threads)
-    std::atomic<uint64_t> fault_ctr{0}, read_fallbacks{0};
     std::unordered_map<std::string, int> file_shard;
     ggml_backend_buffer_type_t repack_buft = nullptr;   // llama.cpp CPU_REPACK buffer type (mode on)
     ggml_backend_buffer_t repack_buf = nullptr;         // a real repack buffer, used for init_tensor / set_tensor only
