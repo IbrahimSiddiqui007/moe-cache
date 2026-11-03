@@ -46,6 +46,7 @@
 #include "mc_tier.h"
 #include "mc_env.h"
 #include "mc_guard.h"
+#include "mc_shared_gpu.h"
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>

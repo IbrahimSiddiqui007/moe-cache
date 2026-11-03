@@ -250,6 +250,62 @@ struct card_guard {
     }
 };
 
+// ---- shared-memory GPUs (CACHE-149; sizing rules in mc_shared_gpu.h) ----
+// On an integrated GPU the block's "GPU" buffers are system RAM. MOE_CACHE_GPU_SHARED=auto (default: the device is of type IGPU, the same test the launcher
+// makes with Vulkan's device type / the registry's dedicated VRAM), 1 (treat the GPU as shared) or 0 (as discrete); MOE_CACHE_GPU_SHARED_CAP_MIB=N sets the cap.
+// NOT TESTED ON AN iGPU (the PC and the dev machine have discrete cards): only the arithmetic is, in tests/shared_gpu_test.cpp. To measure on the Claw.
+struct shared_plan_t { bool shared; size_t cap; };
+
+shared_plan_t shared_gpu_plan(state_t & s, ggml_backend_dev_t dev) {
+    static const int force = [] {
+        const char * v = getenv("MOE_CACHE_GPU_SHARED");
+        return (v && *v && strcmp(v, "auto") != 0) ? (mcenv::flag_value(v, false) ? 1 : 0) : -1;
+    }();
+    static const long cap_mib = getenv("MOE_CACHE_GPU_SHARED_CAP_MIB") ? atol(getenv("MOE_CACHE_GPU_SHARED_CAP_MIB")) : 0;
+    const bool shared = dev && (force >= 0 ? force == 1 : ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_IGPU);
+    if (!shared) {
+        return { false, 0 };
+    }
+    return { true, mcshared::stage_cap(s.limit_bytes ? s.limit_bytes : s.budget, cap_mib) };
+}
+
+// After a block: what the shared-memory GPU's buffers hold (the graph allocator's buffer, the pinned staging and read-back buffers, kept whole tensors)
+// is taken from the cache budget (auto mode: the budget follows the memory limit; with a fixed MOE_CACHE_SIZE_GIB only the cap applies) and from the
+// ceiling the autotuner grows towards, and given back when the buffers shrink or go.
+mcshared::account_t g_shared_acct;
+void shared_gpu_account(moe_cache_backend_ctx * c, state_t & s) {
+    const shared_plan_t p = shared_gpu_plan(s, s.gpu_dev);
+    size_t now = 0;
+    if (p.shared && s.auto_mode) {
+        now += c->galloc ? ggml_gallocr_get_buffer_size(c->galloc, 0) : 0;
+        now += c->up_buf ? ggml_backend_buffer_get_size(c->up_buf) : 0;
+        now += c->rb_buf ? ggml_backend_buffer_get_size(c->rb_buf) : 0;
+        for (const auto & h : c->held) {
+            now += h.bytes;
+        }
+    }
+    if (now == g_shared_acct.reserved) {
+        return;
+    }
+    std::lock_guard<std::mutex> lk(s.mu);
+    const size_t before = s.budget, was = g_shared_acct.reserved;
+    if (mcshared::account(g_shared_acct, now, s.budget, s.max_budget, std::max(s.min_budget, (size_t) 512 << 20))) {
+        while (s.resident_bytes > s.budget) {
+            const int v = s.pick_victim();
+            if (v < 0) {
+                break;
+            }
+            s.evict(v);
+        }
+    }
+    static std::atomic<int> said{0};
+    if (now > was && said++ < 4) {
+        fprintf(stderr, "moe-cache: shared-memory GPU (%s): its copy of the expert weights now holds %.0f MiB of system RAM (cap %.0f MiB); the expert cache budget goes "
+                        "from %.2f to %.2f GiB (MOE_CACHE_GPU_SHARED=0 treats the GPU as discrete)\n", ggml_backend_dev_name(s.gpu_dev), now / 1048576.0, p.cap / 1048576.0,
+                before / 1073741824.0, s.budget / 1073741824.0);
+    }
+}
+
 // llama.cpp gives a GPU backend only the nodes it supports; the plugin's own GPU graphs must ask too, else the backend aborts on such a node
 // (ggml-vulkan refuses for example MUL_MAT_ID at GGML_PREC_F32, or when its shared memory is too small for a type)
 bool gpu_graph_supported(moe_cache_backend_ctx * c, ggml_cgraph * g) {
@@ -463,6 +519,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     size_t held = ggml_gallocr_get_buffer_size(c->galloc, 0);                     // already allocated for an earlier block: reused
     size_t gpu_free = 0, gpu_tot = 0;
     ggml_backend_dev_memory(gdev, &gpu_free, &gpu_tot);
+    const shared_plan_t shp = shared_gpu_plan(s, gdev);      // CACHE-149: on a shared-memory GPU the copy lives in RAM, so its size is capped
+    if (shp.shared) {
+        gpu_free = mcshared::free_for_block(gpu_free, held, shp.cap);
+    }
     // a block that needs no more than the held buffer allocates nothing, so it needs no headroom (with chunks off: the old rule, headroom always)
     auto fits = [&](size_t need) {
         const size_t extra = need > held ? need - held : 0;
@@ -488,6 +548,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         const size_t h2 = c->gpu ? ggml_gallocr_get_buffer_size(c->galloc, 0) : 0;
         if (c->gpu) {
             ggml_backend_dev_memory(s.gpu_dev2, &f2, &t2);
+            const shared_plan_t shp2 = shared_gpu_plan(s, s.gpu_dev2);
+            if (shp2.shared) {
+                f2 = mcshared::free_for_block(f2, h2, shp2.cap);
+            }
         }
         const size_t extra = need > h2 ? need - h2 : 0;
         if (!c->gpu || !(t2 == 0 || extra == 0 || f2 >= extra + headroom)) {
@@ -978,6 +1042,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 fprintf(stderr, "moe-cache: a long-prompt block needs %.0f MiB of GPU memory but only %.0f MiB are free: it stays on the CPU "
                                 "(a smaller --moe-cache-mib or --gpu-margin leaves room; about %.0f MiB per layer for this model)\n",
                         (extra + headroom) / 1048576.0, fr / 1048576.0, need / 1048576.0);
+            }
+            if (shp.shared) {
+                fprintf(stderr, "moe-cache: (shared-memory GPU: the block's copy in system RAM is capped at %.0f MiB; MOE_CACHE_GPU_SHARED_CAP_MIB raises it)\n", shp.cap / 1048576.0);
             }
             ggml_free(ctx);
             return false;
