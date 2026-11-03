@@ -86,6 +86,7 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --ctx 8192 --llama-server /pat
 - `--open` opens the web UI in your browser (it is the built-in llama.cpp UI at http://localhost:8080). The same address is an OpenAI-compatible API, so tools like Open WebUI, editors and scripts can connect to it.
 - `--dry-run` prints the exact command without starting anything.
 - Force the split yourself with `--n-cpu-moe N` (N layers keep their experts on the CPU).
+- `--cpu-only` runs on the processor alone (llama-server gets `--device none -ngl 0`). The launcher also chooses it by itself when `llama-server --list-devices` answers and lists no GPU; a `--device` of your own (after `--`) wins.
 
 The `--fast` levels (all optional; each one changes the output a little on purpose, so the default is exact):
 

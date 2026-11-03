@@ -266,6 +266,26 @@
                 100.0 * acc / (double) budget, std::chrono::duration<double>(std::chrono::steady_clock::now() - r0).count());
     }
 
+    // CACHE-058 (MOE_CACHE_DROP_READAHEAD=1, default off): when the cache holds its own copy in private memory, the page cache copy of the model
+    // files (llama.cpp's load, the warm start's buffered fallback, read-ahead) is only a second copy that the kernel then trades against the cache
+    // or swaps it out for. Drop it once, after the startup fill. File-view mode keeps the page cache as the cache and is left alone.
+    void drop_readahead() {
+        if (!mcram::drop_wanted() || win_view) {
+            return;
+        }
+        int n = 0;
+        for (const plat::file_t & f : fds) {
+#ifndef _WIN32
+            n += mcram::drop_file_cache(f.fd) ? 1 : 0;
+#else
+            (void) f;
+#endif
+        }
+        if (n) {
+            fprintf(stderr, "moe-cache: dropped the read-ahead page cache of %d model file(s) after the startup fill (MOE_CACHE_DROP_READAHEAD)\n", n);
+        }
+    }
+
     // auto mode: keep the real anonymous memory of the process under (limit - margin). Called every 32 groups and after every 256 MiB of reads.
     void tune() {
         if (max_budget == 0) {
