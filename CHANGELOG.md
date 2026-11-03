@@ -63,6 +63,7 @@
 | Bug fixes | The sanitize CI workflow has a concurrency group per branch that queues a second run behind the first instead of losing a running instrumented build (QUALITY-017). |
 | Bug fixes | `moe_cache.py on-demand`: remembering a model again (a new port, idle time or model) without `--api-key` keeps the custom key given earlier, so agents using it are no longer locked out with a silent 401; `--forget-key` drops it (SERVER-624). |
 | Bug fixes | The launcher starts faster: the text of `llama-server --help` is remembered on disk (`probe-cache.json` in the cache folder) while llama-server and its ggml libraries are unchanged, and `ldd` is asked once per launch instead of three times. A dry-run launch on the laptop: 0.47 s -> 0.19 s (median of 7; the first launch after a llama.cpp update pays the 0.3 s once) (PACKAGING-027). |
+| Bug fixes | Plan rule (`MOE_CACHE_PLAN_RULE=1`, off by default): the compute-buffer figures of `llama-fit-params` are remembered on disk (`fit-params-cache.json`) by model files, context, -ub, KV type, GPU and driver, and tool files, so a repeat launch does not run the tool again (about 3 s each); the micro-batch candidates not yet remembered are measured at the same time, up to 4 (PREFILL-180, PREFILL-181). The figures are unchanged. |
 
 ## 0.3.5 (2026-11-03)
 
