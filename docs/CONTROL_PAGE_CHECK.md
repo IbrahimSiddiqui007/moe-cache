@@ -1,6 +1,6 @@
 # Try the control page (Windows and Linux)
 
-About 30 minutes with a small model. Use a model that fits in RAM for steps 1-9 (for example Qwen3.6-35B, 20 GB) and a bigger one for step 10. Nothing here changes your system; the page listens on this machine only. Details of each part: [GUI.md](GUI.md).
+About 30 minutes with a small model. Use a model that fits in RAM for steps 1-9 (for example Qwen3.6-35B, 20 GB) and a bigger one for step 10. The page listens on this machine only. The steps do change local state: they save settings (`~/.cache/moe-cache/ui.json`), download a model, create chats and agent sessions, write agent config files when you press Connect (a backup of your own file is kept next to it) and may create a Start-menu shortcut. Undo: delete the files named in [SECURITY.md](SECURITY.md), restore the `.bak` agent config, remove the shortcut. No system-wide install is needed. Details of each part: [GUI.md](GUI.md).
 
 | # | Do | You should see |
 |---|---|---|

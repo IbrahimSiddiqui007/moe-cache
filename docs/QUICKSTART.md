@@ -12,7 +12,7 @@ No model yet? `python3 bin/moe_cache.py pick` names one for your machine and pri
 
 **Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
 
-You need: Linux, `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release), `g++`, `python3`, and a MoE model in GGUF format.
+You need: Linux, `python3`, and a MoE model in GGUF format. With the `-ggml0.26` release file (Option A in section 1) that is all: it includes the official llama.cpp b11966 build, so no compiler and no separate `llama-server` are needed. Only if you build the plugin yourself (Option B) or use another llama.cpp do you also need `g++` and a `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release).
 The plugin is built and tested against three llama.cpp versions, and **a plugin build only works with the ggml backend API it was compiled for**:
 
 | llama.cpp | ggml | backend API | build the plugin with |
@@ -33,14 +33,14 @@ Works on any Linux GPU that has a Vulkan driver (AMD with the open Mesa/RADV dri
 #   Ubuntu/Debian: sudo apt install cmake ninja-build g++ libvulkan-dev glslc spirv-headers mesa-vulkan-drivers
 #   Fedora:        sudo dnf install cmake ninja-build gcc-c++ vulkan-devel glslc spirv-headers-devel mesa-vulkan-drivers
 #   openSUSE:      sudo zypper install cmake ninja gcc-c++ vulkan-devel shaderc spirv-headers
-git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp && git checkout 7fe450e19
+git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp && git checkout 7fe450e19   # the commit this recipe was tested on (API 2); for the recommended b11966 use `git checkout ff0d396e3` and build the plugin with GGML_API=3
 cmake -B build -G Ninja -DGGML_VULKAN=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
       -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
 cmake --build build --target llama-server -j8
 ./build/bin/llama-server --list-devices        # your GPU should be listed as Vulkan0
 ```
 
-Then in the moe-cache folder: `GGML_LIB_DIR=/path/to/llama.cpp/build/bin ./build.sh` and use `--llama-server /path/to/llama.cpp/build/bin/llama-server` below.
+Then in the moe-cache folder: `GGML_LIB_DIR=/path/to/llama.cpp/build/bin ./build.sh` (add `GGML_API=3` for ff0d396e3 / b11966) and use `--llama-server /path/to/llama.cpp/build/bin/llama-server` below.
 The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_PATH` automatically. Package names differ between distro versions; the tools you need are cmake, ninja, a C++ compiler, the Vulkan headers/loader, `glslc` and the SPIR-V headers.
 
 ## 1. Get it (2 minutes)
@@ -53,7 +53,8 @@ Each release has two Linux files; take the one that matches your llama.cpp's ggm
 
 ```bash
 git clone https://github.com/IbrahimSiddiqui007/moe-cache && cd moe-cache
-./build.sh                       # finds libggml-base.so next to your llama-server; or: GGML_LIB_DIR=/path/to/libs ./build.sh
+GGML_API=3 ./build.sh            # llama.cpp b11966 / 23b0202a1 and newer (backend API 3, the recommended pin); finds libggml-base.so next to your llama-server, or: GGML_LIB_DIR=/path/to/libs GGML_API=3 ./build.sh
+./build.sh                       # legacy only: llama.cpp 7fe450e19 / ggml 0.25.1 (backend API 2); the default of build.sh
 ```
 
 Then, for both options:
@@ -96,12 +97,12 @@ bin/moe-cache-learn /path/to/model.gguf --ram 20 --llama-server /path/to/llama-s
 
 ## Measure it on your own model
 
-The benchmark tool runs stock llama.cpp and moe-cache on your model and prompts under a memory limit and checks the tokens are identical. It is a separate repository: [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark).
+Run `python3 bin/moe_cache.py bench-report MODEL.gguf` (or press **Share my numbers** on the control page): it runs stock llama.cpp and moe-cache on your model and prints both speeds and whether the tokens were identical. A check with a small model (`moe-cache-check MODEL.gguf --run`) only validates the installation; it says nothing about speed on a big model. The older, separate [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) tool does the same under a memory limit.
 
 ## What speed to expect
 
 Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (llama.cpp's own GPU expert cache, `--moe-cache-mib`, is optional there; it was slower on our Vulkan PC, RESULTS 59): moe-cache adds nothing there.
-If it does not fit, we measured 2x to 12x stock (the table in the README). Example: a 48 GB model in a 20 GB memory limit ran at 9.3 tok/s instead of 1.3.
+If it does not fit, we measured 2x to 12x stock on Linux and 1.2x to 2x decode on the Windows PC ([RESULTS.md](RESULTS.md); the README has a short table). Example: a 48 GB model in a 20 GB memory limit ran at 9.3 tok/s instead of 1.3.
 
 ## Which llama-server do I use?
 

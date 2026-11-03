@@ -32,7 +32,7 @@ Moved here from the README on 2026-10-30, unchanged.
 
 ## Prototypes: several GPUs and several models at once (all off by default, untested for speed)
 
-These options exist so a user with more than one GPU, or two models, can try them and report. Each prints "PROTOTYPE" when it is on. Without the flag the launch plan is byte-identical to before (`tests/launch_plan_test.py`, every case). The unit tests run on fake devices and fake servers; **nothing here has been run on a machine with two discrete GPUs, with two models served together through the launcher (the peer rows say what was run by hand on the laptop), or with a real vision model, and no speed gain is claimed.**
+These options exist so a user with more than one GPU, or two models, can try them and report. Each prints "PROTOTYPE" when it is on. Without the flag the launch plan is byte-identical to before (`tests/launch_plan_test.py`, every case). The unit tests run on fake devices and fake servers; **(2026-11-03: the only two-device run so far is a smoke test on the Windows PC, RX 9070 XT + iGPU, Granite: plugin 207-213 vs stock 199 tok/s; the sentence continues as written on 2026-10-30.) Nothing here has been run on a machine with two discrete GPUs, with two models served together through the launcher (the peer rows say what was run by hand on the laptop), or with a real vision model, and no speed gain is claimed.**
 
 | Option | What it does | What is untested |
 |---|---|---|

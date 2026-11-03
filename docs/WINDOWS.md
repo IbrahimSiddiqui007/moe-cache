@@ -1,7 +1,7 @@
 # Windows quick start (experimental)
 
 Tested on one Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM; other cards are untested, reports welcome): identity 4/4 on four models, launcher
-and chat working; speed numbers updated 2026-10-27 with the file-view cache (RESULTS 59-61). Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM, stock llama.cpp is all you need; the plugin
+and chat working; speed numbers updated 2026-10-27 with the file-view cache (RESULTS 59-61); long-context numbers updated 2026-11-03 (section 6). Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM, stock llama.cpp is all you need; the plugin
 helps with models bigger than RAM.
 
 ## 1. What you need
@@ -108,11 +108,13 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   | Flash-Next IQ3_XXS (76 GB) | 9 | 15.14 | **19.86** | +31 % |
   | Flash-Next IQ3_S (84 GB) | 7 | 12.92 | **17.28** | +34 % |
   | Qwen3.5-122B UD-IQ2_XXS (34 GB), re-measured 2026-10-28 (RESULTS 61) | 12 | 15.95 | **19.73** | +24 % |
-  | GLM-5.3-Flash UD-IQ2_XXS (102 GB); moe-cache ABBA on drive D: (RESULTS 62), stock and MTP single runs on C: | 3 | 2.21 | **5.89**; **6.92 with `--mtp`** | 2.7x; 3.1x |
+  | GLM-5.3-Flash UD-IQ2_XXS (102 GB, C:), one pair (RESULTS 59) | 3 | 2.21 | **4.44** | **2.0x** |
+  | GLM-5.3-Flash, same model, plugin with `--mtp` (single run, drive D:, RESULTS 62) | 3 | 2.21 (C:) | 6.92 | 3.1x, not a paired comparison |
 
   Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
   IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). The
   122B row replaces RESULTS 59's 13.88 vs 16.13 (+16 %): that pair ran during a slowdown of the whole PC (stock was 13 % slower too; RESULTS 61, T2b).
+  These decode figures are from the 2026-10-27/28 kits at a short context; later kits are faster (Flash-Next Q2_0 decode 24.7-25.7 tok/s with the async reads, RESULTS 67, and 27.3-27.7 at 34k context with the v0.3.5 defaults). Their stock-vs-plugin ratios are recorded in RESULTS.md.
   If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself). One desktop only; Linux numbers are in the README.
 - **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC, plugin with launcher defaults, cold; RESULTS 59, 60, 63). Tasks = 202
   exact-answer tasks; no quality difference between any two files is proven (all paired sign tests p > 0.05):
@@ -130,10 +132,16 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   than on IQ2_XS (+47 %); the prompt gain is what agent sessions wait on.
   The Q2_0 numbers above were measured before the plugin's exact Q2_0 executor kernel came to Windows; with it the PC's Q2_0 decode is unchanged
   (22.2-22.7 tok/s, RESULTS 63 addendum).
-- **Long context (Windows PC, RESULTS 64; agent mode, one cold run per point, not ABBA).** Flash-Next Q2_0 at a 64k setting: moe-cache reads a 63.5k-token
-  prompt 1.8x faster than stock (about 289 vs 525 s; prefill 266 / 195 tok/s at 4-21k / 53-63k vs 171 / 106) and decodes 20.7 vs 16.8 tok/s at that depth
-  (+23 %). Qwen3.5-122B with moe-cache at 64k: prefill 266 / 217, decode 17.3 at 63.5k. Qwen3.6 (fits, stock): 848 / 739, decode 59.1. At the 256k setting the
-  planner puts every expert layer on the CPU (`-ub 512`): Flash-Next prefill about half (142 tok/s) and decode 18.5 at 4k, 15.9 at 138k; a planner fix is in progress.
+- **Long context (Windows PC, Flash-Next Q2_0 on D:, cold file cache, current defaults).** Since v0.3.5 the launcher uses `-ub 2048` above 32k context (gpt-oss keeps 1024) and the planner keeps 39 CPU layers at 40960-65536, 41 at 131072. Prompt speed, new default against v0.3.4 (RESULTS 78, 2026-11-02, patched server; clean PC):
+
+  | Context, prompt | v0.3.4 prompt tok/s | v0.3.5 prompt tok/s | Decode v0.3.4 / v0.3.5 |
+  |---|---|---|---|
+  | 40960, 34k | 392 / 411 | 637 / 620 | 28.5 / 27.3-27.7 |
+  | 65536, 64k | 312 / 334 | 455 / 458 with 39 layers (the first run at 41 layers: 434 / 437) | 26.2 / 26.1-26.8 with 39 layers |
+  | 131072, 128k | 307 / 306 | 436 / 438 | not recorded |
+  | 262144, 222k tokens (2026-11-03, official server; v0.3.4 not measured) | `-ub 1024`: 263 / 266 | `-ub 2048`: 335 / 333 (+26 %) | - |
+
+  The overnight run of 2026-11-03 on the official llama-server (no patch) measured prompts +42 % at 34k, +38 % at 64k and 128k, and decode -6 % at 34k and -10 % at 64k against v0.3.4. The first 64k measurement (2026-10-28, agent mode, one cold run, v0.3.2 kit: 289 s for a 63.5k-token prompt, 1.8x faster than stock) is superseded; RESULTS 64 keeps it with the Qwen3.5-122B and Qwen3.6 rows (decode 17.3 for the 122B at 63.5k).
 - **Other models (Windows PC, RESULTS 65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
   so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
   57k and 721 at 114k, 190/202 tasks (Flash-Next Q2_0 191, not proven), OpenCode session 47.8 s (the fastest measured). moe-cache forced on it is slower
@@ -197,7 +205,7 @@ the CPU; the GPU work is llama.cpp's Vulkan backend, the plugin only copies tens
 Only one single operation is not cut: the attention (or indexer) step of one layer for one micro-batch, whose cost grows with the batch size times the context. On the test PC
 (RX 9070 XT) there was no event 4101 in 14 days of runs, which included 64k, 128k and 256k contexts at `-ub` 512-2048 and prompts of 228k tokens; a whole 512-token batch at
 228k depth took 1.8 s (Nemotron, stock, RESULTS 65), more than any one operation in it. A slower GPU (an integrated one, an old card) or a hand-chosen `-ub 4096` or more at
-256k is where it could happen; the cure is a smaller `-ub`, which costs a little prompt speed and nothing else. The launcher's choice (512 at 256k) already does that.
+256k is where it could happen; the cure is a smaller `-ub`, which costs a little prompt speed and nothing else. The launcher's own choice at 256k is `-ub 2048` since 2026-11-03 (a 222k-token prompt ran at 334 tok/s with no driver reset; it was 512, then 1024, before); pass `-ub 512` yourself if your GPU is slower.
 
 ## 7. Fair stock-vs-plugin timings: empty the file cache first
 

@@ -1,6 +1,6 @@
 # Design: computing experts on every processor (dGPU, iGPU, NPU, CPU)
 
-Status: **design only.** Written 2026-10-14. Nothing here is built or measured; the experiments that decide whether it gets built are E1-E5 below.
+Status (2026-11-03): **design note from 2026-10-14; the iGPU compute path is not built.** E1 and E2 were measured on the MSI Claw on 2026-10-15 (RESULTS 49: one CPU/iGPU handoff costs about 0.2 ms, not 3 ms; llama.cpp's own per-layer split is still slower than the CPU alone), E3-E5 were not run. What exists instead is the second-card and peer-registry prototype in [PLATFORMS.md](PLATFORMS.md) (off by default; a two-device smoke test, RX 9070 XT + iGPU, Granite, gave 207-213 vs stock 199 tok/s on 2026-11-02, reported by the PC session, not repeated on a big model). Original status line follows: design only, written 2026-10-14, the experiments E1-E5 below decide whether it gets built.
 Approximate by nature (different processors round differently), so it is judged by a quality check (KL divergence, same top token, answer comparison), not by token identity.
 
 ## The idea
