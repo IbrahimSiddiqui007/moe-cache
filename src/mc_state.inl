@@ -33,7 +33,8 @@ void remove_crash_report();
 #include "mc_state_testfault.h"
 #include "mc_state_gpu.h"
 #include "mc_state_pack_members.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t {
+#include "mc_state_policy.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -215,20 +216,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t {
     std::unordered_map<const ggml_tensor *, int> by_tensor;
     std::vector<node_t> nodes;
     std::vector<uint32_t> node_owner;           // index in `tensors` of the tensor that owns each node (same size as nodes)
-    // Replacement policy. MOE_CACHE_POLICY=lru (default): one list, evict the least recently used. MOE_CACHE_POLICY=classlru (llama.cpp #31233):
-    // nclass LRU lists; a node's decayed use count crf (half-life classlru_hl decode tokens, kept after eviction) picks its list
-    // (class = min(nclass-1, floor(log2 crf))); the victim is the oldest evictable node of each list with the largest age / 2^class.
-    // Only the choice of victim changes, never what is computed. The plain policy is the same code with one list.
-    static constexpr int MAXCLS = 8;
-    int    mruc[MAXCLS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
-    int    lruc[MAXCLS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
-    bool   classlru = false;
-    int    nclass = 1;
-    double classlru_hl = 128.0;
-    std::vector<float> decay_tab;                       // 2^(-dt / half-life) for dt = 0 .. size-1 (beyond: 0)
-    uint32_t tok = 0;                                   // decode token counter (classlru clock)
-    int    last_dec_layer = -1;
-    bool   track_crf = false;                           // keep the decayed use counts (classlru, or the idle rebalance wants them)
     // idle rebalance (BO-2): while no graph runs for rb_idle_ms, read the experts with the highest decayed use count that are missing into free room or
     // the room of the lowest-count resident ones (rb_choose), at most rb_cap_bytes per idle period, one expert at a time, stopping as soon as a graph starts
     bool   rb_on = true;                                // BO-2 idle refill: on since 0.3.3 (won every PC pair, RESULTS 73); MOE_CACHE_IDLE_REBALANCE=0 turns it off
