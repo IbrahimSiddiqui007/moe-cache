@@ -70,7 +70,7 @@ bool is_expert_output(const ggml_tensor * t) {
         return false;
     }
     const ggml_tensor * w = t->src[0];
-    return w && w->buffer && ggml_backend_buffer_get_type(w->buffer)->iface.get_name == buft_name && w->ne[2] > 1 && layer_ok(w);
+    return w && w->buffer && is_our_buft(ggml_backend_buffer_get_type(w->buffer)) && w->ne[2] > 1 && layer_ok(w);
 }
 
 bool is_weighted_experts(const ggml_tensor * t) {
@@ -118,14 +118,14 @@ bool dev_supports_op(ggml_backend_dev_t, const ggml_tensor * op) {
             return false;
     }
     const ggml_tensor * w = op->src[0];
-    if (!w || !w->buffer || ggml_backend_buffer_get_type(w->buffer)->iface.get_name != buft_name) {
+    if (!w || !w->buffer || !is_our_buft(ggml_backend_buffer_get_type(w->buffer))) {
         return false;
     }
     return w->ne[2] > 1 && layer_ok(w);
 }
 
 bool dev_supports_buft(ggml_backend_dev_t, ggml_backend_buffer_type_t buft) {
-    return buft->iface.get_name == buft_name;
+    return is_our_buft(buft);
 }
 
 const ggml_backend_device_i g_dev_i = {

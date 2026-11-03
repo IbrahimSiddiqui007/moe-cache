@@ -91,6 +91,12 @@ const char * buft_name(ggml_backend_buffer_type_t) {
     return "MOE_CACHE";
 }
 
+// PATCH-091: "is this one of our buffer types" through the public name call, not by reading the interface struct (ggml_backend_buffer_type's layout is ggml's).
+// The host variant (get_buft_host) has the same name by design.
+bool is_our_buft(ggml_backend_buffer_type_t buft) {
+    return buft && strcmp(ggml_backend_buft_name(buft), "MOE_CACHE") == 0;
+}
+
 void buf_free(ggml_backend_buffer_t buffer) {
     auto * c = buf_ctx(buffer);
     {
@@ -123,13 +129,16 @@ void buf_memset(ggml_backend_buffer_t, ggml_tensor * t, uint8_t v, size_t off, s
 
 void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t off, size_t size) {
     state_t & s = S();
-    if (s.cache_on && t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0 && off == 0 && size == ggml_nbytes(t)) {
+    if (s.cache_on && mcname::is_expert_tensor(t->name, t->ne[2]) && off == 0 && size == ggml_nbytes(t)) {
         std::lock_guard<std::mutex> lk(s.mu);
         if (s.register_tensor(t, data) >= 0) {
             return;
         }
     }
-    if (!plat::mem_commit((char *) t->data + off, size)) {
+    // PATCH-087 / WINDOWS-146: every tensor that is not an expert was committed whole by buf_init_tensor (cache mode) or by buft_alloc (pass-through), before
+    // any set; asking the OS again for every input tensor of every graph was a system call per set for nothing. An expert-named tensor that failed to
+    // register above (its pages are managed by the cache, not committed at init) still needs it.
+    if (mcname::is_expert_tensor(t->name, t->ne[2]) && !plat::mem_commit((char *) t->data + off, size)) {
         commit_fatal(t->name, size);
     }
     memcpy((char *) t->data + off, data, size);
@@ -152,11 +161,11 @@ void buf_clear(ggml_backend_buffer_t buffer, uint8_t v) {
 
 // expert tensors get 12 KiB of padding so that init_tensor can move the data to an address that matches its file offset (mod 4096)
 bool is_expert_tensor(const ggml_tensor * t) {
-    return S().cache_on && S().direct_ok && t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0;
+    return S().cache_on && S().direct_ok && mcname::is_expert_tensor(t->name, t->ne[2]);
 }
 
 ggml_status buf_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * t) {
-    if (S().cache_on && !(t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0)) {
+    if (S().cache_on && !(mcname::is_expert_tensor(t->name, t->ne[2]))) {
         buf_commit_once(buf_ctx(buffer), t->data, ggml_nbytes(t));
     }
     if (is_expert_tensor(t)) {
