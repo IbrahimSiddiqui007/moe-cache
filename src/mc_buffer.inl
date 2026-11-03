@@ -129,7 +129,10 @@ void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t o
             return;
         }
     }
-    if (!plat::mem_commit((char *) t->data + off, size)) {
+    // PATCH-087 / WINDOWS-146: every tensor that is not an expert was committed whole by buf_init_tensor (cache mode) or by buft_alloc (pass-through), before
+    // any set; asking the OS again for every input tensor of every graph was a system call per set for nothing. An expert-named tensor that failed to
+    // register above (its pages are managed by the cache, not committed at init) still needs it.
+    if (mcname::is_expert_tensor(t->name, t->ne[2]) && !plat::mem_commit((char *) t->data + off, size)) {
         commit_fatal(t->name, size);
     }
     memcpy((char *) t->data + off, data, size);
