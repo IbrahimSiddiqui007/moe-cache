@@ -24,6 +24,7 @@ LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
 case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
 MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.5}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
+GGUF_PY_SHA256=70bcd10edfe697fb2dad6e40af2234b9d8ece9a41a99761405121ebda1c3c1cd   # sha256 of gguf-$GGUF_PY_VERSION-py3-none-any.whl (RELEASE-008); pip is refused to install anything else
 VULKAN=0; PREFIX=""; JOBS=$(nproc 2>/dev/null || echo 2); APT=1; OWN=0; DRY=0; UNINSTALL=0; BUILD=0; BINDIR="$HOME/.local/bin"
 while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;; --uninstall) UNINSTALL=1; shift;; --build) BUILD=1; shift;; --bin-dir) BINDIR=$2; shift 2;;
   -h|--help) sed -n 2,19p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
@@ -203,7 +204,14 @@ if [ -n "$BUNDLED" ] && [ -f "$M/build/libggml-moe-cache.so" ]; then echo "plugi
 else GGML_LIB_DIR="$BIN" "$M/build.sh"; fi
 
 say "5/5 python environment for the planner"
-if python3 -m venv "$PREFIX/venv" >/dev/null 2>&1 && "$PREFIX/venv/bin/pip" install -q "gguf==$GGUF_PY_VERSION"; then PY="$PREFIX/venv/bin/python3"
+# the wheel is fetched alone, its sha256 compared with the pinned one, and only then installed (its dependencies come from pip as usual)
+gguf_wheel() {
+  W="$(mktemp -d)"; "$PREFIX/venv/bin/pip" download -q --no-deps --only-binary :all: -d "$W" "gguf==$GGUF_PY_VERSION" || return 1
+  F="$W/gguf-$GGUF_PY_VERSION-py3-none-any.whl"; [ -f "$F" ] || return 1
+  if [ "$(sha256sum "$F" | cut -d' ' -f1)" != "$GGUF_PY_SHA256" ]; then echo "REFUSED: the gguf wheel's sha256 is not the pinned $GGUF_PY_SHA256; not installed"; return 1; fi
+  "$PREFIX/venv/bin/pip" install -q "$F"
+}
+if python3 -m venv "$PREFIX/venv" >/dev/null 2>&1 && gguf_wheel; then PY="$PREFIX/venv/bin/python3"
 else
   echo "note: no python venv or no network for pip (Ubuntu: sudo apt install python3-venv): using the system python3; the planner has its own GGUF reader, so this is fine"
   PY="$(command -v python3)"

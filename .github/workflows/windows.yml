@@ -143,6 +143,9 @@ jobs:
         run: |
           $zip = "llama-$env:LLAMA_RELEASE-bin-win-cpu-x64.zip"
           Invoke-WebRequest -UseBasicParsing "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/$zip" -OutFile $zip
+          # RELEASE-008: pinned sha256 of llama-b12064-bin-win-cpu-x64.zip (24608998 bytes); change it together with LLAMA_RELEASE
+          $zh = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($zh -ne "c1ced7358438e19c2af6debefe188280ba39ac0242352719cd30d931ca8eec73") { throw "$zip: wrong sha256 $zh" }
           Expand-Archive $zip -DestinationPath llama
           $srv = Get-ChildItem -Recurse llama -Filter llama-server.exe | Select-Object -First 1
           "LLAMA_DIR=$($srv.DirectoryName)" | Out-File -Append $env:GITHUB_ENV

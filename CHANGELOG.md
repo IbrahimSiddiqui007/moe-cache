@@ -26,6 +26,7 @@
 | Bug fixes | A file system that accepts O_DIRECT but fails the read (encrypted, FUSE, virtiofs) switches to buffered reads after the first failure instead of paying about 60 ms per expert |
 | Bug fixes | `launch --download` (LAUNCHER-007): checks the free disk (download size + 2 GB, both numbers in the message) before the first byte, and a cut download resumes from its `.part` file with an HTTP Range request instead of starting over; the hash is checked before the file gets its final name (a bad resumed file is deleted). A `.part` held open by another download or program gives a clear message |
 | Bug fixes | Model-card sampling defaults (DIFFUSION-009) also notice your `--temp=0.2` / `--top-p=0.9` (and `--top-k`, `--min-p`, `--presence-penalty`, `--temperature`) in the `=` form, not only `--temp 0.2`: before, both the card value and yours were passed |
+| Bug fixes | Pinned downloads (RELEASE-008): `install.sh` compares the `gguf` Python wheel with a pinned sha256 before installing it, and the Windows CI compares the llama.cpp b12064 CPU zip with a pinned sha256 (a mismatch stops) |
 | Bug fixes | `build.sh` stops with an error when `GGML_API` is not 2 or 3 (it built against the API 2 headers for any other value) |
 | Bug fixes | A failing expert read is retried 3 times, 200 ms apart, before the server stops with the disk error (it never computes on missing data) |
 | Bug fixes | Without the launcher the plugin prints one line saying llama-server's own prompt cache (8 GiB by default) is not in its RAM budget, and that `--cache-ram MiB` limits it |
