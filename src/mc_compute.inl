@@ -136,9 +136,16 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
             st = exec_run_nodes(c, cg, batch);
             batch.clear();
             int last = i;
+            const int first_i = i;
             if (st == GGML_STATUS_SUCCESS && hybrid_group(c, s, cg, i, last)) {
+                if (c->tier_on && tier_check_on()) {
+                    tier_check(c, s, cg, first_i, last);
+                }
                 i = last;
                 continue;
+            }
+            if (c->tier_on && c->hb_buf && st == GGML_STATUS_SUCCESS && c->hb.count(s.by_tensor.at(nd->src[0]))) {
+                cpu_path_check(s, cg);     // a tier group the GPU did not take: its experts were not read ahead, so load what is missing before the executor reads them
             }
         }
         if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && !stock_uses_tiled(nd)) {
@@ -327,7 +334,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     std::vector<group_t> groups_found;
     bool exec_graph = s.cache_on && exec_eligible(s, cg);
     // --fast (routing) and --hybrid live in the executor path: when asked for explicitly they keep it, whatever the weight type
-    static const bool hybrid_asked = [] { const char * e = getenv("MOE_CACHE_HYBRID"); return e && strcmp(e, "0") != 0; }();
+    static const bool hybrid_asked = [] { const char * e = getenv("MOE_CACHE_HYBRID"); return (e && strcmp(e, "0") != 0) || !tier_wanted().empty(); }();
     if (exec_graph && !s.exec_force && !(s.route_mode || s.fewer > 0) && !hybrid_asked) {
         // the executor only pays for weights whose dot product is compute-bound (IQ types, Q2_0: our kernels and parallel reads win); for K-quants
         // and legacy types llama.cpp's own (repacked) kernels are faster even while some experts still have to be read
@@ -516,7 +523,14 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             static const bool pipe_env = !getenv("MOE_CACHE_GPU_PIPE") || atoi(getenv("MOE_CACHE_GPU_PIPE")) != 0;
             const bool pipe = pipe_env && !exec_graph && s.gpu_dev && !c->gpu_failed && s.gpu_min_tokens > 0 && n_tok >= s.gpu_min_tokens &&
                               s.graphs.load() >= c->gpu_retry_at && !(s.route_mode || s.fewer > 0);
-            exec_jobs += s.prepare_group(tidx, used, exec_graph || pipe);
+            // decode tier: a layer the GPU bank served in full last time needs no reads and no cache room (not in CHECK mode, which also runs the CPU)
+            bool tier_skip = exec_graph && c->tier_on && c->hb_buf && !tidx.empty() && c->tier_ok.count(s.tensors[(size_t) tidx[0]]->layer) > 0;
+            for (size_t q = 0; tier_skip && q < tidx.size(); q++) {
+                tier_skip = c->hb.count(tidx[q]) > 0;
+            }
+            if (!tier_skip) {
+                exec_jobs += s.prepare_group(tidx, used, exec_graph || pipe);
+            }
             piped = piped || pipe;
             if (s.lookahead && n_tok == 1) {
                 const ggml_tensor * xin = node->src[1];

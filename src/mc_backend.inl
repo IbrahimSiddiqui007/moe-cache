@@ -159,6 +159,9 @@ struct moe_cache_backend_ctx {
     uint64_t           hb_tok = 0;
     int                ad_every = 8, ad_swaps = 16;
     std::unordered_map<int, std::pair<ggml_tensor *, std::vector<int>>> hb;
+    // MOE_CACHE_DECODE_TIER=L1,L2,... (default off): whole layers of experts in the bank (slot = expert), built in decode from the room the long-prompt block gives back
+    bool               tier_on = false;
+    std::unordered_set<int> tier_ok;       // tier layers whose last group was served by the bank in full: their experts are not read into RAM any more
 };
 
 const char * be_name(ggml_backend_t) {

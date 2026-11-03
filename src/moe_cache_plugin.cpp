@@ -43,6 +43,7 @@
 #include "mc_tested.h"
 #include "mc_rebalance.h"
 #include "mc_peers.h"
+#include "mc_tier.h"
 #ifndef _WIN32
 #include <fcntl.h>
 #include <unistd.h>
