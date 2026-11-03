@@ -1860,8 +1860,16 @@ def parse_server(argv):
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
-    a = ap.parse_args(argv)
+    a = ap.parse_args(fast_levels_only(argv))
     return a, extra, argv
+
+
+FAST_LEVELS = ("1", "2", "kv", "fewer")
+
+
+def fast_levels_only(argv):
+    """LAUNCHER-004: a bare `--fast` followed by anything that is not a level (1, 2, kv, fewer) means level 1: `--fast model.gguf` must not read the path as the level."""
+    return ["--fast=1" if t == "--fast" and (i + 1 >= len(argv) or argv[i + 1] not in FAST_LEVELS) else t for i, t in enumerate(argv)]
 
 
 def server(argv):

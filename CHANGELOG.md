@@ -53,6 +53,7 @@
 | Bug fixes | The control page shows the server command in a form PowerShell runs as shown on Windows (quoting for spaces and & ( ) ^, and the API key as `$env:LLAMA_API_KEY`). |
 | Bug fixes | The control page's launcher file (it holds the page token) is deleted when the page exits, not left in the temp folder. |
 | Bug fixes | Windows: `moe-cache.exe` (the command winget installs) now passes redirects and pipes on to the kit (`moe-cache.exe models > f.txt`, `echo y | moe-cache.exe ...`); before, output and input did not reach it. |
+| Bug fixes | `moe-cache-server --fast MODEL` no longer reads the model path as the level of `--fast`: a bare `--fast` followed by anything but 1, 2, kv or fewer means level 1 (LAUNCHER-004). |
 
 ## 0.3.5 (2026-11-03)
 
