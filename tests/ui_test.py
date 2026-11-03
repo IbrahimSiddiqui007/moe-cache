@@ -656,17 +656,27 @@ r = b.get("result", {})
 check(b["state"] == "done" and r.get("start") == "cold" and r.get("flush") == "fake flush" and r.get("load_s", "") != "", f"cold run recorded: start cold, flush line, load time ({b.get('error') or r.get('load_s')})")
 check(flushed == [(small["path"], [models])] and runner.p.pid != pid_before and runner.state == "ready", "the server was stopped, the model flushed, the server started again")
 check(json.loads(req("/api/bench")[1])["rows"][-1]["start"] == "cold", "cold / warm in the CSV")
+# the race behind that flake: Runner.start() -> reset() used to replace a running benchmark by "idle" until restart() put it back
+_r = ui.Runner()
+_r.bench = {"state": "running", "step": "run 2 of 2: starting the server again"}
+_r.reset({"model": "x"})
+check(_r.bench.get("state") == "running" and _r.state == "idle", "reset() keeps a running benchmark (a restart inside a benchmark must not show it idle)")
+_r.bench = {"state": "done"}
+_r.reset({"model": "x"})
+check(_r.bench == {"state": "idle"}, "reset() still clears a finished benchmark (a normal Start)")
 # compare (I42): measure, start again with Run as flipped (moe-cache -> stock), measure, then back to the user's settings
 flushed.clear()
 st, body = req("/api/bench", {"compare": True})
 check(st == 200 and json.loads(body).get("compare") is True, f"compare benchmark starts ({body[:100]})")
-deadline, steps = time.time() + 90, set()
+deadline, steps, states = time.time() + 90, set(), []
 while time.time() < deadline:
     b = json.loads(req("/api/status")[1])["bench"]
     steps.add(b.get("step", ""))
-    if b["state"] != "running":
+    states.append(b["state"])
+    if b["state"] in ("done", "failed"):        # not "anything but running": a restart used to show "idle" for a moment (windows.yml flake, 41694652982)
         break
-    time.sleep(0.2)
+    time.sleep(0.05)
+check("idle" not in states, f"compare: the page never sees the benchmark idle while the server restarts ({sorted(set(states))})")
 res = b.get("results") or []
 check(b["state"] == "done" and len(res) == 2 and res[0]["mode"].startswith("moe-cache") and res[1]["mode"].startswith("stock llama-server (--stock"),
       f"compare: one moe-cache run, then one stock run ({b.get('error')}; {[r['mode'] for r in res]})")
