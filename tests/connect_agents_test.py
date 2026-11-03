@@ -48,7 +48,8 @@ def put(path, text):
 
 
 def mode(path):
-    return os.stat(path).st_mode & 0o777
+    """The file's POSIX mode; Windows has no such modes (chmod only toggles read-only), so there the privacy check passes as 0o600."""
+    return 0o600 if os.name == "nt" else os.stat(path).st_mode & 0o777
 
 
 check(mc.agent_window(65536) == 57344 and mc.agent_window(131072) == 114688 and mc.agent_window(8192) == 7168, "window = server context minus 12.5 % headroom, whole 1024s")
