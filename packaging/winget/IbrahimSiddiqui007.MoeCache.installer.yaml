@@ -6,9 +6,8 @@ NestedInstallerType: portable
 NestedInstallerFiles:
   - RelativeFilePath: moe-cache-v@VERSION@-windows-x64\moe-cache.exe
     PortableCommandAlias: moe-cache
-Dependencies:
-  PackageDependencies:
-    - PackageIdentifier: Python.Python.3.12
+# No Python.Python.3.12 dependency (AUD-059): winget cannot say "any Python 3.8+", so the dependency installed a second Python next to a user's own.
+# moe-cache.bat finds a Python (MOE_CACHE_PYTHON, the py launcher, python.exe) and tells the user to install 3.8+ when there is none; the description says so.
 ReleaseDate: "@DATE@"
 Installers:
   - Architecture: x64
