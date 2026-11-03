@@ -2389,6 +2389,73 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
     return plan
 
 
+def plan_placement(a, model, ctx, ncmoe, machine):
+    """ENGINE-029, stage "placement": how many layers keep their experts on the GPU, from planner/plan.py (the first answer; the tuner below may refine it).
+    ncmoe: --n-cpu-moe as the user gave it (None: ask the planner). Returns (n_cpu_moe as text, the planner's answer as a dict or None, why it failed or None);
+    the answer carries the model's layers, experts, cache size and free VRAM that the control page shows."""
+    planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
+    if ncmoe is None:
+        p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
+        if a.ram or machine.mem_cap():
+            p += ["--ram-gib", f"{machine.mem_for_server(a.ram) / 2**30:.3f}"]      # the planner plans with the capped memory too
+        if a.vram: p += ["--vram-gib", a.vram]
+        r = None
+        try:
+            r = machine.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
+            planner_info = json.loads(r.stdout)
+            ncmoe = str(planner_info["n_cpu_moe"])
+        except Exception as e:
+            # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
+            why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
+            planner_info, planner_error = None, why or str(e)
+            say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
+    return ncmoe, planner_info, planner_error
+
+
+def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes):
+    """ENGINE-029, stage "tuner": micro-batch, GPU expert cache and the number of static expert layers, from the one shared tuner (planner/gguf_plan.py: tune),
+    with the VRAM other programs hold (desk reserve), --gpu-margin and --leave-room counted. Returns (tuned dict or None, the reserve in GB when the desktop
+    forced one or None, the micro-batch the user asked for or None)."""
+    tuned = None
+    desk_kw = None
+    ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
+    if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import tune
+            free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
+            if mm_bytes and free:
+                free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
+            kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
+            if a.gpu_margin is None:
+                # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
+                from gguf_plan import desk_reserve_gb
+                tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else machine.gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
+                if tf:
+                    res, used = desk_reserve_gb(*tf)
+                    if res > 0.5:
+                        desk_kw = kw["reserve_gb"] = res
+                        say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
+                            f"(--gpu-margin GiB to change)")
+                if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
+                    desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
+                    say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
+            if (ub_asked or "").isdigit():
+                kw["ub"] = int(ub_asked)
+            from gguf_plan import plan_rule_on
+            if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
+                from gguf_plan import find_fit_params, plan_table, plan_table_lines
+                kw["fit_params"] = find_fit_params(ls)
+                say("moe-cache: plan rule: compute-buffer reserve " + ("measured with " + kw["fit_params"] if kw["fit_params"] else "from the formula (no llama-fit-params found)"))
+                if a.dry_run and free:
+                    for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):
+                        say(line)
+            tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
+        except Exception:
+            tuned = None
+    return tuned, desk_kw, ub_asked
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2498,22 +2565,7 @@ def _launch_plan(a, extra, argv, machine):
     ncmoe_user = a.n_cpu_moe
     mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
     ncmoe = a.n_cpu_moe
-    planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
-    if ncmoe is None:
-        p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
-        if a.ram or machine.mem_cap():
-            p += ["--ram-gib", f"{machine.mem_for_server(a.ram) / 2**30:.3f}"]      # the planner plans with the capped memory too
-        if a.vram: p += ["--vram-gib", a.vram]
-        r = None
-        try:
-            r = machine.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-            planner_info = json.loads(r.stdout)
-            ncmoe = str(planner_info["n_cpu_moe"])
-        except Exception as e:
-            # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
-            why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
-            planner_info, planner_error = None, why or str(e)
-            say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
+    ncmoe, planner_info, planner_error = plan_placement(a, model, ctx, ncmoe, machine)
     # API key (DECISION_LLAMA_SERVER_KEY, option C): a key given on our command line or after `--` goes to llama-server through the environment
     # (LLAMA_API_KEY), not its argument list; agent mode and --project always get the stable per-user key. Plain chat servers get none, but a CORS
     # allow-list so a normal web page cannot read their answers.
@@ -2682,43 +2734,7 @@ def _launch_plan(a, extra, argv, machine):
     # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
-    tuned = None
-    desk_kw = None
-    ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
-    if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
-        try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
-            from gguf_plan import tune
-            free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
-            if mm_bytes and free:
-                free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
-            kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
-            if a.gpu_margin is None:
-                # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
-                from gguf_plan import desk_reserve_gb
-                tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else machine.gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
-                if tf:
-                    res, used = desk_reserve_gb(*tf)
-                    if res > 0.5:
-                        desk_kw = kw["reserve_gb"] = res
-                        say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
-                            f"(--gpu-margin GiB to change)")
-                if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
-                    desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
-                    say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
-            if (ub_asked or "").isdigit():
-                kw["ub"] = int(ub_asked)
-            from gguf_plan import plan_rule_on
-            if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
-                from gguf_plan import find_fit_params, plan_table, plan_table_lines
-                kw["fit_params"] = find_fit_params(ls)
-                say("moe-cache: plan rule: compute-buffer reserve " + ("measured with " + kw["fit_params"] if kw["fit_params"] else "from the formula (no llama-fit-params found)"))
-                if a.dry_run and free:
-                    for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):
-                        say(line)
-            tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
-        except Exception:
-            tuned = None
+    tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     ub = a.ub
     if ub == "auto":
         ub = "" if any(x in ("-ub", "--ubatch-size") for x in extra) else (str(tuned["ub"]) if tuned else "")
