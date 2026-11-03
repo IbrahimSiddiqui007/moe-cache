@@ -40,7 +40,8 @@ void remove_crash_report();
 #include "mc_state_prefetch.h"
 #include "mc_state_budget.h"
 #include "mc_state_profile_members.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t {
+#include "mc_state_counters.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -211,8 +212,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
 
     std::mutex mu;
 
-    std::atomic<uint64_t> hits{0}, misses{0}, bytes{0}, groups{0}, ops{0}, graphs{0};
-    std::atomic<uint64_t> ns_prep{0}, ns_cpu{0}, ns_total{0}, ns_read{0}, evictions{0}, direct_jobs{0}, bounce_jobs{0}, async_in{0};
 
     // io workers
     std::vector<std::thread> workers;
