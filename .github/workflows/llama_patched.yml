@@ -1,5 +1,5 @@
 # Builds llama.cpp b12064 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
-# Runs only when asked: push to the branch ci/llama-patched (manual dispatch needs the file on main). release.yml does not use it. See patches/llama.cpp/README.md.
+# Runs only when asked: push to the branch ci/llama-patched or ci/llama-patched-* (manual dispatch needs the file on main). release.yml does not use it. See patches/llama.cpp/README.md.
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
 # Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first.
 name: llama-patched
@@ -89,6 +89,68 @@ jobs:
         with:
           name: llama-patched-win-vulkan-x64
           path: llama.cpp/build/bin/Release/ggml-vulkan.dll
+
+  # One zip for the Windows PC (DECODE-630 test): the server + CPU backends from windows-server and ggml-vulkan.dll from windows-vulkan in one folder, with its
+  # sha256, after a smoke test: the server starts with LLAMA_DECODE_RELOC unset and set (-ub 2048, 100 tokens: more than the 64 small batches that start the
+  # switch) and the text is identical. A CI runner has no GPU, so nothing can move there: the test proves the switch is inert and its "no layer fits" path
+  # puts everything back; the real move is the PC's A B B A (handover/parts/overnight_20261104/items/30_decode_reloc.ps1).
+  windows-package:
+    needs: [windows-server, windows-vulkan]
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llama-patched-win-server-x64
+          path: pkg/llama-patched-win-x64
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llama-patched-win-vulkan-x64
+          path: pkg/llama-patched-win-x64
+      - name: Granite test model (pinned by sha256, as windows.yml)
+        run: |
+          Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
+          $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
+      - name: Smoke test, switch unset and set
+        run: |
+          $dir = "$PWD\pkg\llama-patched-win-x64"
+          Get-ChildItem $dir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+          if (-not (Test-Path "$dir\llama-server.exe")) { throw "no llama-server.exe in the package" }
+          & "$dir\llama-server.exe" --version
+          $body = '{"prompt":"The quick brown fox jumps over the lazy dog. The quick brown fox","n_predict":100,"temperature":0,"seed":1,"cache_prompt":false}'
+          function Run($name, $reloc, $port) {
+            Remove-Item Env:LLAMA_DECODE_RELOC -ErrorAction SilentlyContinue
+            if ($reloc) { $env:LLAMA_DECODE_RELOC = "1"; $env:LLAMA_DECODE_RELOC_AFTER = "16" }
+            $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port",$port,"--no-warmup" -RedirectStandardError "$name.err" -RedirectStandardOutput "$name.out" -PassThru
+            $ok = $false
+            for ($i = 0; $i -lt 180; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/health").StatusCode -eq 200) { $ok = $true; break } } catch {}; Start-Sleep 1 }
+            if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content "$name.err" -Tail 40; throw "$name: server never became ready" }
+            $r = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body "http://127.0.0.1:$port/completion"
+            Stop-Process -Id $p.Id; Start-Sleep 2
+            (($r.Content | ConvertFrom-Json).content)
+          }
+          $off = Run "off" $false 8101
+          $on = Run "on" $true 8102
+          Write-Host "off: $off"; Write-Host "on:  $on"
+          if (-not $off -or $off.Length -lt 20) { throw "the unset run produced no text" }
+          if ($off -ne $on) { throw "text differs with LLAMA_DECODE_RELOC=1 (CPU only: nothing can move, so it must be identical)" }
+          if (Select-String -Path off.err -Pattern "reloc_" -Quiet) { throw "the patch logged with the switch unset" }
+          if (-not (Select-String -Path on.err -Pattern "LLAMA_DECODE_RELOC on" -Quiet)) { throw "switch set: no 'LLAMA_DECODE_RELOC on' line" }
+          Select-String -Path on.err -Pattern "reloc_" | ForEach-Object { $_.Line }
+      - name: Zip and sha256
+        run: |
+          Compress-Archive -Path pkg\llama-patched-win-x64 -DestinationPath llama-patched-win-x64.zip
+          $h = (Get-FileHash llama-patched-win-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$h  llama-patched-win-x64.zip" | Out-File -Encoding ascii llama-patched-win-x64.zip.sha256
+          Get-Content llama-patched-win-x64.zip.sha256
+          (Get-Item llama-patched-win-x64.zip).Length
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llama-patched-win-x64-zip
+          path: |
+            llama-patched-win-x64.zip
+            llama-patched-win-x64.zip.sha256
 
   linux:
     runs-on: ubuntu-22.04
