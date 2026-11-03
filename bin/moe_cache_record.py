@@ -479,10 +479,15 @@ class WindowsProbe:
         \\GPU Process Memory(pid_N_*)\\Dedicated Usage is the llama-server's own share; \\GPU Adapter Memory(*)\\Dedicated Usage is the whole card."""
         adapters = parse_typeperf(RUN(["typeperf", r"\GPU Adapter Memory(*)\Dedicated Usage", "-sc", "1"], timeout=20))
         used = max(adapters.values()) / MiB if adapters else None
+        # count the process tree on that adapter only: an iGPU next to the card is another luid, and summing both read 2360 MiB for a
+        # tree on a card that held 2172 in all (PC, 2026-11-03)
+        big = max(adapters, key=adapters.get) if adapters else ""
+        luid = (re.search(r"(luid_0x[0-9A-Fa-f]+_0x[0-9A-Fa-f]+)", big) or [None, None])[1] if big else None
         procs = parse_typeperf(RUN(["typeperf", r"\GPU Process Memory(*)\Dedicated Usage", "-sc", "1"], timeout=20))
         mine = None
         if procs:
-            mine = sum(v for k, v in procs.items() if (m := re.match(r"pid_(\d+)_", k)) and int(m.group(1)) in pids) / MiB
+            mine = sum(v for k, v in procs.items() if (m := re.match(r"pid_(\d+)_", k)) and int(m.group(1)) in pids
+                       and (luid is None or luid.lower() in k.lower())) / MiB
         if used is None and mine is None:
             return None, None, None
         return used, mine, "typeperf GPU Process Memory" if mine is not None else "typeperf GPU Adapter Memory"

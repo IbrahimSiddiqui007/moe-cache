@@ -84,6 +84,10 @@ procs = '"(PDH-CSV 4.0)","\\\\PC\\GPU Process Memory(pid_100_luid_0x0_0x1_phys_0
         '"11/03/2026 10:00:00.123","10737418240","1073741824"\n'
 cmds["typeperf"] = lambda c: tp if "Adapter" in c[1] else procs
 check(wp.vram({100}) == (12288.0, 10240.0, "typeperf GPU Process Memory"), f"windows: card 12 GiB in use, the server's own 10 GiB, other process excluded ({wp.vram({100})})")
+procs2 = '"(PDH-CSV 4.0)","\\\\PC\\GPU Process Memory(pid_100_luid_0x0_0x1_phys_0)\\Dedicated Usage","\\\\PC\\GPU Process Memory(pid_100_luid_0x0_0x2_phys_0)\\Dedicated Usage"\n' \
+         '"11/03/2026 10:00:00.123","10737418240","1073741824"\n'
+cmds["typeperf"] = lambda c: tp if "Adapter" in c[1] else procs2
+check(wp.vram({100}) == (12288.0, 10240.0, "typeperf GPU Process Memory"), f"windows: the tree's memory on the iGPU (other luid) is not added to the card's ({wp.vram({100})})")
 cmds["typeperf"] = lambda c: tp if "Adapter" in c[1] else ""
 check(wp.vram({100}) == (12288.0, None, "typeperf GPU Adapter Memory"), "windows: no per-process counter -> the card's usage, labelled as such")
 cmds["typeperf"] = ""
