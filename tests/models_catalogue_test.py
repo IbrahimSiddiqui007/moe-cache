@@ -140,5 +140,14 @@ check("moe_cache_catalogue" in src and "pick.MODELS" not in src, "tools/check_mo
 for f in ("tools/make_release.sh", "tools/make_windows_kit.sh"):
     check("models.json" in open(os.path.join(HERE, f), encoding="utf-8").read(), f"{f} ships models.json")
 
+# a damaged or incomplete models.json: one plain sentence, no traceback (AUD-040)
+for label, text in (("cut-off JSON", open(os.path.join(HERE, "models.json"), encoding="utf-8").read()[:500]),
+                    ("a model without its files", json.dumps({"schema": 1, "machines": {}, "models": [{"id": "x"}]})),
+                    ("not an object", "[1, 2]")):
+    bad = os.path.join(TMP, "bad_models.json"); open(bad, "w", encoding="utf-8").write(text)
+    r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "models"], capture_output=True, text=True,
+                       env=dict(os.environ, MOE_CACHE_MODELS_JSON=bad), timeout=60)
+    check(r.returncode != 0 and "Traceback" not in r.stderr and "model catalogue" in (r.stdout + r.stderr), f"{label}: `models` says the catalogue is damaged, no traceback")
+
 print("models catalogue test: " + ("PASS" if not fails else f"FAIL ({len(fails)})"))
 sys.exit(1 if fails else 0)
