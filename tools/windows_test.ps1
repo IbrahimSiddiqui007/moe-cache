@@ -24,7 +24,7 @@ if (-not (Test-Path $Dll)) { throw "plugin dll not found: $Dll" }
 # ---- memory cap (WINDOWS-082): the same rule as the launcher's mem_cap(): RAM minus max(4 GiB, 12.5 %); MOE_CACHE_MAX_RAM_GB overrides (0 = no cap)
 $ramBytes = [double](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
 $capBytes = $ramBytes - [math]::Max(4GB, 0.125 * $ramBytes)
-if ($env:MOE_CACHE_MAX_RAM_GB) { $o = 0.0; if ([double]::TryParse($env:MOE_CACHE_MAX_RAM_GB, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$o) -and $o -ge 0) { $capBytes = $o * 1e9 } }
+if ($env:MOE_CACHE_MAX_RAM_GB) { $parsedCap = 0.0; if ([double]::TryParse($env:MOE_CACHE_MAX_RAM_GB, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedCap) -and $parsedCap -ge 0) { $capBytes = $parsedCap * 1e9 } }
 if ($MemLimitGB -gt 0) { $capBytes = $MemLimitGB * 1e9 } elseif ($MemLimitGB -lt 0) { $capBytes = 0 }
 $modelBytes = (Get-Item $Model).Length
 if ($capBytes -gt 0 -and $modelBytes -gt $capBytes -and -not $AllowBigModel) {
