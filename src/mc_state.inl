@@ -269,6 +269,7 @@ struct state_t {
     // idea P20 (MOE_CACHE_PREFILL_LEND_MIB=N, default 0 = off): while long prompt batches run, the expert cache gives N MiB back to the system (the cache is cut by N and
     // the surplus evicted), and takes them back at the first small (decode) graph
     size_t lent_bytes = 0;
+    size_t lent_budget = 0;                             // the budget right after the lend (a cut by tune() meanwhile is not given back twice, AUD-021)
     void prefill_lend(int64_t max_tok) {
         static const size_t lend = getenv("MOE_CACHE_PREFILL_LEND_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_PREFILL_LEND_MIB"))) << 20 : 0;
         if (!lend) {
@@ -278,6 +279,7 @@ struct state_t {
         if (max_tok >= scan_tokens && !lent_bytes && budget > lend) {
             lent_bytes = lend;
             budget -= lend;
+            lent_budget = budget;
             while (resident_bytes > budget) {
                 int v = pick_victim();
                 if (v < 0) { break; }
@@ -285,7 +287,7 @@ struct state_t {
             }
             fprintf(stderr, "moe-cache: long prompt: the expert cache lends %.0f MiB to the system until decode (MOE_CACHE_PREFILL_LEND_MIB)\n", lend / 1048576.0);
         } else if (max_tok < scan_tokens && lent_bytes) {
-            budget += lent_bytes;
+            budget += mclend::restore_amount(lent_bytes, lent_budget, budget);
             if (max_budget && budget > max_budget) { budget = max_budget; }
             lent_bytes = 0;
         }
