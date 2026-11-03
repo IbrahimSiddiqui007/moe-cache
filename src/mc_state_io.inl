@@ -506,13 +506,13 @@
             sigaction(SIGUSR1, &ign, nullptr);
             const int fd = g_stats_pipe[1];
             g_stats_pipe[1] = -1;
-            close(fd);                       // wakes the snapshot thread, which then exits (joined below: it uses this state)
+            plat::wake_pipe_finish(fd);      // wakes the snapshot thread, which then exits (joined below: it uses this state)
         }
         if (g_idle_pipe[1] >= 0) {
             sigaction(SIGUSR2, &ign, nullptr);
             const int fd = g_idle_pipe[1];
             g_idle_pipe[1] = -1;
-            close(fd);                       // wakes the idle thread, which then exits (joined below: it uses this state)
+            plat::wake_pipe_finish(fd);      // wakes the idle thread, which then exits (joined below: it uses this state)
         }
         if (stats_th.joinable()) {
             stats_th.join();

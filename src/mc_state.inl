@@ -955,7 +955,7 @@ struct state_t {
         }
 #ifdef __linux__
         if (getenv("MOE_CACHE_STATS_SIGNAL")) {
-            if (pipe(g_stats_pipe) == 0) {
+            if (plat::wake_pipe_create(g_stats_pipe)) {
                 struct sigaction sa;
                 memset(&sa, 0, sizeof(sa));
                 sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_stats_pipe[1], &c, 1); (void) r; };   // async-signal-safe: only write()
@@ -965,7 +965,7 @@ struct state_t {
             }
         }
         // idle release (N3): the launcher's on-demand listener sends SIGUSR2 when the server has been idle for a while
-        if (cache_on && pipe(g_idle_pipe) == 0) {
+        if (cache_on && plat::wake_pipe_create(g_idle_pipe)) {
             struct sigaction sa;
             memset(&sa, 0, sizeof(sa));
             sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_idle_pipe[1], &c, 1); (void) r; };    // async-signal-safe: only write()
