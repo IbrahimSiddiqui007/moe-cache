@@ -1,21 +1,66 @@
 # moe-cache on Windows: UNTESTED port. This script answers one question: does the plugin load into an official Windows llama-server and give the same tokens as stock?
 #   powershell -ExecutionPolicy Bypass -File windows_test.ps1 -LlamaDir C:\llama -Model D:\models\model.gguf -Dll C:\moe\ggml-moe-cache-api3.dll
 # -LlamaDir : folder with llama-server.exe (an official release zip, CUDA build if you have an NVIDIA GPU)
-# -Model    : a GGUF that FITS IN RAM for the first test (Windows has no memory-limit scope here: a model bigger than RAM can freeze the machine)
+# -Model    : a GGUF that FITS IN RAM for the first test. The script refuses a model bigger than the memory cap (below) unless -AllowBigModel is given
 # -Dll      : ggml-moe-cache-api2.dll (llama.cpp 7fe450e19 / ggml 0.25.x) or ggml-moe-cache-api3.dll (llama.cpp 23b0202a1 and newer ggml 0.26.x)
 # -CacheGiB : expert cache size for the plugin run (default 0.5: far below the model, so experts are evicted and read again; "auto" sizes it from RAM)
+# -MemLimitGB : cap on the memory llama-server may commit, in decimal GB (WINDOWS-082). Default 0 = the launcher's rule: RAM minus max(4 GiB, 12.5 %), i.e. 28 GiB
+#              on a 32 GiB PC (MOE_CACHE_MAX_RAM_GB overrides, as in the launcher). It is a Windows job object around each llama-server this script starts, so a
+#              runaway process is stopped by Windows (its allocation fails) instead of freezing the PC. -1 = no limit. The job limit counts committed memory, not
+#              the file cache behind a memory-mapped model.
+# -AllowBigModel : run a model whose file is bigger than that cap anyway (it will page; close other programs)
 # -Extra    : more llama-server arguments for both runs, e.g. "--no-repack" (CPU-only machines: repacked weights switch the expert executor off)
 param(
   [Parameter(Mandatory = $true)][string]$LlamaDir,
   [Parameter(Mandatory = $true)][string]$Model,
   [Parameter(Mandatory = $true)][string]$Dll,
-  [int]$Port = 8099, [int]$Tokens = 32, [int]$Ctx = 4096, [int]$NCpuMoe = 999, [string]$CacheGiB = "0.5", [string]$Extra = ""
+  [int]$Port = 8099, [int]$Tokens = 32, [int]$Ctx = 4096, [int]$NCpuMoe = 999, [string]$CacheGiB = "0.5", [string]$Extra = "", [double]$MemLimitGB = 0, [switch]$AllowBigModel
 )
 $ErrorActionPreference = "Stop"
 $srv = Join-Path $LlamaDir "llama-server.exe"
 if (-not (Test-Path $srv)) { throw "llama-server.exe not found in $LlamaDir" }
 if (-not (Test-Path $Model)) { throw "model not found: $Model" }
 if (-not (Test-Path $Dll)) { throw "plugin dll not found: $Dll" }
+# ---- memory cap (WINDOWS-082): the same rule as the launcher's mem_cap(): RAM minus max(4 GiB, 12.5 %); MOE_CACHE_MAX_RAM_GB overrides (0 = no cap)
+$ramBytes = [double](Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory
+$capBytes = $ramBytes - [math]::Max(4GB, 0.125 * $ramBytes)
+if ($env:MOE_CACHE_MAX_RAM_GB) { $parsedCap = 0.0; if ([double]::TryParse($env:MOE_CACHE_MAX_RAM_GB, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$parsedCap) -and $parsedCap -ge 0) { $capBytes = $parsedCap * 1e9 } }
+if ($MemLimitGB -gt 0) { $capBytes = $MemLimitGB * 1e9 } elseif ($MemLimitGB -lt 0) { $capBytes = 0 }
+$modelBytes = (Get-Item $Model).Length
+if ($capBytes -gt 0 -and $modelBytes -gt $capBytes -and -not $AllowBigModel) {
+  throw ("the model file is {0:N1} GB but the memory cap is {1:N1} GB (RAM {2:N1} GB minus max(4 GiB, 12.5 %)). A model bigger than the cap can freeze this PC: use a smaller model for this identity test, or pass -AllowBigModel (or -MemLimitGB N) if you accept that" -f ($modelBytes / 1e9), ($capBytes / 1e9), ($ramBytes / 1e9))
+}
+if ($capBytes -gt 0) { Write-Host ("memory cap for llama-server: {0:N1} GB (job object; RAM {1:N1} GB, model {2:N1} GB)" -f ($capBytes / 1e9), ($ramBytes / 1e9), ($modelBytes / 1e9)) } else { Write-Host "memory cap: none (-MemLimitGB -1 or MOE_CACHE_MAX_RAM_GB=0)" }
+if ($capBytes -gt 0) {
+  # a Windows job object with JOB_OBJECT_LIMIT_JOB_MEMORY around each llama-server (the Python launcher does the same through ctypes, bin/moe_cache.py)
+  if (-not ("MoeJob" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public static class MoeJob {
+  [StructLayout(LayoutKind.Sequential)] struct BASIC { public long PerProcessUserTimeLimit, PerJobUserTimeLimit; public uint LimitFlags; public UIntPtr MinWs, MaxWs; public uint ActiveProcessLimit; public UIntPtr Affinity; public uint Priority, Sched; }
+  [StructLayout(LayoutKind.Sequential)] struct IOC { public ulong a, b, c, d, e, f; }
+  [StructLayout(LayoutKind.Sequential)] struct EXT { public BASIC Basic; public IOC Io; public UIntPtr ProcessMemoryLimit, JobMemoryLimit, PeakProcessMemoryUsed, PeakJobMemoryUsed; }
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateJobObjectW(IntPtr a, string n);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetInformationJobObject(IntPtr j, int c, ref EXT i, int n);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool QueryInformationJobObject(IntPtr j, int c, ref EXT i, int n, IntPtr r);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool AssignProcessToJobObject(IntPtr j, IntPtr p);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  // Limits the process (and its children) to `bytes` of committed memory and kills it when the job handle closes. Returns the limit read back, 0 on failure.
+  public static ulong Assign(IntPtr process, ulong bytes, out IntPtr job) {
+    job = CreateJobObjectW(IntPtr.Zero, null);
+    if (job == IntPtr.Zero) return 0;
+    EXT e = new EXT(); e.Basic.LimitFlags = 0x2000 | 0x200; e.JobMemoryLimit = new UIntPtr(bytes);   // KILL_ON_JOB_CLOSE | JOB_MEMORY
+    if (!SetInformationJobObject(job, 9, ref e, Marshal.SizeOf(typeof(EXT)))) return 0;
+    if (!AssignProcessToJobObject(job, process)) return 0;
+    EXT back = new EXT();
+    if (!QueryInformationJobObject(job, 9, ref back, Marshal.SizeOf(typeof(EXT)), IntPtr.Zero)) return 0;
+    return back.JobMemoryLimit.ToUInt64();
+  }
+  public static void Close(IntPtr job) { if (job != IntPtr.Zero) CloseHandle(job); }
+}
+"@
+  }
+}
 $prompts = @("Explain what a hash table is in two sentences.", "Write a Python function that reverses a string.",
              "What is the capital of Australia and why was it chosen?", "List three uses of a binary search.")
 $out = Join-Path $env:TEMP "moe-cache-test"; New-Item -ItemType Directory -Force $out | Out-Null
@@ -39,6 +84,12 @@ function Run-One([string]$label, [bool]$plugin) {
   $sargs = @("-m", "`"$Model`"", "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
   if ($Extra) { $sargs += ($Extra -split " " | Where-Object { $_ }) }
   $p = Start-Process -FilePath $srv -ArgumentList $sargs -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
+  $job = [IntPtr]::Zero
+  if ($capBytes -gt 0) {
+    $lim = [MoeJob]::Assign($p.Handle, [uint64]$capBytes, [ref]$job)
+    if ($lim -eq 0) { Write-Host "warning: the memory cap could not be set on $label (another job object around this shell? the run continues without it)" }
+    else { Write-Host ("  {0}: job memory limit {1:N1} GB read back" -f $label, ($lim / 1e9)) }
+  }
   try {
     $up = $false
     for ($i = 0; $i -lt 600; $i++) {
@@ -60,6 +111,7 @@ function Run-One([string]$label, [bool]$plugin) {
   } finally {
     # any exception above (health never came, a request failed) must not leave llama-server on the port
     if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+    if ($job -ne [IntPtr]::Zero) { [MoeJob]::Close($job) }
   }
   Start-Sleep -Seconds 3      # the finally above stopped the server; give Windows a moment to release the port and the log files
   $active = (Select-String -Path $log -Pattern "moe-cache:" -SimpleMatch | Select-Object -First 6 | ForEach-Object { $_.Line }) -join "`n"
