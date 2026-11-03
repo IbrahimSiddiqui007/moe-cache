@@ -66,6 +66,7 @@
 | Bug fixes | Plan rule (`MOE_CACHE_PLAN_RULE=1`, off by default): the compute-buffer figures of `llama-fit-params` are remembered on disk (`fit-params-cache.json`) by model files, context, -ub, KV type, GPU and driver, and tool files, so a repeat launch does not run the tool again (about 3 s each); the micro-batch candidates not yet remembered are measured at the same time, up to 4 (PREFILL-180, PREFILL-181). The figures are unchanged. |
 | Bug fixes | `planner/plan.py` prints its environment lines for the shell you use: `set -x NAME 'value'` in fish, `$env:NAME = 'value'` in PowerShell, `export` otherwise; `--shell bash|fish|powershell` picks one, and a path with a space or quote is quoted safely (CLEANUP-017). |
 | Bug fixes | doctor / check: a model whose architecture llama.cpp does not support yet (Clover: upstream pull request 31306 still open) now gets one plain FAIL line saying so, and so does a llama-server that answers "unknown model architecture" in the cache run, instead of a bare exit code; it no longer reads as "needs a newer build" (LAUNCHER-006). |
+| Bug fixes | The launcher turns the plugin's slow-path lines into one plain sentence the first time each shows up in the server output: a long-prompt block left on the CPU (GPU memory short, for example 538 MiB free of 539 needed), a GPU backend that cannot compute some expert weights, experts not in RAM, a failed GPU allocation, no pinned host buffer (LAUNCHER-001). |
 
 ## 0.3.5 (2026-11-03)
 

@@ -1479,6 +1479,39 @@ def keep_awake(cmd, allow_sleep=False):
     return cmd, (lambda: None), ""
 
 
+# LAUNCHER-001: plugin lines that mean a long-prompt block ran the slow way. One plain sentence per kind, the first time it shows up in the server's output.
+# The plugin's own lines stay as they are (src/mc_backend.inl); a CPU block took about 22 s instead of 9 s on the PC (handover n23, Flash-Next, 128k prompt).
+SLOW_PATH_LINES = [
+    ("no-mem", re.compile(r"a long-prompt block needs (\d+) MiB of GPU memory but only (\d+) MiB are free")),
+    ("no-op", re.compile(r"the GPU backend does not support .* such expert blocks stay on the CPU")),
+    ("no-ram", re.compile(r"a long-prompt block would upload whole expert tensors with experts not in RAM: it stays on the CPU")),
+    ("alloc", re.compile(r"could not allocate GPU memory for a long-prompt block: blocks stay on the CPU for \d+ graphs")),
+    ("no-pin", re.compile(r"no pinned host buffer for the long-prompt block")),
+]
+
+
+def slow_path_note(line):
+    """(kind, one plain sentence) when a server output line says a long-prompt block took the slow way, else None."""
+    for kind, rx in SLOW_PATH_LINES:
+        m = rx.search(line)
+        if not m:
+            continue
+        if kind == "no-mem":
+            need, free = int(m.group(1)), int(m.group(2))
+            short = need - free
+            return kind, (f"moe-cache: slow path: a long-prompt block ran on the CPU because the GPU had {free} MiB free and it needs {need} MiB"
+                          + (f" (short by {short} MiB: close programs that use the GPU, or --vram / --moe-cache-mib a little lower)" if short <= 64 else
+                             " (close programs that use the GPU, or lower --vram / --moe-cache-mib to leave room)")
+                          + "; a block on the CPU took about 22 s instead of 9 s in our 128k-prompt measurement")
+        return kind, {
+            "no-op": "moe-cache: slow path: this GPU backend cannot compute some expert weights, so those blocks of a long prompt run on the CPU (slower prompts, answers are the same)",
+            "no-ram": "moe-cache: slow path: a long-prompt block stays on the CPU because its experts are not in RAM (a bigger --ram or a smaller context lets the GPU do it)",
+            "alloc": "moe-cache: slow path: the GPU would not give memory for a long-prompt block, so the next blocks run on the CPU for a while (free GPU memory: close programs that use it)",
+            "no-pin": "moe-cache: slow path: no pinned host memory for the long-prompt block's result, so it is read back the plain way (a little slower, answers are the same)",
+        }[kind]
+    return None
+
+
 GPU_OOM_RE = re.compile(r"ErrorOutOfDeviceMemory|Device memory allocation .* failed|cudaMalloc failed|CUDA error: out of memory|hipMalloc failed|"
                         r"(failed to allocate|unable to allocate) (Vulkan|CUDA|ROCm|HIP|SYCL)\w* (compute )?buffer", re.I)
 
@@ -1639,6 +1672,10 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
             if b"moe-cache:" in line:
                 seen["plugin"] = True
                 seen["last"] = line.decode(errors="replace").strip()
+                note = slow_path_note(seen["last"])
+                if note and note[0] not in seen.setdefault("slow", set()):
+                    seen["slow"].add(note[0])
+                    say(note[1], err=True)
                 if plugin_off_line(line):
                     seen["disabled"] = line.decode(errors="replace").strip()
     pump_t = threading.Thread(target=pump, daemon=True)
