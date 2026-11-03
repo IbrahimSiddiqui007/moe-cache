@@ -299,4 +299,4 @@ If you open the page without the password you see a short note: open the address
   loading or ready, model, context, slots, busy slots, whether it wants a key; the key is never returned), and `GET /api/servers` does that for
   ports 8080-8089, marking the one the page started. Only this machine is asked.
 - Tests: `tests/ui_test.py` (no model) and `tests/ui_live.py MODEL.gguf --llama-server PATH` (a real model); CI runs both on Linux and Windows.
-- Not yet: remote access, a desktop app (design draft APP2).
+- Remote access: only with `--ui-lan` (docs/LAN_ACCESS.md). Not yet: TLS, a desktop app (design draft APP2).
