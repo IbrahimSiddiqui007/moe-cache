@@ -352,16 +352,17 @@ def peek_server(port, api_key=None, trusted=False):
     return out
 
 
-def peek_servers(ports=None, own=None):
-    """peek_server() for the usual ports at once (closed ports answer at once); `own` = the port of the server this page started."""
+def peek_servers(ports=None, own=None, extra=()):
+    """peek_server() for the usual ports at once (closed ports answer at once); `own` = the port of the server this page started, `extra` = the ports of the
+    further servers it started (GUI-013)."""
     res, ports = {}, list(ports or PEEK_PORTS)
-    mine = {own, on_demand_port()} - {None}
+    mine = {own, on_demand_port(), *extra} - {None}
     ts = [threading.Thread(target=lambda p=p: res.__setitem__(p, peek_server(p, trusted=p in mine)), daemon=True) for p in ports]
     for t in ts:
         t.start()
     for t in ts:
         t.join(15)
-    return [dict(res[p], started_here=p == own) for p in ports if p in res and res[p].get("up")]
+    return [dict(res[p], started_here=p == own or p in extra) for p in ports if p in res and res[p].get("up")]
 
 
 # Measured decode speeds from README "Results" / docs/RESULTS.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
@@ -1150,6 +1151,7 @@ class Runner:
         self.bench = {"state": "idle"}
         self.auto_key = None               # the launcher's key (agent mode, no key typed on the page)
         self.agent_guess = {}              # (file, mtime) -> agent name guessed from the conversation's start
+        self.vision, self.vision_at = None, 0     # does the running llama-server take images (/props modalities.vision); asked once it is ready
 
     # -- control --
     def start(self, s, on_demand=False):
@@ -1687,10 +1689,24 @@ class Runner:
                     err += "; your settings could not be started again: press Start"
             b.update(state="failed", error=err, step="")
 
+    def vision_now(self):
+        """GUI-009: True when the running llama-server has an image encoder (its /props says modalities.vision), False when it has none, None while unknown."""
+        if self.state != "ready":
+            return None
+        if self.vision is None and time.time() - self.vision_at > 5:
+            self.vision_at = time.time()
+            st, body = mc.http(f"http://127.0.0.1:{int(self.settings.get('port') or 8080)}/props", api_key=self.key(), timeout=3)
+            if st == 200:
+                try:
+                    self.vision = bool(((json.loads(body) or {}).get("modalities") or {}).get("vision"))
+                except (ValueError, AttributeError):
+                    pass
+        return self.vision
+
     def status(self):
         s = self.settings
         port = int(s.get("port") or 8080)
-        return {"state": self.state, "rc": self.rc, "model": s.get("model"), "port": port, "url": f"http://127.0.0.1:{port}",
+        return {"vision": self.vision_now(), "state": self.state, "rc": self.rc, "model": s.get("model"), "port": port, "url": f"http://127.0.0.1:{port}",
                 "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None,
                 "mode": self.mode + (" + MTP" if self.mode and self.mtp else ""), "command": shown_command(s) if s.get("model") else "", "agent": bool(s.get("agent")), "ctx": s.get("ctx"),
                 "live_tps": self.live_tps, "last": self.last, "cache": self.cache, "server_rss": self.rss, "log_seq": self.seq,
@@ -1704,7 +1720,16 @@ class Runner:
 
 CHAT_DIR = os.path.join(mc.CACHE_DIR, "ui-chats")
 CHAT_ID = re.compile(r"[a-z0-9-]{1,40}")
-MAX_CHAT_BODY = 8 * 1024 * 1024        # a chat with a few attached text files
+MAX_CHAT_BODY = 24 * 1024 * 1024       # a chat with a few attached text files and a few images (the page shrinks images to about 0.5 MB each)
+IMAGE_URL = re.compile(r"data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+")
+MAX_IMAGES = 8                          # per request
+MAX_IMAGE_CHARS = 6 * 1024 * 1024       # one image as a data URL
+
+
+def good_images(v):
+    """The images of a message: a short list of base64 data URLs (png, jpeg, webp, gif) and nothing else (no http(s) URL: the page server must never be made to fetch one)."""
+    return isinstance(v, list) and len(v) <= MAX_IMAGES and all(isinstance(u, str) and len(u) <= MAX_IMAGE_CHARS and IMAGE_URL.fullmatch(u) for u in v)
+
 ON_DEMAND = True                        # the page can start the on-demand listener (Runner.life_on_demand)
 
 
@@ -1740,6 +1765,8 @@ def save_chat(c):
     msgs = c.get("messages")
     if not isinstance(msgs, list) or not all(isinstance(m, dict) and m.get("role") in ("system", "user", "assistant") and isinstance(m.get("content"), str) for m in msgs):
         raise ValueError("messages: a list of {role, content}")
+    if not all(good_images(m["images"]) for m in msgs if m.get("images")):
+        raise ValueError("images: base64 data URLs only")
     keep = {k: c.get(k) for k in ("id", "title", "model", "system", "tokens", "files")}
     keep.update(messages=msgs, t=time.time())
     os.makedirs(CHAT_DIR, mode=0o700, exist_ok=True)
@@ -1766,7 +1793,19 @@ def chat_request(body):
     if not isinstance(msgs, list) or not msgs or not all(isinstance(m, dict) and m.get("role") in ("system", "user", "assistant")
                                                          and isinstance(m.get("content"), str) for m in msgs):
         raise ValueError("messages: a non-empty list of {role, content}")
-    r = {"messages": [{"role": m["role"], "content": m["content"]} for m in msgs], "stream": True, "timings_per_token": False}
+    out, n_img = [], 0
+    for m in msgs:
+        imgs = m.get("images")
+        if imgs:                                   # GUI-009: a user message with images goes out as OpenAI content parts (text, then one image_url each)
+            if m["role"] != "user" or not good_images(imgs):
+                raise ValueError(f"images: at most {MAX_IMAGES} base64 data URLs (png, jpeg, webp, gif) on a user message")
+            n_img += len(imgs)
+            out.append({"role": "user", "content": ([{"type": "text", "text": m["content"]}] if m["content"] else []) + [{"type": "image_url", "image_url": {"url": u}} for u in imgs]})
+        else:
+            out.append({"role": m["role"], "content": m["content"]})
+    if n_img > MAX_IMAGES:
+        raise ValueError(f"images: at most {MAX_IMAGES} in one request")
+    r = {"messages": out, "stream": True, "timings_per_token": False}
     t = number(body.get("temperature"), 0, 5, float, "temperature")
     if t is not None:
         r["temperature"] = t
@@ -1854,6 +1893,7 @@ class Store:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
        "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
+MAX_EXTRA = 2              # servers the page may start besides the main one (GUI-013)
 CHAT_TIMEOUT = 3600         # seconds llama-server may stay silent in the chat (a long prefill of a big context on a slow machine); a module constant so a test can shorten it
 
 
@@ -1905,10 +1945,22 @@ def open_page(url):
     t.start()
 
 
+class Foreign:
+    """The part of Runner that chat() needs, for a llama-server started elsewhere (no key, no plugin counters)."""
+    state = "ready"
+    def __init__(self, port):
+        self.settings = {"port": port}
+    def key(self):
+        return None
+    def cache_counts(self):
+        return None
+
+
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
     downloads = None
+    extra = None                # GUI-013: {port: Runner} of the further servers this page started (the main one is `runner`)
     token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in memory
     server_version = "moe-cache-ui"
     timeout = 30                # a client that sends nothing does not hold a thread forever
@@ -2017,8 +2069,8 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/sessions":
                 return self.send(200, self.runner.sessions())
             if u.path == "/api/servers":                   # llama-servers on this machine (ports 8080-8089), started here or elsewhere
-                own = int(self.runner.settings.get("port") or 8080) if self.runner.state in ("starting", "ready") else None
-                return self.send(200, {"servers": peek_servers(own=own)})
+                own = int(self.runner.settings.get("port") or 8080) if self.runner.state in ("starting", "ready", "waiting") else None
+                return self.send(200, {"servers": peek_servers(own=own, extra=self.live_extra()), "managed": self.managed(), "max_extra": MAX_EXTRA})
             if u.path == "/api/peek":                      # one port on 127.0.0.1 (a server started elsewhere, e.g. by a script or the on-demand server)
                 port = number(q.get("port"), 1, 65535, int, "port")
                 if port is None:
@@ -2080,6 +2132,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, self.downloads.start(str(body.get("id") or ""), self.download_folder(body.get("folder")), body.get("files")))
             if self.path == "/api/download/cancel":
                 return self.send(200, self.downloads.cancel())
+            if self.path == "/api/servers/start":            # GUI-013: one more server on another port, with the page's settings (the same checks as Start)
+                return self.send(200, self.start_extra(body))
+            if self.path == "/api/servers/stop":
+                return self.send(200, self.stop_extra(body.get("port")))
             if self.path == "/api/llama":                    # "llama.cpp not found": the path the user typed (checked with --version) is remembered
                 r, v = self.store.set_llama(body.get("path"))
                 return self.send(200, {"path": r, "version": v, "llama_found": True})
@@ -2154,7 +2210,7 @@ class Handler(BaseHTTPRequestHandler):
     def chat(self, body):
         """Stream one answer: llama-server's server-sent events passed through line by line, plus one {"moe": ...} event before [DONE] with this
         answer's expert-cache hits and misses (plugin only). The page stops an answer by closing the request; llama-server then stops too."""
-        r = self.runner
+        r = self.chat_target(body.get("port"))
         if r.state not in ("ready", "waiting"):          # "waiting": Start on first request; this request loads the model
             raise ValueError("no model is running: start one first")
         req = chat_request(body)
@@ -2211,6 +2267,65 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(502, {"error": f"llama-server did not answer: {e}"})
         finally:
             conn.close()
+
+    def chat_target(self, port):
+        """The server a chat message goes to: the main one (no port, or its port), one of the further servers of this page, or a llama-server started elsewhere on
+        127.0.0.1:8080-8089 that wants no key (GUI-013). Nothing else: the page must not become a way to reach other ports or hosts."""
+        if port in (None, ""):
+            return self.runner
+        port = number(port, 1, 65535, int, "port")
+        if port == int(self.runner.settings.get("port") or 8080) and self.runner.state in ("ready", "waiting"):
+            return self.runner
+        if port in self.extra:
+            return self.extra[port]
+        if port not in PEEK_PORTS:
+            raise ValueError(f"port {port}: only servers on 127.0.0.1 ports {PEEK_PORTS[0]}-{PEEK_PORTS[-1]} can be chatted with")
+        info = peek_server(port)
+        if not info.get("up") or info.get("health") != "ready":
+            raise ValueError(f"nothing ready is listening on port {port}")
+        if info.get("key"):
+            raise ValueError(f"the server on port {port} wants an API key: the page does not send its key to servers it did not start")
+        return Foreign(port)
+
+    def live_extra(self):
+        """Ports of the further servers that are starting or running; finished ones are dropped."""
+        for port, r in list(self.extra.items()):
+            if r.state in ("exited", "stopped", "idle", "failed") and not (r.p and r.p.poll() is None):
+                del self.extra[port]
+        return [p for p, r in self.extra.items() if r.state in ("starting", "ready", "waiting", "stopping")]
+
+    def managed(self):
+        """The servers this page started, main one first: [{port, main, state, model, mode, live_tps, agent, uptime}]."""
+        out = []
+        for port, r in [(int(self.runner.settings.get("port") or 8080), self.runner)] + [(p, self.extra[p]) for p in self.live_extra()]:
+            if r.state in ("starting", "ready", "waiting", "stopping"):
+                st = r.status()
+                out.append({"port": port, "main": r is self.runner, "state": st["state"], "model": st["model"], "mode": st["mode"], "live_tps": st["live_tps"],
+                            "agent": st["agent"], "uptime": st["uptime"], "vision": st["vision"], "url": st["url"]})
+        return out
+
+    def start_extra(self, body):
+        """GUI-013: starts one more server. The port must be free and differ from every server of this page; at most MAX_EXTRA more run at once
+        (each model takes its own RAM: the planner's numbers are for one model alone, the page says so)."""
+        s = self.settings(body)
+        port = int(s.get("port") or 8080)
+        used = {int(self.runner.settings.get("port") or 8080)} if self.runner.state in ("starting", "ready", "waiting", "stopping") else set()
+        used |= set(self.live_extra())
+        if port in used:
+            raise ValueError(f"port {port} is used by another server of this page: pick another port")
+        if len(self.live_extra()) >= MAX_EXTRA:
+            raise ValueError(f"at most {MAX_EXTRA} more servers at once")
+        r = Runner()
+        r.start(s)
+        self.extra[port] = r
+        return {"port": port, "managed": self.managed()}
+
+    def stop_extra(self, port):
+        r = self.extra.get(port) if isinstance(port, int) else None
+        if r is None:
+            raise ValueError("no such server of this page (the main server has its own Stop button)")
+        threading.Thread(target=r.stop, daemon=True).start()
+        return {"ok": True, "port": port}
 
     def download_folder(self, f):
         """The folder a download goes to: one of the page's model folders (the first, ~/models, by default); never a path the request makes up."""
@@ -2398,7 +2513,7 @@ def make_server(port=8070, ls=None, token=None):
         mc.say(line)
     downloads = dl.Downloads()
     downloads.on_change = lambda j: setattr(store, "models_at", 0)          # a finished download shows in the model list at once
-    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "token": token or secrets.token_urlsafe(24)})
+    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "extra": {}, "token": token or secrets.token_urlsafe(24)})
     class _Srv(ThreadingHTTPServer):
         # http.server sets SO_REUSEADDR; on Windows that lets a second instance bind the same port (a double-clicked moe-cache.bat twice gave two competing
         # managers on 8070 and "forbidden" pages from the wrong token). Linux needs it to restart on a port in TIME_WAIT, Windows does not.
@@ -2434,6 +2549,8 @@ def ui(argv):
         pass
     finally:
         remove_launch_files()
+        for r in list(srv.RequestHandlerClass.extra.values()):
+            r.stop()
         srv.RequestHandlerClass.runner.stop()
         srv.server_close()
     return 0
