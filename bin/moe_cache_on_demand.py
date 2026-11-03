@@ -805,6 +805,8 @@ def on_demand(argv):
     ap.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart and stop the listener")
     ap.add_argument("--stop", action="store_true", help="stop a running listener (and its model)")
     ap.add_argument("--status", action="store_true", help="print the remembered choice and whether the listener runs")
+    ap.add_argument("--keep-key", action="store_true", help="remembering a default without --api-key keeps the custom key of an earlier one instead of forgetting it "
+                                                           "(the control page uses this: it never has the key, and a port or idle change must not lock the agents out)")
     ap.add_argument("--add", action="store_true", help="add MODEL as another model (the default stays); a request's \"model\" picks it")
     ap.add_argument("--remove", metavar="NAME", help="forget an added model (its name as /v1/models lists it)")
     extra = []
@@ -888,7 +890,7 @@ def on_demand(argv):
             old = c or {}
             if ukey:
                 save_custom_key(ukey)
-            else:
+            elif not a.keep_key:
                 try:
                     os.unlink(CUSTOM_KEY_FILE)       # a new default without --api-key: the earlier custom key no longer applies
                 except OSError:
