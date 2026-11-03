@@ -239,6 +239,14 @@ The reuse above only works while the start of the prompt stays byte for byte the
 | an editor's autocomplete on the same server (many tiny requests) | give autocomplete its own small model or server |
 | the agent's window larger than the server's | keep the agent's limit below the server's (section above); `connect opencode` writes it, and for windows of 64k+ a 30-minute reply timeout (OpenCode's default is 5 minutes, a 63k first turn took 289 s) |
 
+**Long first turns and client time limits.** A 63k-token first turn takes minutes, and a client that gives up sooner re-sends the whole prompt from zero. Per agent:
+
+| Agent | Limit | What to do |
+|---|---|---|
+| Hermes | waits 1800 s (30 min) per request by default (`HERMES_API_TIMEOUT`, or `request_timeout_seconds` in its config; read from Hermes 0.22.5's code), so `connect hermes` needs no change | nothing, unless you lowered it |
+| OpenCode | `connect opencode` writes a 30-minute `headerTimeout` for windows of 64k+ (its default is 5 minutes) | nothing |
+| other clients (Cline, Continue, Aider and similar) | not checked by us | set the client's request timeout above your longest first-turn time; the server log line `prompt eval time = ... ms` shows how long it took |
+
 ## Measuring it yourself: replay a recorded agent session (tools/agent_bench.py)
 
 Decode tok/s says little about agents; what they wait for is the time to the first token of each turn and the whole task. `tools/agent_bench.py`
