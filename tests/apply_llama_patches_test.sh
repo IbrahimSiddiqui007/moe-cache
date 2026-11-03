@@ -26,4 +26,8 @@ grep -q "0002-bad.patch" "$T/out" || fail "failure should name the patch"
 echo x > h.txt; git add h.txt; git commit -qm other
 if LLAMA_PATCH_DIR="$T/good" "$S" "$R" >"$T/out" 2>&1; then fail "wrong base should stop"; fi
 grep -q "need" "$T/out" || fail "wrong-base message"
+# AUD-018: the async slot-save writer must use a temp name that is unique per task (two saves of one filename wrote the same NAME.tmp)
+P20="$HERE/patches/llama.cpp/0020-server-slot-save-async.patch"
+grep -q 'const std::string tmp = filepath + "." + std::to_string(id_task) + ".tmp"' "$P20" || fail "0020: temp file name must be unique per task"
+if grep -q 'filepath + ".tmp"' "$P20"; then fail "0020: shared NAME.tmp temp name"; fi
 echo "apply_llama_patches_test: PASS"
