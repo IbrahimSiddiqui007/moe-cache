@@ -490,6 +490,10 @@ class WindowsProbe:
                        and (luid is None or luid.lower() in k.lower())) / MiB
         if used is None and mine is None:
             return None, None, None
+        if mine is not None and used is not None and mine > used:
+            # Windows counts an allocation shared between processes (desktop surfaces) in each of them: all processes together read 3749 MiB
+            # on a card holding 2131 (PC 2026-11-03). llama-server's own buffers are not shared, so this only happens for trees of desktop apps
+            return used, used, "typeperf GPU Process Memory (capped at the card's use: shared allocations counted twice)"
         return used, mine, "typeperf GPU Process Memory" if mine is not None else "typeperf GPU Adapter Memory"
 
     # hardware facts
