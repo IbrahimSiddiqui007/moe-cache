@@ -46,7 +46,22 @@ Releases from v0.1.3 on are built by GitHub Actions from the tagged commit and c
 | Control-page chats | `~/.cache/moe-cache/ui-chats/` | your chat texts as JSON | user default |
 | Saved agent conversations | `~/.cache/moe-cache/slots/agent/` | llama-server slot files (the KV state of your conversations, i.e. your prompts in model form); `--no-warm` turns saving off | user default |
 | On-demand choice and logs | `~/.cache/moe-cache/on-demand.json`, `on-demand.log`, `on-demand.pid`, `on-demand-listener.log` | the remembered model and options; server output | user default |
-| Agent configuration written by `connect opencode\|hermes --write` | OpenCode: `~/.config/opencode/opencode.json`; Hermes: its config file; `connect claude`: `./.claude/settings.local.json` of the current folder | the local server address and **the API key**; the first backup of your previous file is kept next to it (`*.bak`) and also contains whatever keys you had | user default |
+| Agent configuration written by `connect <agent> --write` | the agent's own config file (table below) | the local server address and **the API key** | user default |
+
+Where each agent's file and its first backup live (checked in `bin/moe_cache.py`, `connect`). The backup is made only when the file already existed, and the first one is never replaced, so it holds your own setup and whatever keys you had:
+
+| Agent | File that is written | First backup of your previous file |
+|---|---|---|
+| Claude Code | `./.claude/settings.local.json` of the current folder | `~/.cache/moe-cache/backups/<12 hex of the file's path>-settings.local.json.bak` (outside the project on purpose, so a blanket `git add` cannot commit it) |
+| OpenCode | `~/.config/opencode/opencode.json` (`$XDG_CONFIG_HOME` honoured) | `opencode.json.bak` next to it |
+| Hermes | the file `hermes config path` prints (changed through `hermes config set`) | `config.yaml.bak` next to it; if that exists, `config.yaml.bak.YYYYmmdd-HHMMSS`. No new backup when the file is only our own earlier setting |
+| Codex CLI | `~/.codex/config.toml` (`$CODEX_HOME` honoured) | `config.toml.bak` next to it |
+| Pi | `~/.pi/agent/models.json` and `settings.json` (`$PI_CODING_AGENT_DIR` honoured) | `models.json.bak` and `settings.json.bak` next to them |
+| OpenClaw | `~/.openclaw/openclaw.json` | `openclaw.json.bak` next to it |
+| Qwen Code | `~/.qwen/settings.json` | `settings.json.bak` next to it |
+| Aider | `~/.aider.moe-cache.conf.yml` and `.aider.moe-cache.model.metadata.json` (its own files; your `.aider.conf.yml` is not touched) | `.bak` next to each, only if an older copy of our file exists |
+
+With a symlinked config the `.bak` sits beside the real file the link points to.
 
 Delete a row's files to remove that data; the cache folder (`~/.cache/moe-cache/`, or `$XDG_CACHE_HOME/moe-cache`) can be removed whole. Backups of your home folder will contain these files too. On Windows the cache folder is the same relative path under your user profile.
 

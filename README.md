@@ -7,7 +7,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 <img alt="status" src="https://img.shields.io/badge/status-v0.3.5%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
-<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b11669%20%2F%20b11966%20%2F%20b12064%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
+<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b12064%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
 <a href="https://ko-fi.com/ibrumm"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white"></a>
 </p>
 
@@ -24,7 +24,7 @@ MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. W
 |---|---|
 | Memory | 32 GB RAM for the big models (16 GB works for smaller ones such as Qwen3.6-35B); a graphics card is optional but recommended |
 | Disk | an SSD (NVMe is best) with the model size plus about 10 GB free |
-| Software | Python 3.8 or newer. llama.cpp is included in the Windows kit and the Linux `-ggml0.26` download (v0.3.3 and newer) |
+| Software | Python 3.8 or newer (3.11 or newer for `connect codex --write`, which checks the merged TOML file). llama.cpp is included in the Windows kit and the Linux `-ggml0.26` download (v0.3.3 and newer) |
 | Time | about 10 minutes of setup, plus the model download |
 
 **Privacy:** no telemetry, no account; the plugin opens no network connections. The few times the launcher or installer uses the internet (downloads you ask for, the update check) are listed in [docs/SECURITY.md](docs/SECURITY.md#privacy-what-moe-cache-sends-and-stores).
@@ -35,7 +35,7 @@ MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. W
 
 | | Install (checks the download against the release's SHA256 file; no admin or root; undo with `-Uninstall` / `--uninstall`) |
 |---|---|
-| Windows PowerShell | `irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1 \| iex` (needs Python 3.8+; it says how to get it if missing) |
+| Windows PowerShell | `irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1 \| iex` (needs Python 3.8+; 3.11+ only for `connect codex --write`; it says how to get it if missing) |
 | Linux | `curl -fsSL https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.sh -o install.sh && sh install.sh` |
 
 Then open a new terminal and run `moe-cache launch`: it checks your PC, suggests models that fit, prints the download command (it downloads only after you say yes), starts the server and offers to connect your coding agents. What it asks, step by step: [docs/INSTALL.md](docs/INSTALL.md#terminal-guide-moe-cache-launch). The manual ways follow.
@@ -136,6 +136,7 @@ Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html)
 | Page | What is in it |
 |---|---|
 | [Install in detail](docs/INSTALL.md) | every install option, the speed options, the control page, proving the output |
+| [Set up with a coding agent](docs/AI_SETUP.md) | numbered steps with exact commands for an AI agent that installs moe-cache for you (it asks before downloading a model or editing an agent config) |
 | [Windows](docs/WINDOWS.md) | the Windows kit, page file, known limits |
 | [Models](docs/MODELS.md) | which model and which file for your machine |
 | [Coding agents](docs/AGENTS.md) | Hermes, OpenCode, Claude Code, on-demand |

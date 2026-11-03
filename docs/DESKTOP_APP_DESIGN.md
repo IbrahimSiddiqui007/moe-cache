@@ -50,16 +50,17 @@ no UI of its own except a splash/error page. A fix to the page lands in both.
 1. The shell starts the child with `--ui-port 0` (the OS picks a free port: no clash with an open browser page on 8070 and no "port in use").
 2. It reads the line `moe-cache: control page at http://127.0.0.1:PORT/?t=TOKEN …` from the child's output (today's format; section 8 asks for a
    stable machine-readable form) with a 60 s timeout. On a timeout or an early exit the splash page shows the last 15 output lines.
-3. It navigates the window to that address. The page server answers with a redirect that moves the token into a cookie and drops it from the address.
+3. It navigates the window to that address. The page server serves the page with the token inside it (a `<meta name="moe-token">`, no cookie, no redirect); the page keeps the token in memory, removes `?t=` from the address (`history.replaceState`) and sends it in the `X-MoeCache-Token` header on every request.
 4. The webview is a remote `127.0.0.1` page: the Tauri capability file gives it **no Tauri commands**, so a script in the page (or in a chat answer
    rendered in it) cannot call into Rust. The shell talks to the page only through its HTTP API with the `X-MoeCache-Token` header (stop on Quit,
    tray Start / Stop).
 
-**Token handling.** Today the token travels in the address (`?t=`) once, then lives in an HttpOnly SameSite cookie. The address exists in the child's
-stdout pipe, the shell's memory and the webview's first request; it never reaches a command line (so not `/proc/*/cmdline`). The control page is
-**moving the token from the cookie to a request header right now (another session)**. The app must follow that change; what it needs is in section 8
-(item 1): the page must still be able to start from `?t=` in the address, keep the token in JavaScript memory / `sessionStorage` and send the header
-on every call. The shell side does not change: it still navigates to the printed address and uses the header for its own calls.
+**Token handling (header only, owner decision SERVER-011 a; no cookie anywhere).** The token travels in the address (`?t=`) once. The address exists in the
+child's stdout pipe, the shell's memory and the webview's first request; it never reaches a command line (so not `/proc/*/cmdline`). The page server
+hands the token over inside the page, the page keeps it in JavaScript memory and sends `X-MoeCache-Token` on every request (the chat stream uses `fetch`
+with the header, not `EventSource`). A reload in the window needs the address again, by design. The shell side: it navigates to the printed address and
+uses the header for its own calls. Checked on Linux (WebKitGTK) on 2026-11-03 and by `desktop/tests/shell_contract_test.py` (asserts no `Set-Cookie`);
+WebView2 is checked in the day 3 click-through.
 
 Alternative considered and not taken: the shell proxies all requests and injects the header itself (a custom protocol `moecache://`). It would hide
 the token from the page entirely, but costs a streaming proxy for the chat (SSE) and breaks relative-URL assumptions. Revisit only if the page
@@ -138,7 +139,7 @@ Tauri's updater plugin reads `latest.json` from the GitHub Release of the app an
 |---|---|---|
 | Unsigned installer: SmartScreen, Smart App Control, antivirus false positives (a bundled Python + Rust exe is a common flag) | friends hesitate or are blocked | README explains; publish SHA256SUMS; keep `install.ps1` and the `.bat` as the other way; submit false positives to Microsoft/vendors; decision is the owner's |
 | WebKitGTK old or missing on Linux (and Wayland quirks) | blank window or no app | `.deb` declares the dependency; fall back to the browser page (`--ui`) is documented; Linux is secondary |
-| Token handling changes in the control page (cookie → header) | blank page / 403 in the app | section 8 item 1; M1 verifies on both engines; tests in `tests/ui_test.py` for the `?t=` bootstrap |
+| Token handling in the control page (header only, no cookie) | blank page / 403 in the app | section 3; `shell_contract_test.py` and `tests/ui_test.py` cover the `?t=` bootstrap; WebView2 checked on day 3 |
 | Orphaned llama-server after a shell crash | memory held, port busy | Job Object / PDEATHSIG / stdin EOF (section 4) |
 | Webview engine differences (WebView2 vs WebKitGTK): the page was only checked in desktop browsers | layout or SSE streaming bugs | M1 checks the chat stream, file attach, download links on both; CI smoke test starts the app headless on Linux (xvfb) |
 | Bundled llama.cpp ages | stale, a security fix is missed | one app version per kit release; the updater delivers it; same pin as the kit (`b12064`) |
@@ -153,7 +154,7 @@ Listed by priority. Items 1-4 are needed for a usable app; the rest can follow.
 
 | # | Change in `bin/moe_cache_ui.py` / `ui/` | Why |
 |---|---|---|
-| 1 | **Token bootstrap without a cookie**: the page reads `?t=` from its address once, keeps the token in memory/`sessionStorage`, removes it from the address (`history.replaceState`), sends `X-MoeCache-Token` on every request. Still accept the cookie for older callers until removed | the other session is moving the token to a header; the app opens the page by address and must keep working. Apply the same rule to the SSE chat (`fetch` with headers, not `EventSource`) |
+| 1 | **Token bootstrap without a cookie**: **done** (SERVER-011 a): the page reads the token from its `<meta>`, keeps it in memory, drops `?t=` from the address and sends `X-MoeCache-Token` on every request, the chat stream included. No cookie is accepted | the app opens the page by address and keeps working |
 | 2 | **Stable start line**: with `MOE_CACHE_APP=1` (or `--app`) print one JSON line `{"moe_cache_ui":{"url":"http://127.0.0.1:PORT/?t=…","port":PORT,"pid":N}}` to stdout and flush; the human line stays for the terminal | the shell parses a sentence today ("control page at "); a wording change breaks the app silently |
 | 3 | **Parent-gone watch**: with `MOE_CACHE_APP=1` read stdin in a thread; on EOF call `runner.stop()` and exit. Also handle SIGTERM/SIGBREAK the same as Ctrl-C | the shell dying must not leave llama-server running; Windows has no PDEATHSIG |
 | 4 | **Do not open a browser** when started by the app (the shell passes `--no-browser`; make `MOE_CACHE_APP=1` imply it) and skip the `open_page` temp file | defence in depth |

@@ -319,8 +319,65 @@ st, _ = req("/api/bench", {})
 check(st == 400, "no benchmark without a running model")
 st, body = req("/api/chat", {"messages": [{"role": "user", "content": "hi"}]})
 check(st == 400 and "no model is running" in body, f"chat: no answer without a running model ({st})")
-st, body = req("/api/start", {"model": small["path"], "on_demand": True})
-check(st == 400 and "first request" in body and json.loads(req("/api/system")[1])["on_demand"] is False, "on-demand hook: refused until the launcher has it; /api/system says so")
+st, body = req("/api/agents")
+check(st == 200 and [a["agent"] for a in json.loads(body)["agents"]] == ["opencode", "hermes"] and json.loads(body)["url"] is None, "GUI-025: /api/agents reads the agents' config files back (no server running: no url)")
+# GUI-022: Start on first request = `moe_cache.py on-demand MODEL ...` (remember) and then the listener as the child; a fake stands in for both
+fake_od = os.path.join(TMP, "fake_on_demand.py")
+open(fake_od, "w").write(r'''import http.server, json, os, sys, threading
+log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "od_calls.json")
+calls = json.load(open(log)) if os.path.exists(log) else []
+calls.append(sys.argv[1:]); json.dump(calls, open(log, "w"))
+if sys.argv[1:]:                                   # remember step: `on-demand MODEL --port P ...`
+    print("on-demand: remembered " + os.path.basename(sys.argv[1]), flush=True)
+    sys.exit(3 if "--ctx" in sys.argv and sys.argv[sys.argv.index("--ctx") + 1] == "777" else 0)
+port = int(json.load(open(log + ".port")))
+state = ["idle"]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(json.dumps({"status": "ok", "on_demand": state[0]}).encode())
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0)); state[0] = "ready"
+        ok = self.headers.get("Authorization") == "Bearer " + os.environ.get("EXPECT_KEY", "?")
+        self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+        self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": "hi" if ok else "NOKEY"}}]}).encode() + b"\\n\\ndata: [DONE]\\n\\n")
+print("on-demand: listening", flush=True)
+http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+''')
+with socket.socket() as sck:
+    sck.bind(("127.0.0.1", 0)); od_port = sck.getsockname()[1]
+json.dump(od_port, open(os.path.join(TMP, "od_calls.json.port"), "w"))
+ui.ON_DEMAND_CMD = [sys.executable, fake_od]
+os.environ["EXPECT_KEY"] = AUTO_KEY
+st, body = req("/api/start", {"model": small["path"], "on_demand": True, "port": od_port, "api_key": "typed-key-1"})
+check(st == 400 and "agent key" in body, "on-demand: a typed API key is refused (the listener uses the launcher's agent key)")
+st, body = req("/api/start", {"model": small["path"], "on_demand": True, "port": od_port, "ctx": 777})
+time.sleep(1.5)
+odx = json.loads(req("/api/status")[1]); check(odx["state"] == "exited", f"on-demand: the listener is not started when the remember step is refused ({st} {body[:80]} {odx['state']})")
+st, body = req("/api/start", {"model": small["path"], "on_demand": True, "port": od_port, "ctx": 8192, "mode": "exact"})
+check(st == 200 and json.loads(req("/api/system")[1])["on_demand"] is True, f"on-demand: Start on first request is accepted; /api/system says so ({st})")
+deadline, odst = time.time() + 20, ""
+while time.time() < deadline:
+    odst = json.loads(req("/api/status")[1])["state"]
+    if odst == "waiting":
+        break
+    time.sleep(0.3)
+check(odst == "waiting", f"on-demand: the page shows waiting while the model is not loaded ({odst})")
+calls = json.load(open(os.path.join(TMP, "od_calls.json")))
+check(calls[-2][0] == small["path"] and "--port" in calls[-2] and "--agent" not in calls[-2] and "--" in calls[-2] and calls[-1] == [],
+      f"on-demand: remembered with the page's settings (no --agent, the listener adds it), then the listener runs bare ({calls[-2][:5]})")
+st, body = req("/api/chat", {"messages": [{"role": "user", "content": "hi"}]})
+check(st == 200 and '"hi"' in body and "NOKEY" not in body, f"on-demand: the page's chat reaches the listener with the agent key ({st})")
+deadline = time.time() + 10
+while time.time() < deadline and json.loads(req("/api/status")[1])["state"] != "ready":
+    time.sleep(0.3)
+check(json.loads(req("/api/status")[1])["state"] == "ready", "on-demand: ready once the listener says the model is loaded")
+st, _ = req("/api/stop", {})
+deadline = time.time() + 15
+while time.time() < deadline and json.loads(req("/api/status")[1])["state"] not in ("stopped", "exited"):
+    time.sleep(0.3)
+check(json.loads(req("/api/status")[1])["state"] in ("stopped", "exited"), "on-demand: Stop ends the listener")
+ui.ON_DEMAND_CMD = [sys.executable, "-c", "raise SystemExit(9)"]
 st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact", "agent": True, "api_key": "sekrit-123"})
 check(st == 200, f"POST /api/start ({body[:120]})")
 st, _ = req("/api/start", {"model": small["path"], "port": port + 1})
