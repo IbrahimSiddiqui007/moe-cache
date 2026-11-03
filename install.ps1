@@ -192,12 +192,12 @@ function Install-MoeCache {
             if (-not (Test-Path -LiteralPath (Join-Path $stage 'bin\moe_cache.py'))) { Remove-Item -LiteralPath $stage -Recurse -Force; throw 'REFUSED: the zip has no bin\moe_cache.py. Nothing was installed.' }
             [IO.File]::WriteAllText((Join-Path $stage '.moe-cache-complete'), "$Version`r`n")
             Fail-At 'unpack'
-            # swap by renames: kit -> kit.old (fails at once when a running llama-server / python holds a file in it, and then nothing has changed),
+            # swap by renames ([IO.Directory]::Move is a real rename; Move-Item falls back to copy + delete when the rename is refused and then leaves a half kit behind, seen on Windows CI): kit -> kit.old (fails at once when a running llama-server / python holds a file in it, and then nothing has changed),
             # kit.part -> kit; the old kit is deleted last, after the command and the record are written
             try {
                 if (Test-Path -LiteralPath $kitOld) { Remove-Item -LiteralPath $kitOld -Recurse -Force }
-                if (Test-Path -LiteralPath $kit) { Move-Item -LiteralPath $kit -Destination $kitOld }
-                try { Move-Item -LiteralPath $stage -Destination $kit } catch { if ((Test-Path -LiteralPath $kitOld) -and -not (Test-Path -LiteralPath $kit)) { Move-Item -LiteralPath $kitOld -Destination $kit }; throw }
+                if (Test-Path -LiteralPath $kit) { [IO.Directory]::Move($kit, $kitOld) }
+                try { [IO.Directory]::Move($stage, $kit) } catch { if ((Test-Path -LiteralPath $kitOld) -and -not (Test-Path -LiteralPath $kit)) { [IO.Directory]::Move($kitOld, $kit) }; throw }
                 $swapped = $true
             } catch {
                 throw "could not replace $kit ($($_.Exception.Message)). Close a running moe-cache server or llama-server and run this again. The previous install is untouched."
@@ -256,7 +256,7 @@ function Install-MoeCache {
             if ($shimTouched) { if ($null -ne $oldShimText) { [IO.File]::WriteAllText($shim, $oldShimText, (New-Object Text.ASCIIEncoding)) } else { Remove-Item -LiteralPath $shim -Force -ErrorAction SilentlyContinue } }
             if ($swapped) {
                 if (Test-Path -LiteralPath $kit) { Remove-Item -LiteralPath $kit -Recurse -Force }
-                if (Test-Path -LiteralPath $kitOld) { Move-Item -LiteralPath $kitOld -Destination $kit }
+                if (Test-Path -LiteralPath $kitOld) { [IO.Directory]::Move($kitOld, $kit) }
             }
             if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
             foreach ($d in $bin, $Root) { if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } }
