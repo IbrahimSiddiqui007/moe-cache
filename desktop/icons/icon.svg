@@ -1,9 +1,36 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <!-- moe-cache: three stacked blocks (experts), the middle one lit and moving into a chip with a cache square -->
-  <rect width="1024" height="1024" rx="224" fill="#0d1117"/>
-  <rect x="130" y="262" width="250" height="150" rx="36" fill="#2f81f7" opacity="0.55"/>
-  <rect x="130" y="634" width="250" height="150" rx="36" fill="#2f81f7" opacity="0.55"/>
-  <rect x="130" y="448" width="400" height="150" rx="36" fill="#79b8ff"/>
-  <rect x="560" y="232" width="340" height="560" rx="64" fill="#2f81f7"/>
-  <rect x="632" y="428" width="196" height="168" rx="36" fill="#0d1117"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" shape-rendering="crispEdges">
+  <!-- moe-cache icon: a flat pixel-art mast (cream, shaded brown on the right) with stacked expert blocks and a dish; palette of the control page -->
+  <defs><clipPath id="r"><rect width="1024" height="1024" rx="224"/></clipPath></defs>
+  <g clip-path="url(#r)">
+  <rect width="1024" height="1024" fill="#6b99b3"/>
+  <rect x="512" y="32" width="32" height="96" fill="#2a1b14"/>
+  <rect x="480" y="128" width="64" height="896" fill="#f8efc9"/>
+  <rect x="544" y="128" width="32" height="896" fill="#2a1b14"/>
+  <rect x="160" y="416" width="736" height="32" fill="#f8efc9"/>
+  <rect x="160" y="448" width="736" height="32" fill="#2a1b14"/>
+  <rect x="128" y="160" width="128" height="256" fill="#f8efc9"/>
+  <rect x="256" y="160" width="32" height="256" fill="#2a1b14"/>
+  <rect x="320" y="256" width="96" height="160" fill="#f8efc9"/>
+  <rect x="416" y="256" width="32" height="160" fill="#2a1b14"/>
+  <rect x="608" y="256" width="96" height="160" fill="#f8efc9"/>
+  <rect x="704" y="256" width="32" height="160" fill="#2a1b14"/>
+  <rect x="768" y="160" width="128" height="256" fill="#f8efc9"/>
+  <rect x="896" y="160" width="32" height="256" fill="#2a1b14"/>
+  <rect x="768" y="288" width="160" height="32" fill="#c8442a"/>
+  <rect x="224" y="672" width="608" height="32" fill="#f8efc9"/>
+  <rect x="224" y="704" width="608" height="32" fill="#2a1b14"/>
+  <rect x="256" y="512" width="128" height="160" fill="#f8efc9"/>
+  <rect x="384" y="512" width="32" height="160" fill="#2a1b14"/>
+  <rect x="640" y="512" width="128" height="160" fill="#f8efc9"/>
+  <rect x="768" y="512" width="32" height="160" fill="#2a1b14"/>
+  <rect x="576" y="864" width="32" height="32" fill="#2a1b14"/>
+  <rect x="640" y="768" width="96" height="32" fill="#f8efc9"/>
+  <rect x="608" y="800" width="128" height="96" fill="#f8efc9"/>
+  <rect x="736" y="800" width="32" height="96" fill="#2a1b14"/>
+  <rect x="640" y="896" width="64" height="32" fill="#f8efc9"/>
+  <rect x="704" y="896" width="64" height="32" fill="#2a1b14"/>
+  <rect x="480" y="288" width="96" height="32" fill="#c8442a"/>
+  <rect x="480" y="576" width="96" height="32" fill="#c8442a"/>
+  <rect x="480" y="960" width="96" height="32" fill="#c8442a"/>
+  </g>
 </svg>
