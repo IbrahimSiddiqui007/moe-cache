@@ -231,13 +231,80 @@ def ls_found_line(ls):
 
 # ---- how a llama-server loads the plugin ----
 
+_LDD_MEMO = {}          # PACKAGING-027: path -> (time, ldd output); one launch asks three times, a long-lived control page asks again later
+LDD_MEMO_SECONDS = 30
+
+
 def ldd(path):
     if WINDOWS:
         return ""
+    key, now = which(path), time.time()
+    hit = _LDD_MEMO.get(key)
+    if hit and now - hit[0] < LDD_MEMO_SECONDS:
+        return hit[1]
     try:
-        return subprocess.run(["ldd", which(path)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20).stdout
+        out = subprocess.run(["ldd", key], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20).stdout
     except Exception:
         return ""
+    _LDD_MEMO[key] = (now, out)
+    return out
+
+
+PROBE_CACHE_NAME = "probe-cache.json"
+PROBE_CACHE_KEEP = 8
+
+
+def ls_fingerprint(ls):
+    """What makes a llama-server's `--help` text change: the binary and the ggml/llama libraries it loads (the files next to it, and the ones ldd names).
+    A list of [path, mtime_ns, size]; None when the binary cannot be found (a test's fake path: nothing is cached)."""
+    try:
+        exe = os.path.realpath(which(ls))
+        files = [exe]
+        d = os.path.dirname(exe)
+        files += [os.path.join(d, f) for f in sorted(os.listdir(d)) if re.match(r"(lib)?(ggml|llama)", f)]
+        for line in ldd(ls).splitlines():
+            m = re.search(r"=>\s*(\S*(?:ggml|llama)\S*)", line)
+            if m:
+                files.append(os.path.realpath(m.group(1)))
+        out = []
+        for f in dict.fromkeys(files):
+            st = os.stat(f)
+            out.append([f, st.st_mtime_ns, st.st_size])
+        return out
+    except (OSError, TypeError):
+        return None
+
+
+def ls_help(ls, run=None):
+    """The text of `llama-server --help` (starting it costs 0.3 s, a third of a dry-run launch), remembered in memory and in CACHE_DIR/probe-cache.json
+    while the binary and its libraries are unchanged (PACKAGING-027). `run` replaces subprocess.run (tests, Machine.run)."""
+    fp = ls_fingerprint(ls)
+    path = os.path.join(CACHE_DIR, PROBE_CACHE_NAME)
+    data = {}
+    if fp:
+        try:
+            data = json.load(open(path, encoding="utf-8"))
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+        hit = data.get(fp[0][0])
+        if isinstance(hit, dict) and hit.get("fp") == fp and isinstance(hit.get("help"), str):
+            return hit["help"]
+    text = (run or subprocess.run)([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
+    if fp and text:
+        data[fp[0][0]] = {"fp": fp, "help": text}
+        for old in list(data)[:-PROBE_CACHE_KEEP]:
+            del data[old]
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return text
 
 
 def load_env(ls, lib, method="auto"):
@@ -1330,7 +1397,7 @@ def mtp_args(want, agent, ls, model, extra):
     server_has = False
     if head and want is not False and not user_spec:
         try:
-            server_has = "draft-mtp" in subprocess.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout
+            server_has = "draft-mtp" in ls_help(ls)
         except Exception:
             pass
     on, why = mtp_decide(want, agent, head, declared, server_has, user_spec)
@@ -2499,7 +2566,7 @@ def _launch_plan(a, extra, argv, machine):
     cram_auto = False             # True when the launcher chose it (yours after -- always wins)
     if cram is None:
         try:
-            if "--cache-ram" in machine.run([ls, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30).stdout:
+            if "--cache-ram" in ls_help(ls, machine.run):
                 # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
                 # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
                 lim = machine.mem_for_server(a.ram)

@@ -62,6 +62,7 @@
 | Bug fixes | Control page: the agents card now reads OpenCode's config (`opencode.json`, `opencode.jsonc`, comments allowed) and Hermes' `config.yaml` back, so "connected" means the config really points at the running server, also when it was set up outside the page or in an earlier run; an agent set up for another server says so (GUI-025). |
 | Bug fixes | The sanitize CI workflow has a concurrency group per branch that queues a second run behind the first instead of losing a running instrumented build (QUALITY-017). |
 | Bug fixes | `moe_cache.py on-demand`: remembering a model again (a new port, idle time or model) without `--api-key` keeps the custom key given earlier, so agents using it are no longer locked out with a silent 401; `--forget-key` drops it (SERVER-624). |
+| Bug fixes | The launcher starts faster: the text of `llama-server --help` is remembered on disk (`probe-cache.json` in the cache folder) while llama-server and its ggml libraries are unchanged, and `ldd` is asked once per launch instead of three times. A dry-run launch on the laptop: 0.47 s -> 0.19 s (median of 7; the first launch after a llama.cpp update pays the 0.3 s once) (PACKAGING-027). |
 
 ## 0.3.5 (2026-11-03)
 
