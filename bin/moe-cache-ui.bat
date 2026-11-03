@@ -20,12 +20,12 @@ set "PY=%MOE_CACHE_PYTHON%"
 if defined PY goto have_python
 rem the py launcher, by its full path
 for /f "delims=" %%P in ('%WHERE% $PATH:py.exe 2^>nul') do if not defined PY (
-  "%%~fP" -3 -c "import sys" >nul 2>nul && set "PY="%%~fP" -3"
+  "%%~fP" -3 -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>nul && set "PY="%%~fP" -3"
 )
 if defined PY goto have_python
 rem a python.exe that really runs: the one Windows ships without Python only opens the Store
 for /f "delims=" %%P in ('%WHERE% $PATH:python.exe 2^>nul') do if not defined PY (
-  "%%~fP" -c "import sys" >nul 2>nul && set "PY="%%~fP""
+  "%%~fP" -c "import sys; sys.exit(sys.version_info < (3, 8))" >nul 2>nul && set "PY="%%~fP""
 )
 if defined PY goto have_python
 echo Python 3.8 or newer is needed: install it from https://www.python.org/downloads/ (tick "Add python.exe to PATH"), then start this again.

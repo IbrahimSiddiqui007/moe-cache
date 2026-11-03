@@ -8,6 +8,7 @@
   moe_cache.py doctor  [MODEL.gguf] [--llama-server PATH] [--ram GB]       the same as check (preflight: GPU, driver, RAM, disk, llama-server; what to fix)
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py update --check                                            is a newer moe-cache or llama.cpp out? (downloads nothing)
+  moe_cache.py update --apply [--tag vX.Y.Z] [--yes] [--dry-run]          install the newer release (sha256 + attestation checked by its installer; Linux keeps the old version)
   moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md)
   moe_cache.py bench-record collect|monitor|assemble|validate|card|ingest|claim|board|lint|replay     the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
@@ -4118,11 +4119,18 @@ def update_advice(mine, latest_tag, ls_b, llama_tag):
 
 
 def update_cmd(argv):
-    """moe_cache.py update --check: tells whether a newer moe-cache or llama.cpp release exists. Downloads and installs nothing; asks GitHub only now."""
+    """moe_cache.py update --check: tells whether a newer moe-cache or llama.cpp release exists. Downloads and installs nothing; asks GitHub only now. --apply: bin/moe_cache_update.py."""
     ap = argparse.ArgumentParser(prog="moe_cache.py update", description="check for a newer moe-cache and llama.cpp release (nothing is downloaded or installed)")
     ap.add_argument("--check", action="store_true", help="the only mode: ask GitHub's release API once and print what is newer")
     ap.add_argument("--llama-server", default=default_llama_server())
+    ap.add_argument("--apply", action="store_true", help="install the newest release with the release's own installer (only for a copy the installer put there; see bin/moe_cache_update.py)")
+    ap.add_argument("--tag", help="with --apply: a release tag (vX.Y.Z) instead of the newest stable one")
+    ap.add_argument("--yes", action="store_true", help="with --apply: do not ask")
+    ap.add_argument("--dry-run", action="store_true", help="with --apply: say what would happen, download nothing")
     a = ap.parse_args(argv)
+    if a.apply:
+        from moe_cache_update import apply as apply_update
+        return apply_update(VERSION, HERE, tag=a.tag, yes=a.yes, dry=a.dry_run)
     def tag(url):
         try:
             req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": f"moe-cache/{VERSION}"})

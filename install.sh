@@ -127,7 +127,7 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   mv -f "$NEWREC" "$REL_REC"
   COMMITTED=1
   rm -rf "$BACKUP"
-  for d in "$REL_PREFIX"/versions/moe-cache-v*-ggml0.26-linux-x86_64; do [ -d "$d" ] && [ "$d" != "$REL_PREFIX/versions/$REL_NAME" ] && rm -rf "$d"; done     # older versions this installer unpacked, deleted last
+  for d in "$REL_PREFIX"/versions/moe-cache-v*-ggml0.26-linux-x86_64; do [ -d "$d" ] && [ "$d" != "$REL_PREFIX/versions/$REL_NAME" ] && { [ "${MOE_CACHE_KEEP_PREVIOUS:-}" = 1 ] && [ "$d" = "$REL_PREFIX/$PREV_LINK" ] || rm -rf "$d"; }; done     # older versions this installer unpacked, deleted last; MOE_CACHE_KEEP_PREVIOUS=1 (set by `moe_cache.py update --apply`) keeps the one that was current, for a roll back
   echo "installed: $("$REL_SHIM" --version 2>&1 | head -1)${OLD:+ (was $OLD)}"
   echo "  files:   $REL_PREFIX (versions/, current, .installed)"
   echo "  command: $REL_SHIM"

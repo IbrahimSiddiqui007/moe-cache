@@ -67,7 +67,7 @@ class Deps:
                 return err
             rc = subprocess.call(["hf", "download", m["repo"], "--include", *pk.includes(m), "--local-dir", d["folder"]])
             if rc:
-                return f"the download failed (exit {rc}); nothing was changed"
+                return f"the download failed (exit {rc}); nothing was changed. {pk.DOWNLOAD_HINT}"
         if m.get("link"):
             shard, target = (os.path.join(d["folder"], x) for x in m["link"])
             try:
