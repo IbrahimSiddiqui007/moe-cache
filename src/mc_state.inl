@@ -35,7 +35,8 @@ void remove_crash_report();
 #include "mc_state_pack_members.h"
 #include "mc_state_policy.h"
 #include "mc_state_rebalance_members.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t {
+#include "mc_state_exec.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -253,50 +254,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
     uint64_t rb_dec_hits = 0, rb_dec_miss = 0, rb_pre_hits = 0, rb_pre_miss = 0;
     uint64_t cls_promotions = 0, cls_demotions = 0;     // touches that moved a node to a higher / lower class list
     int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
-    // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
-    bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
-    bool   tiled_cache = false;                         // MOE_CACHE_TILED_CACHE=1 (D19, default off): the tiled/duplicate-id scan runs once per ids tensor and graph run instead of for gate, up and down
-    bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
-    int    exec_chunk = 128;                            // MOE_CACHE_EXEC_CHUNK=N: weight rows per pool chunk; 128 decodes +3.9 % over 32 on the PC (N25, every ABBA pair), the arithmetic per row is unchanged
-    bool   exec_fuse = true;                            // gate and up of one layer share one pool job (same arithmetic, one barrier fewer): decode +0.3-2.6 % in every PC ABBA pair, text identical (E3, RESULTS 73); MOE_CACHE_EXEC_FUSE=0 turns it off
-    bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
-    int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
-    bool   exec_pool_decode = false;                    // MOE_CACHE_EXEC_POOL_DECODE=1 (DECODE-137, default off): size the pool from the first single-token graph (src/mc_poolsize.h)
-    int    exec_pool_n = 0;                             // compute threads of the current pool
-    bool   exec_pool_from_decode = false;               // the pool was built (or rebuilt) from a single-token graph
-    int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes
-    int    exec_ecores = 0;                             // extra workers on efficiency cores
-    int    exec_readers = 4;
-    std::unique_ptr<exec_pool_t> pool;
-    std::vector<std::thread> readers;
-    std::mutex rq_mu;
-    std::condition_variable rq_cv;
-    std::deque<io_job_t> rq;
-    // idea I13 (MOE_CACHE_READER_AFFINITY=1, Linux, default off): once the executor pool exists, the reader threads move to the CPUs the pool does not use
-    // (if any are left), so a read's completion is not queued behind a compute thread
-    std::vector<int> reader_cpus;
-    std::atomic<int> reader_aff_gen{0};
-    void set_reader_cpus(const std::vector<int> & pool_cpus) {
-        static const bool on = getenv("MOE_CACHE_READER_AFFINITY") && atoi(getenv("MOE_CACHE_READER_AFFINITY")) > 0;
-        if (!on) {
-            return;
-        }
-        std::lock_guard<std::mutex> lk(rq_mu);
-        reader_cpus.clear();
-        const int n = (int) std::thread::hardware_concurrency();
-        for (int c = 0; c < n; c++) {
-            if (std::find(pool_cpus.begin(), pool_cpus.end(), c) == pool_cpus.end()) {
-                reader_cpus.push_back(c);
-            }
-        }
-        reader_aff_gen++;
-    }
-    std::atomic<int> demand_pending{0};          // idea I02: demand reads queued or running in the reader threads (advisory prefetch reads wait while this is above 0)
-    bool   rq_stop = false;
-    std::atomic<uint64_t> exec_fused{0}, exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
-    uint64_t stepaside_graphs = 0, stepaside_waits = 0;   // executor graphs handed back to llama.cpp with everything resident / of them, graphs that had to wait for a load
-    // per weight type: wall time of the expert products (includes waiting for experts still loading), ops, expert bytes touched
-    std::atomic<uint64_t> exec_type_ns[64] = {}, exec_type_ops[64] = {}, exec_type_bytes[64] = {};
 
     // usage profile and warm start
     std::string profile_path;          // learn here and warm start from it
