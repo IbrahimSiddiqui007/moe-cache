@@ -11,7 +11,7 @@ PY_TESTS="ui_test security_test bench_report_test bench_record_test on_demand_te
  diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test heavy_background_test bench_orphan_test
  budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test
  cgroup_test planner_test model_links_test update_check_test autostart_test fill_manifests_test"
-SH_TESTS="apply_llama_patches_test"
+SH_TESTS="apply_llama_patches_test set_version_test friend_scrub_test"
 # tests that exist but are not part of the list above, with the reason
 NOT_QUICK="require_node_test"      # run below only when CI or REQUIRE_NODE is set: it fails on a machine without node (ui_test would skip its JS checks silently)
 
