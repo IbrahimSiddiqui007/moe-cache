@@ -44,7 +44,8 @@ void remove_crash_report();
 #include "mc_state_workers.h"
 #include "mc_state_files.h"
 #include "mc_state_repack.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t {
+#include "mc_state_view.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -71,12 +72,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
 #else
     static constexpr bool win_buffered = false, win_random = false;
 #endif
-    bool   win_view = false;                    // file-view cache (default on Windows and Linux; MOE_CACHE_WIN_VIEW=0 / MOE_CACHE_LINUX_VIEW=0 turn it off; see the constructor)
-    std::vector<const char *> views;            // win_view: one read-only view per model file (split GGUF)
-    std::vector<size_t> view_sizes;
-    size_t view_bytes = 0;                      // win_view: resident bytes of experts held in the views (not private memory: not in rss_private())
-    size_t ws_min_cur = 0;                      // win_view: the hard working-set minimum set last (0 = none)
-    bool   ws_min_warned = false;
     bool in_use(const node_t & n) const { return n.loading || n.epoch == epoch || n.epoch >= protect_epoch; }
 #ifdef _WIN32
     // once, at the first graph (llama.cpp has uploaded every tensor) and before the warm start fills the cache: release the model-file pages
