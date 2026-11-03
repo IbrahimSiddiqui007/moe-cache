@@ -137,7 +137,7 @@ jobs:
           else
             # notes: docs/RELEASE_NOTES_<tag>.md when it exists (written for the release), else the short text above
             if [ -f "docs/RELEASE_NOTES_$TAG.md" ]; then N=(--notes-file "docs/RELEASE_NOTES_$TAG.md"); else N=(--notes "$NOTES" --generate-notes); fi
-            gh release create "$TAG" --verify-tag --prerelease --title "moe-cache $TAG (beta)" "${N[@]}" \
+            gh release create "$TAG" --verify-tag --latest --title "moe-cache $TAG (beta)" "${N[@]}" \
               dist/moe-cache-v*-linux-x86_64.tar.gz dist/SHA256SUMS dist/install.sh dist/install.ps1
           fi
 
