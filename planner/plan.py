@@ -101,6 +101,7 @@ n_blocks = int(val(f"{arch}.block_count")); n_exp = int(val(f"{arch}.expert_coun
 nextn = int(val(f"{arch}.nextn_predict_layers", 0) or 0); n_main = n_blocks - nextn
 kv_heads = int(val(f"{arch}.attention.head_count_kv", 0) or val(f"{arch}.attention.head_count"))
 heads = int(val(f"{arch}.attention.head_count")); embd = int(val(f"{arch}.embedding_length"))
+if heads <= 0: sys.exit(f"{a.model}: the header says {arch}.attention.head_count = {heads}; cannot size the KV cache")
 key_len = int(val(f"{arch}.attention.key_length", embd // heads)); val_len = int(val(f"{arch}.attention.value_length", key_len))
 interval = int(val(f"{arch}.full_attention_interval", 0) or 0); ssm = val(f"{arch}.ssm.inner_size") is not None
 n_attn = n_main // interval if interval else n_main
@@ -151,8 +152,8 @@ def amd_free():
         if tot >= 2**30 and (best is None or tot > best[0]): best = (tot, tot - used)
     return best[1] if best else None
 gpu_name = "NVIDIA"
-free_vram = a.vram_gib * GIB if a.vram_gib else smi("memory.free")
-if free_vram is None and not a.vram_gib:
+free_vram = a.vram_gib * GIB if a.vram_gib is not None else smi("memory.free")
+if free_vram is None and a.vram_gib is None:
     free_vram = amd_free(); gpu_name = "AMD"
 if a.check is not None:
     n_gpu = n_main - a.check
@@ -173,7 +174,7 @@ def mem_avail():
         return m.ullAvailPhys if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else 8 * GIB
     for l in open("/proc/meminfo"):
         if l.startswith("MemAvailable"): return int(l.split()[1]) * 1024
-ram = a.ram_gib * GIB if a.ram_gib else mem_avail()
+ram = a.ram_gib * GIB if a.ram_gib is not None else mem_avail()
 cpu_experts = ncmoe * per_layer + (mtp_experts if a.mtp else 0)
 cache = max(1.0 * GIB, min(cpu_experts * 1.02, ram - 3.0 * GIB))
 fits = cache >= cpu_experts
@@ -183,7 +184,7 @@ if a.mtp: cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
 usage = a.profile or os.path.expanduser("~/.cache/moe-cache/" + os.path.basename(a.model) + ".usage")
 # the plugin sizes itself from the memory limit (MOE_CACHE_SIZE_GIB=auto); it learns from use and warm-starts the next run
 env = {"MOE_CACHE_SIZE_GIB": "auto", "MOE_CACHE_GGUF": a.model, "MOE_CACHE_PROFILE": usage, "MOE_CACHE_STATS": "1"}
-if a.ram_gib: env["MOE_CACHE_RAM_GIB"] = str(a.ram_gib)
+if a.ram_gib is not None: env["MOE_CACHE_RAM_GIB"] = str(a.ram_gib)
 info = dict(arch=arch, layers=n_main, experts=n_exp, used=n_used, expert_MB=per_layer / n_exp / 1e6, gpu_expert_layers=n_gpu, n_cpu_moe=ncmoe,
             predicted_vram_GiB=predicted_vram(n_gpu) / GIB, free_vram_GiB=(free_vram or 0) / GIB, cpu_experts_GiB=cpu_experts / GIB, ram_available_GiB=ram / GIB,
             cache_GiB=cache / GIB, cache_holds_all_cpu_experts=fits, note=note, env=env, command=cmd)
