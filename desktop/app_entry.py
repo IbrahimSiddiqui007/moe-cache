@@ -53,14 +53,26 @@ def main(argv):
             signal.signal(getattr(signal, name), stop)
 
     if os.environ.get("MOE_CACHE_APP") == "1":
+        # The watcher reads a private copy of the shell's pipe, and fd 0 (what the page's child processes would inherit) becomes NUL: on Windows a
+        # blocking read on the inherited handle stalls the launcher's own Popen calls (the model never got ready in CI), and llama-server must not
+        # hold the shell's pipe either.
+        try:
+            watch_fd = os.dup(0)
+            nul = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(nul, 0)
+            os.close(nul)
+        except OSError:
+            watch_fd = None
+
         def watch_parent():
             try:
-                while sys.stdin.buffer.read(4096):
+                while watch_fd is not None and os.read(watch_fd, 4096):
                     pass
-            except (OSError, ValueError):
+            except OSError:
                 pass
             stop()
-        threading.Thread(target=watch_parent, daemon=True).start()
+        if watch_fd is not None:
+            threading.Thread(target=watch_parent, daemon=True).start()
     rc = ui.ui(argv) or 0
     if os.environ.get("MOE_CACHE_APP") == "1":
         # the watch thread may still sit in a stdin read: a normal interpreter exit would abort on its lock ("could not acquire lock for <stdin>")
