@@ -1032,15 +1032,23 @@ struct state_exit_t {
     ~state_exit_t() {
         if (plat::process_exiting()) {
             s->exit_without_threads();
-        } else if (!s->mu.try_lock()) {
-            // exit() called while a graph holds the cache lock (Linux: llama-server's second Ctrl+C calls exit(1) from its signal handler, in the
-            // middle of a prompt). Joining the readers would wait for ever (they need the lock) and the save would lock it again: leave the state
-            // as the Windows exit does; the system takes the memory back (audit 2026-10-29 N2)
-            fprintf(stderr, "moe-cache: exit during a computation: threads left to the system, usage profile not saved this time\n");
-            s->exit_without_threads();
-        } else {
+            return;
+        }
+        const bool lock_free = s->mu.try_lock();
+        int active = 0;
+        if (lock_free) {
+            active = s->graph_active;
             s->mu.unlock();
+        }
+        if (mcexit::choose(false, lock_free, active) == mcexit::action::delete_state) {
             delete s;
+        } else {
+            // exit() called while a graph is running (Linux: llama-server's second Ctrl+C calls exit(1) from its signal handler, in the middle of a
+            // prompt; the cache lock is held for short steps only, so graph_active is tested too, AUD-013). Joining the readers would wait for ever
+            // (they need the lock) and deleting would pull the state from under the compute threads: leave the state as the Windows exit does;
+            // the system takes the memory back (audit 2026-10-29 N2)
+            fprintf(stderr, "moe-cache: exit during a computation: threads left to the system, usage profile saved without waiting\n");
+            s->exit_without_threads();
         }
     }
 };
