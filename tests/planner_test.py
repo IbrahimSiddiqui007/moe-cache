@@ -64,7 +64,7 @@ except Exception as e:
 
 # the launcher's dry run: --vram is GiB for the tuner too, --gpu-margin reaches the tuner
 def dry(*extra):
-    env = dict(os.environ)
+    env = dict(os.environ, MOE_CACHE_MAX_RAM_GB="0")      # no machine-dependent memory cap: a 16 GB CI runner capped --ram 32 to ~12 GB and the 18 GB model stopped "fitting"
     env.setdefault("MOE_CACHE_LIB", os.path.join(HERE, "build", "libggml-moe-cache.so"))
     r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "server", model, "--ram", "4", "--always-plugin", "--dry-run", *extra],
                        capture_output=True, text=True, timeout=300, env=env)
@@ -86,7 +86,7 @@ check(lo is not None and hi is not None and hi >= lo, f"launcher --gpu-margin 3 
 
 # a stock run (model fits, or --stock) needs no plugin build (T5: Nemotron Bolt on the PC stopped with "plugin not built" before deciding stock)
 def dry_nolib(*extra):
-    env = dict(os.environ, MOE_CACHE_LIB=os.path.join(HERE, "no-such-dir", "libggml-moe-cache.so"))
+    env = dict(os.environ, MOE_CACHE_MAX_RAM_GB="0", MOE_CACHE_LIB=os.path.join(HERE, "no-such-dir", "libggml-moe-cache.so"))
     r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "server", model, "--dry-run", "--vram", "4", *extra],
                        capture_output=True, text=True, timeout=300, env=env)
     return r.returncode, r.stdout + r.stderr
