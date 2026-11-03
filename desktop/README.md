@@ -4,8 +4,11 @@ A Tauri 2 shell around the moe-cache control page. It starts `bin/moe_cache.py u
 address from its output, and shows the page in its own window, with a tray icon (Open / Start model / Stop model / Quit) and one instance only.
 Design, process model, packaging, updater, risks and plan: [docs/DESKTOP_APP_DESIGN.md](../docs/DESKTOP_APP_DESIGN.md).
 
-Status: skeleton. `cargo check` passes on Linux (2026-11-03); it has not been run in a window or built on Windows yet (first Windows build: the
-`desktop` workflow).
+Status (2026-11-03): runs on Linux (window shows the control page, chat streams), CI builds Windows NSIS + MSI and Linux AppImage + deb. Not yet
+run on Windows by hand (owner click-through, day 3).
+
+Tests without a model: `python3 desktop/tests/shell_contract_test.py` (the page started as the shell starts it, a fake model, chat stream, stop) and
+`cd desktop/src-tauri && nice -n 19 cargo test`.
 
 ## Run it in development (Linux)
 
@@ -25,8 +28,8 @@ Compile check only (no window, lighter): `cd src-tauri && nice -n 19 cargo check
 
 ## Build installers
 
-Linux (AppImage + deb): `desktop/scripts/build-linux.sh`. Windows and Linux in CI: run the **desktop** workflow by hand (Actions → desktop → Run
-workflow); give the SHA-256 of the python.org embeddable zip to bundle Python. The plugin and llama.cpp are not staged yet (milestone M1b/M2 in
+Linux (AppImage + deb): `desktop/scripts/build-linux.sh`. Windows and Linux in CI: the **desktop** workflow runs on pull requests that touch `desktop/` and by hand (Actions → desktop → Run
+workflow, once the file is on the default branch). Python 3.12.8's embeddable zip is bundled with a pinned SHA-256 (inputs override it, `none` skips it). The plugin and llama.cpp are not staged yet (milestone M1b/M2 in
 the design); the app uses the ones the page finds, as the browser page does.
 
 ## Layout
@@ -37,6 +40,7 @@ the design); the app uses the ones the page finds, as the browser page does.
 | `src-tauri/tauri.conf.json`, `tauri.windows.conf.json` | window, bundle targets, resources (Windows adds the bundled Python) |
 | `src-tauri/capabilities/default.json` | the control page gets no Tauri commands |
 | `web/index.html` | splash and error page |
+| `tests/` | `shell_contract_test.py`, no model |
 | `scripts/` | `stage.sh` (kit files into the bundle), `build-linux.sh`, `fetch-python-win.ps1` |
 | `src-tauri/icons/` | placeholder icon; replace with `npx tauri icon art.png` |
 
