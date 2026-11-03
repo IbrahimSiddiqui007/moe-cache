@@ -565,6 +565,13 @@ def server_args(s):
     return a + ["--", "--metrics"]          # the API key goes to the launcher in LLAMA_API_KEY (child_env), never on a command line
 
 
+def on_demand_args(s):
+    """GUI-022: `moe_cache.py on-demand` arguments that remember the page's settings (the listener adds --agent itself and takes --port as its own option)."""
+    a = server_args(s)
+    i = a.index("--")
+    return [x for x in a[:i] if x != "--agent"] + a[i:]
+
+
 def shown_command(s, windows=None):
     """The command as the page shows it, in a form the user's shell can run. Windows (PowerShell, which runs it as shown): an argument with a space or any
     of & ( ) ^ | < > % " ' ; , $ ` { } is put in single quotes (' doubled), and the key is `$env:LLAMA_API_KEY = 'KEY'; ` (the NAME=value prefix is
@@ -602,6 +609,7 @@ def dry_run(s):
 # The page asks the launcher for it (stdout: the key alone, exit 0), keeps it in memory, sends it in headers and to `connect` through the
 # environment; never in a URL, a log line or the status JSON (the page fetches it from /api/key only for the Copy button).
 KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]
+ON_DEMAND_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "on-demand"]     # tests replace it with a fake listener
 SHARE_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "bench-report"]    # "Share my numbers"; tests replace it with a fake
 REPORT_DIR = os.path.join(mc.CACHE_DIR, "reports")
 ISSUE_URL = "https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml"
@@ -1121,7 +1129,7 @@ class Runner:
         self.agent_guess = {}              # (file, mtime) -> agent name guessed from the conversation's start
 
     # -- control --
-    def start(self, s):
+    def start(self, s, on_demand=False):
         with self.lock:
             if self.share.get("state") == "running":
                 raise ValueError("\"Share my numbers\" is measuring: wait for it to finish or cancel it first")
@@ -1135,7 +1143,7 @@ class Runner:
             # killed as soon as the reply went out. So a thread that lives as long as the server starts it (and then polls it)
             got = {}
             ready = threading.Event()
-            threading.Thread(target=self.life, args=(s, got, ready), daemon=True).start()
+            threading.Thread(target=self.life_on_demand if on_demand else self.life, args=(s, got, ready), daemon=True).start()
             ready.wait(30)
             if "error" in got or "p" not in got:
                 self.state = "exited"
@@ -1164,6 +1172,59 @@ class Runner:
         threading.Thread(target=self.read, args=(p,), daemon=True).start()
         self.poll(p)
         p.wait()
+
+    def life_on_demand(self, s, got, ready):
+        """GUI-022 "Start on first request": remember the settings with `moe_cache.py on-demand MODEL ...` (it checks them with the launcher's plan), then run the
+        listener as the child: it holds the port, starts llama-server on the first request and stops it when idle. State: starting -> waiting (model not
+        loaded) -> ready (model loaded, until its idle stop)."""
+        got["p"] = None                    # start() may answer now; the plan check below can take a while
+        self.state, self.started = "starting", time.time()
+        ready.set()
+        self.add_line("ui: " + " ".join(["moe-cache on-demand"] + on_demand_args(s)))
+        try:
+            r = subprocess.run(ON_DEMAND_CMD + on_demand_args(s), capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900, env=child_env())
+            out, rc = (r.stdout + r.stderr).strip(), r.returncode
+        except Exception as e:
+            out, rc = f"{type(e).__name__}: {e}", 1
+        for line in out.splitlines():
+            self.add_line(line)
+        if rc:
+            self.rc, self.state = rc, "exited"
+            self.add_line(f"ui: Start on first request was refused (exit code {rc})")
+            return
+        self.auto_key = launcher_key()
+        try:
+            kw = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "env": child_env()}
+            if sys.platform.startswith("linux"):
+                kw["preexec_fn"] = mc._die_with_parent_linux
+            p = self.p = subprocess.Popen(ON_DEMAND_CMD, **kw)
+        except Exception as e:
+            self.rc, self.state = 1, "exited"
+            self.add_line(f"ui: could not start the listener: {e}")
+            return
+        if WINDOWS:
+            try:
+                mc._kill_with_parent_windows(p)
+            except Exception:
+                pass
+        threading.Thread(target=self.read, args=(p,), daemon=True).start()
+        self.poll_on_demand(p)
+        p.wait()
+
+    def poll_on_demand(self, p):
+        port = int(self.settings.get("port") or 8080)
+        while p.poll() is None:
+            if self.state != "stopping":
+                body = mc.http(f"http://127.0.0.1:{port}/health", timeout=2)[1] or ""
+                try:
+                    od = json.loads(body).get("on_demand")
+                except (ValueError, AttributeError):
+                    od = None
+                st = {"idle": "waiting", "ready": "ready", "starting": "starting"}.get(od)
+                if st and self.state in ("starting", "waiting", "ready"):
+                    self.state = st
+            self.hist.append([round(time.time(), 1), None, None])
+            time.sleep(1)
 
     def sessions(self):
         """The saved agent conversations, which of them this server restored at start, a guess of the agent, and the server's live slots."""
@@ -1621,7 +1682,7 @@ class Runner:
 CHAT_DIR = os.path.join(mc.CACHE_DIR, "ui-chats")
 CHAT_ID = re.compile(r"[a-z0-9-]{1,40}")
 MAX_CHAT_BODY = 8 * 1024 * 1024        # a chat with a few attached text files
-ON_DEMAND = False                       # hook: True once the launcher can start the model on the first request (claude/on-demand)
+ON_DEMAND = True                        # the page can start the on-demand listener (Runner.life_on_demand)
 
 
 def chat_path(cid):
@@ -1990,9 +2051,13 @@ class Handler(BaseHTTPRequestHandler):
                 if body.get("on_demand") and not ON_DEMAND:
                     raise ValueError("Start on first request is not in this version yet")
                 s = self.settings(body)
+                if body.get("on_demand"):
+                    if s.get("api_key"):
+                        raise ValueError("Start on first request uses the launcher's own agent key: leave the API key field empty")
+                    s["agent"] = True            # the listener is for agents: --agent is always on
                 self.store.saved["last"] = {k: v for k, v in s.items() if k != "api_key"}
                 self.store.save("last")
-                self.runner.start(s)
+                self.runner.start(s, on_demand=bool(body.get("on_demand")))
                 return self.send(200, self.runner.status())
             if self.path == "/api/pick/use":               # "Use it": the same settings `moe_cache.py pick --apply` writes (no download here)
                 if body.get("use") not in picker.USES:
@@ -2041,7 +2106,7 @@ class Handler(BaseHTTPRequestHandler):
                 agent = body.get("agent")
                 if agent not in ("opencode", "hermes"):
                     raise ValueError("agents: opencode, hermes")
-                if self.runner.state != "ready":
+                if self.runner.state not in ("ready", "waiting"):
                     raise ValueError("start a server first (with Agent mode on)")
                 return self.send(200, connect_agent(agent, self.runner.status()["url"], self.runner.key() or "", bool(body.get("write"))))
         except ValueError as e:
@@ -2054,7 +2119,7 @@ class Handler(BaseHTTPRequestHandler):
         """Stream one answer: llama-server's server-sent events passed through line by line, plus one {"moe": ...} event before [DONE] with this
         answer's expert-cache hits and misses (plugin only). The page stops an answer by closing the request; llama-server then stops too."""
         r = self.runner
-        if r.state != "ready":
+        if r.state not in ("ready", "waiting"):          # "waiting": Start on first request; this request loads the model
             raise ValueError("no model is running: start one first")
         req = chat_request(body)
         before = r.cache_counts()

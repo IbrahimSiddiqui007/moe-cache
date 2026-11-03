@@ -293,7 +293,7 @@ button.danger { border-color:var(--ink); }
     <div class="menu rowmenu" id="rowmenu" role="menu" hidden></div>
     <div class="menu" id="menu" hidden>
       <button data-m="now"><b>Start now</b><span class="small">load the model with the settings and keep it loaded</span></button>
-      <button data-m="ondemand" id="m-ondemand"><b>Start on first request</b><span class="small" id="m-ondemand-why">listen on the port and load the model when a chat or an agent asks (not in this version yet)</span></button>
+      <button data-m="ondemand" id="m-ondemand"><b>Start on first request</b><span class="small" id="m-ondemand-why">listen on the port and load the model when a chat or an agent asks</span></button>
       <button data-m="cmd"><b>Show the llama-server command</b><span class="small">what Start runs (the launcher's --dry-run)</span></button>
       <button data-m="own"><b>Open llama-server's own chat page</b><span class="small">in a new tab (needs a running model)</span></button>
     </div>
@@ -703,10 +703,10 @@ function chart(id, pts, max, color, pct) {
   g.fillStyle = css.getPropertyValue("--muted"); g.font = "11px system-ui"; g.fillText(pct ? "100 %" : top.toFixed(0), 4, 11);
 }
 /* switching models: the list changes the selection, the running server keeps its model until Stop. When they differ the top bar offers one click for both. */
-function runningState(st) { return st.state == "starting" || st.state == "ready" || st.state == "stopping"; }
+function runningState(st) { return st.state == "starting" || st.state == "ready" || st.state == "waiting" || st.state == "stopping"; }      // "waiting": Start on first request, the listener holds the port and the model loads with the first request
 function switchInfo(st, sel, models) {
   const m = (models || []).find(x => x.path == sel);
-  return { show: !!(st && (st.state == "starting" || st.state == "ready") && sel && st.model && sel != st.model && m), label: m ? "Switch to " + shortName(m.name) : "" };
+  return { show: !!(st && (st.state == "starting" || st.state == "ready" || st.state == "waiting") && sel && st.model && sel != st.model && m), label: m ? "Switch to " + shortName(m.name) : "" };
 }
 function switchNeedsConfirm(live, chatBusy) { return !!chatBusy || (Array.isArray(live) && live.some(x => x.processing)); }
 async function switchModel() {
@@ -723,7 +723,7 @@ async function switchModel() {
 }
 /* the menu of a model in the list (right-click, Shift+F10 or the menu key, the ⋮ button) */
 function rowMenuItems(st, path) {
-  const up = st && (st.state == "starting" || st.state == "ready"), here = up && st.model == path, out = [];
+  const up = st && (st.state == "starting" || st.state == "ready" || st.state == "waiting"), here = up && st.model == path, out = [];
   if (here) out.push({ id: "stop", label: "Stop" });
   else if (up) out.push({ id: "switch", label: "Switch to this model" });
   else if (!st || st.state != "stopping") out.push({ id: "start", label: "Start" });
@@ -754,10 +754,10 @@ async function poll() {
   let st;
   try { st = await api("/api/status"); } catch (e) { $("state").textContent = "page server not reachable"; $("statedot").className = "dot bad"; return; }
   S.status = st;
-  const running = st.state == "starting" || st.state == "ready" || st.state == "stopping";
-  $("state").textContent = { idle: "idle", starting: "starting…", ready: "running", stopping: "stopping…", stopped: "stopped", exited: "ended (see Log)" }[st.state] || st.state;
-  $("statedot").className = "dot " + (st.state == "ready" ? "ok" : st.state == "exited" ? "bad" : running ? "warn" : "");
-  $("statemodel").textContent = st.model ? (running ? "Running: " : "Last: ") + shortName(st.model) + (st.state == "ready" ? ` · ${st.url.replace("http://", "")}` : "") + (st.agent ? " · Agent mode" : "") : "";
+  const running = runningState(st);
+  $("state").textContent = { idle: "idle", starting: "starting…", waiting: "waiting for the first request", ready: "running", stopping: "stopping…", stopped: "stopped", exited: "ended (see Log)" }[st.state] || st.state;
+  $("statedot").className = "dot " + (st.state == "ready" || st.state == "waiting" ? "ok" : st.state == "exited" ? "bad" : running ? "warn" : "");
+  $("statemodel").textContent = st.model ? (running ? "Running: " : "Last: ") + shortName(st.model) + (st.state == "ready" || st.state == "waiting" ? ` · ${st.url.replace("http://", "")}` : "") + (st.agent ? " · Agent mode" : "") : "";
   const sw = switchInfo(st, S.sel, S.models); $("switch").hidden = !sw.show; $("switch").textContent = sw.label; $("switch").disabled = false;
   const runKey = running ? st.model : ""; if (runKey !== S.runKey) { S.runKey = runKey; paintModels(); }
   $("start").hidden = running; $("stop").hidden = !running;
@@ -780,7 +780,7 @@ async function poll() {
   paintChatState(st, running);
   paintAgents(st);
   const k = st.api_key || {};
-  $("keyrow").hidden = !k.in_use || !(st.state == "starting" || st.state == "ready");
+  $("keyrow").hidden = !k.in_use || !(st.state == "starting" || st.state == "ready" || st.state == "waiting");
   if (k.in_use) { $("keyends").textContent = "••••" + k.ends; $("keysrc").textContent = "(" + k.source + ")"; }
   paintBench(st);
   paintShare(st);
@@ -914,7 +914,7 @@ function paintAgents(st) {
   const el = $("agentsmain");
   const key = [st.state, st.url, st.agent, JSON.stringify(st.api_key || {}), JSON.stringify(S.connected)].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
-  if (st.state != "ready") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on (Settings): this card then shows what to give OpenCode, Hermes or any OpenAI-compatible client, and connects them.</div>`; return; }
+  if (st.state != "ready" && st.state != "waiting") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on (Settings): this card then shows what to give OpenCode, Hermes or any OpenAI-compatible client, and connects them.</div>`; return; }
   const k = st.api_key || {};
   const line = (a, label, hint) => { const c = S.connected[a];
     return `<div class="line"><span class="dot ${c ? "ok" : ""}"></span><span class="n"><b>${label}</b><br><span class="small">${c ? "connected from this page at " + c : hint}</span></span>
@@ -1206,7 +1206,7 @@ $("bench").onclick = async () => {
 };
 $("share").onclick = async () => {
   if (!S.sel) { showErr("Pick a model in the list first."); return; }
-  const up = ["starting", "ready", "stopping"].includes(S.status.state);
+  const up = ["starting", "ready", "waiting", "stopping"].includes(S.status.state);
   if (up && switchNeedsConfirm(S.live, C.busy) && !confirm("The running model is still answering a request (an agent or the chat). Measuring stops it now. Go on anyway?")) return;
   const other = $("other").value.split(";").map(x => x.trim()).filter(Boolean);
   try { await api("/api/share", { model: S.sel, force: $("shareforce").checked, agent: !!$("agent").checked, other }); poll(); } catch (e) { showErr(e.message); }
