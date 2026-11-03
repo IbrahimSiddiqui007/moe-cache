@@ -31,7 +31,8 @@ void remove_crash_report();
 
 #include "mc_state_route.h"
 #include "mc_state_testfault.h"
-struct state_t : state_route_t, state_testfault_t {
+#include "mc_state_gpu.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -47,15 +48,6 @@ struct state_t : state_route_t, state_testfault_t {
     ggml_backend_buffer_t repack_buf = nullptr;         // a real repack buffer, used for init_tensor / set_tensor only
     ggml_backend_buffer_t repack_tag = nullptr;         // empty buffer of the repack type, swapped in while an operation runs
     std::atomic<uint64_t> repack_jobs{0};
-    ggml_backend_dev_t gpu_dev = nullptr;               // first GPU backend device, used for long prompts
-    ggml_backend_dev_t gpu_dev2 = nullptr;              // MOE_CACHE_GPU_DEV2 (default off, PROTOTYPE): a second card for long-prompt blocks that do not fit on the first
-    std::atomic<uint64_t> gpu_alt_blocks{0};            // blocks that ran on the second card
-    int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
-    std::atomic<uint64_t> hyb_groups{0}, hyb_picks{0}, hyb_hits{0};   // MOE_CACHE_HYBRID: layers split between GPU bank and CPU, picks, picks served by the bank
-    std::atomic<uint64_t> hyb_drops{0}, hyb_reloads{0}, hyb_reload_ns{0};
-    std::atomic<uint64_t> hyb_swaps{0}, hyb_swap_ns{0}, hyb_reverts{0};   // MOE_CACHE_HYBRID_ADAPT: experts swapped into the bank, time spent uploading them   // bank freed for a long prompt's GPU block, loaded again at the next decode step
-    std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0}, gpu_split_blocks{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory; gpu_split_blocks: blocks run in parts (N23)
-    std::atomic<uint64_t> gpu_up_bytes{0}, gpu_up_saved{0};     // gpu_up_saved: idea P11, bytes whose upload a held GPU copy made unnecessary
     // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
     std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
     bool cur_decode = false;                            // the group being prepared is a single-token (decode) step
