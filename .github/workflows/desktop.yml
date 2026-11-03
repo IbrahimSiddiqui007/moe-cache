@@ -1,0 +1,95 @@
+# Desktop app (Tauri 2 shell around the control page). Manual dispatch only: nothing here runs on a push or a tag.
+# Design: docs/DESKTOP_APP_DESIGN.md. First build of the scaffold: no signing of the installer (no code-signing certificate by decision);
+# update-file signing (TAURI_SIGNING_PRIVATE_KEY) is added with the updater milestone.
+name: desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      python_version:
+        description: Windows embeddable Python version
+        default: "3.12.8"
+      python_sha256:
+        description: SHA-256 of python-<version>-embed-amd64.zip (from python.org); empty = skip bundling Python (app then needs MOE_CACHE_PYTHON)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            bundles: appimage,deb
+          - os: windows-2022
+            bundles: nsis,msi
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+
+      - name: Rust toolchain
+        shell: bash
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+
+      - name: Cache Cargo
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: desktop-${{ matrix.os }}-${{ hashFiles('desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/Cargo.lock') }}
+
+      - name: Linux libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Stage the kit files
+        shell: bash
+        run: desktop/scripts/stage.sh
+
+      - name: Bundle Python (Windows)
+        if: runner.os == 'Windows' && inputs.python_sha256 != ''
+        shell: pwsh
+        run: desktop/scripts/fetch-python-win.ps1 -Version "${{ inputs.python_version }}" -Sha256 "${{ inputs.python_sha256 }}"
+
+      - name: Empty Python folder when none is bundled (Windows)
+        if: runner.os == 'Windows' && inputs.python_sha256 == ''
+        shell: bash
+        run: mkdir -p desktop/src-tauri/resources/python && touch desktop/src-tauri/resources/python/.gitkeep
+
+      - name: Build
+        working-directory: desktop
+        shell: bash
+        run: |
+          npm install --no-audit --no-fund
+          npx tauri build --bundles ${{ matrix.bundles }}
+
+      - name: Sizes
+        shell: bash
+        run: find desktop/src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.msi' -o -name '*-setup.exe' \) -exec ls -l {} \;
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: moe-cache-desktop-${{ runner.os }}
+          path: |
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 7
