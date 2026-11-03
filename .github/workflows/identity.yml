@@ -70,6 +70,12 @@ jobs:
           ./build.sh --portable
           ls -la build/libggml-moe-cache.so
 
+      - name: IQ2_XXS / IQ3_XXS kernel variants (src/fast_iq*.h) are bit-identical to this pin's library functions (no model)
+        # AUD-027: tests/kernel_variants.cpp was built only by tools/friend_test.sh, so CI never proved these kernels exact. "check" = compare only, exit 1 on a mismatch.
+        run: |
+          g++ -O2 -std=c++17 -Isrc tests/kernel_variants.cpp -o /tmp/kernel_variants -ldl
+          env -u LD_PRELOAD /tmp/kernel_variants llama.cpp/build/bin check | tee kernel_variants.txt
+
       - name: Small MoE model
         run: |
           curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
