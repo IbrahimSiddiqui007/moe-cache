@@ -97,6 +97,7 @@ struct moe_cache_backend_ctx {
     std::vector<ggml_backend_t> async_src;   // N15: backends with reads into our inputs still queued (cpy_tensor_async); synchronized before use
     ggml_gallocr_t     galloc = nullptr;
     bool               gpu_failed = false;   // the GPU backend could not be started: no GPU blocks for good
+    bool               blocks_ran = false;     // PATCH-086: a long-prompt GPU block ran since the block buffer was last released
     bool               hybrid_failed = false;  // PREFILL-172: a GPU call threw: the hybrid bank is not used any more (its allocator may be in an unknown state)
     unsigned           abort_sent_cpu = ~0u;   // SERVER-012: generation of the abort callback last forwarded to the CPU / GPU backend
     unsigned           abort_sent_gpu = ~0u;

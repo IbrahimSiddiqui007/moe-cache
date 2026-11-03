@@ -472,6 +472,9 @@
 
     // normal teardown (the threads are alive: Linux exit, a Windows FreeLibrary without exit): stop and join them, then save and report
     ~state_t() {
+#ifdef _WIN32
+        remove_crash_report();
+#endif
         stop_threads();
         finish();
     }
