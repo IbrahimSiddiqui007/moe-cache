@@ -227,8 +227,14 @@ const std::vector<int> & tier_wanted() {
     return v;
 }
 
+// "Was --hybrid / MOE_CACHE_HYBRID asked for" (AUD-004): the same answer hybrid_init gives, not a second parse. The decode tier counts as asked too.
+bool hybrid_requested() {
+    static const bool on = mcenv::hybrid_mib(getenv("MOE_CACHE_HYBRID")) > 0 || !tier_wanted().empty();
+    return on;
+}
+
 bool tier_check_on() {
-    static const bool on = getenv("MOE_CACHE_DECODE_TIER_CHECK") && atoi(getenv("MOE_CACHE_DECODE_TIER_CHECK")) > 0;
+    static const bool on = mcenv::env_on("MOE_CACHE_DECODE_TIER_CHECK");
     return on;
 }
 
@@ -268,6 +274,10 @@ bool tier_build(moe_cache_backend_ctx * c, state_t & s) {
     }
     ggml_init_params ip = { ggml_tensor_overhead() * (s.tensors.size() + 1), nullptr, true };
     c->hb_ctx = ggml_init(ip);
+    if (!c->hb_ctx) {                      // AUD-026
+        fprintf(stderr, "moe-cache: decode tier: could not create the tensor context: no tier\n");
+        return false;
+    }
     size_t bytes = 0;
     for (size_t i = 0; i < s.tensors.size(); i++) {
         const tinfo_t & ti = *s.tensors[i];
@@ -313,7 +323,7 @@ bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
     }
     c->hb_tried = true;
     const char * env = getenv("MOE_CACHE_HYBRID");
-    size_t mib = env ? (strcmp(env, "auto") == 0 ? (size_t) -1 : (size_t) atoll(env)) : 0;
+    size_t mib = mcenv::hybrid_mib(env);
     if (!mib || !s.gpu_dev || c->gpu_failed) {
         return false;
     }
@@ -382,6 +392,10 @@ bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
     }
     ggml_init_params ip = { ggml_tensor_overhead() * (s.tensors.size() + 1), nullptr, true };
     c->hb_ctx = ggml_init(ip);
+    if (!c->hb_ctx) {                      // AUD-026
+        fprintf(stderr, "moe-cache: hybrid: could not create the tensor context: no bank\n");
+        return false;
+    }
     for (size_t i = 0; i < s.tensors.size(); i++) {
         const tinfo_t & ti = *s.tensors[i];
         auto it = chosen.find(ti.layer);
@@ -486,7 +500,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     }
     // idea D24 (MOE_CACHE_HYBRID_COMPACT=1, default off): when some picks miss, the GPU graph gets only the hit picks as rows (1 x R, ids = their slots, one input row
     // each) instead of all picks with the misses pointed at slot 0, and only those rows are read back. Same weights times the same input row per hit pick.
-    static const bool hcompact = getenv("MOE_CACHE_HYBRID_COMPACT") && atoi(getenv("MOE_CACHE_HYBRID_COMPACT")) > 0;
+    static const bool hcompact = mcenv::env_on("MOE_CACHE_HYBRID_COMPACT");
     bool compact = hcompact && n_hit < n_used * n_tok;
     std::vector<std::pair<int32_t, int32_t>> hrows;          // (token, pick) of each hit
     std::vector<int32_t> crid;

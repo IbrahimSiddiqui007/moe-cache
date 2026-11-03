@@ -381,7 +381,7 @@ struct state_t {
     bool   stop = false;
 
     state_t() {
-        stats = getenv("MOE_CACHE_STATS") != nullptr;
+        stats = mcenv::env_on("MOE_CACHE_STATS");
         fprintf(stderr, "moe-cache: plugin v0.3.5 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
         if (!moe_cache_tested_ggml(ggml_version())) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only (this is %s); if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML, ggml_version());
@@ -840,7 +840,7 @@ struct state_t {
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_FUSE")) {
-            exec_fuse = atoi(v) != 0;
+            exec_fuse = mcenv::flag_value(v, true);
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHUNK")) {
             exec_chunk = std::max(1, std::min(4096, atoi(v)));
@@ -925,7 +925,7 @@ struct state_t {
             coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;
         }
         if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
-            lookahead = strcmp(v, "0") != 0;
+            lookahead = mcenv::flag_value(v, false);
             la_exec = strcmp(v, "2") == 0;
             if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_GUESS")) {
                 la_guess = atoi(g);

@@ -42,7 +42,7 @@ ggml_backend_t dev_init(ggml_backend_dev_t dev, const char *) {
 }
 
 ggml_backend_buffer_type_t dev_buft(ggml_backend_dev_t) {
-    if (getenv("MOE_CACHE_TRACE")) {
+    if (mcenv::env_on("MOE_CACHE_TRACE")) {
         fprintf(stderr, "moe-cache: get_buffer_type\n");
     }
     return get_buft();
@@ -61,7 +61,7 @@ bool layer_ok(const ggml_tensor * w) {
 // sum leaves the block ([n_embd, n_tokens] instead of [n_embd, k, n_tokens]) instead of the k rows crossing the bus and the scheduler copying them back up.
 // The same backend does the same ops in the same order. Short batches stay as they are.
 bool gpu_sum_on() {
-    static const bool on = !getenv("MOE_CACHE_GPU_SUM") || atoi(getenv("MOE_CACHE_GPU_SUM")) > 0;
+    static const bool on = mcenv::env_flag("MOE_CACHE_GPU_SUM", true);
     return on;
 }
 
@@ -99,7 +99,7 @@ bool dev_supports_op(ggml_backend_dev_t, const ggml_tensor * op) {
     if (gpu_sum_on() && (is_weighted_experts(op) || is_expert_sum(op))) {
         return true;
     }
-    if (getenv("MOE_CACHE_TRACE")) {
+    if (mcenv::env_on("MOE_CACHE_TRACE")) {
         fprintf(stderr, "moe-cache: supports_op %s src0=%s buf=%p\n", ggml_op_name(op->op), op->src[0] ? op->src[0]->name : "-", op->src[0] ? (void *) op->src[0]->buffer : nullptr);
     }
     if (op->op == g_op_glu) {
@@ -252,7 +252,7 @@ extern "C" MOE_CACHE_EXPORT void moe_cache_register(void) {
 #ifndef _WIN32
 // LD_PRELOAD loading (Linux builds that link their backends directly); on Windows the library is loaded through GGML_BACKEND_PATH
 __attribute__((constructor)) static void moe_cache_autoload() {
-    if (getenv("MOE_CACHE_PRELOAD") && !(getenv("MOE_CACHE_DISABLE") && *getenv("MOE_CACHE_DISABLE") && strcmp(getenv("MOE_CACHE_DISABLE"), "0") != 0)) {
+    if (mcenv::env_on("MOE_CACHE_PRELOAD") && !(getenv("MOE_CACHE_DISABLE") && *getenv("MOE_CACHE_DISABLE") && strcmp(getenv("MOE_CACHE_DISABLE"), "0") != 0)) {
         const int api = moe_cache_api_of_ggml(ggml_version());
         if (api > 0 && api != GGML_BACKEND_API_VERSION) {   // registering would hand the server a struct of the wrong layout
             fprintf(stderr, "moe-cache: this plugin was built for ggml backend API %d but the server uses ggml %s (API %d): not loaded, the model loads the normal way. "

@@ -3,29 +3,20 @@
 
 namespace {
 
-// MOE_CACHE_GPU_CATCH=1 (audit A2-03; default off, NOT tested against a real Vulkan failure): ggml-vulkan reports a failed allocation or a lost device by
-// throwing a C++ exception, and nothing in the GPU block catches it, so llama_decode ends the process. With the switch a throw out of the block is caught:
+// MOE_CACHE_GPU_CATCH (audit A2-03, AUD-002; default ON since 0.3.6, =0 opts out; the guard is in mc_guard.h, tests/gpu_guard_test.cpp; it has not met a real
+// Vulkan failure yet: to verify on the PC by taking VRAM away between the free-memory read and the upload): ggml-vulkan reports a failed allocation or a lost
+// device by throwing a C++ exception, and nothing in the GPU block caught it, so llama_decode ended the process. Now a throw out of the block is caught:
 // the block stays on the CPU (its nodes were not silenced yet), no further GPU blocks are tried, one line says why. It only helps when the GPU is still
 // usable (an allocation that failed); after a lost device llama.cpp's own GPU layers throw too, outside this code. MOE_CACHE_GPU_CATCH=2 throws once at
 // the first block (fault injection for a test run: the prompt must finish on the CPU with the same text).
 bool gpu_segment_guarded(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
-    static const int catch_mode = getenv("MOE_CACHE_GPU_CATCH") ? atoi(getenv("MOE_CACHE_GPU_CATCH")) : 0;
-    if (catch_mode <= 0) {
-        return gpu_segment(c, s, cg, first, last, seg);
-    }
+    static const int catch_mode = mcguard::catch_mode(getenv("MOE_CACHE_GPU_CATCH"));
     static bool injected = false;
-    try {
-        if (catch_mode >= 2 && !injected) {
-            injected = true;
-            throw std::runtime_error("injected by MOE_CACHE_GPU_CATCH=2");
-        }
-        return gpu_segment(c, s, cg, first, last, seg);
-    } catch (const std::exception & e) {
-        fprintf(stderr, "moe-cache: the GPU block threw (%s): long-prompt blocks stay on the CPU from now on (MOE_CACHE_GPU_CATCH)\n", e.what());
+    return mcguard::guarded(catch_mode, injected, [&] { return gpu_segment(c, s, cg, first, last, seg); }, [&](const char * what) {
+        fprintf(stderr, "moe-cache: the GPU block threw (%s): long-prompt blocks stay on the CPU from now on (MOE_CACHE_GPU_CATCH=0 turns this guard off)\n", what);
         c->gpu_failed = true;
         seg.clear();
-        return false;
-    }
+    });
 }
 
 // Last check before llama.cpp's own kernels read the experts: every expert a MUL_MAT_ID of this graph uses must be complete and in RAM. Waits for
@@ -135,6 +126,9 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
         if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && hybrid_init(c, s)) {
             st = exec_run_nodes(c, cg, batch);
             batch.clear();
+            if (st != GGML_STATUS_SUCCESS) {
+                break;                 // AUD-007: a real ABORTED / ALLOC_FAILED must not be overwritten by the next (empty, successful) exec_run_nodes below
+            }
             int last = i;
             const int first_i = i;
             if (st == GGML_STATUS_SUCCESS && hybrid_group(c, s, cg, i, last)) {
@@ -151,12 +145,15 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
         if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && !stock_uses_tiled(nd)) {
             st = exec_run_nodes(c, cg, batch);
             batch.clear();
+            if (st != GGML_STATUS_SUCCESS) {
+                break;
+            }
             const int j2 = s.exec_fuse && !s.exec_check && s.pool ? exec_fuse_partner(s, cg, i, n) : -1;
             if (j2 >= 0) {
                 exec_prep_t two[2];
                 exec_prep_op(s, nd, nullptr, 0, two[0]);
                 exec_prep_op(s, ggml_graph_node(cg, j2), nullptr, 1, two[1], &two[0]);
-                static const bool fuse_any = getenv("MOE_CACHE_EXEC_FUSE_ANY") && atoi(getenv("MOE_CACHE_EXEC_FUSE_ANY")) > 0;
+                static const bool fuse_any = mcenv::env_on("MOE_CACHE_EXEC_FUSE_ANY");
                 const bool same = fuse_any || two[0].dot == two[1].dot;
                 exec_run_prepared(s, two, same ? 2 : 1);
                 if (!same) {
@@ -236,8 +233,8 @@ void be_sync(ggml_backend_t backend);
 enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     auto * c = (moe_cache_backend_ctx *) backend->context;
     state_t & s = S();
-    static const bool seg_times = getenv("MOE_CACHE_SEG_TIMES") != nullptr;
-    static const bool e1 = seg_times && getenv("MOE_CACHE_E1_TIMES") != nullptr;
+    static const bool seg_times = mcenv::env_on("MOE_CACHE_SEG_TIMES");
+    static const bool e1 = seg_times && mcenv::env_on("MOE_CACHE_E1_TIMES");
     auto now_ns = [] { return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
     if (seg_times) {
         const uint64_t t = now_ns(), last = s.last_exit_ns.load();
@@ -316,6 +313,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     }
 
     s.graphs++;
+    s.route_ids.clear();     // AUD-008: nothing from an earlier graph (the ids tensor's address is reused) may route this one
     {
         static bool reported = false;
         if (!reported) {
@@ -334,7 +332,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     std::vector<group_t> groups_found;
     bool exec_graph = s.cache_on && exec_eligible(s, cg);
     // --fast (routing) and --hybrid live in the executor path: when asked for explicitly they keep it, whatever the weight type
-    static const bool hybrid_asked = [] { const char * e = getenv("MOE_CACHE_HYBRID"); return (e && strcmp(e, "0") != 0) || !tier_wanted().empty(); }();
+    static const bool hybrid_asked = hybrid_requested();
     if (exec_graph && !s.exec_force && !(s.route_mode || s.fewer > 0) && !hybrid_asked) {
         // the executor only pays for weights whose dot product is compute-bound (IQ types, Q2_0: our kernels and parallel reads win); for K-quants
         // and legacy types llama.cpp's own (repacked) kernels are faster even while some experts still have to be read
@@ -520,7 +518,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             // N23-F3: a long-prompt block's misses are read by the reader threads while gpu_segment uploads the experts already in RAM (it waits for
             // each expert's flag before copying it); before this the whole fill finished first (34k prompt, PC: fill 32 s, then upload 22 s, serial).
             // MOE_CACHE_GPU_PIPE=0: off. A block that ends up on the CPU waits for all of its experts first (below).
-            static const bool pipe_env = !getenv("MOE_CACHE_GPU_PIPE") || atoi(getenv("MOE_CACHE_GPU_PIPE")) != 0;
+            static const bool pipe_env = mcenv::env_flag("MOE_CACHE_GPU_PIPE", true);
             const bool pipe = pipe_env && !exec_graph && s.gpu_dev && !c->gpu_failed && s.gpu_min_tokens > 0 && n_tok >= s.gpu_min_tokens &&
                               s.graphs.load() >= c->gpu_retry_at && !(s.route_mode || s.fewer > 0);
             // decode tier: a layer the GPU bank served in full last time needs no reads and no cache room (not in CHECK mode, which also runs the CPU)
@@ -560,6 +558,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
         // no reads were queued for this graph, but an earlier graph may still be filling these experts in the background (gate/up/down loaded together
         // when they come in separate calls, e.g. gpt-oss): llama.cpp's own path must not read them before they are complete
         s.stepaside_graphs++;
+        s.route_ids.clear();      // AUD-008: entries are keyed by the ids tensor's address, which llama.cpp reuses; a stale vector must not meet a later executor graph
         const int n_all = ggml_graph_n_nodes(cg);
         for (int i = 0; i < n_all; i++) {
             const ggml_tensor * nd = ggml_graph_node(cg, i);
@@ -663,7 +662,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 bool async_in_on(ggml_backend_t src) {
     static const int mode = [] {
         const char * e = getenv("MOE_CACHE_ASYNC_IN");
-        return e ? (atoi(e) != 0 ? 1 : 0) : -1;
+        return (e && *e) ? (mcenv::flag_value(e, true) ? 1 : 0) : -1;     // unset or empty: by GPU
     }();
     if (mode >= 0) {
         return mode == 1;
