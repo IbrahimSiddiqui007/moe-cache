@@ -5,6 +5,8 @@
 | Area | Change |
 |---|---|
 | Bundled llama.cpp | The Windows kit and the Linux tarball bundle the official llama.cpp **b12064** (ggml 0.28.0, backend API 3) instead of b11966. It includes the upstream fix behind our former patch 0022 (llama.cpp #31266, Vulkan `count_experts`): about +5-7 % on long prompts (34k / 64k) measured with the patch; to be confirmed by a paired PC run. It also brings the batched tensor copy (#30881, #31418; our former patch 0027) on by default |
+| One-line install | `install.sh` (Linux) and `install.ps1` (Windows PowerShell) are attached to each release. They download the release, check it against `SHA256SUMS` / `SHA256SUMS-windows` (a mismatch is refused), unpack under your home folder (no admin, no root), add a `moe-cache` command, print the version and how to undo (`--uninstall` / `-Uninstall` removes exactly what was added). No telemetry; run again to update |
+| Guided start | `moe-cache launch` (`moe_cache.py launch`): checks this PC, shows 2-3 models from `pick` (size, speed only if measured, downloaded or not), prints the download command and runs it only after your yes, starts the server (agent mode on request) or the on-demand listener, offers `connect` for the agents found. Flags for scripts: `--yes --model --agent --download --start` |
 | Patches | 0022 and 0027 are merged upstream and moved to `archive/`; 0004, 0005, 0020, 0030, 0040 still apply to b12064 |
 
 ## 0.3.5 (2026-11-03)

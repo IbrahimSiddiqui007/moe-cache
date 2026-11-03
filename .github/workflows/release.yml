@@ -97,6 +97,18 @@ jobs:
             rm -rf "$d"
           done
 
+      - name: Installers (the one-line installs; install.ps1 gets this release's version baked in)
+        env:
+          V: ${{ steps.v.outputs.version }}
+        run: |
+          set -e
+          cp install.sh dist/install.sh
+          sed "s/@VERSION@/$V/g" install.ps1 > dist/install.ps1
+          grep -q "\[string\]\$Version = '$V'" dist/install.ps1 || { echo "FAIL: install.ps1 did not get version $V"; exit 1; }
+          if grep -q '@VERSION@' dist/install.ps1; then echo "FAIL: install.ps1 still has the placeholder"; exit 1; fi
+          grep -q "MOE_CACHE_REF:-v$V}" dist/install.sh || [ "$V" = 0.0.0-ci ] || { echo "FAIL: install.sh does not name v$V"; exit 1; }
+          bash -n dist/install.sh
+
       - name: Attest build provenance
         if: github.ref_type == 'tag'   # a manual run on a branch must not get the same signature as a release
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
@@ -110,6 +122,8 @@ jobs:
           path: |
             dist/moe-cache-v*-linux-x86_64.tar.gz
             dist/SHA256SUMS
+            dist/install.sh
+            dist/install.ps1
 
       - name: Publish release (tags only)
         if: github.ref_type == 'tag'
@@ -119,12 +133,12 @@ jobs:
         run: |
           NOTES="Prebuilt plugin, Linux x86-64, built by GitHub Actions from this tag. Verify the download: gh attestation verify <tarball> -R ${GITHUB_REPOSITORY}. Windows: the windows-x64 zip (experimental). Not tested: macOS. Start with bin/moe-cache-check."
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/moe-cache-v*-linux-x86_64.tar.gz dist/SHA256SUMS --clobber
+            gh release upload "$TAG" dist/moe-cache-v*-linux-x86_64.tar.gz dist/SHA256SUMS dist/install.sh dist/install.ps1 --clobber
           else
             # notes: docs/RELEASE_NOTES_<tag>.md when it exists (written for the release), else the short text above
             if [ -f "docs/RELEASE_NOTES_$TAG.md" ]; then N=(--notes-file "docs/RELEASE_NOTES_$TAG.md"); else N=(--notes "$NOTES" --generate-notes); fi
             gh release create "$TAG" --verify-tag --prerelease --title "moe-cache $TAG (beta)" "${N[@]}" \
-              dist/moe-cache-v*-linux-x86_64.tar.gz dist/SHA256SUMS
+              dist/moe-cache-v*-linux-x86_64.tar.gz dist/SHA256SUMS dist/install.sh dist/install.ps1
           fi
 
   windows-kit:
