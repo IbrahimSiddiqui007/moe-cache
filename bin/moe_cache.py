@@ -34,14 +34,18 @@ CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.pat
 NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
-_NOTES = []          # recorders (lists) that want every say() line while a launch plan is built: (text, is_error) in order
-_QUIET = [0]         # >0: record but do not print (a caller that wants the plan as data, e.g. --plan-json)
+# LAUNCHER-003: what launch_plan() sets while it builds a plan belongs to the building thread (control-page threads plan at the same time):
+#   _TL.notes  recorders (lists) that want every say() line: (text, is_error) in order
+#   _TL.quiet  >0: record but do not print (a caller that wants the plan as data, e.g. --plan-json)
+#   _TL.max_ram  --max-ram of the plan being built (mem_cap() reads it before the MOE_CACHE_MAX_RAM_GB variable)
+_TL = threading.local()
+_UMASK_LOCK = threading.Lock()      # umask is per process: plans that change and restore it take turns, so one cannot restore the other's value
 
 
 def say(msg, err=False):
-    for rec in _NOTES:
+    for rec in getattr(_TL, "notes", ()):
         rec.append((str(msg), bool(err)))
-    if not _QUIET[0]:
+    if not getattr(_TL, "quiet", 0):
         print(msg, file=sys.stderr if err else sys.stdout, flush=True)
 
 
@@ -791,7 +795,9 @@ def mem_cap():
     """Hard cap on the whole server's memory, bytes (owner 2026-10-29): physical RAM minus max(4 GiB, 12.5 %) = 28 GiB on a 32 GiB machine, so
     Windows does not run out of memory and Linux does not OOM; MOE_CACHE_MAX_RAM_GB (decimal GB; --max-ram sets it) overrides, 0 = no cap.
     The plugin applies the same rule (src/mc_common.inl ram_cap). None when off or unknown."""
-    v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
+    v = getattr(_TL, "max_ram", None)
+    if v is None:
+        v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
     if v is not None:
         try:
             f = float(v)
@@ -1875,6 +1881,8 @@ def fast_levels_only(argv):
 def server(argv):
     a, extra, argv = parse_server(argv)
     plan = launch_plan(a, extra, argv, quiet=a.plan_json)
+    if a.max_ram and not a.plan_json:
+        os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram     # this process is the launch: its later memory decisions (OOM retry, warm-keeper threads) keep the cap
     if a.plan_json:
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
@@ -2059,18 +2067,23 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
     server() runs the plan; --dry-run prints it."""
     machine = machine or Machine()
     notes = []
-    _NOTES.append(notes)
-    _QUIET[0] += 1 if quiet else 0
+    recorders = _TL.__dict__.setdefault("notes", [])
+    recorders.append(notes)
+    old_quiet, old_max_ram = getattr(_TL, "quiet", 0), getattr(_TL, "max_ram", None)
+    _TL.quiet = old_quiet + (1 if quiet else 0)
     old_umask = None
-    if quiet and not WINDOWS:
+    lock = _UMASK_LOCK if quiet and not WINDOWS else None
+    if lock:
+        lock.acquire()
         old_umask = os.umask(0o077)       # the plan builder sets 0077 for the files a launch writes; a caller that only describes a launch keeps its own
     try:
         plan = _launch_plan(a, extra, argv, machine)
     finally:
-        _NOTES.remove(notes)
-        _QUIET[0] -= 1 if quiet else 0
-        if old_umask is not None:
+        recorders.remove(notes)
+        _TL.quiet, _TL.max_ram = old_quiet, old_max_ram
+        if lock:
             os.umask(old_umask)
+            lock.release()
     plan.notes = notes
     return plan
 
@@ -2090,7 +2103,7 @@ def _launch_plan(a, extra, argv, machine):
         a.agent = a.agent or p[2]
         say(f"moe-cache: no model given: using the picked one, {a.model} (context {a.ctx}" + (", agent mode" if a.agent else "") + "; moe_cache.py pick)")
     if a.max_ram:
-        os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram          # the launcher's planning and the plugin in llama-server both read it
+        _TL.max_ram = a.max_ram          # the launcher's planning reads it (this thread, this plan); llama-server gets it through the plan's env
     if not win and any(x == "--api-key" or x.startswith("--api-key=") for x in argv):
         # llama-server gets it through the environment, but this launcher's own command line stays readable (/proc) for the server's lifetime
         say("moe-cache: note: a key on the command line is visible to other users of this machine (ps); LLAMA_API_KEY or the stored key "

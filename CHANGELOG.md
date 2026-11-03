@@ -54,6 +54,7 @@
 | Bug fixes | The control page's launcher file (it holds the page token) is deleted when the page exits, not left in the temp folder. |
 | Bug fixes | Windows: `moe-cache.exe` (the command winget installs) now passes redirects and pipes on to the kit (`moe-cache.exe models > f.txt`, `echo y | moe-cache.exe ...`); before, output and input did not reach it. |
 | Bug fixes | `moe-cache-server --fast MODEL` no longer reads the model path as the level of `--fast`: a bare `--fast` followed by anything but 1, 2, kv or fewer means level 1 (LAUNCHER-004). |
+| Bug fixes | The launcher no longer changes process-wide state while it builds a launch plan: `--max-ram`, the recorded notes and the quiet flag are kept per thread, and plans that change the umask take turns, so two control-page threads planning at once cannot see each other's cap or notes or leave the wrong umask (LAUNCHER-003; parent cgroup limits were already counted). |
 
 ## 0.3.5 (2026-11-03)
 
