@@ -10,6 +10,7 @@
 | Windows warning | The launcher and the control page name programs using the GPU; the EA app's measured cost depends on how much it draws |
 | Control page | Cancel works right after Share my numbers. New "Other programs" list |
 | Bug fixes | 19 from an independent audit, among them: `--port`, `-c` and `-ngl` after `--` are seen by the launcher; parent cgroup memory limits count; `MOE_CACHE_DISABLE=0` no longer disables the plugin; a second `moe-cache.bat` cannot share the control page's port |
+| Benchmark record | `moe_cache.py bench-record` collects one complete record per run (VRAM, process RAM, CPU, GPU layers, context, settings, versions, text hashes, how to reproduce); template and recipes in `docs/BENCHMARK_TEMPLATE.md`, the GitHub benchmark issue form uses the same fields |
 | Patches | A small patch set for the bundled llama.cpp, each patch off unless its switch is set (`patches/llama.cpp`). Tested losers moved to `archive/` |
 | Docs | `docs/CODING_STANDARDS.md`, `docs/CONTROL_PAGE_CHECK.md`, a warning about apps that draw on the GPU |
 
