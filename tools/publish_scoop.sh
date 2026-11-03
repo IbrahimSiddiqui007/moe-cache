@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # Put a filled scoop manifest into our scoop bucket repo and push it: tools/publish_scoop.sh BUCKET_GIT_URL dist/packaging/scoop/moe-cache.json
 # Used by .github/workflows/packages.yml after a release; works on an empty bucket repo too (first release). SCOOP_BUCKET_TOKEN (optional) is sent
-# as an HTTP header, never written into a URL or .git/config. Nothing is pushed when the manifest in the bucket is already the same.
+# as an HTTP header (GIT_CONFIG_* environment: not in the command line either), never written into a URL or .git/config. Nothing is pushed when the manifest in the bucket is already the same.
 set -euo pipefail
 url="$1"; manifest="$2"
 ver=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$manifest")
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-auth=()
 if [ -n "${SCOOP_BUCKET_TOKEN:-}" ]; then
-  auth=(-c "http.https://github.com/.extraheader=AUTHORIZATION: basic $(printf 'x-access-token:%s' "$SCOOP_BUCKET_TOKEN" | base64 -w0)")
+  # through GIT_CONFIG_* in the environment, not `git -c` (that puts the token in the process list), and no array (an empty one is an error under set -u on bash < 4.4)
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+  GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$SCOOP_BUCKET_TOKEN" | base64 -w0)"; export GIT_CONFIG_VALUE_0
 fi
-git "${auth[@]}" clone -q "$url" "$work/bucket" 2>&1 | grep -v "cloned an empty repository" || true
+git clone -q "$url" "$work/bucket" 2>&1 | grep -v "cloned an empty repository" || true
 cd "$work/bucket"
 if git rev-parse -q --verify origin/main >/dev/null; then git checkout -q -B main origin/main; else git checkout -q --orphan main 2>/dev/null || git checkout -q -B main; fi   # build on the bucket's main, or start it
 mkdir -p bucket
@@ -19,5 +20,5 @@ cp "$manifest" bucket/moe-cache.json
 git add -A
 if git diff --cached --quiet; then echo "scoop bucket already has moe-cache $ver: nothing to push"; exit 0; fi
 git -c user.name="moe-cache release" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -q -m "moe-cache $ver"
-git "${auth[@]}" push -q origin HEAD:main
+git push -q origin HEAD:main
 echo "scoop bucket: moe-cache $ver pushed"

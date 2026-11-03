@@ -68,7 +68,7 @@ struct exec_pool_t {
     const int spin_us = [] { const char * v = getenv("MOE_CACHE_POOL_SPIN_US"); return v ? std::max(0, std::min(1000000, atoi(v))) : 0; }();
     // MOE_CACHE_EXEC_TIMES=1 (idea N25): where the executor's wall time goes. busy = threads inside the dot products, flagwait = spinning for an expert
     // still being read, wake = from publish to the moment a worker starts on the job (sum over workers), n_wake = workers that did.
-    const bool times = getenv("MOE_CACHE_EXEC_TIMES") != nullptr;
+    const bool times = mcenv::env_on("MOE_CACHE_EXEC_TIMES");
     std::atomic<uint64_t> busy_ns{0}, flagwait_ns{0}, wake_ns{0}, n_wake{0}, chunks{0}, t_disp_ns{0}, t_main_ns{0}, t_tail_ns{0}, n_runs{0};
     std::mutex m;
     std::condition_variable cv;
@@ -205,7 +205,7 @@ struct exec_pool_t {
             return;
         }
         // idea D07 (MOE_CACHE_POOL_TINY=0 turns it off): a job of one chunk is run by the calling thread alone on a local job: no publish, no wake-up, no barrier
-        static const bool tiny_inline = !getenv("MOE_CACHE_POOL_TINY") || atoi(getenv("MOE_CACHE_POOL_TINY")) != 0;
+        static const bool tiny_inline = mcenv::env_flag("MOE_CACHE_POOL_TINY", true);
         if (tiny_inline && n_tasks == 1 && rows <= chunk) {
             exec_job_t lj;
             lj.name = name;

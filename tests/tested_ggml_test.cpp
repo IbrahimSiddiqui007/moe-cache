@@ -19,6 +19,8 @@ int main() {
     CHECK(tested("0.25.1", "0.25.1", "7fe450e19") && !tested("0.25.1", "0.25.10", nullptr) && !tested("", "0.25.1", nullptr));
     CHECK(tested("0.27.0,0.28.0@ab12cd34e", "0.28.0", "ab12cd34e56f"));        // no spaces
     CHECK(!tested("0.28.0@", "0.28.0", "ff0d396e3"));                          // an empty commit entry matches nothing
+    CHECK(tested("0.27.0 ,0.28.0", "0.27.0", nullptr) && tested("0.26.0  , 0.27.0 ", "0.27.0", nullptr));   // AUD-025: blanks before a comma or at the end
+    CHECK(tested("0.28.0@ff0d396e3 , 0.27.0", "0.28.0", "ff0d396e3") && !tested("0.28.0@ff0d396e3 ", "0.28.0", "a34de8618"));
     if (fails) {
         fprintf(stderr, "%d checks failed\n", fails);
         return 1;

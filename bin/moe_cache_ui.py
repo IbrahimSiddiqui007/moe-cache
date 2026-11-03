@@ -10,12 +10,13 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, subprocess, sys, threading, time, urllib.parse, tempfile
+import argparse, atexit, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.parse, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as picker  # noqa: E402
+from moe_cache_wintool import win_tool  # noqa: E402
 
 HERE = mc.HERE
 WINDOWS = mc.WINDOWS
@@ -564,9 +565,17 @@ def server_args(s):
     return a + ["--", "--metrics"]          # the API key goes to the launcher in LLAMA_API_KEY (child_env), never on a command line
 
 
-def shown_command(s):
-    return (("LLAMA_API_KEY=KEY " if s.get("api_key") else "")
-            + " ".join(('"' + x + '"') if " " in x else x for x in ["moe-cache-server"] + server_args(s)))
+def shown_command(s, windows=None):
+    """The command as the page shows it, in a form the user's shell can run. Windows (PowerShell, which runs it as shown): an argument with a space or any
+    of & ( ) ^ | < > % " ' ; , $ ` { } is put in single quotes (' doubled), and the key is `$env:LLAMA_API_KEY = 'KEY'; ` (the NAME=value prefix is
+    not valid in cmd.exe or PowerShell). Elsewhere: double quotes around an argument with a space, `LLAMA_API_KEY=KEY ` in front."""
+    win = (os.name == "nt") if windows is None else windows
+    args = ["moe-cache-server"] + server_args(s)
+    if win:
+        def q(x):
+            return x if x and re.fullmatch(r"[A-Za-z0-9_@+=:./\\-]+", x) else "'" + x.replace("'", "''") + "'"
+        return ("$env:LLAMA_API_KEY = 'KEY'; " if s.get("api_key") else "") + " ".join(q(x) for x in args)
+    return ("LLAMA_API_KEY=KEY " if s.get("api_key") else "") + " ".join(('"' + x + '"') if " " in x else x for x in args)
 
 
 def dry_run(s):
@@ -1449,7 +1458,7 @@ class Runner:
     def _kill_share(self, p):
         try:
             if WINDOWS:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True, timeout=30)
+                subprocess.run([win_tool("taskkill"), "/F", "/T", "/PID", str(p.pid)], capture_output=True, timeout=30)
             elif sys.platform.startswith("linux"):
                 p.send_signal(signal.SIGTERM)
             else:
@@ -1690,6 +1699,8 @@ class Store:
         self.ls = ls
         try:
             self.saved = json.load(open(SETTINGS_FILE, encoding="utf-8"))
+            if not isinstance(self.saved, dict):
+                self.saved = {}
         except Exception:
             self.saved = {}
         self.models, self.models_at = [], 0
@@ -1759,11 +1770,28 @@ class Store:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
        "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
+CHAT_TIMEOUT = 3600         # seconds llama-server may stay silent in the chat (a long prefill of a big context on a slow machine); a module constant so a test can shorten it
 
 
 def token_eq(given, token):
     """Constant-time token check that also takes odd input (compare_digest raises TypeError on non-ASCII str: a dropped connection)."""
     return bool(given) and bool(token) and secrets.compare_digest(str(given).encode("utf-8", "replace"), str(token).encode("utf-8"))
+
+
+_LAUNCH_FILES = []          # the launcher pages (they hold the page token) still in the temp folder
+
+
+def remove_launch_files():
+    """Delete the launcher pages now: after a minute (timer), when the UI exits (atexit and the end of ui()), so none is left in the temp folder
+    with the token inside when the UI is stopped within that minute (the token is dead by then, but the file need not stay)."""
+    while _LAUNCH_FILES:
+        try:
+            os.unlink(_LAUNCH_FILES.pop())
+        except (OSError, IndexError):
+            pass
+
+
+atexit.register(remove_launch_files)
 
 
 def open_page(url):
@@ -1776,9 +1804,14 @@ def open_page(url):
         f.write(f"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url={url}'><title>moe-cache</title>"
                 f"<p style='font:15px system-ui;margin:2em'><a href='{url}'>Open the moe-cache control page</a></p>")
     import pathlib
+    _LAUNCH_FILES.append(path)
     webbrowser.open(pathlib.Path(path).as_uri())
 
     def gone():
+        try:
+            _LAUNCH_FILES.remove(path)
+        except ValueError:
+            pass
         try:
             os.unlink(path)
         except OSError:
@@ -1791,7 +1824,7 @@ def open_page(url):
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
-    token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in a cookie
+    token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in memory
     server_version = "moe-cache-ui"
     timeout = 30                # a client that sends nothing does not hold a thread forever
 
@@ -1811,19 +1844,11 @@ class Handler(BaseHTTPRequestHandler):
         site = self.headers.get("Sec-Fetch-Site")
         return site is None or site == "same-origin" or (navigation and (site == "none" or (cross_site and site == "cross-site")))
 
-    def cookie_name(self):
-        return f"moe_cache_ui_{self.server.server_address[1]}"       # cookies are not per port: the name is
-
     def has_token(self):
-        """The per-run token, from the page's cookie or an X-MoeCache-Token header (scripts, tests): other users of a shared machine can reach
-        127.0.0.1 too, but not this token (it is printed for and opened by the user who started the page)."""
-        t = self.headers.get("X-MoeCache-Token")
-        if not t:
-            for part in (self.headers.get("Cookie") or "").split(";"):
-                k, _, v = part.strip().partition("=")
-                if k == self.cookie_name():
-                    t = v
-        return bool(t) and token_eq(t, self.token)
+        """The per-run token, from the X-MoeCache-Token header only (the page sends it from memory on every request, scripts and tests too; there is
+        no cookie): other users of a shared machine can reach 127.0.0.1 too, but not this token (it is printed for and opened by the user who started
+        the page)."""
+        return token_eq(self.headers.get("X-MoeCache-Token"), self.token)
 
     def end_headers(self):
         self.send_header("X-Frame-Options", "DENY")
@@ -1852,31 +1877,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed(navigation=u.path in ("/", "/index.html")) and not (link and self.allowed(navigation=True, cross_site=True)):
             return self.send(403, {"error": "forbidden"})
         if u.path in ("/", "/index.html"):
-            if link and self.headers.get("Sec-Fetch-Site") == "cross-site":
-                # from the launcher's file:// page: a redirect would stay "cross-site" and the browser would hold back the SameSite=Strict cookie,
-                # so set the cookie here and let this page itself move on to / (a same-origin navigation)
-                body = b"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url=/'><title>moe-cache</title>"
-                self.send_response(200)
-                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if link:
-                # the launcher's link: keep the token in a cookie only this page sends, and drop it from the address bar
-                self.send_response(303)
-                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
-                self.send_header("Location", "/")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            if not self.has_token():
+            if not link and not self.has_token():
                 return self.send(403, "<!doctype html><meta charset=utf-8><title>moe-cache</title><p style='font:15px system-ui;margin:2em'>Open the "
-                                 "address the launcher printed (it ends in <code>?t=…</code>): this page only answers the user who started it.</p>",
-                                 "text/html")
-            return self.send(200, open(PAGE, "rb").read(), "text/html")
+                                 "address the launcher printed (it ends in <code>?t=…</code>): this page only answers the user who started it. "
+                                 "(The page keeps its token in memory only: reloading it needs that address again.)</p>", "text/html")
+            # the token travels once, in the page itself (no cookie): the page keeps it in memory, sends it in a header with every request and
+            # replaces the address (?t=...) at once, so it stays out of the history and, with no-referrer, out of every Referer
+            page = open(PAGE, "rb").read().replace(b'<meta charset="utf-8">', b'<meta charset="utf-8">\n<meta name="moe-token" content="' + self.token.encode("ascii", "replace") + b'">', 1)
+            return self.send(200, page, "text/html")
         if not self.has_token():
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
@@ -2051,7 +2059,7 @@ class Handler(BaseHTTPRequestHandler):
         req = chat_request(body)
         before = r.cache_counts()
         port = int(r.settings.get("port") or 8080)
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=900)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=CHAT_TIMEOUT)
         hdr = {"Content-Type": "application/json", "Accept": "text/event-stream"}
         if r.key():
             hdr["Authorization"] = "Bearer " + r.key()
@@ -2086,6 +2094,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass                                  # the page pressed Stop: closing our side makes llama-server stop generating
+        except socket.timeout:
+            # llama-server was silent for CHAT_TIMEOUT: say so in the stream (the page shows an "error" event as the answer's error line), not an empty answer
+            msg = f"llama-server sent nothing for {f'{CHAT_TIMEOUT // 60} minutes' if CHAT_TIMEOUT >= 120 else f'{CHAT_TIMEOUT} s'}, so the page gave up waiting (it may still be working: see the Log, or press Stop and try again)"
+            if streaming:
+                try:
+                    self.wfile.write(b"data: " + json.dumps({"error": {"message": msg}}).encode() + b"\n\n")
+                    self.wfile.flush()
+                except OSError:
+                    pass
+            else:
+                self.send(502, {"error": msg})
         except OSError as e:
             if not streaming:
                 self.send(502, {"error": f"llama-server did not answer: {e}"})
@@ -2194,6 +2213,7 @@ def ui(argv):
     except KeyboardInterrupt:
         pass
     finally:
+        remove_launch_files()
         srv.RequestHandlerClass.runner.stop()
         srv.server_close()
     return 0

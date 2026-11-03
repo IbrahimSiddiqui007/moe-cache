@@ -47,6 +47,10 @@ def scrubber():
             text = re.sub(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])", "<name>", text, flags=re.I)
         # any other folder path down to its last part: drive-letter paths may have spaces in folder names (D:\\Private Stuff\\x.gguf),
         # / and ~/ paths may not (so "a / b" text stays); URLs (://) are left alone
+        # Windows extended prefixes (\\?\C:\x, \\?\UNC\NAS\share\x) become the plain form, then UNC paths (\\NAS\share\x.gguf) go down to the last part too (AUD-032)
+        text = re.sub(r"\\\\[?.]\\UNC\\", lambda m: "\\\\", text, flags=re.I)
+        text = re.sub(r"\\\\[?.]\\", "", text)
+        text = re.sub(r"(?<![\w\\])\\\\(?:[^\n|`'\"<>()\\/:]+\\)+([^\s|`'\"<>()\\/,;]*)", r"\1", text)
         text = re.sub(r"(?<![\w:/])[A-Za-z]:[\\/](?:[^\n|`'\"<>()\\/:]+[\\/])+([^\s|`'\"<>()\\/,;]*)", r"\1", text)
         text = re.sub(r"(?<![\w:/])(?:~[\\/]|/)(?:[^\s|`'\"<>()\\/]+[\\/])+([^\s|`'\"<>()\\/]*)", r"\1", text)
         return text

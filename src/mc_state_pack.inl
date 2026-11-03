@@ -88,7 +88,7 @@
             L.n_expert = (int) n_exp;
             L.n = (int) nt;
             if (nt < 2 || nt > 4 || n_exp == 0 || n_exp > 65536 || L.base % PAGE || L.stride % PAGE || L.stride == 0 || L.base < last_end ||
-                L.base + L.stride * n_exp > pack_size) {
+                !mcpack::layer_fits(L.base, L.stride, n_exp, pack_size)) {
                 refuse("the layer table is inconsistent");
                 return;
             }
@@ -103,7 +103,8 @@
                 L.in_off[k] = (size_t) rd64(t, 104);
                 const uint64_t src_off = rd64(t, 112);
                 auto ft = file_tensors.find(L.name[k]);
-                if (ft == file_tensors.end() || ft->second.first != src_off || ft->second.second != L.nb2[k] * n_exp || L.in_off[k] + L.nb2[k] > L.stride) {
+                if (ft == file_tensors.end() || ft->second.first != src_off || !mcpack::product_le(L.nb2[k], n_exp, ~0ull) || ft->second.second != L.nb2[k] * n_exp ||
+                    !mcpack::slice_fits(L.in_off[k], L.nb2[k], L.stride)) {
                     refuse("tensor " + L.name[k] + " is not stored the same way in the model (another quantisation or file?)");
                     return;
                 }

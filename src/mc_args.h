@@ -3,6 +3,8 @@
 // then the command line, where the last occurrence wins; flags take their value as the next argument ("--device Vulkan1", no "=" form).
 #pragma once
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <string>
@@ -16,6 +18,27 @@ inline bool truthy(const char * v) {
 }
 inline bool falsey(const char * v) {
     return v && (!strcmp(v, "off") || !strcmp(v, "disabled") || !strcmp(v, "false") || !strcmp(v, "0"));
+}
+
+// AUD-015: a number from an environment variable, all of it: "512M" or "1e999" or "nan" is not a number here (strtod alone reads "512M" as 512 and
+// "inf" as infinity). Leading and trailing white space is allowed. lo..hi is the accepted range (inclusive).
+inline bool parse_number(const char * txt, double lo, double hi, double & out) {
+    if (!txt) {
+        return false;
+    }
+    char * end = nullptr;
+    const double v = strtod(txt, &end);
+    if (end == txt) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
+        end++;
+    }
+    if (*end != 0 || !std::isfinite(v) || v < lo || v > hi) {
+        return false;
+    }
+    out = v;
+    return true;
 }
 
 inline bool is_one_of(const std::string & a, std::initializer_list<const char *> names) {
@@ -80,6 +103,25 @@ inline server_args parse_server_args(const std::vector<std::string> & args, cons
         }
     }
     return r;
+}
+
+// CACHE-269 (b): true when nothing visible limits llama-server's own prompt cache (--cache-ram, default 8 GiB of host RAM, outside the expert
+// cache's budget): not on the command line (--cache-ram / -cram MiB, also --cache_ram), not in LLAMA_ARG_CACHE_RAM, and not told by the launcher
+// (MOE_CACHE_HOST_RESERVE_MIB, which moe-cache-server always sets, together with its own --cache-ram)
+inline bool prompt_cache_unlimited_default(const std::vector<std::string> & args, const char * env_cache_ram, const char * env_launcher_reserve) {
+    if ((env_cache_ram && *env_cache_ram) || (env_launcher_reserve && *env_launcher_reserve)) {
+        return false;
+    }
+    for (size_t i = 1; i + 1 < args.size(); i++) {
+        std::string a = args[i];
+        if (a.compare(0, 2, "--") == 0) {
+            std::replace(a.begin(), a.end(), '_', '-');
+        }
+        if (is_one_of(a, { "-cram", "--cache-ram" })) {
+            return false;
+        }
+    }
+    return true;
 }
 
 }  // namespace mcargs

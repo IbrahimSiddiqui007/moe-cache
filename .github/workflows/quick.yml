@@ -5,6 +5,8 @@ name: quick
 on:
   push:
     branches: [experimental, main]
+  pull_request:                  # AUD-001: an outside PR gets the model-free checks too (no secrets are used; permissions are read-only)
+    branches: [experimental, main]
   workflow_dispatch:
 
 permissions:
@@ -19,9 +21,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Python compiles
-        run: python3 -m py_compile bin/*.py tools/*.py tests/*.py planner/*.py
+        with:
+          persist-credentials: false
 
       - name: Plugin syntax with both header sets (warnings are errors), buffer-field guard
         run: |
@@ -32,13 +33,18 @@ jobs:
           g++ -std=c++17 -O1 -Wall -Werror -Isrc -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src tests/rebalance_test.cpp -o /tmp/rebalance_test -lpthread && /tmp/rebalance_test   # BO-2 choice logic
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/peers_test.cpp -o /tmp/peers_test && /tmp/peers_test    # N2: peer registry rules (fake peers)
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/sigbus_test.cpp -o /tmp/sigbus_test && /tmp/sigbus_test    # A1-04: a model file cut short while mapped says what happened
-
-      - name: Model-free tests (fake servers; same files the full CI runs)
-        run: |
-          set -e
-          for t in ui_test security_test bench_report_test bench_record_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test heavy_background_test bench_orphan_test budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test cgroup_test connect_agents_test connect_check_test launch_test install_sh_test models_catalogue_test; do
-            echo "::group::$t"; python3 tests/$t.py; echo "::endgroup::"
+          # 2026-11-03 audit fixes: each is a standalone program (no ggml, no model)
+          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check lend profile_path; do
+            g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
           done
+          for t in wake_pipe reserve_msg; do      # these two include platform.h without -Wextra
+            g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
+          done
+
+      - name: "Model-free tests (fake servers; the list lives in tools/run_quick_tests.sh - py_compile, every tests/*_test.py, apply_llama_patches_test.sh)"
+        env:
+          REQUIRE_NODE: "1"       # AUD-094: ui_test skips its JavaScript checks without node; the script then runs tests/require_node_test.py, which fails instead
+        run: tools/run_quick_tests.sh
 
       - name: Model catalogue (docs/MODELS.md is generated from models.json)
         run: |
@@ -58,7 +64,7 @@ jobs:
         run: |
           set -e; T=$(mktemp -d); git init -q --bare -b main "$T/b.git"
           sed 's/@VERSION@/9.9.8/g;s/@SHA256@/0/g' packaging/scoop/moe-cache.json > "$T/m.json"
-          tools/publish_scoop.sh "file://$T/b.git" "$T/m.json" | grep -q "9.9.8 pushed"
+          SCOOP_BUCKET_TOKEN=dummy tools/publish_scoop.sh "file://$T/b.git" "$T/m.json" | grep -q "9.9.8 pushed"
           tools/publish_scoop.sh "file://$T/b.git" "$T/m.json" | grep -q "nothing to push"
           sed -i 's/9\.9\.8/9.9.9/g' "$T/m.json"; tools/publish_scoop.sh "file://$T/b.git" "$T/m.json" | grep -q "9.9.9 pushed"
           [ "$(git --git-dir="$T/b.git" rev-list --count main)" = 2 ] && git --git-dir="$T/b.git" show main:bucket/moe-cache.json | grep -q '"version": "9.9.9"'

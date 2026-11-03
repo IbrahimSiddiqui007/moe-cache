@@ -6,10 +6,16 @@ name: windows
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "branch, tag or SHA of this repo to test (empty: the branch the run was started on)"
+        required: false
+        default: ""
   push:
     branches: [windows-ci]    # run it on any commit: git push origin <commit>:refs/heads/windows-ci
   schedule:
-    - cron: "30 3 * * *"
+    - cron: "30 3 * * *"     # main
+    - cron: "30 4 * * *"     # experimental (AUD-001: scheduled runs always use the workflow file on main, so the ref is picked below; the file must be on main first)
 
 permissions:
   contents: read
@@ -22,6 +28,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || (github.event.schedule == '30 4 * * *' && 'experimental' || '') }}
       - name: mingw-w64 (UCRT when available, the C runtime of official llama.cpp and of the kit; else posix/msvcrt)
         run: |
           sudo apt-get update -q
@@ -105,6 +114,9 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || (github.event.schedule == '30 4 * * *' && 'experimental' || '') }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: win-dll
@@ -215,6 +227,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "win_cores: no CPU cores found (pwsh fails a step only on its last command)" }
           python tests/picker_test.py   # model picker: fake machines, no download
           if ($LASTEXITCODE -ne 0) { throw "model picker test failed" }
+          python tests/require_node_test.py     # AUD-094: ui_test skips its JavaScript checks, exit 0, when node is missing; this fails instead
+          if ($LASTEXITCODE -ne 0) { throw "node is missing: the control page's JavaScript checks would be skipped" }
+          $env:REQUIRE_NODE = "1"
           python tests/ui_test.py       # control page (GUI1) without a model
           if ($LASTEXITCODE -ne 0) { throw "control page test failed" }
 
@@ -344,13 +359,15 @@ jobs:
       - name: Identity, Windows file-view cache (the default, idea I47), cache forced to evict, executor byte-checked
         run: |
           $env:MOE_CACHE_EXEC = "2"; $env:MOE_CACHE_EXEC_CHECK = "1"
-          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 24 -Ctx 2048 -Extra "--no-repack"
+          powershell -ExecutionPolicy Bypass -File tools/windows_test.ps1 -LlamaDir $env:LLAMA_DIR -Model "$env:GITHUB_WORKSPACE\granite.gguf" -Dll "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" -CacheGiB 0.2 -Tokens 48 -Ctx 2048 -Extra "--no-repack"
           if ($LASTEXITCODE -ne 0) { throw "windows_test.ps1 (file view) failed ($LASTEXITCODE)" }
           $log = "$env:TEMP\moe-cache-test\plugin.err.txt"
           Select-String $log -Pattern "MOE_CACHE_WIN_VIEW|evictions|executor ran" | ForEach-Object { $_.Line }
           if (-not (Select-String $log -Pattern "experts are kept in read-only views of the model file" -Quiet)) { throw "the file-view cache was not used" }
-          $m = Select-String $log -Pattern '"evictions":(\d+)' | Select-Object -Last 1
-          if (-not $m -or [int64]$m.Matches[0].Groups[1].Value -eq 0) { throw "no evictions: the 0.2 GiB cache did not cycle experts through the views ($($m.Line))" }
+          # AUD-097: the biggest "evictions" of any stats line (not the last one: a final line printed after the cache emptied could read 0), 48 tokens so a 0.2 GiB cache must cycle;
+          # on failure show every stats line so a missing line and a zero count can be told apart
+          $ev = @(Select-String $log -Pattern '"evictions":(\d+)' | ForEach-Object { [int64]$_.Matches[0].Groups[1].Value })
+          if ($ev.Count -eq 0 -or ($ev | Measure-Object -Maximum).Maximum -eq 0) { Select-String $log -Pattern 'evictions|"hits"|graphs=' | ForEach-Object { $_.Line }; throw "no evictions: the 0.2 GiB cache did not cycle experts through the views (stats lines found: $($ev.Count))" }
           $x = Select-String $log -Pattern '"exec_checked":(\d+),"exec_mismatch":(\d+)' | Select-Object -Last 1
           if (-not $x -or [int64]$x.Matches[0].Groups[1].Value -eq 0 -or [int64]$x.Matches[0].Groups[2].Value -ne 0) { throw "executor byte check on the views: none checked or mismatches ($($x.Line))" }
 

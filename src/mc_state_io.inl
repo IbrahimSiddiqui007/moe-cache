@@ -419,11 +419,11 @@
                  ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
                  ",\"n_gap\":" + std::to_string(n_gap.load()) + ",\"gap_b_ns\":[" + std::to_string(gap_b_ns[0].load()) + "," + std::to_string(gap_b_ns[1].load()) + "," +
                  std::to_string(gap_b_ns[2].load()) + "," + std::to_string(gap_b_ns[3].load()) + "]";
-            if (getenv("MOE_CACHE_SEG_TIMES")) {
+            if (mcenv::env_on("MOE_CACHE_SEG_TIMES")) {
                 uint64_t mj = 0;
                 const uint64_t f = process_faults(&mj);
                 j += ",\"faults\":" + std::to_string(f) + ",\"major_faults\":" + std::to_string(mj);
-                if (getenv("MOE_CACHE_E1_TIMES")) {
+                if (mcenv::env_on("MOE_CACHE_E1_TIMES")) {
                     j += e1s::json();
                     j += ",\"e1\":{\"gap_cpu_ns\":" + std::to_string(e1_gap_cpu_ns.load()) + ",\"in_cpu_ns\":" + std::to_string(e1_in_cpu_ns.load()) +
                          ",\"gap_tcpu_ns\":" + std::to_string(e1_gap_tcpu_ns.load()) + ",\"in_tcpu_ns\":" + std::to_string(e1_in_tcpu_ns.load()) + ",\"blk\":[";
@@ -506,13 +506,13 @@
             sigaction(SIGUSR1, &ign, nullptr);
             const int fd = g_stats_pipe[1];
             g_stats_pipe[1] = -1;
-            close(fd);                       // wakes the snapshot thread, which then exits (joined below: it uses this state)
+            plat::wake_pipe_finish(fd);      // wakes the snapshot thread, which then exits (joined below: it uses this state)
         }
         if (g_idle_pipe[1] >= 0) {
             sigaction(SIGUSR2, &ign, nullptr);
             const int fd = g_idle_pipe[1];
             g_idle_pipe[1] = -1;
-            close(fd);                       // wakes the idle thread, which then exits (joined below: it uses this state)
+            plat::wake_pipe_finish(fd);      // wakes the idle thread, which then exits (joined below: it uses this state)
         }
         if (stats_th.joinable()) {
             stats_th.join();
@@ -675,7 +675,7 @@
                 fprintf(stderr, "moe-cache: seg-times: page faults of the process: %llu inside the gaps, %llu inside our backend; longest gap %.0f ms (graph %llu, %llu faults)\n",
                         (unsigned long long) gap_faults.load(), (unsigned long long) in_faults.load(), top_gap_ns[top] / 1e6,
                         (unsigned long long) top_gap_graph[top].load(), (unsigned long long) top_gap_faults[top].load());
-                if (getenv("MOE_CACHE_E1_TIMES")) {
+                if (mcenv::env_on("MOE_CACHE_E1_TIMES")) {
                     fprintf(stderr, "moe-cache: e1: CPU time inside the gaps: process %.2fs, graph thread %.2fs (of %.2fs wall); inside our backend: process %.2fs, graph thread %.2fs (of %.2fs wall)\n",
                             e1_gap_cpu_ns / 1e9, e1_gap_tcpu_ns / 1e9, ns_gap / 1e9, e1_in_cpu_ns / 1e9, e1_in_tcpu_ns / 1e9, ns_total / 1e9);
                     for (int k = 0; k < 2; k++) {
@@ -800,32 +800,25 @@
         }
         // each piece: a read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
         const bool inject_job = fault_every > 0 && (++fault_ctr % (uint64_t) fault_every) == 0;   // test switch: this read fails every direct attempt
-        auto read_all = [&](const plat::file_t & rfd, bool inject, char * buf, size_t want, size_t need, uint64_t foff) {
-            size_t done = 0;
-            int retries = 0;
-            while (done < need) {
-                ptrdiff_t got;
+        auto read_all = [&](const plat::file_t & rfd, bool inject, char * buf, size_t want, size_t need, uint64_t foff, bool * unsupported) {
+            return mcretry::read_fully([&](size_t done) -> ptrdiff_t {
                 if (inject && inject_job) {
-                    got = -1;
                     errno = EIO;
-                } else {
-                    got = plat::file_pread(rfd, buf + done, want - done, foff + done);
+                    return -1;
                 }
-                if (got <= 0) {
-                    if (++retries <= 3) {
-                        plat::sleep_ms(20);
-                        continue;
-                    }
-                    return false;
-                }
-                done += (size_t) got;
-            }
-            return true;
+                return plat::file_pread(rfd, buf + done, want - done, foff + done);
+            }, plat::sleep_ms, need, mcretry::kRetries, mcretry::kDelayMs, inject, unsupported);
         };
         // want: aligned length asked for; need: bytes that must arrive (the end of the file can cut the last aligned page short)
         auto read_piece = [&](char * buf, size_t want, size_t need, uint64_t foff) {
-            if (read_all(fds[j.fdi], true, buf, want, need, foff)) {
-                return;
+            if (!direct_broken[(size_t) j.fdi].load(std::memory_order_relaxed)) {
+                bool unsupported = false;
+                if (read_all(fds[j.fdi], true, buf, want, need, foff, &unsupported)) {
+                    return;
+                }
+                if (unsupported) {      // the file system accepted open(O_DIRECT) but refuses the read: do not pay the failed read for every piece
+                    direct_broken[(size_t) j.fdi].store(true, std::memory_order_relaxed);
+                }
             }
             plat::file_t bfd;
             {
@@ -835,7 +828,9 @@
                 }
                 bfd = fds_buf[j.fdi];
             }
-            if (!bfd.ok() || !read_all(bfd, false, buf, need, need, foff)) {
+            bool unsupported_unused = false;
+            // FUTURE (CACHE-271 option c): fail only the current request here instead of abort() (needs a way to unwind the graph); not built, abort stays
+            if (!bfd.ok() || !read_all(bfd, false, buf, need, need, foff, &unsupported_unused)) {
                 fprintf(stderr, "moe-cache: read failed at offset %llu of %s: %s (disk error, or the model file changed after loading)\n",
                         (unsigned long long) foff, shard_paths[j.fdi].c_str(), plat::last_error().c_str());
                 abort();

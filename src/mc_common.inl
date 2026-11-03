@@ -96,9 +96,8 @@ std::string ggml_abi_mismatch() {
 
 // GiB value from an environment variable: finite, not negative, at most 1 PiB; anything else is ignored with a message
 bool parse_gib(const char * name, const char * txt, size_t & out) {
-    char * end = nullptr;
-    const double v = strtod(txt, &end);
-    if (end == txt || !std::isfinite(v) || v < 0.0 || v > 1048576.0) {
+    double v = 0.0;
+    if (!mcargs::parse_number(txt, 0.0, 1048576.0, v)) {      // all of the text must be the number: MARGIN_GIB=512M used to read as 512 GiB
         fprintf(stderr, "moe-cache: ignoring %s=%s (expected a number of GiB, 0 to 1048576)\n", name, txt);
         return false;
     }
@@ -246,9 +245,8 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
 size_t ram_cap() {
     static const size_t cap = [] {
         if (const char * v = getenv("MOE_CACHE_MAX_RAM_GB")) {
-            char * end = nullptr;
-            const double gb = strtod(v, &end);
-            if (end != v && gb >= 0) {        // also false for nan; a typo keeps the default cap below, as the launcher does
+            double gb = 0.0;
+            if (mcargs::parse_number(v, 0.0, 1e9, gb)) {        // finite, whole text; a typo keeps the default cap below, as the launcher does
                 return gb > 0 ? (size_t) (gb * 1e9) : (size_t) -1;
             }
             fprintf(stderr, "moe-cache: MOE_CACHE_MAX_RAM_GB=%s is not a number of GB: the default cap is used\n", v);

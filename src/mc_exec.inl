@@ -265,7 +265,7 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
     }
     const int n = ggml_graph_n_nodes(cg);
     // idea D18 (MOE_CACHE_EXEC_SCRATCH=0 turns it off): the keep list and the saved-op list are per-thread scratch, not allocated for every small CPU batch
-    static const bool scratch = !getenv("MOE_CACHE_EXEC_SCRATCH") || atoi(getenv("MOE_CACHE_EXEC_SCRATCH")) != 0;
+    static const bool scratch = mcenv::env_flag("MOE_CACHE_EXEC_SCRATCH", true);
     static thread_local std::vector<char> keep_s;
     static thread_local std::vector<std::pair<ggml_tensor *, ggml_op>> saved_s;
     std::vector<char> keep_l;
@@ -429,7 +429,7 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
     static thread_local std::vector<uint8_t> pbufs[2];
     std::vector<uint8_t> & wbuf = wbufs[slot];
     std::vector<uint8_t> & pbuf = pbufs[slot];
-    static const bool etimes = getenv("MOE_CACHE_EXEC_TIMES") != nullptr;
+    static const bool etimes = mcenv::env_on("MOE_CACHE_EXEC_TIMES");
     const uint64_t eq0 = etimes ? exec_now_ns() : 0;
     const char * base;
     size_t stride_i11, stride_tok;       // column (token t, activation row i11) = base + i11 * stride_i11 + t * stride_tok
@@ -444,7 +444,7 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
 #endif
     // idea D03 (MOE_CACHE_EXEC_SHARE_IN=0 turns it off): gate and up of a fused pair read the same activation with the same weight type, so the second
     // op takes the first op's quantised columns (the same values it would compute itself; they stay valid, the buffer is per thread and slot)
-    static const bool share_in = !getenv("MOE_CACHE_EXEC_SHARE_IN") || atoi(getenv("MOE_CACHE_EXEC_SHARE_IN")) != 0;
+    static const bool share_in = mcenv::env_flag("MOE_CACHE_EXEC_SHARE_IN", true);
     if (share_in && share && share->base && share->nd->src[1] == a && share->w->type == w->type && a->type != vdt && share->nd->src[1]->data == a->data) {
         base = share->base;
         stride_i11 = share->stride_i11;
@@ -615,7 +615,7 @@ void exec_prep_op(state_t & s, ggml_tensor * nd, const std::vector<char> * skip,
 
 // runs one prepared op (n = 1) or a fused pair (n = 2, only when both have the same weight type, rows, columns, row stride and kernel)
 void exec_run_prepared(state_t & s, exec_prep_t * p, int n) {
-    static const bool etimes = getenv("MOE_CACHE_EXEC_TIMES") != nullptr;
+    static const bool etimes = mcenv::env_on("MOE_CACHE_EXEC_TIMES");
     const ggml_tensor * w = p[0].w;
     const std::vector<exec_task_t> * single = &p[0].tasks;
     std::vector<exec_task_t> both;
@@ -672,7 +672,7 @@ int exec_fuse_partner(state_t & s, ggml_cgraph * cg, int i, int n_nodes) {
         }
         const ggml_tensor * wa = a->src[0], * wb = b->src[0];
         // idea D04 (MOE_CACHE_EXEC_FUSE_ANY=1, default off): gate and up may differ in weight type and row stride (the tasks carry their own kernel and stride)
-        static const bool fuse_any = getenv("MOE_CACHE_EXEC_FUSE_ANY") && atoi(getenv("MOE_CACHE_EXEC_FUSE_ANY")) > 0;
+        static const bool fuse_any = mcenv::env_on("MOE_CACHE_EXEC_FUSE_ANY");
         if (wa == wb || (!fuse_any && (wa->type != wb->type || wa->nb[1] != wb->nb[1] || a->src[1]->type != b->src[1]->type)) || wa->ne[0] != wb->ne[0] || wa->ne[1] != wb->ne[1] ||
             wa->ne[2] != wb->ne[2] || a->src[2]->ne[0] != b->src[2]->ne[0] || a->src[2]->ne[1] != b->src[2]->ne[1]) {
             return -1;
@@ -695,7 +695,7 @@ extern "C" { int (*moe_cache_iq512_probe)(void) = nullptr; }
 // One line that says what is really active, and why not when something is off (several speed-ups depend on how the plugin was loaded).
 void print_capabilities(state_t & s) {
     std::string o = "moe-cache: active:";
-    const bool preload = getenv("MOE_CACHE_PRELOAD") != nullptr;
+    const bool preload = mcenv::env_on("MOE_CACHE_PRELOAD");
     o += std::string(" load=") + (preload ? "LD_PRELOAD" : "GGML_BACKEND_PATH");
     o += std::string(" cache=") + (s.cache_on ? "on" : "off(pass-through or disabled)");
     if (!s.exec_on) {
@@ -711,7 +711,7 @@ void print_capabilities(state_t & s) {
                                                                 : upstream_q2_0_enabled() ? "executor(column sums, exact to llama.cpp's #30447)" : "off(llama.cpp's own)")
                                                                : preload ? "on(interposed)" : "executor only(not preloaded)");
     o += std::string(" iq3_xxs_kernel=") + (fast_iq3_dot() ? "on(executor)" : "off(MOE_CACHE_FAST_KERNELS=0 or MOE_CACHE_IQ3_KERNEL=0, no AVX2, or not Intel: MOE_CACHE_IQ3_KERNEL=1 forces it on)");
-    o += std::string(" iq_avx512=") + (getenv("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
+    o += std::string(" iq_avx512=") + (mcenv::env_on("MOE_CACHE_AVX512") ? (moe_cache_iq512_probe && moe_cache_iq512_probe() ? "on" : "off(self-check or CPU)") : "off(MOE_CACHE_AVX512 unset)");
 #endif
 #ifdef _WIN32
     cpu_traits(GGML_TYPE_F32);   // resolves the lookup once
@@ -719,11 +719,39 @@ void print_capabilities(state_t & s) {
 #endif
     o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
     o += s.gpu_dev ? " long_prompt_gpu=on(>=" + std::to_string(s.gpu_min_tokens) + " tokens)" : " long_prompt_gpu=off(no GPU device)";
+    if (s.gpu_dev) {
+        const shared_plan_t sp = shared_gpu_plan(s, s.gpu_dev);
+        if (sp.shared) {
+            o += " gpu_memory=shared(block copy capped at " + std::to_string(sp.cap >> 20) + " MiB" + (s.auto_mode ? ", counted against the cache budget)" : ")");
+        }
+    }
     if (s.gpu_dev2) {
         o += std::string(" long_prompt_gpu2=") + ggml_backend_dev_name(s.gpu_dev2);
     }
     if (s.fewer > 0) o += std::string(" approx_fewer=") + std::to_string(s.fewer);
     if (s.route_mode) o += std::string(" approx_route=") + (s.route_mode == 1 ? "skip" : "subst");
+    {   // AUD-005: boolean switches that are set to something other than their default (one parse for all: mc_env.h)
+        static const struct { const char * name; bool def; } flags[] = {
+            { "MOE_CACHE_HOST_OUT", true }, { "MOE_CACHE_GPU_SUM", true }, { "MOE_CACHE_EXEC_SCRATCH", true }, { "MOE_CACHE_EXEC_SHARE_IN", true },
+            { "MOE_CACHE_POOL_TINY", true }, { "MOE_CACHE_EXEC_FUSE", true }, { "MOE_CACHE_GPU_PACK", true }, { "MOE_CACHE_GPU_READBACK", true },
+            { "MOE_CACHE_GPU_PIPE", true }, { "MOE_CACHE_SEG_TIMES", false }, { "MOE_CACHE_EXEC_TIMES", false }, { "MOE_CACHE_GPU_COMPACT", false },
+            { "MOE_CACHE_GPU_TMPL", false }, { "MOE_CACHE_GPU_STAGE", false }, { "MOE_CACHE_GPU_OVERLAP", false }, { "MOE_CACHE_EXEC_FUSE_ANY", false },
+        };
+        std::string nd;
+        for (const auto & f : flags) {
+            const char * v = getenv(f.name);
+            if (v && *v && mcenv::flag_value(v, f.def) != f.def) {
+                nd += std::string(" ") + f.name + "=" + (f.def ? "off" : "on");
+            }
+        }
+        const char * gc = getenv("MOE_CACHE_GPU_CATCH");
+        if (gc && *gc && mcguard::catch_mode(gc) == 0) {
+            nd += " MOE_CACHE_GPU_CATCH=off";
+        }
+        if (!nd.empty()) {
+            o += " switches_not_default:" + nd;
+        }
+    }
     fprintf(stderr, "%s\n", o.c_str());
 }
 

@@ -32,5 +32,38 @@ check(gp.parse_gpu_process_counters(cl, 42) == (1024.0, 2.0) and gp.parse_gpu_pr
 check(gp.start_gpu_mem_log(1, print, False, {}) is None, "GPU memory log is off unless MOE_CACHE_GPU_MEM_LOG is set")
 os.environ.pop("MOE_CACHE_PLAN_RULE", None)
 check(not gp.plan_rule_on(), "plan rule is off by default")
+
+# AUD-031 / AUD-038: plan.py takes --vram-gib 0 as a value (not "not given": a fake nvidia-smi that reports 24 GB free must be ignored) and a header with
+# head_count 0 ends with a message instead of a ZeroDivisionError traceback; gguf_plan.kv_bytes answers None for it
+import json, stat, struct, subprocess, tempfile
+def _s(x):
+    b = x.encode(); return struct.pack("<Q", len(b)) + b
+def _u32(k, v): return _s(k) + struct.pack("<I", 4) + struct.pack("<I", v)
+def _mini(path, heads):
+    kvs = [_s("general.architecture") + struct.pack("<I", 8) + _s("x"), _u32("x.block_count", 2), _u32("x.expert_count", 4), _u32("x.expert_used_count", 2),
+           _u32("x.attention.head_count", heads), _u32("x.attention.head_count_kv", heads), _u32("x.embedding_length", 64)]
+    tens = [("blk.0.ffn_up_exps.weight", 0), ("blk.1.ffn_up_exps.weight", 4096), ("blk.0.attn_q.weight", 8192)]
+    t = b"".join(_s(n) + struct.pack("<I", 1) + struct.pack("<Q", 8) + struct.pack("<I", 0) + struct.pack("<Q", o) for n, o in tens)
+    h = b"GGUF" + struct.pack("<IQQ", 3, len(tens), len(kvs)) + b"".join(kvs) + t
+    h += b"\0" * (-len(h) % 32)
+    open(path, "wb").write(h + b"\0" * 12288)
+if os.name != "nt":
+    d = tempfile.mkdtemp(prefix="plan-zero-")
+    fake = os.path.join(d, "nvidia-smi")
+    open(fake, "w").write("#!/bin/sh\necho 24000\n"); os.chmod(fake, 0o755)
+    env = dict(os.environ, PATH=d + os.pathsep + os.environ.get("PATH", ""), MOE_PLAN_MINI="1")
+    m = os.path.join(d, "ok.gguf"); _mini(m, 4)
+    r = subprocess.run([sys.executable, os.path.join(HERE, "planner", "plan.py"), m, "--ctx", "1024", "--vram-gib", "0", "--ram-gib", "16", "--json"],
+                       capture_output=True, text=True, env=env, timeout=60)
+    try:
+        info = json.loads(r.stdout)
+        check(info["n_cpu_moe"] == 2 and info["free_vram_GiB"] == 0, f"plan.py --vram-gib 0 keeps every expert on the CPU (n_cpu_moe {info['n_cpu_moe']}, free {info['free_vram_GiB']})")
+    except Exception as e:
+        check(False, f"plan.py --vram-gib 0: {e} {r.stderr[-200:]}")
+    z = os.path.join(d, "zero.gguf"); _mini(z, 0)
+    r = subprocess.run([sys.executable, os.path.join(HERE, "planner", "plan.py"), z, "--vram-gib", "8", "--ram-gib", "16", "--json"],
+                       capture_output=True, text=True, env=env, timeout=60)
+    check(r.returncode != 0 and "ZeroDivisionError" not in r.stderr and "head_count" in r.stderr, f"plan.py: head_count 0 -> a message, no traceback ({r.stderr[-120:]!r})")
+    check(gp.kv_bytes(z, 1024) is None, "gguf_plan.kv_bytes: head_count 0 -> None")
 print(f"plan_rule_test: {len(fails)} failed")
 sys.exit(1 if fails else 0)

@@ -42,6 +42,36 @@ int main() {
         const auto d = parse_server_args(V{ "s", "--device" }, nullptr, nullptr, nullptr);      // value missing: ignored
         CHECK(!d.device_none && d.devices.empty());
     }
+    {   // CACHE-269 (b): the one-line note about llama-server's own prompt cache is printed only when nothing limits it
+        using mcargs::prompt_cache_unlimited_default;
+        CHECK(prompt_cache_unlimited_default(V{ "llama-server", "-m", "x.gguf" }, nullptr, nullptr));
+        CHECK(!prompt_cache_unlimited_default(V{ "s", "--cache-ram", "2048" }, nullptr, nullptr));
+        CHECK(!prompt_cache_unlimited_default(V{ "s", "-cram", "0" }, nullptr, nullptr));
+        CHECK(!prompt_cache_unlimited_default(V{ "s", "--cache_ram", "-1" }, nullptr, nullptr));
+        CHECK(!prompt_cache_unlimited_default(V{ "s" }, "4096", nullptr));                      // LLAMA_ARG_CACHE_RAM
+        CHECK(!prompt_cache_unlimited_default(V{ "s" }, nullptr, "1024"));                      // the launcher (MOE_CACHE_HOST_RESERVE_MIB)
+        CHECK(prompt_cache_unlimited_default(V{ "s" }, "", ""));                                // empty env values do not count
+        CHECK(prompt_cache_unlimited_default(V{ "--cache-ram", "x", "s" }, nullptr, nullptr));  // args[0] is the program, not an option
+    }
+    {   // AUD-015: numbers from the environment are read whole and must be finite and in range
+        using mcargs::parse_number;
+        double x = -1;
+        CHECK(parse_number("4", 0, 100, x) && x == 4);
+        CHECK(parse_number(" 2.5 \n", 0, 100, x) && x == 2.5);
+        CHECK(parse_number("1e1", 0, 100, x) && x == 10);
+        CHECK(parse_number("0", 0, 1, x) && x == 0);
+        CHECK(!parse_number("512M", 0, 1e9, x));          // was read as 512
+        CHECK(!parse_number("4 GiB", 0, 100, x));
+        CHECK(!parse_number("", 0, 100, x));
+        CHECK(!parse_number("abc", 0, 100, x));
+        CHECK(!parse_number("inf", 0, 1e9, x));           // was cast to size_t (undefined)
+        CHECK(!parse_number("-inf", -1e9, 1e9, x));
+        CHECK(!parse_number("nan", 0, 1, x));             // PROFILE_DECAY=nan went into the profile
+        CHECK(!parse_number("1.5", 0, 1, x));
+        CHECK(!parse_number("-0.1", 0, 1, x));
+        CHECK(!parse_number(nullptr, 0, 1, x));
+        CHECK(x == 0);                                    // untouched by every failure above
+    }
     if (fails) {
         fprintf(stderr, "args_test: %d failure(s)\n", fails);
         return 1;

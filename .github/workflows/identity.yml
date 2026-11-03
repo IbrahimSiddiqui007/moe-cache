@@ -8,8 +8,14 @@ name: identity
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "branch, tag or SHA of this repo to test (empty: the branch the run was started on)"
+        required: false
+        default: ""
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 5 * * *"      # main
+    - cron: "30 6 * * *"     # experimental (AUD-001: scheduled runs always use the workflow file on main, so the ref is picked below; the file must be on main first)
 
 permissions:
   contents: read
@@ -36,6 +42,9 @@ jobs:
           - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || (github.event.schedule == '30 6 * * *' && 'experimental' || '') }}   # empty = the default for the trigger
 
       - name: Packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
@@ -61,6 +70,12 @@ jobs:
           ./build.sh --portable
           ls -la build/libggml-moe-cache.so
 
+      - name: IQ2_XXS / IQ3_XXS kernel variants (src/fast_iq*.h) are bit-identical to this pin's library functions (no model)
+        # AUD-027: tests/kernel_variants.cpp was built only by tools/friend_test.sh, so CI never proved these kernels exact. "check" = compare only, exit 1 on a mismatch.
+        run: |
+          g++ -O2 -std=c++17 -Isrc tests/kernel_variants.cpp -o /tmp/kernel_variants -ldl
+          env -u LD_PRELOAD /tmp/kernel_variants llama.cpp/build/bin check | tee kernel_variants.txt
+
       - name: Small MoE model
         run: |
           curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
@@ -85,7 +100,8 @@ jobs:
           python3 tests/picker_test.py       # model picker (spec -> model table on fake machines, settings it writes); no model, no download
           python3 tools/check_model_links.py   # every model the picker can recommend still exists on Hugging Face (metadata only; an HF outage only warns)
           python3 tests/gguf_hostile_test.py   # hostile GGUF headers are refused, not allocated (security fix S1)
-          python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
+          python3 tests/require_node_test.py   # AUD-094: without node ui_test skips its JavaScript checks and still exits 0
+          REQUIRE_NODE=1 python3 tests/ui_test.py      # control page (GUI1): model list, plan reasons, start/stop, live stats; fake models and server
           python3 tests/security_test.py     # external-audit regressions: key race, key disclosure, chat saves, custom key, CORS loopback, wrong-model state
           python3 tests/on_demand_test.py    # on-demand endpoint: key, CORS, start on first request, SSE pass-through, idle stop, restart; fake server
           python3 tests/awake_test.py        # keep-awake lock (I47)

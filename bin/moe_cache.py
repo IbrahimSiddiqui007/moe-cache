@@ -24,11 +24,14 @@
 """
 import argparse, glob, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))) if os.path.dirname(os.path.abspath(__file__)) not in sys.path else None   # tests load this file by path
+from moe_cache_wintool import win_tool  # noqa: E402  (bin/: Windows helpers by full System32 path, AUD-034)
+
 VERSION = "0.3.5"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
-NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 _NOTES = []          # recorders (lists) that want every say() line while a launch plan is built: (text, is_error) in order
@@ -906,6 +909,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+# A request to this machine never goes through a proxy (http_proxy / the Windows registry proxy would send /health and the API key to it; 127.0.0.1 is
+# not bypassed unless no_proxy says so). Remote URLs keep the system proxy settings.
+_OPENER_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def http(url, body=None, api_key=None, timeout=10):
@@ -915,7 +921,7 @@ def http(url, body=None, api_key=None, timeout=10):
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, json.dumps(body).encode() if body is not None else None, headers)
     try:
-        with _OPENER.open(req, timeout=timeout) as r:
+        with (_OPENER_DIRECT if loopback_url(url) else _OPENER).open(req, timeout=timeout) as r:
             return r.status, r.read().decode(errors="replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(errors="replace")
@@ -1456,7 +1462,7 @@ def busy_programs(timeout=30):
     if not WINDOWS:
         return []
     try:
-        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", BUSY_SCRIPT], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run([win_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command", BUSY_SCRIPT], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except Exception:
         return []
     return parse_busy(r.stdout)
@@ -1473,7 +1479,7 @@ def busy_note(item):
 def warn_heavy_background():
     """Windows only; a failed tasklist or PowerShell says nothing."""
     try:
-        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run([win_tool("tasklist"), "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except Exception:
         return
     named = heavy_background_apps(r.stdout)
@@ -1919,7 +1925,7 @@ def other_llama_servers():
     out, mine = [], {os.getpid(), os.getppid()}
     if WINDOWS:
         try:
-            r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
+            r = subprocess.run([win_tool("tasklist"), "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             for row in r.stdout.splitlines():
                 f = [x.strip('"') for x in row.split('","')]
                 if len(f) >= 5 and f[0].lower().startswith("llama-server"):
@@ -2236,10 +2242,10 @@ def _launch_plan(a, extra, argv, machine):
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
             "Add --api-key KEY after the -- or bind to 127.0.0.1.", err=True)
     pname = a.profile or ""
-    if pname and not NAME_RE.match(pname):
+    if pname and not NAME_RE.fullmatch(pname):
         raise SystemExit("--profile NAME may only contain letters, digits, _ and -")
     if a.project:
-        if not NAME_RE.match(a.project):
+        if not NAME_RE.fullmatch(a.project):
             raise SystemExit("--project NAME may only contain letters, digits, _ and -")
         pname = pname or a.project
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
@@ -2780,9 +2786,33 @@ def opencode_config_target(cfg):
     return cfg, warn
 
 
+HERMES_MARK = os.path.join(CACHE_DIR, "hermes-connected.json")      # {config.yaml path: the base URL connect last set}
+
+
+def hermes_connected(h, base):
+    """Remember that connect set this base URL in this Hermes config, so a later connect can tell its own setting from a local server the user set up themselves."""
+    try:
+        r = subprocess.run([h, "config", "path"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        path = (r.stdout.strip().splitlines() or [""])[-1].strip() if r.returncode == 0 else ""
+        if not path:
+            return
+        try:
+            marks = json.load(open(HERMES_MARK, encoding="utf-8"))
+            marks = marks if isinstance(marks, dict) else {}
+        except (OSError, ValueError):
+            marks = {}
+        marks[path] = base
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        tmp = stage_private(HERMES_MARK, json.dumps(marks))
+        os.replace(tmp, HERMES_MARK)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def hermes_backup(h):
-    """Before 'hermes config set' replaces the main model: copy config.yaml to config.yaml.bak and describe the model it had, unless it already
-    points at a local server (a second connect must not replace the backup of the user's own setup, e.g. OpenRouter, with ours).
+    """Before 'hermes config set' replaces the main model: copy config.yaml to config.yaml.bak and describe the model it had. A backup is never overwritten:
+    when config.yaml.bak exists the copy gets a time stamp (config.yaml.bak.YYYYmmdd-HHMMSS). Nothing is copied when the config is our own setting from an earlier
+    connect (this base URL was recorded by it) and a backup exists: a second connect must not bury the user's own setup, e.g. OpenRouter, under ours.
     Returns (backup path, "provider P, model M, URL U") or (None, "") when nothing was kept."""
     def get(k):
         r = subprocess.run([h, "config", "get", k], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
@@ -2795,15 +2825,24 @@ def hermes_backup(h):
         return None, ""
     if not path or not os.path.isfile(path):
         return None, ""
-    if (old["provider"] == "custom" and urllib.parse.urlparse(old["base_url"]).hostname in ("127.0.0.1", "localhost", "::1")
-            and os.path.isfile(path + ".bak")):
-        # a local server with a backup already made: a second connect. A local server without one (the user's own Ollama or LM Studio) is
-        # backed up like any other setup (audit 2026-10-29: it was overwritten without a backup)
+    try:
+        marks = json.load(open(HERMES_MARK, encoding="utf-8"))
+    except (OSError, ValueError):
+        marks = {}
+    ours = isinstance(marks, dict) and old["provider"] == "custom" and marks.get(path) == old["base_url"]
+    if ours and glob.glob(glob.escape(path) + ".bak*"):
         return None, ""
-    shutil.copy2(path, path + ".bak")
+    bak = path + ".bak"
+    if os.path.lexists(bak):
+        bak = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}"
+        n = 1
+        while os.path.lexists(bak):
+            n += 1
+            bak = f"{path}.bak.{time.strftime('%Y%m%d-%H%M%S')}-{n}"
+    shutil.copy2(path, bak)
     if not WINDOWS:
-        os.chmod(path + ".bak", 0o600)     # it may hold the old provider's key
-    return path + ".bak", f"provider {old['provider'] or '(not set)'}, model {old['default'] or '(not set)'}, URL {old['base_url'] or '(not set)'}"
+        os.chmod(bak, 0o600)               # it may hold the old provider's key
+    return bak, f"provider {old['provider'] or '(not set)'}, model {old['default'] or '(not set)'}, URL {old['base_url'] or '(not set)'}"
 
 
 def claude_env(url, model, api_key):
@@ -2818,15 +2857,25 @@ def claude_env(url, model, api_key):
 
 
 def claude_snippets(env, ctx, hide_key=False):
-    shown = {k: ("(your key)" if hide_key and k == "ANTHROPIC_AUTH_TOKEN" else v) for k, v in env.items()}
+    shown = {k: (KEY_HINT if hide_key and k == "ANTHROPIC_AUTH_TOKEN" and v != "none" else v) for k, v in env.items()}
     return "\n".join(["  Claude Code, bash / zsh (this terminal only):"] + [f"    export {k}={json.dumps(v)}" for k, v in shown.items()]
                       + ["  Claude Code, PowerShell (this window only):"] + [f"    $env:{k} = {json.dumps(v)}" for k, v in shown.items()]
                       + [f"  then run: claude   (context {ctx}: Claude Code's own system prompt is long; the server should run with --agent or --ctx 65536 or more)"])
 
 
+def claude_backup_path(cfg):
+    """Where the first backup of a Claude Code settings file is kept: ~/.cache/moe-cache/backups, not beside it. The project file lives in a repository
+    folder and its backup can hold the user's own ANTHROPIC key: a .bak next to it would be committed by a blanket add."""
+    import hashlib
+    real = os.path.realpath(cfg)
+    return os.path.join(CACHE_DIR, "backups", hashlib.sha1(real.encode("utf-8", "replace")).hexdigest()[:12] + "-" + os.path.basename(real) + ".bak")
+
+
 def write_claude_settings(cfg, env):
-    """Merge env into the "env" object of a Claude Code settings file (project-local by default), old file kept as .bak, private file (it holds the key)."""
-    data = {}
+    """Merge env into the "env" object of a Claude Code settings file (project-local by default), private file (it holds the key). The first version of an
+    existing file is kept (claude_backup_path); returns that backup's path, None when there is none."""
+    cfg = os.path.realpath(cfg)
+    data, eol, bak = {}, "\n", None
     if os.path.isfile(cfg):
         try:
             data = json.load(open(cfg, encoding="utf-8"))
@@ -2834,21 +2883,32 @@ def write_claude_settings(cfg, env):
             raise SystemExit(f"{cfg} is not plain JSON: add the lines printed by 'moe_cache.py connect claude' by hand")
         if not isinstance(data, dict):
             raise SystemExit(f"{cfg} does not hold a JSON object")
-        if not os.path.isfile(cfg + ".bak"):
-            shutil.copy2(cfg, cfg + ".bak")                 # the first backup is kept: a second connect does not replace what the user had
+        eol = file_eol(cfg)
+        bak = claude_backup_path(cfg)
+        if not os.path.isfile(bak):
+            os.makedirs(os.path.dirname(bak), mode=0o700, exist_ok=True)
+            shutil.copy2(cfg, bak)                          # the first backup is kept: a second connect does not replace what the user had
             if not WINDOWS:
-                os.chmod(cfg + ".bak", 0o600)
+                os.chmod(bak, 0o600)
     cur = data.get("env") if isinstance(data.get("env"), dict) else {}
     cur.update(env)
     data["env"] = cur
-    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
-    tmp = cfg + ".tmp"
-    if os.path.lexists(tmp):
-        os.unlink(tmp)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, cfg)
+    write_private(cfg, json_text(data), eol)
+    return bak
+
+
+def project_folder_hint(cwd):
+    """A warning when cwd is a sub-folder of a project (a parent holds .git or .claude) and has no .claude of its own: Claude Code started in the project root
+    would not read a settings file written here. None otherwise."""
+    if os.path.isdir(os.path.join(cwd, ".claude")):
+        return None
+    d = os.path.dirname(cwd)
+    while d and d != os.path.dirname(d):
+        if os.path.isdir(os.path.join(d, ".git")) or os.path.isdir(os.path.join(d, ".claude")):
+            return (f"this folder is inside the project {d}: Claude Code started there does not read {os.path.join(cwd, '.claude')}; "
+                    f"run the command from {d} (or give --config {os.path.join(d, '.claude', 'settings.local.json')}) to cover the whole project")
+        d = os.path.dirname(d)
+    return None
 
 
 # ---- connect: Codex CLI, Pi, OpenClaw, Aider, Qwen Code ----
@@ -2862,6 +2922,9 @@ CODEX_TOP = ("model", "model_provider", "model_context_window", "web_search")
 AIDER_MARK = "# written by 'moe_cache.py connect aider'; delete this file to undo. Run: aider --config THIS_FILE"
 
 
+KEY_HINT = "<your API key: python3 bin/moe_cache.py key>"      # shown in a preview instead of the key (terminal scrollback, logs, shared screens)
+
+
 def agent_window(ctx):
     """The window handed to an agent: the server's context minus 12.5 % headroom (docs/AGENTS.md 'Keep the agent's own context limit below the
     server's'), in whole 1024s, so the agent's own compaction starts before llama-server refuses a request. 65536 -> 57344."""
@@ -2872,24 +2935,72 @@ def agent_output(ctx):
     return min(32768, max(4096, int(ctx) // 4))
 
 
+def bak_path(cfg):
+    """Where the first backup of cfg lives: next to the real file (a symlinked config is a link into a dotfiles repo or a store: the backup belongs beside what is replaced)."""
+    return os.path.realpath(cfg) + ".bak"
+
+
 def keep_first_backup(cfg):
-    """Copy an existing file to cfg.bak unless a backup is already there (the first one is the user's own setup)."""
+    """Copy an existing file to cfg.bak unless a backup is already there (the first one is the user's own setup). A symlink is followed: the backup sits beside the
+    real file, which is also the one write_private replaces. Returns the backup path, None when there was nothing to copy."""
+    cfg = os.path.realpath(cfg)
     if os.path.isfile(cfg) and not os.path.isfile(cfg + ".bak"):
         shutil.copy2(cfg, cfg + ".bak")
         if not WINDOWS:
             os.chmod(cfg + ".bak", 0o600)
+    return cfg + ".bak" if os.path.isfile(cfg + ".bak") else None
 
 
-def write_private(cfg, text):
-    """Replace cfg with text: mode 0600 (the file holds the API key), through a temporary file and never through a planted link."""
-    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
-    tmp = cfg + ".tmp"
+def file_eol(cfg):
+    """The line end of the existing file: CRLF when it uses Windows line ends (a rewrite keeps them), else LF."""
+    try:
+        with open(cfg, "rb") as f:
+            return "\r\n" if b"\r\n" in f.read() else "\n"
+    except OSError:
+        return "\n"
+
+
+def json_text(data):
+    """The text of a JSON config we write: indent 2, non-ASCII kept as it is (a model or folder name stays readable), a final newline."""
+    try:
+        return json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+    except ValueError as e:
+        raise SystemExit(f"cannot write the config: it holds a value JSON does not allow ({e}); nothing written")
+
+
+def stage_private(cfg, text, eol="\n"):
+    """Write text (UTF-8, `eol` line ends) to a temporary file of its own beside cfg, mode 0600, flushed to disk; returns its path. Never through a planted link."""
+    tmp = f"{cfg}.{os.getpid()}.tmp"
     if os.path.lexists(tmp):
         os.unlink(tmp)
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.replace(tmp, cfg)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text if eol == "\n" else text.replace("\n", eol))
+            f.flush()
+            os.fsync(f.fileno())
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return tmp
+
+
+def write_private(cfg, text, eol="\n"):
+    """Replace cfg with text: mode 0600 (the file holds the API key), through a temporary file. A symlinked cfg keeps being a link: the file it points at is replaced."""
+    cfg = os.path.realpath(cfg)
+    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
+    tmp = stage_private(cfg, text, eol)
+    try:
+        os.replace(tmp, cfg)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load_json_object(cfg, agent, kind="config"):
@@ -2973,7 +3084,7 @@ def codex_merge(text, top, tab):
 def connect_extra(a, name, ctx, base, names):
     """connect codex|pi|openclaw|aider|qwen: print the settings, or with --write merge them into the agent's config."""
     key = a.api_key
-    shown = key if a.write else ("<your API key: python3 bin/moe_cache.py key>" if key else None)     # a preview goes to terminals and logs
+    shown = key if a.write else (KEY_HINT if key else None)     # a preview goes to terminals and logs
     win = agent_window(ctx)
     home = os.path.expanduser("~")
     q = json.dumps
@@ -2982,7 +3093,7 @@ def connect_extra(a, name, ctx, base, names):
         return f"  {title}\n    " + json.dumps(obj, indent=2).replace("\n", "\n    ")
 
     def done(who, cfg, extra=""):
-        return (f"{who} uses {name} at {base} (context {win} of the server's {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else "") + extra)
+        return (f"{who} uses {name} at {base} (context {win} of the server's {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(bak_path(cfg)) else "") + extra)
     if a.agent == "codex":
         cfg = a.config or os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "config.toml")
         top, tab = codex_blocks(base, name, ctx, shown)
@@ -2990,11 +3101,22 @@ def connect_extra(a, name, ctx, base, names):
             say(f"  Codex CLI, {cfg}:\n" + "\n".join("    " + l for l in (top + tab).splitlines()))
             say(f"apply with: moe_cache.py connect codex --write  (merges into {cfg}; then run: codex)")
             return 0
-        old = open(cfg, encoding="utf-8").read() if os.path.isfile(cfg) else ""
         try:
-            import tomllib      # Python 3.11+: the old file must parse, and so must the new one; older Pythons skip the check
+            import tomllib      # Python 3.11+: the old file must parse, and so must the new one
         except ImportError:
             tomllib = None
+        if tomllib is None:
+            raise SystemExit(f"moe-cache: writing {cfg} needs Python 3.11 or newer (this is {sys.version_info[0]}.{sys.version_info[1]}): the merged file is checked as TOML there, and without the "
+                             "check a config Codex refuses to start with could be written. Nothing written. Add the settings printed by 'moe_cache.py connect codex' by hand, "
+                             "or run connect with a newer Python.")
+        old, eol = "", "\n"
+        if os.path.isfile(cfg):
+            try:
+                raw = open(cfg, "rb").read().decode("utf-8")
+            except UnicodeDecodeError:
+                raise SystemExit(f"{cfg} is not UTF-8 text: nothing written; add the settings printed by 'moe_cache.py connect codex' by hand")
+            eol = "\r\n" if "\r\n" in raw else "\n"
+            old = raw.replace("\r\n", "\n")
         if tomllib and old:
             try:
                 tomllib.loads(old)
@@ -3009,7 +3131,7 @@ def connect_extra(a, name, ctx, base, names):
             if got.get("model_provider") != "moe-cache" or got.get("model") != name:
                 raise SystemExit(f"{cfg}: could not place the settings at the top level: nothing written; add the settings printed by 'moe_cache.py connect codex' by hand")
         keep_first_backup(cfg)
-        write_private(cfg, new)
+        write_private(cfg, new, eol)
         say("Codex CLI now " + done("", cfg, "; run: codex").lstrip())
         if re.search(r"^\s*profile\s*=", old, re.M):
             say("moe-cache: warning: config.toml sets a 'profile': keys in that profile win over the ones just written", err=True)
@@ -3027,9 +3149,41 @@ def connect_extra(a, name, ctx, base, names):
         data, sdata = load_json_object(cfg, "pi", "Pi models.json"), load_json_object(settings, "pi", "Pi settings")
         want_dict(data, ["providers"], cfg, "pi")["moe-cache"] = prov
         sdata["defaultProvider"], sdata["defaultModel"] = "moe-cache", name
-        for f, dd in ((cfg, data), (settings, sdata)):
+        # both files or neither: written to temporary files first, then moved into place; when the second move fails the first file is put back
+        pair = [(f, dd, file_eol(f), os.path.isfile(f)) for f, dd in ((cfg, data), (settings, sdata))]
+        for f, dd, eol, existed in pair:
             keep_first_backup(f)
-            write_private(f, json.dumps(dd, indent=2))
+        olds = {os.path.realpath(f): (open(f, "rb").read() if existed else None) for f, dd, eol, existed in pair}
+        staged = []
+        try:
+            for f, dd, eol, existed in pair:
+                f = os.path.realpath(f)
+                os.makedirs(os.path.dirname(f) or ".", exist_ok=True)
+                staged.append((f, stage_private(f, json_text(dd), eol)))
+            moved = []
+            try:
+                for f, tmp in staged:
+                    os.replace(tmp, f)
+                    moved.append(f)
+            except OSError:
+                for f in moved:             # put the first file back as it was
+                    o = olds.get(f)
+                    try:
+                        if o is None:
+                            os.unlink(f)
+                        else:
+                            with open(f, "wb") as fh:
+                                fh.write(o)
+                    except OSError:
+                        pass
+                raise
+        finally:
+            for f, tmp in staged:
+                if os.path.lexists(tmp):
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
         say("Pi now " + done("", cfg, f"; default model in {settings}; run: pi").lstrip())
         return 0
     if a.agent == "openclaw":
@@ -3049,8 +3203,9 @@ def connect_extra(a, name, ctx, base, names):
             dflt["model"] = {"primary": f"moe-cache/{name}"}
         else:
             say(f"moe-cache: warning: agents.defaults.model in {cfg} is not an object, so it is left alone: choose moe-cache/{name} in OpenClaw", err=True)
+        eol = file_eol(cfg)
         keep_first_backup(cfg)
-        write_private(cfg, json.dumps(data, indent=2))
+        write_private(cfg, json_text(data), eol)
         say("OpenClaw now " + done("", cfg, f"; restart its gateway, then use model moe-cache/{name}").lstrip())
         return 0
     if a.agent == "qwen":
@@ -3070,8 +3225,9 @@ def connect_extra(a, name, ctx, base, names):
         mp["openai"] = [e for e in cur if not (isinstance(e, dict) and e.get("envKey") == QWEN_KEY_VAR)] + ents      # ours replaced, the user's own kept
         want_dict(data, ["security", "auth"], cfg, "qwen")["selectedType"] = "openai"
         want_dict(data, ["model"], cfg, "qwen")["name"] = name
+        eol = file_eol(cfg)
         keep_first_backup(cfg)
-        write_private(cfg, json.dumps(data, indent=2))
+        write_private(cfg, json_text(data), eol)
         say("Qwen Code now " + done("", cfg, "; run: qwen").lstrip())
         return 0
     # aider: its YAML cannot be merged without a YAML library, so it gets a file of its own (and a model-metadata file for the window)
@@ -3087,10 +3243,11 @@ def connect_extra(a, name, ctx, base, names):
         return 0
     old_meta = load_json_object(meta, "aider", "Aider model metadata")
     old_meta.update(entries)
+    meta_eol = file_eol(meta)
     keep_first_backup(cfg)
     keep_first_backup(meta)
-    write_private(cfg, yml)
-    write_private(meta, json.dumps(old_meta, indent=2))
+    write_private(cfg, yml, file_eol(cfg))
+    write_private(meta, json_text(old_meta), meta_eol)
     say(f"Aider settings for {name} at {base} (context {win} of the server's {ctx}) written to {cfg} and {meta}; run: aider --config {cfg}")
     return 0
 
@@ -3102,7 +3259,8 @@ def connect(argv):
                                  "claude = Claude Code through llama-server's Anthropic-compatible /v1/messages: prints the ANTHROPIC_* lines, --write merges them into this folder's .claude/settings.local.json)")
     ap.add_argument("agent", choices=["hermes", "opencode", "claude", "codex", "pi", "openclaw", "aider", "qwen"])
     ap.add_argument("--url", help="the server (default: the on-demand endpoint's port when `on-demand` has a model, else http://127.0.0.1:8080)")
-    ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
+    ap.add_argument("--api-key", default=None, help="the server's API key (default: LLAMA_API_KEY for a server on this machine, else the stored key when the server asks for one)")
+    ap.add_argument("--write", action="store_true")
     ap.add_argument("--config", help="file to merge into (opencode: ~/.config/opencode/opencode.json; claude: ./.claude/settings.local.json of this folder; codex: ~/.codex/config.toml; pi: ~/.pi/agent/models.json; openclaw: ~/.openclaw/openclaw.json; qwen: ~/.qwen/settings.json; aider: ~/.aider.moe-cache.conf.yml)")
     ap.add_argument("--check", action="store_true", help="prove the agent's setup works end to end (config, /v1/models, a streamed chat, a tool-call round trip, the window); "
                     "with --write, after writing; exit 0/1")
@@ -3114,19 +3272,27 @@ def connect(argv):
     a.url_given = a.url
     if a.check and not a.write:
         return connect_check(a)
-    rc = connect_apply(a)
+    try:
+        rc = connect_apply(a)
+    except OSError as e:        # a read-only folder, a file the agent holds open (Windows), a directory where a file should be, no permission
+        raise SystemExit(f"moe-cache: cannot {'write' if a.write else 'read'} {e.filename2 or e.filename or 'the agent config'}: {e.strerror or e} - {a.agent} was not connected")
     return connect_check(a) if a.check and not rc else rc
+
+
+def ambient_key(url):
+    """LLAMA_API_KEY from the environment, for a server on this machine only: a --url that names another host never gets a key the user did not type for it."""
+    return os.environ.get("LLAMA_API_KEY") if loopback_url(url) else None
 
 
 def connect_check(a):
     """connect NAME --check: bin/moe_cache_check.py runs the five steps against the server the agent's config points to (or the one connect would use)."""
     from moe_cache_check import check_agent
-    return check_agent(a.agent, a.url_given, a.config, a.json, a.timeout, default_agent_url(), lambda url: key_for(url, a.api_key if a.api_key else None), agent_window)
+    return check_agent(a.agent, a.url_given, a.config, a.json, a.timeout, default_agent_url(), lambda url: key_for(url, a.api_key or ambient_key(url) or None), agent_window)
 
 
 def connect_apply(a):
     a.url = a.url or default_agent_url()
-    a.api_key = key_for(a.url, a.api_key)
+    a.api_key = key_for(a.url, a.api_key or ambient_key(a.url))
     name, ctx = server_info(a.url, a.api_key)
     if not name:
         st = http(a.url.rstrip("/") + "/v1/models", api_key=a.api_key, timeout=3)[0]
@@ -3148,31 +3314,47 @@ def connect_apply(a):
         sets = [("model.provider", "custom"), ("model.base_url", base), ("model.default", name), ("model.context_length", str(ctx)),
                 ("model.api_key", a.api_key or "none")]
         if not a.write:
-            say(agent_snippets(None, name, ctx, a.api_key, base=base, only="hermes"))
-            say("apply with: " + " && ".join(f"hermes config set {k} {v}" for k, v in sets))
+            say(agent_snippets(None, name, ctx, a.api_key, base=base, only="hermes", hide_key=True))
+            say("apply with: " + " && ".join(f"hermes config set {k} {KEY_HINT if k == 'model.api_key' and a.api_key else v}" for k, v in sets)
+                + "   (or: moe_cache.py connect hermes --write)")
             return 0
         h = shutil.which("hermes")
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
         bak, prev = hermes_backup(h)
+        done_keys = []
         for k, v in sets:
-            r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
-            if r.returncode:
-                raise SystemExit(f"hermes config set {k} failed: {(r.stderr or r.stdout).strip()[-300:]}")
+            try:
+                r = subprocess.run([h, "config", "set", k, v], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+                bad = (r.stderr or r.stdout).strip()[-300:] if r.returncode else ""
+            except (OSError, subprocess.SubprocessError) as e:
+                r, bad = None, f"{type(e).__name__}: {e}"
+            if r is None or r.returncode:
+                what = ("; the old config is kept as " + bak + " (copy it back over config.yaml to undo)") if bak else ""
+                raise SystemExit(f"hermes config set {k} failed: {bad}\n  Hermes is only partly set up now: done {', '.join(done_keys) or 'nothing'}, not done "
+                                 f"{', '.join(x for x, _ in sets if x not in done_keys)}{what}. Run the command again, or finish by hand with the lines it prints without --write.")
+            done_keys.append(k)
+        hermes_connected(h, base)
         say(f"Hermes Agent now uses {name} at {base} (context {ctx}); run: hermes")
         if prev:
             say(f"  before: {prev}; old config kept as {bak} (copy it back over config.yaml to undo)")
+        if a.api_key:
+            say("  note: `hermes config set` takes the key on its command line (it has no way to read it from a file or the environment), so other programs of your user "
+                "could read it from the process list for about a second; the preview above never prints it. To avoid that, type it in Hermes: Settings -> Model.")
         return 0
     if a.agent == "claude":
         env = claude_env(a.url, name, a.api_key)
         if not a.write:
-            say(claude_snippets(env, ctx))
+            say(claude_snippets(env, ctx, hide_key=bool(a.api_key)))
             say("apply to this folder only with: moe_cache.py connect claude --write  (merges into ./.claude/settings.local.json; nothing is written without --write)")
             return 0
         cfg = a.config or os.path.join(os.getcwd(), ".claude", "settings.local.json")
-        write_claude_settings(cfg, env)
-        say(f"Claude Code in {os.path.dirname(os.path.dirname(cfg)) or '.'} now uses {name} at {a.url} (context {ctx}); config {cfg}"
-            + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else "") + "; run: claude")
+        bak = write_claude_settings(cfg, env)
+        say(f"Claude Code in {os.path.dirname(os.path.dirname(cfg)) or '.'} now uses {name} at {a.url} (context {ctx}); config {os.path.realpath(cfg)}"
+            + (f" (old file kept as {bak}, outside the project)" if bak else "") + "; run: claude")
+        hint = None if a.config else project_folder_hint(os.getcwd())
+        if hint:
+            say("moe-cache: warning: " + hint, err=True)
         if ctx < 64000:
             say(f"moe-cache: warning: the server's context is {ctx}; Claude Code sends a long system prompt (restart with --agent or --ctx 65536)", err=True)
         return 0
@@ -3185,35 +3367,24 @@ def connect_apply(a):
                                                                                   **({"headerTimeout": opencode_header_timeout(ctx)} if opencode_header_timeout(ctx) else {})),
              "models": {n: {"name": n, "tool_call": True, "limit": {"context": ctx, "output": min(32768, max(4096, ctx // 4))}} for n in names}}
     if not a.write:
-        say(agent_snippets(None, name, ctx, a.api_key, base=base, only="opencode"))
+        say(agent_snippets(None, name, ctx, a.api_key, base=base, only="opencode", hide_key=True))
         say(f"apply with: moe_cache.py connect opencode --write  (merges into {cfg})")
         return 0
     data = {"$schema": "https://opencode.ai/config.json"}
+    eol = "\n"
     if os.path.isfile(cfg):
+        eol = file_eol(cfg)
         try:
             data = json.load(open(cfg, encoding="utf-8"))
         except ValueError:
             raise SystemExit(f"{cfg} is not plain JSON (comments?): add the block printed by 'moe_cache.py connect opencode' by hand")
         if not isinstance(data, dict) or not isinstance(data.get("provider", {}), dict):
             raise SystemExit(f"{cfg} is not an OpenCode config object (a JSON object with a 'provider' object): add the block printed by 'moe_cache.py connect opencode' by hand")
-        if "moe-cache" not in data.get("provider", {}) or not os.path.isfile(cfg + ".bak"):
-            # keep the backup of the user's own setup: a second connect, or a file that already holds our provider (even with another default
-            # model chosen since), must not replace it with ours
-            shutil.copy2(cfg, cfg + ".bak")
-            if not WINDOWS:
-                os.chmod(cfg + ".bak", 0o600)     # the old file holds the old key too
+        keep_first_backup(cfg)       # the first backup is the user's own setup: a second connect, with or without our provider in the file, never replaces it
     data.setdefault("provider", {})["moe-cache"] = entry
     data["model"] = f"moe-cache/{name}"
-    os.makedirs(os.path.dirname(cfg), exist_ok=True)
-    # the file holds the API key: private to this user (a 0600 opencode.json used to come back 0644 through the umask), never through a planted link
-    tmp = cfg + ".tmp"
-    if os.path.lexists(tmp):
-        os.unlink(tmp)
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    os.replace(cfg + ".tmp", cfg)
-    say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else ""))
+    write_private(cfg, json_text(data), eol)       # the file holds the API key: private to this user, through a temporary file, a symlinked config stays a link
+    say(f"OpenCode now uses moe-cache/{name} at {base} (context {ctx}); config {os.path.realpath(cfg)}" + (" (old file: .bak)" if os.path.isfile(bak_path(cfg)) else ""))
     for w in warn:
         say("moe-cache: warning: " + w, err=True)
     return 0
@@ -3289,7 +3460,7 @@ def learn(argv):
     lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(a.llama_server)
     if not os.path.isfile(lib):
         raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
-    if a.name and not NAME_RE.match(a.name):
+    if a.name and not NAME_RE.fullmatch(a.name):
         raise SystemExit("--name may only contain letters, digits, _ and -")
     out = a.out or model_profile(a.model, a.name or "")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
@@ -3345,6 +3516,20 @@ def learn(argv):
 
 # ---- project ----
 
+def server_model_differs(url, api_key, ident):
+    """The model file name the server at `url` reports (/props model_path) when it clearly is not the one in the identity `ident` (slot_id: sanitised file name first);
+    "" when it matches or the server does not say (then the identity is trusted as before)."""
+    st, body = http(url.rstrip("/") + "/props", api_key=api_key, timeout=5)
+    try:
+        mp = json.loads(body).get("model_path") if st == 200 else None
+    except (ValueError, AttributeError):
+        mp = None
+    if not isinstance(mp, str) or not mp:
+        return ""
+    base = os.path.basename(mp.replace("\\", "/"))
+    return "" if re.sub(r"[^A-Za-z0-9_]", "_", base)[:40] == ident.split("-")[0] else base
+
+
 def project(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py project", description="save or restore the prompt state (KV cache of slot 0) of a server started with --project NAME. "
                                  "The state is only valid for the same model file and the same -c / cache type settings.")
@@ -3359,7 +3544,7 @@ def project(argv):
         if not files:
             say("no saved projects")
         return 0
-    if not a.name or not NAME_RE.match(a.name):
+    if not a.name or not NAME_RE.fullmatch(a.name):
         raise SystemExit("usage: moe-cache-project save|restore NAME [--url URL] [--api-key KEY]")
     sdir = os.path.join(d, a.name)
     if a.cmd == "restore" and os.path.isfile(os.path.join(sdir, a.name + ".bin")) and not project_id_ok(sdir, a.name):
@@ -3368,8 +3553,14 @@ def project(argv):
     st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, key_for(a.url, a.api_key), timeout=600)
     if a.cmd == "save" and st == 200:
         try:
-            with open(os.path.join(sdir, a.name + ".bin.id"), "w") as fh:
-                fh.write(open(os.path.join(sdir, "server.id")).read().strip() + "\n")
+            ident = open(os.path.join(sdir, "server.id")).read().strip()
+            other = server_model_differs(a.url, key_for(a.url, a.api_key), ident)
+            if other:
+                say(f"moe-cache: note: saved, but the server at {a.url} runs {other}, not the model the server started with --project {a.name} recorded; "
+                    "the model identity was not recorded, so a restore will be refused", err=True)
+            else:
+                with open(os.path.join(sdir, a.name + ".bin.id"), "w") as fh:
+                    fh.write(ident + "\n")
         except OSError:
             say("moe-cache: note: saved, but the model identity could not be recorded (is the server started with --project " + a.name + "?); a restore will be refused", err=True)
     say(body.strip())
@@ -3409,7 +3600,7 @@ def gpu_driver(name):
         if WINDOWS:
             return win_driver_version(name)
         if "NVIDIA" in name and shutil.which("nvidia-smi"):
-            out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True, timeout=10).stdout
+            out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10).stdout
             return out.strip().splitlines()[0].strip() if out.strip() else ""
     except Exception:
         pass

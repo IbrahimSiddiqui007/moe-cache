@@ -56,10 +56,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/rel" && cd "$RUNNER_TEMP/rel"
           gh release download "$TAG" -R "$GITHUB_REPOSITORY" -p "moe-cache-$TAG-windows-x64.zip" -p SHA256SUMS-windows
           sha256sum -c SHA256SUMS-windows
-          gh attestation verify "moe-cache-$TAG-windows-x64.zip" -R "$GITHUB_REPOSITORY"
+          # --signer-workflow: only the attestation made by this repository's release workflow counts (AUD-062); to verify on the hosted runner (needs one real release run)
+          gh attestation verify "moe-cache-$TAG-windows-x64.zip" -R "$GITHUB_REPOSITORY" --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
 
       - name: Fill the manifests
-        run: python3 packaging/fill_manifests.py "$RUNNER_TEMP/rel/moe-cache-${{ steps.tag.outputs.tag }}-windows-x64.zip" --out dist/packaging --date "${{ steps.tag.outputs.published }}"
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}              # through the environment, not pasted into the script text (AUD-062)
+          PUBLISHED: ${{ steps.tag.outputs.published }}
+        run: python3 packaging/fill_manifests.py "$RUNNER_TEMP/rel/moe-cache-$TAG-windows-x64.zip" --out dist/packaging --date "$PUBLISHED"
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

@@ -36,21 +36,22 @@
     }
 
     // data: the bytes llama.cpp is loading for this tensor (its own copy of the model). Name and size alone do not prove that MOE_CACHE_GGUF is the
-    // same model (another quantisation or fine-tune can have the same layout), so the first bytes are compared with the file as well
+    // same model (another quantisation or fine-tune can have the same layout), so the start, the middle and the end of the tensor are compared with
+    // the file as well (AUD-017: the first 4 KiB alone agree between files with the same header)
     bool same_bytes_in_file(const std::string & name, size_t off, const void * data, size_t size) {
         auto sh = file_shard.find(name);
         const plat::file_t f = buffered_file(sh != file_shard.end() ? sh->second : 0);
-        char buf[4096];
-        const size_t n = std::min(size, sizeof(buf));
-        size_t done = 0;
-        while (done < n) {
-            const ptrdiff_t got = plat::file_pread(f, buf + done, n - done, (uint64_t) (off + done));
-            if (got <= 0) {
-                return false;
+        return mcident::same_samples(data, size, [&](size_t toff, char * buf, size_t n) {
+            size_t done = 0;
+            while (done < n) {
+                const ptrdiff_t got = plat::file_pread(f, buf + done, n - done, (uint64_t) (off + toff + done));
+                if (got <= 0) {
+                    return false;
+                }
+                done += (size_t) got;
             }
-            done += (size_t) got;
-        }
-        return memcmp(buf, data, n) == 0;
+            return true;
+        });
     }
 
     int register_tensor(const ggml_tensor * t, const void * data) {

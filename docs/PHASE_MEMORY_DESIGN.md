@@ -1,6 +1,6 @@
 # Phase memory: -ub 2048 room during the prompt, more GPU layers during decode (design note, 2026-11-01)
 
-**Status (2026-11-03): historical design note; option E and the first test of option C have since been measured (see "Update 2026-11-03" at the end). The tables below are the scout's 2026-11-01 guesses and are kept as written. The design spike that followed is [DECODE_TIER_DESIGN.md](DECODE_TIER_DESIGN.md): option C is cheaper than estimated here because the hybrid bank (`src/mc_hybrid.inl`) already frees and reloads GPU memory around long prompts, and the single-token GPU path it uses is not the one that failed in T25; a default-off prototype (`MOE_CACHE_DECODE_TIER`) awaits a PC kill check.**
+**Status (2026-11-03): historical design note; option E and the first test of option C have since been measured (see "Update 2026-11-03" at the end). The tables below are the scout's 2026-11-01 guesses and are kept as written. The design spike that followed is [DECODE_TIER_DESIGN.md](DECODE_TIER_DESIGN.md): option C is cheaper than estimated here because the hybrid bank (`src/mc_hybrid.inl`) already frees and reloads GPU memory around long prompts, and the single-token GPU path it uses is not the one that failed in T25; the default-off prototype (`MOE_CACHE_DECODE_TIER`) was killed by its PC kill check and is archived in `archive/plugin/decode_tier.patch`.**
 
 Source: handover/parts/scout_round2_20261101.md section 3 (R2-08 to R2-12). The gains in the tables are the scout's guesses, not measurements.
 

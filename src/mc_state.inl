@@ -32,6 +32,7 @@ struct state_t {
     std::vector<std::string> shard_paths;
     std::vector<plat::file_t> fds_buf;          // buffered (no O_DIRECT) handles, opened only if a direct read keeps failing
     std::mutex fds_buf_mu;
+    std::vector<std::atomic<bool>> direct_broken;   // per file: direct reads fail on this file system (EINVAL/EOPNOTSUPP): buffered reads from then on (AUD-011)
     int    test_read_delay_us = 0;              // MOE_CACHE_TEST_READ_DELAY_US=N: test switch, background expert reads start N us late
     int    fault_every = 0;                     // MOE_CACHE_FAULT_EVERY=N: test switch, every Nth expert read fails all its direct attempts
     bool   test_poison = false;                 // MOE_CACHE_TEST_POISON_READS=1: test switch, a read first fills what it will write with 0xFF and waits
@@ -268,6 +269,7 @@ struct state_t {
     // idea P20 (MOE_CACHE_PREFILL_LEND_MIB=N, default 0 = off): while long prompt batches run, the expert cache gives N MiB back to the system (the cache is cut by N and
     // the surplus evicted), and takes them back at the first small (decode) graph
     size_t lent_bytes = 0;
+    size_t lent_budget = 0;                             // the budget right after the lend (a cut by tune() meanwhile is not given back twice, AUD-021)
     void prefill_lend(int64_t max_tok) {
         static const size_t lend = getenv("MOE_CACHE_PREFILL_LEND_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_PREFILL_LEND_MIB"))) << 20 : 0;
         if (!lend) {
@@ -277,6 +279,7 @@ struct state_t {
         if (max_tok >= scan_tokens && !lent_bytes && budget > lend) {
             lent_bytes = lend;
             budget -= lend;
+            lent_budget = budget;
             while (resident_bytes > budget) {
                 int v = pick_victim();
                 if (v < 0) { break; }
@@ -284,7 +287,7 @@ struct state_t {
             }
             fprintf(stderr, "moe-cache: long prompt: the expert cache lends %.0f MiB to the system until decode (MOE_CACHE_PREFILL_LEND_MIB)\n", lend / 1048576.0);
         } else if (max_tok < scan_tokens && lent_bytes) {
-            budget += lent_bytes;
+            budget += mclend::restore_amount(lent_bytes, lent_budget, budget);
             if (max_budget && budget > max_budget) { budget = max_budget; }
             lent_bytes = 0;
         }
@@ -381,7 +384,7 @@ struct state_t {
     bool   stop = false;
 
     state_t() {
-        stats = getenv("MOE_CACHE_STATS") != nullptr;
+        stats = mcenv::env_on("MOE_CACHE_STATS");
         fprintf(stderr, "moe-cache: plugin v0.3.5 (ggml backend API %d), running with ggml %s (%s)\n", GGML_BACKEND_API_VERSION, ggml_version(), ggml_commit());
         if (!moe_cache_tested_ggml(ggml_version())) {
             fprintf(stderr, "moe-cache: warning: tested with ggml %s only (this is %s); if the server crashes or the plugin misbehaves, rebuild it against your llama.cpp headers (or set MOE_CACHE_DISABLE=1)\n", MOE_CACHE_TESTED_GGML, ggml_version());
@@ -397,7 +400,12 @@ struct state_t {
             }
         }
         if (const char * v = getenv("MOE_CACHE_PROFILE_DECAY")) {
-            profile_decay = atof(v);
+            double d = 0.0;
+            if (mcargs::parse_number(v, 0.0, 1.0, d)) {      // a decay is a factor 0..1; nan or text used to be written into the profile
+                profile_decay = d;
+            } else {
+                fprintf(stderr, "moe-cache: ignoring MOE_CACHE_PROFILE_DECAY=%s (expected a number 0..1)\n", v);
+            }
         }
         if (const char * v = getenv("MOE_CACHE_LAYERS")) {
             int a = 0, b = 0;
@@ -517,6 +525,7 @@ struct state_t {
             shard_paths.push_back(shards[si]);
             fds_buf.push_back(plat::file_t());
         }
+        direct_broken = std::vector<std::atomic<bool>>(fds.size());
         pack_try_open();
 #ifdef _WIN32
         // Windows default (idea I47; MOE_CACHE_WIN_VIEW=0 goes back to private memory): keep the cached experts in read-only views of the model files.
@@ -731,6 +740,10 @@ struct state_t {
                 }
             }
         }   // off by default: reading straight into place measured no faster than the bounce buffer
+        if (mcargs::prompt_cache_unlimited_default(plat::command_line(), getenv("LLAMA_ARG_CACHE_RAM"), getenv("MOE_CACHE_HOST_RESERVE_MIB"))) {
+            fprintf(stderr, "moe-cache: note: llama-server's own prompt cache (--cache-ram, 8 GiB by default) is not counted in this cache's RAM budget; "
+                            "to limit it pass --cache-ram MiB to llama-server (moe-cache-server does this for you)\n");
+        }
         if (strcmp(gib, "auto") == 0) {
             auto_mode = true;
             limit_bytes = read_mem_limit();
@@ -812,10 +825,21 @@ struct state_t {
             }
             fingerprint = h;
         }
-        const std::string & src = !profile_path.empty() ? profile_path : warm_path;
+        std::string src = !profile_path.empty() ? profile_path : warm_path;
         if (!src.empty()) {
             uint64_t fp = 0;
-            if (load_usage(src.c_str(), learned, &fp)) {
+            bool loaded = load_usage(src.c_str(), learned, &fp);
+            if (loaded && fp != 0 && fp != fingerprint && !profile_path.empty()) {
+                // AUD-016: the file at MOE_CACHE_PROFILE belongs to another model: keep it, and learn in (and warm start from) a file of our own next to it
+                const std::string mine = mcprofile::own_path(profile_path, fingerprint);
+                fprintf(stderr, "moe-cache: profile %s belongs to another model: kept as it is; this model uses %s\n", profile_path.c_str(), mine.c_str());
+                profile_path = mine;
+                src = mine;
+                learned = usage_t();
+                fp = 0;
+                loaded = load_usage(src.c_str(), learned, &fp);
+            }
+            if (loaded) {
                 if (fp != 0 && fp != fingerprint) {
                     fprintf(stderr, "moe-cache: profile %s belongs to another model, ignored\n", src.c_str());
                     learned = usage_t();
@@ -840,7 +864,7 @@ struct state_t {
             exec_force = strcmp(ex, "2") == 0;        // tests: never step aside, even when everything is resident and bandwidth-bound
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_FUSE")) {
-            exec_fuse = atoi(v) != 0;
+            exec_fuse = mcenv::flag_value(v, true);
         }
         if (const char * v = getenv("MOE_CACHE_EXEC_CHUNK")) {
             exec_chunk = std::max(1, std::min(4096, atoi(v)));
@@ -925,7 +949,7 @@ struct state_t {
             coalesce_bytes = (size_t) std::max(0, atoi(v)) << 20;
         }
         if (const char * v = getenv("MOE_CACHE_LOOKAHEAD")) {
-            lookahead = strcmp(v, "0") != 0;
+            lookahead = mcenv::flag_value(v, false);
             la_exec = strcmp(v, "2") == 0;
             if (const char * g = getenv("MOE_CACHE_LOOKAHEAD_GUESS")) {
                 la_guess = atoi(g);
@@ -949,7 +973,7 @@ struct state_t {
         }
 #ifdef __linux__
         if (getenv("MOE_CACHE_STATS_SIGNAL")) {
-            if (pipe(g_stats_pipe) == 0) {
+            if (plat::wake_pipe_create(g_stats_pipe)) {
                 struct sigaction sa;
                 memset(&sa, 0, sizeof(sa));
                 sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_stats_pipe[1], &c, 1); (void) r; };   // async-signal-safe: only write()
@@ -959,7 +983,7 @@ struct state_t {
             }
         }
         // idle release (N3): the launcher's on-demand listener sends SIGUSR2 when the server has been idle for a while
-        if (cache_on && pipe(g_idle_pipe) == 0) {
+        if (cache_on && plat::wake_pipe_create(g_idle_pipe)) {
             struct sigaction sa;
             memset(&sa, 0, sizeof(sa));
             sa.sa_handler = [](int) { const char c = 1; const ssize_t r = write(g_idle_pipe[1], &c, 1); (void) r; };    // async-signal-safe: only write()
@@ -1026,15 +1050,23 @@ struct state_exit_t {
     ~state_exit_t() {
         if (plat::process_exiting()) {
             s->exit_without_threads();
-        } else if (!s->mu.try_lock()) {
-            // exit() called while a graph holds the cache lock (Linux: llama-server's second Ctrl+C calls exit(1) from its signal handler, in the
-            // middle of a prompt). Joining the readers would wait for ever (they need the lock) and the save would lock it again: leave the state
-            // as the Windows exit does; the system takes the memory back (audit 2026-10-29 N2)
-            fprintf(stderr, "moe-cache: exit during a computation: threads left to the system, usage profile not saved this time\n");
-            s->exit_without_threads();
-        } else {
+            return;
+        }
+        const bool lock_free = s->mu.try_lock();
+        int active = 0;
+        if (lock_free) {
+            active = s->graph_active;
             s->mu.unlock();
+        }
+        if (mcexit::choose(false, lock_free, active) == mcexit::action::delete_state) {
             delete s;
+        } else {
+            // exit() called while a graph is running (Linux: llama-server's second Ctrl+C calls exit(1) from its signal handler, in the middle of a
+            // prompt; the cache lock is held for short steps only, so graph_active is tested too, AUD-013). Joining the readers would wait for ever
+            // (they need the lock) and deleting would pull the state from under the compute threads: leave the state as the Windows exit does;
+            // the system takes the memory back (audit 2026-10-29 N2)
+            fprintf(stderr, "moe-cache: exit during a computation: threads left to the system, usage profile saved without waiting\n");
+            s->exit_without_threads();
         }
     }
 };

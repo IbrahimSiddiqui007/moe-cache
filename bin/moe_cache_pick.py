@@ -12,6 +12,7 @@ import argparse, glob, json, os, re, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
+from moe_cache_wintool import win_tool  # noqa: E402
 
 WINDOWS = mc.WINDOWS
 GIB = 2**30
@@ -94,7 +95,7 @@ def disk_kind(path):
                 return None
             ps = (f"$n=(Get-Partition -DriveLetter {letter} -ErrorAction Stop).DiskNumber; "
                   "(Get-PhysicalDisk | Where-Object { $_.DeviceId -eq \"$n\" }).MediaType")
-            r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
+            r = subprocess.run([win_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=20)
             t = r.stdout.strip().upper()
             return "SSD" if "SSD" in t else "HDD" if "HDD" in t else None
@@ -146,7 +147,7 @@ def ollama_manifests(root):
     """[(name, blob path)] of the models in one Ollama store: manifests/<registry>/<namespace>/<model>/<tag> names the model layer's blob
     (blobs/sha256-<hex>, a plain GGUF file without an extension that llama-server reads). name = 'library/qwen3.6:35b-a3b' style, registry left out."""
     out = []
-    for man in glob.glob(os.path.join(root, "manifests", "*", "*", "*", "*")) + glob.glob(os.path.join(root, "manifests", "*", "*", "*", "*", "*")):
+    for man in glob.glob(os.path.join(glob.escape(root), "manifests", "*", "*", "*", "*")) + glob.glob(os.path.join(glob.escape(root), "manifests", "*", "*", "*", "*", "*")):
         try:
             layers = json.load(open(man, encoding="utf-8")).get("layers", [])
         except Exception:
@@ -265,6 +266,50 @@ def need_free(k):
 def includes(m):
     """The --include patterns of a model as a list (one string or a list)."""
     return [m["include"]] if isinstance(m["include"], str) else list(m["include"])
+
+
+def sha256_file(path, progress=None, chunk=8 * 1024 * 1024):
+    """sha256 hex digest of a file, read in chunks (a model is tens of GB); progress(done_bytes, total_bytes) is called after each chunk."""
+    import hashlib
+    h, done, total = hashlib.sha256(), 0, os.path.getsize(path)
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(chunk)
+            if not b:
+                break
+            h.update(b)
+            done += len(b)
+            if progress:
+                progress(done, total)
+    return h.hexdigest()
+
+
+def verify_download(k, folder, say=None, files=None):
+    """Check the downloaded files of catalogue model k against the sha256 in models.json (AUD-030). The files are at folder/<their catalogue path>.
+    Returns (problems, checked): problems = lines for a file that is missing or whose hash differs; checked = how many files had a hash and were read.
+    A file with no sha256 in the catalogue is skipped. files overrides the catalogue's list (tests)."""
+    say = say or mc.say
+    problems, checked = [], 0
+    for fe in files if files is not None else CAT[k]["files"]:
+        want = (fe.get("sha256") or "").lower()
+        if not want:
+            continue
+        path = os.path.join(folder, *fe["path"].split("/"))
+        if not os.path.isfile(path):
+            problems.append(f"{fe['path']}: not found in {folder} (the download did not produce it)")
+            continue
+        step = {"n": -1}
+
+        def prog(done, total, name=fe["name"]):
+            pct = int(done * 100 / max(total, 1)) // 10 * 10
+            if pct != step["n"]:
+                step["n"] = pct
+                say(f"moe-cache: verifying {name}: {pct} %")
+        got = sha256_file(path, prog)
+        checked += 1
+        if got != want:
+            problems.append(f"{fe['path']}: sha256 {got} but the catalogue says {want} (corrupt or changed on Hugging Face)")
+    return problems, checked
 
 
 def measured_for(k, vram_gib, cap_gb):
@@ -584,9 +629,27 @@ def download_cmd(k):
 
 def load_settings():
     try:
-        return json.load(open(SETTINGS_FILE, encoding="utf-8"))
+        d = json.load(open(SETTINGS_FILE, encoding="utf-8"))
     except Exception:
         return {}
+    return d if isinstance(d, dict) else {}       # valid JSON that is not an object (a list, null) would break every .get() (AUD-036)
+
+
+def _backup_damaged():
+    """ui.json exists but is not a JSON object: keep it as ui.json.bad before it is replaced (AUD-036), so folders and settings are not lost silently."""
+    try:
+        d = json.load(open(SETTINGS_FILE, encoding="utf-8"))
+        if isinstance(d, dict):
+            return
+    except FileNotFoundError:
+        return
+    except Exception:
+        pass
+    try:
+        shutil.copyfile(SETTINGS_FILE, SETTINGS_FILE + ".bad")
+        mc.say(f"moe-cache: {SETTINGS_FILE} was damaged: a copy is kept as {SETTINGS_FILE}.bad")
+    except OSError:
+        pass
 
 
 class _settings_lock:
@@ -603,6 +666,9 @@ class _settings_lock:
                     break
                 except OSError:
                     time.sleep(0.05)
+            else:                                      # never go on without the lock: a lost update is worse than a refused one (AUD-035)
+                self.f.close()
+                raise OSError("could not lock " + SETTINGS_FILE + " (another moe-cache is writing it); try again")
         else:
             import fcntl
             fcntl.flock(self.f.fileno(), fcntl.LOCK_EX)
@@ -625,6 +691,7 @@ def update_settings(change):
     reader never sees a half-written file (audit 2026-10-29: the page wrote in place; a pick reading it then wrote back only its own keys).
     Returns the new settings."""
     with _settings_lock():
+        _backup_damaged()
         s = load_settings()
         change(s)
         tmp = f"{SETTINGS_FILE}.{os.getpid()}.tmp"
@@ -725,6 +792,7 @@ def pick(argv):
     ap.add_argument("--apply", action="store_true", help="write the choice into the launcher's settings (server / on-demand without a model use it)")
     ap.add_argument("--models-dir", action="append", default=[], help="another folder with .gguf files (repeatable)")
     ap.add_argument("--llama-server", default=mc.default_llama_server())     # as server / check: LLAMA_SERVER, PATH, C:\\llama or install.sh's folder
+    ap.add_argument("--no-verify", action="store_true", help="after a download, do not check the files against the catalogue's sha256")
     ap.add_argument("--json", action="store_true", help="print the machine and the recommendations as JSON")
     a = ap.parse_args(argv)
     spec = machine_specs(a.models_dir, a.llama_server)
@@ -760,6 +828,12 @@ def pick(argv):
             rc = subprocess.call(["hf", "download", m_["repo"], "--include", *includes(m_), "--local-dir", d["folder"]])
             if rc:
                 raise SystemExit(f"download failed (exit {rc}); nothing was changed")
+            if not a.no_verify:
+                bad, n = verify_download(r["id"], d["folder"])
+                if bad:
+                    raise SystemExit("the download does not match the catalogue's sha256, so it is NOT used:\n  " + "\n  ".join(bad)
+                                     + "\nDelete the file(s) and run pick again (or pass --no-verify to skip the check).")
+                mc.say(f"moe-cache: sha256 of {n} file(s) matches the catalogue" if n else "moe-cache: no sha256 in the catalogue for this model: not verified")
             if m_.get("link"):          # the Engram file is shard 6 as well: a hard link (same drive, no extra disk)
                 shard, target = (os.path.join(d["folder"], x) for x in m_["link"])
                 try:

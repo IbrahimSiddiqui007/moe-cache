@@ -2,6 +2,14 @@
    fit_n_cpu_moe(path, ctx) -> how many layers keep their experts on the CPU so that the rest fill the free VRAM."""
 import glob, json, os, re, struct, subprocess
 
+def _win_ps():
+    """powershell by its System32 path on Windows (a bare name searches the current folder first, AUD-034); the bare name elsewhere."""
+    if os.name != "nt":
+        return "powershell"
+    p = os.path.join(os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    return p if os.path.isfile(p) else "powershell"
+
+
 _FMT = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
 
 
@@ -249,6 +257,8 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     if not isinstance(blocks, int) or not isinstance(heads, int) or isinstance(kvh, list) or isinstance(heads, list) or \
             g("attention.key_length_mla") is not None or g("attention.kv_lora_rank") is not None or g("attention.sliding_window") is not None:
         return None
+    if heads <= 0:
+        return None
     kvh = kvh or heads
     n_main = blocks - int(g("nextn_predict_layers", 0) or 0)
     k_len = g("attention.key_length") or (g("embedding_length", 0) // heads)
@@ -276,7 +286,7 @@ def _kv_or_flat(path, ctx, kv_q8=False):
 def gpu_total_free_bytes():
     """(total, free) bytes of the GPU the planner uses (NVIDIA first, else the AMD GPU with the most VRAM); None when there is none."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
         out = out.strip().splitlines()[0].split(",")
         return float(out[0]) * 1048576, (float(out[0]) - float(out[1])) * 1048576
     except Exception:
@@ -333,7 +343,7 @@ def sample_gpu_mem_linux(pid=None):
     if best:
         return best[1], best[2], "amdgpu, whole device"
     try:
-        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(["nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
         tot = [float(m) for p, m in (l.split(",")[:2] for l in out.splitlines() if "," in l) if pid is None or p.strip() == str(pid)]
         return (sum(tot), None, "nvidia-smi, this process") if tot else None
     except Exception:
@@ -364,7 +374,7 @@ def start_gpu_mem_log(pid, say, windows, env=None, alive=None):
             cmd = (f"Get-Counter -Counter '\\GPU Process Memory(pid_{pid}_*)\\Dedicated Usage','\\GPU Process Memory(pid_{pid}_*)\\Shared Usage' "
                    "-SampleInterval 1 -Continuous | ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';'; [Console]::Out.Flush() }")
             try:
-                ps = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                ps = subprocess.Popen([_win_ps(), "-NoProfile", "-NonInteractive", "-Command", cmd], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace")
             except OSError:
                 say("moe-cache: GPU memory log: PowerShell not found, no log")
                 return
@@ -413,7 +423,7 @@ def desk_reserve_gb(total, free, base=0.5):
 def free_vram_bytes():
     """Free memory of the GPU: NVIDIA (nvidia-smi), else the AMD GPU with the most VRAM (amdgpu sysfs, as plan.py); None when there is none."""
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(["nvidia-smi", "--query-gpu=memory.total,memory.used", "--format=csv,noheader,nounits"], capture_output=True, text=True, errors="replace", timeout=5).stdout
         out = out.strip().splitlines()[0].split(",")    # one line per GPU: the first, as plan.py (with two GPUs the whole text failed to parse: no GPU)
         return (float(out[0]) - float(out[1])) * 1048576
     except Exception:
@@ -548,7 +558,7 @@ def record_compute_buffer(path, ctx, ub, mib):
     else:
         rows.append({"ctx": int(ctx), "ub": int(ub), "mib": float(mib)})
     d[key] = rows
-    tmp = f + ".tmp"
+    tmp = f"{f}.{os.getpid()}.tmp"
     with open(tmp, "w") as fh:
         json.dump(d, fh)
     os.replace(tmp, f)
@@ -629,7 +639,7 @@ def fit_params_buffer_mib(fit_params, path, ctx, ub, kv_q8=False, timeout=90):
             cmd = [fit_params, "-m", path, "-c", str(ctx), "-ub", str(ub), "-b", str(max(ub, 2048)), "-ngl", "99", "--n-cpu-moe", "999", "--fit-print", "on"]
             if kv_q8:
                 cmd += ["-ctk", "q8_0", "-ctv", "q8_0"]
-            v = parse_fit_params_compute_mib(subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout)
+            v = parse_fit_params_compute_mib(subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout).stdout)
         except Exception:
             pass
         _FIT_CACHE[key] = v

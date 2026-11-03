@@ -194,6 +194,7 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     size = round_up(std::max<size_t>(size, 1));
     void * p = plat::mem_reserve(size);
     if (!p) {
+        fprintf(stderr, "%s\n", mcmsg::reserve_failed(size).c_str());      // AUD-014: llama.cpp's own error names nothing
         return nullptr;
     }
     if (!S().cache_on) {
@@ -206,7 +207,7 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     // E1 (on by default, MOE_CACHE_HOST_OUT=0 off; RESULTS 76): our compute buffers are plain memory, but a type that is not host sends every output through
     // ggml_backend_tensor_copy's slowest path: malloc, get, tensor_set, free (a 34k prompt: 35 % of the time between our graphs, plus the page faults of each fresh malloc).
     // Weights are registered before any compute buffer is allocated and keep the plain type: their bytes may not be loaded. Same bytes either way.
-    static const bool host_out = [] { const char * e = getenv("MOE_CACHE_HOST_OUT"); return !e || atoi(e) != 0; }();
+    static const bool host_out = mcenv::env_flag("MOE_CACHE_HOST_OUT", true);
     ggml_backend_buffer_t b = buffer_init_padded(host_out && S().cache_on && !S().by_tensor.empty() ? get_buft_host() : buft, g_buf_i, c, size);
     std::lock_guard<std::mutex> lk(g_bufs_mu);
     g_bufs.emplace_back(b, c);
@@ -226,10 +227,10 @@ size_t buft_align(ggml_backend_buffer_type_t) {
 bool gpu_cache_mode() {
     static const bool on = [] {
         const char * e = getenv("MOE_CACHE_GPU_CACHE");
-        if (!(e && atoi(e) != 0)) {
+        if (!mcenv::flag_value(e, false)) {
             return false;
         }
-        if (!getenv("MOE_CACHE_PRELOAD")) {
+        if (!mcenv::env_on("MOE_CACHE_PRELOAD")) {
             fprintf(stderr, "moe-cache: MOE_CACHE_GPU_CACHE=1 ignored: it needs LD_PRELOAD loading (MOE_CACHE_PRELOAD=1); "
                             "this plugin was loaded through GGML_BACKEND_PATH, where the GPU would read experts that are not loaded\n");
             return false;
@@ -295,7 +296,7 @@ void gpu_cache_ensure(const void * p, size_t size) {
     }
     // idea I28 kill check (MOE_CACHE_GPU_ENSURE_STATS=1): how many of the experts llama.cpp's GPU cache uploads are not in RAM at that moment.
     // Near zero would let a build that loads the plugin by path (Windows, official releases) keep --gpu-cache with a cheap fallback.
-    static const bool ens_stats = getenv("MOE_CACHE_GPU_ENSURE_STATS") != nullptr;
+    static const bool ens_stats = mcenv::env_on("MOE_CACHE_GPU_ENSURE_STATS");
     if (ens_stats) {
         static std::atomic<uint64_t> calls{0}, wanted{0}, absent{0};
         uint64_t miss = 0;

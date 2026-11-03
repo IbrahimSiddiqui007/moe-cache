@@ -591,6 +591,19 @@ inline unsigned long process_id() {
     return (unsigned long) getpid();
 #endif
 }
+#ifdef __linux__
+// AUD-012: the pipes that carry SIGUSR1/SIGUSR2 to their threads. close-on-exec, so a child process (a tool the server starts) does not keep the write end
+// open; and the exit wakes the reader with one byte instead of relying on the close alone (a still-open copy of the write end would keep the join waiting)
+inline bool wake_pipe_create(int fds[2]) {
+    return pipe2(fds, O_CLOEXEC) == 0;
+}
+inline void wake_pipe_finish(int fd) {
+    const char c = 1;
+    const ssize_t r = write(fd, &c, 1);
+    (void) r;
+    close(fd);
+}
+#endif
 inline void sleep_ms(int ms) {
 #ifdef _WIN32
     Sleep((DWORD) ms);

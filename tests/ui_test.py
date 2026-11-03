@@ -111,6 +111,14 @@ check(args[:2] == ["m.gguf", "--port"] and "--fast" in args and "--agent" in arg
       "launcher arguments: " + " ".join(args))
 check("KEY" in ui.shown_command({"model": "m.gguf", "api_key": "secret"}) and "secret" not in ui.shown_command({"model": "m.gguf", "api_key": "secret"}),
       "the shown command hides the API key")
+# AUD-044: the shown command runs in the user's shell (PowerShell on Windows: quoting for & ( ) ^ and spaces, the key as $env:, not NAME=value)
+_sc = {"model": "C:\\Users\\Ann & Bob (x)\\m^1.gguf", "api_key": "secret"}
+_w, _p = ui.shown_command(_sc, windows=True), ui.shown_command(_sc, windows=False)
+check(_w.startswith("$env:LLAMA_API_KEY = 'KEY'; moe-cache-server ") and "'C:\\Users\\Ann & Bob (x)\\m^1.gguf'" in _w and "secret" not in _w and "LLAMA_API_KEY=KEY" not in _w,
+      f"AUD-044: Windows form quotes & ( ) ^ and spaces, key as $env: ({_w})")
+check("$env" not in ui.shown_command({"model": "m.gguf"}, windows=True), "AUD-044: no key, no prefix")
+check("it''s a.gguf" in ui.shown_command({"model": "it's a.gguf"}, windows=True), "AUD-044: a single quote is doubled in the Windows form")
+check(_p.startswith("LLAMA_API_KEY=KEY moe-cache-server ") and '"C:\\Users\\Ann & Bob (x)\\m^1.gguf"' in _p, f"AUD-044: other systems keep NAME=value and double quotes ({_p})")
 
 # --dry-run must reach the launcher, not llama-server (it went after the -- once)
 seen = []
@@ -138,6 +146,11 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/detokenize":
             body = {"content": "You are opencode, an interactive CLI tool" if q["tokens"][:3] == [11, 22, 33] else "Hello"}
             self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(body).encode()); return
+        if self.path == "/v1/chat/completions" and q["messages"][-1]["content"] in ("SLOW-HEAD", "SLOW-STREAM"):    # SERVER-015: a llama-server that goes silent
+            if q["messages"][-1]["content"] == "SLOW-STREAM":
+                self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+                self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": "Hel"}}]}).encode() + b"\n\n"); self.wfile.flush()
+            time.sleep(2.5); return
         if self.path == "/v1/chat/completions":         # the page's own chat: streamed; the page server must have added the key
             ok = self.headers.get("Authorization") == "Bearer sekrit-123" and q["stream"] is True and q.get("temperature") == 0.5 and set(q["messages"][-1]) == {"role", "content"}
             self.send_response(200 if ok else 401); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
@@ -207,12 +220,30 @@ def raw(method, path, headers=None, body=None):
     c.request(method, path, body=body, headers=headers or {})
     r = c.getresponse(); data = r.read(); c.close()
     return r.status, r.getheader, data.decode(errors="replace")
-st, hdr, _ = raw("GET", "/?t=" + TOKEN)
-cookie = hdr("Set-Cookie") or ""
-check(st == 303 and hdr("Location") == "/" and cookie.startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "HttpOnly" in cookie and "SameSite=Strict" in cookie,
-      f"the launcher's link sets an HttpOnly, SameSite=Strict cookie and drops the token from the address ({st}, {cookie})")
-st, hdr, page = raw("GET", "/", {"Cookie": cookie.split(";")[0]})
-check(st == 200 and "<title>moe-cache</title>" in page, "the page loads with the cookie")
+# SERVER-011 (2026-11-03): no cookie at all. The link hands the token over once inside the page (a <meta>), the page keeps it in memory and sends
+# the X-MoeCache-Token header on every request.
+st, hdr, page = raw("GET", "/?t=" + TOKEN)
+check(st == 200 and hdr("Set-Cookie") is None and f'<meta name="moe-token" content="{TOKEN}">' in page and "<title>moe-cache</title>" in page,
+      f"the launcher's link serves the page with the token inside it and sets no cookie ({st}, {hdr('Set-Cookie')})")
+check(hdr("Referrer-Policy") == "no-referrer" and hdr("Cache-Control") == "no-store", "the page with the token: no-referrer, no-store")
+st, hdr, page = raw("GET", "/", {"X-MoeCache-Token": TOKEN})
+check(st == 200 and "<title>moe-cache</title>" in page and hdr("Set-Cookie") is None, "the page loads with the header")
+st, hdr, page = raw("GET", "/", {"Cookie": f"moe_cache_ui_{srv.server_address[1]}={TOKEN}"})
+check(st == 403 and TOKEN not in page, "the old cookie is no longer accepted for the page")
+for path in ("/api/status", "/api/system", "/api/key", "/api/chats", "/api/log", "/api/sessions", "/api/share", "/api/bench", "/api/models", "/api/busy", "/api/servers"):
+    st, hdr, body = raw("GET", path, {"Cookie": f"moe_cache_ui_{srv.server_address[1]}={TOKEN}"})
+    check(st == 403 and hdr("Set-Cookie") is None and TOKEN not in body, f"SERVER-011: {path} refused without the header (the old cookie does not count) ({st})")
+    check(raw("GET", path + ("&" if "?" in path else "?") + "t=" + TOKEN)[0] == 403, f"SERVER-011: {path} refused with the token in the query")
+check(raw("GET", "/api/status", {"X-MoeCache-Token": TOKEN})[0] == 200 and raw("GET", "/api/status", {"X-MoeCache-Token": TOKEN})[1]("Set-Cookie") is None,
+      "SERVER-011: /api/status with the header: 200, no Set-Cookie")
+st, _, _ = raw("POST", "/api/stop", {"Content-Type": "application/json", "Cookie": f"moe_cache_ui_{srv.server_address[1]}={TOKEN}"}, b"{}")
+check(st == 403, "SERVER-011: POST with only the old cookie: 403")
+# the page (index.html) itself: nothing but the header carries the token (no cookie, no storage, no EventSource, every fetch sends it)
+import re
+_html = open(ui.PAGE, encoding="utf-8").read()
+check("document.cookie" not in _html and "EventSource" not in _html and not re.search(r"(?:local|session)Storage[^;\n]*(?:TOKEN|token)", _html), "SERVER-011: the page never stores the token")
+_fetches = re.findall(r"fetch\([^)]*?\)?[^\n]*", _html)
+check(_fetches and all("authHeaders(" in f or "headers: authHeaders" in f for f in _fetches), f"SERVER-011: every fetch() in the page sends the token header ({_fetches})")
 check(hdr("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in (hdr("Content-Security-Policy") or "") and "frame-src 'none'" in hdr("Content-Security-Policy"),
       "1: no framing (X-Frame-Options DENY, CSP frame-ancestors 'none'); the page has no frames either (own chat)")
 st, hdr, _ = raw("GET", "/api/status")
@@ -229,13 +260,12 @@ check(req("/api/status", headers={"Sec-Fetch-Site": "none"})[0] == 403, "3: an A
 check(req("/api/status", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200, "3: same-origin: allowed")
 check(req("/api/stop", {}, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: POST cross-site: 403")
 check(req("/api/status", headers={"Origin": "http://attacker.example"})[0] == 403, "3: GET with a foreign Origin: 403")
-check(raw("GET", "/", {"Sec-Fetch-Site": "none", "Cookie": cookie.split(";")[0]})[0] == 200, "3: opening the page itself (none) works")
+check(raw("GET", "/", {"Sec-Fetch-Site": "none", "X-MoeCache-Token": TOKEN})[0] == 200, "3: opening the page itself (none) works")
 # audit 2026-10-27: the browser gets a private file:// page that forwards to the link (no token in its command line, readable in /proc)
 st, hdr, page = raw("GET", "/?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})
-check(st == 200 and (hdr("Set-Cookie") or "").startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "SameSite=Strict" in hdr("Set-Cookie")
-      and "url=/'" in page, f"S1: the link opened from the launcher's file page sets the cookie and moves on to / itself ({st})")
+check(st == 200 and hdr("Set-Cookie") is None and f'content="{TOKEN}"' in page, f"S1: the link opened from the launcher's file page serves the page with the token, no cookie ({st})")
 check(raw("GET", "/?t=wrong", {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: a cross-site link with a wrong token: 403")
-check(raw("GET", "/", {"Sec-Fetch-Site": "cross-site", "Cookie": cookie.split(";")[0]})[0] == 403, "S1: cross-site without the link token stays refused")
+check(raw("GET", "/", {"Sec-Fetch-Site": "cross-site", "X-MoeCache-Token": TOKEN})[0] == 403, "S1: cross-site without the link token stays refused")
 check(raw("GET", "/api/status?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: the cross-site exception is for the page link only")
 check(raw("GET", "/?t=%C3%A9")[0] == 403 and req("/api/status", headers={"X-MoeCache-Token": "\u00e9"})[0] in (400, 403),
       "S1: a non-ASCII token is refused, not a dropped connection")
@@ -249,6 +279,15 @@ finally:
 fpath = urllib.request.url2pathname(urllib.parse.urlparse(opened[0]).path) if opened else ""
 check(opened and opened[0].startswith("file:") and "secret-x" not in opened[0] and "secret-x" in open(fpath, encoding="utf-8").read()
       and (os.name == "nt" or (os.stat(fpath).st_mode & 0o077) == 0), f"S1: the browser is given a private file, not the token ({opened})")
+# AUD-039: the launcher page is deleted when the UI exits (atexit and the end of ui()), not only by the 60 s timer
+ui.remove_launch_files()
+check(not os.path.exists(fpath) and ui._LAUNCH_FILES == [], "AUD-039: the launcher page with the token is removed on exit, before the 60 s timer")
+import subprocess
+_code = ("import sys, webbrowser; sys.path.insert(0, %r); import moe_cache_ui as u; webbrowser.open = lambda url: print(url); "
+         "u.open_page('http://127.0.0.1:1/?t=secret-y')") % os.path.dirname(os.path.abspath(ui.__file__))
+_o = subprocess.run([sys.executable, "-c", _code], capture_output=True, text=True, timeout=60)     # exits at once, long before the 60 s timer
+_lp = urllib.request.url2pathname(urllib.parse.urlparse(_o.stdout.strip()).path) if _o.stdout.strip().startswith("file:") else ""
+check(_o.returncode == 0 and _lp and not os.path.exists(_lp), f"AUD-039: a UI that exits within 60 s leaves no launcher page in the temp folder ({_o.stdout.strip()!r} {_o.stderr[-200:]})")
 st, _, _ = raw("POST", "/api/folders", {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN, "Content-Length": str(70000)}, b"x" * 70000)
 check(st == 413, f"5: a body over 64 KiB is refused ({st})")
 check(ui.Handler.timeout == 30, "5: a handler timeout is set")
@@ -328,6 +367,20 @@ for bad, what in (({"messages": []}, "no messages"), ({"messages": [{"role": "to
     check(req("/api/chat", bad)[0] == 400, f"chat: {what} is refused")
 check(req("/api/chat", HI, headers={"X-MoeCache-Token": None})[0] == 403 and req("/api/chat", HI, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403,
       "chat: not without the page token, not from another site")
+# SERVER-015: the timeout is a module constant (3600 s); when it expires the page gets an error line instead of an empty answer
+check(ui.CHAT_TIMEOUT == 3600, f"SERVER-015: the chat waits up to an hour for a silent llama-server ({ui.CHAT_TIMEOUT})")
+ui.CHAT_TIMEOUT = 1
+try:
+    st, body = req("/api/chat", dict(HI, messages=[{"role": "user", "content": "SLOW-STREAM"}]))
+    ev = [json.loads(l[6:]) for l in body.splitlines() if l.startswith("data: {")]
+    errs = [e["error"]["message"] for e in ev if "error" in e]
+    check(st == 200 and len(errs) == 1 and "sent nothing" in errs[0] and "Hel" in body, f"SERVER-015: a stream that goes silent ends with an error event the page shows ({st}, {errs})")
+    st, body = req("/api/chat", dict(HI, messages=[{"role": "user", "content": "SLOW-HEAD"}]))
+    check(st == 502 and "sent nothing" in json.loads(body)["error"], f"SERVER-015: no answer at all: a 502 with the same clear error ({st}, {body[:120]})")
+finally:
+    ui.CHAT_TIMEOUT = 3600
+_ph = open(ui.PAGE, encoding="utf-8").read()
+check("if (j.error) throw new Error(j.error.message" in _ph and "a.error = e.message" in _ph, "SERVER-015: the page turns an error event into the answer's error line")
 st, body = req("/api/chat", dict(HI, messages=[{"role": "user", "content": "x" * 200000}]))
 check(st != 413, f"chat: up to 8 MB for messages with attached files ({st})")
 # chats are files in the cache folder (browser storage is per port; the app picks a free port each run)
@@ -1169,6 +1222,23 @@ if node:
     check(r_ is not None and r_[:6] == ["start," + tail, "stop," + tail, "switch," + tail, "switch," + tail, tail, "start," + tail],
           f"row menu: Start when nothing runs, Stop on the running model, Switch to this model on the others, nothing to start while stopping ({r_ and r_[:6]})")
     check(r_ is not None and r_[6] == ["Start", "Plan / Why", "Show in folder", "Copy path"], "row menu: the labels")
+
+# SERVER-011 on the page's own code (node): the token comes from the <meta>, is dropped from the DOM and the address, and api() sends it as a header
+if node:
+    fn = re.search(r"const TOKEN = .*?async function api\(path, body\) \{.*?\n\}\n", page, re.S).group(0)
+    harness = ("let removed = false, replaced = null, calls = [];\n"
+               "const document = { querySelector: s => s == 'meta[name=\"moe-token\"]' ? { content: 'tok-xyz', remove() { removed = true; } } : null };\n"
+               "const location = { search: '?t=tok-xyz', pathname: '/' }, history = { replaceState: (a, b, u) => { replaced = u; } };\n"
+               "const localStorage = { setItem() { throw new Error('storage used'); }, getItem() { throw new Error('storage used'); } };\n"
+               "const fetch = async (p, o) => { calls.push([p, o]); return { ok: true, json: async () => ({}) }; };\n" + fn +
+               "(async () => { await api('/api/status'); await api('/api/stop', {}); console.log(JSON.stringify([TOKEN, removed, replaced, calls.map(c => [c[1].headers['X-MoeCache-Token'], c[1].method || 'GET', c[1].headers['Content-Type'] || null])])); })();\n")
+    hf = os.path.join(TMP, "token.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ == ["tok-xyz", True, "/", [["tok-xyz", "GET", None], ["tok-xyz", "POST", "application/json"]]], f"SERVER-011: the page keeps the token in memory, clears the address and sends the header on GET and POST ({r_})")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

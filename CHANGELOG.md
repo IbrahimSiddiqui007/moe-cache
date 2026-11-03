@@ -16,6 +16,43 @@
 | Tests | The batch-8 logits test reads a fixed text (a docs edit no longer flips it); Windows bench-record samples VRAM in its own thread |
 | Patches | 0022 and 0027 are merged upstream and moved to `archive/`; 0004, 0005, 0020, 0030, 0040 still apply to b12064 |
 | Desktop app | Design and a buildable skeleton for a desktop app (Tauri 2 shell around the control page, tray icon, one instance, bundled Python on Windows): `docs/DESKTOP_APP_DESIGN.md`, `desktop/`, manual workflow `desktop.yml`. Not released; nothing changes for the browser page |
+| Tests and CI | The quick checks now run on every pull request; the nightly identity and Windows runs also test `experimental`; `tools/run_quick_tests.sh` runs the whole model-free test set in one command; new tests for `update --check`, `on-demand --install-autostart`, the package manifests, the release version script and the planner on a synthetic model |
+| Windows | The winget package no longer installs a second Python next to your own (the launcher still tells you when no Python 3.8+ is found) |
+| Release scripts | `tools/set_version.sh` works for the release after 0.3.5 (it turns `## Unreleased` into the release heading); the bundled-llama download cache is no longer a fixed folder in `/tmp`; the friend-test report also hides the user name outside `/home` |
+| Bug fixes | A GPU error during a long prompt (for example another program takes the graphics memory between the check and the upload) no longer ends the server: that block runs on the CPU with the same text and the rest of the prompt follows. `MOE_CACHE_GPU_CATCH=0` switches this off. |
+| Bug fixes | Environment switches now read the same way everywhere: empty or `off`/`false`/`no`/`0` is off, `1`/`on`/`true`/`yes` is on. Before, `MOE_CACHE_HYBRID=off` or `MOE_CACHE_LOOKAHEAD=` could switch a feature on, `=true` could switch a default-on feature off, and `MOE_CACHE_SEG_TIMES=0` still slowed prompts down. The startup `active:` line lists switches set to something other than their default. |
+| Bug fixes | Shared-memory (integrated) GPUs: the long-prompt block's copy of the experts lives in system RAM, so it is now capped (1/8 of the memory limit, 1 to 4 GiB; `MOE_CACHE_GPU_SHARED_CAP_MIB`) and counted against the expert cache budget. Not yet measured on an integrated GPU. |
+| Bug fixes | A failed executor step before a hybrid group now reports its error instead of success; a stale routing entry can no longer meet a later graph (`--fast`). |
+| Bug fixes | A file system that accepts O_DIRECT but fails the read (encrypted, FUSE, virtiofs) switches to buffered reads after the first failure instead of paying about 60 ms per expert |
+| Bug fixes | A failing expert read is retried 3 times, 200 ms apart, before the server stops with the disk error (it never computes on missing data) |
+| Bug fixes | Without the launcher the plugin prints one line saying llama-server's own prompt cache (8 GiB by default) is not in its RAM budget, and that `--cache-ram MiB` limits it |
+| Bug fixes | A child process of the server can no longer keep the server from exiting; a forced exit (second Ctrl+C) in the middle of a prompt no longer frees the cache under the running computation |
+| Bug fixes | When the memory reservation for a model buffer fails (`ulimit -v`, `vm.overcommit_memory=2`) the log says why and names `MOE_CACHE_DISABLE=1` |
+| Bug fixes | Settings like `MOE_CACHE_MARGIN_GIB=512M`, `MOE_CACHE_MAX_RAM_GB=inf` or `MOE_CACHE_PROFILE_DECAY=nan` are rejected with a message instead of being half-read |
+| Bug fixes | A usage profile of another model at `MOE_CACHE_PROFILE` is no longer overwritten: the new model learns in `<path>.<fingerprint>` next to it |
+| Bug fixes | The check that `MOE_CACHE_GGUF` is the model being loaded compares the middle and the end of each expert tensor too, not only the first 4 KiB |
+| Bug fixes | Hardening of opt-in features: a damaged `.moepack` layer table cannot pass the size check by overflow; the peer registry folder is owner-only with 0600 records and ignores other users' files; `MOE_CACHE_PREFILL_LEND_MIB` no longer gives back memory that the budget tuner already took |
+| Bug fixes | Requests to a server on this machine no longer go through a system or corporate proxy (before: with `http_proxy` set, health checks failed with "server did not become ready" and the API key was sent to the proxy). |
+| Bug fixes | `--vram-gib 0` / a Windows commit cap of 0 GiB now plans with 0 GiB instead of the whole GPU (planner); a model header with `head_count` 0 gives a message, not a traceback. |
+| Bug fixes | `connect` (all agents): a symlinked config (stow, chezmoi, home-manager) stays a link and the real file is merged; the previews of Hermes, OpenCode and Claude Code no longer print the API key; JSON configs keep non-ASCII text, Windows line ends and end with a newline; an unwritable or locked config gives one clear message; Pi writes `models.json` and `settings.json` both or neither; Codex `--write` needs Python 3.11+ (it checks the TOML) and says so; a non-UTF-8 Codex config is refused untouched. |
+| Bug fixes | `connect opencode`: the first `.bak` (your own setup) is never replaced by a later connect. |
+| Bug fixes | `connect hermes`: a backup is never overwritten (a later one gets a time stamp), a failure half-way names what was and was not set and the backup; the key still has to go through `hermes config set` on its command line (Hermes has no other way), the note after `--write` says so. |
+| Bug fixes | `connect claude --write`: the backup of the project's `settings.local.json` is kept under `~/.cache/moe-cache/backups`, not next to it (it could be committed with your own key); a hint when run from a sub-folder of a project. |
+| Bug fixes | `connect X --url http://other-host`: the `LLAMA_API_KEY` of your environment is no longer sent to a host that is not on this machine (a key given with `--api-key` still is). |
+| Bug fixes | `project save` only records the model identity when the server at `--url` reports the model the project folder was started with. |
+| Bug fixes | Windows: `tasklist` / PowerShell / `nvidia-smi` output with non-ASCII names no longer hides another llama-server's memory from the planner. |
+| Bug fixes | Project and profile names with a trailing newline are refused. |
+| Bug fixes | on-demand: an `--api-key` given to `on-demand` is no longer saved in `on-demand.json` or shown on any command line; it is kept in a private file (`on-demand.key`, mode 0600), and the cache folder and `on-demand.json` are private to your user (AUD-029). |
+| Bug fixes | `pick` checks a downloaded model against the sha256 in the catalogue and refuses a file that does not match (`--no-verify` skips the check) (AUD-030). |
+| Bug fixes | bench-report also hides network-share (`\\NAS\share\...`) and `\\?\` paths (AUD-032). |
+| Bug fixes | Windows: `powershell` and `taskkill` are run from System32, not found by name in the current folder (AUD-034). |
+| Bug fixes | A settings lock that cannot be taken on Windows now stops the change instead of writing without it; a damaged `ui.json` is kept as `ui.json.bad` instead of being replaced silently (AUD-035, AUD-036). |
+| Bug fixes | The start-at-login unit escapes `%` and `$` in paths; Ollama folders with `[` `]` in their name are found (AUD-039). |
+| Bug fixes | The control page no longer uses a cookie: its per-run token is held in the page's memory and sent in a header with every request (reloading the page needs the address the launcher printed again). |
+| Bug fixes | The control page's chat now waits up to an hour for a silent llama-server, and says so in the answer ("llama-server sent nothing for 60 minutes") instead of showing an empty answer. |
+| Bug fixes | The control page shows the server command in a form PowerShell runs as shown on Windows (quoting for spaces and & ( ) ^, and the API key as `$env:LLAMA_API_KEY`). |
+| Bug fixes | The control page's launcher file (it holds the page token) is deleted when the page exits, not left in the temp folder. |
+| Bug fixes | Windows: `moe-cache.exe` (the command winget installs) now passes redirects and pipes on to the kit (`moe-cache.exe models > f.txt`, `echo y | moe-cache.exe ...`); before, output and input did not reach it. |
 
 ## 0.3.5 (2026-11-03)
 

@@ -78,8 +78,18 @@ if [ -n "$MODEL" ]; then
 fi
 
 # the report must not contain the user's name or paths
-r=$(<"$TMP"); r=${r//"$HOME"/\~}       # literal replacement: a HOME with # . & would break a sed pattern or leave the real path in
-printf '%s\n' "$r" | sed -e "s#/home/[^/ ]*#/home/USER#g" > "$OUT"
+# scrub-begin (tests/friend_scrub_test.sh runs this function)
+scrub_report() {
+  local r u
+  r=$(cat)
+  r=${r//"$HOME"/\~}       # literal replacement: a HOME with # . & would break a sed pattern or leave the real path in
+  u="${USER:-$(id -un 2>/dev/null)}"
+  # the user's name wherever it appears (/mnt/ssd/NAME/, a prompt, a model folder), not only under /home (AUD-064); 3+ characters so a user "al" does not mangle ordinary words
+  if [ "${#u}" -ge 3 ]; then r=${r//"$u"/USER}; fi
+  printf '%s\n' "$r" | sed -e "s#/home/[^/ ]*#/home/USER#g" -e "s#/Users/[^/ ]*#/Users/USER#g"
+}
+# scrub-end
+if [ "${FRIEND_TEST_SOURCE_ONLY:-0}" != 1 ]; then scrub_report < "$TMP" > "$OUT"; fi
 echo
 echo "Report written to: $OUT"
 echo "Please send that file back. Thank you!"
