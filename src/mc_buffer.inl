@@ -194,6 +194,7 @@ ggml_backend_buffer_t buft_alloc(ggml_backend_buffer_type_t buft, size_t size) {
     size = round_up(std::max<size_t>(size, 1));
     void * p = plat::mem_reserve(size);
     if (!p) {
+        fprintf(stderr, "%s\n", mcmsg::reserve_failed(size).c_str());      // AUD-014: llama.cpp's own error names nothing
         return nullptr;
     }
     if (!S().cache_on) {

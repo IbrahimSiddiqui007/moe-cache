@@ -42,6 +42,7 @@
 #include "mc_args.h"
 #include "mc_retry.h"
 #include "mc_exit.h"
+#include "mc_msg.h"
 #include "mc_tested.h"
 #include "mc_rebalance.h"
 #include "mc_peers.h"
