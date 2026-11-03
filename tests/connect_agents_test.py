@@ -285,7 +285,10 @@ rc, out, _ = run("claude", "--write", "--config", cl)
 bk = mc.claude_backup_path(cl)
 check(rc == 0 and not os.path.exists(cl + ".bak") and json.load(open(bk))["env"] == {"ANTHROPIC_API_KEY": "mine"}, "claude: the backup of the project's settings file is outside the project folder")
 os.makedirs(os.path.join(W, "repo", "." + "git")); os.makedirs(os.path.join(W, "repo", "sub"))
-check("repo" in (mc.project_folder_hint(os.path.join(W, "repo", "sub")) or "") and mc.project_folder_hint(os.path.join(W, "repo")) is None, "claude: a sub-folder of a project gets a hint")
+# the project root itself gets no hint about ITS OWN folder; a marker (.git / .claude) further up, e.g. ~/.claude when TMPDIR is under the home folder, may give another hint
+_h_root = mc.project_folder_hint(os.path.join(W, "repo")) or ""
+check(os.path.join(W, "repo") in (mc.project_folder_hint(os.path.join(W, "repo", "sub")) or "") and ("inside the project " + os.path.join(W, "repo")) not in _h_root,
+      "claude: a sub-folder of a project gets a hint (the project root gets none about itself)")
 
 # AUD-067 / 073 / 074: Hermes through a stand-in `hermes` (a script that keeps its config as a JSON file)
 if os.name != "nt":
