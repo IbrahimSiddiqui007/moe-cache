@@ -227,6 +227,27 @@ json.dump(bad, open(rpath, "w"))
 with contextlib.redirect_stdout(io.StringIO()):
     check(rr.main(["validate", rpath]) == 1, "validate exits 1 on an invalid record")
 
+# ---- 6b. day page: benchmarks/DATE/README.md draft from DATE/records/*.json
+daydir = os.path.join(tmp, "2026-11-03")
+os.makedirs(os.path.join(daydir, "records"))
+rec2 = json.loads(json.dumps(rec)); rec2["settings"]["ctx"] = 131072; rec2["settings"]["command_line"] = "llama-server -c 131072"; rec2["runs"][0]["vram_used_peak_mib"] = NR
+json.dump(rec, open(os.path.join(daydir, "records", "a_64k.json"), "w")); json.dump(rec2, open(os.path.join(daydir, "records", "b_128k.json"), "w"))
+pagef = os.path.join(daydir, "README.md")
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = rr.main(["day", daydir, "--title", "Fake day", "--out", pagef])
+page = open(pagef, encoding="utf-8").read()
+check(rc == 0 and page.startswith("# 20") and page.splitlines()[0].endswith(": Fake day"), "day: heading has the date and title")
+for sec in ("## Hardware", "## Software and versions", "## Method", "## What changed since the last run", "## Results per model and config", "## What each flag did",
+            "## Limitations and what was not measured", "## Reproduce", "## Raw data"):
+    check(sec in page, f"day: section {sec}")
+check(page.count("### Fake-Q2_0.gguf") == 2 and "ctx 65536" in page and "ctx 131072" in page, "day: one table per model and config")
+check("| a_64k.json | 1 | stock | 300.0 | 10.0 |" in page and "7.8" in page, "day: every run is a row with its metrics")
+check("`$.runs[0].vram_used_peak_mib`: b_128k.json" in page, "day: the gaps list names the record that lacks the value")
+check("[records/a_64k.json](records/a_64k.json)" in page and "[records/b_128k.json](records/b_128k.json)" in page, "day: raw data links")
+check("GPU expert layers: 9 (n-cpu-moe 39)" in page and "write by hand" in page, "day: card lines, and hand-written parts are marked")
+with contextlib.redirect_stderr(io.StringIO()):
+    check(rr.main(["day", os.path.join(tmp, "nothing-here")]) == 2, "day: exit 2 when there are no records")
+
 # ---- 7. the real probe on this machine: own process, no GPU or model needed
 real = rr.probe()
 sm = rr.Sampler(os.getpid(), pr=real, interval=0.05, vram_interval=0.2)
