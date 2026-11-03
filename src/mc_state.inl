@@ -49,7 +49,8 @@ void remove_crash_report();
 #include "mc_state_scan.h"
 #include "mc_state_tables.h"
 #include "mc_state_lend.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_lend_t {
+#include "mc_state_rbstats.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_lend_t, state_rbstats_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -171,15 +172,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         }
     }
 
-    bool last_long = false;                             // idea C07: the last graph ended on a long prompt batch (under mu)
-    std::atomic<uint64_t> last_end_ns{0};               // steady clock, end of the last graph
-    bool   rb_acted = false;                            // the last round read something: measure the next graphs
-    bool   rb_armed_dec = false, rb_armed_pre = false;  // count the hits of the first decode / prefill graph after a rebalance
-    bool   g_saw_dec = false, g_saw_pre = false;
-    uint64_t rb_rounds = 0, rb_reads = 0, rb_bytes_read = 0, rb_swaps = 0, rb_cancelled = 0, rb_evicted_bytes = 0;
-    uint64_t rb_dec_hits = 0, rb_dec_miss = 0, rb_pre_hits = 0, rb_pre_miss = 0;
-    uint64_t cls_promotions = 0, cls_demotions = 0;     // touches that moved a node to a higher / lower class list
-    int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
 
     std::mutex mu;
 
