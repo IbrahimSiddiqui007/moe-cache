@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. checks that Python 3.8 or newer is installed (it never installs Python for you) and says how to get it if not
-#   2. downloads the Windows zip of this release and SHA256SUMS-windows, and REFUSES (installs nothing) when the hash does not match
+#   2. downloads the Windows zip of this release and SHA256SUMS-windows, and REFUSES (installs nothing) when the hash does not match (SUMS come from the same release: that finds a damaged download, it does not prove who built it; check the build with gh attestation verify)
 #   3. unpacks it to %LOCALAPPDATA%\moe-cache\kit (llama.cpp is inside the zip)
 #   4. writes a small command, %LOCALAPPDATA%\moe-cache\bin\moe-cache.cmd, and adds that bin folder to YOUR user PATH (never the machine PATH)
 #   5. prints the version and how to undo it
@@ -56,7 +56,7 @@ function Set-UserPathRaw([string]$value) {
 }
 
 function Split-PathList([string]$p) { return @($p -split ';' | Where-Object { $_ -ne '' }) }
-function Same-Dir([string]$a, [string]$b) { return ($a.TrimEnd('\') -ieq $b.TrimEnd('\')) }
+function Same-Dir([string]$a, [string]$b) { return ([Environment]::ExpandEnvironmentVariables($a).TrimEnd('\') -ieq [Environment]::ExpandEnvironmentVariables($b).TrimEnd('\')) }      # %LOCALAPPDATA%\... entries in the registry count (AUD-058)
 
 function Find-Python {
     # MOE_CACHE_PYTHON, then the py launcher, then a python.exe that really runs (the one Windows ships without Python only opens the Store)
@@ -159,6 +159,7 @@ function Install-MoeCache {
 
     # preflight: what can refuse runs before anything is downloaded or touched
     if ((Test-Path -LiteralPath $shim) -and -not ((Get-Content -LiteralPath $shim -Raw) -like "*$Marker*")) { throw "$shim exists and is not ours: left alone. Nothing was installed." }
+    if ((Test-Path -LiteralPath $kit) -and -not $old -and -not (Test-Path -LiteralPath (Join-Path $kit '.moe-cache-complete'))) { throw "$kit already exists and was not created by this installer: left alone (AUD-052). Choose another folder with -Root. Nothing was installed." }
     $failAt = $env:MOE_CACHE_INSTALL_FAIL_AT      # tests only: stop at a named step to prove the rollback
     function Fail-At($step) { if ($failAt -eq $step) { throw "test failure injected at $step" } }
     $kitOld = Join-Path $Root 'kit.old'; $stage = Join-Path $Root 'kit.part'
@@ -183,7 +184,7 @@ function Install-MoeCache {
             if (-not $want) { throw "REFUSED: SHA256SUMS-windows has no line for $name.zip. Nothing was installed." }
             $got = (Get-FileHash -LiteralPath (Join-Path $tmp "$name.zip") -Algorithm SHA256).Hash
             if ($got -ine $want) { throw "REFUSED: the download's sha256 ($got) is not the one in SHA256SUMS-windows ($want). Nothing was installed." }
-            Say "sha256 matches SHA256SUMS-windows ($want)"
+            Say "sha256 matches SHA256SUMS-windows ($want)   (from the same release: this finds a damaged download, it does not prove who built it; to check that: gh attestation verify $name.zip -R $Repo)"
             Say '2/3 unpack (into a temporary folder; the old kit stays until the new one is complete)'
             if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
             [void](New-Item -ItemType Directory -Force -Path $stage)

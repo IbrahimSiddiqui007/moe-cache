@@ -114,7 +114,10 @@ jobs:
         if: github.ref_type == 'tag'   # a manual run on a branch must not get the same signature as a release
         uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
-          subject-path: dist/moe-cache-v*-linux-x86_64.tar.gz
+          subject-path: |
+            dist/moe-cache-v*-linux-x86_64.tar.gz
+            dist/install.sh
+            dist/install.ps1
 
       - name: Keep the files as a workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

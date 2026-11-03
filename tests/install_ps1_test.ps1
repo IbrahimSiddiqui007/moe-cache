@@ -113,6 +113,10 @@ try {
     Remove-Item -LiteralPath $shim -Force
     $r = Run-Installer $good3 '9.9.3' @('-Force')
     Check ($r.Code -eq 0) 'reinstall with -Force over a repaired state'
+    # a -Root that already has a kit folder of the user's: left alone (AUD-052)
+    $kroot = Join-Path $T 'kroot'; New-Item -ItemType Directory -Force -Path (Join-Path $kroot 'kit') | Out-Null; 'mine' | Set-Content (Join-Path $kroot 'kit\mine.txt')
+    $rr = & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -Root $kroot -BaseUrl $good3 -Version 9.9.3 2>&1 | Out-String
+    Check ($LASTEXITCODE -ne 0 -and $rr -match 'not created by this installer' -and (Test-Path (Join-Path $kroot 'kit\mine.txt'))) 'a -Root with a kit folder of the user'"'"'s: refused, the folder stays'
     # non-ASCII -Root (AUD-051): install.json is read back, uninstall removes the PATH entry
     $uroot = Join-Path $T ('Jos' + [char]0xE9 + '-' + [char]0x0416)
     $ubin = Join-Path $uroot 'bin'

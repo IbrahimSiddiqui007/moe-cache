@@ -112,5 +112,21 @@ open(shim, "w").write("#!/bin/sh\necho someone else's\n")
 rc, out = run(r1, "9.9.1")
 check(rc != 0 and "not ours" in out and "someone else's" in open(shim).read(), "a moe-cache command that is not ours is never overwritten")
 
+# ---- shared prefix, other --bin-dir, non-ASCII / quote in the path (AUD-053, 054, 055)
+os.environ["LC_ALL"] = "C"
+sp = os.path.join(T, "data2", "Jos\u00e9's apps"); sb = os.path.join(T, "other bin")
+os.makedirs(os.path.join(sp, "versions", "my-own-tool")); os.makedirs(sb)
+def run2(rel, ver, *args):
+    env = dict(os.environ, MOE_CACHE_BASE_URL="file://" + rel, MOE_CACHE_REF="v" + ver, HOME=os.path.join(T, "home"))
+    r = subprocess.run(["sh", inst, "--prefix", sp, "--bin-dir", sb, "--no-apt", *args], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=120)
+    return r.returncode, r.stdout + r.stderr
+rc, out = run2(r1, "9.9.1")
+shim2 = os.path.join(sb, "moe-cache")
+check(rc == 0 and subprocess.run(["/bin/sh", shim2, "x"], capture_output=True, text=True).stdout.strip() == "args: x", f"a prefix with a non-ASCII letter and an apostrophe: the command runs under /bin/sh ({out.strip().splitlines()[-4:-3]})")
+rc, out = run2(r3, "9.9.3")
+check(rc == 0 and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "an update does not delete folders in versions/ that are not ours")
+rc, out = subprocess.run(["sh", inst, "--prefix", sp, "--uninstall"], capture_output=True, text=True, env=dict(os.environ, HOME=os.path.join(T, "home"), MOE_CACHE_REF="v9.9.3"), stdin=subprocess.DEVNULL).returncode, ""
+check(rc == 0 and not os.path.exists(shim2) and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "uninstall without --bin-dir removes the command the install recorded, and still leaves folders that are not ours")
+
 check(subprocess.run(["bash", "-n", os.path.join(HERE, "install.sh")]).returncode == 0, "install.sh parses")
 print("FAIL" if fails else "PASS", f"({len(fails)} failed)"); sys.exit(1 if fails else 0)
