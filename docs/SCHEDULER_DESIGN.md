@@ -75,7 +75,7 @@ and only into the slot whose score is lowest. Nothing else moves weights; execut
 
 | Check | Pass |
 |---|---|
-| KL divergence vs exact (`kl_run.sh`, 20 chunks prose + code, base `kl_hyb/base.kld`) | <= `--hybrid`'s 0.0043 x 1.5, and far below the quant yardstick 0.243 (RESULTS 43) |
+| KL divergence vs exact (`kl_run.sh`, 20 chunks prose + code, base `kl_hyb/base.kld`) | <= `--hybrid`'s 0.0043 x 1.5, and far below the quant yardstick 0.243 (RESULTS_LOG §43) |
 | Same top token | >= 98 % |
 | Answer bank (`q_run.sh`, 26 checkable answers) and code tasks (10) | same pass count as exact |
 | Speed (paired, clean-run gate) | >= +10 % over `--hybrid` on Flash-Next at 24 GB, else not shipped (E4's stop rule) |
@@ -97,5 +97,5 @@ Effort: S1-S4 about 2 days; S5 about 1 day plus Claw time.
 
 - `gpu_up` loses to the CPU for single misses on this laptop if PCIe uploads stay at 9-11 GB/s: the worked example in MULTI_DEVICE_DESIGN gives a split
   only when 3+ experts miss per layer. If the calibrated costs say the upload lane never wins on Flash-Next, stop after S1 (no code in the hot path).
-- The whole scheduler needs a compute-bound model (Flash-Next yes; K-quant models are bandwidth-bound and gain nothing, RESULTS 34 and 42).
+- The whole scheduler needs a compute-bound model (Flash-Next yes; K-quant models are bandwidth-bound and gain nothing, RESULTS_LOG §34 and 42).
 - If I1 (pinned uploads) is dropped, `gpu_up` loses its main lever; check I1's kill test first.

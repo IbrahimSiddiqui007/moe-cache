@@ -10,7 +10,7 @@ so they pass this gate instead: *the meaning has to match* (owner's rule 2026-10
 
 | Part | How | Against |
 |---|---|---|
-| KL divergence and top-1 agreement | `llama-perplexity`, 3 chunks x 512 tokens, `-b 8 -ub 8` (every step goes through the executor's small-batch path), `--kl-divergence`; the method of RESULTS 25.3 / R11 | stock llama.cpp, f16 KV, same model, same offload |
+| KL divergence and top-1 agreement | `llama-perplexity`, 3 chunks x 512 tokens, `-b 8 -ub 8` (every step goes through the executor's small-batch path), `--kl-divergence`; the method of RESULTS_LOG §25.3 / R11 | stock llama.cpp, f16 KV, same model, same offload |
 | Task score | the 202 exact-answer tasks of `tools/quality_tasks.json`, greedy, through `llama-server` (`tools/quality_yardstick.py run --tasks-only`) | the same tasks on the stock server |
 | Loops (IQ2 failure mode) | the yardstick's repeat detector on the task answers | stock |
 
@@ -20,8 +20,8 @@ A level = the settings of one approximate package. A run passes when **all three
 
 | Level | Settings on top of exact | Mean KLD at most | Same top token at least | Tasks right, at least stock minus | Based on (measured earlier) |
 |---|---|---|---|---|---|
-| `exact` | none (plugin only) | 0.00001 | 100 % | 0 (identical) | RESULTS 25.3, CI identity |
-| `kv` | q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | 0.015 | 95 % | 2 | KL 0.0045 on its own, 0.012 on Vulkan (RESULTS 53, R11) |
+| `exact` | none (plugin only) | 0.00001 | 100 % | 0 (identical) | RESULTS_LOG §25.3, CI identity |
+| `kv` | q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | 0.015 | 95 % | 2 | KL 0.0045 on its own, 0.012 on Vulkan (RESULTS_LOG §53, R11) |
 | `fast` | route skip + q8_0 KV (today's `--fast`) | 0.040 | 90 % | 4 | KL 0.025, top-1 93.6 % (25.3) |
 | `fewer` | `fast` + the lowest-ranked 2 experts dropped on CPU-held layers (B3) | 0.060 | 88 % | 5 | none: new; Q2_0 is already 80.6 % top-1 vs Q8_0 (Strata), errors stack |
 

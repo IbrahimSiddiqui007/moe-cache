@@ -8,7 +8,7 @@ In short, moe-cache manages the CPU-side experts itself:
 - keeps the **hot experts in RAM** and reads the rest from your SSD with large, parallel direct reads;
 - **sizes its cache from your real memory limit** and stays under it (no out-of-memory kills);
 - **learns which experts you use** and warm-starts from that next time (`moe-cache-learn` builds a profile in a minute);
-- produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS](RESULTS.md); the Hunyuan test was short only);
+- produces **token-identical output** to stock llama.cpp (checked on every model in [RESULTS_LOG](RESULTS_LOG.md); the Hunyuan test was short only);
 - works with speculative decoding (MTP; it helps when the model or most of it fits: Qwen3.6 at 12 GB 21.7 -> 24.0 tok/s, but it was 17 % slower on Qwen3.8-Flash-Next with an 8 GB card), split GGUF files, MXFP4 / K-quants / IQ4_XS / Q5_0, CPU-only machines and Vulkan GPUs;
 - runs long prompts on the GPU like stock llama.cpp does;
 - **expert executor** (on by default): while missing experts load from the SSD it already computes the ones in RAM, and on hybrid Intel CPUs it can use the efficiency cores too. Results are bit-identical (every output was compared byte for byte with llama.cpp's own on the test models);

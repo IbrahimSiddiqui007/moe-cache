@@ -25,7 +25,7 @@ The kit is not code-signed (a certificate costs money every year; the code is op
 
 ## Speed on Windows
 
-One desktop: Ryzen 9 7950X, 32 GB DDR5, RX 9070 XT 16 GB, Windows 11, llama.cpp Vulkan (ggml 0.27). Every run cold (Windows' file cache emptied first), stock and moe-cache in the order stock, moe-cache, moe-cache, stock, launcher defaults, a 256-token greedy reply. Details: RESULTS 59-63 in [docs/RESULTS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md).
+One desktop: Ryzen 9 7950X, 32 GB DDR5, RX 9070 XT 16 GB, Windows 11, llama.cpp Vulkan (ggml 0.27). Every run cold (Windows' file cache emptied first), stock and moe-cache in the order stock, moe-cache, moe-cache, stock, launcher defaults, a 256-token greedy reply. Details: RESULTS_LOG §59-63 in [docs/RESULTS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md).
 
 | Model (file size; all bigger than the 32 GB RAM) | stock llama.cpp | moe-cache | |
 |---|---|---|---|

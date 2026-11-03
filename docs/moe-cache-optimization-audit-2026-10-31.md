@@ -13,7 +13,7 @@ The fixed baseline is the same model, quantization, requested context, quality s
 ## What was reviewed and checked
 
 - Production performance paths: all plugin module roles, graph compute, executor/pool, GPU block/hybrid paths, cache admission/eviction, read/pack/view paths, profiles/rebalance, launcher/planners, warm-state persistence and HTTP/UI forwarding. The source tree has about 17,105 lines across the enumerated production C++ headers/includes and Python planner/bin files; that is a scope count, not a claim every line was formally verified.
-- Repository benchmark history, especially RESULTS 59–74, PERFORMANCE_ANALYSIS, configuration and release/build/CI paths. Old profiles describe different builds/settings and must not be treated as the current timing breakdown.
+- Repository benchmark history, especially RESULTS_LOG §59–74, PERFORMANCE_ANALYSIS, configuration and release/build/CI paths. Old profiles describe different builds/settings and must not be treated as the current timing breakdown.
 - Related primary sources: Strata, Maya, KTransformers, oMLX, Fiddler, the Cintu07 research prototype and Peregrine. Previous source inspection in this session covered selected Strata cache/prefill files, Maya fused RDNA expert code and the research prototype's scheduler. External performance claims are not measurements of moe-cache.
 - Fresh checks: both bundled ggml header sets passed warning-as-error C++ syntax checks; args, tested-ggml and rebalance C++ tests passed; 15 Python suites passed. The unmodified UI suite stopped at `/proc/PID/task/PID/children`, unavailable in this runtime. It was not marked a full pass. No GPU run, full-model identity test, new hardware profile or sanitizer run was performed this round.
 
@@ -224,7 +224,7 @@ Moe-cache already groups experts inside a micro-batch. Reuse one layer's transfe
 
 ### P22. Prefetch exact upcoming PLE rows
 
-Priority 2 · Evidence H · Boundary U · [docs/RESULTS.md:2982](https://github.com/IbrahimSiddiqui007/moe-cache/blob/526c804610cf835fdfcccd379fd7072d24e1aa2f/docs/RESULTS.md#L2982)
+Priority 2 · Evidence H · Boundary U · [docs/RESULTS.md:2982](https://github.com/IbrahimSiddiqui007/moe-cache/blob/526c804610cf835fdfcccd379fd7072d24e1aa2f/docs/RESULTS_LOG.md#L2982)
 
 Historical profiling identified model lookup-table faults outside the plugin. If token ids make future row addresses knowable, read those rows ahead of use.
 
@@ -232,7 +232,7 @@ Historical profiling identified model lookup-table faults outside the plugin. If
 
 ### P23. Batch PLE projection computation
 
-Priority 3 · Evidence H · Boundary V · [docs/RESULTS.md:2982](https://github.com/IbrahimSiddiqui007/moe-cache/blob/526c804610cf835fdfcccd379fd7072d24e1aa2f/docs/RESULTS.md#L2982)
+Priority 3 · Evidence H · Boundary V · [docs/RESULTS.md:2982](https://github.com/IbrahimSiddiqui007/moe-cache/blob/526c804610cf835fdfcccd379fd7072d24e1aa2f/docs/RESULTS_LOG.md#L2982)
 
 For supported lookup-table architectures, replace token-at-a-time projection work with batched operations where dependencies allow, following the upstream model path.
 
@@ -1067,7 +1067,7 @@ Bounded arenas, explicit alignment and selective huge-page advice can reduce scr
 | Resident-first CPU executor | `mc_exec.inl` partitions ready and late tasks | D01 handles readiness changes after that initial partition |
 | Persistent CPU worker pool | `mc_pool.inl` | Reduce useful-work granularity and completion overhead; do not merely create another pool |
 | Gate/up single pool job | `exec_run_prepared`, default on | Share compatible preparation and extend validated fusion coverage |
-| Row chunks of 128 | RESULTS 64 addendum: about +3.9% over the old 32-row setting on the desktop | D06 tests other shapes; the already-shipped +3.9% cannot be claimed again |
+| Row chunks of 128 | RESULTS_LOG §64 addendum: about +3.9% over the old 32-row setting on the desktop | D06 tests other shapes; the already-shipped +3.9% cannot be claimed again |
 | Small-batch weight reuse | Multiple token columns grouped per expert, up to eight | Register-blocked multi-column kernels, with tiled-path boundaries respected |
 | Q2_0 SIMD and prepared column sums | Runtime compatibility checks choose matching kernels | Any further kernel must win streaming end-to-end, not just cached dots |
 | IQ3 gather and optional AVX-512 paths | Self-check and vendor gating exist | A different implementation/calibration, not simply enabling a flag that already lost |
@@ -1085,7 +1085,7 @@ Bounded arenas, explicit alignment and selective huge-page advice can reduce scr
 | Micro-batch/placement planning | Existing joint memory plan | Optimize measured latency, not just fit |
 | Stock bypass for models that fit | Existing launcher decision | Preserve it unless a specific plugin path demonstrably wins |
 | MTP and hybrid GPU/CPU experts | Existing, model/workload dependent | Joint cost model and lower dummy work/transfer costs |
-| ClassLRU | Opt-in; RESULTS 73: +1.3–2.9% on tested 122B pairs, mixed on Flash-Next | Broader measurement before changing defaults |
+| ClassLRU | Opt-in; RESULTS_LOG §73: +1.3–2.9% on tested 122B pairs, mixed on Flash-Next | Broader measurement before changing defaults |
 | Idle cache refill | Default since v0.3.3 | Better utility/cancellation and phase-transition policy |
 
 The above percentages are historical repository results with their original conditions. They are not new measurements from this audit and are not all applicable to the same model/configuration.
@@ -1095,8 +1095,8 @@ The above percentages are historical repository results with their original cond
 | Attempt | Recorded outcome / limit | Audit consequence |
 |---|---|---|
 | Longer executor spin (N30) | Roughly 0.8–2% slower decode with 14–23% more CPU time, despite far fewer parks | Do not equate fewer sleeps with higher throughput; D01 is a different scheduling change |
-| Current gather / AVX-512 IQ kernels on Zen 4 | RESULTS 55: tested variants about 0.56–0.77x stock kernel speed | Do not turn them on as a free upgrade; new kernels need different evidence |
-| Current expert pack with default file views | RESULTS 74: reader 1.11→1.17 GB/s but decode roughly 15.6–16.1→14.5–15.1 tok/s | More I/O bandwidth did not mean a faster model; keep pack opt-in |
+| Current gather / AVX-512 IQ kernels on Zen 4 | RESULTS_LOG §55: tested variants about 0.56–0.77x stock kernel speed | Do not turn them on as a free upgrade; new kernels need different evidence |
+| Current expert pack with default file views | RESULTS_LOG §74: reader 1.11→1.17 GB/s but decode roughly 15.6–16.1→14.5–15.1 tok/s | More I/O bandwidth did not mean a faster model; keep pack opt-in |
 | Pack in private-memory mode | Large gains in a much slower private-path condition | Does not prove an improvement over the existing default views |
 | N20 faster Q2_0 microkernel | Cached kernel win, no clear PC decode win | Memory/whole-model effects can erase instruction-level gains |
 | Router lookahead plus executor on tested 122B (D5) | One pair won and the other lost; not kept | Prefetch must be gated by useful on-time stalls avoided |

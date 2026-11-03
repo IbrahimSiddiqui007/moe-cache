@@ -6,7 +6,7 @@ moe-cache v0.3.2 runs MoE models bigger than your RAM through llama.cpp's `llama
 
 | Area | Change |
 |---|---|
-| Long prompts with a browser open | When the GPU also draws the desktop, the desktop and a browser hold VRAM; the planner's GPU margin now grows with what other programs hold, and the long-prompt GPU block runs in parts when VRAM is short. Flash-Next Q2_0 with a browser open: prompts at 34k tokens 109-110 instead of 67-68 tok/s, at 128k 79-95 instead of 67-75 (PC, RESULTS 71) |
+| Long prompts with a browser open | When the GPU also draws the desktop, the desktop and a browser hold VRAM; the planner's GPU margin now grows with what other programs hold, and the long-prompt GPU block runs in parts when VRAM is short. Flash-Next Q2_0 with a browser open: prompts at 34k tokens 109-110 instead of 67-68 tok/s, at 128k 79-95 instead of 67-75 (PC, RESULTS_LOG §71) |
 | Faster prompts | The long-prompt GPU block reads back into pinned memory inside its loop (N22, +2-5 %) and fills the expert cache while the block uploads (N23, +8-11 %); tokens identical |
 | Faster decode | Gate and up of each layer now run as one executor job (one barrier fewer): +0.3-2.6 % decode in every PC pair, same text. Opt-in: `MOE_CACHE_POLICY=classlru`, a frequency-aware cache that helped the miss-heavy 122B (+1.3-2.9 %) |
 | Default Flash-Next file | **IQ3_XXS** (3-bit: reads best, the most tasks right, popular for coding) is now the picker's and the docs' default on a 16 GB GPU; Q2_0 stays as the faster choice (about 10 % more tokens per second, e.g. for long thinking). Smaller GPUs keep Q2_0 |
@@ -64,7 +64,7 @@ The kit is not code-signed (a certificate costs money every year; the code is op
 
 ## Speed on Windows
 
-One desktop: Ryzen 9 7950X, 32 GB DDR5, RX 9070 XT 16 GB, Windows 11, llama.cpp Vulkan (ggml 0.27). Every run cold (Windows' file cache emptied first), stock and moe-cache in the order stock, moe-cache, moe-cache, stock, launcher defaults, a 256-token greedy reply. Details: RESULTS 59-63 in [docs/RESULTS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md).
+One desktop: Ryzen 9 7950X, 32 GB DDR5, RX 9070 XT 16 GB, Windows 11, llama.cpp Vulkan (ggml 0.27). Every run cold (Windows' file cache emptied first), stock and moe-cache in the order stock, moe-cache, moe-cache, stock, launcher defaults, a 256-token greedy reply. Details: RESULTS_LOG §59-63 in [docs/RESULTS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md).
 
 | Model (file size; all bigger than the 32 GB RAM) | stock llama.cpp | moe-cache | |
 |---|---|---|---|

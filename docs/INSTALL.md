@@ -61,7 +61,7 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 ```
 `--ram 12` is the memory (GB) it may use; leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
 
-**The first start is slow.** The server is ready after about 20 seconds (RESULTS 64: 14-19 s); the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens took 186 s on our laptop, [docs/AGENTS.md](AGENTS.md); a 63k-token prompt about 5 minutes on our Windows PC, RESULTS 64). The chat page shows progress. Later turns are much faster because the conversation is kept.
+**The first start is slow.** The server is ready after about 20 seconds (RESULTS_LOG §64: 14-19 s); the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens took 186 s on our laptop, [docs/AGENTS.md](AGENTS.md); a 63k-token prompt about 5 minutes on our Windows PC, RESULTS_LOG §64). The chat page shows progress. Later turns are much faster because the conversation is kept.
 
 **Speed options that change the answers a little (all off by default; the launcher suggests `--fast` when it would help):**
 
@@ -69,7 +69,7 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-
 |---|---|---|
 | `--fast` | about +10 % on models much bigger than your RAM | output no longer identical to stock |
 | `--fast=2` | a stronger level for memory far below the model size (Flash-Next at 12 GB: +43 % over `--fast`) | same answers in different words |
-| `--fast=kv` | only the q8_0 KV cache (Flash-Next Q2_0 at ctx 262144: prefill 2x, decode +11-13 % at 64k) | KL 0.0079, 190/202 tasks = stock (RESULTS 72); it is the default from 128k context, `--exact` turns it off |
+| `--fast=kv` | only the q8_0 KV cache (Flash-Next Q2_0 at ctx 262144: prefill 2x, decode +11-13 % at 64k) | KL 0.0079, 190/202 tasks = stock (RESULTS_LOG §72); it is the default from 128k context, `--exact` turns it off |
 | `--fast=fewer` | `--fast` plus two fewer experts per token on the CPU-held layers | KL 0.034, 192/202 tasks; faster at 4k, **unproven at 64k-256k** |
 
 **Easiest: the control page**: `bin/moe-cache-server --ui` (Windows: double-click `moe-cache.bat` in the kit folder) opens http://127.0.0.1:8070, a three-pane
@@ -87,7 +87,7 @@ python3 bin/moe_cache.py connect hermes --write      # and/or: connect opencode 
 
 Several models: `on-demand /path/to/model2.gguf --add` adds one; the request's `"model"` picks it, one is loaded at a time (`connect opencode` lists them all).
 Or start a server yourself with `bin/moe-cache-server /path/to/model.gguf --agent` and run the same `connect` line. Measured on a Windows desktop
-(RESULTS 60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
+(RESULTS_LOG §60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
 two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details and the Desktop-app steps: [docs/AGENTS.md](AGENTS.md).
 
 ### Windows quick start (experimental)
