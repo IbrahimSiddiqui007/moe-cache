@@ -2630,6 +2630,76 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     return load, method, gcache, env, cap
 
 
+def kv_stage(a, extra, ctx, ls, listing, machine):
+    """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
+    if (not a.fast and not a.exact and not a.stock and ctx >= 131072
+            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
+            and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
+        a.fast = "kv"
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
+            "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+    kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
+    if kv_q8:
+        extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
+    return kv_q8
+
+
+def fast_env_stage(a, env, stock, model, machine):
+    """ENGINE-029, stage "approximate modes": the plugin settings and the one plain line for --fast, --fast=2, --fast=fewer and --fast=kv; without --fast, the hint where it would pay (the model is much bigger than the memory it may use). env grows in place."""
+    if a.fast == "kv":
+        say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
+    elif a.fast:
+        env.append(("MOE_CACHE_ROUTE", "skip"))
+        if a.fast == "2":
+            env.append(("MOE_CACHE_ROUTE_DROP", "4"))
+            say("moe-cache: --fast=2: up to 4 low-ranked experts per token that are not in RAM are skipped (for memory much smaller than the model: "
+                "Flash-Next at 12 GB +43 %; about 1 top token in 28 differs from stock, KL 0.022; RESULTS 53)")
+        elif a.fast == "fewer":
+            env.append(("MOE_CACHE_FEWER", "2"))
+            say("moe-cache: --fast=fewer: --fast, and on the CPU-held layers the 2 lowest-ranked experts of every token are never computed (top-10 -> 8 on Flash-Next); "
+                "output no longer identical to stock, quality limits in docs/QUALITY_GATE.md (level fewer)")
+        else:
+            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
+    elif not stock:
+        # suggest --fast only where it pays: the model is much bigger than the memory it may use
+        try:
+            size = sum(os.path.getsize(p) for p in model_parts(model))
+            lim = float(a.ram) * 1e9 if a.ram else machine.mem_total()
+            if lim and size > 2 * lim:
+                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts for about +10 % (changes some tokens; off by default)")
+        except Exception:
+            pass
+
+
+def cpu_pin_stage(a, env, extra, stock, win, machine):
+    """ENGINE-029, stage "CPU cores": efficiency cores for the expert executor and pinning llama-server to the performance cores on hybrid CPUs (Windows core groups, Linux sysfs). env grows in place. Returns the pinning arguments for llama-server."""
+    if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and machine.has_cpu_atom():
+        ne = min(machine.cpu_atom_count(), 4)
+        if ne > 0:
+            env.append(("MOE_CACHE_EXEC_ECORES", str(ne)))
+            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
+    pinargs = []
+    hm = hybrid_masks(machine.win_cores()) if win else None
+    if machine.win_core_groups() > 1 and not a.no_pin:
+        say("moe-cache: " + WIN_GROUPS_NOTE)
+    if hm and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
+        pmask, ecpus = hm
+        if not a.no_pin:
+            pinargs = ["-C", hex(pmask), "--cpu-strict", "1"]
+            env.append(("MOE_CACHE_CPU_MASK", hex(pmask)))
+            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {hex(pmask)}); --no-pin to disable")
+        ne = min(len(ecpus), 4)
+        if ne and not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES"):
+            env += [("MOE_CACHE_EXEC_ECORES", str(ne)), ("MOE_CACHE_ECORE_MASK", hex(sum(1 << c for c in ecpus)))]
+            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
+    if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
+        mask = machine.perf_core_mask()
+        if mask:
+            pinargs = ["-C", mask, "--cpu-strict", "1"]
+            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
+    return pinargs
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2718,68 +2788,15 @@ def _launch_plan(a, extra, argv, machine):
     # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (prompts about 2x). Not with --stock (that compares
     # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
     # -ctk/-ctv after --) keeps llama.cpp's f16 KV
-    if (not a.fast and not a.exact and not a.stock and ctx >= 131072
-            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
-            and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
-        a.fast = "kv"
-        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
-            "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
-    kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
-    if kv_q8:
-        extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
+    kv_q8 = kv_stage(a, extra, ctx, ls, listing, machine)
     if a.project and not dry:
         try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same (after the KV types above are final)
             write_text_atomic(os.path.join(slotdir, "server.id"),
                               model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
         except OSError:
             pass
-    if a.fast == "kv":
-        say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
-    elif a.fast:
-        env.append(("MOE_CACHE_ROUTE", "skip"))
-        if a.fast == "2":
-            env.append(("MOE_CACHE_ROUTE_DROP", "4"))
-            say("moe-cache: --fast=2: up to 4 low-ranked experts per token that are not in RAM are skipped (for memory much smaller than the model: "
-                "Flash-Next at 12 GB +43 %; about 1 top token in 28 differs from stock, KL 0.022; RESULTS 53)")
-        elif a.fast == "fewer":
-            env.append(("MOE_CACHE_FEWER", "2"))
-            say("moe-cache: --fast=fewer: --fast, and on the CPU-held layers the 2 lowest-ranked experts of every token are never computed (top-10 -> 8 on Flash-Next); "
-                "output no longer identical to stock, quality limits in docs/QUALITY_GATE.md (level fewer)")
-        else:
-            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
-    elif not stock:
-        # suggest --fast only where it pays: the model is much bigger than the memory it may use
-        try:
-            size = sum(os.path.getsize(p) for p in model_parts(model))
-            lim = float(a.ram) * 1e9 if a.ram else machine.mem_total()
-            if lim and size > 2 * lim:
-                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts for about +10 % (changes some tokens; off by default)")
-        except Exception:
-            pass
-    if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and machine.has_cpu_atom():
-        ne = min(machine.cpu_atom_count(), 4)
-        if ne > 0:
-            env.append(("MOE_CACHE_EXEC_ECORES", str(ne)))
-            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
-    pinargs = []
-    hm = hybrid_masks(machine.win_cores()) if win else None
-    if machine.win_core_groups() > 1 and not a.no_pin:
-        say("moe-cache: " + WIN_GROUPS_NOTE)
-    if hm and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
-        pmask, ecpus = hm
-        if not a.no_pin:
-            pinargs = ["-C", hex(pmask), "--cpu-strict", "1"]
-            env.append(("MOE_CACHE_CPU_MASK", hex(pmask)))
-            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {hex(pmask)}); --no-pin to disable")
-        ne = min(len(ecpus), 4)
-        if ne and not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES"):
-            env += [("MOE_CACHE_EXEC_ECORES", str(ne)), ("MOE_CACHE_ECORE_MASK", hex(sum(1 << c for c in ecpus)))]
-            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
-    if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
-        mask = machine.perf_core_mask()
-        if mask:
-            pinargs = ["-C", mask, "--cpu-strict", "1"]
-            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
+    fast_env_stage(a, env, stock, model, machine)
+    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine)
     # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
