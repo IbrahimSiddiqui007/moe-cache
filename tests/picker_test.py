@@ -298,9 +298,9 @@ mc.write_claude_settings(cfg, env)
 d = json.load(open(cfg))
 check(d["permissions"] == {"allow": ["Bash(ls)"]} and d["env"]["FOO"] == "1" and d["env"]["ANTHROPIC_MODEL"] == "my-model", "connect claude --write: merged, the user's other settings kept")
 mc.write_claude_settings(cfg, dict(env, ANTHROPIC_MODEL="other"))
-check(json.load(open(cfg + ".bak"))["env"] == {"FOO": "1"} and json.load(open(cfg))["env"]["ANTHROPIC_MODEL"] == "other", "connect claude --write twice: the first .bak (what the user had) is kept")
+check(json.load(open(mc.claude_backup_path(cfg)))["env"] == {"FOO": "1"} and not os.path.exists(cfg + ".bak") and json.load(open(cfg))["env"]["ANTHROPIC_MODEL"] == "other", "connect claude --write twice: the first .bak (what the user had) is kept")
 if os.name != "nt":
-    check(os.stat(cfg).st_mode & 0o077 == 0 and os.stat(cfg + ".bak").st_mode & 0o077 == 0, "connect claude: the settings file and its backup are private")
+    check(os.stat(cfg).st_mode & 0o077 == 0 and os.stat(mc.claude_backup_path(cfg)).st_mode & 0o077 == 0, "connect claude: the settings file and its backup are private")
 open(cfg, "w").write("{ not json")
 try:
     mc.write_claude_settings(cfg, env); check(False, "connect claude: broken JSON refused")

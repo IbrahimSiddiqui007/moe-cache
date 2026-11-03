@@ -189,5 +189,134 @@ alt = os.path.join(TMP, "alt", "c.toml")
 run("codex", "--write", "--config", alt)
 check(os.path.isfile(alt), "--config PATH writes there")
 check("codex|pi|openclaw|aider|qwen" in open(os.path.join(HERE, "bin", "moe_cache.py")).read().split('"""')[1], "the usage text lists the new agents")
+# ---- writer robustness (audit 2026-11-03: AUD-066 .. AUD-078) ----
+W = os.path.join(TMP, "w"); os.makedirs(W)
+
+# AUD-066: a symlinked config stays a link; the target is replaced, the backup sits beside the target
+if os.name != "nt":
+    real = os.path.join(W, "dotfiles", "opencode.json"); link = os.path.join(W, "cfg", "opencode.json")
+    put(real, '{"provider": {"mine": {}}}'); os.makedirs(os.path.dirname(link)); os.symlink(real, link)
+    rc, _, _ = run("opencode", "--write", "--config", link)
+    check(rc == 0 and os.path.islink(link) and "moe-cache" in json.load(open(real))["provider"] and os.path.isfile(real + ".bak") and not os.path.exists(link + ".bak"),
+          "opencode: a symlinked config stays a link, the real file is merged, the backup is beside it")
+    real = os.path.join(W, "dotfiles", "settings.local.json"); link = os.path.join(W, "cfg", "settings.local.json")
+    put(real, '{"permissions": {}}'); os.symlink(real, link)
+    rc, _, _ = run("claude", "--write", "--config", link)
+    check(rc == 0 and os.path.islink(link) and json.load(open(real))["env"]["ANTHROPIC_MODEL"] == "fake-moe", "claude: a symlinked settings file stays a link")
+    real = os.path.join(W, "dotfiles", "qwen.json"); link = os.path.join(W, "cfg", "qwen.json")
+    put(real, '{"ui": 1}'); os.symlink(real, link)
+    rc, _, _ = run("qwen", "--write", "--config", link)
+    check(rc == 0 and os.path.islink(link) and json.load(open(real))["ui"] == 1 and os.path.isfile(real + ".bak"), "qwen: a symlinked config stays a link (shared writer)")
+
+# AUD-070: CRLF kept, non-ASCII not escaped, final newline
+oc = os.path.join(W, "crlf", "opencode.json")
+os.makedirs(os.path.dirname(oc))
+open(oc, "wb").write('{\r\n  "theme": "dunkel-ü"\r\n}\r\n'.encode("utf-8"))
+rc, _, _ = run("opencode", "--write", "--config", oc)
+raw = open(oc, "rb").read()
+check(rc == 0 and raw.endswith(b"\r\n") and b"\n" not in raw.replace(b"\r\n", b"") and "dunkel-ü".encode("utf-8") in raw and b"\\u00" not in raw, "opencode: CRLF kept, non-ASCII not escaped, final newline")
+fresh = os.path.join(W, "fresh", "opencode.json")
+run("opencode", "--write", "--config", fresh)
+check(open(fresh, "rb").read().endswith(b"}\n"), "opencode: a new file ends with a newline")
+cxc = os.path.join(W, "crlf", "config.toml")
+open(cxc, "wb").write(b'model = "x"\r\n[projects."/a"]\r\ntrust_level = "trusted"\r\n')
+if tomllib:
+    rc, _, _ = run("codex", "--write", "--config", cxc)
+    raw = open(cxc, "rb").read()
+    check(rc == 0 and b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b""), "codex: CRLF file stays CRLF")
+
+# AUD-071: the opencode backup is the first file, not re-copied when the file has no moe-cache provider
+oc = os.path.join(W, "second", "opencode.json")
+put(oc, '{"theme": "first"}')
+run("opencode", "--write", "--config", oc)
+put(oc, '{"theme": "second"}')                       # the user replaced the file by one without our provider
+run("opencode", "--write", "--config", oc)
+check(json.load(open(oc + ".bak")) == {"theme": "first"}, "opencode: a second connect on a file without our provider keeps the first backup")
+
+# AUD-072: an OSError is a message, not a traceback
+dirasfile = os.path.join(W, "isdir", "opencode.json"); os.makedirs(dirasfile)
+rc, _, _ = run("opencode", "--write", "--config", dirasfile)
+check(isinstance(rc, str) and "opencode was not connected" in rc, f"opencode: a directory where the file should be -> one message ({str(rc)[:100]})")
+bad = os.path.join(W, "cp1252", "config.toml"); os.makedirs(os.path.dirname(bad))
+open(bad, "wb").write(b'# caf\xe9\nmodel = "x"\n')
+if tomllib:
+    rc, _, _ = run("codex", "--write", "--config", bad)
+    check(isinstance(rc, str) and "not UTF-8" in rc and open(bad, "rb").read().startswith(b"# caf\xe9"), "codex: a file that is not UTF-8 -> a message, untouched")
+
+# AUD-069: no TOML check below Python 3.11 -> codex --write refuses
+_tl = sys.modules.get("tomllib", "absent"); sys.modules["tomllib"] = None
+rc, _, _ = run("codex", "--write", "--config", os.path.join(W, "notoml", "config.toml"))
+if _tl == "absent":
+    del sys.modules["tomllib"]
+else:
+    sys.modules["tomllib"] = _tl
+check(isinstance(rc, str) and "Python 3.11" in rc and not os.path.exists(os.path.join(W, "notoml", "config.toml")), "codex --write without tomllib: refused with the reason, nothing written")
+
+# AUD-073: Pi writes both files or neither
+if os.name != "nt":
+    pd = os.path.join(W, "pi"); os.makedirs(os.path.join(pd, "settings.json"))          # a directory where settings.json should be
+    rc, _, _ = run("pi", "--write", "--config", os.path.join(pd, "models.json"))
+    check(isinstance(rc, str) and not os.path.exists(os.path.join(pd, "models.json")) and not [f for f in os.listdir(pd) if f.endswith(".tmp")],
+          f"pi: when settings.json cannot be written models.json is not left behind, no temporary files remain ({str(rc)[:80]})")
+
+# AUD-078: the ambient LLAMA_API_KEY goes only to a server on this machine
+seen = []
+_kf = mc.key_for
+mc.key_for = lambda url, given=None: (seen.append((url, given)) or given)
+os.environ["LLAMA_API_KEY"] = "ENVKEY"
+run("pi", "--url", "http://remote.example:8080")
+run("pi", "--url", "http://127.0.0.1:8080")
+run("pi", "--url", "http://remote.example:8080", "--api-key", "TYPED")
+del os.environ["LLAMA_API_KEY"]
+mc.key_for = _kf
+check(seen == [("http://remote.example:8080", None), ("http://127.0.0.1:8080", "ENVKEY"), ("http://remote.example:8080", "TYPED")],
+      f"LLAMA_API_KEY is not sent to a remote --url (a typed --api-key is) ({seen})")
+
+# AUD-068: previews of hermes / opencode / claude never print the key
+for ag in ("hermes", "opencode", "claude"):
+    rc, out, err = run(ag)
+    check(rc == 0 and KEY not in out + err and "<your API key" in out + err, f"{ag}: the preview hides the key")
+
+# AUD-077: the Claude settings backup is not beside the project file
+proj = os.path.join(W, "proj"); cl = os.path.join(proj, ".claude", "settings.local.json")
+put(cl, '{"env": {"ANTHROPIC_API_KEY": "mine"}}')
+rc, out, _ = run("claude", "--write", "--config", cl)
+bk = mc.claude_backup_path(cl)
+check(rc == 0 and not os.path.exists(cl + ".bak") and json.load(open(bk))["env"] == {"ANTHROPIC_API_KEY": "mine"}, "claude: the backup of the project's settings file is outside the project folder")
+os.makedirs(os.path.join(W, "repo", "." + "git")); os.makedirs(os.path.join(W, "repo", "sub"))
+check("repo" in (mc.project_folder_hint(os.path.join(W, "repo", "sub")) or "") and mc.project_folder_hint(os.path.join(W, "repo")) is None, "claude: a sub-folder of a project gets a hint")
+
+# AUD-067 / 073 / 074: Hermes through a stand-in `hermes` (a script that keeps its config as a JSON file)
+if os.name != "nt":
+    hb = os.path.join(W, "hbin"); os.makedirs(hb)
+    hc = os.path.join(W, "hermes-config.yaml")
+    fake = os.path.join(hb, "hermes")
+    open(fake, "w").write('#!/usr/bin/env python3\nimport json, os, sys\nC = %r\n'
+                          'a = sys.argv[1:]\nd = json.load(open(C)) if os.path.exists(C) else {}\n'
+                          'if a[:2] == ["config", "path"]: print(C)\n'
+                          'elif a[:2] == ["config", "get"]: print(d.get(a[2], ""))\n'
+                          'elif a[:2] == ["config", "set"]:\n'
+                          '    if os.environ.get("FAKE_HERMES_FAIL") == a[2]: print("boom", file=sys.stderr); sys.exit(1)\n'
+                          '    d[a[2]] = a[3]; json.dump(d, open(C, "w"))\n' % hc)
+    os.chmod(fake, 0o755)
+    os.environ["PATH"] = hb + os.pathsep + os.environ["PATH"]
+    json.dump({"model.provider": "openrouter", "model.default": "gpt-x", "model.base_url": "https://openrouter.ai/api/v1"}, open(hc, "w"))
+    orig_h = open(hc).read()
+    rc, out, err = run("hermes", "--write")
+    check(rc == 0 and open(hc + ".bak").read() == orig_h and json.load(open(hc))["model.provider"] == "custom", "hermes: --write sets the model and backs up the old config")
+    check(KEY not in out + err, "hermes: the key is not printed")
+    run("hermes", "--write")                                                      # our own setting again: no new backup
+    check(len([f for f in os.listdir(W) if f.startswith("hermes-config.yaml.bak")]) == 1 and open(hc + ".bak").read() == orig_h, "hermes: a second connect does not bury the first backup")
+    json.dump({"model.provider": "custom", "model.default": "ollama-m", "model.base_url": "http://127.0.0.1:11434/v1"}, open(hc, "w"))   # the user's own local server
+    orig2 = open(hc).read()
+    run("hermes", "--write")
+    baks = sorted(f for f in os.listdir(W) if f.startswith("hermes-config.yaml.bak"))
+    check(len(baks) == 2 and open(hc + ".bak").read() == orig_h and any(open(os.path.join(W, f)).read() == orig2 for f in baks if f != "hermes-config.yaml.bak"),
+          f"hermes: the user's own local server is backed up too, the first .bak is never overwritten ({baks})")
+    os.environ["FAKE_HERMES_FAIL"] = "model.default"
+    rc, _, _ = run("hermes", "--write")
+    del os.environ["FAKE_HERMES_FAIL"]
+    check(isinstance(rc, str) and "partly set up" in rc and "model.provider" in rc and "model.default" in rc, f"hermes: a failure half-way says what is done and what is not ({str(rc)[:120]})")
+
 print("\n%d failed" % len(fails) if fails else "\nall ok")
 sys.exit(1 if fails else 0)
