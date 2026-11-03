@@ -6,6 +6,8 @@
 //   3. points the window at that address,
 //   4. gives a tray icon (Open / Start model / Stop model / Quit) and keeps one instance,
 //   5. on Quit stops the model through the page's own API, then the child.
+// The child is desktop/app_entry.py (staged as app_entry.py): the control page plus a stable address line and a parent-gone watch on its stdin, so
+// the shell vanishing (crash, kill) still stops the model. Without it the shell falls back to `moe_cache.py ui` and the human address line.
 // Everything the user sees is the control page, so a change there lands in the browser page and the app alike.
 // Design: docs/DESKTOP_APP_DESIGN.md.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -13,14 +15,18 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri::webview::NewWindowResponse;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_window_state::StateFlags;
+use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const MARKER: &str = "control page at ";
 
@@ -34,8 +40,12 @@ struct Ctl {
 #[derive(Default)]
 struct Inner {
     child: Mutex<Option<Child>>,
+    stdin: Mutex<Option<ChildStdin>>, // kept open while the app runs; closing it tells app_entry.py to stop the model and exit
     ctl: Mutex<Option<Ctl>>,
     log: Mutex<Vec<String>>,
+    splash: Mutex<Option<Url>>,
+    quitting: AtomicBool,
+    run: AtomicU32, // counts page starts: a watcher of an older run must not report
 }
 
 type State = Arc<Inner>;
@@ -90,17 +100,29 @@ fn python_cmd(app: &AppHandle) -> PathBuf {
 
 // ---- the child process ----
 
+/// (script, arguments): app_entry.py when it is there (staged next to bin/, or desktop/ in a checkout), else the plain launcher.
+fn page_command(root: &Path) -> (PathBuf, Vec<&'static str>) {
+    for rel in [Path::new("app_entry.py"), Path::new("desktop").join("app_entry.py").as_path()] {
+        let p = root.join(rel);
+        if p.is_file() {
+            return (p, vec!["--ui-port", "0"]);
+        }
+    }
+    (root.join("bin").join("moe_cache.py"), vec!["ui", "--ui-port", "0", "--no-browser"])
+}
+
 fn spawn_page(app: &AppHandle, state: &State, tx: mpsc::Sender<String>) -> Result<(), String> {
     let root = kit_root(app).ok_or("the moe-cache files (bin/moe_cache.py, ui/index.html) were not found; set MOE_CACHE_HOME")?;
     let py = python_cmd(app);
+    let (script, args) = page_command(&root);
     let mut cmd = Command::new(&py);
     cmd.arg("-u")
-        .arg(root.join("bin").join("moe_cache.py"))
-        .args(["ui", "--ui-port", "0", "--no-browser"])
+        .arg(script)
+        .args(args)
         .current_dir(&root)
         .env("PYTHONIOENCODING", "utf-8")
         .env("MOE_CACHE_APP", "1")
-        .stdin(Stdio::piped()) // kept open: the page can later treat EOF as "the app is gone" and stop its model
+        .stdin(Stdio::piped()) // kept open: app_entry.py treats end of input as "the app is gone" and stops its model
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(windows)]
@@ -109,6 +131,7 @@ fn spawn_page(app: &AppHandle, state: &State, tx: mpsc::Sender<String>) -> Resul
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
     let mut child = cmd.spawn().map_err(|e| format!("could not start {}: {e}", py.display()))?;
+    *state.stdin.lock().unwrap() = child.stdin.take();
     let out = child.stdout.take();
     let err = child.stderr.take();
     *state.child.lock().unwrap() = Some(child);
@@ -123,13 +146,22 @@ fn spawn_page(app: &AppHandle, state: &State, tx: mpsc::Sender<String>) -> Resul
                         log.remove(0);
                     }
                 }
-                if let Some(url) = marker_url(&line) {
+                if let Some(url) = json_url(&line).or_else(|| marker_url(&line)) {
                     let _ = tx.send(url);
                 }
             }
         });
     }
     Ok(())
+}
+
+/// The address in the stable line app_entry.py prints: {"moe_cache_ui": {"url": "http://127.0.0.1:PORT/?t=TOKEN", ...}}
+fn json_url(line: &str) -> Option<String> {
+    if !line.starts_with("{\"moe_cache_ui\"") {
+        return None;
+    }
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    v["moe_cache_ui"]["url"].as_str().map(String::from)
 }
 
 /// The address in the line "moe-cache: control page at http://127.0.0.1:PORT/?t=TOKEN (this machine ...)".
@@ -187,7 +219,17 @@ fn stop_model(state: &State, secs: u64) {
     }
 }
 
-fn kill_child(state: &State) {
+/// End the page process: close its stdin (app_entry.py stops the model and exits), wait up to `secs`, then kill what is left.
+fn end_child(state: &State, secs: u64) {
+    drop(state.stdin.lock().unwrap().take());
+    let t = Instant::now();
+    while t.elapsed() < Duration::from_secs(secs) {
+        match state.child.lock().unwrap().as_mut().map(|c| c.try_wait()) {
+            None | Some(Ok(Some(_))) | Some(Err(_)) => break,
+            Some(Ok(None)) => {}
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
     if let Some(mut c) = state.child.lock().unwrap().take() {
         let _ = c.kill();
         let _ = c.wait();
@@ -211,18 +253,145 @@ fn navigate(app: &AppHandle, url: &str) {
     }
 }
 
+/// A log line without the run's token ("?t=..." in the address lines): the text goes on screen, into screenshots and bug reports.
+fn redact(line: &str) -> String {
+    match line.find("t=") {
+        Some(i) if line[..i].ends_with('?') => {
+            let end = line[i..].find(|c: char| c.is_whitespace() || c == '"').map_or(line.len(), |n| i + n);
+            format!("{}t=…{}", &line[..i], &line[end..])
+        }
+        _ => line.to_string(),
+    }
+}
+
+/// Show `text` on the splash page (the page may still be loading: say it three times).
 fn fail(app: &AppHandle, state: &State, why: &str) {
-    let tail = state.log.lock().unwrap().iter().rev().take(15).rev().cloned().collect::<Vec<_>>().join("\n");
-    let text = format!("{why}\n\n{tail}");
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.eval(&format!("window.__moeFail && window.__moeFail({})", serde_json::to_string(&text).unwrap()));
+    fail_titled(app, state, why, "moe-cache could not start its control page.")
+}
+
+fn fail_titled(app: &AppHandle, state: &State, why: &str, title: &str) {
+    let tail = state.log.lock().unwrap().iter().rev().take(15).rev().map(|l| redact(l)).collect::<Vec<_>>().join("\n");
+    let js = format!("window.__moeFail && window.__moeFail({}, {})", serde_json::to_string(&format!("{why}\n\n{tail}")).unwrap(), serde_json::to_string(title).unwrap());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for ms in [100, 700, 1500] {
+            std::thread::sleep(Duration::from_millis(ms));
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.eval(&js);
+            }
+        }
+    });
+}
+
+/// Back to the splash page (when the control page process has ended).
+fn show_splash(app: &AppHandle, state: &State) {
+    let splash = state.splash.lock().unwrap().clone();
+    if let (Some(w), Some(u)) = (app.get_webview_window("main"), splash) {
+        let _ = w.navigate(u);
     }
 }
 
 fn quit(app: &AppHandle, state: &State) {
-    stop_model(state, 20);
-    kill_child(state);
+    state.quitting.store(true, Ordering::SeqCst);
+    stop_model(state, 20); // through the page's API: works with any page process
+    end_child(state, 20);
     app.exit(0);
+}
+
+// ---- links: the window shows the control page only; every other address opens in the system browser ----
+
+/// May the window itself go to this address? Its own pages (the splash and the control page on this run's port) only.
+fn is_internal(url: &Url, ctl_port: Option<u16>) -> bool {
+    match url.scheme() {
+        "tauri" | "about" | "data" | "blob" => true,
+        "http" | "https" => {
+            let host = url.host_str().unwrap_or("");
+            host == "tauri.localhost" || (url.scheme() == "http" && host == "127.0.0.1" && ctl_port.is_some() && url.port() == ctl_port)
+        }
+        _ => false,
+    }
+}
+
+/// Only web addresses are handed to the system: no file:, no custom schemes.
+fn safe_external(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+}
+
+fn open_external(url: &Url) {
+    if !safe_external(url) {
+        return;
+    }
+    let u = url.as_str();
+    #[cfg(windows)]
+    let mut cmd = {
+        use std::os::windows::process::CommandExt;
+        let mut c = Command::new("rundll32");
+        c.args(["url.dll,FileProtocolHandler", u]).creation_flags(0x0800_0000);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = Command::new("open");
+        c.arg(u);
+        c
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut cmd = {
+        let mut c = Command::new("xdg-open");
+        c.arg(u);
+        c
+    };
+    let _ = cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+}
+
+// ---- starting the control page, and noticing when it ends ----
+
+/// Start the page process; the window follows once it reports its address. A watcher tells the user when the process ends on its own.
+fn start_page(app: &AppHandle, state: &State) {
+    let run = state.run.fetch_add(1, Ordering::SeqCst) + 1;
+    *state.ctl.lock().unwrap() = None;
+    state.log.lock().unwrap().clear();
+    let (tx, rx) = mpsc::channel::<String>();
+    if let Err(e) = spawn_page(app, state, tx) {
+        fail(app, state, &e);
+        return;
+    }
+    let (app, st) = (app.clone(), state.clone());
+    std::thread::spawn(move || {
+        match rx.recv_timeout(Duration::from_secs(60)) {
+            Ok(url) => match parse_url(&url) {
+                Some(ctl) => {
+                    *st.ctl.lock().unwrap() = Some(ctl);
+                    navigate(&app, &url);
+                }
+                None => return fail(&app, &st, "the control page printed an address this app does not understand"),
+            },
+            Err(_) => return fail(&app, &st, "the control page did not report an address within 60 seconds"),
+        }
+        loop {
+            std::thread::sleep(Duration::from_secs(1));
+            if st.quitting.load(Ordering::SeqCst) || st.run.load(Ordering::SeqCst) != run {
+                return;
+            }
+            let ended = match st.child.lock().unwrap().as_mut().map(|c| c.try_wait()) {
+                Some(Ok(Some(status))) => Some(status.to_string()),
+                None => Some("no process".to_string()),
+                _ => None,
+            };
+            if let Some(how) = ended {
+                *st.ctl.lock().unwrap() = None;
+                show_splash(&app, &st);
+                return fail_titled(&app, &st, &format!("The control page process ended ({how}). Use the tray icon: Restart control page. A model it started has been stopped by it, or shows under Other servers after a restart."), "moe-cache's control page stopped.");
+            }
+        }
+    });
+}
+
+fn restart_page(app: &AppHandle, state: &State) {
+    stop_model(state, 10);
+    end_child(state, 15);
+    show_splash(app, state);
+    start_page(app, state);
 }
 
 fn main() {
@@ -232,6 +401,10 @@ fn main() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        // start at login: off until the user ticks the tray item; a login start goes to the tray without opening the window
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
+        // remembers size and position (not visibility: a login start stays hidden)
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED).build())
         .on_window_event(|w, ev| {
             // the close button hides to the tray; Quit in the tray menu ends the app
             if let WindowEvent::CloseRequested { api, .. } = ev {
@@ -242,13 +415,39 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
 
+            // the window is built here (not in tauri.conf.json) so it can refuse to leave the control page: other addresses open in the system browser
+            let (st_nav, st_new) = (st_setup.clone(), st_setup.clone());
+            let win = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+                .title("moe-cache")
+                .inner_size(1280.0, 820.0)
+                .min_inner_size(480.0, 520.0)
+                .visible(!std::env::args().any(|a| a == "--hidden"))
+                .on_navigation(move |url| {
+                    if is_internal(url, ctl_of(&st_nav).map(|c| c.port)) {
+                        return true;
+                    }
+                    open_external(url);
+                    false
+                })
+                .on_new_window(move |url, _| {
+                    // target=_blank and window.open: llama-server's own page on our port too, which the system browser shows better than a second app window
+                    let _ = &st_new;
+                    open_external(&url);
+                    NewWindowResponse::Deny
+                })
+                .build()?;
+            *st_setup.splash.lock().unwrap() = win.url().ok();
+
             // tray
             let open = MenuItem::with_id(app, "open", "Open moe-cache", true, None::<&str>)?;
             let start = MenuItem::with_id(app, "start", "Start model", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop model", true, None::<&str>)?;
+            let login = CheckMenuItem::with_id(app, "login", "Start at login", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
+            let login_item = login.clone();
+            let restart = MenuItem::with_id(app, "restart", "Restart control page", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(app, &[&open, &sep, &start, &stop, &sep, &quit_i])?;
+            let menu = Menu::with_items(app, &[&open, &sep, &start, &stop, &restart, &login, &sep, &quit_i])?;
             let st_menu = st_setup.clone();
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().ok_or("no window icon")?.clone())
@@ -270,6 +469,16 @@ fn main() {
                         let s = st_menu.clone();
                         std::thread::spawn(move || stop_model(&s, 20));
                     }
+                    "login" => {
+                        let al = app.autolaunch();
+                        let on = al.is_enabled().unwrap_or(false);
+                        let _ = if on { al.disable() } else { al.enable() };
+                        let _ = login_item.set_checked(al.is_enabled().unwrap_or(false));
+                    }
+                    "restart" => {
+                        let (a, s) = (app.clone(), st_menu.clone());
+                        std::thread::spawn(move || restart_page(&a, &s));
+                    }
                     "quit" => {
                         let (a, s) = (app.clone(), st_menu.clone());
                         std::thread::spawn(move || quit(&a, &s));
@@ -283,26 +492,7 @@ fn main() {
                 })
                 .build(app)?;
 
-            // the control page as a child process; the window follows once it prints its address
-            let (tx, rx) = mpsc::channel::<String>();
-            if let Err(e) = spawn_page(&handle, &st_setup, tx) {
-                fail(&handle, &st_setup, &e);
-                return Ok(());
-            }
-            let st = st_setup.clone();
-            std::thread::spawn(move || {
-                match rx.recv_timeout(Duration::from_secs(60)) {
-                    Ok(url) => match parse_url(&url) {
-                        Some(ctl) => {
-                            *st.ctl.lock().unwrap() = Some(ctl);
-                            navigate(&handle, &url);
-                        }
-                        None => fail(&handle, &st, "the control page printed an address this app does not understand"),
-                    },
-                    Err(_) => fail(&handle, &st, "the control page did not report an address within 60 seconds"),
-                }
-                // crash handling (M2 in the design): if the child ends on its own, say so and offer a restart
-            });
+            start_page(&handle, &st_setup);
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -312,8 +502,9 @@ fn main() {
         // closing the window must not end the app: the tray keeps it (and the model) running
         RunEvent::ExitRequested { api, code, .. } if code.is_none() => api.prevent_exit(),
         RunEvent::Exit => {
+            st_run.quitting.store(true, Ordering::SeqCst);
             stop_model(&st_run, 10);
-            kill_child(&st_run);
+            end_child(&st_run, 10);
             let _ = app_handle;
         }
         _ => {}
@@ -370,5 +561,56 @@ mod tests {
         let port = l.local_addr().unwrap().port();
         drop(l);
         assert!(api(&Ctl { port, token: "t".into() }, "GET", "/", "", 1).is_none());
+    }
+
+    #[test]
+    fn the_token_never_reaches_the_screen() {
+        assert_eq!(redact("moe-cache: control page at http://127.0.0.1:5000/?t=abc_DEF-1 (this machine"), "moe-cache: control page at http://127.0.0.1:5000/?t=… (this machine");
+        assert_eq!(redact(r#"{"moe_cache_ui": {"url": "http://127.0.0.1:5000/?t=abc", "port": 5000}}"#), r#"{"moe_cache_ui": {"url": "http://127.0.0.1:5000/?t=…", "port": 5000}}"#);
+        assert_eq!(redact("plain line, nothing to hide"), "plain line, nothing to hide");
+    }
+
+    #[test]
+    fn reads_the_stable_json_line() {
+        let l = r#"{"moe_cache_ui": {"url": "http://127.0.0.1:5000/?t=abc", "port": 5000, "pid": 7}}"#;
+        assert_eq!(json_url(l).as_deref(), Some("http://127.0.0.1:5000/?t=abc"));
+        assert_eq!(json_url("moe-cache: control page at http://127.0.0.1:5000/?t=abc"), None);
+        assert_eq!(json_url(r#"{"moe_cache_ui": "broken""#), None);
+    }
+
+    #[test]
+    fn the_window_stays_on_its_own_pages() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(is_internal(&u("tauri://localhost/"), None));
+        assert!(is_internal(&u("http://tauri.localhost/index.html"), None));
+        assert!(is_internal(&u("http://127.0.0.1:5000/?t=abc"), Some(5000)));
+        assert!(!is_internal(&u("http://127.0.0.1:5000/"), None));
+        assert!(!is_internal(&u("http://127.0.0.1:8080/"), Some(5000))); // llama-server's own page
+        assert!(!is_internal(&u("https://huggingface.co/x"), Some(5000)));
+        assert!(!is_internal(&u("file:///etc/passwd"), Some(5000)));
+    }
+
+    #[test]
+    fn only_web_addresses_go_to_the_system() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        assert!(safe_external(&u("https://github.com/ggml-org/llama.cpp/releases")));
+        assert!(safe_external(&u("http://127.0.0.1:8080/")));
+        assert!(!safe_external(&u("file:///C:/Windows/System32/calc.exe")));
+        assert!(!safe_external(&u("ms-msdt:/id")));
+        assert!(!safe_external(&u("javascript:alert(1)")));
+    }
+
+    #[test]
+    fn picks_app_entry_when_present() {
+        let d = std::env::temp_dir().join(format!("moe-desk-test-{}", std::process::id()));
+        std::fs::create_dir_all(d.join("bin")).unwrap();
+        let (p, args) = page_command(&d);
+        assert!(p.ends_with("bin/moe_cache.py") || p.ends_with("bin\\moe_cache.py"));
+        assert_eq!(args.first(), Some(&"ui"));
+        std::fs::write(d.join("app_entry.py"), "").unwrap();
+        let (p, args) = page_command(&d);
+        assert!(p.ends_with("app_entry.py"));
+        assert_eq!(args, vec!["--ui-port", "0"]);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

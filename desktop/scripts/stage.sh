@@ -6,7 +6,7 @@ here="$(cd "$(dirname "$0")/.." && pwd)"; repo="$(cd "$here/.." && pwd)"
 dst="$here/src-tauri/resources/moe-cache"
 mkdir -p "$dst"; find "$dst" -mindepth 1 ! -name .gitkeep -delete
 cp -r "$repo/bin" "$repo/ui" "$repo/planner" "$dst/"
-cp "$repo/models.json" "$dst/"
+cp "$repo/models.json" "$repo/desktop/app_entry.py" "$dst/"
 find "$dst" -name __pycache__ -type d -prune -exec rm -rf {} +
 rm -f "$dst"/bin/moe-cache-ui.bat
 while [ "${1:-}" = "--with-plugin" ]; do cp "$2" "$dst/"; shift 2; done
