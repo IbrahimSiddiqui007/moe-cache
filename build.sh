@@ -10,7 +10,8 @@
 set -e
 cd "$(dirname "$0")"
 HDR=third_party/ggml; OUT="${BUILD_DIR:-build}"
-if [ "${GGML_API:-2}" = 3 ]; then HDR=third_party/ggml-v3; fi
+# GGML_API must be 2 or 3 (or unset = 2): any other value (GGML_API=4, a typo) used to build silently against the API 2 headers
+case "${GGML_API:-2}" in 2) ;; 3) HDR=third_party/ggml-v3 ;; *) echo "build.sh: GGML_API must be 2 or 3 (got '$GGML_API'); unset means 2" >&2; exit 1 ;; esac
 if [ "$1" = "--windows" ]; then
   # MINGW_CXX: the compiler (default x86_64-w64-mingw32-g++; a UCRT one such as x86_64-w64-mingw32ucrt-g++ matches official llama.cpp's C runtime)
   W="${BUILD_DIR:-build/win}"; M=x86_64-w64-mingw32; CXX="${MINGW_CXX:-$M-g++}"; mkdir -p "$W"
