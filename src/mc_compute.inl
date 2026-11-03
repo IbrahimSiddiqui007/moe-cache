@@ -736,7 +736,7 @@ bool be_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst,
         return false;
     }
     const size_t n = ggml_nbytes(src);
-    if (n != ggml_nbytes(dst) || !ggml_is_contiguous(src) || !ggml_is_contiguous(dst) || (dst->ne[2] > 1 && strncmp(dst->name, "blk.", 4) == 0)) {
+    if (n != ggml_nbytes(dst) || !ggml_is_contiguous(src) || !ggml_is_contiguous(dst) || mcname::is_expert_tensor(dst->name, dst->ne[2])) {
         return false;   // expert weights go through buf_set (cache registration)
     }
     if (n == 0) {

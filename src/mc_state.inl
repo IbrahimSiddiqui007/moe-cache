@@ -1086,6 +1086,25 @@ state_t * g_crash_state = nullptr;
 std::atomic<int> g_crash_said{0};
 LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter = nullptr;
 
+// QUALITY-027: snprintf returns the length it WOULD have written; adding that to n and then passing sizeof(buf) - n let a long line (a module path of
+// 260 characters, many null nodes) wrap the size around and write past the buffer. This keeps n inside the buffer and writes nothing it cannot hold.
+int crash_cat(char * buf, size_t cap, int n, const char * fmt, ...) {
+    if (n < 0) {
+        n = 0;
+    }
+    if ((size_t) n >= cap) {
+        return (int) cap - 1;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    const int r = vsnprintf(buf + n, cap - (size_t) n, fmt, ap);
+    va_end(ap);
+    if (r < 0) {
+        return n;
+    }
+    return (size_t) (n + r) >= cap ? (int) cap - 1 : n + r;
+}
+
 bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     const EXCEPTION_RECORD * er = ep ? ep->ExceptionRecord : nullptr;
     state_t * s = g_crash_state;
@@ -1120,40 +1139,40 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
         const size_t rel = addr - (uintptr_t) hit->data;
         const int64_t e = std::max<int64_t>(0, std::min<int64_t>((int64_t) (rel / hit->nb2), hit->n_expert - 1));
         const node_t & nd = s->nodes[(size_t) (hit->node0 + e)];
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
+        n = crash_cat(buf, sizeof(buf), n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
                       "cache %.2f of %.2f GiB, %llu evictions", hit->name.c_str(), (long long) e, rel - (size_t) e * hit->nb2, hit->nb2, (int) nd.resident,
                       (int) nd.loading, (int) nd.mapped, (unsigned long long) nd.epoch, (unsigned long long) s->epoch,
                       (unsigned long long) (s->protect_epoch == UINT64_MAX ? 0 : s->protect_epoch), s->resident_bytes / 1073741824.0,
                       s->budget / 1073741824.0, (unsigned long long) s->evictions);
     } else {
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, " (not in the expert cache)");
+        n = crash_cat(buf, sizeof(buf), n, " (not in the expert cache)");
     }
     // was the plugin handing a graph to the CPU backend? If so, its nodes without data (a NULL base + offset write points there)
     if (ggml_cgraph * g = g_cpu_graph.load()) {
         const int nn = ggml_graph_n_nodes(g);
         int nulls = 0;
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
+        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
         for (int i = 0; i < nn && n < (int) sizeof(buf) - 200; i++) {
             const ggml_tensor * t = ggml_graph_node(g, i);
             const bool null_src = (t->src[0] && !t->src[0]->data) || (t->src[1] && !t->src[1]->data);
             if (t->op != GGML_OP_NONE && (!t->data || null_src) && nulls++ < 8) {
-                n += snprintf(buf + n, sizeof(buf) - (size_t) n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
+                n = crash_cat(buf, sizeof(buf), n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
                               t->data, t->src[0] ? t->src[0]->data : nullptr, t->src[1] ? t->src[1]->data : nullptr,
                               (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2]);
             }
         }
         if (!nulls) {
-            n += snprintf(buf + n, sizeof(buf) - (size_t) n, "; no node or source without data");
+            n = crash_cat(buf, sizeof(buf), n, "; no node or source without data");
         }
     } else {
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
+        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
     }
     // inside executor work (a pool worker or the compute thread's share): which op, task, row, column and output it was computing
     if (const exec_where_t & wh = g_exec_where; wh.op) {
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "\nmoe-cache: crash: inside the executor: op %s, task %p", wh.op, (const void *) wh.task);
+        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside the executor: op %s, task %p", wh.op, (const void *) wh.task);
         if (wh.task) {
             n = std::min<int>(n, (int) sizeof(buf) - 2);
-            n += snprintf(buf + n, sizeof(buf) - (size_t) n, " (weights %p, %d columns, %lld rows), row %lld, column %d, dst %p",
+            n = crash_cat(buf, sizeof(buf), n, " (weights %p, %d columns, %lld rows), row %lld, column %d, dst %p",
                           (const void *) wh.task->w, wh.task->ncol, (long long) wh.task->rows, (long long) wh.r, wh.k, (const void *) wh.dst);
         }
     }
@@ -1168,7 +1187,7 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     // stack of the faulting thread, module+offset per frame (x64 unwind tables)
     {
         CONTEXT ctx = *ep->ContextRecord;
-        n += snprintf(buf + n, sizeof(buf) - (size_t) n, "moe-cache: crash: stack");
+        n = crash_cat(buf, sizeof(buf), n, "moe-cache: crash: stack");
         for (int f = 0; f < 20 && ctx.Rip && n < (int) sizeof(buf) - 120; f++) {
             HMODULE fm = nullptr;
             char fname[MAX_PATH] = "?";
@@ -1176,7 +1195,7 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
                 GetModuleFileNameA(fm, fname, MAX_PATH);
             }
             const char * fb = std::max(strrchr(fname, '\\'), strrchr(fname, '/'));
-            n += snprintf(buf + n, sizeof(buf) - (size_t) n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
+            n = crash_cat(buf, sizeof(buf), n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
             DWORD64 image = 0;
             PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &image, nullptr);
             if (rf) {

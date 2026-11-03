@@ -123,7 +123,7 @@ void buf_memset(ggml_backend_buffer_t, ggml_tensor * t, uint8_t v, size_t off, s
 
 void buf_set(ggml_backend_buffer_t, ggml_tensor * t, const void * data, size_t off, size_t size) {
     state_t & s = S();
-    if (s.cache_on && t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0 && off == 0 && size == ggml_nbytes(t)) {
+    if (s.cache_on && mcname::is_expert_tensor(t->name, t->ne[2]) && off == 0 && size == ggml_nbytes(t)) {
         std::lock_guard<std::mutex> lk(s.mu);
         if (s.register_tensor(t, data) >= 0) {
             return;
@@ -152,11 +152,11 @@ void buf_clear(ggml_backend_buffer_t buffer, uint8_t v) {
 
 // expert tensors get 12 KiB of padding so that init_tensor can move the data to an address that matches its file offset (mod 4096)
 bool is_expert_tensor(const ggml_tensor * t) {
-    return S().cache_on && S().direct_ok && t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0;
+    return S().cache_on && S().direct_ok && mcname::is_expert_tensor(t->name, t->ne[2]);
 }
 
 ggml_status buf_init_tensor(ggml_backend_buffer_t buffer, ggml_tensor * t) {
-    if (S().cache_on && !(t->ne[2] > 1 && strncmp(t->name, "blk.", 4) == 0)) {
+    if (S().cache_on && !(mcname::is_expert_tensor(t->name, t->ne[2]))) {
         buf_commit_once(buf_ctx(buffer), t->data, ggml_nbytes(t));
     }
     if (is_expert_tensor(t)) {
