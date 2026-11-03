@@ -217,12 +217,99 @@ bool hybrid_reload(moe_cache_backend_ctx * c, state_t & s) {
     return true;
 }
 
+// ---- decode tier (MOE_CACHE_DECODE_TIER=L1,L2,..., experimental, default off) ----
+// Whole layers of experts live on the GPU during decode, in the room the long-prompt block gives back (its buffer is idle in decode). It is the hybrid bank with
+// slot = expert, so every pick of those layers hits and the CPU does nothing for them; the other layers stay with the executor. A long prompt drops the bank
+// (hybrid_drop, because its first block finds no room) and the next decode step loads it again (hybrid_reload). MOE_CACHE_DECODE_TIER_KEEP_MIB (default 512)
+// stays free. MOE_CACHE_DECODE_TIER_CHECK=1: also run the CPU executor for those layers, compare, and keep the CPU result (the text does not change).
+const std::vector<int> & tier_wanted() {
+    static const std::vector<int> v = tier_parse(getenv("MOE_CACHE_DECODE_TIER"));
+    return v;
+}
+
+bool tier_check_on() {
+    static const bool on = getenv("MOE_CACHE_DECODE_TIER_CHECK") && atoi(getenv("MOE_CACHE_DECODE_TIER_CHECK")) > 0;
+    return on;
+}
+
+bool tier_build(moe_cache_backend_ctx * c, state_t & s) {
+    c->hb_tried = true;
+    if (!s.gpu_dev || c->gpu_failed) {
+        return false;
+    }
+    if (!c->gpu) {
+        c->gpu = ggml_backend_dev_init(s.gpu_dev, nullptr);
+        if (!c->gpu) {
+            c->gpu_failed = true;
+            return false;
+        }
+    }
+    if (c->galloc) {                       // the block buffer is idle in decode: give it back first (the next long prompt allocates it again)
+        ggml_gallocr_free(c->galloc);
+    }
+    c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
+    std::map<int, size_t> layer_bytes;
+    for (const auto & tp : s.tensors) {
+        if (tp->layer >= 0 && !tp->repack && tp->tensor) {
+            layer_bytes[tp->layer] += tp->nb2 * (size_t) tp->n_expert;
+        }
+    }
+    size_t fr = 0, tot = 0;
+    ggml_backend_dev_memory(s.gpu_dev, &fr, &tot);
+    const size_t keep = (getenv("MOE_CACHE_DECODE_TIER_KEEP_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_DECODE_TIER_KEEP_MIB"))) : (size_t) 512) << 20;
+    const std::vector<int> pick = tier_fit(tier_wanted(), layer_bytes, fr, keep);
+    if (pick.empty()) {
+        fprintf(stderr, "moe-cache: decode tier: no layer fits (%zu MiB free, %zu MiB kept free): no tier\n", fr >> 20, keep >> 20);
+        return false;
+    }
+    if (c->hb_ctx) {
+        ggml_free(c->hb_ctx);
+        c->hb.clear();
+    }
+    ggml_init_params ip = { ggml_tensor_overhead() * (s.tensors.size() + 1), nullptr, true };
+    c->hb_ctx = ggml_init(ip);
+    size_t bytes = 0;
+    for (size_t i = 0; i < s.tensors.size(); i++) {
+        const tinfo_t & ti = *s.tensors[i];
+        if (ti.layer < 0 || ti.repack || !ti.tensor || std::find(pick.begin(), pick.end(), ti.layer) == pick.end()) {
+            continue;
+        }
+        const ggml_tensor * t = ti.tensor;
+        ggml_tensor * bank = ggml_new_tensor_3d(c->hb_ctx, t->type, t->ne[0], t->ne[1], ti.n_expert);
+        std::vector<int> slot((size_t) ti.n_expert);
+        for (size_t e = 0; e < slot.size(); e++) {
+            slot[e] = (int) e;
+        }
+        c->hb[(int) i] = { bank, slot };
+        bytes += ti.nb2 * (size_t) ti.n_expert;
+    }
+    c->hb_buf = ggml_backend_alloc_ctx_tensors(c->hb_ctx, c->gpu);
+    if (!c->hb_buf) {
+        fprintf(stderr, "moe-cache: decode tier: could not allocate %zu MiB on the GPU (%zu MiB free): no tier\n", bytes >> 20, fr >> 20);
+        c->hb.clear();
+        return false;
+    }
+    c->ad_every = 0;                       // no adaptive swaps: the banks are whole layers
+    c->tier_on = true;
+    hybrid_upload(c, s);
+    std::string ls;
+    for (int l : pick) {
+        ls += (ls.empty() ? "" : ",") + std::to_string(l);
+    }
+    fprintf(stderr, "moe-cache: decode tier: layers %s on the GPU for decode (%zu MiB; %zu MiB were free, %zu MiB kept free)%s\n", ls.c_str(), bytes >> 20, fr >> 20,
+            keep >> 20, tier_check_on() ? "; CHECK mode (the CPU result is used)" : "");
+    return true;
+}
+
 bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
     if (c->hb_tried) {
         if (!c->hb_buf && c->hb_dropped) {
             return hybrid_reload(c, s);
         }
         return c->hb_buf != nullptr;
+    }
+    if (!tier_wanted().empty()) {
+        return tier_build(c, s);
     }
     c->hb_tried = true;
     const char * env = getenv("MOE_CACHE_HYBRID");
@@ -547,7 +634,46 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     s.hyb_picks += (uint64_t) (n_used * n_tok);
     s.hyb_hits += (uint64_t) n_hit;
     last_out = first + (int) seg.size() - 1;
+    if (c->tier_on && n_hit == n_used * n_tok && !tier_check_on()) {
+        c->tier_ok.insert(layer);
+    }
     return true;
+}
+
+// MOE_CACHE_DECODE_TIER_CHECK=1: the GPU result of nodes first..last is in place; keep a copy, run the CPU executor for the same nodes (the text then comes from the CPU, as
+// without the tier) and compare. A GPU result that is merely rounded differently shows as a relative error near 1e-3; a wrong one (the single-token defect of T25) as 1e-1 or more.
+void tier_check(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last) {
+    ggml_tensor * out = ggml_graph_node(cg, last);
+    const size_t nb = ggml_nbytes(out);
+    const std::vector<char> gpu((const char *) out->data, (const char *) out->data + nb);
+    for (int j = first; j <= last; j++) {
+        ggml_tensor * nd = ggml_graph_node(cg, j);
+        if (nd->op == GGML_OP_MUL_MAT_ID) {
+            exec_wait_loaded(s, nd);
+            exec_one_op(s, nd);
+        } else {
+            exec_run_nodes(c, cg, std::vector<int>{ j });
+        }
+    }
+    const float * g = (const float *) gpu.data(), * h = (const float *) out->data;
+    size_t exact = 0;
+    double mx = 0, ref = 0;
+    for (size_t k = 0; k < nb / sizeof(float); k++) {
+        const double d = std::fabs((double) g[k] - (double) h[k]);
+        exact += d == 0;
+        mx = std::max(mx, d);
+        ref = std::max(ref, std::fabs((double) h[k]));
+    }
+    static uint64_t n = 0, bad = 0;
+    static double worst = 0;
+    const double rel = ref > 0 ? mx / ref : 0;
+    worst = std::max(worst, rel);
+    n++;
+    bad += rel > 0.05;
+    if (n <= 4 || (rel > 0.05 && bad <= 8) || n % 2000 == 0) {
+        fprintf(stderr, "moe-cache: decode tier check #%llu: layer %d, %zu of %zu values equal, largest difference %.3g of %.3g (%.2g relative); worst so far %.2g, %llu groups above 0.05\n",
+                (unsigned long long) n, s.tensors[(size_t) s.by_tensor.at(ggml_graph_node(cg, first)->src[0])]->layer, exact, nb / sizeof(float), mx, ref, rel, worst, (unsigned long long) bad);
+    }
 }
 
 }  // namespace
