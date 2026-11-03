@@ -34,7 +34,8 @@ void remove_crash_report();
 #include "mc_state_gpu.h"
 #include "mc_state_pack_members.h"
 #include "mc_state_policy.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t {
+#include "mc_state_rebalance_members.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -216,18 +217,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
     std::unordered_map<const ggml_tensor *, int> by_tensor;
     std::vector<node_t> nodes;
     std::vector<uint32_t> node_owner;           // index in `tensors` of the tensor that owns each node (same size as nodes)
-    // idle rebalance (BO-2): while no graph runs for rb_idle_ms, read the experts with the highest decayed use count that are missing into free room or
-    // the room of the lowest-count resident ones (rb_choose), at most rb_cap_bytes per idle period, one expert at a time, stopping as soon as a graph starts
-    bool   rb_on = true;                                // BO-2 idle refill: on since 0.3.3 (won every PC pair, RESULTS 73); MOE_CACHE_IDLE_REBALANCE=0 turns it off
-    int    rb_idle_ms = 1500;
-    size_t rb_cap_bytes = (size_t) 512 << 20;
-    double rb_gain = 2.0, rb_min_score = 0.75;
-    std::thread rb_th;
-    std::condition_variable rb_cv;
-    bool   rb_stop = false;
-    int    graph_active = 0;                            // be_compute calls in flight (mu)
-    uint64_t graph_seq = 0;                             // graphs started (mu)
-    uint64_t rb_round_seq = ~0ull;                      // graph_seq of the last rebalance round: one round per idle period
     // idea P20 (MOE_CACHE_PREFILL_LEND_MIB=N, default 0 = off): while long prompt batches run, the expert cache gives N MiB back to the system (the cache is cut by N and
     // the surplus evicted), and takes them back at the first small (decode) graph
     size_t lent_bytes = 0;
