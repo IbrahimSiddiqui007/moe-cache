@@ -319,6 +319,8 @@ st, _ = req("/api/bench", {})
 check(st == 400, "no benchmark without a running model")
 st, body = req("/api/chat", {"messages": [{"role": "user", "content": "hi"}]})
 check(st == 400 and "no model is running" in body, f"chat: no answer without a running model ({st})")
+st, body = req("/api/agents")
+check(st == 200 and [a["agent"] for a in json.loads(body)["agents"]] == ["opencode", "hermes"] and json.loads(body)["url"] is None, "GUI-025: /api/agents reads the agents' config files back (no server running: no url)")
 # GUI-022: Start on first request = `moe_cache.py on-demand MODEL ...` (remember) and then the listener as the child; a fake stands in for both
 fake_od = os.path.join(TMP, "fake_on_demand.py")
 open(fake_od, "w").write(r'''import http.server, json, os, sys, threading

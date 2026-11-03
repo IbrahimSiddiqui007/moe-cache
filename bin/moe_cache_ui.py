@@ -1974,6 +1974,8 @@ class Handler(BaseHTTPRequestHandler):
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
                                                                              q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls, q["leave_room"]))
                 return self.send(200, dict(hit[1], here=measured_here(m)))       # the benchmark lines are fresh even when the plan is cached
+            if u.path == "/api/agents":                     # GUI-025: the agents' config files, read back
+                return self.send(200, agents_state(self.runner.status()["url"] if self.runner.state in ("ready", "waiting") else None))
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
@@ -2237,6 +2239,113 @@ def connect_agent(agent, url, api_key, write):
     if api_key:
         out["output"] = out["output"].replace(api_key, "(your key)")
     return out
+
+
+# ---- GUI-025: what the agents' own config files say (not only "Connect was pressed in this run") ----
+
+def strip_jsonc(text):
+    """JSON with // and /* */ comments and trailing commas (OpenCode's opencode.jsonc) as plain JSON text; strings are left alone."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            out.append(text[i:j + 1]); i = j + 1
+        elif text.startswith("//", i):
+            while i < n and text[i] != "\n":
+                i += 1
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+        else:
+            out.append(c); i += 1
+    return re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+
+
+def same_server(a, b):
+    """True when two base URLs name the same host and port (127.0.0.1 and localhost are the same machine; a trailing /v1 or / does not matter)."""
+    def norm(u):
+        p = urllib.parse.urlsplit(str(u or "").strip())
+        host = "127.0.0.1" if (p.hostname or "") in ("localhost", "::1", "0.0.0.0") else (p.hostname or "")
+        return host, p.port or (443 if p.scheme == "https" else 80)
+    x, y = norm(a), norm(b)
+    return bool(x[0]) and x == y
+
+
+def opencode_config_files():
+    d = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config"), "opencode")
+    return [os.path.join(d, f) for f in ("config.json", "opencode.json", "opencode.jsonc")]          # merged in this order, later wins
+
+
+def opencode_state(url):
+    """{agent, found, connected, url, model, file}: OpenCode's merged global config has the moe-cache provider (found), and it points at `url` with
+    the default model moe-cache/... (connected). Unreadable files are skipped."""
+    provider, model, where = None, None, None
+    for f in opencode_config_files():
+        try:
+            d = json.loads(strip_jsonc(open(f, encoding="utf-8").read()))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(d, dict):
+            continue
+        pv = d.get("provider")
+        if isinstance(pv, dict) and isinstance(pv.get("moe-cache"), dict):
+            provider, where = pv["moe-cache"], f
+        if isinstance(d.get("model"), str):
+            model = d["model"]
+    opts = (provider or {}).get("options")
+    base = opts.get("baseURL") if isinstance(opts, dict) else None
+    return {"agent": "opencode", "found": provider is not None, "url": base, "model": model, "file": where,
+            "connected": bool(provider is not None and url and same_server(base, url) and str(model or "").startswith("moe-cache/"))}
+
+
+def hermes_config_file():
+    home = os.environ.get("HERMES_HOME")
+    if not home:
+        home = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"), "hermes") if WINDOWS else os.path.join(os.path.expanduser("~"), ".hermes")
+    return os.path.join(home, "config.yaml")
+
+
+def yaml_model_block(text):
+    """The scalar keys of the top-level `model:` mapping of a config.yaml (provider, base_url, default, ...), read without a YAML library; {} when `model` is
+    not a mapping. Quotes and trailing comments are dropped."""
+    out, inside, ind = {}, False, None          # ind: the indent of the mapping's own keys (deeper lines belong to a nested mapping)
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            if inside:
+                break
+            inside = re.match(r"model\s*:\s*(#.*)?$", line) is not None
+            continue
+        m = re.match(r"\s+([A-Za-z_][\w-]*)\s*:\s*(.*)$", line) if inside else None
+        if m and ind is None:
+            ind = len(line) - len(line.lstrip())
+        if m and len(line) - len(line.lstrip()) == ind:
+            v = m.group(2).strip()
+            q = re.match(r"\"([^\"]*)\"|'([^']*)'", v)
+            v = (q.group(1) if q.group(1) is not None else q.group(2)) if q else re.sub(r"\s+#.*$", "", v)
+            out[m.group(1)] = v
+    return out
+
+
+def hermes_state(url):
+    """{agent, found, connected, url, model, file}: Hermes' main model is a custom provider (found) at `url` (connected)."""
+    f = hermes_config_file()
+    try:
+        m = yaml_model_block(open(f, encoding="utf-8", errors="replace").read())
+    except OSError:
+        m = {}
+    base = m.get("base_url")
+    custom = m.get("provider") == "custom" and bool(base)
+    return {"agent": "hermes", "found": custom, "url": base if custom else None, "model": m.get("default") if custom else None, "file": f if m else None,
+            "connected": bool(custom and url and same_server(base, url))}
+
+
+def agents_state(url):
+    return {"url": url, "agents": [opencode_state(url), hermes_state(url)]}
 
 
 def make_server(port=8070, ls=None, token=None):

@@ -480,7 +480,7 @@ button.danger { border-color:var(--ink); }
 <script>
 "use strict";
 const $ = id => document.getElementById(id), app = $("app");
-const S = { models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", engine: "auto", mtp: "auto", plans: {}, logSeq: 0, status: {}, connected: {} };
+const S = { agentsCfg: {}, models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", engine: "auto", mtp: "auto", plans: {}, logSeq: 0, status: {}, connected: {} };
 const fmtGB = b => b == null ? "–" : (b / 1e9).toFixed(1) + " GB";
 const fmtGiB = b => b == null ? "–" : (b / 2 ** 30).toFixed(1) + " GiB";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -779,6 +779,7 @@ async function poll() {
   chart("c-hit", st.history.map(h => [h[0], h[2]]), 1, "--ok", true);
   paintChatState(st, running);
   paintAgents(st);
+  const ak = st.state + "|" + st.url; if (ak !== S.agentsKey || (S.agentsAt || 0) + 15000 < Date.now()) { S.agentsKey = ak; S.agentsAt = Date.now(); if (st.state == "ready" || st.state == "waiting") loadAgentsCfg(); }
   const k = st.api_key || {};
   $("keyrow").hidden = !k.in_use || !(st.state == "starting" || st.state == "ready" || st.state == "waiting");
   if (k.in_use) { $("keyends").textContent = "••••" + k.ends; $("keysrc").textContent = "(" + k.source + ")"; }
@@ -910,14 +911,24 @@ async function paintBench(st) {
 }
 
 /* ---------- agents (right) ---------- */
+async function loadAgentsCfg() {                // GUI-025: what OpenCode's and Hermes' config files say, read back by the page server
+  try {
+    const j = await api("/api/agents"), m = {};
+    for (const a of j.agents || []) m[a.agent] = a;
+    if (JSON.stringify(m) != JSON.stringify(S.agentsCfg)) { S.agentsCfg = m; paintAgents(S.status); }
+  } catch (e) { /* the card keeps what it had */ }
+}
 function paintAgents(st) {
   const el = $("agentsmain");
-  const key = [st.state, st.url, st.agent, JSON.stringify(st.api_key || {}), JSON.stringify(S.connected)].join("|");
+  const key = [st.state, st.url, st.agent, JSON.stringify(st.api_key || {}), JSON.stringify(S.connected), JSON.stringify(S.agentsCfg)].join("|");
   if (el.dataset.k == key) return; el.dataset.k = key;
   if (st.state != "ready" && st.state != "waiting") { el.innerHTML = `<div class="small">Start a model with <b>Agent mode</b> on (Settings): this card then shows what to give OpenCode, Hermes or any OpenAI-compatible client, and connects them.</div>`; return; }
   const k = st.api_key || {};
-  const line = (a, label, hint) => { const c = S.connected[a];
-    return `<div class="line"><span class="dot ${c ? "ok" : ""}"></span><span class="n"><b>${label}</b><br><span class="small">${c ? "connected from this page at " + c : hint}</span></span>
+  const line = (a, label, hint) => { const cfg = S.agentsCfg[a] || {}, c = cfg.connected || S.connected[a];
+    const why = cfg.connected ? "connected: its config file points at this server" + (S.connected[a] ? " (connected from this page at " + S.connected[a] + ")" : "")
+      : S.connected[a] ? "connected from this page at " + S.connected[a]
+      : cfg.found ? "set up for another server (" + esc(cfg.url || "") + "): Connect points it at this one" : hint;
+    return `<div class="line"><span class="dot ${c ? "ok" : ""}"></span><span class="n"><b>${label}</b><br><span class="small">${why}</span></span>
       <button class="ghost small" data-a="${a}">Preview</button><button data-a="${a}" data-w="1" class="${c ? "" : "primary"}">${c ? "Again" : "Connect"}</button></div>`; };
   el.innerHTML = `<div class="kv"><span>Base URL</span><span><code>${esc(st.url)}/v1</code></span><span>Model</span><span><code>${esc(shortName(st.model))}</code></span>
     <span>Context</span><span>${esc(st.ctx || (st.agent ? 65536 : 8192))}</span>${k.in_use ? `<span>API key</span><span><code>••••${esc(k.ends)}</code> <a href="#" id="copykey2">Copy</a></span>` : ""}</div>` +
@@ -933,7 +944,7 @@ function paintAgents(st) {
       const j = await api("/api/connect", { agent: b.dataset.a, write: w });
       const out = `<div class="${j.rc ? "err" : "small"}" style="margin-top:6px">${j.rc ? "Failed" : w ? "Done" : "What would be written"} (exit ${j.rc}):</div><pre>${esc(j.output)}</pre>` +
         (j.file ? `<div class="small" style="margin-top:6px">Now in <code>${esc(j.file)}</code>:</div><pre>${esc(j.written || "")}</pre>` : "");
-      if (w && !j.rc) { S.connected[b.dataset.a] = new Date().toLocaleTimeString(); paintAgents(S.status); }
+      if (w && !j.rc) { S.connected[b.dataset.a] = new Date().toLocaleTimeString(); paintAgents(S.status); loadAgentsCfg(); }
       $("connres").innerHTML = out;
     } catch (e) { $("connres").innerHTML = `<pre class="err">${esc(e.message)}</pre>`; }
   });
