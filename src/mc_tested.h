@@ -19,16 +19,20 @@ inline bool tested(const char * list, const char * version, const char * commit)
         while (*e && *e != ',') {
             e++;
         }
+        const char * te = e;                                   // the entry without trailing blanks ("0.28.0 ,": AUD-025)
+        while (te > p && te[-1] == ' ') {
+            te--;
+        }
         const char * at = p;
-        while (at < e && *at != '@') {
+        while (at < te && *at != '@') {
             at++;
         }
         const size_t vlen = (size_t)(at - p);
         if (n > 0 && vlen == n && strncmp(p, version, n) == 0) {
-            if (at == e) {
+            if (at == te) {
                 return true;                                   // a bare version: any build of it
             }
-            const size_t clen = (size_t)(e - at - 1);          // "@commit": the running build's commit starts with it (or it starts with the running one's)
+            const size_t clen = (size_t)(te - at - 1);          // "@commit": the running build's commit starts with it (or it starts with the running one's)
             const size_t m = clen < nc ? clen : nc;
             if (clen > 0 && m >= 7 && strncmp(at + 1, commit, m) == 0) {
                 return true;
