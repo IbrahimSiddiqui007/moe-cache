@@ -106,8 +106,24 @@ void cpu_path_check(state_t & s, ggml_cgraph * cg) {
 enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg) {
     g_tiled_cache = s.tiled_cache;
     g_tiled_run++;
+    long long graph_tokens = 0;      // largest token count of an expert product here (1 = a decode step)
+    if (s.exec_pool_decode) {
+        for (int i = 0, nn = ggml_graph_n_nodes(cg); i < nn; i++) {
+            const ggml_tensor * q = ggml_graph_node(cg, i);
+            if (q->op == GGML_OP_MUL_MAT_ID && q->src[2]) { graph_tokens = std::max<long long>(graph_tokens, q->src[2]->ne[1]); }
+        }
+    }
+    const mcpool::decision_t pd = mcpool::decide(s.exec_pool_decode, (bool) s.pool, s.exec_pool_n, s.exec_pool_from_decode, s.exec_threads, c->n_threads, graph_tokens);
+    if (pd.act == mcpool::action_t::rebuild) {
+        fprintf(stderr, "moe-cache: executor pool resized from %d to %d compute threads for decode (MOE_CACHE_EXEC_POOL_DECODE)\n", s.exec_pool_n, pd.threads);
+        s.pool.reset();
+    }
+    if (s.exec_pool_decode && graph_tokens == 1) {
+        s.exec_pool_from_decode = true;
+    }
     if (!s.pool) {
-        const int n = s.exec_threads > 0 ? s.exec_threads : std::max(1, c->n_threads);
+        const int n = pd.threads;
+        s.exec_pool_n = n;
         static const std::vector<int> pins = pin_cpus();
         std::vector<int> cpus;
         for (int i = 1; i < n; i++) {
@@ -416,6 +432,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             } else {
                 s.preload();
             }
+            s.drop_readahead();      // CACHE-058 (MOE_CACHE_DROP_READAHEAD=1, default off)
         }
         static const bool lend_on = getenv("MOE_CACHE_PREFILL_LEND_MIB") != nullptr;
         if (lend_on) {
