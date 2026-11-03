@@ -42,6 +42,7 @@ the design); the app uses the ones the page finds, as the browser page does.
 | `src-tauri/tauri.conf.json`, `tauri.windows.conf.json` | window, bundle targets, resources (Windows adds the bundled Python) |
 | `src-tauri/capabilities/default.json` | the control page gets no Tauri commands |
 | `web/index.html` | splash and error page |
+| `CLICK_THROUGH.md` | the Windows click-through for the owner (about 45 minutes) |
 | `tests/` | `shell_contract_test.py`, no model |
 | `scripts/` | `stage.sh` (kit files into the bundle), `build-linux.sh`, `fetch-python-win.ps1` |
 | `src-tauri/icons/` | placeholder icon; replace with `npx tauri icon art.png` |

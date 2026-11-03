@@ -25,10 +25,21 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+use tauri_plugin_updater::UpdaterExt;
 use tauri_plugin_window_state::StateFlags;
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const MARKER: &str = "control page at ";
+
+/// The public half of the update signing key (a file, so the key can be added without touching the code). A file that starts with PLACEHOLDER means
+/// "no key yet": the tray's Check for updates then says so and the updater plugin gets no key.
+const UPDATE_PUBKEY: &str = include_str!("../update-pubkey.txt");
+
+fn update_key() -> Option<&'static str> {
+    let k = UPDATE_PUBKEY.trim();
+    (!k.is_empty() && !k.starts_with("PLACEHOLDER")).then_some(k)
+}
 
 /// Where the control page listens and the token that opens it.
 #[derive(Clone)]
@@ -387,6 +398,43 @@ fn start_page(app: &AppHandle, state: &State) {
     });
 }
 
+fn tell(app: &AppHandle, text: &str) {
+    let _ = app.dialog().message(text).title("moe-cache").kind(MessageDialogKind::Info).blocking_show();
+}
+
+/// Tray: Check for updates. Asks before installing; stops the model and the page first (the installer replaces the program files).
+fn check_updates(app: &AppHandle, state: &State) {
+    if update_key().is_none() {
+        return tell(app, "Updates are not set up in this build yet (the project's update key has not been added).");
+    }
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => return tell(app, &format!("The update check could not start: {e}")),
+    };
+    match tauri::async_runtime::block_on(updater.check()) {
+        Err(e) => tell(app, &format!("The update check failed: {e}")),
+        Ok(None) => tell(app, &format!("moe-cache {} is the newest version.", app.package_info().version)),
+        Ok(Some(up)) => {
+            let ask = format!("moe-cache {} is available (you have {}). Install it now? A running model is stopped and the app restarts.", up.version, up.current_version);
+            let yes = app.dialog().message(ask).title("moe-cache update").kind(MessageDialogKind::Info).buttons(MessageDialogButtons::YesNo).blocking_show();
+            if !yes {
+                return;
+            }
+            state.quitting.store(true, Ordering::SeqCst);
+            stop_model(state, 20);
+            end_child(state, 20);
+            match tauri::async_runtime::block_on(up.download_and_install(|_, _| {}, || {})) {
+                Ok(()) => app.restart(),
+                Err(e) => {
+                    state.quitting.store(false, Ordering::SeqCst);
+                    start_page(app, state);
+                    tell(app, &format!("The update could not be installed: {e}"));
+                }
+            }
+        }
+    }
+}
+
 fn restart_page(app: &AppHandle, state: &State) {
     stop_model(state, 10);
     end_child(state, 15);
@@ -402,6 +450,11 @@ fn main() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         // start at login: off until the user ticks the tray item; a login start goes to the tray without opening the window
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(match update_key() {
+            Some(k) => tauri_plugin_updater::Builder::new().pubkey(k).build(),
+            None => tauri_plugin_updater::Builder::new().build(),
+        })
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
         // remembers size and position (not visibility: a login start stays hidden)
         .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED).build())
@@ -442,12 +495,13 @@ fn main() {
             let open = MenuItem::with_id(app, "open", "Open moe-cache", true, None::<&str>)?;
             let start = MenuItem::with_id(app, "start", "Start model", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop model", true, None::<&str>)?;
+            let updates = MenuItem::with_id(app, "updates", "Check for updates…", true, None::<&str>)?;
             let login = CheckMenuItem::with_id(app, "login", "Start at login", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
             let login_item = login.clone();
             let restart = MenuItem::with_id(app, "restart", "Restart control page", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(app, &[&open, &sep, &start, &stop, &restart, &login, &sep, &quit_i])?;
+            let menu = Menu::with_items(app, &[&open, &sep, &start, &stop, &restart, &login, &updates, &sep, &quit_i])?;
             let st_menu = st_setup.clone();
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().ok_or("no window icon")?.clone())
@@ -468,6 +522,10 @@ fn main() {
                     "stop" => {
                         let s = st_menu.clone();
                         std::thread::spawn(move || stop_model(&s, 20));
+                    }
+                    "updates" => {
+                        let (a, s) = (app.clone(), st_menu.clone());
+                        std::thread::spawn(move || check_updates(&a, &s));
                     }
                     "login" => {
                         let al = app.autolaunch();
