@@ -73,6 +73,26 @@ CASES = [
     ("port_alias_extra", ["--ram", "12", "--port", "8123"], ["--alias", "xyz", "--host", "0.0.0.0"]),
     ("no_ram_arg", [], []),
     ("profile_name", ["--ram", "12", "--profile", "work"], []),
+    # ENGINE-029: paths the cases above did not reach, recorded on the code before the launch plan was split into stages
+    ("leave_room", ["--ram", "12", "--leave-room"], []),
+    ("leave_room_agent", ["--ram", "12", "--agent", "--leave-room"], []),
+    ("project", ["--ram", "12", "--project", "p1"], []),
+    ("share_ram", ["--ram", "12", "--share-ram"], []),
+    ("peers", ["--ram", "12", "--peers"], []),
+    ("auto_fit", ["--ram", "12", "--auto-fit"], []),
+    ("multi_gpu", ["--ram", "12", "--multi-gpu"], []),
+    ("mmproj_auto", ["--ram", "12", "--mmproj", "auto"], []),
+    ("load_path", ["--ram", "12", "--load-method", "path"], []),
+    ("load_preload", ["--ram", "12", "--load-method", "preload"], []),
+    ("vram0", ["--ram", "12", "--vram", "0"], []),
+    ("stock_agent", ["--ram", "12", "--stock", "--agent"], []),
+    ("mtp_agent", ["--ram", "12", "--agent", "--mtp"], []),
+    ("api_key_given", ["--ram", "12", "--api-key", "K-test-123"], []),
+    ("no_sampling_defaults", ["--ram", "12", "--no-sampling-defaults"], []),
+    ("hybrid_128k", ["--ram", "12", "--hybrid", "--ctx", "131072"], []),
+    ("gpu_cache_auto_128k", ["--ram", "12", "--vram", "8", "--gpu-cache", "auto", "--ctx", "131072"], []),
+    ("extra_threads_user", ["--ram", "12"], ["-t", "4"]),
+    ("extra_jinja_user", ["--ram", "12", "--agent"], ["--no-jinja"]),
 ]
 
 
@@ -109,6 +129,9 @@ def make_synthetic_model(path, n_layers=40, n_expert=256, ne0=2048, ne1=512):
     with open(path, "wb") as f:
         f.write(head)
         f.truncate(len(head) + off)        # sparse: the tensor data is never written
+
+
+NEW_CASES = {c[0] for c in CASES[CASES.index(next(x for x in CASES if x[0] == "leave_room")):]}
 
 
 def fake_machine(m, tmp):
@@ -432,6 +455,8 @@ def main():
         return 1 if (bad or consistent_bad) else 0
     for k, r in sorted(results.items()):
         g = gold["cases"].get(k)
+        if g is None and k.split("/", 1)[1] in NEW_CASES:           # recorded for the synthetic model only (the real-model golden file predates them)
+            continue
         if g != r:
             bad += 1
             print("  FAIL", k)
