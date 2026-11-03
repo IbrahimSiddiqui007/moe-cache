@@ -23,8 +23,11 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false   # the patches must apply byte for byte
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           repository: ggml-org/llama.cpp
           ref: ${{ env.LLAMA_COMMIT }}
           path: llama.cpp
@@ -56,8 +59,11 @@ jobs:
     steps:
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           repository: ggml-org/llama.cpp
           ref: ${{ env.LLAMA_COMMIT }}
           path: llama.cpp
@@ -87,8 +93,11 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           repository: ggml-org/llama.cpp
           ref: ${{ env.LLAMA_COMMIT }}
           path: llama.cpp

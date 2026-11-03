@@ -1,0 +1,43 @@
+#!/bin/bash
+# The model-free test set, in ONE place (AUD-087). quick.yml calls this; so does a contributor before a commit:
+#   tools/run_quick_tests.sh            compile check + every test below (needs python3 and bash; node for ui_test)
+#   tools/run_quick_tests.sh --list     print the test names
+# A new tests/*_test.py must be added to PY_TESTS (or to NOT_QUICK with a reason): the script fails on a test file it does not know,
+# so a test cannot be written and then never run.
+# The C++ checks (plugin syntax with both header sets, tests/*.cpp) stay in quick.yml's "Plugin syntax" step: they need g++ and ggml headers only.
+cd "$(dirname "$0")/.." || exit 1
+
+PY_TESTS="ui_test security_test bench_report_test bench_record_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test
+ diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test heavy_background_test bench_orphan_test
+ budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test
+ cgroup_test planner_test model_links_test update_check_test autostart_test fill_manifests_test"
+SH_TESTS="apply_llama_patches_test"
+# tests that exist but are not part of the list above, with the reason
+NOT_QUICK="require_node_test"      # run below only when CI or REQUIRE_NODE is set: it fails on a machine without node (ui_test would skip its JS checks silently)
+
+if [ "$1" = "--list" ]; then echo $PY_TESTS $SH_TESTS; exit 0; fi
+
+fail=0
+for f in tests/*_test.py tests/*_test.sh; do
+  n="$(basename "${f%.*}")"
+  case " $(echo $PY_TESTS) $SH_TESTS $NOT_QUICK " in *" $n "*) ;; *) echo "FAIL: $f is in neither PY_TESTS/SH_TESTS nor NOT_QUICK in tools/run_quick_tests.sh"; fail=1;; esac
+done
+[ "$fail" = 0 ] || exit 1
+
+echo "::group::py_compile"
+python3 -m py_compile bin/*.py tools/*.py tests/*.py planner/*.py || exit 1
+echo "::endgroup::"
+
+if [ -n "$CI$REQUIRE_NODE" ]; then
+  export REQUIRE_NODE=1
+  echo "::group::require_node_test"; python3 tests/require_node_test.py || exit 1; echo "::endgroup::"
+fi
+
+for t in $PY_TESTS; do
+  [ -f "tests/$t.py" ] || { echo "FAIL: tests/$t.py is listed in tools/run_quick_tests.sh but does not exist"; exit 1; }
+  echo "::group::$t"; python3 "tests/$t.py" || { echo "FAIL: $t"; exit 1; }; echo "::endgroup::"
+done
+for t in $SH_TESTS; do
+  echo "::group::$t"; bash "tests/$t.sh" || { echo "FAIL: $t"; exit 1; }; echo "::endgroup::"
+done
+echo "quick tests: all passed"

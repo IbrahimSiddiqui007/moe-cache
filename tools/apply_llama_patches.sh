@@ -12,7 +12,9 @@ HEAD_SHA="$(git -C "$DIR" rev-parse HEAD)"
 [ "$HEAD_SHA" = "$BASE" ] || { echo "FAIL: $DIR is at $HEAD_SHA, the patches need $BASE"; exit 1; }
 git -C "$DIR" diff --quiet HEAD || { echo "FAIL: $DIR has uncommitted changes"; exit 1; }
 n=0
-for p in $(ls "$PDIR"/*.patch 2>/dev/null | sort); do
+shopt -s nullglob
+export LC_ALL=C       # glob order = name order whatever the locale; no word splitting, so a path with spaces works (AUD-064)
+for p in "$PDIR"/*.patch; do
   echo "check $(basename "$p")"
   git -C "$DIR" apply --check "$p" || { echo "FAIL: $(basename "$p") does not apply to $BASE"; exit 1; }
   git -C "$DIR" apply "$p" || { echo "FAIL: applying $(basename "$p")"; exit 1; }

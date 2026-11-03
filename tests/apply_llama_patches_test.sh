@@ -30,4 +30,8 @@ grep -q "need" "$T/out" || fail "wrong-base message"
 P20="$HERE/patches/llama.cpp/0020-server-slot-save-async.patch"
 grep -q 'const std::string tmp = filepath + "." + std::to_string(id_task) + ".tmp"' "$P20" || fail "0020: temp file name must be unique per task"
 if grep -q 'filepath + ".tmp"' "$P20"; then fail "0020: shared NAME.tmp temp name"; fi
+# AUD-064: a patch directory with spaces in its path (the old `for p in $(ls ...)` split it)
+git checkout -q -f "$BASE"; git clean -qfd
+mkdir "$T/with space"; cp "$T/good/"*.patch "$T/with space/"
+LLAMA_PATCH_DIR="$T/with space" "$S" "$R" | grep -q "2 patch" || fail "patch dir with spaces should apply"
 echo "apply_llama_patches_test: PASS"

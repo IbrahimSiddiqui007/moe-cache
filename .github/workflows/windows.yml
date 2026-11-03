@@ -6,10 +6,16 @@ name: windows
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "branch, tag or SHA of this repo to test (empty: the branch the run was started on)"
+        required: false
+        default: ""
   push:
     branches: [windows-ci]    # run it on any commit: git push origin <commit>:refs/heads/windows-ci
   schedule:
-    - cron: "30 3 * * *"
+    - cron: "30 3 * * *"     # main
+    - cron: "30 4 * * *"     # experimental (AUD-001: scheduled runs always use the workflow file on main, so the ref is picked below; the file must be on main first)
 
 permissions:
   contents: read
@@ -22,6 +28,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || (github.event.schedule == '30 4 * * *' && 'experimental' || '') }}
       - name: mingw-w64 (UCRT when available, the C runtime of official llama.cpp and of the kit; else posix/msvcrt)
         run: |
           sudo apt-get update -q
@@ -105,6 +114,9 @@ jobs:
         shell: pwsh
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || (github.event.schedule == '30 4 * * *' && 'experimental' || '') }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: win-dll

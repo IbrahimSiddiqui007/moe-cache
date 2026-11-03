@@ -26,6 +26,8 @@ jobs:
         san: [thread, address]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Packages
         run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
