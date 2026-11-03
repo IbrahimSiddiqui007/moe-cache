@@ -4,7 +4,7 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b12064`, commit `51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c` (ggml 0.28.0). Moved from b11966 (`ff0d396e3`) on 2026-11-03; patches 0004, 0005, 0020, 0030 and 0040 were checked against b12064 with `git apply --check` (all apply). 0022 (upstream #31266) and 0027 (upstream #30881 + #31418) are merged upstream and moved to `archive/`.
 
-Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
+Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors`, `0050-decode-reloc` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
 
 ## Rules
 
@@ -150,3 +150,15 @@ Each of these was checked against the b11966 source. None has a patch.
 - **SC-C01 cheaper CPU sampler step.** Not exact: any change of the top-k selection can reorder tokens with exactly equal logits (libstdc++'s heap order cannot be reproduced), and skipping the 248k-entry copy means applying top-k before the penalty and grammar samplers, which changes their input. About 1 % by guess; skipped.
 - **UP3 (#31073, Hadamard matrices on the GPU).** 1014 lines over 17 files and only with quantised KV; not small.
 - **VK08 pipeline warm-up.** The cheap form is a launcher warm-up prompt (not a patch); a persistent `VkPipelineCache` is a medium patch with a per-driver cache file to invalidate.
+
+## 0050-decode-reloc (DECODE-630)
+
+**What:** with `LLAMA_DECODE_RELOC=1`, after 64 batches in a row of at most 16 tokens (`LLAMA_DECODE_RELOC_AFTER`, `_SMALL`) the context drops its scheduler (the big compute buffer is freed), sets `n_ubatch` to `LLAMA_DECODE_RELOC_UB` (512), reserves again, and copies the expert tensors of the last host-memory layers into new GPU buffers while the GPU keeps `LLAMA_DECODE_RELOC_KEEP_MIB` (768) free and at most `LLAMA_DECODE_RELOC_MAX_LAYERS` (8) are moved. It reserves a second time (the splits depend on where the weights are). A batch of more than the decode chunk points the tensors back at their host buffers (never freed), frees the GPU buffers and restores the prompt `n_ubatch`. Code: `reloc_*` members of `llama_context` in `src/llama-context.cpp/.h`, one call in `llama_context::decode()` before `sched_reserve()`. Launcher side: `planner/decode_reloc.py`, `MOE_CACHE_DECODE_RELOC=1`; design and PC plan: `docs/DECODE_RELOC_DESIGN.md`.
+
+**Soundness:** the bytes copied are the weights the layer already used; the graph is not changed; only the backend that runs those layers' `MUL_MAT_ID` changes. Output equals a stock run that places those layers on the GPU, for the decode part (not bit-equal to a single stock run, because the prompt ran with the other layout). Refused with a log line: `moe_cache_size != 0`, training, tensors that are repacked (`REPACK` buffer type or `extra` set) or already on a device, no layer fits, a reserve that fails (all is put back, the switch turns itself off). Not supported (the launcher does not set it): more than one GPU, `-ot`, MTP or a draft model (a second context shares the weights and would keep its old scheduler).
+
+**Honest scope:** a switch costs two scheduler reserves plus the copy (guess 6-7 s; the log prints the real time), so it pays for answers of about a thousand tokens or more. The plugin's held block buffer stays allocated, which is why 768 MiB are kept free.
+
+**Compiled and run (Linux, laptop RTX 4060 8 GB, CUDA, b12064 + all six patches apply):** `llama-completion` on the 71 MB test model `qwen4exp-moe.gguf` (8 layers, `--n-cpu-moe 3`, `-ub 256`, `LLAMA_DECODE_RELOC_UB=32`, `_AFTER=8`, greedy, 60 tokens): the log shows "LLAMA_DECODE_RELOC on", then "3 layers of experts moved to the GPU (layers 0..2, 6 MiB), ubatch 32, 13.7 ms" (reserve 9.1 ms, then 2.6 ms); the generated text is byte-identical with the switch on and off. The layers that were already on the GPU are skipped. **Not run:** the move back (needs a second long prompt, so a server), a big model, the plugin, Vulkan, Windows. The model's experts sit in a `CUDA_Host` buffer on this build, which the patch treats as plain host memory.
+
+**Test (about 70 minutes, Windows PC):** the A B B A table in `docs/DECODE_RELOC_DESIGN.md`.
