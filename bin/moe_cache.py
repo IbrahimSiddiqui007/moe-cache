@@ -1398,7 +1398,7 @@ def sampling_decide(meta, filename, extra, agent):
     gguf = {"temp", "top_p", "top_k", "min_p"} & set(meta.get("sampling") or {})
     args, kept = [], []
     for (key, flags), v in zip(SAMPLING_FLAGS, modes[mode]):
-        if v is None or any(f in extra for f in flags):
+        if v is None or any(a == f or a.startswith(f + "=") for a in extra for f in flags):      # `--temp 0.2` and `--temp=0.2`
             continue
         if key in gguf:
             kept.append(key.replace("_", "-"))

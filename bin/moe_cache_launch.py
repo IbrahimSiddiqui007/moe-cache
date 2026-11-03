@@ -14,6 +14,7 @@ import argparse, os, shutil, subprocess, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as pk  # noqa: E402
+import moe_cache_fetch as fx  # noqa: E402
 
 AGENTS = ("hermes", "opencode", "claude")
 USE_ASK = {"1": "chat", "2": "agents", "3": "docs"}
@@ -55,9 +56,18 @@ class Deps:
         d = rec["download"]
         m = pk.MODELS[rec["id"]]
         os.makedirs(d["folder"], exist_ok=True)
-        rc = subprocess.call(["hf", "download", m["repo"], "--include", *pk.includes(m), "--local-dir", d["folder"]])
-        if rc:
-            return f"the download failed (exit {rc}); nothing was changed. {pk.DOWNLOAD_HINT}"
+        files = (pk.CAT.get(rec["id"]) or {}).get("files") or []
+        if files and all(f.get("sha256") and f.get("bytes") for f in files):
+            err = self.fetch_files(rec, files, d["folder"])       # resumable, hash-checked (LAUNCHER-007)
+            if err:
+                return err
+        else:
+            err = fx.free_check(d["folder"], pk.need_free(rec["id"]) - fx.MARGIN, fx.MARGIN)
+            if err:
+                return err
+            rc = subprocess.call(["hf", "download", m["repo"], "--include", *pk.includes(m), "--local-dir", d["folder"]])
+            if rc:
+                return f"the download failed (exit {rc}); nothing was changed. {pk.DOWNLOAD_HINT}"
         if m.get("link"):
             shard, target = (os.path.join(d["folder"], x) for x in m["link"])
             try:
@@ -66,6 +76,27 @@ class Deps:
             except OSError as e:
                 return f"the download is done, but the link failed ({e}); run: {d['steps'][1]}"
         return 0
+
+    def fetch_files(self, rec, files, folder, say=print):
+        """Download the catalogue files of rec straight from Hugging Face (HF_ENDPOINT overrides the host): the free disk of ALL files is checked before the
+        first byte, a cut download resumes from its .part file, each file is checked against its sha256 before it gets its final name."""
+        hf = (pk.CAT.get(rec["id"]) or {}).get("hf") or {}
+        base = (os.environ.get("HF_ENDPOINT") or "https://huggingface.co").rstrip("/")
+        todo = [f for f in files if not (os.path.isfile(os.path.join(folder, *f["path"].split("/"))) and
+                                         os.path.getsize(os.path.join(folder, *f["path"].split("/"))) == f["bytes"])]
+        need = 0
+        for f in todo:
+            part = os.path.join(folder, *f["path"].split("/")) + ".part"
+            need += f["bytes"] - (min(os.path.getsize(part), f["bytes"]) if os.path.isfile(part) else 0)
+        err = fx.free_check(folder, need) if need else None
+        if err:
+            return err
+        for f in todo:
+            url = f"{base}/{hf.get('repo') or pk.MODELS[rec['id']]['repo']}/resolve/{hf.get('revision') or 'main'}/{f['path']}"
+            err = fx.fetch(url, os.path.join(folder, *f["path"].split("/")), f["bytes"], f["sha256"], say)
+            if err:
+                return "the download failed: " + err
+        return None
 
     def verify(self, rec, say):
         """AUD-030: compare the downloaded files with the sha256 in models.json. Returns None when all match (or none is listed), else a sentence."""
