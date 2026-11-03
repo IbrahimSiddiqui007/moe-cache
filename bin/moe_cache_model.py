@@ -229,8 +229,11 @@ def profile_path(model, name, cache_dir, dry=True, say=None):
         if not dry:
             try:
                 os.makedirs(cache_dir, exist_ok=True)
-                json.dump({"header_fp": ident.header_fp, "id": ident.id, "arch": ident.arch, "size": ident.size, "experts": ident.n_expert},
-                          open(_note_path(path), "w", encoding="utf-8"))
+                note = _note_path(path)
+                tmp = f"{note}.{os.getpid()}.tmp"                 # LAUNCHER-005 (A3-26): all of it or none of it, so note_of() never reads half a note
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    json.dump({"header_fp": ident.header_fp, "id": ident.id, "arch": ident.arch, "size": ident.size, "experts": ident.n_expert}, fh)
+                os.replace(tmp, note)
             except OSError:
                 pass
 

@@ -53,6 +53,7 @@
 #include "mc_env.h"
 #include "mc_guard.h"
 #include "mc_abort.h"
+#include "mc_lru_rule.h"
 #include "mc_shared_gpu.h"
 #ifndef _WIN32
 #include <fcntl.h>

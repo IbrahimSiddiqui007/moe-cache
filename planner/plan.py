@@ -86,7 +86,9 @@ def open_gguf(path):
 
 ap = argparse.ArgumentParser(); ap.add_argument("model"); ap.add_argument("--ctx", type=int, default=32768); ap.add_argument("--kv", default="f16")
 ap.add_argument("--mtp", action="store_true"); ap.add_argument("--vram-gib", type=float); ap.add_argument("--ram-gib", type=float)
-ap.add_argument("--profile"); ap.add_argument("--check", type=int); ap.add_argument("--json", action="store_true"); a = ap.parse_args()
+ap.add_argument("--profile"); ap.add_argument("--check", type=int); ap.add_argument("--json", action="store_true")
+ap.add_argument("--shell", choices=["auto", "bash", "fish", "powershell"], default="auto", help="syntax of the environment lines printed (auto: fish when you run fish, PowerShell on Windows, else bash)")
+a = ap.parse_args()
 
 r = open_gguf(a.model)
 def val(key, default=None):
@@ -188,10 +190,35 @@ if a.ram_gib is not None: env["MOE_CACHE_RAM_GIB"] = str(a.ram_gib)
 info = dict(arch=arch, layers=n_main, experts=n_exp, used=n_used, expert_MB=per_layer / n_exp / 1e6, gpu_expert_layers=n_gpu, n_cpu_moe=ncmoe,
             predicted_vram_GiB=predicted_vram(n_gpu) / GIB, free_vram_GiB=(free_vram or 0) / GIB, cpu_experts_GiB=cpu_experts / GIB, ram_available_GiB=ram / GIB,
             cache_GiB=cache / GIB, cache_holds_all_cpu_experts=fits, note=note, env=env, command=cmd)
+def detect_shell(environ=None, windows=None):
+    """CLEANUP-017: the shell whose syntax the printed environment lines should use: fish when FISH_VERSION is set or $SHELL ends in fish, PowerShell on Windows without a
+    POSIX $SHELL (Git Bash / MSYS set one), else bash."""
+    environ = os.environ if environ is None else environ
+    windows = (os.name == "nt") if windows is None else windows
+    sh = os.path.basename(environ.get("SHELL", "")).lower().replace(".exe", "")
+    if environ.get("FISH_VERSION") or sh == "fish":
+        return "fish"
+    if windows and not sh:
+        return "powershell"
+    return "bash"
+
+
+def env_lines(env, shell):
+    """One line per variable in the syntax of `shell`: export K='V' (bash), set -x K 'V' (fish), $env:K = 'V' (PowerShell); single-quoted so a space or $ in a path is safe."""
+    def sq(v, doubled):
+        v = str(v)
+        return "'" + (v.replace("'", "''") if doubled else v.replace("\\", "\\\\").replace("'", "\\'")) + "'"
+    if shell == "fish":
+        return [f"set -x {k} {sq(v, False)}" for k, v in env.items()]
+    if shell == "powershell":
+        return [f"$env:{k} = {sq(v, True)}" for k, v in env.items()]
+    return [f"export {k}=" + ("'" + str(v).replace("'", "'\\''") + "'" if re.search(r"[^A-Za-z0-9_@%+=:,./-]", str(v)) else str(v)) for k, v in env.items()]
+
+
 if a.json: print(json.dumps(info, indent=1))
 else:
     print(f"{arch}: {n_main} layers x {n_exp} experts (top-{n_used}), {per_layer/n_exp/1e6:.2f} MB/expert, experts {n_main*per_layer/GIB:.1f} GiB, core {core/GIB:.2f} GiB, KV@{a.ctx} {kv_bytes/GIB:.2f} GiB" + (f", n-gram table {table/GIB:.1f} GiB (stays in the file)" if table else ""))
     print(f"GPU: free {free_vram/GIB:.2f} GiB -> {n_gpu} layers of experts on the GPU (predicted use {predicted_vram(n_gpu)/GIB:.2f} GiB)" if free_vram else "GPU: none")
     print(f"RAM: available {ram/GIB:.1f} GiB -> expert cache {cache/GIB:.1f} GiB ({'holds every CPU expert' if fits else 'partial: ' + format(cache/cpu_experts*100, '.0f') + '% of CPU experts'})")
     if note: print("NOTE:", note)
-    print("\n" + "\n".join(f"export {k}={v}" for k, v in env.items()) + "\n(plus LD_PRELOAD / GGML_BACKEND_PATH for the plugin: easier with bin/moe-cache-server)\n" + " ".join(cmd))
+    print("\n" + "\n".join(env_lines(env, detect_shell() if a.shell == "auto" else a.shell)) + "\n(plus LD_PRELOAD / GGML_BACKEND_PATH for the plugin: easier with bin/moe-cache-server)\n" + " ".join(cmd))
