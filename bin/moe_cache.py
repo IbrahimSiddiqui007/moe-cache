@@ -10,7 +10,7 @@
   moe_cache.py bench-record collect|monitor|assemble|validate|card        the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
-  moe_cache.py connect hermes|opencode|claude [--url URL] [--write]        point Hermes Agent, OpenCode or Claude Code at a running server (start it with --agent)
+  moe_cache.py connect hermes|opencode|claude|codex|pi|openclaw|aider|qwen [--url URL] [--write]   point Hermes Agent, OpenCode, Claude Code, Codex CLI, Pi, OpenClaw, Aider or Qwen Code at a running server (start it with --agent)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
   moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read (BO-1)
@@ -2849,14 +2849,259 @@ def write_claude_settings(cfg, env):
     os.replace(tmp, cfg)
 
 
+# ---- connect: Codex CLI, Pi, OpenClaw, Aider, Qwen Code ----
+# Formats read from each agent's own docs on 2026-11-03 (links in docs/AGENTS.md). Every writer keeps the first backup as .bak, never replaces it,
+# writes the file private (it holds the API key) and refuses a file that is not the expected format instead of guessing.
+
+QWEN_KEY_VAR = "MOE_CACHE_API_KEY"
+CODEX_BEGIN = "# >>> moe-cache (written by 'moe_cache.py connect codex'; remove this block to undo)"
+CODEX_END = "# <<< moe-cache"
+CODEX_TOP = ("model", "model_provider", "model_context_window", "web_search")
+AIDER_MARK = "# written by 'moe_cache.py connect aider'; delete this file to undo. Run: aider --config THIS_FILE"
+
+
+def agent_window(ctx):
+    """The window handed to an agent: the server's context minus 12.5 % headroom (docs/AGENTS.md 'Keep the agent's own context limit below the
+    server's'), in whole 1024s, so the agent's own compaction starts before llama-server refuses a request. 65536 -> 57344."""
+    return max(4096, (int(ctx) - int(ctx) // 8) // 1024 * 1024)
+
+
+def agent_output(ctx):
+    return min(32768, max(4096, int(ctx) // 4))
+
+
+def keep_first_backup(cfg):
+    """Copy an existing file to cfg.bak unless a backup is already there (the first one is the user's own setup)."""
+    if os.path.isfile(cfg) and not os.path.isfile(cfg + ".bak"):
+        shutil.copy2(cfg, cfg + ".bak")
+        if not WINDOWS:
+            os.chmod(cfg + ".bak", 0o600)
+
+
+def write_private(cfg, text):
+    """Replace cfg with text: mode 0600 (the file holds the API key), through a temporary file and never through a planted link."""
+    os.makedirs(os.path.dirname(cfg) or ".", exist_ok=True)
+    tmp = cfg + ".tmp"
+    if os.path.lexists(tmp):
+        os.unlink(tmp)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, cfg)
+
+
+def load_json_object(cfg, agent, kind="config"):
+    """The JSON object in cfg ({} when the file is missing); SystemExit naming the file when it is not plain JSON or not an object."""
+    if not os.path.isfile(cfg):
+        return {}
+    try:
+        data = json.load(open(cfg, encoding="utf-8"))
+    except ValueError:
+        raise SystemExit(f"{cfg} is not plain JSON (comments? JSON5?): nothing written; add the settings printed by 'moe_cache.py connect {agent}' by hand")
+    if not isinstance(data, dict):
+        raise SystemExit(f"{cfg} is not a {kind} object: nothing written; add the settings printed by 'moe_cache.py connect {agent}' by hand")
+    return data
+
+
+def want_dict(data, path, cfg, agent):
+    """data[path[0]][path[1]]... as a dict, created when missing; SystemExit when something on the way is not an object."""
+    cur = data
+    for k in path:
+        nxt = cur.setdefault(k, {})
+        if not isinstance(nxt, dict):
+            raise SystemExit(f"{cfg}: '{'.'.join(path)}' is not an object (it is a {type(nxt).__name__}): nothing written; "
+                             f"add the settings printed by 'moe_cache.py connect {agent}' by hand")
+        cur = nxt
+    return cur
+
+
+def model_rows(base, names, ctx, key):
+    """Pi's models.json and OpenClaw's models.providers entry share this shape (pi.dev models docs; docs.openclaw.ai custom providers):
+    baseUrl, api, apiKey, models[{id, name, reasoning, input, contextWindow, maxTokens}]."""
+    return {"baseUrl": base, "api": "openai-completions", "apiKey": key or "none",
+            "models": [{"id": n, "name": n, "reasoning": False, "input": ["text"], "contextWindow": agent_window(ctx), "maxTokens": agent_output(ctx)} for n in names]}
+
+
+def qwen_entries(base, names, ctx):
+    """Qwen Code's modelProviders.openai entries (envKey NAMES the variable; the key itself goes in settings.json's env block)."""
+    return [{"id": n, "name": n, "envKey": QWEN_KEY_VAR, "baseUrl": base, "generationConfig": {"contextWindowSize": agent_window(ctx)}} for n in names]
+
+
+def codex_blocks(base, name, ctx, key):
+    """(top-level block, provider table block) for ~/.codex/config.toml. Codex speaks the Responses API (wire_api "responses" is the only value),
+    which llama-server answers on /v1/responses; web_search is turned off because that tool is not a function tool and llama-server answers 400
+    to it ('type' of tool must be 'function')."""
+    q = json.dumps
+    top = [CODEX_BEGIN, f"model = {q(name)}", 'model_provider = "moe-cache"', f"model_context_window = {agent_window(ctx)}", 'web_search = "disabled"', CODEX_END]
+    tab = [CODEX_BEGIN, "[model_providers.moe-cache]", 'name = "moe-cache"', f"base_url = {q(base)}", 'wire_api = "responses"']
+    if key:
+        tab.append(f"experimental_bearer_token = {q(key)}")
+    return "\n".join(top) + "\n", "\n".join(tab + [CODEX_END]) + "\n"
+
+
+def codex_merge(text, top, tab):
+    """Merge the two blocks into the text of config.toml: older blocks of ours are dropped, top-level keys of the same names that the user had
+    are commented out ('#moe-cache-off# ' prefix, so they can be restored by hand), the keys go to the top and the table to the end.
+    SystemExit when the user already defines the moe-cache provider themselves."""
+    out, skipping = [], False
+    for ln in text.splitlines():
+        if ln.startswith("# >>> moe-cache"):
+            skipping = True
+        elif skipping and ln.startswith("# <<< moe-cache"):
+            skipping = False
+        elif not skipping:
+            out.append(ln)
+    if skipping:
+        raise SystemExit("config.toml has a moe-cache block without its end line: nothing written; fix or remove it")
+    body = "\n".join(out)
+    if re.search(r'^\s*\[\s*model_providers\s*\.\s*"?moe-cache"?\s*\]', body, re.M) or re.search(r"^\s*model_providers\s*=", body, re.M):
+        raise SystemExit("config.toml already defines [model_providers.moe-cache] (or model_providers inline) outside our block: nothing written; "
+                         "edit it by hand with the settings printed by 'moe_cache.py connect codex'")
+    res, in_top = [], True
+    for ln in out:
+        if ln.lstrip().startswith("["):
+            in_top = False
+        if in_top and re.match(r"^(%s)\s*=" % "|".join(CODEX_TOP), ln):
+            ln = "#moe-cache-off# " + ln
+        res.append(ln)
+    rest = "\n".join(res).strip("\n")
+    return top + ("\n" + rest + "\n" if rest else "") + "\n" + tab
+
+
+def connect_extra(a, name, ctx, base, names):
+    """connect codex|pi|openclaw|aider|qwen: print the settings, or with --write merge them into the agent's config."""
+    key = a.api_key
+    shown = key if a.write else ("<your API key: python3 bin/moe_cache.py key>" if key else None)     # a preview goes to terminals and logs
+    win = agent_window(ctx)
+    home = os.path.expanduser("~")
+    q = json.dumps
+
+    def block(title, obj):
+        return f"  {title}\n    " + json.dumps(obj, indent=2).replace("\n", "\n    ")
+
+    def done(who, cfg, extra=""):
+        return (f"{who} uses {name} at {base} (context {win} of the server's {ctx}); config {cfg}" + (" (old file: .bak)" if os.path.isfile(cfg + ".bak") else "") + extra)
+    if a.agent == "codex":
+        cfg = a.config or os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "config.toml")
+        top, tab = codex_blocks(base, name, ctx, shown)
+        if not a.write:
+            say(f"  Codex CLI, {cfg}:\n" + "\n".join("    " + l for l in (top + tab).splitlines()))
+            say(f"apply with: moe_cache.py connect codex --write  (merges into {cfg}; then run: codex)")
+            return 0
+        old = open(cfg, encoding="utf-8").read() if os.path.isfile(cfg) else ""
+        try:
+            import tomllib      # Python 3.11+: the old file must parse, and so must the new one; older Pythons skip the check
+        except ImportError:
+            tomllib = None
+        if tomllib and old:
+            try:
+                tomllib.loads(old)
+            except ValueError as e:
+                raise SystemExit(f"{cfg} is not valid TOML ({e}): nothing written; add the settings printed by 'moe_cache.py connect codex' by hand")
+        new = codex_merge(old, top, tab)
+        if tomllib:
+            try:
+                got = tomllib.loads(new)
+            except ValueError as e:
+                raise SystemExit(f"{cfg}: the merged file would not be valid TOML ({e}): nothing written; add the settings printed by 'moe_cache.py connect codex' by hand")
+            if got.get("model_provider") != "moe-cache" or got.get("model") != name:
+                raise SystemExit(f"{cfg}: could not place the settings at the top level: nothing written; add the settings printed by 'moe_cache.py connect codex' by hand")
+        keep_first_backup(cfg)
+        write_private(cfg, new)
+        say("Codex CLI now " + done("", cfg, "; run: codex").lstrip())
+        if re.search(r"^\s*profile\s*=", old, re.M):
+            say("moe-cache: warning: config.toml sets a 'profile': keys in that profile win over the ones just written", err=True)
+        return 0
+    if a.agent == "pi":
+        d = os.environ.get("PI_CODING_AGENT_DIR") or os.path.join(home, ".pi", "agent")
+        cfg = a.config or os.path.join(d, "models.json")
+        settings = os.path.join(os.path.dirname(cfg), "settings.json")
+        prov = model_rows(base, names, ctx, shown)
+        if not a.write:
+            say(block(f"Pi, {cfg}:", {"providers": {"moe-cache": prov}}))
+            say(block(f"Pi, {settings} (default model):", {"defaultProvider": "moe-cache", "defaultModel": name}))
+            say("apply with: moe_cache.py connect pi --write  (merges into both files; then run: pi)")
+            return 0
+        data, sdata = load_json_object(cfg, "pi", "Pi models.json"), load_json_object(settings, "pi", "Pi settings")
+        want_dict(data, ["providers"], cfg, "pi")["moe-cache"] = prov
+        sdata["defaultProvider"], sdata["defaultModel"] = "moe-cache", name
+        for f, dd in ((cfg, data), (settings, sdata)):
+            keep_first_backup(f)
+            write_private(f, json.dumps(dd, indent=2))
+        say("Pi now " + done("", cfg, f"; default model in {settings}; run: pi").lstrip())
+        return 0
+    if a.agent == "openclaw":
+        cfg = a.config or os.path.join(home, ".openclaw", "openclaw.json")
+        prov = model_rows(base, names, ctx, shown)
+        if not a.write:
+            say(block(f"OpenClaw, {cfg} (JSON5 file; plain JSON is written):", {"models": {"providers": {"moe-cache": prov}},
+                                                                                "agents": {"defaults": {"model": {"primary": f"moe-cache/{name}"}}}}))
+            say("apply with: moe_cache.py connect openclaw --write  (merges into that file; a file with comments or JSON5 syntax is refused, not rewritten)")
+            return 0
+        data = load_json_object(cfg, "openclaw", "OpenClaw config")
+        want_dict(data, ["models", "providers"], cfg, "openclaw")["moe-cache"] = prov
+        dflt = want_dict(data, ["agents", "defaults"], cfg, "openclaw")
+        if isinstance(dflt.get("model"), dict):
+            dflt["model"]["primary"] = f"moe-cache/{name}"
+        elif dflt.get("model") is None or isinstance(dflt.get("model"), str):      # the docs allow a plain string for the primary model
+            dflt["model"] = {"primary": f"moe-cache/{name}"}
+        else:
+            say(f"moe-cache: warning: agents.defaults.model in {cfg} is not an object, so it is left alone: choose moe-cache/{name} in OpenClaw", err=True)
+        keep_first_backup(cfg)
+        write_private(cfg, json.dumps(data, indent=2))
+        say("OpenClaw now " + done("", cfg, f"; restart its gateway, then use model moe-cache/{name}").lstrip())
+        return 0
+    if a.agent == "qwen":
+        cfg = a.config or os.path.join(home, ".qwen", "settings.json")
+        ents = qwen_entries(base, names, ctx)
+        if not a.write:
+            say(block(f"Qwen Code, {cfg}:", {"env": {QWEN_KEY_VAR: shown or "none"}, "modelProviders": {"openai": ents},
+                                              "security": {"auth": {"selectedType": "openai"}}, "model": {"name": name}}))
+            say("apply with: moe_cache.py connect qwen --write  (merges into that file; then run: qwen)")
+            return 0
+        data = load_json_object(cfg, "qwen", "Qwen Code settings")
+        want_dict(data, ["env"], cfg, "qwen")[QWEN_KEY_VAR] = key or "none"
+        mp = want_dict(data, ["modelProviders"], cfg, "qwen")
+        cur = mp.setdefault("openai", [])
+        if not isinstance(cur, list):
+            raise SystemExit(f"{cfg}: modelProviders.openai is not a list: nothing written; add the settings printed by 'moe_cache.py connect qwen' by hand")
+        mp["openai"] = [e for e in cur if not (isinstance(e, dict) and e.get("envKey") == QWEN_KEY_VAR)] + ents      # ours replaced, the user's own kept
+        want_dict(data, ["security", "auth"], cfg, "qwen")["selectedType"] = "openai"
+        want_dict(data, ["model"], cfg, "qwen")["name"] = name
+        keep_first_backup(cfg)
+        write_private(cfg, json.dumps(data, indent=2))
+        say("Qwen Code now " + done("", cfg, "; run: qwen").lstrip())
+        return 0
+    # aider: its YAML cannot be merged without a YAML library, so it gets a file of its own (and a model-metadata file for the window)
+    cfg = a.config or os.path.join(home, ".aider.moe-cache.conf.yml")
+    meta = os.path.join(os.path.dirname(os.path.abspath(cfg)), ".aider.moe-cache.model.metadata.json")
+    entries = {f"openai/{n}": {"max_tokens": agent_output(ctx), "max_input_tokens": win, "max_output_tokens": agent_output(ctx),
+                              "input_cost_per_token": 0, "output_cost_per_token": 0, "litellm_provider": "openai", "mode": "chat"} for n in names}
+    yml = "\n".join([AIDER_MARK, f"openai-api-base: {q(base)}", f"openai-api-key: {q(shown or 'none')}",
+                     f"model: {q('openai/' + name)}", f"model-metadata-file: {q(meta)}"]) + "\n"
+    if not a.write:
+        say(f"  Aider, {cfg}:\n" + "\n".join("    " + l for l in yml.splitlines()) + "\n" + block(f"and {meta}:", entries))
+        say(f"apply with: moe_cache.py connect aider --write  (writes those two files of its own, your .aider.conf.yml is not touched; then run: aider --config {cfg})")
+        return 0
+    old_meta = load_json_object(meta, "aider", "Aider model metadata")
+    old_meta.update(entries)
+    keep_first_backup(cfg)
+    keep_first_backup(meta)
+    write_private(cfg, yml)
+    write_private(meta, json.dumps(old_meta, indent=2))
+    say(f"Aider settings for {name} at {base} (context {win} of the server's {ctx}) written to {cfg} and {meta}; run: aider --config {cfg}")
+    return 0
+
+
 def connect(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py connect", description="point a coding agent at a running moe-cache server (started with --agent). "
-                                 "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode by merging opencode.json, old file kept as .bak; "
+                                 "Prints the config; --write applies it (Hermes through 'hermes config set'; OpenCode, Codex CLI, Pi, OpenClaw and Qwen Code by merging their config file, old file kept as .bak; "
+                                 "aider = its own two files, run it with --config; "
                                  "claude = Claude Code through llama-server's Anthropic-compatible /v1/messages: prints the ANTHROPIC_* lines, --write merges them into this folder's .claude/settings.local.json)")
-    ap.add_argument("agent", choices=["hermes", "opencode", "claude"])
+    ap.add_argument("agent", choices=["hermes", "opencode", "claude", "codex", "pi", "openclaw", "aider", "qwen"])
     ap.add_argument("--url", help="the server (default: the on-demand endpoint's port when `on-demand` has a model, else http://127.0.0.1:8080)")
     ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
-    ap.add_argument("--config", help="file to merge into (opencode: ~/.config/opencode/opencode.json; claude: ./.claude/settings.local.json of this folder)")
+    ap.add_argument("--config", help="file to merge into (opencode: ~/.config/opencode/opencode.json; claude: ./.claude/settings.local.json of this folder; codex: ~/.codex/config.toml; pi: ~/.pi/agent/models.json; openclaw: ~/.openclaw/openclaw.json; qwen: ~/.qwen/settings.json; aider: ~/.aider.moe-cache.conf.yml)")
     a = ap.parse_args(argv)
     a.url = a.url or default_agent_url()
     a.api_key = key_for(a.url, a.api_key)
@@ -2869,6 +3114,8 @@ def connect(argv):
                             "; `moe_cache.py pick` recommends a model for this machine") + ")")
     ctx = ctx or 65536
     base = a.url.rstrip("/") + "/v1"
+    if a.agent in ("codex", "pi", "openclaw", "aider", "qwen"):
+        return connect_extra(a, name, ctx, base, [name] + [n for n in server_models(a.url, a.api_key) if n != name])      # on-demand with several models: all of them
     if a.agent == "hermes":
         if ctx < 64000:
             say(f"moe-cache: warning: the server's context is {ctx}; Hermes Agent refuses less than 64000 (restart with --agent or --ctx 65536)", err=True)
