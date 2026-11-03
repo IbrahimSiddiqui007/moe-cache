@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.parse, tempfile
+import argparse, atexit, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.parse, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1777,6 +1777,22 @@ def token_eq(given, token):
     return bool(given) and bool(token) and secrets.compare_digest(str(given).encode("utf-8", "replace"), str(token).encode("utf-8"))
 
 
+_LAUNCH_FILES = []          # the launcher pages (they hold the page token) still in the temp folder
+
+
+def remove_launch_files():
+    """Delete the launcher pages now: after a minute (timer), when the UI exits (atexit and the end of ui()), so none is left in the temp folder
+    with the token inside when the UI is stopped within that minute (the token is dead by then, but the file need not stay)."""
+    while _LAUNCH_FILES:
+        try:
+            os.unlink(_LAUNCH_FILES.pop())
+        except (OSError, IndexError):
+            pass
+
+
+atexit.register(remove_launch_files)
+
+
 def open_page(url):
     """Open the page without putting its token on the browser's command line, which other users of a Linux machine can read in /proc:
     the browser gets a private (0600) file that forwards to the address; the file is removed after a minute."""
@@ -1787,9 +1803,14 @@ def open_page(url):
         f.write(f"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url={url}'><title>moe-cache</title>"
                 f"<p style='font:15px system-ui;margin:2em'><a href='{url}'>Open the moe-cache control page</a></p>")
     import pathlib
+    _LAUNCH_FILES.append(path)
     webbrowser.open(pathlib.Path(path).as_uri())
 
     def gone():
+        try:
+            _LAUNCH_FILES.remove(path)
+        except ValueError:
+            pass
         try:
             os.unlink(path)
         except OSError:
@@ -2191,6 +2212,7 @@ def ui(argv):
     except KeyboardInterrupt:
         pass
     finally:
+        remove_launch_files()
         srv.RequestHandlerClass.runner.stop()
         srv.server_close()
     return 0

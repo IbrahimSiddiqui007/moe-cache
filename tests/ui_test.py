@@ -279,6 +279,15 @@ finally:
 fpath = urllib.request.url2pathname(urllib.parse.urlparse(opened[0]).path) if opened else ""
 check(opened and opened[0].startswith("file:") and "secret-x" not in opened[0] and "secret-x" in open(fpath, encoding="utf-8").read()
       and (os.name == "nt" or (os.stat(fpath).st_mode & 0o077) == 0), f"S1: the browser is given a private file, not the token ({opened})")
+# AUD-039: the launcher page is deleted when the UI exits (atexit and the end of ui()), not only by the 60 s timer
+ui.remove_launch_files()
+check(not os.path.exists(fpath) and ui._LAUNCH_FILES == [], "AUD-039: the launcher page with the token is removed on exit, before the 60 s timer")
+import subprocess
+_code = ("import sys, webbrowser; sys.path.insert(0, %r); import moe_cache_ui as u; webbrowser.open = lambda url: print(url); "
+         "u.open_page('http://127.0.0.1:1/?t=secret-y')") % os.path.dirname(os.path.abspath(ui.__file__))
+_o = subprocess.run([sys.executable, "-c", _code], capture_output=True, text=True, timeout=60)     # exits at once, long before the 60 s timer
+_lp = urllib.request.url2pathname(urllib.parse.urlparse(_o.stdout.strip()).path) if _o.stdout.strip().startswith("file:") else ""
+check(_o.returncode == 0 and _lp and not os.path.exists(_lp), f"AUD-039: a UI that exits within 60 s leaves no launcher page in the temp folder ({_o.stdout.strip()!r} {_o.stderr[-200:]})")
 st, _, _ = raw("POST", "/api/folders", {"Content-Type": "application/json", "X-MoeCache-Token": TOKEN, "Content-Length": str(70000)}, b"x" * 70000)
 check(st == 413, f"5: a body over 64 KiB is refused ({st})")
 check(ui.Handler.timeout == 30, "5: a handler timeout is set")
