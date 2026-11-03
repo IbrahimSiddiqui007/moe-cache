@@ -15,7 +15,8 @@ MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_STATS=1 tests/identity.sh MODEL.gguf ...   # ex
 Models bigger than your RAM: add `--limit GB` (hard cgroup, swap off). Never run such a model without a limit.
 
 ## Other checks
-- `bash -n` on every script, `python3 -m py_compile` on the python files (CI does this).
+- `tools/run_quick_tests.sh`: the whole model-free set (py_compile on the python files and every `tests/*_test.py` / `apply_llama_patches_test.sh`, with fake servers, no model, a few minutes). The list of tests lives only in that script; quick.yml calls it on every push and pull request. A new `tests/*_test.py` goes into its `PY_TESTS` (the script fails on a test file it does not know). With `REQUIRE_NODE=1` (CI sets it) a missing `node` fails instead of silently skipping the JavaScript checks in `ui_test.py`.
+- `bash -n` on every script (CI does this).
 - Kernel changes: `g++ -O2 -std=c++17 -Isrc tests/kernel_check.cpp -o /tmp/kernel_check -ldl && /tmp/kernel_check [libggml-cpu.so]` must report 0 mismatches.
 - Memory safety: build the plugin with `-fsanitize=address,undefined` and run an identity test with a tiny cache (`--ram 1`) to force evictions.
 - Memory limits: `tests/limit.sh MODEL.gguf --limit GB` must PASS.

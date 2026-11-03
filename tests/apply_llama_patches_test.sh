@@ -26,4 +26,8 @@ grep -q "0002-bad.patch" "$T/out" || fail "failure should name the patch"
 echo x > h.txt; git add h.txt; git commit -qm other
 if LLAMA_PATCH_DIR="$T/good" "$S" "$R" >"$T/out" 2>&1; then fail "wrong base should stop"; fi
 grep -q "need" "$T/out" || fail "wrong-base message"
+# AUD-064: a patch directory with spaces in its path (the old `for p in $(ls ...)` split it)
+git checkout -q -f "$BASE"; git clean -qfd
+mkdir "$T/with space"; cp "$T/good/"*.patch "$T/with space/"
+LLAMA_PATCH_DIR="$T/with space" "$S" "$R" | grep -q "2 patch" || fail "patch dir with spaces should apply"
 echo "apply_llama_patches_test: PASS"

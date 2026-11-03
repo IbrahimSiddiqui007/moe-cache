@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Planner / tuner / launcher checks on a real MoE GGUF (I13; CI runs it on Granite 1B). No GPU needed: VRAM is passed in.
-   python3 tests/planner_test.py MODEL.gguf
+   python3 tests/planner_test.py MODEL.gguf     a real GGUF (CI: Granite 1B in identity.yml)
+   python3 tests/planner_test.py                a synthetic 18 GB MoE header, no download (sparse file) and a fake llama-server: runs model-free in quick.yml (AUD-091)
 Checks rules that must hold for any model: more VRAM never puts more expert layers on the CPU, the margin is respected, the micro-batch is one the
 tuner knows, plan.py's answer is in range, and the launcher passes --vram to the tuner in GiB (audit A12) and --gpu-margin through (audit A05)."""
 import json, os, subprocess, sys, types
@@ -9,7 +10,25 @@ HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "planner"))
 import gguf_plan  # noqa: E402
 
-model = sys.argv[1]
+import stat, tempfile  # noqa: E402
+_TMP = tempfile.mkdtemp(prefix="planner_test_")
+import atexit, shutil  # noqa: E402
+atexit.register(shutil.rmtree, _TMP, True)
+if len(sys.argv) > 1:
+    model = sys.argv[1]
+else:
+    sys.path.insert(0, os.path.join(HERE, "tests"))
+    import launch_plan_test as _lpt            # noqa: E402  (its synthetic GGUF writer)
+    model = os.path.join(_TMP, "synthetic-moe.gguf")
+    _lpt.make_synthetic_model(model)
+    # a fake llama-server and plugin file: the launcher only asks the server for --help / --list-devices / --version
+    _fake_ls = os.path.join(_TMP, "llama-server")
+    with open(_fake_ls, "w") as f:
+        f.write("#!/bin/sh\ncase \"$*\" in\n *--list-devices*) echo 'Available devices:' ;;\n *--version*) echo 'version: 11966 (ff0d396)' ;;\n *) printf 'usage: llama-server\\n  --cache-ram N\\n' ;;\nesac\nexit 0\n")
+    os.chmod(_fake_ls, os.stat(_fake_ls).st_mode | stat.S_IXUSR)
+    open(os.path.join(_TMP, "libggml-moe-cache.so"), "w").close()
+    os.environ["LLAMA_SERVER"] = _fake_ls
+    os.environ["MOE_CACHE_LIB"] = os.path.join(_TMP, "libggml-moe-cache.so")
 fails = []
 def check(ok, what):
     print(("  ok   " if ok else "  FAIL ") + what)
@@ -71,15 +90,16 @@ def dry_nolib(*extra):
     r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "server", model, "--dry-run", "--vram", "4", *extra],
                        capture_output=True, text=True, timeout=300, env=env)
     return r.returncode, r.stdout + r.stderr
-for args, what in ((("--ram", "8"), "fits in RAM"), (("--ram", "8", "--stock"), "--stock")):
+FIT = "8" if len(sys.argv) > 1 else "32"          # GB that hold the whole model (Granite 1B: 8; the synthetic 18 GB MoE: 32)
+for args, what in ((("--ram", FIT), "fits in RAM"), (("--ram", FIT, "--stock"), "--stock")):
     rc, out = dry_nolib(*args)
     check(rc == 0 and "does not exist" not in out and "running stock llama-server" in out and "GGML_BACKEND_PATH" not in out and "LD_PRELOAD" not in out,
           f"launcher, plugin missing, {what}: runs stock without asking for the plugin (rc {rc})")
 # stock with CPU expert layers: short batches stay on the CPU (GGML_OP_OFFLOAD_MIN_BATCH; T5); a user's own value wins; the plugin run never gets it
-rc, out = dry_nolib("--ram", "8", "--vram", "0.3")
+rc, out = dry_nolib("--ram", FIT, "--vram", "0.3")
 check(rc == 0 and (ncmoe(out) or 0) > 0 and "GGML_OP_OFFLOAD_MIN_BATCH=512" in out, f"launcher stock, {ncmoe(out)} CPU expert layers: GGML_OP_OFFLOAD_MIN_BATCH=512 set")
 os.environ["GGML_OP_OFFLOAD_MIN_BATCH"] = "77"
-rc, out = dry_nolib("--ram", "8", "--vram", "0.3")
+rc, out = dry_nolib("--ram", FIT, "--vram", "0.3")
 del os.environ["GGML_OP_OFFLOAD_MIN_BATCH"]
 check(rc == 0 and "GGML_OP_OFFLOAD_MIN_BATCH=512" not in out, "launcher stock: the user's GGML_OP_OFFLOAD_MIN_BATCH is kept")
 check("GGML_OP_OFFLOAD_MIN_BATCH" not in dry("--vram", "0.3"), "launcher plugin run: no GGML_OP_OFFLOAD_MIN_BATCH")

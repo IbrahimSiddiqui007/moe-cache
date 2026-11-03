@@ -8,8 +8,14 @@ name: identity
 
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: "branch, tag or SHA of this repo to test (empty: the branch the run was started on)"
+        required: false
+        default: ""
   schedule:
-    - cron: "0 5 * * *"
+    - cron: "0 5 * * *"      # main
+    - cron: "30 6 * * *"     # experimental (AUD-001: scheduled runs always use the workflow file on main, so the ref is picked below; the file must be on main first)
 
 permissions:
   contents: read
@@ -36,6 +42,9 @@ jobs:
           - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || (github.event.schedule == '30 6 * * *' && 'experimental' || '') }}   # empty = the default for the trigger
 
       - name: Packages
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
