@@ -2581,6 +2581,55 @@ def plugin_lib_stage(ls, dry, stock, machine):
     return lib
 
 
+def profile_stage(a, model, pname, dry):
+    """ENGINE-029, stage "usage profile": the path of the profile this model learns into (idea I18: with none yet, the shipped one for the model family is copied there, a learned profile made the first request 2.1-2.4x faster, RESULTS 16). Returns the path."""
+    profile = model_profile(model, pname, dry=dry)
+    if not os.path.isfile(profile) and not a.no_starter and not dry:
+        # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import model_key
+            key = model_key(model)
+            starter = os.path.join(HERE, "profiles", key + ".usage") if key else None
+            if starter and os.path.isfile(starter):
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                shutil.copyfile(starter, profile)
+                say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
+        except Exception as e:
+            say(f"moe-cache: could not use a starter profile ({e})", err=True)
+    return profile
+
+
+def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
+    """ENGINE-029, stage "plugin environment": how the plugin is loaded (preload or backend path), the cache and memory settings of the plugin in environment form (RAM, cap, peers) and the memory cap the plan prints. --gpu-cache falls back to static layers when the plugin can only be loaded as a file. Returns (load settings, load method, gpu cache setting, environment, memory cap or None)."""
+    load, method = ([], "none (stock)") if stock else machine.load_env(ls, lib, a.load_method)
+    if gcache != "off" and not stock and method == "path":
+        # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
+        say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
+            "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
+        gcache = "off"
+    env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
+    if a.ram:
+        env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
+    cap = machine.mem_cap()
+    if a.max_ram:
+        env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    if a.peers and not stock:
+        # N2/MM2 (PROTOTYPE): the plugin writes its memory use into this folder once a second and reads the other servers' files; a quiet server gives memory to a busy
+        # one. --ram stays this server's own share. A stock llama-server (no plugin) is not in the folder: --share-ram counts it at start.
+        peers_dir = os.path.join(CACHE_DIR, "peers")
+        env.append(("MOE_CACHE_PEERS", peers_dir))
+        if cap:
+            env.append(("MOE_CACHE_PEER_CAP_GIB", f"{cap / 2**30:.2f}"))
+        say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/PLATFORMS.md)")
+    if cap:
+        say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
+            else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
+        if a.ram and float(a.ram) * 1e9 > cap:
+            say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
+    return load, method, gcache, env, cap
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2661,45 +2710,8 @@ def _launch_plan(a, extra, argv, machine):
         pname = pname or a.project
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
         extra += ["--slot-save-path", slotdir]
-    profile = model_profile(model, pname, dry=dry)
-    if not os.path.isfile(profile) and not a.no_starter and not dry:
-        # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
-        try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
-            from gguf_plan import model_key
-            key = model_key(model)
-            starter = os.path.join(HERE, "profiles", key + ".usage") if key else None
-            if starter and os.path.isfile(starter):
-                os.makedirs(CACHE_DIR, exist_ok=True)
-                shutil.copyfile(starter, profile)
-                say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
-        except Exception as e:
-            say(f"moe-cache: could not use a starter profile ({e})", err=True)
-    load, method = ([], "none (stock)") if stock else machine.load_env(ls, lib, a.load_method)
-    if gcache != "off" and not stock and method == "path":
-        # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
-        say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
-            "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
-        gcache = "off"
-    env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
-    if a.ram:
-        env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
-    cap = machine.mem_cap()
-    if a.max_ram:
-        env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
-    if a.peers and not stock:
-        # N2/MM2 (PROTOTYPE): the plugin writes its memory use into this folder once a second and reads the other servers' files; a quiet server gives memory to a busy
-        # one. --ram stays this server's own share. A stock llama-server (no plugin) is not in the folder: --share-ram counts it at start.
-        peers_dir = os.path.join(CACHE_DIR, "peers")
-        env.append(("MOE_CACHE_PEERS", peers_dir))
-        if cap:
-            env.append(("MOE_CACHE_PEER_CAP_GIB", f"{cap / 2**30:.2f}"))
-        say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/PLATFORMS.md)")
-    if cap:
-        say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
-            else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
-        if a.ram and float(a.ram) * 1e9 > cap:
-            say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
+    profile = profile_stage(a, model, pname, dry)
+    load, method, gcache, env, cap = memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
     # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock,
