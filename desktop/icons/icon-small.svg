@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" shape-rendering="crispEdges">
+  <!-- moe-cache icon: a flat pixel-art mast (cream, shaded brown on the right) with stacked expert blocks and a dish; palette of the control page; simplified for 16-32 px -->
+  <defs><clipPath id="r"><rect width="1024" height="1024" rx="224"/></clipPath></defs>
+  <g clip-path="url(#r)">
+  <rect width="1024" height="1024" fill="#6b99b3"/>
+  <rect x="512" y="0" width="64" height="128" fill="#2a1b14"/>
+  <rect x="448" y="128" width="128" height="896" fill="#f8efc9"/>
+  <rect x="576" y="128" width="64" height="896" fill="#2a1b14"/>
+  <rect x="64" y="192" width="256" height="384" fill="#f8efc9"/>
+  <rect x="320" y="192" width="64" height="384" fill="#2a1b14"/>
+  <rect x="704" y="192" width="192" height="320" fill="#f8efc9"/>
+  <rect x="896" y="192" width="64" height="320" fill="#2a1b14"/>
+  <rect x="704" y="640" width="192" height="320" fill="#f8efc9"/>
+  <rect x="896" y="640" width="64" height="320" fill="#2a1b14"/>
+  <rect x="448" y="704" width="192" height="64" fill="#c8442a"/>
+  </g>
+</svg>
