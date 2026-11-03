@@ -12,6 +12,7 @@ struct cpu_api_t {
     ggml_threadpool_t (*tp_new)(const ggml_threadpool_params *) = nullptr;
     void              (*tp_free)(ggml_threadpool_t) = nullptr;
     void              (*set_tp)(ggml_backend_t, ggml_threadpool_t) = nullptr;
+    void              (*set_abort)(ggml_backend_t, ggml_abort_callback, void *) = nullptr;   // SERVER-012
 };
 
 cpu_api_t & CPU() {
@@ -27,6 +28,7 @@ cpu_api_t & CPU() {
         r.tp_new  = (decltype(r.tp_new))  ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_new");
         r.tp_free = (decltype(r.tp_free)) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_free");
         r.set_tp  = (decltype(r.set_tp))  ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool");
+        r.set_abort = (decltype(r.set_abort)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_abort_callback");
         return r;
     }();
     return a;
@@ -95,6 +97,9 @@ struct moe_cache_backend_ctx {
     std::vector<ggml_backend_t> async_src;   // N15: backends with reads into our inputs still queued (cpy_tensor_async); synchronized before use
     ggml_gallocr_t     galloc = nullptr;
     bool               gpu_failed = false;   // the GPU backend could not be started: no GPU blocks for good
+    bool               hybrid_failed = false;  // PREFILL-172: a GPU call threw: the hybrid bank is not used any more (its allocator may be in an unknown state)
+    unsigned           abort_sent_cpu = ~0u;   // SERVER-012: generation of the abort callback last forwarded to the CPU / GPU backend
+    unsigned           abort_sent_gpu = ~0u;
     uint64_t           gpu_retry_at = 0;     // a GPU allocation failed: long-prompt blocks stay on the CPU until this many graphs have run
     int                gpu_alloc_fails = 0;
     bool               pin_reported = false;

@@ -169,6 +169,9 @@ void * reg_proc(ggml_backend_reg_t, const char * name) {
     if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
         return (void *) set_n_threads;
     }
+    if (strcmp(name, "ggml_backend_set_abort_callback") == 0) {      // SERVER-012: llama.cpp looks it up for every backend it runs
+        return (void *) set_abort_callback;
+    }
     return nullptr;
 }
 

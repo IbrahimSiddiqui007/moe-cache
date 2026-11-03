@@ -9,6 +9,18 @@ namespace {
 // the block stays on the CPU (its nodes were not silenced yet), no further GPU blocks are tried, one line says why. It only helps when the GPU is still
 // usable (an allocation that failed); after a lost device llama.cpp's own GPU layers throw too, outside this code. MOE_CACHE_GPU_CATCH=2 throws once at
 // the first block (fault injection for a test run: the prompt must finish on the CPU with the same text).
+// After a GPU call threw: no more GPU blocks or hybrid groups, and wait (without throwing) for anything the GPU may still be doing with our buffers.
+void gpu_failed_cleanup(moe_cache_backend_ctx * c) {
+    c->gpu_failed = true;
+    c->hybrid_failed = true;
+    if (c->gpu) {
+        try {
+            ggml_backend_synchronize(c->gpu);
+        } catch (...) {
+        }
+    }
+}
+
 bool gpu_segment_guarded(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
     static const int catch_mode = mcguard::catch_mode(getenv("MOE_CACHE_GPU_CATCH"));
     static bool injected = false;
@@ -18,9 +30,26 @@ bool gpu_segment_guarded(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * c
         return ok;
     }, [&](const char * what) {
         fprintf(stderr, "moe-cache: the GPU block threw (%s): long-prompt blocks stay on the CPU from now on (MOE_CACHE_GPU_CATCH=0 turns this guard off)\n", what);
-        c->gpu_failed = true;
+        gpu_failed_cleanup(c);
         seg.clear();
     });
+}
+
+// hybrid_group with the same guard (PREFILL-172). The group's inputs and outputs are only written after the GPU graph finished (the CPU part writes the
+// miss rows, the copy-back writes the hit rows), and a group that returns false is computed again completely by the executor / stock path, so a throw
+// at any point leaves nothing the CPU path does not overwrite. MOE_CACHE_GPU_CATCH=2 injects one fault here too (its own once-flag).
+bool hybrid_group_guarded(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int & last_out) {
+    static const int catch_mode = mcguard::catch_mode(getenv("MOE_CACHE_GPU_CATCH"));
+    static bool injected = false;
+    int last = last_out;
+    const bool ok = mcguard::guarded(catch_mode, injected, [&] { return hybrid_group(c, s, cg, first, last); }, [&](const char * what) {
+        fprintf(stderr, "moe-cache: the hybrid GPU block threw (%s): this and later groups run on the CPU (MOE_CACHE_GPU_CATCH=0 turns this guard off)\n", what);
+        gpu_failed_cleanup(c);
+    });
+    if (ok) {
+        last_out = last;
+    }
+    return ok;
 }
 
 // Last check before llama.cpp's own kernels read the experts: every expert a MUL_MAT_ID of this graph uses must be complete and in RAM. Waits for
@@ -126,15 +155,19 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
     std::vector<int> batch;
     enum ggml_status st = GGML_STATUS_SUCCESS;
     for (int i = 0; i < n && st == GGML_STATUS_SUCCESS; i++) {
+        if (mcabort::stop_requested(mcabort::global())) {      // SERVER-012: a cancelled request does not finish the micro-batch
+            st = GGML_STATUS_ABORTED;
+            break;
+        }
         ggml_tensor * nd = ggml_graph_node(cg, i);
-        if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && hybrid_init(c, s)) {
+        if (nd->op == GGML_OP_MUL_MAT_ID && s.by_tensor.find(nd->src[0]) != s.by_tensor.end() && !c->hybrid_failed && hybrid_init(c, s)) {
             st = exec_run_nodes(c, cg, batch);
             batch.clear();
             if (st != GGML_STATUS_SUCCESS) {
                 break;                 // AUD-007: a real ABORTED / ALLOC_FAILED must not be overwritten by the next (empty, successful) exec_run_nodes below
             }
             int last = i;
-            if (st == GGML_STATUS_SUCCESS && hybrid_group(c, s, cg, i, last)) {
+            if (st == GGML_STATUS_SUCCESS && hybrid_group_guarded(c, s, cg, i, last)) {
                 i = last;
                 continue;
             }
@@ -221,11 +254,15 @@ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgr
     if (st == GGML_STATUS_SUCCESS) {
         st = exec_run_nodes(c, cg, batch);
     }
+    if (st == GGML_STATUS_SUCCESS && mcabort::stop_requested(mcabort::global())) {   // the last op may have been cut short: its output is not valid
+        st = GGML_STATUS_ABORTED;
+    }
     s.route_ids.clear();
     return st;
 }
 
 void be_sync(ggml_backend_t backend);
+void be_forward_abort(moe_cache_backend_ctx * c);
 
 enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     auto * c = (moe_cache_backend_ctx *) backend->context;
@@ -268,6 +305,8 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     if (!c->cpu) {
         c->cpu = ggml_backend_dev_init(CPU().dev, nullptr);
     }
+    mcabort::begin_graph(mcabort::global());
+    be_forward_abort(c);
     if (c->tp_n != c->n_threads && c->tp2 && c->tp2_n == c->n_threads && CPU().set_tp) {
         // back to the other thread count (-t for decode, -tb for prompts): reuse its threadpool instead of joining and starting all threads again
         std::swap(c->tp, c->tp2);
@@ -570,6 +609,17 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 
     // long prompts: run the expert block on the GPU (what llama.cpp's own offload does for batches of 32+ tokens)
     std::vector<std::pair<ggml_tensor *, ggml_op>> silenced;
+    // PREFILL-172: whatever leaves this function (a throw out of the CPU path included), the nodes the GPU block took over get their op back
+    auto silenced_undo = mcguard::make_undo([&] {
+        for (auto & sl : silenced) {
+            sl.first->op = sl.second;
+        }
+        silenced.clear();
+    });
+    if (mcabort::stop_requested(mcabort::global())) {
+        return GGML_STATUS_ABORTED;
+    }
+    be_forward_abort(c);          // the GPU backend may have been started by an earlier graph
     if (s.cache_on && s.gpu_dev && !c->gpu_failed && s.graphs.load() >= c->gpu_retry_at) {
         for (const auto & gr : groups_found) {
             if (gr.n_tok < s.gpu_min_tokens) {
@@ -600,6 +650,12 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 
     // repacked experts: tag the weight as living in llama.cpp's repack buffer type while the kernel runs, so it picks the repacked code path
     std::vector<std::pair<ggml_tensor *, ggml_backend_buffer_t>> tagged;
+    auto tagged_undo = mcguard::make_undo([&] {
+        for (auto & tg : tagged) {
+            tg.first->buffer = tg.second;
+        }
+        tagged.clear();
+    });
     if (s.cache_on && s.repack_tag) {
         const int n_all = ggml_graph_n_nodes(cg);
         for (int i = 0; i < n_all; i++) {
@@ -635,12 +691,8 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
 #ifdef _WIN32
     g_cpu_graph = nullptr;
 #endif
-    for (auto & tg : tagged) {
-        tg.first->buffer = tg.second;
-    }
-    for (auto & sl : silenced) {
-        sl.first->op = sl.second;
-    }
+    tagged_undo.run();
+    silenced_undo.run();
     s.ns_cpu += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - c0).count();
 
     return st;
@@ -712,6 +764,31 @@ const ggml_backend_i g_backend_i = {
     /* .event_wait         = */ nullptr,
     /* .graph_optimize     = */ nullptr,
 };
+
+// SERVER-012: llama.cpp (llama_set_abort_callback; the server sets it for a cancelled request) hands the callback over through the registry. The plugin keeps
+// it for its own executor and forwards it to the stock CPU backend and the GPU backend (be_forward_abort) so their graphs stop too.
+void set_abort_callback(ggml_backend_t, ggml_abort_callback cb, void * data) {
+    mcabort::set(mcabort::global(), (mcabort::callback_t) cb, data);
+}
+
+void be_forward_abort(moe_cache_backend_ctx * c) {
+    const unsigned g = mcabort::global().gen.load();
+    mcabort::state_t & a = mcabort::global();
+    if (c->cpu && c->abort_sent_cpu != g && CPU().set_abort) {
+        // stock CPU graphs ask the callback between nodes; ours is the same function, so a cancel is seen by both
+        CPU().set_abort(c->cpu, a.cb.load(), a.data.load());
+        c->abort_sent_cpu = g;
+    }
+    if (c->gpu && c->abort_sent_gpu != g) {
+        ggml_backend_dev_t gd = ggml_backend_get_device(c->gpu);
+        ggml_backend_reg_t gr = gd ? ggml_backend_dev_backend_reg(gd) : nullptr;
+        auto fn = gr ? (void (*)(ggml_backend_t, ggml_abort_callback, void *)) ggml_backend_reg_get_proc_address(gr, "ggml_backend_set_abort_callback") : nullptr;
+        if (fn) {
+            fn(c->gpu, a.cb.load(), a.data.load());
+        }
+        c->abort_sent_gpu = g;
+    }
+}
 
 void set_n_threads(ggml_backend_t backend, int n) {
     ((moe_cache_backend_ctx *) backend->context)->n_threads = n;
