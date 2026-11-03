@@ -398,7 +398,12 @@ struct state_t {
             }
         }
         if (const char * v = getenv("MOE_CACHE_PROFILE_DECAY")) {
-            profile_decay = atof(v);
+            double d = 0.0;
+            if (mcargs::parse_number(v, 0.0, 1.0, d)) {      // a decay is a factor 0..1; nan or text used to be written into the profile
+                profile_decay = d;
+            } else {
+                fprintf(stderr, "moe-cache: ignoring MOE_CACHE_PROFILE_DECAY=%s (expected a number 0..1)\n", v);
+            }
         }
         if (const char * v = getenv("MOE_CACHE_LAYERS")) {
             int a = 0, b = 0;

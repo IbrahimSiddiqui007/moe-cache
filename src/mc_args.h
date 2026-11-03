@@ -3,6 +3,8 @@
 // then the command line, where the last occurrence wins; flags take their value as the next argument ("--device Vulkan1", no "=" form).
 #pragma once
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <string>
@@ -16,6 +18,27 @@ inline bool truthy(const char * v) {
 }
 inline bool falsey(const char * v) {
     return v && (!strcmp(v, "off") || !strcmp(v, "disabled") || !strcmp(v, "false") || !strcmp(v, "0"));
+}
+
+// AUD-015: a number from an environment variable, all of it: "512M" or "1e999" or "nan" is not a number here (strtod alone reads "512M" as 512 and
+// "inf" as infinity). Leading and trailing white space is allowed. lo..hi is the accepted range (inclusive).
+inline bool parse_number(const char * txt, double lo, double hi, double & out) {
+    if (!txt) {
+        return false;
+    }
+    char * end = nullptr;
+    const double v = strtod(txt, &end);
+    if (end == txt) {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r') {
+        end++;
+    }
+    if (*end != 0 || !std::isfinite(v) || v < lo || v > hi) {
+        return false;
+    }
+    out = v;
+    return true;
 }
 
 inline bool is_one_of(const std::string & a, std::initializer_list<const char *> names) {
