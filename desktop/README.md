@@ -45,6 +45,7 @@ the design); the app uses the ones the page finds, as the browser page does.
 | `CLICK_THROUGH.md` | the Windows click-through for the owner (about 45 minutes) |
 | `tests/` | `shell_contract_test.py`, no model |
 | `scripts/` | `stage.sh` (kit files into the bundle), `build-linux.sh`, `fetch-python-win.ps1` |
-| `src-tauri/icons/` | placeholder icon; replace with `npx tauri icon art.png` |
+| `icons/icon.svg`, `icons/preview.png` | the app icon's source (stacked expert blocks, one lit, moving into a chip) and a preview at 16 / 32 / 64 / 256 px on light and dark |
+| `src-tauri/icons/` | the generated sizes: render the SVG to 1024 px (`rsvg-convert -w 1024 -h 1024 icons/icon.svg -o icon1024.png`), then `npx tauri icon icon1024.png -o OUTDIR`, copy `32x32.png 128x128.png 128x128@2x.png icon.png icon.ico icon.icns` |
 
 Control-page changes the app needs are listed in section 8 of the design; they are not made here.
