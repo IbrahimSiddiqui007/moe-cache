@@ -103,6 +103,10 @@ struct exec_pool_t {
                 const exec_task_t & t = j->tasks[c / j->nch];
                 const int64_t r0 = (int64_t) (c % j->nch) * j->chunk;
                 const int64_t r1 = std::min<int64_t>(r0 + j->chunk, t.rows);
+                if (mcabort::stop_requested(mcabort::global())) {   // SERVER-012: cancelled request: skip the chunk (counted as done so the barrier ends); the graph returns ABORTED
+                    fin++;
+                    continue;
+                }
     #ifndef MOE_CACHE_TEST_MUTANT_NO_EXEC_WAIT     // CI only: a build without this wait must fail the delayed-read Q2_0 gpt-oss step
                 if (t.flag) {
                     const uint64_t f0 = tm && __atomic_load_n(t.flag, __ATOMIC_ACQUIRE) ? exec_now_ns() : 0;

@@ -34,14 +34,18 @@ CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.pat
 NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
-_NOTES = []          # recorders (lists) that want every say() line while a launch plan is built: (text, is_error) in order
-_QUIET = [0]         # >0: record but do not print (a caller that wants the plan as data, e.g. --plan-json)
+# LAUNCHER-003: what launch_plan() sets while it builds a plan belongs to the building thread (control-page threads plan at the same time):
+#   _TL.notes  recorders (lists) that want every say() line: (text, is_error) in order
+#   _TL.quiet  >0: record but do not print (a caller that wants the plan as data, e.g. --plan-json)
+#   _TL.max_ram  --max-ram of the plan being built (mem_cap() reads it before the MOE_CACHE_MAX_RAM_GB variable)
+_TL = threading.local()
+_UMASK_LOCK = threading.Lock()      # umask is per process: plans that change and restore it take turns, so one cannot restore the other's value
 
 
 def say(msg, err=False):
-    for rec in _NOTES:
+    for rec in getattr(_TL, "notes", ()):
         rec.append((str(msg), bool(err)))
-    if not _QUIET[0]:
+    if not getattr(_TL, "quiet", 0):
         print(msg, file=sys.stderr if err else sys.stdout, flush=True)
 
 
@@ -663,9 +667,28 @@ def vk_cache_cap(ls, model, listing=None):
     return gpu_cache_cap_mib(model, min(match)), min(match)
 
 
+def env_has(env, name):
+    return any(k == name for k, _ in env)
+
+
+def sycl_sysman_env(ls, listing=None):
+    """ENGINE-048: [("ZES_ENABLE_SYSMAN", "1")] when llama-server uses a SYCL device (its --list-devices output has a SYCL line, or the ggml-sycl library
+    sits next to it): level-zero then answers the free-memory query and stops warning on every call. Empty when the user set the variable themselves."""
+    if "ZES_ENABLE_SYSMAN" in os.environ:
+        return []
+    if listing and re.search(r"^\s+SYCL\d*:", listing, re.M):
+        return [("ZES_ENABLE_SYSMAN", "1")]
+    try:
+        names = os.listdir(os.path.dirname(os.path.abspath(ls)))
+    except OSError:
+        return []
+    return [("ZES_ENABLE_SYSMAN", "1")] if any(n.lower() in ("libggml-sycl.so", "ggml-sycl.dll") for n in names) else []
+
+
 def list_devices(ls):
     try:
-        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                             env=dict(os.environ, **dict(sycl_sysman_env(ls))))
         return out.stdout + out.stderr
     except Exception:
         return ""
@@ -791,7 +814,9 @@ def mem_cap():
     """Hard cap on the whole server's memory, bytes (owner 2026-10-29): physical RAM minus max(4 GiB, 12.5 %) = 28 GiB on a 32 GiB machine, so
     Windows does not run out of memory and Linux does not OOM; MOE_CACHE_MAX_RAM_GB (decimal GB; --max-ram sets it) overrides, 0 = no cap.
     The plugin applies the same rule (src/mc_common.inl ram_cap). None when off or unknown."""
-    v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
+    v = getattr(_TL, "max_ram", None)
+    if v is None:
+        v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
     if v is not None:
         try:
             f = float(v)
@@ -1860,13 +1885,23 @@ def parse_server(argv):
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i + 1:]
-    a = ap.parse_args(argv)
+    a = ap.parse_args(fast_levels_only(argv))
     return a, extra, argv
+
+
+FAST_LEVELS = ("1", "2", "kv", "fewer")
+
+
+def fast_levels_only(argv):
+    """LAUNCHER-004: a bare `--fast` followed by anything that is not a level (1, 2, kv, fewer) means level 1: `--fast model.gguf` must not read the path as the level."""
+    return ["--fast=1" if t == "--fast" and (i + 1 >= len(argv) or argv[i + 1] not in FAST_LEVELS) else t for i, t in enumerate(argv)]
 
 
 def server(argv):
     a, extra, argv = parse_server(argv)
     plan = launch_plan(a, extra, argv, quiet=a.plan_json)
+    if a.max_ram and not a.plan_json:
+        os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram     # this process is the launch: its later memory decisions (OOM retry, warm-keeper threads) keep the cap
     if a.plan_json:
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
@@ -2051,18 +2086,23 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
     server() runs the plan; --dry-run prints it."""
     machine = machine or Machine()
     notes = []
-    _NOTES.append(notes)
-    _QUIET[0] += 1 if quiet else 0
+    recorders = _TL.__dict__.setdefault("notes", [])
+    recorders.append(notes)
+    old_quiet, old_max_ram = getattr(_TL, "quiet", 0), getattr(_TL, "max_ram", None)
+    _TL.quiet = old_quiet + (1 if quiet else 0)
     old_umask = None
-    if quiet and not WINDOWS:
+    lock = _UMASK_LOCK if quiet and not WINDOWS else None
+    if lock:
+        lock.acquire()
         old_umask = os.umask(0o077)       # the plan builder sets 0077 for the files a launch writes; a caller that only describes a launch keeps its own
     try:
         plan = _launch_plan(a, extra, argv, machine)
     finally:
-        _NOTES.remove(notes)
-        _QUIET[0] -= 1 if quiet else 0
-        if old_umask is not None:
+        recorders.remove(notes)
+        _TL.quiet, _TL.max_ram = old_quiet, old_max_ram
+        if lock:
             os.umask(old_umask)
+            lock.release()
     plan.notes = notes
     return plan
 
@@ -2082,7 +2122,7 @@ def _launch_plan(a, extra, argv, machine):
         a.agent = a.agent or p[2]
         say(f"moe-cache: no model given: using the picked one, {a.model} (context {a.ctx}" + (", agent mode" if a.agent else "") + "; moe_cache.py pick)")
     if a.max_ram:
-        os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram          # the launcher's planning and the plugin in llama-server both read it
+        _TL.max_ram = a.max_ram          # the launcher's planning reads it (this thread, this plan); llama-server gets it through the plan's env
     if not win and any(x == "--api-key" or x.startswith("--api-key=") for x in argv):
         # llama-server gets it through the environment, but this launcher's own command line stays readable (/proc) for the server's lifetime
         say("moe-cache: note: a key on the command line is visible to other users of this machine (ps); LLAMA_API_KEY or the stored key "
@@ -2505,6 +2545,8 @@ def _launch_plan(a, extra, argv, machine):
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
             # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
             env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
+    if not env_has(env, "ZES_ENABLE_SYSMAN"):
+        env += sycl_sysman_env(ls, listing)
     if a.leave_room:
         env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
         if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
@@ -2819,6 +2861,40 @@ def hermes_connected(h, base):
         os.replace(tmp, HERMES_MARK)
     except (OSError, subprocess.SubprocessError):
         pass
+
+
+HERMES_KEY_ENV = "MOE_CACHE_API_KEY"      # the variable in Hermes' own .env that config.yaml's model.api_key points at
+
+
+def hermes_env_file(h):
+    """Hermes' .env (next to its config.yaml, where Hermes loads its own keys from), or None when `hermes config path` does not answer."""
+    try:
+        r = subprocess.run([h, "config", "path"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        path = (r.stdout.strip().splitlines() or [""])[-1].strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return os.path.join(os.path.dirname(path), ".env") if path else None
+
+
+def put_env_line(env_file, name, value):
+    """AGENTS-036: set NAME=value in a .env file (mode 0600, other lines kept, one line for NAME) without the value ever being on a command line."""
+    try:
+        lines = open(env_file, encoding="utf-8").read().splitlines()
+    except OSError:
+        lines = []
+    shown = value if re.fullmatch(r"[A-Za-z0-9._~+/=:@-]+", value) else '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    mine = re.compile(r"\s*(export\s+)?" + re.escape(name) + r"\s*=")
+    out, done = [], False
+    for l in lines:
+        if mine.match(l):
+            if not done:
+                out.append(f"{name}={shown}")
+            done = True
+        else:
+            out.append(l)
+    if not done:
+        out.append(f"{name}={shown}")
+    write_private(env_file, "\n".join(out) + "\n")
 
 
 def hermes_backup(h):
@@ -3323,16 +3399,26 @@ def connect_apply(a):
     if a.agent == "hermes":
         if ctx < 64000:
             say(f"moe-cache: warning: the server's context is {ctx}; Hermes Agent refuses less than 64000 (restart with --agent or --ctx 65536)", err=True)
+        # AGENTS-036: the key goes into Hermes' .env (0600) and config.yaml names it as ${MOE_CACHE_API_KEY}; `hermes config set` would put the key
+        # itself on its command line, readable by other users of the machine in the process list
         sets = [("model.provider", "custom"), ("model.base_url", base), ("model.default", name), ("model.context_length", str(ctx)),
-                ("model.api_key", a.api_key or "none")]
+                ("model.api_key", "${" + HERMES_KEY_ENV + "}" if a.api_key else "none")]
         if not a.write:
             say(agent_snippets(None, name, ctx, a.api_key, base=base, only="hermes", hide_key=True))
-            say("apply with: " + " && ".join(f"hermes config set {k} {KEY_HINT if k == 'model.api_key' and a.api_key else v}" for k, v in sets)
+            say("apply with: " + " && ".join(f"hermes config set {k} {v}" for k, v in sets)
                 + "   (or: moe_cache.py connect hermes --write)")
+            if a.api_key:
+                say(f"and put the key in Hermes' .env as {HERMES_KEY_ENV}={KEY_HINT} (--write does this, mode 0600)")
             return 0
         h = shutil.which("hermes")
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
+        if a.api_key:
+            env_file = hermes_env_file(h)
+            if not env_file:
+                raise SystemExit("`hermes config path` did not answer, so the launcher cannot tell where Hermes keeps its .env for the API key; nothing was changed. "
+                                 "Type the key in Hermes instead: Settings -> Model.")
+            put_env_line(env_file, HERMES_KEY_ENV, a.api_key)
         bak, prev = hermes_backup(h)
         done_keys = []
         for k, v in sets:
@@ -3351,8 +3437,7 @@ def connect_apply(a):
         if prev:
             say(f"  before: {prev}; old config kept as {bak} (copy it back over config.yaml to undo)")
         if a.api_key:
-            say("  note: `hermes config set` takes the key on its command line (it has no way to read it from a file or the environment), so other programs of your user "
-                "could read it from the process list for about a second; the preview above never prints it. To avoid that, type it in Hermes: Settings -> Model.")
+            say(f"  the API key is in Hermes' .env as {HERMES_KEY_ENV} (mode 0600); config.yaml holds only ${{{HERMES_KEY_ENV}}}. It was never on a command line.")
         return 0
     if a.agent == "claude":
         env = claude_env(a.url, name, a.api_key)
