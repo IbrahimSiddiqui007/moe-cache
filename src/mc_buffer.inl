@@ -91,6 +91,12 @@ const char * buft_name(ggml_backend_buffer_type_t) {
     return "MOE_CACHE";
 }
 
+// PATCH-091: "is this one of our buffer types" through the public name call, not by reading the interface struct (ggml_backend_buffer_type's layout is ggml's).
+// The host variant (get_buft_host) has the same name by design.
+bool is_our_buft(ggml_backend_buffer_type_t buft) {
+    return buft && strcmp(ggml_backend_buft_name(buft), "MOE_CACHE") == 0;
+}
+
 void buf_free(ggml_backend_buffer_t buffer) {
     auto * c = buf_ctx(buffer);
     {

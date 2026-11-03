@@ -731,7 +731,7 @@ void be_sync(ggml_backend_t backend) {
 
 bool be_cpy_tensor_async(ggml_backend_t backend_src, ggml_backend_t backend_dst, const ggml_tensor * src, ggml_tensor * dst) {
     auto * c = (moe_cache_backend_ctx *) backend_dst->context;
-    if (!src->buffer || !dst->buffer || ggml_backend_buffer_is_host(src->buffer) || ggml_backend_buffer_get_type(dst->buffer)->iface.get_name != buft_name ||
+    if (!src->buffer || !dst->buffer || ggml_backend_buffer_is_host(src->buffer) || !is_our_buft(ggml_backend_buffer_get_type(dst->buffer)) ||
         ggml_backend_buffer_get_type(src->buffer) != ggml_backend_get_default_buffer_type(backend_src) || !async_in_on(backend_src)) {
         return false;
     }
