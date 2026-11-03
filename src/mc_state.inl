@@ -26,6 +26,7 @@ bool block_device_ok(ggml_backend_dev_t d) {
 }
 #ifdef _WIN32
 void install_crash_report(state_t * s);
+void remove_crash_report();
 #endif
 
 struct state_t {
@@ -1092,97 +1093,92 @@ state_t & S() {
 // inside an expert tensor, which expert and its cache state. The Windows event log gives only the module offset (PC 2026-10-27: 0xC0000005 in
 // ggml-cpu-zen4.dll at a prompt of 11-16 tokens), which cannot tell an evicted expert from anything else. A first-chance handler reports faults in
 // expert memory (before anyone else sees them), the unhandled-exception filter any crash; both pass the exception on unchanged.
-state_t * g_crash_state = nullptr;
+std::atomic<state_t *> g_crash_state{nullptr};
+PVOID g_crash_veh = nullptr;
 std::atomic<int> g_crash_said{0};
 LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter = nullptr;
 
-// QUALITY-027: snprintf returns the length it WOULD have written; adding that to n and then passing sizeof(buf) - n let a long line (a module path of
-// 260 characters, many null nodes) wrap the size around and write past the buffer. This keeps n inside the buffer and writes nothing it cannot hold.
-int crash_cat(char * buf, size_t cap, int n, const char * fmt, ...) {
-    if (n < 0) {
-        n = 0;
-    }
-    if ((size_t) n >= cap) {
-        return (int) cap - 1;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    const int r = vsnprintf(buf + n, cap - (size_t) n, fmt, ap);
-    va_end(ap);
-    if (r < 0) {
-        return n;
-    }
-    return (size_t) (n + r) >= cap ? (int) cap - 1 : n + r;
-}
-
 bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     const EXCEPTION_RECORD * er = ep ? ep->ExceptionRecord : nullptr;
-    state_t * s = g_crash_state;
+    state_t * s = g_crash_state.load();
     if (!er || !s || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) {
         return false;
     }
     const uintptr_t addr = (uintptr_t) er->ExceptionInformation[1];
     const tinfo_t * hit = nullptr;
+    // WINDOWS-081: the tensor list changes under s->mu (registration); the handler never waits for that lock (the crashing thread may hold it), it skips the lookup
+    std::unique_lock<std::mutex> tl(s->mu, std::try_to_lock);
     for (const auto & t : s->tensors) {
+        if (!tl.owns_lock()) {
+            break;
+        }
         // a forgotten tensor (its buffer was freed) has data == nullptr and no experts: it would claim every address below one page
         if (t && t->data && t->n_expert > 0 && addr >= (uintptr_t) t->data && addr < (uintptr_t) t->data + t->nb2 * (size_t) t->n_expert + PAGE) {
             hit = t.get();
             break;
         }
     }
+    if (tl.owns_lock()) {
+        tl.unlock();
+    }
     if ((experts_only && !hit) || g_crash_said.exchange(1) != 0) {
         return false;
     }
+    // WINDOWS-081: from here on only the first crashing thread runs (the exchange above), so the large buffers are static: the handler itself used about 5.5 KB of
+    // the faulting thread's stack, which may be the very thing that ran out
+    static char mname[MAX_PATH];
+    static char fname[MAX_PATH];
+    static char buf[4096];
+    static CONTEXT ctx;
     const uintptr_t pc = (uintptr_t) er->ExceptionAddress;
     HMODULE mod = nullptr;
-    char mname[MAX_PATH] = "?";
+    strcpy(mname, "?");
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) pc, &mod)) {
         GetModuleFileNameA(mod, mname, MAX_PATH);
     }
     const char * base = std::max(strrchr(mname, '\\'), strrchr(mname, '/'));
     base = base ? base + 1 : mname;
     const ULONG_PTR kind = er->ExceptionInformation[0];
-    char buf[4096];
     int n = snprintf(buf, sizeof(buf), "moe-cache: crash: access violation at %s+0x%llx, %s address 0x%llx", base,
                      (unsigned long long) (pc - (uintptr_t) mod), kind == 0 ? "reading" : kind == 1 ? "writing" : "executing", (unsigned long long) addr);
     if (hit) {
         const size_t rel = addr - (uintptr_t) hit->data;
         const int64_t e = std::max<int64_t>(0, std::min<int64_t>((int64_t) (rel / hit->nb2), hit->n_expert - 1));
         const node_t & nd = s->nodes[(size_t) (hit->node0 + e)];
-        n = crash_cat(buf, sizeof(buf), n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
+        n = mccat::cat(buf, sizeof(buf), n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
                       "cache %.2f of %.2f GiB, %llu evictions", hit->name.c_str(), (long long) e, rel - (size_t) e * hit->nb2, hit->nb2, (int) nd.resident,
                       (int) nd.loading, (int) nd.mapped, (unsigned long long) nd.epoch, (unsigned long long) s->epoch,
                       (unsigned long long) (s->protect_epoch == UINT64_MAX ? 0 : s->protect_epoch), s->resident_bytes / 1073741824.0,
                       s->budget / 1073741824.0, (unsigned long long) s->evictions);
     } else {
-        n = crash_cat(buf, sizeof(buf), n, " (not in the expert cache)");
+        n = mccat::cat(buf, sizeof(buf), n, " (not in the expert cache)");
     }
     // was the plugin handing a graph to the CPU backend? If so, its nodes without data (a NULL base + offset write points there)
     if (ggml_cgraph * g = g_cpu_graph.load()) {
         const int nn = ggml_graph_n_nodes(g);
         int nulls = 0;
-        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
+        n = mccat::cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
         for (int i = 0; i < nn && n < (int) sizeof(buf) - 200; i++) {
             const ggml_tensor * t = ggml_graph_node(g, i);
             const bool null_src = (t->src[0] && !t->src[0]->data) || (t->src[1] && !t->src[1]->data);
             if (t->op != GGML_OP_NONE && (!t->data || null_src) && nulls++ < 8) {
-                n = crash_cat(buf, sizeof(buf), n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
+                n = mccat::cat(buf, sizeof(buf), n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
                               t->data, t->src[0] ? t->src[0]->data : nullptr, t->src[1] ? t->src[1]->data : nullptr,
                               (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2]);
             }
         }
         if (!nulls) {
-            n = crash_cat(buf, sizeof(buf), n, "; no node or source without data");
+            n = mccat::cat(buf, sizeof(buf), n, "; no node or source without data");
         }
     } else {
-        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
+        n = mccat::cat(buf, sizeof(buf), n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
     }
     // inside executor work (a pool worker or the compute thread's share): which op, task, row, column and output it was computing
     if (const exec_where_t & wh = g_exec_where; wh.op) {
-        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside the executor: op %s, task %p", wh.op, (const void *) wh.task);
+        n = mccat::cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside the executor: op %s, task %p", wh.op, (const void *) wh.task);
         if (wh.task) {
             n = std::min<int>(n, (int) sizeof(buf) - 2);
-            n = crash_cat(buf, sizeof(buf), n, " (weights %p, %d columns, %lld rows), row %lld, column %d, dst %p",
+            n = mccat::cat(buf, sizeof(buf), n, " (weights %p, %d columns, %lld rows), row %lld, column %d, dst %p",
                           (const void *) wh.task->w, wh.task->ncol, (long long) wh.task->rows, (long long) wh.r, wh.k, (const void *) wh.dst);
         }
     }
@@ -1196,16 +1192,16 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     }
     // stack of the faulting thread, module+offset per frame (x64 unwind tables)
     {
-        CONTEXT ctx = *ep->ContextRecord;
-        n = crash_cat(buf, sizeof(buf), n, "moe-cache: crash: stack");
+        ctx = *ep->ContextRecord;
+        n = mccat::cat(buf, sizeof(buf), n, "moe-cache: crash: stack");
         for (int f = 0; f < 20 && ctx.Rip && n < (int) sizeof(buf) - 120; f++) {
             HMODULE fm = nullptr;
-            char fname[MAX_PATH] = "?";
+            strcpy(fname, "?");
             if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) ctx.Rip, &fm)) {
                 GetModuleFileNameA(fm, fname, MAX_PATH);
             }
             const char * fb = std::max(strrchr(fname, '\\'), strrchr(fname, '/'));
-            n = crash_cat(buf, sizeof(buf), n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
+            n = mccat::cat(buf, sizeof(buf), n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
             DWORD64 image = 0;
             PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &image, nullptr);
             if (rf) {
@@ -1237,8 +1233,18 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS * ep) {
 }
 void install_crash_report(state_t * s) {
     g_crash_state = s;
-    AddVectoredExceptionHandler(0, crash_veh);
+    g_crash_veh = AddVectoredExceptionHandler(0, crash_veh);
     g_prev_filter = SetUnhandledExceptionFilter(crash_filter);
+}
+// WINDOWS-081: when the state is deleted (an orderly unload) the handlers go with it; a crash after that is not ours to report on freed memory
+void remove_crash_report() {
+    g_crash_state = nullptr;
+    if (g_crash_veh) {
+        RemoveVectoredExceptionHandler(g_crash_veh);
+        g_crash_veh = nullptr;
+    }
+    SetUnhandledExceptionFilter(g_prev_filter);        // what was there before us (null: the system default)
+    g_prev_filter = nullptr;
 }
 #endif
 
