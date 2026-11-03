@@ -1041,6 +1041,19 @@ function splitThink(m) {          // models that write <think>…</think> into t
   if (t) { think += t[1]; text = t[2] ? text.slice(t[0].length) : ""; }
   return [think.trim(), text];
 }
+// GUI-023: this chat's expert-cache numbers, added up over its answers (each answer carries the hits and misses counted while it was written)
+function chatHits(messages) {
+  let hits = 0, misses = 0, n = 0;
+  for (const m of messages || []) {
+    const t = m && m.role == "assistant" && m.meta;
+    if (t && Number.isFinite(t.hits) && Number.isFinite(t.misses) && t.hits + t.misses > 0) { hits += t.hits; misses += t.misses; n++; }
+  }
+  return { hits, misses, n, rate: hits + misses > 0 ? hits / (hits + misses) : null };
+}
+function chatHitsText(messages) {
+  const h = chatHits(messages);
+  return h.n ? ` · expert hits ${(h.rate * 100).toFixed(1)} % over ${h.n} answer${h.n == 1 ? "" : "s"}` : "";
+}
 function chips(m, i, live) {
   const t = m.meta || {}, out = [];
   if (live) out.push(`<span class="chip tps">writing · ${t.live_tps != null ? t.live_tps.toFixed(1) + " tok/s" : "…"}</span>`);
@@ -1064,7 +1077,8 @@ function msgHTML(m, i, live) {
 function paintChat() {
   const c = C.chat;
   $("chattitle").textContent = c.title || "New chat";
-  $("chatinfo").textContent = c.messages.length ? `· ${shortName(c.model) || "?"}` + (c.system ? " · own system prompt" : "") : "";
+  $("chatinfo").textContent = c.messages.length ? `· ${shortName(c.model) || "?"}` + (c.system ? " · own system prompt" : "") + chatHitsText(c.messages) : "";
+  $("chatinfo").title = chatHits(c.messages).n ? "The expert-cache hits and misses counted while this chat's answers were written, added up. The server counts them, so another chat or an agent running at the same time is included" : "";
   $("inner").innerHTML = c.messages.length ? c.messages.map((m, i) => msgHTML(m, i, C.busy && i == c.messages.length - 1 && m.role == "assistant")).join("") :
     `<div class="empty"><svg viewBox="0 0 21 32" shape-rendering="crispEdges" aria-hidden="true"><g fill="currentColor"><rect x="10" y="0" width="1" height="6"/><rect x="8" y="5" width="5" height="3"/><rect x="9" y="8" width="3" height="24"/><rect x="3" y="10" width="15" height="1"/><rect x="2" y="11" width="3" height="6"/><rect x="16" y="11" width="3" height="6"/><rect x="5" y="19" width="11" height="1"/><rect x="4" y="20" width="3" height="5"/><rect x="14" y="20" width="3" height="5"/></g><g class="c" fill="currentColor"><rect x="9" y="12" width="3" height="1"/><rect x="9" y="24" width="3" height="1"/><rect x="2" y="13" width="1" height="2"/></g></svg><b>What are we working on?</b>${S.status.state == "ready" ? "Type below. Speed, MTP and cache hits show under each answer." : (S.models.length ? "Pick a model on the left and press Start (top right)." : "No model found yet. Open Settings > Which model? for a recommendation and the download command, or put a .gguf file in a model folder and press Rescan.")}</div>`;
   paintAttached(); paintContext();
