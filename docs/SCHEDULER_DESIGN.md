@@ -1,7 +1,7 @@
 # Design: the per-layer expert scheduler (P1; implementation plan for experiment E4)
 
 Status: **design only**, written 2026-10-15. Builds on MULTI_DEVICE_DESIGN.md (the idea and the limits) and on the shipped `--hybrid` code
-(`src/mc_hybrid.inl`: GPU bank + CPU executor in parallel, measured 13.1 -> 17.6 tok/s on Flash-Next, KL 0.0043). Nothing here is built.
+(`src/mc_hybrid.inl`: GPU bank + CPU executor in parallel, measured 13.1 -> 17.6 tok/s on Flash-Next, KL 0.0043). Nothing here is built (checked 2026-11-03; the switch `MOE_CACHE_SCHED` named below does not exist in the code).
 Opt-in and approximate (different processors round differently): judged by the quality gate below, never the exact default.
 
 ## 1. What changes compared with `--hybrid`

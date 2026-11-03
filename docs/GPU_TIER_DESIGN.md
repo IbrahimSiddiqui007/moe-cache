@@ -1,6 +1,6 @@
 # Design: a GPU expert tier owned by the plugin (ideas 1 and 3)
 
-Status: **design only, not built.** Written 2026-10-11 from measurements on an RTX 4060 Laptop (PCIe 4.0 x8), Flash-Next IQ2_XS.
+Status: **design only, not built.** Written 2026-10-11 from measurements on an RTX 4060 Laptop (PCIe 4.0 x8), Flash-Next IQ2_XS. Update 2026-11-02: the decision stands, do not build: llama.cpp's own GPU hot tier halves speed on the Windows Vulkan PC (RESULTS_LOG §59) and the GPU block already carries long prompts. The switch `MOE_CACHE_GPU_TIER` named below does not exist in the code.
 
 ## Why llama.cpp's own cache cannot be extended from outside
 

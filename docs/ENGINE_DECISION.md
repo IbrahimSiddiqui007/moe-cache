@@ -24,7 +24,7 @@ llama.cpp/ggml plus their own CUDA/AMD kernels, with a hot-expert tier in VRAM, 
 
 ## What the plugin already delivers without an engine
 
-- 2x to 7x stock when the model does not fit in RAM (the biggest lever by far), identical output, works with any MoE llama.cpp supports (7 architectures tested, see RESULTS_LOG §1).
+- 2x to 7x stock on Linux when the model does not fit in RAM (the oldest gpt-oss-120b row 12x), 1.2x to 2x decode on the Windows PC (RESULTS_LOG §59), the biggest lever by far, identical output, works with any MoE llama.cpp supports (7 architectures tested, see RESULTS_LOG §1).
 - Using the GPU well is worth +60 % (all experts on CPU 16.2 -> planner placement 25.9 tok/s) and is done by llama.cpp's own placement.
 
 ## Decision rule

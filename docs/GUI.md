@@ -42,6 +42,8 @@ It prints what it found. The same is shown in the page's header when you hold th
 
 *(Granite 1B on the test laptop, Linux, RTX 4060 8 GB, 2026-10-27; VRAM 0.5 GiB and Run as moe-cache so the plugin has work to do.)*
 
+*Note (2026-11-03): all screenshots in this guide were taken on 2026-10-27. The page has changed since (for example the "Other programs" list of 2026-11-01 and the Share my numbers Cancel fix); the text of this guide is current, the pictures do not show the newer panels.*
+
 The page is laid out like a chat app, in three panes:
 
 | Where | What is there |

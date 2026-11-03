@@ -1,5 +1,7 @@
 # moe-cache: optimization audit and experiment backlog
 
+**Status (2026-11-03): historical one-off audit of v0.3.3 (commit 526c804). Many of its 124 candidates were built and measured afterwards; most lost, were left off, or were archived on 2026-11-02 (switches KEEP_PIN, WHOLE_RUNS, RB_PIPE, TIMER_1MS, COMPUTE_ASYNC, POOL_WHERE_LITE, PRED_FAST, STATS_LITE, POOL_CHUNK_ADAPT, SIBLING_ORDER, PIN_COMPUTE, GPU_PREFETCH and patches 0001-0003, 0021, 0023-0026, 0041, 0042, 0050, 0060-0063 live in `archive/`). Read the rows as ideas of 2026-10-31, not as the current switch list or as a to-do list; the current state is in `archive/README.md`, CONFIGURATION.md and RESULTS_LOG.md.**
+
 Reviewed 31 October 2026 (Asia/Dubai). Repository: [IbrahimSiddiqui007/moe-cache](https://github.com/IbrahimSiddiqui007/moe-cache). Commit: `526c804610cf835fdfcccd379fd7072d24e1aa2f` (v0.3.3). Remote main was fetched and matched this commit. Production source and settings were not edited.
 
 ## Direct assessment

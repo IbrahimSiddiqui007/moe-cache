@@ -22,8 +22,8 @@ Which file to download (the names below show the version they were last checked 
 | Your system | File on the Releases page |
 |---|---|
 | Windows 11 | `moe-cache-v0.3.4-windows-x64.zip` |
-| Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.28) | `moe-cache-v0.3.3-ggml0.26-linux-x86_64.tar.gz`: **includes the official llama.cpp b11966 (Vulkan + CPU build) in its `llama/` folder**, so there is nothing else to download |
-| Linux, older llama.cpp (ggml 0.24 / 0.25, up to commit `7fe450e19`, e.g. Arch `llama.cpp-cuda`) | `moe-cache-v0.3.3-linux-x86_64.tar.gz` (no llama.cpp inside: it needs your own build of that era) |
+| Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.28) | `moe-cache-v0.3.4-ggml0.26-linux-x86_64.tar.gz`: **includes the official llama.cpp b11966 (Vulkan + CPU build) in its `llama/` folder**, so there is nothing else to download |
+| Linux, older llama.cpp (ggml 0.24 / 0.25, up to commit `7fe450e19`, e.g. Arch `llama.cpp-cuda`) | `moe-cache-v0.3.4-linux-x86_64.tar.gz` (no llama.cpp inside: it needs your own build of that era) |
 
 Not sure? Run `check` (step 3): it says which file fits.
 
