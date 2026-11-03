@@ -9,6 +9,23 @@ namespace {
 // the block stays on the CPU (its nodes were not silenced yet), no further GPU blocks are tried, one line says why. It only helps when the GPU is still
 // usable (an allocation that failed); after a lost device llama.cpp's own GPU layers throw too, outside this code. MOE_CACHE_GPU_CATCH=2 throws once at
 // the first block (fault injection for a test run: the prompt must finish on the CPU with the same text).
+// PATCH-086: free the long-prompt block's GPU buffer. Kept graphs (MOE_CACHE_GPU_TMPL) were allocated from it, so they go too; held uploads (GPU_KEEP) are
+// their own buffers and stay. Does not throw: a failure leaves the buffer where it was.
+void gpu_release_block_buffer(moe_cache_backend_ctx * c) {
+    try {
+        for (auto & t : c->tmpls) {
+            ggml_free(t.ctx);
+        }
+        c->tmpls.clear();
+        ggml_backend_synchronize(c->gpu);
+        ggml_gallocr_free(c->galloc);
+        c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
+        c->blocks_ran = false;
+    } catch (...) {
+        c->blocks_ran = false;
+    }
+}
+
 // After a GPU call threw: no more GPU blocks or hybrid groups, and wait (without throwing) for anything the GPU may still be doing with our buffers.
 void gpu_failed_cleanup(moe_cache_backend_ctx * c) {
     c->gpu_failed = true;
@@ -604,6 +621,18 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
             }
         }
     }
+    // PATCH-086 (MOE_CACHE_GPU_FREE_AFTER_PROMPT=1, default off): the prompt is over (no group of this graph is long enough for the GPU block): give the
+    // block's GPU buffer back (up to about one layer of experts) so decoding and other programs have that VRAM. The next long prompt allocates it again.
+    {
+        static const bool free_after = mcenv::env_on("MOE_CACHE_GPU_FREE_AFTER_PROMPT");
+        bool any_long = false;
+        for (const auto & gr : groups_found) {
+            any_long = any_long || gr.n_tok >= s.gpu_min_tokens;
+        }
+        if (mcrelease::should_release(free_after, c->blocks_ran, any_long) && c->gpu && c->galloc) {
+            gpu_release_block_buffer(c);
+        }
+    }
     if (exec_graph) {
         const auto e0 = std::chrono::steady_clock::now();
         const enum ggml_status est = exec_run_graph(c, s, cg);
@@ -645,6 +674,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 s.ns_gpu_seg += now_ns() - gs0;
             }
             if (ok) {
+                c->blocks_ran = true;
                 for (ggml_tensor * n : seg) {
                     silenced.emplace_back(n, n->op);
                     n->op = GGML_OP_NONE;
