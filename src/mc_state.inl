@@ -36,7 +36,8 @@ void remove_crash_report();
 #include "mc_state_policy.h"
 #include "mc_state_rebalance_members.h"
 #include "mc_state_exec.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t {
+#include "mc_state_times.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -270,20 +271,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
 
     std::atomic<uint64_t> hits{0}, misses{0}, bytes{0}, groups{0}, ops{0}, graphs{0};
     std::atomic<uint64_t> ns_prep{0}, ns_cpu{0}, ns_total{0}, ns_read{0}, evictions{0}, direct_jobs{0}, bounce_jobs{0}, async_in{0};
-    // MOE_CACHE_SEG_TIMES=1 (N23-F6): where the time outside our own work goes. gap = from the end of one of our graph splits to the start of the next
-    // (llama.cpp's other splits, the scheduler, copies, GPU waits), sync = the wait for inputs read asynchronously from the GPU (it contains the GPU
-    // time of the split before us), gpu_seg = long-prompt GPU blocks incl. uploads. gap buckets: < 0.2 ms, < 1 ms, < 5 ms, >= 5 ms.
-    std::atomic<uint64_t> ns_gap{0}, ns_sync{0}, ns_gpu_seg{0}, n_gap{0}, last_exit_ns{0};
-    std::atomic<uint64_t> gap_b_ns[4]{}, gap_b_n[4]{};
-    std::atomic<uint64_t> gap_faults{0}, in_faults{0}, last_exit_faults{0}, entry_faults{0}, top_gap_ns[4]{}, top_gap_graph[4]{}, top_gap_faults[4]{};   // faults of the process inside the gaps / inside our backend; the 4 longest gaps
-    // MOE_CACHE_E1_TIMES=1 (with MOE_CACHE_SEG_TIMES=1; E1 step 1): what the gaps and the long-prompt GPU blocks are made of.
-    // cpu: CPU time of the whole process (all threads) and of the graph thread alone, inside the gaps and inside our backend (a gap whose graph-thread CPU time is
-    // far below its wall time is waiting, not computing). blk[0] = blocks run in one part, blk[1] = blocks split into parts:
-    // wait = wait_experts inside the upload, up_faults = page faults during the upload, prep = from entering the block to the first upload,
-    // rows_comp = expert-matmul output rows the GPU computed, rows_use = rows kept (one per token and expert slot).
-    std::atomic<uint64_t> e1_gap_cpu_ns{0}, e1_in_cpu_ns{0}, e1_gap_tcpu_ns{0}, e1_in_tcpu_ns{0}, e1_last_cpu{0}, e1_last_tcpu{0}, e1_ent_cpu{0}, e1_ent_tcpu{0};
-    std::atomic<uint64_t> e1_blk_n[2]{}, e1_parts[2]{}, e1_up_ns[2]{}, e1_comp_ns[2]{}, e1_get_ns[2]{}, e1_wait_ns[2]{}, e1_up_faults[2]{}, e1_prep_ns[2]{}, e1_rows_comp[2]{}, e1_rows_use[2]{};
-    std::atomic<uint64_t> ex_quant_ns{0}, ex_build_ns{0}, ex_run_ns{0}, ex_part_ns[3]{}, ex_part_bytes[3]{}, ex_part_n[3]{};   // MOE_CACHE_EXEC_TIMES: executor phases; part 0 gate, 1 up, 2 down
 
     // io workers
     std::vector<std::thread> workers;
