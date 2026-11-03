@@ -21,9 +21,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::NewWindowResponse;
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_window_state::StateFlags;
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 const MARKER: &str = "control page at ";
@@ -399,6 +401,10 @@ fn main() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
+        // start at login: off until the user ticks the tray item; a login start goes to the tray without opening the window
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, Some(vec!["--hidden"])))
+        // remembers size and position (not visibility: a login start stays hidden)
+        .plugin(tauri_plugin_window_state::Builder::default().with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED).build())
         .on_window_event(|w, ev| {
             // the close button hides to the tray; Quit in the tray menu ends the app
             if let WindowEvent::CloseRequested { api, .. } = ev {
@@ -415,6 +421,7 @@ fn main() {
                 .title("moe-cache")
                 .inner_size(1280.0, 820.0)
                 .min_inner_size(480.0, 520.0)
+                .visible(!std::env::args().any(|a| a == "--hidden"))
                 .on_navigation(move |url| {
                     if is_internal(url, ctl_of(&st_nav).map(|c| c.port)) {
                         return true;
@@ -435,10 +442,12 @@ fn main() {
             let open = MenuItem::with_id(app, "open", "Open moe-cache", true, None::<&str>)?;
             let start = MenuItem::with_id(app, "start", "Start model", true, None::<&str>)?;
             let stop = MenuItem::with_id(app, "stop", "Stop model", true, None::<&str>)?;
+            let login = CheckMenuItem::with_id(app, "login", "Start at login", true, app.autolaunch().is_enabled().unwrap_or(false), None::<&str>)?;
+            let login_item = login.clone();
             let restart = MenuItem::with_id(app, "restart", "Restart control page", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
             let sep = PredefinedMenuItem::separator(app)?;
-            let menu = Menu::with_items(app, &[&open, &sep, &start, &stop, &restart, &sep, &quit_i])?;
+            let menu = Menu::with_items(app, &[&open, &sep, &start, &stop, &restart, &login, &sep, &quit_i])?;
             let st_menu = st_setup.clone();
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().ok_or("no window icon")?.clone())
@@ -459,6 +468,12 @@ fn main() {
                     "stop" => {
                         let s = st_menu.clone();
                         std::thread::spawn(move || stop_model(&s, 20));
+                    }
+                    "login" => {
+                        let al = app.autolaunch();
+                        let on = al.is_enabled().unwrap_or(false);
+                        let _ = if on { al.disable() } else { al.enable() };
+                        let _ = login_item.set_checked(al.is_enabled().unwrap_or(false));
                     }
                     "restart" => {
                         let (a, s) = (app.clone(), st_menu.clone());
