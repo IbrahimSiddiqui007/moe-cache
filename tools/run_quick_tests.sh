@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.." || exit 1
 PY_TESTS="ui_test security_test bench_report_test bench_record_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test
  diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test heavy_background_test bench_orphan_test
  budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test
- cgroup_test planner_test model_links_test update_check_test autostart_test fill_manifests_test connect_agents_test connect_check_test launch_test install_sh_test models_catalogue_test wintool_test fast_arg_test launch_state_test sycl_sysman_test agents_state_test sanitize_ci_test"
+ cgroup_test planner_test model_links_test update_check_test autostart_test fill_manifests_test connect_agents_test connect_check_test launch_test install_sh_test models_catalogue_test wintool_test fast_arg_test launch_state_test sycl_sysman_test agents_state_test sanitize_ci_test decode_reloc_test"
 SH_TESTS="apply_llama_patches_test set_version_test friend_scrub_test win_launcher_test"
 CPP_TESTS="gpu_fallback abort lru_rule"       # PREFILL-172 (GPU error -> CPU result, no half-written state), SERVER-012 (abort callback stops the plugin's chunks)
 # tests that exist but are not part of the list above, with the reason
