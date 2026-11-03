@@ -9,6 +9,13 @@
 #     --dry-run  print what it would do and stop
 # In a release tarball with llama/ (official llama.cpp, unmodified) it builds nothing: no compiler, no apt, about a minute. LLAMA_SHA=... or --own-llama builds instead.
 # Takes about 10-20 minutes, almost all of it compiling llama.cpp. Needs about 3 GB of disk. Run it as a normal user (it asks for sudo only for apt).
+# Downloaded on its own (the release's install.sh, not inside a checkout or tarball) it installs the release instead of building: it fetches the
+# ggml0.26 tarball (official llama.cpp inside), checks it against SHA256SUMS (refuses on a mismatch), unpacks it under --prefix (default
+# ~/.local/share/moe-cache) and adds a `moe-cache` command in ~/.local/bin. No apt, no compiler, no root, nothing sent anywhere. Run it again to update.
+#     --uninstall  remove exactly what a release install added (the versions folder, the moe-cache command); models and ~/.cache/moe-cache stay
+#     --build      build from source even when downloaded on its own (the old behaviour)
+#     --bin-dir D  where the moe-cache command goes (default ~/.local/bin)
+[ -n "$BASH_VERSION" ] || { command -v bash >/dev/null && exec bash "$0" "$@"; echo "install.sh needs bash"; exit 1; }   # `sh install.sh` is the documented way
 set -e
 # The llama.cpp commit moe-cache was built and tested against. Default: 7fe450e19 (ggml 0.25.1, backend API 2).
 # LLAMA_SHA=23b0202a1... (any full sha starting 23b0202a1, ggml 0.26.0, API 3: GLM-5.3-Flash and MTP support) selects the matching plugin build.
@@ -17,10 +24,82 @@ LLAMA_SHA="${LLAMA_SHA:-7fe450e19305b828c199d602c23a8337aaa1f03b}"
 case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
 MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.5}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
-VULKAN=0; PREFIX="$HOME/moe-cache-setup"; JOBS=$(nproc); APT=1; OWN=0; DRY=0
-while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;;
-  -h|--help) sed -n 2,13p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
+VULKAN=0; PREFIX=""; JOBS=$(nproc 2>/dev/null || echo 2); APT=1; OWN=0; DRY=0; UNINSTALL=0; BUILD=0; BINDIR="$HOME/.local/bin"
+while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;; --uninstall) UNINSTALL=1; shift;; --build) BUILD=1; shift;; --bin-dir) BINDIR=$2; shift 2;;
+  -h|--help) sed -n 2,19p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
 say() { printf '\n== %s\n' "$*"; }
+
+# ---- release install: this file was downloaded on its own (no build.sh, no llama/ next to it) ----
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd)"
+if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_DIR/build.sh" ] && [ ! -x "$SELF_DIR/llama/llama-server" ]; then
+  REL_PREFIX="${PREFIX:-${XDG_DATA_HOME:-$HOME/.local/share}/moe-cache}"
+  REL_BASE="${MOE_CACHE_BASE_URL:-https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/$MOE_CACHE_REF}"   # MOE_CACHE_BASE_URL: tests, mirrors
+  case "$REL_PREFIX" in /*) ;; *) REL_PREFIX="$PWD/$REL_PREFIX";; esac; case "$BINDIR" in /*) ;; *) BINDIR="$PWD/$BINDIR";; esac
+  REL_VER="${MOE_CACHE_REF#v}"; REL_NAME="moe-cache-v$REL_VER-ggml0.26-linux-x86_64"
+  REL_SHIM="$BINDIR/moe-cache"; REL_MARK="# moe-cache command written by install.sh"; REL_REC="$REL_PREFIX/.installed"
+  rec() { [ -f "$REL_REC" ] && sed -n "s/^$1=//p" "$REL_REC" | tail -1; }
+  if [ $UNINSTALL = 1 ]; then
+    [ -f "$REL_REC" ] || { echo "moe-cache: nothing to remove: $REL_REC does not exist (this installer added nothing under $REL_PREFIX)"; exit 0; }
+    if [ $DRY = 1 ]; then echo "install.sh: would remove $REL_PREFIX/versions, $REL_PREFIX/current, $REL_REC and $REL_SHIM (if it is ours)"; exit 0; fi
+    rm -rf "$REL_PREFIX/versions"; rm -f "$REL_PREFIX/current" "$REL_REC"
+    if [ -f "$REL_SHIM" ] && grep -qF "$REL_MARK" "$REL_SHIM"; then rm -f "$REL_SHIM"; echo "removed $REL_SHIM"; fi
+    rmdir "$REL_PREFIX" 2>/dev/null || true
+    echo "removed what the moe-cache installer added. Kept: your models and ~/.cache/moe-cache (settings, learned profiles); delete them by hand if you want."
+    exit 0
+  fi
+  [ "$(uname -s)" = Linux ] && [ "$(uname -m)" = x86_64 ] || { echo "the release install is for Linux x86-64 (this is $(uname -s) $(uname -m)); build from source: sh install.sh --build"; exit 1; }
+  [ "$(id -u)" != 0 ] || { echo "run as a normal user, not root"; exit 1; }
+  echo "moe-cache $REL_VER: release install into $REL_PREFIX (command: $REL_SHIM)"
+  if [ $DRY = 1 ]; then echo "install.sh: would download $REL_BASE/$REL_NAME.tar.gz and SHA256SUMS, check the hash, unpack under $REL_PREFIX/versions and add $REL_SHIM"; exit 0; fi
+  command -v python3 >/dev/null && python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' \
+    || { echo "Python 3.8 or newer is needed (python3 not found or too old). Ubuntu / Debian: sudo apt install python3; Fedora: sudo dnf install python3; Arch: sudo pacman -S python. Then run this again."; exit 1; }
+  if command -v curl >/dev/null; then dl() { curl -fsSL -o "$2" "$1"; }; elif command -v wget >/dev/null; then dl() { wget -q -O "$2" "$1"; }
+  else echo "curl or wget is needed to download the release"; exit 1; fi
+  command -v sha256sum >/dev/null || { echo "sha256sum is needed to check the download"; exit 1; }
+  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  say "1/3 download (nothing is installed until the hash matches)"
+  dl "$REL_BASE/SHA256SUMS" "$TMP/SHA256SUMS" || { echo "could not download $REL_BASE/SHA256SUMS (offline? no release $MOE_CACHE_REF?)"; exit 1; }
+  WANT="$(awk -v n="$REL_NAME.tar.gz" '$2 == n || $2 == "*" n {print $1}' "$TMP/SHA256SUMS" | head -1)"
+  [ -n "$WANT" ] || { echo "SHA256SUMS has no line for $REL_NAME.tar.gz: refusing to install"; exit 1; }
+  dl "$REL_BASE/$REL_NAME.tar.gz" "$TMP/$REL_NAME.tar.gz" || { echo "could not download $REL_BASE/$REL_NAME.tar.gz"; exit 1; }
+  GOT="$(sha256sum "$TMP/$REL_NAME.tar.gz" | cut -d' ' -f1)"
+  [ "$GOT" = "$WANT" ] || { echo "REFUSED: the download's sha256 ($GOT) is not the one in SHA256SUMS ($WANT). Nothing was installed."; exit 1; }
+  echo "sha256 matches SHA256SUMS ($WANT)"
+  if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache >/dev/null 2>&1 && echo "build attestation verified (gh)" || echo "note: gh could not verify the build attestation (the sha256 check passed)"
+  else echo "tip: with the gh tool you can also check where it was built: gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache"; fi
+  say "2/3 unpack"
+  tar -tzf "$TMP/$REL_NAME.tar.gz" | awk -v n="$REL_NAME/" 'index($0, n) != 1 || $0 ~ /\.\.\//{bad=1} END{exit bad}' || { echo "REFUSED: the tarball has files outside $REL_NAME/"; exit 1; }
+  OLD="$(rec version || true)"
+  mkdir -p "$REL_PREFIX/versions"
+  if [ -d "$REL_PREFIX/versions/$REL_NAME" ] && [ "$OLD" = "$REL_VER" ]; then echo "moe-cache $REL_VER is already unpacked here: refreshing the command only"
+  else rm -rf "$REL_PREFIX/versions/$REL_NAME.part"; mkdir "$REL_PREFIX/versions/$REL_NAME.part"
+    tar -xzf "$TMP/$REL_NAME.tar.gz" -C "$REL_PREFIX/versions/$REL_NAME.part" --strip-components=1
+    rm -rf "$REL_PREFIX/versions/$REL_NAME"; mv "$REL_PREFIX/versions/$REL_NAME.part" "$REL_PREFIX/versions/$REL_NAME"; fi
+  ln -sfn "versions/$REL_NAME" "$REL_PREFIX/current"
+  for d in "$REL_PREFIX"/versions/*; do [ -d "$d" ] && [ "$d" != "$REL_PREFIX/versions/$REL_NAME" ] && rm -rf "$d"; done     # older versions this installer unpacked
+  say "3/3 the moe-cache command"
+  mkdir -p "$BINDIR"
+  if [ -e "$REL_SHIM" ] && ! grep -qF "$REL_MARK" "$REL_SHIM" 2>/dev/null; then echo "$REL_SHIM exists and is not ours: left alone (use --bin-dir)"; exit 1; fi
+  printf '#!/bin/sh\n%s\nexec "${MOE_CACHE_PYTHON:-python3}" %q "$@"\n' "$REL_MARK (remove: sh install.sh --uninstall)" "$REL_PREFIX/current/bin/moe_cache.py" > "$REL_SHIM"
+  chmod +x "$REL_SHIM"
+  printf 'version=%s\nprefix=%s\ncommand=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" > "$REL_REC"
+  echo "installed: $("$REL_SHIM" --version 2>&1 | head -1)${OLD:+ (was $OLD)}"
+  echo "  files:   $REL_PREFIX (versions/, current, .installed)"
+  echo "  command: $REL_SHIM"
+  echo "  undo:    sh install.sh --uninstall   (removes exactly the two things above; your models stay)"
+  if ! ldconfig -p 2>/dev/null | grep -q libvulkan.so.1; then
+    echo "note: the bundled llama.cpp uses Vulkan and no libvulkan.so.1 was found."
+    if [ $APT = 1 ] && command -v apt-get >/dev/null && [ -t 0 ]; then
+      printf 'install libvulkan1 and mesa-vulkan-drivers with sudo apt now? [y/N] '; read -r A || A=n
+      case "$A" in y|Y|yes) sudo apt-get install -y libvulkan1 mesa-vulkan-drivers;; *) echo "  skipped: sudo apt install libvulkan1 mesa-vulkan-drivers";; esac
+    else echo "  Ubuntu / Debian: sudo apt install libvulkan1 mesa-vulkan-drivers (CPU-only still works without it)"; fi
+  fi
+  case ":$PATH:" in *":$BINDIR:"*) ;; *) echo "note: $BINDIR is not on your PATH; add it (bash: echo 'export PATH=\"$BINDIR:\$PATH\"' >> ~/.bashrc) or run $REL_SHIM"; esac
+  echo; echo "Next: moe-cache launch     (a guided start: checks this PC, suggests a model, starts the server)"
+  exit 0
+fi
+PREFIX="${PREFIX:-$HOME/moe-cache-setup}"
 # the official llama.cpp bundled in this folder (release tarball): used instead of building one
 BUNDLED=""
 if [ $OWN = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ]; then

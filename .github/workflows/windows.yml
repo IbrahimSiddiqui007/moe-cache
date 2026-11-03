@@ -78,6 +78,24 @@ jobs:
             dist/moe-cache-v0.0.0-ci-windows-x64.zip
             dist/SHA256SUMS-windows
 
+  installer:
+    # install.ps1 (the one-line install) and `moe_cache.py launch` on real Windows, no model: a fake release in a folder, the real user PATH (saved and restored)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: install.ps1 in Windows PowerShell 5.1 (hash mismatch refused, zip-slip refused, idempotent, update, uninstall removes only what it added)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install_ps1_test.ps1
+      - name: install.ps1 in PowerShell 7
+        shell: pwsh
+        run: pwsh -NoProfile -File tests/install_ps1_test.ps1
+      - name: launch (fake machine) and the launcher's command line
+        shell: bash
+        run: |
+          python tests/launch_test.py
+          python bin/moe_cache.py launch --help
+
   windows:
     needs: dll
     runs-on: windows-latest

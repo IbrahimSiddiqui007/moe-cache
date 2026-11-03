@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """moe-cache launcher (Linux and Windows; Python 3.8+, standard library only).
 
+  moe_cache.py launch  [--yes] [--model M] [--agent [NAME]]               guided start in plain words: check this PC, pick a model, start the server, connect an agent
   moe_cache.py server  MODEL.gguf [options] [-- extra llama-server args]   run llama-server with the expert-cache plugin
   moe_cache.py pick    [--use agents|chat|docs] [--apply]                  recommend a model for this machine (RAM, VRAM, disk, CPU) and use; --apply uses it
   moe_cache.py doctor  [MODEL.gguf] [--llama-server PATH] [--ram GB]       the same as check (preflight: GPU, driver, RAM, disk, llama-server; what to fix)
@@ -3593,6 +3594,9 @@ def main():
     if sys.argv[1:2] == ["ui"] or (sys.argv[1:2] == ["server"] and "--ui" in sys.argv[2:]):     # GUI1: the control page
         from moe_cache_ui import ui
         return ui([x for x in sys.argv[2:] if x != "--ui"]) or 0
+    if sys.argv[1:2] == ["launch"]:     # the guided start (bin/moe_cache_launch.py)
+        from moe_cache_launch import launch
+        return launch(sys.argv[2:]) or 0
     if sys.argv[1:2] == ["bench-report"]:     # R2-1: stock vs moe-cache on this machine, a report to paste into a GitHub issue
         from moe_cache_bench import bench_report
         return bench_report(sys.argv[2:]) or 0

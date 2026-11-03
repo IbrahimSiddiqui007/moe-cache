@@ -1,5 +1,84 @@
 # Install, run and measure, in detail
 
+## One line to install, one command to start
+
+Nothing here needs administrator rights or root. No telemetry: the installers talk to github.com only, to download the release. Run them again to update.
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1 | iex
+```
+
+Prefer to read it first? Download, read, run:
+
+```powershell
+irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1 -OutFile install.ps1
+notepad install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+It needs Python 3.8 or newer (`winget install Python.Python.3.12`, or python.org; it never installs Python itself and says so if it is missing). It downloads the Windows zip of the release (the official llama.cpp is inside), **checks it against `SHA256SUMS-windows` and refuses if it does not match**, unpacks to `%LOCALAPPDATA%\moe-cache\kit`, writes the command `%LOCALAPPDATA%\moe-cache\bin\moe-cache.cmd` and adds that `bin` folder to **your user PATH** (never the machine PATH). Open a new terminal, then:
+
+```powershell
+moe-cache launch
+```
+
+Undo (removes exactly what it added: the kit folder, the command, the PATH entry if it added it; your models and settings stay): `powershell -ExecutionPolicy Bypass -File .\install.ps1 -Uninstall`, or without the file `& ([scriptblock]::Create((irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1))) -Uninstall`. Other flags: `-DryRun` (print the plan), `-Version X.Y.Z`, `-Root DIR`, `-NoPath`, `-Force`.
+
+**Linux (x86-64):** download first, then run, so you can read it in between:
+
+```bash
+curl -fsSL https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.sh -o install.sh && sh install.sh
+```
+
+Downloaded on its own, `install.sh` installs the release: it fetches the `-ggml0.26` tarball (official llama.cpp inside), checks it against `SHA256SUMS` (**refuses on a mismatch**), unpacks it to `~/.local/share/moe-cache` and writes the command `~/.local/bin/moe-cache`. No apt, no compiler, no root. Only if the Vulkan runtime is missing it offers `sudo apt install libvulkan1 mesa-vulkan-drivers` (asks first; `--no-apt` never offers). Then `moe-cache launch`. Undo: `sh install.sh --uninstall` (removes the versions folder, `current`, the command; models and `~/.cache/moe-cache` stay). Options: `--dry-run`, `--prefix DIR`, `--bin-dir DIR`; `--build` builds llama.cpp and the plugin from source as before (needs cmake and g++; this is what a checkout of the repository does by itself).
+
+**While releases are marked "pre-release"** (all of them are, during the beta), GitHub's `releases/latest/` address does not find them and answers 404. Use the version in the address instead: `https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/vX.Y.Z/install.ps1` (and `install.sh`), `vX.Y.Z` being the newest number on the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases). The installer you download this way installs exactly that release.
+
+## Terminal guide: `moe-cache launch`
+
+`moe-cache launch` (in a checkout: `python3 bin/moe_cache.py launch`) walks you from "installed" to "a server is running", in five steps. It reuses `pick`, `check`, `server`, `on-demand` and `connect`; it changes nothing and downloads nothing without your yes. Press Enter at any question to take the suggestion; Ctrl+C leaves.
+
+| Step | What it shows | What you answer, and what it does |
+|---|---|---|
+| 1. This PC | RAM (and how much the server may use), the graphics card and its memory, free disk, the `llama-server` it will use (the one that came with moe-cache, when it is) | nothing. If no `llama-server` is found it stops and says how to point to one |
+| What for | | **1** plain chat in the browser, **2** a coding agent (server starts in agent mode, 64k context), **3** long documents. Sets the context size and the suggestion |
+| 2. Models | two or three models that fit this PC, from `pick`: size, whether they are already on the PC, the speed **only if it was measured on a PC like this one** (otherwise "not measured"), why | the number of the model (Enter = the first). Your own `.gguf` file: `--model FILE` |
+| 3. Getting the model | if it is not on the PC: the exact download command (`hf download ...`), the size and the folder | `y` runs that command (needs the `hf` tool: `pip install -U huggingface_hub`); anything else prints it and stops, you run it yourself. Disk too small: it says so and stops |
+| 4. Starting | | **1** the server in this window (Ctrl+C stops it), **2** on-demand: a small listener that loads the model on the first request and lets go of the memory when idle, **3** only print the commands. It waits until the model answers |
+| 5. Coding agents | the agents found on this PC (`hermes`, `opencode`, `claude`) | `y` per agent runs `connect NAME --write` (the old config is kept as `.bak`; Claude Code: this folder's `.claude/settings.local.json` only). Needs agent mode (answer 2 at "What for") |
+
+A short session (typed answers after each question; `[...]` is trimmed output):
+
+```text
+1/5  This PC
+     RAM:           32.0 GB (the server may use up to 28.0 GB; ...)
+     graphics card: Test GPU, 8.0 GiB of its own memory
+     llama-server:  .../llama/llama-server (the one that came with moe-cache, build b12064)
+     What will you use it for?  1) plain chat ...  2) a coding agent ...  3) long documents
+     choose 1-3 [1]: 2
+2/5  Models for this PC
+  1) Alpha 35B  (22.0 GB)   <- suggested
+     on this PC: no (download 22.0 GB from https://huggingface.co/...)
+     speed: decode 42 tok/s (measured by the maintainer on a similar PC; yours will differ)
+  2) Beta 20B  (12.0 GB)
+     on this PC: yes (...)
+     speed: not measured on a PC like this one
+     which one? [1-3, Enter = 1]: 2
+4/5  Starting it
+     choose 1-3 [1]: 1
+     ready: http://127.0.0.1:8080
+5/5  Coding agents
+     found: opencode, claude
+     connect opencode to this server (edits its config; the old one is kept as .bak)? [y/N]: y
+Running at http://127.0.0.1:8080. Ctrl+C stops it.
+```
+
+**For scripts** (no questions): `moe-cache launch --yes --model D:\models\x.gguf` starts that file for chat; `--use agents` or `--agent` starts agent mode; `--agent opencode` also connects OpenCode once the server answers (bare `--agent` connects every agent found); `--start on-demand|no` chooses what step 4 does; `--port N`; `--dry-run` shows the steps and commands and starts nothing. `--yes` alone never downloads and never edits an agent's config: a download needs `--download`, an agent connection needs `--agent`. With `--yes` and no `--model` it takes the first suggested model that is already on the PC.
+
+---
+
 The README has the short path; this page keeps every option. Moved here from the README on 2026-10-30, unchanged.
 
 ## Get started
