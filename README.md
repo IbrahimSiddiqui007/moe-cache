@@ -46,7 +46,7 @@ Then open a new terminal and run `moe-cache launch`: it checks your PC, suggests
 |---|---|
 | 1. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH") |
 | 2. The kit | Download `moe-cache-vX-windows-x64.zip` (the newest) from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases). Right-click it > Properties > tick **Unblock** > OK, then unzip it, e.g. to `C:\moe-cache`. The kit is not code-signed: if Windows says "protected your PC", click More info > Run anyway |
-| 3. A model | In the kit folder: `python bin\moe_cache.py pick` names the model that suits your PC and prints its download command (needs `pip install -U huggingface_hub` once) |
+| 3. A model | In the kit folder: `python bin\moe_cache.py pick` names the model that suits your PC and prints its download command (needs `pip install -U huggingface_hub` once). Or skip the command: the control page (step 4) has **Settings > Download a model**, which downloads from the catalogue with a progress bar, continues a cut download and checks the sha256 at the end |
 | 4. Run | Double-click `moe-cache.bat`: the control page opens; pick the model, press Start. The first start takes a minute or two |
 | 5. Agents | Tick Agent mode, then the page's Connect buttons (Hermes, OpenCode) |
 
@@ -121,6 +121,17 @@ The chart at the top is the Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32
 - Models that fit in RAM (Qwen3.6-35B, Nemotron Bolt): plain llama.cpp is as fast or faster, so the launcher runs it by itself.
 - **v0.3.5 vs v0.3.4 (Flash-Next Q2_0, Windows desktop, clean run 2026-11-03, both on the official llama.cpp b11966 server):** prompts of 34k / 64k / 128k tokens are read **+42 % / +38 % / +38 %** faster (575 vs 406, 435 vs 314, 421 vs 305 tok/s); decode after a long prompt is **6-10 % lower** (34k 26.7 vs 28.5, 64k 24.6 vs 27.2 tok/s), because the bigger prompt chunk leaves 2 fewer expert layers on the GPU. 256k prompts +26 % from the same change. [RESULTS section 79](docs/RESULTS.md)
 - Same text as stock on every model checked. On Linux (older laptop runs, v0.2.x) the gains were 2.4x to 5.2x.
+
+**What to expect by memory budget** (decode tok/s, `--ram` = the memory the server may use; only numbers we measured, one cold run each, "not measured" where we have none):
+
+| `--ram` | Windows desktop, Flash-Next IQ2_XS (68 GB), 16 GB GPU | Linux laptop, Qwen3-Next-80B (48.5 GB), about 2.6 GB GPU use |
+|---|---|---|
+| 24 GB | **21.81** (RESULTS §60) | **10.6**, stock 2.3 (RESULTS §6; v0.1 build) |
+| 20 GB | **21.00** (RESULTS §60) | **9.3**, stock 1.3 (RESULTS §6; v0.1 build) |
+| 16 GB | **20.03**, 92 % of the 24 GB speed (RESULTS §60, after the 2026-10-27 job-limit fix) | not measured |
+| 12 GB, 8 GB, 32 GB or more | not measured | not measured |
+
+The two columns are different machines and models, so compare down a column, not across. A model that fits in RAM is not in this table: plain llama.cpp is as fast or faster there.
 
 Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html), [docs/RESULTS.md](docs/RESULTS.md). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md)).
 
