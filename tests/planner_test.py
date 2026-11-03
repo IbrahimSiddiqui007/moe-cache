@@ -266,6 +266,12 @@ check("--temp" not in S(_q, "m.gguf", ["--temp", "0.3"], False)[0] and "--top-k"
 _g = dict(_q, sampling={"temp": 0.6, "top_p": 0.95, "top_k": 20})
 _a, _w = S(_g, "m.gguf", [], False)
 check(_a == ["--min-p", "0", "--presence-penalty", "1.5"] and "from the GGUF" in _w, "sampling: values the GGUF carries are left to llama.cpp")
+for _fl, _gone in ((["--temp=0.2"], "--temp"), (["--temperature=0.2"], "--temp"), (["--top-p=0.9"], "--top-p"), (["--top-k=5"], "--top-k"),
+                   (["--min-p=0.1"], "--min-p"), (["--presence-penalty=0.5"], "--presence-penalty")):
+    _r = S(_q, "m.gguf", _fl, False)[0]
+    check(_gone not in _r and len(_r) == 8 and (_gone != "--temp" or "--temperature" not in _r), f"sampling: your {_fl[0]} (= form) is kept like the separate form ({_r})")
+check(S(_q, "m.gguf", ["--temp=0.2", "--top-p=0.9"], False)[0] == ["--top-k", "20", "--min-p", "0", "--presence-penalty", "1.5"], "sampling: --temp=0.2 --top-p=0.9 both kept")
+check("--top-p" in S(_q, "m.gguf", ["--top-pp=0.9", "--tempo", "1"], False)[0], "sampling: a longer flag name that merely starts the same does not count")
 check(S({"arch": "qwen4exp", "sampling": {}}, "m.gguf", [], False)[0][-2:] == ["--presence-penalty", "0"], "sampling: Qwen3.8 thinking has presence 0 (its card)")
 check(S({"arch": "qwen3moe", "name": "Qwen3-30B-A3B-Instruct-2507", "sampling": {}}, "m.gguf", [], False)[0][1] == "0.7", "sampling: an Instruct name -> non-thinking")
 check(S({"arch": "glm5-next", "sampling": {}}, "m.gguf", [], False)[0] == ["--temp", "1", "--top-p", "0.95"], "sampling: GLM gets only what its card states")

@@ -124,6 +124,9 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*` 
 | `MOE_CACHE_TRACE` | Prints debug lines to stderr as llama.cpp asks the plugin for its buffer type and whether it supports each operation. Very noisy. Accepts 1/on/true/yes; 0/off/false/no or empty means off; any other text counts as on. | off | internal/testing |
 | `MOE_CACHE_VRAM_LINE` | Log only. After a long prompt, prints one line with the lowest free GPU memory seen and the block compute times, and warns once if a block is 3x slower than usual while under 600 MiB is free (nearly full card). Same on/off values as `MOE_CACHE_TRACE`. | off | advanced |
 | `MOE_CACHE_WARM_KEEP` | Launcher: how many of the longest saved conversations are restored into the server at start, so you start warm. 0 restores none. Needs a plain whole number; anything else is ignored. | 2 | advanced |
+| `MOE_CACHE_BASE_URL` | Where `update --apply` (and `install.sh` / the release installers) fetch release files from: a folder (`file://...`) or an https address, instead of the project's GitHub release address. For tests and mirrors; with it set, the `gh` attestation check is skipped. | unset (the GitHub release) | internal/testing |
+| `MOE_CACHE_KEEP_PREVIOUS` | Read by `install.sh`: `1` keeps the version that was installed in `versions/` after an update, so you can point `current` back at it. `update --apply` sets it. | unset (older versions are deleted) | set by the launcher |
+| `MOE_CACHE_SKIP_ATTESTATION` | `1` lets `update --apply` and `install.sh` go on when `gh` is usable but cannot verify the build attestation. Off by default: a failed check refuses. | unset (refuse) | advanced |
 | `MOE_CACHE_WARM_SORT` | When the cache is warmed at start, issues the expert reads in file order (by offset) so a hard drive reads forward instead of jumping around. Only a value above 0 turns it on; 0, empty or text means off. | off | advanced |
 
 ### Names that are not run-time settings

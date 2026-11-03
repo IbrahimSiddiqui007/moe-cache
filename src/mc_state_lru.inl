@@ -317,8 +317,10 @@
                 if (!counted) {
                     if (n.resident) {
                         if (n.loading) { wait_list.push_back(s); }
-                        unlink(s);
-                        push_mru(s);
+                        if (mclru::refresh_recency_of_resident(cur_scan)) {      // CACHE-623: a long prompt does not make an expert "recently used"
+                            unlink(s);
+                            push_mru(s);
+                        }
                         n.epoch = epoch;
                         continue;
                     }
