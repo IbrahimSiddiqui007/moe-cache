@@ -18,6 +18,12 @@ static bool server_repack_disabled() {
 }
 
 struct state_t;
+
+// MULTIGPU-026: false for an OpenVINO device (the NPU is reported as a GPU); see mc_devpick.h
+bool block_device_ok(ggml_backend_dev_t d) {
+    ggml_backend_reg_t r = d ? ggml_backend_dev_backend_reg(d) : nullptr;
+    return mcdev::usable_for_gpu_block(r ? ggml_backend_reg_name(r) : nullptr, d ? ggml_backend_dev_description(d) : nullptr);
+}
 #ifdef _WIN32
 void install_crash_report(state_t * s);
 #endif
@@ -658,7 +664,7 @@ struct state_t {
         for (size_t k = 0; k < sa.devices.size() && gpu_min_tokens > 0 && !gpu_dev; k++) {
             ggml_backend_dev_t d = ggml_backend_dev_by_name(sa.devices[k].c_str());
             const auto t = d ? ggml_backend_dev_type(d) : GGML_BACKEND_DEVICE_TYPE_CPU;
-            if (t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            if ((t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) && block_device_ok(d)) {
                 gpu_dev = d;
             }
         }
@@ -667,6 +673,9 @@ struct state_t {
             // Taking only GPU left the Vega 8 unused: prefill 363 vs stock 693 tok/s (mini PC, T7); with the iGPU 569-597
             ggml_backend_dev_t d = ggml_backend_dev_get(i);
             const auto t = ggml_backend_dev_type(d);
+            if (!block_device_ok(d)) {
+                continue;        // MULTIGPU-026: an OpenVINO device (the NPU is reported as a GPU) is never the long-prompt block target
+            }
             if (t == GGML_BACKEND_DEVICE_TYPE_GPU) {
                 gpu_dev = d;
                 break;
@@ -714,8 +723,9 @@ struct state_t {
                 // repacked; with no GPU in use (none loaded, or --device none), or with --no-host (no host buffer), they are repacked
                 bool gpu = false;
                 for (size_t i = 0; i < ggml_backend_dev_count() && !sa.device_none; i++) {
-                    const auto t = ggml_backend_dev_type(ggml_backend_dev_get(i));
-                    gpu = gpu || t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU;
+                    ggml_backend_dev_t d = ggml_backend_dev_get(i);
+                    const auto t = ggml_backend_dev_type(d);
+                    gpu = gpu || ((t == GGML_BACKEND_DEVICE_TYPE_GPU || t == GGML_BACKEND_DEVICE_TYPE_IGPU) && block_device_ok(d));   // MULTIGPU-026: an NPU is not a GPU that holds llama.cpp's CPU weights
                 }
                 want = (!gpu || sa.no_host) && !server_repack_disabled();
             }
