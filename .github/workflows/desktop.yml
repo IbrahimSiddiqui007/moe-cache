@@ -1,5 +1,6 @@
-# Desktop app (Tauri 2 shell around the control page). Manual dispatch only: nothing here runs on a push or a tag.
-# Design: docs/DESKTOP_APP_DESIGN.md. First build of the scaffold: no signing of the installer (no code-signing certificate by decision);
+# Desktop app (Tauri 2 shell around the control page). Runs by hand (workflow_dispatch, which GitHub offers only once this file is on the default
+# branch) and on pull requests that touch desktop/ or this file, so a branch can be built before that. Never on a push to a branch or a tag.
+# Design: docs/DESKTOP_APP_DESIGN.md. No signing of the installer (no code-signing certificate by decision);
 # update-file signing (TAURI_SIGNING_PRIVATE_KEY) is added with the updater milestone.
 name: desktop
 
@@ -10,14 +11,23 @@ on:
         description: Windows embeddable Python version
         default: "3.12.8"
       python_sha256:
-        description: SHA-256 of python-<version>-embed-amd64.zip (from python.org); empty = skip bundling Python (app then needs MOE_CACHE_PYTHON)
+        description: SHA-256 of python-<version>-embed-amd64.zip (from python.org); empty = the pin for 3.12.8 in the workflow; "none" = do not bundle Python (the app then needs MOE_CACHE_PYTHON)
         default: ""
+  pull_request:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+
+env:
+  # python.org's python-3.12.8-embed-amd64.zip, hash taken on 2026-11-03 from a download over https (no second source: python.org lists none)
+  PY_VERSION: ${{ inputs.python_version || '3.12.8' }}
+  PY_SHA256: ${{ inputs.python_sha256 || '8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb' }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: desktop
+  group: desktop-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -28,8 +38,10 @@ jobs:
         include:
           - os: ubuntu-24.04
             bundles: appimage,deb
+            py: python3
           - os: windows-2022
             bundles: nsis,msi
+            py: python
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     steps:
@@ -63,14 +75,29 @@ jobs:
         run: desktop/scripts/stage.sh
 
       - name: Bundle Python (Windows)
-        if: runner.os == 'Windows' && inputs.python_sha256 != ''
+        if: runner.os == 'Windows' && env.PY_SHA256 != 'none'
         shell: pwsh
-        run: desktop/scripts/fetch-python-win.ps1 -Version "${{ inputs.python_version }}" -Sha256 "${{ inputs.python_sha256 }}"
+        run: desktop/scripts/fetch-python-win.ps1 -Version "$env:PY_VERSION" -Sha256 "$env:PY_SHA256"
 
       - name: Empty Python folder when none is bundled (Windows)
-        if: runner.os == 'Windows' && inputs.python_sha256 == ''
+        if: runner.os == 'Windows' && env.PY_SHA256 == 'none'
         shell: bash
         run: mkdir -p desktop/src-tauri/resources/python && touch desktop/src-tauri/resources/python/.gitkeep
+
+      - name: Shell tests (Rust unit tests)
+        working-directory: desktop/src-tauri
+        shell: bash
+        run: cargo test --locked
+
+      - name: Shell contract test, no model (launcher started as the shell starts it)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 desktop/tests/shell_contract_test.py
+
+      - name: Shell contract test with the bundled Python (Windows)
+        if: runner.os == 'Windows' && env.PY_SHA256 != 'none'
+        shell: bash
+        run: desktop/src-tauri/resources/python/python.exe desktop/tests/shell_contract_test.py
 
       - name: Build
         working-directory: desktop
@@ -81,7 +108,11 @@ jobs:
 
       - name: Sizes
         shell: bash
-        run: find desktop/src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.msi' -o -name '*-setup.exe' \) -exec ls -l {} \;
+        run: |
+          echo "| file | bytes |" >> "$GITHUB_STEP_SUMMARY"; echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          find desktop/src-tauri/target/release/bundle -type f \( -name '*.AppImage' -o -name '*.deb' -o -name '*.msi' -o -name '*-setup.exe' \) | while read -r f; do
+            echo "$f $(wc -c < "$f")"; echo "| $(basename "$f") | $(wc -c < "$f") |" >> "$GITHUB_STEP_SUMMARY"
+          done
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

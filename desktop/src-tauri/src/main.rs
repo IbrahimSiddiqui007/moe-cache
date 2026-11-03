@@ -123,13 +123,20 @@ fn spawn_page(app: &AppHandle, state: &State, tx: mpsc::Sender<String>) -> Resul
                         log.remove(0);
                     }
                 }
-                if let Some(i) = line.find(MARKER) {
-                    let _ = tx.send(line[i + MARKER.len()..].split_whitespace().next().unwrap_or("").to_string());
+                if let Some(url) = marker_url(&line) {
+                    let _ = tx.send(url);
                 }
             }
         });
     }
     Ok(())
+}
+
+/// The address in the line "moe-cache: control page at http://127.0.0.1:PORT/?t=TOKEN (this machine ...)".
+fn marker_url(line: &str) -> Option<String> {
+    let i = line.find(MARKER)?;
+    let url = line[i + MARKER.len()..].split_whitespace().next()?;
+    Some(url.to_string())
 }
 
 /// "http://127.0.0.1:PORT/?t=TOKEN" -> Ctl
@@ -311,4 +318,57 @@ fn main() {
         }
         _ => {}
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn finds_the_address_in_the_launchers_line() {
+        let line = "moe-cache: control page at http://127.0.0.1:41233/?t=abc123 (this machine and this user only; Ctrl-C stops it)";
+        assert_eq!(marker_url(line).as_deref(), Some("http://127.0.0.1:41233/?t=abc123"));
+        assert_eq!(marker_url("moe-cache: something else"), None);
+        assert_eq!(marker_url("control page at "), None);
+    }
+
+    #[test]
+    fn parses_port_and_token() {
+        let c = parse_url("http://127.0.0.1:41233/?t=abc123").unwrap();
+        assert_eq!((c.port, c.token.as_str()), (41233, "abc123"));
+        assert!(parse_url("http://example.com:80/?t=x").is_none());
+        assert!(parse_url("http://127.0.0.1:99999/?t=x").is_none());
+        assert!(parse_url("http://127.0.0.1:8070/").is_none());
+    }
+
+    #[test]
+    fn api_sends_the_token_header_and_returns_the_body() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        let t = std::thread::spawn(move || {
+            let (mut s, _) = l.accept().unwrap();
+            let mut buf = [0u8; 2048];
+            let n = s.read(&mut buf).unwrap();
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"state":"ready"}"#;
+            write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            req
+        });
+        let ctl = Ctl { port, token: "tok".into() };
+        let got = api(&ctl, "GET", "/api/status", "", 3).unwrap();
+        let req = t.join().unwrap();
+        assert!(req.starts_with("GET /api/status HTTP/1.1\r\n"));
+        assert!(req.contains(&format!("Host: 127.0.0.1:{port}\r\n")));
+        assert!(req.contains("X-MoeCache-Token: tok\r\n"));
+        assert_eq!(got, r#"{"state":"ready"}"#);
+    }
+
+    #[test]
+    fn api_returns_none_when_nothing_listens() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = l.local_addr().unwrap().port();
+        drop(l);
+        assert!(api(&Ctl { port, token: "t".into() }, "GET", "/", "", 1).is_none());
+    }
 }
