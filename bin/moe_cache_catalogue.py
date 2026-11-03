@@ -10,12 +10,26 @@ USES = ("agents", "chat", "docs")
 METRICS = {"decode_tps": "tok/s decode", "prompt_tps": "tok/s prompt", "tasks_correct": "tasks right (of 202)", "agent_session_s": "s agent session"}
 
 
-def load(path=None):
+def load(path=None, validate=True):
+    """The catalogue as a dict. A damaged or incomplete file stops with one plain sentence (not a traceback at import, which broke pick, launch,
+    models and the control page at once); validate=False is for the checker that lists the problems itself."""
+    where = path or PATH
     try:
-        with open(path or PATH, encoding="utf-8") as f:
-            return json.load(f)
+        with open(where, encoding="utf-8") as f:
+            doc = json.load(f)
     except OSError as e:
-        raise SystemExit(f"moe-cache: the model catalogue {path or PATH} cannot be read ({e}); models.json belongs next to bin/ (reinstall, or git checkout models.json)")
+        raise SystemExit(f"moe-cache: the model catalogue {where} cannot be read ({e}); models.json belongs next to bin/ (reinstall, or git checkout models.json)")
+    except ValueError as e:
+        raise SystemExit(f"moe-cache: the model catalogue {where} is damaged ({e}); restore it (reinstall, or git checkout models.json)")
+    if validate:
+        try:
+            bad = problems(doc)
+        except Exception as e:      # a shape problems() cannot even walk
+            bad = [f"unexpected structure ({type(e).__name__}: {e})"]
+        if bad:
+            raise SystemExit(f"moe-cache: the model catalogue {where} has {len(bad)} problem(s): " + "; ".join(bad[:3]) + (" ..." if len(bad) > 3 else "") +
+                             "; restore it (reinstall, or git checkout models.json)")
+    return doc
 
 
 def problems(doc):

@@ -60,6 +60,8 @@ class Fake(L.Deps):
     def find_local(self, dirs): return {"bolt": MODEL}
     def which(self, n): return ("/bin/" + n) if (n == "hf" and self.hf) or n in self.agents else None
     def download(self, r): self.downloaded.append(r["id"]); return 0
+    verify_err = None
+    def verify(self, r, say): self.verified = getattr(self, "verified", []) + [r["id"]]; return self.verify_err
     def start(self, cmd): self.started.append(cmd); self.proc = FakeProc(cmd, self.dies); return self.proc
     def up(self, url, on_demand): self.polls += 1; return self.polls > self.up_after
     def connect(self, argv): self.connected.append(argv)
@@ -124,13 +126,59 @@ rc = run(f, "--yes", "--model", MODEL, "--agent", "claude")
 check(rc == 0 and f.connected == [] and "not installed" in f.text(), "--agent NAME that is not installed: said, skipped")
 f = Fake()
 rc = run(f, "--yes", "--model", MODEL, "--start", "on-demand", "--port", "9090", "--use", "agents")
-check(f.started[0][2:] == ["on-demand", MODEL, "--port", "9090"], f"--start on-demand: the listener on the chosen port ({f.started[0][2:]})")
+check(f.started[0][2:] == ["on-demand", MODEL, "--port", "9090", "--ctx", "65536", "--agent"], f"--start on-demand: the listener on the chosen port, with the chosen context and agent mode (AUD-042) ({f.started[0][2:]})")
+f = Fake()
+rc = run(f, "--yes", "--model", MODEL, "--start", "on-demand", "--use", "chat")
+check("--agent" not in f.started[0] and "32768" in f.started[0], "on-demand for plain chat: no --agent, the chat context")
 f = Fake()
 rc = run(f, "--yes", "--model", MODEL, "--dry-run")
 check(rc == 0 and f.started == [] and "nothing was started" in f.text(), "--dry-run starts nothing")
 f = Fake()
 rc = run(f, "--yes", "--model", MODEL, "--start", "no")
 check(rc == 0 and f.started == [], "--start no: prints the commands only")
+
+# ---- 3b. the download is checked against models.json (AUD-030) ----
+f = Fake(); f.verify_err = "the downloaded file does not match the catalogue: x. Nothing was started."
+rc = run(f, "--yes", "--model", "bolt", "--download")
+check(rc == 1 and f.downloaded == ["bolt"] and f.started == [] and "does not match" in f.text(), "a download whose checksum is wrong is not started")
+f = Fake(); f.verify_err = "bad"
+rc = run(f, "--yes", "--model", "bolt", "--download", "--no-verify")
+check(rc == 0 and f.started and not getattr(f, "verified", None), "--no-verify skips the check")
+f = Fake()
+rc = run(f, "--yes", "--model", "bolt", "--download")
+check(rc == 0 and f.verified == ["bolt"] and "checksum ok" in f.text(), "a good download is verified, then started")
+# the real check, on small files and a fake catalogue entry
+import hashlib
+D = os.path.join(TMP, "vdl"); os.makedirs(D)
+open(os.path.join(D, "a.gguf"), "wb").write(b"hello model")
+good = hashlib.sha256(b"hello model").hexdigest()
+real = L.Deps()
+orig = L.pk.CAT
+L.pk.CAT = {"t": {"files": [{"name": "a.gguf", "path": "a.gguf", "bytes": 11, "sha256": good}]}}
+lines = []
+r_ = {"id": "t", "download": {"folder": D}}
+check(real.verify(r_, lines.append) is None, "Deps.verify: a file with the right sha256 passes")
+L.pk.CAT = {"t": {"files": [{"name": "a.gguf", "path": "a.gguf", "bytes": 11, "sha256": "0" * 64}]}}
+check("does not match" in (real.verify(r_, lines.append) or ""), "Deps.verify: a wrong sha256 is reported")
+L.pk.CAT = {"t": {"files": [{"name": "b.gguf", "path": "b.gguf", "bytes": 11, "sha256": good}]}}
+check("missing" in (real.verify(r_, lines.append) or ""), "Deps.verify: a missing file is reported")
+L.pk.CAT = orig
+
+f = Fake(); rc = run(f, "--yes", "--model", MODEL, "--agent", "claude")
+check("export ANTHROPIC_BASE_URL=http://127.0.0.1:8080" in f.text() and "$env:ANTHROPIC_BASE_URL" in f.text(), "connecting Claude Code also prints the exported lines (the settings file alone was ignored in 2.1.317; AUD-083)")
+f = Fake(); rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode")
+check("export ANTHROPIC" not in f.text(), "...and only for Claude Code")
+
+# ---- 3c. waiting for the model (AUD-041) ----
+class Wait(Fake):
+    def up(self, url, od): return False
+f = Wait(); rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode", "--wait", "4")
+check(f.connected == [] and "not answering yet" in f.text() and "ready:" not in f.text(), "--wait runs out: no agent is connected to a server that is still loading")
+class Ctrl(Fake):
+    def up(self, url, od): raise KeyboardInterrupt
+f = Ctrl(); f.terminated = False
+rc = run(f, "--yes", "--model", MODEL)
+check(rc == 130 and "stopped while loading" in f.text() and f.connected == [], "Ctrl+C while loading: no traceback, the server is stopped, exit 130")
 
 # ---- 4. things that go wrong ----
 f = Fake(llama=None)

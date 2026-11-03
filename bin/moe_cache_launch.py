@@ -67,6 +67,26 @@ class Deps:
                 return f"the download is done, but the link failed ({e}); run: {d['steps'][1]}"
         return 0
 
+    def verify(self, rec, say):
+        """AUD-030: compare the downloaded files with the sha256 in models.json. Returns None when all match (or none is listed), else a sentence."""
+        m = pk.CAT.get(rec["id"]) or {}
+        folder = rec["download"]["folder"]
+        bad = []
+        for f in m.get("files") or []:
+            if not f.get("sha256"):
+                say(f"     (no checksum listed for {f['name']}; not checked)")
+                continue
+            path = os.path.join(folder, f.get("path") or f["name"])
+            if not os.path.isfile(path):
+                bad.append(f"{f['name']} is missing in {folder}")
+                continue
+            say(f"     checking {f['name']} ({gbs(f['bytes'])}) against the checksum in models.json ...")
+            got = sha256_file(path, f["bytes"], say)
+            if got != f["sha256"]:
+                bad.append(f"{f['name']}: sha256 {got} is not the expected {f['sha256']}")
+        return ("the downloaded file does not match the catalogue: " + "; ".join(bad) +
+                ". Nothing was started. Delete the file(s) and run the download again (a cut-off download resumes wrong sometimes); --no-verify skips this check.") if bad else None
+
     def start(self, cmd):
         return subprocess.Popen(cmd)
 
@@ -93,8 +113,34 @@ class Deps:
         time.sleep(s)
 
 
+def sha256_file(path, size, say, chunk=8 << 20, every=10.0):
+    """sha256 of a big file, with a progress line every `every` seconds."""
+    import hashlib
+    h, done, t0 = hashlib.sha256(), 0, time.time()
+    last = t0
+    with open(path, "rb") as f:
+        while True:
+            b = f.read(chunk)
+            if not b:
+                break
+            h.update(b)
+            done += len(b)
+            if time.time() - last >= every:
+                last = time.time()
+                say(f"       ... {100 * done / max(size, 1):.0f} %")
+    return h.hexdigest()
+
+
 def gbs(b):
     return "?" if b is None else f"{b / 1e9:.1f} GB"
+
+
+def stop_child(child):
+    child.terminate()
+    try:
+        child.wait(timeout=20)
+    except Exception:
+        child.kill()
 
 
 def command_word():
@@ -176,6 +222,7 @@ def parse(argv):
     ap.add_argument("--use", choices=list(pk.USES), help="chat, agents (coding agents, 64k+ context) or docs (long documents)")
     ap.add_argument("--agent", nargs="?", const="all", metavar="NAME",
                     help="start in agent mode and connect this agent (hermes, opencode or claude) after the server is up; without a name: every agent found on this PC")
+    ap.add_argument("--no-verify", action="store_true", help="after a download, do not compare the file with the checksum in models.json (a 20 GB file takes a minute or two to check)")
     ap.add_argument("--download", action="store_true", help="the explicit yes to downloading the chosen model when it is not on this PC")
     ap.add_argument("--start", choices=["server", "on-demand", "no"], help="server: run it in this window; on-demand: a listener that loads the model on the first request; no: only print the commands")
     ap.add_argument("--port", type=int, default=None, help="the port (default 8080)")
@@ -278,6 +325,12 @@ def launch(argv, deps=None):
         if err:
             say("     " + err)
             return 1
+        if not a.no_verify:
+            err = deps.verify(rec, say)
+            if err:
+                say("     " + err)
+                return 1
+            say("     checksum ok")
         found = deps.find_local(a.models_dir)
         model_path = found.get(rec["id"])
         if not model_path:
@@ -307,10 +360,10 @@ def launch(argv, deps=None):
     script = os.path.join(mc.HERE, "bin", "moe_cache.py")
     base = [sys.executable, script]
     server_cmd = base + ["server", model_path] + sargs + (["--port", str(port)] if port != 8080 else [])
-    od_cmd = base + ["on-demand", model_path, "--port", str(port)]
+    od_cmd = base + ["on-demand", model_path, "--port", str(port)] + sargs      # on-demand passes --ctx and --agent on to the server it starts
     cw = command_word()
     shown = {"server": f'{cw} server "{model_path}" ' + " ".join(sargs) + (f" --port {port}" if port != 8080 else ""),
-             "on-demand": f'{cw} on-demand "{model_path}" --port {port}'}
+             "on-demand": f'{cw} on-demand "{model_path}" --port {port} ' + " ".join(sargs)}
     url = f"http://127.0.0.1:{port}"
     if start == "no" or a.dry_run:
         say("     the commands (nothing was started):")
@@ -322,26 +375,34 @@ def launch(argv, deps=None):
     say("     starting: " + shown[start])
     child = deps.start(cmd)
     say("     loading the model; the first start can take a few minutes (it reads the file from the drive)...")
-    waited, last = 0, 0
-    while not deps.up(url, start == "on-demand"):
-        if child.poll() is not None:
-            say(f"     it stopped with exit code {child.returncode}. `{cw} doctor \"{model_path}\"` says what is wrong.")
-            return 1
-        if waited >= a.wait:
-            say(f"     still not answering after {a.wait} s; leaving it running. Check {url} later, or `{cw} doctor`.")
-            break
-        deps.sleep(2)
-        waited += 2
-        if waited - last >= 30:
-            last = waited
-            say(f"     ... still loading ({waited} s)")
-    else:
-        say(f"     ready: {url}  (chat page in your browser: {url})")
+    waited, last, ready = 0, 0, False
+    try:
+        while not deps.up(url, start == "on-demand"):
+            if child.poll() is not None:
+                say(f"     it stopped with exit code {child.returncode}. `{cw} doctor \"{model_path}\"` says what is wrong.")
+                return 1
+            if waited >= a.wait:
+                say(f"     still not answering after {a.wait} s; leaving it running. Check {url} later, or `{cw} doctor`.")
+                break
+            deps.sleep(2)
+            waited += 2
+            if waited - last >= 30:
+                last = waited
+                say(f"     ... still loading ({waited} s)")
+        else:
+            ready = True
+            say(f"     ready: {url}  (chat page in your browser: {url})")
+    except KeyboardInterrupt:
+        stop_child(child)
+        say("stopped while loading.")
+        return 130
 
     # 5/5 agents
     say("\n5/5  Coding agents")
     found = [x for x in AGENTS if deps.which(x)]
-    if not found:
+    if not ready:
+        say(f"     the server is not answering yet, so no agent was connected (a config written now would point at nothing). When {url} answers:  {cw} connect NAME --write")
+    elif not found:
         say("     none of hermes, opencode, claude found on this PC" + (f" ({a.agent} is not installed; skipped)" if a.agent not in (None, "all") else "")
             + f" (install one, then: {cw} connect NAME --write).")
     elif use != "agents":
@@ -363,6 +424,11 @@ def launch(argv, deps=None):
                 deps.connect([x, "--url", url, "--write"])
             except SystemExit as e:
                 say(f"     could not connect {x}: {e}")
+        if "claude" in want:       # AUD-083: Claude Code 2.1.317 ignored ANTHROPIC_BASE_URL from settings.local.json (went to Anthropic, 401); the exported lines work
+            say("     Claude Code: start it from a shell where these are set (the settings file alone was not enough in the version we tested, docs/AGENTS.md):\n"
+                f"       bash/zsh:    export ANTHROPIC_BASE_URL={url} ANTHROPIC_AUTH_TOKEN=none\n"
+                f"       PowerShell:  $env:ANTHROPIC_BASE_URL=\"{url}\"; $env:ANTHROPIC_AUTH_TOKEN=\"none\"\n"
+                f"     (`{cw} connect claude --url {url}` prints the exact lines for your key)")
         if not want:
             say(f"     not connected. Later:  {cw} connect NAME --write")
 
@@ -370,11 +436,7 @@ def launch(argv, deps=None):
     try:
         return child.wait() or 0
     except KeyboardInterrupt:
-        child.terminate()
-        try:
-            child.wait(timeout=20)
-        except Exception:
-            child.kill()
+        stop_child(child)
         say("stopped.")
         return 0
 

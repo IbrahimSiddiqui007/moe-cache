@@ -317,6 +317,26 @@ buf = io.StringIO()
 with contextlib.redirect_stdout(buf):
     rc_off = cli("replay", "first", "--record", newf)
 check(rc_off == 1 and "| NO |" in buf.getvalue() and "outside the band" in buf.getvalue(), "replay: a record 20 % lower is outside the 5 % band")
+# replay --run asks first and never runs without a yes (AUD-037); Windows paths keep their backslashes
+calls = []
+real_call = cc.subprocess.call
+cc.subprocess.call = lambda argv, *a, **k: calls.append(argv) or 0
+try:
+    err = io.StringIO()
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        rc_no = cli("replay", "first", "--run")            # stdin is not a terminal here: no answer, no run
+    check(rc_no == 2 and not calls and "not run" in err.getvalue(), "replay --run without a yes (and no terminal) runs nothing")
+    with contextlib.redirect_stdout(io.StringIO()):
+        rc_yes = cli("replay", "first", "--run", "--yes")
+    check(rc_yes == 0 and calls, "replay --run --yes runs the recorded commands")
+finally:
+    cc.subprocess.call = real_call
+real_name = cc.os.name
+try:
+    cc.os.name = "nt"
+    check(cc.split_command('python x.py --model "C:\\models\\x.gguf" -c C:\\a\\b') == ["python", "x.py", "--model", "C:\\models\\x.gguf", "-c", "C:\\a\\b"], "Windows: backslashes in the recorded commands survive the split")
+finally:
+    cc.os.name = real_name
 # the committed benchmarks/ folder: every run validates, every claim resolves
 real_runs = cc.load_runs(cc.BENCH)
 check(all(not rr.validate(r, schema) for r in real_runs.values()), f"benchmarks/runs: {len(real_runs)} run files validate against the schema")

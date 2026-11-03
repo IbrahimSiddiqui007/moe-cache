@@ -458,6 +458,13 @@ def cmd_lint(a, bdir):
 
 # ---------------------------------------------------------------- replay
 
+def split_command(cm):
+    """shlex for POSIX; on Windows backslashes in paths (C:\\models\\x.gguf) must survive, so non-POSIX splitting with the quotes removed."""
+    if os.name != "nt":
+        return shlex.split(cm)
+    return [t[1:-1] if len(t) > 1 and t[0] == t[-1] and t[0] in "\"'" else t for t in shlex.split(cm, posix=False)]
+
+
 def cmd_replay(a, bdir):
     claims, runs = load_claims(bdir), load_runs(bdir)
     if a.claim not in claims:
@@ -485,7 +492,16 @@ def cmd_replay(a, bdir):
             return 2
         for cm in cmds:
             print("$ " + cm)
-            rc = subprocess.call(shlex.split(cm))
+            # the commands come from a benchmark record, which may be contributed by someone else: ask before each one (AUD-037)
+            if not a.yes:
+                try:
+                    ok = input("  run this command? [y/N] ").strip().lower() in ("y", "yes") if sys.stdin.isatty() else False
+                except EOFError:
+                    ok = False
+                if not ok:
+                    print("replay: not run (answer y at the question, or pass --yes after reading the commands above)", file=sys.stderr)
+                    return 2
+            rc = subprocess.call(split_command(cm))
             if rc:
                 print(f"replay: command failed with exit {rc}", file=sys.stderr)
                 return rc
@@ -530,7 +546,7 @@ def main(argv=None, prog_cmd=None):
     l = sub.add_parser("lint", help="every performance number in README.md / the card needs a current claim marker"); l.add_argument("files", nargs="*")
     l.add_argument("--warn", action="store_true", help="print the problems, exit 0"); l.add_argument("--strict", action="store_true", help="exit 1 on a problem (default)")
     r = sub.add_parser("replay", help="commands to reproduce a claim; --record NEW.json compares")
-    r.add_argument("claim"); r.add_argument("--run", action="store_true", help="execute the commands"); r.add_argument("--record"); r.add_argument("--band", type=float, default=NOISE_MIN_PCT)
+    r.add_argument("claim"); r.add_argument("--run", action="store_true", help="execute the commands (asks before each one)"); r.add_argument("--yes", action="store_true", help="with --run: do not ask (read the commands first)"); r.add_argument("--record"); r.add_argument("--band", type=float, default=NOISE_MIN_PCT)
     r.add_argument("--arm-map", action="append", help="CLAIMARM=NEWARM when the new record names the arms differently")
     a = ap.parse_args(argv)
     try:

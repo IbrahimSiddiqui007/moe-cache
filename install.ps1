@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. checks that Python 3.8 or newer is installed (it never installs Python for you) and says how to get it if not
-#   2. downloads the Windows zip of this release and SHA256SUMS-windows, and REFUSES (installs nothing) when the hash does not match
+#   2. downloads the Windows zip of this release and SHA256SUMS-windows, and REFUSES (installs nothing) when the hash does not match (SUMS come from the same release: that finds a damaged download, it does not prove who built it; check the build with gh attestation verify)
 #   3. unpacks it to %LOCALAPPDATA%\moe-cache\kit (llama.cpp is inside the zip)
 #   4. writes a small command, %LOCALAPPDATA%\moe-cache\bin\moe-cache.cmd, and adds that bin folder to YOUR user PATH (never the machine PATH)
 #   5. prints the version and how to undo it
@@ -56,7 +56,7 @@ function Set-UserPathRaw([string]$value) {
 }
 
 function Split-PathList([string]$p) { return @($p -split ';' | Where-Object { $_ -ne '' }) }
-function Same-Dir([string]$a, [string]$b) { return ($a.TrimEnd('\') -ieq $b.TrimEnd('\')) }
+function Same-Dir([string]$a, [string]$b) { return ([Environment]::ExpandEnvironmentVariables($a).TrimEnd('\') -ieq [Environment]::ExpandEnvironmentVariables($b).TrimEnd('\')) }      # %LOCALAPPDATA%\... entries in the registry count (AUD-058)
 
 function Find-Python {
     # MOE_CACHE_PYTHON, then the py launcher, then a python.exe that really runs (the one Windows ships without Python only opens the Store)
@@ -117,7 +117,7 @@ function Install-MoeCache {
     $Root = [IO.Path]::GetFullPath($Root)
     $kit = Join-Path $Root 'kit'; $bin = Join-Path $Root 'bin'; $shim = Join-Path $bin 'moe-cache.cmd'; $rec = Join-Path $Root 'install.json'
     $old = $null
-    if (Test-Path -LiteralPath $rec) { try { $old = Get-Content -LiteralPath $rec -Raw | ConvertFrom-Json } catch { $old = $null } }
+    if (Test-Path -LiteralPath $rec) { try { $old = Get-Content -LiteralPath $rec -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $old = $null } }
 
     if ($Uninstall) {
         if (-not $old) { Say "moe-cache: nothing to remove: $rec does not exist (this installer added nothing under $Root)"; return 0 }
@@ -157,7 +157,17 @@ function Install-MoeCache {
     Say "moe-cache $Version for Windows: installing into $Root (Python $($py.Version) found)"
     if ($DryRun) { Say "install.ps1: would download $BaseUrl/$name.zip and SHA256SUMS-windows, check the hash, unpack to $kit, write $shim$(if (-not $NoPath) { " and add $bin to your user PATH" })"; return 0 }
 
-    $same = $old -and $old.version -eq $Version -and (Test-Path -LiteralPath (Join-Path $kit 'bin\moe_cache.py')) -and -not $Force
+    # preflight: what can refuse runs before anything is downloaded or touched
+    if ((Test-Path -LiteralPath $shim) -and -not ((Get-Content -LiteralPath $shim -Raw) -like "*$Marker*")) { throw "$shim exists and is not ours: left alone. Nothing was installed." }
+    if ((Test-Path -LiteralPath $kit) -and -not $old -and -not (Test-Path -LiteralPath (Join-Path $kit '.moe-cache-complete'))) { throw "$kit already exists and was not created by this installer: left alone (AUD-052). Choose another folder with -Root. Nothing was installed." }
+    $failAt = $env:MOE_CACHE_INSTALL_FAIL_AT      # tests only: stop at a named step to prove the rollback
+    function Fail-At($step) { if ($failAt -eq $step) { throw "test failure injected at $step" } }
+    $kitOld = Join-Path $Root 'kit.old'; $stage = Join-Path $Root 'kit.part'
+    $same = $old -and $old.version -eq $Version -and (Test-Path -LiteralPath (Join-Path $kit 'bin\moe_cache.py')) -and (Test-Path -LiteralPath (Join-Path $kit '.moe-cache-complete')) -and -not $Force      # the marker is written last into the staged kit: a kit without it is not trusted
+    $swapped = $false; $shimTouched = $false; $oldShimText = $null; $recWritten = $false; $pathApplied = $false; $oldRecText = $null
+    if (Test-Path -LiteralPath $shim) { $oldShimText = [IO.File]::ReadAllText($shim) }
+    if (Test-Path -LiteralPath $rec) { $oldRecText = [IO.File]::ReadAllText($rec) }
+    try {
     if ($same) {
         Say "moe-cache $Version is already installed here: repairing the command and the PATH entry only (-Force reinstalls)"
     } else {
@@ -174,24 +184,29 @@ function Install-MoeCache {
             if (-not $want) { throw "REFUSED: SHA256SUMS-windows has no line for $name.zip. Nothing was installed." }
             $got = (Get-FileHash -LiteralPath (Join-Path $tmp "$name.zip") -Algorithm SHA256).Hash
             if ($got -ine $want) { throw "REFUSED: the download's sha256 ($got) is not the one in SHA256SUMS-windows ($want). Nothing was installed." }
-            Say "sha256 matches SHA256SUMS-windows ($want)"
-            Say '2/3 unpack'
-            $stage = Join-Path $Root 'kit.part'
+            Say "sha256 matches SHA256SUMS-windows ($want)   (from the same release: this finds a damaged download, it does not prove who built it; to check that: gh attestation verify $name.zip -R $Repo)"
+            Say '2/3 unpack (into a temporary folder; the old kit stays until the new one is complete)'
             if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
             [void](New-Item -ItemType Directory -Force -Path $stage)
             try { Expand-Kit (Join-Path $tmp "$name.zip") $stage } catch { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue; throw }
             if (-not (Test-Path -LiteralPath (Join-Path $stage 'bin\moe_cache.py'))) { Remove-Item -LiteralPath $stage -Recurse -Force; throw 'REFUSED: the zip has no bin\moe_cache.py. Nothing was installed.' }
+            [IO.File]::WriteAllText((Join-Path $stage '.moe-cache-complete'), "$Version`r`n")
+            Fail-At 'unpack'
+            # swap by renames: kit -> kit.old (fails at once when a running llama-server / python holds a file in it, and then nothing has changed),
+            # kit.part -> kit; the old kit is deleted last, after the command and the record are written
             try {
-                if (Test-Path -LiteralPath $kit) { Remove-Item -LiteralPath $kit -Recurse -Force }
-                Move-Item -LiteralPath $stage -Destination $kit
+                if (Test-Path -LiteralPath $kitOld) { Remove-Item -LiteralPath $kitOld -Recurse -Force }
+                if (Test-Path -LiteralPath $kit) { Move-Item -LiteralPath $kit -Destination $kitOld }
+                try { Move-Item -LiteralPath $stage -Destination $kit } catch { if ((Test-Path -LiteralPath $kitOld) -and -not (Test-Path -LiteralPath $kit)) { Move-Item -LiteralPath $kitOld -Destination $kit }; throw }
+                $swapped = $true
             } catch {
-                throw "could not replace $kit ($($_.Exception.Message)). Close a running moe-cache server or llama-server and run this again."
+                throw "could not replace $kit ($($_.Exception.Message)). Close a running moe-cache server or llama-server and run this again. The previous install is untouched."
             }
-        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+            Fail-At 'swap'
+        } finally { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue; if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue } }
     }
 
     Say '3/3 the moe-cache command'
-    if ((Test-Path -LiteralPath $shim) -and -not ((Get-Content -LiteralPath $shim -Raw) -like "*$Marker*")) { throw "$shim exists and is not ours: left alone" }
     [void](New-Item -ItemType Directory -Force -Path $bin)
     $cmd = @(
         '@echo off',
@@ -214,17 +229,41 @@ function Install-MoeCache {
         '%PY% "%KIT%\bin\moe_cache.py" %*',
         'exit /b %errorlevel%'
     ) -join "`r`n"
+    $shimTouched = $true
     [IO.File]::WriteAllText($shim, $cmd + "`r`n", (New-Object Text.ASCIIEncoding))
+    Fail-At 'shim'
 
     $added = $false
     if ($old -and $old.added_path) { $added = $true }       # an earlier run added it: still ours
+    $needPath = $false
     if (-not $NoPath) {
         $list = Split-PathList (Get-UserPathRaw)
-        if (-not ($list | Where-Object { Same-Dir $_ $bin })) { Set-UserPathRaw ((@($list) + $bin) -join ';'); $added = $true; Say "added $bin to your user PATH (new terminals see it)" }
-        if (-not ((Split-PathList $env:Path) | Where-Object { Same-Dir $_ $bin })) { $env:Path = $env:Path.TrimEnd(';') + ';' + $bin }
+        if (-not ($list | Where-Object { Same-Dir $_ $bin })) { $needPath = $true; $added = $true }
     }
     $json = [ordered]@{ version = $Version; root = $Root; kit = $kit; bin = $bin; command = $shim; added_path = $added }
+    $recWritten = $true
     [IO.File]::WriteAllText($rec, ($json | ConvertTo-Json), (New-Object Text.UTF8Encoding($false)))
+    Fail-At 'record'
+    if ($needPath) { $pathApplied = $true; Set-UserPathRaw ((@($list) + $bin) -join ';'); Say "added $bin to your user PATH (new terminals see it)" }
+    if (-not $NoPath -and -not ((Split-PathList $env:Path) | Where-Object { Same-Dir $_ $bin })) { $env:Path = $env:Path.TrimEnd(';') + ';' + $bin }
+    Fail-At 'path'
+    } catch {
+        # roll back to the previous install: the old kit, command and record come back, what this run added goes
+        $msg = $_.Exception.Message
+        try {
+            if ($pathApplied) { Set-UserPathRaw ((Split-PathList (Get-UserPathRaw) | Where-Object { -not (Same-Dir $_ $bin) }) -join ';') }
+            if ($recWritten) { if ($null -ne $oldRecText) { [IO.File]::WriteAllText($rec, $oldRecText, (New-Object Text.UTF8Encoding($false))) } else { Remove-Item -LiteralPath $rec -Force -ErrorAction SilentlyContinue } }
+            if ($shimTouched) { if ($null -ne $oldShimText) { [IO.File]::WriteAllText($shim, $oldShimText, (New-Object Text.ASCIIEncoding)) } else { Remove-Item -LiteralPath $shim -Force -ErrorAction SilentlyContinue } }
+            if ($swapped) {
+                if (Test-Path -LiteralPath $kit) { Remove-Item -LiteralPath $kit -Recurse -Force }
+                if (Test-Path -LiteralPath $kitOld) { Move-Item -LiteralPath $kitOld -Destination $kit }
+            }
+            if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+            foreach ($d in $bin, $Root) { if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force -ErrorAction SilentlyContinue } }
+        } catch { $msg += " (and the rollback hit: $($_.Exception.Message))" }
+        throw "$msg`nStopped: the previous install (if any) was put back and the half-done files were removed."
+    }
+    if (Test-Path -LiteralPath $kitOld) { Remove-Item -LiteralPath $kitOld -Recurse -Force -ErrorAction SilentlyContinue }      # last, best effort
 
     $shown = (& $shim --version 2>&1 | Select-Object -First 1)
     Say ''

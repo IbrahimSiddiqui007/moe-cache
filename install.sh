@@ -10,7 +10,7 @@
 # In a release tarball with llama/ (official llama.cpp, unmodified) it builds nothing: no compiler, no apt, about a minute. LLAMA_SHA=... or --own-llama builds instead.
 # Takes about 10-20 minutes, almost all of it compiling llama.cpp. Needs about 3 GB of disk. Run it as a normal user (it asks for sudo only for apt).
 # Downloaded on its own (the release's install.sh, not inside a checkout or tarball) it installs the release instead of building: it fetches the
-# ggml0.26 tarball (official llama.cpp inside), checks it against SHA256SUMS (refuses on a mismatch), unpacks it under --prefix (default
+# ggml0.26 tarball (official llama.cpp inside), checks it against SHA256SUMS (refuses on a mismatch; that catches a damaged download, not a tampered release: see the attestation below), unpacks it under --prefix (default
 # ~/.local/share/moe-cache) and adds a `moe-cache` command in ~/.local/bin. No apt, no compiler, no root, nothing sent anywhere. Run it again to update.
 #     --uninstall  remove exactly what a release install added (the versions folder, the moe-cache command); models and ~/.cache/moe-cache stay
 #     --build      build from source even when downloaded on its own (the old behaviour)
@@ -40,9 +40,14 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   rec() { [ -f "$REL_REC" ] && sed -n "s/^$1=//p" "$REL_REC" | tail -1; }
   if [ $UNINSTALL = 1 ]; then
     [ -f "$REL_REC" ] || { echo "moe-cache: nothing to remove: $REL_REC does not exist (this installer added nothing under $REL_PREFIX)"; exit 0; }
-    if [ $DRY = 1 ]; then echo "install.sh: would remove $REL_PREFIX/versions, $REL_PREFIX/current, $REL_REC and $REL_SHIM (if it is ours)"; exit 0; fi
-    rm -rf "$REL_PREFIX/versions"; rm -f "$REL_PREFIX/current" "$REL_REC"
-    if [ -f "$REL_SHIM" ] && grep -qF "$REL_MARK" "$REL_SHIM"; then rm -f "$REL_SHIM"; echo "removed $REL_SHIM"; fi
+    if [ $DRY = 1 ]; then echo "install.sh: would remove the moe-cache-v* folders in $REL_PREFIX/versions, $REL_PREFIX/current, $REL_REC and $REL_SHIM (if it is ours)"; exit 0; fi
+    REC_CMD="$(rec command || true)"
+    for d in "$REL_PREFIX"/versions/moe-cache-v*-ggml0.26-linux-x86_64*; do [ -d "$d" ] && rm -rf "$d"; done     # only the folders this installer makes (the prefix may be shared)
+    rmdir "$REL_PREFIX/versions" 2>/dev/null || true
+    rm -f "$REL_PREFIX/current" "$REL_REC"
+    for c in "$REL_SHIM" "$REC_CMD"; do      # the command given now, and the one the install recorded (it may have used another --bin-dir)
+      if [ -n "$c" ] && [ -f "$c" ] && grep -qF "$REL_MARK" "$c"; then rm -f "$c"; echo "removed $c"; fi
+    done
     rmdir "$REL_PREFIX" 2>/dev/null || true
     echo "removed what the moe-cache installer added. Kept: your models and ~/.cache/moe-cache (settings, learned profiles); delete them by hand if you want."
     exit 0
@@ -56,7 +61,28 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   if command -v curl >/dev/null; then dl() { curl -fsSL -o "$2" "$1"; }; elif command -v wget >/dev/null; then dl() { wget -q -O "$2" "$1"; }
   else echo "curl or wget is needed to download the release"; exit 1; fi
   command -v sha256sum >/dev/null || { echo "sha256sum is needed to check the download"; exit 1; }
-  TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+  # preflight: everything that can refuse runs BEFORE anything is downloaded or touched (AUD-049)
+  if [ -e "$REL_SHIM" ] && ! grep -qF "$REL_MARK" "$REL_SHIM" 2>/dev/null; then echo "$REL_SHIM exists and is not ours: left alone (use --bin-dir). Nothing was installed."; exit 1; fi
+  mkdir -p "$REL_PREFIX/versions" "$BINDIR" 2>/dev/null && [ -w "$REL_PREFIX/versions" ] && [ -w "$BINDIR" ] || { echo "cannot write to $REL_PREFIX/versions and $BINDIR: choose other folders with --prefix / --bin-dir. Nothing was installed."; exit 1; }
+  failpoint() { [ "${MOE_CACHE_INSTALL_FAIL_AT:-}" != "$1" ] || { echo "install.sh: test failure injected at $1" >&2; exit 1; }; return 0; }   # tests only
+  # Nothing is committed until the end: the new version is unpacked beside the old one, swapped in by renames, and if any step fails
+  # the trap puts the previous install back and removes the half-done pieces.
+  TMP="$(mktemp -d)"; STAGE="$REL_PREFIX/versions/$REL_NAME.part"; BACKUP="$REL_PREFIX/versions/$REL_NAME.old"; NEWSHIM="$BINDIR/.moe-cache.new.$$"; NEWLINK="$REL_PREFIX/.current.new.$$"; NEWREC="$REL_PREFIX/.installed.new.$$"; OLDSHIM="$BINDIR/.moe-cache.old.$$"
+  SWAPPED=0; SHIMMED=0; COMMITTED=0; PREV_LINK="$(readlink "$REL_PREFIX/current" 2>/dev/null || true)"
+  cleanup() {
+    rc=$?
+    if [ $COMMITTED = 0 ] && [ $rc != 0 ]; then
+      if [ $SWAPPED = 1 ]; then rm -rf "$REL_PREFIX/versions/$REL_NAME"; fi
+      if [ -d "$BACKUP" ]; then rm -rf "$REL_PREFIX/versions/$REL_NAME"; mv "$BACKUP" "$REL_PREFIX/versions/$REL_NAME"; fi
+      if [ $SHIMMED = 1 ]; then if [ -f "$OLDSHIM" ]; then mv -f "$OLDSHIM" "$REL_SHIM"; else rm -f "$REL_SHIM"; fi; fi
+      if [ -z "$PREV_LINK" ]; then rm -f "$REL_PREFIX/current"; fi
+      if [ -n "$PREV_LINK" ]; then ln -sfn "$PREV_LINK" "$REL_PREFIX/.current.back.$$" && mv -T "$REL_PREFIX/.current.back.$$" "$REL_PREFIX/current"; fi
+      [ $rc = 0 ] || echo "install.sh: stopped; the previous install (if any) is untouched and the half-done files were removed." >&2
+    fi
+    rm -rf "$TMP" "$STAGE" "$NEWSHIM" "$NEWLINK" "$NEWREC" "$OLDSHIM" "$REL_PREFIX/.current.back.$$"; rmdir "$REL_PREFIX/versions" "$REL_PREFIX" 2>/dev/null || true
+    return $rc
+  }
+  trap cleanup EXIT
   say "1/3 download (nothing is installed until the hash matches)"
   dl "$REL_BASE/SHA256SUMS" "$TMP/SHA256SUMS" || { echo "could not download $REL_BASE/SHA256SUMS (offline? no release $MOE_CACHE_REF?)"; exit 1; }
   WANT="$(awk -v n="$REL_NAME.tar.gz" '$2 == n || $2 == "*" n {print $1}' "$TMP/SHA256SUMS" | head -1)"
@@ -64,26 +90,43 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   dl "$REL_BASE/$REL_NAME.tar.gz" "$TMP/$REL_NAME.tar.gz" || { echo "could not download $REL_BASE/$REL_NAME.tar.gz"; exit 1; }
   GOT="$(sha256sum "$TMP/$REL_NAME.tar.gz" | cut -d' ' -f1)"
   [ "$GOT" = "$WANT" ] || { echo "REFUSED: the download's sha256 ($GOT) is not the one in SHA256SUMS ($WANT). Nothing was installed."; exit 1; }
-  echo "sha256 matches SHA256SUMS ($WANT)"
-  if command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-    gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache >/dev/null 2>&1 && echo "build attestation verified (gh)" || echo "note: gh could not verify the build attestation (the sha256 check passed)"
-  else echo "tip: with the gh tool you can also check where it was built: gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache"; fi
-  say "2/3 unpack"
+  echo "sha256 matches SHA256SUMS ($WANT)   (SUMS come from the same release: this finds a damaged download, it does not prove who built it)"
+  if [ -z "${MOE_CACHE_BASE_URL:-}" ] && command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
+    # gh is usable, so the build attestation CAN be checked: a failure refuses (MOE_CACHE_SKIP_ATTESTATION=1 to go on anyway, e.g. offline mirror)
+    if gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache >/dev/null 2>&1; then echo "build attestation verified (gh): built by this repository's release workflow"
+    elif [ "${MOE_CACHE_SKIP_ATTESTATION:-}" = 1 ]; then echo "note: gh could not verify the build attestation; continuing because MOE_CACHE_SKIP_ATTESTATION=1"
+    else echo "REFUSED: gh could not verify the build attestation of $REL_NAME.tar.gz (not built by the release workflow, or gh is offline). Nothing was installed. Set MOE_CACHE_SKIP_ATTESTATION=1 to install anyway."; exit 1; fi
+  else echo "note: only the checksum was checked. To check where it was built: gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache"; fi
+  say "2/3 unpack (into a temporary folder; the old version stays until the new one is complete)"
   tar -tzf "$TMP/$REL_NAME.tar.gz" | awk -v n="$REL_NAME/" 'index($0, n) != 1 || $0 ~ /\.\.\//{bad=1} END{exit bad}' || { echo "REFUSED: the tarball has files outside $REL_NAME/"; exit 1; }
   OLD="$(rec version || true)"
-  mkdir -p "$REL_PREFIX/versions"
-  if [ -d "$REL_PREFIX/versions/$REL_NAME" ] && [ "$OLD" = "$REL_VER" ]; then echo "moe-cache $REL_VER is already unpacked here: refreshing the command only"
-  else rm -rf "$REL_PREFIX/versions/$REL_NAME.part"; mkdir "$REL_PREFIX/versions/$REL_NAME.part"
-    tar -xzf "$TMP/$REL_NAME.tar.gz" -C "$REL_PREFIX/versions/$REL_NAME.part" --strip-components=1
-    rm -rf "$REL_PREFIX/versions/$REL_NAME"; mv "$REL_PREFIX/versions/$REL_NAME.part" "$REL_PREFIX/versions/$REL_NAME"; fi
-  ln -sfn "versions/$REL_NAME" "$REL_PREFIX/current"
-  for d in "$REL_PREFIX"/versions/*; do [ -d "$d" ] && [ "$d" != "$REL_PREFIX/versions/$REL_NAME" ] && rm -rf "$d"; done     # older versions this installer unpacked
+  if [ -f "$REL_PREFIX/versions/$REL_NAME/bin/moe_cache.py" ] && [ "$OLD" = "$REL_VER" ]; then echo "moe-cache $REL_VER is already unpacked here: refreshing the command only"
+  else
+    rm -rf "$STAGE" "$BACKUP"; mkdir "$STAGE"
+    tar -xzf "$TMP/$REL_NAME.tar.gz" -C "$STAGE" --strip-components=1
+    failpoint unpack
+    [ -f "$STAGE/bin/moe_cache.py" ] || { echo "REFUSED: the tarball has no bin/moe_cache.py"; exit 1; }
+    [ -d "$REL_PREFIX/versions/$REL_NAME" ] && mv "$REL_PREFIX/versions/$REL_NAME" "$BACKUP"   # same version, damaged or not recorded: kept until the swap is done
+    mv "$STAGE" "$REL_PREFIX/versions/$REL_NAME"; SWAPPED=1
+    failpoint swap
+  fi
   say "3/3 the moe-cache command"
-  mkdir -p "$BINDIR"
-  if [ -e "$REL_SHIM" ] && ! grep -qF "$REL_MARK" "$REL_SHIM" 2>/dev/null; then echo "$REL_SHIM exists and is not ours: left alone (use --bin-dir)"; exit 1; fi
-  printf '#!/bin/sh\n%s\nexec "${MOE_CACHE_PYTHON:-python3}" %q "$@"\n' "$REL_MARK (remove: sh install.sh --uninstall)" "$REL_PREFIX/current/bin/moe_cache.py" > "$REL_SHIM"
-  chmod +x "$REL_SHIM"
-  printf 'version=%s\nprefix=%s\ncommand=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" > "$REL_REC"
+  # single-quoted path: bash's %q writes $'..' for non-ASCII names, which /bin/sh (dash) cannot read (AUD-055)
+  QPY="'$(printf %s "$REL_PREFIX/current/bin/moe_cache.py" | sed "s/'/'\\\\''/g")'"
+  printf '#!/bin/sh\n%s\nexec "${MOE_CACHE_PYTHON:-python3}" %s "$@"\n' "$REL_MARK (remove: sh install.sh --uninstall)" "$QPY" > "$NEWSHIM"
+  chmod +x "$NEWSHIM"
+  ln -sfn "versions/$REL_NAME" "$NEWLINK"
+  printf 'version=%s\nprefix=%s\ncommand=%s\n' "$REL_VER" "$REL_PREFIX" "$REL_SHIM" > "$NEWREC"
+  failpoint link
+  mv -T "$NEWLINK" "$REL_PREFIX/current"            # atomic: current names the old version or the new one, never nothing
+  failpoint shim
+  if [ -f "$REL_SHIM" ]; then cp -p "$REL_SHIM" "$OLDSHIM"; fi
+  SHIMMED=1; mv -f "$NEWSHIM" "$REL_SHIM"
+  failpoint record
+  mv -f "$NEWREC" "$REL_REC"
+  COMMITTED=1
+  rm -rf "$BACKUP"
+  for d in "$REL_PREFIX"/versions/moe-cache-v*-ggml0.26-linux-x86_64; do [ -d "$d" ] && [ "$d" != "$REL_PREFIX/versions/$REL_NAME" ] && rm -rf "$d"; done     # older versions this installer unpacked, deleted last
   echo "installed: $("$REL_SHIM" --version 2>&1 | head -1)${OLD:+ (was $OLD)}"
   echo "  files:   $REL_PREFIX (versions/, current, .installed)"
   echo "  command: $REL_SHIM"
