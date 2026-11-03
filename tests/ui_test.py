@@ -1264,6 +1264,24 @@ if node:
           f"Switch to <name> only when a server is up and another model is selected ({r_ and [x['show'] for x in r_[:6]]})")
     check(r_ is not None and r_[6:] == [True, False, True, False], "confirm only when a request is running (agent slot processing or the chat)")
 
+# GUI-023: the chat's own hit counter, added up over its answers
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"function chatHits\(messages\) \{.*?\n\}\n", r"function chatHitsText\(messages\) \{.*?\n\}\n"))
+    harness = fn + ("const A = (h, m) => ({role: 'assistant', content: 'x', meta: {hits: h, misses: m}});\n"
+                    "console.log(JSON.stringify([chatHits([]), chatHits(undefined), chatHits([{role:'user',content:'q'}, A(90,10), {role:'user',content:'q'}, A(70,30)]), chatHits([A(0,0), {role:'assistant',content:'x'}, A(NaN,1)]),\n"
+                    "  chatHitsText([A(90,10)]), chatHitsText([A(90,10), A(70,30)]), chatHitsText([]), chatHitsText([A(0,0)])]));\n")
+    hf = os.path.join(TMP, "hits.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and r_[0]["n"] == 0 and r_[0]["rate"] is None and r_[1]["n"] == 0, "chat hits: no answers, no numbers")
+    check(r_ is not None and r_[2] == {"hits": 160, "misses": 40, "n": 2, "rate": 0.8}, f"chat hits: two answers add up to 160 hits, 40 misses, 80 % ({r_ and r_[2]})")
+    check(r_ is not None and r_[3]["n"] == 0, "chat hits: answers without numbers (0/0, missing, NaN) are skipped")
+    check(r_ is not None and r_[4:] == [" \u00b7 expert hits 90.0 % over 1 answer", " \u00b7 expert hits 80.0 % over 2 answers", "", ""], f"chat hits: the line under the title ({r_ and r_[4:]})")
+check('id="chatinfo"' in page and "chatHitsText(c.messages)" in page, "the chat title line shows the counter")
+
 # the model list's menu: right-click, Shift+F10 / the menu key, the three-dots button; the items follow the server state
 check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),
       "the list rows have the context menu, the keyboard keys, the three-dots button and focusable rows")

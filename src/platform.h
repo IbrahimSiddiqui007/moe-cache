@@ -5,6 +5,7 @@
 // On Linux commit is a no-op (pages appear when touched) and decommit is madvise(DONTNEED).
 #pragma once
 #include <cerrno>
+#include "mc_ramguard.h"
 #ifndef _WIN32
 #include <sys/resource.h>
 #endif
@@ -321,6 +322,7 @@ inline bool mem_commit(void * p, size_t size) {
         const uintptr_t a = (uintptr_t) p / 4096 * 4096, b = ((uintptr_t) p + size + 4095) / 4096 * 4096;
         mprotect((void *) a, b - a, PROT_READ | PROT_WRITE);
     }
+    mcram::lock_range(p, size);      // MOE_CACHE_RAM_LOCK=1 (CACHE-153): keep these pages out of swap; false and ignored when off or refused
     return true;
 #endif
 }
@@ -329,6 +331,7 @@ inline void mem_decommit(void * p, size_t size) {
 #ifdef _WIN32
     VirtualFree(p, size, MEM_DECOMMIT);
 #else
+    mcram::unlock_range(p, size);    // locked pages cannot be given back with MADV_DONTNEED
     madvise(p, size, MADV_DONTNEED);
     if (mem_guard()) {
         mprotect(p, size, PROT_NONE);

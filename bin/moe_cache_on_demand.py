@@ -148,6 +148,25 @@ class PortTaken(RuntimeError):
     """The port picked for the model server was taken by another program before the launcher bound it (A3-13)."""
 
 
+PROGRESS_PATHS = ("/v1/chat/completions", "/chat/completions", "/v1/completions", "/completions", "/completion")
+
+
+def with_prompt_progress(path, data, enabled):
+    """AGENTS-061 (MOE_CACHE_PROMPT_PROGRESS=1, default off): a streaming request that does not say otherwise gets "return_progress": true, so llama-server sends a
+    small event after every batch of the prompt (an empty delta and a prompt_progress object) while it reads a long prompt. Without it the stream is silent until
+    the first answer token and a client with a read timeout gives up on a long prompt. llama-server ignores the field when it does not know it. Returns the body."""
+    if not enabled or not data or path.split("?")[0].rstrip("/") not in PROGRESS_PATHS:
+        return data
+    try:
+        req = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return data
+    if not isinstance(req, dict) or req.get("stream") is not True or "return_progress" in req:
+        return data
+    req["return_progress"] = True
+    return json.dumps(req).encode()
+
+
 def model_first(argv):
     """LAUNCHER-005 (A3-16): `on-demand --ram 20 MODEL.gguf` took 20 for the model. The first word that is not an option and not the value of a launcher option
     that takes one becomes the model and moves to the front; argv is returned as it was when there is no such word."""
@@ -589,6 +608,7 @@ class Handler(BaseHTTPRequestHandler):
                 name = json.loads(data).get("model")
             except (ValueError, AttributeError, UnicodeDecodeError):
                 pass
+        data = with_prompt_progress(path, data, os.environ.get("MOE_CACHE_PROMPT_PROGRESS") == "1") if self.command == "POST" else data
         b = pool.pick(name)
         if self.command == "GET" and (pool.state != "ready" or len(pool.bs) > 1):
             if path in ("/v1/models", "/models"):        # with several models: always all of them, not only the running one

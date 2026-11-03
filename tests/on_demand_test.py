@@ -46,6 +46,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.headers.get("Authorization") != "Bearer " + key: return self.send(401, {"error": "key"})
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        open(os.path.join(os.environ["XDG_CACHE_HOME"], "lastreq"), "w").write(json.dumps(req))     # AGENTS-061: what the model server was sent
         if not req.get("stream"):
             return self.send(200, {"choices": [{"message": {"content": "hello " + req["messages"][0]["content"] + " from " + os.environ.get("FAKE_ID", "fake-real")}}]})
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.send_header("Transfer-Encoding", "chunked")
@@ -439,6 +440,36 @@ except Exception as e:
     ok_race, port2 = False, str(e)
 check("race: a port taken at launch is retried once with a new port and the model starts", ok_race and any("taken by another program" in m for m in rl), (port2, rl))
 bk2._stop_locked("test over") if hasattr(bk2, "_stop_locked") else None
+
+
+# AGENTS-061: prompt progress for streaming requests (MOE_CACHE_PROMPT_PROGRESS=1, default off)
+P = lambda path, obj, on: json.loads(od.with_prompt_progress(path, json.dumps(obj).encode(), on))
+check("progress: off by default - the body is not touched", od.with_prompt_progress("/v1/chat/completions", b'{"stream": true}', False) == b'{"stream": true}')
+check("progress: a streaming chat request gets return_progress", P("/v1/chat/completions", {"stream": True, "messages": []}, True).get("return_progress") is True)
+check("progress: also /completion and /v1/completions", P("/completion", {"stream": True}, True).get("return_progress") is True and P("/v1/completions", {"stream": True}, True).get("return_progress") is True)
+check("progress: not without stream, not on other paths", "return_progress" not in P("/v1/chat/completions", {"messages": []}, True) and "return_progress" not in P("/v1/embeddings", {"stream": True}, True)
+      and "return_progress" not in P("/v1/chat/completions", {"stream": False}, True))
+check("progress: the client's own value stays", P("/v1/chat/completions", {"stream": True, "return_progress": False}, True)["return_progress"] is False)
+check("progress: a body that is not JSON, or not an object, passes unchanged", od.with_prompt_progress("/completion", b"not json", True) == b"not json" and od.with_prompt_progress("/completion", b"[1]", True) == b"[1]" and od.with_prompt_progress("/completion", None, True) is None)
+# through the listener
+PORT2 = free_port()
+b3 = od.Backend(dict(choice), launcher=[sys.executable, FAKE], idle_min=1, start_timeout=30, log=lambda m: None)
+srv3 = od.serve(b3, PORT2)
+threading.Thread(target=srv3.serve_forever, daemon=True).start()
+def post2(obj):
+    c = http.client.HTTPConnection("127.0.0.1", PORT2, timeout=60)
+    c.request("POST", "/v1/chat/completions", json.dumps(obj), {"Content-Type": "application/json", "Authorization": "Bearer " + KEY})
+    r = c.getresponse(); r.read(); c.close(); return r.status
+LAST = os.path.join(TMP, "lastreq")
+os.environ["MOE_CACHE_PROMPT_PROGRESS"] = "1"
+post2({"messages": [{"role": "user", "content": "x"}], "stream": True, "n": 1})
+check("progress: the model server got return_progress for a streaming request through the listener", json.load(open(LAST)).get("return_progress") is True)
+post2({"messages": [{"role": "user", "content": "x"}]})
+check("progress: and nothing added to a request that does not stream", "return_progress" not in json.load(open(LAST)))
+os.environ.pop("MOE_CACHE_PROMPT_PROGRESS")
+post2({"messages": [{"role": "user", "content": "x"}], "stream": True, "n": 1})
+check("progress: switched off again, the stream request is sent as it came", "return_progress" not in json.load(open(LAST)))
+srv3.shutdown(); b3._stop_locked("test over") if hasattr(b3, "_stop_locked") else None
 
 print("FAILED: " + ", ".join(fails) if fails else "all on-demand tests passed")
 sys.exit(1 if fails else 0)
