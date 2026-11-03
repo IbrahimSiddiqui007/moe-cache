@@ -1,6 +1,8 @@
 // moe-cache plugin part: compute pool of the executor.
 // Included by moe_cache_plugin.cpp (one translation unit); not compiled on its own.
 
+#include "mc_prefetch.h"
+
 namespace {
 
 // ---- compute pool for decode-time expert matrix products (MOE_CACHE_EXEC=1) ----
@@ -125,6 +127,11 @@ struct exec_pool_t {
                 const ggml_vec_dot_t dotf = t.dot ? t.dot : j->dot;
                 const char * wr = t.w + (size_t) r * nb01;       // the weight row stays in L1 while every token column uses it
                     wh.r = r;
+                    // MOE_CACHE_EXEC_PREFETCH=N (R-02, default off): ask for the lines of the weight row N rows ahead (src/mc_prefetch.h)
+                    static const int pf_rows = mcpf::parse_rows(getenv("MOE_CACHE_EXEC_PREFETCH"));
+                    if (pf_rows) {
+                        mcpf::rows_ahead(t.w, nb01, r, pf_rows, t.rows);
+                    }
                     for (int k = 0; k < t.ncol; k++) {
                         wh.k = k;
                         wh.dst = &t.dsts[k][r];
