@@ -67,6 +67,7 @@
 | Bug fixes | `planner/plan.py` prints its environment lines for the shell you use: `set -x NAME 'value'` in fish, `$env:NAME = 'value'` in PowerShell, `export` otherwise; `--shell bash|fish|powershell` picks one, and a path with a space or quote is quoted safely (CLEANUP-017). |
 | Bug fixes | doctor / check: a model whose architecture llama.cpp does not support yet (Clover: upstream pull request 31306 still open) now gets one plain FAIL line saying so, and so does a llama-server that answers "unknown model architecture" in the cache run, instead of a bare exit code; it no longer reads as "needs a newer build" (LAUNCHER-006). |
 | Bug fixes | The launcher turns the plugin's slow-path lines into one plain sentence the first time each shows up in the server output: a long-prompt block left on the CPU (GPU memory short, for example 538 MiB free of 539 needed), a GPU backend that cannot compute some expert weights, experts not in RAM, a failed GPU allocation, no pinned host buffer (LAUNCHER-001). |
+| Bug fixes | README: one line on reserving GPU memory for the desktop with `--gpu-margin GiB` (the option and the automatic reserve for other programs' GPU use were already in the launcher; no new flag) (PREFILL-103). |
 
 ## 0.3.5 (2026-11-03)
 
