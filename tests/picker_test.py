@@ -354,5 +354,119 @@ with contextlib.redirect_stdout(out):
 j = json.loads(out.getvalue())
 check(rc == 0 and j["recommendations"][0]["use"] == "agents" and "ram_cap" in j["machine"], "pick --json: machine and one recommendation")
 
+# ---- AUD-036: a damaged / non-object ui.json is kept as ui.json.bad, not silently replaced ----
+os.makedirs(mc.CACHE_DIR, exist_ok=True)
+for body, what in (("{not json", "truncated JSON"), ('["folders"]', "valid JSON that is not an object")):
+    for f in (pk.SETTINGS_FILE, pk.SETTINGS_FILE + ".bad"):
+        if os.path.exists(f):
+            os.unlink(f)
+    open(pk.SETTINGS_FILE, "w").write(body)
+    check(pk.load_settings() == {}, f"ui.json {what}: read as empty settings (no AttributeError)")
+    out = pk.update_settings(lambda d: d.update({"folders": ["/x"]}))
+    check(out == {"folders": ["/x"]} and json.load(open(pk.SETTINGS_FILE)) == {"folders": ["/x"]}, f"ui.json {what}: new settings written")
+    check(os.path.isfile(pk.SETTINGS_FILE + ".bad") and open(pk.SETTINGS_FILE + ".bad").read() == body, f"ui.json {what}: the old file is kept as ui.json.bad")
+if os.path.exists(pk.SETTINGS_FILE + ".bad"):
+    os.unlink(pk.SETTINGS_FILE + ".bad")
+pk.update_settings(lambda d: d.update({"a": 1}))
+check(not os.path.exists(pk.SETTINGS_FILE + ".bad"), "a healthy ui.json is not backed up")
+
+# ---- AUD-035: the Windows lock never lets the caller go on without it ----
+import types
+class _Mt:
+    LK_LOCK, LK_UNLCK = 1, 0
+    calls = 0
+    def locking(self, fd, mode, n):
+        _Mt.calls += 1
+        raise OSError("locked by another process")
+_fake = types.ModuleType("msvcrt"); _fake.LK_LOCK, _fake.LK_UNLCK = 1, 0; _fake.locking = _Mt().locking
+_saved = (pk.WINDOWS, pk.time.sleep, sys.modules.get("msvcrt"))
+pk.WINDOWS, pk.time.sleep, sys.modules["msvcrt"] = True, (lambda s: None), _fake
+ran = []
+try:
+    pk.update_settings(lambda d: ran.append(1)); err = None
+except OSError as e:
+    err = str(e)
+finally:
+    pk.WINDOWS, pk.time.sleep = _saved[0], _saved[1]
+    if _saved[2] is None: sys.modules.pop("msvcrt", None)
+    else: sys.modules["msvcrt"] = _saved[2]
+check(err and "could not lock" in err and not ran, f"msvcrt lock that never succeeds: refused, the change is not made ({err})")
+
+# ---- AUD-039: a store folder with glob characters ----
+odd = os.path.join(TMP, "oll[a]ma")
+os.makedirs(os.path.join(odd, "manifests", "reg", "lib", "m"))
+blob = "sha256:" + "a" * 64
+os.makedirs(os.path.join(odd, "blobs"))
+open(os.path.join(odd, "blobs", "sha256-" + "a" * 64), "wb").write(b"GGUF")
+json.dump({"layers": [{"mediaType": "application/vnd.ollama.image.model", "digest": blob}]}, open(os.path.join(odd, "manifests", "reg", "lib", "m", "tag"), "w"))
+check(len(pk.ollama_manifests(odd)) == 1, "ollama_manifests: a folder name with [ ] is found (glob.escape)")
+
+# ---- AUD-030: sha256 check of a downloaded file against the catalogue ----
+import hashlib
+dl = os.path.join(TMP, "dl"); os.makedirs(dl)
+data = b"tiny model" * 1000
+open(os.path.join(dl, "t.gguf"), "wb").write(data)
+good = hashlib.sha256(data).hexdigest()
+lines = []
+ent = lambda sha: [{"name": "t.gguf", "path": "t.gguf", "bytes": len(data), "sha256": sha}]
+bad, n = pk.verify_download("x", dl, say=lines.append, files=ent(good))
+check(bad == [] and n == 1 and any("100 %" in l for l in lines), f"verify: matching hash passes, progress reported ({lines[-1:]})")
+bad, n = pk.verify_download("x", dl, say=lambda l: None, files=ent("0" * 64))
+check(n == 1 and len(bad) == 1 and "sha256" in bad[0] and good in bad[0], f"verify: a wrong hash is reported ({bad})")
+bad, n = pk.verify_download("x", dl, say=lambda l: None, files=ent(good.upper()))
+check(bad == [], "verify: an upper-case hash in the catalogue still matches")
+bad, n = pk.verify_download("x", dl, say=lambda l: None, files=[{"name": "u", "path": "sub/u.gguf", "sha256": good}])
+check(n == 0 and len(bad) == 1 and "not found" in bad[0], "verify: a file the download did not produce is reported")
+bad, n = pk.verify_download("x", dl, say=lambda l: None, files=[{"name": "t.gguf", "path": "t.gguf"}])
+check(bad == [] and n == 0, "verify: no hash in the catalogue -> nothing checked, nothing failed")
+# end to end through pick(): a fake `hf` that writes a wrong file; the pick must refuse and apply nothing
+k = "bolt"
+fake_files = pk.CAT[k]["files"]
+pk.CAT[k]["files"] = [{"name": "t.gguf", "path": "t.gguf", "bytes": len(data), "sha256": "1" * 64}]
+_calls = []
+class _TTY:
+    def isatty(self): return True
+    def readline(self): return ""
+_si, _ask, _call, _which, _ms = sys.stdin, pk.ask, pk.subprocess.call, pk.shutil.which, pk.machine_specs
+sys.stdin, pk.ask = _TTY(), (lambda q, d="": "y" if "download" in q else d)
+pk.subprocess.call = lambda cmd: _calls.append(cmd) or 0
+pk.shutil.which = lambda n: "/usr/bin/hf" if n == "hf" else _which(n)
+pk.machine_specs = lambda dirs, ls: machine(32, 16, local={})
+_home = os.environ["HOME"]
+try:
+    # the download folder is ~/models (a fake HOME): the fake hf call put a wrong t.gguf there
+    dest = os.path.join(os.path.expanduser("~"), "models"); os.makedirs(dest, exist_ok=True)
+    open(os.path.join(dest, "t.gguf"), "wb").write(data)
+    try:
+        pk.pick(["--use", "agents", "--model", k, "--apply"]); refused = ""
+    except SystemExit as e:
+        refused = str(e)
+    check("does not match" in refused and "NOT used" in refused and _calls, f"pick: a downloaded file with the wrong sha256 is refused ({refused[:90]})")
+    _calls.clear()
+    try:
+        pk.pick(["--use", "agents", "--model", k, "--no-verify", "--apply"]); refused = ""
+    except SystemExit as e:
+        refused = str(e)
+    check("does not match" not in refused, f"pick --no-verify: the check is skipped ({refused[:90]})")
+finally:
+    sys.stdin, pk.ask, pk.subprocess.call, pk.shutil.which, pk.machine_specs = _si, _ask, _call, _which, _ms
+    pk.CAT[k]["files"] = fake_files
+
+# ---- AUD-034: Windows helpers by full System32 path (fake SystemRoot) ----
+import moe_cache_wintool as wt
+_root = os.path.join(TMP, "Win")
+os.makedirs(os.path.join(_root, "System32", "WindowsPowerShell", "v1.0"))
+for rel in ("taskkill.exe", "tasklist.exe", os.path.join("WindowsPowerShell", "v1.0", "powershell.exe")):
+    open(os.path.join(_root, "System32", rel), "w").close()
+_sr = os.environ.get("SystemRoot")
+os.environ["SystemRoot"] = _root
+check(wt.win_tool("taskkill", windows=True) == os.path.join(_root, "System32", "taskkill.exe"), "win_tool: taskkill -> System32\\taskkill.exe")
+check(wt.win_tool("tasklist", windows=True) == os.path.join(_root, "System32", "tasklist.exe"), "win_tool: tasklist -> System32\\tasklist.exe")
+check(wt.win_tool("powershell", windows=True) == os.path.join(_root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), "win_tool: powershell -> WindowsPowerShell\\v1.0")
+check(wt.win_tool("nosuchtool", windows=True) == "nosuchtool", "win_tool: a tool that is not in System32 keeps its bare name")
+check(wt.win_tool("taskkill", windows=False) == "taskkill" and wt.win_tool("powershell", windows=False) == "powershell", "win_tool: elsewhere the bare name")
+if _sr is None: os.environ.pop("SystemRoot", None)
+else: os.environ["SystemRoot"] = _sr
+
 print("picker test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

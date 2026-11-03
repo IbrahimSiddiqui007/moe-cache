@@ -1690,6 +1690,8 @@ class Store:
         self.ls = ls
         try:
             self.saved = json.load(open(SETTINGS_FILE, encoding="utf-8"))
+            if not isinstance(self.saved, dict):
+                self.saved = {}
         except Exception:
             self.saved = {}
         self.models, self.models_at = [], 0
