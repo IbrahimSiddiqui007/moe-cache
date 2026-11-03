@@ -215,6 +215,12 @@ button.danger { border-color:var(--ink); }
 .pickcard details { margin-top:10px; } .pickcard details > summary { cursor:pointer; color:var(--muted); font-size:12px; }
 .pickcard details > div { margin-top:4px; font-size:12px; } .pickcard details > div > div { margin:3px 0; }
 .pickcard .get { margin-top:10px; font-size:12px; }
+.dlcard { margin-top:8px; border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); padding:10px 12px; font-size:13px; color:var(--text); }
+.dlcard table { width:100%; } .dlcard td { padding:2px 6px 2px 0; border-bottom:0; font-size:13px; font-variant-numeric:tabular-nums; }
+.dlcard td:first-child { color:var(--muted); white-space:nowrap; }
+.dlcard label.f { display:flex; gap:8px; align-items:flex-start; margin:4px 0; font-size:12px; word-break:break-all; }
+.dlcard .meter { height:12px; border-radius:6px; background:var(--code); overflow:hidden; margin:8px 0 4px; } .dlcard .meter i { display:block; height:100%; background:var(--accent); width:0; }
+.dlcard .bad { color:var(--warn); }
 .pickact { display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
 .pickact:has(#pickapply[hidden]):not(:has(#pickmsg:not(:empty))) { display:none; }
 .top .brand { font:700 15px ui-monospace, "SF Mono", Consolas, monospace; letter-spacing:.04em; text-transform:lowercase; }
@@ -426,13 +432,22 @@ button.danger { border-color:var(--ink); }
   <div class="body">
     <div class="hint">These apply at the next Start; the verdicts in the model list update at once. The page remembers them (not the API key).</div>
     <h4>Which model?</h4>
-    <div class="hint">Reads this machine (RAM, VRAM, disk, CPU) and recommends one model from our measurements. It never downloads anything.</div>
+    <div class="hint">Reads this machine (RAM, VRAM, disk, CPU) and recommends one model from our measurements. This part never downloads anything; the next section does, only after you tick each file.</div>
     <div class="seg" id="pickuse"><button data-v="agents">Agents / coding</button><button data-v="chat">Chat</button><button data-v="docs">Long documents</button></div>
     <div class="row small" style="margin-top:6px"><label for="pickmodel">Or choose one yourself (only warned about, never refused):</label>
       <select id="pickmodel"><option value="">the recommended one</option><option value="bolt">Nemotron 3.5 Bolt 74B</option><option value="flash-next-q2_0">Flash-Next Q2_0</option>
         <option value="flash-next-iq3_xxs">Flash-Next IQ3_XXS</option><option value="qwen3.5-122b">Qwen3.5-122B</option><option value="qwen3.6-35b">Qwen3.6-35B</option><option value="glm-5.3">GLM-5.3-Flash</option><option value="gpt-oss-120b">gpt-oss-120b (untested)</option><option value="deepseek-v41-flash">DeepSeek-V4.1-Flash IQ1_M (untested, 231 GB)</option></select></div>
     <div class="pickcard"><div id="pickres"></div>
       <div class="pickact"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div></div>
+    <h4>Download a model</h4>
+    <div class="hint">From the catalogue (models.json) to the first model folder. Nothing starts until you tick every file it will fetch; a stopped download continues from the bytes already on disk, and the sha256 of each file is checked at the end.</div>
+    <select id="dlmodel" aria-label="Model to download"></select>
+    <div class="dlcard" id="dlcard" hidden>
+      <div id="dlinfo"></div>
+      <div id="dlfiles"></div>
+      <div class="pickact"><button id="dlgo" class="primary" disabled>Download</button><button id="dlcancel" hidden>Cancel</button><button id="dlall" class="small">Tick all files</button><span class="small" id="dlmsg"></span></div>
+      <div class="meter" id="dlmeter" hidden><i id="dlbar"></i></div><div class="small" id="dlprog"></div>
+    </div>
     <h4>Other programs</h4>
     <div class="small" id="busymsg">Looking at what uses the GPU and CPU…</div>
     <div class="small" id="busyres"></div>
@@ -593,12 +608,18 @@ function verdictBadge(p) {
   if (!p) return `<span class="badge wait">planning…</span>`;
   return `<span class="badge ${p.kind || "error"}">${esc(p.verdict || "?")}</span>`;
 }
+function mtpChip(i) {      // GUI-011: the model's own file has an MTP head (the launcher uses it in Agent mode); a separate mtp-*.gguf beside it is not used
+  if (!i) return "";
+  if (i.head > 0) return ` · <span class="chip mtp" title="This model has an MTP head (${i.head} layer) in its own file. Agent mode uses it when llama-server supports it (Settings → MTP).">MTP head</span>`;
+  if (i.beside) return ` · <span class="chip" title="A separate head file (${esc(i.beside)}) lies in the same folder. The launcher reads only the head inside the model's own file, so this one is not used.">MTP file beside, not used</span>`;
+  return "";
+}
 function paintModels() {
   $("nomodels").hidden = S.models.length > 0;
   $("nomodels").textContent = "No .gguf models found: add a folder in Settings, or let Settings → Which model? suggest one for this machine.";
   $("models").innerHTML = S.models.map((m, i) => { const p = S.plans[planKey(m.path)];
     return `<div class="item${m.path == S.sel ? " sel" : ""}" data-i="${i}" tabindex="0" title="${esc(m.path)}"><div><span class="t">${esc(shortName(m.name))}${S.runKey && S.runKey == m.path ? ` <span class="badge stock">running</span>` : ""}</span>
-      <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span></span></div><button class="rowbtn" data-i="${i}" aria-label="Actions for ${esc(shortName(m.name))}" aria-haspopup="menu" title="Actions">⋮</button></div>`; }).join("");
+      <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span>${mtpChip(m.mtp)}</span></div><button class="rowbtn" data-i="${i}" aria-label="Actions for ${esc(shortName(m.name))}" aria-haspopup="menu" title="Actions">⋮</button></div>`; }).join("");
   const m = S.models.find(x => x.path == S.sel), p = S.sel && S.plans[planKey(S.sel)];
   $("topmodel").textContent = m ? shortName(m.name) : "no model";
   $("topverdict").className = "badge " + (p ? p.kind || "error" : "wait"); $("topverdict").textContent = m ? (p ? p.verdict || "?" : "planning…") : ""; $("topverdict").title = (p && p.summary) || "";
@@ -680,6 +701,59 @@ async function applyPick() {
     } else $("pickmsg").textContent = "remembered; download the file, then press Use it again";
   } catch (e) { $("pickmsg").textContent = e.message; }
 }
+
+
+/* ---------- model downloads (bin/moe_cache_download.py; GUI-008) ---------- */
+const DL = { models: [], job: { status: "idle" }, timer: null };
+const fmtDur = s => s == null || !isFinite(s) ? "" : s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
+async function loadDownloads() {
+  try {
+    const j = await api("/api/downloads"); DL.models = j.models; DL.job = j.job; DL.folder = j.folder;
+    const cur = $("dlmodel").value;
+    $("dlmodel").innerHTML = j.models.map(m => `<option value="${esc(m.id)}">${esc(m.name)} · ${fmtGB(m.bytes)}${m.complete ? " · here" : m.have ? " · partly here" : ""}</option>`).join("");
+    const run = j.job && j.job.running ? j.job.id : null;
+    $("dlmodel").value = run || (j.models.some(m => m.id == cur) ? cur : (j.models[0] || {}).id);
+    paintDownload();
+  } catch (e) { $("dlmsg").textContent = e.message; }
+}
+function dlModel() { return DL.models.find(m => m.id == $("dlmodel").value); }
+function paintDownload() {
+  const m = dlModel(), job = DL.job || {}, mine = job.id == (m && m.id), running = job.running;
+  $("dlcard").hidden = !m; if (!m) return;
+  const todo = m.files.filter(f => !f.complete);
+  $("dlinfo").innerHTML = `<table><tr><td>Size</td><td>${fmtGB(m.bytes)} in ${m.files.length} ${m.files.length == 1 ? "file" : "files"}${m.have ? ` · ${fmtGB(m.have)} already here` : ""}</td></tr>` +
+    `<tr><td>To fetch</td><td>${fmtGB(m.missing)} from <code>huggingface.co/${esc(m.repo)}</code></td></tr>` +
+    `<tr><td>Free disk</td><td class="${m.fits_disk ? "" : "bad"}">${m.free == null ? "unknown" : fmtGB(m.free)} at <code>${esc(m.folder)}</code> · needs ${fmtGB(m.need_free)}${m.fits_disk ? "" : " — not enough, no download is offered"}</td></tr>` +
+    `<tr><td>Checks</td><td>${m.has_checksums ? "sha256 of every file" : "no checksum listed for some files"}</td></tr>` +
+    (m.mtp && m.mtp != "none" ? `<tr><td>Speed</td><td><span class="chip mtp" title="multi-token prediction head: ${esc(m.mtp)}">MTP head ${esc(m.mtp)}</span></td></tr>` : "") + `</table>`;
+  const ticked = new Set([...document.querySelectorAll("#dlfiles input:checked")].map(x => x.value));
+  $("dlfiles").innerHTML = todo.length ? `<div class="small" style="margin-top:6px">Tick each file to allow it:</div>` + todo.map(f => `<label class="f"><input type="checkbox" value="${esc(f.path)}"${ticked.has(f.path) ? " checked" : ""}${running ? " disabled" : ""}><span>${esc(f.path)} · ${fmtGB(f.bytes)}${f.part ? ` · ${fmtGB(f.part)} here` : ""}</span></label>`).join("")
+    : `<div class="small" style="margin-top:6px">Every file is here.</div>`;
+  const all = () => todo.length && todo.every(f => document.querySelector(`#dlfiles input[value="${CSS.escape(f.path)}"]`).checked);
+  const upd = () => { $("dlgo").disabled = !!running || !all() || !m.fits_disk; };
+  document.querySelectorAll("#dlfiles input").forEach(x => x.onchange = upd); upd();
+  $("dlgo").textContent = m.have && !m.complete ? "Continue download" : "Download"; $("dlgo").hidden = m.complete; $("dlall").hidden = !todo.length || !!running;
+  $("dlcancel").hidden = !(running && mine);
+  const show = mine && job.status != "idle";
+  $("dlmeter").hidden = !show; $("dlprog").className = "small" + (job.status == "failed" ? " bad" : "");
+  if (show) {
+    const pct = job.total ? Math.min(100, 100 * job.done / job.total) : 0;
+    $("dlbar").style.width = (job.status == "verifying" || job.status == "done" ? 100 : pct) + "%";
+    $("dlprog").textContent = job.status == "downloading" ? `${pct.toFixed(1)} % · ${fmtGB(job.done)} of ${fmtGB(job.total)}${job.speed > 1 ? " · " + (job.speed / 1e6).toFixed(1) + " MB/s" : ""}${job.eta ? " · about " + fmtDur(job.eta) + " left" : ""}${job.message ? " · " + job.message : ""}`
+      : job.status == "verifying" ? "checking sha256… " + (job.message || "") : job.message || job.status;
+  } else $("dlprog").textContent = running ? `Another download is running: ${job.name}` : "";
+  clearTimeout(DL.timer); if (running) DL.timer = setTimeout(pollDownload, 1000);
+}
+async function pollDownload() {
+  try { const was = DL.job && DL.job.running; DL.job = await api("/api/download"); if (was && !DL.job.running) { await loadDownloads(); loadModels(true); return; } } catch (e) {}
+  paintDownload();
+}
+async function startDownload() {
+  const m = dlModel(); $("dlmsg").textContent = "";
+  try { DL.job = await api("/api/download/start", { id: m.id, files: [...document.querySelectorAll("#dlfiles input:checked")].map(x => x.value) }); paintDownload(); }
+  catch (e) { $("dlmsg").textContent = e.message; }
+}
+async function cancelDownload() { try { DL.job = await api("/api/download/cancel", {}); } catch (e) { $("dlmsg").textContent = e.message; } paintDownload(); }
 
 /* ---------- live status ---------- */
 function chart(id, pts, max, color, pct) {
@@ -1279,7 +1353,9 @@ window.addEventListener("hashchange", openHash);
   newChat();
   await loadSystem();
   S.pickuse = (S.sys.pick || {}).use || "agents"; seg("#pickuse", "pickuse", loadPick); $("pickapply").onclick = applyPick; $("pickmodel").onchange = loadPick;
-  $("openSettings").addEventListener("click", () => { if (!S.pickLoaded) { S.pickLoaded = true; loadPick(); } });
+  $("dlmodel").onchange = paintDownload; $("dlgo").onclick = startDownload; $("dlcancel").onclick = cancelDownload;
+  $("dlall").onclick = () => { document.querySelectorAll("#dlfiles input:not(:disabled)").forEach(x => x.checked = true); paintDownload(); };
+  $("openSettings").addEventListener("click", () => { loadDownloads(); if (!S.pickLoaded) { S.pickLoaded = true; loadPick(); } });
   seg("#ctx", "ctx", settingsChanged); seg("[data-seg=mode]", "mode", settingsChanged); seg("#engine", "engine", settingsChanged); seg("#mtp", "mtp", settingsChanged);
   paintRanges();
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; segPainters.forEach(p => p()); } settingsChanged(); };
