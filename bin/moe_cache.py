@@ -667,9 +667,28 @@ def vk_cache_cap(ls, model, listing=None):
     return gpu_cache_cap_mib(model, min(match)), min(match)
 
 
+def env_has(env, name):
+    return any(k == name for k, _ in env)
+
+
+def sycl_sysman_env(ls, listing=None):
+    """ENGINE-048: [("ZES_ENABLE_SYSMAN", "1")] when llama-server uses a SYCL device (its --list-devices output has a SYCL line, or the ggml-sycl library
+    sits next to it): level-zero then answers the free-memory query and stops warning on every call. Empty when the user set the variable themselves."""
+    if "ZES_ENABLE_SYSMAN" in os.environ:
+        return []
+    if listing and re.search(r"^\s+SYCL\d*:", listing, re.M):
+        return [("ZES_ENABLE_SYSMAN", "1")]
+    try:
+        names = os.listdir(os.path.dirname(os.path.abspath(ls)))
+    except OSError:
+        return []
+    return [("ZES_ENABLE_SYSMAN", "1")] if any(n.lower() in ("libggml-sycl.so", "ggml-sycl.dll") for n in names) else []
+
+
 def list_devices(ls):
     try:
-        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        out = subprocess.run([ls, "--list-devices"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                             env=dict(os.environ, **dict(sycl_sysman_env(ls))))
         return out.stdout + out.stderr
     except Exception:
         return ""
@@ -2526,6 +2545,8 @@ def _launch_plan(a, extra, argv, machine):
             # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
             # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
             env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
+    if not env_has(env, "ZES_ENABLE_SYSMAN"):
+        env += sycl_sysman_env(ls, listing)
     if a.leave_room:
         env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
         if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):

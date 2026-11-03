@@ -55,6 +55,7 @@
 | Bug fixes | Windows: `moe-cache.exe` (the command winget installs) now passes redirects and pipes on to the kit (`moe-cache.exe models > f.txt`, `echo y | moe-cache.exe ...`); before, output and input did not reach it. |
 | Bug fixes | `moe-cache-server --fast MODEL` no longer reads the model path as the level of `--fast`: a bare `--fast` followed by anything but 1, 2, kv or fewer means level 1 (LAUNCHER-004). |
 | Bug fixes | The launcher no longer changes process-wide state while it builds a launch plan: `--max-ram`, the recorded notes and the quiet flag are kept per thread, and plans that change the umask take turns, so two control-page threads planning at once cannot see each other's cap or notes or leave the wrong umask (LAUNCHER-003; parent cgroup limits were already counted). |
+| Bug fixes | The launcher sets `ZES_ENABLE_SYSMAN=1` for llama-server (and for its `--list-devices` call) when it sees a SYCL device or the ggml-sycl library next to llama-server, which stops the level-zero warnings and the meaningless free-memory answer; a value you set yourself is kept (ENGINE-048; not yet run on an Intel SYCL device). |
 
 ## 0.3.5 (2026-11-03)
 
