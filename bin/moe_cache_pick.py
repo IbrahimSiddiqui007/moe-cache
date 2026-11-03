@@ -18,35 +18,18 @@ GIB = 2**30
 SETTINGS_FILE = os.path.join(mc.CACHE_DIR, "ui.json")      # the control page's settings (moe_cache_ui.SETTINGS_FILE): "last" = what Start uses
 GPU_MARGIN_GIB = 0.5 * 1e9 / GIB      # the launcher's --gpu-margin default (the tuner's 0.5 GB): VRAM it leaves free next to everything it places
 USES = {"agents": "agents and coding (Hermes, OpenCode) at 64k-256k context", "chat": "plain chat", "docs": "long documents (64k-128k prompts)"}
+USE_SHORT = {"agents": "coding agents", "chat": "chat", "docs": "long documents"}      # for the fit reasons
 BOLT_BUILD = 11966          # Nemotron needs llama.cpp b11966 or newer (tokenizer fix #30960, RESULTS 65)
 DSV4_BUILD = 11870          # DeepSeek-V4.1-Flash needs llama.cpp b11870 or newer (the release of 25 Oct with "model: DSV4.1 flash (#31086)"; the card says so)
 PC = "32 GB RAM + 16 GB GPU (Windows desktop, RESULTS 59-67)"
 LAPTOP = "31 GB RAM limited to 24 GB + 8 GB GPU (Linux laptop, RESULTS 44-45)"
 
-# The candidates. size = bytes of the files we measured (all shards); pattern finds a copy in the model folders; repo + include = where it comes from.
-MODELS = {
-    "bolt": dict(name="Nemotron 3.5 Bolt 74B-A9B (NVIDIA 2-bit QAT)", size=22_018_326_528, pattern=r"Nemotron-3\.5-Bolt-74B.*24GB\.gguf$",
-                 repo="nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF", include="NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf"),
-    "flash-next-q2_0": dict(name="Qwen3.8-Flash-Next Q2_0 (GSQ-RCO)", size=66_423_878_624, pattern=r"Flash-Next-GSQ-RCO-Q2_0[-.]",
-                            repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="Q2_0/*.gguf"),
-    "flash-next-iq3_xxs": dict(name="Qwen3.8-Flash-Next IQ3_XXS (GSQ-RCO)", size=75_839_998_528, pattern=r"Flash-Next-GSQ-RCO-IQ3_XXS[-.]",
-                               repo="ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF", include="IQ3_XXS/*.gguf"),
-    "qwen3.6-35b": dict(name="Qwen3.6-35B-A3B Q4_K_M", size=21_718_480_960, pattern=r"(?i)qwen3\.6(-35b-a3b)?([-_.].*Q4_K_M)?.*\.gguf$",
-                        repo="unsloth/Qwen3.6-35B-A3B-GGUF", include="*Q4_K_M*", ollama="qwen3.6:35b-a3b"),
-    "qwen3.5-122b": dict(name="Qwen3.5-122B-A10B UD-IQ2_XXS", size=36_637_668_544, pattern=r"Qwen3\.5-122B-A10B-UD-IQ2_XXS[-.]",
-                         repo="unsloth/Qwen3.5-122B-A10B-GGUF", include="*UD-IQ2_XXS*"),
-    "glm-5.3": dict(name="GLM-5.3-Flash UD-IQ2_XXS", size=101_845_506_400, pattern=r"GLM-5\.3-Flash-UD-IQ2_XXS[-.]",
-                    repo="unsloth/GLM-5.3-Flash-GGUF", include="UD-IQ2_XXS/*.gguf"),
-    # the next two are untested on this class of machine until the PC runs give numbers (handover/parts/scout16 section 1, scout17 section 3)
-    "gpt-oss-120b": dict(name="gpt-oss-120b MXFP4 (OpenAI, ggml-org)", size=63_387_346_208, pattern=r"gpt-oss-120b-MXFP4\.gguf$",
-                         repo="ggml-org/gpt-oss-120b-GGUF", include="gpt-oss-120b-MXFP4.gguf",
-                         sha256="582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"),
-    # six files: the backbone in five shards (120.7 GB) and the Engram lookup table (110.6 GB), which must also be shard 6 under the series' name (a hard link)
-    "deepseek-v41-flash": dict(name="DeepSeek-V4.1-Flash-1017 IQ1_M + Engram (GSQ-RCO)", size=231_316_485_152,
-                               pattern=r"DeepSeek-V4\.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006\.gguf$",
-                               repo="ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF", include=["*IQ1_M*", "*Engram*"], min_free=240e9,
-                               link=("DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00006-of-00006.gguf", "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf")),
-}
+# The candidates are in models.json (bin/moe_cache_catalogue.py); MODELS is the picker's view of them: name, size = bytes of all shards, pattern finds a
+# copy in the model folders, repo + include = where it comes from (+ sha256, min_free, link, ollama). CAT has the whole entries (fit block, measured numbers).
+import moe_cache_catalogue as cat  # noqa: E402
+CATALOGUE = cat.load()
+CAT = cat.models_dict(CATALOGUE)
+MODELS = {k: cat.legacy(m) for k, m in CAT.items()}
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
 SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default file on a 16 GB GPU (owner 2026-10-30): 3-bit, the most tasks right (193/202), reads best for coding; about 10 % slower decode than Q2_0",
@@ -190,8 +173,7 @@ def ollama_name(blob):
 
 
 # which Ollama tags are which candidate (matched on the whole tag, lower case)
-OLLAMA_TAGS = {"bolt": r"nemotron.*bolt", "flash-next-q2_0": r"flash-next.*q2_0", "flash-next-iq3_xxs": r"flash-next.*iq3_xxs",
-               "qwen3.6-35b": r"qwen3\.6.*35b", "qwen3.5-122b": r"qwen3\.5.*122b", "glm-5.3": r"glm-?5\.3"}
+OLLAMA_TAGS = {k: m["ollama"]["tag_regex"] for k, m in CAT.items() if m.get("ollama")}
 
 
 def find_ollama(found=None, roots=None):
@@ -283,6 +265,80 @@ def need_free(k):
 def includes(m):
     """The --include patterns of a model as a list (one string or a list)."""
     return [m["include"]] if isinstance(m["include"], str) else list(m["include"])
+
+
+def measured_for(k, vram_gib, cap_gb):
+    """The catalogue's measured numbers for model k from the best machine this PC is at least as strong as (90 % tolerance on RAM cap and VRAM, since a
+    16 GB card reports 15.9): [(record, machine entry)], strongest machine first; [] when nothing was measured on a PC this small."""
+    ms = CATALOGUE["machines"]
+    out = [(r, ms[r["machine"]]) for r in CAT[k]["measured"]
+           if cap_gb >= 0.9 * ms[r["machine"]]["cap_gb"] and vram_gib >= 0.9 * ms[r["machine"]]["vram_gib"]]
+    return sorted(out, key=lambda x: (-x[1]["cap_gb"], -x[1]["vram_gib"], x[0]["metric"] != "decode_tps", x[0].get("ctx") or 0))
+
+
+def fit(spec, k, ctx, use, local=None):
+    """THE fit rule: does model k run on this machine at context `ctx` for `use` (agents | chat | docs)? -> {"verdict": "fits" | "tight" | "no",
+    "reason": text, "reasons": [text]}. Built from the launcher's own numbers, not new arithmetic: the memory the server may use (spec["ram_cap"] =
+    mem_cap(): RAM minus max(4 GiB, 12.5 %)), the stock-or-plugin rule (moe_cache.decide: file + STOCK_HEADROOM fits the cap = stock llama-server),
+    the planner's KV size (kv_estimate -> gguf_plan.kv_bytes) and the VRAM margin of the tuner. The thresholds come from the catalogue's "fit" block.
+      no    it will not run or not usefully: llama-server too old, bigger than the memory and below the model's floor (RAM, VRAM), on a hard disk, the
+            KV cache alone does not fit, or the model is marked not for this use
+      tight it runs, but outside what we measured: the PC is smaller than every machine measured, the context is longer than the longest measured,
+            this use or the drive type is untested, or model + KV is more than RAM cap + VRAM
+      fits  none of the above."""
+    e = CAT[k]
+    f = e["fit"]
+    local = spec.get("local") if local is None else local
+    cap = (spec.get("ram_cap") or 0) / 1e9
+    vram = (spec.get("vram") or 0) / GIB
+    size = size_of(k, local or {})
+    stock = size + mc.STOCK_HEADROOM <= cap * 1e9
+    no, tight = [], []
+    if use in e["avoid_uses"]:
+        no.append(f"not for {USE_SHORT[use]}: {e['name'].split(' ')[0]} is for {' and '.join(e['uses'])} only")
+    elif use not in e["uses"]:
+        tight.append(f"not tested for {USE_SHORT[use]}")
+    build, mb = spec.get("llama_build"), f.get("min_build")
+    if mb and build is not None and build < mb:
+        no.append(f"your llama-server is b{build}, this model needs b{mb} or newer")
+    elif mb and build is None:
+        tight.append(f"your llama-server's build could not be read (this model needs b{mb} or newer)")
+    if not stock:
+        sc = f.get("small_ctx_floor")
+        if f.get("stock_only"):
+            no.append(f"{size / 1e9:.0f} GB does not fit in the {cap:.0f} GB the server may use, and this model is only suggested where it fits")
+        elif spec.get("disk_kind") == "HDD":
+            no.append(f"{size / 1e9:.0f} GB is bigger than the {cap:.0f} GB the server may use and the models are on a hard disk (experts are read from the drive all the time)")
+        elif cap < f.get("min_cap_gb", 0):
+            if sc and ctx <= sc["ctx"] and cap >= sc["min_cap_gb"]:
+                tight.append(f"only {cap:.0f} GB for the server: works for context up to {sc['ctx']} and {sc['note']}")
+            else:
+                no.append(f"needs a server memory of {f['min_cap_gb']} GB or more, you have {cap:.0f} GB")
+        elif f.get("needs_ssd") and spec.get("disk_kind") != "SSD":
+            tight.append("could not tell whether the models' drive is an SSD; this model reads most of itself from the drive")
+        elif f.get("needs_ssd_if_oversize") and spec.get("disk_kind") is None:
+            tight.append("could not tell whether the models' drive is an SSD (bigger than memory: experts are read from it)")
+        if vram < f.get("min_vram_gib", 0):
+            no.append(f"needs a GPU with {f['min_vram_gib']} GiB or more, you have {vram:.0f} GiB")
+    kv = kv_estimate(k, ctx, (local or {}).get(k))["bytes"]
+    margin = float(spec["gpu_margin"]) if spec.get("gpu_margin") is not None else GPU_MARGIN_GIB
+    avail = cap * 1e9 + (max(0.0, vram - margin) * GIB if vram else 0.0)
+    if kv > avail:
+        no.append(f"the KV cache alone at context {ctx} ({kv / 1e9:.1f} GB) is more than the {avail / 1e9:.0f} GB of RAM cap + VRAM")
+    elif stock and size + kv > avail:
+        tight.append(f"model {size / 1e9:.1f} GB + KV cache {kv / 1e9:.1f} GB at context {ctx} is more than RAM cap + VRAM ({avail / 1e9:.0f} GB)")
+    tested = f.get("ctx_tested_max", 0)
+    if ctx > tested:
+        tight.append(f"context {ctx} is longer than any we ran it at ({tested})" if tested else "we have never run it")
+    if not no:
+        done = [x for x in measured_for(k, vram, cap) if x[0].get("covers_fit", True)]      # --fast numbers (approximate) do not make a machine class tested
+        if not e["measured"]:
+            tight.append("no measurement of it at all")
+        elif not done:
+            tight.append("measured only on bigger machines than yours (" + ", ".join(sorted({CATALOGUE['machines'][r['machine']]['name'].split(':')[0] + ' ' + str(CATALOGUE['machines'][r['machine']]['vram_gib']) + ' GiB GPU' for r in e['measured']})) + "): untested on this class of machine")
+    verdict = "no" if no else "tight" if tight else "fits"
+    reasons = no or tight or [("stock llama.cpp: " if stock else "through moe-cache: ") + f"model {size / 1e9:.1f} GB + KV cache {kv / 1e9:.1f} GB at context {ctx}, RAM cap {cap:.0f} GB + VRAM {vram:.0f} GiB; measured on a machine like this one"]
+    return {"verdict": verdict, "reason": "; ".join(reasons), "reasons": reasons}
 
 
 def recommend(spec, use, model=None):
@@ -451,17 +507,20 @@ def recommend(spec, use, model=None):
     alts = []
     for r in R:
         if r is not chosen and r[1] and r[0] != k and r[0] not in (a["id"] for a in alts) and placeable(r[0]):
-            alts.append({"id": r[0], "name": MODELS[r[0]]["name"], "why": r[4] + ("" if r[3] else " (untested on this class of machine)")})
+            alts.append({"id": r[0], "name": MODELS[r[0]]["name"], "why": r[4] + ("" if r[3] else " (untested on this class of machine)"),
+                         "fit": fit(spec, r[0], r[2], use, local)})
     for lk in local:      # a model that is already here is worth knowing about even when it is not the best fit
         if lk != k and lk not in (a["id"] for a in alts) and len(alts) < 2:
-            alts.append({"id": lk, "name": MODELS[lk]["name"], "why": "already on this machine (not the best fit for it)"})
+            alts.append({"id": lk, "name": MODELS[lk]["name"], "why": "already on this machine (not the best fit for it)",
+                         "fit": fit(spec, lk, {"chat": 32768}.get(use, 65536), use, local)})
     if use == "agents" and k != "flash-next-iq3_xxs" and cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs") and placeable("flash-next-iq3_xxs"):
         alts.append({"id": "flash-next-iq3_xxs", "name": MODELS["flash-next-iq3_xxs"]["name"],
                      "why": f"the default Flash-Next file for coding (3-bit, 193/202 tasks), moe-cache; long context measured with Q2_0 on {PC}: "
-                            "20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (Q2_0 is about 10 % faster)"})
+                            "20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (Q2_0 is about 10 % faster)",
+                     "fit": fit(spec, "flash-next-iq3_xxs", 65536, use, local)})
     out = {"id": k, "name": m["name"], "use": use, "size": size_of(k, local), "ctx": ctx, "args": args, "engine": engine,
            "measured": measured or "untested on this class of machine", "untested": not measured, "key": key_numbers(measured), "why": [why], "warnings": warn,
-           "alternatives": alts[:2], "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,
+           "alternatives": alts[:2], "fit": fit(spec, k, ctx, use, local), "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,
            "download": None if (k in local or not fits_disk) else download_cmd(k)}
     return out
 

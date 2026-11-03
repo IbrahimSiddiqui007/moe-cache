@@ -36,9 +36,18 @@ jobs:
       - name: Model-free tests (fake servers; same files the full CI runs)
         run: |
           set -e
-          for t in ui_test security_test bench_report_test bench_record_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test heavy_background_test bench_orphan_test budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test cgroup_test connect_agents_test connect_check_test launch_test install_sh_test; do
+          for t in ui_test security_test bench_report_test bench_record_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test heavy_background_test bench_orphan_test budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test cgroup_test connect_agents_test connect_check_test launch_test install_sh_test models_catalogue_test; do
             echo "::group::$t"; python3 tests/$t.py; echo "::endgroup::"
           done
+
+      - name: Model catalogue (docs/MODELS.md is generated from models.json)
+        run: |
+          python3 tools/gen_models_md.py --check
+          python3 - <<'PY'
+          import sys; sys.path.insert(0, "bin")
+          import moe_cache_catalogue as c
+          p = c.problems(c.load()); print("\n".join(p) or "models.json ok"); sys.exit(1 if p else 0)
+          PY
 
       - name: Published numbers have claims (benchmarks/; WARN mode until every current number has a claim)
         run: |
