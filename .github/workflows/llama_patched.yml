@@ -125,7 +125,7 @@ jobs:
             $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port",$port,"--no-warmup" -RedirectStandardError "$name.err" -RedirectStandardOutput "$name.out" -PassThru
             $ok = $false
             for ($i = 0; $i -lt 180; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/health").StatusCode -eq 200) { $ok = $true; break } } catch {}; Start-Sleep 1 }
-            if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content "$name.err" -Tail 40; throw "$name: server never became ready" }
+            if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content "$name.err" -Tail 40; throw "${name}: server never became ready" }
             $r = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body "http://127.0.0.1:$port/completion"
             Stop-Process -Id $p.Id; Start-Sleep 2
             (($r.Content | ConvertFrom-Json).content)
