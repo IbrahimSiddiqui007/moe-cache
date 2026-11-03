@@ -160,7 +160,8 @@ def fake_machine(m, tmp):
     mc.python_cmd = lambda: "python3"
     # --share-ram counts the llama-servers running on the machine: Linux reads /proc (none, whatever runs here); Windows asks tasklist through subprocess.run,
     # which is faked below and recorded in `calls`
-    mc.other_llama_servers = _REAL_OTHER_SERVERS if m["windows"] else (lambda: [])
+    if mc.other_llama_servers is _REAL_OTHER_SERVERS and not m["windows"]:       # (a test that fakes the list itself, as dense_share_test does, keeps its own)
+        mc.other_llama_servers = lambda: []
     gguf_plan.free_vram_bytes = lambda: m["free_vram"]
     gguf_plan.gpu_total_free_bytes = lambda: (m["total_vram"], m["free_vram"])
     real_access = os.access
@@ -181,7 +182,7 @@ def fake_machine(m, tmp):
 
 def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None):
     m = MACHINES[machine_name]
-    saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy())
+    saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy(), mc.other_llama_servers)
     for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH")]:
         del os.environ[k]
     out, err = io.StringIO(), io.StringIO()
@@ -204,6 +205,7 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None)
     finally:
         mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access = saved[:5]
         os.environ.clear(); os.environ.update(saved[5])
+        mc.other_llama_servers = saved[6]
 
     def norm(s):
         for a, b in ((model, "<MODEL>"), (tmp, "<TMP>"), (HERE, "<HERE>")):
