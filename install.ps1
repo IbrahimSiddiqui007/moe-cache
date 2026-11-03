@@ -123,6 +123,7 @@ function Install-MoeCache {
         if (-not $old) { Say "moe-cache: nothing to remove: $rec does not exist (this installer added nothing under $Root)"; return 0 }
         if ($DryRun) { Say "install.ps1: would remove $kit, $shim, the PATH entry $bin$(if ($old.added_path) { '' } else { ' (not added by us: stays)' }) and $rec"; return 0 }
         if (Test-Path -LiteralPath $kit) { Remove-Item -LiteralPath $kit -Recurse -Force; Say "removed $kit" }
+        $kitPrevU = Join-Path $Root 'kit.prev'; if (Test-Path -LiteralPath $kitPrevU) { Remove-Item -LiteralPath $kitPrevU -Recurse -Force; Say "removed $kitPrevU" }
         if ((Test-Path -LiteralPath $shim) -and ((Get-Content -LiteralPath $shim -Raw) -like "*$Marker*")) { Remove-Item -LiteralPath $shim -Force; Say "removed $shim" }
         if ($old.added_path -and -not $NoPath) {
             $list = Split-PathList (Get-UserPathRaw)
@@ -263,7 +264,12 @@ function Install-MoeCache {
         } catch { $msg += " (and the rollback hit: $($_.Exception.Message))" }
         throw "$msg`nStopped: the previous install (if any) was put back and the half-done files were removed."
     }
-    if (Test-Path -LiteralPath $kitOld) { Remove-Item -LiteralPath $kitOld -Recurse -Force -ErrorAction SilentlyContinue }      # last, best effort
+    if (Test-Path -LiteralPath $kitOld) {
+        if ($env:MOE_CACHE_KEEP_PREVIOUS -eq '1') {      # set by `moe_cache.py update --apply`: the kit that was installed stays as kit.prev, for a roll back
+            $kitPrev = Join-Path $Root 'kit.prev'
+            try { if (Test-Path -LiteralPath $kitPrev) { Remove-Item -LiteralPath $kitPrev -Recurse -Force }; [IO.Directory]::Move($kitOld, $kitPrev) } catch { Say "note: could not keep the previous kit ($($_.Exception.Message))" }
+        } else { Remove-Item -LiteralPath $kitOld -Recurse -Force -ErrorAction SilentlyContinue }      # last, best effort
+    }
 
     $shown = (& $shim --version 2>&1 | Select-Object -First 1)
     Say ''

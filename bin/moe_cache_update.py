@@ -3,8 +3,9 @@
 It does not unpack anything itself. It downloads the release's install.sh (Linux) or install.ps1 (Windows), checks that file's build attestation
 with `gh` when gh is usable, and runs it for the same folders the running copy was installed into. The installer then does the rest: it checks the
 tarball / zip against the release's SHA256SUMS and its build attestation, unpacks beside the old version, swaps by rename and rolls back on any
-failure. On Linux the previous version stays in versions/ (MOE_CACHE_KEEP_PREVIOUS=1) and `current` can be pointed back at it; on Windows the
-installer deletes the old kit once the new one is complete (no previous version kept yet).
+failure. On Linux the previous version stays in versions/ (MOE_CACHE_KEEP_PREVIOUS=1) and `current` can be pointed back at it; on Windows the previous
+kit stays as kit.prev. After the swap it runs the new command's --version and imports the launcher modules from the new folder (no model); a failure
+puts the previous version back.
 A copy that was not put there by the installer (a git checkout, an unpacked tarball or kit) is not touched: the command says so and stops.
 Standard library only."""
 import json, os, re, shutil, subprocess, sys, tempfile, urllib.request
@@ -58,12 +59,18 @@ def installed_layout(here, windows=WINDOWS, env=None):
     return None
 
 
+def on_path(folder, env):
+    """True when `folder` is in PATH. An update leaves the PATH alone when the command folder is not there (an install made with -NoPath stays that way)."""
+    norm = lambda x: os.path.normcase(os.path.normpath(x))
+    return any(norm(x) == norm(folder) for x in (env.get("PATH") or env.get("Path") or "").split(os.pathsep) if x)
+
+
 def installer_command(layout, script, tag, env=None, base=None):
     """(argv, env) that runs the downloaded installer for the folders of `layout`."""
     env = dict(os.environ if env is None else env)
+    env["MOE_CACHE_KEEP_PREVIOUS"] = "1"
     if layout["kind"] == "linux":
         env["MOE_CACHE_REF"] = tag
-        env["MOE_CACHE_KEEP_PREVIOUS"] = "1"
         if base:
             env["MOE_CACHE_BASE_URL"] = base
         argv = ["bash", script, "--prefix", layout["prefix"], "--no-apt"]
@@ -71,7 +78,55 @@ def installer_command(layout, script, tag, env=None, base=None):
             argv += ["--bin-dir", os.path.dirname(layout["command"])]
         return argv, env
     ps = os.path.join(env.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
-    return [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Root", layout["root"]] + (["-BaseUrl", base] if base else []), env
+    return [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Root", layout["root"]] + (["-BaseUrl", base] if base else []) + ([] if on_path(os.path.join(layout["root"], "bin"), env) else ["-NoPath"]), env
+
+
+KIT_MODULES = "moe_cache, moe_cache_ui, moe_cache_on_demand, moe_cache_pick, moe_cache_pack, moe_cache_model, moe_cache_launch"
+
+
+def new_bin_dir(layout):
+    return os.path.join(layout["prefix"], "current", "bin") if layout["kind"] == "linux" else os.path.join(layout["root"], "kit", "bin")
+
+
+def verify_new(layout, tag, command, run=subprocess.run):
+    """After the swap, without a model: the moe-cache command prints the new version, and the launcher modules import from the new folder alone
+    (the same check tools/make_windows_kit.sh makes on the kit). Returns '' when fine, else what is wrong."""
+    want = "moe-cache " + tag.lstrip("v")
+    try:
+        r = run([command, "--version"], capture_output=True, text=True, timeout=60, shell=False)
+        got = (r.stdout or "").strip().splitlines()[:1]
+        if r.returncode or not got or got[0] != want:
+            return f"`{command} --version` printed {got or r.stderr.strip()[-120:]}, expected '{want}'"
+        r = run([sys.executable, "-I", "-c", f"import sys; sys.path.insert(0, sys.argv[1]); import {KIT_MODULES}", new_bin_dir(layout)],
+                capture_output=True, text=True, timeout=120)
+        if r.returncode:
+            return "a launcher module does not import from the new folder: " + (r.stderr.strip().splitlines() or ["?"])[-1]
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"could not run the new version: {e}"
+    return ""
+
+
+def roll_back(layout):
+    """Make the version that was installed before current again. Linux: `current` points back (atomic rename of a new link). Windows: kit and
+    kit.prev trade places (the failed kit is kept as kit.failed, nothing is deleted). Returns '' or what went wrong."""
+    try:
+        if layout["kind"] == "linux":
+            tmp = os.path.join(layout["prefix"], ".current.back")
+            if os.path.lexists(tmp):
+                os.remove(tmp)
+            os.symlink(os.path.join("versions", layout["previous"]), tmp)
+            os.replace(tmp, os.path.join(layout["prefix"], "current"))
+        else:
+            kit, prev, bad = (os.path.join(layout["root"], n) for n in ("kit", "kit.prev", "kit.failed"))
+            if not os.path.isdir(prev):
+                return "no kit.prev to go back to"
+            if os.path.exists(bad):
+                return f"{bad} is in the way: move it away and go back by hand (rename kit to kit.failed, kit.prev to kit)"
+            os.rename(kit, bad)
+            os.rename(prev, kit)
+    except OSError as e:
+        return str(e)
+    return ""
 
 
 def attestation(path, base_url_is_default, env=None):
@@ -107,7 +162,7 @@ def apply(version, here, tag=None, yes=False, dry=False, fetch_json=http_json, b
     name = "install.ps1" if layout["kind"] == "windows" else "install.sh"
     say(f"moe-cache {version} -> {tag}: download {base}/{name}, run it for {layout.get('prefix') or layout.get('root')}")
     say("  the installer checks the package against the release's SHA256SUMS and its build attestation (when gh can), unpacks beside the old version and rolls back on a failure"
-        + ("; the version now installed stays in versions/ for a roll back" if layout["kind"] == "linux" else "; the old kit is deleted once the new one is complete"))
+        + ("; the version now installed stays in versions/ for a roll back" if layout["kind"] == "linux" else "; the kit now installed stays as kit.prev for a roll back"))
     if dry:
         say("  --dry-run: nothing was downloaded.")
         return 0
@@ -137,15 +192,29 @@ def apply(version, here, tag=None, yes=False, dry=False, fetch_json=http_json, b
             say(f"moe-cache: REFUSED: gh could not verify the build attestation of {name} ({note}). Nothing was changed. MOE_CACHE_SKIP_ATTESTATION=1 goes on anyway.")
             return 1
         say("  " + note)
-        argv, run_env = installer_command(layout, script, tag, env, None if default_base else base)
+        ibase = None if default_base else base
+        if ibase and ibase.startswith("file://") and layout["kind"] == "windows":      # install.ps1 takes a folder, not a file:// address
+            ibase = urllib.request.url2pathname(ibase[len("file://"):]).lstrip("\\") if re.match(r"file:///[A-Za-z]:", ibase) else urllib.request.url2pathname(ibase[len("file://"):])
+        argv, run_env = installer_command(layout, script, tag, env, ibase)
         rc = subprocess.call(argv, env=run_env)
         if rc:
             say(f"moe-cache: the installer stopped (exit {rc}); it puts the previous install back, so you still have {version}.")
             return rc
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    command = layout.get("command") or (os.path.join(layout["root"], "bin", "moe-cache.cmd") if layout["kind"] == "windows" else "")
+    if windows and layout["kind"] == "windows":
+        try:
+            command = json.load(open(layout["record"], encoding="utf-8-sig")).get("command") or command
+        except (OSError, ValueError):
+            pass
+    bad = verify_new(layout, tag, command)
+    if bad:
+        err = roll_back(layout)
+        say(f"moe-cache: the new version failed its check ({bad}); " + (f"going back to {version} failed too: {err}" if err else f"went back to {version}."))
+        return 1
     if layout["kind"] == "linux":
-        say(f"updated to {tag}. Back to {version}: ln -sfn versions/{layout['previous']} {layout['prefix']}/current")
+        say(f"updated to {tag}; its command and modules checked (no model needed). Back to {version}: ln -sfn versions/{layout['previous']} {layout['prefix']}/current")
     else:
-        say(f"updated to {tag}.")
+        say(f"updated to {tag}; its command and modules checked (no model needed). The kit that was installed stays as {layout['root']}\\kit.prev (rename kit to kit.failed and kit.prev to kit to go back)")
     return 0
