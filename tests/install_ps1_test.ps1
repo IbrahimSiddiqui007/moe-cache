@@ -87,10 +87,15 @@ try {
         $o = (& $shim --version 2>&1 | Out-String).Trim()
         Check ($o -eq 'moe-cache 9.9.2') '...and the command still runs 9.9.2'
     }
-    # a locked file in the kit: the swap fails at once and nothing has changed
+    # a locked file in the old kit. Windows decides: a folder holding an open file may refuse the rename (then nothing has changed) or may be
+    # renamed anyway (then the new kit is in place whole and the old one waits as kit.old until it can be deleted). Never a half state.
     $lock = [IO.File]::Open((Join-Path $kit 'bin\moe_cache.py'), 'Open', 'Read', 'None')
     try { $r = Run-Installer $good3 '9.9.3' @() } finally { $lock.Dispose() }
-    Check ($r.Code -ne 0 -and (Snapshot) -eq $before) 'a locked file in the old kit: the update fails whole, the old install is untouched'
+    $o = (& $shim --version 2>&1 | Out-String).Trim()
+    $whole = ($r.Code -ne 0 -and (Snapshot) -eq $before -and $o -eq 'moe-cache 9.9.2') -or ($r.Code -eq 0 -and $o -eq 'moe-cache 9.9.3' -and (Test-Path (Join-Path $kit '.moe-cache-complete')) -and -not (Test-Path (Join-Path $root 'kit.part')))
+    Check $whole 'a locked file in the old kit: the update either fails with the old install untouched or completes whole (never half)'
+    $r = Run-Installer (Join-Path $T 'good2') '9.9.2' @('-Force')       # back to a clean 9.9.2 (the lock is released; a leftover kit.old is removed now)
+    Check ($r.Code -eq 0 -and -not (Test-Path (Join-Path $root 'kit.old'))) '...with the lock released, the next run installs and leaves no kit.old'
     $r = Run-Installer $good3 '9.9.3' @()
     Check ($r.Code -eq 0 -and $r.Out -match 'installed: moe-cache 9.9.3 \(was 9.9.2\)' -and -not (Test-Path (Join-Path $root 'kit.old')) -and -not (Test-Path (Join-Path $root 'kit.part'))) 'the update after the failures works and leaves no kit.old / kit.part'
     # a kit without the completeness marker is not trusted as "already installed"
