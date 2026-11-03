@@ -40,4 +40,6 @@ done
 for t in $SH_TESTS; do
   echo "::group::$t"; bash "tests/$t.sh" || { echo "FAIL: $t"; exit 1; }; echo "::endgroup::"
 done
+# warning only (DOCS-089): MOE_CACHE_ names the code reads and no doc mentions; never fails the run
+python3 tools/env_names_check.py --missing 2>&1 >/dev/null | sed "s/^/warning: env names: /"
 echo "quick tests: all passed"
