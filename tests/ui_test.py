@@ -207,12 +207,30 @@ def raw(method, path, headers=None, body=None):
     c.request(method, path, body=body, headers=headers or {})
     r = c.getresponse(); data = r.read(); c.close()
     return r.status, r.getheader, data.decode(errors="replace")
-st, hdr, _ = raw("GET", "/?t=" + TOKEN)
-cookie = hdr("Set-Cookie") or ""
-check(st == 303 and hdr("Location") == "/" and cookie.startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "HttpOnly" in cookie and "SameSite=Strict" in cookie,
-      f"the launcher's link sets an HttpOnly, SameSite=Strict cookie and drops the token from the address ({st}, {cookie})")
-st, hdr, page = raw("GET", "/", {"Cookie": cookie.split(";")[0]})
-check(st == 200 and "<title>moe-cache</title>" in page, "the page loads with the cookie")
+# SERVER-011 (2026-11-03): no cookie at all. The link hands the token over once inside the page (a <meta>), the page keeps it in memory and sends
+# the X-MoeCache-Token header on every request.
+st, hdr, page = raw("GET", "/?t=" + TOKEN)
+check(st == 200 and hdr("Set-Cookie") is None and f'<meta name="moe-token" content="{TOKEN}">' in page and "<title>moe-cache</title>" in page,
+      f"the launcher's link serves the page with the token inside it and sets no cookie ({st}, {hdr('Set-Cookie')})")
+check(hdr("Referrer-Policy") == "no-referrer" and hdr("Cache-Control") == "no-store", "the page with the token: no-referrer, no-store")
+st, hdr, page = raw("GET", "/", {"X-MoeCache-Token": TOKEN})
+check(st == 200 and "<title>moe-cache</title>" in page and hdr("Set-Cookie") is None, "the page loads with the header")
+st, hdr, page = raw("GET", "/", {"Cookie": f"moe_cache_ui_{srv.server_address[1]}={TOKEN}"})
+check(st == 403 and TOKEN not in page, "the old cookie is no longer accepted for the page")
+for path in ("/api/status", "/api/system", "/api/key", "/api/chats", "/api/log", "/api/sessions", "/api/share", "/api/bench", "/api/models", "/api/busy", "/api/servers"):
+    st, hdr, body = raw("GET", path, {"Cookie": f"moe_cache_ui_{srv.server_address[1]}={TOKEN}"})
+    check(st == 403 and hdr("Set-Cookie") is None and TOKEN not in body, f"SERVER-011: {path} refused without the header (the old cookie does not count) ({st})")
+    check(raw("GET", path + ("&" if "?" in path else "?") + "t=" + TOKEN)[0] == 403, f"SERVER-011: {path} refused with the token in the query")
+check(raw("GET", "/api/status", {"X-MoeCache-Token": TOKEN})[0] == 200 and raw("GET", "/api/status", {"X-MoeCache-Token": TOKEN})[1]("Set-Cookie") is None,
+      "SERVER-011: /api/status with the header: 200, no Set-Cookie")
+st, _, _ = raw("POST", "/api/stop", {"Content-Type": "application/json", "Cookie": f"moe_cache_ui_{srv.server_address[1]}={TOKEN}"}, b"{}")
+check(st == 403, "SERVER-011: POST with only the old cookie: 403")
+# the page (index.html) itself: nothing but the header carries the token (no cookie, no storage, no EventSource, every fetch sends it)
+import re
+_html = open(ui.PAGE, encoding="utf-8").read()
+check("document.cookie" not in _html and "EventSource" not in _html and not re.search(r"(?:local|session)Storage[^;\n]*(?:TOKEN|token)", _html), "SERVER-011: the page never stores the token")
+_fetches = re.findall(r"fetch\([^)]*?\)?[^\n]*", _html)
+check(_fetches and all("authHeaders(" in f or "headers: authHeaders" in f for f in _fetches), f"SERVER-011: every fetch() in the page sends the token header ({_fetches})")
 check(hdr("X-Frame-Options") == "DENY" and "frame-ancestors 'none'" in (hdr("Content-Security-Policy") or "") and "frame-src 'none'" in hdr("Content-Security-Policy"),
       "1: no framing (X-Frame-Options DENY, CSP frame-ancestors 'none'); the page has no frames either (own chat)")
 st, hdr, _ = raw("GET", "/api/status")
@@ -229,13 +247,12 @@ check(req("/api/status", headers={"Sec-Fetch-Site": "none"})[0] == 403, "3: an A
 check(req("/api/status", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200, "3: same-origin: allowed")
 check(req("/api/stop", {}, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403, "3: POST cross-site: 403")
 check(req("/api/status", headers={"Origin": "http://attacker.example"})[0] == 403, "3: GET with a foreign Origin: 403")
-check(raw("GET", "/", {"Sec-Fetch-Site": "none", "Cookie": cookie.split(";")[0]})[0] == 200, "3: opening the page itself (none) works")
+check(raw("GET", "/", {"Sec-Fetch-Site": "none", "X-MoeCache-Token": TOKEN})[0] == 200, "3: opening the page itself (none) works")
 # audit 2026-10-27: the browser gets a private file:// page that forwards to the link (no token in its command line, readable in /proc)
 st, hdr, page = raw("GET", "/?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})
-check(st == 200 and (hdr("Set-Cookie") or "").startswith(f"moe_cache_ui_{srv.server_address[1]}={TOKEN}") and "SameSite=Strict" in hdr("Set-Cookie")
-      and "url=/'" in page, f"S1: the link opened from the launcher's file page sets the cookie and moves on to / itself ({st})")
+check(st == 200 and hdr("Set-Cookie") is None and f'content="{TOKEN}"' in page, f"S1: the link opened from the launcher's file page serves the page with the token, no cookie ({st})")
 check(raw("GET", "/?t=wrong", {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: a cross-site link with a wrong token: 403")
-check(raw("GET", "/", {"Sec-Fetch-Site": "cross-site", "Cookie": cookie.split(";")[0]})[0] == 403, "S1: cross-site without the link token stays refused")
+check(raw("GET", "/", {"Sec-Fetch-Site": "cross-site", "X-MoeCache-Token": TOKEN})[0] == 403, "S1: cross-site without the link token stays refused")
 check(raw("GET", "/api/status?t=" + TOKEN, {"Sec-Fetch-Site": "cross-site"})[0] == 403, "S1: the cross-site exception is for the page link only")
 check(raw("GET", "/?t=%C3%A9")[0] == 403 and req("/api/status", headers={"X-MoeCache-Token": "\u00e9"})[0] in (400, 403),
       "S1: a non-ASCII token is refused, not a dropped connection")
@@ -1169,6 +1186,23 @@ if node:
     check(r_ is not None and r_[:6] == ["start," + tail, "stop," + tail, "switch," + tail, "switch," + tail, tail, "start," + tail],
           f"row menu: Start when nothing runs, Stop on the running model, Switch to this model on the others, nothing to start while stopping ({r_ and r_[:6]})")
     check(r_ is not None and r_[6] == ["Start", "Plan / Why", "Show in folder", "Copy path"], "row menu: the labels")
+
+# SERVER-011 on the page's own code (node): the token comes from the <meta>, is dropped from the DOM and the address, and api() sends it as a header
+if node:
+    fn = re.search(r"const TOKEN = .*?async function api\(path, body\) \{.*?\n\}\n", page, re.S).group(0)
+    harness = ("let removed = false, replaced = null, calls = [];\n"
+               "const document = { querySelector: s => s == 'meta[name=\"moe-token\"]' ? { content: 'tok-xyz', remove() { removed = true; } } : null };\n"
+               "const location = { search: '?t=tok-xyz', pathname: '/' }, history = { replaceState: (a, b, u) => { replaced = u; } };\n"
+               "const localStorage = { setItem() { throw new Error('storage used'); }, getItem() { throw new Error('storage used'); } };\n"
+               "const fetch = async (p, o) => { calls.push([p, o]); return { ok: true, json: async () => ({}) }; };\n" + fn +
+               "(async () => { await api('/api/status'); await api('/api/stop', {}); console.log(JSON.stringify([TOKEN, removed, replaced, calls.map(c => [c[1].headers['X-MoeCache-Token'], c[1].method || 'GET', c[1].headers['Content-Type'] || null])])); })();\n")
+    hf = os.path.join(TMP, "token.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ == ["tok-xyz", True, "/", [["tok-xyz", "GET", None], ["tok-xyz", "POST", "application/json"]]], f"SERVER-011: the page keeps the token in memory, clears the address and sends the header on GET and POST ({r_})")
 
 print("ui test:", "PASS" if not fails else f"FAIL ({len(fails)})")
 sys.exit(1 if fails else 0)

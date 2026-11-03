@@ -496,8 +496,13 @@ async function loadBusy() {      // never blocks: the page server answers with i
     $("busyres").innerHTML = r.programs.map(p => "<div>" + esc(p.note) + "</div>").join("");
   } catch (e) { $("busymsg").textContent = "Could not look: " + e; }
 }
+/* The per-run token: handed over once inside this page (a <meta> the server fills in), kept in memory only (no cookie, no storage), sent in a header
+   with every request. The address (?t=...) is replaced at once so the token stays out of the history; reloading needs the launcher's address again. */
+const TOKEN = (() => { const m = document.querySelector('meta[name="moe-token"]'); const t = m ? m.content : ""; if (m) m.remove();
+  try { if (location.search) history.replaceState(null, "", location.pathname); } catch (e) {} return t; })();
+const authHeaders = h => Object.assign({ "X-MoeCache-Token": TOKEN }, h);
 async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const r = await fetch(path, body === undefined ? { headers: authHeaders() } : { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), body: JSON.stringify(body) });
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.status);
   return j;
@@ -1095,7 +1100,7 @@ async function ask() {
   const redraw = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; paintLast(); }); };
   const temp = +$("temp").value;
   try {
-    const r = await fetch("/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, signal: C.ctrl.signal,
+    const r = await fetch("/api/chat", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), signal: C.ctrl.signal,
                                          body: JSON.stringify(Object.assign({ messages: msgs }, temp >= 0 ? { temperature: temp } : {})) });
     if (!r.ok) { let m = r.status; try { m = (await r.json()).error; } catch (e) {} throw new Error(m); }
     const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";

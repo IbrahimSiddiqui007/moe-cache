@@ -1793,7 +1793,7 @@ def open_page(url):
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
-    token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in a cookie
+    token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in memory
     server_version = "moe-cache-ui"
     timeout = 30                # a client that sends nothing does not hold a thread forever
 
@@ -1813,19 +1813,11 @@ class Handler(BaseHTTPRequestHandler):
         site = self.headers.get("Sec-Fetch-Site")
         return site is None or site == "same-origin" or (navigation and (site == "none" or (cross_site and site == "cross-site")))
 
-    def cookie_name(self):
-        return f"moe_cache_ui_{self.server.server_address[1]}"       # cookies are not per port: the name is
-
     def has_token(self):
-        """The per-run token, from the page's cookie or an X-MoeCache-Token header (scripts, tests): other users of a shared machine can reach
-        127.0.0.1 too, but not this token (it is printed for and opened by the user who started the page)."""
-        t = self.headers.get("X-MoeCache-Token")
-        if not t:
-            for part in (self.headers.get("Cookie") or "").split(";"):
-                k, _, v = part.strip().partition("=")
-                if k == self.cookie_name():
-                    t = v
-        return bool(t) and token_eq(t, self.token)
+        """The per-run token, from the X-MoeCache-Token header only (the page sends it from memory on every request, scripts and tests too; there is
+        no cookie): other users of a shared machine can reach 127.0.0.1 too, but not this token (it is printed for and opened by the user who started
+        the page)."""
+        return token_eq(self.headers.get("X-MoeCache-Token"), self.token)
 
     def end_headers(self):
         self.send_header("X-Frame-Options", "DENY")
@@ -1854,31 +1846,14 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed(navigation=u.path in ("/", "/index.html")) and not (link and self.allowed(navigation=True, cross_site=True)):
             return self.send(403, {"error": "forbidden"})
         if u.path in ("/", "/index.html"):
-            if link and self.headers.get("Sec-Fetch-Site") == "cross-site":
-                # from the launcher's file:// page: a redirect would stay "cross-site" and the browser would hold back the SameSite=Strict cookie,
-                # so set the cookie here and let this page itself move on to / (a same-origin navigation)
-                body = b"<!doctype html><meta charset=utf-8><meta http-equiv=refresh content='0;url=/'><title>moe-cache</title>"
-                self.send_response(200)
-                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if link:
-                # the launcher's link: keep the token in a cookie only this page sends, and drop it from the address bar
-                self.send_response(303)
-                self.send_header("Set-Cookie", f"{self.cookie_name()}={self.token}; Path=/; HttpOnly; SameSite=Strict")
-                self.send_header("Location", "/")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-            if not self.has_token():
+            if not link and not self.has_token():
                 return self.send(403, "<!doctype html><meta charset=utf-8><title>moe-cache</title><p style='font:15px system-ui;margin:2em'>Open the "
-                                 "address the launcher printed (it ends in <code>?t=…</code>): this page only answers the user who started it.</p>",
-                                 "text/html")
-            return self.send(200, open(PAGE, "rb").read(), "text/html")
+                                 "address the launcher printed (it ends in <code>?t=…</code>): this page only answers the user who started it. "
+                                 "(The page keeps its token in memory only: reloading it needs that address again.)</p>", "text/html")
+            # the token travels once, in the page itself (no cookie): the page keeps it in memory, sends it in a header with every request and
+            # replaces the address (?t=...) at once, so it stays out of the history and, with no-referrer, out of every Referer
+            page = open(PAGE, "rb").read().replace(b'<meta charset="utf-8">', b'<meta charset="utf-8">\n<meta name="moe-token" content="' + self.token.encode("ascii", "replace") + b'">', 1)
+            return self.send(200, page, "text/html")
         if not self.has_token():
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
