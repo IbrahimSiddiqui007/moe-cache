@@ -93,6 +93,7 @@ try {
     try { $r = Run-Installer $good3 '9.9.3' @() } finally { $lock.Dispose() }
     $o = (& $shim --version 2>&1 | Out-String).Trim()
     $whole = ($r.Code -ne 0 -and (Snapshot) -eq $before -and $o -eq 'moe-cache 9.9.2') -or ($r.Code -eq 0 -and $o -eq 'moe-cache 9.9.3' -and (Test-Path (Join-Path $kit '.moe-cache-complete')) -and -not (Test-Path (Join-Path $root 'kit.part')))
+    if (-not $whole) { $script:lastOut += "`n--- code $($r.Code); version '$o'; before/after differ: " + ((Snapshot) -ne $before) + "`n--- before: $before`n--- after:  $(Snapshot)" }
     Check $whole 'a locked file in the old kit: the update either fails with the old install untouched or completes whole (never half)'
     $r = Run-Installer (Join-Path $T 'good2') '9.9.2' @('-Force')       # back to a clean 9.9.2 (the lock is released; a leftover kit.old is removed now)
     Check ($r.Code -eq 0 -and -not (Test-Path (Join-Path $root 'kit.old'))) '...with the lock released, the next run installs and leaves no kit.old'
