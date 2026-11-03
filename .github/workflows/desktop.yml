@@ -1,5 +1,5 @@
 # Desktop app (Tauri 2 shell around the control page). Runs by hand (workflow_dispatch, which GitHub offers only once this file is on the default
-# branch) and on pull requests that touch desktop/ or this file, so a branch can be built before that. Never on a push to a branch or a tag.
+# branch) on pull requests that touch desktop/ or this file, and on pushes to claude/desktop-* branches (so a desktop branch builds without a PR). Never on a tag.
 # Design: docs/DESKTOP_APP_DESIGN.md. No signing of the installer (no code-signing certificate by decision);
 # update-file signing (TAURI_SIGNING_PRIVATE_KEY) is added with the updater milestone.
 name: desktop
@@ -13,6 +13,11 @@ on:
       python_sha256:
         description: SHA-256 of python-<version>-embed-amd64.zip (from python.org); empty = the pin for 3.12.8 in the workflow; "none" = do not bundle Python (the app then needs MOE_CACHE_PYTHON)
         default: ""
+  push:
+    branches: ["claude/desktop-*"]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
   pull_request:
     paths:
       - "desktop/**"
