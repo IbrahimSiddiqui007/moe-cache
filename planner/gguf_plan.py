@@ -1,6 +1,6 @@
 """Minimal GGUF header reader (standard library only) and GPU placement planner.
    fit_n_cpu_moe(path, ctx) -> how many layers keep their experts on the CPU so that the rest fill the free VRAM."""
-import glob, json, os, re, struct, subprocess
+import glob, json, os, re, struct, subprocess, threading
 
 def _win_ps():
     """powershell by its System32 path on Windows (a bare name searches the current folder first, AUD-034); the bare name elsewhere."""
@@ -630,11 +630,95 @@ def find_fit_params(llama_server=None):
     return next((c for c in cands if c and os.path.isfile(c)), None)
 
 
+FIT_DISK_NAME = "fit-params-cache.json"
+FIT_DISK_KEEP = 400
+_FIT_LOCK = threading.Lock()
+_GPU_ID = []
+
+
+def fit_disk_file():
+    return os.environ.get("MOE_CACHE_FIT_CACHE") or os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache", FIT_DISK_NAME)
+
+
+def gpu_identity():
+    """Which GPU and driver the measured buffers belong to (PREFILL-180): nvidia-smi's name and driver, else the vendor/device ids of the DRM cards (Linux sysfs);
+    "" when neither answers, and then nothing is cached on disk. Asked once per process."""
+    if _GPU_ID:
+        return _GPU_ID[0]
+    ident = ""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=name,driver_version", "--format=csv,noheader"], capture_output=True, text=True, errors="replace", timeout=5)
+        if out.returncode == 0 and out.stdout.strip():
+            ident = "nvidia:" + ";".join(out.stdout.strip().splitlines())
+    except Exception:
+        pass
+    if not ident:
+        ids = []
+        for card in sorted(glob.glob("/sys/class/drm/card[0-9]*/device")):
+            try:
+                ids.append(open(card + "/vendor").read().strip() + ":" + open(card + "/device").read().strip())
+            except OSError:
+                pass
+        ident = "drm:" + ",".join(ids) if ids else ""
+    _GPU_ID.append(ident)
+    return ident
+
+
+def _file_id(p):
+    st = os.stat(p)
+    return [os.path.basename(p), st.st_size, st.st_mtime_ns]
+
+
+def fit_disk_key(fit_params, path, ctx, ub, kv_q8):
+    """The key of a measured buffer: the tool, the model files, context, -ub, the KV type and the GPU; None when any part is unknown (nothing cached)."""
+    try:
+        gpu = gpu_identity()
+        if not gpu:
+            return None
+        return json.dumps([_file_id(os.path.realpath(fit_params)), [_file_id(x) for x in shards(path)], ctx, ub, bool(kv_q8), gpu])
+    except OSError:
+        return None
+
+
+def _fit_disk_read():
+    try:
+        d = json.load(open(fit_disk_file(), encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _fit_disk_store(key, v):
+    with _FIT_LOCK:
+        d = _fit_disk_read()
+        d.pop(key, None)
+        d[key] = v
+        for old in list(d)[:-FIT_DISK_KEEP]:
+            del d[old]
+        f = fit_disk_file()
+        try:
+            os.makedirs(os.path.dirname(f), exist_ok=True)
+            tmp = f"{f}.{os.getpid()}.{threading.get_ident()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(d, fh)
+            os.replace(tmp, f)
+        except OSError:
+            pass
+
+
 def fit_params_buffer_mib(fit_params, path, ctx, ub, kv_q8=False, timeout=90):
-    """Compute buffer (MiB) llama.cpp itself would reserve for this model, context and -ub (-b raised to match, or the tool clamps -ub to 2048); None on any failure."""
+    """Compute buffer (MiB) llama.cpp itself would reserve for this model, context and -ub (-b raised to match, or the tool clamps -ub to 2048); None on any failure.
+    Remembered for the process and on disk (PREFILL-180, ~3 s a measurement): the same model, context, -ub, KV type, GPU and tool files give the same figure."""
     key = (fit_params, path, ctx, ub, bool(kv_q8))
-    if key not in _FIT_CACHE:
-        v = None
+    if key in _FIT_CACHE:
+        return _FIT_CACHE[key]
+    dkey = fit_disk_key(fit_params, path, ctx, ub, kv_q8)
+    v = None
+    if dkey:
+        got = _fit_disk_read().get(dkey)
+        if isinstance(got, (int, float)) and not isinstance(got, bool) and got > 0:
+            v = float(got)
+    if v is None:
         try:
             cmd = [fit_params, "-m", path, "-c", str(ctx), "-ub", str(ub), "-b", str(max(ub, 2048)), "-ngl", "99", "--n-cpu-moe", "999", "--fit-print", "on"]
             if kv_q8:
@@ -642,8 +726,24 @@ def fit_params_buffer_mib(fit_params, path, ctx, ub, kv_q8=False, timeout=90):
             v = parse_fit_params_compute_mib(subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout).stdout)
         except Exception:
             pass
-        _FIT_CACHE[key] = v
-    return _FIT_CACHE[key]
+        if v is not None and dkey:
+            _fit_disk_store(dkey, v)           # a failure is never written: the next launch tries again
+    _FIT_CACHE[key] = v
+    return v
+
+
+def prefetch_fit_params(fit_params, path, ctx, ubs, kv_q8=False, workers=4):
+    """PREFILL-181: measure the micro-batch candidates that are not remembered yet at the same time (the tool builds graphs with no_alloc, so the runs
+    do not compete for GPU memory); the figures are the same as one by one, only the waiting is shorter. Returns the number of runs started."""
+    todo = [u for u in dict.fromkeys(ubs) if fit_params and (fit_params, path, ctx, u, bool(kv_q8)) not in _FIT_CACHE]
+    if len(todo) < 2:
+        return 0
+    ts = [threading.Thread(target=fit_params_buffer_mib, args=(fit_params, path, ctx, u, kv_q8), daemon=True) for u in todo[:max(1, workers)]]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    return len(ts)
 
 
 def rule_buffer_mib(path, lay, ctx, ub, kv_q8=False, fit_params=None, ubs=PLAN_UBS):
@@ -689,6 +789,7 @@ def plan_table(path, ctx=8192, free=None, kv_q8=False, reserve_gb=0.5, fit_param
         return []
     fixed = lay["other_bytes"] + _kv_or_flat(path, ctx, kv_q8)
     rows = []
+    prefetch_fit_params(fit_params, path, ctx, ubs, kv_q8)
     for u in ubs:
         buf, src = rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params, ubs)
         blk = rule_block_mib(path, lay, u)
@@ -731,6 +832,8 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     fixed = lay["other_bytes"] + kv
 
     rule = plan_rule_on()
+    if rule and fit_params:
+        prefetch_fit_params(fit_params, path, ctx, [u for u in PLAN_UBS if u <= max(ub or 0, 2048)] + ([ub] if ub else []), kv_q8)
 
     def cbm(u, guess):        # idea L01: the table, raised by a buffer measured on this model when MOE_CACHE_COMPUTE_DB has one
         if rule:              # MOE_CACHE_PLAN_RULE=1: the table only says whether u is a candidate (as before); the number is the rule's

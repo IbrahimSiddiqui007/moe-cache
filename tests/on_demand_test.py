@@ -408,5 +408,37 @@ except Exception as e:
 check("on-demand: a request sent at once is answered after the check", st == 200 and '"on_demand"' in body and t_ans and t_ans >= 2.5, (st, body, t_ans))
 p.terminate(); p.wait(30)
 
+
+# LAUNCHER-005 (A3-16): launcher options before the model do not swallow it
+M = "MODEL.gguf"
+check("order: --ram 20 MODEL -> MODEL first", od.model_first(["--ram", "20", M]) == [M, "--ram", "20"])
+check("order: MODEL first stays", od.model_first([M, "--ram", "20"]) == [M, "--ram", "20"])
+check("order: --ctx=8192 --mtp MODEL", od.model_first(["--ctx=8192", "--mtp", M]) == [M, "--ctx=8192", "--mtp"])
+check("order: --fast MODEL keeps MODEL as the model; --fast 2 MODEL takes the level", od.model_first(["--fast", M]) == [M, "--fast"] and od.model_first(["--fast", "2", M]) == [M, "--fast", "2"])
+check("order: no model word (only option values): unchanged", od.model_first(["--ram", "20", "--status"]) == ["--ram", "20", "--status"])
+check("order: --port 8099 --idle 5 MODEL --add", od.model_first(["--port", "8099", "--idle", "5", M, "--add"]) == [M, "--port", "8099", "--idle", "5", "--add"])
+
+# LAUNCHER-005 (A3-13): the port picked for the model server was taken before the launcher bound it: one retry with another port
+RACE = os.path.join(TMP, "race_launcher.py")
+open(RACE, "w").write(r'''import os, runpy, sys
+mark = os.path.join(os.environ["XDG_CACHE_HOME"], "race-once")
+if not os.path.exists(mark):
+    open(mark, "w").write("1")
+    print("moe-cache: port " + sys.argv[sys.argv.index("--port") + 1] + " is already in use (another llama-server, or on-demand)", flush=True)
+    sys.exit(2)
+sys.argv = [sys.argv[0]] + sys.argv[1:]
+runpy.run_path("@FAKE@", run_name="__main__")
+'''.replace("@FAKE@", FAKE.replace("\\", "/")))
+rl = []
+bk2 = od.Backend(dict(choice), launcher=[sys.executable, RACE], idle_min=1, start_timeout=30, log=lambda m: rl.append(m))
+t0 = time.time()
+try:
+    port2 = bk2.ensure("race test")
+    ok_race = bool(port2) and bk2.state == "ready"
+except Exception as e:
+    ok_race, port2 = False, str(e)
+check("race: a port taken at launch is retried once with a new port and the model starts", ok_race and any("taken by another program" in m for m in rl), (port2, rl))
+bk2._stop_locked("test over") if hasattr(bk2, "_stop_locked") else None
+
 print("FAILED: " + ", ".join(fails) if fails else "all on-demand tests passed")
 sys.exit(1 if fails else 0)
