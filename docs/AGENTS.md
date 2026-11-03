@@ -248,6 +248,7 @@ The reuse above only works while the start of the prompt stays byte for byte the
 | Hermes | waits 1800 s (30 min) per request by default (`HERMES_API_TIMEOUT`, or `request_timeout_seconds` in its config; read from Hermes 0.22.5's code), so `connect hermes` needs no change | nothing, unless you lowered it |
 | OpenCode | `connect opencode` writes a 30-minute `headerTimeout` for windows of 64k+ (its default is 5 minutes) | nothing |
 | other clients (Cline, Continue, Aider and similar) | not checked by us | set the client's request timeout above your longest first-turn time; the server log line `prompt eval time = ... ms` shows how long it took |
+| any client, through the on-demand endpoint | `MOE_CACHE_PROMPT_PROGRESS=1` (set where `moe_cache.py on-demand` runs; default off) adds `"return_progress": true` to streaming requests, so llama-server sends a small event after every batch of a long prompt (an empty delta and a `prompt_progress` object) and the client's read timeout keeps being reset. Clients that choke on an event without text should leave it off; it has not been tried with Cline or Continue. A client talking to llama-server directly can send `return_progress` itself | `MOE_CACHE_PROMPT_PROGRESS=1` |
 
 ## Measuring it yourself: replay a recorded agent session (tools/agent_bench.py)
 

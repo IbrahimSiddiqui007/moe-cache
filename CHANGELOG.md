@@ -76,6 +76,7 @@
 | Bug fixes | doctor / check: the llama.cpp version line is plain words ("this llama.cpp build is not one we tested", with the builds we did test) instead of API numbers and commit lists; docs/WINDOWS.md says the same (WINDOWS-061). |
 | Bug fixes | `moe-cache-server MODEL --print-systemd` prints the always-on systemd user unit with your absolute paths, your options and memory limits (MemoryMax from `--ram`, else the launcher's memory cap; MemoryHigh 8 % below it); the API key is never written into it. The launcher now reads the smaller of MemoryMax and MemoryHigh (cgroup `memory.max` and `memory.high`) when `--ram` is not given (SERVER-005; not yet run as a long-lived service). |
 | Bug fixes | Control page: each chat shows its own expert-cache hit rate under the title ("expert hits 80.0 % over 2 answers"), added up from the hits and misses counted while its answers were written; the server counts them, so another chat or an agent running at the same time is included, and the tooltip says so (GUI-023). |
+| Bug fixes | `moe_cache.py on-demand`: with `MOE_CACHE_PROMPT_PROGRESS=1` (default off) streaming requests get `"return_progress": true`, so llama-server sends a small progress event after every batch of a long prompt and a client with a read timeout does not give up before the first token; table row in docs/AGENTS.md (AGENTS-061; not tried with Cline or Continue). |
 
 ## 0.3.5 (2026-11-03)
 
