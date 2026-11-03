@@ -2547,6 +2547,40 @@ def gpu_stage(a, ls, win, machine):
     return vram_user, listing, gpu
 
 
+def plugin_lib_stage(ls, dry, stock, machine):
+    """ENGINE-029, stage "plugin build": which plugin library goes with this llama-server (MOE_CACHE_LIB gives way to the matching build when its backend API differs), and the refusals: llama-server missing, plugin not built, API mismatch. Returns the library path."""
+    lib = os.environ.get("MOE_CACHE_LIB")
+    if lib:
+        # moe-cache.bat sets MOE_CACHE_LIB to the first DLL it finds (the api3 one); for an older llama-server (ggml 0.24 / 0.25) that build refuses to load.
+        # An env value built for another API than the server uses gives way to the matching build the launcher finds itself (audit A4-01)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if want and have and want != have:
+            alt = machine.pick_lib(ls)
+            if alt != lib and machine.lib_exists(alt) and machine.lib_api(alt) == want:
+                say(f"moe-cache: MOE_CACHE_LIB {lib} was built for ggml backend API {have}, {ls} uses API {want}: using {alt} instead", err=True)
+                lib = alt
+    else:
+        lib = machine.pick_lib(ls)
+    if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
+        # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
+        # tarball users the wrong way (audit 2026-10-29 K2)
+        raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else " (Linux: the -ggml0.26 download has llama.cpp inside, or run ./install.sh; with your own llama.cpp the file is build/bin/llama-server)")
+                         + f". Looked: {machine.ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
+    if (line := machine.ls_found_line(ls)):
+        say(line)
+    if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if want and have and want != have:
+            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load; "
+                + api_advice(want), err=True)
+        if not machine.lib_exists(lib):
+            if os.environ.get("MOE_CACHE_LIB"):
+                raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
+            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    return lib
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2600,35 +2634,7 @@ def _launch_plan(a, extra, argv, machine):
     mm_file, mm_bytes, dense = None, 0, False
     if a.mmproj or a.auto_fit:
         mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
-    lib = os.environ.get("MOE_CACHE_LIB")
-    if lib:
-        # moe-cache.bat sets MOE_CACHE_LIB to the first DLL it finds (the api3 one); for an older llama-server (ggml 0.24 / 0.25) that build refuses to load.
-        # An env value built for another API than the server uses gives way to the matching build the launcher finds itself (audit A4-01)
-        want, have = machine.ls_api(ls), machine.lib_api(lib)
-        if want and have and want != have:
-            alt = machine.pick_lib(ls)
-            if alt != lib and machine.lib_exists(alt) and machine.lib_api(alt) == want:
-                say(f"moe-cache: MOE_CACHE_LIB {lib} was built for ggml backend API {have}, {ls} uses API {want}: using {alt} instead", err=True)
-                lib = alt
-    else:
-        lib = machine.pick_lib(ls)
-    if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
-        # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
-        # tarball users the wrong way (audit 2026-10-29 K2)
-        raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
-                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else " (Linux: the -ggml0.26 download has llama.cpp inside, or run ./install.sh; with your own llama.cpp the file is build/bin/llama-server)")
-                         + f". Looked: {machine.ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
-    if (line := machine.ls_found_line(ls)):
-        say(line)
-    if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
-        want, have = machine.ls_api(ls), machine.lib_api(lib)
-        if want and have and want != have:
-            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load; "
-                + api_advice(want), err=True)
-        if not machine.lib_exists(lib):
-            if os.environ.get("MOE_CACHE_LIB"):
-                raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
-            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    lib = plugin_lib_stage(ls, dry, stock, machine)
     vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
     ncmoe_user = a.n_cpu_moe
     mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
