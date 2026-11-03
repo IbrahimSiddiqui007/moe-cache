@@ -93,6 +93,8 @@ python3 bin/moe_cache.py on-demand --install-autostart        # optional: start 
 | Linux | a systemd user unit `~/.config/systemd/user/moe-cache-on-demand.service`, enabled and started (`systemctl --user enable --now`) | log: `journalctl --user -u moe-cache-on-demand`; no root. It runs while you are logged in |
 | Windows | a shortcut `moe-cache on-demand.lnk` in your Startup folder (`shell:startup`) that runs `pythonw.exe bin\moe_cache.py on-demand`, started right away too | no admin rights, no console window; the model server also runs without a window |
 
+**A server that is always on (Linux, systemd user unit).** The on-demand listener above loads the model on the first request. For a server that stays loaded, copy [moe-cache-server.service](moe-cache-server.service) to `~/.config/systemd/user/`, edit the `ExecStart` line (your moe-cache folder, model and llama-server) and the memory limits, then `systemctl --user daemon-reload && systemctl --user enable --now moe-cache-server`. Log: `journalctl --user -u moe-cache-server`. It starts at login; `loginctl enable-linger $USER` starts it at boot. `MemoryMax` is the limit moe-cache reads when `--ram` is not given. We wrote the file from the launcher's code and the on-demand unit; we have not run it as a long-lived service.
+
 Run `on-demand MODEL ...` (or `--port` / `--idle` / `--idle-release`) again to change the choice; restart the listener to use it (`--stop`, then
 `systemctl --user start moe-cache-on-demand` or log in again; without autostart, run `on-demand`).
 
@@ -238,6 +240,14 @@ The reuse above only works while the start of the prompt stays byte for byte the
 | more conversations than slots (agent + title request + sub-agents + a second agent) | `--agent` gives 4 slots; with two agents and sub-agents raise them (`-- -np 6`) or run one agent at a time |
 | an editor's autocomplete on the same server (many tiny requests) | give autocomplete its own small model or server |
 | the agent's window larger than the server's | keep the agent's limit below the server's (section above); `connect opencode` writes it, and for windows of 64k+ a 30-minute reply timeout (OpenCode's default is 5 minutes, a 63k first turn took 289 s) |
+
+**Long first turns and client time limits.** A 63k-token first turn takes minutes, and a client that gives up sooner re-sends the whole prompt from zero. Per agent:
+
+| Agent | Limit | What to do |
+|---|---|---|
+| Hermes | waits 1800 s (30 min) per request by default (`HERMES_API_TIMEOUT`, or `request_timeout_seconds` in its config; read from Hermes 0.22.5's code), so `connect hermes` needs no change | nothing, unless you lowered it |
+| OpenCode | `connect opencode` writes a 30-minute `headerTimeout` for windows of 64k+ (its default is 5 minutes) | nothing |
+| other clients (Cline, Continue, Aider and similar) | not checked by us | set the client's request timeout above your longest first-turn time; the server log line `prompt eval time = ... ms` shows how long it took |
 
 ## Measuring it yourself: replay a recorded agent session (tools/agent_bench.py)
 
