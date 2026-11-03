@@ -28,11 +28,11 @@ jobs:
         include:
           - { name: "ggml-0.25-api2", sha: "7fe450e19305b828c199d602c23a8337aaa1f03b", api: "2", tested: "yes" }
           - { name: "ggml-0.26-api3", sha: "23b0202a189c44a54625aadcb37a946dd1d6278d", api: "3", tested: "yes" }
-          # release b11966 = ggml 0.28.0 (the build the Windows kit bundles); named by commit in MOE_CACHE_TESTED_GGML. The vendored headers (third_party/ggml-v3, from 0.26) differ from it
-          # by new declarations only (tools/check_ggml_headers.py)
+          # release b11966 = ggml 0.28.0, the previous pin (kept as a row); named by commit in MOE_CACHE_TESTED_GGML
           - { name: "ggml-0.28-b11966-api3", sha: "ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1", api: "3", tested: "yes" }
-          # the newest release at the time of writing: a candidate for the next pin (the plugin may warn "tested with ggml" here: that is the point)
-          - { name: "ggml-b12015-api3", sha: "a34de8618b25dfc32ee43749db47d767a9f0a25d", api: "3", tested: "no" }
+          # release b12064 = ggml 0.28.0, the current pin (the build the Windows kit and the Linux tarball bundle). The vendored headers (third_party/ggml-v3, from 0.26) differ from it by new
+          # declarations only, plus three optional hooks appended to ggml_backend_buffer_i (set_tensor_n, get_tensor_n, cpy_tensor_n; the plugin passes its interface zero-padded, src/mc_buffer.inl)
+          - { name: "ggml-0.28-b12064-api3", sha: "51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c", api: "3", tested: "yes" }
           - { name: "master-api3", sha: "master", api: "3", tested: "no" }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

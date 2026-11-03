@@ -23,7 +23,7 @@ computed on the GPU instead of the CPU can change the last digits and then a tok
 | Workflow | Trigger | Coverage | Blocking |
 |---|---|---|---|
 | `quick` | every push to `main` and `experimental` | build, syntax checks, unit tests, kernel bit-exactness (no model) | yes |
-| `identity` | manual and daily 05:00 UTC | five llama.cpp rows: pinned commits (ggml 0.25 / API 2, ggml 0.26 / API 3, b11966) and llama.cpp **master** rows; small models on CPU runners | pinned rows; master / candidate rows are reported, never blocking |
+| `identity` | manual and daily 05:00 UTC | five llama.cpp rows: pinned commits (ggml 0.25 / API 2, ggml 0.26 / API 3, b11966, b12064) and llama.cpp **master** rows; small models on CPU runners | pinned rows; master / candidate rows are reported, never blocking |
 | `windows` | manual and nightly 03:30 UTC, or a push to `windows-ci` | the release kit unzipped as a user gets it, official release zip, CPU runner | checked before a release |
 | `sanitize` | manual, weekly (Monday 06:00 UTC), or a push to `sanitize` | address and thread sanitizers | no |
 | `release` | a version tag | builds the kits; publishes only after identity and windows passed on the tagged commit | yes |

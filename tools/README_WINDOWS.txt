@@ -7,7 +7,7 @@ launcher then runs it stock by itself.
 
 1. What you need
    - llama.cpp: INCLUDED in this kit (folder llama\: the official, unmodified llama.cpp
-     b11966 Vulkan build for AMD, Intel and NVIDIA cards; MIT licence in that folder). Nothing to
+     b12064 Vulkan build for AMD, Intel and NVIDIA cards; MIT licence in that folder). Nothing to
      download. To use another llama.cpp build instead, run once in a Command Prompt and open a
      new window:  setx LLAMA_SERVER "D:\path\to\llama-server.exe"
    - Python 3.8 or newer (python.org; tick "Add python.exe to PATH"; if typing python opens the

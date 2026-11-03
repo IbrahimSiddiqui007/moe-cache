@@ -2,9 +2,9 @@
 
 The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp build. This folder holds a small patch set for that build. The plugin does not need it: moe-cache keeps working on stock llama.cpp.
 
-**Pinned base:** release `b11966`, commit `ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1` (ggml 0.28.0).
+**Pinned base:** release `b12064`, commit `51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c` (ggml 0.28.0). Moved from b11966 (`ff0d396e3`) on 2026-11-03; patches 0004, 0005, 0020, 0030 and 0040 were checked against b12064 with `git apply --check` (all apply). 0022 (upstream #31266) and 0027 (upstream #30881 + #31418) are merged upstream and moved to `archive/`.
 
-Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0022-vulkan-count-experts-fast`, `0027-batched-tensor-copy`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
+Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
 
 ## Rules
 
@@ -38,11 +38,11 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 ## CI
 
-`.github/workflows/llama_patched.yml` runs only when asked: a push to the branch `ci/llama-patched` (manual dispatch needs the file on main). It builds the patched `llama-server` for Windows (Vulkan) and Linux (Vulkan) with the flags, runners and Vulkan SDK of llama.cpp's own release workflow at the pin and uploads them as artifacts. Windows is two artifacts, as upstream: server + CPU backends, and `ggml-vulkan.dll`; put them in one folder. First run 2026-11-01 green with patches 0001-0005 (about 12 min); the version line says build 11966, commit ff0d396e3.
+`.github/workflows/llama_patched.yml` runs only when asked: a push to the branch `ci/llama-patched` (manual dispatch needs the file on main). It builds the patched `llama-server` for Windows (Vulkan) and Linux (Vulkan) with the flags, runners and Vulkan SDK of llama.cpp's own release workflow at the pin and uploads them as artifacts. Windows is two artifacts, as upstream: server + CPU backends, and `ggml-vulkan.dll`; put them in one folder. First run 2026-11-01 green with patches 0001-0005 (about 12 min); the version line then said build 11966, commit ff0d396e3.
 
 ## What would change to ship it
 
-`release.yml` and `windows.yml` currently download the official b11966 release. To ship the patched build they would instead use the artifacts of `llama_patched.yml` (or build it inline), and the bundled `LICENSE-llama.cpp.txt` / `README-moe-cache.txt` would say the build is patched. `release.yml` is not changed here.
+`release.yml` and `windows.yml` currently download the official b12064 release. To ship the patched build they would instead use the artifacts of `llama_patched.yml` (or build it inline), and the bundled `LICENSE-llama.cpp.txt` / `README-moe-cache.txt` would say the build is patched. `release.yml` is not changed here.
 
 
 
@@ -81,29 +81,6 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 **Compiled and run (Linux, Release, Vulkan build):** `llama-server` with the 1.1 MB `stories260K.gguf` (CPU): save with and without the switch gives byte-identical 22476-byte files, restore from the async file works and the next completion reuses the 25 cached tokens, no `.tmp` is left. Timings on that model are meaningless (0.1 ms).
 
 **Test (under 20 minutes, Windows PC):** Flash-Next with a 64k prompt processed, then `POST /slots/0?action=save` while a second request decodes on another slot (or measure decode tok/s of one slot during a save). A B B A, A = unset, B = `LLAMA_SLOT_SAVE_ASYNC=1`; read the longest gap between two streamed tokens of the decoding request and the save reply time. Watch peak RAM. Accept only if the gap shrinks by more than the A-vs-A spread and the saved files restore to the same output.
-
-## 0022-vulkan-count-experts-fast (UP1, llama.cpp #31266)
-
-**What:** `count_experts.comp`, the Vulkan pass in front of every `MUL_MAT_ID` matrix kernel, zeroes the rows of skipped slots (expert id -1) with one workgroup that walks all `n_used x n_tokens` ids one after the other (10 x 1024 = 10k ids per call at `-ub 1024`). Upstream #31266 (labelled merge ready) collects the skipped slots once and zeroes their rows with all 256 threads, and skips the work when nothing is skipped; its authors report prompt rates 4333 -> 8061 tok/s on an RTX 5070 Ti. The patch carries that change in the same shader behind a specialization constant. Switch: `GGML_VK_COUNT_EXPERTS_FAST=1`. Unset = the stock loop (the new branch is compiled out of the pipeline).
-
-**Soundness:** the same rows are zeroed, no float arithmetic. The plugin's GPU blocks pass packed ids with skipped slots, so this is on its path.
-
-**Compiled and run (Linux, glslc, RTX 4060 laptop = Vulkan1):** `test-backend-ops test -o MUL_MAT_ID -b Vulkan1`: 1109/1109 pass with the switch unset and 1109/1109 with `GGML_VK_COUNT_EXPERTS_FAST=1` (the suite includes skipped ids, `mask_skipped_ids`). Not run on the AMD card.
-
-**Test (under 20 minutes, Windows PC):** (1) `test-backend-ops perf -o MUL_MAT_ID -b Vulkan0` A and B (unset / switch), compare us/run on the shapes with 128+ tokens; (2) Flash-Next 34k prompt, `GGML_VK_PERF_LOGGER=1` once for MUL_MAT_ID time, then A B B A on prompt tok/s. Accept only if B is faster in both pairs by more than the A-vs-A spread; text identical.
-
-
-## 0027-batched-tensor-copy (UP6, llama.cpp #30881 + #31418)
-
-**What:** saving or restoring a slot or a context checkpoint copies thousands of small KV ranges one `ggml_backend_tensor_get/set/copy` at a time (`llama_io_write_host`, `llama_io_read_host` and the multi-buffer copies in `llama-context.cpp`). Upstream #30881 (merged 2026-10-29, after the pin) adds batched `ggml_backend_tensor_get_n / set_n / copy_n` with optional backend hooks, and #31418 implements them for Vulkan with one staged transfer for all ranges; its table (R9700, the same RDNA4 family) gives 286-950 ms -> 24-48 ms per 64-73 MiB. The patch is both PRs, applied unchanged to the pin (`git apply --check` clean, in that order), plus one change: the batched path is only used with **`GGML_BACKEND_BATCHED_COPY=1`**. Unset, each `_n` function calls the single-tensor function per tensor, in the same order as before, so behaviour is stock. The new test `tests/test-backend-tensor.cpp` comes with the PRs.
-
-**Plugin:** `#30881` appends three hooks to the end of `ggml_backend_buffer_i`. The plugin already passes its buffer interface padded with zero slots (`buffer_i_padded` in `src/mc_buffer.inl`), so the new hooks stay NULL for its buffers and ggml's generic fallback is used; the plugin reads no ggml buffer field. Not run with the plugin on this laptop.
-
-**Compiled and run (Linux, Vulkan build):** `llama-server`, `test-backend-tensor`. `test-backend-tensor`: Vulkan0, Vulkan1 and CPU pass with the switch unset and set; the MOCK case (it asserts that the batched hooks are called) passes with the switch and **fails without it, as expected** (the hooks are not called then). Slot save and restore on the 1.1 MB `stories260K.gguf` (CPU): the saved files are byte-identical with and without the switch and the restore works. That model has no GPU state, so no speed is measured here.
-
-**Risk:** 1700 lines of upstream code touching every backend; Metal, SYCL and the others compile only on their own platforms (not built here). A Windows Vulkan build is not checked here (CI `llama_patched.yml` builds it).
-
-**Test (under 20 minutes, Windows PC):** Flash-Next with a 64k prompt processed, then `POST /slots/0?action=save` and `restore`, three times each, A = unset, B = `GGML_BACKEND_BATCHED_COPY=1`; read `save_ms` and `restore_ms` from the reply and compare the restored output tokens (identical). Also the checkpoint creation time in the server log during a long agent turn. Accept if B is faster by more than the A-vs-A spread and the output is identical. Note: patch 0020 (`LLAMA_SLOT_SAVE_ASYNC`) writes the file from a memory copy made by `llama_state_seq_get_data_ext`, which is the path this patch speeds up; try the two together.
 
 ## 0040-reserve-top-tensors (R4-01)
 
