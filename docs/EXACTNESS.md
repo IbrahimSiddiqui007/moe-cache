@@ -1,24 +1,34 @@
 # Same tokens as stock: how moe-cache checks it
 
 moe-cache runs MoE models bigger than your RAM inside an **unmodified** llama-server. Its default promise is simple: the answer is the one stock
-llama.cpp gives for the same model, settings and layer split. This page lists how that is checked, on every change, and where the promise has limits.
+llama.cpp gives for the same model, settings and layer split. This page lists how that is checked, when the checks run, and where the promise has limits.
 Numbers and logs: [RESULTS.md](RESULTS.md); the approximate modes: [QUALITY_GATE.md](QUALITY_GATE.md).
 
 ## What "the same" means
 
 | Mode | Promise | How it is checked |
 |---|---|---|
-| default, context below 128k | **token-identical** to stock with the same layer split | greedy decoding, stock and plugin servers, every generated token compared (`tests/identity.sh`) |
-| default at `--ctx 131072` and above | q8_0 KV cache (`--fast=kv`): same meaning, not the same bytes | quality gate (KL divergence, top-1, 202 tasks), measured at 4k context; `--exact` keeps f16 and identity |
-| `--fast`, `--fast=2`, `--fast=fewer`, `--hybrid` | approximate, opt-in only | quality gate with limits fixed before measuring ([QUALITY_GATE.md](QUALITY_GATE.md)) |
+| default, context below 128k, MTP off | **token-identical** to stock **under the stated settings**: greedy decoding, same layer split, same llama.cpp build and backend, same KV types (f16 unless you set them) | greedy decoding, stock and plugin servers, every generated token compared (`tests/identity.sh`) |
+| default at `--ctx 131072` and above, with a GPU | q8_0 KV cache (`--fast=kv`) is selected automatically (not with `--stock`, `--exact`, your own `-ctk`/`-ctv`, or without a GPU). It **may change answers**; measured: KL 0.0079, top-1 96.7 %, 190/202 tasks (= stock) on one model at 4k context | quality gate ([QUALITY_GATE.md](QUALITY_GATE.md)); `--exact` keeps f16 |
+| MTP (speculative decoding with the model's own draft head) | **not guaranteed identical**: with the same split, GLM code text differed under MTP (RESULTS 77) | speed pairs; compare text before relying on it |
+| `--fast`, `--fast=2`, `--fast=fewer`, `--hybrid` | approximate, opt-in only; may change answers | quality gate with limits fixed before measuring ([QUALITY_GATE.md](QUALITY_GATE.md)) |
+
+**Strict comparison with stock:** use `--exact`, do not pass `--fast*` or `--hybrid`, turn MTP off (`--no-mtp`), set `-ctk f16 -ctv f16` explicitly on both sides, and fix the layer split (`--n-cpu-moe`, same `-ub`). `--exact` alone does not remove every source of difference.
 
 "Same layer split" matters: with long prompts the amount of work that runs on the GPU can change from run to run with the free VRAM, and a layer
 computed on the GPU instead of the CPU can change the last digits and then a token, in stock llama.cpp too. The identity tests fix the split.
 
-## Checked on every change (CI)
+## What CI runs, and when
 
-Three llama.cpp versions in every run: two pinned commits (ggml 0.25 / backend API 2 and ggml 0.26 / API 3) and **llama.cpp master of that day**,
-so an upstream change that breaks the plugin shows up before a release does (Linux). Windows CI uses the official llama.cpp release zip.
+| Workflow | Trigger | Coverage | Blocking |
+|---|---|---|---|
+| `quick` | every push to `main` and `experimental` | build, syntax checks, unit tests, kernel bit-exactness (no model) | yes |
+| `identity` | manual and daily 05:00 UTC | five llama.cpp rows: pinned commits (ggml 0.25 / API 2, ggml 0.26 / API 3, b11966) and llama.cpp **master** rows; small models on CPU runners | pinned rows; master / candidate rows are reported, never blocking |
+| `windows` | manual and nightly 03:30 UTC, or a push to `windows-ci` | the release kit unzipped as a user gets it, official release zip, CPU runner | checked before a release |
+| `sanitize` | manual, weekly (Monday 06:00 UTC), or a push to `sanitize` | address and thread sanitizers | no |
+| `release` | a version tag | builds the kits; publishes only after identity and windows passed on the tagged commit | yes |
+
+None of these runs a GPU: a CPU-only runner cannot exercise GPU kernels or the GPU block, even when a test sends long batches. The list below is what the identity and Windows jobs contain; it runs on those triggers, not on every commit.
 
 | Check | What it catches |
 |---|---|
@@ -54,5 +64,5 @@ with a fixed split. Please report what you see: [Benchmark report](https://githu
 | Limit | Note |
 |---|---|
 | The identity tests in CI use small models on CPU runners | big models are checked on one PC and by users' reports |
-| The quality gate for the 128k+ default ran at 4k context | a long-context loop test is part of the PC runs |
+| The quality gate for the 128k+ default ran at 4k context | a long-context loop test is part of the PC runs; the gate does not prove equal meaning on arbitrary prompts |
 | Different llama.cpp builds or backends (CUDA, Vulkan, HIP) give different digits | compare against stock on the same build |

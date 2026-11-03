@@ -25,8 +25,8 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 
 ## Interface choices
 
-- **Web UI**: not built here. `llama-server` already serves a web UI at its address, and `moe-cache-server --open` opens it. Anything that speaks the OpenAI API (for example Open WebUI) can connect to the same address.
-- **Setup GUI** (choose model, RAM, GPU split with sliders): reasonable for v0.4, a small local web page or a terminal menu.
+- **Web UI**: `llama-server` serves its own chat page (`moe-cache-server --open` opens it); anything that speaks the OpenAI API (for example Open WebUI) can connect to the same address.
+- **Setup GUI**: built since v0.3.0 as the **control page** (`moe-cache-server --ui`, `moe-cache.bat` on Windows): model picker with the planner's verdict, RAM / VRAM / context settings, start and stop, chat, live numbers, agent connect actions and Share my numbers ([GUI.md](GUI.md)). It is separate from llama-server's own page. Remaining gaps: screenshots in GUI.md predate the newest panels.
 
 ## Status against the v1.0 list (as of 2026-10-30, version 0.3.3; v0.3.4 was released after it and v0.3.5 is in preparation: see CHANGELOG.md)
 
@@ -36,7 +36,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 | NVIDIA, AMD and Intel GPUs each tested | NVIDIA (CUDA, Vulkan), Intel iGPU (Vulkan), AMD iGPU (Vega 8, Linux) and AMD discrete (RX 9070 XT: a user on Linux, issue #1; the developer on Windows, RESULTS 54) tested. |
 | Compatibility list checked automatically per model | list exists (docs/COMPATIBILITY.md); `bench/run_matrix.py` in [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) runs identity + speed over a folder of models; not yet run by CI (needs models). |
 | Versioned releases tracking llama.cpp | releases are tagged and built by CI with attestation; llama.cpp 7fe450e19 (API 2) and 23b0202a1 (API 3) are supported, each with its own plugin build. **Open: re-run the full identity matrix on 23b0202a1 (5 models done), run GLM-5.3-Flash on it (needs a model file), automate both builds in CI.** |
-| Continuous tests (identity + speed regression guard) | CI builds, syntax-checks and runs the kernel bit-exactness check (needs no model). Identity and speed need models and a GPU runner. **Open.** |
+| Continuous tests (identity + speed regression guard) | CI builds, runs unit tests and the kernel bit-exactness check on every push (`quick`), and runs identity on small models on CPU runners daily (`identity`, five llama.cpp rows including master), Windows nightly and sanitizers weekly (table in [EXACTNESS.md](EXACTNESS.md)). **Open: identity on big models and a GPU, and any speed regression guard.** |
 | Documentation for contributors | CONTRIBUTING.md, TECHNIQUES.md, SECURITY.md exist. |
 | Safety: automatic fallback on a fault | read faults fall back to buffered reads; a wrong model file disables caching instead of aborting; an unrecoverable read still stops the server (never serves wrong data). |
 | Sanitizer runs | whole plugin under ASan + UBSan with the executor, forced evictions and byte checking: clean. |
