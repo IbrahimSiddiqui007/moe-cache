@@ -122,5 +122,13 @@ try:
 finally:
     mb.doctor_facts, mb.launcher_plan, mb.run_one, mb.server_info, ui.flush_model_cache, ui.header_quant, mb.mc.port_busy = saved
 
+# AUD-032: UNC and \\?\ paths are scrubbed down to the file name like drive-letter paths
+_sc = mb.scrubber()
+for src, want in ((r"\\NAS\share\q.gguf", "q.gguf"), (r"model=\\NAS\my share\sub\q.gguf ok", "model=q.gguf ok"),
+                  (r"\\?\C:\Users\zed\models\q.gguf", "q.gguf"), (r"\\?\UNC\NAS\share\dir\q.gguf", "q.gguf"),
+                  (r"D:\Private Stuff\x.gguf", "x.gguf"), ("see http://a.example/b", "see http://a.example/b")):
+    got = _sc(src)
+    check(got == want and "NAS" not in got and "zed" not in got, f"scrub: {src!r} -> {want!r} (got {got!r})")
+
 print("bench-report test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)
