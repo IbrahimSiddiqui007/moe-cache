@@ -2484,6 +2484,40 @@ def api_key_stage(a, extra):
     return api_key, key_env
 
 
+def agent_stage(a, extra, model):
+    """ENGINE-029, stage "agent flags": --jinja, recurrent checkpoints, slot similarity, the alias and (without --no-warm / --project) the folder for saved conversations. extra grows in place. Returns (alias or None, slot folder or None)."""
+    alias = None
+    slotdir = None
+    if a.agent:
+        if not any(x in ("--jinja", "--no-jinja") for x in extra):
+            extra.append("--jinja")         # the default in current llama.cpp; explicit for older builds (tool calls need the model's own template)
+        if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None:
+            # models with recurrent layers keep a copy of that state per checkpoint in host RAM (about 60 MiB on Qwen3.6-35B), outside the cache's budget
+            # idea S03 (MOE_CACHE_CKPT=N, default 8): how many recurrent checkpoints each conversation keeps; more cost host RAM, fewer cost reprocessing
+            ck = os.environ.get("MOE_CACHE_CKPT", "8")
+            extra += ["--ctx-checkpoints", ck if ck.isdigit() else "8"]
+        # idea S02 (MOE_CACHE_SLOT_SIMILARITY=0..1, default unset = the server's own): a request takes a busy conversation's slot only if its prompt is at least
+        # this similar to what the slot holds, so a short request from another agent goes to a free slot instead of displacing a long conversation
+        sps = os.environ.get("MOE_CACHE_SLOT_SIMILARITY")
+        if sps and arg_after(extra, "-sps", "--slot-prompt-similarity") is None:
+            try:
+                if 0.0 <= float(sps) <= 1.0:
+                    extra += ["--slot-prompt-similarity", sps]
+            except ValueError:
+                pass
+        alias = arg_after(extra, "-a", "--alias")
+        if alias is None:
+            alias = default_alias(model)
+            extra += ["--alias", alias]
+        if not a.no_warm and not a.project:
+            if arg_after(extra, "--slot-save-path") is None:
+                slotdir = os.path.join(CACHE_DIR, "slots", "agent"); os.makedirs(slotdir, exist_ok=True)
+                extra += ["--slot-save-path", slotdir]
+            else:
+                slotdir = arg_after(extra, "--slot-save-path")
+    return alias, slotdir
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2599,35 +2633,7 @@ def _launch_plan(a, extra, argv, machine):
     # allow-list so a normal web page cannot read their answers.
     api_key, key_env = api_key_stage(a, extra)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
-    alias = None
-    slotdir = None
-    if a.agent:
-        if not any(x in ("--jinja", "--no-jinja") for x in extra):
-            extra.append("--jinja")         # the default in current llama.cpp; explicit for older builds (tool calls need the model's own template)
-        if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None:
-            # models with recurrent layers keep a copy of that state per checkpoint in host RAM (about 60 MiB on Qwen3.6-35B), outside the cache's budget
-            # idea S03 (MOE_CACHE_CKPT=N, default 8): how many recurrent checkpoints each conversation keeps; more cost host RAM, fewer cost reprocessing
-            ck = os.environ.get("MOE_CACHE_CKPT", "8")
-            extra += ["--ctx-checkpoints", ck if ck.isdigit() else "8"]
-        # idea S02 (MOE_CACHE_SLOT_SIMILARITY=0..1, default unset = the server's own): a request takes a busy conversation's slot only if its prompt is at least
-        # this similar to what the slot holds, so a short request from another agent goes to a free slot instead of displacing a long conversation
-        sps = os.environ.get("MOE_CACHE_SLOT_SIMILARITY")
-        if sps and arg_after(extra, "-sps", "--slot-prompt-similarity") is None:
-            try:
-                if 0.0 <= float(sps) <= 1.0:
-                    extra += ["--slot-prompt-similarity", sps]
-            except ValueError:
-                pass
-        alias = arg_after(extra, "-a", "--alias")
-        if alias is None:
-            alias = default_alias(model)
-            extra += ["--alias", alias]
-        if not a.no_warm and not a.project:
-            if arg_after(extra, "--slot-save-path") is None:
-                slotdir = os.path.join(CACHE_DIR, "slots", "agent"); os.makedirs(slotdir, exist_ok=True)
-                extra += ["--slot-save-path", slotdir]
-            else:
-                slotdir = arg_after(extra, "--slot-save-path")
+    alias, slotdir = agent_stage(a, extra, model)
     extra += mtp_args(a.mtp, a.agent, ls, model, extra)
     extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
