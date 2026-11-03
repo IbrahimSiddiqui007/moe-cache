@@ -3513,6 +3513,20 @@ def learn(argv):
 
 # ---- project ----
 
+def server_model_differs(url, api_key, ident):
+    """The model file name the server at `url` reports (/props model_path) when it clearly is not the one in the identity `ident` (slot_id: sanitised file name first);
+    "" when it matches or the server does not say (then the identity is trusted as before)."""
+    st, body = http(url.rstrip("/") + "/props", api_key=api_key, timeout=5)
+    try:
+        mp = json.loads(body).get("model_path") if st == 200 else None
+    except (ValueError, AttributeError):
+        mp = None
+    if not isinstance(mp, str) or not mp:
+        return ""
+    base = os.path.basename(mp.replace("\\", "/"))
+    return "" if re.sub(r"[^A-Za-z0-9_]", "_", base)[:40] == ident.split("-")[0] else base
+
+
 def project(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py project", description="save or restore the prompt state (KV cache of slot 0) of a server started with --project NAME. "
                                  "The state is only valid for the same model file and the same -c / cache type settings.")
@@ -3536,8 +3550,14 @@ def project(argv):
     st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, key_for(a.url, a.api_key), timeout=600)
     if a.cmd == "save" and st == 200:
         try:
-            with open(os.path.join(sdir, a.name + ".bin.id"), "w") as fh:
-                fh.write(open(os.path.join(sdir, "server.id")).read().strip() + "\n")
+            ident = open(os.path.join(sdir, "server.id")).read().strip()
+            other = server_model_differs(a.url, key_for(a.url, a.api_key), ident)
+            if other:
+                say(f"moe-cache: note: saved, but the server at {a.url} runs {other}, not the model the server started with --project {a.name} recorded; "
+                    "the model identity was not recorded, so a restore will be refused", err=True)
+            else:
+                with open(os.path.join(sdir, a.name + ".bin.id"), "w") as fh:
+                    fh.write(ident + "\n")
         except OSError:
             say("moe-cache: note: saved, but the model identity could not be recorded (is the server started with --project " + a.name + "?); a restore will be refused", err=True)
     say(body.strip())

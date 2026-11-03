@@ -37,5 +37,32 @@ check(i.endswith("-f16-f16"), "no --fast: server.id says f16 KV")
 i, plan = sid([], ["-ctk", "q4_0", "-ctv", "q4_0"])
 check(i.endswith("-q4_0-q4_0"), "own -ctk/-ctv: recorded")
 mc.run_launch_plan = real
+
+# AUD-039: `project save` against a server that runs another model must not stamp the folder's identity on the state
+import http.server, threading, json
+props = {"model_path": "/models/other-model.gguf"}
+class Fake(http.server.BaseHTTPRequestHandler):
+    def _send(self, body):
+        self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(body).encode())
+    def do_GET(self):
+        self._send(props)
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length") or 0)); self._send({"ok": True})
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), Fake)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+url = "http://127.0.0.1:%d" % srv.server_address[1]
+mc.CACHE_DIR = os.path.join(tmp, "cache2")
+sd = os.path.join(mc.CACHE_DIR, "slots", "pp"); os.makedirs(sd)
+open(os.path.join(sd, "server.id"), "w").write("my_model_q4_gguf-1234-abcd-c4096-f16-f16\n")
+mc.say = lambda *a, **k: None
+mc.project(["save", "pp", "--url", url, "--api-key", "x"])
+check(not os.path.exists(os.path.join(sd, "pp.bin.id")), "project save: a server running another model does not get the folder's identity")
+props["model_path"] = "/models/my_model_q4.gguf"
+mc.project(["save", "pp", "--url", url, "--api-key", "x"])
+check(open(os.path.join(sd, "pp.bin.id")).read().strip().startswith("my_model_q4_gguf-1234"), "project save: the matching model gets it")
+os.unlink(os.path.join(sd, "pp.bin.id")); props.clear()
+mc.project(["save", "pp", "--url", url, "--api-key", "x"])
+check(os.path.exists(os.path.join(sd, "pp.bin.id")), "project save: a server that does not report its model keeps the old behaviour")
 print("\nall project id tests passed" if not fails else f"\n{len(fails)} FAILED")
 sys.exit(1 if fails else 0)
