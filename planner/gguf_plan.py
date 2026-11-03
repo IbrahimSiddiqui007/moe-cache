@@ -2,6 +2,14 @@
    fit_n_cpu_moe(path, ctx) -> how many layers keep their experts on the CPU so that the rest fill the free VRAM."""
 import glob, json, os, re, struct, subprocess
 
+def _win_ps():
+    """powershell by its System32 path on Windows (a bare name searches the current folder first, AUD-034); the bare name elsewhere."""
+    if os.name != "nt":
+        return "powershell"
+    p = os.path.join(os.environ.get("SystemRoot") or os.environ.get("windir") or r"C:\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+    return p if os.path.isfile(p) else "powershell"
+
+
 _FMT = {0: "<B", 1: "<b", 2: "<H", 3: "<h", 4: "<I", 5: "<i", 6: "<f", 7: "<?", 10: "<Q", 11: "<q", 12: "<d"}
 
 
@@ -366,7 +374,7 @@ def start_gpu_mem_log(pid, say, windows, env=None, alive=None):
             cmd = (f"Get-Counter -Counter '\\GPU Process Memory(pid_{pid}_*)\\Dedicated Usage','\\GPU Process Memory(pid_{pid}_*)\\Shared Usage' "
                    "-SampleInterval 1 -Continuous | ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';'; [Console]::Out.Flush() }")
             try:
-                ps = subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace")
+                ps = subprocess.Popen([_win_ps(), "-NoProfile", "-NonInteractive", "-Command", cmd], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, errors="replace")
             except OSError:
                 say("moe-cache: GPU memory log: PowerShell not found, no log")
                 return

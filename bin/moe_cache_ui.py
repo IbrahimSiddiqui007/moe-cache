@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as picker  # noqa: E402
+from moe_cache_wintool import win_tool  # noqa: E402
 
 HERE = mc.HERE
 WINDOWS = mc.WINDOWS
@@ -1457,7 +1458,7 @@ class Runner:
     def _kill_share(self, p):
         try:
             if WINDOWS:
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True, timeout=30)
+                subprocess.run([win_tool("taskkill"), "/F", "/T", "/PID", str(p.pid)], capture_output=True, timeout=30)
             elif sys.platform.startswith("linux"):
                 p.send_signal(signal.SIGTERM)
             else:

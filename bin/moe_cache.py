@@ -24,6 +24,8 @@
 """
 import argparse, glob, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
 
+from moe_cache_wintool import win_tool  # noqa: E402  (bin/: Windows helpers by full System32 path, AUD-034)
+
 VERSION = "0.3.5"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
@@ -1459,7 +1461,7 @@ def busy_programs(timeout=30):
     if not WINDOWS:
         return []
     try:
-        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", BUSY_SCRIPT], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        r = subprocess.run([win_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command", BUSY_SCRIPT], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except Exception:
         return []
     return parse_busy(r.stdout)
@@ -1476,7 +1478,7 @@ def busy_note(item):
 def warn_heavy_background():
     """Windows only; a failed tasklist or PowerShell says nothing."""
     try:
-        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+        r = subprocess.run([win_tool("tasklist"), "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except Exception:
         return
     named = heavy_background_apps(r.stdout)
@@ -1922,7 +1924,7 @@ def other_llama_servers():
     out, mine = [], {os.getpid(), os.getppid()}
     if WINDOWS:
         try:
-            r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
+            r = subprocess.run([win_tool("tasklist"), "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             for row in r.stdout.splitlines():
                 f = [x.strip('"') for x in row.split('","')]
                 if len(f) >= 5 and f[0].lower().startswith("llama-server"):
