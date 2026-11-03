@@ -16,7 +16,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 
 ## What it is
 
-**moe-cache lets a normal PC run big Mixture-of-Experts AI models** (files of 60-120 GB) that are bigger than its RAM, with the **same answers as plain llama.cpp**: token-identical below 128k context with the same layer split; from 128k context a q8_0 KV cache is used (`--exact` keeps f16), see [EXACTNESS](docs/EXACTNESS.md). Chat in your browser, or connect coding tools (OpenCode, Hermes, Claude Code). Windows 11 and Linux. Free (MIT), no account.
+**moe-cache lets a normal PC run big Mixture-of-Experts AI models** (files of 60-120 GB) that are bigger than its RAM, with the **same answers as plain llama.cpp**: token-identical below 128k context with the same layer split; from 128k context a q8_0 KV cache is used (`--exact` keeps f16), MTP and the `--fast` modes can change answers; see [EXACTNESS](docs/EXACTNESS.md). Chat in your browser, or connect coding tools (OpenCode, Hermes, Claude Code). Windows 11 and Linux. Free (MIT), no account.
 
 MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. When the file is bigger than your RAM, plain llama.cpp keeps reading the whole file from the disk and slows to a crawl; moe-cache keeps the experts the model actually uses in RAM and reads only the rest. If your model already fits in RAM, plain llama.cpp is as fast or faster, and moe-cache steps aside on its own ([when to use something else](docs/FAQ.md#when-to-use-something-else)).
 
@@ -71,7 +71,7 @@ More, including the desktop apps and the context limits agents need: [docs/AGENT
 
 The chart at the top is the Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), stock llama.cpp vs moe-cache with the same command line:
 
-- **+20 to +47 %** decode on the Flash-Next files that do not fit in RAM, **2.7x** on GLM-5.3-Flash (102 GB), 3.1x with MTP.
+- **+20 to +47 %** decode on the Flash-Next files that do not fit in RAM, **2.0x** on GLM-5.3-Flash (102 GB; one run each on the same drive, 4.44 vs 2.21 tok/s), 3.1x with MTP (one run).
 - **2.0-2.4x** faster coding-agent sessions (OpenCode, Hermes) on Flash-Next.
 - Models that fit in RAM (Qwen3.6-35B, Nemotron Bolt): plain llama.cpp is as fast or faster, so the launcher runs it by itself.
 - **v0.3.5 vs v0.3.4 (Flash-Next Q2_0, Windows desktop, clean run 2026-11-03, both on the official llama.cpp b11966 server):** prompts of 34k / 64k / 128k tokens are read **+42 % / +38 % / +38 %** faster (575 vs 406, 435 vs 314, 421 vs 305 tok/s); decode after a long prompt is **6-10 % lower** (34k 26.7 vs 28.5, 64k 24.6 vs 27.2 tok/s), because the bigger prompt chunk leaves 2 fewer expert layers on the GPU. 256k prompts +26 % from the same change. [RESULTS section 79](docs/RESULTS.md)
