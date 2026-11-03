@@ -125,6 +125,32 @@ int main() {
         try { auto u = mcguard::make_undo([&] { throw std::runtime_error("y"); }); } catch (...) { alive = false; }
         CHECK(alive);
     }
+    // PREFILL-622: 40 groups in one graph, the first GPU call throws. After it the loop stops asking the GPU (one call, one log line), every group is
+    // computed on the CPU, and the contexts the throw left in flight are freed by the cleanup (none left; a normal exit frees its own)
+    {
+        std::vector<int> inflight;           // stands for moe_cache_backend_ctx::inflight
+        int next_ctx = 1, live = 0, gpu_calls = 0, logged = 0;
+        bool gpu_failed = false, injected = false;
+        std::vector<graph_t> groups(40, make_graph());
+        for (auto & g : groups) {
+            if (gpu_failed) { break; }
+            bool ok = mcguard::guarded(1, injected, [&]() -> bool {
+                gpu_calls++;
+                inflight.push_back(next_ctx++); live++;
+                throw std::runtime_error("vk::OutOfDeviceMemoryError");
+            }, [&](const char *) {
+                logged++;
+                gpu_failed = true;
+                live -= (int) inflight.size();       // gpu_failed_cleanup frees what the throw left
+                inflight.clear();
+            });
+            if (!ok) { cpu_compute(g); }
+        }
+        for (auto & g : groups) { if (g.nodes[0].out[0] < 0) { cpu_compute(g); } }     // the groups after the break take the CPU path
+        bool all_cpu = true;
+        for (auto & g : groups) { all_cpu = all_cpu && same(g, ref); }
+        CHECK(gpu_calls == 1 && logged == 1 && live == 0 && inflight.empty() && all_cpu);
+    }
     if (fails) {
         fprintf(stderr, "%d checks failed\n", fails);
         return 1;

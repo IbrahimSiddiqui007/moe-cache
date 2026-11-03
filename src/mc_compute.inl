@@ -19,6 +19,10 @@ void gpu_failed_cleanup(moe_cache_backend_ctx * c) {
         } catch (...) {
         }
     }
+    for (ggml_context * x : c->inflight) {      // PREFILL-622: the contexts the throw left behind (after the sync: the GPU graphs that used them are done)
+        ggml_free(x);
+    }
+    c->inflight.clear();
 }
 
 bool gpu_segment_guarded(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
@@ -622,6 +626,9 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
     be_forward_abort(c);          // the GPU backend may have been started by an earlier graph
     if (s.cache_on && s.gpu_dev && !c->gpu_failed && s.graphs.load() >= c->gpu_retry_at) {
         for (const auto & gr : groups_found) {
+            if (c->gpu_failed) {
+                break;      // PREFILL-622: a throw in an earlier group of this graph ended the GPU blocks: the rest go to the CPU without another try (and another log line)
+            }
             if (gr.n_tok < s.gpu_min_tokens) {
                 continue;
             }
