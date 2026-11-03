@@ -176,6 +176,25 @@ The Linux commands were checked against `hermes --help` and `opencode --help` (2
 
 If a GUI does not show the model, add the provider by hand in its settings: type OpenAI-compatible, base URL `http://127.0.0.1:8080/v1` (your `--port`), model name = the file name, context 65536, API key `none` (or your `--api-key`). `connect` without `--write` prints these values. Keep the server on `127.0.0.1`. In agent mode the key is in the config that `connect --write` wrote (or print it with `python3 bin/moe_cache.py key`); llama-server's own web page asks for it once.
 
+## Check it works
+
+```bash
+python3 bin/moe_cache.py connect codex --check            # after (or without) --write; add --json for scripts; exit code 0 = works, 1 = something failed
+python3 bin/moe_cache.py connect opencode --write --check # write the config, then check it
+```
+
+`--check` reads the agent's own config file (URL, key, model, window; if there is none yet it checks what `--write` would write), then talks to the server the way that agent does and prints one row per step:
+
+| Step | What is tested |
+|---|---|
+| config | the file has the moe-cache entry with a URL |
+| models | `GET /v1/models` answers with that key and lists the model |
+| chat | one short streamed request returns text: OpenAI chat completions (Hermes, OpenCode, Pi, OpenClaw, Aider, Qwen Code), `/v1/responses` (Codex CLI), `/v1/messages` (Claude Code) |
+| tool call | one request with a `read_file` tool returns a well-formed call; the tool result is sent back and the model answers (Aider sends no tools: skipped, text only is checked) |
+| window | the window in the agent's config is at or below the server's context (`/props`); Hermes needs 64000 and Claude Code a server context of 64000 or more |
+
+The last line says what to do about the first failure: wrong key (rerun `connect NAME --write`), model name that the server does not list, window bigger than the server's, a server not in agent mode (`--agent` adds `--jinja`, which tool calls need), a missing endpoint (older llama.cpp), or no server (`server MODEL.gguf --agent`, or `on-demand`). It never starts or stops a server and writes nothing itself. `--timeout SEC` (default 180) is how long each model reply may take; the first request to a cold large model can be slow.
+
 ## Keep the agent's own context limit below the server's
 
 `connect --write` (and the control page's Connect buttons) write the server's context as the agent's window: 65536 by default, or your `--ctx`. When the agent believes it has the whole window, it keeps adding tool results until llama-server refuses the request ("context too large"), and the reply itself also has to fit. Leave 10-25 % of headroom, so the agent's own summarising or compaction starts first:
