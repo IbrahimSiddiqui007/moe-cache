@@ -128,9 +128,9 @@ def llama_search_dirs():
     if WINDOWS:
         up = os.environ.get("USERPROFILE") or home
         return ([r"C:\llama"] + sorted(glob.glob(r"C:\llama*")) + sorted(glob.glob(os.path.join(up, "llama*")))
-                + sorted(glob.glob(os.path.join(up, "Downloads", "llama-b*-bin-win-*"))) + [HERE, os.path.dirname(HERE),
+                + sorted(glob.glob(os.path.join(up, "Downloads", "llama-b*-bin-win-*"))) + [HERE,
                 os.path.join(HERE, "llama")])       # the kit's bundled official llama.cpp (one download for friends)
-    return [os.path.join(home, "moe-cache-setup", "llama.cpp", "build", "bin"), os.path.join(home, "llama.cpp", "build", "bin"), HERE, os.path.dirname(HERE),
+    return [os.path.join(home, "moe-cache-setup", "llama.cpp", "build", "bin"), os.path.join(home, "llama.cpp", "build", "bin"), HERE,
             os.path.join(HERE, "llama")]            # the tarball's bundled official llama.cpp (the -ggml0.26 file)
 
 
@@ -721,7 +721,7 @@ def vk_cache_cap(ls, model, listing=None):
                 d = json.load(open(pc_file)) if os.path.isfile(pc_file) else {}
                 d[pc_key] = lim
                 os.makedirs(CACHE_DIR, exist_ok=True)
-                json.dump(d, open(pc_file, "w"))
+                write_text_atomic(pc_file, json.dumps(d))
             except (OSError, ValueError):
                 pass
       except Exception:
@@ -877,6 +877,30 @@ def ram_gib(ram_gb):
     return f"{float(ram_gb) * 1e9 / 2**30:.3f}"
 
 
+def leading_number(v):
+    """LAUNCHER-005 (A3-22): the leading decimal number of a text, the way the plugin's strtod reads MOE_CACHE_MAX_RAM_GB ("20GB" is 20 there, so it must be 20
+    here too, or the two sides plan with different caps). Raises ValueError when the text does not start with a number (hex, inf and nan count as typos here)."""
+    m = re.match(r"\s*([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)", str(v))
+    if not m or re.match(r"\s*[+-]?0[xX]", str(v)):
+        raise ValueError(v)
+    return m.group(1)
+
+
+def write_text_atomic(path, text):
+    """LAUNCHER-005 (A3-26): the whole text appears under `path` or nothing does (a crash must not leave a truncated note that note_of() then misreads)."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def mem_cap():
     """Hard cap on the whole server's memory, bytes (owner 2026-10-29): physical RAM minus max(4 GiB, 12.5 %) = 28 GiB on a 32 GiB machine, so
     Windows does not run out of memory and Linux does not OOM; MOE_CACHE_MAX_RAM_GB (decimal GB; --max-ram sets it) overrides, 0 = no cap.
@@ -886,7 +910,7 @@ def mem_cap():
         v = os.environ.get("MOE_CACHE_MAX_RAM_GB")
     if v is not None:
         try:
-            f = float(v)
+            f = float(leading_number(v))
             if f == f and f >= 0:            # not nan
                 return f * 1e9 if f > 0 else None
         except ValueError:
@@ -1175,6 +1199,22 @@ def python_cmd():
 
 
 _JOB = None   # Windows job object: kept open for the launcher's lifetime; closing it (the launcher exits or is killed) kills llama-server
+_JOBS = []    # [(job handle, child)] of every job made, so the handle of a job whose child has ended can be closed (A3-20: one leaked per model start)
+
+
+def prune_jobs(jobs, close):
+    """Closes the handles of jobs whose child has ended (the job is empty, closing it kills nothing) and drops them from `jobs`; returns how many."""
+    n = 0
+    for item in list(jobs):
+        job, child = item
+        if child.poll() is not None:
+            try:
+                close(job)
+            except Exception:
+                pass
+            jobs.remove(item)
+            n += 1
+    return n
 
 
 def _kill_with_parent_windows(p, mem_limit=None):
@@ -1197,6 +1237,8 @@ def _kill_with_parent_windows(p, mem_limit=None):
                     ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    prune_jobs(_JOBS, k32.CloseHandle)
     job = k32.CreateJobObjectW(None, None)
     info = EXT()
     info.Basic.LimitFlags = 0x2000           # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
@@ -1207,6 +1249,7 @@ def _kill_with_parent_windows(p, mem_limit=None):
         k32.AssignProcessToJobObject(wintypes.HANDLE(job), wintypes.HANDLE(int(p._handle)))
     if ok:
         _JOB = job
+        _JOBS.append((job, p))
     else:
         say("moe-cache: warning: could not tie llama-server to the launcher (closing this window may leave it running)", err=True)
         return None
@@ -1759,7 +1802,8 @@ SERVER_HELP = """\
 --gpu-cache off|auto|MIB  (Linux, preload method only) llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
            Not bit-identical to CPU-computed experts (GPU float order), identical to llama.cpp's own cache. Needs llama.cpp 23b0202a1 or newer (API 3 plugin build).
 --leave-room  I use this PC while the model runs: RAM for the server = total minus max(8 GiB, 25 %) instead of max(4 GiB, 12.5 %), at least 2 GB of
-           GPU memory kept free for the desktop, 2 CPU cores left free, lower priority. Smoother PC, slower model. MOE_CACHE_LEAVE_ROOM=1 turns it on for good
+           GPU memory kept free for the desktop (not with --gpu-margin), 2 CPU cores left free (not with pinned hybrid cores or your own -t), lower priority; the start-up
+           lines say which of these were applied. Smoother PC, slower model. MOE_CACHE_LEAVE_ROOM=1 turns it on for good
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
 --ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it. On Windows it is also set as a
@@ -2238,8 +2282,8 @@ def _launch_plan(a, extra, argv, machine):
             say(f"moe-cache: --leave-room: --ram {a.ram} GB as given")
         elif (lr := leave_room_ram_gb(machine)):
             a.ram = lr
-            say(f"moe-cache: --leave-room: the server may use {lr} GB of RAM (the rest stays for your own programs), keeps {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU "
-                f"memory free for the desktop, leaves {LEAVE_ROOM_FREE_CORES} CPU cores free and runs at a lower priority: smoother PC, slower model")
+            say(f"moe-cache: --leave-room: the server may use {lr} GB of RAM (the rest stays for your own programs) and runs at a lower priority: smoother PC, slower model "
+                "(the GPU memory and CPU cores it leaves free are reported below when they were applied)")
     if a.share_ram:
         share_ram_start(a, machine)
     user_flags, extra = adopt_user_flags(extra)
@@ -2450,8 +2494,8 @@ def _launch_plan(a, extra, argv, machine):
         extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
     if a.project and not dry:
         try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same (after the KV types above are final)
-            with open(os.path.join(slotdir, "server.id"), "w") as fh:
-                fh.write(model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
+            write_text_atomic(os.path.join(slotdir, "server.id"),
+                              model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
         except OSError:
             pass
     if a.fast == "kv":
@@ -2527,6 +2571,7 @@ def _launch_plan(a, extra, argv, machine):
                             f"(--gpu-margin GiB to change)")
                 if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
                     desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
+                    say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
             if (ub_asked or "").isdigit():
                 kw["ub"] = int(ub_asked)
             from gguf_plan import plan_rule_on
@@ -2655,6 +2700,7 @@ def _launch_plan(a, extra, argv, machine):
         env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
         if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
             extra = extra + ["-t", str(max(1, machine.physical_cores() - LEAVE_ROOM_FREE_CORES))]    # hybrid CPUs keep their performance-core pinning
+            say(f"moe-cache: --leave-room: {LEAVE_ROOM_FREE_CORES} CPU cores left free (-t {extra[-1]})")
     if mg:
         extra_before = extra
         ncmoe, extra = multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win)
@@ -2812,6 +2858,20 @@ def warm_save_wait(n_tokens, last_tokens, bytes_per_token, poll=10, idle_polls=2
     return min(small_wait + small_per_gb * gb, small_cap)
 
 
+def clean_stale_saves(slotdir, tag, older_than=120):
+    """LAUNCHER-005 (A3-28): deletes <tag>-sN.new.bin files a server died in the middle of saving (multi-GB, never counted in disk checks). A file touched in the last
+    `older_than` seconds may be a save in progress (another server on this tag) and stays. Returns the number deleted."""
+    n = 0
+    for f in glob.glob(os.path.join(glob.escape(slotdir), tag + "-s*.new.bin")):
+        try:
+            if time.time() - os.path.getmtime(f) > older_than:
+                os.unlink(f)
+                n += 1
+        except OSError:
+            pass
+    return n
+
+
 def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2048, keep=2):
     """Ideas I29 / I34: at start, restore the saved conversations (one file per slot, at most `keep`, longest first) into the slots they came from; afterwards
     save every idle slot of min_tokens or more (with its context checkpoints) once it has been unchanged for warm_save_wait() seconds (N27: longer for
@@ -2828,6 +2888,7 @@ def warm_keeper(port, api_key, slotdir, tag, poll=10, idle_polls=2, min_tokens=2
         time.sleep(1)
     else:
         return
+    clean_stale_saves(slotdir, tag)
     saved_tokens = {}           # slot -> token count of its file on disk (N27)
     bytes_per_token = None      # from the last save or restore (file size / tokens); sets the waits of warm_save_wait()
     files = [f for f in glob.glob(os.path.join(glob.escape(slotdir), tag + "-s*.bin")) if re.search(r"-s(\d+)\.bin$", f) and not f.endswith(".new.bin")]
@@ -3646,10 +3707,16 @@ def agent_snippets(port, model, ctx, api_key, host="", base=None, only=None, hid
 
 # ---- learn ----
 
+def learn_default_ram():
+    """LAUNCHER-005 (A3-25): --ram for `learn` when none is given: what this machine can give the server, at most 20 GB (before: always 20, even on a 16 GB machine)."""
+    mem = mem_for_server(None)
+    return f"{min(20.0, mem / 1e9):.1f}" if mem else "20"
+
+
 def learn(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py learn", description="build a warm-start profile by running a set of prompts through the model with the plugin; "
                                  "moe-cache-server loads it automatically (same default path)")
-    ap.add_argument("model"); ap.add_argument("--name", default=""); ap.add_argument("--ram", default="20"); ap.add_argument("--n-cpu-moe", default="999")
+    ap.add_argument("model"); ap.add_argument("--name", default=""); ap.add_argument("--ram", type=gb_arg, help="GB the server may use (default: what this machine can give, at most 20)"); ap.add_argument("--n-cpu-moe", default="999")
     ap.add_argument("--tokens", type=int, default=150); ap.add_argument("--prompts", default=os.path.join(HERE, "tools", "learn_prompts.txt"))
     ap.add_argument("--out"); ap.add_argument("--llama-server", default=default_llama_server()); ap.add_argument("--port", type=int, default=8097)
     ap.add_argument("--load-method", default="auto", choices=["auto", "preload", "path"])
@@ -3658,6 +3725,7 @@ def learn(argv):
         os.umask(0o077)
     if not os.path.isfile(a.model):
         raise SystemExit("usage: moe-cache-learn MODEL.gguf [options]")
+    a.ram = a.ram or learn_default_ram()
     lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(a.llama_server)
     if not os.path.isfile(lib):
         raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
@@ -3711,7 +3779,12 @@ def learn(argv):
                 p.kill()
     if not os.path.isfile(out) or (before is not None and os.path.getmtime(out) <= before):
         raise SystemExit(f"no new profile was written to {out} (server log: {logf.name})")
-    say(f"done: moe-cache-server will warm-start from {out} ({os.path.getsize(out)} bytes; server log: {logf.name})")
+    logf.close()
+    try:
+        os.unlink(logf.name)          # LAUNCHER-005 (A3-25): kept only when something went wrong (the messages above name it)
+    except OSError:
+        pass
+    say(f"done: moe-cache-server will warm-start from {out} ({os.path.getsize(out)} bytes)")
     return 0
 
 
@@ -3760,8 +3833,7 @@ def project(argv):
                 say(f"moe-cache: note: saved, but the server at {a.url} runs {other}, not the model the server started with --project {a.name} recorded; "
                     "the model identity was not recorded, so a restore will be refused", err=True)
             else:
-                with open(os.path.join(sdir, a.name + ".bin.id"), "w") as fh:
-                    fh.write(ident + "\n")
+                write_text_atomic(os.path.join(sdir, a.name + ".bin.id"), ident + "\n")
         except OSError:
             say("moe-cache: note: saved, but the model identity could not be recorded (is the server started with --project " + a.name + "?); a restore will be refused", err=True)
     say(body.strip())
@@ -3993,7 +4065,7 @@ def check(argv):
                 march = ""
             if march in KNOWN_UNSUPPORTED_ARCH:
                 fail("architecture", unsupported_arch_message(march, KNOWN_UNSUPPORTED_ARCH[march]))
-            if b"expert_count" in head:
+            if b"expert_count" in head or header_has_experts(a.model):
                 ok("MoE model", "has experts (expert_count found)")
             else:
                 warn("MoE model", "no expert_count in the header: this may not be a MoE model, moe-cache will not help")
@@ -4042,6 +4114,17 @@ def check(argv):
             say(f"  [{lvl}] {k:<14} {m}")
     say(f"summary: {n['fail']} failed, {n['warn']} warnings")
     return 1 if n["fail"] else 0
+
+
+def header_has_experts(path):
+    """LAUNCHER-005 (A3-27): True when the GGUF header has an <arch>.expert_count key, read as keys and not as a text search in the first 4 MiB (a model with a big
+    tokenizer written before the architecture keys pushed it out of the window)."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import read_meta, shards
+        return any(k.endswith(".expert_count") and isinstance(v, int) and v > 0 for k, v in read_meta(shards(path)[0]).items())
+    except Exception:
+        return False
 
 
 # LAUNCHER-006: architectures llama.cpp itself cannot load yet. A newer build does not help until upstream has merged support, so the doctor says that instead of
@@ -4311,5 +4394,10 @@ def main():
     return cmds[sys.argv[1]](sys.argv[2:]) or 0
 
 
+def exit_status(rc):
+    """LAUNCHER-005 (A3-21): a child killed by a signal comes back as -N from subprocess; sys.exit(-9) would be 247, scripts and systemd expect 128+N (137)."""
+    return 128 - rc if isinstance(rc, int) and rc < 0 and not WINDOWS else rc
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(exit_status(main()))
