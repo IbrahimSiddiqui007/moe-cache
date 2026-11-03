@@ -11,7 +11,7 @@
   moe_cache.py bench-record collect|monitor|assemble|validate|card|ingest|claim|board|lint|replay     the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
-  moe_cache.py connect hermes|opencode|claude|codex|pi|openclaw|aider|qwen [--url URL] [--write]   point Hermes Agent, OpenCode, Claude Code, Codex CLI, Pi, OpenClaw, Aider or Qwen Code at a running server (start it with --agent)
+  moe_cache.py connect hermes|opencode|claude|codex|pi|openclaw|aider|qwen [--url URL] [--write]   point Hermes Agent, OpenCode, Claude Code, Codex CLI, Pi, OpenClaw, Aider or Qwen Code at a running server (start it with --agent); --check proves the setup works (models, chat, tool call, window; --json)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
   moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read (BO-1)
@@ -3103,7 +3103,27 @@ def connect(argv):
     ap.add_argument("--url", help="the server (default: the on-demand endpoint's port when `on-demand` has a model, else http://127.0.0.1:8080)")
     ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY")); ap.add_argument("--write", action="store_true")
     ap.add_argument("--config", help="file to merge into (opencode: ~/.config/opencode/opencode.json; claude: ./.claude/settings.local.json of this folder; codex: ~/.codex/config.toml; pi: ~/.pi/agent/models.json; openclaw: ~/.openclaw/openclaw.json; qwen: ~/.qwen/settings.json; aider: ~/.aider.moe-cache.conf.yml)")
+    ap.add_argument("--check", action="store_true", help="prove the agent's setup works end to end (config, /v1/models, a streamed chat, a tool-call round trip, the window); "
+                    "with --write, after writing; exit 0/1")
+    ap.add_argument("--json", action="store_true", help="with --check: the result as JSON")
+    ap.add_argument("--timeout", type=float, default=180, help="with --check: seconds to wait for each model reply (default 180)")
     a = ap.parse_args(argv)
+    if a.json and not a.check:
+        ap.error("--json goes with --check")
+    a.url_given = a.url
+    if a.check and not a.write:
+        return connect_check(a)
+    rc = connect_apply(a)
+    return connect_check(a) if a.check and not rc else rc
+
+
+def connect_check(a):
+    """connect NAME --check: bin/moe_cache_check.py runs the five steps against the server the agent's config points to (or the one connect would use)."""
+    from moe_cache_check import check_agent
+    return check_agent(a.agent, a.url_given, a.config, a.json, a.timeout, default_agent_url(), lambda url: key_for(url, a.api_key if a.api_key else None), agent_window)
+
+
+def connect_apply(a):
     a.url = a.url or default_agent_url()
     a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
