@@ -6,11 +6,11 @@ still shown, but it is not a chart number until it is measured again.
 
 | Piece | File | What it is |
 |---|---|---|
-| This page | `docs/BENCHMARK_TEMPLATE.md` | the fields, how each is collected on Linux and Windows, the recipes, the day-page template |
+| This page | `docs/BENCHMARK_TEMPLATE.md` | the fields, how each is collected on Linux and Windows, the recipes, runs / claims / board |
 | Schema | `docs/bench_record.schema.json` | the record as JSON Schema (required fields, "number or `not recorded`") |
 | Collector | `bin/moe_cache_record.py` (also `python bin/moe_cache.py bench-record ...`) | collects the machine, samples a run (VRAM, process RAM, free RAM, CPU), builds, validates and renders the record; standard library only, Linux and Windows |
 | Report | `python bin/moe_cache.py bench-report MODEL.gguf` | stock against moe-cache in ABBA order; since this template its report carries the record (card lines + JSON) |
-| Day pages | `benchmarks/` | one folder per test day: `README.md` page plus `records/*.json`; `bench-record day` drafts the page |
+| Runs, claims, board | `benchmarks/`, `bin/moe_cache_claims.py` | every published number is a claim on recorded runs; status computed; `BOARD.md` is what is true now |
 | Issue form | `.github/ISSUE_TEMPLATE/benchmark_report.yml` | where a tester pastes it |
 
 **Required** below means: the key must be in the record (the validator refuses a record without it), and its value is a real measurement or
@@ -73,7 +73,7 @@ The drive that holds the model matters more than the CPU for the cache's misses:
 
 | Field | Req | How |
 |---|---|---|
-| uptime (`uptime_h`) | yes | `/proc/uptime`; Windows `GetTickCount64`. Chart numbers need a restart within the last hours: write the restart time in the day page's first lines |
+| uptime (`uptime_h`) | yes | `/proc/uptime`; Windows `GetTickCount64`. Chart numbers need a restart within the last hours: write the restart time in the claim's statement |
 | baseline check (`baseline_check`) | yes | the stock llama.cpp speed check before the run, e.g. "PASS 49.4 tok/s at 12:29" (`--baseline "..."`); `not recorded` if none was run |
 | other programs on the GPU/CPU (`other_programs`) | yes | text you give (`--other-programs "browser closed, nothing else"`); the numbers below show what the machine was doing |
 | file cache (`file_cache`) | yes | cold or warm (bench-report drops the model from the cache before each run unless `--warm`) |
@@ -179,7 +179,7 @@ python3 bin/moe_cache.py bench-record assemble --runs runs.json --model MODEL.gg
 python3 bin/moe_cache.py bench-record validate record.json            # schema check, and how many fields say "not recorded"
 python3 bin/moe_cache.py bench-record card record.json --as details --section 80    # the four lines for docs/benchmark_card.html
 python3 bin/moe_cache.py bench-record card record.json --as results --section 80 --title "Title (Windows PC, date)"   # the old-style RESULTS section
-python3 bin/moe_cache.py bench-record day benchmarks/2026-11-04 --title "Title" --out benchmarks/2026-11-04/README.md   # the day page draft, from benchmarks/2026-11-04/records/*.json
+python3 bin/moe_cache.py bench-record ingest record.json --machine pc      # into benchmarks/runs/; then `claim add`, `board` (see "Runs, claims and the board")
 ```
 
 From Python: `from moe_cache_record import Sampler, run_entry, assemble`; `Sampler(pid).start()` ... `Sampler.stop()` returns the monitor dict that `run_entry` takes.
@@ -198,38 +198,52 @@ launcher abc123def, DLL 0123456 · llama.cpp 11966 (ff0d396e3, Vulkan) · 11-03 
 
 A row whose line says `not recorded` is a row that still has to be measured (or the field edited in by hand with the reason).
 
-## Day page (benchmarks/DATE/README.md)
+## Runs, claims and the board (`benchmarks/`)
 
-Results are organised by test day: `benchmarks/YYYY-MM-DD/README.md` is the readable page, `benchmarks/YYYY-MM-DD/records/*.json` are the raw records beside it
-(see `benchmarks/README.md` for the index). `docs/RESULTS.md` stays as the numbered history up to section 79; new results go into a day folder. Several runs on one date share one folder.
+The problem this solves: a number gets published (README, the benchmark card, release notes), the code or llama.cpp moves on, and nobody can tell which published
+numbers still hold. So every published number is a **claim** that points at the **runs** behind it, and its status is computed.
 
-`bench-record day benchmarks/DATE --title "Title" [--date YYYY-MM-DD] [--machine "..."] [--out benchmarks/DATE/README.md]` drafts the page from
-`DATE/records/*.json`: hardware, software and method from the first record, one table per model and config with every run, the card's detail lines, the gaps list,
-the reproduce commands and the raw-data links. What only a person knows (clean or not and why, what changed, what each flag did, other limitations) is left as
-`not recorded: write by hand`. Fill those in; do not delete the generated tables. A page converted from an old RESULTS section says so in its first line.
-
-Every day page has these sections, in this order:
-
-```markdown
-# YYYY-MM-DD: TITLE
-
-Machine: OS, CPU, GPU. Clean / not clean: REASON (PC restarted at HH:MM, baseline guard PASS at X tok/s, runs HH:MM-HH:MM). Source: records/ (or "converted from RESULTS.md section N, resource metrics not recorded").
-
-## Hardware            CPU (cores/threads), RAM size/type/speed, GPU + VRAM + driver, OS + build, model drive (model, interface), power plan
-## Software and versions   moe-cache version + commit, plugin sha256 prefix, llama.cpp bNNNNN (commit, backend), Python; each arm's kit if they differ
-## Method              protocol (arms, order ABBA / single, runs per arm, first / second shown), prompt set + sha256 + tokens, n_predict / temperature / seed,
-                       cold or warm file cache, uptime, baseline check, other programs, clean or not clean and why
-## What changed since the last run   code, defaults, llama.cpp pin, kit; link to the previous day's page
-## Results per model and config     one table per model and config: every run with prompt / decode tok/s, TTFT, VRAM peak, process RAM peak, free RAM min,
-                       CPU avg / peak, GPU expert layers, ctx, -ub, order; then the A/B change per cell (average, my arithmetic)
-## What each flag did  A/B tables, one per flag: setting A vs B, prompt tok/s, decode tok/s, GPU expert layers, source record
-## Limitations and what was not measured   gaps list ("not recorded" fields), models and depths not run, cells where the answer ended early
-## Reproduce           the exact commands (the records' `reproduce.commands`)
-## Raw data            list of records/*.json
+```
+benchmarks/
+  runs/DATE_MACHINE_SHORTID.json   one record (this page's format) per run set; append-only, never edited. SHORTID = 6 hex of the content hash
+  claims/CLAIM-ID.md               a number we publish: statement, runs behind it, cells, what it is valid for
+  BOARD.md                         generated: machine x model x setting x arm -> newest number, date, status, claim
+  JOURNAL.md                       generated: one line per run set, newest first
 ```
 
-Rules: every number has its source (a record file, or a RESULTS section for converted pages); an average or ratio that we computed says "my arithmetic"; a value
-nobody measured is `not recorded`, never a guess; no private paths, host names or user names. The headline of the page goes into the index table of `benchmarks/README.md`.
+**Run**: what a harness measured, as a record. `bench-record ingest RECORD.json [--machine pc]` copies it into `runs/` under its canonical name (the machine name
+defaults to the GPU). A record that does not validate is refused; the same record again changes nothing. An old result with only a few numbers written down is
+ingested as a record whose other fields say `not recorded`, and its `notes` say where it was converted from. Never edit a run file: measure again and ingest the new one.
+
+**Claim**: `bench-record claim add ID --run RUNID [--run ...] [--vs ARM] --title "the published sentence" --statement "conditions, order, caveats, source" [--valid-moe MIN-MAX] [--valid-llama MIN-MAX]`.
+It writes `claims/ID.md`: a front matter block (`runs`, `cells`, `valid_moe_cache`, `valid_llama_builds`, `withdrawn`) and the plain-words statement. A **cell** is
+one arm and one metric (`prompt_tps` or `decode_tps`) of one run; its value is **computed** as the mean of that arm's runs, never typed, so the claim cannot drift
+from its runs. `--vs ARM` adds the change against that arm. Validity defaults to the version and llama.cpp build of the run. `claim show ID` prints the claim with its
+computed values, spread and gaps; `claim list` lists all with their status.
+
+**Status is computed**, in this order:
+
+| Status | When |
+|---|---|
+| withdrawn | `withdrawn:` has a reason (the only status typed by hand; use it when a run was bad, e.g. the PC slowed down) |
+| superseded | every cell of the claim is covered by a newer claim (same machine, model, setting, arm and metric) |
+| stale | the moe-cache `VERSION` is above `valid_moe_cache`, the llama.cpp pin (`LLAMA_TAG` in `tools/make_windows_kit.sh`) is above `valid_llama_builds`, or the validity was not recorded |
+| current | none of the above |
+
+Stale does not mean wrong: it means nobody re-measured since the code or llama.cpp moved. Two claims of the same date with different numbers for one cell are
+listed under **Conflicts** on the board.
+
+**Board**: `bench-record board` writes `BOARD.md` and `JOURNAL.md`; `board --check` exits 1 when they are out of date. `BOARD.md` is the short "what is true now" page.
+
+**Lint**: `bench-record lint [FILES]` checks `README.md` and `docs/benchmark_card.html`. A *performance number* is a `N tok/s` value, a signed percent (`+42 %`) or an
+`Nx` / `N×` multiplier. Every line that shows one needs the marker `<!-- claim:ID -->` somewhere on the same line (in a table row, put it inside the row; in
+Markdown, put it at the end of the line), and the claim must be *current*. It reports unclaimed lines, unknown claim ids and claims that are not current; code
+fences and `<script>` / `<style>` blocks are skipped. Default exit 1 on a problem; `--warn` prints and exits 0 (what `quick.yml` runs until every current number has a claim).
+
+**Replay**: `bench-record replay ID` prints the conditions to match and the exact commands of the claim's runs (`reproduce.commands`; `not recorded` for a converted run).
+`--run` executes those commands. `--record NEW.json` compares a new record with the claim, cell by cell, inside a noise band: the largest of 5 % (`--band`), the
+claim's own first/second spread and the new record's spread. Exit 1 when a cell is outside its band; then measure again and add a newer claim, or withdraw the old one.
+`--arm-map CLAIMARM=NEWARM` maps arm names when the new record calls them something else (e.g. `v0.3.5=moe-cache`).
 
 ## Old RESULTS.md sections (up to 79)
 

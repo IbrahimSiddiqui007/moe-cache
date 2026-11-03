@@ -5,7 +5,7 @@
   monitor   watch a running llama-server (--pid N) or run a command (-- CMD) and sample VRAM, process RAM, free RAM and CPU until it ends
   assemble  build the full record from the facts, the runs a harness measured and the protocol
   validate  check a record against the schema (required fields present, every value a number / text or "not recorded")
-  day       draft a day page (benchmarks/DATE/README.md) from DIR/records/*.json
+  ingest, claim, board, lint, replay   runs, claims and the board of benchmarks/ (bin/moe_cache_claims.py)
   card      print the record as the benchmark card's four detail lines, a table row, a RESULTS section or an issue body
 
 A value that could not be read is written "not recorded" (NR), never guessed. bench-report (bin/moe_cache_bench.py) uses the Sampler and the record
@@ -1023,120 +1023,11 @@ def cmd_assemble(a):
     return 1 if errs else 0
 
 
-# ---------------------------------------------------------------- day page (benchmarks/DATE/README.md draft from DIR/records/*.json)
-
-def _cell(x, nd=None):
-    if isinstance(x, float) and nd is not None:
-        x = round(x, nd)
-    return str(x)
-
-
-def _mib_gib(x):
-    return f"{x / 1024:.1f}" if isinstance(x, (int, float)) else NR
-
-
-def _group_key(rec):
-    s = rec["settings"]
-    return (rec["model"]["file"], s.get("ctx", NR), s.get("ubatch", NR), s.get("n_cpu_moe", NR), s.get("kv_type_k", NR), s.get("command_line", ""))
-
-
-def day_page(records, title="TITLE", date=None, machine=None, schema=None):
-    """A day page draft (docs/BENCHMARK_TEMPLATE.md section 'Day page'): `records` = [(file name, record dict)]. Hardware, software and conditions come from the first
-    record (and say so when later records differ); one table per model and config with every run; the card's detail lines; the gaps list. Fields only a person knows
-    (what changed, what each flag did, limitations) are left as `not recorded: write by hand` lines."""
-    if not records:
-        raise ValueError("no records")
-    first = records[0][1]
-    h, sw, c, pr = first["hardware"], first["software"], first["conditions"], first["protocol"]
-    date = date or first["created_utc"][:10]
-    machine = machine or f"{h['os']}, {h['cpu_model']}, {h['gpu_model']}"
-    hw_rows = [("CPU", f"{h['cpu_model']} ({h['cpu_cores']} cores, {h['cpu_threads']} threads)"), ("RAM", f"{h['ram_gib']} GiB {h['ram_type']}, {h['ram_speed_mts']} MT/s"),
-               ("GPU", f"{h['gpu_model']}, {_gib(h['vram_mib'])} VRAM, driver {h['gpu_driver']}"), ("OS", f"{h['os']} {h['os_build']}"),
-               ("Model drive", f"{h['storage']['drive']} ({h['storage']['model']}, {h['storage']['interface']})"), ("Power plan", h["power_plan"])]
-    out = [f"# {date}: {title}", "", f"Machine: {machine}. Records: {len(records)}. Draft made by `bench-record day`; every value comes from the records, `not recorded` is a gap, "
-           "lines marked *write by hand* need a person.", "", "## Hardware", "", "| Part | Value |", "|---|---|"]
-    out += [f"| {k} | {v} |" for k, v in hw_rows]
-    diff = [n for n, r in records[1:] if r["hardware"] != h]
-    if diff:
-        out += ["", "Hardware differs in: " + ", ".join(diff) + " (the table is the first record's)."]
-    out += ["", "## Software and versions", "", "| Part | Value |", "|---|---|",
-            f"| moe-cache | {sw['moe_cache_version']} (commit {sw['moe_cache_commit']}) |", f"| plugin | {sw['plugin_file']}, sha256 {sw['plugin_sha256_prefix']} |",
-            f"| llama.cpp | b{sw['llama_build']} ({sw['llama_commit']}), {sw['llama_backend']} |", f"| Python | {sw['python']} |"]
-    diff = [n for n, r in records[1:] if r["software"] != sw]
-    if diff:
-        out += ["", "Software differs in: " + ", ".join(diff) + " (the table is the first record's)."]
-    out += ["", "## Method", "", f"- Protocol: arms {', '.join(pr.get('arms', [])) or NR}; order {pr.get('order', NR)}; {pr.get('runs_per_arm', NR)} runs per arm.",
-            f"- Prompt: {pr.get('prompt_set', NR)} (sha256 {pr.get('prompt_sha256', NR)}), {pr.get('prompt_tokens', NR)} tokens; n_predict {pr.get('n_predict', NR)}, "
-            f"temperature {pr.get('temperature', NR)}, seed {pr.get('seed', NR)}, sampler {pr.get('sampler', NR)}.",
-            f"- File cache: {c['file_cache']}. Up {c['uptime_h']} h. Baseline check: {c['baseline_check']}. Other programs: {c['other_programs']}.",
-            "- Clean or not clean, and why: *not recorded: write by hand*.", "", "## What changed since the last run", "", "*not recorded: write by hand*", "",
-            "## Results per model and config", ""]
-    groups = {}
-    for n, r in records:
-        groups.setdefault(_group_key(r), []).append((n, r))
-    for (model, ctx, ub, ncm, kv, cmd), items in groups.items():
-        r0 = items[0][1]
-        out += [f"### {model}: ctx {ctx}, -ub {ub}, n-cpu-moe {ncm}", "",
-                f"{r0['model']['quant']}, {r0['model']['size_gb']} GB, sha256 {r0['model']['sha256_head16MiB']}. GPU expert layers {r0['settings'].get('gpu_expert_layers', NR)}, "
-                f"KV {kv}. Records: {', '.join(n for n, _ in items)}.", "",
-                "| Record | Run | Arm | Prompt tok/s | Decode tok/s | TTFT s | VRAM peak GiB | Process RAM peak GiB | Free RAM min GiB | CPU avg / peak % | Text sha256 |",
-                "|---|---|---|---|---|---|---|---|---|---|---|"]
-        for n, r in items:
-            for x in r["runs"]:
-                out.append(f"| {n} | {x['index']} | {x['arm']}{'' if x['ok'] else ' (failed: ' + str(x['error']) + ')'} | {_cell(x['prompt_tps'])} | {_cell(x['decode_tps'])} | "
-                           f"{_cell(x['ttft_s'])} | {_mib_gib(x['vram_used_peak_mib'])} | {_mib_gib(x['process_ram_peak_mib'])} | {_mib_gib(x['system_ram_free_min_mib'])} | "
-                           f"{_cell(x['cpu_avg_pct'])} / {_cell(x['cpu_peak_pct'])} | {x['text_sha256']} |")
-        out += ["", "Averages per arm (mean of the ok runs, prompt / decode tok/s):", ""] + [
-            f"- {n}, {arm}: {v['prompt_tps']} / {v['decode_tps']} ({v['runs']} runs)" for n, r in items for arm, v in r["summary"].items()]
-        out += ["", "Details (card lines):", ""]
-        out += ["    " + l for l in details_lines(r0)]
-        out += ["", f"Settings: `{cmd or NR}`. Environment: {json.dumps(r0['settings']['environment']) if r0['settings'].get('environment') else 'none'}. "
-                f"Text identical to baseline: {r0['outputs']['identical_to_baseline']}.", ""]
-    out += ["## What each flag did", "", "*not recorded: write by hand* (one A/B table per flag: setting, prompt tok/s, decode tok/s, GPU expert layers, source record).", "",
-            "## Limitations and what was not measured", ""]
-    gaps = {}
-    for n, r in records:
-        for g in not_recorded_fields(r):
-            gaps.setdefault(g, []).append(n)
-    if gaps:
-        out += [f"{len(gaps)} fields say `{NR}` in at least one record (field: records):", ""] + [f"- `{g}`: {', '.join(v)}" for g, v in sorted(gaps.items())]
-    else:
-        out.append("No field says not recorded.")
-    out += ["", "Anything else (one model, one machine, depths not run): *write by hand*.", "", "## Reproduce", ""]
-    cmds = []
-    for n, r in records:
-        for cm in r.get("reproduce", {}).get("commands", []) or []:
-            if cm not in cmds:
-                cmds.append(cm)
-    out += (["```", *cmds, "```"] if cmds else [f"{NR}"]) + ["", "## Raw data", ""]
-    for n, r in records:
-        errs = validate(r, schema) if schema else []
-        out.append(f"- [records/{n}](records/{n}): created {r['created_utc']} UTC" + (f"; **schema problems: {len(errs)}**" if errs else ""))
-    return "\n".join(out) + "\n"
-
-
-def cmd_day(a):
-    d = os.path.abspath(a.dir)
-    files = sorted(glob.glob(os.path.join(d, "records", "*.json")))
-    if not files:
-        print(f"day: no records in {os.path.join(d, 'records')}", file=sys.stderr)
-        return 2
-    recs = []
-    for f in files:
-        try:
-            recs.append((os.path.basename(f), json.load(open(f, encoding="utf-8"))))
-        except (OSError, ValueError) as e:
-            print(f"day: {f}: {e}", file=sys.stderr)
-            return 2
-    page = day_page(recs, a.title, a.date, a.machine, load_schema())
-    if a.out:
-        open(a.out, "w", encoding="utf-8").write(page)
-    else:
-        print(page, end="")
-    return 0
-
-
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] and (argv[0] in ("ingest", "claim", "board", "lint", "replay") or argv[0] == "--dir"):          # benchmarks/: runs, claims, board
+        import moe_cache_claims
+        return moe_cache_claims.main(argv)
     ap = argparse.ArgumentParser(prog="moe_cache_record.py", description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect", help="machine, software and model facts as JSON")
@@ -1154,11 +1045,7 @@ def main(argv=None):
     v = sub.add_parser("validate", help="check a record against docs/bench_record.schema.json"); v.add_argument("record")
     r = sub.add_parser("card", help="print a record as card lines / row / RESULTS section / issue body"); r.add_argument("record")
     r.add_argument("--as", dest="fmt", choices=["details", "row", "results", "issue", "gaps"], default="details"); r.add_argument("--section"); r.add_argument("--title", default="TITLE")
-    dy = sub.add_parser("day", help="draft a benchmarks/DATE/README.md from DIR/records/*.json")
-    dy.add_argument("dir"); dy.add_argument("--title", default="TITLE"); dy.add_argument("--date"); dy.add_argument("--machine"); dy.add_argument("--out", help="default: print")
     a = ap.parse_args(argv)
-    if a.cmd == "day":
-        return cmd_day(a)
     if a.cmd == "collect":
         env = collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url, hash_model=a.hash_model)
         text = json.dumps(env, indent=1, ensure_ascii=False)

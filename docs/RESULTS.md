@@ -8,7 +8,7 @@ Machines: sections 1-48, 51-53, 57, 66 and 70 were measured on the Linux laptop 
 
 | Question | Section | Note |
 |---|---|---|
-| **New results (from 2026-11-03): one page per test day, with the raw records** | [benchmarks/](../benchmarks/README.md) | this file stays as the history up to section 79; sections 78 and 79 are also converted to day pages |
+| **What is true now, per machine, model and setting; every published number is a claim on recorded runs** | [benchmarks/BOARD.md](../benchmarks/BOARD.md) | new results go to `benchmarks/` (runs, claims, board); this file stays as the numbered history up to section 79, which is also converted there |
 | v0.3.5 against v0.3.4, long prompts, official llama.cpp b11966 server (the numbers to quote) | 79 | prompts +42 % at 34k, +38 % at 64k and 128k; decode -6 % at 34k, -10 % at 64k (Windows PC, Flash-Next Q2_0) |
 | The same comparison with a patched server and patch 0022 (not shipped) | 78 | prompts overstated by about 5-7 %; its 64k follow-up shows 39 CPU layers fix the placement (decode 26.1-26.8) |
 | Windows desktop, stock vs plugin, short context, per model | 59-63 | file-view cache, GLM 2.0x paired (4.44 vs 2.21 tok/s, section 59) |
