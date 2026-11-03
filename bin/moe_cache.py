@@ -1980,6 +1980,7 @@ class Machine:
     def load_env(self, ls, lib, method="auto"): return load_env(ls, lib, method)
     def vk_cache_cap(self, ls, model, listing=None): return vk_cache_cap(ls, model, listing)
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
+    def planner_answer(self, model, ctx, ram_gib, vram_gib): return planner_answer(model, ctx, ram_gib, vram_gib)
     def lib_exists(self, lib): return os.path.isfile(lib)
 
     def other_llama_servers(self): return other_llama_servers()
@@ -2402,26 +2403,38 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
     return plan
 
 
+_PLAN_MODULE = []
+
+
+def planner_answer(model, ctx, ram_gib=None, vram_gib=None):
+    """ENGINE-029: planner/plan.py's answer (the dict `plan.py --json` prints), computed in this process. The launcher used to start a second Python for it (about
+    0.06 s of every launch, and a second decision path nobody could step into); plan.py stays runnable as a script for people who call it directly.
+    Raises planner.plan.PlanError (a message for the user) or the GGUF reader's ValueError / OSError for a model it cannot read."""
+    if not _PLAN_MODULE:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("moe_cache_plan", os.path.join(HERE, "planner", "plan.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _PLAN_MODULE.append(mod)
+    return _PLAN_MODULE[0].plan_info(model, ctx=ctx, ram_gib=ram_gib, vram_gib=vram_gib)
+
+
 def plan_placement(a, model, ctx, ncmoe, machine):
     """ENGINE-029, stage "placement": how many layers keep their experts on the GPU, from planner/plan.py (the first answer; the tuner below may refine it).
     ncmoe: --n-cpu-moe as the user gave it (None: ask the planner). Returns (n_cpu_moe as text, the planner's answer as a dict or None, why it failed or None);
     the answer carries the model's layers, experts, cache size and free VRAM that the control page shows."""
     planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
     if ncmoe is None:
-        p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
-        if a.ram or machine.mem_cap():
-            p += ["--ram-gib", f"{machine.mem_for_server(a.ram) / 2**30:.3f}"]      # the planner plans with the capped memory too
-        if a.vram: p += ["--vram-gib", a.vram]
-        r = None
+        ram_gib = float(f"{machine.mem_for_server(a.ram) / 2**30:.3f}") if (a.ram or machine.mem_cap()) else None      # the planner plans with the capped memory too
+        vram_gib = float(a.vram) if a.vram else None
         try:
-            r = machine.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-            planner_info = json.loads(r.stdout)
+            planner_info = machine.planner_answer(model, ctx, ram_gib, vram_gib)
             ncmoe = str(planner_info["n_cpu_moe"])
         except Exception as e:
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
-            why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
-            planner_info, planner_error = None, why or str(e)
-            say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
+            why = str(e) if type(e).__name__ == "PlanError" else f"{type(e).__name__}: {e}"
+            planner_info, planner_error = None, why
+            say(f"moe-cache: planner failed ({why}); keeping all experts on the CPU"); ncmoe = "999"
     return ncmoe, planner_info, planner_error
 
 

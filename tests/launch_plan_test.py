@@ -20,6 +20,7 @@ import gguf_plan                  # noqa: E402
 
 LINUX_LIST = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 7600 MiB free)\n"
 WIN_LIST = "Available devices:\n  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n  Vulkan1: AMD Radeon(TM) Graphics (512 MiB, 400 MiB free)\n"
+PLANNER_ANSWER = {"arch": "qwen35moe", "layers": 40, "experts": 256, "used": 8, "n_cpu_moe": 21, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0, "free_vram_GiB": 7.5, "note": ""}
 HELP_TEXT = "usage: llama-server\n  --cache-ram N\n  --spec-type draft-mtp\n"
 
 MACHINES = {
@@ -158,6 +159,7 @@ def fake_machine(m, tmp):
     mc.vk_cache_cap = lambda ls, model, listing=None: (None, None)
     mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
     mc.python_cmd = lambda: "python3"
+    mc.planner_answer = lambda model, ctx, ram_gib=None, vram_gib=None: dict(PLANNER_ANSWER)       # ENGINE-029: the planner runs in this process; the answer is fixed here
     # --share-ram counts the llama-servers running on the machine: Linux reads /proc (none, whatever runs here); Windows asks tasklist through subprocess.run,
     # which is faked below and recorded in `calls`
     if mc.other_llama_servers is _REAL_OTHER_SERVERS and not m["windows"]:       # (a test that fakes the list itself, as dense_share_test does, keeps its own)
@@ -171,9 +173,7 @@ def fake_machine(m, tmp):
     def fake_run(cmd, *a, **k):
         calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else cmd)
         out = ""
-        if isinstance(cmd, (list, tuple)) and len(cmd) > 1 and str(cmd[1]).endswith("plan.py"):
-            out = '{"arch": "qwen35moe", "layers": 40, "experts": 256, "used": 8, "n_cpu_moe": 21, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0, "free_vram_GiB": 7.5, "note": ""}'
-        elif isinstance(cmd, (list, tuple)) and "--help" in cmd:
+        if isinstance(cmd, (list, tuple)) and "--help" in cmd:
             out = HELP_TEXT
         return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
     mc.subprocess.run = fake_run
@@ -238,9 +238,9 @@ class FakeMachine(mc.Machine):
     def gpu_total_free_bytes(self): return (self.vram_mib * 2**20, self.free_mib * 2**20)
     def has_cpu_atom(self): return False
     def has_cpu_core(self): return False
+    def planner_answer(self, model, ctx, ram_gib, vram_gib): return {"n_cpu_moe": 21}
     def run(self, cmd, **kw):
-        out = '{"n_cpu_moe": 21}' if str(cmd[1]).endswith("plan.py") else "--cache-ram N\n"
-        return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="--cache-ram N\n", stderr="")
 
 
 def injection_test(model):

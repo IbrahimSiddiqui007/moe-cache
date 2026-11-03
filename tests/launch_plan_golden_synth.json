@@ -2,7 +2,6 @@
  "cases": {
   "linux/agent": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -11,7 +10,6 @@
   },
   "linux/agent_ctx32k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 32768 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -20,7 +18,6 @@
   },
   "linux/agent_no_warm": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -29,7 +26,6 @@
   },
   "linux/api_key_given": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -38,7 +34,6 @@
   },
   "linux/auto_fit": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -46,16 +41,13 @@
    "stdout": "moe-cache: sampling from the Qwen3.5/3.6 model card (thinking): --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5; requests that send their own values win; --no-sampling-defaults turns it off\nmoe-cache: memory cap 28.0 GiB (30.1 GB) for the whole server (physical RAM minus max(4 GiB, 12.5 %); --max-ram GB changes it)\nmoe-cache: other programs hold 0.6 GiB of the GPU memory: keeping 0.5 GB free for them and the long-prompt block (--gpu-margin GiB to change)\nmoe-cache: micro-batch -ub 2048 (prompt processing; --ub N to change)\nmoe-cache: prompt cache: off (--cache-ram 0): a conversation that is replaced is processed again when it comes back; llama-server's default number of slots. To change it: moe-cache-server ... -- --cache-ram MiB\nmoe-cache: experts of 30 layers stay on the CPU and are managed by the cache; profile <TMP>/cache/synthetic-moe.gguf.usage; plugin loaded by preload\nmoe-cache: web UI and API will be at http://127.0.0.1:8080\nenv LD_PRELOAD=<TMP>/libggml-moe-cache.so MOE_CACHE_PRELOAD=1 MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF=<MODEL> MOE_CACHE_PROFILE=<TMP>/cache/synthetic-moe.gguf.usage MOE_CACHE_RAM_GIB=11.176 MOE_CACHE_HOST_RESERVE_MIB=0 LLAMA_ARG_CORS_ORIGINS=localhost <TMP>/llama-server -m <MODEL> -ngl 99 --n-cpu-moe 30 -c 8192 -fa on --load-mode mmap --no-warmup --port 8080 --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5 -ub 2048 -b 2048 --cache-ram 0\n"
   },
   "linux/cache_ram_user": {
-   "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176"
-   ],
+   "calls": [],
    "rc": 0,
    "stderr": "",
    "stdout": "moe-cache: sampling from the Qwen3.5/3.6 model card (thinking): --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5; requests that send their own values win; --no-sampling-defaults turns it off\nmoe-cache: memory cap 28.0 GiB (30.1 GB) for the whole server (physical RAM minus max(4 GiB, 12.5 %); --max-ram GB changes it)\nmoe-cache: other programs hold 0.6 GiB of the GPU memory: keeping 0.5 GB free for them and the long-prompt block (--gpu-margin GiB to change)\nmoe-cache: micro-batch -ub 2048 (prompt processing; --ub N to change)\nmoe-cache: prompt cache: up to 512 MiB of host RAM keeps finished conversations for reuse (--cache-ram); llama-server's default number of slots. To change it: moe-cache-server ... -- --cache-ram MiB\nmoe-cache: experts of 30 layers stay on the CPU and are managed by the cache; profile <TMP>/cache/synthetic-moe.gguf.usage; plugin loaded by preload\nmoe-cache: web UI and API will be at http://127.0.0.1:8080\nenv LD_PRELOAD=<TMP>/libggml-moe-cache.so MOE_CACHE_PRELOAD=1 MOE_CACHE_SIZE_GIB=auto MOE_CACHE_GGUF=<MODEL> MOE_CACHE_PROFILE=<TMP>/cache/synthetic-moe.gguf.usage MOE_CACHE_RAM_GIB=11.176 MOE_CACHE_HOST_RESERVE_MIB=512 LLAMA_ARG_CORS_ORIGINS=localhost <TMP>/llama-server -m <MODEL> -ngl 99 --n-cpu-moe 30 -c 8192 -fa on --load-mode mmap --no-warmup --port 8080 --cache-ram 512 --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5 -ub 2048 -b 2048\n"
   },
   "linux/ctx_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -64,7 +56,6 @@
   },
   "linux/ctx_128k_ctk_user": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -73,7 +64,6 @@
   },
   "linux/ctx_128k_stock": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -82,7 +72,6 @@
   },
   "linux/ctx_256k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 262144 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -91,7 +80,6 @@
   },
   "linux/ctx_256k_vram": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 262144 --json --ram-gib 11.176 --vram-gib 12",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -100,7 +88,6 @@
   },
   "linux/ctx_64k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -109,7 +96,6 @@
   },
   "linux/ctx_8k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -118,7 +104,6 @@
   },
   "linux/ctx_user_after": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -127,7 +112,6 @@
   },
   "linux/exact_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -136,7 +120,6 @@
   },
   "linux/extra_jinja_user": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -145,7 +128,6 @@
   },
   "linux/extra_threads_user": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -154,7 +136,6 @@
   },
   "linux/fast": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -163,7 +144,6 @@
   },
   "linux/fast2": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -172,7 +152,6 @@
   },
   "linux/fast_fewer": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -181,7 +160,6 @@
   },
   "linux/fast_kv": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -190,7 +168,6 @@
   },
   "linux/fits_always_plugin": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 28.000",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -199,7 +176,6 @@
   },
   "linux/fits_stock_ram32": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 28.000",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -208,7 +184,6 @@
   },
   "linux/gpu_cache_2000": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -217,7 +192,6 @@
   },
   "linux/gpu_cache_auto": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -226,7 +200,6 @@
   },
   "linux/gpu_cache_auto_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -235,7 +208,6 @@
   },
   "linux/hybrid": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -244,7 +216,6 @@
   },
   "linux/hybrid_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -253,7 +224,6 @@
   },
   "linux/leave_room": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -262,7 +232,6 @@
   },
   "linux/leave_room_agent": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -271,7 +240,6 @@
   },
   "linux/load_path": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -280,7 +248,6 @@
   },
   "linux/load_preload": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -289,7 +256,6 @@
   },
   "linux/max_ram_20": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -303,24 +269,19 @@
    "stdout": ""
   },
   "linux/mtp": {
-   "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176"
-   ],
+   "calls": [],
    "rc": 1,
    "stderr": "SystemExit: --mtp: the model has no MTP head (no blk.N.nextn.* tensors)\n",
    "stdout": ""
   },
   "linux/mtp_agent": {
-   "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176"
-   ],
+   "calls": [],
    "rc": 1,
    "stderr": "SystemExit: --mtp: the model has no MTP head (no blk.N.nextn.* tensors)\n",
    "stdout": "moe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in <TMP>/cache/api.key (`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)\n"
   },
   "linux/multi_gpu": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -353,7 +314,6 @@
   },
   "linux/no_mtp": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -362,7 +322,6 @@
   },
   "linux/no_pin_no_ecores": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -371,7 +330,6 @@
   },
   "linux/no_ram_arg": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 22.352",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -380,7 +338,6 @@
   },
   "linux/no_sampling_defaults": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -389,7 +346,6 @@
   },
   "linux/peers": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -398,7 +354,6 @@
   },
   "linux/plain_ram12": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -407,7 +362,6 @@
   },
   "linux/port_alias_extra": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -416,7 +370,6 @@
   },
   "linux/port_user_after": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -425,7 +378,6 @@
   },
   "linux/profile_name": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -434,7 +386,6 @@
   },
   "linux/project": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -443,7 +394,6 @@
   },
   "linux/ram_low_cram0": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 7.451",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -452,7 +402,6 @@
   },
   "linux/share_ram": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -461,7 +410,6 @@
   },
   "linux/stock_agent": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -470,7 +418,6 @@
   },
   "linux/stock_flag": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -479,7 +426,6 @@
   },
   "linux/ub1024": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -488,7 +434,6 @@
   },
   "linux/ub2048_vram8": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -497,7 +442,6 @@
   },
   "linux/ub_user_after": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -512,7 +456,6 @@
   },
   "linux/vram2_margin": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 2",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -521,7 +464,6 @@
   },
   "linux/vram8": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -530,7 +472,6 @@
   },
   "win/agent": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -539,7 +480,6 @@
   },
   "win/agent_ctx32k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 32768 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -548,7 +488,6 @@
   },
   "win/agent_no_warm": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -557,7 +496,6 @@
   },
   "win/api_key_given": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -566,7 +504,6 @@
   },
   "win/auto_fit": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -574,16 +511,13 @@
    "stdout": "moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 14.65 GiB free (llama-server --list-devices; --vram GiB to override)\nmoe-cache: sampling from the Qwen3.5/3.6 model card (thinking): --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5; requests that send their own values win; --no-sampling-defaults turns it off\nmoe-cache: memory cap 25.8 GiB (27.7 GB) for the whole server (physical RAM minus max(4 GiB, 12.5 %); --max-ram GB changes it)\nmoe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C 0x1); --no-pin to disable\nmoe-cache: expert executor will also use 4 efficiency cores (--no-ecores to disable)\nmoe-cache: micro-batch -ub 2048 (prompt processing; --ub N to change)\nmoe-cache: Windows memory: RAM 24.0 GB free; commit 20.0 GB free of 60.0 GB (RAM + page file)\nmoe-cache: prompt cache: off (--cache-ram 0): a conversation that is replaced is processed again when it comes back; llama-server's default number of slots. To change it: moe-cache-server ... -- --cache-ram MiB\nmoe-cache: experts of 13 layers stay on the CPU and are managed by the cache; profile <TMP>/cache/synthetic-moe.gguf.usage; plugin loaded by path\nmoe-cache: web UI and API will be at http://127.0.0.1:8080\n$env:GGML_BACKEND_PATH=\"<TMP>/libggml-moe-cache.so\"; $env:MOE_CACHE_SIZE_GIB=\"auto\"; $env:MOE_CACHE_GGUF=\"<MODEL>\"; $env:MOE_CACHE_PROFILE=\"<TMP>/cache/synthetic-moe.gguf.usage\"; $env:MOE_CACHE_RAM_GIB=\"11.176\"; $env:MOE_CACHE_CPU_MASK=\"0x1\"; $env:MOE_CACHE_EXEC_ECORES=\"4\"; $env:MOE_CACHE_ECORE_MASK=\"0xf0000\"; $env:MOE_CACHE_HOST_RESERVE_MIB=\"0\"; $env:LLAMA_ARG_CORS_ORIGINS=\"localhost\"; & <TMP>/llama-server -m <MODEL> -ngl 99 --n-cpu-moe 13 -c 8192 -fa on --load-mode mmap --no-warmup --port 8080 -C 0x1 --cpu-strict 1 --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5 -ub 2048 -b 2048 --cache-ram 0\n"
   },
   "win/cache_ram_user": {
-   "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63"
-   ],
+   "calls": [],
    "rc": 0,
    "stderr": "moe-cache: GPU plan 14.65 -> 14.63 GiB: Windows' free commit (20.0 GB, RAM + page file) must also carry llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan\n",
    "stdout": "moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 14.65 GiB free (llama-server --list-devices; --vram GiB to override)\nmoe-cache: sampling from the Qwen3.5/3.6 model card (thinking): --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5; requests that send their own values win; --no-sampling-defaults turns it off\nmoe-cache: memory cap 25.8 GiB (27.7 GB) for the whole server (physical RAM minus max(4 GiB, 12.5 %); --max-ram GB changes it)\nmoe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C 0x1); --no-pin to disable\nmoe-cache: expert executor will also use 4 efficiency cores (--no-ecores to disable)\nmoe-cache: micro-batch -ub 2048 (prompt processing; --ub N to change)\nmoe-cache: Windows memory: RAM 24.0 GB free; commit 20.0 GB free of 60.0 GB (RAM + page file)\nmoe-cache: prompt cache: up to 512 MiB of host RAM keeps finished conversations for reuse (--cache-ram); llama-server's default number of slots. To change it: moe-cache-server ... -- --cache-ram MiB\nmoe-cache: experts of 13 layers stay on the CPU and are managed by the cache; profile <TMP>/cache/synthetic-moe.gguf.usage; plugin loaded by path\nmoe-cache: web UI and API will be at http://127.0.0.1:8080\n$env:GGML_BACKEND_PATH=\"<TMP>/libggml-moe-cache.so\"; $env:MOE_CACHE_SIZE_GIB=\"auto\"; $env:MOE_CACHE_GGUF=\"<MODEL>\"; $env:MOE_CACHE_PROFILE=\"<TMP>/cache/synthetic-moe.gguf.usage\"; $env:MOE_CACHE_RAM_GIB=\"11.176\"; $env:MOE_CACHE_CPU_MASK=\"0x1\"; $env:MOE_CACHE_EXEC_ECORES=\"4\"; $env:MOE_CACHE_ECORE_MASK=\"0xf0000\"; $env:MOE_CACHE_HOST_RESERVE_MIB=\"512\"; $env:LLAMA_ARG_CORS_ORIGINS=\"localhost\"; & <TMP>/llama-server -m <MODEL> -ngl 99 --n-cpu-moe 13 -c 8192 -fa on --load-mode mmap --no-warmup --port 8080 -C 0x1 --cpu-strict 1 --cache-ram 512 --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5 -ub 2048 -b 2048\n"
   },
   "win/ctx_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -592,7 +526,6 @@
   },
   "win/ctx_128k_ctk_user": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -601,7 +534,6 @@
   },
   "win/ctx_128k_stock": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -610,7 +542,6 @@
   },
   "win/ctx_256k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 262144 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -619,7 +550,6 @@
   },
   "win/ctx_256k_vram": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 262144 --json --ram-gib 11.176 --vram-gib 12",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -628,7 +558,6 @@
   },
   "win/ctx_64k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -637,7 +566,6 @@
   },
   "win/ctx_8k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -646,7 +574,6 @@
   },
   "win/ctx_user_after": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -655,7 +582,6 @@
   },
   "win/exact_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -664,7 +590,6 @@
   },
   "win/extra_jinja_user": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -673,7 +598,6 @@
   },
   "win/extra_threads_user": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -682,7 +606,6 @@
   },
   "win/fast": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -691,7 +614,6 @@
   },
   "win/fast2": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -700,7 +622,6 @@
   },
   "win/fast_fewer": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -709,7 +630,6 @@
   },
   "win/fast_kv": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -718,7 +638,6 @@
   },
   "win/fits_always_plugin": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 25.802 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -727,7 +646,6 @@
   },
   "win/fits_stock_ram32": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 25.802 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -736,7 +654,6 @@
   },
   "win/gpu_cache_2000": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -745,7 +662,6 @@
   },
   "win/gpu_cache_auto": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -754,7 +670,6 @@
   },
   "win/gpu_cache_auto_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -763,7 +678,6 @@
   },
   "win/hybrid": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -772,7 +686,6 @@
   },
   "win/hybrid_128k": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 131072 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -781,7 +694,6 @@
   },
   "win/leave_room": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -790,7 +702,6 @@
   },
   "win/leave_room_agent": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -799,7 +710,6 @@
   },
   "win/load_path": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -807,16 +717,13 @@
    "stdout": "moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 14.65 GiB free (llama-server --list-devices; --vram GiB to override)\nmoe-cache: sampling from the Qwen3.5/3.6 model card (thinking): --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5; requests that send their own values win; --no-sampling-defaults turns it off\nmoe-cache: memory cap 25.8 GiB (27.7 GB) for the whole server (physical RAM minus max(4 GiB, 12.5 %); --max-ram GB changes it)\nmoe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C 0x1); --no-pin to disable\nmoe-cache: expert executor will also use 4 efficiency cores (--no-ecores to disable)\nmoe-cache: micro-batch -ub 2048 (prompt processing; --ub N to change)\nmoe-cache: Windows memory: RAM 24.0 GB free; commit 20.0 GB free of 60.0 GB (RAM + page file)\nmoe-cache: prompt cache: off (--cache-ram 0): a conversation that is replaced is processed again when it comes back; llama-server's default number of slots. To change it: moe-cache-server ... -- --cache-ram MiB\nmoe-cache: experts of 13 layers stay on the CPU and are managed by the cache; profile <TMP>/cache/synthetic-moe.gguf.usage; plugin loaded by path\nmoe-cache: web UI and API will be at http://127.0.0.1:8080\n$env:GGML_BACKEND_PATH=\"<TMP>/libggml-moe-cache.so\"; $env:MOE_CACHE_SIZE_GIB=\"auto\"; $env:MOE_CACHE_GGUF=\"<MODEL>\"; $env:MOE_CACHE_PROFILE=\"<TMP>/cache/synthetic-moe.gguf.usage\"; $env:MOE_CACHE_RAM_GIB=\"11.176\"; $env:MOE_CACHE_CPU_MASK=\"0x1\"; $env:MOE_CACHE_EXEC_ECORES=\"4\"; $env:MOE_CACHE_ECORE_MASK=\"0xf0000\"; $env:MOE_CACHE_HOST_RESERVE_MIB=\"0\"; $env:LLAMA_ARG_CORS_ORIGINS=\"localhost\"; & <TMP>/llama-server -m <MODEL> -ngl 99 --n-cpu-moe 13 -c 8192 -fa on --load-mode mmap --no-warmup --port 8080 -C 0x1 --cpu-strict 1 --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5 -ub 2048 -b 2048 --cache-ram 0\n"
   },
   "win/load_preload": {
-   "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63"
-   ],
+   "calls": [],
    "rc": 1,
    "stderr": "moe-cache: GPU plan 14.65 -> 14.63 GiB: Windows' free commit (20.0 GB, RAM + page file) must also carry llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan\nSystemExit: --load-method preload does not exist on Windows (use path)\n",
    "stdout": "moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 14.65 GiB free (llama-server --list-devices; --vram GiB to override)\nmoe-cache: sampling from the Qwen3.5/3.6 model card (thinking): --temp 1 --top-p 0.95 --top-k 20 --min-p 0 --presence-penalty 1.5; requests that send their own values win; --no-sampling-defaults turns it off\n"
   },
   "win/max_ram_20": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -830,24 +737,19 @@
    "stdout": ""
   },
   "win/mtp": {
-   "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63"
-   ],
+   "calls": [],
    "rc": 1,
    "stderr": "moe-cache: GPU plan 14.65 -> 14.63 GiB: Windows' free commit (20.0 GB, RAM + page file) must also carry llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan\nSystemExit: --mtp: the model has no MTP head (no blk.N.nextn.* tensors)\n",
    "stdout": "moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 14.65 GiB free (llama-server --list-devices; --vram GiB to override)\n"
   },
   "win/mtp_agent": {
-   "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63"
-   ],
+   "calls": [],
    "rc": 1,
    "stderr": "moe-cache: GPU plan 14.65 -> 14.63 GiB: Windows' free commit (20.0 GB, RAM + page file) must also carry llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan\nSystemExit: --mtp: the model has no MTP head (no blk.N.nextn.* tensors)\n",
    "stdout": "moe-cache: GPU AMD Radeon RX 9070 XT (Vulkan0): 14.65 GiB free (llama-server --list-devices; --vram GiB to override)\nmoe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in <TMP>/cache/api.key (`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)\n"
   },
   "win/multi_gpu": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -880,7 +782,6 @@
   },
   "win/no_mtp": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -889,7 +790,6 @@
   },
   "win/no_pin_no_ecores": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -898,7 +798,6 @@
   },
   "win/no_ram_arg": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 22.352 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -907,7 +806,6 @@
   },
   "win/no_sampling_defaults": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -916,7 +814,6 @@
   },
   "win/peers": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -925,7 +822,6 @@
   },
   "win/plain_ram12": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -934,7 +830,6 @@
   },
   "win/port_alias_extra": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -943,7 +838,6 @@
   },
   "win/port_user_after": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -952,7 +846,6 @@
   },
   "win/profile_name": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -961,7 +854,6 @@
   },
   "win/project": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -970,7 +862,6 @@
   },
   "win/ram_low_cram0": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 7.451 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -980,7 +871,6 @@
   "win/share_ram": {
    "calls": [
     "tasklist /FI IMAGENAME eq llama-server.exe /FO CSV /NH",
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -989,7 +879,6 @@
   },
   "win/stock_agent": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 65536 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -998,7 +887,6 @@
   },
   "win/stock_flag": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -1007,7 +895,6 @@
   },
   "win/ub1024": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -1016,7 +903,6 @@
   },
   "win/ub2048_vram8": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -1025,7 +911,6 @@
   },
   "win/ub_user_after": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 14.63",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -1040,7 +925,6 @@
   },
   "win/vram2_margin": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 2",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
@@ -1049,7 +933,6 @@
   },
   "win/vram8": {
    "calls": [
-    "python3 <HERE>/planner/plan.py <MODEL> --ctx 8192 --json --ram-gib 11.176 --vram-gib 8",
     "<TMP>/llama-server --help"
    ],
    "rc": 0,
