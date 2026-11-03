@@ -806,11 +806,13 @@ def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
     a, b = tune(path, ctx, free=free, kv_q8=False, **kw), tune(path, ctx, free=free, kv_q8=True, **kw)
     kv16, kv8 = _kv_or_flat(path, ctx), _kv_or_flat(path, ctx, True)
     gained = a["n_cpu_moe"] - b["n_cpu_moe"]
+    bigger_ub = b["ub"] > a["ub"]          # since 2026-11-03 the room q8_0 frees can go to -ub 2048 (256k: prompts +26 %) instead of more layers
     no_fit = lay["other_bytes"] + kv16 > free and lay["other_bytes"] + kv8 <= free
-    if gained < 2 and not no_fit:
+    if gained < 2 and not no_fit and not bigger_ub:
         return None
     what = ("the context does not fit the card's memory with an f16 KV cache, with q8_0 it does" if no_fit else
-            f"{gained} more layers of experts on the GPU ({b['n_cpu_moe']} instead of {a['n_cpu_moe']} on the CPU)")
+            f"{gained} more layers of experts on the GPU ({b['n_cpu_moe']} instead of {a['n_cpu_moe']} on the CPU)" if gained >= 2 else
+            f"a prompt chunk of {b['ub']} instead of {a['ub']} tokens (faster long prompts; {b['n_cpu_moe']} instead of {a['n_cpu_moe']} layers of experts on the CPU)")
     return (f"at {ctx // 1024}k context, --fast would store the KV cache as q8_0 ({kv8 / 2**30:.1f} instead of {kv16 / 2**30:.1f} GiB): {what}. "
             "It changes some tokens (exact mode stays identical to stock)")
 

@@ -277,8 +277,8 @@ check(gguf_plan.compute_buffer_guess_mib(524288, 512) >= 2 * gguf_plan.compute_b
 for _c in sorted(gguf_plan._COMPUTE_MIB):      # audit 2026-10-29 L1: -ub 2048 at 128k/256k was guessed at a flat 990 MiB (3150 / 3979 measured)
     check(gguf_plan.compute_buffer_guess_mib(_c, 2048) >= gguf_plan.compute_buffer_guess_mib(_c, 1024) >= gguf_plan.compute_buffer_guess_mib(_c, 512),
           f"compute buffer guess at {_c}: 2048 >= 1024 >= 512 ({[gguf_plan.compute_buffer_guess_mib(_c, u) for u in (2048, 1024, 512)]})")
-check(gguf_plan.compute_buffer_guess_mib(262144, 2048) >= 3979 and gguf_plan.compute_buffer_mib(262144, 2048) is None,
-      "compute buffer: 2048 at 256k guessed at its measured size but still never auto-picked")
+check(gguf_plan.compute_buffer_guess_mib(262144, 2048) >= 3979 and gguf_plan.compute_buffer_mib(262144, 2048) == 3979,
+      "compute buffer: 2048 at 256k is a candidate with its measured size (picked since 2026-11-03: prompts +26 %)")
 _run = gguf_plan.subprocess.run      # audit 2026-10-29 L4: two NVIDIA GPUs print two lines; the tuner read none
 gguf_plan.subprocess.run = lambda *a, **k: types.SimpleNamespace(stdout="24564, 300\n12288, 100\n")
 try:
@@ -377,7 +377,7 @@ _fkv = [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qw
 _ft = [("token_embd.weight", 3 << 30)] + [(f"blk.{i}.ffn_down_exps.weight", 700 << 20) for i in range(48)]
 _fp = os.path.join(_md, "fnx_full.gguf"); _full_gguf(_fp, _fkv, _ft)
 _h256, _h64 = gguf_plan.fast_kv_hint(_fp, 262144, free=15.06 * 2**30), gguf_plan.fast_kv_hint(_fp, 65536, free=15.06 * 2**30)
-check(_h256 and "--fast" in _h256 and "more layers of experts on the GPU" in _h256 and _h64 is None, f"fast_kv_hint: 256k -> {_h256}; 64k -> {_h64}")
+check(_h256 and "--fast" in _h256 and ("more layers of experts on the GPU" in _h256 or "prompt chunk of 2048" in _h256) and _h64 is None, f"fast_kv_hint: 256k -> {_h256}; 64k -> {_h64}")
 
 # hard memory cap (owner 2026-10-29): physical RAM minus max(4 GiB, 12.5 %), MOE_CACHE_MAX_RAM_GB overrides (0 = off), --ram cannot exceed it
 _mt, _env = L.mem_total, os.environ.pop("MOE_CACHE_MAX_RAM_GB", None)
