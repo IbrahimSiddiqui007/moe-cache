@@ -131,6 +131,7 @@ def make_synthetic_model(path, n_layers=40, n_expert=256, ne0=2048, ne1=512):
         f.truncate(len(head) + off)        # sparse: the tensor data is never written
 
 
+_REAL_OTHER_SERVERS = mc.other_llama_servers
 NEW_CASES = {c[0] for c in CASES[CASES.index(next(x for x in CASES if x[0] == "leave_room")):]}
 
 
@@ -157,6 +158,9 @@ def fake_machine(m, tmp):
     mc.vk_cache_cap = lambda ls, model, listing=None: (None, None)
     mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
     mc.python_cmd = lambda: "python3"
+    # --share-ram counts the llama-servers running on the machine: Linux reads /proc (none, whatever runs here); Windows asks tasklist through subprocess.run,
+    # which is faked below and recorded in `calls`
+    mc.other_llama_servers = _REAL_OTHER_SERVERS if m["windows"] else (lambda: [])
     gguf_plan.free_vram_bytes = lambda: m["free_vram"]
     gguf_plan.gpu_total_free_bytes = lambda: (m["total_vram"], m["free_vram"])
     real_access = os.access

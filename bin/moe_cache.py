@@ -2469,6 +2469,21 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     return tuned, desk_kw, ub_asked
 
 
+def api_key_stage(a, extra):
+    """ENGINE-029, stage "API key": a key given on our command line or after `--` goes to llama-server through the environment (LLAMA_API_KEY), never its argument list; agent mode and --project always get the stable per-user key; plain chat servers get none, but a CORS allow-list. Returns (api_key or None, the environment settings for it)."""
+    api_key = take_api_key_from_args(extra) or a.api_key
+    if not api_key and (a.agent or a.project):
+        api_key = stored_key(create=True)
+        say(f"moe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in {KEY_FILE} "
+            "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
+    key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
+    if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
+        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
+        # Passed as the environment variable so a llama-server without the flag just ignores it
+        key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
+    return api_key, key_env
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2582,16 +2597,7 @@ def _launch_plan(a, extra, argv, machine):
     # API key (DECISION_LLAMA_SERVER_KEY, option C): a key given on our command line or after `--` goes to llama-server through the environment
     # (LLAMA_API_KEY), not its argument list; agent mode and --project always get the stable per-user key. Plain chat servers get none, but a CORS
     # allow-list so a normal web page cannot read their answers.
-    api_key = take_api_key_from_args(extra) or a.api_key
-    if not api_key and (a.agent or a.project):
-        api_key = stored_key(create=True)
-        say(f"moe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in {KEY_FILE} "
-            "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
-    key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
-    if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
-        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
-        # Passed as the environment variable so a llama-server without the flag just ignores it
-        key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
+    api_key, key_env = api_key_stage(a, extra)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias = None
     slotdir = None
