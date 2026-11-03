@@ -23,7 +23,7 @@ for API in 2 3; do
   if [ $API = 3 ]; then SUF=-ggml0.26; export GGML_API=3; else SUF=; unset GGML_API; fi
   ./build.sh --portable
   N=moe-cache-v$V$SUF-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
-  cp -r bin planner ui tests tools profiles docs LICENSE README.md CHANGELOG.md build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
+  cp -r bin planner ui tests tools profiles docs LICENSE README.md CHANGELOG.md models.json build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
   rm -f dist/$N/tools/make_release.sh dist/$N/tools/bundle_llama_linux.sh
   # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12064 = ggml 0.28 = API 3), unmodified, sha256-checked
   # against the release asset, in llama/ (the launcher finds it); the API-2 tarball (llama.cpp 7fe450e19) has no official build to bundle: it needs your own.

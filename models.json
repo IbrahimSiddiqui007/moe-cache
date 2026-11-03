@@ -1,0 +1,730 @@
+{
+ "schema": 1,
+ "about": "The one model catalogue of moe-cache: bin/moe_cache_catalogue.py reads it; pick, launch, models, docs/MODELS.md (tools/gen_models_md.py) and tools/check_model_links.py follow it. Schema in docs/MODELS.md. Numbers: only those written down in docs/RESULTS.md or benchmarks/, each with machine, date and source.",
+ "machines": {
+  "pc": {
+   "name": "Windows PC: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Windows 11, llama.cpp Vulkan",
+   "ram_gb": 32,
+   "cap_gb": 30.1,
+   "vram_gib": 16,
+   "os": "Windows"
+  },
+  "laptop-24": {
+   "name": "Linux laptop: RTX 4060 8 GB, 31 GB RAM limited to 24 GB",
+   "ram_gb": 24,
+   "cap_gb": 24.0,
+   "vram_gib": 8,
+   "os": "Linux"
+  },
+  "laptop-12": {
+   "name": "Linux laptop: RTX 4060 8 GB, memory limited to 12 GB",
+   "ram_gb": 12,
+   "cap_gb": 12.0,
+   "vram_gib": 8,
+   "os": "Linux"
+  }
+ },
+ "models": [
+  {
+   "id": "bolt",
+   "name": "Nemotron 3.5 Bolt 74B-A9B (NVIDIA 2-bit QAT)",
+   "family": "Nemotron 3.5 Bolt, 74B total / 9B active",
+   "quant": "NVIDIA 2-bit QAT (24GB file)",
+   "license": "openmdw-1.1",
+   "bytes": 22018326528,
+   "files": [
+    {
+     "name": "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+     "path": "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+     "bytes": 22018326528,
+     "sha256": "91d63363e782c8a3d5f4be42816eba8e0d42dd2530bd07a7d0d2dc440599af75"
+    }
+   ],
+   "hf": {
+    "repo": "nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB-GGUF",
+    "include": "NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB.gguf",
+    "revision": "e0fecb69cb3e5e4c5e8a056fa2aec98c78e91246",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "Nemotron-3\\.5-Bolt-74B.*24GB\\.gguf$",
+   "mtp": null,
+   "uses": [
+    "agents",
+    "chat",
+    "docs"
+   ],
+   "avoid_uses": [],
+   "fit": {
+    "stock_only": true,
+    "min_build": 11966,
+    "ctx_tested_max": 262144
+   },
+   "measured": [
+    {
+     "metric": "decode_tps",
+     "value": 27.9,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 65; claim card-decode-nemotron",
+     "ctx": 65536
+    },
+    {
+     "metric": "decode_tps",
+     "value": 24.85,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 65",
+     "ctx": 131072,
+     "note": "at 114k tokens of prompt"
+    },
+    {
+     "metric": "prompt_tps",
+     "value": 595.4,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 65",
+     "ctx": 65536,
+     "note": "57k-token prompt"
+    },
+    {
+     "metric": "prompt_tps",
+     "value": 720.8,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 65",
+     "ctx": 131072,
+     "note": "114k-token prompt"
+    },
+    {
+     "metric": "tasks_correct",
+     "value": 190,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 65",
+     "note": "of 202 exact-answer tasks"
+    },
+    {
+     "metric": "agent_session_s",
+     "value": 47.75,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 65",
+     "note": "OpenCode replay, stock, cold; Flash-Next IQ2_XS took 73.4 s"
+    }
+   ],
+   "notes": [
+    "Fits in RAM + VRAM on a 32 GB PC, so the launcher runs stock llama-server (moe-cache forced on it was 18 % slower, RESULTS 65).",
+    "General knowledge beyond our 202 tasks is not checked."
+   ],
+   "warnings": [
+    "Needs llama.cpp b11966 or newer (tokenizer fix #30960)."
+   ],
+   "ollama": {
+    "pull": null,
+    "tag_regex": "nemotron.*bolt"
+   }
+  },
+  {
+   "id": "flash-next-q2_0",
+   "name": "Qwen3.8-Flash-Next Q2_0 (GSQ-RCO)",
+   "family": "Qwen3.8-Flash-Next (512 experts)",
+   "quant": "Q2_0",
+   "license": "apache-2.0",
+   "bytes": 66423878624,
+   "files": [
+    {
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+     "path": "Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00001-of-00002.gguf",
+     "bytes": 37623740192,
+     "sha256": "69820c02ec7d0b45ef2ebb19d6620299db749fe2aded7f39f93c6b88b199b720"
+    },
+    {
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+     "path": "Q2_0/Qwen3.8-Flash-Next-GSQ-RCO-Q2_0-00002-of-00002.gguf",
+     "bytes": 28800138432,
+     "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    }
+   ],
+   "hf": {
+    "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+    "include": "Q2_0/*.gguf",
+    "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "Flash-Next-GSQ-RCO-Q2_0[-.]",
+   "mtp": "none",
+   "uses": [
+    "chat",
+    "agents",
+    "docs"
+   ],
+   "avoid_uses": [],
+   "fit": {
+    "min_cap_gb": 24,
+    "min_vram_gib": 6,
+    "needs_ssd_if_oversize": true,
+    "ctx_tested_max": 262144,
+    "small_ctx_floor": {
+     "ctx": 16384,
+     "min_cap_gb": 11,
+     "note": "only with --fast (approximate)"
+    }
+   },
+   "measured": [
+    {
+     "metric": "decode_tps",
+     "value": 22.16,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 63; claim card-decode-flashnext-q2_0",
+     "ctx": 8192,
+     "note": "cold, mean of two runs, 36 CPU expert layers"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 24.68,
+     "machine": "pc",
+     "date": "2026-10-29",
+     "source": "RESULTS 67 (N15 async reads, now merged)",
+     "ctx": 40960
+    },
+    {
+     "metric": "decode_tps",
+     "value": 20.65,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 64",
+     "ctx": 65536,
+     "note": "at 63.5k tokens of prompt"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 15.27,
+     "machine": "pc",
+     "date": "2026-10-29",
+     "source": "RESULTS 67",
+     "ctx": 131072,
+     "note": "at 130.6k tokens of prompt"
+    },
+    {
+     "metric": "prompt_tps",
+     "value": 281,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 63",
+     "ctx": 8192,
+     "note": "3k-token prompt"
+    },
+    {
+     "metric": "prompt_tps",
+     "value": 287,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 63",
+     "ctx": 40960,
+     "note": "34k-token prompt; the v0.3.5 defaults read 34k at 620-640 tok/s (RESULTS 78, 2026-11-02)"
+    },
+    {
+     "metric": "tasks_correct",
+     "value": 191,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 63",
+     "note": "of 202"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 9.5,
+     "machine": "laptop-12",
+     "date": "2026-10-26",
+     "source": "RESULTS 53",
+     "covers_fit": false,
+     "ctx": 16384,
+     "note": "with --fast (changes some tokens); 13.7 with --fast=2"
+    }
+   ],
+   "notes": [
+    "The faster Flash-Next file: about 10 % more tokens per second than IQ3_XXS, 9 GB smaller. No quality difference between any two Flash-Next files is proven (all p > 0.05).",
+    "Decode is CPU-bound on the measured PC; the model card's +33 % does not reproduce."
+   ],
+   "warnings": [
+    "Bigger than the RAM the server may use: moe-cache keeps the hot experts in RAM and reads the rest from the drive (SSD needed)."
+   ],
+   "ollama": {
+    "pull": null,
+    "tag_regex": "flash-next.*q2_0"
+   }
+  },
+  {
+   "id": "flash-next-iq3_xxs",
+   "name": "Qwen3.8-Flash-Next IQ3_XXS (GSQ-RCO)",
+   "family": "Qwen3.8-Flash-Next (512 experts)",
+   "quant": "IQ3_XXS",
+   "license": "apache-2.0",
+   "bytes": 75839998528,
+   "files": [
+    {
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+     "path": "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf",
+     "bytes": 47039860096,
+     "sha256": "219ea929900dfa9ef091f3aa473fdba6874b65fcb36526d7d851ac9e95856d15"
+    },
+    {
+     "name": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+     "path": "IQ3_XXS/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00002-of-00002.gguf",
+     "bytes": 28800138432,
+     "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+    }
+   ],
+   "hf": {
+    "repo": "ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF",
+    "include": "IQ3_XXS/*.gguf",
+    "revision": "ed59f92082b1e93c0e96d60a8b11aab089b52f09",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "Flash-Next-GSQ-RCO-IQ3_XXS[-.]",
+   "mtp": "none",
+   "uses": [
+    "chat",
+    "agents"
+   ],
+   "avoid_uses": [],
+   "fit": {
+    "min_cap_gb": 24,
+    "min_vram_gib": 6,
+    "needs_ssd_if_oversize": true,
+    "ctx_tested_max": 65536,
+    "ctx_tested_source": "docs/AGENTS.md: Hermes fixed a bug at 64k (laptop, 2026-10-29)"
+   },
+   "measured": [
+    {
+     "metric": "decode_tps",
+     "value": 19.86,
+     "machine": "pc",
+     "date": "2026-10-27",
+     "source": "RESULTS 59; claim card-decode-flashnext-iq3xxs",
+     "ctx": 8192,
+     "note": "cold ABBA, 9 GPU expert layers"
+    },
+    {
+     "metric": "tasks_correct",
+     "value": 193,
+     "machine": "pc",
+     "date": "2026-10-27",
+     "source": "RESULTS 60, 63",
+     "note": "of 202 (the most of any file)"
+    }
+   ],
+   "notes": [
+    "The default Flash-Next file on a 16 GB GPU (owner 2026-10-30): 3-bit, the most tasks right (193/202), reads best for coding; about 10 % slower decode than Q2_0."
+   ],
+   "warnings": [
+    "Bigger than the RAM the server may use: moe-cache keeps the hot experts in RAM and reads the rest from the drive (SSD needed)."
+   ],
+   "ollama": {
+    "pull": null,
+    "tag_regex": "flash-next.*iq3_xxs"
+   }
+  },
+  {
+   "id": "qwen3.6-35b",
+   "name": "Qwen3.6-35B-A3B Q4_K_M",
+   "family": "Qwen3.6, 35B total / 3B active",
+   "quant": "Q4_K_M (unsloth UD)",
+   "license": "apache-2.0",
+   "bytes": 22134528992,
+   "files": [
+    {
+     "name": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+     "path": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+     "bytes": 22134528992,
+     "sha256": "ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
+    }
+   ],
+   "hf": {
+    "repo": "unsloth/Qwen3.6-35B-A3B-GGUF",
+    "include": "*Q4_K_M*",
+    "revision": "a483e9e6cbd595906af30beda3187c2663a1118c",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "(?i)qwen3\\.6(-35b-a3b)?([-_.].*Q4_K_M)?.*\\.gguf$",
+   "mtp": "separate-file",
+   "uses": [
+    "agents",
+    "chat",
+    "docs"
+   ],
+   "avoid_uses": [],
+   "fit": {
+    "stock_if_fits": true,
+    "ctx_tested_max": 262144
+   },
+   "measured": [
+    {
+     "metric": "decode_tps",
+     "value": 42.89,
+     "machine": "laptop-24",
+     "date": "2026-10-15",
+     "source": "RESULTS 44.1",
+     "ctx": 4096,
+     "note": "stock, fits in RAM"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 22.6,
+     "machine": "laptop-12",
+     "date": "2026-10-15",
+     "source": "RESULTS 44.2",
+     "ctx": 32768,
+     "note": "moe-cache, --cache-ram 0; stock 6.9"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 59.09,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 64; claim card-decode-qwen36",
+     "ctx": 65536,
+     "note": "at 63.5k tokens of prompt, stock"
+    },
+    {
+     "metric": "prompt_tps",
+     "value": 739,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 64",
+     "ctx": 65536,
+     "note": "53-63k depth; 848 at 4-21k"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 45.76,
+     "machine": "pc",
+     "date": "2026-10-29",
+     "source": "RESULTS 64 (added from 67)",
+     "ctx": 131072,
+     "note": "at 130.5k tokens of prompt"
+    },
+    {
+     "metric": "prompt_tps",
+     "value": 697,
+     "machine": "pc",
+     "date": "2026-10-29",
+     "source": "RESULTS 64 (added from 67)",
+     "ctx": 131072,
+     "note": "last 17k chunk up to 130.5k; peak 1014"
+    }
+   ],
+   "notes": [
+    "The smallest candidate: the one that still runs agents at 64k on a small machine.",
+    "MTP (separate head file) takes decode from 43.5 to 72 tok/s in agent mode on the PC (RESULTS 60).",
+    "The Hugging Face file is now 22.13 GB; the picker and the measurements used a 21.72 GB file (RESULTS 44), so the file changed since (revision above): check the sha256 before comparing numbers."
+   ],
+   "warnings": [],
+   "ollama": {
+    "pull": "qwen3.6:35b-a3b",
+    "tag_regex": "qwen3\\.6.*35b"
+   }
+  },
+  {
+   "id": "qwen3.5-122b",
+   "name": "Qwen3.5-122B-A10B UD-IQ2_XXS",
+   "family": "Qwen3.5, 122B total / 10B active",
+   "quant": "UD-IQ2_XXS (unsloth)",
+   "license": "apache-2.0",
+   "bytes": 36637668544,
+   "files": [
+    {
+     "name": "Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf",
+     "path": "Qwen3.5-122B-A10B-UD-IQ2_XXS.gguf",
+     "bytes": 36637668544,
+     "sha256": "3a67140a6be1e51716ef28d32f52e3190295557c3ed04c8444a3a38eb82b756c"
+    }
+   ],
+   "hf": {
+    "repo": "unsloth/Qwen3.5-122B-A10B-GGUF",
+    "include": "*UD-IQ2_XXS*",
+    "revision": "51eab4d59d53f573fb9206cb3ce613f1d0aa392b",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "Qwen3\\.5-122B-A10B-UD-IQ2_XXS[-.]",
+   "mtp": null,
+   "uses": [
+    "chat"
+   ],
+   "avoid_uses": [],
+   "fit": {
+    "min_cap_gb": 24,
+    "min_vram_gib": 6,
+    "needs_ssd_if_oversize": true,
+    "ctx_tested_max": 131072
+   },
+   "measured": [
+    {
+     "metric": "decode_tps",
+     "value": 19.69,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 64",
+     "ctx": 65536,
+     "note": "at 4k"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 17.26,
+     "machine": "pc",
+     "date": "2026-10-28",
+     "source": "RESULTS 64",
+     "ctx": 65536,
+     "note": "at 63.5k tokens of prompt"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 7.7,
+     "machine": "laptop-24",
+     "date": "2026-10-15",
+     "source": "RESULTS 45",
+     "ctx": 4096,
+     "note": "moe-cache; stock 1.89"
+    }
+   ],
+   "notes": [
+    "36.6 GB on disk instead of Flash-Next's 66 GB."
+   ],
+   "warnings": [
+    "Bigger than the RAM the server may use (SSD needed)."
+   ],
+   "ollama": {
+    "pull": null,
+    "tag_regex": "qwen3\\.5.*122b"
+   }
+  },
+  {
+   "id": "glm-5.3",
+   "name": "GLM-5.3-Flash UD-IQ2_XXS",
+   "family": "GLM-5.3-Flash",
+   "quant": "UD-IQ2_XXS (unsloth)",
+   "license": "mit",
+   "bytes": 101844951904,
+   "files": [
+    {
+     "name": "GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf",
+     "path": "UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00001-of-00004.gguf",
+     "bytes": 9429984,
+     "sha256": "337870cefce5fb34b2aa3ade54a0fbf61676697f7f9a906670c20edde74561f4"
+    },
+    {
+     "name": "GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf",
+     "path": "UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00002-of-00004.gguf",
+     "bytes": 49896298080,
+     "sha256": "d51a3d9ca05022d53e71753df75ee64ed5fd4e47655650ae023e9717b3ec158d"
+    },
+    {
+     "name": "GLM-5.3-Flash-UD-IQ2_XXS-00003-of-00004.gguf",
+     "path": "UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00003-of-00004.gguf",
+     "bytes": 49248507840,
+     "sha256": "89180f13784dc1128586b98adf1ca876279881a20bc4f01747703ce352563372"
+    },
+    {
+     "name": "GLM-5.3-Flash-UD-IQ2_XXS-00004-of-00004.gguf",
+     "path": "UD-IQ2_XXS/GLM-5.3-Flash-UD-IQ2_XXS-00004-of-00004.gguf",
+     "bytes": 2690716000,
+     "sha256": "9e0ef47daa1fdffce3cf2ac1594ce4634d176ad018be6e692729757f38d5fbf6"
+    }
+   ],
+   "hf": {
+    "repo": "unsloth/GLM-5.3-Flash-GGUF",
+    "include": "UD-IQ2_XXS/*.gguf",
+    "revision": "a38483c8cd5df544f53d70fb281afe97369d5ab6",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "GLM-5\\.3-Flash-UD-IQ2_XXS[-.]",
+   "mtp": "in-file",
+   "uses": [
+    "chat"
+   ],
+   "avoid_uses": [],
+   "fit": {
+    "stock_only": true,
+    "ctx_tested_max": 32768,
+    "ctx_tested_source": "benchmarks/claims/guard-glm-30k.md; a 64k run timed out at 35 min (RESULTS 64)"
+   },
+   "measured": [
+    {
+     "metric": "decode_tps",
+     "value": 4.44,
+     "machine": "pc",
+     "date": "2026-10-27",
+     "source": "RESULTS 59; claim card-decode-glm",
+     "ctx": 8192,
+     "note": "one cold pair; stock 2.21, 3 GPU expert layers"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 6.92,
+     "machine": "pc",
+     "date": "2026-10-27",
+     "source": "RESULTS 60; claim card-decode-glm",
+     "ctx": 8192,
+     "note": "with --mtp"
+    }
+   ],
+   "notes": [
+    "The biggest candidate; suggested for chat only where it fits in RAM (128 GB+).",
+    "With --mtp 3.1x stock on the PC (RESULTS 60); on the laptop MTP lost 25 % (RESULTS 40)."
+   ],
+   "warnings": [
+    "On a 32 GB PC it is a 102 GB model read from the drive: 4-7 tok/s, 64k contexts did not finish."
+   ],
+   "ollama": {
+    "pull": null,
+    "tag_regex": "glm-?5\\.3"
+   }
+  },
+  {
+   "id": "gpt-oss-120b",
+   "name": "gpt-oss-120b MXFP4 (OpenAI, ggml-org)",
+   "family": "gpt-oss-120b (128 experts, top 4)",
+   "quant": "MXFP4",
+   "license": "apache-2.0",
+   "bytes": 63387346208,
+   "files": [
+    {
+     "name": "gpt-oss-120b-MXFP4.gguf",
+     "path": "gpt-oss-120b-MXFP4.gguf",
+     "bytes": 63387346208,
+     "sha256": "582bd40f6886200101f4c4ed9f25f3fe80cc14c86e9e2b37746cd8904a0c622d"
+    }
+   ],
+   "hf": {
+    "repo": "ggml-org/gpt-oss-120b-GGUF",
+    "include": "gpt-oss-120b-MXFP4.gguf",
+    "revision": "7200b74bea78b0a2964ef9f3897eefa401e890ff",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "gpt-oss-120b-MXFP4\\.gguf$",
+   "mtp": null,
+   "uses": [
+    "chat"
+   ],
+   "avoid_uses": [],
+   "fit": {
+    "min_cap_gb": 24,
+    "min_vram_gib": 6,
+    "needs_ssd_if_oversize": true,
+    "ctx_tested_max": 8192
+   },
+   "measured": [
+    {
+     "metric": "decode_tps",
+     "value": 2.71,
+     "machine": "laptop-24",
+     "date": "2026-10-09",
+     "source": "RESULTS 12",
+     "ctx": 8192,
+     "note": "all experts on the CPU, one run per cell; stock 0.34"
+    },
+    {
+     "metric": "decode_tps",
+     "value": 3.01,
+     "machine": "laptop-24",
+     "date": "2026-10-09",
+     "source": "RESULTS 12b",
+     "ctx": 8192,
+     "note": "2 of 36 expert layers on the GPU; not a clean run"
+    }
+   ],
+   "notes": [
+    "General chat and short answers. A reasoning model: if answers come back empty, give it room or lower its effort (--reasoning-budget); sampling temperature 1.0, top-p 1.0."
+   ],
+   "warnings": [
+    "Coding agents at 64k and long prompts are not tested (check that the agent handles reasoning_content)."
+   ]
+  },
+  {
+   "id": "deepseek-v41-flash",
+   "name": "DeepSeek-V4.1-Flash-1017 IQ1_M + Engram (GSQ-RCO)",
+   "family": "DeepSeek-V4.1-Flash",
+   "quant": "IQ1_M + Engram IQ4_NL",
+   "license": "mit",
+   "bytes": 231316485152,
+   "files": [
+    {
+     "name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006.gguf",
+     "path": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006.gguf",
+     "bytes": 5780704,
+     "sha256": "3e8ddd11441edd4bc19bacaef5dbe38818af2cbdf0820fb70f1d2d851fcc192a"
+    },
+    {
+     "name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00002-of-00006.gguf",
+     "path": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00002-of-00006.gguf",
+     "bytes": 39340012896,
+     "sha256": "be4ceb1caf1bed28e886860cf6a52adc8f5ca9eb0d2098ade39bb4179d48b323"
+    },
+    {
+     "name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00003-of-00006.gguf",
+     "path": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00003-of-00006.gguf",
+     "bytes": 38698805888,
+     "sha256": "758c66ba65236e8ce0820c21a7b6f9b2947681df8cc509f672a77722e8191b9a"
+    },
+    {
+     "name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00004-of-00006.gguf",
+     "path": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00004-of-00006.gguf",
+     "bytes": 39707055008,
+     "sha256": "04a5bea2b38eb576f49efc19c0a677768d6e2a8ea5772d72fb6cb79e1733a212"
+    },
+    {
+     "name": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00005-of-00006.gguf",
+     "path": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00005-of-00006.gguf",
+     "bytes": 2969539840,
+     "sha256": "7c8dbee99890f05dbc420eba6f44393f5228d06248fe61e1ae8ed002449c7549"
+    },
+    {
+     "name": "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf",
+     "path": "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf",
+     "bytes": 110595290816,
+     "sha256": "3dac4c54893ad7aa89103c0028500eadc78e74112cef3a2930a97e67dc9fb4f3"
+    }
+   ],
+   "hf": {
+    "repo": "ISTA-DASLab/DeepSeek-V4.1-Flash-1017-GSQ-RCO-GGUF",
+    "include": [
+     "*IQ1_M*",
+     "*Engram*"
+    ],
+    "revision": "65d53bc8be65123e255ff02f3ded958b6dbf54fd",
+    "revision_date": "2026-11-03"
+   },
+   "local_pattern": "DeepSeek-V4\\.1-Flash-1017-GSQ-RCO-IQ1_M-00001-of-00006\\.gguf$",
+   "mtp": null,
+   "uses": [
+    "chat"
+   ],
+   "avoid_uses": [
+    "agents",
+    "docs"
+   ],
+   "fit": {
+    "min_cap_gb": 24,
+    "min_vram_gib": 12,
+    "min_build": 11870,
+    "needs_ssd": true,
+    "min_free_disk_bytes": 240000000000,
+    "ctx_tested_max": 0
+   },
+   "measured": [],
+   "notes": [
+    "Six files: the backbone in five shards (120.7 GB) and the Engram lookup table (110.6 GB), read from the SSD."
+   ],
+   "warnings": [
+    "Chat and short answers only: long prompts are slow (a llama.cpp user measured about 31 tok/s prompt) and saved prompt state is unreliable until llama.cpp #31292.",
+    "Needs 240 GB free disk and a fast SSD; never run by us (no measured numbers)."
+   ],
+   "link": {
+    "file": "DeepSeek-V4.1-Flash-1017-GSQ-RCO-IQ1_M-00006-of-00006.gguf",
+    "target": "DeepSeek-V4.1-Flash-Engram-IQ4_NL.gguf",
+    "how": "hard link: the Engram table must also answer to the name of shard 6 of 6"
+   }
+  }
+ ]
+}

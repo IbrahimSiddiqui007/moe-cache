@@ -142,6 +142,8 @@ def candidate_lines(i, r, first, why=None):
         out.append(f"     on this PC: no, and the disk is {gbs(r['disk_missing'])} too small for the download")
     else:
         out.append(f"     on this PC: no (download {gbs(r['download']['size'])} from {r['download']['source']})")
+    if r.get("fit"):
+        out.append(f"     fit for this PC: {r['fit']['verdict']} ({short(r['fit']['reason'], 140)})")
     out.append("     " + speed_text(r))
     out.append(f"     runs as: {r['engine']}, context {r['ctx']}")
     if why or r.get("why"):
