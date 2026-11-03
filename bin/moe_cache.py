@@ -2518,6 +2518,35 @@ def agent_stage(a, extra, model):
     return alias, slotdir
 
 
+def gpu_stage(a, ls, win, machine):
+    """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
+    vram_user = a.vram
+    listing = machine.list_devices(ls) if win else None
+    gpu = machine.pick_gpu_full(listing) if win else None
+    if win and not a.vram and not machine.nvidia_reports():
+        # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
+        # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
+        g = gpu
+        ded = machine.win_dedicated_vram().get(g[1]) if g else None
+        if g and ded is not None and ded < 2**30:
+            # an integrated GPU (the Claw's Arc 140V, Ryzen APUs): Vulkan's "free" is shared system RAM, which the cache also counts;
+            # plan with the dedicated carve-out only, as Linux does (planner/plan.py amd_free)
+            say(f"moe-cache: GPU {g[1]} ({g[0]}) is integrated ({ded / 2**20:.0f} MiB of its own memory): planning without dedicated VRAM")
+            g = None
+        if g and g[2] > 0:
+            a.vram = f"{g[2] / 1024:.2f}"
+            say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
+            # XA-3: Vulkan's GPU allocations are charged to Windows commit; plan no more GPU memory than the free commit can carry next to llama-server's
+            # host buffers, so a desktop with a browser open gets a slower start instead of a crash (RESULTS 73)
+            cfree = machine.win_commit()[1]
+            capped = vram_for_commit(float(a.vram), cfree)
+            if capped < float(a.vram):
+                say(f"moe-cache: GPU plan {a.vram} -> {capped:.2f} GiB: Windows' free commit ({cfree / 1e9:.1f} GB, RAM + page file) must also carry "
+                    "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
+                a.vram = f"{capped:.2f}"
+    return vram_user, listing, gpu
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2600,30 +2629,7 @@ def _launch_plan(a, extra, argv, machine):
             if os.environ.get("MOE_CACHE_LIB"):
                 raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
             raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
-    vram_user = a.vram
-    listing = machine.list_devices(ls) if win else None
-    gpu = machine.pick_gpu_full(listing) if win else None
-    if win and not a.vram and not machine.nvidia_reports():
-        # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
-        # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
-        g = gpu
-        ded = machine.win_dedicated_vram().get(g[1]) if g else None
-        if g and ded is not None and ded < 2**30:
-            # an integrated GPU (the Claw's Arc 140V, Ryzen APUs): Vulkan's "free" is shared system RAM, which the cache also counts;
-            # plan with the dedicated carve-out only, as Linux does (planner/plan.py amd_free)
-            say(f"moe-cache: GPU {g[1]} ({g[0]}) is integrated ({ded / 2**20:.0f} MiB of its own memory): planning without dedicated VRAM")
-            g = None
-        if g and g[2] > 0:
-            a.vram = f"{g[2] / 1024:.2f}"
-            say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
-            # XA-3: Vulkan's GPU allocations are charged to Windows commit; plan no more GPU memory than the free commit can carry next to llama-server's
-            # host buffers, so a desktop with a browser open gets a slower start instead of a crash (RESULTS 73)
-            cfree = machine.win_commit()[1]
-            capped = vram_for_commit(float(a.vram), cfree)
-            if capped < float(a.vram):
-                say(f"moe-cache: GPU plan {a.vram} -> {capped:.2f} GiB: Windows' free commit ({cfree / 1e9:.1f} GB, RAM + page file) must also carry "
-                    "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
-                a.vram = f"{capped:.2f}"
+    vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
     ncmoe_user = a.n_cpu_moe
     mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
     ncmoe = a.n_cpu_moe
