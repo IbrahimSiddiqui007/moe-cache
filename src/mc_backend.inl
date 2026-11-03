@@ -284,7 +284,7 @@ static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t
 // 20 blocks while less than 600 MiB is free (a nearly full card: on Windows the driver may move memory to system RAM and the GPU waits). Reads the same
 // ggml_backend_dev_memory call the block already makes; changes nothing it computes.
 struct vram_watch_t {
-    bool on = getenv("MOE_CACHE_VRAM_LINE") && atoi(getenv("MOE_CACHE_VRAM_LINE")) > 0;
+    bool on = mcenv::env_on("MOE_CACHE_VRAM_LINE");
     std::mutex mu;
     size_t min_free = (size_t) -1, first_free = 0, total = 0;
     std::vector<float> ms;            // compute time (ms) of each block of this prompt
@@ -339,7 +339,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         ggml_tensor * n = ggml_graph_node(cg, i);
         // idea P16 (MOE_CACHE_GPU_EXTRA_OPS=1, default off): plain element-wise nodes between the expert matrices (clamp, scale) may stay in the GPU block
         // instead of sending the whole block back to the CPU; they read only nodes of the block
-        static const bool extra_ops = getenv("MOE_CACHE_GPU_EXTRA_OPS") && atoi(getenv("MOE_CACHE_GPU_EXTRA_OPS")) > 0;
+        static const bool extra_ops = mcenv::env_on("MOE_CACHE_GPU_EXTRA_OPS");
         if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu && !(extra_ops && i > first && (n->op == GGML_OP_CLAMP || n->op == GGML_OP_SCALE))) {
             return false;
         }
@@ -391,7 +391,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     // a part of the experts, but the whole layer was uploaded (Qwen3.6: a 79-token turn took 3.4 s, all of it uploads). The used experts are packed
     // into a smaller weight tensor and the ids renumbered; each output still comes from the same expert matrix and the same input row.
     // Identical to stock (identity 4/4 at 74 and 147-token prompts, Qwen3.6); 70-token prompts 1.62 -> 0.90 s, 170-token 1.74 -> 1.12 s (RESULTS 52).
-    static const bool pack_env = !getenv("MOE_CACHE_GPU_PACK") || atoi(getenv("MOE_CACHE_GPU_PACK")) > 0;
+    static const bool pack_env = mcenv::env_flag("MOE_CACHE_GPU_PACK", true);
     const ggml_tensor * pack_ids = nullptr;
     std::vector<int32_t> pack_used, pack_map;
     const ggml_tensor * full_ids = nullptr;
@@ -535,7 +535,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
             // idea P12 (MOE_CACHE_GPU_SPLIT_ADAPT=1, default off): the first split that fits and the next two are tried in turn, then the one with the
             // lowest measured time per used expert (running average) is used; the block's time is booked at the end of this function
-            static const bool adapt = getenv("MOE_CACHE_GPU_SPLIT_ADAPT") && atoi(getenv("MOE_CACHE_GPU_SPLIT_ADAPT")) > 0;
+            static const bool adapt = mcenv::env_on("MOE_CACHE_GPU_SPLIT_ADAPT");
             if (adapt && n_chunk > 1) {
                 size_t pick = 0;
                 double bestv = 0;
@@ -563,7 +563,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             n_chunk = std::min(n_chunk, pack_used.size());
             // idea P17 (MOE_CACHE_GPU_BALANCE=1, default off): the parts hold the same number of experts (what fits), but not the same number of picks. Experts are
             // dealt to the parts heaviest first (each to the lightest part with room), so the parts' rows, and with MOE_CACHE_GPU_COMPACT their work, are even.
-            static const bool balance = getenv("MOE_CACHE_GPU_BALANCE") && atoi(getenv("MOE_CACHE_GPU_BALANCE")) > 0;
+            static const bool balance = mcenv::env_on("MOE_CACHE_GPU_BALANCE");
             if (balance && n_chunk > 1 && pack_ids) {
                 std::vector<uint32_t> cnt(pack_map.size(), 0);
                 for (int64_t i1 = 0; i1 < pack_ids->ne[1]; i1++) {
@@ -618,7 +618,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     // idea P01 (MOE_CACHE_GPU_COMPACT=1, default off): a split block computes, for each part, only the (token, slot) rows whose expert is in that part
     // (a graph of 1 x R rows, built per part) instead of the whole n_ids x n_tok shape with the other rows thrown away. Each row is the same
     // expert matrix times the same input row, but the GPU kernel sees another shape, so the rounding may differ: it needs the logit check.
-    static const bool compact_env = getenv("MOE_CACHE_GPU_COMPACT") && atoi(getenv("MOE_CACHE_GPU_COMPACT")) > 0;
+    static const bool compact_env = mcenv::env_on("MOE_CACHE_GPU_COMPACT");
     if (compact_env && n_chunk > 1 && pack_ids && pack_weights.size() > 0) {
         const int64_t n_ids = pack_ids->ne[0], n_tok = pack_ids->ne[1];
         bool ok = ggml_is_contiguous(out) && out->ne[1] == n_ids && out->ne[2] == n_tok && out->ne[3] == 1;
@@ -673,6 +673,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 const int64_t R = (int64_t) rows.size();
                 ggml_context * pctx = ggml_init(ip);
                 if (!pctx) {
+                    ggml_free(ctx);
                     return false;
                 }
                 std::unordered_map<const ggml_tensor *, ggml_tensor *> pc;
@@ -713,6 +714,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 ggml_build_forward_expand(pg, pout);
                 if (!gpu_graph_supported(c, pg) || !ggml_gallocr_alloc_graph(c->galloc, pg)) {
                     ggml_free(pctx);
+                    ggml_free(ctx);
                     return false;
                 }
                 for (auto & u : pup) {
@@ -747,6 +749,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 if (st != GGML_STATUS_SUCCESS) {
                     ggml_backend_synchronize(c->gpu);
                     ggml_free(pctx);
+                    ggml_free(ctx);
                     return false;
                 }
                 const size_t row = ggml_row_size(out->type, out->ne[0]);
@@ -765,7 +768,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     }
     // MOE_CACHE_GPU_SUM (mc_device.inl): the nodes right after the experts that the plugin claimed join the block, so only their sum is read back. A block split
     // into parts leaves them to the CPU (the row copy of a split block needs the expert output's shape), as does anything that does not match; the result is the same, only slower.
-    static const bool tmpl_off = !getenv("MOE_CACHE_GPU_TMPL") || atoi(getenv("MOE_CACHE_GPU_TMPL")) <= 0;
+    static const bool tmpl_off = !mcenv::env_on("MOE_CACHE_GPU_TMPL");
     if (gpu_sum_on() && tmpl_off && n_chunk == 1 && last + 1 < n_all && is_weighted_experts(ggml_graph_node(cg, last + 1)) && ggml_graph_node(cg, last + 1)->src[0] == out) {
         ggml_tensor * mul = ggml_graph_node(cg, last + 1);
         const ggml_tensor * w = mul->src[1];
@@ -800,7 +803,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     const size_t per_alloc = pack_ids ? (per_chunk + bucket_n - 1) / bucket_n * bucket_n : per_chunk;
     std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
     std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
-    static const bool tmpl_env = getenv("MOE_CACHE_GPU_TMPL") && atoi(getenv("MOE_CACHE_GPU_TMPL")) > 0 && !(getenv("MOE_CACHE_GPU_KEEP_MIB") && atoi(getenv("MOE_CACHE_GPU_KEEP_MIB")) > 0);
+    static const bool tmpl_env = mcenv::env_on("MOE_CACHE_GPU_TMPL") && !(getenv("MOE_CACHE_GPU_KEEP_MIB") && atoi(getenv("MOE_CACHE_GPU_KEEP_MIB")) > 0);
     std::string tkey;
     if (tmpl_env) {      // the block's shape signature: ops, types, shapes, parameters, how the nodes read each other, and the split
         std::vector<const ggml_tensor *> exts;
@@ -1015,11 +1018,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         return false;
     }
     // idea I2 kill check (MOE_CACHE_SEG_TIMES=1): upload vs compute time per block; overlap can only pay if compute is a real share of the block
-    static const bool seg_times = getenv("MOE_CACHE_SEG_TIMES") != nullptr;
+    static const bool seg_times = mcenv::env_on("MOE_CACHE_SEG_TIMES");
     // N22 (on by default; MOE_CACHE_GPU_READBACK=0 = old path): the result goes into a pinned host buffer of the GPU device, queued right after
     // the compute with one synchronize for both, then one memcpy into the CPU tensor. A blocking read into ordinary memory goes through the
     // backend's staging copy (~1.6 GB/s on the 9070 XT, 18 % of a block). Same bytes either way.
-    static const bool rb_env = !getenv("MOE_CACHE_GPU_READBACK") || atoi(getenv("MOE_CACHE_GPU_READBACK")) > 0;
+    static const bool rb_env = mcenv::env_flag("MOE_CACHE_GPU_READBACK", true);
     const size_t out_bytes = ggml_nbytes(out);
     void * rb = nullptr;
     if (rb_env && !c->rb_failed) {
@@ -1044,8 +1047,8 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     // idea P05 (MOE_CACHE_GPU_STAGE=1): the weights of a part are first copied into one pinned host buffer and uploaded from there in one copy per
     // tensor; the next part is staged while the GPU computes this one. idea P04 (MOE_CACHE_GPU_OVERLAP=1, without staging): only the wait for the next
     // part's experts (SSD reads) is moved into that window. Both need the pinned read-back path (the window exists only while the result copy is queued).
-    static const bool stage_env = getenv("MOE_CACHE_GPU_STAGE") && atoi(getenv("MOE_CACHE_GPU_STAGE")) > 0;
-    static const bool overlap_env = getenv("MOE_CACHE_GPU_OVERLAP") && atoi(getenv("MOE_CACHE_GPU_OVERLAP")) > 0;
+    static const bool stage_env = mcenv::env_on("MOE_CACHE_GPU_STAGE");
+    static const bool overlap_env = mcenv::env_on("MOE_CACHE_GPU_OVERLAP");
     char * stage = nullptr;
     size_t staged_ch = (size_t) -1;
     std::vector<std::pair<const ggml_tensor *, size_t>> stage_tensors;     // weight tensor, offset in the staging buffer
@@ -1074,7 +1077,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         const size_t plo = pch * per_chunk, phi = std::min(pack_used.size(), plo + per_chunk);
         // idea P10 (MOE_CACHE_GPU_INTERLEAVE=1, default off): by run of neighbouring experts, all of its weight tensors (gate, up, down) before the next run,
         // instead of one whole tensor after the other, so the first runs are complete while the reads of the later ones still go on
-        static const bool interleave = getenv("MOE_CACHE_GPU_INTERLEAVE") && atoi(getenv("MOE_CACHE_GPU_INTERLEAVE")) > 0;
+        static const bool interleave = mcenv::env_on("MOE_CACHE_GPU_INTERLEAVE");
         auto do_run = [&](const std::pair<const ggml_tensor *, size_t> & st, size_t k, size_t r) {
             wait_experts(s, st.first, pack_used[k], (int64_t) r);
             if (stage) {
@@ -1126,7 +1129,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     };
     // idea P18 (MOE_CACHE_GPU_EVENTS=1, default off): the wait for the queued result copy uses an event recorded right after it, not a synchronize of the whole
     // backend (same wait on one stream; it only differs where the backend has events and other work is queued). Falls back to synchronize without events.
-    static const bool ev_env = getenv("MOE_CACHE_GPU_EVENTS") && atoi(getenv("MOE_CACHE_GPU_EVENTS")) > 0;
+    static const bool ev_env = mcenv::env_on("MOE_CACHE_GPU_EVENTS");
     auto sync_result = [&] {
         if (ev_env) {
             ggml_backend_event_t ev = ggml_backend_event_new(gdev);
@@ -1144,13 +1147,13 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             stage_part(ch + 1);
         }
     };
-    static const bool res_first = getenv("MOE_CACHE_GPU_RES_FIRST") && atoi(getenv("MOE_CACHE_GPU_RES_FIRST")) > 0;
+    static const bool res_first = mcenv::env_on("MOE_CACHE_GPU_RES_FIRST");
     std::vector<std::pair<size_t, size_t>> runs;
-    static const bool share_up = getenv("MOE_CACHE_GPU_SHARE_UP") && atoi(getenv("MOE_CACHE_GPU_SHARE_UP")) > 0;
+    static const bool share_up = mcenv::env_on("MOE_CACHE_GPU_SHARE_UP");
     // idea P02 (MOE_CACHE_GPU_RB_ROWS=1): in a split block read back only the rows of this part's experts (runs of neighbouring rows in one copy)
-    static const bool rb_rows = getenv("MOE_CACHE_GPU_RB_ROWS") && atoi(getenv("MOE_CACHE_GPU_RB_ROWS")) > 0;
+    static const bool rb_rows = mcenv::env_on("MOE_CACHE_GPU_RB_ROWS");
     double up_ns = 0, comp_ns = 0, get_ns = 0;
-    static const bool e1 = seg_times && getenv("MOE_CACHE_E1_TIMES") != nullptr;
+    static const bool e1 = seg_times && mcenv::env_on("MOE_CACHE_E1_TIMES");
     double wait_ns = 0;
     uint64_t up_faults = 0;
     auto timed_wait = [&](const ggml_tensor * t, int64_t e0, int64_t n) {
