@@ -164,7 +164,7 @@ check(rc == 0 and "openai-api-base" in out and KEY not in out and not os.path.ex
 run("aider", "--write")
 y = open(ac).read()
 m = json.load(open(am))
-check(f'openai-api-key: "{KEY}"' in y and 'model: "openai/fake-moe"' in y and am in y and m["openai/fake-moe"]["max_input_tokens"] == 57344 and "openai/second" in m
+check(f'openai-api-key: "{KEY}"' in y and 'model: "openai/fake-moe"' in y and json.dumps(am) in y and m["openai/fake-moe"]["max_input_tokens"] == 57344 and "openai/second" in m
       and m["openai/fake-moe"]["litellm_provider"] == "openai" and mode(ac) == 0o600, "aider: own config + metadata written, private")
 put(am, json.dumps({"openai/other": {"max_input_tokens": 1}}))
 run("aider", "--write")
