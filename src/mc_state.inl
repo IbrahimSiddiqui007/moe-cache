@@ -46,20 +46,14 @@ void remove_crash_report();
 #include "mc_state_repack.h"
 #include "mc_state_view.h"
 #include "mc_state_livestats.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t {
+#include "mc_state_scan.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
     // "all" for the default range (hi = 2^30 means no upper bound; the log printed "layers 0-1073741824", T7)
     std::string layer_range() const { return lo == 0 && hi >= (1 << 30) ? std::string("all") : std::to_string(lo) + "-" + std::to_string(hi); }
     // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
-    bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
-    std::atomic<uint64_t> sibling_loads{0};
-    bool   cur_scan = false;                            // the group being prepared is a long prompt batch (MOE_CACHE_SCAN_TOKENS)
-    int    scan_tokens = 512;                           // MOE_CACHE_SCAN_TOKENS=N (default 512, 0 = off; I3, RESULTS 48): batches of N+ tokens load experts at the evict-first end, so the experts
-                                                        // cached before the prompt survive from chunk to chunk (with LRU a cyclic scan bigger than the cache keeps nothing)
-    uint64_t small_mapped = 0, small_over = 0;          // cache smaller than one op: experts mapped from the file (stock way) / loaded over the budget
-    bool   small_warned = false;
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
 #ifdef _WIN32
