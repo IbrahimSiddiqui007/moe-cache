@@ -29,7 +29,7 @@ for API in 2 3; do
   # against the release asset, in llama/ (the launcher finds it); the API-2 tarball (llama.cpp 7fe450e19) has no official build to bundle: it needs your own.
   # MOE_CACHE_RELEASE_NO_LLAMA=1 builds the old tarball without it.
   if [ $API = 3 ] && [ "${MOE_CACHE_RELEASE_NO_LLAMA:-0}" != 1 ]; then
-    tools/bundle_llama_linux.sh dist/$N b11966 llama-b11966-bin-ubuntu-vulkan-x64.tar.gz d31219d2a2519c1d1e5b26aa21a89637c494ca56cb3bca9c1758cbd6fadc5180 "${LLAMA_TGZ_CACHE:-/tmp/moe-cache-llama-cache}"
+    tools/bundle_llama_linux.sh dist/$N b11966 llama-b11966-bin-ubuntu-vulkan-x64.tar.gz d31219d2a2519c1d1e5b26aa21a89637c494ca56cb3bca9c1758cbd6fadc5180 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
   fi
   [ -f dist/$N/ui/index.html ] || { echo "FAIL: ui/index.html missing from $N (the control page needs it)"; exit 1; }
   tar -C dist -czf dist/$N.tar.gz $N

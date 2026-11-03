@@ -5,12 +5,14 @@
 #     TAG    the llama.cpp release, e.g. b11966
 #     ASSET  the release asset, e.g. llama-b11966-bin-ubuntu-vulkan-x64.tar.gz
 #     SHA256 the asset's digest from `gh api repos/ggml-org/llama.cpp/releases/tags/TAG` (the download must match it)
-#     CACHE_DIR where the asset is kept (default: $LLAMA_TGZ_CACHE or /tmp); an asset already there is not downloaded again
+#     CACHE_DIR where the asset is kept (default: $LLAMA_TGZ_CACHE or ~/.cache/moe-cache-llama, a folder only you can write to); an asset already there is not downloaded again
 # LLAMA_LICENSE_FILE=PATH copies that licence file instead of fetching llama.cpp's from GitHub (tests, offline builds).
 set -e
-D="$1"; TAG="$2"; ASSET="$3"; SHA="$4"; CACHE="${5:-${LLAMA_TGZ_CACHE:-/tmp}}"
+D="$1"; TAG="$2"; ASSET="$3"; SHA="$4"; CACHE="${5:-${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}}"
 [ -n "$D" ] && [ -n "$TAG" ] && [ -n "$ASSET" ] && [ -n "$SHA" ] || { sed -n 2,11p "$0"; exit 1; }
-mkdir -p "$CACHE"; Z="$CACHE/$ASSET"
+# a shared, predictable folder like /tmp/NAME lets another user on a build host plant the asset between the download, the hash check and the unpacking (AUD-064)
+mkdir -p "$CACHE"; [ -O "$CACHE" ] && [ ! -L "$CACHE" ] || { echo "FAIL: $CACHE is not a folder you own (set LLAMA_TGZ_CACHE to one)"; exit 1; }
+chmod go-w "$CACHE"; Z="$CACHE/$ASSET"
 [ -f "$Z" ] || curl -fsSL -o "$Z" "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/$ASSET"
 echo "$SHA  $Z" | sha256sum -c - >/dev/null || { echo "FAIL: $ASSET sha256 does not match the release asset"; exit 1; }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
