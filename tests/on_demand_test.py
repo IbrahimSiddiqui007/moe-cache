@@ -351,6 +351,10 @@ bk = od.Backend(od.load_choice())
 check("api-key: the listener still uses the given key", bk.key == SECRET and SECRET not in " ".join(bk.cmd(1234)), bk.key)
 od.on_demand([choice["model"], "--ram", "8", "--status"])
 check("api-key: a new default without a key forgets the custom key", not os.path.exists(od.CUSTOM_KEY_FILE) and od.Backend(od.load_choice()).key == KEY)
+od.on_demand([choice["model"], "--ram", "8", "--status", "--", "--api-key", SECRET])
+od.on_demand(["--keep-key", choice["model"], "--port", "8099", "--status"])          # GUI-022: the control page remembers its settings this way
+check("api-key: --keep-key (the control page) keeps the custom key through a port change", od.Backend(od.load_choice()).key == SECRET and os.path.exists(od.CUSTOM_KEY_FILE))
+od.on_demand([choice["model"], "--ram", "8", "--status"])
 
 # AUD-039: % and $ in a path or XDG_CACHE_HOME are doubled in the systemd unit (otherwise %h / $HOME would be expanded)
 _x = os.environ["XDG_CACHE_HOME"]

@@ -2,7 +2,7 @@
 """`moe_cache.py connect codex|pi|openclaw|aider|qwen`: what is printed, what --write merges, the first backup kept, malformed files refused.
 No model, no server (server_info / server_models are replaced), temporary HOME; standard library only.
    python3 tests/connect_agents_test.py"""
-import contextlib, io, json, os, sys, tempfile
+import re, contextlib, io, json, os, sys, tempfile
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-connect-test-")
@@ -292,7 +292,7 @@ if os.name != "nt":
     hc = os.path.join(W, "hermes-config.yaml")
     fake = os.path.join(hb, "hermes")
     open(fake, "w").write('#!/usr/bin/env python3\nimport json, os, sys\nC = %r\n'
-                          'a = sys.argv[1:]\nd = json.load(open(C)) if os.path.exists(C) else {}\n'
+                          'a = sys.argv[1:]\nopen(C + ".argv", "a").write(" ".join(a) + "\\n")\nd = json.load(open(C)) if os.path.exists(C) else {}\n'
                           'if a[:2] == ["config", "path"]: print(C)\n'
                           'elif a[:2] == ["config", "get"]: print(d.get(a[2], ""))\n'
                           'elif a[:2] == ["config", "set"]:\n'
@@ -305,6 +305,18 @@ if os.name != "nt":
     rc, out, err = run("hermes", "--write")
     check(rc == 0 and open(hc + ".bak").read() == orig_h and json.load(open(hc))["model.provider"] == "custom", "hermes: --write sets the model and backs up the old config")
     check(KEY not in out + err, "hermes: the key is not printed")
+    # AGENTS-036: the key is never an argument of `hermes config set`; it is in Hermes' .env (0600) and config.yaml points at it
+    argv_log = open(hc + ".argv").read()
+    envf = os.path.join(W, ".env")
+    check(KEY not in argv_log and "model.api_key ${MOE_CACHE_API_KEY}" in argv_log, "hermes: no hermes command line holds the key; model.api_key is ${MOE_CACHE_API_KEY}")
+    check(open(envf).read() == f"MOE_CACHE_API_KEY={KEY}\n" if re.fullmatch(r"[A-Za-z0-9._~+/=:@-]+", KEY) else KEY in open(envf).read(), "hermes: the key is in Hermes' .env")
+    check(os.name == "nt" or oct(os.stat(envf).st_mode & 0o777) == "0o600", "hermes: the .env is mode 0600")
+    open(envf, "w").write("OPENROUTER_API_KEY=keep\nexport MOE_CACHE_API_KEY=old\nMOE_CACHE_API_KEY=older\n")
+    run("hermes", "--write")
+    txt = open(envf).read()
+    check(txt.count("MOE_CACHE_API_KEY=") == 1 and "OPENROUTER_API_KEY=keep" in txt and "old" not in txt.replace(KEY, ""), "hermes: other .env lines are kept, the key line is replaced, not duplicated")
+    mc.put_env_line(envf, "X_KEY", 'a b"c\\d')
+    check('X_KEY="a b\\"c\\\\d"' in open(envf).read(), "hermes: a key with odd characters is quoted")
     run("hermes", "--write")                                                      # our own setting again: no new backup
     check(len([f for f in os.listdir(W) if f.startswith("hermes-config.yaml.bak")]) == 1 and open(hc + ".bak").read() == orig_h, "hermes: a second connect does not bury the first backup")
     json.dump({"model.provider": "custom", "model.default": "ollama-m", "model.base_url": "http://127.0.0.1:11434/v1"}, open(hc, "w"))   # the user's own local server

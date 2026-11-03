@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+# QUALITY-017: one sanitize run per ref at a time. A second push or a manual run waits (it does not cancel the first: an instrumented llama.cpp build takes
+# most of the 90 minutes, and the thread job was once lost mid build on f64101f); a third replaces the one that is still waiting.
+concurrency:
+  group: sanitize-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   sanitize:
     runs-on: ubuntu-24.04
