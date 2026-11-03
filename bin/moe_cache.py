@@ -7,6 +7,7 @@
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py update --check                                            is a newer moe-cache or llama.cpp out? (downloads nothing)
   moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md)
+  moe_cache.py bench-record collect|monitor|assemble|validate|card        the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode|claude [--url URL] [--write]        point Hermes Agent, OpenCode or Claude Code at a running server (start it with --agent)
@@ -3595,6 +3596,9 @@ def main():
     if sys.argv[1:2] == ["bench-report"]:     # R2-1: stock vs moe-cache on this machine, a report to paste into a GitHub issue
         from moe_cache_bench import bench_report
         return bench_report(sys.argv[2:]) or 0
+    if sys.argv[1:2] == ["bench-record"]:     # the benchmark record's tools: collect, monitor, assemble, validate, card (docs/BENCHMARK_TEMPLATE.md)
+        from moe_cache_record import main as record_main
+        return record_main(sys.argv[2:]) or 0
     if sys.argv[1:2] in (["--version"], ["-V"], ["version"]):
         say(f"moe-cache {VERSION}")
         return 0

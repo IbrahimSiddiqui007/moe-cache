@@ -6,15 +6,21 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for testing. How to make a report: [docs/SHARE_YOUR_NUMBERS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/SHARE_YOUR_NUMBERS.md).
-        Run `python bin/moe_cache.py bench-report MODEL.gguf` and paste the `.md` file it writes.
+        Thank you for testing. The fields are explained in [docs/BENCHMARK_TEMPLATE.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/BENCHMARK_TEMPLATE.md) (Windows and Linux recipes, how to pick a model bigger than your RAM); the short version is [docs/SHARE_YOUR_NUMBERS.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/SHARE_YOUR_NUMBERS.md).
+        Run `python bin/moe_cache.py bench-report MODEL.gguf --pairs 2` and paste the `.md` file it writes. A value you could not measure stays `not recorded`: never guess it.
   - type: textarea
     id: report
     attributes:
-      label: The report
-      description: Paste the whole moe-cache-report-....md file here.
+      label: The report (the whole moe-cache-report-....md file)
+      description: It holds the numbers, four detail lines and the record as JSON (VRAM, RAM, CPU, settings, versions). Paste all of it; GitHub folds the JSON.
     validations:
       required: true
+  - type: textarea
+    id: record
+    attributes:
+      label: Record JSON (only if you ran your own harness instead of bench-report)
+      description: "The file from `python bin/moe_cache.py bench-record assemble ...` (check it with `bench-record validate FILE`). Leave empty when the report above has it."
+      render: json
   - type: dropdown
     id: backend
     attributes:
@@ -26,18 +32,51 @@ body:
   - type: input
     id: gpu
     attributes:
-      label: GPU and driver version
-      placeholder: "RX 9070 XT, Adrenalin 25.10.2 / RTX 4060, driver 581.15 / none"
+      label: GPU, VRAM and driver version
+      placeholder: "RX 9070 XT 16 GB, Adrenalin 25.10.2 / RTX 4060 8 GB, driver 581.15 / none"
+    validations:
+      required: true
+  - type: input
+    id: cpu_ram
+    attributes:
+      label: CPU, RAM size / type / speed
+      placeholder: "Ryzen 9 7950X, 32 GB DDR5-5600 / i7-13620H, 30 GB DDR5-4800"
   - type: input
     id: os
     attributes:
       label: Windows or Linux version
       placeholder: "Windows 11 24H2 / Ubuntu 24.04"
+  - type: input
+    id: model
+    attributes:
+      label: Model file, quant, size and where you got it
+      placeholder: "Qwen3.5-122B-A10B IQ2_XXS, 36.6 GB, https://huggingface.co/..."
+  - type: input
+    id: drive
+    attributes:
+      label: Drive holding the model (model name, NVMe / SATA / USB)
+      placeholder: "Samsung 990 PRO NVMe / external USB SSD"
+  - type: input
+    id: settings
+    attributes:
+      label: Context, -ub, GPU expert layers (n-cpu-moe), anything you changed
+      description: The report has them from the launcher's plan; add what you set by hand (flags, MOE_CACHE_* variables).
+      placeholder: "ctx 8192, -ub 512, --n-cpu-moe 30, defaults otherwise"
+  - type: dropdown
+    id: order
+    attributes:
+      label: Run order
+      options: ["ABBA (stock, moe-cache, moe-cache, stock)", "single runs", "other (say below)"]
+  - type: dropdown
+    id: filecache
+    attributes:
+      label: File cache at the start of each run
+      options: ["cold (the report says COLD)", "warm (the report says WARM)", "not sure"]
   - type: textarea
     id: unusual
     attributes:
       label: Anything unusual during the run
-      description: Browser or game open, laptop on battery, another big program, the model on a USB or SATA drive, ...
+      description: Browser or game open, laptop on battery, another big program, the model on a USB or SATA drive, how long since the last restart, ...
   - type: checkboxes
     id: privacy
     attributes:

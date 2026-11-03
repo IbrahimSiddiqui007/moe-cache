@@ -86,7 +86,11 @@ try:
     for bad, what in ((user, "user name"), (host, "host name"), (os.path.expanduser("~"), "home folder"), (model_dir, "model folder"), ("same", "answer text"),
                       ("Private Stuff", "another folder (Windows path)")):
         check(bad not in md and bad not in js, f"privacy: no {what} in the report or the .json")
-    json.loads(js)
+    rj = json.loads(js)
+    import moe_cache_record as rr
+    check("Details (benchmark card format)" in md and "<details><summary>Record (JSON)" in md and rr.validate(rj["record"], rr.load_schema()) == [],
+          "benchmark record: the card's detail lines and the record are in the report, and the record is valid against the schema")
+    check(rj["record"]["outputs"]["identical_to_baseline"] == "yes" and rj["record"]["protocol"]["order"] == "ABBA" and len(rj["record"]["runs"]) == 4, "record: ABBA, four runs, identity yes")
     check("2.0x" in md, "decode ratio 2.0x in the result line")
 
     calls.clear(); flush_ok[0] = False
