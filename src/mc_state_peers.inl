@@ -38,6 +38,15 @@
             fprintf(stderr, "moe-cache: MOE_CACHE_PEERS=%s: cannot make the folder (%s): the peer registry is off\n", d, ec.message().c_str());
             return;
         }
+#ifndef _WIN32
+        {
+            const std::string why = mcpeers::secure_dir(d);
+            if (!why.empty()) {
+                fprintf(stderr, "moe-cache: MOE_CACHE_PEERS=%s: %s: the peer registry is off\n", d, why.c_str());
+                return;
+            }
+        }
+#endif
         peer_dir = d;
         peer_cap = ram_cap() != (size_t) -1 ? ram_cap() : plat::mem_total() / 8 * 7;
         if (const char * v = getenv("MOE_CACHE_PEER_CAP_GIB")) {
@@ -78,10 +87,16 @@
 
     void peer_write(const mcpeers::rec & r) {
         const std::string fin = peer_file(r.pid), tmp = peer_dir + "/" + std::to_string(r.pid) + ".tmp";
+#ifndef _WIN32
+        if (!mcpeers::write_private(tmp, mcpeers::format(r))) {      // 0600, no symlink followed (AUD-020)
+            return;
+        }
+#else
         {
             std::ofstream f(peer_fs(tmp), std::ios::binary | std::ios::trunc);
             f << mcpeers::format(r);
         }
+#endif
         std::error_code ec;
         std::filesystem::rename(peer_fs(tmp), peer_fs(fin), ec);      // replaces the old file in one step: a reader sees the old or the new record
     }
@@ -93,6 +108,11 @@
             if (it->path().extension() != ".peer") {
                 continue;
             }
+#ifndef _WIN32
+            if (!mcpeers::owned_by_me(it->path().string())) {        // a record of another user (or a link) is not a peer of ours (AUD-020)
+                continue;
+            }
+#endif
             std::ifstream f(it->path(), std::ios::binary);
             std::string s((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
             mcpeers::rec r;

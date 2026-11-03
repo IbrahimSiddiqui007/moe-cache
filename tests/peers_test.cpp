@@ -52,6 +52,24 @@ int main() {
     { mcpeers::rec me = R(1, 8 * G, 6 * G, 14 * G, 1, 1);
       auto v = mcpeers::decide(me, { R(2, 40 * G, 7 * G, 14 * G, 0, 0) }, 28 * G, 1000, 5000, 1 * G);
       CHECK(v.ceiling == 0); }
+#ifndef _WIN32
+    // 8. AUD-020: the registry folder is made owner-only, records are 0600, no symlink is followed, a link or foreign file is not "owned by me"
+    { char tmpl[] = "/tmp/peers_test_XXXXXX";
+      const std::string d = mkdtemp(tmpl);
+      chmod(d.c_str(), 0777);
+      CHECK(mcpeers::secure_dir(d).empty());
+      struct stat st;
+      CHECK(stat(d.c_str(), &st) == 0 && (st.st_mode & 077) == 0);
+      CHECK(!mcpeers::secure_dir(d + "/nope").empty());
+      CHECK(mcpeers::write_private(d + "/1.tmp", "hello"));
+      CHECK(stat((d + "/1.tmp").c_str(), &st) == 0 && (st.st_mode & 0777) == 0600 && st.st_size == 5);
+      CHECK(mcpeers::owned_by_me(d + "/1.tmp"));
+      CHECK(symlink("/etc/passwd", (d + "/2.tmp").c_str()) == 0);
+      CHECK(!mcpeers::write_private(d + "/2.tmp", "x"));           // O_NOFOLLOW
+      CHECK(!mcpeers::owned_by_me(d + "/2.tmp"));                  // a link is not a record
+      CHECK(!mcpeers::owned_by_me(d + "/missing"));
+      unlink((d + "/1.tmp").c_str()); unlink((d + "/2.tmp").c_str()); rmdir(d.c_str()); }
+#endif
     if (fails) { fprintf(stderr, "%d failed\n", fails); return 1; }
     printf("peers_test: ok\n");
     return 0;

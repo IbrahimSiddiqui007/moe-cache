@@ -11,6 +11,12 @@
 #include <cstdlib>
 #include <string>
 #include <vector>
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 
 namespace mcpeers {
 
@@ -82,5 +88,46 @@ inline verdict decide(const rec & me, const std::vector<rec> & others, uint64_t 
     }
     return v;
 }
+
+// AUD-020: who may write the registry. A folder or record of another user could forge a peer (a fake server that holds all the memory, so this one
+// shrinks its cache). The folder must be ours and closed to others (0700), records are 0600, and records of another user are not read. Windows: the
+// folder inherits its parent's access rules; nothing to do here.
+#ifndef _WIN32
+// "" when dir is a folder of this user (made 0700 if it was open to others), else why not
+inline std::string secure_dir(const std::string & dir) {
+    struct stat st;
+    if (stat(dir.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) {
+        return "not a folder";
+    }
+    if (st.st_uid != geteuid()) {
+        return "the folder belongs to another user";
+    }
+    if ((st.st_mode & 077) != 0 && chmod(dir.c_str(), 0700) != 0) {
+        return "cannot restrict the folder to its owner";
+    }
+    return "";
+}
+inline bool owned_by_me(const std::string & path) {
+    struct stat st;
+    return lstat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid();
+}
+// create or replace a file readable by the owner only; never follows a symlink
+inline bool write_private(const std::string & path, const std::string & text) {
+    const int fd = open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        return false;
+    }
+    size_t done = 0;
+    while (done < text.size()) {
+        const ssize_t w = write(fd, text.data() + done, text.size() - done);
+        if (w <= 0) {
+            close(fd);
+            return false;
+        }
+        done += (size_t) w;
+    }
+    return close(fd) == 0;
+}
+#endif
 
 }  // namespace mcpeers
