@@ -1,10 +1,11 @@
 # Always-on moe-cache server as a systemd USER unit (no root).
-# Install:  cp docs/moe-cache-server.service ~/.config/systemd/user/   then edit the three marked lines
+# Install:  cp docs/moe-cache-server.service ~/.config/systemd/user/   then edit the marked lines
 #           systemctl --user daemon-reload && systemctl --user enable --now moe-cache-server
 # Log:      journalctl --user -u moe-cache-server -f
 # Starts at login; to start at boot without a login run once: loginctl enable-linger $USER
-# MemoryMax below is the cgroup limit (memory.max) that moe-cache reads when --ram is not given (bin/moe_cache.py, cgroup_mem_limit), so the
-# cache is sized to stay under it. MemoryHigh is not read by moe-cache; it only makes the kernel reclaim memory before the hard stop.
+# moe-cache reads the smaller of MemoryMax (memory.max) and MemoryHigh (memory.high) when --ram is not given (bin/moe_cache.py, cgroup_mem_limit), so the
+# cache is sized to stay under both. MemoryHigh makes the kernel reclaim memory before the hard stop at MemoryMax.
+# Or let the launcher fill this file in for you: moe-cache-server /path/MODEL.gguf --agent --print-systemd > ~/.config/systemd/user/moe-cache-server.service
 [Unit]
 Description=moe-cache server (llama-server with the expert cache)
 StartLimitIntervalSec=300

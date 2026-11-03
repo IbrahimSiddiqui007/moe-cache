@@ -935,7 +935,8 @@ def mem_for_server(ram_gb):
 
 def cgroup_mem_limit(proc_cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
     """Smallest memory limit in bytes of this process's cgroup AND its parents (a limit set on a systemd slice or a docker parent applies to a leaf that
-    says "max"), cgroup v2 memory.max and v1 memory.limit_in_bytes; None when nothing limits it. The paths are arguments for tests/cgroup_test.py."""
+    says "max"), cgroup v2 memory.max and memory.high (systemd's MemoryMax and MemoryHigh; SERVER-005: the cache is sized to stay below the soft limit too, or
+    the kernel starts reclaiming it), cgroup v1 memory.limit_in_bytes; None when nothing limits it. The paths are arguments for tests/cgroup_test.py."""
     try:
         lines = open(proc_cgroup).read().strip().splitlines()
     except OSError:
@@ -947,19 +948,20 @@ def cgroup_mem_limit(proc_cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
             continue
         hier, ctrl, rel = parts
         if hier == "0" and ctrl == "":
-            base, name = root, "memory.max"
+            base, names = root, ("memory.max", "memory.high")
         elif "memory" in ctrl.split(","):
-            base, name = os.path.join(root, "memory"), "memory.limit_in_bytes"
+            base, names = os.path.join(root, "memory"), ("memory.limit_in_bytes",)
         else:
             continue
         d = rel or "/"
         while True:
-            try:
-                v = open(os.path.join(base, d.lstrip("/"), name)).read().strip()
-            except OSError:
-                v = ""
-            if v.isdigit() and int(v) < 2**60:            # v1 says 9223372036854771712 for "no limit"
-                best = int(v) if best is None else min(best, int(v))
+            for name in names:
+                try:
+                    v = open(os.path.join(base, d.lstrip("/"), name)).read().strip()
+                except OSError:
+                    v = ""
+                if v.isdigit() and int(v) < 2**60:            # v1 says 9223372036854771712 for "no limit"; "max" is not a number
+                    best = int(v) if best is None else min(best, int(v))
             if d in ("/", ""):
                 break
             d = os.path.dirname(d.rstrip("/")) or "/"
@@ -2030,6 +2032,7 @@ def parse_server(argv):
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
     ap.add_argument("--no-sampling-defaults", action="store_true")
+    ap.add_argument("--print-systemd", action="store_true")  # SERVER-005: print docs/moe-cache-server.service filled with this command line and the memory limits, and exit
     ap.add_argument("--plan-json", action="store_true")      # print the launch plan as JSON (argv, environment, reasons, warnings) and exit; nothing is started
     extra = []
     if "--" in argv:
@@ -2046,8 +2049,83 @@ def fast_levels_only(argv):
     return ["--fast=1" if t == "--fast" and (i + 1 >= len(argv) or argv[i + 1] not in FAST_LEVELS) else t for i, t in enumerate(argv)]
 
 
+SYSTEMD_TEMPLATE = os.path.join(HERE, "docs", "moe-cache-server.service")
+
+
+def unit_word(w):
+    """One word of a systemd ExecStart= line: double-quoted when it has a space or a quote, \\ and \" escaped, % and $ doubled (systemd expands both)."""
+    w = str(w).replace("%", "%%").replace("$", "$$")
+    return '"' + w.replace("\\", "\\\\").replace('"', '\\"') + '"' if re.search(r"[\s\"'\\;]", w) else w
+
+
+def systemd_unit(a, extra, argv, template=None):
+    """SERVER-005: the text of docs/moe-cache-server.service with this launcher's paths and this command line in ExecStart (absolute model, llama-server and
+    launcher paths, because a user unit has no shell PATH), and MemoryMax / MemoryHigh from --ram, else the launcher's own memory cap (MemoryHigh 8 % below
+    it). The API key never goes into the unit (a unit file is readable); returns (text, notes)."""
+    notes = []
+    text = template if template is not None else open(SYSTEMD_TEMPLATE, encoding="utf-8").read()
+    args, i = [], 0
+    while i < len(argv):
+        t = argv[i]
+        if t == "--print-systemd":
+            pass
+        elif t == "--api-key":
+            i += 1
+            notes.append("--api-key left out of the unit (it would be readable there): put LLAMA_API_KEY=... in a file and add EnvironmentFile=%h/.config/moe-cache/key.env, "
+                         "or use the stored key (python3 bin/moe_cache.py key)")
+        elif t.startswith("--api-key="):
+            notes.append("--api-key left out of the unit (it would be readable there): use EnvironmentFile= or the stored key (python3 bin/moe_cache.py key)")
+        else:
+            args.append(os.path.abspath(t) if (a.model and t == a.model) else t)
+        i += 1
+    if extra and "--" not in args:
+        args += ["--"] + extra
+    if not any(x == "--llama-server" or x.startswith("--llama-server=") for x in args):
+        ls = shutil.which(a.llama_server) or a.llama_server
+        if os.path.isabs(ls):
+            args = args[:1] + ["--llama-server", ls] + args[1:] if args and not args[0].startswith("-") else ["--llama-server", ls] + args
+        else:
+            notes.append("llama-server was not found: add --llama-server /full/path to the ExecStart line")
+    exe = os.path.join(HERE, "bin", "moe-cache-server")
+    lines = ["ExecStart=" + " ".join(unit_word(x) for x in [exe] + args)]
+    cap = float(a.ram) * 1e9 if a.ram else mem_cap()
+    if cap:
+        gib = cap / 2**30
+        mx = max(1, int(gib + 0.999))
+        hi = max(1, int(gib * 0.92))
+        lines += [f"MemoryHigh={min(hi, mx)}G", f"MemoryMax={mx}G"]
+        notes.append(f"MemoryMax={mx}G is " + (f"--ram {a.ram} GB" if a.ram else "the launcher's memory cap for this machine") + f"; MemoryHigh={min(hi, mx)}G makes the kernel reclaim first; "
+                     "moe-cache sizes its cache below the smaller of the two")
+    out = []
+    for l in text.splitlines():
+        if l.startswith("ExecStart="):
+            out.append(lines[0])
+        elif l.startswith("MemoryHigh=") and len(lines) == 3:
+            out.append(lines[1])
+        elif l.startswith("MemoryMax=") and len(lines) == 3:
+            out.append(lines[2])
+        elif l.startswith("# EDIT 1:"):
+            out.append("# Generated by moe-cache-server --print-systemd from your command line: the paths are absolute. Check the model and options.")
+        elif l.startswith("# EDIT 2:") and len(lines) == 3:
+            out.append("# The memory the server may use in total (see the note printed with this unit). MemoryMax is the hard stop, MemoryHigh makes the kernel reclaim first")
+        else:
+            out.append(l)
+    return "\n".join(out) + "\n", notes
+
+
 def server(argv):
     a, extra, argv = parse_server(argv)
+    if a.print_systemd:
+        if not a.model:
+            raise SystemExit("--print-systemd needs the model: moe-cache-server /path/MODEL.gguf --agent --print-systemd")
+        try:
+            unit, notes = systemd_unit(a, extra, argv)
+        except OSError as e:
+            raise SystemExit(f"--print-systemd: the template {SYSTEMD_TEMPLATE} cannot be read ({e})")
+        sys.stdout.write(unit)
+        for n in notes:
+            say("moe-cache: " + n, err=True)
+        return 0
     plan = launch_plan(a, extra, argv, quiet=a.plan_json)
     if a.max_ram and not a.plan_json:
         os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram     # this process is the launch: its later memory decisions (OOM retry, warm-keeper threads) keep the cap
