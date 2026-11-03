@@ -173,6 +173,17 @@ rc, _, _ = run("aider", "--write")
 check(isinstance(rc, str) and "not plain JSON" in rc, "aider: malformed metadata refused")
 check(not os.path.exists(os.path.join(HOME, ".aider.conf.yml")), "aider: the user's own .aider.conf.yml is never created or touched")
 
+# ---- a server that answers 401 is not "no server" (found with the real agents: temporary HOME without the stored key) ----
+_si, _http = mc.server_info, mc.http
+mc.server_info = lambda url, key=None: (None, None)
+mc.http = lambda url, body=None, api_key=None, timeout=10: (401, "")
+rc, _, _ = run("codex")
+check(isinstance(rc, str) and "answers 401" in rc and "--api-key" in rc, "401 from the server: the message says it wants its API key")
+mc.http = lambda url, body=None, api_key=None, timeout=10: (0, "")
+rc, _, _ = run("codex")
+check(isinstance(rc, str) and "no llama-server answers" in rc, "unreachable server: still 'no llama-server answers'")
+mc.server_info, mc.http = _si, _http
+
 # ---- --config, and the help line ----
 alt = os.path.join(TMP, "alt", "c.toml")
 run("codex", "--write", "--config", alt)

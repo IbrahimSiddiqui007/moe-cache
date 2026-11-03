@@ -3107,6 +3107,10 @@ def connect(argv):
     a.api_key = key_for(a.url, a.api_key)
     name, ctx = server_info(a.url, a.api_key)
     if not name:
+        st = http(a.url.rstrip("/") + "/v1/models", api_key=a.api_key, timeout=3)[0]
+        if st in (401, 403):     # the server is there but refuses our key (e.g. HOME points at a folder without the stored key)
+            raise SystemExit(f"the server at {a.url} answers {st}: it wants its API key. Give it with --api-key KEY (or LLAMA_API_KEY), "
+                             "or run connect as the user who started the server: the stored key is `moe_cache.py key`")
         from moe_cache_pick import picked
         p = picked()
         raise SystemExit(f"no llama-server answers at {a.url} (start one with: moe-cache-server MODEL.gguf --agent"
