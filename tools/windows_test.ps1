@@ -20,32 +20,48 @@ $prompts = @("Explain what a hash table is in two sentences.", "Write a Python f
              "What is the capital of Australia and why was it chosen?", "List three uses of a binary search.")
 $out = Join-Path $env:TEMP "moe-cache-test"; New-Item -ItemType Directory -Force $out | Out-Null
 
+# a server left on the fixed port by an earlier run would answer /health and this run would test THAT process (AUD-056): stop if anything holds the port
+function Assert-PortFree {
+  for ($i = 0; $i -lt 10; $i++) {
+    try { $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port); $l.Start(); $l.Stop(); return } catch { Start-Sleep -Seconds 1 }
+  }
+  throw "port $Port is already in use (a llama-server from an earlier run? stop it, or pass -Port): this test would talk to that process"
+}
+$envNames = "GGML_BACKEND_PATH", "MOE_CACHE_GGUF", "MOE_CACHE_STATS", "MOE_CACHE_STATS_SIGNAL", "MOE_CACHE_SIZE_GIB"
+$savedEnv = @{}; foreach ($v in $envNames) { $savedEnv[$v] = [Environment]::GetEnvironmentVariable($v, "Process") }
+
 function Run-One([string]$label, [bool]$plugin) {
+  Assert-PortFree
   $log = Join-Path $out "$label.err.txt"; $std = Join-Path $out "$label.out.txt"
   # MOE_CACHE_SIZE_GIB turns the cache on: without it the plugin only passes the weights through and the test would prove nothing
   if ($plugin) { $env:GGML_BACKEND_PATH = (Resolve-Path $Dll).Path; $env:MOE_CACHE_GGUF = (Resolve-Path $Model).Path; $env:MOE_CACHE_STATS = "1"; $env:MOE_CACHE_STATS_SIGNAL = "1"; $env:MOE_CACHE_SIZE_GIB = $CacheGiB }
-  else { foreach ($v in "GGML_BACKEND_PATH", "MOE_CACHE_GGUF", "MOE_CACHE_STATS", "MOE_CACHE_STATS_SIGNAL", "MOE_CACHE_SIZE_GIB") { Remove-Item "Env:$v" -ErrorAction SilentlyContinue } }
+  else { foreach ($v in $envNames) { Remove-Item "Env:$v" -ErrorAction SilentlyContinue } }
   $sargs = @("-m", "`"$Model`"", "-ngl", "99", "--n-cpu-moe", "$NCpuMoe", "-c", "$Ctx", "-fa", "on", "--no-warmup", "--port", "$Port", "--seed", "42")
   if ($Extra) { $sargs += ($Extra -split " " | Where-Object { $_ }) }
   $p = Start-Process -FilePath $srv -ArgumentList $sargs -PassThru -RedirectStandardError $log -RedirectStandardOutput $std -WindowStyle Hidden
-  $up = $false
-  for ($i = 0; $i -lt 600; $i++) {
-    if ($p.HasExited) { break }
-    try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 2).StatusCode -eq 200) { $up = $true; break } } catch {}
-    Start-Sleep -Seconds 2
+  try {
+    $up = $false
+    for ($i = 0; $i -lt 600; $i++) {
+      if ($p.HasExited) { break }
+      try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 2).StatusCode -eq 200) { $up = $true; break } } catch {}
+      Start-Sleep -Seconds 2
+    }
+    if (-not $up) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }; Get-Content $log -Tail 15; throw "$label : server did not start (see $log)" }
+    $texts = @(); $tps = @()
+    foreach ($q in $prompts) {
+      $body = @{ prompt = $q; n_predict = $Tokens; temperature = 0; seed = 42; cache_prompt = $false } | ConvertTo-Json
+      $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/completion" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 3600
+      $texts += $r.content; $tps += [math]::Round($r.timings.predicted_per_second, 2)
+    }
+    if ($plugin) {
+      # the server is killed below, so the plugin's summary at exit never appears: ask for a snapshot first (named event, see src/mc_state.inl)
+      try { $ev = [System.Threading.EventWaitHandle]::OpenExisting("Local\moe-cache-stats-$($p.Id)"); [void]$ev.Set(); Start-Sleep -Seconds 2 } catch {}
+    }
+  } finally {
+    # any exception above (health never came, a request failed) must not leave llama-server on the port
+    if ($p -and -not $p.HasExited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
   }
-  if (-not $up) { if (-not $p.HasExited) { Stop-Process -Id $p.Id -Force }; Get-Content $log -Tail 15; throw "$label : server did not start (see $log)" }
-  $texts = @(); $tps = @()
-  foreach ($q in $prompts) {
-    $body = @{ prompt = $q; n_predict = $Tokens; temperature = 0; seed = 42; cache_prompt = $false } | ConvertTo-Json
-    $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/completion" -Method Post -ContentType "application/json" -Body $body -TimeoutSec 3600
-    $texts += $r.content; $tps += [math]::Round($r.timings.predicted_per_second, 2)
-  }
-  if ($plugin) {
-    # the server is killed below, so the plugin's summary at exit never appears: ask for a snapshot first (named event, see src/mc_state.inl)
-    try { $ev = [System.Threading.EventWaitHandle]::OpenExisting("Local\moe-cache-stats-$($p.Id)"); [void]$ev.Set(); Start-Sleep -Seconds 2 } catch {}
-  }
-  Stop-Process -Id $p.Id -Force; Start-Sleep -Seconds 3
+  Start-Sleep -Seconds 3      # the finally above stopped the server; give Windows a moment to release the port and the log files
   $active = (Select-String -Path $log -Pattern "moe-cache:" -SimpleMatch | Select-Object -First 6 | ForEach-Object { $_.Line }) -join "`n"
   $cache = [bool](Select-String -Path $log -Pattern "moe-cache: cache mode" -SimpleMatch -Quiet)
   $disabled = [bool](Select-String -Path $log -Pattern "plugin disabled" -SimpleMatch -Quiet)
@@ -59,8 +75,12 @@ function Run-One([string]$label, [bool]$plugin) {
   return @{ texts = $texts; tps = $tps; active = $active; cache = $cache; disabled = $disabled; stats = $stats }
 }
 
-Write-Host "1/2 stock server"; $a = Run-One "stock" $false
-Write-Host "2/2 server with the plugin"; $b = Run-One "plugin" $true
+try {
+  Write-Host "1/2 stock server"; $a = Run-One "stock" $false
+  Write-Host "2/2 server with the plugin"; $b = Run-One "plugin" $true
+} finally {
+  foreach ($v in $envNames) { [Environment]::SetEnvironmentVariable($v, $savedEnv[$v], "Process") }      # the caller's session gets its own values back
+}
 Write-Host "---- plugin log lines (must show that the plugin loaded):"; Write-Host $b.active
 if (-not $b.active) {
   $lf = Select-String -Path (Join-Path $out "plugin.err.txt") -Pattern "failed to load" -SimpleMatch | Select-Object -First 1 | ForEach-Object { $_.Line }
