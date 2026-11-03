@@ -27,6 +27,18 @@ under its own. The page makes the split once, before either server starts, and t
 
 `bin/moe_cache_ui.py`: `group_plan_view` (the split for 2-3 models), `/api/servers/plan`, `/api/servers/group` (starts them one after the other), `start_extra` (a second server next to a running one gets `--share-ram`); `ui/index.html`: the panel "Two models at once (prototype)" in the card "Servers on this machine". Tests: `tests/servers_test.py` (fake machine and fake launcher, 50 checks).
 
+## Rules decided from the code (2026-11-04, tested with fake servers in `tests/servers_test.py`)
+
+| Question | Rule |
+|---|---|
+| The second model does not fit | Next to a running server the page subtracts what the running servers hold (their resident memory) from the one cap and checks the new model's minimum against the rest. If it does not fit: refused with the numbers and "stop one of them first, or pick a smaller model". A typed `--ram` skips the check (the user decided). A group start whose minimums do not fit under the cap starts nothing. |
+| The same model twice | Refused (group, "Start another server", and a main restart): the warm-conversation files are named after the model, so two servers on one model would overwrite each other's saved conversations. |
+| One stops or restarts | Stop on any row stops only that server; the others keep running and answering. Restarting the main server while others run counts what they hold (`--share-ram`) and may not use their model. Closing the page stops all. |
+| Half-started group | The servers are started one after the other; if a later one cannot start, the earlier ones keep running and the page shows why (`group_error`). |
+| Ports | Default 8080, 8081; a port used by another server of the page or by anything else is refused before anything starts. At most 3 servers (main + 2). |
+| Agents | "Connect OpenCode / Hermes" takes an optional `port`: it connects the agent to that server of the page (default: the main one). The saved-conversation list in Agents still shows the main server only. |
+| Memory trading | Only between plugin servers started with `--peers` (a group start does that). A server started by hand next to the page's servers is counted at its start by `--share-ram`, not at run time. |
+
 ## What is not decided or not done
 
 | Item | Why |
