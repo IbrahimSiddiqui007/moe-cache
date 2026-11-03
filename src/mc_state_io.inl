@@ -419,11 +419,11 @@
                  ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
                  ",\"n_gap\":" + std::to_string(n_gap.load()) + ",\"gap_b_ns\":[" + std::to_string(gap_b_ns[0].load()) + "," + std::to_string(gap_b_ns[1].load()) + "," +
                  std::to_string(gap_b_ns[2].load()) + "," + std::to_string(gap_b_ns[3].load()) + "]";
-            if (getenv("MOE_CACHE_SEG_TIMES")) {
+            if (mcenv::env_on("MOE_CACHE_SEG_TIMES")) {
                 uint64_t mj = 0;
                 const uint64_t f = process_faults(&mj);
                 j += ",\"faults\":" + std::to_string(f) + ",\"major_faults\":" + std::to_string(mj);
-                if (getenv("MOE_CACHE_E1_TIMES")) {
+                if (mcenv::env_on("MOE_CACHE_E1_TIMES")) {
                     j += e1s::json();
                     j += ",\"e1\":{\"gap_cpu_ns\":" + std::to_string(e1_gap_cpu_ns.load()) + ",\"in_cpu_ns\":" + std::to_string(e1_in_cpu_ns.load()) +
                          ",\"gap_tcpu_ns\":" + std::to_string(e1_gap_tcpu_ns.load()) + ",\"in_tcpu_ns\":" + std::to_string(e1_in_tcpu_ns.load()) + ",\"blk\":[";
@@ -675,7 +675,7 @@
                 fprintf(stderr, "moe-cache: seg-times: page faults of the process: %llu inside the gaps, %llu inside our backend; longest gap %.0f ms (graph %llu, %llu faults)\n",
                         (unsigned long long) gap_faults.load(), (unsigned long long) in_faults.load(), top_gap_ns[top] / 1e6,
                         (unsigned long long) top_gap_graph[top].load(), (unsigned long long) top_gap_faults[top].load());
-                if (getenv("MOE_CACHE_E1_TIMES")) {
+                if (mcenv::env_on("MOE_CACHE_E1_TIMES")) {
                     fprintf(stderr, "moe-cache: e1: CPU time inside the gaps: process %.2fs, graph thread %.2fs (of %.2fs wall); inside our backend: process %.2fs, graph thread %.2fs (of %.2fs wall)\n",
                             e1_gap_cpu_ns / 1e9, e1_gap_tcpu_ns / 1e9, ns_gap / 1e9, e1_in_cpu_ns / 1e9, e1_in_tcpu_ns / 1e9, ns_total / 1e9);
                     for (int k = 0; k < 2; k++) {
