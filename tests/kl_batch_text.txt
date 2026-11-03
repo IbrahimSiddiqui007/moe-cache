@@ -1,0 +1,648 @@
+<h1 align="center">moe-cache</h1>
+
+<p align="center"><b>Run Mixture-of-Experts models that are bigger than your RAM, without the speed cliff.</b><br>
+A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
+
+<p align="center">
+<img alt="status" src="https://img.shields.io/badge/status-v0.3.5%20beta-orange">
+<img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+<img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
+<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b11669%20%2F%20b11966%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
+<a href="https://ko-fi.com/ibrumm"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white"></a>
+</p>
+
+<p align="center"><a href="docs/benchmark_card.html"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmark_card-dark.png"><img src="docs/benchmark_card.png" width="860" alt="Benchmark card: decode tokens per second, stock llama.cpp vs moe-cache, on a Windows PC with 32 GB RAM and a 16 GB graphics card"></picture></a></p>
+<p align="center"><sub>Windows desktop, 32 GB RAM + 16 GB graphics card; speeds measured 2026-10-27/28 with builds of that week (each row lists its test details; not recorded values say so). Full <a href="docs/benchmark_card.html">benchmark card</a> (long context, other models, agents); every number in <a href="docs/RESULTS.md">docs/RESULTS.md</a>. Older laptop results: <a href="docs/RESULTS.md#laptop-results-older-versions">docs/RESULTS.md</a>.</sub></p>
+
+## What it is
+
+**moe-cache lets a normal PC run big Mixture-of-Experts AI models** (files of 60-120 GB) that are bigger than its RAM, with the **same answers as plain llama.cpp**: token-identical below 128k context with the same layer split; from 128k context a q8_0 KV cache is used (`--exact` keeps f16), MTP and the `--fast` modes can change answers; see [EXACTNESS](docs/EXACTNESS.md). Chat in your browser, or connect coding tools (OpenCode, Hermes, Claude Code). Windows 11 and Linux. Free (MIT), no account.
+
+MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. When the file is bigger than your RAM, plain llama.cpp keeps reading the whole file from the disk and slows to a crawl; moe-cache keeps the experts the model actually uses in RAM and reads only the rest. If your model already fits in RAM, plain llama.cpp is as fast or faster, and moe-cache steps aside on its own ([when to use something else](docs/FAQ.md#when-to-use-something-else)).
+
+| You need | |
+|---|---|
+| Memory | 32 GB RAM for the big models (16 GB works for smaller ones such as Qwen3.6-35B); a graphics card is optional but recommended |
+| Disk | an SSD (NVMe is best) with the model size plus about 10 GB free |
+| Software | Python 3.8 or newer. llama.cpp is included in the Windows kit and the Linux `-ggml0.26` download (v0.3.3 and newer) |
+| Time | about 10 minutes of setup, plus the model download |
+
+## Get started
+
+### Windows 11
+
+| Step | What to do |
+|---|---|
+| 1. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH") |
+| 2. The kit | Download `moe-cache-vX-windows-x64.zip` (the newest) from [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases). Right-click it > Properties > tick **Unblock** > OK, then unzip it, e.g. to `C:\moe-cache`. The kit is not code-signed: if Windows says "protected your PC", click More info > Run anyway |
+| 3. A model | In the kit folder: `python bin\moe_cache.py pick` names the model that suits your PC and prints its download command (needs `pip install -U huggingface_hub` once) |
+| 4. Run | Double-click `moe-cache.bat`: the control page opens; pick the model, press Start. The first start takes a minute or two |
+| 5. Agents | Tick Agent mode, then the page's Connect buttons (Hermes, OpenCode) |
+
+If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says what to fix. Every install option: [docs/INSTALL.md](docs/INSTALL.md#windows-quick-start-experimental); Windows details: [docs/WINDOWS.md](docs/WINDOWS.md).
+
+**Using the PC while the model runs?** Tick **Leave room for me** on the control page (or `--leave-room`): the model leaves more RAM, GPU memory and CPU to your own programs and gets a little slower. A CPU with its own graphics: plug the monitor into the motherboard.
+
+### Linux
+
+| Step | What to do |
+|---|---|
+| 1. Download | From [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases): `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` (llama.cpp b11966 included, Vulkan + CPU), or `moe-cache-vX-linux-x86_64.tar.gz` for an older llama.cpp of your own (ggml 0.24 / 0.25). `tar xzf` it and `cd` into the folder |
+| 2. A model | `python3 bin/moe_cache.py pick` |
+| 3. Check | `bin/moe-cache-check /path/to/model.gguf --run` ("cache runs: yes" means it works on your machine) |
+| 4. Run | `bin/moe-cache-server /path/to/model.gguf --open` (chat page and an OpenAI-compatible API at http://localhost:8080), or `bin/moe-cache-server --ui` for the control page |
+
+Your own llama.cpp (CUDA, ROCm), `install.sh`, building from source, the speed options (`--fast`, `--hybrid`) and proving the output yourself: [docs/INSTALL.md](docs/INSTALL.md).
+
+### Coding agents
+
+Start the server in agent mode (or let on-demand start it when an agent asks), then point the agent at it. One command writes the agent's config; the old config is kept as `.bak`.
+
+```bash
+python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart   # loads the model on the first request, unloads it when idle
+# or by hand: bin/moe-cache-server /path/to/model.gguf --agent                # context 65536, tool calls, API key, warm sessions
+```
+
+#### Hermes Agent
+
+| Step | What to do |
+|---|---|
+| Install | Hermes Agent CLI, or Hermes Desktop on Windows (hermes-agent.nousresearch.com). Windows: add `%LOCALAPPDATA%\hermes\bin` to PATH so `connect` finds `hermes` |
+| Connect | `python3 bin/moe_cache.py connect hermes --write` (or the control page's **Connect Hermes** button): provider `custom`, URL, model name, context 65536 and the API key go into Hermes' `config.yaml`. Hermes Desktop reads the same file |
+| Use | `hermes chat` (CLI), `hermes dashboard` (web UI), or Hermes Desktop: Settings > Model shows the moe-cache model |
+| Measured | Windows desktop, Flash-Next IQ2_XS (68 GB, bigger than RAM), a recorded Hermes bug-fix session: **81.6 s with moe-cache vs 163.9 s stock (2.0x)**, first token 21.8 vs 66.2 s ([RESULTS section 60](docs/RESULTS.md)) |
+
+#### OpenCode
+
+| Step | What to do |
+|---|---|
+| Install | OpenCode CLI, or OpenCode Desktop (opencode.ai/download) |
+| Connect | `python3 bin/moe_cache.py connect opencode --write` (or **Connect OpenCode** on the control page): adds a `moe-cache` provider to `opencode.json` (or `opencode.jsonc`) and selects it; OpenCode Desktop reads the same folder |
+| Use | `opencode`, `opencode web`, or OpenCode Desktop; pick `moe-cache/<model>` in the model list |
+| Measured | same PC and model, a recorded OpenCode bug-fix session: **73.4 s with moe-cache vs 174.8 s stock (2.4x)**, first token 38.6 vs 116.8 s ([RESULTS section 60](docs/RESULTS.md)) |
+
+Claude Code: `python3 bin/moe_cache.py connect claude` prints the settings (`--write` puts them in this folder's `.claude/settings.local.json`). Keep each agent's own context limit below the server's, and set things up before a session: details, desktop apps and on-demand in [docs/AGENTS.md](docs/AGENTS.md).
+
+### Which model?
+
+`pick` decides from your RAM, graphics card, free disk and use (agents, chat, long documents). On a 32 GB RAM + 16 GB GPU PC: Qwen3.8-Flash-Next IQ3_XXS (76 GB) for general and agent use, the Q2_0 file (66 GB) for speed, Nemotron 3.5 Bolt 74B (22 GB, fits in RAM) for 128k contexts. All files and the rules: [docs/MODELS.md](docs/MODELS.md).
+
+## Results
+
+The chart at the top is the Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), stock llama.cpp vs moe-cache with the same command line:
+
+- **+20 to +47 %** decode on the Flash-Next files that do not fit in RAM, **2.0x** on GLM-5.3-Flash (102 GB; one run each on the same drive, 4.44 vs 2.21 tok/s), 3.1x with MTP (one run).
+- **2.0-2.4x** faster coding-agent sessions (OpenCode, Hermes) on Flash-Next.
+- Models that fit in RAM (Qwen3.6-35B, Nemotron Bolt): plain llama.cpp is as fast or faster, so the launcher runs it by itself.
+- **v0.3.5 vs v0.3.4 (Flash-Next Q2_0, Windows desktop, clean run 2026-11-03, both on the official llama.cpp b11966 server):** prompts of 34k / 64k / 128k tokens are read **+42 % / +38 % / +38 %** faster (575 vs 406, 435 vs 314, 421 vs 305 tok/s); decode after a long prompt is **6-10 % lower** (34k 26.7 vs 28.5, 64k 24.6 vs 27.2 tok/s), because the bigger prompt chunk leaves 2 fewer expert layers on the GPU. 256k prompts +26 % from the same change. [RESULTS section 79](docs/RESULTS.md)
+- Same text as stock on every model checked. On Linux (older laptop runs, v0.2.x) the gains were 2.4x to 5.2x.
+
+Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html), [docs/RESULTS.md](docs/RESULTS.md). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md)).
+
+
+## Known issues in v0.3.5 (honest list)
+
+| Issue | Detail |
+|---|---|
+| Not byte-identical at 128k+ by default | at `--ctx 131072` and above the KV cache is q8_0 (`--fast=kv`, about 2x prompt speed at 256k on a 16 GB card, from the bigger GPU plan the smaller KV allows): it passed the quality gate at 4k context (KL 0.0079, top-1 96.7 %, tasks = stock), but not the same bytes as stock. `--exact` keeps llama.cpp's f16 KV |
+| Windows zip is unsigned | Windows shows "unknown publisher" / SmartScreen: Unblock the zip, More info > Run anyway (see Get started). Check the SHA256 or `gh attestation verify` |
+| Windows tested on one desktop | Ryzen 9 7950X + RX 9070 XT 16 GB + 32 GB, Windows 11, Vulkan, plus a GitHub Windows runner (CPU). NVIDIA, Intel GPUs and Windows 10 are untested; HIP loads but is slower than Vulkan |
+| Models measured | Qwen3.8-Flash-Next (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Coder IQ1_M), Qwen3.5-122B IQ2_XXS, GLM-5.3-Flash, Qwen3.6-35B, Nemotron 3.5 Bolt 74B (agent speed; plugin forced slower than stock in one test), Granite 1B (CI). Other MoE models should work but are not measured. Long context (64k-256k) is measured on Flash-Next and a few more, single runs |
+| Linux | Tested on Intel + NVIDIA, CPU-only, Vulkan, and a user's RX 9070 XT. `install.sh` has been tried on Arch (`--no-apt`) and, for this release, from a clean clone on that machine; a fresh Ubuntu/Debian run with apt is not tested. macOS: no |
+| Not tested for this release | `winget install` and `scoop install` (manifests exist but are not submitted); Hermes Desktop and OpenCode Desktop on Windows (click-through still open); a full model run from the final zip |
+| Decode after long prompts | 6-10 % slower than v0.3.4 after a 34k-64k prompt (the bigger prompt chunk leaves 2 fewer expert layers on the GPU); prompts are about 1.4x faster. A later release aims to give that GPU memory back after the prompt |
+| Speed numbers | One PC, cold runs, mostly single series; yours depends on RAM, SSD and GPU. The Linux table is older (v0.2.3.5) |
+
+
+## Documentation
+
+| Page | What is in it |
+|---|---|
+| [Install in detail](docs/INSTALL.md) | every install option, the speed options, the control page, proving the output |
+| [Windows](docs/WINDOWS.md) | the Windows kit, page file, known limits |
+| [Models](docs/MODELS.md) | which model and which file for your machine |
+| [Coding agents](docs/AGENTS.md) | Hermes, OpenCode, Claude Code, on-demand |
+| [Control page](docs/GUI.md), [try it step by step](docs/CONTROL_PAGE_CHECK.md) | the browser app |
+| [How it works](docs/HOW_IT_WORKS.md) | the cache, the plugin, what it changes in llama.cpp (nothing) |
+| [Exactness](docs/EXACTNESS.md) | how "same tokens as stock" is checked |
+| [Results](docs/RESULTS.md) and the [benchmark card](docs/benchmark_card.html) | every measurement |
+| [Hardware and limits](docs/PLATFORMS.md) | what is tested where, known limitations |
+| [Configuration](docs/CONFIGURATION.md) | environment variables |
+| [FAQ](docs/FAQ.md) | questions, and how moe-cache compares with other projects |
+| [Troubleshooting](docs/TROUBLESHOOTING.md) | wrong-looking answers, slow runs, start problems |
+| [Coding standards](docs/CODING_STANDARDS.md) | rules for anyone building or testing moe-cache |
+| [Compatibility](docs/COMPATIBILITY.md), [Roadmap](docs/ROADMAP.md), [Security and privacy](docs/SECURITY.md) | |
+
+## Support
+
+moe-cache is built and tested in my spare time on my own machines. If it saves you a RAM upgrade, you can support it on [Ko-fi](https://ko-fi.com/ibrumm).
+
+## Acknowledgements
+
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) and ggml (MIT, Copyright The ggml authors): moe-cache is a plugin for their backend interface, and it runs their CPU kernels unchanged.
+- Related projects with a similar approach (tiering experts across VRAM, RAM and SSD), built as their own engines: [Strata](https://github.com/Niko1221/Strata) (MIT, by Niko1221) and [Project Maya](https://github.com/mw00/project-maya) (MIT, by mw00; started from Strata's code).
+
+## License
+
+- moe-cache is MIT-licensed, see [LICENSE](LICENSE).
+- `third_party/ggml/` contains interface headers copied from ggml / llama.cpp (MIT, Copyright The ggml authors). Their license text is kept in `third_party/ggml/LICENSE`.
+- moe-cache does not include any model weights. Models you run with it keep their own licenses.
+- Product and model names (Qwen, gpt-oss, DeepSeek, Granite, Hunyuan, KAT-Coder and others) belong to their owners and are used only to say what was tested.
+# Coding agents (Hermes Agent, OpenCode) on moe-cache
+
+Both agents talk to any OpenAI-compatible server, and llama-server is one. `--agent` sets the launcher up for them, and `connect` writes their config.
+
+```bash
+bin/moe-cache-server MODEL.gguf --agent            # context 65536, tool calls, stable model name, warm sessions
+python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write   (add --url http://127.0.0.1:PORT for another port)
+```
+
+**Claude Code** (it speaks Anthropic's API; llama-server answers `/v1/messages` and `/v1/messages/count_tokens`, checked on llama.cpp b11966 on the Windows PC with a small model, 2026-10-29: 200 with `x-api-key` and with a Bearer token): `python3 bin/moe_cache.py connect claude` prints the `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_MODEL` lines for bash and PowerShell and writes nothing; `connect claude --write` merges them into the `env` of **this folder's** `.claude/settings.local.json` only (first backup kept as `.bak`, file private), so Claude Code started elsewhere is not redirected. Claude Code's own system prompt is long: use `--agent` (64k) or more. `connect claude` also sets `CLAUDE_CODE_ATTRIBUTION_HEADER=0`: without it a block that changes per request sits at the start of Claude Code's system prompt, and llama-server has to read the whole prompt again each turn. Untested: how well a given local model follows Claude Code's tool use, and how much this saves on our runs.
+
+| What `--agent` does | Why |
+|---|---|
+| a log line about the prompt cache | `moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); ... slots, 8 checkpoints per slot`. Two agents on one server reuse a shared prompt only while this cache holds it; below 16 GB of server memory it is off (the RAM is worth more to the expert cache, RESULTS 44). The control page lists the line under "What the launcher decided". Change it with `-- --cache-ram MiB` |
+| context 65536 (unless `--ctx`) | agents send 5-20k tokens of tools and instructions before the conversation starts; Hermes Agent refuses less than 64,000 |
+| `--jinja` | tool calls use the model's own chat template (already the default in current llama.cpp) |
+| `--alias NAME` (the file name) | the name agents see in `/v1/models`; pass `-- --alias other` to choose it |
+| at most 8 context checkpoints per slot, 1 GiB kept free for them and for restored conversations | models with recurrent layers (Qwen3-Next, Qwen3.5/3.6) keep a copy of that state per checkpoint in RAM (about 60 MiB each on Qwen3.6-35B), outside the expert cache |
+| warm sessions (`--no-warm` turns them off) | every idle conversation of 2k+ tokens is saved to disk (with its checkpoints) once it has been idle for 20 s + 20 s per GB of the file; a conversation that grew by less than a quarter (and less than 4,096 tokens) since its last save waits 3 min + 30 s per GB (at most 10 min), because a save rewrites the whole file and llama-server answers nothing while it writes; one file per slot; the two longest are restored at the next start, so each agent finds its own |
+| prints the base URL and both config blocks once the server is ready | |
+| an API key (made for you) | `--agent` always sets one: a stable random key kept in `~/.cache/moe-cache/api.key` (mode 0600; Windows: your profile), created on first use and given to llama-server through the environment, never on its command line. Why: agent mode saves conversations to disk and llama-server answers any web page's request on 127.0.0.1 by default, so a page in your browser could erase or read them. `python3 bin/moe_cache.py key` prints it; `connect hermes\|opencode --write` finds it by itself (it uses the stored key when the server answers 401) and writes it into the agent's config. Your own `--api-key KEY` (or `LLAMA_API_KEY`) replaces it |
+| (Windows + AMD GPU with a driver older than 32.0.32015.7029 + Flash-Next only) `--ctx-checkpoints 0` instead of 8 | saving a checkpoint crashes AMD's older Windows Vulkan driver (RESULTS 54; 32.0.32015.7029 does not); the cost is that edited history is processed again instead of resuming from a checkpoint; Qwen3.6 keeps its checkpoints. Not yet measured with an agent on Windows |
+
+## Which model
+
+| Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin; RESULTS 60, 63) |
+|---|---|---|
+| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default since 0.3.2 | decode 19.9 tok/s, 193/202 tasks, reads best for coding (RESULTS 63) |
+| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB) | decode 22.2 tok/s (about 10 % more than IQ3_XXS), prompts 281 tok/s at 3k and 287 at 34k tokens (vs IQ2_XS: +5 % decode, +11 % / +19 % prompts), 191/202 tasks |
+| coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
+
+No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
+IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC (RESULTS 60).
+
+## Without starting a server by hand (on-demand)
+
+Hermes Agent and OpenCode only know a URL; they cannot start a server. `on-demand` gives them an endpoint that is always there and starts the model
+when an agent asks for it, the way Ollama does:
+
+```bash
+python3 bin/moe_cache.py on-demand MODEL.gguf --ram 20      # remembers the model and its options, then listens on 127.0.0.1:8080
+python3 bin/moe_cache.py connect opencode --write            # and/or: connect hermes --write  (the model does not start for this)
+python3 bin/moe_cache.py on-demand --install-autostart        # optional: start the listener at every login
+```
+
+| What happens | Details |
+|---|---|
+| the listener | a small standard-library process (about 35 MB of RAM) on the agent port (`--port`, default 8080). It checks the API key (the stable key of `moe_cache.py key`) and allows cross-origin requests only from local pages, as agent mode does. `/health`, `/v1/models` and `/props` are answered without starting the model, so agents and `connect` can look at the endpoint for free |
+| first request | starts `moe_cache.py server MODEL --agent` with the remembered options on a private port, waits until it is ready (the request waits too; up to `--start-timeout`, 900 s) and passes everything through, streaming (SSE) included |
+| idle release (N3) | after `--idle-release` minutes (default 5, `0` = off) without a request the plugin gives the expert cache's RAM back and the server keeps running: on Windows the experts' file pages move to the standby list (PC, Flash-Next IQ2_XS: available RAM 6.8 -> 25 GB, the next request 4.4 s instead of 3.9 s, against 34 s for a restart); on Linux the experts are evicted and read again when used. The next request sets everything up again by itself |
+| idle stop | after `--idle` minutes (default 15) without a request the server is stopped and its RAM is free; a long streamed answer counts as busy. The next request starts it again (warm sessions bring the conversations back) |
+| the choice | `on-demand MODEL [launcher options] [-- llama-server args]` checks the options with a dry run and keeps them in `~/.cache/moe-cache/on-demand.json` (also `LLAMA_SERVER` and `MOE_CACHE_LIB` from your shell, since autostart has none); `on-demand` alone uses it. Any `server` option works except `--port`/`--agent` (on-demand sets them) |
+| log | one line per start and stop on the listener's output (journal on Linux); the launcher's and llama-server's output go to `~/.cache/moe-cache/on-demand.log` |
+| `--status`, `--stop` | what is remembered, whether the listener and the model run; stop the listener (and the model) |
+| a crash | a model server that dies is noticed; the next request starts it again |
+| two models (Ollama-style) | `on-demand MODEL2.gguf [options] --add` adds another model; the first stays the default. `/v1/models` lists all of them, and the request's `"model"` picks one: one model runs at a time, so a request for the other waits until the running one has finished its requests, stops it and starts the one asked for (Granite on the laptop: about 2 s; a big model takes its load time, its pages are often still in the file cache). A name it does not know goes to the running model, else the default (llama-server ignores the field too). `--remove NAME` forgets an added model; `on-demand MODEL` alone replaces the whole choice. `connect opencode --write` puts every listed model into OpenCode's model picker |
+
+**Start at login** (`--install-autostart`, undo with `--remove-autostart`, which also stops the listener):
+
+| | What it installs | Notes |
+|---|---|---|
+| Linux | a systemd user unit `~/.config/systemd/user/moe-cache-on-demand.service`, enabled and started (`systemctl --user enable --now`) | log: `journalctl --user -u moe-cache-on-demand`; no root. It runs while you are logged in |
+| Windows | a shortcut `moe-cache on-demand.lnk` in your Startup folder (`shell:startup`) that runs `pythonw.exe bin\moe_cache.py on-demand`, started right away too | no admin rights, no console window; the model server also runs without a window |
+
+Run `on-demand MODEL ...` (or `--port` / `--idle` / `--idle-release`) again to change the choice; restart the listener to use it (`--stop`, then
+`systemctl --user start moe-cache-on-demand` or log in again; without autostart, run `on-demand`).
+
+**Pointing the agents at it.** `connect hermes|opencode --write` uses the on-demand port when on-demand has a model (no `--url` needed). OpenCode CLI and
+OpenCode Desktop read the same `opencode.json`. In **Hermes Desktop** you can also set it by hand: Settings -> Model -> Main model, provider **custom**
+(OpenAI-compatible), URL `http://127.0.0.1:8080/v1`, API key from `python3 bin/moe_cache.py key`, model name as `connect hermes` prints it (the file name
+without `.gguf`), context 65536. The Hermes CLI and Desktop share one config, so `connect hermes --write` covers both.
+
+The control page's Start button starts a server on its own port; do not give it the on-demand port while the listener runs.
+
+**Checked on the Linux laptop (2026-10-27)** with the real Hermes Agent 0.22.5 and OpenCode 1.19.4 (isolated config folders, API key on) against the listener: first request starts the model (Granite 1B: 2 s; Qwen3.6-35B under a 12 GB memory limit: 14-17 s), SSE streaming passes through, OpenCode ran `bash` and `read` tool calls on Qwen3.6, idle stop after the set minutes, the next request (Hermes) started it again, no key / wrong key / raw key without `Bearer` give 401, `x-api-key` and `Authorization: Bearer KEY` work, another site's origin gets no CORS header. One bug found and fixed: Hermes asks `/api/v1/models`, `/api/tags`, `/v1/props` and `/version` once to tell LM Studio, Ollama and llama.cpp apart; these started the model on a probe. The idle listener now answers them with llama-server's own 404. Not tried: the Desktop apps (no Windows here).
+
+## PC checklist: Hermes Desktop and OpenCode Desktop with on-demand (Windows)
+
+Use PowerShell. `LS` is your llama-server folder, `MODEL` your .gguf. Each step says what you should see; if not, stop and note it.
+
+| # | Do | You should see |
+|---|---|---|
+| 1 | `python bin\moe_cache.py on-demand MODEL --llama-server LS\llama-server.exe --ram 20` | "remembered ... " and a line with port 8080 and idle stop 15 min. If it says "refused these options", fix the path it names |
+| 2 | `python bin\moe_cache.py on-demand --install-autostart` | "started it now too"; `on-demand --status` says listener running, model idle. Task Manager: no llama-server |
+| 3 | `python bin\moe_cache.py key` | your API key (keep this window for steps 5 and 8) |
+| 4 | Add `%LOCALAPPDATA%\hermes\bin` to PATH if `hermes` is not found, then `python bin\moe_cache.py connect hermes --write` and `python bin\moe_cache.py connect opencode --write` | two lines "now uses ... at http://127.0.0.1:8080/v1"; llama-server still not running |
+| 5 | **Hermes Desktop**: open it, Settings -> Model -> Main model. Check provider `custom`, URL `http://127.0.0.1:8080/v1`, model = the file name without `.gguf`, context 65536. If empty, type them in and paste the key from step 3 | the values from `connect` are shown. Opening Settings must not start llama-server (note it if it does) |
+| 6 | Hermes Desktop: new chat, send "Use your terminal to list the files in this folder." | the answer arrives after the load time (first request waits); llama-server appears in Task Manager without a console window; the reply streams |
+| 7 | Send a second message | answers quickly (the conversation is reused, only new tokens are processed) |
+| 8 | **OpenCode Desktop**: open it, open a project folder, check the model picker lists `moe-cache/NAME`. If not: Settings -> Providers -> add OpenAI-compatible, base URL `http://127.0.0.1:8080/v1`, key from step 3, model NAME. Note which file got the config: `%USERPROFILE%\.config\opencode\opencode.jsonc` if it exists, else `opencode.json` | `moe-cache/NAME` is selected |
+| 9 | OpenCode Desktop: send "Run ls and read a file, tell me what it says." | a bash and a read tool call run, then the answer |
+| 10 | Close both apps, wait the idle time (15 min; use `--idle 2` in step 1 for a quick test) | llama-server gone from Task Manager, RAM back; `%USERPROFILE%\.cache\moe-cache\on-demand-listener.log` has a "stopped" line |
+| 11 | Open one app again, send a message | the model starts again, the old conversation is picked up (warm session) |
+| 12 | Sign out and in, send a message | the listener is back at login (Startup shortcut), the model starts again |
+| 13 | `python bin\moe_cache.py on-demand --remove-autostart` | shortcut gone, listener and model stopped |
+
+If a step fails, send: `python bin\moe_cache.py on-demand --status`, the last 30 lines of `on-demand-listener.log` and `on-demand.log` (both in `%USERPROFILE%\.cache\moe-cache\`), and the text of the app's error.
+
+## T8: Hermes Desktop and OpenCode Desktop through the control page (Windows, owner click-through)
+
+Both desktop apps are already installed on the test PC (Hermes Desktop; OpenCode Desktop 2.1.4 in `%LOCALAPPDATA%\Programs\@opencodedesktop`). This path needs no on-demand listener: the control page starts the server and writes both configs. Use a small model first (Qwen3.6, 20 GB). Each step says what you should see; if not, stop and note it.
+
+| # | Do | You should see |
+|---|---|---|
+| 1 | Double-click `bin\moe-cache-ui.bat` (the console prints `plugin: ...dll`, `llama-server: ...`, and the page opens) | the control page; the header shows RAM and the GPU |
+| 2 | Pick the model, turn **Agent mode** on, context 65536, press **Start** | status goes to ready; Why list has no warning in red; the key line says "the launcher's agent key" |
+| 3 | Agents tab: **Connect OpenCode**, then **Connect Hermes** | each says "written": OpenCode with the file path (`%USERPROFILE%\.config\opencode\opencode.json`, or `opencode.jsonc` if OpenCode Desktop made one), Hermes "now uses NAME at http://127.0.0.1:PORT/v1 (context 65536)" and a line `before: provider ..., model ...; old config kept as ...config.yaml.bak`. Your own Hermes setup (OpenRouter etc.) is in `%LOCALAPPDATA%\hermes\config.yaml.bak`: copy it back over `config.yaml` to undo |
+| 4 | **Hermes Desktop**: open it, Settings -> Model -> Main model | provider `custom`, URL `http://127.0.0.1:PORT/v1`, model = the file name without `.gguf`, context 65536. If it asks at first run, choose "Local / custom endpoint" and type those values (key: **Copy key** on the page) |
+| 5 | Hermes Desktop: new chat: "Use your terminal to list the files in this folder." | the answer streams, a terminal tool call runs; the page's Status tab shows prompt tokens and decode tok/s; first turn is the slow one |
+| 6 | Hermes Desktop: a second message | much quicker: only the new tokens are processed |
+| 7 | **OpenCode Desktop**: open it, open a project folder, open the model picker | `moe-cache/NAME` is listed and selected. If it is not: Settings -> Providers -> add OpenAI-compatible, base URL `http://127.0.0.1:PORT/v1`, key from **Copy key**, model NAME |
+| 8 | OpenCode Desktop: "Run ls and read a file, tell me what it says." | a bash and a read tool call, then the answer |
+| 9 | Control page, Agents tab | the two conversations appear as saved sessions after they have been idle for a while (warm sessions) |
+| 10 | Press **Stop** on the page, then **Start** again, send one more message in either app | the old conversation is picked up (restored at start) |
+| 11 | Close the apps; the page's **Stop** ends the server | llama-server is gone from Task Manager |
+
+Harmless: after each Hermes chat the Log tab shows one `unauthorized: Invalid API Key` (HTTP 401) line, because Hermes asks `GET /v1/models` once without the key (seen on the Linux laptop; Hermes' `model_metadata_llamacpp.py`). The chat itself works.
+
+If a step fails, send the page's Log tab (or `ui.log` of the console) and the text of the app's error.
+
+## Using the agents with a GUI
+
+Both agents come with a graphical front end. The steps are the same everywhere: start the server in agent mode, write the agent's config, open the GUI.
+
+```bash
+bin/moe-cache-server MODEL.gguf --agent                # Windows: python bin\moe_cache.py server MODEL.gguf --agent --llama-server C:\llama\llama-server.exe
+python3 bin/moe_cache.py connect hermes --write        # and/or: connect opencode --write   (Windows: python bin\moe_cache.py connect ...)
+```
+
+| | Linux | Windows (signed desktop apps) |
+|---|---|---|
+| Hermes Agent | `hermes dashboard`: web UI at http://127.0.0.1:9119 (`--port`, `--host`, `--no-open`, `--stop`, `--status`). `hermes desktop` builds and starts the native (Electron) app | Hermes Desktop: `Hermes-Setup.exe` from hermes-agent.nousresearch.com, a Tauri setup app that has to be run by hand. Installs to `%LOCALAPPDATA%\hermes`, the CLI is `%LOCALAPPDATA%\hermes\bin\hermes.exe` |
+| OpenCode | `opencode web`: starts the server and opens the browser UI (`--port`, `--hostname`, default 127.0.0.1) | OpenCode Desktop: opencode.ai/download, the `windows-x64` NSIS installer, per-user install in `%LOCALAPPDATA%\Programs\opencodedesktop`; needs Edge WebView2 |
+
+The Linux commands were checked against `hermes --help` and `opencode --help` (2026-10-26); they were not started against a moe-cache server for this page.
+
+**Checked on the Linux laptop with a running agent-mode server (2026-10-29, Hermes Agent 0.22.5, OpenCode 1.19.4, Qwen3.6-35B-A3B, 64k):** `connect hermes --write` and `connect opencode --write` wrote correct configs (OpenCode: into the existing `opencode.jsonc`, old file kept as `.bak`). Both CLIs fixed a bug in a small git repo over two turns (run tests, edit, commit): `hermes chat -Q -t terminal,file,todo -q "..."` (then `-c` for the next turn) and `opencode run --auto "..." < /dev/null` (then `-c`). Flash-Next IQ3_XXS at 64k also fixed it with Hermes (373 s, cold first turn 5.8k tokens in 167 s). Hermes sends one `GET /v1/models` without the API key after each chat; the server logs "unauthorized: Invalid API Key" for it. That comes from Hermes and is harmless. The web UIs (`hermes dashboard`, `opencode web`) were not started.
+
+**How each is pointed at moe-cache** (read from `connect()` in `bin/moe_cache.py`):
+
+| Agent | What `connect ... --write` does | Windows | Do the GUIs read it? |
+|---|---|---|---|
+| Hermes | runs `hermes config set` for `model.provider=custom`, `model.base_url`, `model.default`, `model.context_length`, `model.api_key`. It looks for `hermes` on `PATH` and fails if it is not there. Before the first change it copies `config.yaml` to `config.yaml.bak` and prints the model you had (a config that already points at a local server is not copied over the backup) | The Hermes Desktop installer puts the CLI in `%LOCALAPPDATA%\hermes\bin`: add that directory to `PATH` (or run the command from it) so `connect` finds it. `hermes config set` writes the dotted `model.*` keys (the key too) to `%LOCALAPPDATA%\hermes\config.yaml`: on Windows Hermes' home is `%LOCALAPPDATA%\hermes` (`HERMES_HOME` overrides it), not `%USERPROFILE%\.hermes` (hermes_constants.py; read 2026-10-27) | Yes (source and docs, 2026-10-27; not yet tried on the PC): Hermes Desktop (apps/desktop, Electron) runs the same Python backend on the same `HERMES_HOME`, so it reads that `config.yaml`. Its model picker in the chat box is remembered per device and does not change the default; the default is Settings → Model → Main model, which is the same `config.yaml` entry |
+| OpenCode | merges a `moe-cache` provider into `opencode.json` and sets `model` to `moe-cache/NAME`; the old file is kept as `.bak`. Default file: `$XDG_CONFIG_HOME/opencode/opencode.json`, else `~/.config/opencode/opencode.json`; `--config PATH` writes another one | `%USERPROFILE%\.config\opencode\opencode.json` (the launcher does not use `%APPDATA%`). OpenCode Desktop reads it too: its server runs inside the app on the same global folder (it only moves its state folder). OpenCode merges `config.json`, `opencode.json`, then `opencode.jsonc` (later wins) and creates `opencode.jsonc` on first run, so `connect` writes into `opencode.jsonc` when that is plain JSON, and warns when a `.jsonc` with comments sets its own `model`. `OPENCODE_CONFIG` (a file merged after these) is reported too | Yes for `opencode web` and the Desktop app (same server code, same global folder; source read 2026-10-27, not yet tried on the PC) |
+
+If a GUI does not show the model, add the provider by hand in its settings: type OpenAI-compatible, base URL `http://127.0.0.1:8080/v1` (your `--port`), model name = the file name, context 65536, API key `none` (or your `--api-key`). `connect` without `--write` prints these values. Keep the server on `127.0.0.1`. In agent mode the key is in the config that `connect --write` wrote (or print it with `python3 bin/moe_cache.py key`); llama-server's own web page asks for it once.
+
+## Keep the agent's own context limit below the server's
+
+`connect --write` (and the control page's Connect buttons) write the server's context as the agent's window: 65536 by default, or your `--ctx`. When the agent believes it has the whole window, it keeps adding tool results until llama-server refuses the request ("context too large"), and the reply itself also has to fit. Leave 10-25 % of headroom, so the agent's own summarising or compaction starts first:
+
+| Agent | What to do | Example for the default 65536 |
+|---|---|---|
+| OpenCode | lower `limit.context` (and set `limit.output`) of the `moe-cache` model in `opencode.json` | `"limit": {"context": 56000, "output": 8192}` |
+| Hermes | it needs `model.context_length` of at least 64,000, so keep 65536 there and give the server more room | start the server with `--ctx 81920` (Flash-Next KV is about 27.5 KB per token: about 0.4 GiB more than at 65536), run `connect hermes --write` (it copies the server's 81920), then `hermes config set model.context_length 65536` |
+
+A bigger server window costs KV memory and some speed at depth. Not measured by us: the advice follows from how the limits work and from Strata's agent chat, which reports the peak prompt in a 64K-window test falling from 83 % to 61 % when it summarises early (their number).
+
+## What makes agents fast or slow
+
+An agent's first turn is the expensive one. llama-server keeps each conversation in its own slot (4 slots sharing the context), so later turns only
+process the new tokens. It also keeps a checkpoint at the start of the last user message, which is where the agent's fixed preamble ends, so a *new*
+session on the same server reuses the preamble too. Measured on the laptop (RTX 4060 8 GB, Qwen3.6-35B-A3B Q4_K_M under a 16 GB memory limit, plugin
+with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
+
+| Request | New prompt tokens | Prompt time |
+|---|---|---|
+| session 1, turn 1 (OpenCode's tools and instructions) | 7,438 | 45.6 s (163 tok/s) |
+| session 1, turns 2-3 | 79 / 20 | 3.4 s / 0.8 s |
+| session 2 (same server), turn 1 | 29 | 0.7 s |
+| after a server restart, warm session restored (0.2 s), turn 1 | 1,028 | 8.5 s |
+| Hermes Agent (file tools only), turn 1 / turn 2 | 3,687 / 76 | 23.0 s / 2.9 s |
+| whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | 78 s / 30 s / 39 s / 55 s |
+
+With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens in 186 s; after a restart with the warm session the whole OpenCode
+session takes 112 s instead of 242 s. Details: [RESULTS.md section 51-52](RESULTS.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+model, context and slot.
+
+OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.
+
+### Keep the reuse working
+
+The reuse above only works while the start of the prompt stays byte for byte the same. What breaks it, and what to do:
+
+| Breaks the reuse | Do instead |
+|---|---|
+| adding or removing a tool or an MCP server in the middle of a session (the tool list sits at the start of the prompt) | set up tools before the session; a change means one slow turn while the whole prompt is read again |
+| more conversations than slots (agent + title request + sub-agents + a second agent) | `--agent` gives 4 slots; with two agents and sub-agents raise them (`-- -np 6`) or run one agent at a time |
+| an editor's autocomplete on the same server (many tiny requests) | give autocomplete its own small model or server |
+| the agent's window larger than the server's | keep the agent's limit below the server's (section above); `connect opencode` writes it, and for windows of 64k+ a 30-minute reply timeout (OpenCode's default is 5 minutes, a 63k first turn took 289 s) |
+
+## Measuring it yourself: replay a recorded agent session (tools/agent_bench.py)
+
+Decode tok/s says little about agents; what they wait for is the time to the first token of each turn and the whole task. `tools/agent_bench.py`
+(Python standard library only, Linux and Windows) records an agent session through a small proxy and replays it against any server, with the same
+request bodies, the same overlap of parallel requests and the same pauses between turns. Two recordings come with it (`tests/agent_sessions/`: OpenCode
+and Hermes Agent fixing a bug in a small two-file project, 5 and 7 requests, first prompts of 7,455 and 3,717 tokens).
+
+```bash
+python3 tools/agent_bench.py replay tests/agent_sessions/opencode_stats.json --url http://127.0.0.1:8080 --json oc.json   # per turn: TTFT, prompt tokens processed / reused, decode tok/s
+python3 tools/agent_bench.py table oc.json other.json                                                                       # results side by side
+python3 tools/agent_bench.py record --upstream http://127.0.0.1:8080 --port 8199 --out mine.json   # then point the agent at http://127.0.0.1:8199/v1; Ctrl+C ends
+```
+
+The replay generates greedily and stops at the recorded number of tokens, so stock llama-server and moe-cache (exact) produce the same tokens and the
+same prompt reuse. Follow-up turns re-send the agent's original assistant message, which the server processes again if the model now writes something
+else (a few hundred tokens per turn). Recording replaces the home folder, user and host names. Agent-mode servers want the per-user API key: the replay sends `LLAMA_API_KEY`, or the launcher's stored key when the server asks for one (`--api-key` to give another). Start the server fresh for a cold first turn (with
+`--agent`, also give it an empty `--slot-save-path` after `--`, or it restores the last warm session). Measured on the laptop, stock vs moe-cache:
+[RESULTS.md section 57](RESULTS.md).
+
+## Agent notes
+
+| Agent | Notes |
+|---|---|
+| OpenCode | `opencode run "..."` waits on an open stdin: give it `< /dev/null` in scripts. Config: `~/.config/opencode/opencode.json` or `opencode.json` in the project; `connect opencode --write --config PATH` writes either (the old file is kept as `.bak`) |
+| Hermes Agent | config `~/.hermes/config.yaml` (Windows: `%LOCALAPPDATA%\hermes\config.yaml`), model block `provider: custom`, `base_url`, `default`, `context_length`, `api_key`; `connect hermes --write` sets them through `hermes config set` |
+# GPU backends: NVIDIA, AMD (ROCm / HIP), Intel Arc (SYCL / Vulkan), Vulkan
+
+moe-cache talks to llama.cpp only through ggml's generic backend interface, so it is not tied to CUDA. This page says what is **verified** and what is
+**expected to work but untested**, and how to build llama.cpp for each GPU so a tester can try it.
+
+| Backend | Status | Notes |
+|---|---|---|
+| CUDA (NVIDIA) | **tested** (RTX 4060 Laptop, CUDA 13) | plugin, executor, llama.cpp GPU expert cache, identity |
+| Vulkan on an Intel iGPU | **tested** earlier (llama.cpp 7fe450e19, loadable backends) | plugin and identity; not re-run on the newer commit |
+| Vulkan on AMD (RX 9070 XT, Windows 11 and a user's Linux; Vega 8 iGPU on Linux) and NVIDIA (Linux) | **tested**: identity 4/4 (details and dates: [COMPATIBILITY.md](COMPATIBILITY.md)) | the Windows desktop is the speed reference |
+| Vulkan on Intel Arc (discrete) | untested | expected to behave like the Intel iGPU case |
+| ROCm / HIP (AMD) | **loads, not identity-checked** (Windows, official b11669 HIP zip, RX 9070 XT; RESULTS 67) | generic ggml calls only; the llama.cpp GPU expert cache is backend-neutral upstream code. On that card HIP is 2.4x slower than Vulkan even without the plugin, and the launcher reads no GPU memory from a HIP build (it plans every expert layer on the CPU) |
+| SYCL (Intel Arc, Intel GPUs) | **untested** | same as above |
+| Intel NPU (Core Ultra, Lunar Lake) | **untested** | llama.cpp has an OpenVINO backend (`-DGGML_OPENVINO=ON`, `GGML_OPENVINO_DEVICE=NPU`), labelled a preview. Its formats are FP16, Q8_0, Q4_0/Q4_1/Q4_K (Q5_K/Q6_K converted at load), so IQ2 / Q2_0 models such as Qwen3.8-Flash-Next cannot use it; a Q4_K MoE can. Not tried with this plugin |
+| AMD NPU (XDNA, Ryzen AI) | not supported | no ggml backend for it; AMD's own Ryzen AI software is separate |
+
+## Build llama.cpp for your GPU (shared libraries, as moe-cache needs)
+
+Commit `23b0202a1` (ggml 0.26.0) or newer for the GPU expert cache; `7fe450e19` also works without it. Check llama.cpp's own `docs/build.md` if a flag has moved.
+
+```bash
+git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp && git checkout 23b0202a1
+# NVIDIA
+cmake -B build -G Ninja -DGGML_CUDA=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+# AMD ROCm / HIP: find your GPU target with `rocminfo | grep gfx` (for example gfx1100, gfx1151 for Strix Halo)
+HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" \
+  cmake -B build -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1100 -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+# Intel Arc / Intel GPUs with oneAPI
+source /opt/intel/oneapi/setvars.sh
+cmake -B build -G Ninja -DGGML_SYCL=ON -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+# any GPU with a Vulkan driver (AMD, Intel, NVIDIA): the easiest first try
+cmake -B build -G Ninja -DGGML_VULKAN=ON -DBUILD_SHARED_LIBS=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target llama-server -j
+./build/bin/llama-server --list-devices        # your GPU must appear here
+```
+
+Then, in the moe-cache folder:
+
+```bash
+GGML_API=3 GGML_LIB_DIR=/path/to/llama.cpp/build/bin ./build.sh      # llama.cpp 23b0202a1 or newer (use ./build.sh alone for 7fe450e19)
+tools/friend_test.sh --llama-server /path/to/llama.cpp/build/bin/llama-server --model /path/to/small-moe.gguf
+```
+
+`tools/friend_test.sh` writes one report file (hardware names, results, no prompts or paths); see `docs/FRIEND_TEST.md`.
+
+## What to expect on a unified-memory machine (Ryzen AI Max, Apple-like layouts)
+
+When the whole model fits in the shared memory the plugin has nothing to cache and steps aside; the useful settings are then llama.cpp's own
+(`-ngl 99`, a larger `-ub`, flash attention). moe-cache matters when the model is bigger than the memory you can give it.
+# Benchmark template: one record for every result
+
+Every number we publish (our Windows PC, our Linux laptop, and anyone who sends a report) carries the same fields, so results can be compared and
+re-run. The rule: **a value that was not recorded is written `not recorded`, never guessed.** A result with `not recorded` in a required field is
+still shown, but it is not a chart number until it is measured again.
+
+| Piece | File | What it is |
+|---|---|---|
+| This page | `docs/BENCHMARK_TEMPLATE.md` | the fields, how each is collected on Linux and Windows, the recipes, the RESULTS section template |
+| Schema | `docs/bench_record.schema.json` | the record as JSON Schema (required fields, "number or `not recorded`") |
+| Collector | `bin/moe_cache_record.py` (also `python bin/moe_cache.py bench-record ...`) | collects the machine, samples a run (VRAM, process RAM, free RAM, CPU), builds, validates and renders the record; standard library only, Linux and Windows |
+| Report | `python bin/moe_cache.py bench-report MODEL.gguf` | stock against moe-cache in ABBA order; since this template its report carries the record (card lines + JSON) |
+| Issue form | `.github/ISSUE_TEMPLATE/benchmark_report.yml` | where a tester pastes it |
+
+**Required** below means: the key must be in the record (the validator refuses a record without it), and its value is a real measurement or
+`not recorded`. **Optional** keys may be absent.
+
+## 1. Hardware (`hardware`)
+
+| Field (key) | Req | Linux | Windows |
+|---|---|---|---|
+| CPU model (`cpu_model`) | yes | `/proc/cpuinfo` "model name" | PowerShell `Get-CimInstance Win32_Processor` |
+| CPU cores / threads (`cpu_cores`, `cpu_threads`) | yes | `/proc/cpuinfo` physical id + core id; logical count | `Win32_Processor` NumberOfCores / NumberOfLogicalProcessors |
+| RAM size (`ram_gib`) | yes | `/proc/meminfo` MemTotal | `GlobalMemoryStatusEx` |
+| RAM type, speed (`ram_type`, `ram_speed_mts`) | yes | `dmidecode -t memory` (needs root; otherwise `not recorded`: run `sudo dmidecode -t memory` and add the two values by hand) | `Win32_PhysicalMemory` SMBIOSMemoryType, ConfiguredClockSpeed |
+| GPU model (`gpu_model`) | yes | `nvidia-smi`, else `llama-server --list-devices` | `llama-server --list-devices` |
+| VRAM total (`vram_mib`) | yes | `nvidia-smi`, else `--list-devices` | `--list-devices` (WMI's AdapterRAM stops at 4 GB, so it is not used) |
+| GPU driver (`gpu_driver`) | yes | `nvidia-smi` driver_version; AMD: `not recorded` unless `vulkaninfo --summary` shows driverInfo | `Win32_VideoController` DriverVersion (AMD Adrenalin: also note the Adrenalin number in the issue) |
+| OS, build (`os`, `os_build`) | yes | `platform` (kernel) | `platform` (e.g. 10.0.26100) |
+| Storage: model, interface, drive (`storage.*`) | yes | `findmnt` + `lsblk` MODEL, TRAN of the disk holding the model file | `Get-Partition -DriveLetter X \| Get-Disk` FriendlyName, BusType (NVMe / SATA / USB) |
+| Power plan (`power_plan`) | yes | `powerprofilesctl get` and the cpufreq governor | `powercfg /getactivescheme` |
+
+The drive that holds the model matters more than the CPU for the cache's misses: always say which drive (`storage.drive`).
+
+## 2. Software (`software`)
+
+| Field | Req | How |
+|---|---|---|
+| moe-cache version (`moe_cache_version`) | yes | `VERSION` of `bin/moe_cache.py` |
+| git commit (`moe_cache_commit`) | yes | `git rev-parse` in the checkout; a release kit has no `.git`: `not recorded`, so name the kit's file name in the issue |
+| plugin file + sha256 prefix (`plugin_file`, `plugin_sha256_prefix`) | yes | sha256 (12 hex) of `libggml-moe-cache.so` / `ggml-moe-cache*.dll` found next to the launcher; `not recorded` if the launcher runs stock |
+| llama.cpp build, commit (`llama_build`, `llama_commit`) | yes | `llama-server --version` ("version: 11966 (ff0d396e3)") |
+| backend (`llama_backend`) | yes | `llama-server --list-devices`: Vulkan, ROCm-HIP, CUDA, SYCL, Metal, CPU only. AMD testers: say Vulkan or ROCm |
+| Python (`python`) | yes | `platform.python_version()` |
+
+## 3. Model (`model`)
+
+| Field | Req | How |
+|---|---|---|
+| file name (`file`) | yes | base name only (no folders; the report scrubs paths) |
+| quant (`quant`) | yes | GGUF general.file_type, else the experts' dominant tensor type |
+| size (`size_gb`) | yes | sum of the shards |
+| sha256 prefix (`sha256_head16MiB`) | yes | sha256 of the first 16 MiB (16 hex shown); with the size it identifies the file quickly |
+| full sha256 prefix (`sha256_full`) | optional | `bench-record collect --hash-model` (reads the whole file: minutes on a 60 GB model) |
+| source URL (`source_url`) | yes | the Hugging Face page of the file (`--model-url`); `not recorded` if you do not know it |
+
+## 4. Settings (`settings`)
+
+| Field | Req | How |
+|---|---|---|
+| full command line (`command_line`) | yes | the launcher's own plan: `moe_cache.py server MODEL ... --plan-json` ("command_line"), including its `env MOE_CACHE_...=` prefix. bench-report records it |
+| environment (`environment`) | yes | every `MOE_CACHE_*`, `GGML_*`, `LLAMA_*` variable set in the process or in the command line's `env` prefix (`LLAMA_API_KEY` is never copied) |
+| context, `-ub`, `-b` (`ctx`, `ubatch`, `batch`) | yes | parsed from the command line (`-c`, `-ub`, `-b`) |
+| `--n-cpu-moe` and GPU expert layers (`n_cpu_moe`, `gpu_expert_layers`) | yes | `gpu_expert_layers` = model layers (llama-server log `n_layer`) minus `n_cpu_moe`; `not recorded` when the log did not show the layer count |
+| KV type (`kv_type_k`, `kv_type_v`) | yes | `-ctk` / `-ctv`; `not recorded` = llama.cpp's default (f16) was used |
+| MTP, `--fast` (`mtp`, `fast_flag`) | yes | yes / no, from the command line |
+| threads (`threads`) | yes | `-t`; `not recorded` = llama.cpp default |
+| stock arm's command line (`stock_command_line`) | optional | the `--stock` plan (bench-report) |
+| `-ngl`, `n_layer`, flash attention | optional | command line / log |
+
+## 5. Conditions (`conditions`)
+
+| Field | Req | How |
+|---|---|---|
+| uptime (`uptime_h`) | yes | `/proc/uptime`; Windows `GetTickCount64`. Chart numbers need a restart within the last hours: write the restart time in the RESULTS heading |
+| baseline check (`baseline_check`) | yes | the stock llama.cpp speed check before the run, e.g. "PASS 49.4 tok/s at 12:29" (`--baseline "..."`); `not recorded` if none was run |
+| other programs on the GPU/CPU (`other_programs`) | yes | text you give (`--other-programs "browser closed, nothing else"`); the numbers below show what the machine was doing |
+| file cache (`file_cache`) | yes | cold or warm (bench-report drops the model from the cache before each run unless `--warm`) |
+| CPU busy before, free RAM before, VRAM in use before | optional | sampled for one second before the run (system-wide) |
+| temperatures (`cpu_temp_c`, `gpu_temp_c`) | optional | Linux: hwmon k10temp/coretemp, `nvidia-smi`; **Windows: not collected** (no standard source without a vendor tool); write it by hand if you have one |
+
+## 6. Protocol (`protocol`)
+
+| Field | Req | How |
+|---|---|---|
+| arms (`arms`) | yes | stock, moe-cache (and e.g. MTP variants, named in the run's `arm`) |
+| order (`order`) | yes | `ABBA` (stock, moe-cache, moe-cache, stock, per pair) or `single` |
+| runs per arm (`runs_per_arm`) | yes | bench-report `--pairs N` gives 2N |
+| prompt set + sha256 (`prompt_set`, `prompt_sha256`) | yes | a name (`bench-report/chat-v1`) and the sha256 prefix of the prompt text; the prompt is not published, the hash proves two runs used the same one |
+| prompt length (`prompt_tokens`) | yes | from the server's timings |
+| `n_predict`, temperature, seed, sampler | yes | `--tokens`, 0, 42, greedy |
+
+## 7. Metrics per run (`runs[]`)
+
+| Field (key) | Req | Linux | Windows |
+|---|---|---|---|
+| prompt tok/s, decode tok/s (`prompt_tps`, `decode_tps`) | yes | `timings` of the server's answer | same |
+| time to first token, wall time (`ttft_s`, `wall_s`) | yes | `timings.prompt_ms`; clock | same |
+| VRAM used peak (`vram_used_peak_mib`, `vram_source`) | yes | `nvidia-smi --query-compute-apps` (the server's own share), else `nvidia-smi memory.used`, else amdgpu `mem_info_vram_used` (whole card); last fallback: llama-server's buffer-size log lines (model + KV + compute on the GPU; an estimate, labelled) | `typeperf "\GPU Process Memory(*)\Dedicated Usage"` (the server's own share), else `\GPU Adapter Memory(*)\Dedicated Usage` (whole card), else the log lines. Counters need Windows 10 1709+ and the WDDM driver (all current AMD/NVIDIA/Intel) |
+| whole-card VRAM peak (`vram_system_peak_mib`) | optional | as above | as above |
+| process RAM peak (`process_ram_peak_mib`) | yes | RSS of llama-server and its children, peak of 0.5 s samples and `VmHWM`. **Includes the mapped model file**, so a memory-mapped run can show far more than the cache's own memory | working set (`GetProcessMemoryInfo`) |
+| process private RAM peak (`process_private_peak_mib`) | optional | `RssAnon` (anonymous memory: the cache, buffers) | private bytes |
+| system RAM free minimum (`system_ram_free_min_mib`) | yes | lowest `MemAvailable` | lowest `ullAvailPhys` |
+| CPU % average and peak (`cpu_avg_pct`, `cpu_peak_pct`) | yes | CPU time of the process tree per 0.5 s interval, as % of **all logical CPUs** (100 = every CPU busy); average over the run, highest interval | same, `GetProcessTimes` |
+| system CPU % average, peak (`system_cpu_*`) | optional | `/proc/stat` | `GetSystemTimes`; shows other programs competing |
+| cache hit % (`cache_hit_pct`) | optional | plugin stats (`MOE_CACHE_STATS_SIGNAL`) | same |
+| disk read (`disk_read_gb`) | optional | plugin stats `read_bytes` | same |
+| GPU blocks / segments (`gpu_blocks`) | optional | only if the plugin reports them; otherwise `not recorded` | same |
+| text hash (`text_sha256`) | yes | sha256 prefix of the answer | same |
+
+Sampling is every 0.5 s (VRAM every 2 s; on Windows each `typeperf` call takes about a second), so a peak shorter than that is missed. CPU and RAM sampling
+costs well under 1 % of one CPU. The sampler measures the launcher's process tree (the launcher and its llama-server child).
+
+## 8. Outputs (`outputs`)
+
+`text_sha256_by_arm` (hash per arm) and `identical_to_baseline`: `yes`, `no` or `not checked` (approximate modes, or an arm that failed). A `no` is reported, not hidden.
+
+## 9. Reproduce (`reproduce`)
+
+`commands` (the exact command that was run; for bench-report the line starts `python bin/moe_cache.py bench-report <model file> ...`), `kit` (release page or branch and
+commit), `model_url`, `prompt_file`. With these and the record's settings a second person can run the same thing.
+
+## Recipes
+
+### Pick a model the launcher does not run as stock
+
+The launcher runs plain llama.cpp when the model fits your RAM, and then there is nothing to compare. Pick a file **bigger than your free RAM** (rule of thumb:
+size at least 1.2 x RAM, e.g. 40 GB or more on 32 GB):
+
+```bash
+python3 bin/moe_cache.py pick          # recommends a model for your RAM / VRAM / disk and prints the download command
+python3 bin/moe_cache.py server MODEL.gguf --plan-json | grep -o '"engine": *"[a-z]*"'     # must say "plugin"
+```
+
+On Windows: `python bin\moe_cache.py server D:\models\MODEL.gguf --plan-json | findstr engine`. `"stock"` means it fits: pick a bigger model (or `--force-plugin` for a
+forced run, which the report then states).
+
+### Windows (10 / 11), normal PowerShell, no administrator
+
+```powershell
+# 1. llama.cpp is in the kit (llama\ folder, Vulkan). AMD: Vulkan, not HIP. Python 3.8+ with "Add to PATH".
+# 2. close the browser and games; plug in a laptop; restart the PC first for chart-quality numbers
+python bin\moe_cache.py doctor D:\models\MODEL.gguf
+# 3. the run: 2 ABBA pairs, cold file cache (--flush-from = a folder of other big files, about as large as your RAM)
+python bin\moe_cache.py bench-report D:\models\MODEL.gguf --pairs 2 --flush-from D:\other-big-files --out $env:USERPROFILE\moe-reports `
+    --baseline "PASS 49.4 tok/s" --other-programs "nothing" --model-url https://huggingface.co/ORG/REPO
+# --baseline / --other-programs / --model-url are text you give; leave them out and the report says "not recorded"
+```
+
+Windows notes: the report names the backend (Vulkan or ROCm) from `--list-devices`; VRAM comes from the GPU performance counters (`typeperf`); temperatures are not collected.
+
+### Linux
+
+```bash
+./install.sh                                  # or your own llama.cpp built with -DBUILD_SHARED_LIBS=ON
+python3 bin/moe_cache.py doctor MODEL.gguf
+python3 bin/moe_cache.py bench-report MODEL.gguf --pairs 2 --out ~/moe-reports --other-programs "nothing" --model-url https://huggingface.co/ORG/REPO
+sudo dmidecode -t memory | grep -E "Type:|Speed:"     # optional: RAM type and speed, which need root
+```
+
+### Paste it into the issue
+
+1. The report is `moe-cache-report-YYYYMMDD-HHMM.md` (and `.json`) in the `--out` folder. It holds the numbers, the four card lines and the whole record in a collapsed JSON block; no prompts, answers, user name, host name or folder names.
+2. Open the [Benchmark report form](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml), paste the whole `.md` into **The report**, fill the few key fields (backend, GPU and driver, OS, what else was running), tick the privacy box.
+3. Check the gaps list at the end of the report: every field that says `not recorded` can still be added as a comment.
+
+### Our own runs (PC harness, laptop scripts)
+
+A harness that measures tok/s itself keeps its own loop and adds the sampler and the record:
+
+```bash
+# per run: start the server, then watch its process while the harness sends the prompts
+python3 bin/moe_cache.py bench-record monitor --pid 12345 --seconds 120 --out mon_A1.json     # or: monitor --out mon.json -- <the command>
+# at the end: runs.json = [{"arm": "stock", "decode_tps": 28.4, "prompt_tps": 408.6, "ttft_s": 4.9, "text": "...", "monitor": "mon_A1.json"}, ...]
+python3 bin/moe_cache.py bench-record assemble --runs runs.json --model MODEL.gguf --llama-server LS --backend Vulkan --order ABBA \
+    --command-line "env MOE_CACHE_SIZE_GIB=auto llama-server -m ... -c 65536 --n-cpu-moe 39 -ub 2048" --prompt-file prompt.txt --prompt-tokens 34000 --n-predict 128 \
+    --cache cold --baseline "PASS 49.4 tok/s" --other-programs "none" --model-url https://huggingface.co/... --out record.json
+python3 bin/moe_cache.py bench-record validate record.json            # schema check, and how many fields say "not recorded"
+python3 bin/moe_cache.py bench-record card record.json --as details --section 80    # the four lines for docs/benchmark_card.html
+python3 bin/moe_cache.py bench-record card record.json --as results --section 80 --title "Title (Windows PC, date)"   # the RESULTS section
+```
+
+From Python: `from moe_cache_record import Sampler, run_entry, assemble`; `Sampler(pid).start()` ... `Sampler.stop()` returns the monitor dict that `run_entry` takes.
+Run `collect --out env.json` once per session and pass `--env env.json` to `assemble` so the machine facts are read once.
+
+## The benchmark card's detail lines
+
+`bench-record card FILE --as details` prints the four lines of a row in `docs/benchmark_card.html` (field `d`):
+
+```
+GPU expert layers: 9 (n-cpu-moe 39) · -ub 2048
+ctx 65536 · prompt 34000 tokens · 2 runs each, order ABBA · cold file cache
+VRAM peak 7.8 GiB · process RAM peak 9.0 GiB (system free min 4.2 GiB) · CPU 22.5 % avg, 61.0 % peak
+launcher abc123def, DLL 0123456 · llama.cpp 11966 (ff0d396e3, Vulkan) · 11-03 · §80
+```
+
+A row whose line says `not recorded` is a row that still has to be measured (or the field edited in by hand with the reason).
+
+## RESULTS.md section template
+
+Every new section in `docs/RESULTS.md` starts with this heading line and carries the same fields (`bench-record card FILE --as results` fills it):
+
+```markdown
+## N. TITLE (MACHINE, DATE; clean / not clean: REASON; PC restarted at HH:MM, baseline guard PASS at X tok/s, runs HH:MM-HH:MM)
+
+OS, CPU, GPU + VRAM + driver, RAM size/type/speed, model drive (model, interface). Model: file (quant, size GB, sha256 prefix, source). Software: moe-cache
+VERSION + commit, plugin sha256 prefix, llama.cpp bNNNNN (commit, backend). Order ABBA / single, R runs per arm, first / second shown. Baseline check, uptime.
+
+| Case | arm A | arm B | change |
+|---|---|---|---|
+| prompt tok/s | ... | ... | ... |
+| decode tok/s | ... | ... | ... |
+| ttft s | ... | ... | ... |
+| VRAM peak GiB / process RAM peak GiB / system free min GiB | ... | ... | |
+| CPU % avg / peak | ... | ... | |
+
+Details (the card's four lines).
+Settings: `the full command line`. Environment: every MOE_CACHE_* / GGML_* / LLAMA_* variable (or "none").
+Conditions: other programs, cold or warm file cache, temperatures. Text identical to baseline: yes / no / not checked. Prompt set name + sha256, prompt tokens, n_predict, temperature, seed.
+Record: records/NAME.json (the file `bench-record assemble` wrote). Anything not recorded is written "not recorded".
+```
+
+Old sections (before this template) keep their text; where they lack a field, the field is not recorded, and the card row says so until it is measured again.
+# Coding standards
+
+One page for anyone, or any session, building or testing moe-cache. It records what the repo already does and checks. Where a rule has a source, read the source.
+
+| Area | Rule | Source to read |
+|---|---|---|
+| C++ in `src/` | One translation unit: `moe_cache_plugin.cpp` includes the `mc_*.inl` parts (each starts with a one-line "plugin part" comment and is not compiled alone). Plain-C++ headers (`mc_args.h`, `mc_tested.h`, `mc_rebalance.h`) have no ggml, so a test builds them alone. Names: `snake_case`, `mc_` prefix on parts, `MOE_CACHE_*` for environment switches. Comments say what is not obvious, often with the finding and where it came from (for example "found on the MSI Claw, RESULTS 50"). A switch is read once into a `static const` with `getenv`. Nothing may need more than ggml and the C++ standard library. Anything Windows-specific sits behind `plat::is_windows` or `#ifdef _WIN32` in `platform.h`; every change must still build on Linux and Windows (`build.sh --windows`) | `src/`, `build.sh`, `CONTRIBUTING.md` |
+| Python in `bin/` `tools/` `planner/` | Standard library only (the import line of `bin/moe_cache.py` is the example; `tools/card_image.py` needs Pillow and Chrome and says so at the top). Functions and variables `snake_case`, internal state `_UPPER`. Launcher text goes through `say(msg, err=False)`, never bare `print`; messages start with `moe-cache:`, give the value found and what happens instead. Each file opens with a docstring: what it does, how to run it | `bin/moe_cache.py`, `tools/` |
+| Hard rules the CI checks | The plugin compiles with both header sets (`third_party/ggml`, `third_party/ggml-v3`) under `-Wall -Werror`. No reading of ggml buffer struct fields (`buf->size`, `->buft`, ...): use the public API. The tested-ggml list in `src/mc_tested.h` is only changed with `tests/tested_ggml_test.cpp`. Python must compile; shell scripts must pass `bash -n` | `.github/workflows/quick.yml` |
+| New speed work | Every switch is **off by defau
