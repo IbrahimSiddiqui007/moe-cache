@@ -139,7 +139,7 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   | 40960, 34k | 392 / 411 | 637 / 620 | 28.5 / 27.3-27.7 |
   | 65536, 64k | 312 / 334 | 455 / 458 with 39 layers (the first run at 41 layers: 434 / 437) | 26.2 / 26.1-26.8 with 39 layers |
   | 131072, 128k | 307 / 306 | 436 / 438 | not recorded |
-  | 262144, 222k tokens (2026-11-03, official server, `-ub 2048` vs `-ub 1024`) | 263 / 266 at `-ub 1024` | 335 / 333 | - |
+  | 262144, 222k tokens (2026-11-03, official server; v0.3.4 not measured) | `-ub 1024`: 263 / 266 | `-ub 2048`: 335 / 333 (+26 %) | - |
 
   The overnight run of 2026-11-03 on the official llama-server (no patch) measured prompts +42 % at 34k, +38 % at 64k and 128k, and decode -6 % at 34k and -10 % at 64k against v0.3.4. The first 64k measurement (2026-10-28, agent mode, one cold run, v0.3.2 kit: 289 s for a 63.5k-token prompt, 1.8x faster than stock) is superseded; RESULTS_LOG §64 keeps it with the Qwen3.5-122B and Qwen3.6 rows (decode 17.3 for the 122B at 63.5k).
 - **Other models (Windows PC, RESULTS_LOG §65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
@@ -205,7 +205,7 @@ the CPU; the GPU work is llama.cpp's Vulkan backend, the plugin only copies tens
 Only one single operation is not cut: the attention (or indexer) step of one layer for one micro-batch, whose cost grows with the batch size times the context. On the test PC
 (RX 9070 XT) there was no event 4101 in 14 days of runs, which included 64k, 128k and 256k contexts at `-ub` 512-2048 and prompts of 228k tokens; a whole 512-token batch at
 228k depth took 1.8 s (Nemotron, stock, RESULTS_LOG §65), more than any one operation in it. A slower GPU (an integrated one, an old card) or a hand-chosen `-ub 4096` or more at
-256k is where it could happen; the cure is a smaller `-ub`, which costs a little prompt speed and nothing else. The launcher's choice (512 at 256k) already does that.
+256k is where it could happen; the cure is a smaller `-ub`, which costs a little prompt speed and nothing else. The launcher's own choice at 256k is `-ub 2048` since 2026-11-03 (a 222k-token prompt ran at 334 tok/s with no driver reset; it was 512, then 1024, before); pass `-ub 512` yourself if your GPU is slower.
 
 ## 7. Fair stock-vs-plugin timings: empty the file cache first
 
