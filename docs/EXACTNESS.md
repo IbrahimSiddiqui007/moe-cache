@@ -2,7 +2,7 @@
 
 moe-cache runs MoE models bigger than your RAM inside an **unmodified** llama-server. Its default promise is simple: the answer is the one stock
 llama.cpp gives for the same model, settings and layer split. This page lists how that is checked, on every change, and where the promise has limits.
-Current numbers: [RESULTS.md](RESULTS.md); every run with its text check: [RESULTS_LOG.md](RESULTS_LOG.md); the approximate modes: [QUALITY_GATE.md](QUALITY_GATE.md).
+Numbers and logs: [RESULTS.md](RESULTS.md); the approximate modes: [QUALITY_GATE.md](QUALITY_GATE.md).
 
 ## What "the same" means
 
@@ -41,7 +41,7 @@ so an upstream change that breaks the plugin shows up before a release does (Lin
 ## Checked on real hardware
 
 The Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB) runs paired A/B tests for every speed change: A, B, B, A, and the text of every run
-is compared (A vs A, B vs B, A vs B). A change is kept only when it is faster in every pair and the text stays identical (RESULTS_LOG §59-73).
+is compared (A vs A, B vs B, A vs B). A change is kept only when it is faster in every pair and the text stays identical (RESULTS 59-73).
 
 ## Check it yourself
 

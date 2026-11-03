@@ -89,7 +89,7 @@ CPU in RAM and reads the rest only when needed."; the same sentence is the toolt
 behind the verdict (model size against your memory, how many layers of experts go on the GPU, how much of the experts the cache can hold, the
 micro-batch). On Windows with an AMD graphics card it also lists the launcher's AMD rule (`--ctx-checkpoints 0` for Flash-Next on older
 drivers), in purple. For models we have measured, it also lists the speeds we measured, stock and moe-cache, on the test laptop (Linux, RTX
-4060 8 GB) and the desktop PC (Windows, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB; RESULTS_LOG §59-60). Yours will differ.
+4060 8 GB) and the desktop PC (Windows, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB; RESULTS 59-60). Yours will differ.
 
 The verdict uses the same rules and planner as the launcher, so it matches what **Start** will do.
 

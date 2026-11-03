@@ -4,7 +4,7 @@ moe-cache v0.3.4 runs MoE models bigger than your RAM through llama.cpp's `llama
 
 | Area | Change |
 |---|---|
-| Long prompts | Plugin outputs go straight to the GPU instead of through llama.cpp's slowest copy path. Measured in paired runs on Flash-Next with identical text; details in docs/RESULTS_LOG §76. Turn it off with `MOE_CACHE_HOST_OUT=0` |
+| Long prompts | Plugin outputs go straight to the GPU instead of through llama.cpp's slowest copy path. Measured in paired runs on Flash-Next with identical text; details in docs/RESULTS 76. Turn it off with `MOE_CACHE_HOST_OUT=0` |
 | Leave room for me | `--leave-room` and a control-page box keep the PC usable while a model runs |
 | Windows | Without the file views (not the default), experts are read through the file cache |
 | Security and bug fixes | The API key no longer follows a redirect to another host; `--project` state identity with q8_0 KV; saved agent conversations; orphaned `bench-report` and `learn` servers; `[`, `*`, `?` in model paths; clean-up after a failed file reopen or view mapping |

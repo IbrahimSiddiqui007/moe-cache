@@ -9,9 +9,9 @@ Moved here from the README on 2026-10-30, unchanged.
 | Linux + Intel CPU + NVIDIA GPU (CUDA) | **Tested** |
 | Linux + Vulkan (NVIDIA, and the Intel integrated GPU) | **Tested** on llama.cpp `7fe450e19` only, loaded the official way (`GGML_BACKEND_PATH`; see the feature table below) |
 | Linux, no usable GPU (CPU only) | **Tested**, identical to stock, within about 4 % of its speed when the model fits |
-| Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB 1.23x stock (no expert layer fits on a 3 GiB iGPU); RESULTS_LOG §50 |
+| Linux + AMD CPU, AMD integrated GPU (Vulkan) | **Tested** on a Ryzen 7 5800H with Vega 8 (2026-10-16): identical to stock, Qwen3.6 at 12 GB 1.23x stock (no expert layer fits on a 3 GiB iGPU); RESULTS 50 |
 | Linux + AMD discrete GPU | **Tested by a user** (GitHub issue #1: RX 9070 XT + Ryzen 7 7700, Linux, Vulkan): identity PASS, Flash-Next 15.9 -> 18.8 tok/s. Not yet run by the developer on Linux |
-| Windows | **Experimental, now faster than stock.** Identical to stock in CI on a Windows runner and on a Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). Since 2026-10-27 the cache keeps experts in read-only views of the model file (Windows charged its private memory, and Vulkan's GPU memory, to commit, which held the cache at 8-11 GiB). Cold, stock vs moe-cache, launcher defaults (RESULTS_LOG §59-60): Flash-Next Q2_0 (the recommended file) **22.2 vs 18.4 tok/s**, prompts 2.3x (RESULTS_LOG §63), IQ2_XS 21.9 vs 14.9, IQ3_XXS 19.9 vs 15.1, IQ3_S 17.3 vs 12.9, Qwen3.5-122B 19.7 vs 16.0 (re-measured 2026-10-28, RESULTS_LOG §61; replaces 16.1 vs 13.9, which ran during a PC-wide slowdown), GLM-5.3 4.4 vs 2.2 (**6.9 with `--mtp`**); text byte-identical. Context checkpoints stay on with AMD driver 32.0.32015.7029 or newer (older ones crash with Flash-Next). See docs/COMPATIBILITY.md |
+| Windows | **Experimental, now faster than stock.** Identical to stock in CI on a Windows runner and on a Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB, Vulkan). Since 2026-10-27 the cache keeps experts in read-only views of the model file (Windows charged its private memory, and Vulkan's GPU memory, to commit, which held the cache at 8-11 GiB). Cold, stock vs moe-cache, launcher defaults (RESULTS 59-60): Flash-Next Q2_0 (the recommended file) **22.2 vs 18.4 tok/s**, prompts 2.3x (RESULTS 63), IQ2_XS 21.9 vs 14.9, IQ3_XXS 19.9 vs 15.1, IQ3_S 17.3 vs 12.9, Qwen3.5-122B 19.7 vs 16.0 (re-measured 2026-10-28, RESULTS 61; replaces 16.1 vs 13.9, which ran during a PC-wide slowdown), GLM-5.3 4.4 vs 2.2 (**6.9 with `--mtp`**); text byte-identical. Context checkpoints stay on with AMD driver 32.0.32015.7029 or newer (older ones crash with Flash-Next). See docs/COMPATIBILITY.md |
 | macOS | No |
 
 ## Known limitations
@@ -24,7 +24,7 @@ Moved here from the README on 2026-10-30, unchanged.
   |---|---|---|
   | RAM expert cache, SSD streaming, memory limit, warm start | yes | yes |
   | Expert executor (computes ready experts while others load) | yes | yes (since 0.2.3.3; tested on a Vulkan build) |
-  | Fast Q2_0 / IQ3_XXS kernels | yes | inside the executor only (Linux, and Windows x86-64 since 2026-10-28; no speed change on the PC, RESULTS_LOG §63 addendum) |
+  | Fast Q2_0 / IQ3_XXS kernels | yes | inside the executor only (Linux, and Windows x86-64 since 2026-10-28; no speed change on the PC, RESULTS 63 addendum) |
   | Working together with llama.cpp's GPU expert cache (`--gpu-cache`) | yes | **no** (refused since cffa6f9: it gave wrong tokens; the launcher uses static GPU expert layers instead) |
 
   The `moe-cache: active: ...` line in the server log says which parts are on.

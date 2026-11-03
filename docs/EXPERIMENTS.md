@@ -1,6 +1,6 @@
 # Experiment ideas for large models (Qwen3.8-Flash-Next class)
 
-Status (2026-11-03): **historical, written 2026-10-10/11 on the laptop; not updated since** (later ideas live in the ledgers outside the repo and in RESULTS_LOG.md). The "Status (2026-10-11)" table below says what happened to each idea; the ranking tables above it are the original plan. Nothing in the idea tables is built or measured unless the status table or a "Measured" heading says so.
+Status (2026-11-03): **historical, written 2026-10-10/11 on the laptop; not updated since** (later ideas live in the ledgers outside the repo and in RESULTS.md). The "Status (2026-10-11)" table below says what happened to each idea; the ranking tables above it are the original plan. Nothing in the idea tables is built or measured unless the status table or a "Measured" heading says so.
 Every idea that changes the generated tokens is opt-in and needs a quality measurement before it goes anywhere near a default.
 
 ## What we know about the target (Qwen3.8-Flash-Next IQ2_XS, this laptop, 24 GB limit)
@@ -33,10 +33,10 @@ Every idea that changes the generated tokens is opt-in and needs a quality measu
 | # | Result |
 |---|---|
 | 1 | Done: routing trace (section above). |
-| 2 | **Measured: first request 2.1-2.4x faster with a learned profile**, steady speed unchanged (RESULTS_LOG §16). |
-| 3 | **Measured: a loss.** MTP works (acceptance 45-73 %) but decodes 2.6x slower with this plugin (4.3 vs 11.4 tok/s), not token-identical (2/4 prompts), and needs the head's experts on the CPU on an 8 GB card. RESULTS_LOG §18. |
-| 4, 5 | **Measured (opt-in `MOE_CACHE_ROUTE=skip|subst`)**: +10-12 % at a 6 GiB cache on Flash-Next, 26/26 checkable answers correct, 21 % less SSD reading (RESULTS_LOG §21). |
-| 11 | **Built** as plugin + llama.cpp's GPU cache (`MOE_CACHE_GPU_CACHE=1`, `moe-cache-server --gpu-cache auto`); identical to stock + cache; 0-19 % over plugin static on Flash-Next (RESULTS_LOG §18). Later: not available on Windows (needs LD_PRELOAD); llama.cpp's cache lost on the Windows Vulkan PC (9.7 vs 13.7 tok/s, RESULTS_LOG §59), and a plugin-owned GPU hot tier was judged not worth building (2026-11-02). |
+| 2 | **Measured: first request 2.1-2.4x faster with a learned profile**, steady speed unchanged (RESULTS 16). |
+| 3 | **Measured: a loss.** MTP works (acceptance 45-73 %) but decodes 2.6x slower with this plugin (4.3 vs 11.4 tok/s), not token-identical (2/4 prompts), and needs the head's experts on the CPU on an 8 GB card. RESULTS 18. |
+| 4, 5 | **Measured (opt-in `MOE_CACHE_ROUTE=skip|subst`)**: +10-12 % at a 6 GiB cache on Flash-Next, 26/26 checkable answers correct, 21 % less SSD reading (RESULTS 21). |
+| 11 | **Built** as plugin + llama.cpp's GPU cache (`MOE_CACHE_GPU_CACHE=1`, `moe-cache-server --gpu-cache auto`); identical to stock + cache; 0-19 % over plugin static on Flash-Next (RESULTS 18). Later: not available on Windows (needs LD_PRELOAD); llama.cpp's cache lost on the Windows Vulkan PC (9.7 vs 13.7 tok/s, RESULTS 59), and a plugin-owned GPU hot tier was judged not worth building (2026-11-02). |
 | neurons | Probe: top 25 % of neurons carry about 90 % of the energy; exploiting it needs a predictor. Not pursued. |
 | 6 | **Dead**: 3-23 major faults per request. |
 | 7 | io_uring: same device ceiling; +30 % to 2x only for slices of 0.5 MB or less. No effect on Flash-Next (compute-bound). |
@@ -103,5 +103,5 @@ One paired run each, not gated (desktop apps were using CPU), so read the ratio 
 ## Measured (2026-10-11): kernels for the GLM-5.3-Flash types and upstream's expert cache
 
 - GLM-5.3-Flash UD-IQ2_XXS (header read, no download): gate/up IQ2_XXS (IQ2_S in one layer), down IQ3_XXS (IQ4_XS in three layers), 288 experts, 8 used, 42 MoE layers. Per-core dot-product speed on this CPU: IQ2_XXS 16.2, IQ3_XXS 12.5 G weights/s versus Q4_K 46 and Q2_K 50. By arithmetic alone that is roughly 5-6 tok/s of expert compute (estimate, not measured on the model).
-- AVX2 / AVX-VNNI rewrites of those two dot products: no gain for IQ2_XXS, 13-18 % for IQ3_XXS with gathers (not worth shipping: gathers are slow on some AMD CPUs). See RESULTS_LOG §15.
-- Upstream's `--moe-cache-mib` is the "GPU hot tier" idea (idea 11) implemented in llama.cpp itself: +29 % on Qwen3.6-35B when the model fits in RAM. It does not work together with this plugin yet (see RESULTS_LOG §15).
+- AVX2 / AVX-VNNI rewrites of those two dot products: no gain for IQ2_XXS, 13-18 % for IQ3_XXS with gathers (not worth shipping: gathers are slow on some AMD CPUs). See RESULTS 15.
+- Upstream's `--moe-cache-mib` is the "GPU hot tier" idea (idea 11) implemented in llama.cpp itself: +29 % on Qwen3.6-35B when the model fits in RAM. It does not work together with this plugin yet (see RESULTS 15).

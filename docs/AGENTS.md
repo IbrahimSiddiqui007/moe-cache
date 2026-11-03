@@ -11,7 +11,7 @@ python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write 
 
 | What `--agent` does | Why |
 |---|---|
-| a log line about the prompt cache | `moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); ... slots, 8 checkpoints per slot`. Two agents on one server reuse a shared prompt only while this cache holds it; below 16 GB of server memory it is off (the RAM is worth more to the expert cache, RESULTS_LOG §44). The control page lists the line under "What the launcher decided". Change it with `-- --cache-ram MiB` |
+| a log line about the prompt cache | `moe-cache: prompt cache: up to 2048 MiB of host RAM keeps finished conversations for reuse (--cache-ram); ... slots, 8 checkpoints per slot`. Two agents on one server reuse a shared prompt only while this cache holds it; below 16 GB of server memory it is off (the RAM is worth more to the expert cache, RESULTS 44). The control page lists the line under "What the launcher decided". Change it with `-- --cache-ram MiB` |
 | context 65536 (unless `--ctx`) | agents send 5-20k tokens of tools and instructions before the conversation starts; Hermes Agent refuses less than 64,000 |
 | `--jinja` | tool calls use the model's own chat template (already the default in current llama.cpp) |
 | `--alias NAME` (the file name) | the name agents see in `/v1/models`; pass `-- --alias other` to choose it |
@@ -19,18 +19,18 @@ python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write 
 | warm sessions (`--no-warm` turns them off) | every idle conversation of 2k+ tokens is saved to disk (with its checkpoints) once it has been idle for 20 s + 20 s per GB of the file; a conversation that grew by less than a quarter (and less than 4,096 tokens) since its last save waits 3 min + 30 s per GB (at most 10 min), because a save rewrites the whole file and llama-server answers nothing while it writes; one file per slot; the two longest are restored at the next start, so each agent finds its own |
 | prints the base URL and both config blocks once the server is ready | |
 | an API key (made for you) | `--agent` always sets one: a stable random key kept in `~/.cache/moe-cache/api.key` (mode 0600; Windows: your profile), created on first use and given to llama-server through the environment, never on its command line. Why: agent mode saves conversations to disk and llama-server answers any web page's request on 127.0.0.1 by default, so a page in your browser could erase or read them. `python3 bin/moe_cache.py key` prints it; `connect hermes\|opencode --write` finds it by itself (it uses the stored key when the server answers 401) and writes it into the agent's config. Your own `--api-key KEY` (or `LLAMA_API_KEY`) replaces it |
-| (Windows + AMD GPU with a driver older than 32.0.32015.7029 + Flash-Next only) `--ctx-checkpoints 0` instead of 8 | saving a checkpoint crashes AMD's older Windows Vulkan driver (RESULTS_LOG §54; 32.0.32015.7029 does not); the cost is that edited history is processed again instead of resuming from a checkpoint; Qwen3.6 keeps its checkpoints. Not yet measured with an agent on Windows |
+| (Windows + AMD GPU with a driver older than 32.0.32015.7029 + Flash-Next only) `--ctx-checkpoints 0` instead of 8 | saving a checkpoint crashes AMD's older Windows Vulkan driver (RESULTS 54; 32.0.32015.7029 does not); the cost is that edited history is processed again instead of resuming from a checkpoint; Qwen3.6 keeps its checkpoints. Not yet measured with an agent on Windows |
 
 ## Which model
 
-| Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin; RESULTS_LOG §60, 63) |
+| Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin; RESULTS 60, 63) |
 |---|---|---|
-| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default since 0.3.2 | decode 19.9 tok/s, 193/202 tasks, reads best for coding (RESULTS_LOG §63) |
+| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default since 0.3.2 | decode 19.9 tok/s, 193/202 tasks, reads best for coding (RESULTS 63) |
 | the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB) | decode 22.2 tok/s (about 10 % more than IQ3_XXS), prompts 281 tok/s at 3k and 287 at 34k tokens (vs IQ2_XS: +5 % decode, +11 % / +19 % prompts), 191/202 tasks |
 | coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
 
 No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
-IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC (RESULTS_LOG §60).
+IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enough: Qwen3.6-35B (20 GB, fits in 32 GB RAM) decodes at about 72 tok/s with MTP in agent mode on the same PC (RESULTS 60).
 
 ## Without starting a server by hand (on-demand)
 
@@ -173,7 +173,7 @@ with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
 | whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | 78 s / 30 s / 39 s / 55 s |
 
 With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens in 186 s; after a restart with the warm session the whole OpenCode
-session takes 112 s instead of 242 s. Details: [RESULTS_LOG §51-52](RESULTS_LOG.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+session takes 112 s instead of 242 s. Details: [RESULTS.md section 51-52](RESULTS.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
 model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.
@@ -206,7 +206,7 @@ The replay generates greedily and stops at the recorded number of tokens, so sto
 same prompt reuse. Follow-up turns re-send the agent's original assistant message, which the server processes again if the model now writes something
 else (a few hundred tokens per turn). Recording replaces the home folder, user and host names. Agent-mode servers want the per-user API key: the replay sends `LLAMA_API_KEY`, or the launcher's stored key when the server asks for one (`--api-key` to give another). Start the server fresh for a cold first turn (with
 `--agent`, also give it an empty `--slot-save-path` after `--`, or it restores the last warm session). Measured on the laptop, stock vs moe-cache:
-[RESULTS_LOG §57](RESULTS_LOG.md).
+[RESULTS.md section 57](RESULTS.md).
 
 ## Agent notes
 

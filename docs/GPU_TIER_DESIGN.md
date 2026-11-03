@@ -1,6 +1,6 @@
 # Design: a GPU expert tier owned by the plugin (ideas 1 and 3)
 
-Status: **design only, not built.** Written 2026-10-11 from measurements on an RTX 4060 Laptop (PCIe 4.0 x8), Flash-Next IQ2_XS. Update 2026-11-02: the decision stands, do not build: llama.cpp's own GPU hot tier halves speed on the Windows Vulkan PC (RESULTS_LOG §59) and the GPU block already carries long prompts. The switch `MOE_CACHE_GPU_TIER` named below does not exist in the code.
+Status: **design only, not built.** Written 2026-10-11 from measurements on an RTX 4060 Laptop (PCIe 4.0 x8), Flash-Next IQ2_XS. Update 2026-11-02: the decision stands, do not build: llama.cpp's own GPU hot tier halves speed on the Windows Vulkan PC (RESULTS 59) and the GPU block already carries long prompts. The switch `MOE_CACHE_GPU_TIER` named below does not exist in the code.
 
 ## Why llama.cpp's own cache cannot be extended from outside
 
@@ -52,10 +52,10 @@ CUDA stream ownership next to llama.cpp's own streams; VRAM sharing with `--n-cp
 
 - **Predictor recall on Flash-Next** (plugin lookahead, router weights of the next layer, 12 prompts x 64 tokens): 68.1 % of the next layer's picks predicted
   (241,479 of 354,760), 67 % of the prefetched experts were used (25,809 of 38,667), 8,006 arrived late. Cheap predictors from past picks alone reach 36-57 % with
-  about 28 % precision (RESULTS_LOG §24.4). So a prefetch with the router-based predictor is in the range that makes the estimate (+25-45 %) plausible; the
+  about 28 % precision (RESULTS 24.4). So a prefetch with the router-based predictor is in the range that makes the estimate (+25-45 %) plausible; the
   cheap ones would double the upload traffic for a gain that is not there.
-- **Cache policy is not a lever**: LRU, 2Q and pinned+LRU are within 0.5 points (RESULTS_LOG §24.4), so the tier can use plain LRU.
-- **VRAM is the constraint that came out of the prefill work** (RESULTS_LOG §23): the long-prompt GPU block needs about one layer (923 MiB) free next to any GPU
+- **Cache policy is not a lever**: LRU, 2Q and pinned+LRU are within 0.5 points (RESULTS 24.4), so the tier can use plain LRU.
+- **VRAM is the constraint that came out of the prefill work** (RESULTS 23): the long-prompt GPU block needs about one layer (923 MiB) free next to any GPU
   expert cache. A plugin-owned bank must reserve that too, or give the memory back during prompt processing.
 - **Not started**: step 1 (bank + upload on miss) is only a baseline equal to llama.cpp's cache; the gain starts at step 2, which needs the router-based predictor
   to run before llama.cpp's callback and a separate copy stream. That is days of work and a new exact-identity argument for the partial sum, so it was left as the
