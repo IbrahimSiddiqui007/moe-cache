@@ -823,10 +823,21 @@ struct state_t {
             }
             fingerprint = h;
         }
-        const std::string & src = !profile_path.empty() ? profile_path : warm_path;
+        std::string src = !profile_path.empty() ? profile_path : warm_path;
         if (!src.empty()) {
             uint64_t fp = 0;
-            if (load_usage(src.c_str(), learned, &fp)) {
+            bool loaded = load_usage(src.c_str(), learned, &fp);
+            if (loaded && fp != 0 && fp != fingerprint && !profile_path.empty()) {
+                // AUD-016: the file at MOE_CACHE_PROFILE belongs to another model: keep it, and learn in (and warm start from) a file of our own next to it
+                const std::string mine = mcprofile::own_path(profile_path, fingerprint);
+                fprintf(stderr, "moe-cache: profile %s belongs to another model: kept as it is; this model uses %s\n", profile_path.c_str(), mine.c_str());
+                profile_path = mine;
+                src = mine;
+                learned = usage_t();
+                fp = 0;
+                loaded = load_usage(src.c_str(), learned, &fp);
+            }
+            if (loaded) {
                 if (fp != 0 && fp != fingerprint) {
                     fprintf(stderr, "moe-cache: profile %s belongs to another model, ignored\n", src.c_str());
                     learned = usage_t();
