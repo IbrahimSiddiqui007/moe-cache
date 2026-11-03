@@ -2,7 +2,13 @@
 
 ## One line to install, one command to start
 
-Nothing here needs administrator rights or root. No telemetry: the installers talk to github.com only, to download the release. Run them again to update.
+Nothing here needs administrator rights or root. No telemetry: the installers talk to github.com only, to download the release. Run them again to update, or let the installed copy do it:
+
+| Command | What it does |
+|---|---|
+| `moe-cache update --check` | says whether a newer moe-cache or llama.cpp is out; downloads nothing |
+| `moe-cache update --apply` | asks, then downloads the newest stable release's installer, checks its build attestation when `gh` is installed and logged in, and runs it; the installer checks the package's sha256 (and attestation) and puts the old install back if anything fails. Only for a copy the installer put there; `--tag vX.Y.Z` picks another release, `--dry-run` shows the plan, `--yes` skips the question |
+| roll back (Linux) | `update --apply` keeps the version that was installed in `versions/`; `ln -sfn versions/<old folder> <prefix>/current` makes it current again (the command is printed). On Windows the installer deletes the old kit after the new one is complete |
 
 **Windows (PowerShell):**
 

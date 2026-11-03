@@ -11,7 +11,7 @@ set -u
 O=$1; LIM=$2; RAM=$3; M=$4; AL=$5; shift 5; mkdir -p "$O"; P=${PORT:-8099}
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 LS=${LLAMA_SERVER:-llama-server}; LIB=${MOE_CACHE_LIB:-$HERE/build/libggml-moe-cache.so}; SES=${SESSIONS:-$HERE/tests/agent_sessions}
-MFILES=$(ls "$(dirname "$M")"/$(basename "$M" | sed -E 's/-00001-of-/-*-of-/'))
+mapfile -t MFILES < <(compgen -G "$(dirname "$M")/$(basename "$M" | sed -E 's/-00001-of-/-*-of-/')")   # array: a file name with a space stays one word (CLEANUP-025)
 evict() { python3 - "$@" <<'PY'
 import os, sys
 for p in sys.argv[1:]:
@@ -39,7 +39,7 @@ k=0
 for kind in "$@"; do
   k=$((k + 1)); tag=$k-$kind; U=i30-$tag-$$
   if curl -s -o /dev/null --max-time 2 http://127.0.0.1:$P/health; then log "port $P is in use (another server?): stop"; exit 1; fi
-  evict $MFILES; RES=$(resident_gb $MFILES); log "run $k/$# ($kind): model in page cache after eviction: $RES GB"
+  evict "${MFILES[@]}"; RES=$(resident_gb "${MFILES[@]}"); log "run $k/$# ($kind): model in page cache after eviction: $RES GB"
   awk "BEGIN{exit !($RES > 1.0)}" && { log "eviction failed (the file is mapped or pinned elsewhere): stop"; exit 1; }
   mkdir -p "$O/slots-$tag"
   if [ "$kind" = mc ]; then
