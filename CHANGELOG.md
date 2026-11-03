@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+| Area | Change |
+|---|---|
+| Bundled llama.cpp | The Windows kit and the Linux tarball bundle the official llama.cpp **b12064** (ggml 0.28.0, backend API 3) instead of b11966. It includes the upstream fix behind our former patch 0022 (llama.cpp #31266, Vulkan `count_experts`): about +5-7 % on long prompts (34k / 64k) measured with the patch; to be confirmed by a paired PC run. It also brings the batched tensor copy (#30881, #31418; our former patch 0027) on by default |
+| Patches | 0022 and 0027 are merged upstream and moved to `archive/`; 0004, 0005, 0020, 0030, 0040 still apply to b12064 |
+
 ## 0.3.5 (2026-11-03)
 
 | Area | Change |

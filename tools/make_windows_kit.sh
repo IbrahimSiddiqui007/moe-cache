@@ -8,7 +8,7 @@
 #   README_WINDOWS.txt            what to install and the first commands
 #   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 / 0.27 (b11669 and newer); -api2.dll for ggml 0.25
 #   bin\ planner\ ui\ tools\ profiles\ docs\ LICENSE   the launcher, the page and what they read (Python 3.8+, standard library only)
-#   llama\                        the official llama.cpp Vulkan build (b11966, unmodified, MIT), so a friend downloads one zip
+#   llama\                        the official llama.cpp Vulkan build (b12064, unmodified, MIT), so a friend downloads one zip
 set -e
 cd "$(dirname "$0")/.."
 V="$1"; [ -n "$V" ] || { echo "usage: tools/make_windows_kit.sh VERSION"; exit 1; }
@@ -36,7 +36,7 @@ cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGE
 cp "$X/LICENSE" "$X/CHANGELOG.md" "$K/"
 # one download for friends: the official, unmodified llama.cpp Vulkan build in llama\ (MIT; its licence is copied next to it). Pinned and checked
 # against the release asset's sha256; MOE_CACHE_KIT_NO_LLAMA=1 builds the kit without it (the launcher then searches C:\llama and the rest as before)
-LLAMA_TAG=b11966; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=977dc4569c0a3f644c5855f1bb836b66e45fe6aefbe739adac0928ea607bebf9
+LLAMA_TAG=b12064; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=e0fee991887711ce74cb9c1f7715a1234e27d94f13ccfc594dc01310e5da6e22
 if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ]; then
   Z="${LLAMA_ZIP_CACHE:-$X}/$LLAMA_ZIP"
   [ -f "$Z" ] || curl -fsSL -o "$Z" "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_ZIP"

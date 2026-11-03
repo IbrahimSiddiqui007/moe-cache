@@ -2,8 +2,8 @@
 # Put the official, unmodified llama.cpp Linux build into a release tarball folder (the Linux twin of the Windows kit's llama\ folder).
 #   tools/bundle_llama_linux.sh DEST TAG ASSET SHA256 [CACHE_DIR]
 #     DEST   the tarball's folder; the build goes to DEST/llama/ (llama-server, the ggml libraries, LICENSE-llama.cpp.txt, README-moe-cache.txt)
-#     TAG    the llama.cpp release, e.g. b11966
-#     ASSET  the release asset, e.g. llama-b11966-bin-ubuntu-vulkan-x64.tar.gz
+#     TAG    the llama.cpp release, e.g. b12064
+#     ASSET  the release asset, e.g. llama-b12064-bin-ubuntu-vulkan-x64.tar.gz
 #     SHA256 the asset's digest from `gh api repos/ggml-org/llama.cpp/releases/tags/TAG` (the download must match it)
 #     CACHE_DIR where the asset is kept (default: $LLAMA_TGZ_CACHE or /tmp); an asset already there is not downloaded again
 # LLAMA_LICENSE_FILE=PATH copies that licence file instead of fetching llama.cpp's from GitHub (tests, offline builds).

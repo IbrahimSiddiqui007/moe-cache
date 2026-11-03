@@ -1,4 +1,4 @@
-# Builds llama.cpp b11966 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
+# Builds llama.cpp b12064 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
 # Runs only when asked: push to the branch ci/llama-patched (manual dispatch needs the file on main). release.yml does not use it. See patches/llama.cpp/README.md.
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
 # Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first.
@@ -9,7 +9,7 @@ on:
     branches: [ci/llama-patched, 'ci/llama-patched-**']
 
 env:
-  LLAMA_COMMIT: ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1   # b11966
+  LLAMA_COMMIT: 51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c   # b12064
   VULKAN_VERSION: "1.4.357.0"
   CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=ON"
 

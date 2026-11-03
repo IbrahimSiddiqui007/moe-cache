@@ -1,12 +1,12 @@
 #!/bin/bash
 # Apply patches/llama.cpp/*.patch, in name order, to a llama.cpp checkout pinned at the base commit.
 #   tools/apply_llama_patches.sh LLAMA_CPP_DIR
-# Env: LLAMA_PATCH_DIR (default patches/llama.cpp), LLAMA_BASE_COMMIT (default b11966).
+# Env: LLAMA_PATCH_DIR (default patches/llama.cpp), LLAMA_BASE_COMMIT (default b12064).
 set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 DIR="${1:?usage: apply_llama_patches.sh LLAMA_CPP_DIR}"
 PDIR="${LLAMA_PATCH_DIR:-$HERE/patches/llama.cpp}"
-BASE="${LLAMA_BASE_COMMIT:-ff0d396e3dda0f33e7ce5ad4267fce4f7690cfb1}"
+BASE="${LLAMA_BASE_COMMIT:-51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c}"
 git -C "$DIR" rev-parse --git-dir >/dev/null 2>&1 || { echo "FAIL: $DIR is not a git checkout"; exit 1; }
 HEAD_SHA="$(git -C "$DIR" rev-parse HEAD)"
 [ "$HEAD_SHA" = "$BASE" ] || { echo "FAIL: $DIR is at $HEAD_SHA, the patches need $BASE"; exit 1; }

@@ -45,5 +45,12 @@ Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 202
 | llama.cpp/0002-server-adaptive-draft-length.patch | `LLAMA_SPEC_ADAPT` | MTP decode 16.35 both | no gain | another draft model |
 | llama.cpp/0003-vulkan-mmid-vec-max-tokens.patch | `GGML_VK_MMID_VEC_MAX_TOKENS` | 16.45 vs 16.2-16.35 | no gain | - |
 
+### Merged upstream (2026-11-03, pin move b11966 -> b12064)
+
+| File | Switch | Result | Why archived | Retest if |
+|---|---|---|---|---|
+| llama.cpp/0022-vulkan-count-experts-fast.patch | `GGML_VK_COUNT_EXPERTS_FAST` | +5 % prompts at 34k, +7 % at 64k (PC) | merged upstream as PR 31266, in the pin from b12064 (always on there; no switch) | - |
+| llama.cpp/0027-batched-tensor-copy.patch | `GGML_BACKEND_BATCHED_COPY` | slot save / restore faster on Vulkan (see PRs) | merged upstream as PR 30881 + 31418, in the pin from b12064 (always on there; our patch only added the switch) | - |
+
 ## Notes on 0001
 `ggml_vk_wait_for_fence` waits for the last 20 % of a graph by polling `getFenceStatus` with 1000 `pause` instructions between polls. The patch made the count an env value (N blocks of 10 pauses, unset = 100 = stock). Only the poll interval changes, so output cannot change. Tested at N = 10.

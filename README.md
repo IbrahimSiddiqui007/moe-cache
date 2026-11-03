@@ -7,7 +7,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 <img alt="status" src="https://img.shields.io/badge/status-v0.3.5%20beta-orange">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
-<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b11669%20%2F%20b11966%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
+<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b11669%20%2F%20b11966%20%2F%20b12064%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
 <a href="https://ko-fi.com/ibrumm"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white"></a>
 </p>
 
@@ -47,7 +47,7 @@ If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says w
 
 | Step | What to do |
 |---|---|
-| 1. Download | From [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases): `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` (llama.cpp b11966 included, Vulkan + CPU), or `moe-cache-vX-linux-x86_64.tar.gz` for an older llama.cpp of your own (ggml 0.24 / 0.25). `tar xzf` it and `cd` into the folder |
+| 1. Download | From [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases): `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` (llama.cpp b12064 included, Vulkan + CPU), or `moe-cache-vX-linux-x86_64.tar.gz` for an older llama.cpp of your own (ggml 0.24 / 0.25). `tar xzf` it and `cd` into the folder |
 | 2. A model | `python3 bin/moe_cache.py pick` |
 | 3. Check | `bin/moe-cache-check /path/to/model.gguf --run` ("cache runs: yes" means it works on your machine) |
 | 4. Run | `bin/moe-cache-server /path/to/model.gguf --open` (chat page and an OpenAI-compatible API at http://localhost:8080), or `bin/moe-cache-server --ui` for the control page |
