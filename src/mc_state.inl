@@ -38,7 +38,8 @@ void remove_crash_report();
 #include "mc_state_exec.h"
 #include "mc_state_times.h"
 #include "mc_state_prefetch.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t {
+#include "mc_state_budget.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -81,26 +82,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
     size_t view_bytes = 0;                      // win_view: resident bytes of experts held in the views (not private memory: not in rss_private())
     size_t ws_min_cur = 0;                      // win_view: the hard working-set minimum set last (0 = none)
     bool   ws_min_warned = false;
-    size_t budget = 0;
-    bool   commit_warned = false;      // Windows: the commit-limit warning was printed (tune())
-    bool   commit_fail_warned = false; // Windows: a refused expert commit was reported (commit_for())
-    uint64_t commit_evictions = 0;     // experts evicted because Windows refused a commit or system commit ran low
-    size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
-    bool shrink_warned = false;
-    bool   auto_mode = false;          // MOE_CACHE_SIZE_GIB=auto: size the cache from the real memory limit
-    size_t limit_bytes = 0;
-    size_t margin = (size_t) 1 << 30;  // keep this much below the limit (MOE_CACHE_MARGIN_GIB, default 1 GiB)
-    size_t pending_bytes = 0;          // expert bytes marked resident but not read yet
-    size_t max_budget = 0;             // all registered expert bytes
-    size_t min_budget = 0;
-    uint64_t tune_shrinks = 0, tune_grows = 0;
-    size_t resident_bytes = 0;
-    uint64_t epoch = 0;
-    // experts with epoch >= protect_epoch are used by the graph being prepared/computed: no eviction may take them. All groups of a graph are
-    // prepared before any is computed, so protecting only the current group (epoch == epoch) let a later group (or tune() shrinking the budget)
-    // evict an earlier group's experts before llama.cpp read them: decommitted memory on Windows (access violation, PC 2026-10-27), zeros on Linux
-    uint64_t protect_epoch = UINT64_MAX;
-    uint64_t cpu_check_reloads = 0;                     // experts cpu_path_check() had to load again (should stay 0)
     bool in_use(const node_t & n) const { return n.loading || n.epoch == epoch || n.epoch >= protect_epoch; }
 #ifdef _WIN32
     // once, at the first graph (llama.cpp has uploaded every tensor) and before the warm start fills the cache: release the model-file pages
