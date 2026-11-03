@@ -4,8 +4,9 @@ A Tauri 2 shell around the moe-cache control page. It starts `bin/moe_cache.py u
 address from its output, and shows the page in its own window, with a tray icon (Open / Start model / Stop model / Quit) and one instance only.
 Design, process model, packaging, updater, risks and plan: [docs/DESKTOP_APP_DESIGN.md](../docs/DESKTOP_APP_DESIGN.md).
 
-Status (2026-11-03): runs on Linux (window shows the control page, chat streams), CI builds Windows NSIS + MSI and Linux AppImage + deb. Not yet
-run on Windows by hand (owner click-through, day 3).
+Status (2026-11-03): runs on Linux (window shows the control page, chat streams), CI builds Windows NSIS (30.5 MB, with the kit: plugin DLLs and
+llama.cpp Vulkan) + MSI and Linux AppImage + deb. Tray: Open, Start model, Stop model, Restart control page, Start at login (off by default), Quit.
+Not yet run on Windows by hand (owner click-through, day 3).
 
 Tests without a model: `python3 desktop/tests/shell_contract_test.py` (the page started as the shell starts it, a fake model, chat stream, stop) and
 `cd desktop/src-tauri && nice -n 19 cargo test`.
@@ -36,6 +37,7 @@ the design); the app uses the ones the page finds, as the browser page does.
 
 | Path | What |
 |---|---|
+| `app_entry.py` | what the shell runs: the control page + stable address line + stdin-EOF watch (the model stops if the shell dies) |
 | `src-tauri/src/main.rs` | the whole shell |
 | `src-tauri/tauri.conf.json`, `tauri.windows.conf.json` | window, bundle targets, resources (Windows adds the bundled Python) |
 | `src-tauri/capabilities/default.json` | the control page gets no Tauri commands |
