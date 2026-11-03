@@ -28,7 +28,7 @@ Not on the road to v1.0 unless measurements justify it: a dynamic GPU expert tie
 - **Web UI**: `llama-server` serves its own chat page (`moe-cache-server --open` opens it); anything that speaks the OpenAI API (for example Open WebUI) can connect to the same address.
 - **Setup GUI**: built since v0.3.0 as the **control page** (`moe-cache-server --ui`, `moe-cache.bat` on Windows): model picker with the planner's verdict, RAM / VRAM / context settings, start and stop, chat, live numbers, agent connect actions and Share my numbers ([GUI.md](GUI.md)). It is separate from llama-server's own page. Remaining gaps: screenshots in GUI.md predate the newest panels.
 
-## Status against the v1.0 list (as of 2026-10-30, version 0.3.3; v0.3.4 was released after it and v0.3.5 is in preparation: see CHANGELOG.md)
+## Status against the v1.0 list (as of 2026-10-30, version 0.3.3; v0.3.4 and v0.3.5 (2026-11-03) were released after it: see CHANGELOG.md)
 
 | v1.0 requirement | State |
 |---|---|
