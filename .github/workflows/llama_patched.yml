@@ -136,7 +136,8 @@ jobs:
           if (-not $off -or $off.Length -lt 20) { throw "the unset run produced no text" }
           if ($off -ne $on) { throw "text differs with LLAMA_DECODE_RELOC=1 (CPU only: nothing can move, so it must be identical)" }
           if (Select-String -Path off.err -Pattern "reloc_" -Quiet) { throw "the patch logged with the switch unset" }
-          if (-not (Select-String -Path on.err -Pattern "LLAMA_DECODE_RELOC on" -Quiet)) { throw "switch set: no 'LLAMA_DECODE_RELOC on' line" }
+          Write-Host "--- patch lines in on.err / on.out:"; Select-String -Path on.err,on.out -Pattern "reloc|RELOC|n_ubatch|ubatch" | ForEach-Object { $_.Line } | Select-Object -First 20
+          if (-not (Select-String -Path on.err,on.out -Pattern "LLAMA_DECODE_RELOC on" -Quiet)) { Get-Content on.err -Tail 60; throw "switch set: no 'LLAMA_DECODE_RELOC on' line (see the lines above)" }
           Select-String -Path on.err -Pattern "reloc_" | ForEach-Object { $_.Line }
       - name: Zip and sha256
         run: |
