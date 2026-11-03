@@ -1,0 +1,331 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 0cd795a56..ff03eb4d0 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -177,6 +177,19 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
+     /*.n_tokens_per_seq =*/ 1,
+ };
+ 
++#include <mutex>
++
++#include <mutex>
++
++// number of live contexts per model: a second context (MTP / draft) shares the weights and keeps its own scheduler, so the move is refused
++static std::mutex & llama_reloc_mtx() { static std::mutex m; return m; }
++static std::unordered_map<const llama_model *, int> & llama_reloc_ctxs() { static std::unordered_map<const llama_model *, int> m; return m; }
++
++static int llama_reloc_live(const llama_model * m) {
++    std::lock_guard<std::mutex> lock(llama_reloc_mtx());
++    return llama_reloc_ctxs()[m];
++}
++
+ llama_context::llama_context(
+         const llama_model & model,
+               llama_context_params params) :
+@@ -604,12 +617,23 @@ llama_context::llama_context(
+             sampling.token_ids_full_vocab[i] = i;
+         }
+     }
++
++    {
++        std::lock_guard<std::mutex> lock(llama_reloc_mtx());
++        llama_reloc_ctxs()[&model]++;
++    }
+ }
+ 
+ llama_context::~llama_context() {
+     // wait for any pending asynchronous copies into the output buffers before they are freed
+     synchronize();
+ 
++    reloc_restore();
++    {
++        std::lock_guard<std::mutex> lock(llama_reloc_mtx());
++        llama_reloc_ctxs()[&model]--;
++    }
++
+     // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
+     if (!model.no_alloc() && !opt_ctx) {
+         for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+@@ -2068,6 +2092,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+     output_swaps.clear();
+     embd_batch_idxs.clear();
+ 
++    reloc_step((uint32_t) n_tokens_all);
++
+     sched_reserve();
+ 
+     bool did_optimize = false;
+@@ -2952,6 +2978,233 @@ ggml_status llama_context::graph_compute(
+     return status;
+ }
+ 
++// ---- patch 0050: LLAMA_DECODE_RELOC ----------------------------------------------------------------------------------------
++// Prompt phase: big micro-batch, experts of the first layers in host memory (--n-cpu-moe). Decode phase (after `after` consecutive
++// batches of at most `small` tokens): micro-batch `ub_decode`, and the experts of up to `max_layers` host layers (the last ones) are
++// copied into the GPU memory the big compute buffer freed. A batch of more than `ub_decode` tokens moves everything back.
++// The weights are the same bytes, the graph is the same; only the backend that runs those layers' MUL_MAT_ID changes.
++
++
++static long llama_reloc_env(const char * name, long def) {
++    const char * e = getenv(name);
++    return (e && *e) ? atol(e) : def;
++}
++
++void llama_context::reloc_init() {
++    reloc.inited = true;
++    const char * e = getenv("LLAMA_DECODE_RELOC");
++    if (!e || !*e || strcmp(e, "0") == 0) {
++        return;
++    }
++    if (model.no_alloc() || cparams.moe_cache_size != 0 || cparams.training) {
++        LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC ignored (no_alloc, MoE cache or training)\n", __func__);
++        return;
++    }
++    reloc.ub_prompt  = cparams.n_ubatch;
++    reloc.ub_decode  = (uint32_t) std::max(1L, llama_reloc_env("LLAMA_DECODE_RELOC_UB", 512));
++    reloc.max_layers = (int) llama_reloc_env("LLAMA_DECODE_RELOC_MAX_LAYERS", 8);
++    reloc.keep       = (size_t) std::max(0L, llama_reloc_env("LLAMA_DECODE_RELOC_KEEP_MIB", 768)) << 20;
++    reloc.after      = (uint32_t) std::max(1L, llama_reloc_env("LLAMA_DECODE_RELOC_AFTER", 64));
++    reloc.small      = (uint32_t) std::max<long>(llama_reloc_env("LLAMA_DECODE_RELOC_SMALL", 16), cparams.n_seq_max);
++    if (reloc.ub_decode >= reloc.ub_prompt || reloc.max_layers <= 0) {
++        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: nothing to do (decode ubatch %u, prompt ubatch %u, max layers %d)\n",
++                __func__, reloc.ub_decode, reloc.ub_prompt, reloc.max_layers);
++        return;
++    }
++    reloc.on = true;
++    LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC on: prompt ubatch %u, decode ubatch %u, up to %d layers, keep %zu MiB free, after %u small batches\n",
++            __func__, reloc.ub_prompt, reloc.ub_decode, reloc.max_layers, reloc.keep >> 20, reloc.after);
++}
++
++void llama_context::reloc_drop_graphs() {
++    synchronize();
++    for (auto & res : gf_res_prev) {
++        res.reset();
++    }
++    gf_res_reserve.reset();
++    gf_res_prev_active = nullptr;
++    sched.reset();
++}
++
++void llama_context::reloc_restore() {
++    for (auto it = reloc.moved.rbegin(); it != reloc.moved.rend(); ++it) {
++        it->t->buffer = it->buf;
++        it->t->data   = it->data;
++    }
++    reloc.moved.clear();
++    for (auto * b : reloc.bufs) {
++        ggml_backend_buffer_free(b);
++    }
++    reloc.bufs.clear();
++}
++
++void llama_context::reloc_to_prompt() {
++    const int64_t t0 = ggml_time_us();
++    reloc_drop_graphs();
++    reloc_restore();
++    cparams.n_ubatch  = reloc.ub_prompt;
++    sched_need_reserve = true;
++    reloc.decode = false;
++    reloc.run    = 0;
++    LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: back to the prompt layout (ubatch %u), %.1f ms (the scheduler is reserved at the next batch)\n",
++            __func__, reloc.ub_prompt, (ggml_time_us() - t0) / 1000.0);
++}
++
++bool llama_context::reloc_to_decode() {
++    const int64_t t0 = ggml_time_us();
++    if (llama_reloc_live(&model) > 1) {
++        LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: another context (MTP / draft) uses this model, off\n", __func__);
++        return false;
++    }
++
++    // 1. smaller micro-batch: the big compute buffer is freed, a small one is reserved
++    reloc_drop_graphs();
++    cparams.n_ubatch   = reloc.ub_decode;
++    sched_need_reserve = true;
++    try {
++        sched_reserve();
++    } catch (const std::exception & ex) {
++        LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: reserve with ubatch %u failed (%s), off\n", __func__, reloc.ub_decode, ex.what());
++        reloc_drop_graphs();
++        cparams.n_ubatch   = reloc.ub_prompt;
++        sched_need_reserve = true;
++        return false;
++    }
++
++    // 2. the host layers, last first, that fit in the free memory of the device their other weights sit on
++    size_t   moved_bytes = 0;
++    int      n_layers    = 0;
++    int      first_il    = -1;
++    int      last_il     = -1;
++    size_t   free_mem    = 0;
++    for (int il = (int) model.layers.size() - 1; il >= 0 && n_layers < reloc.max_layers; --il) {
++        const llama_layer & L = model.layers[il];
++        // the device the model put this layer on (its other weights are there); a layer on the CPU has nothing to gain
++        ggml_backend_dev_t dev = model.dev_layer(il);
++        if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
++            LLAMA_LOG_DEBUG("%s: layer %d: not on a GPU\n", __func__, il);
++            continue;
++        }
++        ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
++        ggml_tensor * ts[] = { L.ffn_gate_exps, L.ffn_down_exps, L.ffn_up_exps, L.ffn_gate_up_exps,
++                               L.ffn_gate_exps_b, L.ffn_down_exps_b, L.ffn_up_exps_b, L.ffn_gate_up_exps_b,
++                               L.ffn_gate_exps_s, L.ffn_down_exps_s, L.ffn_up_exps_s };
++        std::vector<ggml_tensor *> sel;
++        bool ok = true;
++        for (auto * t : ts) {
++            if (!t) {
++                continue;
++            }
++            // only plain host weights: not already on a device, not repacked for the CPU
++            if (!t->buffer || !ggml_backend_buffer_is_host(t->buffer) || t->extra ||
++                    strstr(ggml_backend_buft_name(ggml_backend_buffer_get_type(t->buffer)), "REPACK")) {
++                LLAMA_LOG_DEBUG("%s: layer %d: %s is not a plain host weight\n", __func__, il, t->name);
++                ok = false;
++                break;
++            }
++            sel.push_back(t);
++        }
++        if (!ok || sel.empty()) {
++            continue;
++        }
++        size_t total = 0;
++        const size_t align = ggml_backend_buft_get_alignment(buft);
++        std::vector<size_t> off;
++        for (auto * t : sel) {
++            total = GGML_PAD(total, align);
++            off.push_back(total);
++            total += ggml_backend_buft_get_alloc_size(buft, t);
++        }
++        size_t total_dev = 0;
++        ggml_backend_dev_memory(dev, &free_mem, &total_dev);
++        if (free_mem < reloc.keep + total) {
++            break;
++        }
++        ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
++        if (!buf) {
++            break;
++        }
++        ggml_backend_buffer_set_usage(buf, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
++        char * base = (char *) ggml_backend_buffer_get_base(buf);
++        for (size_t k = 0; k < sel.size(); ++k) {
++            ggml_tensor * t = sel[k];
++            ggml_tensor tmp = *t;
++            tmp.buffer = buf;
++            tmp.data   = base + off[k];
++            ggml_backend_buffer_init_tensor(buf, &tmp);
++            ggml_backend_tensor_set(&tmp, t->data, 0, ggml_nbytes(t));
++            reloc.moved.push_back({ t, t->buffer, t->data });
++            t->buffer = buf;
++            t->data   = tmp.data;
++        }
++        reloc.bufs.push_back(buf);
++        moved_bytes += total;
++        n_layers++;
++        if (last_il < 0) {
++            last_il = il;
++        }
++        first_il = il;
++    }
++
++    if (n_layers == 0) {
++        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: no layer fits (free %zu MiB, keep %zu MiB), off\n", __func__, free_mem >> 20, reloc.keep >> 20);
++        reloc_drop_graphs();
++        cparams.n_ubatch   = reloc.ub_prompt;
++        sched_need_reserve = true;
++        return false;
++    }
++
++    // 3. the splits depend on where the weights are: reserve again
++    reloc_drop_graphs();
++    sched_need_reserve = true;
++    try {
++        sched_reserve();
++    } catch (const std::exception & ex) {
++        LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: reserve after the move failed (%s), moving back, off\n", __func__, ex.what());
++        reloc_drop_graphs();
++        reloc_restore();
++        cparams.n_ubatch   = reloc.ub_prompt;
++        sched_need_reserve = true;
++        return false;
++    }
++    reloc.decode = true;
++    LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: %d layers of experts moved to the GPU (layers %d..%d, %zu MiB), ubatch %u, %.1f ms\n",
++            __func__, n_layers, first_il, last_il, moved_bytes >> 20, reloc.ub_decode, (ggml_time_us() - t0) / 1000.0);
++    return true;
++}
++
++void llama_context::reloc_step(uint32_t n_tokens) {
++    if (!reloc.inited) {
++        reloc_init();
++    }
++    if (!reloc.on) {
++        return;
++    }
++    if (reloc.decode) {
++        if (llama_reloc_live(&model) > 1) {
++            LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: another context was created, moving back, off\n", __func__);
++            reloc_to_prompt();
++            reloc.on = false;
++            return;
++        }
++        if (n_tokens > reloc.ub_decode) {
++            reloc_to_prompt();
++        }
++        return;
++    }
++    if (n_tokens > reloc.small) {
++        reloc.run = 0;
++        return;
++    }
++    if (++reloc.run < reloc.after) {
++        return;
++    }
++    reloc.run = 0;
++    if (!reloc_to_decode()) {
++        reloc.on = false;
++    }
++}
++
+ bool llama_context::sched_copy_experts(ggml_backend_t backend, const ggml_tensor * src, ggml_tensor * dst, ggml_cgraph * graph, void * user_data) {
+     auto * lctx = static_cast<llama_context *>(user_data);
+ 
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 39c5619df..459830f8b 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -379,6 +379,35 @@ private:
+ 
+     bool sched_need_reserve = true;
+ 
++    // patch 0050 (LLAMA_DECODE_RELOC, off by default): after the prompt, shrink the micro-batch and move the experts of a few
++    // host-memory layers into the GPU memory the big compute buffer held; undo it when a prompt chunk arrives
++    struct reloc_moved {
++        ggml_tensor *         t;
++        ggml_backend_buffer_t buf;     // the tensor's buffer before the move
++        void *                data;    // and its data pointer
++    };
++    struct reloc_state {
++        bool     inited = false;
++        bool     on     = false;
++        bool     decode = false;       // true while layers are moved
++        uint32_t ub_prompt = 0;
++        uint32_t ub_decode = 512;
++        uint32_t small     = 16;       // a batch of at most this many tokens counts as decode
++        uint32_t after     = 64;       // consecutive small batches before the move
++        uint32_t run       = 0;
++        int      max_layers = 8;
++        size_t   keep       = 768ull << 20;
++        std::vector<reloc_moved>          moved;
++        std::vector<ggml_backend_buffer_t> bufs;
++    } reloc;
++
++    void reloc_init();
++    void reloc_step(uint32_t n_tokens);
++    bool reloc_to_decode();
++    void reloc_to_prompt();
++    void reloc_restore();
++    void reloc_drop_graphs();
++
+     // whether the reserve graph has a logits tensor, set in sched_reserve()
+     // true until then, because the first output_reserve() runs before any graph is reserved
+     bool graph_has_logits = true;

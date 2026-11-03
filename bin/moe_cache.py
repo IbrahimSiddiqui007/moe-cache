@@ -2558,6 +2558,18 @@ def _launch_plan(a, extra, argv, machine):
             # N3/MG5 (PROTOTYPE): the plugin's long-prompt block may also use the second card of the --device list when it does not fit on the first
             env.append(("MOE_CACHE_GPU_DEV2", "auto"))
             say("moe-cache: --multi-gpu: the plugin's long-prompt GPU block may use the second card too (MOE_CACHE_GPU_DEV2=auto, PROTOTYPE)")
+    if os.environ.get("MOE_CACHE_DECODE_RELOC"):       # DECODE-630 (PROTOTYPE, default off): layers back to the GPU after the prompt, needs llama.cpp patch 0070
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner")) if os.path.join(HERE, "planner") not in sys.path else None
+            import gguf_plan
+            from decode_reloc import launcher_env
+            r_env, r_note = launcher_env(os.environ, lay=gguf_plan.model_layout(model), ctx=ctx, ub=ub, ncmoe=ncmoe, extra=extra, gcache=gcache,
+                                         compute_mib=gguf_plan.compute_buffer_guess_mib)
+            env += r_env
+            if r_note:
+                say(r_note)
+        except Exception as e:
+            say(f"moe-cache: MOE_CACHE_DECODE_RELOC ignored: {e}", err=True)
     cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
     if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
         del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load

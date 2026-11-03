@@ -1047,7 +1047,7 @@ function chips(m, i, live) {
   else if (t.predicted_per_second) out.push(`<span class="chip tps">${t.predicted_per_second.toFixed(1)} tok/s</span>`);
   if (t.prompt_per_second && t.prompt_n > 1) out.push(`<span class="chip" title="${t.prompt_n} new prompt tokens${t.cache_n ? ", " + t.cache_n + " reused" : ""}">prefill ${t.prompt_per_second.toFixed(0)} tok/s</span>`);
   if (t.draft_n) out.push(`<span class="chip mtp" title="multi-token prediction: drafted ${t.draft_n}, accepted ${t.draft_n_accepted}">MTP ${(100 * t.draft_n_accepted / t.draft_n).toFixed(0)} % accepted</span>`);
-  if (t.hit_rate != null) out.push(`<span class="chip hit" title="experts found in RAM during this answer: ${t.hits} hits, ${t.misses} misses">hit ${(t.hit_rate * 100).toFixed(1)} %</span>`);
+  if (t.hit_rate != null) out.push(`<span class="chip hit" title="experts found in RAM while this answer was written: ${t.hits} hits, ${t.misses} misses. The count is the server's, so a second chat or agent running at the same time is included">hit ${(t.hit_rate * 100).toFixed(1)} %</span>`);
   if (t.predicted_n) out.push(`<span class="chip">${t.predicted_n} tokens · ${(t.predicted_ms / 1000).toFixed(1)} s</span>`);
   if (t.stopped) out.push(`<span class="chip stopped">stopped</span>`);
   const last = i == C.chat.messages.length - 1;

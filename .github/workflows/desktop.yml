@@ -1,5 +1,5 @@
 # Desktop app (Tauri 2 shell around the control page). Runs by hand (workflow_dispatch, which GitHub offers only once this file is on the default
-# branch) and on pull requests that touch desktop/ or this file, so a branch can be built before that. Never on a push to a branch or a tag.
+# branch) on pull requests that touch desktop/ or this file, and on pushes to claude/desktop-* branches (so a desktop branch builds without a PR). Never on a tag.
 # Design: docs/DESKTOP_APP_DESIGN.md. No signing of the installer (no code-signing certificate by decision);
 # update-file signing (TAURI_SIGNING_PRIVATE_KEY) is added with the updater milestone.
 name: desktop
@@ -13,6 +13,11 @@ on:
       python_sha256:
         description: SHA-256 of python-<version>-embed-amd64.zip (from python.org); empty = the pin for 3.12.8 in the workflow; "none" = do not bundle Python (the app then needs MOE_CACHE_PYTHON)
         default: ""
+  push:
+    branches: ["claude/desktop-*"]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
   pull_request:
     paths:
       - "desktop/**"
@@ -31,7 +36,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  kit:
+    # the Windows kit (launcher, page, both plugin DLLs, the official llama.cpp Vulkan build) made by the repository's own script; the Windows app bundles it
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: mingw-w64 (UCRT when available, as windows.yml)
+        run: |
+          sudo apt-get update -q
+          if sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
+            echo "MINGW_CXX=x86_64-w64-mingw32ucrt-g++" >> "$GITHUB_ENV"
+          else
+            sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+            echo "MINGW_CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
+          fi
+      - name: Windows kit
+        run: tools/make_windows_kit.sh 0.0.0-desktop
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-kit
+          path: dist/moe-cache-v0.0.0-desktop-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 3
+
   build:
+    needs: kit
     strategy:
       fail-fast: false
       matrix:
@@ -74,6 +106,27 @@ jobs:
         shell: bash
         run: desktop/scripts/stage.sh
 
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: runner.os == 'Windows'
+        with:
+          name: desktop-kit
+          path: kit-zip
+
+      - name: Replace the staged kit with the Windows kit (plugin DLLs, llama.cpp Vulkan) (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Expand-Archive kit-zip\moe-cache-v0.0.0-desktop-windows-x64.zip -DestinationPath "$env:RUNNER_TEMP\kit"
+          $src = Get-ChildItem "$env:RUNNER_TEMP\kit" -Directory | Select-Object -First 1
+          $dst = "desktop\src-tauri\resources\moe-cache"
+          Get-ChildItem $dst -Force | Where-Object Name -ne ".gitkeep" | Remove-Item -Recurse -Force
+          Copy-Item "$($src.FullName)\*" $dst -Recurse
+          Remove-Item "$dst\moe-cache.bat", "$dst\moe-cache.exe", "$dst\bin\moe-cache-ui.bat" -ErrorAction SilentlyContinue
+          Copy-Item desktop\app_entry.py $dst
+          Get-ChildItem $dst | Select-Object Name | Format-Table -HideTableHeaders
+          if (-not (Test-Path "$dst\llama\llama-server.exe") -or -not (Test-Path "$dst\ggml-moe-cache-api3.dll")) { throw "the kit lacks llama-server.exe or the API 3 DLL" }
+          "{0:N1} MB staged" -f ((Get-ChildItem $dst -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+
       - name: Bundle Python (Windows)
         if: runner.os == 'Windows' && env.PY_SHA256 != 'none'
         shell: pwsh
@@ -83,6 +136,16 @@ jobs:
         if: runner.os == 'Windows' && env.PY_SHA256 == 'none'
         shell: bash
         run: mkdir -p desktop/src-tauri/resources/python && touch desktop/src-tauri/resources/python/.gitkeep
+
+      - name: The bundled Python finds the kit's plugin and llama-server (Windows)
+        if: runner.os == 'Windows' && env.PY_SHA256 != 'none'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"   # the checks write warnings to stderr; the pattern match below decides
+          $out = & desktop\src-tauri\resources\python\python.exe desktop\src-tauri\resources\moe-cache\bin\moe_cache.py check 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch "ggml-moe-cache-api3.dll") { throw "check did not find the kit's API 3 DLL" }
+          if ($out -notmatch "llama-server") { throw "check does not mention llama-server" }
 
       - name: Shell tests (Rust unit tests)
         working-directory: desktop/src-tauri
