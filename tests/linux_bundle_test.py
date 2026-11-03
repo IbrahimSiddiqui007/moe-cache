@@ -60,6 +60,12 @@ bad = os.path.join(cache, "llama-b99999-bin-ubuntu-x64.tar.gz"); make_tgz(bad, w
 r = run(os.path.join(TMP, "dest-noserver"), "b99999", os.path.basename(bad), hashlib.sha256(open(bad, "rb").read()).hexdigest())
 check(r.returncode != 0 and "no llama-server" in r.stdout, "a tarball without llama-server is refused")
 check(subprocess.run(["bash", script], capture_output=True, text=True).returncode == 1, "no arguments: usage and exit 1")
+# AUD-064: a cache folder that is a symlink (planted in a shared folder) is refused; the default folder is under the user's cache, not /tmp
+lnk = os.path.join(TMP, "cache-link"); os.symlink(cache, lnk)
+r = run(os.path.join(TMP, "dest-link"), "b99999", asset, sha, lnk)
+check(r.returncode != 0 and "not a folder you own" in r.stdout and not os.path.exists(os.path.join(TMP, "dest-link", "llama")), "a cache folder that is a symlink is refused")
+check("/tmp/moe-cache-llama-cache" not in open(os.path.join(HERE, "tools", "make_release.sh")).read() and "moe-cache-llama" in open(script).read().split("set -e")[1].split("\n")[1],
+      "the default asset cache is not a fixed name in /tmp")
 
 # ---- the launcher finds <root>/llama: a copy of bin/ + planner/ with the bundle next to it ----
 root = os.path.join(TMP, "root")

@@ -47,6 +47,7 @@ if [ -z "$LIBS" ]; then
   done
 fi
 [ -n "$LIBS" ] || { echo "libggml-base.so not found. Set GGML_LIB_DIR to the directory of your llama.cpp libraries."; exit 1; }
+LIBS="$(cd "$LIBS" && pwd)"      # absolute: the rpath written into the plugin must not depend on the directory it is loaded from (AUD-064)
 BASE="$(ls "$LIBS"/libggml-base.so "$LIBS"/libggml-base.so.* 2>/dev/null | head -1)"
 mkdir -p $OUT
 echo "using libggml-base from $LIBS"

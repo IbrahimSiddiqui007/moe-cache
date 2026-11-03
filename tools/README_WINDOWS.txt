@@ -24,7 +24,10 @@ launcher then runs it stock by itself.
      Get-ChildItem C:\moe-cache -Recurse | Unblock-File
    If SmartScreen says "Windows protected your PC": More info > Run anyway.
    Check the zip: Get-FileHash moe-cache-v@VERSION@-windows-x64.zip (PowerShell) must equal the
-   line in SHA256SUMS-windows on the release page.
+   line in SHA256SUMS-windows on the release page. This finds a damaged or cut-short download;
+   it cannot find a zip that was replaced on the release page together with its hash file.
+   For that, with GitHub's CLI (gh) installed:
+     gh attestation verify moe-cache-v@VERSION@-windows-x64.zip -R IbrahimSiddiqui007/moe-cache
 
 2. Start
    Unzip this kit (e.g. to C:\moe-cache) and double-click moe-cache.bat.
