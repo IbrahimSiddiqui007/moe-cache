@@ -566,10 +566,10 @@ def server_args(s):
 
 
 def on_demand_args(s):
-    """GUI-022: `moe_cache.py on-demand` arguments (the model must stay first after --keep-key) that remember the page's settings (the listener adds --agent itself and takes --port as its own option)."""
+    """GUI-022: `moe_cache.py on-demand` arguments that remember the page's settings (the listener adds --agent itself and takes --port as its own option)."""
     a = server_args(s)
     i = a.index("--")
-    return ["--keep-key"] + [x for x in a[:i] if x != "--agent"] + a[i:]       # --keep-key: SERVER-624, the page has no key and must not delete the CLI's custom key
+    return [x for x in a[:i] if x != "--agent"] + a[i:]
 
 
 def shown_command(s, windows=None):

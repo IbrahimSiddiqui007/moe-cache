@@ -60,6 +60,7 @@
 | Bug fixes | Control page: **Start on first request** works. The page remembers its settings with `moe_cache.py on-demand`, runs the listener on the chosen port, shows "waiting for the first request" until a chat or an agent asks, then "running" while the model is loaded; Stop ends the listener and its model. The page's chat and Connect work while it waits. It uses the launcher's agent key (a typed key is refused). "Show the llama-server command" was already in the page (GUI-022; the real on-demand run from the page is still to be clicked through). |
 | Bug fixes | Control page: the agents card now reads OpenCode's config (`opencode.json`, `opencode.jsonc`, comments allowed) and Hermes' `config.yaml` back, so "connected" means the config really points at the running server, also when it was set up outside the page or in an earlier run; an agent set up for another server says so (GUI-025). |
 | Bug fixes | The sanitize CI workflow has a concurrency group per branch that queues a second run behind the first instead of losing a running instrumented build (QUALITY-017). |
+| Bug fixes | `moe_cache.py on-demand`: remembering a model again (a new port, idle time or model) without `--api-key` keeps the custom key given earlier, so agents using it are no longer locked out with a silent 401; `--forget-key` drops it (SERVER-624). |
 
 ## 0.3.5 (2026-11-03)
 
