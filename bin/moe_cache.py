@@ -2031,6 +2031,19 @@ class LaunchPlan:
     def kv(self):
         return "q8_0" if self.kv_q8 else "f16"
 
+    def numbers(self):
+        """ENGINE-029: the figures the control page shows, from this plan alone (the model's layers and sizes from the planner's answer, the placement the launcher
+        chose: n_cpu_moe, micro-batch, KV type). None when the planner gave no answer. The page used to combine planner_info, tuned and these fields itself."""
+        pl, tuned = self.planner_info, self.tuned
+        if not pl:
+            return None
+        ncmoe = int(self.n_cpu_moe) if str(self.n_cpu_moe).isdigit() else pl["n_cpu_moe"]
+        layers = pl["layers"]
+        return {"layers": layers, "gpu_expert_layers": max(0, layers - min(ncmoe, layers)), "n_cpu_moe": ncmoe, "cache_GiB": pl["cache_GiB"],
+                "cpu_experts_GiB": pl["cpu_experts_GiB"], "free_vram_GiB": pl["free_vram_GiB"],
+                "ub": int(self.ub) if str(self.ub).isdigit() else (tuned["ub"] if tuned else None), "kv_cache": self.kv,
+                "experts": pl["experts"], "used": pl["used"], "arch": pl["arch"]}
+
     def command_line(self, windows=None):
         """The line --dry-run prints: environment settings, then the command (PowerShell form on Windows); the API key is never shown."""
         shown = [(k, "(hidden)" if k == "LLAMA_API_KEY" else v) for k, v in self.env + self.key_env]

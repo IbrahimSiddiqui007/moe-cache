@@ -76,8 +76,10 @@ def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=Fal
     info = _planner[0](path, ctx, ram, vram)          # a RuntimeError here is the planner's refusal
     stock = ui.mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
     t = dict(TUNE)
-    return type("LP", (), {"engine": "stock" if stock else "plugin", "n_cpu_moe": str(t["n_cpu_moe"]), "ub": str(t["ub"]), "kv": "q8_0" if mode == "fast" else "f16",
-                           "planner_info": info, "tuned": t, "planner_error": None})()
+    lp = ui.mc.LaunchPlan()                          # the real class: the page now asks it for its numbers (ENGINE-029)
+    lp.engine, lp.n_cpu_moe, lp.ub, lp.kv_q8 = "stock" if stock else "plugin", str(t["n_cpu_moe"]), str(t["ub"]), mode == "fast"
+    lp.planner_info, lp.tuned, lp.planner_error = info, t, None
+    return lp
 real_view, ui.launcher_view = ui.launcher_view, fake_view
 
 p = ui.plan_model(small["path"], ram="2")
