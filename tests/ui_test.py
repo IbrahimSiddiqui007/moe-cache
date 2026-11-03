@@ -138,6 +138,11 @@ class H(BaseHTTPRequestHandler):
         if self.path == "/detokenize":
             body = {"content": "You are opencode, an interactive CLI tool" if q["tokens"][:3] == [11, 22, 33] else "Hello"}
             self.send_response(200); self.end_headers(); self.wfile.write(json.dumps(body).encode()); return
+        if self.path == "/v1/chat/completions" and q["messages"][-1]["content"] in ("SLOW-HEAD", "SLOW-STREAM"):    # SERVER-015: a llama-server that goes silent
+            if q["messages"][-1]["content"] == "SLOW-STREAM":
+                self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+                self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": "Hel"}}]}).encode() + b"\n\n"); self.wfile.flush()
+            time.sleep(2.5); return
         if self.path == "/v1/chat/completions":         # the page's own chat: streamed; the page server must have added the key
             ok = self.headers.get("Authorization") == "Bearer sekrit-123" and q["stream"] is True and q.get("temperature") == 0.5 and set(q["messages"][-1]) == {"role", "content"}
             self.send_response(200 if ok else 401); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
@@ -345,6 +350,20 @@ for bad, what in (({"messages": []}, "no messages"), ({"messages": [{"role": "to
     check(req("/api/chat", bad)[0] == 400, f"chat: {what} is refused")
 check(req("/api/chat", HI, headers={"X-MoeCache-Token": None})[0] == 403 and req("/api/chat", HI, headers={"Sec-Fetch-Site": "cross-site"})[0] == 403,
       "chat: not without the page token, not from another site")
+# SERVER-015: the timeout is a module constant (3600 s); when it expires the page gets an error line instead of an empty answer
+check(ui.CHAT_TIMEOUT == 3600, f"SERVER-015: the chat waits up to an hour for a silent llama-server ({ui.CHAT_TIMEOUT})")
+ui.CHAT_TIMEOUT = 1
+try:
+    st, body = req("/api/chat", dict(HI, messages=[{"role": "user", "content": "SLOW-STREAM"}]))
+    ev = [json.loads(l[6:]) for l in body.splitlines() if l.startswith("data: {")]
+    errs = [e["error"]["message"] for e in ev if "error" in e]
+    check(st == 200 and len(errs) == 1 and "sent nothing" in errs[0] and "Hel" in body, f"SERVER-015: a stream that goes silent ends with an error event the page shows ({st}, {errs})")
+    st, body = req("/api/chat", dict(HI, messages=[{"role": "user", "content": "SLOW-HEAD"}]))
+    check(st == 502 and "sent nothing" in json.loads(body)["error"], f"SERVER-015: no answer at all: a 502 with the same clear error ({st}, {body[:120]})")
+finally:
+    ui.CHAT_TIMEOUT = 3600
+_ph = open(ui.PAGE, encoding="utf-8").read()
+check("if (j.error) throw new Error(j.error.message" in _ph and "a.error = e.message" in _ph, "SERVER-015: the page turns an error event into the answer's error line")
 st, body = req("/api/chat", dict(HI, messages=[{"role": "user", "content": "x" * 200000}]))
 check(st != 413, f"chat: up to 8 MB for messages with attached files ({st})")
 # chats are files in the cache folder (browser storage is per port; the app picks a free port each run)

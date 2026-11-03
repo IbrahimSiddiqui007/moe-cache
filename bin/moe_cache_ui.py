@@ -10,7 +10,7 @@ and shows live speed, cache hit rate, SSD reads, RAM and VRAM, llama-server's ow
 Live numbers: the plugin's stats snapshot (MOE_CACHE_STATS_SIGNAL: SIGUSR1 on Linux, a named event on Windows), llama-server's /slots and
 its timing lines. The plugin and llama.cpp are not changed.
 """
-import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, subprocess, sys, threading, time, urllib.parse, tempfile
+import argparse, collections, csv, ctypes, glob, http.client, json, math, secrets, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.parse, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1761,6 +1761,7 @@ class Store:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
        "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
+CHAT_TIMEOUT = 3600         # seconds llama-server may stay silent in the chat (a long prefill of a big context on a slow machine); a module constant so a test can shorten it
 
 
 def token_eq(given, token):
@@ -2028,7 +2029,7 @@ class Handler(BaseHTTPRequestHandler):
         req = chat_request(body)
         before = r.cache_counts()
         port = int(r.settings.get("port") or 8080)
-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=900)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=CHAT_TIMEOUT)
         hdr = {"Content-Type": "application/json", "Accept": "text/event-stream"}
         if r.key():
             hdr["Authorization"] = "Bearer " + r.key()
@@ -2063,6 +2064,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass                                  # the page pressed Stop: closing our side makes llama-server stop generating
+        except socket.timeout:
+            # llama-server was silent for CHAT_TIMEOUT: say so in the stream (the page shows an "error" event as the answer's error line), not an empty answer
+            msg = f"llama-server sent nothing for {f'{CHAT_TIMEOUT // 60} minutes' if CHAT_TIMEOUT >= 120 else f'{CHAT_TIMEOUT} s'}, so the page gave up waiting (it may still be working: see the Log, or press Stop and try again)"
+            if streaming:
+                try:
+                    self.wfile.write(b"data: " + json.dumps({"error": {"message": msg}}).encode() + b"\n\n")
+                    self.wfile.flush()
+                except OSError:
+                    pass
+            else:
+                self.send(502, {"error": msg})
         except OSError as e:
             if not streaming:
                 self.send(502, {"error": f"llama-server did not answer: {e}"})
