@@ -2700,6 +2700,113 @@ def cpu_pin_stage(a, env, extra, stock, win, machine):
     return pinargs
 
 
+def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine):
+    """ENGINE-029, stage "micro-batch and static layers": -ub from the tuner (or the user), and without a GPU cache the number of static expert layers from the same decision (the planner alone assumes a small compute buffer, RESULTS 61); the hint for --fast=kv; the MTP warning for an --n-cpu-moe that puts more layers on the GPU than planned. Returns (ub as text, n_cpu_moe as text, whether the tuner had no GPU memory figure)."""
+    ub = a.ub
+    if ub == "auto":
+        ub = "" if any(x in ("-ub", "--ubatch-size") for x in extra) else (str(tuned["ub"]) if tuned else "")
+    if ub and ub != "auto":
+        if not ub.isdigit():
+            say("moe-cache: --ub must be auto or a number")
+        else:
+            extra += ["-ub", ub, "-b", str(max(int(ub), 2048))]
+            say(f"moe-cache: micro-batch -ub {ub} (prompt processing; --ub N to change)")
+    # without a GPU cache, take the static expert layers from the same decision as the micro-batch (the planner alone assumes a small compute
+    # buffer and fills the card, so the long-prompt GPU block found no room next to -ub 2048: Flash-Next prefill 18 instead of 50+ tok/s)
+    no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))   # e.g. an integrated GPU: keep the planner's answer
+    if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned and not no_vram:
+        ncmoe = str(tuned["n_cpu_moe"])
+        if not kv_q8 and not a.fast:
+            try:
+                from gguf_plan import fast_kv_hint
+                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
+                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
+                if h:
+                    say("moe-cache: " + h)
+            except Exception:
+                pass
+    # MTP's draft context needs GPU memory next to the layers; with more expert layers on the GPU than planned, llama.cpp over-commits the card
+    # (it logs "failed to fit params to free device memory") and on Windows the spill then starves host memory: GGML_ASSERT(ctx->mem_buffer != NULL)
+    # while creating the draft context (GLM on the PC, 41 and 43 CPU layers with MTP; the planned 45 loads, RESULTS 62). Same warning on Linux.
+    if (ncmoe_user or "").isdigit() and tuned and not no_vram and gcache == "off" and "draft-mtp" in extra and int(ncmoe_user) < int(tuned["n_cpu_moe"]) < 999:
+        say(f"moe-cache: WARNING: --n-cpu-moe {ncmoe_user} puts more expert layers on the GPU than planned ({tuned['n_cpu_moe']}) while MTP is on: "
+            "MTP's draft context needs GPU memory too, and llama-server may abort at load (seen on GLM: GGML_ASSERT(ctx->mem_buffer != NULL)). "
+            f"Use --n-cpu-moe {tuned['n_cpu_moe']} or more, or --no-mtp", err=True)
+    return ub, ncmoe, no_vram
+
+
+def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine):
+    """ENGINE-029, stage "GPU expert cache and hybrid bank": the size of llama.cpp's GPU expert cache (--gpu-cache auto/MiB, capped by one Vulkan device buffer), or the hybrid bank (--hybrid); both put every expert on the CPU side (n_cpu_moe 999). env and extra grow in place. Returns n_cpu_moe as text."""
+    if gcache != "off" and ncmoe != "0":
+        gcmib = gcache
+        if gcache == "auto":
+            gcmib = str(tuned["gpu_cache_mib"]) if tuned and tuned["gpu_cache_mib"] else ""
+            for w in (tuned or {}).get("why", []):
+                say("moe-cache: tuner: " + w)
+        if not gcmib.isdigit():
+            say("moe-cache: --gpu-cache: could not work out a size (planner unavailable?), using the planner's static GPU layers"); gcmib = ""
+        else:
+            cap, lim = machine.vk_cache_cap(ls, model, listing)
+            if cap is not None and int(gcmib) > cap:
+                say(f"moe-cache: --gpu-cache: {gcmib} MiB capped to {cap} MiB: on Vulkan each of llama.cpp's cache banks must fit in one device buffer "
+                    f"({lim / 2**20:.0f} MiB on this GPU), a bigger cache aborts the load")
+                gcmib = str(cap)
+        if gcmib and int(gcmib) < 512:
+            say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
+        if gcmib:
+            ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
+            say(f"moe-cache: GPU expert cache of {gcmib} MiB; " + ("llama.cpp keeps the hottest experts on the GPU" if stock else "all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"))
+    if a.hybrid and ncmoe != "0":
+        ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))
+        say("moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)")
+        if not os.path.isfile(profile):
+            say(f"moe-cache: --hybrid: no usage profile yet ({profile}): the bank is chosen from it, so this first session runs without one")
+    return ncmoe
+
+
+def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
+    """ENGINE-029, stage "prompt cache": llama-server's --cache-ram (8 GiB by default, which competes with the expert cache): 2 GiB, 0 below 16 GB of memory, MOE_CACHE_PROMPT_CACHE_MIB, cut to what Windows' free commit can carry; and the host reserve told to the plugin. Yours after -- always wins. extra and env grow in place. Returns the cache size as text or None."""
+    cram = arg_after(extra, "--cache-ram", "-cram")
+    cram_auto = False             # True when the launcher chose it (yours after -- always wins)
+    if cram is None:
+        try:
+            if "--cache-ram" in ls_help(ls, machine.run):
+                # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
+                # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
+                lim = machine.mem_for_server(a.ram)
+                cram = "0" if lim and lim < 16e9 else "2048"
+                # idea L05 (MOE_CACHE_PROMPT_CACHE_MIB=N, unset = the rule above): set the prompt cache from evidence instead of the fixed split (0 = off); the number
+                # to use is the one where the saved reprocessing stops paying for the expert-cache RAM it takes (tools/agent_bench.py at two settings)
+                pcm = os.environ.get("MOE_CACHE_PROMPT_CACHE_MIB", "")
+                if re.fullmatch(r"[0-9]+", pcm):
+                    cram = pcm
+                extra += ["--cache-ram", cram]
+                cram_auto = True
+        except Exception:
+            pass
+    if win:     # XA-3: llama-server's own buffers and Vulkan's GPU memory need Windows commit (RAM + page file), not only free RAM
+        if not dry:
+            warn_heavy_background()
+        ctot, cfree = machine.win_commit()
+        if ctot and cfree:
+            say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
+            if cram_auto and re.fullmatch(r"[0-9]+", str(cram)):
+                fit, short = commit_plan(cfree, a.vram, int(cram))
+                if fit < int(cram):
+                    extra[len(extra) - 1 - extra[::-1].index("--cache-ram") + 1] = str(fit)
+                    say(f"moe-cache: prompt cache {cram} -> {fit} MiB so llama-server stays inside Windows' free commit (other programs hold the rest)", err=True)
+                    cram = str(fit)
+                if short:
+                    say(f"moe-cache: WARNING: Windows commit is nearly full ({cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB): llama-server may fail to allocate "
+                        "memory and stop. Close big programs, or set the page file to system-managed (or larger) in Windows' Advanced system settings", err=True)
+    say(prompt_cache_note(cram, extra, a.agent))
+    if cram is not None and re.fullmatch(r"[0-9-]+", cram):
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
+    elif a.agent:
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", "1024"))     # told to the plugin directly instead of it parsing our command line
+    return cram
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2801,103 +2908,14 @@ def _launch_plan(a, extra, argv, machine):
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
-    ub = a.ub
-    if ub == "auto":
-        ub = "" if any(x in ("-ub", "--ubatch-size") for x in extra) else (str(tuned["ub"]) if tuned else "")
-    if ub and ub != "auto":
-        if not ub.isdigit():
-            say("moe-cache: --ub must be auto or a number")
-        else:
-            extra += ["-ub", ub, "-b", str(max(int(ub), 2048))]
-            say(f"moe-cache: micro-batch -ub {ub} (prompt processing; --ub N to change)")
-    # without a GPU cache, take the static expert layers from the same decision as the micro-batch (the planner alone assumes a small compute
-    # buffer and fills the card, so the long-prompt GPU block found no room next to -ub 2048: Flash-Next prefill 18 instead of 50+ tok/s)
-    no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))   # e.g. an integrated GPU: keep the planner's answer
-    if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned and not no_vram:
-        ncmoe = str(tuned["n_cpu_moe"])
-        if not kv_q8 and not a.fast:
-            try:
-                from gguf_plan import fast_kv_hint
-                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
-                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
-                if h:
-                    say("moe-cache: " + h)
-            except Exception:
-                pass
-    # MTP's draft context needs GPU memory next to the layers; with more expert layers on the GPU than planned, llama.cpp over-commits the card
-    # (it logs "failed to fit params to free device memory") and on Windows the spill then starves host memory: GGML_ASSERT(ctx->mem_buffer != NULL)
-    # while creating the draft context (GLM on the PC, 41 and 43 CPU layers with MTP; the planned 45 loads, RESULTS 62). Same warning on Linux.
-    if (ncmoe_user or "").isdigit() and tuned and not no_vram and gcache == "off" and "draft-mtp" in extra and int(ncmoe_user) < int(tuned["n_cpu_moe"]) < 999:
-        say(f"moe-cache: WARNING: --n-cpu-moe {ncmoe_user} puts more expert layers on the GPU than planned ({tuned['n_cpu_moe']}) while MTP is on: "
-            "MTP's draft context needs GPU memory too, and llama-server may abort at load (seen on GLM: GGML_ASSERT(ctx->mem_buffer != NULL)). "
-            f"Use --n-cpu-moe {tuned['n_cpu_moe']} or more, or --no-mtp", err=True)
-    if gcache != "off" and ncmoe != "0":
-        gcmib = gcache
-        if gcache == "auto":
-            gcmib = str(tuned["gpu_cache_mib"]) if tuned and tuned["gpu_cache_mib"] else ""
-            for w in (tuned or {}).get("why", []):
-                say("moe-cache: tuner: " + w)
-        if not gcmib.isdigit():
-            say("moe-cache: --gpu-cache: could not work out a size (planner unavailable?), using the planner's static GPU layers"); gcmib = ""
-        else:
-            cap, lim = machine.vk_cache_cap(ls, model, listing)
-            if cap is not None and int(gcmib) > cap:
-                say(f"moe-cache: --gpu-cache: {gcmib} MiB capped to {cap} MiB: on Vulkan each of llama.cpp's cache banks must fit in one device buffer "
-                    f"({lim / 2**20:.0f} MiB on this GPU), a bigger cache aborts the load")
-                gcmib = str(cap)
-        if gcmib and int(gcmib) < 512:
-            say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
-        if gcmib:
-            ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
-            say(f"moe-cache: GPU expert cache of {gcmib} MiB; " + ("llama.cpp keeps the hottest experts on the GPU" if stock else "all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"))
-    if a.hybrid and ncmoe != "0":
-        ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))
-        say("moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)")
-        if not os.path.isfile(profile):
-            say(f"moe-cache: --hybrid: no usage profile yet ({profile}): the bank is chosen from it, so this first session runs without one")
+    ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
+    ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
     if (a.hybrid or a.fast) and not os.environ.get("MOE_CACHE_GPU_MIN_TOKENS"):
         env.append(("MOE_CACHE_GPU_MIN_TOKENS", "64"))
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
-    cram = arg_after(extra, "--cache-ram", "-cram")
-    cram_auto = False             # True when the launcher chose it (yours after -- always wins)
-    if cram is None:
-        try:
-            if "--cache-ram" in ls_help(ls, machine.run):
-                # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
-                # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
-                lim = machine.mem_for_server(a.ram)
-                cram = "0" if lim and lim < 16e9 else "2048"
-                # idea L05 (MOE_CACHE_PROMPT_CACHE_MIB=N, unset = the rule above): set the prompt cache from evidence instead of the fixed split (0 = off); the number
-                # to use is the one where the saved reprocessing stops paying for the expert-cache RAM it takes (tools/agent_bench.py at two settings)
-                pcm = os.environ.get("MOE_CACHE_PROMPT_CACHE_MIB", "")
-                if re.fullmatch(r"[0-9]+", pcm):
-                    cram = pcm
-                extra += ["--cache-ram", cram]
-                cram_auto = True
-        except Exception:
-            pass
-    if win:     # XA-3: llama-server's own buffers and Vulkan's GPU memory need Windows commit (RAM + page file), not only free RAM
-        if not dry:
-            warn_heavy_background()
-        ctot, cfree = machine.win_commit()
-        if ctot and cfree:
-            say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
-            if cram_auto and re.fullmatch(r"[0-9]+", str(cram)):
-                fit, short = commit_plan(cfree, a.vram, int(cram))
-                if fit < int(cram):
-                    extra[len(extra) - 1 - extra[::-1].index("--cache-ram") + 1] = str(fit)
-                    say(f"moe-cache: prompt cache {cram} -> {fit} MiB so llama-server stays inside Windows' free commit (other programs hold the rest)", err=True)
-                    cram = str(fit)
-                if short:
-                    say(f"moe-cache: WARNING: Windows commit is nearly full ({cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB): llama-server may fail to allocate "
-                        "memory and stop. Close big programs, or set the page file to system-managed (or larger) in Windows' Advanced system settings", err=True)
-    say(prompt_cache_note(cram, extra, a.agent))
-    if cram is not None and re.fullmatch(r"[0-9-]+", cram):
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
-    elif a.agent:
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", "1024"))     # told to the plugin directly instead of it parsing our command line
+    cram = prompt_cache_stage(a, extra, env, ls, machine, win, dry)
     if stock:
         if a.stock:
             say("moe-cache: --stock: running stock llama-server without the plugin, as asked (to compare; a model bigger than RAM is read through the file cache)")
