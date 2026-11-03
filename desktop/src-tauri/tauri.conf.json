@@ -8,33 +8,35 @@
   },
   "app": {
     "withGlobalTauri": false,
-    "windows": [
-      {
-        "label": "main",
-        "title": "moe-cache",
-        "width": 1280,
-        "height": 820,
-        "minWidth": 480,
-        "minHeight": 520,
-        "visible": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi", "appimage", "deb"],
-    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "targets": [
+      "nsis",
+      "msi",
+      "appimage",
+      "deb"
+    ],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Run big MoE models on a small computer",
     "resources": {
       "resources/moe-cache/": "moe-cache/"
     },
     "windows": {
-      "nsis": { "installMode": "currentUser" },
-      "wix": { "upgradeCode": "6b1e0b8a-3c0d-4a54-9f2e-5d1a7c2b9e10" }
+      "nsis": {
+        "installMode": "currentUser"
+      },
+      "wix": {
+        "upgradeCode": "6b1e0b8a-3c0d-4a54-9f2e-5d1a7c2b9e10"
+      }
     }
   }
 }

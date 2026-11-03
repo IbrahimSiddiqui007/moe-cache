@@ -91,3 +91,26 @@ used up, new allocations fail even though RAM still shows as free, and llama-ser
 Qwen3 / GLM thinking models can think for thousands of tokens before they answer. llama-server can cap it: add `-- --reasoning-budget N` (tokens; llama.cpp
 #30333, #31093), or use the model's no-think mode for coding agents. This changes how long the model thinks, not the plugin.
 
+
+## Known problems from llama.cpp and the platforms (one line each)
+
+The causes below come from the llama.cpp issue pages and from our own code; the issue numbers are llama.cpp's. We have not hit all of them ourselves.
+
+| Problem | Cause | What to do |
+|---|---|---|
+| Very slow reads under WSL2 or a cloud VM (17-35x slower in llama.cpp discussions #30333 and #30409; OLMoE test 0.19 vs 3.2-3.4 tok/s) | A disk read-ahead of `read_ahead_kb=8192` pulls in 8 MiB for every small read | Lower the read-ahead of the disk the model is on (`echo 128 \| sudo tee /sys/block/sdX/queue/read_ahead_kb`, `sdX` = that disk). The report is about llama.cpp's file-mapped loading; moe-cache reads missed experts itself with large direct reads |
+| Memory runs out, or the process is killed, while a CPU-only model loads, especially under a memory limit | With no GPU in use, llama.cpp repacks the weights into private memory: a full copy that cannot be streamed from the file. moe-cache does what stock does here (`MOE_CACHE_REPACK=auto`) and does not read repacked experts directly (`src/mc_state_profile.inl`) | Add `-- --no-repack` to the server arguments, or set `MOE_CACHE_REPACK=off` ([CONFIGURATION.md](CONFIGURATION.md)) |
+| llama.cpp's own GPU cache option aborts at load on some AMD cards (RX 6900 XT on Windows, Radeon Pro VII; llama.cpp #30697; fixes #31114 and #31139 were still open on 2026-11-01) | Its cache bank is larger than the card's single-buffer limit and the card lacks 64-bit indexing | Do not use `--moe-cache-mib` on these cards (next section) |
+| The first load is slow on an APU or handheld (for example MSI Claw) when llama.cpp loads without mmap (`--load-mode none`; older builds `--no-mmap`) | The whole model file is read once at load, and one full expert tensor sits in a temporary buffer (`src/mc_buffer.inl`) | Expect the longer first load; keep enough free RAM for one expert tensor on top of the cache |
+| The server grows or gets slower after hours | Upstream reports memory growth in llama-server with speculative decoding (#31392: draft-mtp scheduler rebuilt per request). moe-cache's own cache is capped (`MOE_CACHE_SIZE_GIB`); llama-server's own growth is not | Restart the server when its memory keeps growing; try without `--mtp` to see whether it stops |
+| Empty or missing final answers from a thinking model | Thinking models can spend the whole reply budget on thinking (see the section below) | Raise the reply limit in the client, or cap the thinking with `-- --reasoning-budget N` |
+
+## Do not combine llama.cpp's `--moe-cache-mib` with moe-cache's cache or with a draft model
+
+`--moe-cache-mib` is llama.cpp's own GPU expert cache, not ours.
+
+| Case | What happens | Do |
+|---|---|---|
+| the plugin plus `--moe-cache-mib` (without `--gpu-cache`) | measured 29.6 tok/s against 38.8 without it (Qwen3-Coder-30B, laptop, [RESULTS.md](RESULTS.md), table "plugin + `--moe-cache-mib 5000`"): the plugin's buffer is not a host buffer, so the upstream cache finds no layer to cache | Leave it off. For a GPU cache on top of ours use `--gpu-cache` (Linux, preload method only) |
+| `--moe-cache-mib` on AMD cards under Vulkan | aborts at load on some cards (table above) | Leave it off on AMD |
+| a draft model (`-md` / `--model-draft`) together with it | reported broken upstream (llama.cpp #31497); we have not tested a draft model with that cache | Use only one of the two |
