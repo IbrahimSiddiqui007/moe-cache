@@ -30,6 +30,11 @@ body:
     validations:
       required: true
   - type: input
+    id: version
+    attributes:
+      label: moe-cache version (`moe-cache --version`) and Windows or Linux version
+      placeholder: "moe-cache 0.3.5, Windows 11 24H2 / Ubuntu 24.04"
+  - type: input
     id: llama
     attributes:
       label: llama.cpp build and backend

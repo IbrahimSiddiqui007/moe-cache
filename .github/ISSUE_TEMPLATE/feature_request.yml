@@ -1,0 +1,40 @@
+name: Feature request
+description: Something moe-cache should do that it does not
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a one-person project: a short, concrete request with your reason helps most. A speed idea is easier to judge with a number, or a plain "not measured".
+  - type: textarea
+    id: want
+    attributes:
+      label: What should moe-cache do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: What do you do today instead, and what is wrong with that?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part?
+      options: ["launcher / commands", "model picker", "agent connection (connect)", "control page", "speed of the cache", "install / packaging", "docs", "other"]
+  - type: input
+    id: os
+    attributes:
+      label: Windows or Linux version (if it only matters there)
+      placeholder: "Windows 11 24H2 / Ubuntu 24.04"
+  - type: input
+    id: hardware
+    attributes:
+      label: GPU and RAM (if it matters for the request)
+      placeholder: "RTX 4060 8 GB, 32 GB DDR5"
+  - type: input
+    id: version
+    attributes:
+      label: moe-cache version (`moe-cache --version`)
+      placeholder: "moe-cache 0.3.5"

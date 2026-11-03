@@ -2,6 +2,27 @@
 
 moe-cache is a plugin that runs inside `llama-server` plus a few helper scripts. This page says what it touches and what it keeps.
 
+## Privacy: what moe-cache sends and stores
+
+**No telemetry. No account. The plugin opens no network sockets.** (Checked: nothing in `src/` mentions a socket, a connect call, curl, an address lookup or a URL.) The launcher and the tools never send your prompts, answers, model names, paths or hardware details anywhere. The only things that listen are the local ones in the next section, on `127.0.0.1` unless you pass a different `--host`.
+
+moe-cache reaches the internet only in the places below, and only when you run that command:
+
+| When | What is contacted | What is sent | How to avoid it |
+|---|---|---|---|
+| `moe_cache.py update --check` | `api.github.com`: the release lists of IbrahimSiddiqui007/moe-cache and ggml-org/llama.cpp (two GET requests) | the request itself (your IP address, the header `User-Agent: moe-cache/VERSION`). Nothing is downloaded or installed | do not run it. No other command checks for updates |
+| `pick` or `launch`, when you say yes to the model download (`y` at the question, or `launch --download`) | `huggingface.co`, through the `hf` tool (`pip install -U huggingface_hub`), which does the transfer | what `hf` sends: the repository and file names of the model. moe-cache itself makes no request. Without your yes, both only *print* the command (`pick` also prints it when it has no terminal) | answer no and run the printed command yourself, or download the `.gguf` another way and use `--model FILE` |
+| One-line install, Windows: `install.ps1` | `github.com`: the release zip and `SHA256SUMS-windows` (served from GitHub's download hosts). `api.github.com` as well, only when the script is run from a checkout without `-Version`, to find the newest release | the requests (your IP address; `User-Agent: moe-cache-install` on the API call). Nothing about your machine | download the zip and the sums file by hand; `-DryRun` shows the plan without a request for the zip. Nothing is sent after the install |
+| One-line install, Linux: `install.sh` | `github.com`: the release tarball and `SHA256SUMS`, with `curl` or `wget` | the request (your IP address). Nothing about your machine | download the tarball yourself and run `install.sh` from inside it; `--dry-run` prints the plan |
+| `install.sh --build`, or `install.sh` run from a checkout (builds llama.cpp) | `github.com`: git clone of moe-cache at the tag and a fetch of one llama.cpp commit (ggml-org/llama.cpp); PyPI for the python `gguf` package (pip); your distribution's `apt` for the build tools (asks for sudo; `--no-apt` skips) | what git, pip and apt send in the ordinary way | the release install needs none of this |
+| Links in the control page ("Official llama.cpp releases", the issue link after `bench-report`) | nothing until you click; your browser then opens `github.com` | what your browser sends | do not click. `bench-report` writes a local `.md` file and contacts nothing: you paste it into an issue yourself |
+| `tools/check_model_links.py` (maintainers) | `huggingface.co/api`: file lists of the catalogue's repositories (metadata only) | the repository names | not part of an install; do not run it |
+| CI and release scripts (`.github/workflows`, `tools/bundle_llama_linux.sh`, `tools/make_windows_kit.sh`) | GitHub, Hugging Face (a tiny test model), the Vulkan SDK site | CI only; none of it runs on your PC | not part of an install |
+
+Everything else is local: the control page, the on-demand listener and the bench and agent tools talk to `127.0.0.1` only. `connect NAME --write` puts the local server address and your API key into the agent's own config file and sends nothing; what that agent then sends to others is the agent's business, not moe-cache's.
+
+What is stored on your PC, and where, is in [What is written to disk](#what-is-written-to-disk) below. Removing `~/.cache/moe-cache/` (on Windows the same path under your user profile) removes it.
+
 ## What runs and what listens
 | Component | Network | Notes |
 |---|---|---|

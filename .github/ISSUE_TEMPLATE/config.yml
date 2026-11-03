@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Known issues and limits
-    url: https://github.com/IbrahimSiddiqui007/moe-cache#known-issues-in-v032-honest-list
+    url: https://github.com/IbrahimSiddiqui007/moe-cache#known-issues-in-v035-honest-list
     about: Check the honest list in the README first.
+  - name: Security problem
+    url: https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/SECURITY.md#reporting
+    about: How to report one (no exploit details in a public issue).

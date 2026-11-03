@@ -1,0 +1,40 @@
+name: Question
+description: You are not sure how to do something, or what a result means
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please look at [docs/FAQ.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/FAQ.md) and [docs/TROUBLESHOOTING.md](https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/TROUBLESHOOTING.md) first. Something broken is a bug report, not a question.
+  - type: textarea
+    id: question
+    attributes:
+      label: What do you want to know or do?
+    validations:
+      required: true
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you already tried (the command, and what happened)
+      render: text
+  - type: input
+    id: os
+    attributes:
+      label: Windows or Linux version
+      placeholder: "Windows 11 24H2 / Ubuntu 24.04"
+  - type: input
+    id: hardware
+    attributes:
+      label: GPU and RAM
+      placeholder: "RTX 4060 8 GB, 32 GB DDR5 / no GPU, 16 GB"
+  - type: input
+    id: version
+    attributes:
+      label: moe-cache version (`moe-cache --version`)
+      placeholder: "moe-cache 0.3.5"
+  - type: textarea
+    id: check
+    attributes:
+      label: Output of `moe-cache check` (only if the question is about your PC)
+      description: Remove anything private.
+      render: text

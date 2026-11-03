@@ -34,6 +34,8 @@ curl -fsSL https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/downl
 
 Downloaded on its own, `install.sh` installs the release: it fetches the `-ggml0.26` tarball (official llama.cpp inside), checks it against `SHA256SUMS` (**refuses on a mismatch**), unpacks it to `~/.local/share/moe-cache` and writes the command `~/.local/bin/moe-cache`. No apt, no compiler, no root. Only if the Vulkan runtime is missing it offers `sudo apt install libvulkan1 mesa-vulkan-drivers` (asks first; `--no-apt` never offers). Then `moe-cache launch`. Undo: `sh install.sh --uninstall` (removes the versions folder, `current`, the command; models and `~/.cache/moe-cache` stay). Options: `--dry-run`, `--prefix DIR`, `--bin-dir DIR`; `--build` builds llama.cpp and the plugin from source as before (needs cmake and g++; this is what a checkout of the repository does by itself).
 
+**Asking a coding agent to do it for you?** Give it [AI_SETUP.md](AI_SETUP.md): numbered steps with the exact commands, what to expect, and the rules (it asks before downloading a model or editing an agent's config).
+
 **While releases are marked "pre-release"** (all of them are, during the beta), GitHub's `releases/latest/` address does not find them and answers 404. Use the version in the address instead: `https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/vX.Y.Z/install.ps1` (and `install.sh`), `vX.Y.Z` being the newest number on the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases). The installer you download this way installs exactly that release.
 
 ## Terminal guide: `moe-cache launch`
