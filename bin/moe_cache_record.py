@@ -5,6 +5,7 @@
   monitor   watch a running llama-server (--pid N) or run a command (-- CMD) and sample VRAM, process RAM, free RAM and CPU until it ends
   assemble  build the full record from the facts, the runs a harness measured and the protocol
   validate  check a record against the schema (required fields present, every value a number / text or "not recorded")
+  ingest, claim, board, lint, replay   runs, claims and the board of benchmarks/ (bin/moe_cache_claims.py)
   card      print the record as the benchmark card's four detail lines, a table row, a RESULTS section or an issue body
 
 A value that could not be read is written "not recorded" (NR), never guessed. bench-report (bin/moe_cache_bench.py) uses the Sampler and the record
@@ -1023,6 +1024,10 @@ def cmd_assemble(a):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] and (argv[0] in ("ingest", "claim", "board", "lint", "replay") or argv[0] == "--dir"):          # benchmarks/: runs, claims, board
+        import moe_cache_claims
+        return moe_cache_claims.main(argv)
     ap = argparse.ArgumentParser(prog="moe_cache_record.py", description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("collect", help="machine, software and model facts as JSON")

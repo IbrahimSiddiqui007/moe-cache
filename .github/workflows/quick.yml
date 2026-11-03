@@ -40,6 +40,11 @@ jobs:
             echo "::group::$t"; python3 tests/$t.py; echo "::endgroup::"
           done
 
+      - name: Published numbers have claims (benchmarks/; WARN mode until every current number has a claim)
+        run: |
+          python3 bin/moe_cache.py bench-record lint --warn
+          python3 bin/moe_cache.py bench-record board --check || echo "::warning::benchmarks/BOARD.md is out of date: run bench-record board"
+
       - name: Scoop bucket push (local empty bucket repo; first push, unchanged, next version)
         run: |
           set -e; T=$(mktemp -d); git init -q --bare -b main "$T/b.git"

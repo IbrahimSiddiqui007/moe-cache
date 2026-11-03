@@ -227,6 +227,105 @@ json.dump(bad, open(rpath, "w"))
 with contextlib.redirect_stdout(io.StringIO()):
     check(rr.main(["validate", rpath]) == 1, "validate exits 1 on an invalid record")
 
+# ---- 6b. benchmarks/: runs (ingest), claims (status computed), board, lint, replay
+import moe_cache_claims as cc  # noqa: E402
+bdir = os.path.join(tmp, "benchmarks")
+src1 = os.path.join(tmp, "run1.json")
+rec_a = json.loads(json.dumps(rec)); rec_a["created_utc"] = "2026-11-01 10:00"
+json.dump(rec_a, open(src1, "w"))
+rid1, wrote = cc.ingest(src1, bdir, machine="Test PC")
+check(wrote and __import__("re").fullmatch(r"2026-11-01_test-pc_[0-9a-f]{6}", rid1) and os.path.exists(os.path.join(bdir, "runs", rid1 + ".json")), f"ingest: canonical name DATE_MACHINE_SHORTID ({rid1})")
+check(cc.ingest(src1, bdir, machine="Test PC") == (rid1, False), "ingest: the same record again changes nothing (append-only)")
+check(cc.default_machine(rec) == "rx-9070-xt", f"ingest: default machine name from the GPU ({cc.default_machine(rec)})")
+json.dump(bad, open(os.path.join(tmp, "bad.json"), "w"))
+try:
+    cc.ingest(os.path.join(tmp, "bad.json"), bdir)
+    check(False, "ingest refuses a record that does not validate")
+except ValueError:
+    check(True, "ingest refuses a record that does not validate")
+rec_b = json.loads(json.dumps(rec_a)); rec_b["created_utc"] = "2026-11-02 10:00"
+for r in rec_b["runs"]:
+    if r["arm"] == "moe-cache":
+        r["decode_tps"] += 1.0
+json.dump(rec_b, open(os.path.join(tmp, "run2.json"), "w"))
+rid2, _ = cc.ingest(os.path.join(tmp, "run2.json"), bdir, machine="Test PC")
+check(rid2 != rid1 and rid2.startswith("2026-11-02_"), "ingest: a different record is a new file")
+runs = cc.load_runs(bdir)
+check(set(runs) == {rid1, rid2}, "load_runs: both run files")
+cli = lambda *a: cc.main(["--dir", bdir, *a])
+with contextlib.redirect_stdout(io.StringIO()):
+    r1 = cli("claim", "add", "first", "--run", rid1, "--vs", "stock", "--title", "moe-cache decodes 2.2x faster", "--statement", "Fake run set.", "--valid-moe", "0.3.5-0.3.5", "--valid-llama", "11966-11966")
+check(r1 == 0 and os.path.exists(os.path.join(bdir, "claims", "first.md")), "claim add: writes claims/ID.md")
+claims = cc.load_claims(bdir)
+c1 = claims["first"]
+check(c1["runs"] == [rid1] and len(c1["cells"]) == 4 and c1["valid_moe_cache"] == ["0.3.5", "0.3.5"] and c1["valid_llama_builds"] == [11966, 11966], "claim: cells for every arm and metric, validity range")
+check(cc.parse_claim(cc.render_claim(c1))["cells"] == c1["cells"], "claim file round trip")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    cli("claim", "show", "first")
+shown = buf.getvalue()
+check("status: " in shown and "| moe-cache | decode tok/s | 22.50 | 2 | 4.4 % | stock: +120.6 % |" in shown, "claim show: status and values computed from the run")
+st, _ = cc.compute_status(claims, runs, version="0.3.5", pin=11966)
+check(st["first"][0] == "current", "status: current inside the validity range")
+check(cc.compute_status(claims, runs, version="0.3.6", pin=11966)[0]["first"][0] == "stale", "status: stale when the moe-cache version moved past the claim")
+sp = cc.compute_status(claims, runs, version="0.3.5", pin=12064)[0]["first"]
+check(sp[0] == "stale" and "b12064" in sp[1], f"status: stale when the llama.cpp pin moved ({sp[1]})")
+with contextlib.redirect_stdout(io.StringIO()):
+    cli("claim", "add", "second", "--run", rid2, "--vs", "stock", "--title", "newer", "--statement", "Newer.", "--valid-moe", "0.3.5-0.3.5", "--valid-llama", "11966-11966")
+claims = cc.load_claims(bdir)
+st, conf = cc.compute_status(claims, runs, version="0.3.5", pin=11966)
+check(st["first"][0] == "superseded" and st["second"][0] == "current", "status: a newer claim for the same cell supersedes the older one")
+claims["second"]["withdrawn"] = "measured while a game was running"
+st, _ = cc.compute_status(claims, runs, version="0.3.5", pin=11966)
+check(st["second"][0] == "withdrawn" and st["first"][0] == "current", "status: withdrawn (with a reason) frees the older claim again")
+claims["second"]["withdrawn"] = ""
+board = cc.board_text(claims, runs, version="0.3.5", pin=11966)
+check("| moe-cache | 300.0 (+0.0 % vs stock) | 23.50 (+130.4 % vs stock) | 2026-11-02 | current | [second](claims/second.md) |" in board,
+      "board: one row per machine, model, setting, arm with the newest claim's number")
+check("| [first](claims/first.md) | superseded |" in board and "## Conflicts" in board, "board: claims that are not current are listed")
+check("2026-11-02" in cc.journal_text(claims, runs) and rid1 in cc.journal_text(claims, runs), "journal: one line per run set")
+with contextlib.redirect_stdout(io.StringIO()):
+    check(cli("board") == 0 and cli("board", "--check") == 0, "board writes BOARD.md and JOURNAL.md; --check passes right after")
+os.remove(os.path.join(bdir, "JOURNAL.md"))
+with contextlib.redirect_stdout(io.StringIO()):
+    check(cli("board", "--check") == 1, "board --check exits 1 when a file is out of date")
+# lint
+md = os.path.join(tmp, "page.md")
+open(md, "w").write("Plain text, no numbers.\n+20 % faster <!-- claim:second -->\n+30 % unmarked\n9.9 tok/s <!-- claim:nope -->\n5.5x <!-- claim:first -->\n```\n+99 % in code\n```\n"
+                    "<span>2.0x</span> <!-- claim:second -->\n")
+status_now, _ = cc.compute_status(claims, runs, version="0.3.5", pin=11966)
+probs, shown_n, ok_n = cc.lint_file(md, claims, status_now)
+kinds = sorted((n, k.split(" ")[0] if k != "unknown claim" else k) for n, k, _ in probs)
+check(shown_n == 5 and ok_n == 2 and kinds == [(3, "unclaimed"), (4, "unknown claim"), (5, "claim")], f"lint: unclaimed, unknown and non-current markers found; code fence skipped ({probs})")
+check(cc.perf_numbers("<td>12 tok/s</td><!-- 5 tok/s --> +3.5 % 2x 16 GB") == ["12 tok/s", "+3.5 %", "2x"], "lint: the numbers it counts (tok/s, signed percent, N-times), not sizes or comments")
+with contextlib.redirect_stdout(io.StringIO()) as lb:
+    rc_warn, rc_strict = cli("lint", md, "--warn"), cli("lint", md)
+check(rc_warn == 0 and rc_strict == 1, "lint: --warn exits 0, the default exits 1 on a problem")
+# replay
+newf = os.path.join(tmp, "new.json")
+rec_c = json.loads(json.dumps(rec_a))
+json.dump(rec_c, open(newf, "w"))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc_same = cli("replay", "first", "--record", newf)
+check(rc_same == 0 and "the claim holds" in buf.getvalue() and "Commands:" in buf.getvalue(), "replay: an equal record is inside the band")
+for r in rec_c["runs"]:
+    if r["arm"] == "moe-cache":
+        r["decode_tps"] *= 0.8
+json.dump(rec_c, open(newf, "w"))
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc_off = cli("replay", "first", "--record", newf)
+check(rc_off == 1 and "| NO |" in buf.getvalue() and "outside the band" in buf.getvalue(), "replay: a record 20 % lower is outside the 5 % band")
+# the committed benchmarks/ folder: every run validates, every claim resolves
+real_runs = cc.load_runs(cc.BENCH)
+check(all(not rr.validate(r, schema) for r in real_runs.values()), f"benchmarks/runs: {len(real_runs)} run files validate against the schema")
+real_claims = cc.load_claims(cc.BENCH)
+check(all(rid in real_runs for c in real_claims.values() for rid in c["runs"]) and all(cell["run"] in real_runs and cell["metric"] in cc.METRICS and cc.arm_stats(real_runs[cell["run"]], cell["arm"], cell["metric"])[1]
+      for c in real_claims.values() for cell in c["cells"]), f"benchmarks/claims: {len(real_claims)} claims, every cell resolves to recorded numbers")
+check(all(__import__("re").fullmatch(r"\d{4}-\d{2}-\d{2}_[a-z0-9-]+_[0-9a-f]{6}", i) and cc.canonical(real_runs[i]) and
+          __import__("hashlib").sha256(cc.canonical(real_runs[i]).encode()).hexdigest()[:6] == i[-6:] for i in real_runs), "benchmarks/runs: names match the content hash (no run was edited)")
+
 # ---- 7. the real probe on this machine: own process, no GPU or model needed
 real = rr.probe()
 sm = rr.Sampler(os.getpid(), pr=real, interval=0.05, vram_interval=0.2)

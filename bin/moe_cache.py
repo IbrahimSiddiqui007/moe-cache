@@ -7,7 +7,7 @@
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py update --check                                            is a newer moe-cache or llama.cpp out? (downloads nothing)
   moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md)
-  moe_cache.py bench-record collect|monitor|assemble|validate|card        the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
+  moe_cache.py bench-record collect|monitor|assemble|validate|card|ingest|claim|board|lint|replay     the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
   moe_cache.py project save|restore|list [NAME] [--url URL] [--api-key KEY] save / restore a running server's prompt state
   moe_cache.py connect hermes|opencode|claude|codex|pi|openclaw|aider|qwen [--url URL] [--write]   point Hermes Agent, OpenCode, Claude Code, Codex CLI, Pi, OpenClaw, Aider or Qwen Code at a running server (start it with --agent)
