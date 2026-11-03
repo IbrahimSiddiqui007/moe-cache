@@ -67,6 +67,12 @@ fake_systemctl(fail_on="enable")
 rc, out, err = run(od.install_autostart)
 check(rc is None and err is not None and "enable" in err and "boom" in err, f"systemctl enable failing stops with its message (got {err!r})")
 
+# no systemctl on the machine (no systemd): a message, not a FileNotFoundError traceback
+_p = os.environ["PATH"]; os.environ["PATH"] = os.path.join(TMP, "empty-path")
+rc, out, err = run(od.install_autostart)
+os.environ["PATH"] = _p
+check(rc == 0 and err is None and "systemctl not found" in out, f"no systemctl: says so and returns 0 (got rc={rc!r} err={err!r})")
+
 # dry run writes nothing
 os.remove(unit)
 rc, out, err = run(od.install_autostart, True)

@@ -15,7 +15,7 @@ Model listing (/v1/models, /props) is answered without starting the model, so ag
   moe_cache.py on-demand [MODEL ...] --install-autostart                         start it at login (systemd --user unit / Windows Startup folder)
   moe_cache.py on-demand --remove-autostart | --stop | --status
 """
-import argparse, hmac, ipaddress, http.client, json, os, re, signal, socket, subprocess, sys, threading, time
+import argparse, hmac, ipaddress, http.client, json, os, re, shutil, signal, socket, subprocess, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -707,7 +707,7 @@ def install_autostart(dry=False):
     with open(path, "w", encoding="utf-8") as f:
         f.write(unit_text())
     say(f"autostart: {path}")
-    sc = mc.which("systemctl")
+    sc = shutil.which("systemctl")   # not mc.which(): that returns the bare name when missing, so "not found" never showed
     if not sc:
         say("autostart: systemctl not found: start `moe_cache.py on-demand` from your desktop's autostart settings instead"); return 0
     for args in (["daemon-reload"], ["enable", "--now", UNIT]):
@@ -729,7 +729,7 @@ def remove_autostart():
         stop_running()
         return 0
     path = unit_path()
-    sc = mc.which("systemctl")
+    sc = shutil.which("systemctl")   # not mc.which(): that returns the bare name when missing, so "not found" never showed
     if sc:
         subprocess.run([sc, "--user", "disable", "--now", UNIT], capture_output=True, text=True, timeout=60)
     if os.path.isfile(path):
