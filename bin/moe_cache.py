@@ -606,6 +606,22 @@ def pick_gpu_full(listing):
     return d[0], d[1].strip(), int(d[3]), int(d[2])
 
 
+def cpu_only_decision(forced, extra, listing, vram_given=False):
+    """LINUX-011: -> (cpu_only, why). CPU-only means llama-server is told `--device none` and `-ngl 0`: with -ngl 0 alone llama.cpp can still put the KV
+    cache on a GPU backend it loaded (an upstream report: CUDA out-of-memory at 256k on a machine used CPU-only). True when --cpu-only was given, or when
+    `llama-server --list-devices` answered (it printed "Available devices") and lists no GPU. The user's own --device / -dev after -- and a given --vram
+    win; an empty or failed listing never switches anything (we do not know there is no GPU)."""
+    if any(x in ("--device", "-dev") or x.startswith("--device=") for x in extra):
+        return False, None
+    if forced:
+        return True, "--cpu-only"
+    if vram_given or not listing or "Available devices" not in listing:
+        return False, None
+    if pick_gpu(listing) is None:
+        return True, "llama-server lists no GPU device"
+    return False, None
+
+
 def nvidia_reports():
     """True when nvidia-smi exists and reports at least one GPU's free memory."""
     try:
@@ -751,6 +767,43 @@ def sycl_sysman_env(ls, listing=None):
     except OSError:
         return []
     return [("ZES_ENABLE_SYSMAN", "1")] if any(n.lower() in ("libggml-sycl.so", "ggml-sycl.dll") for n in names) else []
+
+
+def hip_missing_hint(ls, listing, windows=None, find=None, names=None):
+    """LINUX-018: a sentence when the ggml-hip backend sits next to llama-server (ggml-hip.dll / libggml-hip.so) but --list-devices shows no HIP / ROCm
+    device and the HIP runtime libraries it needs are not found: hipblas / rocblas (Windows: *.dll on PATH or next to llama-server; Linux: libhipblas.so /
+    librocblas.so in the library path, /opt/rocm/lib or next to llama-server). None when there is no ggml-hip, a HIP device is listed, or nothing is missing.
+    find(name) -> bool and names (the files next to llama-server) are for tests."""
+    windows = WINDOWS if windows is None else windows
+    if re.search(r"^\s+(HIP|ROCm)\d*:", listing or "", re.M):
+        return None
+    d = os.path.dirname(os.path.abspath(ls))
+    if names is None:
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return None
+    low = {n.lower() for n in names}
+    if not low & {"ggml-hip.dll", "libggml-hip.so"}:
+        return None
+    if find is None:
+        def find(n):
+            if n.lower() in low or shutil.which(n):
+                return True
+            if windows:
+                return bool(os.environ.get("HIP_PATH")) and os.path.isfile(os.path.join(os.environ["HIP_PATH"], "bin", n))
+            import glob
+            return any(glob.glob(os.path.join(p, n + "*")) for p in ("/opt/rocm/lib", "/opt/rocm/lib64", "/usr/lib", "/usr/lib64", "/usr/lib/x86_64-linux-gnu",
+                                                                     *[x for x in os.environ.get("LD_LIBRARY_PATH", "").split(":") if x]))
+    want = ["hipblas.dll", "rocblas.dll"] if windows else ["libhipblas.so", "librocblas.so"]
+    missing = [n for n in want if not find(n)]
+    if not missing:
+        return ("the HIP backend (" + ("ggml-hip.dll" if windows else "libggml-hip.so") + ") is next to llama-server but lists no AMD device: the GPU driver or ROCm "
+                "does not see a supported card (rocminfo / hipInfo shows what ROCm sees)")
+    return (f"the HIP backend ({'ggml-hip.dll' if windows else 'libggml-hip.so'}) is next to llama-server but no AMD device is listed, and {', '.join(missing)} "
+            + ("is not on PATH (add the ROCm / HIP SDK bin folder, e.g. C:\\Program Files\\AMD\\ROCm\\<version>\\bin, or copy the DLLs next to llama-server.exe)"
+               if windows else "was not found (install the ROCm runtime: hipblas and rocblas; or add /opt/rocm/lib to LD_LIBRARY_PATH)")
+            + ": llama.cpp then loads the backend without a device")
 
 
 def list_devices(ls):
@@ -1829,6 +1882,7 @@ SERVER_HELP = """\
            Warm sessions (ideas I29, I34): every idle conversation of 2k+ tokens (with its checkpoints) is saved to disk 20 s after it changes,
            one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
+--cpu-only    run on the CPU only: llama-server gets --device none and -ngl 0 (also chosen by itself when --list-devices shows no GPU)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
            Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
@@ -2022,6 +2076,7 @@ def parse_server(argv):
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
+    ap.add_argument("--cpu-only", action="store_true", help="run on the CPU only: --device none and -ngl 0 (also chosen by itself when llama-server lists no GPU)")
     ap.add_argument("--auto-fit", action="store_true")      # PROTOTYPE (MM6): a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; default off
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
@@ -2721,7 +2776,11 @@ def _launch_plan(a, extra, argv, machine):
                 say(r_note)
         except Exception as e:
             say(f"moe-cache: MOE_CACHE_DECODE_RELOC ignored: {e}", err=True)
-    cmd = [ls, "-m", model, "-ngl", "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
+    cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
+    if cpu_only:
+        extra = ["--device", "none"] + extra          # -ngl 0 alone still lets the KV cache land on a loaded GPU backend
+        say(f"moe-cache: CPU-only ({cpu_why}): --device none and -ngl 0, nothing is put on a GPU")
+    cmd = [ls, "-m", model, "-ngl", "0" if cpu_only else "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
     if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
         del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load
         del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
@@ -4007,6 +4066,9 @@ def check(argv):
                     warn("gpu driver", f"AMD driver {drv} is older than 32.0.32015.7029: Flash-Next checkpoints crash it (the launcher turns them off); update Adrenalin")
             else:
                 facts["gpu"] = "none usable by this llama-server (CPU only)"
+                hip = hip_missing_hint(lsp, devlist)
+                if hip:
+                    warn("gpu (HIP)", hip)
                 warn("gpu", "no GPU backend in this llama-server: CPU-only mode (works, slower). For a GPU: " +
                      ("the llama.cpp release zip ...-bin-win-vulkan-x64.zip" if WINDOWS else "./install.sh --vulkan, or a llama.cpp built with -DGGML_VULKAN=ON / -DGGML_CUDA=ON"))
     memav = cg = None
