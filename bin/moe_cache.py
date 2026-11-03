@@ -2516,7 +2516,7 @@ def _launch_plan(a, extra, argv, machine):
             # N3/MG5 (PROTOTYPE): the plugin's long-prompt block may also use the second card of the --device list when it does not fit on the first
             env.append(("MOE_CACHE_GPU_DEV2", "auto"))
             say("moe-cache: --multi-gpu: the plugin's long-prompt GPU block may use the second card too (MOE_CACHE_GPU_DEV2=auto, PROTOTYPE)")
-    if os.environ.get("MOE_CACHE_DECODE_RELOC"):       # DECODE-630 (PROTOTYPE, default off): layers back to the GPU after the prompt, needs llama.cpp patch 0050
+    if os.environ.get("MOE_CACHE_DECODE_RELOC"):       # DECODE-630 (PROTOTYPE, default off): layers back to the GPU after the prompt, needs llama.cpp patch 0070
         try:
             sys.path.insert(0, os.path.join(HERE, "planner")) if os.path.join(HERE, "planner") not in sys.path else None
             import gguf_plan

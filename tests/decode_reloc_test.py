@@ -2,7 +2,7 @@
 """DECODE-630 (layers back to the GPU after the prompt), model-free: the planner side (planner/decode_reloc.py) and the link to the llama.cpp patch.
    python3 tests/decode_reloc_test.py
 Checks: default off; the 64k Flash-Next numbers give the 2 layers the PC measured; refusals say why; the env names the launcher writes are the ones
-patch 0050 reads; the patch is off unless LLAMA_DECODE_RELOC is set."""
+patch 0070 reads; the patch is off unless LLAMA_DECODE_RELOC is set."""
 import glob, os, re, sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +38,7 @@ pairs, note = dr.launcher_env({dr.SWITCH: "1"}, **common)
 d = dict(pairs)
 check("env pairs", d.get("LLAMA_DECODE_RELOC") == "1" and d.get("LLAMA_DECODE_RELOC_UB") == "512" and d.get("LLAMA_DECODE_RELOC_MAX_LAYERS") == "2"
       and d.get("LLAMA_DECODE_RELOC_KEEP_MIB") == "768", pairs)
-check("note names the patch and PROTOTYPE", note and "0050" in note and "PROTOTYPE" in note, note)
+check("note names the patch and PROTOTYPE", note and "0070" in note and "PROTOTYPE" in note, note)
 pairs, _ = dr.launcher_env({dr.SWITCH: "1", dr.SWITCH + "_UB": "1024", dr.SWITCH + "_KEEP_MIB": "512"}, **common)
 check("decode chunk and keep from the environment", dict(pairs).get("LLAMA_DECODE_RELOC_UB") == "1024" and dict(pairs).get("LLAMA_DECODE_RELOC_KEEP_MIB") == "512", pairs)
 
@@ -58,8 +58,8 @@ check("size_extra: no layers", dr.size_extra(0, 0, 1750, 690, 2048, 512)["max_la
 check("cap at 8", dr.size_extra(10 * MiB, 40, 100000, 0, 2048, 512)["max_layers"] == 8)
 
 # 4. the link to the patch: every env name the launcher writes is read by the patch, and the patch is off unless the switch is set
-pf = sorted(glob.glob(os.path.join(HERE, "patches", "llama.cpp", "0050-*.patch")))
-check("patch 0050 exists", len(pf) == 1, pf)
+pf = sorted(glob.glob(os.path.join(HERE, "patches", "llama.cpp", "0070-*.patch")))
+check("patch 0070 exists", len(pf) == 1, pf)
 if pf:
     text = open(pf[0], encoding="utf-8").read()
     for n in ("LLAMA_DECODE_RELOC", "LLAMA_DECODE_RELOC_UB", "LLAMA_DECODE_RELOC_MAX_LAYERS", "LLAMA_DECODE_RELOC_KEEP_MIB", "LLAMA_DECODE_RELOC_AFTER", "LLAMA_DECODE_RELOC_SMALL"):

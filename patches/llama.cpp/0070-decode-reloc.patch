@@ -1,17 +1,52 @@
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 0cd795a56..350ca559a 100644
+index 0cd795a56..ff03eb4d0 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -610,6 +610,8 @@ llama_context::~llama_context() {
+@@ -177,6 +177,19 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
+     /*.n_tokens_per_seq =*/ 1,
+ };
+ 
++#include <mutex>
++
++#include <mutex>
++
++// number of live contexts per model: a second context (MTP / draft) shares the weights and keeps its own scheduler, so the move is refused
++static std::mutex & llama_reloc_mtx() { static std::mutex m; return m; }
++static std::unordered_map<const llama_model *, int> & llama_reloc_ctxs() { static std::unordered_map<const llama_model *, int> m; return m; }
++
++static int llama_reloc_live(const llama_model * m) {
++    std::lock_guard<std::mutex> lock(llama_reloc_mtx());
++    return llama_reloc_ctxs()[m];
++}
++
+ llama_context::llama_context(
+         const llama_model & model,
+               llama_context_params params) :
+@@ -604,12 +617,23 @@ llama_context::llama_context(
+             sampling.token_ids_full_vocab[i] = i;
+         }
+     }
++
++    {
++        std::lock_guard<std::mutex> lock(llama_reloc_mtx());
++        llama_reloc_ctxs()[&model]++;
++    }
+ }
+ 
+ llama_context::~llama_context() {
      // wait for any pending asynchronous copies into the output buffers before they are freed
      synchronize();
  
 +    reloc_restore();
++    {
++        std::lock_guard<std::mutex> lock(llama_reloc_mtx());
++        llama_reloc_ctxs()[&model]--;
++    }
 +
      // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
      if (!model.no_alloc() && !opt_ctx) {
          for (size_t i = 0; i < backend_ptrs.size(); ++i) {
-@@ -2068,6 +2070,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2068,6 +2092,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
      output_swaps.clear();
      embd_batch_idxs.clear();
  
@@ -20,7 +55,7 @@ index 0cd795a56..350ca559a 100644
      sched_reserve();
  
      bool did_optimize = false;
-@@ -2952,6 +2956,222 @@ ggml_status llama_context::graph_compute(
+@@ -2952,6 +2978,233 @@ ggml_status llama_context::graph_compute(
      return status;
  }
  
@@ -29,6 +64,7 @@ index 0cd795a56..350ca559a 100644
 +// batches of at most `small` tokens): micro-batch `ub_decode`, and the experts of up to `max_layers` host layers (the last ones) are
 +// copied into the GPU memory the big compute buffer freed. A batch of more than `ub_decode` tokens moves everything back.
 +// The weights are the same bytes, the graph is the same; only the backend that runs those layers' MUL_MAT_ID changes.
++
 +
 +static long llama_reloc_env(const char * name, long def) {
 +    const char * e = getenv(name);
@@ -97,6 +133,10 @@ index 0cd795a56..350ca559a 100644
 +
 +bool llama_context::reloc_to_decode() {
 +    const int64_t t0 = ggml_time_us();
++    if (llama_reloc_live(&model) > 1) {
++        LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: another context (MTP / draft) uses this model, off\n", __func__);
++        return false;
++    }
 +
 +    // 1. smaller micro-batch: the big compute buffer is freed, a small one is reserved
 +    reloc_drop_graphs();
@@ -222,6 +262,12 @@ index 0cd795a56..350ca559a 100644
 +        return;
 +    }
 +    if (reloc.decode) {
++        if (llama_reloc_live(&model) > 1) {
++            LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: another context was created, moving back, off\n", __func__);
++            reloc_to_prompt();
++            reloc.on = false;
++            return;
++        }
 +        if (n_tokens > reloc.ub_decode) {
 +            reloc_to_prompt();
 +        }

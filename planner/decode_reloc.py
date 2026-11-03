@@ -2,7 +2,7 @@
 
 Idea: size the card for the big prompt chunk (-ub 2048), then, once the prompt is read and the server only decodes, shrink the chunk to
 -ub 512 and move the experts of a few more layers onto the GPU in the memory the big compute buffer held. The work is done inside llama.cpp
-by patches/llama.cpp/0050-decode-reloc.patch (env LLAMA_DECODE_RELOC, off unless set). This file only decides, in plain numbers, whether to
+by patches/llama.cpp/0070-decode-reloc.patch (env LLAMA_DECODE_RELOC, off unless set). This file only decides, in plain numbers, whether to
 switch it on and what to tell it. Switch: MOE_CACHE_DECODE_RELOC=1 (default off). Design: docs/DECODE_RELOC_DESIGN.md.
 
 Pure functions, no GPU and no GGUF needed for `size_extra` and `launcher_env` with `lay` and the buffer sizes passed in (tests/decode_reloc_test.py).
@@ -69,4 +69,4 @@ def launcher_env(environ, *, lay, ctx, ub, ncmoe, extra, gcache, compute_mib):
     pairs = [("LLAMA_DECODE_RELOC", "1"), ("LLAMA_DECODE_RELOC_UB", str(ubd)), ("LLAMA_DECODE_RELOC_MAX_LAYERS", str(s["max_layers"])),
              ("LLAMA_DECODE_RELOC_KEEP_MIB", str(int(environ.get(SWITCH + "_KEEP_MIB") or KEEP_MIB)))]
     return pairs, (f"moe-cache: {SWITCH}=1: after the prompt -ub {ubp} becomes {ubd} and up to {s['max_layers']} more layers of experts move to the GPU "
-                   f"(planner estimate {s['expected_extra']} from {s['freed_mib']:.0f} MiB freed; needs the patched llama.cpp, patch 0050; PROTOTYPE)")
+                   f"(planner estimate {s['expected_extra']} from {s['freed_mib']:.0f} MiB freed; needs the patched llama.cpp, patch 0070; PROTOTYPE)")
