@@ -777,6 +777,10 @@ def rec_lines(r):
     return out
 
 
+DOWNLOAD_HINT = ("Run the same command again to continue: `hf download` keeps the files that finished and resumes a half-written one. "
+                 "If it fails again, a proxy or VPN may be in the way: set HTTPS_PROXY for your proxy, or switch the VPN off, and retry.")
+
+
 def ask(q, default=""):
     try:
         return input(q).strip().lower() or default
@@ -827,7 +831,7 @@ def pick(argv):
             m_ = MODELS[r["id"]]
             rc = subprocess.call(["hf", "download", m_["repo"], "--include", *includes(m_), "--local-dir", d["folder"]])
             if rc:
-                raise SystemExit(f"download failed (exit {rc}); nothing was changed")
+                raise SystemExit(f"download failed (exit {rc}); nothing was changed. {DOWNLOAD_HINT}")
             if not a.no_verify:
                 bad, n = verify_download(r["id"], d["folder"])
                 if bad:
