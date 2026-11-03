@@ -20,7 +20,11 @@ for m in doc["models"]:
         with urllib.request.urlopen(url, timeout=30) as r:
             files = json.load(r)
     except urllib.error.HTTPError as e:
-        print(f"FAIL {key}: {repo} answers HTTP {e.code}"); bad.append(key); continue
+        if e.code in (404, 410):          # the repo is gone (a 5xx / 429 / 403 is Hugging Face having a bad day: AUD-098)
+            print(f"FAIL {key}: {repo} answers HTTP {e.code}"); bad.append(key)
+        else:
+            print(f"warn {key}: Hugging Face answers HTTP {e.code} for {repo} (not treated as a deleted repo)")
+        continue
     except Exception as e:
         print(f"warn {key}: could not reach Hugging Face ({e})"); continue
     pats = cat.includes(m["hf"])
