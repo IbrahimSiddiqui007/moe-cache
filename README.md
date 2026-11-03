@@ -27,7 +27,18 @@ MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. W
 | Software | Python 3.8 or newer. llama.cpp is included in the Windows kit and the Linux `-ggml0.26` download (v0.3.3 and newer) |
 | Time | about 10 minutes of setup, plus the model download |
 
+**Privacy:** no telemetry, no account; the plugin opens no network connections. The few times the launcher or installer uses the internet (downloads you ask for, the update check) are listed in [docs/SECURITY.md](docs/SECURITY.md#privacy-what-moe-cache-sends-and-stores).
+
 ## Get started
+
+### Quickest: one line, then `moe-cache launch`
+
+| | Install (checks the download against the release's SHA256 file; no admin or root; undo with `-Uninstall` / `--uninstall`) |
+|---|---|
+| Windows PowerShell | `irm https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.ps1 \| iex` (needs Python 3.8+; it says how to get it if missing) |
+| Linux | `curl -fsSL https://github.com/IbrahimSiddiqui007/moe-cache/releases/latest/download/install.sh -o install.sh && sh install.sh` |
+
+Then open a new terminal and run `moe-cache launch`: it checks your PC, suggests models that fit, prints the download command (it downloads only after you say yes), starts the server and offers to connect your coding agents. What it asks, step by step: [docs/INSTALL.md](docs/INSTALL.md#terminal-guide-moe-cache-launch). The manual ways follow.
 
 ### Windows 11
 
@@ -81,11 +92,17 @@ python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart   # l
 | Use | `opencode`, `opencode web`, or OpenCode Desktop; pick `moe-cache/<model>` in the model list |
 | Measured | same PC and model, a recorded OpenCode bug-fix session: **73.4 s with moe-cache vs 174.8 s stock (2.4x)**, first token 38.6 vs 116.8 s ([RESULTS section 60](docs/RESULTS.md)) |
 
-Claude Code: `python3 bin/moe_cache.py connect claude` prints the settings (`--write` puts them in this folder's `.claude/settings.local.json`). Keep each agent's own context limit below the server's, and set things up before a session: details, desktop apps and on-demand in [docs/AGENTS.md](docs/AGENTS.md).
+#### Other agents
+
+`connect` also writes the config for **Claude Code, Codex CLI, Pi, OpenClaw, Aider and Qwen Code**: `python3 bin/moe_cache.py connect NAME --write` (without `--write` it only prints the settings; the first backup of your config is kept as `.bak`). Checked against the real programs with a small model on 2026-11-03: Codex CLI, Pi, OpenClaw, Aider, OpenCode and Claude Code completed a turn (Claude Code with its settings exported in the shell); Qwen Code read its config but the 1.7B test model returned an empty answer, so it is not proven yet; Hermes was checked on 2026-10-29. Details: [docs/AGENTS.md](docs/AGENTS.md).
+
+**Check it works:** `python3 bin/moe_cache.py connect NAME --check` sends one prompt and one tool call the way that agent does and prints pass/fail per step with the likely fix (wrong key, model name, window too big, tool calls off).
+
+Keep each agent's own context limit below the server's, and set things up before a session: details, desktop apps and on-demand in [docs/AGENTS.md](docs/AGENTS.md).
 
 ### Which model?
 
-`pick` decides from your RAM, graphics card, free disk and use (agents, chat, long documents). On a 32 GB RAM + 16 GB GPU PC: Qwen3.8-Flash-Next IQ3_XXS (76 GB) for general and agent use, the Q2_0 file (66 GB) for speed, Nemotron 3.5 Bolt 74B (22 GB, fits in RAM) for 128k contexts. All files and the rules: [docs/MODELS.md](docs/MODELS.md).
+`pick` decides from your RAM, graphics card, free disk and use (agents, chat, long documents). On a 32 GB RAM + 16 GB GPU PC: Qwen3.8-Flash-Next IQ3_XXS (76 GB) for general and agent use, the Q2_0 file (66 GB) for speed, Nemotron 3.5 Bolt 74B (22 GB, fits in RAM) for 128k contexts. `python3 bin/moe_cache.py models` lists every catalogue model with fits / tight / no for this PC, whether it is already downloaded and its measured speed (or "not measured"). All files and the rules: [docs/MODELS.md](docs/MODELS.md).
 
 ## Results
 
