@@ -70,7 +70,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Benchmark card · 2026-10-28 · Windows desktop</div>
+    <div class="eyebrow">Benchmark card · 2026-11-03 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
     <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decodes faster than stock llama-server on every model that is bigger than the RAM, with the same output text.</p>
     <div class="machine">
@@ -80,6 +80,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section aria-label="Headline numbers">
     <div class="tiles">
+      <div class="tile"><b>≈1.4×</b><span>faster long prompts (34k–128k tokens), v0.3.5 vs v0.3.4; decode after them 6–10 % lower</span></div>
       <div class="tile"><b>+20–47 %</b><span>decode speed on the five Qwen MoE files that do not fit in RAM</span></div>
       <div class="tile"><b>2.7×</b><span>GLM-5.3 (102 GB), 3.1× with MTP</span></div>
       <div class="tile"><b>2.0–2.4×</b><span>faster agent sessions (OpenCode, Hermes) on Flash-Next</span></div>
@@ -136,7 +137,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
     <ul>
       <li><b>At 64k, Flash-Next with moe-cache</b> reads the whole 63.5k prompt 1.8× faster than stock (about 289 vs 525 s) and decodes 23 % faster at that depth (20.65 vs 16.83 tok/s).</li>
-      <li><b>The 256k setting is slower today:</b> the planner moves every expert layer to the CPU and uses <code>-ub 512</code>, so prefill is about half and decode at 4k is 19 % lower than at the 64k setting. A planner fix is in progress; not measured yet.</li>
+      <li><b>The 256k setting is slower today:</b> the planner moves every expert layer to the CPU and uses <code>-ub 512</code>, so prefill is about half and decode at 4k is 19 % lower than at the 64k setting. The table above is v0.3.4. In v0.3.5 the planner uses <code>-ub 2048</code> at 256k: a 222k-token prompt reads 26 % faster (334.8 / 333.2 vs 263.4 / 265.8 tok/s, log §79); decode there is not re-measured.</li>
       <li>Decode falls 10–14 % with depth on every model (attention), with the plugin's hit rate still 95–97 %.</li>
       <li>Saving the agent's conversation at 64k blocks the server for 1.7–2.4 s (5.5 s at 138k). At the 256k setting one decode after a save did not finish (under investigation).</li>
       <li>Not run yet: Qwen3.6 and the 122B at 256k, the 122B stock at 64k. Source: RESULTS 64.</li>
@@ -144,22 +145,23 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   </section>
 
   <section>
-    <h2>Long prompts: experimental (next release) vs v0.3.4</h2>
-    <p>Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old, new; the PC was restarted that morning and its baseline check passed (clean run, 2026-11-02). "Experimental" is not released yet: larger prompt chunks above 32k context, GPU_SUM on, and llama.cpp patch 0022. Two runs per cell.</p>
+    <h2>Long prompts: v0.3.5 vs v0.3.4</h2>
+    <p>Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old, new; the PC was restarted that night and its baseline check passed (clean run, 2026-11-03). Both versions ran on the official llama.cpp b11966 server. Two runs per cell (first / second).</p>
     <div class="scroll">
       <table>
-        <thead><tr><th>Context, prompt</th><th class="n">v0.3.4 prompt tok/s</th><th class="n">experimental prompt tok/s</th><th class="n">v0.3.4 decode tok/s</th><th class="n">experimental decode tok/s</th></tr></thead>
+        <thead><tr><th>Context, prompt</th><th class="n">v0.3.4 prompt tok/s</th><th class="n">v0.3.5 prompt tok/s</th><th class="n">change</th><th class="n">v0.3.4 decode tok/s</th><th class="n">v0.3.5 decode tok/s</th><th class="n">change</th></tr></thead>
         <tbody>
-          <tr><td>40960, 34k tokens</td><td class="n">392.2 / 411.0</td><td class="n"><b>637.2 / 619.7</b></td><td class="n">28.55 / 28.48</td><td class="n">27.29 / 27.67</td></tr>
-          <tr><td>65536, 64k</td><td class="n">311.9 / 333.9</td><td class="n"><b>434.4 / 436.6</b></td><td class="n">26.29 / 26.10</td><td class="n"><b>22.95 / 21.72</b></td></tr>
-          <tr><td>131072, 128k</td><td class="n">306.8 / 306.0</td><td class="n"><b>436.3 / 437.5</b></td><td class="n">not recorded</td><td class="n">not recorded</td></tr>
+          <tr><td>34k</td><td class="n">408.6 / 403.1</td><td class="n"><b>577.0 / 572.6</b></td><td class="n up">+42 %</td><td class="n">28.43 / 28.59</td><td class="n">27.04 / 26.38</td><td class="n">−6 %</td></tr>
+          <tr><td>64k</td><td class="n">313.8 / 314.1</td><td class="n"><b>421.3 / 448.3</b></td><td class="n up">+38 %</td><td class="n">27.42 / 27.04</td><td class="n">25.69 / 23.44</td><td class="n"><b>−10 %</b></td></tr>
+          <tr><td>128k</td><td class="n">304.8 / 305.5</td><td class="n"><b>420.7 / 421.9</b></td><td class="n up">+38 %</td><td class="n">not measured</td><td class="n">not measured</td><td class="n">–</td></tr>
         </tbody>
       </table>
     </div>
     <ul>
-      <li>Prompts are 35–56 % faster at the three depths.</li>
-      <li><b>Decode after the 64k prompt was 15 % lower</b> (22.3 vs 26.2 tok/s) with 41 expert layers on the CPU; with 39, the launcher's placement since the same afternoon, it decodes at 26.1-26.8 and reads the prompt at 455-458 tok/s. At 34k decode is 4 % lower.</li>
-      <li>Source: RESULTS 78. Text was not compared in this run.</li>
+      <li>Prompts are about 1.4× faster at the three depths.</li>
+      <li><b>Decode after a long prompt is 6–10 % lower.</b> The bigger prompt chunk takes GPU memory, so 2 fewer expert layers fit on the GPU (39–40 on the CPU at 64k, against 37–38 for v0.3.4). With 2 more GPU layers at 64k decode was 26.6 / 26.9 against 23.7 / 22.9.</li>
+      <li>Other runs the same night: 256k setting (222k-token prompt) +26 % (334.8 / 333.2 vs 263.4 / 265.8 tok/s); Qwen3.5-122B at 64k +24 %; GLM-5.3-Flash at 30k +62 % with decode −6 %.</li>
+      <li>Source: log §79. Text was not compared in this run. The earlier “experimental” numbers (patched server) overstated this by about 5–7 %.</li>
     </ul>
   </section>
 
@@ -318,7 +320,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
   </section>
 
-  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, sections 58 to 65. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS.md">docs/RESULTS.md</a>, log sections 58 to 65 and 79 in <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/experimental/docs/RESULTS_LOG.md">docs/RESULTS_LOG.md</a>. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
 </div>
 
 <script>
