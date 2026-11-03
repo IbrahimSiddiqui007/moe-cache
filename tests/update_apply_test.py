@@ -16,12 +16,14 @@ def check(ok, what):
     if not ok:
         fails.append(what)
 
-def release(ver, tamper=False):
-    d = os.path.join(T, "rel-" + ver + ("-bad" if tamper else "")); os.makedirs(d, exist_ok=True)
+def release(ver, tamper=False, modules=True):
+    d = os.path.join(T, "rel-" + ver + ("-bad" if tamper else "") + ("" if modules else "-nomod")); os.makedirs(d, exist_ok=True)
     n = f"moe-cache-v{ver}-ggml0.26-linux-x86_64"
     py = f'import sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args")\n'.encode()
     with tarfile.open(os.path.join(d, n + ".tar.gz"), "w:gz") as tf:
         ti = tarfile.TarInfo(n + "/bin/moe_cache.py"); ti.size = len(py); ti.mode = 0o755; tf.addfile(ti, io.BytesIO(py))
+        for m in (up.KIT_MODULES.split(", ")[1:] if modules else []):      # stand-ins for the launcher modules the check imports
+            ti = tarfile.TarInfo(f"{n}/bin/{m}.py"); ti.size = 5; tf.addfile(ti, io.BytesIO(b"pass\n"))
     h = hashlib.sha256(open(os.path.join(d, n + ".tar.gz"), "rb").read()).hexdigest()
     open(os.path.join(d, "SHA256SUMS"), "w").write(("0" * 64 if tamper else h) + f"  {n}.tar.gz\n")
     open(os.path.join(d, "install.sh"), "w").write(open(os.path.join(HERE, "install.sh")).read())
@@ -63,6 +65,10 @@ check(rc == 1 and "does not look like a release tag" in out, "a strange tag is r
 # a damaged package: the installer refuses, the old install keeps working
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=env, base_url="file://" + release("9.9.2", tamper=True)))
 check(rc != 0 and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.1", "a damaged package is refused and 9.9.1 still runs")
+
+# a package that unpacks but whose launcher modules do not import: the check after the swap puts the old version back
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.3", yes=True, env=env, base_url="file://" + release("9.9.3", modules=False)))
+check(rc == 1 and "failed its check" in out and "went back to 9.9.1" in out and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.1", f"a version that fails the check is rolled back ({out.strip()[-160:]})")
 
 # the real update
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=env, base_url="file://" + release("9.9.2")))
