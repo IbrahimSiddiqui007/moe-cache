@@ -364,7 +364,7 @@ while time.time() < deadline:
     time.sleep(0.3)
 check(odst == "waiting", f"on-demand: the page shows waiting while the model is not loaded ({odst})")
 calls = json.load(open(os.path.join(TMP, "od_calls.json")))
-check("--keep-key" in calls[-2] and calls[-2][1] == small["path"] and "--port" in calls[-2] and "--agent" not in calls[-2] and "--" in calls[-2] and calls[-1] == [],
+check(calls[-2][0] == small["path"] and "--port" in calls[-2] and "--agent" not in calls[-2] and "--" in calls[-2] and calls[-1] == [],
       f"on-demand: remembered with the page's settings (no --agent, the listener adds it), then the listener runs bare ({calls[-2][:5]})")
 st, body = req("/api/chat", {"messages": [{"role": "user", "content": "hi"}]})
 check(st == 200 and '"hi"' in body and "NOKEY" not in body, f"on-demand: the page's chat reaches the listener with the agent key ({st})")

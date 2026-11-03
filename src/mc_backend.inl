@@ -12,6 +12,7 @@ struct cpu_api_t {
     ggml_threadpool_t (*tp_new)(const ggml_threadpool_params *) = nullptr;
     void              (*tp_free)(ggml_threadpool_t) = nullptr;
     void              (*set_tp)(ggml_backend_t, ggml_threadpool_t) = nullptr;
+    void              (*set_abort)(ggml_backend_t, ggml_abort_callback, void *) = nullptr;   // SERVER-012
 };
 
 cpu_api_t & CPU() {
@@ -27,6 +28,7 @@ cpu_api_t & CPU() {
         r.tp_new  = (decltype(r.tp_new))  ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_new");
         r.tp_free = (decltype(r.tp_free)) ggml_backend_reg_get_proc_address(reg, "ggml_threadpool_free");
         r.set_tp  = (decltype(r.set_tp))  ggml_backend_reg_get_proc_address(reg, "ggml_backend_cpu_set_threadpool");
+        r.set_abort = (decltype(r.set_abort)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_set_abort_callback");
         return r;
     }();
     return a;
@@ -95,6 +97,9 @@ struct moe_cache_backend_ctx {
     std::vector<ggml_backend_t> async_src;   // N15: backends with reads into our inputs still queued (cpy_tensor_async); synchronized before use
     ggml_gallocr_t     galloc = nullptr;
     bool               gpu_failed = false;   // the GPU backend could not be started: no GPU blocks for good
+    bool               hybrid_failed = false;  // PREFILL-172: a GPU call threw: the hybrid bank is not used any more (its allocator may be in an unknown state)
+    unsigned           abort_sent_cpu = ~0u;   // SERVER-012: generation of the abort callback last forwarded to the CPU / GPU backend
+    unsigned           abort_sent_gpu = ~0u;
     uint64_t           gpu_retry_at = 0;     // a GPU allocation failed: long-prompt blocks stay on the CPU until this many graphs have run
     int                gpu_alloc_fails = 0;
     bool               pin_reported = false;
@@ -114,6 +119,7 @@ struct moe_cache_backend_ctx {
         std::vector<ggml_tensor *> ext_clones;      // the input clones, in order of first use
     };
     std::vector<gpu_tmpl_t> tmpls;
+    std::vector<ggml_context *> inflight;      // PREFILL-622: graph contexts of a GPU block that is running; freed by gpu_failed_cleanup when it throws
     // idea P11 (MOE_CACHE_GPU_KEEP_MIB=N, default 0 = off): whole expert tensors uploaded for a block stay in GPU memory (up to N MiB, least recently used out)
     // and a later block that needs the same tensor (the next micro-batch of the same prompt) skips the upload: model weights never change, so a held copy is valid
     struct gpu_held_t {
@@ -387,6 +393,22 @@ bool is_expert_sum(const ggml_tensor * t);
 
 // Run the expert block (MUL_MAT_ID / GLU nodes first..last) on the GPU: clone the nodes into a small graph, upload the weights and inputs
 // to a reusable staging area, compute there and copy the last node's result back. Returns false (nothing changed) if anything does not fit.
+// Contexts of the GPU block in progress. Every normal exit frees its own (ctx_free); a throw leaves them here and gpu_failed_cleanup frees them (once).
+ggml_context * ctx_new(moe_cache_backend_ctx * c, const ggml_init_params & ip) {
+    ggml_context * x = ggml_init(ip);
+    if (x) {
+        c->inflight.push_back(x);
+    }
+    return x;
+}
+void ctx_keep(moe_cache_backend_ctx * c, ggml_context * x) {        // ownership moves to a template kept for later blocks
+    c->inflight.erase(std::remove(c->inflight.begin(), c->inflight.end(), x), c->inflight.end());
+}
+void ctx_free(moe_cache_backend_ctx * c, ggml_context * x) {
+    ctx_keep(c, x);
+    ggml_free(x);
+}
+
 bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
     const auto t_fn0 = std::chrono::steady_clock::now();     // MOE_CACHE_E1_TIMES: start of the block (before the graph is built)
     const int n_all = ggml_graph_n_nodes(cg);
@@ -439,7 +461,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
     }
     ggml_init_params ip = { ggml_tensor_overhead() * 4 * (size_t) (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
-    ggml_context * ctx = ggml_init(ip);
+    ggml_context * ctx = ctx_new(c, ip);
     if (!ctx) {
         return false;
     }
@@ -735,9 +757,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     continue;
                 }
                 const int64_t R = (int64_t) rows.size();
-                ggml_context * pctx = ggml_init(ip);
+                ggml_context * pctx = ctx_new(c, ip);
                 if (!pctx) {
-                    ggml_free(ctx);
+                    ctx_free(c, ctx);
                     return false;
                 }
                 std::unordered_map<const ggml_tensor *, ggml_tensor *> pc;
@@ -777,8 +799,8 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 ggml_cgraph * pg = ggml_new_graph(pctx);
                 ggml_build_forward_expand(pg, pout);
                 if (!gpu_graph_supported(c, pg) || !ggml_gallocr_alloc_graph(c->galloc, pg)) {
-                    ggml_free(pctx);
-                    ggml_free(ctx);
+                    ctx_free(c, pctx);
+                    ctx_free(c, ctx);
                     return false;
                 }
                 for (auto & u : pup) {
@@ -812,8 +834,8 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 const enum ggml_status st = ggml_backend_graph_compute(c->gpu, pg);
                 if (st != GGML_STATUS_SUCCESS) {
                     ggml_backend_synchronize(c->gpu);
-                    ggml_free(pctx);
-                    ggml_free(ctx);
+                    ctx_free(c, pctx);
+                    ctx_free(c, ctx);
                     return false;
                 }
                 const size_t row = ggml_row_size(out->type, out->ne[0]);
@@ -822,9 +844,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 for (int64_t r = 0; r < R; r++) {
                     memcpy((char *) out->data + (size_t) rows[(size_t) r].second * out->nb[1] + (size_t) rows[(size_t) r].first * out->nb[2], hostbuf.data() + (size_t) r * row, row);
                 }
-                ggml_free(pctx);
+                ctx_free(c, pctx);
             }
-            ggml_free(ctx);
+            ctx_free(c, ctx);
             s.gpu_segments++;
             s.gpu_split_blocks++;
             return true;
@@ -908,7 +930,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
             auto t = std::move(c->tmpls[i]);        // taken out while in use: an early return below frees it
             c->tmpls.erase(c->tmpls.begin() + (long) i);
-            ggml_free(ctx);
+            ctx_free(c, ctx);
             ctx = t.ctx;
             g = t.g;
             node_clones = t.node_clones;
@@ -1016,7 +1038,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         ggml_build_forward_expand(g, gout);
     }
     if (!from_tmpl && !gpu_graph_supported(c, g)) {
-        ggml_free(ctx);
+        ctx_free(c, ctx);
         return false;
     }
     {
@@ -1043,7 +1065,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             if (shp.shared) {
                 fprintf(stderr, "moe-cache: (shared-memory GPU: the block's copy in system RAM is capped at %.0f MiB; MOE_CACHE_GPU_SHARED_CAP_MIB raises it)\n", shp.cap / 1048576.0);
             }
-            ggml_free(ctx);
+            ctx_free(c, ctx);
             return false;
         }
     }
@@ -1069,7 +1091,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 if (said_nr++ == 0) {
                     fprintf(stderr, "moe-cache: a long-prompt block would upload whole expert tensors with experts not in RAM: it stays on the CPU\n");
                 }
-                ggml_free(ctx);
+                ctx_free(c, ctx);
                 return false;
             }
         }
@@ -1077,7 +1099,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
 #endif
     if (!ggml_gallocr_alloc_graph(c->galloc, g)) {
         // not for good (it was for the rest of the process): another program may hold the GPU memory for a while (Windows). Try again later.
-        ggml_free(ctx);
+        ctx_free(c, ctx);
         c->gpu_retry_at = s.graphs.load() + 64;
         if (c->gpu_alloc_fails++ == 0) {
             fprintf(stderr, "moe-cache: could not allocate GPU memory for a long-prompt block: blocks stay on the CPU for 64 graphs, then the GPU is tried again\n");
@@ -1364,7 +1386,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 // activations / ids that are views: pack row by row
                 const size_t es = ggml_type_size(t->type);
                 if (t->nb[0] != es) {
-                    ggml_free(ctx);
+                    ctx_free(c, ctx);
                     return false;
                 }
                 pack.assign(ggml_nbytes(d), 0);
@@ -1391,7 +1413,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         if (st != GGML_STATUS_SUCCESS) {
             ggml_backend_synchronize(c->gpu);
-            ggml_free(ctx);
+            ctx_free(c, ctx);
             return false;
         }
         const auto t_g0 = std::chrono::steady_clock::now();
@@ -1468,6 +1490,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         moe_cache_backend_ctx::gpu_tmpl_t t;
         t.key = tkey;
         t.ctx = ctx;
+        ctx_keep(c, ctx);
         t.g = g;
         for (ggml_tensor * n : seg) {
             t.node_clones.push_back(clone[n]);
@@ -1477,7 +1500,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         c->tmpls.push_back(std::move(t));
     } else {
-        ggml_free(ctx);
+        ctx_free(c, ctx);
     }
     s.gpu_segments++;
     if (n_chunk > 1) {

@@ -7,6 +7,7 @@
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include "mc_env.h"
 
 namespace mcguard {
@@ -27,6 +28,9 @@ inline int catch_mode(const char * v) {
 
 // Runs `run()` (returns bool: block done on the GPU). mode 0: no guard. Otherwise a std::exception out of it (or the injected one, once, in mode 2)
 // is caught: `failed(what)` is called and the result is false. `injected` is the caller's once-only flag for mode 2.
+template <class Failed>
+void report(Failed && failed, const char * what) noexcept;
+
 template <class Run, class Failed>
 bool guarded(int mode, bool & injected, Run && run, Failed && failed) {
     if (mode <= 0) {
@@ -39,9 +43,45 @@ bool guarded(int mode, bool & injected, Run && run, Failed && failed) {
         }
         return run();
     } catch (const std::exception & e) {
-        failed(e.what());
+        report(failed, e.what());
+        return false;
+    } catch (...) {
+        report(failed, "unknown exception");
         return false;
     }
 }
+
+// The failure handler must not throw out of the catch (it syncs and talks to the same GPU that just failed): anything it throws is dropped.
+template <class Failed>
+void report(Failed && failed, const char * what) noexcept {
+    try {
+        failed(what);
+    } catch (...) {
+    }
+}
+
+// Runs `undo` when the scope ends, also when an exception unwinds it, unless release() ran. Used to put graph nodes back (op switched to NONE for the GPU,
+// buffer tagged for the repack kernel) so an exception can never leave a node of llama.cpp's graph changed.
+template <class Undo>
+struct scope_undo {
+    Undo undo;
+    bool armed = true;
+    explicit scope_undo(Undo u) : undo(std::move(u)) {}
+    scope_undo(const scope_undo &) = delete;
+    scope_undo & operator=(const scope_undo &) = delete;
+    void run() {            // undo now (the normal path); the destructor then does nothing
+        if (armed) {
+            armed = false;
+            undo();
+        }
+    }
+    ~scope_undo() {
+        if (armed) {
+            try { undo(); } catch (...) {}
+        }
+    }
+};
+template <class Undo>
+scope_undo<Undo> make_undo(Undo u) { return scope_undo<Undo>(std::move(u)); }
 
 }  // namespace mcguard
