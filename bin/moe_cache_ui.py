@@ -860,11 +860,11 @@ def session_tokens(path, n_ids=0):
 
 
 def guess_agent(text):
+    """The agent whose name comes first in the conversation's start. First, not first in the list: Hermes' own prompt also names OpenCode and Claude Code
+    (real prompts, tests/agent_sessions/real_prompts.json), and a longer start of it would have been called OpenCode."""
     t = (text or "").lower()
-    for w, name in AGENT_WORDS:
-        if w in t:
-            return name
-    return None
+    hits = [(t.find(w), name) for w, name in AGENT_WORDS if w in t]
+    return min(hits)[1] if hits else None
 
 
 def warm_files():
