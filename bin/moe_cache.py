@@ -2851,6 +2851,40 @@ def hermes_connected(h, base):
         pass
 
 
+HERMES_KEY_ENV = "MOE_CACHE_API_KEY"      # the variable in Hermes' own .env that config.yaml's model.api_key points at
+
+
+def hermes_env_file(h):
+    """Hermes' .env (next to its config.yaml, where Hermes loads its own keys from), or None when `hermes config path` does not answer."""
+    try:
+        r = subprocess.run([h, "config", "path"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
+        path = (r.stdout.strip().splitlines() or [""])[-1].strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return os.path.join(os.path.dirname(path), ".env") if path else None
+
+
+def put_env_line(env_file, name, value):
+    """AGENTS-036: set NAME=value in a .env file (mode 0600, other lines kept, one line for NAME) without the value ever being on a command line."""
+    try:
+        lines = open(env_file, encoding="utf-8").read().splitlines()
+    except OSError:
+        lines = []
+    shown = value if re.fullmatch(r"[A-Za-z0-9._~+/=:@-]+", value) else '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    mine = re.compile(r"\s*(export\s+)?" + re.escape(name) + r"\s*=")
+    out, done = [], False
+    for l in lines:
+        if mine.match(l):
+            if not done:
+                out.append(f"{name}={shown}")
+            done = True
+        else:
+            out.append(l)
+    if not done:
+        out.append(f"{name}={shown}")
+    write_private(env_file, "\n".join(out) + "\n")
+
+
 def hermes_backup(h):
     """Before 'hermes config set' replaces the main model: copy config.yaml to config.yaml.bak and describe the model it had. A backup is never overwritten:
     when config.yaml.bak exists the copy gets a time stamp (config.yaml.bak.YYYYmmdd-HHMMSS). Nothing is copied when the config is our own setting from an earlier
@@ -3353,16 +3387,26 @@ def connect_apply(a):
     if a.agent == "hermes":
         if ctx < 64000:
             say(f"moe-cache: warning: the server's context is {ctx}; Hermes Agent refuses less than 64000 (restart with --agent or --ctx 65536)", err=True)
+        # AGENTS-036: the key goes into Hermes' .env (0600) and config.yaml names it as ${MOE_CACHE_API_KEY}; `hermes config set` would put the key
+        # itself on its command line, readable by other users of the machine in the process list
         sets = [("model.provider", "custom"), ("model.base_url", base), ("model.default", name), ("model.context_length", str(ctx)),
-                ("model.api_key", a.api_key or "none")]
+                ("model.api_key", "${" + HERMES_KEY_ENV + "}" if a.api_key else "none")]
         if not a.write:
             say(agent_snippets(None, name, ctx, a.api_key, base=base, only="hermes", hide_key=True))
-            say("apply with: " + " && ".join(f"hermes config set {k} {KEY_HINT if k == 'model.api_key' and a.api_key else v}" for k, v in sets)
+            say("apply with: " + " && ".join(f"hermes config set {k} {v}" for k, v in sets)
                 + "   (or: moe_cache.py connect hermes --write)")
+            if a.api_key:
+                say(f"and put the key in Hermes' .env as {HERMES_KEY_ENV}={KEY_HINT} (--write does this, mode 0600)")
             return 0
         h = shutil.which("hermes")
         if not h:
             raise SystemExit("hermes is not on PATH (install: https://github.com/NousResearch/hermes-agent)")
+        if a.api_key:
+            env_file = hermes_env_file(h)
+            if not env_file:
+                raise SystemExit("`hermes config path` did not answer, so the launcher cannot tell where Hermes keeps its .env for the API key; nothing was changed. "
+                                 "Type the key in Hermes instead: Settings -> Model.")
+            put_env_line(env_file, HERMES_KEY_ENV, a.api_key)
         bak, prev = hermes_backup(h)
         done_keys = []
         for k, v in sets:
@@ -3381,8 +3425,7 @@ def connect_apply(a):
         if prev:
             say(f"  before: {prev}; old config kept as {bak} (copy it back over config.yaml to undo)")
         if a.api_key:
-            say("  note: `hermes config set` takes the key on its command line (it has no way to read it from a file or the environment), so other programs of your user "
-                "could read it from the process list for about a second; the preview above never prints it. To avoid that, type it in Hermes: Settings -> Model.")
+            say(f"  the API key is in Hermes' .env as {HERMES_KEY_ENV} (mode 0600); config.yaml holds only ${{{HERMES_KEY_ENV}}}. It was never on a command line.")
         return 0
     if a.agent == "claude":
         env = claude_env(a.url, name, a.api_key)
