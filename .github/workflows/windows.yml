@@ -96,6 +96,9 @@ jobs:
       - name: install.ps1 in Windows PowerShell 5.1 (hash mismatch refused, zip-slip refused, idempotent, update, uninstall removes only what it added)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install_ps1_test.ps1
+      - name: "update --apply on Windows (real install.ps1, fake release - kit.prev kept, a failing version rolled back, user PATH untouched)"
+        shell: powershell
+        run: python tests\update_apply_win_test.py $env:RUNNER_TEMP\update_apply_win
       - name: install.ps1 in PowerShell 7
         shell: pwsh
         run: pwsh -NoProfile -File tests/install_ps1_test.ps1
