@@ -83,10 +83,10 @@ static FILE * fopen_private(const char * path) {
 
 // ggml builds CI runs this build against (comma-separated, src/mc_tested.h): API 2 = identity CI at 7fe450e19 (0.25.1); API 3 = identity CI at 23b0202a1
 // (0.26.0), Windows CI + the Windows test PC at release b11669 (0.27.0, any build of it) and identity + Windows CI at release b11966 (0.28.0, named by
-// commit because later 0.28.0 builds changed a struct layout without a version bump)
+// commit because later 0.28.0 builds changed a struct layout without a version bump) and release b12064 (0.28.0@51fe42c5d, the pin since 2026-11-03)
 #ifndef MOE_CACHE_TESTED_GGML
 #if GGML_BACKEND_API_VERSION >= 3
-#define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0, 0.28.0@ff0d396e3"
+#define MOE_CACHE_TESTED_GGML "0.26.0, 0.27.0, 0.28.0@ff0d396e3, 0.28.0@51fe42c5d"
 #else
 #define MOE_CACHE_TESTED_GGML "0.25.1"
 #endif
