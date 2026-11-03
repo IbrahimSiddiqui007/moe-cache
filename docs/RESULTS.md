@@ -3125,3 +3125,28 @@ Windows 11, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Flash-Next Q2_0 on D:, 
 Decode after a 64k prompt is 15 % lower with the experimental defaults than with v0.3.4, in both pairs; the cause is not found. Prompts are faster at all three depths. Text was not compared in this run. Only this model and these three depths are measured.
 
 **Follow-up, same boot, 16:05-16:26 (64k, `-ub 2048`, patch 0022, one run per arm except two for 39 and 40):** 41 CPU layers 454.3 / decode 22.34; 40 layers 464.3, 476.5 / 23.69, 25.40; **39 layers 457.7, 454.6 / 26.82, 26.13**; `-ub 1024` with the launcher's 38 layers 415.4 / 25.60. So the 64k decode loss was the placement. The planner now reserves for 39 at 64k.
+
+
+## 79. v0.3.5 vs v0.3.4 on long prompts, official b11966 server (Windows PC, 2026-11-03; clean: PC restarted at 02:03, baseline guard PASS at 49.4 tok/s, runs 02:30-03:25)
+
+Windows 11, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Flash-Next Q2_0 on D:, cold file cache before each run. Both versions ran on the **official llama.cpp b11966 server**, without patch 0022 (section 78 used a patched server, so its prompt numbers overstate v0.3.5 by about 5-7 %; these replace them). Order new old old new, two runs per cell, shown as first / second; the averages are my arithmetic.
+
+| Context | Prompt v0.3.4 | Prompt v0.3.5 | Change | Decode v0.3.4 | Decode v0.3.5 | Change |
+|---|---|---|---|---|---|---|
+| 34k | 408.6 / 403.1 | 577.0 / 572.6 | +42 % | 28.43 / 28.59 | 27.04 / 26.38 | -6 % |
+| 64k | 313.8 / 314.1 | 421.3 / 448.3 | +38 % | 27.42 / 27.04 | 25.69 / 23.44 | -10 % |
+| 128k | 304.8 / 305.5 | 420.7 / 421.9 | +38 % | not measured (the answer ended after 2 tokens) | not measured | - |
+
+**The decode loss is real.** After a long prompt v0.3.5 decodes 6-10 % slower than v0.3.4. Cause: the bigger prompt chunk (`-ub 2048`) takes GPU memory, so 2 fewer expert layers fit on the GPU. At 64k the launcher keeps 39 expert layers on the CPU on a nearly empty card and 40 when other programs hold about 1 GB; v0.3.4 had 37-38. Check run (64k): 2 more GPU layers with `-ub 512` (38 CPU layers) decode 26.63 / 26.92, against 23.74 / 22.91 with `-ub 2048` and 40 layers.
+
+Other runs the same night (not paired with v0.3.4):
+
+| Item | Result |
+|---|---|
+| 256k setting (222k-token prompt), prompt tok/s | `-ub 2048` 334.8 / 333.2 vs `-ub 1024` 263.4 / 265.8 (+26 %). The planner now picks 2048 at 256k (commit 1309fcd) |
+| Qwen3.5-122B IQ2_XXS, 64k, prompt tok/s | new default 538.9 / 551.5 vs `-ub 1024` 438.7 / 437.3 (+24 %) |
+| GLM-5.3-Flash, 30k, prompt tok/s | 72.8 / 73.1 vs 44.9 / 45.0 (+62 %); decode 2.88 vs 3.06 (-6 %) |
+| Planner rule `MOE_CACHE_PLAN_RULE=1`, 128k, prompt tok/s | 403.5 / 403.6 vs 418.7 / 423.4 without (-4 %): stays off by default |
+| Windows priority switches, 34k | prompt +2.0 % (598.2 vs 586.4, average over two pairs), decode the same |
+
+Text was not compared in this run. Only these models and depths are measured. Source: PC overnight run of 2026-11-03 (A B B A per row).
