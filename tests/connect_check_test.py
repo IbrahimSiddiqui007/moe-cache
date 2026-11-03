@@ -9,6 +9,8 @@ TMP = tempfile.mkdtemp(prefix="moe-check-test-")
 HOME = os.path.join(TMP, "home"); os.makedirs(HOME)
 WORK = os.path.join(TMP, "work"); os.makedirs(WORK)
 os.environ["HOME"] = os.environ["USERPROFILE"] = HOME
+os.environ["LOCALAPPDATA"] = HOME      # hermes keeps its files in %LOCALAPPDATA%\\hermes on Windows
+HERMES_DIR = "hermes" if os.name == "nt" else ".hermes"
 os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")
 for v in ("CODEX_HOME", "PI_CODING_AGENT_DIR", "LLAMA_API_KEY", "XDG_CONFIG_HOME", "HERMES_HOME", "OPENCODE_CONFIG"):
     os.environ.pop(v, None)
@@ -131,8 +133,8 @@ def setup(agent):
     """Write the agent's config the way `connect --write` does (hermes: by hand, it needs the hermes program)."""
     MODE.update(m="ok", ctx=65536)
     if agent == "hermes":
-        os.makedirs(os.path.join(HOME, ".hermes"), exist_ok=True)
-        open(os.path.join(HOME, ".hermes", "config.yaml"), "w").write(
+        os.makedirs(os.path.join(HOME, HERMES_DIR), exist_ok=True)
+        open(os.path.join(HOME, HERMES_DIR, "config.yaml"), "w").write(
             f"model:\n  provider: custom\n  base_url: {URL}/v1\n  default: {MODEL}\n  context_length: 65536\n  api_key: {KEY}\nother:\n  base_url: x\n")
         return 0
     return run(agent, "--write", "--url", URL, "--api-key", KEY)[0]
@@ -172,7 +174,7 @@ for ag in AGENTS:
     # key: the server now wants KEY, the config holds another one
     MODE.update(m="badkey", ctx=65536)
     cfgs = {"codex": ".codex/config.toml", "pi": ".pi/agent/models.json", "openclaw": ".openclaw/openclaw.json", "qwen": ".qwen/settings.json",
-            "aider": ".aider.moe-cache.conf.yml", "opencode": ".config/opencode/opencode.json", "hermes": ".hermes/config.yaml", "claude": None}
+            "aider": ".aider.moe-cache.conf.yml", "opencode": ".config/opencode/opencode.json", "hermes": HERMES_DIR + "/config.yaml", "claude": None}
     path = os.path.join(WORK, ".claude", "settings.local.json") if ag == "claude" else os.path.join(HOME, cfgs[ag])
     good = open(path).read()
     open(path, "w").write(good.replace(KEY, "wrong-key") if ag != "qwen" else good.replace(KEY, "wrong-key"))
