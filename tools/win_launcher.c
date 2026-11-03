@@ -42,7 +42,19 @@ int wmain(void) {
     _snwprintf(app, MAX_PATH + 16, L"%ls\\cmd.exe", sysdir);
     STARTUPINFOW si = { sizeof si };
     PROCESS_INFORMATION pi;
-    if (!CreateProcessW(app, cmd, NULL, NULL, FALSE, 0, NULL, dir, &si, &pi)) {
+    /* pass our own stdin/stdout/stderr on: without this a redirect or pipe (moe-cache.exe models > f.txt, echo y | moe-cache.exe ...) does not reach cmd.exe.
+       Handles are inherited only when all three are real (a GUI-started process may have none); a console is inherited anyway. */
+    HANDLE hin = GetStdHandle(STD_INPUT_HANDLE), hout = GetStdHandle(STD_OUTPUT_HANDLE), herr = GetStdHandle(STD_ERROR_HANDLE);
+    BOOL inherit = FALSE;
+    if (hin && hin != INVALID_HANDLE_VALUE && hout && hout != INVALID_HANDLE_VALUE && herr && herr != INVALID_HANDLE_VALUE) {
+        SetHandleInformation(hin, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        SetHandleInformation(hout, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        SetHandleInformation(herr, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdInput = hin; si.hStdOutput = hout; si.hStdError = herr;
+        inherit = TRUE;
+    }
+    if (!CreateProcessW(app, cmd, NULL, NULL, inherit, 0, NULL, dir, &si, &pi)) {
         fwprintf(stderr, L"moe-cache: cannot start %lsmoe-cache.bat (error %lu)\n", dir, GetLastError());
         return 1;
     }
