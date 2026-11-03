@@ -3952,7 +3952,9 @@ def check(argv):
         if re.search(r"7fe450e|23b0202", ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
-            warn("ggml version", "tested with 7fe450e19 (API 2) and 23b0202a1 (API 3)" + (", and on Windows with b11669 (ggml 0.27.0, 620d2225c)" if WINDOWS else "") + "; other versions usually load but may not (the plugin warns at start)")
+            warn("ggml version", "this llama.cpp build is not one we tested" + (f" ({ver})" if ver else "") + ": we tested " +
+                 ("b11669, b11966 and b12064 on Windows" if WINDOWS else "two llama.cpp commits on Linux (7fe450e19 and 23b0202a1) and b11966 and b12064") +
+                 ". Other builds usually work; if the plugin does not load, the lines below say so (moe_cache.py update --check shows the newest build)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):
                 ok("shared ggml", "libggml-base is a shared library")

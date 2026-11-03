@@ -51,4 +51,15 @@ if os.name != "nt":
     open(ls, "w").write("#!/bin/sh\necho 'something else broke' >&2\nexit 1\n")
     ok_, text = mc.run_check(ls, m2, [], port=18097)
     check(not ok_ and "does not support" not in text, "cache run: another failure keeps the old wording")
+
+# WINDOWS-061: the llama.cpp version line is plain words (no API numbers, no commit lists)
+if os.name != "nt":
+    vls = os.path.join(TMP, "ver-llama-server")
+    open(vls, "w").write("#!/bin/sh\necho 'version: 12345 (abcdef1)'\nexit 0\n")
+    os.chmod(vls, os.stat(vls).st_mode | stat.S_IEXEC)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        mc.check(["--llama-server", vls])
+    line = next((l for l in buf.getvalue().splitlines() if "ggml version" in l), "")
+    check("this llama.cpp build is not one we tested" in line and "API 2" not in line and "API 3" not in line and "ggml 0.27" not in line, f"doctor: an untested llama.cpp gets a plain sentence ({line[:120]})")
 sys.exit(1 if fails else 0)
