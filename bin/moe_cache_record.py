@@ -557,19 +557,27 @@ class Sampler(threading.Thread):
         self.cpu_total_s = None
         self.vram_before = None
 
+    def _vram_loop(self):
+        # its own thread: on Windows a typeperf call takes 1-2 s and stalled the RAM and CPU samples (one sample in 2 s on the CI runner, 2026-11-03)
+        while not self._stop_ev.is_set():
+            try:
+                self.sample_vram(set(self.pr.tree(self.pid)))
+            except Exception:
+                pass
+            self._stop_ev.wait(self.vram_interval)
+
     def run(self):
         box = [None]                                    # (time, proc cpu s, sys busy s, sys total s) of the previous sample
-        next_vram = 0.0
         self.t0 = time.time()
+        vt = threading.Thread(target=self._vram_loop, daemon=True)
+        vt.start()
         while not self._stop_ev.is_set():
-            do_vram = time.time() >= next_vram
             try:
-                self.sample_once(box, do_vram)
+                self.sample_once(box, False)
             except Exception:                           # one unreadable sample must not end the sampling (a process may exit between two reads)
                 pass
-            if do_vram:
-                next_vram = time.time() + self.vram_interval
             self._stop_ev.wait(self.interval)
+        vt.join(timeout=25)
         self.t1 = time.time()
 
     def sample_once(self, last_box, do_vram=True):
@@ -600,12 +608,15 @@ class Sampler(threading.Thread):
         elif s:
             last_box[0] = (now, 0.0, s[0], s[1])
         if do_vram:
-            sysv, procv, src = pr.vram(set(pids))
-            if sysv is not None:
-                self.vram_sys_peak = max(self.vram_sys_peak or 0, sysv)
-                self.vram_source = src
-            if procv is not None:
-                self.vram_proc_peak = max(self.vram_proc_peak or 0, procv)
+            self.sample_vram(set(pids))
+
+    def sample_vram(self, pids):
+        sysv, procv, src = self.pr.vram(pids)
+        if sysv is not None:
+            self.vram_sys_peak = max(self.vram_sys_peak or 0, sysv)
+            self.vram_source = src
+        if procv is not None:
+            self.vram_proc_peak = max(self.vram_proc_peak or 0, procv)
 
     def stop(self):
         self._stop_ev.set()
