@@ -1,6 +1,6 @@
 # Decode tier: getting the GPU layers back for decode without losing the big prompt chunk (design spike, 2026-11-03)
 
-**Status:** design spike plus a default-off prototype (`MOE_CACHE_DECODE_TIER`), compiled but **never run on a GPU or a model** (laptop only; the PC kill check below is the first real test). Every number below is either quoted with its source or marked as my arithmetic or guess.
+**Status (2026-11-03): killed by its PC kill check and moved to `archive/plugin/decode_tier.patch`.** Check mode exact; decode 26.71 / 26.22 vs 26.72 / 26.65 (no gain), prompt 311 / 313 vs 488 / 585 (-41 %). The +15 % from 2 more GPU layers needs llama.cpp's own placement (engine re-check, option B). The text below is the design as written before the test.
 
 ## The problem in one paragraph
 v0.3.5 reads long prompts about 1.4x faster (`-ub 2048`) but decodes 6-10 % slower after them, because the bigger chunk needs a bigger compute buffer and 2 fewer expert layers fit on the 16 GB card (RESULTS 79: 64k, 39-40 CPU layers; `-ub 512` with 38 CPU layers decodes 26.6 / 26.9 against 23.7 / 22.9 tok/s, i.e. +15 % for 2 layers, and v0.3.4 decoded 27.4 / 27.0). The wish: prompt with `-ub 2048` **and** decode with 2 more GPU layers.
