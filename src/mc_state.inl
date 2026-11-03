@@ -733,6 +733,10 @@ struct state_t {
                 }
             }
         }   // off by default: reading straight into place measured no faster than the bounce buffer
+        if (mcargs::prompt_cache_unlimited_default(plat::command_line(), getenv("LLAMA_ARG_CACHE_RAM"), getenv("MOE_CACHE_HOST_RESERVE_MIB"))) {
+            fprintf(stderr, "moe-cache: note: llama-server's own prompt cache (--cache-ram, 8 GiB by default) is not counted in this cache's RAM budget; "
+                            "to limit it pass --cache-ram MiB to llama-server (moe-cache-server does this for you)\n");
+        }
         if (strcmp(gib, "auto") == 0) {
             auto_mode = true;
             limit_bytes = read_mem_limit();

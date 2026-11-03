@@ -82,4 +82,23 @@ inline server_args parse_server_args(const std::vector<std::string> & args, cons
     return r;
 }
 
+// CACHE-269 (b): true when nothing visible limits llama-server's own prompt cache (--cache-ram, default 8 GiB of host RAM, outside the expert
+// cache's budget): not on the command line (--cache-ram / -cram MiB, also --cache_ram), not in LLAMA_ARG_CACHE_RAM, and not told by the launcher
+// (MOE_CACHE_HOST_RESERVE_MIB, which moe-cache-server always sets, together with its own --cache-ram)
+inline bool prompt_cache_unlimited_default(const std::vector<std::string> & args, const char * env_cache_ram, const char * env_launcher_reserve) {
+    if ((env_cache_ram && *env_cache_ram) || (env_launcher_reserve && *env_launcher_reserve)) {
+        return false;
+    }
+    for (size_t i = 1; i + 1 < args.size(); i++) {
+        std::string a = args[i];
+        if (a.compare(0, 2, "--") == 0) {
+            std::replace(a.begin(), a.end(), '_', '-');
+        }
+        if (is_one_of(a, { "-cram", "--cache-ram" })) {
+            return false;
+        }
+    }
+    return true;
+}
+
 }  // namespace mcargs
