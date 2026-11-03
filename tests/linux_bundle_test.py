@@ -13,7 +13,7 @@ def check(ok, what):
         fails.append(what)
 
 if not sys.platform.startswith("linux"):
-    print("linux bundle test: skipped (Linux only)"); sys.exit(0)
+    print("::warning::linux bundle test SKIPPED (Linux only): nothing was checked"); sys.exit(0)
 
 # ---- a fake "official" tarball: llama-b99999/ with llama-server, a versioned library and its symlinks, no licence (the script fetches / copies it) ----
 def make_tgz(path, with_server=True):

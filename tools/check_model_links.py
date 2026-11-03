@@ -16,7 +16,11 @@ for key, m in pick.MODELS.items():
         with urllib.request.urlopen(url, timeout=30) as r:
             files = json.load(r)
     except urllib.error.HTTPError as e:
-        print(f"FAIL {key}: {m['repo']} answers HTTP {e.code}"); bad += 1; continue
+        if e.code in (404, 410):          # the repo is gone (a 5xx / 429 / 403 is Hugging Face having a bad day: AUD-098)
+            print(f"FAIL {key}: {m['repo']} answers HTTP {e.code}"); bad += 1
+        else:
+            print(f"warn {key}: Hugging Face answers HTTP {e.code} for {m['repo']} (not treated as a deleted repo)")
+        continue
     except Exception as e:
         print(f"warn {key}: could not reach Hugging Face ({e})"); continue
     pats = [m["include"]] if isinstance(m["include"], str) else list(m["include"])
