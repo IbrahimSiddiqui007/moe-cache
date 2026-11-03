@@ -3948,6 +3948,14 @@ def check(argv):
             else:
                 fail("model", "not a GGUF file")
             facts["model"] = f"{os.path.basename(a.model)}, {size:.1f} GB"
+            try:
+                sys.path.insert(0, os.path.join(HERE, "planner"))
+                from gguf_plan import sampling_meta
+                march = (sampling_meta(a.model).get("arch") or "").lower()
+            except Exception:
+                march = ""
+            if march in KNOWN_UNSUPPORTED_ARCH:
+                fail("architecture", unsupported_arch_message(march, KNOWN_UNSUPPORTED_ARCH[march]))
             if b"expert_count" in head:
                 ok("MoE model", "has experts (expert_count found)")
             else:
@@ -3999,6 +4007,27 @@ def check(argv):
     return 1 if n["fail"] else 0
 
 
+# LAUNCHER-006: architectures llama.cpp itself cannot load yet. A newer build does not help until upstream has merged support, so the doctor says that instead of
+# only "exited before it was ready".
+KNOWN_UNSUPPORTED_ARCH = {"clover": "upstream llama.cpp pull request 31306 is still open"}
+UNKNOWN_ARCH_RE = re.compile(r"unknown model architecture:?\s*['\"]?([\w.+-]+)['\"]?", re.I)
+
+
+def unsupported_arch_message(arch, why=None):
+    """One plain sentence for an architecture this llama-server cannot load; `why` = what is known about it (None: only that this build refused it)."""
+    return (f"llama.cpp does not support the model architecture '{arch}' yet" + (f" ({why})" if why else "") +
+            ": no llama-server build loads this model until upstream adds it, and a newer build only helps once that has happened. Nothing is wrong with your setup")
+
+
+def arch_in_log(lines):
+    """The architecture llama-server named in 'unknown model architecture: X' in its output, or None."""
+    for l in lines:
+        m = UNKNOWN_ARCH_RE.search(l)
+        if m:
+            return m.group(1)
+    return None
+
+
 def run_check(lsp, model, load, port=8097):
     """Start llama-server with the plugin in cache mode (0.25 GiB cache, experts on the CPU, the rest on the CPU too, small context) for one 8-token
     request (idea I26: the Claw's check said "plugin loads: yes" while cache mode crashed at the first request). (passed, message)."""
@@ -4032,6 +4061,9 @@ def run_check(lsp, model, load, port=8097):
         time.sleep(1)
         mc = [l for l in lines if "moe-cache:" in l]
         if p.poll() is not None:
+            arch = arch_in_log(lines)
+            if arch and not ready:
+                return False, unsupported_arch_message(arch, KNOWN_UNSUPPORTED_ARCH.get(arch.lower())) + "; " + exit_reason(p.returncode, ready)
             return False, exit_reason(p.returncode, ready) + (f"; last plugin line: {mc[-1]}" if mc else "")
         if not any("cache mode" in l for l in mc):
             return False, "the server ran but the plugin's cache was not on (no 'moe-cache: cache mode' line): " + (mc[-1] if mc else "no plugin lines at all")
