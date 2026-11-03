@@ -564,9 +564,17 @@ def server_args(s):
     return a + ["--", "--metrics"]          # the API key goes to the launcher in LLAMA_API_KEY (child_env), never on a command line
 
 
-def shown_command(s):
-    return (("LLAMA_API_KEY=KEY " if s.get("api_key") else "")
-            + " ".join(('"' + x + '"') if " " in x else x for x in ["moe-cache-server"] + server_args(s)))
+def shown_command(s, windows=None):
+    """The command as the page shows it, in a form the user's shell can run. Windows (PowerShell, which runs it as shown): an argument with a space or any
+    of & ( ) ^ | < > % " ' ; , $ ` { } is put in single quotes (' doubled), and the key is `$env:LLAMA_API_KEY = 'KEY'; ` (the NAME=value prefix is
+    not valid in cmd.exe or PowerShell). Elsewhere: double quotes around an argument with a space, `LLAMA_API_KEY=KEY ` in front."""
+    win = (os.name == "nt") if windows is None else windows
+    args = ["moe-cache-server"] + server_args(s)
+    if win:
+        def q(x):
+            return x if x and re.fullmatch(r"[A-Za-z0-9_@+=:./\\-]+", x) else "'" + x.replace("'", "''") + "'"
+        return ("$env:LLAMA_API_KEY = 'KEY'; " if s.get("api_key") else "") + " ".join(q(x) for x in args)
+    return ("LLAMA_API_KEY=KEY " if s.get("api_key") else "") + " ".join(('"' + x + '"') if " " in x else x for x in args)
 
 
 def dry_run(s):

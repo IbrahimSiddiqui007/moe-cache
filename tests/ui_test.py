@@ -111,6 +111,14 @@ check(args[:2] == ["m.gguf", "--port"] and "--fast" in args and "--agent" in arg
       "launcher arguments: " + " ".join(args))
 check("KEY" in ui.shown_command({"model": "m.gguf", "api_key": "secret"}) and "secret" not in ui.shown_command({"model": "m.gguf", "api_key": "secret"}),
       "the shown command hides the API key")
+# AUD-044: the shown command runs in the user's shell (PowerShell on Windows: quoting for & ( ) ^ and spaces, the key as $env:, not NAME=value)
+_sc = {"model": "C:\\Users\\Ann & Bob (x)\\m^1.gguf", "api_key": "secret"}
+_w, _p = ui.shown_command(_sc, windows=True), ui.shown_command(_sc, windows=False)
+check(_w.startswith("$env:LLAMA_API_KEY = 'KEY'; moe-cache-server ") and "'C:\\Users\\Ann & Bob (x)\\m^1.gguf'" in _w and "secret" not in _w and "LLAMA_API_KEY=KEY" not in _w,
+      f"AUD-044: Windows form quotes & ( ) ^ and spaces, key as $env: ({_w})")
+check("$env" not in ui.shown_command({"model": "m.gguf"}, windows=True), "AUD-044: no key, no prefix")
+check("it''s a.gguf" in ui.shown_command({"model": "it's a.gguf"}, windows=True), "AUD-044: a single quote is doubled in the Windows form")
+check(_p.startswith("LLAMA_API_KEY=KEY moe-cache-server ") and '"C:\\Users\\Ann & Bob (x)\\m^1.gguf"' in _p, f"AUD-044: other systems keep NAME=value and double quotes ({_p})")
 
 # --dry-run must reach the launcher, not llama-server (it went after the -- once)
 seen = []
