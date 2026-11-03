@@ -32,7 +32,8 @@ void remove_crash_report();
 #include "mc_state_route.h"
 #include "mc_state_testfault.h"
 #include "mc_state_gpu.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t {
+#include "mc_state_pack_members.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -99,15 +100,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t {
 #else
     static constexpr bool win_buffered = false, win_random = false;
 #endif
-    // BO-1 (MOE_CACHE_PACK, see bin/moe_cache_pack.py): MODEL.moepack holds each expert's gate/up/down slices in one 4 KiB-aligned block; a missing expert is
-    // then one large unbuffered read instead of three. Replaces the file-view cache while it is in use (reads fill private memory).
-    struct pack_layer_t { uint64_t base = 0, stride = 0; int n_expert = 0, n = 0; std::string name[4]; size_t nb2[4] = {}, in_off[4] = {}; };
-    bool   pack_on = false;
-    plat::file_t pack_fd;
-    std::string pack_path;
-    std::vector<pack_layer_t> pack_layers;
-    std::unordered_map<std::string, std::pair<int, int>> pack_by_name;   // tensor name -> (layer record, slot)
-    std::atomic<uint64_t> pack_reads{0}, pack_bytes{0}, pack_slices{0}, pack_fallbacks{0};
     bool   win_view = false;                    // file-view cache (default on Windows and Linux; MOE_CACHE_WIN_VIEW=0 / MOE_CACHE_LINUX_VIEW=0 turn it off; see the constructor)
     std::vector<const char *> views;            // win_view: one read-only view per model file (split GGUF)
     std::vector<size_t> view_sizes;
