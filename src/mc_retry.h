@@ -8,7 +8,7 @@
 namespace mcretry {
 
 constexpr int kRetries = 3;         // tries after the first failure (CACHE-271 option b)
-constexpr int kDelayMs = 20;        // pause between tries
+constexpr int kDelayMs = 200;       // pause between tries (owner decision CACHE-271 b: 3 tries, 200 ms apart; a fault-injected read now costs 3 x 200 ms)
 
 // a direct read that fails like this will fail every time on this file system (fscrypt, FUSE, 9p, virtiofs accept open(O_DIRECT) but not the read):
 // no retry, the caller switches that file to buffered reads for good (AUD-011)

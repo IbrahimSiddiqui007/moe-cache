@@ -829,6 +829,7 @@
                 bfd = fds_buf[j.fdi];
             }
             bool unsupported_unused = false;
+            // FUTURE (CACHE-271 option c): fail only the current request here instead of abort() (needs a way to unwind the graph); not built, abort stays
             if (!bfd.ok() || !read_all(bfd, false, buf, need, need, foff, &unsupported_unused)) {
                 fprintf(stderr, "moe-cache: read failed at offset %llu of %s: %s (disk error, or the model file changed after loading)\n",
                         (unsigned long long) foff, shard_paths[j.fdi].c_str(), plat::last_error().c_str());

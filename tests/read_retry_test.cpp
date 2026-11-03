@@ -16,6 +16,9 @@ int main() {
         CHECK(!ok); CHECK(!uns); CHECK(calls == 1 + mcretry::kRetries); CHECK((int) sleeps.size() == mcretry::kRetries);
         for (int ms : sleeps) CHECK(ms == mcretry::kDelayMs);
     }
+    // the owner's rule: 3 retries, 200 ms apart
+    CHECK(mcretry::kRetries == 3);
+    CHECK(mcretry::kDelayMs == 200);
     // a read that recovers on the second retry succeeds
     {
         int calls = 0; size_t seen_done = 99; bool uns;
