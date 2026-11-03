@@ -56,12 +56,32 @@ Your own llama.cpp (CUDA, ROCm), `install.sh`, building from source, the speed o
 
 ### Coding agents
 
+Start the server in agent mode (or let on-demand start it when an agent asks), then point the agent at it. One command writes the agent's config; the old config is kept as `.bak`.
+
 ```bash
 python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart   # loads the model on the first request, unloads it when idle
-python3 bin/moe_cache.py connect hermes --write                              # and/or: connect opencode --write; connect claude for Claude Code
+# or by hand: bin/moe-cache-server /path/to/model.gguf --agent                # context 65536, tool calls, API key, warm sessions
 ```
 
-More, including the desktop apps and the context limits agents need: [docs/AGENTS.md](docs/AGENTS.md).
+#### Hermes Agent
+
+| Step | What to do |
+|---|---|
+| Install | Hermes Agent CLI, or Hermes Desktop on Windows (hermes-agent.nousresearch.com). Windows: add `%LOCALAPPDATA%\hermes\bin` to PATH so `connect` finds `hermes` |
+| Connect | `python3 bin/moe_cache.py connect hermes --write` (or the control page's **Connect Hermes** button): provider `custom`, URL, model name, context 65536 and the API key go into Hermes' `config.yaml`. Hermes Desktop reads the same file |
+| Use | `hermes chat` (CLI), `hermes dashboard` (web UI), or Hermes Desktop: Settings > Model shows the moe-cache model |
+| Measured | Windows desktop, Flash-Next IQ2_XS (68 GB, bigger than RAM), a recorded Hermes bug-fix session: **81.6 s with moe-cache vs 163.9 s stock (2.0x)**, first token 21.8 vs 66.2 s ([RESULTS section 60](docs/RESULTS.md)) |
+
+#### OpenCode
+
+| Step | What to do |
+|---|---|
+| Install | OpenCode CLI, or OpenCode Desktop (opencode.ai/download) |
+| Connect | `python3 bin/moe_cache.py connect opencode --write` (or **Connect OpenCode** on the control page): adds a `moe-cache` provider to `opencode.json` (or `opencode.jsonc`) and selects it; OpenCode Desktop reads the same folder |
+| Use | `opencode`, `opencode web`, or OpenCode Desktop; pick `moe-cache/<model>` in the model list |
+| Measured | same PC and model, a recorded OpenCode bug-fix session: **73.4 s with moe-cache vs 174.8 s stock (2.4x)**, first token 38.6 vs 116.8 s ([RESULTS section 60](docs/RESULTS.md)) |
+
+Claude Code: `python3 bin/moe_cache.py connect claude` prints the settings (`--write` puts them in this folder's `.claude/settings.local.json`). Keep each agent's own context limit below the server's, and set things up before a session: details, desktop apps and on-demand in [docs/AGENTS.md](docs/AGENTS.md).
 
 ### Which model?
 
