@@ -33,6 +33,13 @@ jobs:
           g++ -std=c++17 -O1 -Wall -Werror -Isrc -Ithird_party/ggml-v3/include -Ithird_party/ggml-v3/src tests/rebalance_test.cpp -o /tmp/rebalance_test -lpthread && /tmp/rebalance_test   # BO-2 choice logic
           g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/peers_test.cpp -o /tmp/peers_test && /tmp/peers_test    # N2: peer registry rules (fake peers)
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/sigbus_test.cpp -o /tmp/sigbus_test && /tmp/sigbus_test    # A1-04: a model file cut short while mapped says what happened
+          # 2026-11-03 audit fixes: each is a standalone program (no ggml, no model)
+          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check lend profile_path; do
+            g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
+          done
+          for t in wake_pipe reserve_msg; do      # these two include platform.h without -Wextra
+            g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
+          done
 
       - name: "Model-free tests (fake servers; the list lives in tools/run_quick_tests.sh - py_compile, every tests/*_test.py, apply_llama_patches_test.sh)"
         env:
