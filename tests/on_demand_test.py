@@ -331,6 +331,41 @@ except SystemExit as e:
 check("--remove of the default is refused (replace it instead)", rm and "replaced, not removed" in rm, rm)
 check("the added model keeps the full llama-server path (autostart has no shell PATH)", all(e["env"].get("LLAMA_SERVER") == sys.executable for e in od.load_choice()["extra"]), od.load_choice()["extra"])
 check("--remove forgets an added model", od.on_demand(["--remove", "Other-Coder"]) == 0 and od.load_choice()["extra"] == [], od.load_choice())
+# AUD-029: a user --api-key is not written to on-demand.json (0600, folder 0700), not put on the launcher's argv, and still the listener's key
+DUMP = os.path.join(TMP, "plan_dump.json")
+od.LAUNCHER = [sys.executable, "-c", "import json,os,sys; json.dump({'argv': sys.argv, 'key': os.environ.get('LLAMA_API_KEY')}, open(sys.argv[1], 'w'))", DUMP]
+SECRET = "sekrit-key-0123456789"
+os.chmod(mc.CACHE_DIR, 0o755)                 # an existing folder with default permissions
+rc = od.on_demand([choice["model"], "--ram", "8", "--status", "--", "--api-key", SECRET])      # --status: remember it, do not listen
+saved = open(od.CHOICE_FILE).read()
+dump = json.load(open(DUMP))
+check("api-key: on-demand.json does not contain the key", rc == 0 and SECRET not in saved and "--api-key" not in saved, saved)
+check("api-key: the other options are kept", json.loads(saved)["args"][:2] == ["--ram", "8"], saved)
+if os.name != "nt":
+    check("api-key: on-demand.json is mode 0600", (os.stat(od.CHOICE_FILE).st_mode & 0o777) == 0o600, oct(os.stat(od.CHOICE_FILE).st_mode))
+    check("api-key: the cache folder is tightened to 0700", (os.stat(mc.CACHE_DIR).st_mode & 0o777) == 0o700, oct(os.stat(mc.CACHE_DIR).st_mode))
+    check("api-key: the key file is mode 0600", (os.stat(od.CUSTOM_KEY_FILE).st_mode & 0o777) == 0o600)
+check("api-key: not in the --plan-json subprocess argv, given by environment", SECRET not in " ".join(dump["argv"]) and dump["key"] == SECRET, dump)
+check("api-key: no leftover temp files", not [f for f in os.listdir(mc.CACHE_DIR) if f.endswith(".tmp")], os.listdir(mc.CACHE_DIR))
+bk = od.Backend(od.load_choice())
+check("api-key: the listener still uses the given key", bk.key == SECRET and SECRET not in " ".join(bk.cmd(1234)), bk.key)
+od.on_demand([choice["model"], "--ram", "8", "--status"])
+check("api-key: a new default without a key forgets the custom key", not os.path.exists(od.CUSTOM_KEY_FILE) and od.Backend(od.load_choice()).key == KEY)
+
+# AUD-039: % and $ in a path or XDG_CACHE_HOME are doubled in the systemd unit (otherwise %h / $HOME would be expanded)
+_x = os.environ["XDG_CACHE_HOME"]
+os.environ["XDG_CACHE_HOME"] = "/home/a%h/b$HOME"
+try:
+    unit = od.unit_text()
+finally:
+    os.environ["XDG_CACHE_HOME"] = _x
+check("systemd unit: % and $ doubled", "a%%h/b$$HOME" in unit and "a%h/b$HOME" not in unit.replace("a%%h/b$$HOME", ""), unit)
+# AUD-045: no fixed .tmp name (a per-process name, created exclusively)
+_tmp = "%s.%d.tmp" % (od.CHOICE_FILE, os.getpid())
+os.symlink(os.path.join(TMP, "victim"), _tmp) if hasattr(os, "symlink") and os.name != "nt" else None
+od.save_choice({"model": "m", "args": []})
+check("save_choice: a planted link at the temp name is not followed", not os.path.exists(os.path.join(TMP, "victim")) and not os.path.islink(od.CHOICE_FILE))
+
 if _ls_env is None: os.environ.pop("LLAMA_SERVER", None)
 else: os.environ["LLAMA_SERVER"] = _ls_env
 od.LAUNCHER = real_launcher

@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
+from moe_cache_wintool import win_tool  # noqa: E402
 
 WINDOWS = mc.WINDOWS
 # server-type probes that llama-server answers with 404: answered the same while the model is stopped, so a probe does not load it
@@ -27,6 +28,7 @@ NOT_FOUND_PROBES = ("/api/v1/models", "/api/tags", "/v1/props", "/version")
 CHOICE_FILE = os.path.join(mc.CACHE_DIR, "on-demand.json")
 LOG_FILE = os.path.join(mc.CACHE_DIR, "on-demand.log")       # the launcher's and llama-server's output
 PID_FILE = os.path.join(mc.CACHE_DIR, "on-demand.pid")
+CUSTOM_KEY_FILE = os.path.join(mc.CACHE_DIR, "on-demand.key")      # the --api-key given with the default model (mode 0600)
 LISTENER_LOG = os.path.join(mc.CACHE_DIR, "on-demand-listener.log")   # the listener's own lines when it has no console (Windows)
 LAUNCHER = [mc.python_cmd(), os.path.join(mc.HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
 UNIT = "moe-cache-on-demand.service"
@@ -47,11 +49,52 @@ def load_choice():
         return None
 
 
-def save_choice(c):
+def private_dir():
+    """The cache folder, mode 0700 (makedirs' mode does not tighten a folder that already exists; AUD-029)."""
     os.makedirs(mc.CACHE_DIR, mode=0o700, exist_ok=True)
-    with open(CHOICE_FILE + ".tmp", "w", encoding="utf-8") as f:
-        json.dump(c, f, indent=2)
-    os.replace(CHOICE_FILE + ".tmp", CHOICE_FILE)
+    if not WINDOWS:
+        try:
+            os.chmod(mc.CACHE_DIR, 0o700)
+        except OSError:
+            pass
+
+
+def write_private(path, text):
+    """Write `text` to `path` with mode 0600 from the first byte: a per-process temp name created with O_EXCL (never a fixed name another
+    process or a planted link could use; AUD-029, AUD-045), then an atomic replace."""
+    private_dir()
+    tmp = "%s.%d.tmp" % (path, os.getpid())
+    try:
+        os.unlink(tmp)               # a leftover of a crashed run with the same pid
+    except OSError:
+        pass
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def save_choice(c):
+    write_private(CHOICE_FILE, json.dumps(c, indent=2))
+
+
+def save_custom_key(k):
+    """A user-given --api-key is kept here (mode 0600), not in on-demand.json and not in any argument list (AUD-029)."""
+    write_private(CUSTOM_KEY_FILE, k + "\n")
+
+
+def custom_key():
+    try:
+        return open(CUSTOM_KEY_FILE, encoding="utf-8").read().strip()
+    except OSError:
+        return ""
 
 
 def model_alias(model, args):
@@ -109,7 +152,7 @@ class Backend:
         self.release, self.released = release_min * 60, False      # N3: earlier idle stage, the cache's RAM goes back but the server stays
         self.args = list(choice.get("args", []))
         self.share_args, self.llama_args = [], []        # set by Pool.go_concurrent (MM1)
-        self.key = mc.take_api_key_from_args(self.args) or mc.stored_key(create=True)       # a configured custom key is THE key (listener and backend)
+        self.key = mc.take_api_key_from_args(self.args) or custom_key() or mc.stored_key(create=True)       # a configured custom key is THE key (listener and backend)
         self.lock = threading.Lock()             # held while starting / stopping
         self.count = threading.Lock()
         self.p, self.port, self.state, self.active, self.last, self.t0 = None, None, "idle", 0, time.time(), 0.0
@@ -627,7 +670,8 @@ def pythonw():
 
 
 def unit_text():
-    q = lambda s: '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'      # systemd quoting, for paths with spaces
+    # systemd quoting, for paths with spaces; % is a specifier and $ a variable in ExecStart= / Environment=, so both are doubled (AUD-039)
+    q = lambda s: '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%").replace("$", "$$") + '"'
     env = "".join(f"Environment={q(k + '=' + os.environ[k])}\n" for k in ("XDG_CACHE_HOME",) if os.environ.get(k))
     return ("[Unit]\nDescription=moe-cache on-demand endpoint for coding agents (starts the model on the first request, stops it when idle)\n"
             "StartLimitIntervalSec=120\nStartLimitBurst=5\n\n"
@@ -645,7 +689,7 @@ def install_autostart(dry=False):
         if dry:
             print(f"{link} -> {env['MC_PY']} \"{env['MC_SCRIPT']}\" on-demand"); return 0
         os.makedirs(os.path.dirname(link), exist_ok=True)
-        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], env=env, capture_output=True, text=True, timeout=60)
+        r = subprocess.run([win_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command", ps], env=env, capture_output=True, text=True, timeout=60)
         if r.returncode or not os.path.isfile(link):
             raise SystemExit(f"could not create the Startup shortcut {link}: {(r.stderr or r.stdout).strip()[-300:]}")
         say(f"autostart: {link} (runs at every login, no admin rights needed)")
@@ -717,7 +761,7 @@ def stop_running():
     if not pid:
         return False
     if WINDOWS:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        subprocess.run([win_tool("taskkill"), "/PID", str(pid), "/T", "/F"], capture_output=True)
     else:
         os.kill(pid, signal.SIGTERM)
     say(f"on-demand: stopped the listener (PID {pid})")
@@ -811,10 +855,11 @@ def on_demand(argv):
         if not os.path.isfile(model):
             raise SystemExit(f"model file not found: {a.model}")
         args = rest + extra
+        ukey = mc.take_api_key_from_args(args)       # AUD-029: the key goes to a 0600 file and the environment, never into on-demand.json or an argument list
         env = {k: os.environ[k] for k in ("LLAMA_SERVER", "MOE_CACHE_LIB") if os.environ.get(k)}   # autostart has no shell environment
         # check the options now (the launcher's plan, --plan-json, reads the model's header and refuses what it would refuse at start) rather than on the first agent request
         r = subprocess.run(LAUNCHER + [model, "--agent", "--plan-json", "--port", "1"] + args, capture_output=True, text=True,
-                           env=dict(os.environ, **env), timeout=600)
+                           env=dict(os.environ, **dict(env, **({"LLAMA_API_KEY": ukey} if ukey else {}))), timeout=600)
         if r.returncode:
             raise SystemExit("the launcher refused these options:\n" + (r.stderr or r.stdout).strip()[-1500:])
         # the dry run does not start llama-server: check it exists now, not at the first agent request (a 503 then; audit 2026-10-29 A1), and
@@ -841,6 +886,13 @@ def on_demand(argv):
             return 0
         else:
             old = c or {}
+            if ukey:
+                save_custom_key(ukey)
+            else:
+                try:
+                    os.unlink(CUSTOM_KEY_FILE)       # a new default without --api-key: the earlier custom key no longer applies
+                except OSError:
+                    pass
             c = {"model": model, "args": args, "env": env, "port": a.port or old.get("port", 8080), "idle": a.idle or old.get("idle", 15),
                  "idle_release": old.get("idle_release", 5) if a.idle_release is None else a.idle_release}
             save_choice(c)
