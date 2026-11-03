@@ -39,7 +39,8 @@ void remove_crash_report();
 #include "mc_state_times.h"
 #include "mc_state_prefetch.h"
 #include "mc_state_budget.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t {
+#include "mc_state_profile_members.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -208,17 +209,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
     uint64_t cls_promotions = 0, cls_demotions = 0;     // touches that moved a node to a higher / lower class list
     int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
 
-    // usage profile and warm start
-    std::string profile_path;          // learn here and warm start from it
-    std::string warm_path;             // warm start only
-    bool   preload_on = false;
-    bool   preload_done = false;
-    double preload_frac = -1.0;        // < 0: everything if it fits, else 0.7
-    double profile_decay = 0.5;
-    uint64_t fingerprint = 0;
-    usage_t learned;
-    std::vector<std::vector<double>> session;   // [layer][expert] picks of this run
-    uint64_t groups_since_save = 0;
     std::mutex mu;
 
     std::atomic<uint64_t> hits{0}, misses{0}, bytes{0}, groups{0}, ops{0}, graphs{0};
