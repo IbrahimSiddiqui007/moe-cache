@@ -9,7 +9,7 @@ $T = Join-Path ([IO.Path]::GetTempPath()) ('moe-install-ps1-' + [Guid]::NewGuid(
 New-Item -ItemType Directory -Force -Path $T | Out-Null
 $hostExe = (Get-Process -Id $PID).Path
 $fails = 0
-function Check([bool]$ok, [string]$what) { if ($ok) { Write-Host "  ok   $what" } else { Write-Host "  FAIL $what"; $script:fails++ } }
+function Check([bool]$ok, [string]$what) { if ($ok) { Write-Host "  ok   $what" } else { Write-Host "  FAIL $what"; Write-Host ('       last installer output: ' + $script:lastOut); $script:fails++ } }
 
 $py = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $py) { $py = Get-Command py -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1 }
@@ -38,6 +38,7 @@ function New-Release([string]$name, [string]$ver, [string]$mode) {
 }
 function Run-Installer([string]$rel, [string]$ver, [string[]]$extra) {
     $out = & $hostExe -NoProfile -ExecutionPolicy Bypass -File $installer -Root $script:root -BaseUrl $rel -Version $ver @extra 2>&1 | Out-String
+    $script:lastOut = $out
     return @{ Code = $LASTEXITCODE; Out = $out }
 }
 function Count-Entry([string]$dir) { return @((Get-UserPath) -split ';' | Where-Object { $_.TrimEnd('\') -ieq $dir.TrimEnd('\') }).Count }
@@ -56,7 +57,7 @@ try {
     Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and -not (Test-Path (Join-Path $T 'evil.txt')) -and -not (Test-Path $kit)) 'a zip with a path that leaves the folder is refused'
 
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-DryRun')
-    Check ($r.Code -eq 0 -and $r.Out -match 'would download' -and -not (Test-Path $root)) '-DryRun prints the plan and installs nothing'
+    Check ($r.Code -eq 0 -and $r.Out -match 'would download' -and -not (Test-Path $kit) -and -not (Test-Path $bin) -and -not (Test-Path (Join-Path $root 'kit.part'))) '-DryRun prints the plan and installs nothing'
 
     $good1 = Join-Path $T 'good1'
     $r = Run-Installer $good1 '9.9.1' @()

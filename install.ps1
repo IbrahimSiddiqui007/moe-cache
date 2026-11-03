@@ -195,7 +195,7 @@ function Install-MoeCache {
     [void](New-Item -ItemType Directory -Force -Path $bin)
     $cmd = @(
         '@echo off',
-        $Marker + ' (remove: install.ps1 -Uninstall)',
+        ($Marker + ' (remove: install.ps1 -Uninstall)'),
         'setlocal',
         'set "KIT=%~dp0..\kit"',
         'set "PY=%MOE_CACHE_PYTHON%"',
