@@ -48,7 +48,8 @@ void remove_crash_report();
 #include "mc_state_livestats.h"
 #include "mc_state_scan.h"
 #include "mc_state_tables.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t {
+#include "mc_state_lend.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_lend_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -147,10 +148,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
             update_ws_min();             // the first graph after an idle release holds the experts in RAM again (no-op on Linux)
         }
     }
-    // idea P20 (MOE_CACHE_PREFILL_LEND_MIB=N, default 0 = off): while long prompt batches run, the expert cache gives N MiB back to the system (the cache is cut by N and
-    // the surplus evicted), and takes them back at the first small (decode) graph
-    size_t lent_bytes = 0;
-    size_t lent_budget = 0;                             // the budget right after the lend (a cut by tune() meanwhile is not given back twice, AUD-021)
     void prefill_lend(int64_t max_tok) {
         static const size_t lend = getenv("MOE_CACHE_PREFILL_LEND_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_PREFILL_LEND_MIB"))) << 20 : 0;
         if (!lend) {
