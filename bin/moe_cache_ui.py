@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
 import moe_cache_pick as picker  # noqa: E402
+import moe_cache_download as dl  # noqa: E402
 from moe_cache_wintool import win_tool  # noqa: E402
 
 HERE = mc.HERE
@@ -63,6 +64,28 @@ def size_of(path):
         return 0
 
 
+_MTP_INFO = {}
+
+
+def mtp_info(path):
+    """GUI-011: does this model have an MTP head? {"head": layers with blk.N.nextn.* tensors in the model's own files, "declared": the header's
+    nextn_predict_layers, "beside": the name of a separate mtp-*.gguf in the same folder or None}. The launcher (moe_cache.mtp_args) reads only the
+    model's own file, so "beside" is shown but is not used. Kept per file, size and time (reads the GGUF header); None when unreadable."""
+    try:
+        st = os.stat(path)
+        k = (os.path.abspath(path), st.st_size, st.st_mtime_ns)
+        if k not in _MTP_INFO:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import mtp_layers
+            head, declared = mtp_layers(path)
+            d = os.path.dirname(path)
+            beside = next((f for f in sorted(os.listdir(d)) if f.lower().startswith("mtp-") and f.lower().endswith(".gguf")), None) if os.path.isdir(d) else None
+            _MTP_INFO[k] = {"head": head, "declared": declared, "beside": beside}
+        return _MTP_INFO[k]
+    except Exception:
+        return None
+
+
 def scan_folder(folder, depth=4):
     """GGUF models below `folder`: split models once (their first part), projector files (mmproj) and MTP / draft heads (not models) left out."""
     out = []
@@ -89,7 +112,7 @@ def scan_folder(folder, depth=4):
             p = os.path.join(root, f)
             if picker.is_draft_head(p):
                 continue
-            out.append({"path": p, "name": re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", f), "size": size_of(p), "quant": quant_of(f), "source": folder})
+            out.append({"path": p, "name": re.sub(r"(-\d{5}-of-\d{5})?\.gguf$", "", f), "size": size_of(p), "quant": quant_of(f), "source": folder, "mtp": mtp_info(p)})
     return out
 
 
@@ -97,7 +120,7 @@ def scan_ollama(root):
     out = []
     for name, p in picker.ollama_manifests(root):
         out.append({"path": p, "name": name.replace("library/", "", 1) if name.startswith("library/") else name, "size": os.path.getsize(p),
-                    "quant": header_quant(p), "source": "Ollama (" + root + ")"})
+                    "quant": header_quant(p), "source": "Ollama (" + root + ")", "mtp": mtp_info(p)})
     return out
 
 
@@ -1885,6 +1908,7 @@ def open_page(url):
 class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
+    downloads = None
     token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in memory
     server_version = "moe-cache-ui"
     timeout = 30                # a client that sends nothing does not hold a thread forever
@@ -1961,6 +1985,12 @@ class Handler(BaseHTTPRequestHandler):
                 uses = [q["use"]] if q.get("use") in picker.USES else list(picker.USES)
                 return self.send(200, {"machine": spec, "lines": picker.spec_lines(spec), "uses": picker.USES,
                                        "recommendations": [picker.recommend(spec, x, q.get("model") or None) for x in uses], "pick": self.store.saved.get("pick")})
+            if u.path == "/api/downloads":                 # GUI-008: the catalogue with what is on disk, free disk and the running / last download
+                folder = self.download_folder(q.get("folder"))
+                return self.send(200, {"folders": self.store.folders(), "folder": folder, "job": self.downloads.status(),
+                                       "models": [dl.describe(k, e, folder) for k, e in dl.catalogue().items()]})
+            if u.path == "/api/download":
+                return self.send(200, self.downloads.status())
             if u.path == "/api/models":
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(q.get("fresh") == "1")})
             if u.path == "/api/plan":
@@ -2046,6 +2076,10 @@ class Handler(BaseHTTPRequestHandler):
                     lst.remove(f)
                 self.store.save("folders")
                 return self.send(200, {"folders": self.store.folders(), "models": self.store.list_models(True)})
+            if self.path == "/api/download/start":           # GUI-008: only the files the owner ticked (they must be exactly the missing ones)
+                return self.send(200, self.downloads.start(str(body.get("id") or ""), self.download_folder(body.get("folder")), body.get("files")))
+            if self.path == "/api/download/cancel":
+                return self.send(200, self.downloads.cancel())
             if self.path == "/api/llama":                    # "llama.cpp not found": the path the user typed (checked with --version) is remembered
                 r, v = self.store.set_llama(body.get("path"))
                 return self.send(200, {"path": r, "version": v, "llama_found": True})
@@ -2177,6 +2211,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(502, {"error": f"llama-server did not answer: {e}"})
         finally:
             conn.close()
+
+    def download_folder(self, f):
+        """The folder a download goes to: one of the page's model folders (the first, ~/models, by default); never a path the request makes up."""
+        folders = self.store.folders()
+        if f:
+            f = os.path.abspath(os.path.expanduser(str(f)))
+            if f not in [os.path.abspath(x) for x in folders]:
+                raise ValueError("folder: one of the model folders of this page")
+            return f
+        return os.path.abspath(folders[0])
 
     def known(self, path):
         """Only models the page listed can be planned or started."""
@@ -2352,7 +2396,9 @@ def make_server(port=8070, ls=None, token=None):
     store = Store(ls or mc.default_llama_server())
     if not ls and (line := mc.ls_found_line(store.ls)):
         mc.say(line)
-    h = type("H", (Handler,), {"store": store, "runner": Runner(), "token": token or secrets.token_urlsafe(24)})
+    downloads = dl.Downloads()
+    downloads.on_change = lambda j: setattr(store, "models_at", 0)          # a finished download shows in the model list at once
+    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "token": token or secrets.token_urlsafe(24)})
     class _Srv(ThreadingHTTPServer):
         # http.server sets SO_REUSEADDR; on Windows that lets a second instance bind the same port (a double-clicked moe-cache.bat twice gave two competing
         # managers on 8070 and "forbidden" pages from the wrong token). Linux needs it to restart on a port in TIME_WAIT, Windows does not.
