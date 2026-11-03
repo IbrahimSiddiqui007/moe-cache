@@ -32,6 +32,7 @@ struct state_t {
     std::vector<std::string> shard_paths;
     std::vector<plat::file_t> fds_buf;          // buffered (no O_DIRECT) handles, opened only if a direct read keeps failing
     std::mutex fds_buf_mu;
+    std::vector<std::atomic<bool>> direct_broken;   // per file: direct reads fail on this file system (EINVAL/EOPNOTSUPP): buffered reads from then on (AUD-011)
     int    test_read_delay_us = 0;              // MOE_CACHE_TEST_READ_DELAY_US=N: test switch, background expert reads start N us late
     int    fault_every = 0;                     // MOE_CACHE_FAULT_EVERY=N: test switch, every Nth expert read fails all its direct attempts
     bool   test_poison = false;                 // MOE_CACHE_TEST_POISON_READS=1: test switch, a read first fills what it will write with 0xFF and waits
@@ -517,6 +518,7 @@ struct state_t {
             shard_paths.push_back(shards[si]);
             fds_buf.push_back(plat::file_t());
         }
+        direct_broken = std::vector<std::atomic<bool>>(fds.size());
         pack_try_open();
 #ifdef _WIN32
         // Windows default (idea I47; MOE_CACHE_WIN_VIEW=0 goes back to private memory): keep the cached experts in read-only views of the model files.

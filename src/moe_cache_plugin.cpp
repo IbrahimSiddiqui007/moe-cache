@@ -40,6 +40,7 @@
 #include "platform.h"
 #include "mc_e1_sample.h"
 #include "mc_args.h"
+#include "mc_retry.h"
 #include "mc_tested.h"
 #include "mc_rebalance.h"
 #include "mc_peers.h"

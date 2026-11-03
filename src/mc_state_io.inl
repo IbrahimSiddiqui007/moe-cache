@@ -800,32 +800,25 @@
         }
         // each piece: a read with retries; if it keeps failing, one more try through a normal buffered read; then stop (never serve wrong data)
         const bool inject_job = fault_every > 0 && (++fault_ctr % (uint64_t) fault_every) == 0;   // test switch: this read fails every direct attempt
-        auto read_all = [&](const plat::file_t & rfd, bool inject, char * buf, size_t want, size_t need, uint64_t foff) {
-            size_t done = 0;
-            int retries = 0;
-            while (done < need) {
-                ptrdiff_t got;
+        auto read_all = [&](const plat::file_t & rfd, bool inject, char * buf, size_t want, size_t need, uint64_t foff, bool * unsupported) {
+            return mcretry::read_fully([&](size_t done) -> ptrdiff_t {
                 if (inject && inject_job) {
-                    got = -1;
                     errno = EIO;
-                } else {
-                    got = plat::file_pread(rfd, buf + done, want - done, foff + done);
+                    return -1;
                 }
-                if (got <= 0) {
-                    if (++retries <= 3) {
-                        plat::sleep_ms(20);
-                        continue;
-                    }
-                    return false;
-                }
-                done += (size_t) got;
-            }
-            return true;
+                return plat::file_pread(rfd, buf + done, want - done, foff + done);
+            }, plat::sleep_ms, need, mcretry::kRetries, mcretry::kDelayMs, inject, unsupported);
         };
         // want: aligned length asked for; need: bytes that must arrive (the end of the file can cut the last aligned page short)
         auto read_piece = [&](char * buf, size_t want, size_t need, uint64_t foff) {
-            if (read_all(fds[j.fdi], true, buf, want, need, foff)) {
-                return;
+            if (!direct_broken[(size_t) j.fdi].load(std::memory_order_relaxed)) {
+                bool unsupported = false;
+                if (read_all(fds[j.fdi], true, buf, want, need, foff, &unsupported)) {
+                    return;
+                }
+                if (unsupported) {      // the file system accepted open(O_DIRECT) but refuses the read: do not pay the failed read for every piece
+                    direct_broken[(size_t) j.fdi].store(true, std::memory_order_relaxed);
+                }
             }
             plat::file_t bfd;
             {
@@ -835,7 +828,8 @@
                 }
                 bfd = fds_buf[j.fdi];
             }
-            if (!bfd.ok() || !read_all(bfd, false, buf, need, need, foff)) {
+            bool unsupported_unused = false;
+            if (!bfd.ok() || !read_all(bfd, false, buf, need, need, foff, &unsupported_unused)) {
                 fprintf(stderr, "moe-cache: read failed at offset %llu of %s: %s (disk error, or the model file changed after loading)\n",
                         (unsigned long long) foff, shard_paths[j.fdi].c_str(), plat::last_error().c_str());
                 abort();
