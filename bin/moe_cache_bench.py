@@ -9,6 +9,7 @@ import argparse, contextlib, datetime, io, json, os, platform, re, socket, subpr
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import moe_cache as mc  # noqa: E402
+import moe_cache_record as rec  # noqa: E402
 
 SCHEMA = 1
 DECODE_PROMPT = "Write a short story about a lighthouse keeper who finds a message in a bottle."
@@ -148,6 +149,8 @@ def run_one(model, mode, a, port):
     lines = []
     threading.Thread(target=lambda: [lines.append(l.decode(errors="replace").rstrip()) for l in iter(p.stdout.readline, b"")], daemon=True).start()
     res = {"mode": mode, "error": ""}
+    smp = rec.Sampler(p.pid, log_lines=lines)         # VRAM, process RAM, free RAM, CPU % while this run goes on (the launcher's tree: llama-server is its child)
+    smp.start()
     try:
         while not mc.healthy(port):
             if p.poll() is not None:
@@ -158,6 +161,7 @@ def run_one(model, mode, a, port):
                 return res
             time.sleep(1)
         res["load_s"] = round(time.time() - t0, 1)
+        t_req = time.time()
         url = f"http://127.0.0.1:{port}/completion"
         long_prompt = "Summarise the following text in five bullet points.\n" + PARA * max(1, a.prompt_tokens // 37)
         st, body = mc.http(url, {"prompt": long_prompt, "n_predict": 1, "temperature": 0, "cache_prompt": False}, timeout=3600)
@@ -170,6 +174,7 @@ def run_one(model, mode, a, port):
             return res
         j = json.loads(body); tm = j.get("timings", {})
         res["decode"], res["text"] = tm.get("predicted_per_second"), j.get("content", "")
+        res["wall_s"] = round(time.time() - t_req, 1)
         res["ttft_s"] = round(tm.get("prompt_ms", 0) / 1000, 2) if tm.get("prompt_ms") is not None else round(time.time() - t1, 2)
         if getattr(a, "scenario", "") == "agent":
             res.update(agent_turns(url, a))
@@ -191,6 +196,8 @@ def run_one(model, mode, a, port):
         res["error"] = f"{type(e).__name__}: {e}"
         return res
     finally:
+        res["monitor"] = smp.stop()
+        res["log_facts"] = {"lines": [l for l in lines if re.search(r"n_layer\s*=|offloaded \d+/\d+|buffer size\s*=", l)][:60]}
         if p.poll() is None:
             p.terminate()
             try:
@@ -314,8 +321,32 @@ def report_md(d):
              ]
     if d["notes"]:
         lines += ["", "Notes:"] + [f"- {n}" for n in d["notes"]]
+    if d.get("record"):         # the benchmark record (docs/BENCHMARK_TEMPLATE.md): the card's detail lines, then the whole record for the issue form
+        lines += ["", "Details (benchmark card format):", ""] + ["- " + l for l in rec.details_lines(d["record"])]
+        gaps = rec.not_recorded_fields(d["record"])
+        if gaps:
+            lines += ["", f"Not recorded on this machine ({len(gaps)} fields): " + ", ".join(g.replace("$.", "") for g in gaps[:12]) + (" ..." if len(gaps) > 12 else "")]
+        lines += ["", "<details><summary>Record (JSON)</summary>", "", "```json", json.dumps({k: v for k, v in d["record"].items() if k != "notes"}, indent=1, ensure_ascii=False), "```", "", "</details>"]
     lines += ["", "_No prompts, answers, user name, host name or folder names are in this report. Nothing was uploaded._"]
     return "\n".join(lines) + "\n"
+
+
+def build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, conditions):
+    """The benchmark record for this bench-report (docs/BENCHMARK_TEMPLATE.md): machine, software, model, settings, conditions, protocol, per-run metrics."""
+    env = rec.collect_environment(a.model, None, listing=devices, version_line=llama, backend=d["backend"], identity={"quant": None if d["model"].get("quant") in (None, "-") else d["model"]["quant"]}, model_url=a.model_url)
+    env["software"]["moe_cache_version"] = mc.VERSION
+    moe_run = next((r for r in runs if r["mode"] == "moe-cache" and r.get("log_facts")), None) or next((r for r in runs if r.get("log_facts")), {})
+    st = rec.settings_from(plan_line, env={}, log_lines=(moe_run.get("log_facts") or {}).get("lines"),
+                           extra={"stock_command_line": stock_line, "fast_flag": "yes" if a.fast else "no"})
+    entries = [rec.run_entry(r["mode"], i + 1, r, r.get("monitor")) for i, r in enumerate(runs)]
+    long_prompt = "Summarise the following text in five bullet points.\n" + PARA * max(1, a.prompt_tokens // 37)
+    ntok = [r["prompt_tokens"] for r in runs if isinstance(r.get("prompt_tokens"), int)]
+    proto = {"arms": ["stock", "moe-cache"], "order": "ABBA", "runs_per_arm": 2 * a.pairs, "prompt_set": "bench-report/chat-v1",
+             "prompt_sha256": rec.sha256_text(long_prompt + "\n" + DECODE_PROMPT)[:16], "prompt_tokens": ntok[0] if ntok else a.prompt_tokens,
+             "n_predict": a.tokens, "temperature": 0.0, "seed": 42, "sampler": "greedy (temperature 0, seed 42)"}
+    cmd = "python bin/moe_cache.py bench-report " + os.path.basename(a.model) + " " + " ".join(x for x in argv if x != a.model and not x.endswith(".gguf"))
+    return rec.assemble(env, st, conditions, proto, entries, notes=d["notes"],
+                        reproduce={"commands": [cmd.strip()], "kit": "https://github.com/IbrahimSiddiqui007/moe-cache/releases", "model_url": a.model_url or rec.NR, "prompt_file": "built into bin/moe_cache_bench.py (PARA, DECODE_PROMPT)"})
 
 
 def bench_report(argv):
@@ -335,6 +366,9 @@ def bench_report(argv):
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"], help="measure an approximate mode (identity is then n/a)")
     ap.add_argument("--scenario", choices=["chat", "agent"], default="chat", help="agent: also a 3-turn conversation with --gap seconds between turns (coding agents)")
     ap.add_argument("--gap", type=float, default=5.0, help="seconds between agent turns (a tool running)")
+    ap.add_argument("--baseline", default="", help="the stock-speed check you ran before (e.g. 'PASS 49.4 tok/s'); goes into the record")
+    ap.add_argument("--other-programs", default="", help="what else was running (e.g. 'nothing'); goes into the record")
+    ap.add_argument("--model-url", default="", help="where the model file comes from (Hugging Face page); goes into the record")
     ap.add_argument("--port", type=int, default=8099)
     ap.add_argument("--load-timeout", type=int, default=1800)
     a = ap.parse_args(argv)
@@ -362,6 +396,7 @@ def bench_report(argv):
     notes, start = [], "WARM" if a.warm else "COLD"
     other = [x for x in a.flush_from.split(",") if x]
     runs = []
+    cond = rec.conditions_now(cold=None if a.warm else True if start == "COLD" else False, baseline=a.baseline, other_programs=a.other_programs)      # one second of CPU sampling; uptime, free RAM, VRAM in use, temperatures
     for i, mode in enumerate(order(a.pairs)):
         if not a.warm:
             ok_, why = ui.flush_model_cache(a.model, other)
@@ -394,7 +429,13 @@ def bench_report(argv):
          "model": model_section(a.model, size, ram_total),
          "plan": plan_summary(plan_line), "scenario": a.scenario, "gap": a.gap, "fits": "yes (forced)" if fits else "no", "prompt_tokens": a.prompt_tokens, "order": order(a.pairs),
          "summary": s_, "notes": notes, "stock_plan": plan_summary(stock_line),
-         "runs": [{k: v for k, v in r.items() if k != "text"} for r in runs]}
+         "runs": [{k: v for k, v in r.items() if k not in ("text", "log_facts")} for r in runs]}
+    try:
+        cond["file_cache"] = "cold" if start == "COLD" else "warm"
+        d["record"] = build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, cond)
+    except Exception as e:          # the record is an addition: a report without it is still a report
+        notes.append(f"benchmark record not built ({type(e).__name__}: {e})")
+        d["notes"] = notes
     scrub = scrubber()
     md = scrub(report_md(d))
     os.makedirs(a.out, exist_ok=True)

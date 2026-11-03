@@ -163,6 +163,8 @@ jobs:
         run: |
           python tests\bench_report_test.py
           if ($LASTEXITCODE -ne 0) { throw "bench_report_test failed" }
+          python tests\bench_record_test.py
+          if ($LASTEXITCODE -ne 0) { throw "bench_record_test failed" }
           $k = "$env:RUNNER_TEMP\kit\moe-cache-v0.0.0-ci-windows-x64"
           Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
           Push-Location $k

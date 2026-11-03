@@ -1,5 +1,7 @@
 # Share your numbers
 
+The report carries the full benchmark record (VRAM, RAM, CPU, settings, versions; fields and recipes in [BENCHMARK_TEMPLATE.md](BENCHMARK_TEMPLATE.md)). Anything the machine could not tell is written `not recorded`.
+
 One command measures stock llama.cpp and moe-cache on your machine and writes a report you paste into a GitHub issue. It takes 5-20 minutes, only
 measures (the report itself downloads, uploads and changes nothing; you need a model file, see "Get a model" in the README), and the report holds no prompts, answers, user name, host name or folder names.
 
@@ -37,6 +39,7 @@ comparable with the README rows.
 | cache hit rate | share of experts found in RAM; the rest were read from the drive |
 | tokens IDENTICAL / DIFFERENT | whether stock and moe-cache wrote the same answer. DIFFERENT can be normal when the two used different GPU/CPU splits (both plans are in the report); report it anyway |
 | COLD / WARM | whether the model was pushed out of the file cache before each run |
+| Details / Record (JSON) | the benchmark card's four lines (expert layers, context, VRAM and RAM peaks, CPU, versions) and the whole record; `not recorded` marks what this machine could not read |
 | Backend | the GPU backend of your llama.cpp (Vulkan, CUDA, ROCm, CPU only); please correct it in the issue if it says UNKNOWN |
 
 The runs go stock, moe-cache, moe-cache, stock (`--pairs 2` repeats that), so both sides see the same warm-up. Coding agents (OpenCode, Hermes, Claude Code): add `--scenario agent` for a 3-turn conversation with 5 s pauses (a tool running); the report then shows

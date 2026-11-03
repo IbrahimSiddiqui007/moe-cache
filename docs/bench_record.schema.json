@@ -1,0 +1,518 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/bench_record.schema.json",
+ "title": "moe-cache benchmark record",
+ "description": "One benchmark record (docs/BENCHMARK_TEMPLATE.md). Every field listed under `required` must be present; a value that was not recorded is the text \"not recorded\", never a guess. bin/moe_cache_record.py writes and validates it.",
+ "$defs": {
+  "num": {
+   "anyOf": [
+    {
+     "type": "number"
+    },
+    {
+     "const": "not recorded"
+    }
+   ]
+  },
+  "str": {
+   "anyOf": [
+    {
+     "type": "string"
+    },
+    {
+     "type": "number"
+    }
+   ]
+  }
+ },
+ "type": "object",
+ "required": [
+  "record_schema",
+  "created_utc",
+  "hardware",
+  "software",
+  "model",
+  "settings",
+  "conditions",
+  "protocol",
+  "runs",
+  "outputs",
+  "reproduce"
+ ],
+ "properties": {
+  "record_schema": {
+   "const": 1
+  },
+  "created_utc": {
+   "type": "string"
+  },
+  "hardware": {
+   "type": "object",
+   "required": [
+    "cpu_model",
+    "cpu_cores",
+    "cpu_threads",
+    "ram_gib",
+    "ram_type",
+    "ram_speed_mts",
+    "gpu_model",
+    "vram_mib",
+    "gpu_driver",
+    "os",
+    "os_build",
+    "power_plan",
+    "storage"
+   ],
+   "properties": {
+    "cpu_model": {
+     "$ref": "#/$defs/str"
+    },
+    "cpu_cores": {
+     "$ref": "#/$defs/num"
+    },
+    "cpu_threads": {
+     "$ref": "#/$defs/num"
+    },
+    "ram_gib": {
+     "$ref": "#/$defs/num"
+    },
+    "ram_type": {
+     "$ref": "#/$defs/str"
+    },
+    "ram_speed_mts": {
+     "$ref": "#/$defs/num"
+    },
+    "gpu_model": {
+     "$ref": "#/$defs/str"
+    },
+    "vram_mib": {
+     "$ref": "#/$defs/num"
+    },
+    "gpu_driver": {
+     "$ref": "#/$defs/str"
+    },
+    "os": {
+     "$ref": "#/$defs/str"
+    },
+    "os_build": {
+     "$ref": "#/$defs/str"
+    },
+    "power_plan": {
+     "$ref": "#/$defs/str"
+    },
+    "storage": {
+     "type": "object",
+     "required": [
+      "model",
+      "interface",
+      "drive"
+     ],
+     "properties": {
+      "model": {
+       "$ref": "#/$defs/str"
+      },
+      "interface": {
+       "$ref": "#/$defs/str"
+      },
+      "drive": {
+       "$ref": "#/$defs/str"
+      }
+     }
+    }
+   }
+  },
+  "software": {
+   "type": "object",
+   "required": [
+    "moe_cache_version",
+    "moe_cache_commit",
+    "plugin_file",
+    "plugin_sha256_prefix",
+    "llama_build",
+    "llama_commit",
+    "llama_backend",
+    "python"
+   ],
+   "properties": {
+    "moe_cache_version": {
+     "$ref": "#/$defs/str"
+    },
+    "moe_cache_commit": {
+     "$ref": "#/$defs/str"
+    },
+    "plugin_file": {
+     "$ref": "#/$defs/str"
+    },
+    "plugin_sha256_prefix": {
+     "$ref": "#/$defs/str"
+    },
+    "llama_build": {
+     "$ref": "#/$defs/num"
+    },
+    "llama_commit": {
+     "$ref": "#/$defs/str"
+    },
+    "llama_backend": {
+     "$ref": "#/$defs/str"
+    },
+    "python": {
+     "$ref": "#/$defs/str"
+    }
+   }
+  },
+  "model": {
+   "type": "object",
+   "required": [
+    "file",
+    "quant",
+    "size_gb",
+    "sha256_head16MiB",
+    "source_url"
+   ],
+   "properties": {
+    "file": {
+     "$ref": "#/$defs/str"
+    },
+    "quant": {
+     "$ref": "#/$defs/str"
+    },
+    "size_gb": {
+     "$ref": "#/$defs/num"
+    },
+    "sha256_head16MiB": {
+     "$ref": "#/$defs/str"
+    },
+    "source_url": {
+     "$ref": "#/$defs/str"
+    },
+    "sha256_full": {
+     "$ref": "#/$defs/str"
+    }
+   }
+  },
+  "settings": {
+   "type": "object",
+   "required": [
+    "command_line",
+    "ctx",
+    "ubatch",
+    "batch",
+    "n_cpu_moe",
+    "gpu_expert_layers",
+    "kv_type_k",
+    "kv_type_v",
+    "mtp",
+    "fast_flag",
+    "threads",
+    "environment"
+   ],
+   "properties": {
+    "command_line": {
+     "$ref": "#/$defs/str"
+    },
+    "ctx": {
+     "$ref": "#/$defs/num"
+    },
+    "ubatch": {
+     "$ref": "#/$defs/num"
+    },
+    "batch": {
+     "$ref": "#/$defs/num"
+    },
+    "n_cpu_moe": {
+     "$ref": "#/$defs/num"
+    },
+    "gpu_expert_layers": {
+     "$ref": "#/$defs/num"
+    },
+    "kv_type_k": {
+     "$ref": "#/$defs/str"
+    },
+    "kv_type_v": {
+     "$ref": "#/$defs/str"
+    },
+    "mtp": {
+     "$ref": "#/$defs/str"
+    },
+    "fast_flag": {
+     "$ref": "#/$defs/str"
+    },
+    "threads": {
+     "$ref": "#/$defs/num"
+    },
+    "n_layer": {
+     "$ref": "#/$defs/num"
+    },
+    "ngl": {
+     "$ref": "#/$defs/num"
+    },
+    "flash_attn": {
+     "$ref": "#/$defs/str"
+    },
+    "environment": {
+     "type": "object",
+     "additionalProperties": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "conditions": {
+   "type": "object",
+   "required": [
+    "uptime_h",
+    "baseline_check",
+    "other_programs",
+    "file_cache"
+   ],
+   "properties": {
+    "uptime_h": {
+     "$ref": "#/$defs/num"
+    },
+    "baseline_check": {
+     "$ref": "#/$defs/str"
+    },
+    "other_programs": {
+     "$ref": "#/$defs/str"
+    },
+    "file_cache": {
+     "$ref": "#/$defs/str"
+    },
+    "system_cpu_busy_before_pct": {
+     "$ref": "#/$defs/num"
+    },
+    "system_ram_free_before_mib": {
+     "$ref": "#/$defs/num"
+    },
+    "vram_in_use_before_mib": {
+     "$ref": "#/$defs/num"
+    },
+    "cpu_temp_c": {
+     "$ref": "#/$defs/num"
+    },
+    "gpu_temp_c": {
+     "$ref": "#/$defs/num"
+    }
+   }
+  },
+  "protocol": {
+   "type": "object",
+   "required": [
+    "arms",
+    "order",
+    "runs_per_arm",
+    "prompt_set",
+    "prompt_sha256",
+    "prompt_tokens",
+    "n_predict",
+    "temperature",
+    "seed",
+    "sampler"
+   ],
+   "properties": {
+    "arms": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "order": {
+     "enum": [
+      "ABBA",
+      "single",
+      "not recorded"
+     ]
+    },
+    "runs_per_arm": {
+     "$ref": "#/$defs/num"
+    },
+    "prompt_set": {
+     "$ref": "#/$defs/str"
+    },
+    "prompt_sha256": {
+     "$ref": "#/$defs/str"
+    },
+    "prompt_tokens": {
+     "$ref": "#/$defs/num"
+    },
+    "n_predict": {
+     "$ref": "#/$defs/num"
+    },
+    "temperature": {
+     "$ref": "#/$defs/num"
+    },
+    "seed": {
+     "$ref": "#/$defs/num"
+    },
+    "sampler": {
+     "$ref": "#/$defs/str"
+    }
+   }
+  },
+  "runs": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "arm",
+     "index",
+     "ok",
+     "prompt_tps",
+     "decode_tps",
+     "ttft_s",
+     "wall_s",
+     "vram_used_peak_mib",
+     "vram_source",
+     "process_ram_peak_mib",
+     "system_ram_free_min_mib",
+     "cpu_avg_pct",
+     "cpu_peak_pct",
+     "text_sha256"
+    ],
+    "properties": {
+     "arm": {
+      "type": "string"
+     },
+     "index": {
+      "type": "integer"
+     },
+     "ok": {
+      "type": "boolean"
+     },
+     "prompt_tps": {
+      "$ref": "#/$defs/num"
+     },
+     "decode_tps": {
+      "$ref": "#/$defs/num"
+     },
+     "ttft_s": {
+      "$ref": "#/$defs/num"
+     },
+     "wall_s": {
+      "$ref": "#/$defs/num"
+     },
+     "vram_used_peak_mib": {
+      "$ref": "#/$defs/num"
+     },
+     "vram_source": {
+      "$ref": "#/$defs/str"
+     },
+     "process_ram_peak_mib": {
+      "$ref": "#/$defs/num"
+     },
+     "system_ram_free_min_mib": {
+      "$ref": "#/$defs/num"
+     },
+     "cpu_avg_pct": {
+      "$ref": "#/$defs/num"
+     },
+     "cpu_peak_pct": {
+      "$ref": "#/$defs/num"
+     },
+     "text_sha256": {
+      "$ref": "#/$defs/str"
+     },
+     "load_s": {
+      "$ref": "#/$defs/num"
+     },
+     "prompt_tokens": {
+      "$ref": "#/$defs/num"
+     },
+     "cache_hit_pct": {
+      "$ref": "#/$defs/num"
+     },
+     "disk_read_gb": {
+      "$ref": "#/$defs/num"
+     },
+     "gpu_blocks": {
+      "$ref": "#/$defs/num"
+     },
+     "process_private_peak_mib": {
+      "$ref": "#/$defs/num"
+     },
+     "vram_system_peak_mib": {
+      "$ref": "#/$defs/num"
+     },
+     "system_cpu_avg_pct": {
+      "$ref": "#/$defs/num"
+     },
+     "system_cpu_peak_pct": {
+      "$ref": "#/$defs/num"
+     },
+     "error": {
+      "type": "string"
+     }
+    }
+   }
+  },
+  "summary": {
+   "type": "object"
+  },
+  "outputs": {
+   "type": "object",
+   "required": [
+    "text_sha256_by_arm",
+    "identical_to_baseline"
+   ],
+   "properties": {
+    "text_sha256_by_arm": {
+     "anyOf": [
+      {
+       "const": "not recorded"
+      },
+      {
+       "type": "object",
+       "additionalProperties": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        }
+       }
+      }
+     ]
+    },
+    "identical_to_baseline": {
+     "enum": [
+      "yes",
+      "no",
+      "not checked"
+     ]
+    },
+    "baseline_arm": {
+     "type": "string"
+    }
+   }
+  },
+  "reproduce": {
+   "type": "object",
+   "required": [
+    "commands",
+    "kit",
+    "model_url"
+   ],
+   "properties": {
+    "commands": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     }
+    },
+    "kit": {
+     "$ref": "#/$defs/str"
+    },
+    "model_url": {
+     "$ref": "#/$defs/str"
+    },
+    "prompt_file": {
+     "$ref": "#/$defs/str"
+    }
+   }
+  },
+  "notes": {
+   "type": "array",
+   "items": {
+    "type": "string"
+   }
+  }
+ }
+}
