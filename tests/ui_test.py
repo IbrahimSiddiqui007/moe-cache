@@ -1271,7 +1271,7 @@ if node:
                     "console.log(JSON.stringify([chatHits([]), chatHits(undefined), chatHits([{role:'user',content:'q'}, A(90,10), {role:'user',content:'q'}, A(70,30)]), chatHits([A(0,0), {role:'assistant',content:'x'}, A(NaN,1)]),\n"
                     "  chatHitsText([A(90,10)]), chatHitsText([A(90,10), A(70,30)]), chatHitsText([]), chatHitsText([A(0,0)])]));\n")
     hf = os.path.join(TMP, "hits.js"); open(hf, "w", encoding="utf-8").write(harness)
-    o = subprocess.run([node, hf], capture_output=True, text=True, timeout=30)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
     try:
         r_ = json.loads(o.stdout.strip().splitlines()[-1])
     except Exception:
