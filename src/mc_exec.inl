@@ -719,6 +719,12 @@ void print_capabilities(state_t & s) {
 #endif
     o += std::string(" gpu_cache_host_buffer=") + (gpu_cache_mode() ? "on" : "off");
     o += s.gpu_dev ? " long_prompt_gpu=on(>=" + std::to_string(s.gpu_min_tokens) + " tokens)" : " long_prompt_gpu=off(no GPU device)";
+    if (s.gpu_dev) {
+        const shared_plan_t sp = shared_gpu_plan(s, s.gpu_dev);
+        if (sp.shared) {
+            o += " gpu_memory=shared(block copy capped at " + std::to_string(sp.cap >> 20) + " MiB" + (s.auto_mode ? ", counted against the cache budget)" : ")");
+        }
+    }
     if (s.gpu_dev2) {
         o += std::string(" long_prompt_gpu2=") + ggml_backend_dev_name(s.gpu_dev2);
     }

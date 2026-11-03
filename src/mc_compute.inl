@@ -12,7 +12,11 @@ namespace {
 bool gpu_segment_guarded(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int last, std::vector<ggml_tensor *> & seg) {
     static const int catch_mode = mcguard::catch_mode(getenv("MOE_CACHE_GPU_CATCH"));
     static bool injected = false;
-    return mcguard::guarded(catch_mode, injected, [&] { return gpu_segment(c, s, cg, first, last, seg); }, [&](const char * what) {
+    return mcguard::guarded(catch_mode, injected, [&] {
+        const bool ok = gpu_segment(c, s, cg, first, last, seg);
+        shared_gpu_account(c, s);       // CACHE-149: no-op unless the GPU shares system RAM
+        return ok;
+    }, [&](const char * what) {
         fprintf(stderr, "moe-cache: the GPU block threw (%s): long-prompt blocks stay on the CPU from now on (MOE_CACHE_GPU_CATCH=0 turns this guard off)\n", what);
         c->gpu_failed = true;
         seg.clear();
