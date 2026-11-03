@@ -1,8 +1,22 @@
-# Results (measured 2026-10-08, one laptop)
+# Results (Linux laptop 2026-10-08 to 10-29; Windows desktop 2026-10-26 to 11-03)
 
 Note (2026-10-14): the `bench/` scripts and `moe-cache-bench` named below moved to [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark); `bench/gguf_plan.py` is now `planner/gguf_plan.py`.
 
-Machine: i7-13620H (6P+4E), 30 GB RAM, RTX 4060 Laptop 8 GB, WD SN560 NVMe, Linux. llama.cpp commit 7fe450e19.
+Machines: sections 1-48, 51-53, 57, 66 and 70 were measured on the Linux laptop (i7-13620H (6P+4E), 30 GB RAM, RTX 4060 Laptop 8 GB, WD SN560 NVMe); llama.cpp commit 7fe450e19 for sections 1-14, 23b0202a1 from section 15 on. Sections 49-50 are an MSI Claw and a mini PC (2026-10-15/16). Sections 54-56, 58-65, 67-69 and 71-79 are the Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5; llama.cpp Vulkan b11669, then 620d2225c, then b11966). Each section names its own machine, date and version.
+
+## Current state (2026-11-03): where the numbers that apply to the next release are
+
+| Question | Section | Note |
+|---|---|---|
+| v0.3.5 against v0.3.4, long prompts, official llama.cpp b11966 server (the numbers to quote) | 79 | prompts +42 % at 34k, +38 % at 64k and 128k; decode -6 % at 34k, -10 % at 64k (Windows PC, Flash-Next Q2_0) |
+| The same comparison with a patched server and patch 0022 (not shipped) | 78 | prompts overstated by about 5-7 %; its 64k follow-up shows 39 CPU layers fix the placement (decode 26.1-26.8) |
+| Windows desktop, stock vs plugin, short context, per model | 59-63 | file-view cache, GLM 2.0x paired (4.44 vs 2.21 tok/s, section 59) |
+| Agent sessions, stock vs plugin | 57, 60 | recorded OpenCode / Hermes replays |
+| Approximate modes and their quality | 72, and QUALITY_GATE.md | KV q8_0, fewer experts |
+| Laptop (Linux, 8 GB card) tables below | 1-48 | older versions (v0.1 to v0.2.3.5), kept as history; many were superseded, see the notes at the top of sections 20, 54-56, 58, 64, 76 and 78 |
+
+Dates differ between sections on purpose: a result is true for the date, version and machine in its heading. Rules for reading it: a later section on the same machine and model replaces an earlier one when it says so.
+
 Method: "clean" = CPU <= 58 C at start, no background load, fresh page cache, process memory limit via cgroup (`MemoryMax`, swap off),
 4 prompts, temperature 0, seed 42, forward and reverse order; "steady" = mean of requests 2-4. Unclean runs are not reported.
 "Stock" = the same llama.cpp without the plugin. Raw data and scripts: `work/t7-plugin/` of the research repo.
@@ -13,6 +27,8 @@ Method: "clean" = CPU <= 58 C at start, no background load, fresh page cache, pr
 The README now shows the Windows desktop chart; the laptop tables and the long-context and other-model notes that were there are kept here.
 
 ### Results (measured, clean runs)
+
+These rows are from the Linux laptop with v0.1 to v0.2.3.5 (see "Current state" above for the Windows desktop and v0.3.5).
 
 Re-measured on 2026-10-15 with the current code where the model is still on the test machine (RESULTS section 44); older rows say which version they come from.
 
@@ -59,7 +75,7 @@ Measured on the Linux laptop (i7-13620H, RTX 4060 8 GB, memory limited with a cg
 **Long context (Windows PC, RESULTS 64; agent mode, one cold run per point, not ABBA).** Flash-Next Q2_0 at a 64k setting: moe-cache reads a 63.5k-token
 prompt 1.8x faster than stock (about 289 vs 525 s; prefill 266 / 195 tok/s at 4-21k / 53-63k vs 171 / 106) and decodes 20.7 vs 16.8 tok/s at that depth
 (+23 %). Qwen3.5-122B with moe-cache at 64k: prefill 266 / 217, decode 17.3 at 63.5k. Qwen3.6 (fits, stock): 848 / 739, decode 59.1. At the 256k setting the
-planner now keeps the long-prompt GPU block its room (RESULTS 67 / 69, paired runs): Flash-Next prefill 108-110 tok/s at 4-34k and decode **21.9 vs 18.5 tok/s** at 4k (+18 %) over the old plan; decode at 138k depth was 15.9 with the old plan (not re-measured).
+planner then kept the long-prompt GPU block its room (RESULTS 67 / 69, paired runs): Flash-Next prefill 108-110 tok/s at 4-34k and decode **21.9 vs 18.5 tok/s** at 4k (+18 %) over the old plan; decode at 138k depth was 15.9 with the old plan (not re-measured). **Superseded for v0.3.5 (2026-11-03):** the launcher now uses `-ub 2048` above 32k context, including 256k; prompts read at 421-448 tok/s at 64k and 421 at 128k (section 79), and a 222k-token prompt at 256k reads at 334 tok/s (section 79).
 
 **Other models (Windows PC, RESULTS 65, one cold run per point).** Nemotron 3.5 Bolt 74B-A9B (NVIDIA's 2-bit QAT file, 22.0 GB) fits in RAM + VRAM,
 so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
@@ -541,10 +557,12 @@ Flash-Next, all experts on the CPU side, 8 requests:
 ### Caveat for `-ub 2048` (2026-10-11)
 
 With a 128k context (`-c 131072`, q8_0 KV cache) the compute buffer of a 2048-token micro-batch is 3.06 GiB on the GPU and does not fit an 8 GB card next to the model,
-so the server fails to start. The +70 % prompt-processing gain of section 17 applies to short contexts; at long contexts use the default `-ub 512` (or 1024).
+so the server fails to start. The +70 % prompt-processing gain of section 17 applies to short contexts; at long contexts use the default `-ub 512` (or 1024). *(Superseded on 2026-11-02: on a 16 GB card the launcher picks `-ub 2048` above 32k context and reserves room for the compute buffer, sections 78-79; on an 8 GB card the advice above still holds.)*
 
 
 ## 20. Long context, long sessions and prompt processing on Flash-Next (2026-10-11)
+
+**Partly superseded:** the "scan resistance lost 25 % of prefill" finding here was reversed once reads were merged (section 48: +27 %, on by default since 2026-10-15); the `-ub` advice is superseded by sections 78-79.
 
 Plugin on Flash-Next IQ2_XS, 24 GB hard limit, all experts on the CPU side (the only layout where a 128k KV cache fits next to the model on 8 GB), q8_0 KV cache,
 `-c 131072`, `bench/quality.py longctx` (a fact hidden in filler text at 10 / 50 / 90 % depth, asked at the end).
@@ -1483,6 +1501,8 @@ correct. Picks given up in that session: 20,439 (`--fast`) and 43,367 (`--fast=2
 
 ## 54. Windows 11 desktop: Ryzen 9 7950X + RX 9070 XT (2026-10-26; from the PC session, windows-kit/pc_results.md)
 
+**Superseded:** every speed in this section is preliminary (apps open, warm file cache). The identity, bug and driver findings stand; for speeds use sections 55, 59-63 and 79.
+
 First real run on the owner's new desktop, driven over SSH. **Every speed here is PRELIMINARY**: the owner's apps were open (Dia, Claude, ChatGPT,
 Discord: 18.6 GB of working sets, 14.2 GB of RAM free at the start), and Windows' file cache could not be cleared (needs admin rights, RAMMap).
 Clean reruns: Flash-Next is done in section 55 (file cache flushed without admin rights); 122B and GLM follow. Identity and bit-exact results do not depend on any of this and are final.
@@ -1667,6 +1687,8 @@ ran the long prompt without a crash (table above).
 
 ## 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; complete: Flash-Next, 122B, GLM)
 
+**Superseded for speed by section 59 (2026-10-27):** these runs are from before the file-view cache and the I37 fix, when the plugin was at or below stock on Windows. Kept as the "before" measurement.
+
 Repeat of the speed runs in section 54, whose numbers are PRELIMINARY (apps open; Windows' file cache warm for stock and cold for the plugin). WP2 is done
 for the three big models; the plugin stats runs and `--fast` / `--hybrid` rows are not measured (cells marked "-"). The owner's Claude app was open
 during the series, so these numbers are still not a perfectly quiet-machine result.
@@ -1752,6 +1774,8 @@ this machine; (3) on GLM the shrink from the AMD driver's RAM cost still happens
 stats (`handover` note 122B_DIAG_PLAN) and the budget idea I40.
 
 ## 56. Windows desktop experiments (2026-10-26/27; SKELETON: known facts filled, empty cells "-" are not measured yet)
+
+**Status:** a skeleton from 2026-10-26/27; cells marked "-" were never filled. Later results on the same questions are in sections 58-61 (I37 and the 122B diagnosis were resolved by the file-view cache, section 59).
 
 Machine, llama.cpp and DLL as in sections 54-55 (Ryzen 9 7950X, RX 9070 XT 16 GB, driver 32.0.23034.4, 32 GB RAM; llama.cpp b11669 Vulkan). Scripts are in
 `windows-kit/` (`pc_runlib.ps1`, `pc_prefill_lib.ps1`, `pc_r*.ps1`). Every speed is PRELIMINARY until the section says otherwise; quote only filled tables.
@@ -2028,6 +2052,8 @@ Findings:
   20 s idle; each server was stopped sooner).
 
 ## 58. Windows desktop, 2026-10-27: fixes confirmed, MTP, Flash-Next IQ2_XS vs IQ3_XXS, GLM page file
+
+**Superseded in part by section 59 (same evening):** the IQ3_XXS loss to stock found here was fixed by the file-view cache.
 
 PC: Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Windows 11, llama.cpp Vulkan **ggml 0.27 (620d2225c)** (no longer b11669: numbers before this
 section are not strictly comparable), AMD driver 32.0.32015.7029. Every run cold (other big model files read first). Decode = 256-token greedy
@@ -2607,6 +2633,8 @@ Linux and Windows, no speed change on the PC); N20b killed (forcing the executor
 
 ## 64. Long context on the Windows PC (pc-bench, 2026-10-28 evening): 64k and 128k+ on Flash-Next Q2_0, the 122B and Qwen3.6
 
+**Superseded for Flash-Next Q2_0 prompt speed by sections 78-79 (2026-11-02/03):** 64k now reads at 421-448 tok/s (this section: 195-266) and the 256k setting uses `-ub 2048`. The 122B and Qwen3.6 rows here are still the only measurements of those models at 64k with these versions.
+
 Owner: the main use is 64k-256k context. Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan 620d2225c, launcher experimental 28b022b
 (`server MODEL --agent --no-warm --ctx N`, own cache dir with the usage profile copied), plugin DLL built from experimental f478564 (exit-hang fix,
 Windows executor kernels). Text: the moe-cache repo's docs and code concatenated (C:\dl\pcb\lc_text.txt), fed as appended chunks into slot 0
@@ -3086,6 +3114,8 @@ Same PC. The buffered row comes from the night chain of 10-31, when the PC ran a
 
 ## 76. Long prompts: plugin outputs skip the slow copy (Windows PC, 2026-10-31; baseline 48.1 tok/s that day, PC up about 4 h, so not chart numbers yet)
 
+**Superseded for numbers to quote by sections 78-79** (this run was "not chart numbers": PC up about 4 h).
+
 A sampler on the graph thread found 35 % of the time between plugin graphs in `ggml_backend_tensor_copy`'s slowest path (malloc, get, set, free), because the plugin's buffer type did not report host. The table is the first version, which changed the type after the first copy. The shipped version picks the type when the buffer is created, through the public API (compute buffers are host, weights are not); it has not been re-measured on the PC.
 
 | Flash-Next Q2_0, ctx 40960, same DLL, 34k-token prompt | Prompt tok/s | Prompt wall s | Decode after, tok/s | Text |
@@ -3113,6 +3143,8 @@ Source: handover section 4 of 2026-11-01. One run per row unless stated; these a
 
 
 ## 78. Experimental (next release) vs v0.3.4 on long prompts (Windows PC, 2026-11-02; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13)
+
+**Superseded by section 79:** this run used a patched server with patch 0022 (not shipped in v0.3.5), so its prompt numbers are about 5-7 % too high; section 79 repeats the comparison on the official server. The 64k follow-up below (39 CPU layers) is still the placement evidence.
 
 Windows 11, Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5, Flash-Next Q2_0 on D:, cold file cache before each run, order new old old new. "v0.3.4" is the released kit with its own llama-server. "Experimental" is the unreleased launcher defaults (prompt chunk 2048 above 32k context, GPU_SUM on) plus llama.cpp patch 0022 (`GGML_VK_COUNT_EXPERTS_FAST=1`) on the patched b11966 server; these defaults are not in any release yet. Two runs per cell, shown as first / second; the averages are my arithmetic.
 
