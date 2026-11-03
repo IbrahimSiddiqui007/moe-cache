@@ -127,9 +127,9 @@ class FakeProbe:
 
     def proc(self, pids):
         self.i += 1
-        return {"rss": [2, 9, 5][min(self.i - 1, 2)] * rr.MiB, "private": 1 * rr.MiB * self.i, "cpu_s": 2.0 * self.i, "hwm": 0}
+        return {"rss": [2, 9, 5][min(self.i - 1, 2)] * 1024 * rr.MiB, "private": 1024 * rr.MiB * self.i, "cpu_s": 0.04 * self.i, "hwm": 0}
 
-    def mem(self): return {"total": 100 * rr.MiB, "available": [50, 20, 40][min(self.i - 1, 2)] * rr.MiB}
+    def mem(self): return {"total": 100 * 1024 * rr.MiB, "available": [50, 20, 40][min(self.i - 1, 2)] * 1024 * rr.MiB}
 
     def sys_cpu(self): return (self.i * 1.0, self.i * 4.0)
 
@@ -146,7 +146,7 @@ for k in range(3):
     time.sleep(0.05)
     sm.sample_once(box)
 res = sm.result()
-check(res["process_ram_peak_mib"] == 9 and res["system_ram_free_min_mib"] == 20 and res["samples"] == 3, f"sampler: RAM peak 9 MiB, free min 20 MiB ({res['process_ram_peak_mib']}, {res['system_ram_free_min_mib']})")
+check(res["process_ram_peak_mib"] == 9216 and res["system_ram_free_min_mib"] == 20480 and res["samples"] == 3, f"sampler: RAM peak 9 GiB, free min 20 GiB ({res['process_ram_peak_mib']}, {res['system_ram_free_min_mib']})")
 check(res["vram_used_peak_mib"] == 8003 and res["vram_system_peak_mib"] == 9003 and res["vram_source"] == "fake counter (this server)", "sampler: VRAM = the process share; whole-card peak kept apart")
 check(isinstance(res["cpu_avg_pct"], float) and res["cpu_peak_pct"] >= res["cpu_avg_pct"] > 0 and res["system_cpu_avg_pct"] == 25.0, f"sampler: CPU avg <= peak, system 25 % ({res['cpu_avg_pct']}, {res['cpu_peak_pct']}, {res['system_cpu_avg_pct']})")
 empty = rr.Sampler(1, pr=type("P", (FakeProbe,), {"proc": lambda s, p: None, "vram": lambda s, p: (None, None, None), "mem": lambda s: {"total": None, "available": None},
