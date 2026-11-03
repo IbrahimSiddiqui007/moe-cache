@@ -41,7 +41,8 @@ void remove_crash_report();
 #include "mc_state_budget.h"
 #include "mc_state_profile_members.h"
 #include "mc_state_counters.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t {
+#include "mc_state_workers.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -213,14 +214,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
     std::mutex mu;
 
 
-    // io workers
-    std::vector<std::thread> workers;
-    std::mutex wmu;
-    std::condition_variable wcv, dcv;
-    std::function<void(int)> task;
-    int    gen = 0;
-    int    busy = 0;
-    bool   stop = false;
 
     state_t() {
         stats = mcenv::env_on("MOE_CACHE_STATS");
