@@ -46,6 +46,7 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.headers.get("Authorization") != "Bearer " + key: return self.send(401, {"error": "key"})
         req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        open(os.path.join(os.environ["XDG_CACHE_HOME"], "lastreq"), "w").write(json.dumps(req))     # AGENTS-061: what the model server was sent
         if not req.get("stream"):
             return self.send(200, {"choices": [{"message": {"content": "hello " + req["messages"][0]["content"] + " from " + os.environ.get("FAKE_ID", "fake-real")}}]})
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.send_header("Transfer-Encoding", "chunked")
@@ -350,11 +351,11 @@ check("api-key: no leftover temp files", not [f for f in os.listdir(mc.CACHE_DIR
 bk = od.Backend(od.load_choice())
 check("api-key: the listener still uses the given key", bk.key == SECRET and SECRET not in " ".join(bk.cmd(1234)), bk.key)
 od.on_demand([choice["model"], "--ram", "8", "--status"])
-check("api-key: a new default without a key forgets the custom key", not os.path.exists(od.CUSTOM_KEY_FILE) and od.Backend(od.load_choice()).key == KEY)
-od.on_demand([choice["model"], "--ram", "8", "--status", "--", "--api-key", SECRET])
-od.on_demand(["--keep-key", choice["model"], "--port", "8099", "--status"])          # GUI-022: the control page remembers its settings this way
-check("api-key: --keep-key (the control page) keeps the custom key through a port change", od.Backend(od.load_choice()).key == SECRET and os.path.exists(od.CUSTOM_KEY_FILE))
-od.on_demand([choice["model"], "--ram", "8", "--status"])
+check("api-key: a new default without a key keeps the custom key (SERVER-624)", os.path.exists(od.CUSTOM_KEY_FILE) and od.Backend(od.load_choice()).key == SECRET)
+od.on_demand([choice["model"], "--port", "8099", "--status"])          # a port or idle change, as the control page does
+check("api-key: a port change keeps the custom key", od.Backend(od.load_choice()).key == SECRET)
+od.on_demand([choice["model"], "--ram", "8", "--status", "--forget-key"])
+check("api-key: --forget-key drops it; the launcher's own key applies again", not os.path.exists(od.CUSTOM_KEY_FILE) and od.Backend(od.load_choice()).key == KEY)
 
 # AUD-039: % and $ in a path or XDG_CACHE_HOME are doubled in the systemd unit (otherwise %h / $HOME would be expanded)
 _x = os.environ["XDG_CACHE_HOME"]
@@ -407,6 +408,68 @@ except Exception as e:
     st, body, t_ans = None, str(e), None
 check("on-demand: a request sent at once is answered after the check", st == 200 and '"on_demand"' in body and t_ans and t_ans >= 2.5, (st, body, t_ans))
 p.terminate(); p.wait(30)
+
+
+# LAUNCHER-005 (A3-16): launcher options before the model do not swallow it
+M = "MODEL.gguf"
+check("order: --ram 20 MODEL -> MODEL first", od.model_first(["--ram", "20", M]) == [M, "--ram", "20"])
+check("order: MODEL first stays", od.model_first([M, "--ram", "20"]) == [M, "--ram", "20"])
+check("order: --ctx=8192 --mtp MODEL", od.model_first(["--ctx=8192", "--mtp", M]) == [M, "--ctx=8192", "--mtp"])
+check("order: --fast MODEL keeps MODEL as the model; --fast 2 MODEL takes the level", od.model_first(["--fast", M]) == [M, "--fast"] and od.model_first(["--fast", "2", M]) == [M, "--fast", "2"])
+check("order: no model word (only option values): unchanged", od.model_first(["--ram", "20", "--status"]) == ["--ram", "20", "--status"])
+check("order: --port 8099 --idle 5 MODEL --add", od.model_first(["--port", "8099", "--idle", "5", M, "--add"]) == [M, "--port", "8099", "--idle", "5", "--add"])
+
+# LAUNCHER-005 (A3-13): the port picked for the model server was taken before the launcher bound it: one retry with another port
+RACE = os.path.join(TMP, "race_launcher.py")
+open(RACE, "w").write(r'''import os, runpy, sys
+mark = os.path.join(os.environ["XDG_CACHE_HOME"], "race-once")
+if not os.path.exists(mark):
+    open(mark, "w").write("1")
+    print("moe-cache: port " + sys.argv[sys.argv.index("--port") + 1] + " is already in use (another llama-server, or on-demand)", flush=True)
+    sys.exit(2)
+sys.argv = [sys.argv[0]] + sys.argv[1:]
+runpy.run_path("@FAKE@", run_name="__main__")
+'''.replace("@FAKE@", FAKE.replace("\\", "/")))
+rl = []
+bk2 = od.Backend(dict(choice), launcher=[sys.executable, RACE], idle_min=1, start_timeout=30, log=lambda m: rl.append(m))
+t0 = time.time()
+try:
+    port2 = bk2.ensure("race test")
+    ok_race = bool(port2) and bk2.state == "ready"
+except Exception as e:
+    ok_race, port2 = False, str(e)
+check("race: a port taken at launch is retried once with a new port and the model starts", ok_race and any("taken by another program" in m for m in rl), (port2, rl))
+bk2._stop_locked("test over") if hasattr(bk2, "_stop_locked") else None
+
+
+# AGENTS-061: prompt progress for streaming requests (MOE_CACHE_PROMPT_PROGRESS=1, default off)
+P = lambda path, obj, on: json.loads(od.with_prompt_progress(path, json.dumps(obj).encode(), on))
+check("progress: off by default - the body is not touched", od.with_prompt_progress("/v1/chat/completions", b'{"stream": true}', False) == b'{"stream": true}')
+check("progress: a streaming chat request gets return_progress", P("/v1/chat/completions", {"stream": True, "messages": []}, True).get("return_progress") is True)
+check("progress: also /completion and /v1/completions", P("/completion", {"stream": True}, True).get("return_progress") is True and P("/v1/completions", {"stream": True}, True).get("return_progress") is True)
+check("progress: not without stream, not on other paths", "return_progress" not in P("/v1/chat/completions", {"messages": []}, True) and "return_progress" not in P("/v1/embeddings", {"stream": True}, True)
+      and "return_progress" not in P("/v1/chat/completions", {"stream": False}, True))
+check("progress: the client's own value stays", P("/v1/chat/completions", {"stream": True, "return_progress": False}, True)["return_progress"] is False)
+check("progress: a body that is not JSON, or not an object, passes unchanged", od.with_prompt_progress("/completion", b"not json", True) == b"not json" and od.with_prompt_progress("/completion", b"[1]", True) == b"[1]" and od.with_prompt_progress("/completion", None, True) is None)
+# through the listener
+PORT2 = free_port()
+b3 = od.Backend(dict(choice), launcher=[sys.executable, FAKE], idle_min=1, start_timeout=30, log=lambda m: None)
+srv3 = od.serve(b3, PORT2)
+threading.Thread(target=srv3.serve_forever, daemon=True).start()
+def post2(obj):
+    c = http.client.HTTPConnection("127.0.0.1", PORT2, timeout=60)
+    c.request("POST", "/v1/chat/completions", json.dumps(obj), {"Content-Type": "application/json", "Authorization": "Bearer " + KEY})
+    r = c.getresponse(); r.read(); c.close(); return r.status
+LAST = os.path.join(TMP, "lastreq")
+os.environ["MOE_CACHE_PROMPT_PROGRESS"] = "1"
+post2({"messages": [{"role": "user", "content": "x"}], "stream": True, "n": 1})
+check("progress: the model server got return_progress for a streaming request through the listener", json.load(open(LAST)).get("return_progress") is True)
+post2({"messages": [{"role": "user", "content": "x"}]})
+check("progress: and nothing added to a request that does not stream", "return_progress" not in json.load(open(LAST)))
+os.environ.pop("MOE_CACHE_PROMPT_PROGRESS")
+post2({"messages": [{"role": "user", "content": "x"}], "stream": True, "n": 1})
+check("progress: switched off again, the stream request is sent as it came", "return_progress" not in json.load(open(LAST)))
+srv3.shutdown(); b3._stop_locked("test over") if hasattr(b3, "_stop_locked") else None
 
 print("FAILED: " + ", ".join(fails) if fails else "all on-demand tests passed")
 sys.exit(1 if fails else 0)

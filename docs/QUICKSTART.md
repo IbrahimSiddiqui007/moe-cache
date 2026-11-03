@@ -86,6 +86,17 @@ bin/moe-cache-server /path/to/model.gguf --ram 12 --ctx 8192 --llama-server /pat
 - `--open` opens the web UI in your browser (it is the built-in llama.cpp UI at http://localhost:8080). The same address is an OpenAI-compatible API, so tools like Open WebUI, editors and scripts can connect to it.
 - `--dry-run` prints the exact command without starting anything.
 - Force the split yourself with `--n-cpu-moe N` (N layers keep their experts on the CPU).
+- `--cpu-only` runs on the processor alone (llama-server gets `--device none -ngl 0`). The launcher also chooses it by itself when `llama-server --list-devices` answers and lists no GPU; a `--device` of your own (after `--`) wins.
+
+The `--fast` levels (all optional; each one changes the output a little on purpose, so the default is exact):
+
+| Flag | What it does | Measured (from `--help` and RESULTS) |
+|---|---|---|
+| (none) | exact: same tokens as stock llama.cpp | the default; at `--ctx 131072` and above the KV cache is q8_0 anyway (add `--exact` to keep f16) |
+| `--fast=kv` | only the q8_0 KV cache (half the KV memory), every expert is computed | KL 0.005-0.012 against stock |
+| `--fast` | also skips a low-ranked expert that is not in RAM instead of reading it from the SSD | about +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock |
+| `--fast=fewer` | `--fast`, and the 2 lowest-ranked experts of every token are never computed on the CPU-held layers | opt-in, new |
+| `--fast=2` | up to 4 low-ranked picks may be skipped (at least half are kept), for memory much smaller than the model | Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for `--fast`; KL 0.022; no gain at 24 GB |
 
 ## 4. Make it faster for you (optional)
 

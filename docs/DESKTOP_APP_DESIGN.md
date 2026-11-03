@@ -1,6 +1,6 @@
 # Desktop app: design (2026-11-03)
 
-Status: **days 1-2 built** (2026-11-03): runs on Linux, CI builds Windows and Linux installers (section 9). Owner decision 2026-11-03: build it, after release v0.3.6. Nothing here ships yet.
+Status: **days 1-2, 4 and 5 built** (2026-11-03): runs on Linux, CI builds Windows and Linux installers with the Windows kit inside (section 9). Day 3 (Windows run) waits for the owner's click-through. Owner decision 2026-11-03: build it, after release v0.3.6. Nothing here ships yet.
 
 ## 1. What the app is
 
@@ -109,14 +109,16 @@ build the kit uses; GPU backends as in the kit: Vulkan for Windows).
 | llama.cpp Vulkan build (compressed) | 40-70 MB | 25-45 MB (kit tarball) |
 | **Total download** | **about 60-90 MB** (ledger estimate 60-100) | **about 30-50 MB** (AppImage 15-25 MB without llama.cpp) |
 
-Measured (CI run of PR 3, bundled Python 3.12.8 and kit files, no llama.cpp, no plugin):
+Measured, CI run 41683220306 (2026-11-03, with the Windows kit: bundled Python 3.12.8, launcher and page, both plugin DLLs, official llama.cpp b12064 Vulkan build; the 108.9 MB staged folder is compressed by the installers):
 
 | File | Bytes | MB | Against the estimate |
 |---|---|---|---|
-| Windows `moe-cache_0.0.0_x64-setup.exe` (NSIS) | 10,527,894 | 10.5 | under (shell + Python + kit expected 16-18) |
-| Windows `moe-cache_0.0.0_x64_en-US.msi` | 12,976,128 | 13.0 | under |
-| Linux `.deb` | 2,132,814 | 2.1 | under (needs system webkit2gtk) |
-| Linux `.AppImage` | 81,127,928 | 81.1 | **over: the estimate (15-25 MB without llama.cpp) was wrong; the AppImage carries GTK and WebKit** |
+| Windows `moe-cache_0.0.0_x64-setup.exe` (NSIS) | 30,528,554 | 30.5 | **under** (estimate 60-90 MB total download) |
+| Windows `moe-cache_0.0.0_x64_en-US.msi` | 53,359,424 | 53.4 | under (MSI compresses less) |
+| Linux `.deb` | 2,199,696 | 2.2 | under (no llama.cpp or plugin yet; needs system webkit2gtk) |
+| Linux `.AppImage` | 81,189,368 | 81.2 | **over: the estimate (15-25 MB without llama.cpp) was wrong; the AppImage carries GTK and WebKit** |
+
+Before the kit (run 41671816279): NSIS 10.5 MB, MSI 13.0 MB, so the kit's llama.cpp and plugin add about 20 MB to the NSIS file. The 25 MB rule below is for the app without llama.cpp and the plugin (10.5 MB: holds).
 
 Budget rule: the app without llama.cpp stays under 25 MB (holds for Windows; the Linux AppImage is a known exception, the deb is the small Linux file). If the total exceeds 100 MB on Windows, llama.cpp is downloaded on first run instead
 (from the same release, SHA-256 checked, with the owner's OK per file as for models).
@@ -178,14 +180,14 @@ Estimates assume the audit-fix sessions are merged and v0.3.6 is out. "Day" = a 
 | 1 | **M1a Linux runs** | window on the control page; tray; token bootstrap | done: debug app opened the control page in WebKitGTK on Wayland; the launcher printed its address, the page took the `?t=` token and sent the header; real Granite 1B chat streamed and Stop left no llama-server (driven through the launcher API); model-free test `desktop/tests/shell_contract_test.py` and 4 Rust unit tests pass. Not clicked by hand: the tray menu, Quit | 0 |
 | 2 | **M1b Windows CI build** | NSIS + MSI + AppImage + deb; Python staged; sizes | done: `desktop.yml` green on PR 3 (Windows 2022 and Ubuntu 24.04), contract test also ran with the bundled Python on Windows; sizes in section 5 | 0 |
 | 3 | **M1c Windows run** | install on Windows, app opens, Start a small model | open: owner click-through (checklist in PR 3, about 45 min of the owner's time); fixes about 0.5 day. llama.cpp and the plugin are **not** in the installer yet (staged by M2b / M5), so the Windows test uses the user's own llama-server via the page | 0.5-1 |
-| 4 | **M2 process safety** | Job Object / PDEATHSIG, stdin-EOF (item 3), `/api/quit` (item 5), child-died screen, external links (item 7) | not started; items 3, 5, 7 touch `bin/moe_cache_ui.py` / `ui/` (other session) | 1 |
-| 5 | **M2b polish** | icon, name, first-run text, window state, start at login, stage llama.cpp + plugin | not started | 1 (was 1; staging llama.cpp added, window state is small) |
-| 6-7 | **M3 downloads in the page** (item 9) | download card with progress, checksum, resume | not started | 2 |
-| 8 | **M4 updater** | key pair, `latest.json`, About card | not started; needs the owner to create the update key secret | 1 |
-| 9 | **M5 release wiring** | `release.yml` attaches files and SHA256SUMS; docs; friend test | not started | 0.75 |
+| 4 | **M2 process safety** | Job Object / PDEATHSIG, stdin-EOF (item 3), `/api/quit` (item 5), child-died screen, external links (item 7) | done, **without touching `bin/` or `ui/`**: `desktop/app_entry.py` is the entry the shell runs (stable JSON address line = item 2, stdin-EOF watch = item 3, SIGTERM / SIGBREAK, no browser = item 4). The shell closes stdin on Quit and waits 20 s. Checked: real app, `kill -9` of the shell: the page process was gone within 4 s; the contract test starts a fake model and checks it is gone after stdin EOF and after SIGTERM (Linux), stdin EOF (Windows CI). A Job Object is not needed (a killed shell closes the pipe on Windows too). Page ended on its own: the window shows "control page stopped" (token redacted), tray has Restart control page (screenshot). Links: only the splash and this run's control page stay in the window, other http / https addresses open in the system browser (9 Rust unit tests; not clicked by hand). `/api/quit` (item 5) is not needed | 0 |
+| 5 | **M2b polish** | icon, name, first-run text, window state, start at login, stage llama.cpp + plugin | done except icon art and first-run text: Windows installers carry the kit (`kit` job runs `tools/make_windows_kit.sh`; the Windows job also checks that the bundled Python's `moe_cache.py check` finds the API 3 DLL); window size and position remembered; Start at login is a tray tick, off by default, starts hidden (item 8 done in the shell, no page change); icon is still the placeholder (needs art); Linux AppImage / deb do not carry llama.cpp and the plugin yet (system Python and the page's search), about 0.5 day when wanted | 0.25 (icon, first-run text) |
+| 6-7 | **M3 downloads in the page** (item 9) | download card with progress, checksum, resume | not started: the work is in `ui/index.html` and `bin/moe_cache_ui.py`, which the launcher / page session owns; needs that session or the main session's go | 2 |
+| 8 | **M4 updater** | key pair, `latest.json`, About card | not started; needs the owner to create the update key pair and the `TAURI_SIGNING_PRIVATE_KEY` secret (the shell part, the plugin and a tray item, can be done once the public key exists) | 1 |
+| 9 | **M5 release wiring** | `release.yml` attaches files and SHA256SUMS; docs; friend test | not started: `release.yml` is not a desktop file (main session) | 0.75 |
 | 10 | buffer | fixes from the friend test | not started | 0.5-1 |
 
-Days 1-2 took about one working day (several hours; the CI round trip was 5 minutes). Days 3-10 re-estimated: about 6.75-7.75 working days left, so about 8-9 days in total (was 9-10).
+Days 1-2, 4 and 5 took about one and a half working days (CI rounds of 5-10 minutes; one Windows CI failure, fixed in one round: a blocking stdin read stalled the launcher's own child processes). Left: day 3 (about 0.5-1, owner's PC), 6-7 (2), 8 (1), 9 (0.75), icon and first-run text (0.25), buffer (0.5-1): about 5-6.5 working days, so about 7-8 days in total (was 9-10).
 
 A **first usable app** (a friend installs it, starts a model, chats, quits cleanly) is the end of **day 4**, assuming items 1-5 of section 8 are in.
 Everything after is polish, downloads and updates. Total about 9-10 days, in line with the ledger's 8-10.
@@ -194,7 +196,8 @@ Everything after is polish, downloads and updates. Total about 9-10 days, in lin
 
 | File | Role |
 |---|---|
-| `src-tauri/src/main.rs` (about 320 lines with 4 unit tests) | spawn the page, read its address, navigate, tray, single instance, clean Quit through the page's API |
+| `app_entry.py` | the entry the shell runs: the control page plus a stable address line, the stdin-EOF watch and signal handling (staged as `moe-cache/app_entry.py`) |
+| `src-tauri/src/main.rs` (about 560 lines with 9 unit tests) | spawn the page, read its address, navigate, tray, single instance, clean Quit through the page's API |
 | `src-tauri/tauri.conf.json`, `Cargo.toml`, `capabilities/default.json` | window, bundle targets, resources mapping; no IPC for the remote page |
 | `web/index.html` | splash and error page (the only UI of the shell) |
 | `scripts/stage.sh`, `build-linux.sh`, `fetch-python-win.ps1` | stage kit files; Linux build; Windows Python staging |

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """The desktop shell's contract with the control page, without a model and without a window (Linux and Windows; standard library only).
 
-It starts the control page the way desktop/src-tauri/src/main.rs does (`python -u bin/moe_cache.py ui --ui-port 0 --no-browser`, MOE_CACHE_APP=1,
-stdin and stdout piped), then does what the shell and the window do: reads the "control page at URL" line, opens the address like a webview
-(navigation, token in ?t=), calls the API with the X-MoeCache-Token header, starts a fake model, streams a chat answer, stops the model, ends the page.
+It starts the control page the way desktop/src-tauri/src/main.rs does (`python -u desktop/app_entry.py --ui-port 0`, MOE_CACHE_APP=1, stdin and
+stdout piped), then does what the shell and the window do: reads the stable JSON address line, opens the address like a webview (navigation, token
+in ?t=), calls the API with the X-MoeCache-Token header, starts a fake model, streams a chat answer, stops the model, ends the page by closing its
+stdin. Three more runs check the safety nets: the shell vanishing (stdin closes while a model runs), SIGTERM, and the old human address line.
 The model is a tiny fake launcher (it answers /health and a streamed /v1/chat/completions); the page file list is a fake .gguf.
    python3 desktop/tests/shell_contract_test.py"""
 import http.client, json, os, subprocess, sys, tempfile, threading, time
@@ -54,45 +55,69 @@ entry = os.path.join(TMP, "entry.py")
 with open(entry, "w") as f:
     f.write(f'''
 import os, sys
-sys.path.insert(0, {os.path.join(HERE, "bin")!r})
-import moe_cache_ui as ui
+sys.path.insert(0, {os.path.join(HERE, "desktop")!r})
+import app_entry
+ui = app_entry.ui
 ui.default_folders = lambda: [{models!r}]
 ui.ollama_roots = lambda: []
 ui.LAUNCHER = [sys.executable, {fake!r}]
 ui.KEY_CMD = [sys.executable, "-c", "print('k')"]
-sys.exit(ui.ui(["--ui-port", "0", "--no-browser"]))
+sys.exit(app_entry.main(["--ui-port", "0"]))
 ''')
 
 env = dict(os.environ, PYTHONIOENCODING="utf-8", MOE_CACHE_APP="1", XDG_CACHE_HOME=os.path.join(TMP, "cache"), XDG_CONFIG_HOME=os.path.join(TMP, "config"),
            LOCALAPPDATA=os.path.join(TMP, "local"), APPDATA=os.path.join(TMP, "roaming"), USERPROFILE=TMP, HOME=TMP)
-proc = subprocess.Popen([sys.executable, "-u", entry], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, cwd=HERE,
-                        text=True, encoding="utf-8")
-lines, got = [], threading.Event()
-url_holder = []
-def reader():
-    for line in proc.stdout:
-        lines.append(line.rstrip("\n"))
-        i = line.find(MARKER)
-        if i >= 0 and not url_holder:
-            url_holder.append(line[i + len(MARKER):].split()[0])
-            got.set()
-threading.Thread(target=reader, daemon=True).start()
+
+class Page:
+    """One page process, started and read as the shell does."""
+    def __init__(self):
+        for f in ("fake.pid",):
+            if os.path.exists(os.path.join(TMP, f)):
+                os.remove(os.path.join(TMP, f))
+        self.proc = subprocess.Popen([sys.executable, "-u", entry], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env,
+                                     cwd=HERE, text=True, encoding="utf-8")
+        self.lines, self.got, self.json_url, self.human_url = [], threading.Event(), None, None
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for line in self.proc.stdout:
+            self.lines.append(line.rstrip("\n"))
+            if line.startswith('{"moe_cache_ui"') and not self.json_url:
+                try:
+                    self.json_url = json.loads(line)["moe_cache_ui"]["url"]
+                    self.got.set()
+                except (ValueError, KeyError):
+                    pass
+            i = line.find(MARKER)
+            if i >= 0 and not self.human_url:
+                self.human_url = line[i + len(MARKER):].split()[0]
+
+    def close_stdin(self):
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+
+    def end(self):
+        self.close_stdin()
+        if self.proc.poll() is None:
+            self.proc.kill()
+
+main_pg = Page()
+proc, lines, got = main_pg.proc, main_pg.lines, main_pg.got
 
 def finish(code):
-    try:
-        proc.stdin.close()
-    except OSError:
-        pass
-    if proc.poll() is None:
-        proc.kill()
+    main_pg.end()
     print("\n".join(lines[-15:]) if fails else "", flush=True)
     print(f"{len(fails)} failed" if fails else "all ok", flush=True)
     sys.exit(code)
 
-check(got.wait(60) and bool(url_holder), "the page prints 'control page at URL' within 60 s")
-if not url_holder:
+check(got.wait(60) and bool(main_pg.json_url), "the entry prints its JSON address line within 60 s")
+if not main_pg.json_url:
     finish(1)
-url = url_holder[0]
+url = main_pg.json_url
+time.sleep(0.5)
+check(main_pg.human_url == url, "the page's own human line 'control page at URL' follows and carries the same address")
 # the same parse as main.rs parse_url: http://127.0.0.1:PORT/?t=TOKEN
 check(url.startswith("http://127.0.0.1:") and "/?t=" in url, f"the address has the shape the shell parses ({url.split('?t=')[0]}?t=…)")
 rest = url[len("http://127.0.0.1:"):]
@@ -166,6 +191,60 @@ if fake_pid and not WINDOWS:
     except OSError:
         alive = False
     check(not alive, "the fake model process is gone after Stop (no orphan)")
-proc.kill()
-check(proc.wait(timeout=10) is not None, "the page process ends when the shell kills it")
+# Quit as the shell does it: the model is stopped, then the shell closes the page's stdin and the page ends by itself
+main_pg.close_stdin()
+try:
+    rc = proc.wait(timeout=20)
+except subprocess.TimeoutExpired:
+    rc = None
+check(rc == 0, f"closing the page's stdin ends it with exit code 0 (got {rc})")
+
+def alive(pid):
+    if WINDOWS:
+        return subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout.find(str(pid)) >= 0
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+def run_with_model():
+    """A second page with a running fake model; returns (page, call) once the model is ready."""
+    global port, token, TOK
+    pg = Page()
+    assert pg.got.wait(60), "no address line"
+    port = int(pg.json_url[len("http://127.0.0.1:"):].split("/")[0]); token = pg.json_url.split("t=", 1)[1]; TOK = {"X-MoeCache-Token": token}
+    mods = json.loads(call("GET", "/api/models", TOK)[2])["models"]
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0)); fp = sk.getsockname()[1]
+    call("POST", "/api/start", TOK, {"model": mods[0]["path"], "port": fp, "ctx": 8192, "mode": "exact"})
+    for _ in range(100):
+        if json.loads(call("GET", "/api/status", TOK)[2]).get("state") == "ready":
+            return pg
+        time.sleep(0.2)
+    return pg
+
+def wait_gone(pg, pid, secs=30):
+    t = time.time()
+    while time.time() - t < secs and (pg.proc.poll() is None or (pid and alive(pid))):
+        time.sleep(0.3)
+    return pg.proc.poll(), (alive(pid) if pid else False)
+
+# the shell vanishes while a model runs (crash, kill -9): its end of the pipe closes, the page must stop the model and exit
+pg = run_with_model()
+pid = int(open(pidf).read()) if os.path.exists(pidf) else 0
+check(bool(pid) and alive(pid), "second page: a fake model is running")
+pg.close_stdin()
+rc, still = wait_gone(pg, pid)
+check(rc is not None and not still, f"the shell vanishing (stdin closed) ends the page (exit {rc}) and the model process ({'still alive' if still else 'gone'})")
+pg.end()
+
+if not WINDOWS:
+    import signal
+    pg = run_with_model()
+    pid = int(open(pidf).read()) if os.path.exists(pidf) else 0
+    pg.proc.send_signal(signal.SIGTERM)
+    rc, still = wait_gone(pg, pid)
+    check(rc == 0 and not still, f"SIGTERM ends the page the clean way (exit {rc}) and stops the model ({'still alive' if still else 'gone'})")
+    pg.end()
 finish(1 if fails else 0)

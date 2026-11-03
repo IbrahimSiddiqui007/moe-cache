@@ -274,6 +274,12 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
     std::vector<std::pair<ggml_tensor *, ggml_op>> & saved = scratch ? saved_s : saved_l;
     keep.assign((size_t) n, 0);
     saved.clear();
+    auto undo = mcguard::make_undo([&] {       // PREFILL-172: the ops come back also when an exception unwinds this function
+        for (auto & sv : saved) {
+            sv.first->op = sv.second;
+        }
+        saved.clear();
+    });
     for (int i : which) {
         keep[(size_t) i] = 1;
     }
@@ -291,9 +297,7 @@ enum ggml_status exec_run_nodes(moe_cache_backend_ctx * c, ggml_cgraph * cg, con
 #ifdef _WIN32
     g_cpu_graph = nullptr;
 #endif
-    for (auto & sv : saved) {
-        sv.first->op = sv.second;
-    }
+    undo.run();
     return st;
 }
 

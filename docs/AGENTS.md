@@ -93,6 +93,8 @@ python3 bin/moe_cache.py on-demand --install-autostart        # optional: start 
 | Linux | a systemd user unit `~/.config/systemd/user/moe-cache-on-demand.service`, enabled and started (`systemctl --user enable --now`) | log: `journalctl --user -u moe-cache-on-demand`; no root. It runs while you are logged in |
 | Windows | a shortcut `moe-cache on-demand.lnk` in your Startup folder (`shell:startup`) that runs `pythonw.exe bin\moe_cache.py on-demand`, started right away too | no admin rights, no console window; the model server also runs without a window |
 
+**A server that is always on (Linux, systemd user unit).** The on-demand listener above loads the model on the first request. For a server that stays loaded, let the launcher fill in the unit: `moe-cache-server /path/MODEL.gguf --agent --print-systemd > ~/.config/systemd/user/moe-cache-server.service` (absolute paths of the launcher, model and llama-server; `MemoryMax` from `--ram`, else the launcher's memory cap; the API key is never written into it). Or copy [moe-cache-server.service](moe-cache-server.service) and edit the `ExecStart` line and the memory limits yourself. Then `systemctl --user daemon-reload && systemctl --user enable --now moe-cache-server`. Log: `journalctl --user -u moe-cache-server`. It starts at login; `loginctl enable-linger $USER` starts it at boot. moe-cache reads the smaller of `MemoryMax` and `MemoryHigh` when `--ram` is not given. We wrote the file from the launcher's code and the on-demand unit; we have not run it as a long-lived service.
+
 Run `on-demand MODEL ...` (or `--port` / `--idle` / `--idle-release`) again to change the choice; restart the listener to use it (`--stop`, then
 `systemctl --user start moe-cache-on-demand` or log in again; without autostart, run `on-demand`).
 
@@ -238,6 +240,15 @@ The reuse above only works while the start of the prompt stays byte for byte the
 | more conversations than slots (agent + title request + sub-agents + a second agent) | `--agent` gives 4 slots; with two agents and sub-agents raise them (`-- -np 6`) or run one agent at a time |
 | an editor's autocomplete on the same server (many tiny requests) | give autocomplete its own small model or server |
 | the agent's window larger than the server's | keep the agent's limit below the server's (section above); `connect opencode` writes it, and for windows of 64k+ a 30-minute reply timeout (OpenCode's default is 5 minutes, a 63k first turn took 289 s) |
+
+**Long first turns and client time limits.** A 63k-token first turn takes minutes, and a client that gives up sooner re-sends the whole prompt from zero. Per agent:
+
+| Agent | Limit | What to do |
+|---|---|---|
+| Hermes | waits 1800 s (30 min) per request by default (`HERMES_API_TIMEOUT`, or `request_timeout_seconds` in its config; read from Hermes 0.22.5's code), so `connect hermes` needs no change | nothing, unless you lowered it |
+| OpenCode | `connect opencode` writes a 30-minute `headerTimeout` for windows of 64k+ (its default is 5 minutes) | nothing |
+| other clients (Cline, Continue, Aider and similar) | not checked by us | set the client's request timeout above your longest first-turn time; the server log line `prompt eval time = ... ms` shows how long it took |
+| any client, through the on-demand endpoint | `MOE_CACHE_PROMPT_PROGRESS=1` (set where `moe_cache.py on-demand` runs; default off) adds `"return_progress": true` to streaming requests, so llama-server sends a small event after every batch of a long prompt (an empty delta and a `prompt_progress` object) and the client's read timeout keeps being reset. Clients that choke on an event without text should leave it off; it has not been tried with Cline or Continue. A client talking to llama-server directly can send `return_progress` itself | `MOE_CACHE_PROMPT_PROGRESS=1` |
 
 ## Measuring it yourself: replay a recorded agent session (tools/agent_bench.py)
 

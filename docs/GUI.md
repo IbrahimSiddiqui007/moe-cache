@@ -117,6 +117,8 @@ documents): the page lists what it read (RAM and the server's cap, VRAM, free di
 recommended model with size, context and options, the measurement behind it or "untested on this class of machine", and one alternative. **Use it**
 selects the file (when it is in a model folder), the context, Agent mode and writes them to the page's settings, where `moe-cache-server` without a file
 name and `connect hermes|opencode` find them; if the file is not on this machine the page shows the download command (size, source) and never runs it.
+**Download a model** (Settings): pick a model from the catalogue (`models.json`); the card shows its size, what is already on disk, the free disk at the first model folder and what the download needs (bytes still to fetch + 2 GB). Each file to fetch has its own tick box and the Download button works only when all are ticked. One download at a time; a progress bar with speed; Cancel keeps the `.part` file and the next start continues from it (HTTP Range; a lost connection is retried 5 times the same way); at the end the sha256 of every file is checked against the catalogue, and a file that does not match is kept as `.bad`. Source: `huggingface.co/<repo>/resolve/<revision>/<file>`; code in `bin/moe_cache_download.py`.
+
 Ollama's downloaded models are found and listed as local (agents see them under their tag, e.g. `qwen3.6-35b-a3b`). If the disk is too small for the recommended model, the panel says which model it is and how much disk is missing, and offers no download. With no model found at all, the panel opens by itself at the first start.
 
 ## 5. Start, stop and the live numbers
@@ -165,7 +167,9 @@ The middle pane is the page's own chat. Start a model, type, press Enter (Shift+
 (Settings → Chat turns it off).
 
 **Files:** drop text or code files on the chat or use 📎 (up to 512 KB each). They go into your message, so the model reads them; the right pane
-lists them and the **Context** card shows how much of the context they use. Images and other binary files are not supported yet.
+lists them and the **Context** card shows how much of the context they use. **Images** (PNG, JPEG, WebP, GIF) can be attached when the running llama-server has an image encoder (it says so in `/props`; start a vision model with `-- --mmproj FILE`): the page shrinks each to 1568 px and sends it as an `image_url` part (at most 8 per message). Other binary files are not supported. A warning shows above the input at 85 % of the context and a message that does not fit is not sent.
+
+**Several servers** (card *Servers on this machine*): besides the main server the page can start up to 2 more on other ports with the same settings (*Start another server*; each loads its own model into memory, so the plan's numbers are for one model alone), stop them, and chat with any of them (*Chat here*). Servers started outside the page on ports 8080-8089 are listed and can be chatted with when they need no API key; the page never sends its key to a server it did not start.
 
 **Saved chats:** every chat is saved after each answer as a file in `~/.cache/moe-cache/ui-chats/` (Windows: in your profile's moe-cache
 folder; Settings shows the place), so it is there after a restart, in any browser and in the coming desktop app. **Export** saves a chat as a
@@ -295,4 +299,4 @@ If you open the page without the password you see a short note: open the address
   loading or ready, model, context, slots, busy slots, whether it wants a key; the key is never returned), and `GET /api/servers` does that for
   ports 8080-8089, marking the one the page started. Only this machine is asked.
 - Tests: `tests/ui_test.py` (no model) and `tests/ui_live.py MODEL.gguf --llama-server PATH` (a real model); CI runs both on Linux and Windows.
-- Not yet: model downloads, several models at once, remote access, a desktop app (design draft APP2).
+- Not yet: remote access, a desktop app (design draft APP2).

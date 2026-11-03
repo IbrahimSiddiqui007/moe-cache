@@ -144,6 +144,47 @@ def free_port():
         return s.getsockname()[1]
 
 
+class PortTaken(RuntimeError):
+    """The port picked for the model server was taken by another program before the launcher bound it (A3-13)."""
+
+
+PROGRESS_PATHS = ("/v1/chat/completions", "/chat/completions", "/v1/completions", "/completions", "/completion")
+
+
+def with_prompt_progress(path, data, enabled):
+    """AGENTS-061 (MOE_CACHE_PROMPT_PROGRESS=1, default off): a streaming request that does not say otherwise gets "return_progress": true, so llama-server sends a
+    small event after every batch of the prompt (an empty delta and a prompt_progress object) while it reads a long prompt. Without it the stream is silent until
+    the first answer token and a client with a read timeout gives up on a long prompt. llama-server ignores the field when it does not know it. Returns the body."""
+    if not enabled or not data or path.split("?")[0].rstrip("/") not in PROGRESS_PATHS:
+        return data
+    try:
+        req = json.loads(data)
+    except (ValueError, UnicodeDecodeError):
+        return data
+    if not isinstance(req, dict) or req.get("stream") is not True or "return_progress" in req:
+        return data
+    req["return_progress"] = True
+    return json.dumps(req).encode()
+
+
+def model_first(argv):
+    """LAUNCHER-005 (A3-16): `on-demand --ram 20 MODEL.gguf` took 20 for the model. The first word that is not an option and not the value of a launcher option
+    that takes one becomes the model and moves to the front; argv is returned as it was when there is no such word."""
+    takes_value = {"--ram", "--vram", "--max-ram", "--ctx", "--n-cpu-moe", "--llama-server", "--load-method", "--gpu-cache", "--gpu-margin", "--ub",
+                   "--project", "--profile", "--mmproj", "--api-key", "--port", "--idle", "--idle-release", "--start-timeout", "--remove"}
+    i = 0
+    while i < len(argv):
+        t = argv[i]
+        if t == "--":
+            break
+        if t.startswith("-"):
+            level = t == "--fast" and i + 1 < len(argv) and argv[i + 1] in ("1", "2", "kv", "fewer")      # --fast takes a level only when one follows
+            i += 1 if "=" in t or not (t in takes_value or level) else 2
+            continue
+        return [t] + argv[:i] + argv[i + 1:]
+    return argv
+
+
 class Backend:
     """The real server: started on demand, stopped when idle. One at a time; requests that come while it starts wait for it."""
 
@@ -195,7 +236,11 @@ class Backend:
                 return self.port
             if self.running():                   # starting (another request is not possible here: the lock) or stopping
                 self._stop_locked("restart")
-            self._start_locked(why)
+            try:
+                self._start_locked(why)
+            except PortTaken:
+                self.log("the port picked for the model server was taken by another program before it started; trying another one")
+                self._start_locked(why)
             return self.port
 
     def _start_locked(self, why):
@@ -214,6 +259,8 @@ class Backend:
             if p.poll() is not None:
                 self.state = "idle"
                 self.log(f"the server did not start (exit code {p.returncode}); its output is in {LOG_FILE}")
+                if self._log_tail_has("is already in use"):
+                    raise PortTaken(f"port {port} was taken before the launcher bound it")
                 raise RuntimeError(f"the model server did not start (exit code {p.returncode}); see {LOG_FILE}")
             if mc.healthy(port, self.key):
                 break
@@ -225,6 +272,15 @@ class Backend:
         self.busy(0)
         self.log(f"ready on 127.0.0.1:{port} after {time.time() - self.t0:.0f} s")
         self._remember(port)
+
+    def _log_tail_has(self, text, n=4096):
+        try:
+            with open(LOG_FILE, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - n))
+                return text in f.read().decode(errors="replace")
+        except OSError:
+            return False
 
     def _remember(self, port):
         """Keep the real model list and context, so the endpoint answers them exactly while the model is stopped."""
@@ -552,6 +608,7 @@ class Handler(BaseHTTPRequestHandler):
                 name = json.loads(data).get("model")
             except (ValueError, AttributeError, UnicodeDecodeError):
                 pass
+        data = with_prompt_progress(path, data, os.environ.get("MOE_CACHE_PROMPT_PROGRESS") == "1") if self.command == "POST" else data
         b = pool.pick(name)
         if self.command == "GET" and (pool.state != "ready" or len(pool.bs) > 1):
             if path in ("/v1/models", "/models"):        # with several models: always all of them, not only the running one
@@ -805,14 +862,14 @@ def on_demand(argv):
     ap.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart and stop the listener")
     ap.add_argument("--stop", action="store_true", help="stop a running listener (and its model)")
     ap.add_argument("--status", action="store_true", help="print the remembered choice and whether the listener runs")
-    ap.add_argument("--keep-key", action="store_true", help="remembering a default without --api-key keeps the custom key of an earlier one instead of forgetting it "
-                                                           "(the control page uses this: it never has the key, and a port or idle change must not lock the agents out)")
+    ap.add_argument("--forget-key", action="store_true", help="remembering a default without --api-key keeps the custom key of an earlier one (a port or idle change "
+                                                             "must not lock the agents out); this forgets it, and the launcher's own agent key applies again")
     ap.add_argument("--add", action="store_true", help="add MODEL as another model (the default stays); a request's \"model\" picks it")
     ap.add_argument("--remove", metavar="NAME", help="forget an added model (its name as /v1/models lists it)")
     extra = []
     if "--" in argv:
         i = argv.index("--"); argv, extra = argv[:i], argv[i:]
-    a, rest = ap.parse_known_args(argv)
+    a, rest = ap.parse_known_args(model_first(argv))
     srv = None
     if a.remove_autostart:
         return remove_autostart()
@@ -890,9 +947,9 @@ def on_demand(argv):
             old = c or {}
             if ukey:
                 save_custom_key(ukey)
-            elif not a.keep_key:
+            elif a.forget_key:
                 try:
-                    os.unlink(CUSTOM_KEY_FILE)       # a new default without --api-key: the earlier custom key no longer applies
+                    os.unlink(CUSTOM_KEY_FILE)       # SERVER-624: only when asked; a new start without --api-key keeps the earlier custom key
                 except OSError:
                     pass
             c = {"model": model, "args": args, "env": env, "port": a.port or old.get("port", 8080), "idle": a.idle or old.get("idle", 15),

@@ -1,0 +1,25 @@
+# Always-on moe-cache server as a systemd USER unit (no root).
+# Install:  cp docs/moe-cache-server.service ~/.config/systemd/user/   then edit the marked lines
+#           systemctl --user daemon-reload && systemctl --user enable --now moe-cache-server
+# Log:      journalctl --user -u moe-cache-server -f
+# Starts at login; to start at boot without a login run once: loginctl enable-linger $USER
+# moe-cache reads the smaller of MemoryMax (memory.max) and MemoryHigh (memory.high) when --ram is not given (bin/moe_cache.py, cgroup_mem_limit), so the
+# cache is sized to stay under both. MemoryHigh makes the kernel reclaim memory before the hard stop at MemoryMax.
+# Or let the launcher fill this file in for you: moe-cache-server /path/MODEL.gguf --agent --print-systemd > ~/.config/systemd/user/moe-cache-server.service
+[Unit]
+Description=moe-cache server (llama-server with the expert cache)
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+# EDIT 1: the folder you unpacked moe-cache into, your model, and your llama-server
+ExecStart=/opt/moe-cache/bin/moe-cache-server /models/MODEL.gguf --agent --llama-server /opt/llama/llama-server
+# EDIT 2: the memory the server may use in total. MemoryMax is the hard stop (and what moe-cache sizes to), MemoryHigh makes the kernel reclaim first
+MemoryHigh=24G
+MemoryMax=26G
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+# EDIT 3 (optional): bind to the network with  --host 0.0.0.0  on the ExecStart line; moe-cache then needs an API key (--api-key or LLAMA_API_KEY)

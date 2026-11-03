@@ -364,7 +364,7 @@ while time.time() < deadline:
     time.sleep(0.3)
 check(odst == "waiting", f"on-demand: the page shows waiting while the model is not loaded ({odst})")
 calls = json.load(open(os.path.join(TMP, "od_calls.json")))
-check("--keep-key" in calls[-2] and calls[-2][1] == small["path"] and "--port" in calls[-2] and "--agent" not in calls[-2] and "--" in calls[-2] and calls[-1] == [],
+check(calls[-2][0] == small["path"] and "--port" in calls[-2] and "--agent" not in calls[-2] and "--" in calls[-2] and calls[-1] == [],
       f"on-demand: remembered with the page's settings (no --agent, the listener adds it), then the listener runs bare ({calls[-2][:5]})")
 st, body = req("/api/chat", {"messages": [{"role": "user", "content": "hi"}]})
 check(st == 200 and '"hi"' in body and "NOKEY" not in body, f"on-demand: the page's chat reaches the listener with the agent key ({st})")
@@ -656,17 +656,27 @@ r = b.get("result", {})
 check(b["state"] == "done" and r.get("start") == "cold" and r.get("flush") == "fake flush" and r.get("load_s", "") != "", f"cold run recorded: start cold, flush line, load time ({b.get('error') or r.get('load_s')})")
 check(flushed == [(small["path"], [models])] and runner.p.pid != pid_before and runner.state == "ready", "the server was stopped, the model flushed, the server started again")
 check(json.loads(req("/api/bench")[1])["rows"][-1]["start"] == "cold", "cold / warm in the CSV")
+# the race behind that flake: Runner.start() -> reset() used to replace a running benchmark by "idle" until restart() put it back
+_r = ui.Runner()
+_r.bench = {"state": "running", "step": "run 2 of 2: starting the server again"}
+_r.reset({"model": "x"})
+check(_r.bench.get("state") == "running" and _r.state == "idle", "reset() keeps a running benchmark (a restart inside a benchmark must not show it idle)")
+_r.bench = {"state": "done"}
+_r.reset({"model": "x"})
+check(_r.bench == {"state": "idle"}, "reset() still clears a finished benchmark (a normal Start)")
 # compare (I42): measure, start again with Run as flipped (moe-cache -> stock), measure, then back to the user's settings
 flushed.clear()
 st, body = req("/api/bench", {"compare": True})
 check(st == 200 and json.loads(body).get("compare") is True, f"compare benchmark starts ({body[:100]})")
-deadline, steps = time.time() + 90, set()
+deadline, steps, states = time.time() + 90, set(), []
 while time.time() < deadline:
     b = json.loads(req("/api/status")[1])["bench"]
     steps.add(b.get("step", ""))
-    if b["state"] != "running":
+    states.append(b["state"])
+    if b["state"] in ("done", "failed"):        # not "anything but running": a restart used to show "idle" for a moment (windows.yml flake, 41694652982)
         break
-    time.sleep(0.2)
+    time.sleep(0.05)
+check("idle" not in states, f"compare: the page never sees the benchmark idle while the server restarts ({sorted(set(states))})")
 res = b.get("results") or []
 check(b["state"] == "done" and len(res) == 2 and res[0]["mode"].startswith("moe-cache") and res[1]["mode"].startswith("stock llama-server (--stock"),
       f"compare: one moe-cache run, then one stock run ({b.get('error')}; {[r['mode'] for r in res]})")
@@ -1263,6 +1273,24 @@ if node:
     check(r_ is not None and [x["show"] for x in r_[:6]] == [False, False, True, True, False, False] and r_[2]["label"] == "Switch to qwen-b",
           f"Switch to <name> only when a server is up and another model is selected ({r_ and [x['show'] for x in r_[:6]]})")
     check(r_ is not None and r_[6:] == [True, False, True, False], "confirm only when a request is running (agent slot processing or the chat)")
+
+# GUI-023: the chat's own hit counter, added up over its answers
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"function chatHits\(messages\) \{.*?\n\}\n", r"function chatHitsText\(messages\) \{.*?\n\}\n"))
+    harness = fn + ("const A = (h, m) => ({role: 'assistant', content: 'x', meta: {hits: h, misses: m}});\n"
+                    "console.log(JSON.stringify([chatHits([]), chatHits(undefined), chatHits([{role:'user',content:'q'}, A(90,10), {role:'user',content:'q'}, A(70,30)]), chatHits([A(0,0), {role:'assistant',content:'x'}, A(NaN,1)]),\n"
+                    "  chatHitsText([A(90,10)]), chatHitsText([A(90,10), A(70,30)]), chatHitsText([]), chatHitsText([A(0,0)])]));\n")
+    hf = os.path.join(TMP, "hits.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and r_[0]["n"] == 0 and r_[0]["rate"] is None and r_[1]["n"] == 0, "chat hits: no answers, no numbers")
+    check(r_ is not None and r_[2] == {"hits": 160, "misses": 40, "n": 2, "rate": 0.8}, f"chat hits: two answers add up to 160 hits, 40 misses, 80 % ({r_ and r_[2]})")
+    check(r_ is not None and r_[3]["n"] == 0, "chat hits: answers without numbers (0/0, missing, NaN) are skipped")
+    check(r_ is not None and r_[4:] == [" \u00b7 expert hits 90.0 % over 1 answer", " \u00b7 expert hits 80.0 % over 2 answers", "", ""], f"chat hits: the line under the title ({r_ and r_[4:]})")
+check('id="chatinfo"' in page and "chatHitsText(c.messages)" in page, "the chat title line shows the counter")
 
 # the model list's menu: right-click, Shift+F10 / the menu key, the three-dots button; the items follow the server state
 check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),

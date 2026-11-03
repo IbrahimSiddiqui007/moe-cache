@@ -11,8 +11,8 @@
 <script>
   // The shell shows this page until the control-page server answers, then replaces it with the server's address.
   // On a failure it calls window.__moeFail(text) so the user sees why instead of an empty window.
-  window.__moeFail = function (text) {
-    document.getElementById("t").textContent = "moe-cache could not start its control page.";
+  window.__moeFail = function (text, title) {
+    document.getElementById("t").textContent = title || "moe-cache could not start its control page.";
     document.getElementById("d").textContent = text;
   };
 </script>

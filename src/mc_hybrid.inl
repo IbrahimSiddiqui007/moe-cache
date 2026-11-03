@@ -440,7 +440,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     const int64_t R = (int64_t) hrows.size();
     // the GPU graph: same nodes, weights replaced by the bank, ids by the slots (misses point at slot 0; their columns are not used)
     ggml_init_params ip = { ggml_tensor_overhead() * 4 * (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
-    ggml_context * ctx = ggml_init(ip);
+    ggml_context * ctx = ctx_new(c, ip);
     if (!ctx) {
         return false;
     }
@@ -468,7 +468,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             } else {
                 // uploaded row by row below: whole rows of F32 / I32 only (the same rule as gpu_segment)
                 if (src->nb[0] != ggml_type_size(src->type) || (src->type != GGML_TYPE_F32 && src->type != GGML_TYPE_I32)) {
-                    ggml_free(ctx);
+                    ctx_free(c, ctx);
                     return false;
                 }
                 int64_t sne[GGML_MAX_DIMS] = { src->ne[0], src->ne[1], src->ne[2], src->ne[3] };
@@ -487,7 +487,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     ggml_cgraph * g = ggml_new_graph(ctx);
     ggml_build_forward_expand(g, gout);
     if (!gpu_graph_supported(c, g) || !ggml_gallocr_alloc_graph(c->galloc, g)) {
-        ggml_free(ctx);
+        ctx_free(c, ctx);
         return false;
     }
     if (compact) {
@@ -523,7 +523,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     }
     if (ggml_backend_graph_compute_async(c->gpu, g) != GGML_STATUS_SUCCESS) {
         ggml_backend_synchronize(c->gpu);    // part of it may have been submitted: let it finish before the buffers are used again
-        ggml_free(ctx);
+        ctx_free(c, ctx);
         return false;
     }
     // meanwhile the CPU computes the misses (the activation node runs for all picks; the hit picks' values are replaced below)
@@ -552,7 +552,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             }
         }
     }
-    ggml_free(ctx);
+    ctx_free(c, ctx);
     s.hyb_groups++;
     s.hyb_picks += (uint64_t) (n_used * n_tok);
     s.hyb_hits += (uint64_t) n_hit;

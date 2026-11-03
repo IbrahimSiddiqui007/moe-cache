@@ -215,6 +215,14 @@ button.danger { border-color:var(--ink); }
 .pickcard details { margin-top:10px; } .pickcard details > summary { cursor:pointer; color:var(--muted); font-size:12px; }
 .pickcard details > div { margin-top:4px; font-size:12px; } .pickcard details > div > div { margin:3px 0; }
 .pickcard .get { margin-top:10px; font-size:12px; }
+.thumb { height:22px; width:22px; object-fit:cover; border-radius:3px; vertical-align:middle; } .pic { max-height:160px; max-width:100%; border-radius:6px; margin:4px 4px 0 0; display:block; }
+.banner.warn { color:var(--warn); }
+.dlcard { margin-top:8px; border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); padding:10px 12px; font-size:13px; color:var(--text); }
+.dlcard table { width:100%; } .dlcard td { padding:2px 6px 2px 0; border-bottom:0; font-size:13px; font-variant-numeric:tabular-nums; }
+.dlcard td:first-child { color:var(--muted); white-space:nowrap; }
+.dlcard label.f { display:flex; gap:8px; align-items:flex-start; margin:4px 0; font-size:12px; word-break:break-all; }
+.dlcard .meter { height:12px; border-radius:6px; background:var(--code); overflow:hidden; margin:8px 0 4px; } .dlcard .meter i { display:block; height:100%; background:var(--accent); width:0; }
+.dlcard .bad { color:var(--warn); }
 .pickact { display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:10px; border-top:1px solid var(--line); }
 .pickact:has(#pickapply[hidden]):not(:has(#pickmsg:not(:empty))) { display:none; }
 .top .brand { font:700 15px ui-monospace, "SF Mono", Consolas, monospace; letter-spacing:.04em; text-transform:lowercase; }
@@ -270,6 +278,7 @@ button.danger { border-color:var(--ink); }
   .only-wide { display:none !important; }
   .only-narrow { display:inline-flex !important; }
   .top { gap:6px; padding:8px; }
+  .top { min-width:0; } .startgrp { min-width:0; flex:0 1 auto; max-width:62vw; } #switch, #start { min-width:0; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }   /* a long model name in "Switch to ..." must not push the bar past the screen */
   #state { display:none; }               /* the dot and Start/Stop say it */
   .modelpick { padding:3px 8px; } .modelpick .badge { display:none; }
   .msgs { padding:12px 10px 6px; } .composer { padding:6px 8px 10px; }
@@ -321,7 +330,7 @@ button.danger { border-color:var(--ink); }
     <main class="center" id="center">
       <div class="chathead">
         <span class="title" id="chattitle">New chat</span>
-        <span class="small only-wide" id="chatinfo"></span>
+        <span class="small only-wide" id="chatinfo"></span><span class="small" id="chattarget"></span>
         <span style="flex:1"></span>
         <button class="ghost small" id="export" title="Save this chat as a Markdown file">Export</button>
         <button class="ghost small" id="trashchat" title="Move this chat to the Trash">Trash</button>
@@ -330,11 +339,12 @@ button.danger { border-color:var(--ink); }
       <div class="composer">
         <div id="err"></div>
         <div class="banner" id="chatnote"></div>
+        <div class="banner warn" id="ctxwarn" hidden></div>
         <div class="box">
           <div class="row" id="attached"></div>
-          <textarea id="ta" rows="2" placeholder="Message… (Enter sends, Shift+Enter new line; drop text files here)"></textarea>
+          <textarea id="ta" rows="2" placeholder="Message… (Enter sends, Shift+Enter new line; drop text or image files here)"></textarea>
           <div class="row">
-            <button class="ghost" id="attach" title="Attach text files">📎</button><input type="file" id="fileinput" multiple hidden>
+            <button class="ghost" id="attach" title="Attach text, code or image files">📎</button><input type="file" id="fileinput" multiple hidden>
             <span class="small" id="ctxinfo"></span>
             <span class="grow"></span>
             <button class="danger" id="stopgen" hidden>■ Stop</button>
@@ -342,7 +352,7 @@ button.danger { border-color:var(--ink); }
           </div>
         </div>
       </div>
-      <div class="drop"><b>Drop files to attach</b><span class="small">text and code files go into the message (up to 512 KB each)</span></div>
+      <div class="drop"><b>Drop files to attach</b><span class="small">text and code files go into the message (up to 512 KB each); images go to a vision model</span></div>
     </main>
 
     <!-- ================= RIGHT: live status, context, files, agents, log ================= -->
@@ -376,7 +386,7 @@ button.danger { border-color:var(--ink); }
 
       <details class="card" open id="c-agents"><summary>Agents</summary><div class="body"><div id="agentsmain"></div></div></details>
 
-      <details class="card" open id="c-servers" hidden><summary>Other servers on this machine</summary><div class="body" id="servers"></div></details>
+      <details class="card" open id="c-servers" hidden><summary>Servers on this machine</summary><div class="body" id="servers"></div></details>
 
       <details class="card" id="decisions" hidden><summary>What the launcher decided</summary><div class="body"><ul class="why"></ul></div></details>
 
@@ -426,13 +436,22 @@ button.danger { border-color:var(--ink); }
   <div class="body">
     <div class="hint">These apply at the next Start; the verdicts in the model list update at once. The page remembers them (not the API key).</div>
     <h4>Which model?</h4>
-    <div class="hint">Reads this machine (RAM, VRAM, disk, CPU) and recommends one model from our measurements. It never downloads anything.</div>
+    <div class="hint">Reads this machine (RAM, VRAM, disk, CPU) and recommends one model from our measurements. This part never downloads anything; the next section does, only after you tick each file.</div>
     <div class="seg" id="pickuse"><button data-v="agents">Agents / coding</button><button data-v="chat">Chat</button><button data-v="docs">Long documents</button></div>
     <div class="row small" style="margin-top:6px"><label for="pickmodel">Or choose one yourself (only warned about, never refused):</label>
       <select id="pickmodel"><option value="">the recommended one</option><option value="bolt">Nemotron 3.5 Bolt 74B</option><option value="flash-next-q2_0">Flash-Next Q2_0</option>
         <option value="flash-next-iq3_xxs">Flash-Next IQ3_XXS</option><option value="qwen3.5-122b">Qwen3.5-122B</option><option value="qwen3.6-35b">Qwen3.6-35B</option><option value="glm-5.3">GLM-5.3-Flash</option><option value="gpt-oss-120b">gpt-oss-120b (untested)</option><option value="deepseek-v41-flash">DeepSeek-V4.1-Flash IQ1_M (untested, 231 GB)</option></select></div>
     <div class="pickcard"><div id="pickres"></div>
       <div class="pickact"><button id="pickapply" class="primary" hidden>Use it</button><span class="small" id="pickmsg"></span></div></div>
+    <h4>Download a model</h4>
+    <div class="hint">From the catalogue (models.json) to the first model folder. Nothing starts until you tick every file it will fetch; a stopped download continues from the bytes already on disk, and the sha256 of each file is checked at the end.</div>
+    <select id="dlmodel" aria-label="Model to download"></select>
+    <div class="dlcard" id="dlcard" hidden>
+      <div id="dlinfo"></div>
+      <div id="dlfiles"></div>
+      <div class="pickact"><button id="dlgo" class="primary" disabled>Download</button><button id="dlcancel" hidden>Cancel</button><button id="dlall" class="small">Tick all files</button><span class="small" id="dlmsg"></span></div>
+      <div class="meter" id="dlmeter" hidden><i id="dlbar"></i></div><div class="small" id="dlprog"></div>
+    </div>
     <h4>Other programs</h4>
     <div class="small" id="busymsg">Looking at what uses the GPU and CPU…</div>
     <div class="small" id="busyres"></div>
@@ -593,12 +612,18 @@ function verdictBadge(p) {
   if (!p) return `<span class="badge wait">planning…</span>`;
   return `<span class="badge ${p.kind || "error"}">${esc(p.verdict || "?")}</span>`;
 }
+function mtpChip(i) {      // GUI-011: the model's own file has an MTP head (the launcher uses it in Agent mode); a separate mtp-*.gguf beside it is not used
+  if (!i) return "";
+  if (i.head > 0) return ` · <span class="chip mtp" title="This model has an MTP head (${i.head} layer) in its own file. Agent mode uses it when llama-server supports it (Settings → MTP).">MTP head</span>`;
+  if (i.beside) return ` · <span class="chip" title="A separate head file (${esc(i.beside)}) lies in the same folder. The launcher reads only the head inside the model's own file, so this one is not used.">MTP file beside, not used</span>`;
+  return "";
+}
 function paintModels() {
   $("nomodels").hidden = S.models.length > 0;
   $("nomodels").textContent = "No .gguf models found: add a folder in Settings, or let Settings → Which model? suggest one for this machine.";
   $("models").innerHTML = S.models.map((m, i) => { const p = S.plans[planKey(m.path)];
     return `<div class="item${m.path == S.sel ? " sel" : ""}" data-i="${i}" tabindex="0" title="${esc(m.path)}"><div><span class="t">${esc(shortName(m.name))}${S.runKey && S.runKey == m.path ? ` <span class="badge stock">running</span>` : ""}</span>
-      <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span></span></div><button class="rowbtn" data-i="${i}" aria-label="Actions for ${esc(shortName(m.name))}" aria-haspopup="menu" title="Actions">⋮</button></div>`; }).join("");
+      <span class="s">${fmtGB(m.size)} · ${esc(m.quant)} · <span class="${p ? p.kind || "error" : "wait"}">${esc(p ? p.verdict || "?" : "planning…")}</span>${mtpChip(m.mtp)}</span></div><button class="rowbtn" data-i="${i}" aria-label="Actions for ${esc(shortName(m.name))}" aria-haspopup="menu" title="Actions">⋮</button></div>`; }).join("");
   const m = S.models.find(x => x.path == S.sel), p = S.sel && S.plans[planKey(S.sel)];
   $("topmodel").textContent = m ? shortName(m.name) : "no model";
   $("topverdict").className = "badge " + (p ? p.kind || "error" : "wait"); $("topverdict").textContent = m ? (p ? p.verdict || "?" : "planning…") : ""; $("topverdict").title = (p && p.summary) || "";
@@ -680,6 +705,59 @@ async function applyPick() {
     } else $("pickmsg").textContent = "remembered; download the file, then press Use it again";
   } catch (e) { $("pickmsg").textContent = e.message; }
 }
+
+
+/* ---------- model downloads (bin/moe_cache_download.py; GUI-008) ---------- */
+const DL = { models: [], job: { status: "idle" }, timer: null };
+const fmtDur = s => s == null || !isFinite(s) ? "" : s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
+async function loadDownloads() {
+  try {
+    const j = await api("/api/downloads"); DL.models = j.models; DL.job = j.job; DL.folder = j.folder;
+    const cur = $("dlmodel").value;
+    $("dlmodel").innerHTML = j.models.map(m => `<option value="${esc(m.id)}">${esc(m.name)} · ${fmtGB(m.bytes)}${m.complete ? " · here" : m.have ? " · partly here" : ""}</option>`).join("");
+    const run = j.job && j.job.running ? j.job.id : null;
+    $("dlmodel").value = run || (j.models.some(m => m.id == cur) ? cur : (j.models[0] || {}).id);
+    paintDownload();
+  } catch (e) { $("dlmsg").textContent = e.message; }
+}
+function dlModel() { return DL.models.find(m => m.id == $("dlmodel").value); }
+function paintDownload() {
+  const m = dlModel(), job = DL.job || {}, mine = job.id == (m && m.id), running = job.running;
+  $("dlcard").hidden = !m; if (!m) return;
+  const todo = m.files.filter(f => !f.complete);
+  $("dlinfo").innerHTML = `<table><tr><td>Size</td><td>${fmtGB(m.bytes)} in ${m.files.length} ${m.files.length == 1 ? "file" : "files"}${m.have ? ` · ${fmtGB(m.have)} already here` : ""}</td></tr>` +
+    `<tr><td>To fetch</td><td>${fmtGB(m.missing)} from <code>huggingface.co/${esc(m.repo)}</code></td></tr>` +
+    `<tr><td>Free disk</td><td class="${m.fits_disk ? "" : "bad"}">${m.free == null ? "unknown" : fmtGB(m.free)} at <code>${esc(m.folder)}</code> · needs ${fmtGB(m.need_free)}${m.fits_disk ? "" : " — not enough, no download is offered"}</td></tr>` +
+    `<tr><td>Checks</td><td>${m.has_checksums ? "sha256 of every file" : "no checksum listed for some files"}</td></tr>` +
+    (m.mtp && m.mtp != "none" ? `<tr><td>Speed</td><td><span class="chip mtp" title="multi-token prediction head: ${esc(m.mtp)}">MTP head ${esc(m.mtp)}</span></td></tr>` : "") + `</table>`;
+  const ticked = new Set([...document.querySelectorAll("#dlfiles input:checked")].map(x => x.value));
+  $("dlfiles").innerHTML = todo.length ? `<div class="small" style="margin-top:6px">Tick each file to allow it:</div>` + todo.map(f => `<label class="f"><input type="checkbox" value="${esc(f.path)}"${ticked.has(f.path) ? " checked" : ""}${running ? " disabled" : ""}><span>${esc(f.path)} · ${fmtGB(f.bytes)}${f.part ? ` · ${fmtGB(f.part)} here` : ""}</span></label>`).join("")
+    : `<div class="small" style="margin-top:6px">Every file is here.</div>`;
+  const all = () => todo.length && todo.every(f => document.querySelector(`#dlfiles input[value="${CSS.escape(f.path)}"]`).checked);
+  const upd = () => { $("dlgo").disabled = !!running || !all() || !m.fits_disk; };
+  document.querySelectorAll("#dlfiles input").forEach(x => x.onchange = upd); upd();
+  $("dlgo").textContent = m.have && !m.complete ? "Continue download" : "Download"; $("dlgo").hidden = m.complete; $("dlall").hidden = !todo.length || !!running;
+  $("dlcancel").hidden = !(running && mine);
+  const show = mine && job.status != "idle";
+  $("dlmeter").hidden = !show; $("dlprog").className = "small" + (job.status == "failed" ? " bad" : "");
+  if (show) {
+    const pct = job.total ? Math.min(100, 100 * job.done / job.total) : 0;
+    $("dlbar").style.width = (job.status == "verifying" || job.status == "done" ? 100 : pct) + "%";
+    $("dlprog").textContent = job.status == "downloading" ? `${pct.toFixed(1)} % · ${fmtGB(job.done)} of ${fmtGB(job.total)}${job.speed > 1 ? " · " + (job.speed / 1e6).toFixed(1) + " MB/s" : ""}${job.eta ? " · about " + fmtDur(job.eta) + " left" : ""}${job.message ? " · " + job.message : ""}`
+      : job.status == "verifying" ? "checking sha256… " + (job.message || "") : job.message || job.status;
+  } else $("dlprog").textContent = running ? `Another download is running: ${job.name}` : "";
+  clearTimeout(DL.timer); if (running) DL.timer = setTimeout(pollDownload, 1000);
+}
+async function pollDownload() {
+  try { const was = DL.job && DL.job.running; DL.job = await api("/api/download"); if (was && !DL.job.running) { await loadDownloads(); loadModels(true); return; } } catch (e) {}
+  paintDownload();
+}
+async function startDownload() {
+  const m = dlModel(); $("dlmsg").textContent = "";
+  try { DL.job = await api("/api/download/start", { id: m.id, files: [...document.querySelectorAll("#dlfiles input:checked")].map(x => x.value) }); paintDownload(); }
+  catch (e) { $("dlmsg").textContent = e.message; }
+}
+async function cancelDownload() { try { DL.job = await api("/api/download/cancel", {}); } catch (e) { $("dlmsg").textContent = e.message; } paintDownload(); }
 
 /* ---------- live status ---------- */
 function chart(id, pts, max, color, pct) {
@@ -950,14 +1028,41 @@ function paintAgents(st) {
   });
 }
 
-/* ---------- llama-servers started elsewhere (status only; /api/servers asks ports 8080-8089 on this machine) ---------- */
+/* ---------- servers on this machine (GUI-013): the ones this page started (main + up to 2 more) and the ones started elsewhere (ports 8080-8089) ---------- */
+S.chatPort = null; S.servers = { managed: [], other: [], max: 2 };
+const nextPort = () => { const used = new Set((S.servers.managed || []).map(x => x.port).concat((S.servers.other || []).map(x => x.port))); for (let p = 8081; p < 8090; p++) if (!used.has(p)) return p; return ""; };
 async function loadServers() {
   let j; try { j = await api("/api/servers"); } catch (e) { return; }
-  const other = (j.servers || []).filter(x => !x.started_here);
-  $("c-servers").hidden = !other.length;
-  $("servers").innerHTML = other.map(x => `<div class="line"><span class="dot ${x.health == "ready" ? (x.busy ? "ok" : "") : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
-    <br><span class="small">${x.health == "ready" ? "ready" : "loading"}${x.ctx ? " · ctx " + x.ctx.toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span></div>`).join("") +
-    (other.length ? `<div class="hint">Started outside this page (a script, the terminal, another page). Shown only; Start/Stop here act on the page's own server.</div>` : "");
+  const managed = j.managed || [], other = (j.servers || []).filter(x => !x.started_here);
+  S.servers = { managed, other, max: j.max_extra };
+  if (S.chatPort && !managed.concat(other).some(x => x.port == S.chatPort)) S.chatPort = null;
+  paintServers(); paintChatTarget();
+}
+function paintServers() {
+  const { managed, other } = S.servers, can = S.status.state == "ready" && S.sel && managed.length <= S.servers.max;
+  $("c-servers").hidden = !(managed.length > 1 || other.length);
+  const chatBtn = (port, why) => `<button class="rowbtn" data-chat="${port}" ${why ? `disabled title="${esc(why)}"` : ""}>${(S.chatPort || (managed.find(x => x.main) || {}).port) == port ? "chatting here" : "Chat here"}</button>`;
+  $("servers").innerHTML = managed.map(x => `<div class="line"><span class="dot ${x.state == "ready" ? "ok" : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
+    <br><span class="small">${x.main ? "main server of this page" : "started here"} · ${esc(x.state)}${x.mode ? " · " + esc(x.mode) : ""}${x.live_tps ? ` · ${x.live_tps.toFixed(1)} tok/s` : ""}${x.vision ? " · images" : ""}</span></span>
+    ${x.state == "ready" || x.state == "waiting" ? chatBtn(x.port) : ""}${x.main ? "" : `<button class="rowbtn" data-stop="${x.port}">Stop</button>`}</div>`).join("") +
+    other.map(x => `<div class="line"><span class="dot ${x.health == "ready" ? (x.busy ? "ok" : "") : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
+    <br><span class="small">started elsewhere · ${x.health == "ready" ? "ready" : "loading"}${x.ctx ? " · ctx " + x.ctx.toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span>
+    ${x.health == "ready" ? chatBtn(x.port, x.key ? "this server wants an API key; the page sends its key only to servers it started" : "") : ""}</div>`).join("") +
+    (other.length ? `<div class="hint">Servers started outside this page (a script, the terminal, another page) can be chatted with here when they need no key; Start and Stop act on this page's own servers only.</div>` : "") +
+    `<div class="row small" style="margin-top:8px"><button id="srvadd" ${can ? "" : "disabled"} title="Starts the model selected on the left, with the settings in Settings, on another port">Start another server</button><input type="number" id="srvport" min="1" max="65535" value="${nextPort()}" style="width:80px" aria-label="Port of the new server"></div>
+    <div class="hint">Every server loads its own model into this PC's memory: the plan's numbers are for one model alone. Two big models at once will not fit; two small ones, or one model and a small one, can.</div>`;
+}
+$("servers").onclick = async e => {
+  const b = e.target.closest("button"); if (!b) return;
+  try {
+    if (b.dataset.chat) { S.chatPort = +b.dataset.chat == ((S.servers.managed.find(x => x.main) || {}).port) ? null : +b.dataset.chat; paintServers(); paintChatTarget(); }
+    else if (b.dataset.stop) { await api("/api/servers/stop", { port: +b.dataset.stop }); setTimeout(loadServers, 1500); }
+    else if (b.id == "srvadd") { await api("/api/servers/start", Object.assign(settings(), { port: $("srvport").value })); showErr(""); loadServers(); }
+  } catch (er) { showErr(er.message); }
+};
+function paintChatTarget() {
+  const x = S.chatPort && S.servers.managed.concat(S.servers.other).find(y => y.port == S.chatPort);
+  $("chattarget").textContent = x ? `· chatting with :${x.port} ${shortName(x.model || "") || ""}` : "";
 }
 
 /* ---------- the chat (center) ---------- */
@@ -1041,13 +1146,26 @@ function splitThink(m) {          // models that write <think>…</think> into t
   if (t) { think += t[1]; text = t[2] ? text.slice(t[0].length) : ""; }
   return [think.trim(), text];
 }
+// GUI-023: this chat's expert-cache numbers, added up over its answers (each answer carries the hits and misses counted while it was written)
+function chatHits(messages) {
+  let hits = 0, misses = 0, n = 0;
+  for (const m of messages || []) {
+    const t = m && m.role == "assistant" && m.meta;
+    if (t && Number.isFinite(t.hits) && Number.isFinite(t.misses) && t.hits + t.misses > 0) { hits += t.hits; misses += t.misses; n++; }
+  }
+  return { hits, misses, n, rate: hits + misses > 0 ? hits / (hits + misses) : null };
+}
+function chatHitsText(messages) {
+  const h = chatHits(messages);
+  return h.n ? ` · expert hits ${(h.rate * 100).toFixed(1)} % over ${h.n} answer${h.n == 1 ? "" : "s"}` : "";
+}
 function chips(m, i, live) {
   const t = m.meta || {}, out = [];
   if (live) out.push(`<span class="chip tps">writing · ${t.live_tps != null ? t.live_tps.toFixed(1) + " tok/s" : "…"}</span>`);
   else if (t.predicted_per_second) out.push(`<span class="chip tps">${t.predicted_per_second.toFixed(1)} tok/s</span>`);
   if (t.prompt_per_second && t.prompt_n > 1) out.push(`<span class="chip" title="${t.prompt_n} new prompt tokens${t.cache_n ? ", " + t.cache_n + " reused" : ""}">prefill ${t.prompt_per_second.toFixed(0)} tok/s</span>`);
   if (t.draft_n) out.push(`<span class="chip mtp" title="multi-token prediction: drafted ${t.draft_n}, accepted ${t.draft_n_accepted}">MTP ${(100 * t.draft_n_accepted / t.draft_n).toFixed(0)} % accepted</span>`);
-  if (t.hit_rate != null) out.push(`<span class="chip hit" title="experts found in RAM during this answer: ${t.hits} hits, ${t.misses} misses">hit ${(t.hit_rate * 100).toFixed(1)} %</span>`);
+  if (t.hit_rate != null) out.push(`<span class="chip hit" title="experts found in RAM while this answer was written: ${t.hits} hits, ${t.misses} misses. The count is the server's, so a second chat or agent running at the same time is included">hit ${(t.hit_rate * 100).toFixed(1)} %</span>`);
   if (t.predicted_n) out.push(`<span class="chip">${t.predicted_n} tokens · ${(t.predicted_ms / 1000).toFixed(1)} s</span>`);
   if (t.stopped) out.push(`<span class="chip stopped">stopped</span>`);
   const last = i == C.chat.messages.length - 1;
@@ -1056,7 +1174,7 @@ function chips(m, i, live) {
 }
 function msgHTML(m, i, live) {
   if (m.role == "user")
-    return `<div class="msg user">${esc(m.shown ?? m.content)}${(m.files || []).length ? `<div class="att">${m.files.map(f => `<span class="file">📄 ${esc(f.name)} · ${f.tokens.toLocaleString()} tokens</span>`).join("")}</div>` : ""}</div>`;
+    return `<div class="msg user">${esc(m.shown ?? m.content)}${(m.images || []).length ? `<div class="att">${m.images.map(u => `<img class="pic" src="${u}" alt="attached image">`).join("")}</div>` : ""}${(m.files || []).length ? `<div class="att">${m.files.map(f => `<span class="file">${f.image ? "🖼" : "📄"} ${esc(f.name)} · ${f.tokens.toLocaleString()} tokens</span>`).join("")}</div>` : ""}</div>`;
   const [think, text] = splitThink(m);
   return `<div class="msg ai" data-i="${i}">${think && $("showthink").checked ? `<details class="think"${live && !text ? " open" : ""}><summary>${live && !text ? "Thinking…" : "Thinking"}</summary>${esc(think)}</details>` : ""}` +
     (m.error ? `<p class="errmsg">${esc(m.error)}</p>` : "") + md(text) + (live ? `<span class="cursor"></span>` : "") + chips(m, i, live) + "</div>";
@@ -1064,7 +1182,8 @@ function msgHTML(m, i, live) {
 function paintChat() {
   const c = C.chat;
   $("chattitle").textContent = c.title || "New chat";
-  $("chatinfo").textContent = c.messages.length ? `· ${shortName(c.model) || "?"}` + (c.system ? " · own system prompt" : "") : "";
+  $("chatinfo").textContent = c.messages.length ? `· ${shortName(c.model) || "?"}` + (c.system ? " · own system prompt" : "") + chatHitsText(c.messages) : "";
+  $("chatinfo").title = chatHits(c.messages).n ? "The expert-cache hits and misses counted while this chat's answers were written, added up. The server counts them, so another chat or an agent running at the same time is included" : "";
   $("inner").innerHTML = c.messages.length ? c.messages.map((m, i) => msgHTML(m, i, C.busy && i == c.messages.length - 1 && m.role == "assistant")).join("") :
     `<div class="empty"><svg viewBox="0 0 21 32" shape-rendering="crispEdges" aria-hidden="true"><g fill="currentColor"><rect x="10" y="0" width="1" height="6"/><rect x="8" y="5" width="5" height="3"/><rect x="9" y="8" width="3" height="24"/><rect x="3" y="10" width="15" height="1"/><rect x="2" y="11" width="3" height="6"/><rect x="16" y="11" width="3" height="6"/><rect x="5" y="19" width="11" height="1"/><rect x="4" y="20" width="3" height="5"/><rect x="14" y="20" width="3" height="5"/></g><g class="c" fill="currentColor"><rect x="9" y="12" width="3" height="1"/><rect x="9" y="24" width="3" height="1"/><rect x="2" y="13" width="1" height="2"/></g></svg><b>What are we working on?</b>${S.status.state == "ready" ? "Type below. Speed, MTP and cache hits show under each answer." : (S.models.length ? "Pick a model on the left and press Start (top right)." : "No model found yet. Open Settings > Which model? for a recommendation and the download command, or put a .gguf file in a model folder and press Rescan.")}</div>`;
   paintAttached(); paintContext();
@@ -1082,9 +1201,10 @@ $("inner").onclick = e => {
   if (b.dataset.regen != null && !C.busy) { C.chat.messages.pop(); paintChat(); ask(); }
 };
 function paintChatState(st, running) {
-  const ready = st.state == "ready", ondemand = st.state == "waiting";      // "waiting": the on-demand mode's state, once the launcher has it
+  const other = S.chatPort != null;                                         // chatting with another server (GUI-013): its own state is what the server list shows
+  const ready = st.state == "ready" || other, ondemand = st.state == "waiting";      // "waiting": the on-demand mode's state, once the launcher has it
   $("send").disabled = C.busy || !(ready || ondemand);
-  $("ta").placeholder = ready ? `Message ${shortName(st.model)}… (Enter sends, Shift+Enter new line; drop text files here)` : running ? "The model is loading…" : "Start a model to chat (top right)";
+  $("ta").placeholder = ready ? `Message ${shortName(other ? ((S.servers.managed.concat(S.servers.other).find(y => y.port == S.chatPort) || {}).model || "") : st.model)}… (Enter sends, Shift+Enter new line; drop text or image files here)` : running ? "The model is loading…" : "Start a model to chat (top right)";
   if (!(S.noteUntil > Date.now())) $("chatnote").textContent = running && !ready && !ondemand ? "Loading the model… the chat works as soon as it says running." : "";
   if (!C.chat.messages.length && S.lastState != st.state) paintChat();
   S.lastState = st.state;
@@ -1092,17 +1212,21 @@ function paintChatState(st, running) {
 async function send() {
   const text = $("ta").value.trim();
   if ((!text && !C.files.length) || C.busy || $("send").disabled) return;
-  const files = C.files.map(f => ({ name: f.name, tokens: f.tokens }));
-  const content = (text + C.files.map(f => `\n\nFile: ${f.name}\n\`\`\`\n${f.text}\n\`\`\``).join("")).trim();
-  C.chat.messages.push({ role: "user", content, shown: text, files });
+  const files = C.files.map(f => ({ name: f.name, tokens: f.tokens, image: !!f.image }));
+  const content = (text + C.files.filter(f => !f.image).map(f => `\n\nFile: ${f.name}\n\`\`\`\n${f.text}\n\`\`\``).join("")).trim();
+  const images = C.files.filter(f => f.image).map(f => f.image);
+  const full = estimateTokens() + C.files.reduce((a, f) => a + f.tokens, 0) + Math.ceil(text.length / 4);
+  if (full > ctxSize()) { showErr(`The chat is full: about ${full.toLocaleString()} tokens against a context of ${ctxSize().toLocaleString()}. Start a new chat, or pick a bigger context in Settings and restart the model.`); return; }
+  C.chat.messages.push(Object.assign({ role: "user", content, shown: text, files }, images.length ? { images } : {}));
   C.chat.files = (C.chat.files || []).concat(files);
   C.files = []; $("ta").value = ""; autosize();
   paintChat(); ask();
 }
 async function ask() {
   const c = C.chat;
-  c.model = S.status.model || c.model;
-  const msgs = (c.system ? [{ role: "system", content: c.system }] : []).concat(c.messages.map(m => ({ role: m.role, content: m.role == "assistant" ? splitThink(m)[1] : m.content })).filter(m => m.content));
+  const tgt = S.chatPort && S.servers.managed.concat(S.servers.other).find(y => y.port == S.chatPort);
+  c.model = (tgt ? tgt.model : S.status.model) || c.model;
+  const msgs = (c.system ? [{ role: "system", content: c.system }] : []).concat(c.messages.map(m => Object.assign({ role: m.role, content: m.role == "assistant" ? splitThink(m)[1] : m.content }, m.images && m.images.length ? { images: m.images } : {})).filter(m => m.content || m.images));
   const a = { role: "assistant", content: "", think: "", meta: {} };
   c.messages.push(a);
   C.busy = true; C.ctrl = new AbortController(); showErr("");
@@ -1112,7 +1236,7 @@ async function ask() {
   const temp = +$("temp").value;
   try {
     const r = await fetch("/api/chat", { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }), signal: C.ctrl.signal,
-                                         body: JSON.stringify(Object.assign({ messages: msgs }, temp >= 0 ? { temperature: temp } : {})) });
+                                         body: JSON.stringify(Object.assign({ messages: msgs }, temp >= 0 ? { temperature: temp } : {}, S.chatPort ? { port: S.chatPort } : {})) });
     if (!r.ok) { let m = r.status; try { m = (await r.json()).error; } catch (e) {} throw new Error(m); }
     const rd = r.body.getReader(), dec = new TextDecoder(); let buf = "";
     for (;;) {
@@ -1153,20 +1277,36 @@ $("ta").onkeydown = e => { if (e.key == "Enter" && !e.shiftKey && !e.isComposing
 
 // attached files: text only, read in the browser, put into the message
 const MAX_FILE = 512 * 1024;
+const IMG_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"], MAX_IMG = 20 * 1024 * 1024, MAX_EDGE = 1568, MAX_IMAGES = 8;
+// GUI-009: an image is shrunk in the browser (long edge 1568 px, JPEG) and goes to a model that has an image encoder: the running llama-server says so in /props
+async function addImage(f) {
+  if (S.status.state != "ready" && !S.chatPort) { showErr(`${f.name}: start a model first; images only go to a model with an image encoder`); return; }
+  if (S.status.vision === false && !S.chatPort) { showErr(`${f.name}: the running model has no image input. A vision model needs its projector file: start it with  -- --mmproj FILE  (or use a model that has one)`); return; }
+  if (f.size > MAX_IMG) { showErr(`${f.name}: bigger than 20 MB, not attached`); return; }
+  if (C.files.filter(x => x.image).length >= MAX_IMAGES) { showErr(`at most ${MAX_IMAGES} images in one message`); return; }
+  try {
+    const bmp = await createImageBitmap(f), k = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height)), w = Math.max(1, Math.round(bmp.width * k)), h = Math.max(1, Math.round(bmp.height * k));
+    const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+    const g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, w, h); g.drawImage(bmp, 0, 0, w, h);
+    const url = cv.toDataURL("image/jpeg", 0.85);
+    C.files.push({ name: f.name, image: url, tokens: Math.min(1600, Math.ceil(w * h / 750)), thumb: w + "×" + h });
+  } catch (e) { showErr(`${f.name}: not an image this browser can read`); }
+}
 async function addFiles(list) {
   for (const f of list) {
+    if (IMG_TYPES.includes(f.type)) { await addImage(f); continue; }
     if (f.size > MAX_FILE) { showErr(`${f.name}: bigger than 512 KB, not attached`); continue; }
     const text = await f.text();
-    if (text.includes("\0") || /�{3,}/.test(text)) { showErr(`${f.name}: not a text file (images and binary files are not supported yet)`); continue; }
+    if (text.includes("\0") || /�{3,}/.test(text)) { showErr(`${f.name}: not a text file (binary files are not supported; images go to a vision model)`); continue; }
     C.files.push({ name: f.name, text, tokens: Math.ceil(text.length / 4) });
   }
   paintAttached(); paintContext();
 }
 function paintAttached() {
-  $("attached").innerHTML = C.files.map((f, i) => `<span class="file">📄 ${esc(f.name)} · ~${f.tokens.toLocaleString()} tokens <span class="x" data-i="${i}" title="Remove">✕</span></span>`).join("");
+  $("attached").innerHTML = C.files.map((f, i) => `<span class="file">${f.image ? `<img class="thumb" src="${f.image}" alt="">` : "📄"} ${esc(f.name)} · ~${f.tokens.toLocaleString()} tokens <span class="x" data-i="${i}" title="Remove">✕</span></span>`).join("");
   const all = (C.chat.files || []).map(f => ({ ...f, sent: true })).concat(C.files);
-  $("filelist").innerHTML = all.length ? all.map(f => `<div class="line"><span class="n">📄 ${esc(f.name)} <span class="small">~${f.tokens.toLocaleString()} tokens · ${f.sent ? "sent" : "attached, not sent yet"}</span></span></div>`).join("")
-    : `<div class="small">No files. Drop text or code files on the chat, or use 📎.</div>`;
+  $("filelist").innerHTML = all.length ? all.map(f => `<div class="line"><span class="n">${f.image ? "🖼" : "📄"} ${esc(f.name)} <span class="small">~${f.tokens.toLocaleString()} tokens · ${f.sent ? "sent" : "attached, not sent yet"}</span></span></div>`).join("")
+    : `<div class="small">No files. Drop text, code or image files on the chat, or use 📎.</div>`;
 }
 $("attached").onclick = e => { if (e.target.dataset.i != null) { C.files.splice(+e.target.dataset.i, 1); paintAttached(); paintContext(); } };
 $("attach").onclick = () => $("fileinput").click();
@@ -1177,8 +1317,13 @@ $("center").addEventListener("dragleave", () => { if (--depth <= 0) { depth = 0;
 $("center").addEventListener("dragover", e => e.preventDefault());
 $("center").addEventListener("drop", e => { e.preventDefault(); depth = 0; $("center").classList.remove("dragging"); addFiles([...e.dataTransfer.files]); });
 
+const ctxSize = () => S.status.state == "ready" && S.status.ctx || S.ctx;
+function estimateTokens() {           // what the chat holds now: the server's count after the last answer, else an estimate
+  const c = C.chat, est = s => Math.ceil((s || "").length / 4);
+  return c.tokens != null ? c.tokens : est(c.system) + c.messages.reduce((a, m) => a + est(m.content) + (m.files || []).filter(f => f.image).reduce((b, f) => b + f.tokens, 0), 0);
+}
 function paintContext() {
-  const c = C.chat, ctx = S.status.state == "ready" && S.status.ctx || S.ctx;
+  const c = C.chat, ctx = ctxSize();
   const est = s => Math.ceil((s || "").length / 4);
   const sys = est(c.system), files = (c.files || []).concat(C.files).reduce((a, f) => a + f.tokens, 0);
   const all = c.tokens != null ? c.tokens + C.files.reduce((a, f) => a + f.tokens, 0) : sys + files + c.messages.reduce((a, m) => a + est(m.content), 0);
@@ -1188,6 +1333,9 @@ function paintContext() {
   $("ctxparts").innerHTML = `<span>system</span><span>~${sys.toLocaleString()}</span><span>files</span><span>~${files.toLocaleString()}</span><span>messages</span><span>${msgs.toLocaleString()}</span>` +
     (all > ctx * 0.8 ? `<span></span><span class="err">almost full: start a new chat, or a bigger context in Settings</span>` : "");
   $("ctxinfo").textContent = `ctx ${all.toLocaleString()} / ${ctx.toLocaleString()}`;
+  $("ctxinfo").className = "small" + (all > ctx * 0.9 ? " err" : "");
+  $("ctxwarn").textContent = all > ctx ? "The chat is full: the next message will not fit. Start a new chat, or use a bigger context (Settings, then restart the model)." : all > ctx * 0.85 ? `The context is ${(100 * all / ctx).toFixed(0)} % full: start a new chat soon, or use a bigger context in Settings.` : "";
+  $("ctxwarn").hidden = !$("ctxwarn").textContent;
 }
 
 /* ---------- start, stop and the other buttons ---------- */
@@ -1279,7 +1427,9 @@ window.addEventListener("hashchange", openHash);
   newChat();
   await loadSystem();
   S.pickuse = (S.sys.pick || {}).use || "agents"; seg("#pickuse", "pickuse", loadPick); $("pickapply").onclick = applyPick; $("pickmodel").onchange = loadPick;
-  $("openSettings").addEventListener("click", () => { if (!S.pickLoaded) { S.pickLoaded = true; loadPick(); } });
+  $("dlmodel").onchange = paintDownload; $("dlgo").onclick = startDownload; $("dlcancel").onclick = cancelDownload;
+  $("dlall").onclick = () => { document.querySelectorAll("#dlfiles input:not(:disabled)").forEach(x => x.checked = true); paintDownload(); };
+  $("openSettings").addEventListener("click", () => { loadDownloads(); if (!S.pickLoaded) { S.pickLoaded = true; loadPick(); } });
   seg("#ctx", "ctx", settingsChanged); seg("[data-seg=mode]", "mode", settingsChanged); seg("#engine", "engine", settingsChanged); seg("#mtp", "mtp", settingsChanged);
   paintRanges();
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; segPainters.forEach(p => p()); } settingsChanged(); };
