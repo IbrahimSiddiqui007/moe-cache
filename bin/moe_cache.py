@@ -28,7 +28,7 @@ VERSION = "0.3.5"                    # tools/set_version.sh fills this in with t
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
-NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+NAME_RE = re.compile(r"[A-Za-z0-9_-]+")
 
 
 _NOTES = []          # recorders (lists) that want every say() line while a launch plan is built: (text, is_error) in order
@@ -906,6 +906,9 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _OPENER = urllib.request.build_opener(_NoRedirect)
+# A request to this machine never goes through a proxy (http_proxy / the Windows registry proxy would send /health and the API key to it; 127.0.0.1 is
+# not bypassed unless no_proxy says so). Remote URLs keep the system proxy settings.
+_OPENER_DIRECT = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
 
 
 def http(url, body=None, api_key=None, timeout=10):
@@ -915,7 +918,7 @@ def http(url, body=None, api_key=None, timeout=10):
         headers["Authorization"] = "Bearer " + api_key
     req = urllib.request.Request(url, json.dumps(body).encode() if body is not None else None, headers)
     try:
-        with _OPENER.open(req, timeout=timeout) as r:
+        with (_OPENER_DIRECT if loopback_url(url) else _OPENER).open(req, timeout=timeout) as r:
             return r.status, r.read().decode(errors="replace")
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode(errors="replace")
@@ -1456,7 +1459,7 @@ def busy_programs(timeout=30):
     if not WINDOWS:
         return []
     try:
-        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", BUSY_SCRIPT], capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", BUSY_SCRIPT], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except Exception:
         return []
     return parse_busy(r.stdout)
@@ -1473,7 +1476,7 @@ def busy_note(item):
 def warn_heavy_background():
     """Windows only; a failed tasklist or PowerShell says nothing."""
     try:
-        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except Exception:
         return
     named = heavy_background_apps(r.stdout)
@@ -1919,7 +1922,7 @@ def other_llama_servers():
     out, mine = [], {os.getpid(), os.getppid()}
     if WINDOWS:
         try:
-            r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15)
+            r = subprocess.run(["tasklist", "/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             for row in r.stdout.splitlines():
                 f = [x.strip('"') for x in row.split('","')]
                 if len(f) >= 5 and f[0].lower().startswith("llama-server"):
@@ -2236,10 +2239,10 @@ def _launch_plan(a, extra, argv, machine):
         say(f"WARNING: llama-server will listen on '{host}' without --api-key: anyone who can reach this machine can use the model and the web UI. "
             "Add --api-key KEY after the -- or bind to 127.0.0.1.", err=True)
     pname = a.profile or ""
-    if pname and not NAME_RE.match(pname):
+    if pname and not NAME_RE.fullmatch(pname):
         raise SystemExit("--profile NAME may only contain letters, digits, _ and -")
     if a.project:
-        if not NAME_RE.match(a.project):
+        if not NAME_RE.fullmatch(a.project):
             raise SystemExit("--project NAME may only contain letters, digits, _ and -")
         pname = pname or a.project
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
@@ -3289,7 +3292,7 @@ def learn(argv):
     lib = os.environ.get("MOE_CACHE_LIB") or pick_lib(a.llama_server)
     if not os.path.isfile(lib):
         raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
-    if a.name and not NAME_RE.match(a.name):
+    if a.name and not NAME_RE.fullmatch(a.name):
         raise SystemExit("--name may only contain letters, digits, _ and -")
     out = a.out or model_profile(a.model, a.name or "")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
@@ -3359,7 +3362,7 @@ def project(argv):
         if not files:
             say("no saved projects")
         return 0
-    if not a.name or not NAME_RE.match(a.name):
+    if not a.name or not NAME_RE.fullmatch(a.name):
         raise SystemExit("usage: moe-cache-project save|restore NAME [--url URL] [--api-key KEY]")
     sdir = os.path.join(d, a.name)
     if a.cmd == "restore" and os.path.isfile(os.path.join(sdir, a.name + ".bin")) and not project_id_ok(sdir, a.name):
@@ -3409,7 +3412,7 @@ def gpu_driver(name):
         if WINDOWS:
             return win_driver_version(name)
         if "NVIDIA" in name and shutil.which("nvidia-smi"):
-            out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True, timeout=10).stdout
+            out = subprocess.run(["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10).stdout
             return out.strip().splitlines()[0].strip() if out.strip() else ""
     except Exception:
         pass

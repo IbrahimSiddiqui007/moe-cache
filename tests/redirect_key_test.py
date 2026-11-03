@@ -22,3 +22,18 @@ st, body = mc.http(f"http://127.0.0.1:{rsrv.server_address[1]}/v1/models", api_k
 assert not seen, f"redirect was followed and the target saw Authorization={seen}"
 assert st == 302, st
 print("redirect_key_test: ok")
+
+# AUD-028: a loopback request ignores the proxy settings (http_proxy at a closed port must not break it)
+os.environ["http_proxy"] = os.environ["HTTP_PROXY"] = "http://127.0.0.1:9"
+os.environ.pop("no_proxy", None); os.environ.pop("NO_PROXY", None)
+class Ok(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self, *a): pass
+osrv = http.server.HTTPServer(("127.0.0.1", 0), Ok)
+threading.Thread(target=osrv.serve_forever, daemon=True).start()
+st, body = mc.http(f"http://127.0.0.1:{osrv.server_address[1]}/health")
+assert (st, body) == (200, "ok"), (st, body)
+# AUD-043: a trailing newline is not a valid name
+assert mc.NAME_RE.fullmatch("abc_1") and not mc.NAME_RE.fullmatch("abc\n")
+print("redirect_key_test (proxy, names): ok")
