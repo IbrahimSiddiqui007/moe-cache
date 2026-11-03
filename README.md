@@ -12,7 +12,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 </p>
 
 <p align="center"><a href="docs/benchmark_card.html"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmark_card-dark.png"><img src="docs/benchmark_card.png" width="860" alt="Benchmark card: decode tokens per second, stock llama.cpp vs moe-cache, on a Windows PC with 32 GB RAM and a 16 GB graphics card"></picture></a></p>
-<p align="center"><sub>Windows desktop, 32 GB RAM + 16 GB graphics card, v0.3.x. Full <a href="docs/benchmark_card.html">benchmark card</a> (long context, other models, agents); every number in <a href="docs/RESULTS.md">docs/RESULTS.md</a>. Older laptop results: <a href="docs/RESULTS.md#laptop-results-older-versions">docs/RESULTS.md</a>.</sub></p>
+<p align="center"><sub>Windows desktop, 32 GB RAM + 16 GB graphics card; speeds measured 2026-10-27/28 with builds of that week (each row lists its test details; not recorded values say so). Full <a href="docs/benchmark_card.html">benchmark card</a> (long context, other models, agents); every number in <a href="docs/RESULTS.md">docs/RESULTS.md</a>. Older laptop results: <a href="docs/RESULTS.md#laptop-results-older-versions">docs/RESULTS.md</a>.</sub></p>
 
 ## What it is
 

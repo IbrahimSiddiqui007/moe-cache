@@ -70,11 +70,11 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Benchmark card · 2026-11-03 · Windows desktop</div>
+    <div class="eyebrow">Benchmark card · measured 2026-10-27 to 2026-11-03 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
-    <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decodes faster than stock llama-server on every model that is bigger than the RAM, with the same output text.</p>
+    <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decodes faster than stock llama-server on every model that is bigger than the RAM, with the same output text (without MTP).</p>
     <div class="machine">
-      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>llama.cpp Vulkan, ggml 0.27 (620d2225c)</span>
+      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>llama.cpp Vulkan: 620d2225c (ggml 0.27) for the 2026-10-27/28 tables, official b11966 for Nemotron and the 2026-11-03 table</span>
     </div>
   </header>
 
@@ -82,10 +82,10 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     <div class="tiles">
       <div class="tile"><b>≈1.4×</b><span>faster long prompts (34k–128k tokens), v0.3.5 vs v0.3.4; decode after them 6–10 % lower</span></div>
       <div class="tile"><b>+20–47 %</b><span>decode speed on the five Qwen MoE files that do not fit in RAM</span></div>
-      <div class="tile"><b>2.7×</b><span>GLM-5.3 (102 GB), 3.1× with MTP</span></div>
+      <div class="tile"><b>2.0×</b><span>GLM-5.3 (102 GB), one run each on the same drive; 3.1× with MTP, one run</span></div>
       <div class="tile"><b>2.0–2.4×</b><span>faster agent sessions (OpenCode, Hermes) on Flash-Next</span></div>
       <div class="tile"><b>+54 %</b><span>decode with MTP on Qwen3.6-35B (fits in RAM; stock gains +49 %)</span></div>
-      <div class="tile"><b>Same text</b><span>byte-identical output to stock on every model checked</span></div>
+      <div class="tile"><b>Same text</b><span>byte-identical to stock without MTP on every model checked</span></div>
     </div>
   </section>
 
@@ -109,15 +109,15 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
           <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:</span></td><td class="n">9</td><td class="n">15.14</td><td class="n">19.86</td><td class="n up">+31 %</td></tr>
           <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive C:</span></td><td class="n">7</td><td class="n">12.92</td><td class="n">17.28</td><td class="n up">+34 %</td></tr>
           <tr><td>Qwen3.5-122B UD-IQ2_XXS<span class="sub">36.6 GB, drive D:, re-measured 2026-10-28; replaces 13.88 vs 16.13 (+16 %), which ran during a slowdown of the whole PC</span></td><td class="n">12</td><td class="n">15.95</td><td class="n">19.73</td><td class="n up">+24 %</td></tr>
-          <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB; moe-cache: ABBA on drive D:, launcher defaults (RESULTS 62); stock: one run on drive C:, not yet re-run on D:</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">5.89</td><td class="n up">2.7×</td></tr>
-          <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">one run; drafts accepted 61–100 %</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">6.92</td><td class="n up">3.1×</td></tr>
+          <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB, drive C:, one run each (RESULTS 59). moe-cache later decoded 5.36 and 5.52 / 5.58 on C: (RESULTS 61) and 5.89 as an ABBA mean on drive D: (RESULTS 62); stock was never re-run, so the ratios against 2.21 would be 2.4× to 2.7× and are not a fair pair</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">4.44</td><td class="n up">2.0×</td></tr>
+          <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">drive C:, one run (RESULTS 61); drafts accepted 61–100 %</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">6.92</td><td class="n up">3.1×</td></tr>
           <tr><td>Nemotron 3.5 Bolt 74B-A9B<span class="sub">22.0 GB, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced here to compare (one run each)</span></td><td class="n">–</td><td class="n">27.9</td><td class="n">22.8</td><td class="n">−18 %</td></tr>
           <tr><td>Qwen3.6-35B-A3B Q4_K_M<span class="sub">20 GB, <b>fits in RAM</b>: stock is the right choice; moe-cache forced (two runs each, RESULTS 58)</span></td><td class="n">–</td><td class="n">46.06</td><td class="n">45.60</td><td class="n">−1 %</td></tr>
           <tr><td>Qwen3.6-35B, moe-cache with MTP<span class="sub">stock with MTP: 68.6 (+49 %); about 78 % of drafts accepted</span></td><td class="n">–</td><td class="n">46.06</td><td class="n">70.25</td><td class="n up">+53 %</td></tr>
         </tbody>
       </table>
     </div>
-    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM: moe-cache is the mean of an ABBA set on drive D: (RESULTS 62), stock and MTP are single cold runs on drive C: (a stock re-run on D: is queued). Every model here is bigger than the free RAM once the GPU and Windows have taken their share. Since experimental 29addb9 the executor works in 128-row chunks: Flash-Next Q2_0 decode +3.9 % in every ABBA pair (23.4 → 24.3 tok/s), text identical (RESULTS 64 addendum); the rows here were measured before. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin's decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
+    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM: one run per side on drive C: (see the row). Every model here is bigger than the free RAM once the GPU and Windows have taken their share. <b>Dates and builds:</b> every row of this table was measured on 2026-10-27 or 28 (RESULTS 58–65) with llama.cpp 620d2225c (Nemotron: b11966) and the plugin builds named in the chart; the chart is older than the current code. Later changes (128-row executor chunks, +3.9 % on Flash-Next Q2_0; async reads, +12 %, RESULTS 67) are not in these numbers, and stock was not re-run after them. The 2026-11-03 numbers below are a different test. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin's decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
   </section>
 
   <section>
@@ -271,7 +271,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   <section>
     <h2>Where it does not help</h2>
     <ul>
-      <li><b>Models that fit in RAM.</b> Qwen3.6-35B (20 GB) decodes at the same speed with or without the plugin (43.6 vs 43.1 tok/s without MTP). Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.</li>
+      <li><b>Models that fit in RAM.</b> Qwen3.6-35B (20 GB) decodes at the same speed with or without the plugin (46.1 vs 45.6 tok/s without MTP, RESULTS 58). Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.</li>
       <li><b>Decode at long agent contexts.</b> On Flash-Next the 2.0–2.4× session gain comes from prompt processing. Decode at 65k-context agent settings is equal (21.5 vs 21.2 tok/s).</li>
       <li><b>CPU kernels.</b> The numbers here were measured with llama.cpp's own CPU kernels (ggml-cpu-zen4) on both sides. The plugin's exact Q2_0 executor kernel, on Windows since 2026-10-28, did not change the PC's decode (it is limited by RAM bandwidth). The gain comes from which experts are in RAM and how they are read, not from faster math.</li>
       <li><b>Cold start.</b> From a cold file cache the plugin reports ready 5.6 s later than stock (28.5 vs 22.9 s) while it loads its hot experts; the first answer wins it back. A warm restart answers 6 s sooner than stock.</li>
@@ -326,22 +326,112 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 <script>
 (function () {
   var data = [
-    { m: "Flash-Next Q2_0", s: "66.4 GB", stock: 18.41, mc: 22.16 },
-    { m: "Flash-Next IQ2_XS", s: "68 GB", stock: 14.89, mc: 21.94 },
-    { m: "Flash-Next IQ3_XXS", s: "76 GB", stock: 15.14, mc: 19.86 },
-    { m: "Flash-Next IQ3_S", s: "83.6 GB", stock: 12.92, mc: 17.28 },
-    { m: "Qwen3.5-122B IQ2_XXS", s: "36.6 GB", stock: 15.95, mc: 19.73 },
-    { m: "GLM-5.3-Flash IQ2_XXS", s: "102 GB", stock: 2.21, mc: 5.89, mtp: 6.92 },
-    { m: "Nemotron 3.5 Bolt 74B", s: "22 GB, fits", stock: 27.9, mc: 22.8 },
-    { m: "Qwen3.6-35B Q4_K_M", s: "20 GB, fits", stock: 46.06, mc: 45.60, mtp: 70.25 }
+    {
+      "m": "Flash-Next Q2_0",
+      "s": "66.4 GB, drive D:",
+      "stock": 18.41,
+      "mc": 22.16,
+      "d": [
+        "GPU expert layers: 12 (stock: --stock defaults, count not recorded)",
+        "ctx 8192 · short prompt · 2 runs each, not interleaved",
+        "VRAM not recorded · RAM: cache limit about 23 GiB of 32 GB",
+        "launcher 1d2d5a8, DLL 681f3bc · llama.cpp 620d2225c · 10-28 · §63"
+      ]
+    },
+    {
+      "m": "Flash-Next IQ2_XS",
+      "s": "68 GB, drive C:",
+      "stock": 14.89,
+      "mc": 21.94,
+      "d": [
+        "GPU expert layers: 12 (stock and moe-cache)",
+        "ctx 8192 · short prompt · ABBA, 2 runs each",
+        "VRAM not recorded · RAM limit not recorded (32 GB)",
+        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-27 · §59"
+      ]
+    },
+    {
+      "m": "Flash-Next IQ3_XXS",
+      "s": "76 GB, drive D:",
+      "stock": 15.14,
+      "mc": 19.86,
+      "d": [
+        "GPU expert layers: 9 (stock and moe-cache)",
+        "ctx 8192 · short prompt · ABBA, 2 runs each",
+        "VRAM not recorded · RAM limit not recorded (32 GB)",
+        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-27 · §59"
+      ]
+    },
+    {
+      "m": "Flash-Next IQ3_S",
+      "s": "83.6 GB, drive C:",
+      "stock": 12.92,
+      "mc": 17.28,
+      "d": [
+        "GPU expert layers: 7 (stock and moe-cache)",
+        "ctx 8192 · short prompt · ABBA, 2 runs each",
+        "VRAM not recorded · RAM limit not recorded (32 GB)",
+        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-27 · §59"
+      ]
+    },
+    {
+      "m": "Qwen3.5-122B IQ2_XXS",
+      "s": "36.6 GB, drive D:",
+      "stock": 15.95,
+      "mc": 19.73,
+      "d": [
+        "GPU expert layers: 12 (as in §59)",
+        "ctx 8192 · short prompt · ABBA, 2 runs each",
+        "VRAM not recorded · RAM: cache limit 25.3 GiB of 32 GB",
+        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-28 · §61"
+      ]
+    },
+    {
+      "m": "GLM-5.3-Flash IQ2_XXS",
+      "s": "102 GB, drive C:",
+      "stock": 2.21,
+      "mc": 4.44,
+      "mtp": 6.92,
+      "d": [
+        "GPU expert layers: 3 (stock and moe-cache) · ONE run each",
+        "ctx 8192 · short prompt · MTP bar: one run, 3.1×",
+        "VRAM not recorded · RAM: cache 20 GiB (MTP run)",
+        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-27 · §59, §61"
+      ]
+    },
+    {
+      "m": "Nemotron 3.5 Bolt 74B",
+      "s": "22 GB, fits, drive C:",
+      "stock": 27.9,
+      "mc": 22.8,
+      "d": [
+        "GPU expert layers: not recorded (stock = launcher default)",
+        "ctx 65536 · short prompt · one cold run each",
+        "VRAM, RAM not recorded (fits in RAM + VRAM)",
+        "DLL 681f3bc · llama.cpp b11966 (ff0d396e3) · 10-28 · §65"
+      ]
+    },
+    {
+      "m": "Qwen3.6-35B Q4_K_M",
+      "s": "20 GB, fits, drive not recorded",
+      "stock": 46.06,
+      "mc": 45.6,
+      "mtp": 70.25,
+      "d": [
+        "GPU expert layers: not recorded · moe-cache is forced here",
+        "ctx not recorded · short prompt · 2 runs each, order not recorded",
+        "VRAM, RAM not recorded · MTP: draft 2 (stock MTP 68.6)",
+        "DLL not recorded · llama.cpp 620d2225c · 10-27 · §58"
+      ]
+    }
   ];
   var NS = "http://www.w3.org/2000/svg", svg = document.getElementById("bars"), tip = document.getElementById("tip"), box = document.getElementById("chart");
   var top_v = Math.max.apply(null, data.map(function (d) { return Math.max(d.stock, d.mc, d.mtp || 0); }));
   var step = top_v > 40 ? 10 : 5, max = Math.ceil(top_v * 1.05 / step) * step;      // the axis grows with the fastest bar
-  var W = 860, left = 190, right = 60, top = 8, bh = 14, gap = 2;
+  var W = 860, left = 372, right = 52, top = 8, bh = 14, gap = 2;
   var x = function (v) { return left + (W - left - right) * v / max; };
   function el(n, a, txt) { var e = document.createElementNS(NS, n); for (var k in a) e.setAttribute(k, a[k]); if (txt != null) e.textContent = txt; svg.appendChild(e); return e; }
-  var rowH = 74, y0 = top;
+  var rowH = 98, y0 = top;
   var H = top + data.length * rowH + 30;
   svg.setAttribute("viewBox", "0 0 " + W + " " + H);
   var ticks = []; for (var t0 = 0; t0 <= max; t0 += step) ticks.push(t0);
@@ -367,7 +457,8 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   data.forEach(function (d, i) {
     var y = y0 + i * rowH + 6;
     el("text", { x: 0, y: y + 12, "font-size": 14, "font-weight": 600, fill: "var(--ink)" }, d.m);
-    el("text", { x: 0, y: y + 30, "font-size": 12, fill: "var(--ink-3)" }, d.s + " · " + (d.mc / d.stock >= 1.95 ? (d.mc / d.stock).toFixed(1) + "×" : (d.mc >= d.stock ? "+" : "−") + Math.abs(Math.round((d.mc / d.stock - 1) * 100)) + " %"));
+    el("text", { x: 0, y: y + 27, "font-size": 12, fill: "var(--ink-2)" }, d.s + "  ·  " + (d.mc / d.stock >= 1.95 ? (d.mc / d.stock).toFixed(1) + "×" : (d.mc >= d.stock ? "+" : "−") + Math.abs(Math.round((d.mc / d.stock - 1) * 100)) + " %"));
+    d.d.forEach(function (ln, k) { el("text", { x: 0, y: y + 41 + k * 12, "font-size": 10.5, fill: "var(--ink-3)" }, ln); });
     bar(y, d.stock, "var(--stock)", d.m + ", stock");
     bar(y + bh + gap, d.mc, "var(--plugin)", d.m + ", moe-cache");
     if (d.mtp) bar(y + 2 * (bh + gap), d.mtp, "var(--mtp)", d.m + ", moe-cache + MTP");
