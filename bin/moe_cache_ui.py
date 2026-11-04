@@ -508,12 +508,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
                           else summary(out, mode, engine))
         return out
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))
-    ncmoe = int(lp.n_cpu_moe) if str(lp.n_cpu_moe).isdigit() else plan["n_cpu_moe"]       # the launcher's choice
-    layers = plan["layers"]
-    gpu_layers = max(0, layers - min(ncmoe, layers))
-    out["numbers"] = {"layers": layers, "gpu_expert_layers": gpu_layers, "n_cpu_moe": ncmoe, "cache_GiB": plan["cache_GiB"],
-                      "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": int(lp.ub) if str(lp.ub).isdigit() else (tuned["ub"] if tuned else None), "kv_cache": lp.kv,
-                      "experts": plan["experts"], "used": plan["used"], "arch": plan["arch"]}
+    out["numbers"] = lp.numbers()                      # ENGINE-029: the launch plan's own figures (placement, micro-batch, KV, model sizes)
+    ncmoe, layers, gpu_layers = out["numbers"]["n_cpu_moe"], out["numbers"]["layers"], out["numbers"]["gpu_expert_layers"]
     if stock and not stock_fits:
         out.update(kind="stock", verdict="runs stock llama-server, as asked (bigger than free RAM; to compare)")
         R.append("--stock: no plugin; experts that are not in the file cache are read from the SSD by the OS (usually much slower than moe-cache "

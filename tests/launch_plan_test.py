@@ -20,6 +20,7 @@ import gguf_plan                  # noqa: E402
 
 LINUX_LIST = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 4060 Laptop GPU (8188 MiB, 7600 MiB free)\n"
 WIN_LIST = "Available devices:\n  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n  Vulkan1: AMD Radeon(TM) Graphics (512 MiB, 400 MiB free)\n"
+PLANNER_ANSWER = {"arch": "qwen35moe", "layers": 40, "experts": 256, "used": 8, "n_cpu_moe": 21, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0, "free_vram_GiB": 7.5, "note": ""}
 HELP_TEXT = "usage: llama-server\n  --cache-ram N\n  --spec-type draft-mtp\n"
 
 MACHINES = {
@@ -73,6 +74,26 @@ CASES = [
     ("port_alias_extra", ["--ram", "12", "--port", "8123"], ["--alias", "xyz", "--host", "0.0.0.0"]),
     ("no_ram_arg", [], []),
     ("profile_name", ["--ram", "12", "--profile", "work"], []),
+    # ENGINE-029: paths the cases above did not reach, recorded on the code before the launch plan was split into stages
+    ("leave_room", ["--ram", "12", "--leave-room"], []),
+    ("leave_room_agent", ["--ram", "12", "--agent", "--leave-room"], []),
+    ("project", ["--ram", "12", "--project", "p1"], []),
+    ("share_ram", ["--ram", "12", "--share-ram"], []),
+    ("peers", ["--ram", "12", "--peers"], []),
+    ("auto_fit", ["--ram", "12", "--auto-fit"], []),
+    ("multi_gpu", ["--ram", "12", "--multi-gpu"], []),
+    ("mmproj_auto", ["--ram", "12", "--mmproj", "auto"], []),
+    ("load_path", ["--ram", "12", "--load-method", "path"], []),
+    ("load_preload", ["--ram", "12", "--load-method", "preload"], []),
+    ("vram0", ["--ram", "12", "--vram", "0"], []),
+    ("stock_agent", ["--ram", "12", "--stock", "--agent"], []),
+    ("mtp_agent", ["--ram", "12", "--agent", "--mtp"], []),
+    ("api_key_given", ["--ram", "12", "--api-key", "K-test-123"], []),
+    ("no_sampling_defaults", ["--ram", "12", "--no-sampling-defaults"], []),
+    ("hybrid_128k", ["--ram", "12", "--hybrid", "--ctx", "131072"], []),
+    ("gpu_cache_auto_128k", ["--ram", "12", "--vram", "8", "--gpu-cache", "auto", "--ctx", "131072"], []),
+    ("extra_threads_user", ["--ram", "12"], ["-t", "4"]),
+    ("extra_jinja_user", ["--ram", "12", "--agent"], ["--no-jinja"]),
 ]
 
 
@@ -111,6 +132,10 @@ def make_synthetic_model(path, n_layers=40, n_expert=256, ne0=2048, ne1=512):
         f.truncate(len(head) + off)        # sparse: the tensor data is never written
 
 
+_REAL_OTHER_SERVERS = mc.other_llama_servers
+NEW_CASES = {c[0] for c in CASES[CASES.index(next(x for x in CASES if x[0] == "leave_room")):]}
+
+
 def fake_machine(m, tmp):
     """Patch every outside fact in the launcher module (restored by the caller)."""
     mc.WINDOWS = m["windows"]
@@ -134,6 +159,11 @@ def fake_machine(m, tmp):
     mc.vk_cache_cap = lambda ls, model, listing=None: (None, None)
     mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
     mc.python_cmd = lambda: "python3"
+    mc.planner_answer = lambda model, ctx, ram_gib=None, vram_gib=None: dict(PLANNER_ANSWER)       # ENGINE-029: the planner runs in this process; the answer is fixed here
+    # --share-ram counts the llama-servers running on the machine: Linux reads /proc (none, whatever runs here); Windows asks tasklist through subprocess.run,
+    # which is faked below and recorded in `calls`
+    if mc.other_llama_servers is _REAL_OTHER_SERVERS and not m["windows"]:       # (a test that fakes the list itself, as dense_share_test does, keeps its own)
+        mc.other_llama_servers = lambda: []
     gguf_plan.free_vram_bytes = lambda: m["free_vram"]
     gguf_plan.gpu_total_free_bytes = lambda: (m["total_vram"], m["free_vram"])
     real_access = os.access
@@ -143,9 +173,7 @@ def fake_machine(m, tmp):
     def fake_run(cmd, *a, **k):
         calls.append(list(cmd) if isinstance(cmd, (list, tuple)) else cmd)
         out = ""
-        if isinstance(cmd, (list, tuple)) and len(cmd) > 1 and str(cmd[1]).endswith("plan.py"):
-            out = '{"arch": "qwen35moe", "layers": 40, "experts": 256, "used": 8, "n_cpu_moe": 21, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0, "free_vram_GiB": 7.5, "note": ""}'
-        elif isinstance(cmd, (list, tuple)) and "--help" in cmd:
+        if isinstance(cmd, (list, tuple)) and "--help" in cmd:
             out = HELP_TEXT
         return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
     mc.subprocess.run = fake_run
@@ -154,7 +182,7 @@ def fake_machine(m, tmp):
 
 def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None):
     m = MACHINES[machine_name]
-    saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy())
+    saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy(), mc.other_llama_servers)
     for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH")]:
         del os.environ[k]
     out, err = io.StringIO(), io.StringIO()
@@ -177,6 +205,7 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None)
     finally:
         mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access = saved[:5]
         os.environ.clear(); os.environ.update(saved[5])
+        mc.other_llama_servers = saved[6]
 
     def norm(s):
         for a, b in ((model, "<MODEL>"), (tmp, "<TMP>"), (HERE, "<HERE>")):
@@ -209,9 +238,9 @@ class FakeMachine(mc.Machine):
     def gpu_total_free_bytes(self): return (self.vram_mib * 2**20, self.free_mib * 2**20)
     def has_cpu_atom(self): return False
     def has_cpu_core(self): return False
+    def planner_answer(self, model, ctx, ram_gib, vram_gib): return {"n_cpu_moe": 21}
     def run(self, cmd, **kw):
-        out = '{"n_cpu_moe": 21}' if str(cmd[1]).endswith("plan.py") else "--cache-ram N\n"
-        return types.SimpleNamespace(returncode=0, stdout=out, stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="--cache-ram N\n", stderr="")
 
 
 def injection_test(model):
@@ -432,6 +461,8 @@ def main():
         return 1 if (bad or consistent_bad) else 0
     for k, r in sorted(results.items()):
         g = gold["cases"].get(k)
+        if g is None and k.split("/", 1)[1] in NEW_CASES:           # recorded for the synthetic model only (the real-model golden file predates them)
+            continue
         if g != r:
             bad += 1
             print("  FAIL", k)
