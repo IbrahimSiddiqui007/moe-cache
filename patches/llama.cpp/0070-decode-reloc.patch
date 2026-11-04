@@ -1,12 +1,14 @@
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 7365c3bbb..4d8142930 100644
+index 7365c3bbb..de2b2ea9b 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -179,6 +179,30 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
+@@ -179,6 +179,32 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
      /*.n_tokens_per_seq =*/ 1,
  };
  
++#include <chrono>
 +#include <mutex>
++#include <thread>
 +
 +// number of live contexts per model: a second context (MTP / draft) shares the weights and keeps its own scheduler, so the move is refused
 +static std::mutex & llama_reloc_mtx() { static std::mutex m; return m; }
@@ -33,7 +35,7 @@ index 7365c3bbb..4d8142930 100644
  llama_context::llama_context(
          const llama_model & model,
                llama_context_params params) :
-@@ -606,12 +630,24 @@ llama_context::llama_context(
+@@ -606,12 +632,24 @@ llama_context::llama_context(
              sampling.token_ids_full_vocab[i] = i;
          }
      }
@@ -58,7 +60,7 @@ index 7365c3bbb..4d8142930 100644
      // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
      if (!model.no_alloc() && !opt_ctx) {
          for (size_t i = 0; i < backend_ptrs.size(); ++i) {
-@@ -2147,6 +2183,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2147,6 +2185,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
      output_swaps.clear();
      embd_batch_idxs.clear();
  
@@ -67,7 +69,7 @@ index 7365c3bbb..4d8142930 100644
      sched_reserve();
  
      bool did_optimize = false;
-@@ -3031,6 +3069,255 @@ ggml_status llama_context::graph_compute(
+@@ -3031,6 +3071,306 @@ ggml_status llama_context::graph_compute(
      return status;
  }
  
@@ -81,6 +83,16 @@ index 7365c3bbb..4d8142930 100644
 +static long llama_reloc_env(const char * name, long def) {
 +    const char * e = getenv(name);
 +    return (e && *e) ? atol(e) : def;
++}
++
++// free / total memory of a device. WDDM (Windows) can report the memory of a freed buffer late, so when the figure is below `want` it is read again for up to
++// 300 ms before it is believed.
++static void llama_reloc_dev_memory(ggml_backend_dev_t dev, size_t want, size_t * free_mem, size_t * total_mem) {
++    ggml_backend_dev_memory(dev, free_mem, total_mem);
++    for (int i = 0; i < 15 && *free_mem < want; ++i) {
++        std::this_thread::sleep_for(std::chrono::milliseconds(20));
++        ggml_backend_dev_memory(dev, free_mem, total_mem);
++    }
 +}
 +
 +void llama_context::reloc_init() {
@@ -180,12 +192,21 @@ index 7365c3bbb..4d8142930 100644
 +    int      first_il    = -1;
 +    int      last_il     = -1;
 +    size_t   free_mem    = 0;
++    size_t   total_mem   = 0;
++    bool     queried     = false;
++    int      skip_gpu    = 0;       // layers whose device is not a GPU
++    int      skip_weight = 0;       // layers with an expert weight that is neither plain host memory nor the moe-cache plugin's buffer
++    int      skip_extra  = 0;       // layers whose weights carry extra data (repacked for the CPU)
++    int      skip_fit    = 0;       // layers that did not fit in the free memory
++    int      n_plugin    = 0;       // layers read through the moe-cache plugin's buffer
++    const long fake_free = llama_reloc_env("LLAMA_DECODE_RELOC_FAKE_FREE_MIB", -1);     // test only: pretend the device has this much free memory
 +    for (int il = (int) model.layers.size() - 1; il >= 0 && n_layers < reloc.max_layers; --il) {
 +        const llama_layer & L = model.layers[il];
 +        // the device the model put this layer on (its other weights are there); a layer on the CPU has nothing to gain
 +        ggml_backend_dev_t dev = model.dev_layer(il);
 +        if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
 +            LLAMA_LOG_DEBUG("%s: layer %d: not on a GPU\n", __func__, il);
++            skip_gpu++;
 +            continue;
 +        }
 +        ggml_backend_buffer_type_t buft = ggml_backend_dev_buffer_type(dev);
@@ -194,17 +215,23 @@ index 7365c3bbb..4d8142930 100644
 +                               L.ffn_gate_exps_s, L.ffn_down_exps_s, L.ffn_up_exps_s };
 +        std::vector<ggml_tensor *> sel;
 +        bool ok = true;
++        bool plugin_layer = false;
 +        for (auto * t : ts) {
 +            if (!t) {
 +                continue;
 +            }
-+            // only plain host weights: not already on a device, not repacked for the CPU
-+            if (!t->buffer || !ggml_backend_buffer_is_host(t->buffer) || t->extra ||
-+                    strstr(ggml_backend_buft_name(ggml_backend_buffer_get_type(t->buffer)), "REPACK")) {
-+                LLAMA_LOG_DEBUG("%s: layer %d: %s is not a plain host weight\n", __func__, il, t->name);
++            // plain host memory, or the moe-cache plugin's buffer ("MOE_CACHE": not "host" in cache mode, its experts may be evicted; ggml_backend_tensor_get
++            // loads them first). Not repacked for the CPU, nothing else.
++            const char * bname = t->buffer ? ggml_backend_buft_name(ggml_backend_buffer_get_type(t->buffer)) : "";
++            const bool plugin = t->buffer && strcmp(bname, "MOE_CACHE") == 0;
++            const bool plain  = t->buffer && ggml_backend_buffer_is_host(t->buffer) && !strstr(bname, "REPACK");
++            if (!t->buffer || t->extra || !(plain || plugin)) {
++                LLAMA_LOG_DEBUG("%s: layer %d: %s is not movable (buffer %s%s)\n", __func__, il, t->name, bname, t->extra ? ", extra data" : "");
++                if (t->extra) { skip_extra++; } else { skip_weight++; }
 +                ok = false;
 +                break;
 +            }
++            plugin_layer = plugin_layer || plugin;
 +            sel.push_back(t);
 +        }
 +        if (!ok || sel.empty()) {
@@ -218,9 +245,18 @@ index 7365c3bbb..4d8142930 100644
 +            off.push_back(total);
 +            total += ggml_backend_buft_get_alloc_size(buft, t);
 +        }
-+        size_t total_dev = 0;
-+        ggml_backend_dev_memory(dev, &free_mem, &total_dev);
++        if (fake_free >= 0) {
++            free_mem = (size_t) fake_free << 20; total_mem = free_mem;
++        } else {
++            llama_reloc_dev_memory(dev, reloc.keep + total, &free_mem, &total_mem);
++        }
++        if (!queried) {
++            LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: %s: %zu MiB free of %zu MiB (layer %d needs %zu MiB, keep %zu MiB)%s\n", __func__,
++                    ggml_backend_dev_name(dev), free_mem >> 20, total_mem >> 20, il, total >> 20, reloc.keep >> 20, fake_free >= 0 ? " [LLAMA_DECODE_RELOC_FAKE_FREE_MIB]" : "");
++        }
++        queried = true;
 +        if (free_mem < reloc.keep + total) {
++            skip_fit++;
 +            break;
 +        }
 +        ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, total);
@@ -235,7 +271,18 @@ index 7365c3bbb..4d8142930 100644
 +            tmp.buffer = buf;
 +            tmp.data   = base + off[k];
 +            ggml_backend_buffer_init_tensor(buf, &tmp);
-+            ggml_backend_tensor_set(&tmp, t->data, 0, ggml_nbytes(t));
++            const size_t nb = ggml_nbytes(t);
++            if (strcmp(ggml_backend_buft_name(ggml_backend_buffer_get_type(t->buffer)), "MOE_CACHE") == 0) {
++                // through the buffer's own get_tensor, 64 MiB at a time: the plugin loads evicted experts before it copies (t->data may point at pages that are not there)
++                std::vector<uint8_t> stage(std::min<size_t>(nb, 64u << 20));
++                for (size_t off = 0; off < nb; off += stage.size()) {
++                    const size_t n = std::min(stage.size(), nb - off);
++                    ggml_backend_tensor_get(t, stage.data(), off, n);
++                    ggml_backend_tensor_set(&tmp, stage.data(), off, n);
++                }
++            } else {
++                ggml_backend_tensor_set(&tmp, t->data, 0, nb);
++            }
 +            reloc.moved.push_back({ t, t->buffer, t->data });
 +            t->buffer = buf;
 +            t->data   = tmp.data;
@@ -243,6 +290,9 @@ index 7365c3bbb..4d8142930 100644
 +        reloc.bufs.push_back(buf);
 +        moved_bytes += total;
 +        n_layers++;
++        if (plugin_layer) {
++            n_plugin++;
++        }
 +        if (last_il < 0) {
 +            last_il = il;
 +        }
@@ -250,7 +300,10 @@ index 7365c3bbb..4d8142930 100644
 +    }
 +
 +    if (n_layers == 0) {
-+        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: no layer fits (free %zu MiB, keep %zu MiB), off\n", __func__, free_mem >> 20, reloc.keep >> 20);
++        char fr[96];
++        if (queried) { snprintf(fr, sizeof fr, "%zu MiB free of %zu MiB", free_mem >> 20, total_mem >> 20); } else { snprintf(fr, sizeof fr, "device memory not queried: no layer got that far"); }
++        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: no layer fits (%s, keep %zu MiB; layers skipped: %d not on a GPU, %d weights neither host memory nor the moe-cache buffer, %d with extra data, %d too big for the free memory), off\n",
++                __func__, fr, reloc.keep >> 20, skip_gpu, skip_weight, skip_extra, skip_fit);
 +        reloc_drop_graphs();
 +        cparams.n_ubatch   = reloc.ub_prompt;
 +        sched_need_reserve = true;
@@ -276,8 +329,8 @@ index 7365c3bbb..4d8142930 100644
 +        return false;
 +    }
 +    reloc.decode = true;
-+    LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: %d layers of experts moved to the GPU (layers %d..%d, %zu MiB), ubatch %u, %.1f ms\n",
-+            __func__, n_layers, first_il, last_il, moved_bytes >> 20, reloc.ub_decode, (ggml_time_us() - t0) / 1000.0);
++    LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: %d layers of experts moved to the GPU (layers %d..%d, %zu MiB, %d of them read through the moe-cache buffer), ubatch %u, %.1f ms\n",
++            __func__, n_layers, first_il, last_il, moved_bytes >> 20, n_plugin, reloc.ub_decode, (ggml_time_us() - t0) / 1000.0);
 +    return true;
 +}
 +

@@ -190,9 +190,15 @@ jobs:
         run: |
           curl -fsSL --retry 5 --retry-delay 10 -o granite.gguf "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
           echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+      # The moe-cache plugin (build.sh --portable needs only g++) is loaded in the second half of each live run: with it the experts of the host layers are in the plugin's
+      # MOE_CACHE buffer, which is not "host" memory, and they must still move (the PC run of 2026-11-05 moved nothing for that reason).
+      - name: moe-cache plugin for the live test (API 3, portable)
+        run: |
+          GGML_API=3 ./build.sh --portable
+          ls -la build/libggml-moe-cache.so
       - name: Live test of patch 0070 (patched libllama + tiny MoE model, CPU only)
         run: |
-          LIVE_NGL=0 DECODE_RELOC_EXPECT=any DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
+          DECODE_RELOC_PLUGIN="$PWD/build/libggml-moe-cache.so" DECODE_RELOC_PLUGIN_CACHE_GIB=0.0005 LIVE_NGL=0 DECODE_RELOC_EXPECT=any DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
             tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
       # Critic round 4 #7: the CPU-only run above skips every check that needs a real move. lavapipe (software Vulkan, installed above) is a GPU device to ggml, so here
       # the layers really move (DECODE_RELOC_EXPECT=moved: the run fails if they do not): the reserve failure after the move (fail=2) and a second context created after
@@ -213,7 +219,7 @@ jobs:
         timeout-minutes: 25
         run: |
           # ggml-vulkan at the pin skips a CPU-type Vulkan device (lavapipe) unless it is listed by index
-          GGML_VK_VISIBLE_DEVICES=0 DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
+          DECODE_RELOC_PLUGIN="$PWD/build/libggml-moe-cache.so" DECODE_RELOC_PLUGIN_CACHE_GIB=0.0005 GGML_VK_VISIBLE_DEVICES=0 DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
             tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/tiny-gptoss-f16.gguf"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

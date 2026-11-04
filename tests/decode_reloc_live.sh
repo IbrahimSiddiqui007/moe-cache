@@ -4,6 +4,8 @@
 # Env: DECODE_RELOC_EXPECT=moved (default) the switch-on run must really move layers (a machine with a GPU, e.g. the laptop);
 #      DECODE_RELOC_EXPECT=any   CI without a real GPU (llama_patched.yml): checks that need a move are skipped, with a line saying so, when none happened;
 #      DECODE_RELOC_SKIP_LONG=1  leave out the 2400-token run (a software GPU such as lavapipe is too slow for it);
+#      DECODE_RELOC_PLUGIN=LIB   also run with the moe-cache plugin loaded (GGML_BACKEND_PATH) and a 2 MB cache so experts are evicted: the experts of the host layers
+#                                (DECODE_RELOC_PLUGIN_CACHE_GIB, default 0.002) are then in the plugin's MOE_CACHE buffer (not "host" memory) and must still move, through get_tensor, with the same tokens;
 #      DECODE_RELOC_EXE_DIR=DIR  where the test program is put (default: a temporary folder); a build with dynamic backends (GGML_BACKEND_DL) finds them next to the program.
 # Runs tests/decode_reloc_live.cpp with the switch unset and set (and with a second context) and compares the token ids. Also:
 #   reserve failure: LLAMA_DECODE_RELOC_FAIL=1 (first reserve throws) and =2 (reserve after the move throws): the run goes on, the layers are back, tokens equal
@@ -27,6 +29,15 @@ run l_off env -u LLAMA_DECODE_RELOC "$EXE/live" "$MODEL" late2
 run l_on env LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" late2
 [ -n "${DECODE_RELOC_SKIP_LONG:-}" ] || run g_off env -u LLAMA_DECODE_RELOC -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB "$EXE/live" "$MODEL" long
 [ -n "${DECODE_RELOC_SKIP_LONG:-}" ] || run g_on env -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" long
+# diagnostics: the memory figure is the real one (or says it was not queried); LLAMA_DECODE_RELOC_FAKE_FREE_MIB (test only) pretends the device has little free memory
+run f3 env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_FAKE_FREE_MIB=50 "$EXE/live" "$MODEL"
+if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
+  PENV=(GGML_BACKEND_PATH="$DECODE_RELOC_PLUGIN" MOE_CACHE_GGUF="$MODEL" MOE_CACHE_SIZE_GIB="${DECODE_RELOC_PLUGIN_CACHE_GIB:-0.002}" MOE_CACHE_STATS=1)
+  run p_off env -u LLAMA_DECODE_RELOC "${PENV[@]}" "$EXE/live" "$MODEL"
+  run p_on env LLAMA_DECODE_RELOC=1 "${PENV[@]}" "$EXE/live" "$MODEL"
+  run pl_off env -u LLAMA_DECODE_RELOC "${PENV[@]}" "$EXE/live" "$MODEL" late2
+  run pl_on env LLAMA_DECODE_RELOC=1 "${PENV[@]}" "$EXE/live" "$MODEL" late2
+fi
 fail=0
 MOVED=0; grep -q 'layers of experts moved to the GPU' "$OUT/on.err" && MOVED=1
 chkm() { if [ "$MOVED" = 1 ]; then chk "$@"; else echo "skip $1 (no layer could move on this machine: $(grep -h 'no layer fits\|not on a GPU' "$OUT/on.err" | head -1 | cut -c1-120))"; fi; }
@@ -39,6 +50,14 @@ chk "tokens equal with the switch on and off (prompt, decode, restore, move back
 chk "slot save/restore in the decode phase reproduces the tokens (on)" "grep -q 'restore_matches: yes' '$OUT/on.txt'"
 chk "second context: move refused" "grep -q 'another context' '$OUT/two.err' && ! grep -q 'layers of experts moved' '$OUT/two.err'"
 chk "second context: tokens unchanged" "cmp -s '$OUT/off.txt' '$OUT/two.txt'"
+# diagnostics
+chk "no layer fits: the log names the memory figure and the reasons (fake free memory 50 MiB)" "[ \"\$(cat $OUT/f3.rc)\" = 0 ] && grep -q 'no layer fits (50 MiB free of 50 MiB' '$OUT/f3.err' && grep -q 'too big for the free memory' '$OUT/f3.err' && cmp -s '$OUT/off.txt' '$OUT/f3.txt'"
+if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
+  chk "plugin: the experts are in the MOE_CACHE buffer and the cache evicted (2 MB cache)" "grep -q 'buffer type overridden to MOE_CACHE' '$OUT/p_on.err' && grep -Eq 'evictions=[1-9]' '$OUT/p_on.err'"
+  chk "plugin: exit 0, tokens equal with the switch on and off (experts evicted while the layers move)" "[ \"\$(cat $OUT/p_on.rc)\" = 0 ] && [ \"\$(cat $OUT/p_off.rc)\" = 0 ] && cmp -s '$OUT/p_off.txt' '$OUT/p_on.txt'"
+  chkm "plugin: layers moved, read through the moe-cache buffer" "grep -q 'of them read through the moe-cache buffer' '$OUT/p_on.err' && ! grep -q 'of them read through the moe-cache buffer' '$OUT/p_off.err'"
+  chk "plugin, second context after the move: no crash, tokens equal to the switch off" "[ \"\$(cat $OUT/pl_on.rc)\" = 0 ] && cmp -s '$OUT/pl_off.txt' '$OUT/pl_on.txt'"
+fi
 # test 1: reserve failure
 chk "fail=1: first reserve throws, the log says why" "grep -q 'reserve with ubatch 32 failed (LLAMA_DECODE_RELOC_FAIL=1' '$OUT/f1.err' && ! grep -q 'layers of experts moved' '$OUT/f1.err'"
 chk "fail=1: process finished (exit 0), tokens equal to the switch off" "[ \"\$(cat $OUT/f1.rc)\" = 0 ] && cmp -s '$OUT/off.txt' '$OUT/f1.txt'"
