@@ -73,6 +73,8 @@ One row is a machine, model, setting and arm. The number shown is the one from t
 | Qwen3.8-Flash-Next-GSQ-RCO-Q2_0 | ctx 40960, -ub 2048, n-cpu-moe 39, GPU expert layers 9, 34k-token prompt, then a short answer | pass2 | 560.2 | 27.56 | 2026-11-04 | stale | [chain1103-q2_0-34k](claims/chain1103-q2_0-34k.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-Q2_0 | ctx 65536, -ub 2048, n-cpu-moe 40, GPU expert layers 8, 64k-token prompt, then a short answer | pass1 | 415.5 | 24.85 | 2026-11-04 | stale | [chain1103-q2_0-64k](claims/chain1103-q2_0-64k.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-Q2_0 | ctx 65536, -ub 2048, n-cpu-moe 40, GPU expert layers 8, 64k-token prompt, then a short answer | pass2 | 382.7 | 26.23 | 2026-11-04 | stale | [chain1103-q2_0-64k](claims/chain1103-q2_0-64k.md) |
+| gpt-oss-120b-MXFP4 | ctx 65536, -ub 1024, n-cpu-moe 32, 30k-token prompt (30,374 tokens), then a short answer | cc4fe9e (yesterday's code) | 73.2 | 8.78 | 2026-11-04 | current | [chain1103-gptoss-623](claims/chain1103-gptoss-623.md) |
+| gpt-oss-120b-MXFP4 | ctx 65536, -ub 1024, n-cpu-moe 32, 30k-token prompt (30,374 tokens), then a short answer | f8899ca (today's code) | 114.7 (+56.7 % vs cc4fe9e (yesterday's code)) | 9.16 (+4.4 % vs cc4fe9e (yesterday's code)) | 2026-11-04 | current | [chain1103-gptoss-623](claims/chain1103-gptoss-623.md) |
 
 ## Claims that are not current
 

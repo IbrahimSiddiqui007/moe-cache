@@ -31,6 +31,13 @@ QUANT = {
 }
 
 
+# a build against build comparison (arms A and B are two experimental kits): item -> (model file, quant, size, prompt set, arm names, llama build, note)
+AB = {"gptoss_623": ("gpt-oss-120b-MXFP4", "MXFP4", 63.4, "30k-token prompt (30,374 tokens), then a short answer",
+                     {"A": "cc4fe9e (yesterday's code)", "B": "f8899ca (today's code)"}, 12064,
+                     "Arms are two experimental kits built from the commits named in the arm (CACHE-623: the sibling-load path of gpt-oss no longer moves resident experts to the "
+                     "most-recently-used end during a long prompt); both ran with the official llama.cpp b12064. Order A B B A.")}
+
+
 def load(facts_dir):
     items = {}
     for f in sorted(glob.glob(os.path.join(facts_dir, "*.facts.json"))):
@@ -48,7 +55,11 @@ def hardware(chain):
 
 
 def build(item, facts, chain, baseline):
-    if item in CARD:
+    if item in AB:
+        name, quant, size, prompt_set, amap, lbuild, abnote = AB[item]
+        kind = "ab"
+        facts = [dict(d, arm=amap[d["arm"]]) for d in facts]
+    elif item in CARD:
         name, quant, size = CARD[item]
         prompt_set, kind = "water request (13 tokens)", "card"
     else:
@@ -62,7 +73,7 @@ def build(item, facts, chain, baseline):
         r = d["results"][0]
         idx[d["arm"]] = idx.get(d["arm"], 0) + 1
         dec = r.get("decode_tps") if kind == "card" else r.get("decode_after_tps")
-        if kind == "quant" and not dec:
+        if kind in ("quant", "ab") and not dec:
             notes.append(f"{d['arm']}: the harness stored decode-after = {r.get('decode_after_tps')}; that is not a speed, so it is recorded as 'not recorded'.")
             dec = None
         mon = d.get("monitor") or {}
@@ -71,7 +82,9 @@ def build(item, facts, chain, baseline):
                                                    "text_sha256": d.get("text_md5")}, mon)
         runs.append(e)
         notes += [n for n in d.get("notes", []) if "not clean" in n or "peak RAM" in n]
-    if kind == "quant":
+    if kind == "ab":
+        notes.append(abnote)
+    if kind in ("quant", "ab"):
         notes.append("decode_tps in this record is the speed of the short answer after the long prompt (decode after a long prompt), from the harness' decode_after_tps. "
                      "'reprocessed' (prompt tokens read again by the follow-up): " + ", ".join(f"{d['arm']} {d['results'][0].get('reprocessed')}" for d in facts) + ".")
         notes.append("text_sha256 holds the first 10 hex digits of the harness' text md5, not a sha256.")
@@ -84,7 +97,7 @@ def build(item, facts, chain, baseline):
     g = facts[0]
     env = {"hardware": hardware(chain),
            "software": {"moe_cache_version": "0.3.5", "moe_cache_commit": NR, "plugin_file": NR, "plugin_sha256_prefix": NR, "llama_backend": "Vulkan",
-                        "llama_build": 11966, "llama_commit": plug.get("ggml_commit", NR), "python": NR},
+                        "llama_build": lbuild if kind == "ab" else 11966, "llama_commit": plug.get("ggml_commit", NR), "python": NR},
            "model": {"file": name, "quant": quant, "size_gb": size if size is not None else NR, "sha256_full": NR, "sha256_head16MiB": NR, "source_url": NR}}
     settings = {"batch": NR, "command_line": NR, "ctx": g.get("ctx", NR), "environment": {}, "fast_flag": NR, "flash_attn": NR,
                 "gpu_expert_layers": plug.get("gpu_expert_layers", NR), "kv_type_k": NR, "kv_type_v": NR,
@@ -92,9 +105,9 @@ def build(item, facts, chain, baseline):
                 "n_layer": plug.get("model_layers", NR), "ngl": NR, "threads": NR, "ubatch": g.get("ub", NR)}
     cond = {"baseline_check": NR if item.endswith("_fix") else baseline, "cpu_temp_c": NR, "file_cache": NR, "gpu_temp_c": NR, "other_programs": ("the owner's browser held 1.4 GB of VRAM (not clean)" if item.endswith("_fix") else "owner work was running (every run 'not clean')"),
             "system_cpu_busy_before_pct": NR, "system_ram_free_before_mib": NR, "uptime_h": NR, "vram_in_use_before_mib": NR}
-    proto = {"arms": arms, "n_predict": NR, "order": "ABBA" if kind == "card" else "single", "prompt_set": prompt_set, "prompt_sha256": NR,
+    proto = {"arms": arms, "n_predict": NR, "order": "ABBA" if kind in ("card", "ab") else "single", "prompt_set": prompt_set, "prompt_sha256": NR,
              "prompt_tokens": facts[0]["results"][0].get("prompt_n", NR), "runs_per_arm": max(idx.values()), "sampler": NR, "seed": NR, "temperature": NR}
-    repro = {"commands": [], "kit": "the released v0.3.5 kit with the official llama.cpp b11966 (launcher defaults)", "model_url": NR}
+    repro = {"commands": [], "kit": ("two experimental kits (head3 = cc4fe9e, head4 = f8899ca) with the official llama.cpp b12064" if kind == "ab" else "the released v0.3.5 kit with the official llama.cpp b11966 (launcher defaults)"), "model_url": NR}
     import datetime
     rec = rr.assemble(env, settings, cond, proto, runs, repro, notes, now=datetime.datetime(2026, 11, 4, 10, 52 if item.endswith("_fix") else 56, tzinfo=datetime.timezone.utc) if item.endswith("_fix") else datetime.datetime(2026, 11, 4, 6, 56, tzinfo=datetime.timezone.utc))
     return rec
@@ -117,7 +130,7 @@ def main(argv):
         if a.only and item not in a.only:
             continue
         base = item.replace("_fix", "")
-        if item not in CARD and not (base.rsplit("_", 1)[0] in QUANT and base.endswith(("_34k", "_64k"))):
+        if item not in CARD and item not in AB and not (base.rsplit("_", 1)[0] in QUANT and base.endswith(("_34k", "_64k"))):
             continue
         rec = build(item, items[item], chain, baseline)
         errs = rr.validate(rec, sch) if sch else []
