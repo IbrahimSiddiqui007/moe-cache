@@ -15,6 +15,7 @@
 #include "llama.h"
 #include "ggml-backend.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 #include <string>
@@ -39,7 +40,7 @@ int main(int argc, char ** argv) {
     ggml_backend_load_all();
     llama_backend_init();
     llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 99;
+    mp.n_gpu_layers = getenv("LIVE_NGL") ? atoi(getenv("LIVE_NGL")) : 99;     // LIVE_NGL=0: CPU only (CI without a GPU: the patch must stay inert)
     // the experts of layers 0..2 stay in host memory (plain CPU buffer, as --n-cpu-moe 3 does)
     llama_model_tensor_buft_override ov[2] = { { "blk\\.[0-2]\\.ffn_.*_exps", ggml_backend_cpu_buffer_type() }, { nullptr, nullptr } };
     mp.tensor_buft_overrides = ov;

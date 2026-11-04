@@ -182,6 +182,18 @@ jobs:
           cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS
           cmake --build build --config Release --target llama-server -j $(nproc)
           build/bin/llama-server --version
+      # Critic fix list 8: the live test of patch 0070 runs on every patched build, not only by hand. Real patched libllama (the build above) and a small
+      # MoE model, CPU only (LIVE_NGL=0: a runner has no GPU, so nothing can move): the patch must stay inert (identical text over 2400 tokens, 4 prompts,
+      # switch off vs on), the injected reserve failure (LLAMA_DECODE_RELOC_FAIL=1) must be survived, a second context must be refused. The checks that need a
+      # real move (fail=2, a second context after the move) are skipped with a line that says so; the laptop run (tests/decode_reloc_live.sh with a GPU) and the PC run cover them.
+      - name: Granite test model (pinned by sha256, as windows-package)
+        run: |
+          curl -fsSL --retry 5 --retry-delay 10 -o granite.gguf "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
+          echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+      - name: Live test of patch 0070 (patched libllama + tiny MoE model, CPU only)
+        run: |
+          LIVE_NGL=0 DECODE_RELOC_EXPECT=any DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
+            tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llama-patched-linux-x64
