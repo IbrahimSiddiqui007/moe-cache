@@ -72,7 +72,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   <header>
     <div class="eyebrow">Benchmark card · measured 2026-10-27 to 2026-11-04 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
-    <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decodes faster than stock llama-server on every model that is bigger than the RAM, with the same output text (without MTP).</p>
+    <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decoded faster than stock llama-server on every model bigger than the RAM that was tested (short chats at 8k context, table below; long-context decode is measured against stock only for one file, 2026-10-28). The 256-token answers checked were byte-identical to stock (without MTP); a different GPU layer split can change a token while the meaning stays.</p>
     <div class="machine">
       <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>llama.cpp Vulkan: 620d2225c (ggml 0.27) for the Q2_0 and IQ2_XS rows of 2026-10-27/28, official b11966 for the 2026-11-04 rows and the 2026-11-03 table</span>
     </div>
@@ -80,17 +80,17 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section aria-label="Headline numbers">
     <div class="tiles">
-      <div class="tile"><b>≈1.4×</b><span>faster long prompts (34k–128k tokens), v0.3.5 vs v0.3.4; decode after them 6–10 % lower</span></div>
-      <div class="tile"><b>+42–53 %</b><span>decode speed on the three Qwen MoE files re-measured on 2026-11-04 (IQ3_XXS, IQ3_S, 122B); Q2_0 +20 % and IQ2_XS +47 % are from 2026-10-27/28 <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --></span></div>
-      <div class="tile"><b>2.1×</b><span>GLM-5.3 (102 GB), two runs each on the same drive; 2.7× with MTP <!-- claim:chain1103-glm --></span></div>
-      <div class="tile"><b>2.0–2.4×</b><span>faster agent sessions (OpenCode, Hermes) on Flash-Next</span></div>
-      <div class="tile"><b>+56 %</b><span>decode with MTP on Qwen3.6-35B against stock without MTP (fits in RAM; stock with MTP not measured on 2026-11-04) <!-- claim:chain1103-qwen36 --></span></div>
-      <div class="tile"><b>Same text</b><span>byte-identical to stock without MTP on every model checked</span></div>
+      <div class="tile"><b>+42 / +38 / +38 %</b><span>prompt reading speed at 34k / 64k / 128k tokens, v0.3.5 against v0.3.4 (Flash-Next Q2_0, clean run 2026-11-03, official llama.cpp b11966); decode after those prompts is 6–10 % lower <!-- claim:v035-vs-v034-34k --><!-- claim:v035-vs-v034-64k --><!-- claim:v035-vs-v034-128k --></span></div>
+      <div class="tile"><b>1.8×</b><span>prompt reading at 64k context, moe-cache against stock: a 63.5k-token prompt in about 289 against 525 s, decode +23 % at that depth (Flash-Next Q2_0; one cold run each, 2026-10-28, Steam running, so not clean)</span></div>
+      <div class="tile"><b>+26 %</b><span>prompt reading at the 256k setting with <code>-ub 2048</code> against <code>-ub 1024</code> (a 222k-token prompt; v0.3.5, 2026-11-03) <!-- claim:v035-ub2048-256k --></span></div>
+      <div class="tile"><b>2.0–2.4×</b><span>faster coding-agent sessions (OpenCode, Hermes) on Flash-Next IQ2_XS at 65k agent context (2026-10-27, two cold runs each)</span></div>
+      <div class="tile"><b>8k chat</b><span>+42–53 % decode on three Qwen files and 2.1× on GLM-5.3 (2.7× with MTP), at 8k context with a 13-token prompt (2026-11-04, v0.3.5 kit, every run not clean) <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --><!-- claim:chain1103-glm --></span></div>
+      <div class="tile"><b>Pending</b><span>a clean stock against moe-cache run at long context (34k–256k) on the 2026-11-04 files and on v0.3.6 (TEST-684); the long-context stock numbers here are from 2026-10-28</span></div>
     </div>
   </section>
 
   <section>
-    <h2>Decode speed, tokens per second</h2>
+    <h2>Decode speed, short chat (8k context, 13-token prompt), tokens per second</h2>
     <div class="chart" id="chart">
       <div class="legend">
         <span><i style="background:var(--stock)"></i>stock llama-server</span>
@@ -102,18 +102,18 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
     <div class="scroll">
       <table>
-        <thead><tr><th>Model (file size)</th><th class="n">GPU expert layers</th><th class="n">stock</th><th class="n">moe-cache</th><th class="n">change</th></tr></thead>
+        <thead><tr><th>Model (file size)</th><th>Context, prompt</th><th class="n">GPU expert layers</th><th class="n">stock</th><th class="n">moe-cache</th><th class="n">change</th></tr></thead>
         <tbody>
-          <tr><td><b>Flash-Next Q2_0</b> (the faster file)<span class="sub">66.4 GB, drive D:, two runs each, not interleaved; stock = launcher <code>--stock</code> defaults</span></td><td class="n">12 (moe-cache)</td><td class="n">18.41</td><td class="n">22.16</td><td class="n up">+20 %</td></tr>
-          <tr><td>Qwen3-Next “Flash-Next” IQ2_XS<span class="sub">68 GB, drive C:</span></td><td class="n">12</td><td class="n">14.89</td><td class="n">21.94</td><td class="n up">+47 %</td></tr>
-          <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:, 2026-11-04, v0.3.5 kit, two runs each (replaces 15.14 vs 19.86 of 2026-10-27)</span></td><td class="n">8</td><td class="n">14.96</td><td class="n">22.87</td><td class="n up">+53 %</td></tr><!-- claim:chain1103-iq3xxs -->
-          <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive D:, 2026-11-04 (replaces 12.92 vs 17.28 of 2026-10-27)</span></td><td class="n">6</td><td class="n">13.79</td><td class="n">19.62</td><td class="n up">+42 %</td></tr><!-- claim:chain1103-iq3s -->
-          <tr><td>Qwen3.5-122B UD-IQ2_XXS<span class="sub">36.6 GB, drive D:, 2026-11-04 (replaces 15.95 vs 19.73 of 2026-10-28)</span></td><td class="n">10</td><td class="n">16.10</td><td class="n">23.31</td><td class="n up">+45 %</td></tr><!-- claim:chain1103-122b -->
-          <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB, drive D:, two runs each, ABBA, 2026-11-04 (replaces the single pair 2.21 vs 4.44 of 2026-10-27)</span></td><td class="n">0</td><td class="n">2.98</td><td class="n">6.27</td><td class="n up">2.1×</td></tr><!-- claim:chain1103-glm -->
-          <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">two runs; stock without MTP is the other side (replaces the single run 6.92)</span></td><td class="n">0</td><td class="n">2.98</td><td class="n">8.17</td><td class="n up">2.7×</td></tr><!-- claim:chain1103-glm -->
-          <tr><td>Nemotron 3.5 Bolt 74B-A9B<span class="sub">22.0 GB, drive C:, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced here to compare (two runs each, 2026-11-04; the single runs of 2026-10-28 gave −18 %)</span></td><td class="n">–</td><td class="n">29.99</td><td class="n">31.68</td><td class="n up">+6 %</td></tr><!-- claim:chain1103-bolt -->
-          <tr><td>Qwen3.6-35B-A3B Q4_K_M<span class="sub">22 GB, drive C:, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced (two runs each, 2026-11-04; 2026-10-27 gave −1 %)</span></td><td class="n">–</td><td class="n">46.59</td><td class="n">51.80</td><td class="n up">+11 %</td></tr><!-- claim:chain1103-qwen36 -->
-          <tr><td>Qwen3.6-35B, moe-cache with MTP<span class="sub">against stock without MTP; stock with MTP was not measured on 2026-11-04 (68.6 on 2026-10-27)</span></td><td class="n">–</td><td class="n">46.59</td><td class="n">72.69</td><td class="n up">+56 %</td></tr><!-- claim:chain1103-qwen36 -->
+          <tr><td><b>Flash-Next Q2_0</b> (the faster file)<span class="sub">66.4 GB, drive D:, two runs each, not interleaved; stock = launcher <code>--stock</code> defaults</span></td><td>8192, short prompt (length not recorded)</td><td class="n">12 (moe-cache)</td><td class="n">18.41</td><td class="n">22.16</td><td class="n up">+20 %</td></tr>
+          <tr><td>Qwen3-Next “Flash-Next” IQ2_XS<span class="sub">68 GB, drive C:</span></td><td>8192, short prompt (length not recorded)</td><td class="n">12</td><td class="n">14.89</td><td class="n">21.94</td><td class="n up">+47 %</td></tr>
+          <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:, 2026-11-04, v0.3.5 kit, two runs each (replaces 15.14 vs 19.86 of 2026-10-27)</span></td><td>8192, 13 tokens</td><td class="n">8</td><td class="n">14.96</td><td class="n">22.87</td><td class="n up">+53 %</td></tr><!-- claim:chain1103-iq3xxs -->
+          <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive D:, 2026-11-04 (replaces 12.92 vs 17.28 of 2026-10-27)</span></td><td>8192, 13 tokens</td><td class="n">6</td><td class="n">13.79</td><td class="n">19.62</td><td class="n up">+42 %</td></tr><!-- claim:chain1103-iq3s -->
+          <tr><td>Qwen3.5-122B UD-IQ2_XXS<span class="sub">36.6 GB, drive D:, 2026-11-04 (replaces 15.95 vs 19.73 of 2026-10-28)</span></td><td>8192, 13 tokens</td><td class="n">10</td><td class="n">16.10</td><td class="n">23.31</td><td class="n up">+45 %</td></tr><!-- claim:chain1103-122b -->
+          <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB, drive D:, two runs each, ABBA, 2026-11-04 (replaces the single pair 2.21 vs 4.44 of 2026-10-27)</span></td><td>8192, 13 tokens</td><td class="n">0</td><td class="n">2.98</td><td class="n">6.27</td><td class="n up">2.1×</td></tr><!-- claim:chain1103-glm -->
+          <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">two runs; stock without MTP is the other side (replaces the single run 6.92)</span></td><td>8192, 13 tokens</td><td class="n">0</td><td class="n">2.98</td><td class="n">8.17</td><td class="n up">2.7×</td></tr><!-- claim:chain1103-glm -->
+          <tr><td>Nemotron 3.5 Bolt 74B-A9B<span class="sub">22.0 GB, drive C:, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced here to compare (two runs each, 2026-11-04; the single runs of 2026-10-28 gave −18 %)</span></td><td>8192, 13 tokens</td><td class="n">–</td><td class="n">29.99</td><td class="n">31.68</td><td class="n up">+6 %</td></tr><!-- claim:chain1103-bolt -->
+          <tr><td>Qwen3.6-35B-A3B Q4_K_M<span class="sub">22 GB, drive C:, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced (two runs each, 2026-11-04; 2026-10-27 gave −1 %)</span></td><td>8192, 13 tokens</td><td class="n">–</td><td class="n">46.59</td><td class="n">51.80</td><td class="n up">+11 %</td></tr><!-- claim:chain1103-qwen36 -->
+          <tr><td>Qwen3.6-35B, moe-cache with MTP<span class="sub">against stock without MTP; stock with MTP was not measured on 2026-11-04 (68.6 on 2026-10-27)</span></td><td>8192, 13 tokens</td><td class="n">–</td><td class="n">46.59</td><td class="n">72.69</td><td class="n up">+56 %</td></tr><!-- claim:chain1103-qwen36 -->
         </tbody>
       </table>
     </div>

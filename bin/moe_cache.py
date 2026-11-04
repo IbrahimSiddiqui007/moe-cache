@@ -1897,9 +1897,10 @@ SERVER_HELP = """\
            lines say which of these were applied. Smoother PC, slower model. MOE_CACHE_LEAVE_ROOM=1 turns it on for good
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
---ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it. On Windows it is also set as a
-           job memory limit on llama-server only with MOE_CACHE_WIN_VIEW=0 (with the default file-view cache the experts use no commit and a job limit
-           would only cap llama.cpp's GPU memory, which Windows commits)
+--ram GB   memory the cache and the layer plan are sized to (default: the cgroup limit or free RAM). A sizing hint, NOT a RAM cap: the launcher sets no
+           limit on Linux (only a cgroup you set yourself is a hard limit). On Windows a job memory limit is set only for the plugin, only with --ram and
+           only with MOE_CACHE_WIN_VIEW=0; the default file-view cache, the on-demand listener and stock llama-server get none (a job limit counts GPU
+           memory too and broke Vulkan), so the server can use more RAM than --ram says
 --max-ram GB  hard cap on the whole server's memory (default: physical RAM minus max(4 GiB, 12.5 %), = 28 GiB on a 32 GiB machine; 0 = none).
            Same rule on Linux and Windows; --ram and the free-memory logic stay below it (MOE_CACHE_MAX_RAM_GB does the same)
            The cap is kept by planning (cache budget, layer plan), never by stopping a running server (owner's rule)
