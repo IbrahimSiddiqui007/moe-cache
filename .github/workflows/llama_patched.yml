@@ -194,6 +194,15 @@ jobs:
         run: |
           LIVE_NGL=0 DECODE_RELOC_EXPECT=any DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
             tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
+      # Critic round 4 #7: the CPU-only run above skips every check that needs a real move. lavapipe (software Vulkan, installed above) is a GPU device to ggml, so here
+      # the layers really move (DECODE_RELOC_EXPECT=moved: the run fails if they do not): the reserve failure after the move (fail=2) and a second context created after
+      # the move are exercised. The 2400-token run is left out (too slow on a software GPU); it runs in the CPU-only step above and on the laptop. Also the first run
+      # of the move code on Vulkan, without a real card: a device OOM is still untested (docs/DECODE_RELOC_DESIGN.md).
+      - name: Live test of patch 0070 on lavapipe (software Vulkan) - layers move, fail=2, second context after the move
+        timeout-minutes: 45
+        run: |
+          DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
+            tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llama-patched-linux-x64

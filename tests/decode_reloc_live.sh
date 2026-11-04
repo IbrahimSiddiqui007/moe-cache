@@ -3,6 +3,7 @@
 #   tests/decode_reloc_live.sh LLAMA_CPP_DIR BUILD_DIR MODEL.gguf
 # Env: DECODE_RELOC_EXPECT=moved (default) the switch-on run must really move layers (a machine with a GPU, e.g. the laptop);
 #      DECODE_RELOC_EXPECT=any   CI without a real GPU (llama_patched.yml): checks that need a move are skipped, with a line saying so, when none happened;
+#      DECODE_RELOC_SKIP_LONG=1  leave out the 2400-token run (a software GPU such as lavapipe is too slow for it);
 #      DECODE_RELOC_EXE_DIR=DIR  where the test program is put (default: a temporary folder); a build with dynamic backends (GGML_BACKEND_DL) finds them next to the program.
 # Runs tests/decode_reloc_live.cpp with the switch unset and set (and with a second context) and compares the token ids. Also:
 #   reserve failure: LLAMA_DECODE_RELOC_FAIL=1 (first reserve throws) and =2 (reserve after the move throws): the run goes on, the layers are back, tokens equal
@@ -24,8 +25,8 @@ run f1 env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_FAIL=1 "$EXE/live" "$MODEL"
 run f2 env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_FAIL=2 "$EXE/live" "$MODEL"
 run l_off env -u LLAMA_DECODE_RELOC "$EXE/live" "$MODEL" late2
 run l_on env LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" late2
-run g_off env -u LLAMA_DECODE_RELOC -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB "$EXE/live" "$MODEL" long
-run g_on env -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" long
+[ -n "${DECODE_RELOC_SKIP_LONG:-}" ] || run g_off env -u LLAMA_DECODE_RELOC -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB "$EXE/live" "$MODEL" long
+[ -n "${DECODE_RELOC_SKIP_LONG:-}" ] || run g_on env -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" long
 fail=0
 MOVED=0; grep -q 'layers of experts moved to the GPU' "$OUT/on.err" && MOVED=1
 chkm() { if [ "$MOVED" = 1 ]; then chk "$@"; else echo "skip $1 (no layer could move on this machine: $(grep -h 'no layer fits\|not on a GPU' "$OUT/on.err" | head -1 | cut -c1-120))"; fi; }
@@ -50,6 +51,7 @@ chkm "late 2nd context: layers were moved first, then the first context moved ba
 chk "late 2nd context: no crash (exit 0) with the switch on and off" "[ \"\$(cat $OUT/l_on.rc)\" = 0 ] && [ \"\$(cat $OUT/l_off.rc)\" = 0 ]"
 chk "late 2nd context: tokens of both contexts equal to the switch off" "cmp -s '$OUT/l_off.txt' '$OUT/l_on.txt'"
 # test 3: long greedy identity
+if [ -n "${DECODE_RELOC_SKIP_LONG:-}" ]; then echo "skip long greedy identity (DECODE_RELOC_SKIP_LONG)"; else
 ntok=$(grep -E '^P[0-9]:' "$OUT/g_on.txt" | wc -w); ntok=$((ntok - 4))
 chk "long: at least 2000 tokens generated ($ntok), exit 0" "[ $ntok -ge 2000 ] && [ \"\$(cat $OUT/g_on.rc)\" = 0 ] && [ \"\$(cat $OUT/g_off.rc)\" = 0 ]"
 chkm "long: layers moved at least twice and moved back at least twice (700 and 1500 token batches in the decode phase)" "[ \$(grep -c 'layers of experts moved' '$OUT/g_on.err') -ge 2 ] && [ \$(grep -c 'back to the prompt layout' '$OUT/g_on.err') -ge 2 ]"
@@ -74,6 +76,7 @@ for la, lb in zip(a, b):
 else:
     print("  line counts differ:", len(a), len(b))
 PY
+fi
 fi
 echo "logs in $OUT"
 exit $fail
