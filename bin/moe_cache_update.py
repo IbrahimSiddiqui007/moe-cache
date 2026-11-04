@@ -30,6 +30,19 @@ def newest_stable_tag(fetch_json):
     return None
 
 
+def version_key(v):
+    """Sortable key of a release version or tag ('v0.3.6', '0.3.6-beta2'): numbers first, a final release sorts after its own pre-releases.
+    None when it is not a version (then nothing is compared)."""
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:[.-]([A-Za-z0-9.]+))?", str(v).strip())
+    if not m:
+        return None
+    nums = tuple(int(x) for x in m.group(1).split("."))
+    nums += (0,) * (4 - len(nums))
+    pre = m.group(2)
+    tail = tuple((0, int(x), "") if x.isdigit() else (1, 0, x.lower()) for x in re.findall(r"\d+|[A-Za-z]+", pre)) if pre else ()
+    return (nums, 0 if pre else 1, tail)
+
+
 def http_json(url):
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "moe-cache-update"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -107,10 +120,14 @@ def verify_new(layout, tag, command, run=subprocess.run):
 
 
 def roll_back(layout):
-    """Make the version that was installed before current again. Linux: `current` points back (atomic rename of a new link). Windows: kit and
-    kit.prev trade places (the failed kit is kept as kit.failed, nothing is deleted). Returns '' or what went wrong."""
+    """Make the version that was installed before current again. Linux: `current` points back (atomic rename of a new link), but only when that
+    folder exists: a link to a missing folder would leave no moe-cache at all. Windows: kit and kit.prev trade places (the failed kit is kept as
+    kit.failed, nothing is deleted; when the second rename fails the first one is undone). Returns '' or what went wrong; nothing is changed then."""
     try:
         if layout["kind"] == "linux":
+            target = os.path.join(layout["prefix"], "versions", layout["previous"])
+            if not os.path.isdir(target):
+                return f"{target} does not exist any more, so `current` was not changed (it still points at the version that was just installed)"
             tmp = os.path.join(layout["prefix"], ".current.back")
             if os.path.lexists(tmp):
                 os.remove(tmp)
@@ -123,7 +140,11 @@ def roll_back(layout):
             if os.path.exists(bad):
                 return f"{bad} is in the way: move it away and go back by hand (rename kit to kit.failed, kit.prev to kit)"
             os.rename(kit, bad)
-            os.rename(prev, kit)
+            try:
+                os.rename(prev, kit)
+            except OSError:
+                os.rename(bad, kit)         # put the kit back: never leave the root without one
+                raise
     except OSError as e:
         return str(e)
     return ""
@@ -139,7 +160,7 @@ def attestation(path, base_url_is_default, env=None):
     return ("verified", "build attestation of the installer verified (gh)") if r.returncode == 0 else ("failed", (r.stderr or r.stdout).strip()[-300:])
 
 
-def apply(version, here, tag=None, yes=False, dry=False, fetch_json=http_json, base_url=None, env=None, windows=WINDOWS, tty=None):
+def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, fetch_json=http_json, base_url=None, env=None, windows=WINDOWS, tty=None):
     """Returns a process exit code. version = the running moe-cache version; here = its folder (the repository root of the copy)."""
     env = os.environ if env is None else env
     layout = installed_layout(here, windows, env)
@@ -157,6 +178,10 @@ def apply(version, here, tag=None, yes=False, dry=False, fetch_json=http_json, b
     if tag == "v" + version:
         say(f"moe-cache {version} is already the newest release. Nothing to do.")
         return 0
+    mine, theirs = version_key(version), version_key(tag)
+    if mine and theirs and theirs < mine and not allow_downgrade:
+        say(f"moe-cache: REFUSED: {tag} is older than the running {version}, so this would be a downgrade. Nothing was changed. If you mean it, add --allow-downgrade.")
+        return 1
     default_base = base_url is None and not env.get("MOE_CACHE_BASE_URL")
     base = base_url or env.get("MOE_CACHE_BASE_URL") or f"https://github.com/{REPO}/releases/download/{tag}"
     name = "install.ps1" if layout["kind"] == "windows" else "install.sh"

@@ -7,7 +7,7 @@ Nothing here needs administrator rights or root. No telemetry: the installers ta
 | Command | What it does |
 |---|---|
 | `moe-cache update --check` | says whether a newer moe-cache or llama.cpp is out; downloads nothing |
-| `moe-cache update --apply` | asks, then downloads the newest stable release's installer, checks its build attestation when `gh` is installed and logged in, and runs it; the installer checks the package's sha256 (and attestation) and puts the old install back if anything fails. Only for a copy the installer put there; `--tag vX.Y.Z` picks another release, `--dry-run` shows the plan, `--yes` skips the question |
+| `moe-cache update --apply` | asks, then downloads the newest stable release's installer, checks its build attestation when `gh` is installed and logged in, and runs it; the installer checks the package's sha256 (and attestation) and puts the old install back if anything fails. Only for a copy the installer put there; `--tag vX.Y.Z` picks another release (an older one than the running copy is refused unless you add `--allow-downgrade`), `--dry-run` shows the plan, `--yes` skips the question |
 | after the update | it runs the new command's `--version` and imports the launcher modules from the new folder (no model needed); if that fails it goes back to the old version by itself |
 | roll back by hand | Linux: `update --apply` keeps the old version in `versions/`; `ln -sfn versions/<old folder> <prefix>/current` makes it current again (the command is printed). Windows: the old kit stays as `kit.prev` in the install folder (`%LOCALAPPDATA%\moe-cache`); close moe-cache, rename `kit` to `kit.failed` and `kit.prev` to `kit` |
 

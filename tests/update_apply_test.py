@@ -66,6 +66,45 @@ check(rc == 1 and "does not look like a release tag" in out, "a strange tag is r
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=env, base_url="file://" + release("9.9.2", tamper=True)))
 check(rc != 0 and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.1", "a damaged package is refused and 9.9.1 still runs")
 
+# RELEASE-691: a downgrade needs --allow-downgrade; roll_back never points `current` at a folder that is not there
+k = up.version_key
+check(k("v0.3.6") > k("0.3.6-beta2") > k("0.3.6-beta1") and k("0.3.10") > k("0.3.9") and k("0.3.6-beta10") > k("0.3.6-beta2") and k("1.0") == k("1.0.0") and k("junk") is None and k("0.3.7-beta1") > k("0.3.6"),
+      "version order: final after its pre-releases, 0.3.10 after 0.3.9, beta10 after beta2")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.0", yes=True, env=env, base_url="file://" + release("9.9.0")))
+check(rc == 1 and "downgrade" in out and "--allow-downgrade" in out and os.listdir(os.path.join(prefix, "versions")) == [os.path.basename(here1)], "a downgrade (v9.9.0 over 9.9.1) is refused, nothing downloaded or changed")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.0", yes=True, dry=True, env=env, allow_downgrade=True, base_url="file://" + release("9.9.0")))
+check(rc == 0 and "nothing was downloaded" in out and "downgrade" not in out, "--allow-downgrade lets it through (dry run)")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.1-beta1", yes=True, env=env))
+check(rc == 1 and "downgrade" in out, "the final release over its own pre-release tag is a downgrade too")
+rc, out = say_to_str(lambda: up.apply("9.9.1-beta1", here1, tag="v9.9.1", yes=True, dry=True, env=env, base_url="file://" + release("9.9.1")))
+check(rc == 0 and "downgrade" not in out, "a pre-release over to its final release is an upgrade")
+
+rb = os.path.join(T, "rb"); os.makedirs(os.path.join(rb, "versions", "new")); os.makedirs(os.path.join(rb, "versions", "old"))
+os.symlink(os.path.join("versions", "new"), os.path.join(rb, "current"))
+err = up.roll_back({"kind": "linux", "prefix": rb, "previous": "gone"})
+check(err and "does not exist" in err and os.readlink(os.path.join(rb, "current")) == "versions/new" and not os.path.lexists(os.path.join(rb, ".current.back")),
+      "roll_back to a missing folder: refused, `current` untouched, no stray link")
+err = up.roll_back({"kind": "linux", "prefix": rb, "previous": "old"})
+check(err == "" and os.readlink(os.path.join(rb, "current")) == "versions/old", "roll_back to an existing folder switches `current`")
+# the Windows branch (plain renames; runs on Linux too): the root is never left without a kit
+rw = os.path.join(T, "rw"); os.makedirs(os.path.join(rw, "kit")); os.makedirs(os.path.join(rw, "kit.prev"))
+open(os.path.join(rw, "kit", "id"), "w").write("new"); open(os.path.join(rw, "kit.prev", "id"), "w").write("old")
+real, calls = os.rename, []
+def flaky(a, b):
+    calls.append(a)
+    if len(calls) == 2:
+        raise OSError("simulated: the second rename is refused")
+    return real(a, b)
+os.rename = flaky
+try:
+    err = up.roll_back({"kind": "windows", "root": rw})
+finally:
+    os.rename = real
+check(err and open(os.path.join(rw, "kit", "id")).read() == "new" and os.path.isdir(os.path.join(rw, "kit.prev")) and not os.path.exists(os.path.join(rw, "kit.failed")),
+      "windows roll_back: when the second rename fails the first is undone (kit is still there)")
+err = up.roll_back({"kind": "windows", "root": rw})
+check(err == "" and open(os.path.join(rw, "kit", "id")).read() == "old" and open(os.path.join(rw, "kit.failed", "id")).read() == "new", "windows roll_back: kit and kit.prev trade places, the failed kit is kept")
+
 # a package that unpacks but whose launcher modules do not import: the check after the swap puts the old version back
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.3", yes=True, env=env, base_url="file://" + release("9.9.3", modules=False)))
 check(rc == 1 and "failed its check" in out and "went back to 9.9.1" in out and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.1", f"a version that fails the check is rolled back ({out.strip()[-160:]})")
