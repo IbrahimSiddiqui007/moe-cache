@@ -52,7 +52,7 @@ def build(item, facts, chain, baseline):
         name, quant, size = CARD[item]
         prompt_set, kind = "water request (13 tokens)", "card"
     else:
-        key, ctx = item.rsplit("_", 1)
+        key, ctx = item.replace("_fix", "").rsplit("_", 1)
         name, quant, size = QUANT[key]
         prompt_set, kind = f"{ctx}-token prompt, then a short answer", "quant"
     plug = next((d for d in facts if d.get("plugin")), {})
@@ -75,7 +75,12 @@ def build(item, facts, chain, baseline):
         notes.append("decode_tps in this record is the speed of the short answer after the long prompt (decode after a long prompt), from the harness' decode_after_tps. "
                      "'reprocessed' (prompt tokens read again by the follow-up): " + ", ".join(f"{d['arm']} {d['results'][0].get('reprocessed')}" for d in facts) + ".")
         notes.append("text_sha256 holds the first 10 hex digits of the harness' text md5, not a sha256.")
-    notes.append("Source: the overnight chain of 2026-11-04 01:36-06:56 on the PC (restarted 01:34; baseline guard: " + baseline + "). Every run was 'not clean': owner work was running.")
+    if item.endswith("_fix"):
+        notes.append("Source: a daytime re-run of 2026-11-04 (about 10:18-10:52) on the PC, after the harness was fixed to ignore end-of-answer on the decode-after request (128 tokens). "
+                     "Not clean: the owner's browser held 1.4 GB of VRAM, so the prompt speeds here are about 40 % below the clean overnight runs of the same files; a clean re-run is planned. "
+                     "Use the overnight record for prompt speed.")
+    else:
+        notes.append("Source: the overnight chain of 2026-11-04 01:36-06:56 on the PC (restarted 01:34; baseline guard: " + baseline + "). Every run was 'not clean': owner work was running.")
     g = facts[0]
     env = {"hardware": hardware(chain),
            "software": {"moe_cache_version": "0.3.5", "moe_cache_commit": NR, "plugin_file": NR, "plugin_sha256_prefix": NR, "llama_backend": "Vulkan",
@@ -85,13 +90,13 @@ def build(item, facts, chain, baseline):
                 "gpu_expert_layers": plug.get("gpu_expert_layers", NR), "kv_type_k": NR, "kv_type_v": NR,
                 "mtp": "on in the mtp arm only (--mtp)" if kind == "card" and "mtp" in arms else NR, "n_cpu_moe": plug.get("cpu_expert_layers", NR),
                 "n_layer": plug.get("model_layers", NR), "ngl": NR, "threads": NR, "ubatch": g.get("ub", NR)}
-    cond = {"baseline_check": baseline, "cpu_temp_c": NR, "file_cache": NR, "gpu_temp_c": NR, "other_programs": "owner work was running (every run 'not clean')",
+    cond = {"baseline_check": NR if item.endswith("_fix") else baseline, "cpu_temp_c": NR, "file_cache": NR, "gpu_temp_c": NR, "other_programs": ("the owner's browser held 1.4 GB of VRAM (not clean)" if item.endswith("_fix") else "owner work was running (every run 'not clean')"),
             "system_cpu_busy_before_pct": NR, "system_ram_free_before_mib": NR, "uptime_h": NR, "vram_in_use_before_mib": NR}
     proto = {"arms": arms, "n_predict": NR, "order": "ABBA" if kind == "card" else "single", "prompt_set": prompt_set, "prompt_sha256": NR,
              "prompt_tokens": facts[0]["results"][0].get("prompt_n", NR), "runs_per_arm": max(idx.values()), "sampler": NR, "seed": NR, "temperature": NR}
     repro = {"commands": [], "kit": "the released v0.3.5 kit with the official llama.cpp b11966 (launcher defaults)", "model_url": NR}
     import datetime
-    rec = rr.assemble(env, settings, cond, proto, runs, repro, notes, now=datetime.datetime(2026, 11, 4, 6, 56, tzinfo=datetime.timezone.utc))
+    rec = rr.assemble(env, settings, cond, proto, runs, repro, notes, now=datetime.datetime(2026, 11, 4, 10, 52 if item.endswith("_fix") else 56, tzinfo=datetime.timezone.utc) if item.endswith("_fix") else datetime.datetime(2026, 11, 4, 6, 56, tzinfo=datetime.timezone.utc))
     return rec
 
 
@@ -111,7 +116,8 @@ def main(argv):
     for item in sorted(items):
         if a.only and item not in a.only:
             continue
-        if item not in CARD and not (item.rsplit("_", 1)[0] in QUANT and item.endswith(("_34k", "_64k"))):
+        base = item.replace("_fix", "")
+        if item not in CARD and not (base.rsplit("_", 1)[0] in QUANT and base.endswith(("_34k", "_64k"))):
             continue
         rec = build(item, items[item], chain, baseline)
         errs = rr.validate(rec, sch) if sch else []

@@ -55,8 +55,8 @@ One row is a machine, model, setting and arm. The number shown is the one from t
 | Qwen3.6-35B-A3B Q4_K_M | water-cycle request (decode) | stock + MTP | not recorded | 68.60 (+49.0 % vs stock) | 2026-10-27 | stale | [card-decode-qwen36](claims/card-decode-qwen36.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS | ctx 40960, -ub 2048, n-cpu-moe 39, GPU expert layers 9, 34k-token prompt, then a short answer | pass1 | 530.4 | 24.68 | 2026-11-04 | stale | [chain1103-iq2xs-34k](claims/chain1103-iq2xs-34k.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS | ctx 40960, -ub 2048, n-cpu-moe 39, GPU expert layers 9, 34k-token prompt, then a short answer | pass2 | 477.0 | 24.77 | 2026-11-04 | stale | [chain1103-iq2xs-34k](claims/chain1103-iq2xs-34k.md) |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS | ctx 65536, -ub 2048, n-cpu-moe 40, GPU expert layers 8, 64k-token prompt, then a short answer | pass1 | 326.2 | not recorded | 2026-11-04 | stale | [chain1103-iq2xs-64k](claims/chain1103-iq2xs-64k.md) |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS | ctx 65536, -ub 2048, n-cpu-moe 40, GPU expert layers 8, 64k-token prompt, then a short answer | pass2 | 307.6 | not recorded | 2026-11-04 | stale | [chain1103-iq2xs-64k](claims/chain1103-iq2xs-64k.md) |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS | ctx 65536, -ub 2048, n-cpu-moe 40, GPU expert layers 8, 64k-token prompt, then a short answer | pass1 | 326.2 | 16.63 | 2026-11-04 | stale | [chain1103-iq2xs-64k](claims/chain1103-iq2xs-64k.md), [chain1103-iq2xs-64k-decode](claims/chain1103-iq2xs-64k-decode.md) |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ2_XS | ctx 65536, -ub 2048, n-cpu-moe 40, GPU expert layers 8, 64k-token prompt, then a short answer | pass2 | 307.6 | 17.18 | 2026-11-04 | stale | [chain1103-iq2xs-64k](claims/chain1103-iq2xs-64k.md), [chain1103-iq2xs-64k-decode](claims/chain1103-iq2xs-64k-decode.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S | ctx 40960, -ub 2048, n-cpu-moe 43, GPU expert layers 5, 34k-token prompt, then a short answer | pass1 | 277.8 | 13.38 | 2026-11-04 | stale | [chain1103-iq3s-34k](claims/chain1103-iq3s-34k.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S | ctx 40960, -ub 2048, n-cpu-moe 43, GPU expert layers 5, 34k-token prompt, then a short answer | pass2 | 278.1 | 13.46 | 2026-11-04 | stale | [chain1103-iq3s-34k](claims/chain1103-iq3s-34k.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S | ctx 65536, -ub 2048, n-cpu-moe 44, GPU expert layers 4, 64k-token prompt, then a short answer | pass1 | 221.6 | 12.77 | 2026-11-04 | stale | [chain1103-iq3s-64k](claims/chain1103-iq3s-64k.md) |
@@ -65,8 +65,8 @@ One row is a machine, model, setting and arm. The number shown is the one from t
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S | ctx 8192, -ub 2048, n-cpu-moe 42, GPU expert layers 6, water request (13 tokens) | stock | 9.4 | 13.80 | 2026-11-04 | stale | [chain1103-iq3s](claims/chain1103-iq3s.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 40960, -ub 2048, n-cpu-moe 42, GPU expert layers 6, 34k-token prompt, then a short answer | pass1 | 348.3 | 16.64 | 2026-11-04 | stale | [chain1103-iq3xxs-34k](claims/chain1103-iq3xxs-34k.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 40960, -ub 2048, n-cpu-moe 42, GPU expert layers 6, 34k-token prompt, then a short answer | pass2 | 349.5 | 15.49 | 2026-11-04 | stale | [chain1103-iq3xxs-34k](claims/chain1103-iq3xxs-34k.md) |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 65536, -ub 2048, n-cpu-moe 42, GPU expert layers 6, 64k-token prompt, then a short answer | pass1 | 181.3 | not recorded | 2026-11-04 | stale | [chain1103-iq3xxs-64k](claims/chain1103-iq3xxs-64k.md) |
-| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 65536, -ub 2048, n-cpu-moe 42, GPU expert layers 6, 64k-token prompt, then a short answer | pass2 | 183.3 | not recorded | 2026-11-04 | stale | [chain1103-iq3xxs-64k](claims/chain1103-iq3xxs-64k.md) |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 65536, -ub 2048, n-cpu-moe 42, GPU expert layers 6, 64k-token prompt, then a short answer | pass1 | 181.3 | 11.66 | 2026-11-04 | stale | [chain1103-iq3xxs-64k](claims/chain1103-iq3xxs-64k.md), [chain1103-iq3xxs-64k-decode](claims/chain1103-iq3xxs-64k-decode.md) |
+| Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 65536, -ub 2048, n-cpu-moe 42, GPU expert layers 6, 64k-token prompt, then a short answer | pass2 | 183.3 | 13.02 | 2026-11-04 | stale | [chain1103-iq3xxs-64k](claims/chain1103-iq3xxs-64k.md), [chain1103-iq3xxs-64k-decode](claims/chain1103-iq3xxs-64k-decode.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 8192, -ub 2048, n-cpu-moe 40, GPU expert layers 8, water request (13 tokens) | plugin | 25.1 (+107.9 % vs stock) | 22.87 (+52.9 % vs stock) | 2026-11-04 | stale | [chain1103-iq3xxs](claims/chain1103-iq3xxs.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS | ctx 8192, -ub 2048, n-cpu-moe 40, GPU expert layers 8, water request (13 tokens) | stock | 12.1 | 14.96 | 2026-11-04 | stale | [chain1103-iq3xxs](claims/chain1103-iq3xxs.md) |
 | Qwen3.8-Flash-Next-GSQ-RCO-Q2_0 | ctx 40960, -ub 2048, n-cpu-moe 39, GPU expert layers 9, 34k-token prompt, then a short answer | pass1 | 575.8 | 27.29 | 2026-11-04 | stale | [chain1103-q2_0-34k](claims/chain1103-q2_0-34k.md) |
@@ -92,12 +92,14 @@ One row is a machine, model, setting and arm. The number shown is the one from t
 | [chain1103-glm](claims/chain1103-glm.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq2xs-34k](claims/chain1103-iq2xs-34k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq2xs-64k](claims/chain1103-iq2xs-64k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
+| [chain1103-iq2xs-64k-decode](claims/chain1103-iq2xs-64k-decode.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq3s](claims/chain1103-iq3s.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq3s-34k](claims/chain1103-iq3s-34k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq3s-64k](claims/chain1103-iq3s-64k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq3xxs](claims/chain1103-iq3xxs.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq3xxs-34k](claims/chain1103-iq3xxs-34k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-iq3xxs-64k](claims/chain1103-iq3xxs-64k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
+| [chain1103-iq3xxs-64k-decode](claims/chain1103-iq3xxs-64k-decode.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-q2_0-34k](claims/chain1103-q2_0-34k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-q2_0-64k](claims/chain1103-q2_0-64k.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
 | [chain1103-qwen36](claims/chain1103-qwen36.md) | stale | the llama.cpp pin is now b12064, the claim is valid up to b11966 |
