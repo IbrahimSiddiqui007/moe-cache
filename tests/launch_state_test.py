@@ -67,4 +67,18 @@ if os.name != "nt":
     now = os.umask(0o022)
     check(now == 0o022, f"four overlapping quiet plans restore the umask (0o{now:03o})")
     os.umask(old)
+
+# ENGINE-029: the figures the page shows come from the plan alone
+lp = mc.LaunchPlan()
+lp.planner_info, lp.tuned, lp.n_cpu_moe, lp.ub, lp.kv_q8 = None, None, "20", "1024", False
+check(lp.numbers() is None, "numbers(): no planner answer, no numbers")
+pl = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe": 40, "cache_GiB": 6.0, "cpu_experts_GiB": 18.0, "free_vram_GiB": 7.5, "note": ""}
+lp.planner_info = pl
+n = lp.numbers()
+check(n["n_cpu_moe"] == 20 and n["gpu_expert_layers"] == 28 and n["layers"] == 48 and n["ub"] == 1024 and n["kv_cache"] == "f16" and n["cache_GiB"] == 6.0, "numbers(): the launcher's n_cpu_moe and -ub, the planner's model sizes")
+lp.n_cpu_moe, lp.ub, lp.tuned, lp.kv_q8 = "auto", "", {"ub": 2048}, True
+n = lp.numbers()
+check(n["n_cpu_moe"] == 40 and n["gpu_expert_layers"] == 8 and n["ub"] == 2048 and n["kv_cache"] == "q8_0", "numbers(): a non-numeric n_cpu_moe falls back to the planner's, -ub to the tuner's, KV q8_0")
+lp.n_cpu_moe = "999"
+check(lp.numbers()["gpu_expert_layers"] == 0 and lp.numbers()["n_cpu_moe"] == 999, "numbers(): more CPU layers than layers: no GPU layers")
 sys.exit(1 if fails else 0)
