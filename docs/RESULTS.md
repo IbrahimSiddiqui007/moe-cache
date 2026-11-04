@@ -169,7 +169,7 @@ Text was not compared in this run. Only these models and depths are measured. So
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-11-02 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | versions and commits named in the text: v0.3.5, v0.3.4 | mentioned in the text: b11966 | next release; Windows PC; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13 | Yes (heading says clean) |
+| 2026-11-02 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | unreleased experimental code (next release, later v0.3.5) against the released v0.3.4 | b11966 with patch 0022 (a patched server, not shipped) | next release; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13 | Yes (heading says clean) |
 
 <sub>Old heading: 78. Experimental (next release) vs v0.3.4 on long prompts (Windows PC, 2026-11-02; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13)</sub>
 
@@ -1357,7 +1357,7 @@ Windows while its prefill is far ahead. (IQ3_S file 2 is byte-identical to IQ3_X
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-26/27 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.5-122B, GLM-5.3, Qwen3.6 | not stated | mentioned in the text: b11669 | SKELETON: known facts filled, empty cells "-" are not measured yet | Not stated |
+| 2026-10-26/27 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.5-122B, GLM-5.3, Qwen3.6 | not stated | mentioned in the text: b11669 | SKELETON: known facts filled, empty cells "-" are not measured yet | Skeleton: not every cell is measured |
 
 <sub>Old heading: 56. Windows desktop experiments (2026-10-26/27; SKELETON: known facts filled, empty cells "-" are not measured yet)</sub>
 
@@ -1673,7 +1673,7 @@ stats (`handover` note 122B_DIAG_PLAN) and the budget idea I40.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-26 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, GLM-5.3, Qwen3.5-122B, Qwen3.6, Granite, IQ2_XS, IQ2_XXS, Q4_K_M, Q2_0, IQ3_XXS | versions and commits named in the text: ff73ec1, 7a1b86f, db8e634 | mentioned in the text: b11669, 620d2225c | from the PC session, windows-kit/pc_results.md | Not stated |
+| 2026-10-26 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, GLM-5.3, Qwen3.5-122B, Qwen3.6, Granite, IQ2_XS, IQ2_XXS, Q4_K_M, Q2_0, IQ3_XXS | not stated (the text names fix commits ff73ec1, 7a1b86f, db8e634) | mentioned in the text: b11669, 620d2225c | see the section (source: the PC session's windows-kit/pc_results.md) | Preliminary: the section says every speed is preliminary (owner's apps open, warm file cache); identity and bug findings are final |
 
 <sub>Old heading: 54. Windows 11 desktop: Ryzen 9 7950X + RX 9070 XT (2026-10-26; from the PC session, windows-kit/pc_results.md)</sub>
 

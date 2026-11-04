@@ -142,8 +142,8 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 
 | Model (file size) | Context, prompt | GPU expert layers | stock | moe-cache | change |
 |---|---|---|---|---|---|
-| **Flash-Next Q2_0** (the faster file)<br><sub>66.4 GB, drive D:, two runs each, not interleaved; stock = launcher `--stock` defaults</sub> | 8192, short prompt (length not recorded) | 12 (moe-cache) | 18.41 | 22.16 | +20 % |
-| Qwen3-Next “Flash-Next” IQ2_XS<br><sub>68 GB, drive C:</sub> | 8192, short prompt (length not recorded) | 12 | 14.89 | 21.94 | +47 % |
+| **Flash-Next Q2_0** (the faster file)<br><sub>66.4 GB, drive D:, two runs each, not interleaved; stock = launcher `--stock` defaults</sub> | 8192, short prompt (length not recorded) | 12 (moe-cache) | 18.41 | 22.16 | +20 % <!-- claim:card-decode-flashnext-q2_0 --> |
+| Qwen3-Next “Flash-Next” IQ2_XS<br><sub>68 GB, drive C:</sub> | 8192, short prompt (length not recorded) | 12 | 14.89 | 21.94 | +47 % <!-- claim:card-decode-flashnext-iq2xs --> |
 | Flash-Next IQ3_XXS<br><sub>76 GB, drive D:, 2026-11-04, v0.3.5 kit, two runs each (replaces 15.14 vs 19.86 of 2026-10-27)</sub> | 8192, 13 tokens | 8 | 14.96 | 22.87 | +53 % <!-- claim:chain1103-iq3xxs --> |
 | Flash-Next IQ3_S<br><sub>83.6 GB, drive D:, 2026-11-04 (replaces 12.92 vs 17.28 of 2026-10-27)</sub> | 8192, 13 tokens | 6 | 13.79 | 19.62 | +42 % <!-- claim:chain1103-iq3s --> |
 | Qwen3.5-122B UD-IQ2_XXS<br><sub>36.6 GB, drive D:, 2026-11-04 (replaces 15.95 vs 19.73 of 2026-10-28)</sub> | 8192, 13 tokens | 10 | 16.10 | 23.31 | +45 % <!-- claim:chain1103-122b --> |
@@ -181,7 +181,7 @@ Agent mode (`--agent --ctx N`), a real 63.5k-token text fed in chunks, decode of
 | Qwen3.6-35B, stock (fits), 64k | 848 / 739 | 67.21 | 59.09 | – |
 
 - **At 64k, Flash-Next with moe-cache** reads the whole 63.5k prompt 1.8× faster than stock (about 289 vs 525 s) and decodes 23 % faster at that depth (20.65 vs 16.83 tok/s).
-- **The 256k setting is slower today:** the planner moves every expert layer to the CPU and uses `-ub 512`, so prefill is about half and decode at 4k is 19 % lower than at the 64k setting. The table above is v0.3.4. In v0.3.5 the planner uses `-ub 2048` at 256k: a 222k-token prompt reads 26 % faster (334.8 / 333.2 vs 263.4 / 265.8 tok/s, log §79); decode there is not re-measured.
+- **The 256k setting is slower today:** the planner moves every expert layer to the CPU and uses `-ub 512`, so prefill is about half and decode at 4k is 19 % lower than at the 64k setting. The table above is v0.3.4. In v0.3.5 the planner uses `-ub 2048` at 256k: a 222k-token prompt reads 26 % faster (334.8 / 333.2 vs 263.4 / 265.8 tok/s, RESULTS 79); decode there is not re-measured. <!-- claim:v035-ub2048-256k -->
 - Decode falls 10–14 % with depth on every model (attention), with the plugin's hit rate still 95–97 %.
 - Saving the agent's conversation at 64k blocks the server for 1.7–2.4 s (5.5 s at 138k). At the 256k setting one decode after a save did not finish (under investigation).
 - Not run yet: Qwen3.6 and the 122B at 256k, the 122B stock at 64k. Source: RESULTS 64.
@@ -192,14 +192,14 @@ Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old,
 
 | Context, prompt | v0.3.4 prompt tok/s | v0.3.5 prompt tok/s | change | v0.3.4 decode tok/s | v0.3.5 decode tok/s | change |
 |---|---|---|---|---|---|---|
-| 34k | 408.6 / 403.1 | **577.0 / 572.6** | +42 % | 28.43 / 28.59 | 27.04 / 26.38 | −6 % |
-| 64k | 313.8 / 314.1 | **421.3 / 448.3** | +38 % | 27.42 / 27.04 | 25.69 / 23.44 | **−10 %** |
-| 128k | 304.8 / 305.5 | **420.7 / 421.9** | +38 % | not measured | not measured | – |
+| 34k | 408.6 / 403.1 | **577.0 / 572.6** | +42 % | 28.43 / 28.59 | 27.04 / 26.38 | −6 % <!-- claim:v035-vs-v034-34k --> |
+| 64k | 313.8 / 314.1 | **421.3 / 448.3** | +38 % | 27.42 / 27.04 | 25.69 / 23.44 | **−10 %** <!-- claim:v035-vs-v034-64k --> |
+| 128k | 304.8 / 305.5 | **420.7 / 421.9** | +38 % | not measured | not measured | – <!-- claim:v035-vs-v034-128k --> |
 
 - Prompts are about 1.4× faster at the three depths.
-- **Decode after a long prompt is 6–10 % lower.** The bigger prompt chunk takes GPU memory, so 2 fewer expert layers fit on the GPU (39–40 on the CPU at 64k, against 37–38 for v0.3.4). With 2 more GPU layers at 64k decode was 26.6 / 26.9 against 23.7 / 22.9.
-- Other runs the same night: 256k setting (222k-token prompt) +26 % (334.8 / 333.2 vs 263.4 / 265.8 tok/s); Qwen3.5-122B at 64k +24 %; GLM-5.3-Flash at 30k +62 % with decode −6 %.
-- Source: log §79. Text was not compared in this run. The earlier “experimental” numbers (patched server) overstated this by about 5–7 %.
+- **Decode after a long prompt is 6–10 % lower.** The bigger prompt chunk takes GPU memory, so 2 fewer expert layers fit on the GPU (39–40 on the CPU at 64k, against 37–38 for v0.3.4). With 2 more GPU layers at 64k decode was 26.6 / 26.9 against 23.7 / 22.9. <!-- claim:decode-room-64k -->
+- Other runs the same night: 256k setting (222k-token prompt) +26 % (334.8 / 333.2 vs 263.4 / 265.8 tok/s); Qwen3.5-122B at 64k +24 %; GLM-5.3-Flash at 30k +62 % with decode −6 %. <!-- claim:v035-ub2048-256k --><!-- claim:guard-122b-64k --><!-- claim:guard-glm-30k -->
+- Source: RESULTS 79. Text was not compared in this run. The earlier “experimental” numbers (patched server) overstated this by about 5–7 %.
 
 ### Which Flash-Next file
 
@@ -225,7 +225,7 @@ A newer model that fits in RAM + VRAM, measured on the same PC. One cold run per
 | Nemotron, moe-cache forced | 22.0 GB | plugin | 22.1 at 57k<br><sub>22.8 short</sub> | 329 at 57k | – | 59.2 s |
 | Flash-Next Q2_0 (for comparison) | 66.4 GB | moe-cache | 22.2 | 287 at 34k | 191 | –<br><sub>IQ2_XS 73.4 s, Coder 55.5 s</sub> |
 
-Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it cost 18 % decode and 45 % prompt speed in these single runs (2026-10-28); two runs each on 2026-11-04 (top table, v0.3.5 kit, not clean) gave +6 % decode <!-- claim:chain1103-bolt -->, so there is no steady gain either way. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.
+Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it cost 18 % decode and 45 % prompt speed in these single runs (2026-10-28) <!-- claim:card-decode-nemotron -->; two runs each on 2026-11-04 (top table, v0.3.5 kit, not clean) gave +6 % decode <!-- claim:chain1103-bolt -->, so there is no steady gain either way. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.
 
 ### GLM-5.3-Flash: best setting on this PC
 
@@ -245,8 +245,8 @@ Qwen3.6-35B-A3B Q4_K_M (20 GB) fits in the 32 GB, so the launcher runs stock lla
 
 | Server | no MTP, tok/s | MTP, tok/s | MTP gain |
 |---|---|---|---|
-| stock llama-server | 46.01 / 46.10 | 68.28 / 68.92 | +49 % |
-| moe-cache (forced) | 45.57 / 45.62 | **70.29 / 70.20** | +54 % |
+| stock llama-server | 46.01 / 46.10 | 68.28 / 68.92 | +49 % <!-- claim:card-decode-qwen36 --> |
+| moe-cache (forced) | 45.57 / 45.62 | **70.29 / 70.20** | +54 % <!-- claim:card-decode-qwen36 --> |
 
 Measured 2026-10-27 (older kit, llama.cpp 620d2225c): two measurements per cell, cold, PC above (RESULTS 58); the 2026-11-04 rows in the top table (+11 % without MTP, +56 % with MTP against stock without MTP) <!-- claim:chain1103-qwen36 --> are a separate, newer run. About 78 % of the drafted tokens were accepted. Prompt processing is 5–8 % slower with MTP. Without MTP the plugin and stock decode at the same speed, as expected for a model that fits.
 
@@ -257,7 +257,7 @@ With MTP a small extra head guesses the next two tokens, and the model then chec
 | Model | MTP head | Measured | Launcher |
 |---|---|---|---|
 | Qwen3.6-35B-A3B<br><sub>fits in RAM</sub> | in the file | decode +49 % stock, **+54 %** moe-cache (table above, 2026-10-27); agent sessions 13–25 % shorter (RESULTS 60) | on in agent mode; `--mtp` otherwise |
-| GLM-5.3-Flash<br><sub>102 GB, bigger than RAM</sub> | in the file (`blk.45.nextn`) | moe-cache 4.44 → **6.92 tok/s** (3.1× stock) on 2026-10-27, text identical; one cold run on chat text. **Re-measured 2026-11-04** (v0.3.5 kit, two runs each, short water request): stock 2.98, moe-cache 6.27, with `--mtp` **8.17 tok/s** (2.7× stock) <!-- claim:chain1103-glm -->. Later runs (RESULTS 62, D:, fixed memory): chat text **+10–23 %** at 100 % draft acceptance, code **0 %** at 79 %: MTP's draft context takes memory the cache needed. With 2 extra GPU layers it does not fit (load abort). Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB | on in agent mode; `--mtp` otherwise |
+| GLM-5.3-Flash<br><sub>102 GB, bigger than RAM</sub> | in the file (`blk.45.nextn`) | moe-cache 4.44 → **6.92 tok/s** (3.1× stock) on 2026-10-27 <!-- claim:card-decode-glm -->, text identical; one cold run on chat text. **Re-measured 2026-11-04** (v0.3.5 kit, two runs each, short water request): stock 2.98, moe-cache 6.27, with `--mtp` **8.17 tok/s** (2.7× stock) <!-- claim:chain1103-glm -->. Later runs (RESULTS 62, D:, fixed memory): chat text **+10–23 %** at 100 % draft acceptance, code **0 %** at 79 %: MTP's draft context takes memory the cache needed. With 2 extra GPU layers it does not fit (load abort). Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB | on in agent mode; `--mtp` otherwise |
 | Flash-Next (every quant), Qwen3.5-122B<br><sub>bigger than RAM</sub> | none in the files | a separate head file (unsloth Q8_0, 4.14 GB) on Flash-Next IQ2_XS: stock **−15 %**, moe-cache **−38 %**, with 73–74 % of drafts accepted. Checking three tokens at once on CPU-held experts cost more than the drafts saved. Measured before the file-view cache, not re-run | off: no head; separate head files are not supported (dropped) |
 
 The launcher reads the model file: MTP is turned on only when the file has `blk.N.nextn` tensors and llama-server has `draft-mtp`; it prints one line saying why it is on or off. `--no-mtp` turns it off. Sources: RESULTS 58 (Qwen3.6, head file), 60 and 62 (GLM).

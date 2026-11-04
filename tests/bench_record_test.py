@@ -200,7 +200,7 @@ check(len(d) == 4 and d[0].startswith("GPU expert layers: 9 (n-cpu-moe 39) · -u
 check("not recorded" not in " ".join(d), "no gaps in this filled record's card lines")
 check(rr.card_row(rec).endswith("| 2.21x | yes |"), f"card row: ratio and identity ({rr.card_row(rec)})")
 sec = rr.results_section(rec, "Fake run (Windows PC)", 80)
-check(sec.startswith("## 80. Fake run") and "Order ABBA" in sec and "PASS 49.4 tok/s" in sec and "MOE_CACHE_SIZE_GIB" in sec and "records/NAME.json" in sec, "RESULTS section carries the fields")
+check(sec.startswith("## Result 80. Fake run") and "| Date | Machine | Model + quant |" in sec and "Order ABBA" in sec and "PASS 49.4 tok/s" in sec and "MOE_CACHE_SIZE_GIB" in sec and "records/NAME.json" in sec, "RESULTS section carries the fields")
 body = rr.issue_body(rec)
 check("<details>" in body and json.loads(body.split("```json\n")[1].split("```")[0])["record_schema"] == 1, "issue body: card lines plus the whole record as JSON")
 # gaps are visible
@@ -214,7 +214,7 @@ tmp = tempfile.mkdtemp(prefix="bench record ")
 rpath = os.path.join(tmp, "rec.json")
 json.dump(rec, open(rpath, "w"))
 import io, contextlib
-for fmt, want in (("details", "GPU expert layers: 9"), ("row", "Fake-Q2_0.gguf"), ("results", "## N."), ("issue", "<details>"), ("gaps", "")):
+for fmt, want in (("details", "GPU expert layers: 9"), ("row", "Fake-Q2_0.gguf"), ("results", "## Result N."), ("issue", "<details>"), ("gaps", "")):
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         rc = rr.main(["card", rpath, "--as", fmt])

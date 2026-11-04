@@ -849,7 +849,11 @@ def card_row(rec):
     return f"| {m['file']} ({m['size_gb']} GB) | " + " | ".join(cells) + f" | {ratio} | {rec['outputs']['identical_to_baseline']} |"
 
 
-RESULTS_TEMPLATE = """## N. TITLE (MACHINE, DATE; clean / not clean: REASON)
+RESULTS_TEMPLATE = """## Result N. TITLE
+
+| Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings | Clean |
+|---|---|---|---|---|---|---|
+| {date} | {machine_short} | {model_short} | {kit} | {build} | {settings_short} | {clean} |
 
 {machine}. Model: {model}. Order {order}, {runs} runs per arm, first / second shown. Baseline check: {baseline}. Up {uptime} h.
 
@@ -870,12 +874,16 @@ def results_section(rec, title="TITLE", number="N", record_file="records/NAME.js
     rows = "\n".join(f"| {a} | decode " + " / ".join(str(r["decode_tps"]) for r in rec["runs"] if r["arm"] == a) + "; prompt " +
                      " / ".join(str(r["prompt_tps"]) for r in rec["runs"] if r["arm"] == a) + " |" for a in arms)
     machine = f"{h['os']}, {h['cpu_model']}, {h['gpu_model']} {_gib(h['vram_mib'])}, {h['ram_gib']} GB {h['ram_type']}, model on {h['storage']['drive']} ({h['storage']['model']}, {h['storage']['interface']})"
-    txt = RESULTS_TEMPLATE.format(machine=machine, model=f"{rec['model']['file']} ({rec['model']['quant']}, {rec['model']['size_gb']} GB)", order=pr.get("order", NR),
+    sw, st, md = rec["software"], rec["settings"], rec["model"]
+    txt = RESULTS_TEMPLATE.format(date=str(rec["created_utc"])[:10], machine_short=f"{h['os']}, {h['cpu_model']}, {h['gpu_model']}".replace("|", "/"),
+                                  model_short=f"{md['file']} ({md['quant']})", kit=f"{sw['moe_cache_version']} ({sw['moe_cache_commit']})",
+                                  build=f"{sw['llama_build']} ({sw['llama_commit']})", settings_short=f"ctx {st['ctx']}, ub {st['ubatch']}, {pr.get('prompt_tokens', NR)}-token prompt",
+                                  clean=f"other programs: {c['other_programs']}; baseline: {c['baseline_check']}", machine=machine, model=f"{rec['model']['file']} ({rec['model']['quant']}, {rec['model']['size_gb']} GB)", order=pr.get("order", NR),
                                   runs=pr.get("runs_per_arm", NR), baseline=c["baseline_check"], uptime=c["uptime_h"], arms="results", rows=rows,
                                   details=" | ".join(details_lines(rec)), cmd=s["command_line"], env=json.dumps(s["environment"]) if s["environment"] else "none",
                                   cond=f"other programs {c['other_programs']}, file cache {c['file_cache']}, CPU temp {c['cpu_temp_c']}, GPU temp {c['gpu_temp_c']}",
                                   ident=rec["outputs"]["identical_to_baseline"], record_file=record_file)
-    return txt.replace("## N.", f"## {number}.").replace("TITLE", title, 1)
+    return txt.replace("## Result N.", f"## Result {number}.").replace("TITLE", title, 1)
 
 
 def issue_body(rec):
