@@ -16,6 +16,8 @@ jobs:
   quick:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.tested.outputs.sha }}
     defaults:
       run:
         shell: bash
@@ -23,6 +25,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      - name: Record the commit this job tests
+        id: tested
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Plugin syntax with both header sets (warnings are errors), buffer-field guard
         run: |
@@ -74,3 +81,27 @@ jobs:
 
       - name: Shell scripts parse
         run: for f in install.sh build.sh bin/moe-cache-* bin/_moe_cache_env.sh tests/*.sh tools/*.sh; do case "$f" in *.bat) continue;; esac; bash -n "$f"; done
+
+  # RELEASE-687: the release gate must know WHICH commit this run tested, not only which commit the run was started on (a run started on one branch
+  # can test another ref through the `ref` input). This job runs only when every job above passed and they all tested the same commit; it keeps that
+  # commit in the artifact `tested-sha`, which tools/release_gate.sh compares with the tag's commit.
+  record:
+    needs: [quick]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write tested-sha.txt
+        shell: bash
+        run: |
+          set -e
+          n=0; first=""
+          for s in ${{ needs.quick.outputs.sha }}; do
+            [ -n "$s" ] || { echo "a job did not report the commit it tested"; exit 1; }
+            [ -z "$first" ] || [ "$s" = "$first" ] || { echo "the jobs tested different commits ($first, $s)"; exit 1; }
+            first="$s"; n=$((n+1))
+          done
+          echo "$first" | grep -Eq '^[0-9a-f]{40}$' || { echo "not a commit: $first"; exit 1; }
+          echo "$first" > tested-sha.txt; echo "tested $first ($n job(s))"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tested-sha
+          path: tested-sha.txt

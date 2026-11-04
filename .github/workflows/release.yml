@@ -37,12 +37,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # RELEASE-687: each of the three workflows leaves the artifact `tested-sha` (the commit it really tested); the gate accepts a run only when that equals this tag's commit.
           # quick runs on every push to experimental/main; run identity and windows on the tag first: gh workflow run identity.yml --ref vX.Y.Z; gh workflow run windows.yml --ref vX.Y.Z
-          for w in identity.yml windows.yml quick.yml; do
-            n=$(gh run list -R "$GITHUB_REPOSITORY" -w "$w" -c "$GITHUB_SHA" -s success --json databaseId --jq length)
-            [ "${n:-0}" -ge 1 ] || { echo "no successful $w run on $GITHUB_SHA: run it on this tag first, then re-run this workflow"; exit 1; }
-            echo "$w passed on $GITHUB_SHA"
-          done
+          tools/release_gate.sh "$GITHUB_SHA" "$GITHUB_REPOSITORY"
 
       - name: Check scripts
         run: |

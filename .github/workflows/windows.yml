@@ -26,11 +26,17 @@ env:
 jobs:
   dll:
     runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.tested.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           ref: ${{ inputs.ref || (github.event.schedule == '30 4 * * *' && 'experimental' || '') }}
+      - name: Record the commit this job tests
+        id: tested
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: mingw-w64 (UCRT when available, the C runtime of official llama.cpp and of the kit; else posix/msvcrt)
         run: |
           sudo apt-get update -q
@@ -93,8 +99,17 @@ jobs:
     # install.ps1 (the one-line install) and `moe_cache.py launch` on real Windows, no model: a fake release in a folder, the real user PATH (saved and restored)
     runs-on: windows-latest
     timeout-minutes: 15
+    outputs:
+      sha: ${{ steps.tested.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || (github.event.schedule == '30 4 * * *' && 'experimental' || '') }}
+      - name: Record the commit this job tests
+        id: tested
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: install.ps1 in Windows PowerShell 5.1 (hash mismatch refused, zip-slip refused, idempotent, update, uninstall removes only what it added)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tests\install_ps1_test.ps1
@@ -113,6 +128,8 @@ jobs:
   windows:
     needs: dll
     runs-on: windows-latest
+    outputs:
+      sha: ${{ steps.tested.outputs.sha }}
     timeout-minutes: 60
     defaults:
       run:
@@ -122,6 +139,10 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ inputs.ref || (github.event.schedule == '30 4 * * *' && 'experimental' || '') }}
+      - name: Record the commit this job tests
+        id: tested
+        shell: bash
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: win-dll
@@ -439,3 +460,27 @@ jobs:
         with:
           name: windows-logs
           path: logs
+
+  # RELEASE-687: the release gate must know WHICH commit this run tested, not only which commit the run was started on (a run started on one branch
+  # can test another ref through the `ref` input). This job runs only when every job above passed and they all tested the same commit; it keeps that
+  # commit in the artifact `tested-sha`, which tools/release_gate.sh compares with the tag's commit.
+  record:
+    needs: [dll, installer, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write tested-sha.txt
+        shell: bash
+        run: |
+          set -e
+          n=0; first=""
+          for s in ${{ needs.dll.outputs.sha }} ${{ needs.installer.outputs.sha }} ${{ needs.windows.outputs.sha }}; do
+            [ -n "$s" ] || { echo "a job did not report the commit it tested"; exit 1; }
+            [ -z "$first" ] || [ "$s" = "$first" ] || { echo "the jobs tested different commits ($first, $s)"; exit 1; }
+            first="$s"; n=$((n+1))
+          done
+          echo "$first" | grep -Eq '^[0-9a-f]{40}$' || { echo "not a commit: $first"; exit 1; }
+          echo "$first" > tested-sha.txt; echo "tested $first ($n job(s))"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tested-sha
+          path: tested-sha.txt

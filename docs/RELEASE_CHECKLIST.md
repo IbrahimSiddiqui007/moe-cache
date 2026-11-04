@@ -17,7 +17,7 @@ The release workflow already has its own gates:
 
 | Gate | Where | What happens when it fails |
 |---|---|---|
-| `identity`, `windows` and `quick` each passed on the tagged commit | first step of the `build` job (tags only) | the build stops; run the missing workflow on the tag, then re-run `release` |
+| `identity`, `windows` and `quick` each have a successful run that **tested** the tagged commit (RELEASE-687: each ends with a `record` job that uploads the artifact `tested-sha` = `git rev-parse HEAD` of what it tested; `tools/release_gate.sh` compares it with the tag's commit, the run's own head sha is not used) | first step of the `build` job (tags only) | the build stops; run the missing workflow on the tag (`gh workflow run NAME.yml --ref vX.Y.Z`), then re-run `release`. A run from before this change has no artifact and does not count |
 | install.sh names the tag; install.ps1 gets the version; the package carries the official llama.cpp; no newer glibc than 2.34 | `build` job | the build stops |
 | both the Linux and the Windows files are attached | `publish` job | the release stays a **draft** that nobody sees |
 | a tag with a suffix (`-beta1`, `-rc1`) | `publish` job | published as a pre-release and never as "latest" |
