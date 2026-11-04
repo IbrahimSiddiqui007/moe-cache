@@ -249,6 +249,10 @@ _ge, _end = None, time.time() + 15
 while time.time() < _end and not _ge:
     _ge = json.loads(req("/api/servers")[1]).get("group_error"); time.sleep(0.2)
 check(st == 200 and _ge and "no room for the second model" in _ge and "keep running" in _ge, f"group: a second server that cannot start is reported in /api/servers ({st}, {_ge})")
+check(json.loads(req("/api/servers")[1]).get("group_error") == _ge, "group: the reason is still there on the next poll")
+_old_t = ui.time.time; ui.time.time = lambda: _old_t() + ui.GROUP_ERROR_SHOWN + 5
+check(json.loads(req("/api/servers")[1]).get("group_error") is None, "group: ...and gone once it has been shown for a while")
+ui.time.time = _old_t
 srv3.RequestHandlerClass.runner.state = "idle"
 ui.Runner.start = _orig_start
 srv3.shutdown()
