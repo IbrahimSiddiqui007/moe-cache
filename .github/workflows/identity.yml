@@ -152,6 +152,34 @@ jobs:
           tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_evict.txt
           grep -qE "evictions=[1-9]" ident_evict/plugin.log || { echo "FAIL: no evictions: the 0.2 GiB cache did not cycle experts (as windows.yml checks)"; grep "moe-cache: graphs=" ident_evict/plugin.log; exit 1; }
 
+      # Critic round 4, item 2: default-on switches had no test of the "off" side. Each one turned off, one at a time, must still give stock's tokens (the default-on side is
+      # every other identity step). The executor is forced on (MOE_CACHE_EXEC=2, byte-checked) so the executor switches matter; the cache is forced to evict.
+      # Not testable here (no GPU in this job): MOE_CACHE_GPU_SUM, GPU_PACK, HOST_OUT; the Windows crash reporter is not covered either.
+      - name: Default-on switches turned off, one at a time (SIBLINGS, EXEC_SCRATCH, EXEC_SHARE_IN, POOL_TINY, EXEC_FUSE) - identity with stock
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+        run: |
+          for sw in SIBLINGS EXEC_SCRATCH EXEC_SHARE_IN POOL_TINY EXEC_FUSE; do
+            echo "=== MOE_CACHE_${sw}=0"
+            IDENT_KEEP=ident_sw_$sw IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2 MOE_CACHE_EXEC_CHECK=1 MOE_CACHE_${sw}=0" \
+              tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_sw_$sw.txt || { echo "FAIL: MOE_CACHE_${sw}=0 changes the tokens or crashes"; tail -30 ident_sw_$sw/plugin.log 2>/dev/null; exit 1; }
+          done
+
+      - name: Idle rebalance (default on) - the idle thread reads experts between requests (log line); MOE_CACHE_IDLE_REBALANCE=0 turns it off
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+        run: |
+          IDENT_KEEP=ident_rb_on IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_IDLE_REBALANCE_MS=100" \
+            tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_rb_on.txt
+          grep -q "idle rebalance:" ident_rb_on/plugin.log || { echo "FAIL: idle rebalance is on by default but the idle thread never read an expert"; grep "moe-cache:" ident_rb_on/plugin.log | tail -20; exit 1; }
+          IDENT_KEEP=ident_rb_off IDENT_PLUGIN_ENV="MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_IDLE_REBALANCE_MS=100 MOE_CACHE_IDLE_REBALANCE=0" \
+            tests/identity.sh granite.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_rb_off.txt
+          if grep -q "idle rebalance:" ident_rb_off/plugin.log; then echo "FAIL: MOE_CACHE_IDLE_REBALANCE=0 still rebalanced"; exit 1; fi
+
       - name: Expert pack (BO-1) - pack format test, then identity with experts read from MODEL.moepack (private memory, forced eviction, executor byte-checked)
         env:
           LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
@@ -339,6 +367,17 @@ jobs:
           tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_delay.txt || { tail -40 ident_gptoss/stock.log ident_gptoss/plugin.log 2>/dev/null; exit 1; }
           # a run where the executor did nothing proves nothing (this step does not reach the step-aside branch: Q2_0 graphs never step aside; next step)
           grep -qE "executor ran [1-9]" identity_gptoss_delay.txt || { echo "FAIL: the executor ran 0 ops"; exit 1; }
+
+      - name: Identity on gpt-oss (Q2_0) with the plugin's own Q2_0 kernel turned off (MOE_CACHE_FAST_KERNELS=0 uses llama.cpp's) - the default-on side is the step above
+        env:
+          LLAMA_SERVER: ${{ github.workspace }}/llama.cpp/build/bin/llama-server
+          MOE_CACHE_LIB: ${{ github.workspace }}/build/libggml-moe-cache.so
+          MOE_CACHE_STATS: "1"
+          IDENT_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.002 MOE_CACHE_FAST_KERNELS=0 MOE_CACHE_LINUX_VIEW=0"
+          IDENT_EXTRA: "--no-repack"
+          IDENT_KEEP: ident_gptoss_fk0
+        run: |
+          tests/identity.sh tiny-gptoss.gguf --tokens 24 --ctx 2048 --n-cpu-moe 999 | tee identity_gptoss_fk0.txt || { tail -40 ident_gptoss_fk0/plugin.log 2>/dev/null; exit 1; }
 
       - name: Identity on gpt-oss (Q8_0) with reads delayed - the executor steps aside and must wait for experts still loading (T45)
         env:
