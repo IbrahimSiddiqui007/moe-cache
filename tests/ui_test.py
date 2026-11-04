@@ -1170,7 +1170,10 @@ try:
     check(any("no llama-server there" in x for x in r["looked"]), "the stale value is reported in the places looked")
     del os.environ["LLAMA_SERVER"]
     mc.shutil.which = real_which if real_which("llama-server") else (lambda n, *a, **k: "/usr/bin/llama-server" if n == "llama-server" else real_which(n, *a, **k))
-    r = mc.find_llama_server(saved=""); check(r["path"] == "llama-server" and r["source"] == "PATH", "order: PATH before the default folders")
+    _pw = os.path.abspath(mc.shutil.which("llama-server")); apis[_pw] = "3"       # a PATH server with a supported API (LAUNCHER-689: an unreadable one gives way to the kit's)
+    r = mc.find_llama_server(saved=""); check(r["path"] == _pw and r["source"] == "PATH", "order: PATH before the default folders (as an absolute path)")
+    del apis[_pw]
+    r = mc.find_llama_server(saved=""); check(r["source"] == "a default folder" and "unreadable" in (r["note"] or ""), "order: a PATH server whose API cannot be read gives way to a folder one with a supported API")
     mc.shutil.which = nopath
     # Windows: the registry as stored (setx), user before machine, %VARS% expanded, then the registry PATH
     store = {"HKCU": {}, "HKLM": {}}
