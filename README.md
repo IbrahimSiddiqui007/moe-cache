@@ -134,7 +134,7 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 | +42 / +38 / +38 % | prompt reading speed at 34k / 64k / 128k tokens, v0.3.5 against v0.3.4 (Flash-Next Q2_0, 2026-11-03, official llama.cpp b11966; baseline guard passed at 49.4 tok/s but its log notes “not clean: owner work running”, so not called clean); decode after those prompts is 6–10 % lower <!-- claim:v035-vs-v034-34k --><!-- claim:v035-vs-v034-64k --><!-- claim:v035-vs-v034-128k --> |
 | 1.8× | prompt reading at 64k context, moe-cache against stock: a 63.5k-token prompt in about 289 against 525 s, decode +23 % at that depth (Flash-Next Q2_0; one cold run each, 2026-10-28, Steam running, so not clean; RESULTS 64, no record) |
 | +26 % | prompt reading at the 256k setting with `-ub 2048` against `-ub 1024` (a 222k-token prompt; v0.3.5, 2026-11-03) <!-- claim:v035-ub2048-256k --> |
-| 2.0–2.4× | faster coding-agent sessions (OpenCode, Hermes) on Flash-Next IQ2_XS at 65k agent context (2026-10-27, two cold runs each) |
+| 2.0–2.4× | faster coding-agent sessions (OpenCode, Hermes) on Flash-Next IQ2_XS at 65k agent context (2026-10-27, two cold runs each; RESULTS 60, no record) |
 | 8k chat | +42–53 % decode on three Qwen files and 2.1× on GLM-5.3 (2.7× with MTP), at 8k context with a 13-token prompt (2026-11-04, v0.3.5 kit, every run not clean) <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --><!-- claim:chain1103-glm --> |
 | Pending | a clean stock against moe-cache run at long context (34k–256k) on the 2026-11-04 files and on v0.3.6 (TEST-684); the long-context stock numbers here are from 2026-10-28 |
 
@@ -264,7 +264,7 @@ The launcher reads the model file: MTP is turned on only when the file has `blk.
 
 ### Agent sessions
 
-Recorded OpenCode (5 requests) and Hermes (7 requests) sessions were replayed against each server with the same request bodies, overlap and pauses. Each figure is the mean of two cold runs, order ABBA, with 0 errors in every replay.
+Recorded OpenCode (5 requests) and Hermes (7 requests) sessions were replayed against each server with the same request bodies, overlap and pauses. Each figure is the mean of two cold runs, order ABBA, with 0 errors in every replay. These sessions are from RESULTS 60 (2026-10-27); no benchmark record exists for them, so no figure in this section has a claim.
 
 | Model | Session | whole task, s stock / moe-cache | first answer, s stock / moe-cache | decode tok/s stock / moe-cache |
 |---|---|---|---|---|
@@ -359,7 +359,7 @@ Everything, with methods and caveats: [docs/RESULTS.md](docs/RESULTS.md) (Window
 | Models measured | Qwen3.8-Flash-Next (Q2_0, IQ2_XS, IQ3_XXS, IQ3_S, Coder IQ1_M), Qwen3.5-122B IQ2_XXS, GLM-5.3-Flash, Qwen3.6-35B, Nemotron 3.5 Bolt 74B (agent speed; plugin forced slower than stock in one test), Granite 1B (CI). Other MoE models should work but are not measured. Long context (64k-256k) is measured on Flash-Next and a few more, single runs |
 | Linux | Tested on Intel + NVIDIA, CPU-only, Vulkan, and a user's RX 9070 XT. `install.sh` has been tried on Arch (`--no-apt`) and, for this release, from a clean clone on that machine; a fresh Ubuntu/Debian run with apt is not tested. macOS: no |
 | `--ram` is a sizing hint | On Windows the memory limit is set only for the plugin, only with `--ram`, and only with `MOE_CACHE_WIN_VIEW=0`; the default file-view cache, the on-demand listener and stock llama-server get none (a job limit counts GPU memory and broke Vulkan). The server can use more RAM than `--ram` says. On Linux the launcher sets no limit either; only a cgroup you set yourself is a hard limit. No guard is being built |
-| Crash on a truncated or unreadable model file | a model file that is cut short or cannot be read can still crash the server instead of giving a clear error (CACHE-685, being fixed) |
+| A failed model read still aborts | a model file that is cut short or cannot be read stops the server. On Linux it now prints a clear message; on Windows the abort is still open (CACHE-685) |
 | Installers need `gh` or an explicit yes | `install.sh`, `install.ps1` and `update --apply` check the build attestation with the GitHub CLI (`gh`, logged in). Without it they stop and say what was and was not checked; `--yes-unverified` (or `MOE_CACHE_ALLOW_UNVERIFIED=1`) goes on with only the SHA256 check, which catches a damaged download but not a tampered release (RELEASE-686 fixed: no silent skip) |
 | GPU errors | with Vulkan a GPU error inside an expert block is caught and the block runs on the CPU (`MOE_CACHE_GPU_CATCH`, not yet seen with a real failure); on NVIDIA / CUDA a GPU error still ends the server |
 | Context length of the speed numbers | the 2026-11-04 decode numbers are short chats (8k context, a 13-14-token prompt). Long-context (34k-256k) stock-against-moe-cache numbers are from 2026-10-28 (one file, one cold run) and the v0.3.5 against v0.3.4 comparison; a clean long-context stock run on the newest files is pending (TEST-684) |

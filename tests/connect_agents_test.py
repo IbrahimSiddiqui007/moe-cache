@@ -21,7 +21,7 @@ except ImportError:
 KEY = "k3y-abc123"
 mc.server_info = lambda url, key=None: ("fake-moe", 65536)
 mc.server_models = lambda url, key=None: ["fake-moe", "second"]
-mc.key_for = lambda url, given=None: given or KEY
+mc.key_for = lambda url, given=None, trusted=False: given or KEY
 fails = []
 
 
@@ -263,7 +263,7 @@ if os.name != "nt":
 # AUD-078: the ambient LLAMA_API_KEY goes only to a server on this machine
 seen = []
 _kf = mc.key_for
-mc.key_for = lambda url, given=None: (seen.append((url, given)) or given)
+mc.key_for = lambda url, given=None, trusted=False: (seen.append((url, given)) or given)
 os.environ["LLAMA_API_KEY"] = "ENVKEY"
 run("pi", "--url", "http://remote.example:8080")
 run("pi", "--url", "http://127.0.0.1:8080")

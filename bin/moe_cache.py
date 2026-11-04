@@ -1238,12 +1238,93 @@ def loopback_url(url):
         return False
 
 
-def key_for(url, given=None):
-    """The key to send to the server at `url`: the given one, else (only for a server on this machine that answers 401/403 without a key) the
-    stored one. A remote URL never gets the stored key, however it answers: it would hand our local secret to whoever runs that host."""
+SERVER_DIR = os.path.join(CACHE_DIR, "servers")
+
+
+def pid_alive(pid):
+    if not pid or pid < 1:
+        return False
+    if WINDOWS:
+        try:
+            import ctypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, pid)
+            if not h:
+                return False
+            code = ctypes.c_ulong()
+            ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+            k.CloseHandle(h)
+            return bool(ok) and code.value == 259          # STILL_ACTIVE
+        except Exception:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True            # EPERM: it exists
+    return True
+
+
+def _url_port(url):
+    try:
+        return urllib.parse.urlsplit(url if "://" in url else "http://" + url).port
+    except ValueError:
+        return None
+
+
+class OwnsPort:
+    """While this launcher runs llama-server on `port`, a record in the cache folder says so (its own pid): launcher_owns() is how another moe-cache command
+    (connect, project save / restore, the launch ready check) knows a loopback port is the launcher's own server and may be sent the stored API key (SERVER-692)."""
+    def __init__(self, port):
+        self.path = os.path.join(SERVER_DIR, f"{int(port)}.pid") if port else None
+
+    def __enter__(self):
+        if self.path:
+            try:
+                os.makedirs(SERVER_DIR, mode=0o700, exist_ok=True)
+                with open(self.path, "w") as f:
+                    f.write(str(os.getpid()))
+            except OSError:
+                self.path = None
+        return self
+
+    def __exit__(self, *a):
+        if self.path:
+            try:
+                if open(self.path).read().strip() == str(os.getpid()):
+                    os.remove(self.path)
+            except OSError:
+                pass
+
+
+def launcher_owns(url):
+    """Is `url` a loopback port that a moe-cache launcher of this user is running llama-server on right now (its record names a live pid), or this
+    user's on-demand listener (its pid file)? Only then is the stored API key ours to send there."""
+    if not loopback_url(url):
+        return False
+    port = _url_port(url)
+    if not port:
+        return False
+    try:
+        if pid_alive(int(open(os.path.join(SERVER_DIR, f"{port}.pid")).read().split()[0])):
+            return True
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        pid, oport = (int(x) for x in open(os.path.join(CACHE_DIR, "on-demand.pid")).read().split()[:2])
+        return oport == port and pid_alive(pid)
+    except (OSError, ValueError):
+        return False
+
+
+def key_for(url, given=None, trusted=False):
+    """The key to send to the server at `url`: the given one, else the stored one only when `trusted` (the server is one this launcher started itself:
+    launcher_owns(url)) and it answers 401/403 without a key. Any other server, however it answers, never gets the stored key: any local program can
+    listen on a free port, answer 200 and then 401, and collect it (SERVER-692). A remote URL never does either."""
     if given:
         return given
-    if not loopback_url(url):
+    if not trusted or not loopback_url(url):
         return None
     st = http(url.rstrip("/") + "/v1/models", timeout=3)[0]
     return stored_key() if st in (401, 403) else None
@@ -1654,6 +1735,11 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sl
     """run_child_once, and when llama-server stops before it is ready because the GPU ran out of memory at load (another program took the memory
     after the plan was made: desktop PC 2026-10-30, the control page planned with 13.4 GiB free), ask `oom_retry()` for a new command (it measures the
     free GPU memory again and plans again) and start once more. One retry only."""
+    with OwnsPort(port):
+        return _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry)
+
+
+def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry):
     rc, seen = run_child_once(cmd, env, port, expect_plugin, mem_limit, allow_sleep)
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)
     if rc not in (0, None) and not quiet and oom_retry and seen["oom"] and not seen["ready"]:
@@ -3856,12 +3942,12 @@ def ambient_key(url):
 def connect_check(a):
     """connect NAME --check: bin/moe_cache_check.py runs the five steps against the server the agent's config points to (or the one connect would use)."""
     from moe_cache_check import check_agent
-    return check_agent(a.agent, a.url_given, a.config, a.json, a.timeout, default_agent_url(), lambda url: key_for(url, a.api_key or ambient_key(url) or None), agent_window)
+    return check_agent(a.agent, a.url_given, a.config, a.json, a.timeout, default_agent_url(), lambda url: key_for(url, a.api_key or ambient_key(url) or None, launcher_owns(url)), agent_window)
 
 
 def connect_apply(a):
     a.url = a.url or default_agent_url()
-    a.api_key = key_for(a.url, a.api_key or ambient_key(a.url))
+    a.api_key = key_for(a.url, a.api_key or ambient_key(a.url), launcher_owns(a.url))
     name, ctx = server_info(a.url, a.api_key)
     if not name:
         st = http(a.url.rstrip("/") + "/v1/models", api_key=a.api_key, timeout=3)[0]
@@ -4140,11 +4226,11 @@ def project(argv):
     if a.cmd == "restore" and os.path.isfile(os.path.join(sdir, a.name + ".bin")) and not project_id_ok(sdir, a.name):
         raise SystemExit(f"restore refused: {a.name}.bin has no record of the model it was saved with, or it differs from the server started with "
                          f"--project {a.name}; a state only fits the same model file. Save it again with `project save`.")
-    st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, key_for(a.url, a.api_key), timeout=600)
+    st, body = http(f"{a.url}/slots/0?action={a.cmd}", {"filename": a.name + ".bin"}, key_for(a.url, a.api_key, launcher_owns(a.url)), timeout=600)
     if a.cmd == "save" and st == 200:
         try:
             ident = open(os.path.join(sdir, "server.id")).read().strip()
-            other = server_model_differs(a.url, key_for(a.url, a.api_key), ident)
+            other = server_model_differs(a.url, key_for(a.url, a.api_key, launcher_owns(a.url)), ident)
             if other:
                 say(f"moe-cache: note: saved, but the server at {a.url} runs {other}, not the model the server started with --project {a.name} recorded; "
                     "the model identity was not recorded, so a restore will be refused", err=True)

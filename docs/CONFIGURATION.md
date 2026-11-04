@@ -1,6 +1,6 @@
 # Configuration (environment variables)
 
-**The first table is the list of common options; the second part ("Settings not listed above") covers every other `MOE_CACHE_*` name the code reads (160 in all).** `tools/env_names_check.py` checks that every name the code reads is mentioned in the docs. Defaults below are those of the code on 2026-11-03.
+**The first table is the list of common options; the second part ("Settings not listed above") covers every other `MOE_CACHE_*` name the code reads (175 in all).** `tools/env_names_check.py` checks that every name the code reads is mentioned in the docs. Defaults below are those of the code on 2026-11-03.
 
 `moe-cache-server` and the control page set these for you. Moved here from the README on 2026-10-30, unchanged.
 
@@ -133,6 +133,40 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*` 
 | `MOE_CACHE_FIT_CACHE` | Path of the file where the planner keeps the GPU compute-buffer sizes it measured on this GPU and driver, so the next start can skip the measurement. | `fit-params-cache.json` in `moe-cache/` under `$XDG_CACHE_HOME` (default `~/.cache`) | advanced |
 | `MOE_CACHE_HF_BASE` | Web address the model downloader (`bin/moe_cache_download.py`) fetches model files from, instead of `https://huggingface.co`. The code comment says it is for tests. | `https://huggingface.co` | internal/testing |
 | `MOE_CACHE_WARM_SORT` | When the cache is warmed at start, issues the expert reads in file order (by offset) so a hard drive reads forward instead of jumping around. Only a value above 0 turns it on; 0, empty or text means off. | off | advanced |
+| `MOE_CACHE_API_KEY` | Name of the variable that `moe_cache.py connect` writes into the config of Hermes and Qwen Code so the agent sends the server's API key. Set by `connect`; you do not set it yourself. | set by connect | set by the launcher |
+| `MOE_CACHE_ASYNC_IN` | Upload the input rows of the GPU path asynchronously. `1` on, `0` off. Unset: on for AMD GPUs on Vulkan only (PC micro-benchmark 210 to 137 us per layer; no gain on NVIDIA or Intel). | unset (AMD on Vulkan only) | advanced |
+| `MOE_CACHE_AVX512` | `1` turns on the AVX-512 kernels for IQ-quantised weights. They were written without an AVX-512 machine to test on, and even with the switch they run only after a self-check passes. | off | advanced |
+| `MOE_CACHE_DECODE_RELOC` | `1` turns on the DECODE-630 prototype: after the prompt, the experts of the last host layers move to the GPU memory the big compute buffer freed. Needs llama.cpp patch 0070 (`patches/llama.cpp/README.md`, `docs/DECODE_RELOC_DESIGN.md`); the launcher says so and ignores it when it cannot use it. | off | advanced |
+| `MOE_CACHE_DIRECT` | `1` / `0` forces reading experts straight into place (when the alignment allows) on or off. Unset: on when the model does not fit in the memory limit. | unset (decided from the model size) | advanced |
+| `MOE_CACHE_EXEC_CHUNK` | Weight rows per chunk of the expert pool. 128 decoded 3.9 % faster than 32 on the PC (every paired run); the arithmetic per row is unchanged. | 128 | advanced |
+| `MOE_CACHE_EXEC_MAXCOL` | Largest batch (in tokens, 1 to 8) the expert executor takes; bigger batches go the other way. | built-in limit | advanced |
+| `MOE_CACHE_EXEC_TIMES` | `1` times the phases of the expert executor (measurement). | off | advanced |
+| `MOE_CACHE_FAULT_EVERY` | Test switch: every Nth expert read fails all its direct attempts, to prove the fallback. Never set it in normal use. | 0 (off) | advanced |
+| `MOE_CACHE_GPU_CACHE` | Set to `1` by the launcher with `--gpu-cache` (llama.cpp's GPU expert cache next to the plugin). Not for hand use. | set by the launcher | set by the launcher |
+| `MOE_CACHE_GPU_CHUNKS` | Number of parts a big GPU block is split into. `0` off (old behaviour), `N` always N parts (identity checks). Unset: automatic. | unset (automatic) | advanced |
+| `MOE_CACHE_GPU_DEV2` | `auto`: the plugin's long-prompt GPU block may also use the second card of the `--device` list when it does not fit on the first. Set by `--multi-gpu` (prototype). | set by --multi-gpu | set by the launcher |
+| `MOE_CACHE_GPU_ENSURE_STATS` | `1` counts how many of the experts llama.cpp's GPU cache uploads were not in RAM at that moment (idea I28 kill check; measurement only). | off | advanced |
+| `MOE_CACHE_GPU_MIN_TOKENS` | Smallest batch, in tokens, that takes the GPU block. The launcher sets 64 with `--hybrid` / `--fast`. `1` is not supported (single-token batches gave wrong output): the plugin uses 2. | built-in (launcher: 64 with --hybrid / --fast) | advanced |
+| `MOE_CACHE_GPU_PIPE` | `0` turns off the pipelined GPU block (a block that ends up on the CPU then waits for all its experts first). | on | advanced |
+| `MOE_CACHE_GPU_READBACK` | `0` goes back to the old result path; by default the result goes into a pinned host buffer of the GPU device, queued right after the compute. | on | advanced |
+| `MOE_CACHE_HYBRID_DUEL` | Window W (in batches) for the hybrid bank's duel: it counts what the profile's own bank would have served next to the real bank. `0` off. | 32 | advanced |
+| `MOE_CACHE_IO_THREADS` | Parallel readers in total for loading experts (the calling thread reads too, so N means N readers). | 6 | advanced |
+| `MOE_CACHE_LEAVE_ROOM` | `1` turns on `--leave-room` for good: your own programs come first. Smoother PC, slower model. | 0 (off) | everyone |
+| `MOE_CACHE_LIB` | Windows `moe-cache-ui.bat` only: the plugin DLL to use. Unset: the .bat looks for the plugin DLL itself (see the comment at the top of the file). | unset | advanced |
+| `MOE_CACHE_PACK` | Experimental: `1` uses the pack file made by `moe_cache.py pack` (next to the model), or a path to one. The plugin reads packed experts only when asked. | off | advanced |
+| `MOE_CACHE_PEERS` | Folder where servers started with `--peers` (prototype) write their memory use once a second and read the others' files. Set by the launcher. | set by --peers | set by the launcher |
+| `MOE_CACHE_PEER_CAP_GIB` | The memory, in GiB, that the servers of one `--peers` folder share. Set by the launcher. | set by --peers | set by the launcher |
+| `MOE_CACHE_PLAN_RULE` | `1`: the planner reserve is measured by `llama-fit-params` or taken from the formula, and grows monotonically with `-ub` (plan rule). Off by default. | off | advanced |
+| `MOE_CACHE_POLL` | Poll value handed to the CPU thread pool (how hard idle compute threads poll before they sleep). Unset: the backend's own default. | unset | advanced |
+| `MOE_CACHE_POOL_SPIN_US` | A pool worker keeps spinning this many microseconds after its last job before it sleeps. `0` keeps the fixed number of pauses (about 40,000). Clamped to 0 to 1,000,000. | 0 | advanced |
+| `MOE_CACHE_PRELOAD_ALL` | `0` turns off loading every CPU expert in layer order at start when they all fit in the cache and there is no profile (filling on demand decodes about 15 % slower). | on | advanced |
+| `MOE_CACHE_PRELOAD_FRAC` | Fraction (0 to 1) used by the start-up preload (see `MOE_CACHE_PRELOAD_ALL`). A value outside 0..1 is ignored with a message. | built-in | advanced |
+| `MOE_CACHE_PROMPT_PROGRESS` | `1`: a streaming request that does not say otherwise gets `"return_progress": true`, so llama-server sends prompt progress. | off | advanced |
+| `MOE_CACHE_PYTHON` | Python used by the small scripts in `bin/` (`moe-cache-check`, `moe-cache-bench-report`, ...). | python3 | advanced |
+| `MOE_CACHE_REF` | Release tag the installer installs. `moe_cache.py update --apply` sets it for the installer it runs; `install.sh` defaults to the tag of the release it came from. | the release tag | set by the launcher |
+| `MOE_CACHE_REPACK` | `on`: use llama.cpp's repacked CPU weight layout. `auto` (default): do what stock llama.cpp does (repacked when no GPU is in use), so results stay identical. Anything else: off. | auto | advanced |
+| `MOE_CACHE_SIBLINGS` | `0` turns off the sibling batch load. | on | advanced |
+| `MOE_CACHE_TRACE_IDS` | File name: records the experts picked in every decode step (int16 layer, int16 count, then the expert ids). For analysis. | off | advanced |
 
 ### Names that are not run-time settings
 
@@ -154,3 +188,4 @@ These appear in the code but setting them in the environment does nothing (build
 | `MOE_CACHE_TEST_MUTANT_NO_STEPASIDE_WAIT` | Not a runtime variable: a compile-time flag (`-D`) used only by CI. It removes the waits before llama.cpp's CPU path so the delayed-read test is proven able to fail. Never set it. |
 | `MOE_CACHE_TEST_MUTANT_NO_TILED_WAIT` | Not a runtime variable: a compile-time flag (`-D`) used only by CI. It removes a wait in the tiled compute path so the delayed-read batch-8 test is proven able to fail. Never set it. |
 | `MOE_CACHE_TEST_MUTANT_PACK_OFFSET` | Not a runtime variable: a compile-time flag (`-D`) used only by CI. It copies expert slices from a wrong offset so the pack identity test is proven able to fail. Never set it. |
+| `MOE_CACHE_TEST_NO_POPULATE` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI to test the guarded page-touch that a kernel without `MADV_POPULATE_READ` takes. Never set it. |
