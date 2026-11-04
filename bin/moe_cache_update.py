@@ -150,17 +150,29 @@ def roll_back(layout):
     return ""
 
 
+MAX_SCRIPT = 2_000_000      # the installer scripts are a few tens of KB; anything bigger is not one
+SIGNER_WORKFLOW = f"{REPO}/.github/workflows/release.yml"      # only an attestation made by this repository's release workflow counts (as packages.yml)
+# gh output that means "gh could not reach GitHub / the service said later", not "the file does not match its attestation"
+_NETWORK = re.compile(r"no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5\d\d|rate limit|unexpected EOF", re.I)
+
+
 def attestation(path, env=None):
     """('verified' | 'failed' | 'skipped', note). RELEASE-686: whenever gh is installed and logged in the file is verified, also when it came from a mirror
-    (the attestation is bound to the file's content, not to where it was fetched). 'skipped' = gh cannot be used, 'failed' = gh said no."""
+    (the attestation is bound to the file's content, not to where it was fetched). 'skipped' = the check could not run (gh missing, not logged in, GitHub not reachable):
+    --yes-unverified may go on. 'failed' = gh ran and said no: nothing overrides that."""
     env = os.environ if env is None else env
     gh = shutil.which("gh", path=env.get("PATH"))
     if not gh:
         return "skipped", "gh (the GitHub command line tool) is not installed"
     if subprocess.run([gh, "auth", "status"], capture_output=True, env=dict(env)).returncode:
         return "skipped", "gh is installed but not logged in (run: gh auth login)"
-    r = subprocess.run([gh, "attestation", "verify", path, "-R", REPO], capture_output=True, text=True, env=dict(env))
-    return ("verified", "build attestation of the installer verified (gh)") if r.returncode == 0 else ("failed", "gh attestation verify FAILED: " + (r.stderr or r.stdout).strip()[-300:])
+    r = subprocess.run([gh, "attestation", "verify", path, "-R", REPO, "--signer-workflow", SIGNER_WORKFLOW], capture_output=True, text=True, env=dict(env))
+    if r.returncode == 0:
+        return "verified", "build attestation of the installer verified (gh)"
+    out = (r.stderr or r.stdout).strip()
+    if _NETWORK.search(out):
+        return "skipped", "gh could not reach GitHub to verify: " + out[-200:]
+    return "failed", "gh attestation verify FAILED: " + out[-300:]
 
 
 def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, unverified=False, fetch_json=http_json, base_url=None, env=None, windows=WINDOWS, tty=None):
@@ -206,7 +218,14 @@ def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, 
         script = os.path.join(tmp, name)
         try:
             with urllib.request.urlopen(urllib.request.Request(f"{base}/{name}", headers={"User-Agent": "moe-cache-update"}), timeout=30) as r:
-                data = r.read(2_000_000)
+                data = r.read(MAX_SCRIPT + 1)
+                want = r.headers.get("Content-Length")
+            if len(data) > MAX_SCRIPT:
+                say(f"moe-cache: {name} is larger than {MAX_SCRIPT} bytes: not an installer script. Nothing was changed.")
+                return 1
+            if want is not None and want.isdigit() and int(want) != len(data):       # a cut-off download is refused, not run
+                say(f"moe-cache: {name} downloaded incompletely ({len(data)} of {want} bytes). Nothing was changed.")
+                return 1
         except Exception as e:
             say(f"moe-cache: could not download {base}/{name}: {e}. Nothing was changed.")
             return 1
@@ -217,6 +236,10 @@ def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, 
             f.write(data)
         state, note = attestation(script, env)
         allow = unverified or env.get("MOE_CACHE_ALLOW_UNVERIFIED") == "1" or env.get("MOE_CACHE_SKIP_ATTESTATION") == "1"
+        if state == "failed":
+            say(f"  NOT checked: who built {name} (build attestation): {note}")
+            say("moe-cache: REFUSED: the build attestation was checked and FAILED, so nothing was run or changed. --yes-unverified / MOE_CACHE_ALLOW_UNVERIFIED=1 only cover a check that could not run (gh missing, not logged in, GitHub unreachable); they never override a failed one.")
+            return 1
         if state == "verified":
             say("  checked: " + note + "; the installer checks the package's build attestation and sha256 the same way")
         else:

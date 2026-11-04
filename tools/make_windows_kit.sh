@@ -31,8 +31,8 @@ done
 mkdir -p "$K/bin" "$K/tools" "$K/docs"
 cp "$X"/bin/*.py "$X"/bin/moe-cache-ui.bat "$K/bin/"     # every launcher module (v0.3.0 left out moe_cache_pick.py: the control page did not start)
 cp -r "$X/planner" "$X/ui" "$X/profiles" "$K/"
-cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$X"/tools/loop_check.py "$K/tools/"
-cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$X"/docs/SHARE_YOUR_NUMBERS.md "$X"/docs/TROUBLESHOOTING.md "$X"/docs/EXACTNESS.md "$X"/docs/BENCHMARK_TEMPLATE.md "$X"/docs/bench_record.schema.json "$X"/docs/CONFIGURATION.md "$X"/docs/QUALITY_GATE.md "$X"/docs/RESULTS.md "$X"/docs/RESULTS_OLD_LAPTOP.md "$X"/docs/moe-cache-server.service "$K/docs/"   # WINDOWS.md links WINDOWS_TEST.md; the other kit docs link CONFIGURATION, QUALITY_GATE, RESULTS and the systemd unit (PACKAGING-032)
+cp "$X"/tools/*.ps1 "$X"/tools/learn_prompts.txt "$X"/tools/agent_bench.py "$X"/tools/conversation_bench.py "$X"/tools/loop_check.py "$K/tools/"
+cp "$X"/docs/WINDOWS.md "$X"/docs/WINDOWS_TEST.md "$X"/docs/GUI.md "$X"/docs/AGENTS.md "$X"/docs/COMPATIBILITY.md "$X"/docs/SHARE_YOUR_NUMBERS.md "$X"/docs/TROUBLESHOOTING.md "$X"/docs/EXACTNESS.md "$X"/docs/BENCHMARK_TEMPLATE.md "$X"/docs/bench_record.schema.json "$X"/docs/CONFIGURATION.md "$X"/docs/QUALITY_GATE.md "$X"/docs/RESULTS.md "$X"/docs/RESULTS_OLD_LAPTOP.md "$X"/docs/CONVERSATION_BENCH.md "$X"/docs/moe-cache-server.service "$K/docs/"   # WINDOWS.md links WINDOWS_TEST.md; the other kit docs link CONFIGURATION, QUALITY_GATE, RESULTS and the systemd unit (PACKAGING-032)
 mkdir -p "$K/docs/img" && cp "$X"/docs/img/gui-3pane-desktop.png "$K/docs/img/"      # GUI.md shows it
 cp "$X/LICENSE" "$X/CHANGELOG.md" "$X/models.json" "$K/"     # the model catalogue (bin/moe_cache_catalogue.py reads it from the folder above bin)
 # one download for friends: the official, unmodified llama.cpp Vulkan build in llama\ (MIT; its licence is copied next to it). Pinned and checked

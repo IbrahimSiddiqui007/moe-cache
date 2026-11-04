@@ -15,7 +15,7 @@
 #     --uninstall  remove exactly what a release install added (the versions folder, the moe-cache command); models and ~/.cache/moe-cache stay
 #     --build      build from source even when downloaded on its own (the old behaviour)
 #     --bin-dir D  where the moe-cache command goes (default ~/.local/bin)
-#     --yes-unverified  install even though the build attestation could not be checked (gh missing / not logged in / verify failed); same as MOE_CACHE_ALLOW_UNVERIFIED=1. The sha256 check is never skipped.
+#     --yes-unverified  install even though the build attestation could not be checked (gh missing / not logged in / GitHub unreachable; a verification that ran and FAILED is never overridden); same as MOE_CACHE_ALLOW_UNVERIFIED=1. The sha256 check is never skipped.
 [ -n "$BASH_VERSION" ] || { command -v bash >/dev/null && exec bash "$0" "$@"; echo "install.sh needs bash"; exit 1; }   # `sh install.sh` is the documented way
 set -e
 # The llama.cpp commit moe-cache was built and tested against. Default: 7fe450e19 (ggml 0.25.1, backend API 2).
@@ -99,8 +99,18 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   ATT_WHY=""
   if ! command -v gh >/dev/null; then ATT_WHY="gh (the GitHub command line tool) is not installed"
   elif ! gh auth status >/dev/null 2>&1; then ATT_WHY="gh is installed but not logged in (run: gh auth login)"
-  elif gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache >/dev/null 2>&1; then ATT_WHY=""; ATT_OK=1
-  else ATT_WHY="gh attestation verify FAILED: the file was not built by this repository's release workflow, or gh is offline"; fi
+  else
+    # --signer-workflow: only an attestation made by this repository's release workflow counts (packages.yml pins it the same way)
+    VOUT="$(gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache --signer-workflow IbrahimSiddiqui007/moe-cache/.github/workflows/release.yml 2>&1)" && ATT_OK=1 || {
+      if printf '%s' "$VOUT" | grep -qiE 'no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5[0-9][0-9]|rate limit|unexpected EOF'; then
+        ATT_WHY="gh could not reach GitHub to verify (network): $(printf '%s' "$VOUT" | tail -c 200)"      # the check could not run: --yes-unverified may go on
+      else ATT_FAILED=1; ATT_WHY="gh attestation verify FAILED: $(printf '%s' "$VOUT" | tail -c 300)"; fi; }
+  fi
+  if [ "${ATT_FAILED:-0}" = 1 ]; then
+    echo "checked:     sha256 of the download against SHA256SUMS of the same release (finds a damaged download)"
+    echo "NOT checked: who built the file (build attestation): $ATT_WHY"
+    echo "REFUSED: the build attestation was checked and FAILED. Nothing was installed. --yes-unverified / MOE_CACHE_ALLOW_UNVERIFIED=1 only cover a check that could not run (gh missing, not logged in, GitHub unreachable); they never override a failed one."; exit 1
+  fi
   if [ "${ATT_OK:-0}" = 1 ]; then
     echo "checked: build attestation verified (gh): built by this repository's release workflow"
   else

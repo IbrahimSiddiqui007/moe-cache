@@ -473,6 +473,13 @@ inline const char * file_view_map(const char * path, size_t * size) {
     return nullptr;
 #endif
 }
+#ifdef _WIN32
+// the jump buffer of the file_view_load running on this thread (null: none), for its in-page-error handler
+inline void **& inpage_guard_buf() {
+    static thread_local void ** g = nullptr;
+    return g;
+}
+#endif
 // bring [p, p + n) of a file view into this process's working set: one large read-ahead (PrefetchVirtualMemory), then a touch per page.
 // false: Linux could not read the pages (the file is cut short past this range, or a disk read error); the caller reports it. Windows: always true.
 inline bool file_view_load(const char * p, size_t n) {
@@ -486,12 +493,33 @@ inline bool file_view_load(const char * p, size_t n) {
         WIN32_MEMORY_RANGE_ENTRY r = { (void *) p, n };
         prefetch(GetCurrentProcess(), 1, &r, 0);
     }
-    unsigned sum = 0;
-    for (size_t o = (4096 - (uintptr_t) p % 4096) % 4096; o < n; o += 4096) {
-        sum += (unsigned char) *(volatile const char *) (p + o);
+    // CACHE-685: a read error under the view (a disk or share that dropped) raises EXCEPTION_IN_PAGE_ERROR in the touching thread. Windows does not let a
+    // mapped file be cut short, so this is the one way the touch fails. A vectored handler (mingw has no __try) jumps back here while the guard is set.
+    static const PVOID veh = AddVectoredExceptionHandler(1, [](EXCEPTION_POINTERS * ep) -> LONG {
+        if (inpage_guard_buf() && ep->ExceptionRecord->ExceptionCode == 0xC0000006u /* EXCEPTION_IN_PAGE_ERROR */) {
+            __builtin_longjmp(inpage_guard_buf(), 1);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    });
+    (void) veh;
+    void * jb[5];
+    void ** const outer = inpage_guard_buf();
+    if (__builtin_setjmp(jb) != 0) {
+        inpage_guard_buf() = outer;
+        return false;
     }
-    sum += (unsigned char) *(volatile const char *) p + (unsigned char) *(volatile const char *) (p + n - 1);
-    (void) sum;
+    inpage_guard_buf() = jb;
+    volatile unsigned sum = 0;
+    for (size_t o = (4096 - (uintptr_t) p % 4096) % 4096; o < n; o += 4096) {
+#ifdef MOE_CACHE_TEST_INPAGE_ERROR      // CI only: the second page of a range raises the in-page error a dropped disk would
+        if (o >= 4096) {
+            RaiseException(0xC0000006u, 0, 0, nullptr);
+        }
+#endif
+        sum = sum + (unsigned char) *(volatile const char *) (p + o);
+    }
+    sum = sum + (unsigned char) *(volatile const char *) p + (unsigned char) *(volatile const char *) (p + n - 1);
+    inpage_guard_buf() = outer;
     return true;
 #elif defined(__linux__)
     if (n == 0) {
