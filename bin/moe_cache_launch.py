@@ -9,7 +9,7 @@ agents found on the PC. Every step reuses what exists (pick, check's facts, serv
 
 Standard library only. The decisions are plain functions of the answers and of `Deps` (the machine facts, pick's recommendation, running things),
 so tests/launch_test.py runs the whole walk-through on a fake machine."""
-import argparse, os, shutil, subprocess, sys, time
+import argparse, os, re, shutil, subprocess, sys, time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import moe_cache as mc  # noqa: E402
@@ -20,6 +20,24 @@ AGENTS = ("hermes", "opencode", "claude")
 USE_ASK = {"1": "chat", "2": "agents", "3": "docs"}
 USE_WORDS = {"chat": "plain chat", "agents": "a coding agent (64k context)", "docs": "long documents"}
 GIB = 2 ** 30
+
+
+def same_model(served, path, args=()):
+    """Does the model name a server reports name the file we started it with? Its path or file name (maybe a split file's first shard), or the alias it was
+    started with: agent mode gives it default_alias(path) (for an Ollama blob, the Ollama tag), and a --alias in `args` wins."""
+    def stem(x):
+        x = os.path.basename(str(x).replace("\\", "/")).lower()
+        x = x[:-5] if x.endswith(".gguf") else x
+        return re.sub(r"-0*1-of-0*\d+$", "", x)
+    names = {stem(path)}
+    try:
+        names.add(stem(mc.default_alias(path)))
+    except Exception:
+        pass
+    alias = mc.arg_after(list(args), "-a", "--alias")
+    if alias:
+        names.add(stem(alias))
+    return stem(served) in names
 
 
 class Deps:
@@ -136,6 +154,13 @@ class Deps:
             return bool(mc.server_info(url, mc.key_for(url, None, mc.launcher_owns(url)))[0])
         except Exception:
             return False
+
+    def served_model(self, url):
+        """The model name the server at `url` reports (/v1/models), or None."""
+        try:
+            return mc.server_info(url, mc.key_for(url, None, mc.launcher_owns(url)))[0]
+        except Exception:
+            return None
 
     def connect(self, argv):
         return mc.connect(argv)
@@ -406,23 +431,30 @@ def launch(argv, deps=None):
     say("     starting: " + shown[start])
     child = deps.start(cmd)
     say("     loading the model; the first start can take a few minutes (it reads the file from the drive)...")
-    waited, last, ready = 0, 0, False
+    waited, last, ready, other = 0, 0, False, None
     try:
-        while not deps.up(url, start == "on-demand"):
+        while True:
+            # LAUNCHER-690: ready means OUR child is alive and what answers is OUR model; another process on the port (an older server, a squatter) is neither
             if child.poll() is not None:
-                say(f"     it stopped with exit code {child.returncode}. `{cw} doctor \"{model_path}\"` says what is wrong.")
+                say(f"     it stopped with exit code {child.returncode}. `{cw} doctor \"{model_path}\"` says what is wrong."
+                    + (f" (Something else answers on {url}: model {other}.)" if other else ""))
                 return 1
+            if deps.up(url, start == "on-demand") and child.poll() is None:
+                name = None if start == "on-demand" else deps.served_model(url)
+                if name is None or same_model(name, model_path, sargs):
+                    ready = True
+                    say(f"     ready: {url}  (chat page in your browser: {url})")
+                    break
+                other = name
             if waited >= a.wait:
-                say(f"     still not answering after {a.wait} s; leaving it running. Check {url} later, or `{cw} doctor`.")
+                say(f"     still not answering after {a.wait} s; leaving it running. Check {url} later, or `{cw} doctor`."
+                    + (f" (What answers on {url} is model {other}, not {os.path.basename(model_path)}: another server may hold the port.)" if other else ""))
                 break
             deps.sleep(2)
             waited += 2
             if waited - last >= 30:
                 last = waited
                 say(f"     ... still loading ({waited} s)")
-        else:
-            ready = True
-            say(f"     ready: {url}  (chat page in your browser: {url})")
     except KeyboardInterrupt:
         stop_child(child)
         say("stopped while loading.")

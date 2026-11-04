@@ -171,7 +171,7 @@ def find_llama_server(saved=None):
     Windows the registry's); then every default folder (Windows: C:\\llama*, %USERPROFILE%\\llama*, Downloads\\llama-b*-bin-win-*, the kit; Linux:
     install.sh's build, ~/llama.cpp/build/bin, the kit). An explicit setting that points at a file wins; among the folders the newest build whose
     ggml API a shipped plugin supports wins. One exception to "the PATH comes before the folders": a PATH llama-server whose ggml API no shipped plugin
-    supports (the distro's, API 2, next to a kit that ships the API 3 plugin and a bundled llama.cpp) gives way to a default-folder one that has a supported
+    supports, or whose API cannot be read (the distro's, API 2, next to a kit that ships the API 3 plugin and a bundled llama.cpp) gives way to a default-folder one that has a supported
     API, with a note (v0.3.6-beta2 smoke test: `check` failed on /usr/bin/llama-server and advised another download); with no supported one anywhere the
     PATH one stays, as before. Returns {"path", "source", "build", "api", "others", "looked", "note"}; "path" is None when nothing was found."""
     looked = []
@@ -191,7 +191,7 @@ def find_llama_server(saved=None):
     def supported_folder_instead(found_path, label):
         """A default-folder llama-server with a supported API to use instead of the PATH one at found_path (None: keep the PATH one)."""
         apis, api = shipped_apis(), ls_api(found_path)
-        if not (apis and api and api not in apis):
+        if not apis or api in apis:           # LAUNCHER-689: an API that cannot be read (None) is not a supported one: a known-good kit server beats it
             return None
         found = folder_candidates()
         good = [c for c in found if ls_api(c) in apis]
@@ -202,7 +202,7 @@ def find_llama_server(saved=None):
         res["build"] = ls_build(best)
         res["others"] = [c for c in found if c != best]
         kit = os.path.abspath(best).startswith(os.path.abspath(HERE) + os.sep)
-        res["note"] = (f"{label} llama-server (ggml API {api}) skipped: no shipped plugin for it; using "
+        res["note"] = (f"{label} llama-server (ggml API {api or 'unreadable'}) skipped: no shipped plugin for it; using "
                        + ("the kit's bundled llama-server" if kit else best) + f" (API {res['api']})")
         looked.append(res["note"])
         return res
@@ -219,7 +219,8 @@ def find_llama_server(saved=None):
     w = shutil.which("llama-server")
     looked.append("PATH: " + ("llama-server" if w else "not on it"))
     if w:
-        return supported_folder_instead(os.path.abspath(w), "PATH") or hit("llama-server", "PATH")
+        w = os.path.abspath(w)                # an absolute path, so the one checked is the one started (not whatever "llama-server" means later)
+        return supported_folder_instead(w, "PATH") or hit(w, "PATH")
     if WINDOWS:
         for where, v in win_registry_env("PATH"):
             for d in v.split(";"):
