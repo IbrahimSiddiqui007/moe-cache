@@ -30,13 +30,18 @@ def release(ver, modules=True):
     open(os.path.join(d, "install.ps1"), "w", encoding="utf-8").write(open(os.path.join(HERE, "install.ps1"), encoding="utf-8").read().replace("@VERSION@", ver))
     return d
 
+# RELEASE-686: a fake gh.cmd first on PATH (FAKE_GH_AUTH / FAKE_GH_VERIFY = exit codes): the installer and the updater refuse without a verified build attestation
+FAKEGH = os.path.join(T, "fakegh"); os.makedirs(FAKEGH, exist_ok=True)
+open(os.path.join(FAKEGH, "gh.cmd"), "w").write("@echo off\r\nif \"%1 %2\"==\"auth status\" exit /b %FAKE_GH_AUTH%\r\nif \"%1 %2\"==\"attestation verify\" exit /b %FAKE_GH_VERIFY%\r\nexit /b 1\r\n")
+genv = dict(os.environ, PATH=FAKEGH + os.pathsep + os.environ["PATH"], FAKE_GH_AUTH="0", FAKE_GH_VERIFY="0")
+
 def ps(*args, env=None):
     r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", *args], capture_output=True, text=True, env=env, timeout=300)
     return r.returncode, r.stdout + r.stderr
 
 root = os.path.join(T, "root")
 r1 = release("9.9.1")
-rc, out = ps(os.path.join(r1, "install.ps1"), "-Root", root, "-NoPath", "-BaseUrl", r1, "-Version", "9.9.1")
+rc, out = ps(os.path.join(r1, "install.ps1"), "-Root", root, "-NoPath", "-BaseUrl", r1, "-Version", "9.9.1", env=genv)
 check(rc == 0 and "installed: moe-cache 9.9.1" in out, f"install 9.9.1 ({out.strip()[-150:]})")
 kit = os.path.join(root, "kit")
 lay = up.installed_layout(kit, True, os.environ)
@@ -55,12 +60,15 @@ def url(d):
 def shim_version():
     return subprocess.run([os.path.join(root, "bin", "moe-cache.cmd"), "--version"], capture_output=True, text=True).stdout.strip()
 
-rc, out = say_to_str(lambda: up.apply("9.9.1", kit, tag="v9.9.3", yes=True, windows=True, base_url=url(release("9.9.3", modules=False))))
+rc, out = say_to_str(lambda: up.apply("9.9.1", kit, tag="v9.9.3", yes=True, windows=True, env=genv, base_url=url(release("9.9.3", modules=False))))
 check(rc == 1 and "failed its check" in out and shim_version() == "moe-cache 9.9.1", f"a version that fails the check is rolled back ({out.strip()[-200:]})")
 check(os.path.isdir(os.path.join(root, "kit.failed")) and not os.path.isdir(os.path.join(root, "kit.prev")), "...the failed kit is kept as kit.failed, the old kit is the kit again")
 failed = os.path.join(root, "kit.failed"); os.rename(failed, os.path.join(T, "failed-kept"))      # moved away, not deleted: the next update needs the name free
 
-rc, out = say_to_str(lambda: up.apply("9.9.1", kit, tag="v9.9.2", yes=True, windows=True, base_url=url(release("9.9.2"))))
+for label, extra in (("gh not logged in", dict(FAKE_GH_AUTH="1")), ("gh verify fails", dict(FAKE_GH_VERIFY="1"))):
+    rc, out = say_to_str(lambda: up.apply("9.9.1", kit, tag="v9.9.2", yes=True, windows=True, env=dict(genv, **extra), base_url=url(release("9.9.2"))))
+    check(rc == 1 and "REFUSED" in out and "NOT checked" in out and "--yes-unverified" in out and shim_version() == "moe-cache 9.9.1" and not os.path.isdir(os.path.join(root, "kit.prev")), f"{label}: update refused, nothing changed")
+rc, out = say_to_str(lambda: up.apply("9.9.1", kit, tag="v9.9.2", yes=True, windows=True, env=genv, base_url=url(release("9.9.2"))))
 check(rc == 0 and shim_version() == "moe-cache 9.9.2", f"update to 9.9.2 ({out.strip()[-200:]})")
 check(os.path.isdir(os.path.join(root, "kit.prev")) and not os.path.isdir(os.path.join(root, "kit.old")), "...the previous kit stays as kit.prev")
 prev_ver = subprocess.run([sys.executable, os.path.join(root, "kit.prev", "bin", "moe_cache.py"), "--version"], capture_output=True, text=True).stdout.strip()
