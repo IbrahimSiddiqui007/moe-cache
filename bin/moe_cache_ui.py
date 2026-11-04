@@ -319,10 +319,11 @@ PEEK_PORTS = range(8080, 8090)
 def on_demand_port():
     """The port of this user's on-demand listener (from its pid file in the private cache folder) while that process lives, else None."""
     try:
-        pid, port = (int(x) for x in open(os.path.join(mc.CACHE_DIR, "on-demand.pid")).read().split()[:2])
-    except (OSError, ValueError):
+        rec = open(os.path.join(mc.CACHE_DIR, "on-demand.pid")).read().split()
+        pid, port = int(rec[0]), int(rec[1])
+    except (OSError, ValueError, IndexError):
         return None
-    return port if alive(pid) else None
+    return port if alive(pid) and mc.pid_is(pid, rec[2] if len(rec) > 2 else "") else None
 
 
 def peek_server(port, api_key=None, trusted=False):
@@ -1290,8 +1291,14 @@ class Runner:
                 "running": self.state in ("starting", "ready")}
 
     def key(self):
-        """The key llama-server needs: the one typed on the page, else the launcher's agent key, else None."""
-        return self.settings.get("api_key") or self.auto_key
+        """The key llama-server needs: the one typed on the page, else the launcher's agent key, else None. The launcher's stored key goes only to a port this
+        launcher (or this user's on-demand listener) really holds right now (mc.launcher_owns): if our server died and another program took the port, it
+        gets nothing (SERVER-692)."""
+        if self.settings.get("api_key"):
+            return self.settings["api_key"]
+        if self.auto_key and mc.launcher_owns(f"http://127.0.0.1:{int(self.settings.get('port') or 8080)}"):
+            return self.auto_key
+        return None
 
     def key_info(self):
         k = self.key()

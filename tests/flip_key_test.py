@@ -85,6 +85,42 @@ with mc.OwnsPort(port):
 check(not mc.launcher_owns(url), "...and removes it afterwards")
 check(not mc.launcher_owns("http://10.0.0.5:%d" % port), "a non-loopback host is never ours")
 
+# PID reuse: a record whose pid is alive but started at another time is not ours (the system gave the pid to another program)
+rec = os.path.join(mc.SERVER_DIR, f"{port}.pid")
+me = os.getpid(); st = mc.pid_start(me)
+open(rec, "w").write(f"{me} {st}")
+check(mc.launcher_owns(url) and (st == "" or mc.pid_is(me, st)), "record with the right start token: ours")
+if st:
+    open(rec, "w").write(f"{me} 1")
+    check(not mc.launcher_owns(url), "record whose pid is alive but started at another time (pid reuse): not ours")
+else:
+    print("  skip start-time check: this system gives no process start time")
+open(rec, "w").write(str(me))
+check(mc.launcher_owns(url), "an old record with only a pid: still ours while the pid lives (alive-only)")
+os.remove(rec)
+
+# tools/agent_bench.py _key_for: same rule, and no request at all to a host that is not ours
+sys.path.insert(0, os.path.join(HERE, "tools"))
+import agent_bench as ab  # noqa: E402
+reset(); Flip.n = 1
+check(ab._key_for(url) == "" and not leaked(), f"agent_bench: the flip server on a port that is not ours gets no key and is not asked ({seen[:3]})")
+reset()
+import time as _t; t0 = _t.time()
+check(ab._key_for("http://192.0.2.1:9") == "" and _t.time() - t0 < 2, "agent_bench: another host is not even contacted (no connect timeout)")
+open(rec, "w").write(f"{me} {mc.pid_start(me)}".strip()); Flip.n = 1
+check(ab._key_for(url) == SECRET, "agent_bench: our own server that wants a key still gets the stored one")
+os.remove(rec)
+
+# the page server's Runner.key(): the typed key always, the launcher's key only on a port the launcher holds
+import moe_cache_ui as ui  # noqa: E402
+r = ui.Runner(); r.auto_key = "LAUNCHER-KEY"; r.settings = {"port": port}
+check(r.key() is None, "Runner.key(): the launcher's key is not used on a port nobody of ours holds")
+open(rec, "w").write(f"{me} {mc.pid_start(me)}".strip())
+check(r.key() == "LAUNCHER-KEY", "Runner.key(): ...but is on a port the launcher holds")
+os.remove(rec)
+r.settings = {"port": port, "api_key": "typed"}
+check(r.key() == "typed", "Runner.key(): a key typed on the page is always used")
+
 srv.shutdown(); shutil.rmtree(TMP, ignore_errors=True)
 print("\nFAILED: " + "; ".join(fails) if fails else "\nflip key tests passed")
 sys.exit(1 if fails else 0)

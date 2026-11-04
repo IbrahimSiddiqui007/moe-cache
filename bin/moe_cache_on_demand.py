@@ -989,7 +989,7 @@ def on_demand(argv):
              concurrent=bool(c.get("concurrent")) and len(c.get("extra") or []) > 0, peers=bool(c.get("peers")))
     srv = serve(b, port, srv=srv)
     with open(PID_FILE, "w") as f:
-        f.write(f"{os.getpid()} {port}\n")
+        f.write(f"{os.getpid()} {port} {mc.pid_start(os.getpid())}\n".replace("  ", " "))
     d = b.bs[0]
     log(f"listening on http://127.0.0.1:{port}/v1 for {', '.join(x.alias for x in b.bs)} (context {d.ctx}); the model starts on the first request "
         f"and stops after {d.idle / 60:g} idle min" + (("; all models at once (--concurrent, prototype)" if b.concurrent else "; one model at a time") + ", the request's model name picks it" if len(b.bs) > 1 else "")
