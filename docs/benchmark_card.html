@@ -83,7 +83,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <div class="tile"><b>+42 / +38 / +38 %</b><span>prompt reading speed at 34k / 64k / 128k tokens, v0.3.5 against v0.3.4 (Flash-Next Q2_0, 2026-11-03, official llama.cpp b11966; baseline guard passed at 49.4 tok/s but its log notes “not clean: owner work running”, so not called clean); decode after those prompts is 6–10 % lower <!-- claim:v035-vs-v034-34k --><!-- claim:v035-vs-v034-64k --><!-- claim:v035-vs-v034-128k --></span></div>
       <div class="tile"><b>1.8×</b><span>prompt reading at 64k context, moe-cache against stock: a 63.5k-token prompt in about 289 against 525 s, decode +23 % at that depth (Flash-Next Q2_0; one cold run each, 2026-10-28, Steam running, so not clean; RESULTS 64, no record)</span></div>
       <div class="tile"><b>+26 %</b><span>prompt reading at the 256k setting with <code>-ub 2048</code> against <code>-ub 1024</code> (a 222k-token prompt; v0.3.5, 2026-11-03) <!-- claim:v035-ub2048-256k --></span></div>
-      <div class="tile"><b>2.0–2.4×</b><span>faster coding-agent sessions (OpenCode, Hermes) on Flash-Next IQ2_XS at 65k agent context (2026-10-27, two cold runs each)</span></div>
+      <div class="tile"><b>2.0–2.4×</b><span>faster coding-agent sessions (OpenCode, Hermes) on Flash-Next IQ2_XS at 65k agent context (2026-10-27, two cold runs each; RESULTS 60, no record)</span></div>
       <div class="tile"><b>8k chat</b><span>+42–53 % decode on three Qwen files and 2.1× on GLM-5.3 (2.7× with MTP), at 8k context with a 13-token prompt (2026-11-04, v0.3.5 kit, every run not clean) <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --><!-- claim:chain1103-glm --></span></div>
       <div class="tile"><b>Pending</b><span>a clean stock against moe-cache run at long context (34k–256k) on the 2026-11-04 files and on v0.3.6 (TEST-684); the long-context stock numbers here are from 2026-10-28</span></div>
     </div>
@@ -251,7 +251,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section>
     <h2>Agent sessions</h2>
-    <p>Recorded OpenCode (5 requests) and Hermes (7 requests) sessions were replayed against each server with the same request bodies, overlap and pauses. Each figure is the mean of two cold runs, order ABBA, with 0 errors in every replay.</p>
+    <p>Recorded OpenCode (5 requests) and Hermes (7 requests) sessions were replayed against each server with the same request bodies, overlap and pauses. Each figure is the mean of two cold runs, order ABBA, with 0 errors in every replay. These sessions are from RESULTS 60 (2026-10-27); no benchmark record exists for them, so no figure in this section has a claim.</p>
     <div class="scroll">
       <table>
         <thead><tr><th>Model</th><th>Session</th><th class="n">whole task, s<br>stock / moe-cache</th><th class="n">first answer, s<br>stock / moe-cache</th><th class="n">decode tok/s<br>stock / moe-cache</th></tr></thead>
