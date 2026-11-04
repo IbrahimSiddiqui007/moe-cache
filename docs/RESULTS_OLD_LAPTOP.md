@@ -128,7 +128,7 @@ Measured on the Linux laptop (i7-13620H, RTX 4060 8 GB, memory limited with a cg
 
 <p align="center"><img src="img/results.svg" alt="laptop speed with and without moe-cache, v0.1 to v0.2.3.5" width="760"></p>
 
-Hardware for the other measurements above (not this file table): Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
+Hardware for the other measurements above (see also the Machines table at the top): Intel i7-13620H, 31 GB RAM, RTX 4060 8 GB, NVMe SSD (a Ryzen 7 5800H mini PC in RESULTS 50; the Windows 11 desktop in RESULTS 54-55).
 
 ## Result 70. Diffusion MoE: prefill proxy and LLaDA-MoE
 
@@ -156,7 +156,7 @@ S3: `moe_cache.py diffusion` (launcher wrapper, merged). S2 (RND1-Base-0910 Q8_0
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-27 night; 2026-10-28 | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Q4_K_M | not stated | 23b0202a1 (old file header: section 15 on) | measured ; merged under the owner's new rule | Not stated |
+| 2026-10-27 night; 2026-10-28 | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Q4_K_M | not stated | 23b0202a1 (old file header: section 15 on) | measured 2026-10-27 night; merged 2026-10-28 under the owner's new rule | Not stated |
 
 <sub>Old heading: 66. Linux file-view cache made the default (laptop, measured 2026-10-27 night; merged 2026-10-28 under the owner's new rule)</sub>
 

@@ -15,6 +15,7 @@
 #     --uninstall  remove exactly what a release install added (the versions folder, the moe-cache command); models and ~/.cache/moe-cache stay
 #     --build      build from source even when downloaded on its own (the old behaviour)
 #     --bin-dir D  where the moe-cache command goes (default ~/.local/bin)
+#     --yes-unverified  install even though the build attestation could not be checked (gh missing / not logged in / verify failed); same as MOE_CACHE_ALLOW_UNVERIFIED=1. The sha256 check is never skipped.
 [ -n "$BASH_VERSION" ] || { command -v bash >/dev/null && exec bash "$0" "$@"; echo "install.sh needs bash"; exit 1; }   # `sh install.sh` is the documented way
 set -e
 # The llama.cpp commit moe-cache was built and tested against. Default: 7fe450e19 (ggml 0.25.1, backend API 2).
@@ -25,9 +26,10 @@ case "$LLAMA_SHA" in 23b0202a1*) export GGML_API=3;; esac
 MOE_CACHE_REF="${MOE_CACHE_REF:-v0.3.6}"            # tag of moe-cache used without a checkout (newest release; the release workflow checks it matches the tag)
 GGUF_PY_VERSION=0.19.0                                # python 'gguf' package version the planner was tested with
 GGUF_PY_SHA256=70bcd10edfe697fb2dad6e40af2234b9d8ece9a41a99761405121ebda1c3c1cd   # sha256 of gguf-$GGUF_PY_VERSION-py3-none-any.whl (RELEASE-008); pip is refused to install anything else
+UNVERIFIED_OK=0; [ "${MOE_CACHE_ALLOW_UNVERIFIED:-}" = 1 ] || [ "${MOE_CACHE_SKIP_ATTESTATION:-}" = 1 ] && UNVERIFIED_OK=1
 VULKAN=0; PREFIX=""; JOBS=$(nproc 2>/dev/null || echo 2); APT=1; OWN=0; DRY=0; UNINSTALL=0; BUILD=0; BINDIR="$HOME/.local/bin"
-while [ $# -gt 0 ]; do case "$1" in --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;; --uninstall) UNINSTALL=1; shift;; --build) BUILD=1; shift;; --bin-dir) BINDIR=$2; shift 2;;
-  -h|--help) sed -n 2,19p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
+while [ $# -gt 0 ]; do case "$1" in --yes-unverified) UNVERIFIED_OK=1; shift;; --vulkan) VULKAN=1; shift;; --prefix) PREFIX=$2; shift 2;; --jobs) JOBS=$2; shift 2;; --no-apt) APT=0; shift;; --own-llama) OWN=1; shift;; --dry-run) DRY=1; shift;; --uninstall) UNINSTALL=1; shift;; --build) BUILD=1; shift;; --bin-dir) BINDIR=$2; shift 2;;
+  -h|--help) sed -n 2,20p "$0"; exit 0;; *) echo "unknown option: $1"; exit 1;; esac; done
 say() { printf '\n== %s\n' "$*"; }
 
 # ---- release install: this file was downloaded on its own (no build.sh, no llama/ next to it) ----
@@ -92,12 +94,21 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   GOT="$(sha256sum "$TMP/$REL_NAME.tar.gz" | cut -d' ' -f1)"
   [ "$GOT" = "$WANT" ] || { echo "REFUSED: the download's sha256 ($GOT) is not the one in SHA256SUMS ($WANT). Nothing was installed."; exit 1; }
   echo "sha256 matches SHA256SUMS ($WANT)   (SUMS come from the same release: this finds a damaged download, it does not prove who built it)"
-  if [ -z "${MOE_CACHE_BASE_URL:-}" ] && command -v gh >/dev/null && gh auth status >/dev/null 2>&1; then
-    # gh is usable, so the build attestation CAN be checked: a failure refuses (MOE_CACHE_SKIP_ATTESTATION=1 to go on anyway, e.g. offline mirror)
-    if gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache >/dev/null 2>&1; then echo "build attestation verified (gh): built by this repository's release workflow"
-    elif [ "${MOE_CACHE_SKIP_ATTESTATION:-}" = 1 ]; then echo "note: gh could not verify the build attestation; continuing because MOE_CACHE_SKIP_ATTESTATION=1"
-    else echo "REFUSED: gh could not verify the build attestation of $REL_NAME.tar.gz (not built by the release workflow, or gh is offline). Nothing was installed. Set MOE_CACHE_SKIP_ATTESTATION=1 to install anyway."; exit 1; fi
-  else echo "note: only the checksum was checked. To check where it was built: gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache"; fi
+  # RELEASE-686: the checksum alone only finds a damaged download (SHA256SUMS come from the same place as the file). Who built the file is checked
+  # with `gh attestation verify`; when that cannot be done the install stops unless the user asked for it (--yes-unverified / MOE_CACHE_ALLOW_UNVERIFIED=1).
+  ATT_WHY=""
+  if ! command -v gh >/dev/null; then ATT_WHY="gh (the GitHub command line tool) is not installed"
+  elif ! gh auth status >/dev/null 2>&1; then ATT_WHY="gh is installed but not logged in (run: gh auth login)"
+  elif gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache >/dev/null 2>&1; then ATT_WHY=""; ATT_OK=1
+  else ATT_WHY="gh attestation verify FAILED: the file was not built by this repository's release workflow, or gh is offline"; fi
+  if [ "${ATT_OK:-0}" = 1 ]; then
+    echo "checked: build attestation verified (gh): built by this repository's release workflow"
+  else
+    echo "checked:     sha256 of the download against SHA256SUMS of the same release (finds a damaged download)"
+    echo "NOT checked: who built the file (build attestation): $ATT_WHY"
+    if [ $UNVERIFIED_OK = 1 ]; then echo "WARNING: continuing without the build attestation because --yes-unverified / MOE_CACHE_ALLOW_UNVERIFIED=1 was given."
+    else echo "REFUSED: the build attestation could not be checked. Nothing was installed. Log in with gh and run this again, or accept the risk with --yes-unverified (or MOE_CACHE_ALLOW_UNVERIFIED=1). Check by hand: gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache"; exit 1; fi
+  fi
   say "2/3 unpack (into a temporary folder; the old version stays until the new one is complete)"
   tar -tzf "$TMP/$REL_NAME.tar.gz" | awk -v n="$REL_NAME/" 'index($0, n) != 1 || $0 ~ /\.\.\//{bad=1} END{exit bad}' || { echo "REFUSED: the tarball has files outside $REL_NAME/"; exit 1; }
   OLD="$(rec version || true)"

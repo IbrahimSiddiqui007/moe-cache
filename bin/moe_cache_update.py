@@ -150,17 +150,20 @@ def roll_back(layout):
     return ""
 
 
-def attestation(path, base_url_is_default, env=None):
-    """('verified' | 'failed' | 'skipped', note). gh can only check when it is installed and logged in, and not for a mirror / test folder."""
+def attestation(path, env=None):
+    """('verified' | 'failed' | 'skipped', note). RELEASE-686: whenever gh is installed and logged in the file is verified, also when it came from a mirror
+    (the attestation is bound to the file's content, not to where it was fetched). 'skipped' = gh cannot be used, 'failed' = gh said no."""
     env = os.environ if env is None else env
-    gh = shutil.which("gh")
-    if not base_url_is_default or not gh or subprocess.run([gh, "auth", "status"], capture_output=True).returncode:
-        return "skipped", "gh is not usable here, so only HTTPS from github.com vouches for the installer (the installer still checks the package's SHA256SUMS)"
-    r = subprocess.run([gh, "attestation", "verify", path, "-R", REPO], capture_output=True, text=True)
-    return ("verified", "build attestation of the installer verified (gh)") if r.returncode == 0 else ("failed", (r.stderr or r.stdout).strip()[-300:])
+    gh = shutil.which("gh", path=env.get("PATH"))
+    if not gh:
+        return "skipped", "gh (the GitHub command line tool) is not installed"
+    if subprocess.run([gh, "auth", "status"], capture_output=True, env=dict(env)).returncode:
+        return "skipped", "gh is installed but not logged in (run: gh auth login)"
+    r = subprocess.run([gh, "attestation", "verify", path, "-R", REPO], capture_output=True, text=True, env=dict(env))
+    return ("verified", "build attestation of the installer verified (gh)") if r.returncode == 0 else ("failed", "gh attestation verify FAILED: " + (r.stderr or r.stdout).strip()[-300:])
 
 
-def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, fetch_json=http_json, base_url=None, env=None, windows=WINDOWS, tty=None):
+def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, unverified=False, fetch_json=http_json, base_url=None, env=None, windows=WINDOWS, tty=None):
     """Returns a process exit code. version = the running moe-cache version; here = its folder (the repository root of the copy)."""
     env = os.environ if env is None else env
     layout = installed_layout(here, windows, env)
@@ -212,15 +215,24 @@ def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, 
             return 1
         with open(script, "wb") as f:
             f.write(data)
-        state, note = attestation(script, default_base, env)
-        if state == "failed" and env.get("MOE_CACHE_SKIP_ATTESTATION") != "1":
-            say(f"moe-cache: REFUSED: gh could not verify the build attestation of {name} ({note}). Nothing was changed. MOE_CACHE_SKIP_ATTESTATION=1 goes on anyway.")
-            return 1
-        say("  " + note)
+        state, note = attestation(script, env)
+        allow = unverified or env.get("MOE_CACHE_ALLOW_UNVERIFIED") == "1" or env.get("MOE_CACHE_SKIP_ATTESTATION") == "1"
+        if state == "verified":
+            say("  checked: " + note + "; the installer checks the package's build attestation and sha256 the same way")
+        else:
+            say(f"  checked:     nothing about who built {name} (only HTTPS to the server it came from); the installer will check the package against the release's SHA256SUMS (finds a damaged download)")
+            say(f"  NOT checked: who built {name} (build attestation): {note}")
+            if not allow:
+                say("moe-cache: REFUSED: the build attestation could not be checked, so nothing was run or changed. Log in with gh and try again, or accept the risk with"
+                    " --yes-unverified (or MOE_CACHE_ALLOW_UNVERIFIED=1). Check by hand: gh attestation verify FILE -R " + REPO)
+                return 1
+            say("  WARNING: going on without the build attestation because --yes-unverified / MOE_CACHE_ALLOW_UNVERIFIED=1 was given.")
         ibase = None if default_base else base
         if ibase and ibase.startswith("file://") and layout["kind"] == "windows":      # install.ps1 takes a folder, not a file:// address
             ibase = urllib.request.url2pathname(ibase[len("file://"):]).lstrip("\\") if re.match(r"file:///[A-Za-z]:", ibase) else urllib.request.url2pathname(ibase[len("file://"):])
         argv, run_env = installer_command(layout, script, tag, env, ibase)
+        if state != "verified" and allow:
+            run_env["MOE_CACHE_ALLOW_UNVERIFIED"] = "1"      # the installer checks the package itself and would refuse the same way
         rc = subprocess.call(argv, env=run_env)
         if rc:
             say(f"moe-cache: the installer stopped (exit {rc}); it puts the previous install back, so you still have {version}.")

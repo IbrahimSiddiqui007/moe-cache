@@ -1,6 +1,6 @@
 # Techniques used in moe-cache: what each does, the evidence, the downside
 
-Audit of 2026-10-10; rows re-checked against the code on 2026-11-03 (defaults of v0.3.5). "Default" is what is in the code, not what the docs say. Current numbers are in [RESULTS](RESULTS.md); the numbered runs are in [RESULTS](RESULTS.md).
+Audit of 2026-10-10; rows re-checked against the code on 2026-11-03 (defaults of v0.3.5). "Default" is what is in the code, not what the docs say. Current numbers are in [RESULTS](RESULTS.md); the numbered runs are in [RESULTS](RESULTS.md) and [RESULTS_OLD_LAPTOP](RESULTS_OLD_LAPTOP.md).
 
 | Technique | Default | What it does | Evidence | Downside / risk | Verdict |
 |---|---|---|---|---|---|

@@ -8,7 +8,7 @@
   moe_cache.py doctor  [MODEL.gguf] [--llama-server PATH] [--ram GB]       the same as check (preflight: GPU, driver, RAM, disk, llama-server; what to fix)
   moe_cache.py check   [MODEL.gguf] [--llama-server PATH] [--ram GB]       check that this machine, llama-server and the model are ready
   moe_cache.py update --check                                            is a newer moe-cache or llama.cpp out? (downloads nothing)
-  moe_cache.py update --apply [--tag vX.Y.Z] [--allow-downgrade] [--yes] [--dry-run]          install the newer release (sha256 + attestation checked by its installer; Linux keeps the old version)
+  moe_cache.py update --apply [--tag vX.Y.Z] [--allow-downgrade] [--yes] [--yes-unverified] [--dry-run]   install the newer release (sha256 always, attestation unless --yes-unverified; Linux keeps the old version)
   moe_cache.py bench-report MODEL.gguf [--ram GB] [--flush-from DIR]     stock vs moe-cache on this machine; a report to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md)
   moe_cache.py bench-record collect|monitor|assemble|validate|card|ingest|claim|board|lint|replay     the benchmark record (docs/BENCHMARK_TEMPLATE.md): VRAM, RAM, CPU, settings, versions
   moe_cache.py learn   MODEL.gguf [options]                                build a warm-start profile from a set of prompts
@@ -1879,7 +1879,7 @@ def exit_reason(rc, ready):
 SERVER_HELP = """\
 --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
            also a q8_0 KV cache (half the KV memory; KL 0.0045 on its own, RESULTS 53).
-           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS.md section 31).
+           About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    keep the f16 KV cache at 128k+ (no --fast=kv default)
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
@@ -4666,11 +4666,12 @@ def update_cmd(argv):
     ap.add_argument("--tag", help="with --apply: a release tag (vX.Y.Z) instead of the newest stable one")
     ap.add_argument("--yes", action="store_true", help="with --apply: do not ask")
     ap.add_argument("--allow-downgrade", action="store_true", help="with --apply: install a release older than the running one (refused without this)")
+    ap.add_argument("--yes-unverified", action="store_true", help="with --apply: go on although the build attestation cannot be checked (gh missing / not logged in); sha256 is always checked")
     ap.add_argument("--dry-run", action="store_true", help="with --apply: say what would happen, download nothing")
     a = ap.parse_args(argv)
     if a.apply:
         from moe_cache_update import apply as apply_update
-        return apply_update(VERSION, HERE, tag=a.tag, yes=a.yes, dry=a.dry_run, allow_downgrade=a.allow_downgrade)
+        return apply_update(VERSION, HERE, tag=a.tag, yes=a.yes, dry=a.dry_run, allow_downgrade=a.allow_downgrade, unverified=a.yes_unverified)
     def tag(url):
         try:
             req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": f"moe-cache/{VERSION}"})

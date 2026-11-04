@@ -7,7 +7,7 @@
 #
 # What it does:
 #   1. checks that Python 3.8 or newer is installed (it never installs Python for you) and says how to get it if not
-#   2. downloads the Windows zip of this release and SHA256SUMS-windows, and REFUSES (installs nothing) when the hash does not match (SUMS come from the same release: that finds a damaged download, it does not prove who built it; check the build with gh attestation verify)
+#   2. downloads the Windows zip of this release and SHA256SUMS-windows, and REFUSES (installs nothing) when the hash does not match (SUMS come from the same release: that finds a damaged download, it does not prove who built it) or when `gh attestation verify` cannot confirm the build (-YesUnverified to go on anyway; check the build with gh attestation verify)
 #   3. unpacks it to %LOCALAPPDATA%\moe-cache\kit (llama.cpp is inside the zip)
 #   4. writes a small command, %LOCALAPPDATA%\moe-cache\bin\moe-cache.cmd, and adds that bin folder to YOUR user PATH (never the machine PATH)
 #   5. prints the version and how to undo it
@@ -19,6 +19,8 @@
 #   -Version X   install release X (default: the release this file belongs to; run from a checkout: the newest)
 #   -Root DIR    install somewhere else (default %LOCALAPPDATA%\moe-cache)
 #   -NoPath      do not touch the PATH
+#   -YesUnverified  install even though the build attestation could not be checked (gh missing / not logged in / verify failed); same as $env:MOE_CACHE_ALLOW_UNVERIFIED='1'
+#                (the only way with `| iex`). The sha256 check is never skipped.
 #   -BaseUrl U   where the release files are (a folder or an https address; default this release's GitHub download address)
 # With `| iex` no flags can be given: use the read-first form above, or  & ([scriptblock]::Create((irm URL))) -Uninstall
 [CmdletBinding()]
@@ -29,7 +31,8 @@ param(
     [switch]$Uninstall,
     [switch]$DryRun,
     [switch]$NoPath,
-    [switch]$Force
+    [switch]$Force,
+    [switch]$YesUnverified
 )
 
 $Repo = 'IbrahimSiddiqui007/moe-cache'
@@ -185,7 +188,26 @@ function Install-MoeCache {
             if (-not $want) { throw "REFUSED: SHA256SUMS-windows has no line for $name.zip. Nothing was installed." }
             $got = (Get-FileHash -LiteralPath (Join-Path $tmp "$name.zip") -Algorithm SHA256).Hash
             if ($got -ine $want) { throw "REFUSED: the download's sha256 ($got) is not the one in SHA256SUMS-windows ($want). Nothing was installed." }
-            Say "sha256 matches SHA256SUMS-windows ($want)   (from the same release: this finds a damaged download, it does not prove who built it; to check that: gh attestation verify $name.zip -R $Repo)"
+            Say "sha256 matches SHA256SUMS-windows ($want)   (from the same release: this finds a damaged download, it does not prove who built it)"
+            # RELEASE-686: who built the zip is checked with `gh attestation verify`; when that cannot be done the install stops unless the user asked for it
+            $attWhy = ''; $attOk = $false
+            $gh = Get-Command gh -ErrorAction SilentlyContinue
+            if (-not $gh) { $attWhy = 'gh (the GitHub command line tool) is not installed' }
+            else {
+                & $gh.Source auth status *> $null
+                if ($LASTEXITCODE -ne 0) { $attWhy = 'gh is installed but not logged in (run: gh auth login)' }
+                else {
+                    & $gh.Source attestation verify (Join-Path $tmp "$name.zip") -R $Repo *> $null
+                    if ($LASTEXITCODE -eq 0) { $attOk = $true } else { $attWhy = "gh attestation verify FAILED: the file was not built by this repository's release workflow, or gh is offline" }
+                }
+            }
+            if ($attOk) { Say "checked: build attestation verified (gh): built by this repository's release workflow" }
+            else {
+                Say 'checked:     sha256 of the download against SHA256SUMS-windows of the same release (finds a damaged download)'
+                Say "NOT checked: who built the file (build attestation): $attWhy"
+                if ($YesUnverified -or $env:MOE_CACHE_ALLOW_UNVERIFIED -eq '1' -or $env:MOE_CACHE_SKIP_ATTESTATION -eq '1') { Say 'WARNING: continuing without the build attestation because -YesUnverified / MOE_CACHE_ALLOW_UNVERIFIED=1 was given.' }
+                else { throw 'REFUSED: the build attestation could not be checked. Nothing was installed. Log in with gh and run this again, or accept the risk with -YesUnverified (or $env:MOE_CACHE_ALLOW_UNVERIFIED=''1''; the only way with | iex). Check by hand: gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache' }
+            }
             Say '2/3 unpack (into a temporary folder; the old kit stays until the new one is complete)'
             if (Test-Path -LiteralPath $stage) { Remove-Item -LiteralPath $stage -Recurse -Force }
             [void](New-Item -ItemType Directory -Force -Path $stage)

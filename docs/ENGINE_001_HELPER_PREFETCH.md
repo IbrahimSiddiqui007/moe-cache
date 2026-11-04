@@ -13,7 +13,7 @@ A helper thread reads ahead so a model that fits in RAM decodes faster. The owne
 | Block prefetch, `archive/plugin/gpu_prefetch.patch` | upload the next block while the current one computes | 34k: 598/593 off, 598/597 on; 128k: 414 vs 418 (no gain) | archive/README.md |
 | Competitor-style helper thread (Strata `adapt_async_default.hpp`) | same as look-ahead | -5.5 % on CPU-bound boxes; their own best 32 GB run set `STRATA_LOOKAHEAD=0` | deepdive_strata_maya_20261029.md SM12 |
 | Startup fill (`preload()`, `src/mc_state_profile.inl`) | when every CPU expert fits the cache, all are read in layer order before the first token | in the plugin, on by default | code |
-| Lookahead in other engines | BigMoeOnEdge: "prefetchers and route-ahead lost to the device cache"; llama.cpp #28766: gain only with 5 tokens of look-ahead | - | scout10_20261030.md |
+| Lookahead elsewhere | a third-party report (not re-measured by us): prefetchers and route-ahead lost to the device cache; llama.cpp #28766: gain only with 5 tokens of look-ahead | - | scout10_20261030.md |
 
 ## Every form a helper thread could take for a fit-in-RAM model
 

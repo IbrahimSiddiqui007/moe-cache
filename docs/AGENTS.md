@@ -225,7 +225,7 @@ with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
 | whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | 78 s / 30 s / 39 s / 55 s |
 
 With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens in 186 s; after a restart with the warm session the whole OpenCode
-session takes 112 s instead of 242 s. Details: [RESULTS.md section 51-52](RESULTS.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+session takes 112 s instead of 242 s. Details: [RESULTS_OLD_LAPTOP.md, results 51-52](RESULTS_OLD_LAPTOP.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
 model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.
@@ -267,7 +267,7 @@ The replay generates greedily and stops at the recorded number of tokens, so sto
 same prompt reuse. Follow-up turns re-send the agent's original assistant message, which the server processes again if the model now writes something
 else (a few hundred tokens per turn). Recording replaces the home folder, user and host names. Agent-mode servers want the per-user API key: the replay sends `LLAMA_API_KEY`, or the launcher's stored key when the server asks for one (`--api-key` to give another). Start the server fresh for a cold first turn (with
 `--agent`, also give it an empty `--slot-save-path` after `--`, or it restores the last warm session). Measured on the laptop, stock vs moe-cache:
-[RESULTS.md section 57](RESULTS.md).
+[RESULTS_OLD_LAPTOP.md, result 57](RESULTS_OLD_LAPTOP.md).
 
 ## Agent notes
 

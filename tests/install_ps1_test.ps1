@@ -45,6 +45,12 @@ function Count-Entry([string]$dir) { return @((Get-UserPath) -split ';' | Where-
 function Get-UserPath { $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment'); try { return [string]$k.GetValue('Path', '', 'DoNotExpandEnvironmentNames') } finally { $k.Close() } }
 function Set-UserPath([string]$v) { $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true); try { $k.SetValue('Path', $v, 'ExpandString') } finally { $k.Close() } }
 
+# RELEASE-686: a fake gh.cmd first on PATH (FAKE_GH_AUTH / FAKE_GH_VERIFY = exit codes). Without a verified build attestation the installer stops unless -YesUnverified / MOE_CACHE_ALLOW_UNVERIFIED=1.
+$fakeGh = Join-Path $T 'fakegh'; New-Item -ItemType Directory -Force -Path $fakeGh | Out-Null
+Set-Content -LiteralPath (Join-Path $fakeGh 'gh.cmd') -Encoding ASCII -Value @('@echo off', 'if "%1 %2"=="auth status" exit /b %FAKE_GH_AUTH%', 'if "%1 %2"=="attestation verify" exit /b %FAKE_GH_VERIFY%', 'exit /b 1')
+$env:FAKE_GH_AUTH = '0'; $env:FAKE_GH_VERIFY = '0'
+$origProcPath = $env:PATH
+$env:PATH = "$fakeGh;$origProcPath"
 $origPath = Get-UserPath
 try {
     $script:root = Join-Path $T 'root'; $bin = Join-Path $root 'bin'; $kit = Join-Path $root 'kit'; $shim = Join-Path $bin 'moe-cache.cmd'
@@ -58,6 +64,32 @@ try {
 
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-DryRun')
     Check ($r.Code -eq 0 -and $r.Out -match 'would download' -and -not (Test-Path $kit) -and -not (Test-Path $bin) -and -not (Test-Path (Join-Path $root 'kit.part'))) '-DryRun prints the plan and installs nothing'
+
+    # ---- RELEASE-686: the build attestation
+    $env:FAKE_GH_VERIFY = '1'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'NOT checked: who built' -and $r.Out -match 'checked:\s+sha256' -and $r.Out -match 'YesUnverified' -and -not (Test-Path $kit) -and -not (Test-Path $shim)) 'gh verify fails: refused, says what was and was not checked, nothing installed'
+    $env:FAKE_GH_VERIFY = '0'; $env:FAKE_GH_AUTH = '1'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'not logged in' -and -not (Test-Path $kit)) 'gh not logged in: refused, nothing installed'
+    $env:FAKE_GH_AUTH = '0'
+    $env:PATH = (($origProcPath -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'gh.exe')) -and -not (Test-Path (Join-Path $_ 'gh.cmd')) }) -join ';'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'is not installed' -and -not (Test-Path $kit)) 'gh not installed: refused, nothing installed'
+    $r = Run-Installer (New-Release 'bad' '9.9.1' 'bad') '9.9.1' @('-YesUnverified')
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'sha256' -and -not (Test-Path $kit)) '-YesUnverified never skips the sha256: a wrong hash is still refused'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-YesUnverified')
+    Check ($r.Code -eq 0 -and $r.Out -match 'WARNING: continuing without the build attestation' -and $r.Out -match 'NOT checked' -and (Test-Path (Join-Path $kit 'bin\moe_cache.py'))) '-YesUnverified with no gh: installs, with a warning that says what was not checked'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-Uninstall')
+    Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
+    $env:FAKE_GH_VERIFY = '1'; $env:MOE_CACHE_ALLOW_UNVERIFIED = '1'; $env:PATH = "$fakeGh;$origProcPath"
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -eq 0 -and $r.Out -match 'WARNING' -and (Test-Path (Join-Path $kit 'bin\moe_cache.py'))) 'MOE_CACHE_ALLOW_UNVERIFIED=1 with a failing verify: installs, with a warning'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-Uninstall')
+    Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
+    Remove-Item Env:\MOE_CACHE_ALLOW_UNVERIFIED; $env:FAKE_GH_VERIFY = '0'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-DryRun')
+    Check ($r.Code -eq 0 -and $r.Out -match 'would download') '-DryRun does not need gh'
 
     $good1 = Join-Path $T 'good1'
     $r = Run-Installer $good1 '9.9.1' @()

@@ -3,7 +3,7 @@
 Checks: a wrong hash is refused and installs nothing, a good one installs, a second run is idempotent, an update replaces the old version,
 --uninstall removes exactly what was added (a file of the user's in the same folders stays). Linux only.
    python3 tests/install_sh_test.py"""
-import hashlib, io, os, subprocess, sys, tarfile, tempfile
+import hashlib, io, os, shutil, subprocess, sys, tarfile, tempfile
 
 if not sys.platform.startswith("linux"):
     print("install.sh test: Linux only, skipped"); sys.exit(0)
@@ -14,6 +14,24 @@ def check(ok, what):
     print(("  ok   " if ok else "  FAIL ") + what)
     if not ok:
         fails.append(what)
+
+# RELEASE-686: a fake `gh` (FAKE_GH_AUTH / FAKE_GH_VERIFY = exit codes; calls are logged in FAKE_GH_LOG) first on PATH, and a PATH without any gh
+FAKEBIN = os.path.join(T, "fakebin"); os.makedirs(FAKEBIN)
+GH_LOG = os.path.join(T, "gh.log")
+open(os.path.join(FAKEBIN, "gh"), "w").write('''#!/bin/sh
+case "$1 $2" in
+  "auth status") exit ${FAKE_GH_AUTH:-0};;
+  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; exit ${FAKE_GH_VERIFY:-0};;
+esac
+exit 1
+'''); os.chmod(os.path.join(FAKEBIN, "gh"), 0o755)
+NOGH = os.path.join(T, "nogh"); os.makedirs(NOGH)
+for tool in "bash sh python3 tar gzip sha256sum awk sed grep cut head tail tr cat ls mkdir mktemp rm mv cp ln chmod readlink dirname basename uname id sort curl wget ldconfig rmdir nproc env printf test find xargs date".split():
+    w = shutil.which(tool)
+    if w and not os.path.exists(os.path.join(NOGH, tool)):
+        os.symlink(w, os.path.join(NOGH, tool))
+assert not os.path.exists(os.path.join(NOGH, "gh"))
+GOOD_ENV = dict(PATH=FAKEBIN + ":" + os.environ["PATH"], FAKE_GH_LOG=GH_LOG)
 
 def release(ver, tamper=False):
     """A release folder: moe-cache-v<ver>-ggml0.26-linux-x86_64.tar.gz with bin/moe_cache.py, and SHA256SUMS (wrong hash when tamper)."""
@@ -31,7 +49,7 @@ open(inst, "w").write(open(os.path.join(HERE, "install.sh")).read())      # alon
 prefix, bindir = os.path.join(T, "data", "moe-cache"), os.path.join(T, "home", "bin")
 os.makedirs(bindir); open(os.path.join(bindir, "mine.sh"), "w").write("keep me\n")
 def run(rel, ver, *args, **extra):
-    env = dict(os.environ, MOE_CACHE_BASE_URL="file://" + rel, MOE_CACHE_REF="v" + ver, HOME=os.path.join(T, "home"), **extra)
+    env = dict(os.environ, MOE_CACHE_BASE_URL="file://" + rel, MOE_CACHE_REF="v" + ver, HOME=os.path.join(T, "home"), **GOOD_ENV); env.update(extra)
     r = subprocess.run(["sh", inst, "--prefix", prefix, "--bin-dir", bindir, "--no-apt", *args], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=120)
     return r.returncode, r.stdout + r.stderr
 shim = os.path.join(bindir, "moe-cache")
@@ -42,6 +60,34 @@ check(not os.path.exists(prefix) and not os.path.exists(shim), "...and nothing w
 
 rc, out = run(release("9.9.1"), "9.9.1", "--dry-run")
 check(rc == 0 and "would download" in out and not os.path.exists(prefix), "--dry-run prints the plan and installs nothing")
+
+# ---- RELEASE-686: the build attestation. Without it the install stops unless the user asked for it; the sha256 is checked either way.
+rA = release("9.9.1")
+def refused(label, **extra):
+    rc, out = run(rA, "9.9.1", **extra)
+    check(rc != 0 and "REFUSED" in out and "NOT checked: who built the file" in out and "checked:     sha256" in out and "--yes-unverified" in out
+          and not os.path.exists(prefix) and not os.path.exists(shim), f"{label}: refused, says what was and was not checked, nothing installed")
+    return out
+out = refused("gh not installed", PATH=NOGH)
+check("is not installed" in out, "...reason named: gh not installed")
+out = refused("gh not logged in", FAKE_GH_AUTH="1")
+check("not logged in" in out, "...reason named: not logged in")
+out = refused("gh verify fails", FAKE_GH_VERIFY="1")
+check("verify FAILED" in out, "...reason named: verify failed")
+open(GH_LOG, "w").close()
+rc, out = run(rA, "9.9.1", "--dry-run")
+check(rc == 0 and open(GH_LOG).read() == "", "--dry-run asks gh nothing and installs nothing")
+rc, out = run(rA, "9.9.1")          # a mirror (MOE_CACHE_BASE_URL is set) is NOT a reason to skip: gh is asked, verifies the downloaded file
+check(rc == 0 and "build attestation verified" in out and "tar.gz" in open(GH_LOG).read() and "-R IbrahimSiddiqui007/moe-cache" in open(GH_LOG).read(), "a mirror folder with a working gh: the file is verified (not skipped)")
+rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0 and not os.path.exists(prefix), "...(uninstalled again)")
+rc, out = run(rA, "9.9.1", "--yes-unverified", PATH=NOGH)
+check(rc == 0 and "WARNING: continuing without the build attestation" in out and "NOT checked" in out and os.access(shim, os.X_OK), "--yes-unverified with no gh: installs, with a warning that says what was not checked")
+rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0, "...(uninstalled again)")
+rc, out = run(rA, "9.9.1", MOE_CACHE_ALLOW_UNVERIFIED="1", FAKE_GH_VERIFY="1")
+check(rc == 0 and "WARNING" in out, "MOE_CACHE_ALLOW_UNVERIFIED=1 with a failing verify: installs, with a warning")
+rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0, "...(uninstalled again)")
+rc, out = run(release("9.9.1", tamper=True), "9.9.1", "--yes-unverified", PATH=NOGH)
+check(rc != 0 and "REFUSED" in out and "sha256" in out and not os.path.exists(prefix), "--yes-unverified never skips the sha256: a wrong hash is still refused")
 
 r1 = release("9.9.1")
 rc, out = run(r1, "9.9.1")
@@ -117,7 +163,7 @@ os.environ["LC_ALL"] = "C"
 sp = os.path.join(T, "data2", "Jos\u00e9's apps"); sb = os.path.join(T, "other bin")
 os.makedirs(os.path.join(sp, "versions", "my-own-tool")); os.makedirs(sb)
 def run2(rel, ver, *args):
-    env = dict(os.environ, MOE_CACHE_BASE_URL="file://" + rel, MOE_CACHE_REF="v" + ver, HOME=os.path.join(T, "home"))
+    env = dict(os.environ, MOE_CACHE_BASE_URL="file://" + rel, MOE_CACHE_REF="v" + ver, HOME=os.path.join(T, "home"), **GOOD_ENV)
     r = subprocess.run(["sh", inst, "--prefix", sp, "--bin-dir", sb, "--no-apt", *args], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL, timeout=120)
     return r.returncode, r.stdout + r.stderr
 rc, out = run2(r1, "9.9.1")
@@ -125,7 +171,7 @@ shim2 = os.path.join(sb, "moe-cache")
 check(rc == 0 and subprocess.run(["/bin/sh", shim2, "x"], capture_output=True, text=True).stdout.strip() == "args: x", f"a prefix with a non-ASCII letter and an apostrophe: the command runs under /bin/sh ({out.strip().splitlines()[-4:-3]})")
 rc, out = run2(r3, "9.9.3")
 check(rc == 0 and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "an update does not delete folders in versions/ that are not ours")
-rc, out = subprocess.run(["sh", inst, "--prefix", sp, "--uninstall"], capture_output=True, text=True, env=dict(os.environ, HOME=os.path.join(T, "home"), MOE_CACHE_REF="v9.9.3"), stdin=subprocess.DEVNULL).returncode, ""
+rc, out = subprocess.run(["sh", inst, "--prefix", sp, "--uninstall"], capture_output=True, text=True, env=dict(os.environ, HOME=os.path.join(T, "home"), MOE_CACHE_REF="v9.9.3", **GOOD_ENV), stdin=subprocess.DEVNULL).returncode, ""
 check(rc == 0 and not os.path.exists(shim2) and os.path.isdir(os.path.join(sp, "versions", "my-own-tool")), "uninstall without --bin-dir removes the command the install recorded, and still leaves folders that are not ours")
 
 check(subprocess.run(["bash", "-n", os.path.join(HERE, "install.sh")]).returncode == 0, "install.sh parses")
