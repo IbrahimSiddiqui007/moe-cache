@@ -340,7 +340,7 @@ def peek_server(port, api_key=None, trusted=False):
                     "key": "needed"}
     # SERVER-692: key_for() asks /v1/models a second time and sends the stored key on a 401, so a listener that answers 200 and then 401 would collect it.
     # Only a trusted port goes through it; any other port gets the key the caller gave, or none.
-    key = mc.key_for(url, api_key) if trusted else (api_key or None)
+    key = mc.key_for(url, api_key, trusted=True) if trusted else (api_key or None)
     name, ctx = mc.server_info(url, key)
     wants = not name and mc.http(url + "/v1/models", api_key=key, timeout=2)[0] in (401, 403)
     out = {"port": port, "up": True, "health": "ready" if st == 200 else "loading", "model": name, "ctx": ctx, "slots": None, "busy": None,
