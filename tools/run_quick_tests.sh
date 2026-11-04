@@ -53,6 +53,6 @@ else
   echo "no g++: C++ tests skipped ($CPP_TESTS)"
   [ -z "$CI" ] || { echo "FAIL: CI needs g++"; exit 1; }
 fi
-# warning only (DOCS-089): MOE_CACHE_ names the code reads and no doc mentions; never fails the run
-python3 tools/env_names_check.py --missing 2>&1 >/dev/null | sed "s/^/warning: env names: /"
+# every MOE_CACHE_ name the code reads must be in README.md or docs/CONFIGURATION.md (DOCS-089, strict since the Critic's round 4); fails the run
+python3 tools/env_names_check.py --config-only --strict >/dev/null || { echo "FAIL: MOE_CACHE_ names the code reads and CONFIGURATION.md/README.md do not mention:"; python3 tools/env_names_check.py --config-only --missing 2>/dev/null; exit 1; }
 echo "quick tests: all passed"
