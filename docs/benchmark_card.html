@@ -70,21 +70,21 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
 <div class="wrap">
   <header>
-    <div class="eyebrow">Benchmark card · measured 2026-10-27 to 2026-11-03 · Windows desktop</div>
+    <div class="eyebrow">Benchmark card · measured 2026-10-27 to 2026-11-04 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
     <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decodes faster than stock llama-server on every model that is bigger than the RAM, with the same output text (without MTP).</p>
     <div class="machine">
-      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>llama.cpp Vulkan: 620d2225c (ggml 0.27) for the 2026-10-27/28 tables, official b11966 for Nemotron and the 2026-11-03 table</span>
+      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>llama.cpp Vulkan: 620d2225c (ggml 0.27) for the Q2_0 and IQ2_XS rows of 2026-10-27/28, official b11966 for the 2026-11-04 rows and the 2026-11-03 table</span>
     </div>
   </header>
 
   <section aria-label="Headline numbers">
     <div class="tiles">
       <div class="tile"><b>≈1.4×</b><span>faster long prompts (34k–128k tokens), v0.3.5 vs v0.3.4; decode after them 6–10 % lower</span></div>
-      <div class="tile"><b>+20–47 %</b><span>decode speed on the five Qwen MoE files that do not fit in RAM</span></div>
-      <div class="tile"><b>2.0×</b><span>GLM-5.3 (102 GB), one run each on the same drive; 3.1× with MTP, one run</span></div>
+      <div class="tile"><b>+42–53 %</b><span>decode speed on the three Qwen MoE files re-measured on 2026-11-04 (IQ3_XXS, IQ3_S, 122B); Q2_0 +20 % and IQ2_XS +47 % are from 2026-10-27/28 <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --></span></div>
+      <div class="tile"><b>2.1×</b><span>GLM-5.3 (102 GB), two runs each on the same drive; 2.7× with MTP <!-- claim:chain1103-glm --></span></div>
       <div class="tile"><b>2.0–2.4×</b><span>faster agent sessions (OpenCode, Hermes) on Flash-Next</span></div>
-      <div class="tile"><b>+54 %</b><span>decode with MTP on Qwen3.6-35B (fits in RAM; stock gains +49 %)</span></div>
+      <div class="tile"><b>+56 %</b><span>decode with MTP on Qwen3.6-35B against stock without MTP (fits in RAM; stock with MTP not measured on 2026-11-04) <!-- claim:chain1103-qwen36 --></span></div>
       <div class="tile"><b>Same text</b><span>byte-identical to stock without MTP on every model checked</span></div>
     </div>
   </section>
@@ -106,18 +106,18 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         <tbody>
           <tr><td><b>Flash-Next Q2_0</b> (the faster file)<span class="sub">66.4 GB, drive D:, two runs each, not interleaved; stock = launcher <code>--stock</code> defaults</span></td><td class="n">12 (moe-cache)</td><td class="n">18.41</td><td class="n">22.16</td><td class="n up">+20 %</td></tr>
           <tr><td>Qwen3-Next “Flash-Next” IQ2_XS<span class="sub">68 GB, drive C:</span></td><td class="n">12</td><td class="n">14.89</td><td class="n">21.94</td><td class="n up">+47 %</td></tr>
-          <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:</span></td><td class="n">9</td><td class="n">15.14</td><td class="n">19.86</td><td class="n up">+31 %</td></tr>
-          <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive C:</span></td><td class="n">7</td><td class="n">12.92</td><td class="n">17.28</td><td class="n up">+34 %</td></tr>
-          <tr><td>Qwen3.5-122B UD-IQ2_XXS<span class="sub">36.6 GB, drive D:, re-measured 2026-10-28; replaces 13.88 vs 16.13 (+16 %), which ran during a slowdown of the whole PC</span></td><td class="n">12</td><td class="n">15.95</td><td class="n">19.73</td><td class="n up">+24 %</td></tr>
-          <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB, drive C:, one run each (RESULTS 59). moe-cache later decoded 5.36 and 5.52 / 5.58 on C: (RESULTS 61) and 5.89 as an ABBA mean on drive D: (RESULTS 62); stock was never re-run, so the ratios against 2.21 would be 2.4× to 2.7× and are not a fair pair</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">4.44</td><td class="n up">2.0×</td></tr>
-          <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">drive C:, one run (RESULTS 61); drafts accepted 61–100 %</span></td><td class="n">3</td><td class="n">2.21</td><td class="n">6.92</td><td class="n up">3.1×</td></tr>
-          <tr><td>Nemotron 3.5 Bolt 74B-A9B<span class="sub">22.0 GB, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced here to compare (one run each)</span></td><td class="n">–</td><td class="n">27.9</td><td class="n">22.8</td><td class="n">−18 %</td></tr>
-          <tr><td>Qwen3.6-35B-A3B Q4_K_M<span class="sub">20 GB, <b>fits in RAM</b>: stock is the right choice; moe-cache forced (two runs each, RESULTS 58)</span></td><td class="n">–</td><td class="n">46.06</td><td class="n">45.60</td><td class="n">−1 %</td></tr>
-          <tr><td>Qwen3.6-35B, moe-cache with MTP<span class="sub">stock with MTP: 68.6 (+49 %); about 78 % of drafts accepted</span></td><td class="n">–</td><td class="n">46.06</td><td class="n">70.25</td><td class="n up">+53 %</td></tr>
+          <tr><td>Flash-Next IQ3_XXS<span class="sub">76 GB, drive D:, 2026-11-04, v0.3.5 kit, two runs each (replaces 15.14 vs 19.86 of 2026-10-27)</span></td><td class="n">8</td><td class="n">14.96</td><td class="n">22.87</td><td class="n up">+53 %</td></tr><!-- claim:chain1103-iq3xxs -->
+          <tr><td>Flash-Next IQ3_S<span class="sub">83.6 GB, drive D:, 2026-11-04 (replaces 12.92 vs 17.28 of 2026-10-27)</span></td><td class="n">6</td><td class="n">13.79</td><td class="n">19.62</td><td class="n up">+42 %</td></tr><!-- claim:chain1103-iq3s -->
+          <tr><td>Qwen3.5-122B UD-IQ2_XXS<span class="sub">36.6 GB, drive D:, 2026-11-04 (replaces 15.95 vs 19.73 of 2026-10-28)</span></td><td class="n">10</td><td class="n">16.10</td><td class="n">23.31</td><td class="n up">+45 %</td></tr><!-- claim:chain1103-122b -->
+          <tr><td>GLM-5.3-Flash UD-IQ2_XXS<span class="sub">102 GB, drive D:, two runs each, ABBA, 2026-11-04 (replaces the single pair 2.21 vs 4.44 of 2026-10-27)</span></td><td class="n">0</td><td class="n">2.98</td><td class="n">6.27</td><td class="n up">2.1×</td></tr><!-- claim:chain1103-glm -->
+          <tr><td>GLM-5.3-Flash, moe-cache with <code>--mtp</code><span class="sub">two runs; stock without MTP is the other side (replaces the single run 6.92)</span></td><td class="n">0</td><td class="n">2.98</td><td class="n">8.17</td><td class="n up">2.7×</td></tr><!-- claim:chain1103-glm -->
+          <tr><td>Nemotron 3.5 Bolt 74B-A9B<span class="sub">22.0 GB, drive C:, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced here to compare (two runs each, 2026-11-04; the single runs of 2026-10-28 gave −18 %)</span></td><td class="n">–</td><td class="n">29.99</td><td class="n">31.68</td><td class="n up">+6 %</td></tr><!-- claim:chain1103-bolt -->
+          <tr><td>Qwen3.6-35B-A3B Q4_K_M<span class="sub">22 GB, drive C:, <b>fits in RAM</b>: the launcher runs stock for it; moe-cache forced (two runs each, 2026-11-04; 2026-10-27 gave −1 %)</span></td><td class="n">–</td><td class="n">46.59</td><td class="n">51.80</td><td class="n up">+11 %</td></tr><!-- claim:chain1103-qwen36 -->
+          <tr><td>Qwen3.6-35B, moe-cache with MTP<span class="sub">against stock without MTP; stock with MTP was not measured on 2026-11-04 (68.6 on 2026-10-27)</span></td><td class="n">–</td><td class="n">46.59</td><td class="n">72.69</td><td class="n up">+56 %</td></tr><!-- claim:chain1103-qwen36 -->
         </tbody>
       </table>
     </div>
-    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. GLM: one run per side on drive C: (see the row). Every model here is bigger than the free RAM once the GPU and Windows have taken their share. <b>Dates and builds:</b> every row of this table was measured on 2026-10-27 or 28 (RESULTS 58–65) with llama.cpp 620d2225c (Nemotron: b11966) and the plugin builds named in the chart; the chart is older than the current code. Later changes (128-row executor chunks, +3.9 % on Flash-Next Q2_0; async reads, +12 %, RESULTS 67) are not in these numbers, and stock was not re-run after them. The 2026-11-03 numbers below are a different test. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin's decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
+    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. Every model here is bigger than the free RAM once the GPU and Windows have taken their share, except the two marked “fits in RAM”. <b>Dates and builds:</b> the rows for IQ3_XXS, IQ3_S, Qwen3.5-122B, GLM-5.3 and the two models that fit were re-measured on 2026-11-04 (overnight chain, the released v0.3.5 kit with the official llama.cpp b11966, launcher defaults, context 8192, a 13-token request, two runs each; every run was “not clean”: owner work was running on the PC). The rows for Q2_0 and IQ2_XS are from 2026-10-27/28 (llama.cpp 620d2225c, RESULTS 58–65) and were not re-run; later changes (128-row executor chunks, +3.9 % on Q2_0; async reads, +12 %, RESULTS 67) are in the 2026-11-04 rows but not in those two. The chart and its detail lines use the same numbers. These rows describe the v0.3.5 kit; the current pin is b12064, so a paired re-run is still open. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin’s decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
   </section>
 
   <section>
@@ -167,16 +167,16 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section>
     <h2>Which Flash-Next file</h2>
-    <p><strong>Measured 2026-10-28 on v0.3.x (RESULTS 63): the prompt speeds here are from before the v0.3.5 prompt work and are now about 2x higher (Q2_0 at 34k: 287 here, 575 on v0.3.5, RESULTS 79); a re-measure of all files on v0.3.5 is queued.</strong> Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.</p>
+    <p><strong>Decode, 3k/34k prompt speed and tasks were measured 2026-10-28 on v0.3.x (RESULTS 63). The two columns marked “v0.3.5, 2026-11-04” are new: the 34k and 64k prompts and the short answer after them, two passes each on the released v0.3.5 kit with llama.cpp b11966 (every run “not clean”: owner work was running). IQ2_XS and IQ3_XXS at 64k have no decode-after value: the harness stored 0.0 in all four runs, which is not a speed, and its server log is not in the data.</strong> Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.</p>
     <div class="scroll">
       <table>
-        <thead><tr><th>File</th><th class="n">size</th><th class="n">decode tok/s</th><th class="n">prompt tok/s<br>3k / 34k</th><th class="n">tasks /202</th><th>verdict</th></tr></thead>
+        <thead><tr><th>File</th><th class="n">size</th><th class="n">decode tok/s</th><th class="n">prompt tok/s<br>3k / 34k<span class="sub">2026-10-28</span></th><th class="n">prompt tok/s<br>34k / 64k<span class="sub">v0.3.5, 2026-11-04</span></th><th class="n">decode after the prompt<br>34k / 64k<span class="sub">v0.3.5, 2026-11-04</span></th><th class="n">tasks /202</th><th>verdict</th></tr></thead>
         <tbody>
-          <tr><td><b>Q2_0</b></td><td class="n">66.4 GB</td><td class="n"><b>22.2</b></td><td class="n"><b>281 / 287</b></td><td class="n">191</td><td><b>the faster file</b> (about 10 % faster than IQ3_XXS). vs IQ2_XS: +1.2 tok/s (+5 %), prompts +11 % / +19 %, 1.6 GB smaller, +4 tasks (not proven)</td></tr>
-          <tr><td>IQ3_XXS</td><td class="n">75.8 GB</td><td class="n">19.9</td><td class="n">–</td><td class="n"><b>193</b></td><td><b>recommended default</b> (3-bit, reads best, popular for coding). vs Q2_0: −2.3 tok/s (−10 %) for +2 tasks (not proven)</td></tr>
-          <tr><td>Coder IQ1_M<span class="sub">ISTA GSQ-RCO, 256 of 512 experts</span></td><td class="n">58.4 GB</td><td class="n">21.2<span class="sub">agent session</span></td><td class="n">–</td><td class="n">189</td><td><b>coding agents.</b> OpenCode session 55.5 s vs 73.4 s on IQ2_XS (−24 %, one run); general knowledge not checked beyond the task set</td></tr>
-          <tr><td>IQ2_XS</td><td class="n">68.0 GB</td><td class="n">21.0<span class="sub">21.9 in the ABBA above</span></td><td class="n">253 / 242</td><td class="n">187</td><td>superseded by Q2_0: slower everywhere, bigger, 4 fewer tasks (not proven)</td></tr>
-          <tr><td>IQ3_S</td><td class="n">83.6 GB</td><td class="n">17.3</td><td class="n">–</td><td class="n">192</td><td><b>not worth it.</b> vs IQ3_XXS: −2.6 tok/s (−13 %), 7.8 GB bigger, −1 task</td></tr>
+          <tr><td><b>Q2_0</b></td><td class="n">66.4 GB</td><td class="n"><b>22.2</b></td><td class="n"><b>281 / 287</b></td><td class="n">568 / 399<!-- claim:chain1103-q2_0-34k --><!-- claim:chain1103-q2_0-64k --></td><td class="n">27.4 / 25.5</td><td class="n">191</td><td><b>the faster file</b> (about 10 % faster than IQ3_XXS). vs IQ2_XS: +1.2 tok/s (+5 %), prompts +11 % / +19 %, 1.6 GB smaller, +4 tasks (not proven)</td></tr>
+          <tr><td>IQ3_XXS</td><td class="n">75.8 GB</td><td class="n">19.9</td><td class="n">–</td><td class="n">349 / 182<!-- claim:chain1103-iq3xxs-34k --><!-- claim:chain1103-iq3xxs-64k --></td><td class="n">16.1 / not recorded</td><td class="n"><b>193</b></td><td><b>recommended default</b> (3-bit, reads best, popular for coding). vs Q2_0: −2.3 tok/s (−10 %) for +2 tasks (not proven)</td></tr>
+          <tr><td>Coder IQ1_M<span class="sub">ISTA GSQ-RCO, 256 of 512 experts</span></td><td class="n">58.4 GB</td><td class="n">21.2<span class="sub">agent session</span></td><td class="n">–</td><td class="n">not re-run</td><td class="n">not re-run</td><td class="n">189</td><td><b>coding agents.</b> OpenCode session 55.5 s vs 73.4 s on IQ2_XS (−24 %, one run); general knowledge not checked beyond the task set</td></tr>
+          <tr><td>IQ2_XS</td><td class="n">68.0 GB</td><td class="n">21.0<span class="sub">21.9 in the ABBA above</span></td><td class="n">253 / 242</td><td class="n">504 / 317<!-- claim:chain1103-iq2xs-34k --><!-- claim:chain1103-iq2xs-64k --></td><td class="n">24.7 / not recorded</td><td class="n">187</td><td>superseded by Q2_0: slower everywhere, bigger, 4 fewer tasks (not proven)</td></tr>
+          <tr><td>IQ3_S</td><td class="n">83.6 GB</td><td class="n">17.3</td><td class="n">–</td><td class="n">278 / 221<!-- claim:chain1103-iq3s-34k --><!-- claim:chain1103-iq3s-64k --></td><td class="n">13.4 / 11.9</td><td class="n">192</td><td><b>not worth it.</b> vs IQ3_XXS: −2.6 tok/s (−13 %), 7.8 GB bigger, −1 task</td></tr>
         </tbody>
       </table>
     </div>
@@ -241,7 +241,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         <thead><tr><th>Model</th><th>MTP head</th><th>Measured</th><th>Launcher</th></tr></thead>
         <tbody>
           <tr><td>Qwen3.6-35B-A3B<span class="sub">fits in RAM</span></td><td>in the file</td><td>decode +49 % stock, <b>+54 %</b> moe-cache (table above); agent sessions 13–25 % shorter (RESULTS 60)</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
-          <tr><td>GLM-5.3-Flash<span class="sub">102 GB, bigger than RAM</span></td><td>in the file (<code>blk.45.nextn</code>)</td><td>moe-cache 4.44 → <b>6.92 tok/s</b> (3.1× stock), text identical; one cold run on chat text. Later runs (RESULTS 62, D:, fixed memory): chat text <b>+10–23 %</b> at 100 % draft acceptance, code <b>0 %</b> at 79 %: MTP's draft context takes memory the cache needed. With 2 extra GPU layers it does not fit (load abort). Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
+          <tr><td>GLM-5.3-Flash<span class="sub">102 GB, bigger than RAM</span></td><td>in the file (<code>blk.45.nextn</code>)</td><td>moe-cache 4.44 → <b>6.92 tok/s</b> (3.1× stock) on 2026-10-27, text identical; one cold run on chat text. <b>Re-measured 2026-11-04</b> (v0.3.5 kit, two runs each, short water request): stock 2.98, moe-cache 6.27, with <code>--mtp</code> <b>8.17 tok/s</b> (2.7× stock) <!-- claim:chain1103-glm -->. Later runs (RESULTS 62, D:, fixed memory): chat text <b>+10–23 %</b> at 100 % draft acceptance, code <b>0 %</b> at 79 %: MTP's draft context takes memory the cache needed. With 2 extra GPU layers it does not fit (load abort). Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB</td><td>on in agent mode; <code>--mtp</code> otherwise</td></tr>
           <tr><td>Flash-Next (every quant), Qwen3.5-122B<span class="sub">bigger than RAM</span></td><td>none in the files</td><td>a separate head file (unsloth Q8_0, 4.14 GB) on Flash-Next IQ2_XS: stock <b>−15 %</b>, moe-cache <b>−38 %</b>, with 73–74 % of drafts accepted. Checking three tokens at once on CPU-held experts cost more than the drafts saved. Measured before the file-view cache, not re-run</td><td>off: no head; separate head files are not supported (dropped)</td></tr>
         </tbody>
       </table>
@@ -353,75 +353,75 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     {
       "m": "Flash-Next IQ3_XXS",
       "s": "76 GB, drive D:",
-      "stock": 15.14,
-      "mc": 19.86,
+      "stock": 14.96,
+      "mc": 22.87,
       "d": [
-        "GPU expert layers: 9 (stock and moe-cache)",
-        "ctx 8192 · short prompt · ABBA, 2 runs each",
-        "VRAM not recorded · RAM limit not recorded (32 GB)",
-        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-27 · §59"
+        "GPU expert layers: 8 (moe-cache; stock = launcher defaults, count not recorded)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "moe-cache peak: VRAM 12732 MiB · process RAM 22838 MiB",
+        "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_cfa905 · claim chain1103-iq3xxs"
       ]
     },
     {
       "m": "Flash-Next IQ3_S",
-      "s": "83.6 GB, drive C:",
-      "stock": 12.92,
-      "mc": 17.28,
+      "s": "83.6 GB, drive D:",
+      "stock": 13.79,
+      "mc": 19.62,
       "d": [
-        "GPU expert layers: 7 (stock and moe-cache)",
-        "ctx 8192 · short prompt · ABBA, 2 runs each",
-        "VRAM not recorded · RAM limit not recorded (32 GB)",
-        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-27 · §59"
+        "GPU expert layers: 6 (moe-cache; stock = launcher defaults, count not recorded)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "moe-cache peak: VRAM 12211 MiB · process RAM 23779 MiB",
+        "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_42b419 · claim chain1103-iq3s"
       ]
     },
     {
       "m": "Qwen3.5-122B IQ2_XXS",
       "s": "36.6 GB, drive D:",
-      "stock": 15.95,
-      "mc": 19.73,
+      "stock": 16.1,
+      "mc": 23.31,
       "d": [
-        "GPU expert layers: 12 (as in §59)",
-        "ctx 8192 · short prompt · ABBA, 2 runs each",
-        "VRAM not recorded · RAM: cache limit 25.3 GiB of 32 GB",
-        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-28 · §61"
+        "GPU expert layers: 10 (moe-cache; stock = launcher defaults, count not recorded)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "moe-cache peak: VRAM 12180 MiB · process RAM 21980 MiB",
+        "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_15144c · claim chain1103-122b"
       ]
     },
     {
       "m": "GLM-5.3-Flash IQ2_XXS",
-      "s": "102 GB, drive C:",
-      "stock": 2.21,
-      "mc": 4.44,
-      "mtp": 6.92,
+      "s": "102 GB, drive D:",
+      "stock": 2.98,
+      "mc": 6.27,
+      "mtp": 8.17,
       "d": [
-        "GPU expert layers: 3 (stock and moe-cache) · ONE run each",
-        "ctx 8192 · short prompt · MTP bar: one run, 3.1×",
-        "VRAM not recorded · RAM: cache 20 GiB (MTP run)",
-        "launcher 65facd1, DLL 681f3bc · llama.cpp 620d2225c · 10-27 · §59, §61"
+        "GPU expert layers: 0 (moe-cache; stock = launcher defaults, count not recorded)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "moe-cache peak: VRAM 7867 MiB · process RAM 23632 MiB",
+        "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_bea283 · claim chain1103-glm"
       ]
     },
     {
       "m": "Nemotron 3.5 Bolt 74B",
       "s": "22 GB, fits, drive C:",
-      "stock": 27.9,
-      "mc": 22.8,
+      "stock": 29.99,
+      "mc": 31.68,
       "d": [
-        "GPU expert layers: not recorded (stock = launcher default)",
-        "ctx 65536 · short prompt · one cold run each",
-        "VRAM, RAM not recorded (fits in RAM + VRAM)",
-        "DLL 681f3bc · llama.cpp b11966 (ff0d396e3) · 10-28 · §65"
+        "GPU expert layers: not recorded (moe-cache; stock = launcher defaults, count not recorded)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "moe-cache peak: VRAM 10299 MiB · process RAM 12514 MiB",
+        "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_00ce69 · claim chain1103-bolt"
       ]
     },
     {
       "m": "Qwen3.6-35B Q4_K_M",
-      "s": "20 GB, fits, drive not recorded",
-      "stock": 46.06,
-      "mc": 45.6,
-      "mtp": 70.25,
+      "s": "22 GB, fits, drive C:",
+      "stock": 46.59,
+      "mc": 51.8,
+      "mtp": 72.69,
       "d": [
-        "GPU expert layers: not recorded · moe-cache is forced here",
-        "ctx not recorded · short prompt · 2 runs each, order not recorded",
-        "VRAM, RAM not recorded · MTP: draft 2 (stock MTP 68.6)",
-        "DLL not recorded · llama.cpp 620d2225c · 10-27 · §58"
+        "GPU expert layers: 20 (moe-cache; stock = launcher defaults, count not recorded)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "moe-cache peak: VRAM 12402 MiB · process RAM 12020 MiB",
+        "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_92657e · claim chain1103-qwen36"
       ]
     }
   ];
