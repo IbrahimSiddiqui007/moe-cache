@@ -1160,7 +1160,9 @@ function chatHitsText(messages) {
   return h.n ? ` · expert hits ${(h.rate * 100).toFixed(1)} % over ${h.n} answer${h.n == 1 ? "" : "s"}` : "";
 }
 function chips(m, i, live) {
-  const t = m.meta || {}, out = [];
+  // the counters come from the server's stream (a llama-server this page did not start can send anything): numbers only, never markup
+  const t = {}, out = [];
+  for (const [k, v] of Object.entries(m.meta || {})) t[k] = typeof v == "boolean" || v == null ? v : (Number.isFinite(+v) ? +v : 0);
   if (live) out.push(`<span class="chip tps">writing · ${t.live_tps != null ? t.live_tps.toFixed(1) + " tok/s" : "…"}</span>`);
   else if (t.predicted_per_second) out.push(`<span class="chip tps">${t.predicted_per_second.toFixed(1)} tok/s</span>`);
   if (t.prompt_per_second && t.prompt_n > 1) out.push(`<span class="chip" title="${t.prompt_n} new prompt tokens${t.cache_n ? ", " + t.cache_n + " reused" : ""}">prefill ${t.prompt_per_second.toFixed(0)} tok/s</span>`);

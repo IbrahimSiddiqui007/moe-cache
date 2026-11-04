@@ -1292,6 +1292,23 @@ if node:
     check(r_ is not None and r_[4:] == [" \u00b7 expert hits 90.0 % over 1 answer", " \u00b7 expert hits 80.0 % over 2 answers", "", ""], f"chat hits: the line under the title ({r_ and r_[4:]})")
 check('id="chatinfo"' in page and "chatHitsText(c.messages)" in page, "the chat title line shows the counter")
 
+# hostile counters in an answer's meta (a foreign server's SSE) must not become markup or break the page
+if node:
+    fn = re.search(r"const esc = [^\n]*\n", page).group(0) + re.search(r"function chips\(m, i, live\) \{.*?\n\}\n", page, re.S).group(0)
+    harness = ("const C = {chat: {messages: [1, 2]}};\n" + fn +
+               "const X = '\"><img src=x onerror=alert(1)>';\n"
+               "const m = {role: 'assistant', content: 'x', meta: {live_tps: X, predicted_per_second: X, prompt_per_second: X, prompt_n: X, cache_n: X, draft_n: X, draft_n_accepted: X, hit_rate: X, hits: X, misses: X, predicted_n: X, predicted_ms: X, stopped: true}};\n"
+               "const ok = {role: 'assistant', content: 'x', meta: {predicted_per_second: 12.34, prompt_per_second: 800, prompt_n: 50, cache_n: 7, hit_rate: 0.9, hits: 9, misses: 1, predicted_n: 20, predicted_ms: 1500}};\n"
+               "console.log(JSON.stringify([chips(m, 1, false), chips(m, 1, true), chips(ok, 1, false)]));\n")
+    hf = os.path.join(TMP, "chips.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and not any("<img" in h or "onerror" in h for h in r_[:2]), f"chips: hostile counters from a foreign server never become markup ({r_ and r_[0][:200]})")
+    check(r_ is not None and "12.3 tok/s" in r_[2] and "prefill 800 tok/s" in r_[2] and "hit 90.0 %" in r_[2] and "20 tokens" in r_[2], f"chips: honest numbers still show ({r_ and r_[2][:300]})")
+
 # the model list's menu: right-click, Shift+F10 / the menu key, the three-dots button; the items follow the server state
 check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),
       "the list rows have the context menu, the keyboard keys, the three-dots button and focusable rows")
