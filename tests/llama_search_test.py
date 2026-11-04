@@ -58,23 +58,29 @@ check(line and "skipped" in line and line.count("(") >= 1, f"the start-up line c
 # 2. a supported PATH llama-server stays first
 setup(path_ls=bundled)
 r = mc.find_llama_server()
-check(r["path"] == "llama-server" and r["source"] == "PATH" and not r["note"], "PATH API 3 (supported): the PATH one, no note")
+check(r["path"] == bundled and r["source"] == "PATH" and not r["note"], "PATH API 3 (supported): the PATH one (as an absolute path), no note")
 
 # 3. no supported llama-server anywhere: today's behaviour
 setup(path_ls=distro, shipped=("3",), folders=(os.path.join(TMP, "home", "llama.cpp", "build", "bin"),))
 r = mc.find_llama_server()
-check(r["path"] == "llama-server" and r["source"] == "PATH" and not r["note"], "PATH API 2 and only API 2 in the folders: the PATH one stays (today's behaviour and advice)")
+check(r["path"] == distro and r["source"] == "PATH" and not r["note"], "PATH API 2 and only API 2 in the folders: the PATH one stays (today's behaviour and advice)")
 
 # 4. no plugin shipped at all (a source checkout): nothing to compare, the PATH one stays
 setup(path_ls=distro, shipped=())
 r = mc.find_llama_server()
-check(r["path"] == "llama-server" and r["source"] == "PATH" and not r["note"], "no shipped plugin build: the PATH one stays")
+check(r["path"] == distro and r["source"] == "PATH" and not r["note"], "no shipped plugin build: the PATH one stays")
 
 # 5. the API of the PATH one is unknown: it stays
 api_of_save = dict(api_of); api_of.pop(distro)
 setup(path_ls=distro)
 r = mc.find_llama_server()
-check(r["path"] == "llama-server" and not r["note"], "PATH llama-server of unknown API: it stays")
+check(r["path"] == bundled and "unreadable" in (r["note"] or ""), f"PATH llama-server of unreadable API loses to the kit's with a known API ({r['path'][-28:]}, {r['note']})")
+setup(path_ls=distro, folders=(os.path.join(TMP, "home", "llama.cpp", "build", "bin"),))
+r = mc.find_llama_server()
+check(r["path"] == distro and not r["note"], "PATH llama-server of unreadable API and no supported one in the folders: it stays, as an absolute path")
+setup(path_ls=distro, shipped=())
+r = mc.find_llama_server()
+check(r["path"] == distro and not r["note"], "PATH llama-server of unreadable API, no shipped plugin to compare: it stays")
 api_of.update(api_of_save)
 
 # 6. explicit settings win, even when their API has no plugin
