@@ -1895,9 +1895,14 @@ class Store:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
        "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
-# GUI-012 (--ui-lan, docs/LAN_ACCESS.md): what a request from another computer may not do. These change this PC outside the model: the llama-server path (a program to run),
-# a new model folder, an agent's config file, a download, Trash moves of saved agent conversations, a share report.
-REMOTE_BLOCKED = ("/api/llama", "/api/folders", "/api/connect", "/api/download/start", "/api/sessions/trash", "/api/share", "/api/share/cancel")
+# GUI-012 (--ui-lan, docs/LAN_ACCESS.md): what a request from another computer may do. An ALLOW-LIST, checked for GET and POST: a route not named here is
+# 403 for a non-loopback peer, so a new route is closed to the network until someone decides. Allowed: reading the page, status, log, lists and plans, and
+# the chat itself (talks only to a model server on this PC, with the key kept server-side). Everything that starts, stops, benchmarks or configures, anything
+# that reads a secret (/api/key) or reaches other ports (/api/peek), downloads, Trash moves and share reports stay on the PC itself.
+REMOTE_GET = ("/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/api/downloads", "/api/download", "/api/models", "/api/plan", "/api/status",
+              "/api/bench", "/api/servers", "/api/chats", "/api/log")
+REMOTE_POST = ("/api/chat", "/api/chats/save")
+REMOTE_REFUSED = "this action is not offered to other computers (it starts or changes things on this PC, or reads a secret): do it on the PC itself (docs/LAN_ACCESS.md)"
 TOKEN_FAILS, TOKEN_WINDOW = 20, 60.0          # wrong tokens from one remote address before it is answered 429 for a minute
 MAX_EXTRA = 2              # servers the page may start besides the main one (GUI-013)
 CHAT_TIMEOUT = 3600         # seconds llama-server may stay silent in the chat (a long prefill of a big context on a slow machine); a module constant so a test can shorten it
@@ -2056,6 +2061,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(429, {"error": "too many wrong tokens from this address: wait a minute"})
         if not self.token_ok():
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
+        if self.remote() and u.path not in REMOTE_GET:
+            return self.send(403, {"error": REMOTE_REFUSED})
         try:
             if u.path == "/api/system":
                 self.store.fresh()                         # `pick --apply` may have changed ui.json while the page is open
@@ -2133,8 +2140,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(429, {"error": "too many wrong tokens from this address: wait a minute"})
         if not self.allowed() or not (self.headers.get("Content-Type") or "").startswith("application/json") or not self.token_ok():
             return self.send(403, {"error": "forbidden"})
-        if self.path in REMOTE_BLOCKED and self.remote():
-            return self.send(403, {"error": "this action changes this PC outside the model: do it on the PC itself (docs/LAN_ACCESS.md)"})
+        if self.remote() and self.path not in REMOTE_POST:
+            return self.send(403, {"error": REMOTE_REFUSED})
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:

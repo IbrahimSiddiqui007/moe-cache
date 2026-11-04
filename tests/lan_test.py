@@ -92,12 +92,34 @@ H = srv.RequestHandlerClass
 local = req("/api/llama", {"path": ""}, headers={"Host": f"127.0.0.1:{port}"})[0]
 check(local == 400, f"page: from this PC the llama path route is reachable (400 for an empty path, not 403: {local})")
 H.remote = lambda self: True                       # every request now looks like another computer's
-for path, body in (("/api/llama", {"path": "/bin/sh"}), ("/api/folders", {"add": TMP}), ("/api/connect", {"agent": "opencode", "write": True}), ("/api/download/start", {"id": "x", "files": []}),
-                   ("/api/sessions/trash", {"name": "a-s0.bin"}), ("/api/share", {})):
-    st, out = req(path, body, headers={"Host": f"192.168.1.20:{port}"})
-    check(st == 403 and "on the PC itself" in out, f"remote: {path} is blocked")
-check(req("/api/status", headers={"Host": f"192.168.1.20:{port}"})[0] == 200 and req("/api/chats", headers={"Host": f"192.168.1.20:{port}"})[0] == 200, "remote: status and chats still work")
-check(req("/api/stop", {}, headers={"Host": f"192.168.1.20:{port}"})[0] == 200, "remote: stop works (it is the model, not the PC)")
+HOST = {"Host": f"192.168.1.20:{port}"}
+# every route the handler knows, read from its source: a new route that is not in the decision tables below fails this test until someone decides
+import inspect, re
+get_routes = set(re.findall(r'u\.path == "(/[^"]*)"', inspect.getsource(ui.Handler.do_GET))) | {"/", "/index.html"}
+post_routes = set(re.findall(r'self\.path == "(/[^"]*)"', inspect.getsource(ui.Handler.do_POST)))
+GET_ALLOWED = {"/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/api/downloads", "/api/download", "/api/models", "/api/plan", "/api/status",
+               "/api/bench", "/api/servers", "/api/chats", "/api/log"}
+GET_DENIED = {"/api/key", "/api/agents", "/api/sessions", "/api/peek", "/api/share"}
+POST_ALLOWED = {"/api/chat", "/api/chats/save"}
+POST_DENIED = {"/api/chats/trash", "/api/folders", "/api/download/start", "/api/download/cancel", "/api/servers/start", "/api/servers/stop", "/api/llama", "/api/start",
+               "/api/pick/use", "/api/command", "/api/sessions/trash", "/api/bench", "/api/share", "/api/share/cancel", "/api/stop", "/api/connect"}
+check(get_routes == GET_ALLOWED | GET_DENIED, f"routes: every GET route has a remote decision (undecided: {sorted(get_routes ^ (GET_ALLOWED | GET_DENIED))})")
+check(post_routes == POST_ALLOWED | POST_DENIED, f"routes: every POST route has a remote decision (undecided: {sorted(post_routes ^ (POST_ALLOWED | POST_DENIED))})")
+check(set(ui.REMOTE_GET) == GET_ALLOWED and set(ui.REMOTE_POST) == POST_ALLOWED, "routes: the code's allow-lists are exactly the decided ones")
+check(not (GET_ALLOWED & GET_DENIED) and not (POST_ALLOWED & POST_DENIED), "routes: no route is both allowed and denied")
+H.remote = lambda self: True                       # every request now looks like another computer's
+for path in sorted(GET_DENIED | {"/api/not-a-route", "//api/key", "/api/key/", "/api/key?x=1"}):
+    st, out = req(path, headers=HOST)
+    check(st == 403 and "not offered to other computers" in out, f"remote GET {path}: 403 ({st})")
+for path in sorted(POST_DENIED | {"/api/not-a-route"}):
+    st, out = req(path, {}, headers=HOST)
+    check(st == 403 and "not offered to other computers" in out, f"remote POST {path}: 403 ({st})")
+for path in sorted(GET_ALLOWED - {"/", "/index.html", "/api/plan"}):
+    check(req(path, headers=HOST)[0] not in (403, 429), f"remote GET {path}: allowed")
+for path in sorted(POST_ALLOWED):
+    check(req(path, {}, headers=HOST)[0] not in (403, 429), f"remote POST {path}: allowed (400 for the empty body, not 403)")
+st, out = req("/api/key", headers=HOST)
+check(st == 403 and "error" in json.loads(out) and "key" not in json.loads(out), "remote: /api/key is 403 with the right token")
 H.fails.clear()
 codes = [req("/api/status", headers={"Host": f"192.168.1.20:{port}"}, token="guess%d" % i)[0] for i in range(25)]
 check(codes[:20] == [403] * 20 and codes[20:] == [429] * 5, f"remote: 20 wrong tokens, then 429 ({set(codes[:20])}, {set(codes[20:])})")
@@ -105,6 +127,7 @@ check(req("/api/status", headers={"Host": f"192.168.1.20:{port}"})[0] == 429, "r
 H.fails.clear()
 check(req("/api/status", headers={"Host": f"192.168.1.20:{port}"})[0] == 200, "remote: after the minute (cleared here) it works again")
 del H.remote
+check(req("/api/key", headers={"Host": f"127.0.0.1:{port}"})[0] in (200, 400), "this PC itself still reaches /api/key (the Copy button)")
 H.fails.clear()
 codes = [req("/api/status", token="guess%d" % i)[0] for i in range(25)]
 check(set(codes) == {403}, "this PC: wrong tokens are never locked out (only remote addresses are)")
