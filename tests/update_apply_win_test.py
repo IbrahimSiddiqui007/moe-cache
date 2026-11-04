@@ -23,6 +23,8 @@ def release(ver, modules=True):
     py = f'import sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args")\n'
     with zipfile.ZipFile(os.path.join(d, n + ".zip"), "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr(n + "/bin/moe_cache.py", py)
+        for extra in ("moe-cache.exe", "ggml-moe-cache-api3.dll", "llama/llama-server.exe"):      # the files install.ps1 requires after the unpack
+            z.writestr(f"{n}/{extra}", "x")
         for m in (up.KIT_MODULES.split(", ")[1:] if modules else []):
             z.writestr(f"{n}/bin/{m}.py", "pass\n")
     h = hashlib.sha256(open(os.path.join(d, n + ".zip"), "rb").read()).hexdigest()

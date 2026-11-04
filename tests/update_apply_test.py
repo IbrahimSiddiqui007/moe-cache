@@ -36,7 +36,7 @@ FAKEBIN = os.path.join(T, "fakebin"); os.makedirs(FAKEBIN)
 open(os.path.join(FAKEBIN, "gh"), "w").write('''#!/bin/sh
 case "$1 $2" in
   "auth status") exit ${FAKE_GH_AUTH:-0};;
-  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; exit ${FAKE_GH_VERIFY:-0};;
+  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; [ -z "${FAKE_GH_MSG:-}" ] || echo "$FAKE_GH_MSG" >&2; exit ${FAKE_GH_VERIFY:-0};;
 esac
 exit 1
 '''); os.chmod(os.path.join(FAKEBIN, "gh"), 0o755)
@@ -95,11 +95,32 @@ check(rc == 0 and "nothing was downloaded" in out, "--dry-run does not need gh")
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, PATH=NOGH), base_url="file://" + release("9.9.2", tamper=True), unverified=True))
 check(rc != 0 and "the installer stopped" in out and "WARNING: going on without" in out and still_9_9_1(), "--yes-unverified never skips sha256: a damaged package is still refused by the installer")
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, FAKE_GH_VERIFY="1", MOE_CACHE_ALLOW_UNVERIFIED="1"), base_url="file://" + r2))
-check(rc == 0 and "WARNING" in out and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.2", "MOE_CACHE_ALLOW_UNVERIFIED=1 with a failing verify: updates, with a warning")
+check(rc == 1 and "REFUSED" in out and "FAILED" in out and "never override" in out and still_9_9_1(), "MOE_CACHE_ALLOW_UNVERIFIED=1 does NOT override a verification that ran and FAILED")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, unverified=True, env=dict(env, FAKE_GH_VERIFY="1"), base_url="file://" + r2))
+check(rc == 1 and "never override" in out and still_9_9_1(), "--yes-unverified does NOT override a failed verification either")
+net = dict(env, FAKE_GH_VERIFY="1", FAKE_GH_MSG="dial tcp: lookup api.github.com: no such host")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=net, base_url="file://" + r2))
+check(rc == 1 and "REFUSED" in out and "could not reach GitHub" in out and still_9_9_1(), "GitHub unreachable (the check could not run), no flag: refused")
+open(GH_LOG, "w").close()
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, unverified=True, env=net, base_url="file://" + r2))
+check(rc == 0 and "WARNING" in out and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.2", "a verify that could not run (GitHub unreachable) + --yes-unverified: updates, with a warning")
+check("--signer-workflow IbrahimSiddiqui007/moe-cache/.github/workflows/release.yml" in open(GH_LOG).read(), "gh attestation verify is called with the pinned --signer-workflow")
 # put 9.9.1 back for the rest of the test
 subprocess.run(["ln", "-sfn", "versions/moe-cache-v9.9.1-ggml0.26-linux-x86_64", os.path.join(prefix, "current")], check=True)
 shutil.rmtree(os.path.join(prefix, "versions", "moe-cache-v9.9.2-ggml0.26-linux-x86_64"), ignore_errors=True)
 vers_before = sorted(os.listdir(os.path.join(prefix, "versions")))
+# a cut-off installer script (Content-Length says more than arrived) is refused, never run
+import http.server, threading
+class Cut(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"#!/bin/sh\n" + b"echo hi\n" * 100
+        self.send_response(200); self.send_header("Content-Length", str(len(body) + 5000)); self.end_headers(); self.wfile.write(body); self.wfile.flush()
+        self.close_connection = True
+    def log_message(self, *a): pass
+srv = http.server.HTTPServer(("127.0.0.1", 0), Cut); threading.Thread(target=srv.serve_forever, daemon=True).start()
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=env, base_url=f"http://127.0.0.1:{srv.server_port}"))
+srv.shutdown()
+check(rc == 1 and "incompletely" in out and still_9_9_1(), "an installer script cut off by the connection (Content-Length not reached) is refused, nothing changed")
 # a mirror folder with a working gh: the installer script is verified (not skipped because of the mirror)
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=env, base_url="file://" + r2, dry=False))
 check(rc == 0 and "build attestation of the installer verified" in out and "install.sh" in open(GH_LOG).read(), "a mirror with a working gh: verified, not skipped")

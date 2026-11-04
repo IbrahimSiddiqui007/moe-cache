@@ -19,7 +19,7 @@
 #   -Version X   install release X (default: the release this file belongs to; run from a checkout: the newest)
 #   -Root DIR    install somewhere else (default %LOCALAPPDATA%\moe-cache)
 #   -NoPath      do not touch the PATH
-#   -YesUnverified  install even though the build attestation could not be checked (gh missing / not logged in / verify failed); same as $env:MOE_CACHE_ALLOW_UNVERIFIED='1'
+#   -YesUnverified  install even though the build attestation could not be checked (gh missing / not logged in / GitHub unreachable; a verification that ran and FAILED is never overridden); same as $env:MOE_CACHE_ALLOW_UNVERIFIED='1'
 #                (the only way with `| iex`). The sha256 check is never skipped.
 #   -BaseUrl U   where the release files are (a folder or an https address; default this release's GitHub download address)
 # With `| iex` no flags can be given: use the read-first form above, or  & ([scriptblock]::Create((irm URL))) -Uninstall
@@ -190,16 +190,27 @@ function Install-MoeCache {
             if ($got -ine $want) { throw "REFUSED: the download's sha256 ($got) is not the one in SHA256SUMS-windows ($want). Nothing was installed." }
             Say "sha256 matches SHA256SUMS-windows ($want)   (from the same release: this finds a damaged download, it does not prove who built it)"
             # RELEASE-686: who built the zip is checked with `gh attestation verify`; when that cannot be done the install stops unless the user asked for it
-            $attWhy = ''; $attOk = $false
+            $attWhy = ''; $attOk = $false; $attFailed = $false
             $gh = Get-Command gh -ErrorAction SilentlyContinue
             if (-not $gh) { $attWhy = 'gh (the GitHub command line tool) is not installed' }
             else {
                 & $gh.Source auth status *> $null
                 if ($LASTEXITCODE -ne 0) { $attWhy = 'gh is installed but not logged in (run: gh auth login)' }
                 else {
-                    & $gh.Source attestation verify (Join-Path $tmp "$name.zip") -R $Repo *> $null
-                    if ($LASTEXITCODE -eq 0) { $attOk = $true } else { $attWhy = "gh attestation verify FAILED: the file was not built by this repository's release workflow, or gh is offline" }
+                    # --signer-workflow: only an attestation made by this repository's release workflow counts (packages.yml pins it the same way)
+                    $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+                    try { $vout = (& $gh.Source attestation verify (Join-Path $tmp "$name.zip") -R $Repo --signer-workflow "$Repo/.github/workflows/release.yml" 2>&1 | Out-String) } finally { $ErrorActionPreference = $prevEap }
+                    $vcode = $LASTEXITCODE
+                    $vtail = $vout.Trim(); if ($vtail.Length -gt 300) { $vtail = $vtail.Substring($vtail.Length - 300) }
+                    if ($vcode -eq 0) { $attOk = $true }
+                    elseif ($vout -match '(?i)no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5\d\d|rate limit|unexpected EOF') { $attWhy = "gh could not reach GitHub to verify (network): $vtail" }      # the check could not run: -YesUnverified may go on
+                    else { $attFailed = $true; $attWhy = "gh attestation verify FAILED: $vtail" }
                 }
+            }
+            if ($attFailed) {
+                Say 'checked:     sha256 of the download against SHA256SUMS-windows of the same release (finds a damaged download)'
+                Say "NOT checked: who built the file (build attestation): $attWhy"
+                throw 'REFUSED: the build attestation was checked and FAILED. Nothing was installed. -YesUnverified / MOE_CACHE_ALLOW_UNVERIFIED=1 only cover a check that could not run (gh missing, not logged in, GitHub unreachable); they never override a failed one.'
             }
             if ($attOk) { Say "checked: build attestation verified (gh): built by this repository's release workflow" }
             else {
@@ -213,6 +224,10 @@ function Install-MoeCache {
             [void](New-Item -ItemType Directory -Force -Path $stage)
             try { Expand-Kit (Join-Path $tmp "$name.zip") $stage } catch { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue; throw }
             if (-not (Test-Path -LiteralPath (Join-Path $stage 'bin\moe_cache.py'))) { Remove-Item -LiteralPath $stage -Recurse -Force; throw 'REFUSED: the zip has no bin\moe_cache.py. Nothing was installed.' }
+            # RELEASE-1104: more than the launcher must be there. Antivirus programs quarantine unsigned DLLs / exes right after the unpack; an install that reports success without them fails later with a puzzling message.
+            $required = @('bin\moe_cache.py', 'moe-cache.exe', 'ggml-moe-cache-api3.dll', 'llama\llama-server.exe')
+            $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stage $_)) })
+            if ($missing.Count) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue; throw ("REFUSED: after unpacking, the kit is missing: " + ($missing -join ', ') + ". If your antivirus (Windows Security, Defender) removed or quarantined a file, restore it or add an exception for the install folder and run this again; otherwise the zip is incomplete. Nothing was installed.") }
             [IO.File]::WriteAllText((Join-Path $stage '.moe-cache-complete'), "$Version`r`n")
             Fail-At 'unpack'
             # swap by renames ([IO.Directory]::Move is a real rename; Move-Item falls back to copy + delete when the rename is refused and then leaves a half kit behind, seen on Windows CI): kit -> kit.old (fails at once when a running llama-server / python holds a file in it, and then nothing has changed),
