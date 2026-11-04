@@ -133,7 +133,7 @@ class Deps:
             except OSError:
                 return False
         try:
-            return bool(mc.server_info(url, mc.key_for(url, None))[0])
+            return bool(mc.server_info(url, mc.key_for(url, None, mc.launcher_owns(url)))[0])
         except Exception:
             return False
 
