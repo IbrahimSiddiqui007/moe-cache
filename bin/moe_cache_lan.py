@@ -12,6 +12,12 @@ import ipaddress, os, socket
 PRIVATE_NETS = [ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "100.64.0.0/10", "fc00::/7", "fe80::/10")]
 
 
+def is_loopback_host(host):
+    """True for a --host value that keeps llama-server on this PC only (empty = llama-server's own default 127.0.0.1)."""
+    h = str(host or "").strip().strip("[]").lower()
+    return h == "" or h == "localhost" or classify(h) == "loopback"
+
+
 def classify(addr):
     try:
         ip = ipaddress.ip_address(str(addr).strip().strip("[]"))
@@ -73,6 +79,10 @@ def check_bind(host, addrs, allow_public=False):
         return None
     if allow_public:
         return None
+    if kind == "any" and ipaddress.ip_address(str(host).strip().strip("[]")).version == 6:
+        # "::" listens on every IPv6 card (and, on most systems, every IPv4 one too); local_addresses() only knows IPv4 addresses, so a global IPv6 address
+        # of this PC cannot be seen: treat it as public
+        return f"{host} would listen on every network card, including IPv6 ones this check cannot see: refused. Use --lan (one home-network address) or add --allow-public"
     if kind == "public":
         return f"{host} is a public (internet) address: refused. Use a home-network address, a VPN address, or add --allow-public if you really mean it"
     pub = [a for a in addrs if classify(a) == "public"]

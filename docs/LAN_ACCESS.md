@@ -23,8 +23,8 @@ does not set that up.
 |---|---|---|
 | 1 | Nothing listens beyond this PC unless `--lan` or `--ui-lan` is given | default host stays `127.0.0.1` |
 | 2 | `--lan` needs a **private address on this PC** (home ranges 10/8, 172.16/12, 192.168/16, link-local, 100.64/10 used by Tailscale) and prints it; the server listens on every network card (the launcher and the page talk to it through 127.0.0.1), so rule 3 is what keeps a public card closed | `moe_cache_lan.pick_address` |
-| 3 | A public (internet) address, or listening on every card on a PC that has a public address, is refused unless `--allow-public` is also given; the same for an explicit `--host` | `moe_cache_lan.check_bind` |
-| 4 | The model server never runs open on a network address: `--lan` forces an API key (yours after `--`, `LLAMA_API_KEY`, or the stored per-user key, made on first use) | launcher |
+| 3 | A public (internet) address, or listening on every card on a PC that has a public address, is refused unless `--allow-public` is also given; the same for an explicit `--host`. `--host ::` (every IPv6 card) always counts as public: the check only knows this PC's IPv4 addresses, so it cannot rule out a global IPv6 address | `moe_cache_lan.check_bind` |
+| 4 | The model server never runs open on a network address: `--lan` **and any other non-loopback `--host`** (a private address, `0.0.0.0`) force an API key (yours after `--`, `LLAMA_API_KEY`, or the stored per-user key, made on first use) | launcher |
 | 5 | The control page keeps the per-run token header (`X-MoeCache-Token`); there is no cookie and no way in without it | page server |
 | 6 | The page answers only for the exact address it was bound to (plus `127.0.0.1` and `localhost`); a different `Host` is refused (no DNS rebinding) | page server `allowed()` |
 | 7 | The address and the exact URL (with the page token) are printed once at start; the API key is never printed, only where it is stored | launcher / page |
@@ -45,6 +45,13 @@ does not set that up.
 | A remote visitor fills the disk | Model download, or a chat saved over and over | rule 8 (downloads stay local); saved chats are size-limited per file | long chats are stored on the PC |
 | The key leaks through the process list | `--api-key KEY` on a command line | the launcher already takes the key from `LLAMA_API_KEY` / the stored file | a key typed after `--` is visible to other users of this PC |
 | A second user of this PC | They can reach `127.0.0.1` anyway | token and key (SERVER-011) | same as before |
+
+## A reverse proxy on this PC
+
+If you put a reverse proxy (Caddy, nginx, a tunnel client) on **this** PC and point it at moe-cache on `127.0.0.1`, every request moe-cache sees comes from
+127.0.0.1, so it treats the visitor as this PC: the remote-route limits below (rule 8) do **not** apply, and `/api/key`, start, stop and the path routes are
+open to whoever the proxy lets through. The page token and the API key are then the only gates. Do not do this unless the proxy itself asks for a login
+(and uses TLS); the supported way to reach the page from another computer is `--ui-lan`.
 
 ## What another computer may do with `--ui-lan`
 
