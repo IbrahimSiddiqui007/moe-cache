@@ -159,11 +159,41 @@ def find_llama_server(saved=None):
     environment; on Windows LLAMA_SERVER as stored in the registry (user, then machine); the control page's saved path; the PATH (process, and on
     Windows the registry's); then every default folder (Windows: C:\\llama*, %USERPROFILE%\\llama*, Downloads\\llama-b*-bin-win-*, the kit; Linux:
     install.sh's build, ~/llama.cpp/build/bin, the kit). An explicit setting that points at a file wins; among the folders the newest build whose
-    ggml API a shipped plugin supports wins. Returns {"path", "source", "build", "api", "others", "looked"}; "path" is None when nothing was found."""
+    ggml API a shipped plugin supports wins. One exception to "the PATH comes before the folders": a PATH llama-server whose ggml API no shipped plugin
+    supports (the distro's, API 2, next to a kit that ships the API 3 plugin and a bundled llama.cpp) gives way to a default-folder one that has a supported
+    API, with a note (v0.3.6-beta2 smoke test: `check` failed on /usr/bin/llama-server and advised another download); with no supported one anywhere the
+    PATH one stays, as before. Returns {"path", "source", "build", "api", "others", "looked", "note"}; "path" is None when nothing was found."""
     looked = []
-    res = {"path": None, "source": None, "build": None, "api": None, "others": [], "looked": looked}
+    res = {"path": None, "source": None, "build": None, "api": None, "others": [], "looked": looked, "note": None}
     def hit(path, source):
         res.update(path=path, source=source, api=ls_api(path) if os.path.isabs(path) else None)
+        return res
+    def folder_candidates():
+        found = []
+        for d in llama_search_dirs():
+            r = next((os.path.join(d, x, llama_exe()) for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release"))
+                      if os.path.isfile(os.path.join(d, x, llama_exe()))), None)
+            looked.append(f"folder {d}: " + ("found" if r else "no llama-server"))
+            if r and os.path.abspath(r) not in found:
+                found.append(os.path.abspath(r))
+        return found
+    def supported_folder_instead(found_path, label):
+        """A default-folder llama-server with a supported API to use instead of the PATH one at found_path (None: keep the PATH one)."""
+        apis, api = shipped_apis(), ls_api(found_path)
+        if not (apis and api and api not in apis):
+            return None
+        found = folder_candidates()
+        good = [c for c in found if ls_api(c) in apis]
+        if not good:
+            return None
+        best = max(good, key=lambda c: (ls_build(c) or 0, os.path.getmtime(c)))
+        hit(best, "a default folder")
+        res["build"] = ls_build(best)
+        res["others"] = [c for c in found if c != best]
+        kit = os.path.abspath(best).startswith(os.path.abspath(HERE) + os.sep)
+        res["note"] = (f"{label} llama-server (ggml API {api}) skipped: no shipped plugin for it; using "
+                       + ("the kit's bundled llama-server" if kit else best) + f" (API {res['api']})")
+        looked.append(res["note"])
         return res
     explicit = [("LLAMA_SERVER", os.environ.get("LLAMA_SERVER"))] + [("LLAMA_SERVER in " + w, v) for w, v in win_registry_env("LLAMA_SERVER")]
     explicit.append(("the control page's saved path", saved if saved is not None else saved_llama_server()))
@@ -178,22 +208,16 @@ def find_llama_server(saved=None):
     w = shutil.which("llama-server")
     looked.append("PATH: " + ("llama-server" if w else "not on it"))
     if w:
-        return hit("llama-server", "PATH")
+        return supported_folder_instead(os.path.abspath(w), "PATH") or hit("llama-server", "PATH")
     if WINDOWS:
         for where, v in win_registry_env("PATH"):
             for d in v.split(";"):
                 r = resolve_llama_server(d) if d and os.path.isdir(d) and os.path.isfile(os.path.join(d, llama_exe())) else None
                 if r:
                     looked.append(f"PATH in {where}: {d}")
-                    return hit(r, "PATH in " + where)
+                    return supported_folder_instead(r, "PATH in " + where) or hit(r, "PATH in " + where)
         looked.append("PATH in the registry: not on it")
-    found = []
-    for d in llama_search_dirs():
-        r = next((os.path.join(d, x, llama_exe()) for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release"))
-                  if os.path.isfile(os.path.join(d, x, llama_exe()))), None)
-        looked.append(f"folder {d}: " + ("found" if r else "no llama-server"))
-        if r and os.path.abspath(r) not in found:
-            found.append(os.path.abspath(r))
+    found = folder_candidates()
     if found:
         apis = shipped_apis()
         def rank(c):
@@ -227,7 +251,7 @@ def ls_found_line(ls):
         return None
     return (f"moe-cache: llama-server: {which(ls) if ls != 'llama-server' else ls} (found by {_LS['source']}"
             + (f", build b{_LS['build']}" if _LS.get("build") else "") + (f", ggml API {_LS['api']}" if _LS.get("api") else "")
-            + (f"; also found, not used: {', '.join(_LS['others'])}" if _LS.get("others") else "") + ")")
+            + (f"; also found, not used: {', '.join(_LS['others'])}" if _LS.get("others") else "") + (f"; {_LS['note']}" if _LS.get("note") else "") + ")")
 
 
 # ---- how a llama-server loads the plugin ----
