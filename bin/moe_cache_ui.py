@@ -328,7 +328,7 @@ def on_demand_port():
 def peek_server(port, api_key=None, trusted=False):
     """What a llama-server on 127.0.0.1:port says about itself: {port, up, health, model, ctx, slots, busy, key}. Only this machine (no other host:
     the page must not become a way to probe the network); the key itself is never returned. key: "needed" (the server wants one; the stored key
-    or `api_key` was used only when `trusted`), "rejected" (401 even with it), or null. The stored key goes only to a `trusted` port (the page's own
+    or `api_key` was used only when `trusted`; an untrusted port never gets the stored key, even if it answered 200 first and 401 after), "rejected" (401 even with it), or null. The stored key goes only to a `trusted` port (the page's own
     server, this user's on-demand listener): any local user can listen on a free port of 8080-8089 and answer 401 to collect it (audit 2026-10-29 U1)."""
     url = f"http://127.0.0.1:{int(port)}"
     st = mc.http(url + "/health", timeout=1)[0]          # llama-server answers /health without a key; 503 while it loads the model
@@ -338,10 +338,13 @@ def peek_server(port, api_key=None, trusted=False):
         if mc.http(url + "/v1/models", timeout=2)[0] in (401, 403):
             return {"port": port, "up": True, "health": "ready" if st == 200 else "loading", "model": None, "ctx": None, "slots": None, "busy": None,
                     "key": "needed"}
-    key = mc.key_for(url, api_key)
+    # SERVER-692: key_for() asks /v1/models a second time and sends the stored key on a 401, so a listener that answers 200 and then 401 would collect it.
+    # Only a trusted port goes through it; any other port gets the key the caller gave, or none.
+    key = mc.key_for(url, api_key) if trusted else (api_key or None)
     name, ctx = mc.server_info(url, key)
+    wants = not name and mc.http(url + "/v1/models", api_key=key, timeout=2)[0] in (401, 403)
     out = {"port": port, "up": True, "health": "ready" if st == 200 else "loading", "model": name, "ctx": ctx, "slots": None, "busy": None,
-           "key": ("rejected" if not name and mc.http(url + "/v1/models", api_key=key, timeout=2)[0] in (401, 403) else "needed") if key else None}
+           "key": ("rejected" if wants else "needed") if key else ("needed" if wants else None)}
     sst, body = mc.http(url + "/slots", api_key=key, timeout=2)
     if sst == 200:
         try:
