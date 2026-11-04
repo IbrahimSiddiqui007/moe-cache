@@ -403,7 +403,7 @@ check(len(d) == 5 and d[0].startswith("GPU AMD Radeon") and d[1].startswith("AMD
       and d[4].startswith("MTP on:"),
       f"what the launcher decided, up to its URL line, without the prefix ({d})")
 import re as _re
-w = [x for x in status.get("warnings", []) if not _re.match(r"ERROR: ld\.so: object '[^']*' from LD_PRELOAD cannot be preloaded \(cannot open shared object file\): ignored\.$", x["line"])]   # TEST-678: the loader's own message when the machine's LD_PRELOAD names a missing library, nothing else
+w = [x for x in status.get("warnings", []) if not _re.match(r"ERROR: ld\.so: object '/usr/NX/lib/libnxegl\.so' from LD_PRELOAD cannot be preloaded \(cannot open shared object file\): ignored\.$", x["line"])]   # TEST-678: only this laptop's NoMachine library message (/usr/NX/lib/libnxegl.so); any other LD_PRELOAD failure, e.g. the plugin's own, stays a warning
 check(len(w) == 1 and w[0]["count"] == 2 and w[0]["line"].startswith("moe-cache: warning: the expert cache shrank"),
       f"the shrink warning is lifted out of the log, once, counted, without llama-server's prefix ({w})")
 check("sekrit" not in json.dumps(status), "the API key is not in the status")

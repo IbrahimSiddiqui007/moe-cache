@@ -50,6 +50,19 @@ jobs:
             grep -q "MOE_CACHE_REF:-${GITHUB_REF_NAME}}" install.sh || { echo "install.sh MOE_CACHE_REF does not match ${GITHUB_REF_NAME}: bump it with the version"; exit 1; }
           fi
 
+      - name: Published numbers have current claims (tags only; a waiver file is the only way past)
+        if: github.ref_type == 'tag'
+        run: |
+          # bench-record lint exits non-zero on any unclaimed or stale number. The one exception: docs/claims_waiver.txt with exactly one line
+          # "waived: owner YYYY-MM-DD, reason ..." (the owner's explicit decision for this release; delete the file afterwards).
+          if python3 bin/moe_cache.py bench-record lint; then
+            echo "claims lint: clean"
+          elif [ -f docs/claims_waiver.txt ] && [ "$(grep -c . docs/claims_waiver.txt)" = 1 ] && grep -Eq '^waived: owner [0-9]{4}-[0-9]{2}-[0-9]{2}, .{8,}$' docs/claims_waiver.txt; then
+            echo "::warning::claims lint has problems; released under the waiver: $(cat docs/claims_waiver.txt)"
+          else
+            echo "claims lint failed: fix the claims, or (owner only) add docs/claims_waiver.txt with the single line 'waived: owner YYYY-MM-DD, reason'"; exit 1
+          fi
+
       - name: Q2_0 kernel is bit-exact (no model needed)
         run: |
           g++ -O2 -std=c++17 -Isrc tests/kernel_check.cpp -o /tmp/kernel_check -ldl

@@ -757,7 +757,13 @@
     void read_job(const io_job_t & j, char * bounce) {
         // idea I08: a job's expert lives in the view of its own file (ti->data = views[ti->fdi] + offset), so test that one view instead of searching all
         if ((size_t) j.fdi < views.size() && j.dst >= views[(size_t) j.fdi] && j.dst < views[(size_t) j.fdi] + view_sizes[(size_t) j.fdi]) {
-            plat::file_view_load(j.dst, j.nb2);     // Windows file-view cache: bring the expert's file pages into the working set
+            if (!plat::file_view_load(j.dst, j.nb2)) {      // Windows file-view cache: bring the expert's file pages into the working set
+                // CACHE-685: the model file is cut short or unreadable here. The expert's bytes must come from the view (compute reads them there), so
+                // there is no buffered fallback; stop with the reason like a failed buffered read does, instead of a SIGBUS in the next touch.
+                fprintf(stderr, "moe-cache: read failed at offset %llu of %s: the model file is cut short or cannot be read (disk error, or the file changed after loading)\n",
+                        (unsigned long long) j.off, shard_paths[(size_t) j.fdi].c_str());
+                abort();
+            }
             direct_jobs++;
             bytes += j.nb2;
             return;
