@@ -62,4 +62,10 @@ if os.name != "nt":
         mc.check(["--llama-server", vls])
     line = next((l for l in buf.getvalue().splitlines() if "ggml version" in l), "")
     check("this llama.cpp build is not one we tested" in line and "API 2" not in line and "API 3" not in line and "ggml 0.27" not in line, f"doctor: an untested llama.cpp gets a plain sentence ({line[:120]})")
+    open(vls, "w").write("#!/bin/sh\necho 'version: 12064 (commit 51fe42c5d)'\nexit 0\n")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        mc.check(["--llama-server", vls])
+    line = next((l for l in buf.getvalue().splitlines() if "ggml version" in l), "")
+    check("not one we tested" not in line, f"LAUNCHER-674: doctor: a tested commit (b12064) gets no warning ({line[:100]})")
 sys.exit(1 if fails else 0)
