@@ -51,7 +51,11 @@ chk "slot save/restore in the decode phase reproduces the tokens (on)" "grep -q 
 chk "second context: move refused" "grep -q 'another context' '$OUT/two.err' && ! grep -q 'layers of experts moved' '$OUT/two.err'"
 chk "second context: tokens unchanged" "cmp -s '$OUT/off.txt' '$OUT/two.txt'"
 # diagnostics
-chk "no layer fits: the log names the memory figure and the reasons (fake free memory 50 MiB)" "[ \"\$(cat $OUT/f3.rc)\" = 0 ] && grep -q 'no layer fits (50 MiB free of 50 MiB' '$OUT/f3.err' && grep -q 'too big for the free memory' '$OUT/f3.err' && cmp -s '$OUT/off.txt' '$OUT/f3.txt'"
+if [ "$MOVED" = 1 ]; then
+  chk "no layer fits: the log names the memory figure and the reasons (fake free memory 50 MiB)" "[ \"\$(cat $OUT/f3.rc)\" = 0 ] && grep -q 'no layer fits (50 MiB free of 50 MiB' '$OUT/f3.err' && grep -q 'too big for the free memory' '$OUT/f3.err' && cmp -s '$OUT/off.txt' '$OUT/f3.txt'"
+else
+  chk "no layer fits (no GPU here): the log says the memory was not queried and counts the layers not on a GPU" "[ \"\$(cat $OUT/f3.rc)\" = 0 ] && grep -q 'device memory not queried' '$OUT/f3.err' && grep -Eq '[1-9][0-9]* not on a GPU' '$OUT/f3.err' && cmp -s '$OUT/off.txt' '$OUT/f3.txt'"
+fi
 if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
   chk "plugin: the experts are in the MOE_CACHE buffer and the cache evicted (2 MB cache)" "grep -q 'buffer type overridden to MOE_CACHE' '$OUT/p_on.err' && grep -Eq 'evictions=[1-9]' '$OUT/p_on.err'"
   chk "plugin: exit 0, tokens equal with the switch on and off (experts evicted while the layers move)" "[ \"\$(cat $OUT/p_on.rc)\" = 0 ] && [ \"\$(cat $OUT/p_off.rc)\" = 0 ] && cmp -s '$OUT/p_off.txt' '$OUT/p_on.txt'"
