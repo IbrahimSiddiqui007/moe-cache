@@ -60,9 +60,11 @@ for u in ("https://example.com/v1", "http://127.attacker.example:8080", "http://
     calls.clear()
     check(mc.key_for(u) is None and not calls, f"remote URL {u}: no key, no probe")
 for u in ("http://127.0.0.1:8080", "http://localhost:8080/v1", "http://[::1]:8080", "http://127.5.5.5:1"):
-    check(mc.key_for(u) == mc.stored_key(), f"loopback URL {u} answering 401: the stored key")
+    check(mc.key_for(u) is None, f"loopback URL {u} answering 401, not started by the launcher: no stored key (SERVER-692)")
+    check(mc.key_for(u, None, True) == mc.stored_key(), f"loopback URL {u} answering 401, started by the launcher (trusted): the stored key")
 mc.http = real_http
-check(mc.key_for(f"http://127.0.0.1:{srv.server_address[1]}") == mc.stored_key(), "real local server answering 401: the stored key")
+check(mc.key_for(f"http://127.0.0.1:{srv.server_address[1]}") is None, "real local server answering 401, not ours: no stored key")
+check(mc.key_for(f"http://127.0.0.1:{srv.server_address[1]}", None, True) == mc.stored_key(), "real local server answering 401, ours (trusted): the stored key")
 check(mc.key_for("http://example.com", "given") == "given", "a key the user gave is used as given")
 srv.shutdown()
 
