@@ -30,7 +30,7 @@ Models that fit in RAM: the launcher still runs plain llama.cpp for them; the tw
 | IQ3_XXS | 349 | 182 | 16.1 | 12.3 (*) |
 | IQ3_S | 278 | 221 | 13.4 | 11.9 |
 
-(*) From a daytime re-run, **not clean** (the owner's browser held 1.4 GB of VRAM): the overnight run had no value here because the model ended its answer after 2 tokens, and the daytime re-run with the fixed harness generated 128 tokens. A clean re-run is planned. The prompt speeds in the table are the clean overnight ones.
+(*) From a daytime re-run, **not clean** (the owner's browser held 1.4 GB of VRAM): the overnight run had no value here because the model ended its answer after 2 tokens, and the daytime re-run with the fixed harness generated 128 tokens. A clean re-run is planned. The prompt speeds in the table are from the overnight run, which was also not clean (owner work was running).
 
 **gpt-oss-120b, today's code against yesterday's** (two experimental kits, official llama.cpp b12064, 30,374-token prompt, ABBA, two runs each, not clean): prompt **73 -> 115 tok/s** (73.1 / 73.2 against 114.6 / 114.7; the fix keeps resident experts from being moved to the most-recently-used end during a long prompt). Decode after the prompt 8.8 -> 9.2 tok/s. Record `2026-11-04_pc_76a45c`, claim `chain1103-gptoss-623`. This compares two builds of moe-cache, not moe-cache against stock.
 
