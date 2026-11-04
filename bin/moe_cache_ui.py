@@ -2008,7 +2008,6 @@ class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
     downloads = None
-    group_error = None          # why the last group start stopped half way (class attribute: one page, one group at a time)
     extra = None                # GUI-013: {port: Runner} of the further servers this page started (the main one is `runner`)
     token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in memory
     server_version = "moe-cache-ui"
@@ -2119,7 +2118,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, self.runner.sessions())
             if u.path == "/api/servers":                   # llama-servers on this machine (ports 8080-8089), started here or elsewhere
                 own = int(self.runner.settings.get("port") or 8080) if self.runner.state in ("starting", "ready", "waiting") else None
-                return self.send(200, {"servers": peek_servers(own=own, extra=self.live_extra()), "managed": self.managed(), "max_extra": MAX_EXTRA, "group_error": self.group_error})
+                return self.send(200, {"servers": peek_servers(own=own, extra=self.live_extra()), "managed": self.managed(), "max_extra": MAX_EXTRA, "group_error": self.get_group_error()})
             if u.path == "/api/peek":                      # one port on 127.0.0.1 (a server started elsewhere, e.g. by a script or the on-demand server)
                 port = number(q.get("port"), 1, 65535, int, "port")
                 if port is None:
@@ -2415,6 +2414,15 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError(f"not enough memory next to the running servers: they hold {held / 1e9:.1f} GB of the {inp['cap'] / 1e9:.1f} GB cap; " + "; ".join(view["why"]) +
                              ". Stop one of them first, or pick a smaller model.")
 
+    # why the last group start stopped half way: on the server object (a handler is made per request, so `self.x = ...` on it is lost with the request), under a lock
+    def get_group_error(self):
+        with self.server.group_lock:
+            return self.server.group_error
+
+    def set_group_error(self, v):
+        with self.server.group_lock:
+            self.server.group_error = v
+
     def group_items(self, body):
         """The models of a group request, checked like Start: [(settings, list entry)]. Two or three, each a listed model, distinct ports."""
         ms = body.get("models")
@@ -2455,7 +2463,7 @@ class Handler(BaseHTTPRequestHandler):
         for port, _ in [(s["port"], m) for s, m in items]:
             if mc.port_busy(port):
                 raise ValueError(f"port {port} is already in use: pick another port")
-        self.group_error = None
+        self.set_group_error(None)
         runs = []
         for (s, _), row in zip(items, view["rows"]):
             s["ram"] = row["ram_gb"]
@@ -2476,7 +2484,7 @@ class Handler(BaseHTTPRequestHandler):
                     r.start(s)
                 except ValueError as e:
                     r.add_line("ui: could not start: " + str(e))
-                    self.group_error = f"{shortname(s['model'])} on port {s['port']} could not start: {e}" + (" (the servers started before it keep running)" if i else "")
+                    self.set_group_error(f"{shortname(s['model'])} on port {s['port']} could not start: {e}" + (" (the servers started before it keep running)" if i else ""))
                     return
                 end = time.time() + 600
                 while time.time() < end and r.state == "starting":      # one after the other: the next plan reads the VRAM the first one took
@@ -2684,6 +2692,7 @@ def make_server(port=8070, ls=None, token=None):
         allow_reuse_address = os.name != "nt"
     srv = _Srv(("127.0.0.1", port), h)
     srv.daemon_threads = True
+    srv.group_error, srv.group_lock = None, threading.Lock()          # see Handler.set_group_error
     return srv
 
 
