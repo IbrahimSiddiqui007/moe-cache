@@ -30,6 +30,19 @@ def newest_stable_tag(fetch_json):
     return None
 
 
+def version_key(v):
+    """Sortable key of a release version or tag ('v0.3.6', '0.3.6-beta2'): numbers first, a final release sorts after its own pre-releases.
+    None when it is not a version (then nothing is compared)."""
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)(?:[.-]([A-Za-z0-9.]+))?", str(v).strip())
+    if not m:
+        return None
+    nums = tuple(int(x) for x in m.group(1).split("."))
+    nums += (0,) * (4 - len(nums))
+    pre = m.group(2)
+    tail = tuple((0, int(x), "") if x.isdigit() else (1, 0, x.lower()) for x in re.findall(r"\d+|[A-Za-z]+", pre)) if pre else ()
+    return (nums, 0 if pre else 1, tail)
+
+
 def http_json(url):
     req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "moe-cache-update"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -107,10 +120,14 @@ def verify_new(layout, tag, command, run=subprocess.run):
 
 
 def roll_back(layout):
-    """Make the version that was installed before current again. Linux: `current` points back (atomic rename of a new link). Windows: kit and
-    kit.prev trade places (the failed kit is kept as kit.failed, nothing is deleted). Returns '' or what went wrong."""
+    """Make the version that was installed before current again. Linux: `current` points back (atomic rename of a new link), but only when that
+    folder exists: a link to a missing folder would leave no moe-cache at all. Windows: kit and kit.prev trade places (the failed kit is kept as
+    kit.failed, nothing is deleted; when the second rename fails the first one is undone). Returns '' or what went wrong; nothing is changed then."""
     try:
         if layout["kind"] == "linux":
+            target = os.path.join(layout["prefix"], "versions", layout["previous"])
+            if not os.path.isdir(target):
+                return f"{target} does not exist any more, so `current` was not changed (it still points at the version that was just installed)"
             tmp = os.path.join(layout["prefix"], ".current.back")
             if os.path.lexists(tmp):
                 os.remove(tmp)
@@ -123,23 +140,30 @@ def roll_back(layout):
             if os.path.exists(bad):
                 return f"{bad} is in the way: move it away and go back by hand (rename kit to kit.failed, kit.prev to kit)"
             os.rename(kit, bad)
-            os.rename(prev, kit)
+            try:
+                os.rename(prev, kit)
+            except OSError:
+                os.rename(bad, kit)         # put the kit back: never leave the root without one
+                raise
     except OSError as e:
         return str(e)
     return ""
 
 
-def attestation(path, base_url_is_default, env=None):
-    """('verified' | 'failed' | 'skipped', note). gh can only check when it is installed and logged in, and not for a mirror / test folder."""
+def attestation(path, env=None):
+    """('verified' | 'failed' | 'skipped', note). RELEASE-686: whenever gh is installed and logged in the file is verified, also when it came from a mirror
+    (the attestation is bound to the file's content, not to where it was fetched). 'skipped' = gh cannot be used, 'failed' = gh said no."""
     env = os.environ if env is None else env
-    gh = shutil.which("gh")
-    if not base_url_is_default or not gh or subprocess.run([gh, "auth", "status"], capture_output=True).returncode:
-        return "skipped", "gh is not usable here, so only HTTPS from github.com vouches for the installer (the installer still checks the package's SHA256SUMS)"
-    r = subprocess.run([gh, "attestation", "verify", path, "-R", REPO], capture_output=True, text=True)
-    return ("verified", "build attestation of the installer verified (gh)") if r.returncode == 0 else ("failed", (r.stderr or r.stdout).strip()[-300:])
+    gh = shutil.which("gh", path=env.get("PATH"))
+    if not gh:
+        return "skipped", "gh (the GitHub command line tool) is not installed"
+    if subprocess.run([gh, "auth", "status"], capture_output=True, env=dict(env)).returncode:
+        return "skipped", "gh is installed but not logged in (run: gh auth login)"
+    r = subprocess.run([gh, "attestation", "verify", path, "-R", REPO], capture_output=True, text=True, env=dict(env))
+    return ("verified", "build attestation of the installer verified (gh)") if r.returncode == 0 else ("failed", "gh attestation verify FAILED: " + (r.stderr or r.stdout).strip()[-300:])
 
 
-def apply(version, here, tag=None, yes=False, dry=False, fetch_json=http_json, base_url=None, env=None, windows=WINDOWS, tty=None):
+def apply(version, here, tag=None, yes=False, dry=False, allow_downgrade=False, unverified=False, fetch_json=http_json, base_url=None, env=None, windows=WINDOWS, tty=None):
     """Returns a process exit code. version = the running moe-cache version; here = its folder (the repository root of the copy)."""
     env = os.environ if env is None else env
     layout = installed_layout(here, windows, env)
@@ -157,6 +181,10 @@ def apply(version, here, tag=None, yes=False, dry=False, fetch_json=http_json, b
     if tag == "v" + version:
         say(f"moe-cache {version} is already the newest release. Nothing to do.")
         return 0
+    mine, theirs = version_key(version), version_key(tag)
+    if mine and theirs and theirs < mine and not allow_downgrade:
+        say(f"moe-cache: REFUSED: {tag} is older than the running {version}, so this would be a downgrade. Nothing was changed. If you mean it, add --allow-downgrade.")
+        return 1
     default_base = base_url is None and not env.get("MOE_CACHE_BASE_URL")
     base = base_url or env.get("MOE_CACHE_BASE_URL") or f"https://github.com/{REPO}/releases/download/{tag}"
     name = "install.ps1" if layout["kind"] == "windows" else "install.sh"
@@ -187,15 +215,24 @@ def apply(version, here, tag=None, yes=False, dry=False, fetch_json=http_json, b
             return 1
         with open(script, "wb") as f:
             f.write(data)
-        state, note = attestation(script, default_base, env)
-        if state == "failed" and env.get("MOE_CACHE_SKIP_ATTESTATION") != "1":
-            say(f"moe-cache: REFUSED: gh could not verify the build attestation of {name} ({note}). Nothing was changed. MOE_CACHE_SKIP_ATTESTATION=1 goes on anyway.")
-            return 1
-        say("  " + note)
+        state, note = attestation(script, env)
+        allow = unverified or env.get("MOE_CACHE_ALLOW_UNVERIFIED") == "1" or env.get("MOE_CACHE_SKIP_ATTESTATION") == "1"
+        if state == "verified":
+            say("  checked: " + note + "; the installer checks the package's build attestation and sha256 the same way")
+        else:
+            say(f"  checked:     nothing about who built {name} (only HTTPS to the server it came from); the installer will check the package against the release's SHA256SUMS (finds a damaged download)")
+            say(f"  NOT checked: who built {name} (build attestation): {note}")
+            if not allow:
+                say("moe-cache: REFUSED: the build attestation could not be checked, so nothing was run or changed. Log in with gh and try again, or accept the risk with"
+                    " --yes-unverified (or MOE_CACHE_ALLOW_UNVERIFIED=1). Check by hand: gh attestation verify FILE -R " + REPO)
+                return 1
+            say("  WARNING: going on without the build attestation because --yes-unverified / MOE_CACHE_ALLOW_UNVERIFIED=1 was given.")
         ibase = None if default_base else base
         if ibase and ibase.startswith("file://") and layout["kind"] == "windows":      # install.ps1 takes a folder, not a file:// address
             ibase = urllib.request.url2pathname(ibase[len("file://"):]).lstrip("\\") if re.match(r"file:///[A-Za-z]:", ibase) else urllib.request.url2pathname(ibase[len("file://"):])
         argv, run_env = installer_command(layout, script, tag, env, ibase)
+        if state != "verified" and allow:
+            run_env["MOE_CACHE_ALLOW_UNVERIFIED"] = "1"      # the installer checks the package itself and would refuse the same way
         rc = subprocess.call(argv, env=run_env)
         if rc:
             say(f"moe-cache: the installer stopped (exit {rc}); it puts the previous install back, so you still have {version}.")

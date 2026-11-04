@@ -3,7 +3,7 @@
 installer did not put there is refused, same version is a no-op, --dry-run downloads nothing, a good update installs the new version and keeps
 the previous one in versions/, a damaged package makes the installer refuse and leaves the old install working. Linux only.
    python3 tests/update_apply_test.py"""
-import hashlib, io, os, subprocess, sys, tarfile, tempfile
+import hashlib, io, os, shutil, subprocess, sys, tarfile, tempfile
 if not sys.platform.startswith("linux"):
     print("update --apply test: Linux only, skipped"); sys.exit(0)
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -31,7 +31,22 @@ def release(ver, tamper=False, modules=True):
 
 prefix, bindir, home = os.path.join(T, "data", "moe-cache"), os.path.join(T, "home", "bin"), os.path.join(T, "home")
 os.makedirs(bindir)
-env = dict(os.environ, HOME=home)
+# RELEASE-686: a fake `gh` first on PATH (FAKE_GH_AUTH / FAKE_GH_VERIFY = exit codes), and a PATH without any gh
+FAKEBIN = os.path.join(T, "fakebin"); os.makedirs(FAKEBIN)
+open(os.path.join(FAKEBIN, "gh"), "w").write('''#!/bin/sh
+case "$1 $2" in
+  "auth status") exit ${FAKE_GH_AUTH:-0};;
+  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; exit ${FAKE_GH_VERIFY:-0};;
+esac
+exit 1
+'''); os.chmod(os.path.join(FAKEBIN, "gh"), 0o755)
+NOGH = os.path.join(T, "nogh"); os.makedirs(NOGH)
+for tool in "bash sh python3 tar gzip sha256sum awk sed grep cut head tail tr cat ls mkdir mktemp rm mv cp ln chmod readlink dirname basename uname id sort curl wget ldconfig rmdir nproc env printf test find xargs date".split():
+    w = shutil.which(tool)
+    if w and not os.path.exists(os.path.join(NOGH, tool)):
+        os.symlink(w, os.path.join(NOGH, tool))
+GH_LOG = os.path.join(T, "gh.log")
+env = dict(os.environ, HOME=home, PATH=FAKEBIN + ":" + os.environ["PATH"], FAKE_GH_LOG=GH_LOG)
 def say_to_str(fn):
     buf, old = io.StringIO(), up.say
     up.say = lambda m: buf.write(m + "\n")
@@ -65,6 +80,69 @@ check(rc == 1 and "does not look like a release tag" in out, "a strange tag is r
 # a damaged package: the installer refuses, the old install keeps working
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=env, base_url="file://" + release("9.9.2", tamper=True)))
 check(rc != 0 and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.1", "a damaged package is refused and 9.9.1 still runs")
+
+# RELEASE-686: no silent skip of the attestation: gh missing / not logged in / verify failing stop the update before the installer runs,
+# unless --yes-unverified (unverified=True) or MOE_CACHE_ALLOW_UNVERIFIED=1; the installer's sha256 check is never skipped
+r2 = release("9.9.2"); vers_before = sorted(os.listdir(os.path.join(prefix, "versions")))
+def still_9_9_1():
+    return sorted(os.listdir(os.path.join(prefix, "versions"))) == vers_before and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.1"
+for label, extra, why in (("gh not installed", dict(PATH=NOGH), "is not installed"), ("gh not logged in", dict(FAKE_GH_AUTH="1"), "not logged in"), ("gh verify fails", dict(FAKE_GH_VERIFY="1"), "verify FAILED")):
+    rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, **extra), base_url="file://" + r2))
+    check(rc == 1 and "REFUSED" in out and "NOT checked" in out and why in out and "--yes-unverified" in out and still_9_9_1(), f"{label}: update refused, says what was not checked, nothing changed")
+open(GH_LOG, "w").close()
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", dry=True, env=dict(env, PATH=NOGH), base_url="file://" + r2))
+check(rc == 0 and "nothing was downloaded" in out, "--dry-run does not need gh")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, PATH=NOGH), base_url="file://" + release("9.9.2", tamper=True), unverified=True))
+check(rc != 0 and "the installer stopped" in out and "WARNING: going on without" in out and still_9_9_1(), "--yes-unverified never skips sha256: a damaged package is still refused by the installer")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, FAKE_GH_VERIFY="1", MOE_CACHE_ALLOW_UNVERIFIED="1"), base_url="file://" + r2))
+check(rc == 0 and "WARNING" in out and subprocess.run([os.path.join(bindir, "moe-cache"), "--version"], capture_output=True, text=True).stdout.strip() == "moe-cache 9.9.2", "MOE_CACHE_ALLOW_UNVERIFIED=1 with a failing verify: updates, with a warning")
+# put 9.9.1 back for the rest of the test
+subprocess.run(["ln", "-sfn", "versions/moe-cache-v9.9.1-ggml0.26-linux-x86_64", os.path.join(prefix, "current")], check=True)
+shutil.rmtree(os.path.join(prefix, "versions", "moe-cache-v9.9.2-ggml0.26-linux-x86_64"), ignore_errors=True)
+vers_before = sorted(os.listdir(os.path.join(prefix, "versions")))
+# a mirror folder with a working gh: the installer script is verified (not skipped because of the mirror)
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=env, base_url="file://" + r2, dry=False))
+check(rc == 0 and "build attestation of the installer verified" in out and "install.sh" in open(GH_LOG).read(), "a mirror with a working gh: verified, not skipped")
+subprocess.run(["ln", "-sfn", "versions/moe-cache-v9.9.1-ggml0.26-linux-x86_64", os.path.join(prefix, "current")], check=True)
+shutil.rmtree(os.path.join(prefix, "versions", "moe-cache-v9.9.2-ggml0.26-linux-x86_64"), ignore_errors=True)
+# RELEASE-691: a downgrade needs --allow-downgrade; roll_back never points `current` at a folder that is not there
+k = up.version_key
+check(k("v0.3.6") > k("0.3.6-beta2") > k("0.3.6-beta1") and k("0.3.10") > k("0.3.9") and k("0.3.6-beta10") > k("0.3.6-beta2") and k("1.0") == k("1.0.0") and k("junk") is None and k("0.3.7-beta1") > k("0.3.6"),
+      "version order: final after its pre-releases, 0.3.10 after 0.3.9, beta10 after beta2")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.0", yes=True, env=env, base_url="file://" + release("9.9.0")))
+check(rc == 1 and "downgrade" in out and "--allow-downgrade" in out and os.listdir(os.path.join(prefix, "versions")) == [os.path.basename(here1)], "a downgrade (v9.9.0 over 9.9.1) is refused, nothing downloaded or changed")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.0", yes=True, dry=True, env=env, allow_downgrade=True, base_url="file://" + release("9.9.0")))
+check(rc == 0 and "nothing was downloaded" in out and "downgrade" not in out, "--allow-downgrade lets it through (dry run)")
+rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.1-beta1", yes=True, env=env))
+check(rc == 1 and "downgrade" in out, "the final release over its own pre-release tag is a downgrade too")
+rc, out = say_to_str(lambda: up.apply("9.9.1-beta1", here1, tag="v9.9.1", yes=True, dry=True, env=env, base_url="file://" + release("9.9.1")))
+check(rc == 0 and "downgrade" not in out, "a pre-release over to its final release is an upgrade")
+
+rb = os.path.join(T, "rb"); os.makedirs(os.path.join(rb, "versions", "new")); os.makedirs(os.path.join(rb, "versions", "old"))
+os.symlink(os.path.join("versions", "new"), os.path.join(rb, "current"))
+err = up.roll_back({"kind": "linux", "prefix": rb, "previous": "gone"})
+check(err and "does not exist" in err and os.readlink(os.path.join(rb, "current")) == "versions/new" and not os.path.lexists(os.path.join(rb, ".current.back")),
+      "roll_back to a missing folder: refused, `current` untouched, no stray link")
+err = up.roll_back({"kind": "linux", "prefix": rb, "previous": "old"})
+check(err == "" and os.readlink(os.path.join(rb, "current")) == "versions/old", "roll_back to an existing folder switches `current`")
+# the Windows branch (plain renames; runs on Linux too): the root is never left without a kit
+rw = os.path.join(T, "rw"); os.makedirs(os.path.join(rw, "kit")); os.makedirs(os.path.join(rw, "kit.prev"))
+open(os.path.join(rw, "kit", "id"), "w").write("new"); open(os.path.join(rw, "kit.prev", "id"), "w").write("old")
+real, calls = os.rename, []
+def flaky(a, b):
+    calls.append(a)
+    if len(calls) == 2:
+        raise OSError("simulated: the second rename is refused")
+    return real(a, b)
+os.rename = flaky
+try:
+    err = up.roll_back({"kind": "windows", "root": rw})
+finally:
+    os.rename = real
+check(err and open(os.path.join(rw, "kit", "id")).read() == "new" and os.path.isdir(os.path.join(rw, "kit.prev")) and not os.path.exists(os.path.join(rw, "kit.failed")),
+      "windows roll_back: when the second rename fails the first is undone (kit is still there)")
+err = up.roll_back({"kind": "windows", "root": rw})
+check(err == "" and open(os.path.join(rw, "kit", "id")).read() == "old" and open(os.path.join(rw, "kit.failed", "id")).read() == "new", "windows roll_back: kit and kit.prev trade places, the failed kit is kept")
 
 # a package that unpacks but whose launcher modules do not import: the check after the swap puts the old version back
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.3", yes=True, env=env, base_url="file://" + release("9.9.3", modules=False)))

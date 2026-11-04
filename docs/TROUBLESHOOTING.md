@@ -111,6 +111,6 @@ The causes below come from the llama.cpp issue pages and from our own code; the 
 
 | Case | What happens | Do |
 |---|---|---|
-| the plugin plus `--moe-cache-mib` (without `--gpu-cache`) | measured 29.6 tok/s against 38.8 without it (Qwen3-Coder-30B, laptop, [RESULTS.md](RESULTS.md), table "plugin + `--moe-cache-mib 5000`"): the plugin's buffer is not a host buffer, so the upstream cache finds no layer to cache | Leave it off. For a GPU cache on top of ours use `--gpu-cache` (Linux, preload method only) |
+| the plugin plus `--moe-cache-mib` (without `--gpu-cache`) | measured 29.6 tok/s against 38.8 without it (Qwen3-Coder-30B, laptop, [RESULTS_OLD_LAPTOP.md](RESULTS_OLD_LAPTOP.md), table "plugin + `--moe-cache-mib 5000`"): the plugin's buffer is not a host buffer, so the upstream cache finds no layer to cache | Leave it off. For a GPU cache on top of ours use `--gpu-cache` (Linux, preload method only) |
 | `--moe-cache-mib` on AMD cards under Vulkan | aborts at load on some cards (table above) | Leave it off on AMD |
 | a draft model (`-md` / `--model-draft`) together with it | reported broken upstream (llama.cpp #31497); we have not tested a draft model with that cache | Use only one of the two |

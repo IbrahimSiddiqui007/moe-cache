@@ -571,7 +571,7 @@
    ],
    "notes": [
     "The biggest candidate; suggested for chat only where it fits in RAM (128 GB+).",
-    "With --mtp 3.1x stock on the PC (RESULTS 60); on the laptop MTP lost 25 % (RESULTS 40)."
+    "With --mtp 3.1x stock on the PC (RESULTS 60); on the laptop MTP lost 25 % (RESULTS_OLD_LAPTOP 40)."
    ],
    "warnings": [
     "On a 32 GB PC it is a 102 GB model read from the drive: 4-7 tok/s, 64k contexts did not finish."
