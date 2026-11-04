@@ -80,13 +80,14 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section aria-label="Headline numbers">
     <div class="tiles">
-      <div class="tile"><b>+42 / +38 / +38 %</b><span>prompt reading speed at 34k / 64k / 128k tokens, v0.3.5 against v0.3.4 (Flash-Next Q2_0, 2026-11-03, official llama.cpp b11966; baseline guard passed at 49.4 tok/s but its log notes “not clean: owner work running”, so not called clean); decode after those prompts is 6–10 % lower <!-- claim:v035-vs-v034-34k --><!-- claim:v035-vs-v034-64k --><!-- claim:v035-vs-v034-128k --></span></div>
+      <div class="tile"><b>+42 / +38 / +38 %</b><span>prompt reading speed at 34k / 64k / 128k tokens, v0.3.5 against v0.3.4 (Flash-Next Q2_0, 2026-11-03, official llama.cpp b11966; baseline guard passed at 49.4 tok/s; cleanliness not recorded); decode after those prompts is 6–10 % lower <!-- claim:v035-vs-v034-34k --><!-- claim:v035-vs-v034-64k --><!-- claim:v035-vs-v034-128k --></span></div>
       <div class="tile"><b>1.8×</b><span>prompt reading at 64k context, moe-cache against stock: a 63.5k-token prompt in about 289 against 525 s, decode +23 % at that depth (Flash-Next Q2_0; one cold run each, 2026-10-28, Steam running, so not clean; RESULTS 64, no record)</span></div>
       <div class="tile"><b>+26 %</b><span>prompt reading at the 256k setting with <code>-ub 2048</code> against <code>-ub 1024</code> (a 222k-token prompt; v0.3.5, 2026-11-03) <!-- claim:v035-ub2048-256k --></span></div>
       <div class="tile"><b>2.0–2.4×</b><span>faster coding-agent sessions (OpenCode, Hermes) on Flash-Next IQ2_XS at 65k agent context (2026-10-27, two cold runs each; RESULTS 60, no record)</span></div>
-      <div class="tile"><b>8k chat</b><span>+42–53 % decode on three Qwen files and 2.1× on GLM-5.3 (2.7× with MTP), at 8k context with a 13-token prompt (2026-11-04, v0.3.5 kit, every run not clean) <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --><!-- claim:chain1103-glm --></span></div>
+      <div class="tile"><b>8k chat</b><span>+42–53 % decode on three Qwen files and 2.1× on GLM-5.3 (2.7× with MTP), at 8k context with a 13-token prompt (2026-11-04, v0.3.5 kit, cleanliness not recorded) <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --><!-- claim:chain1103-glm --></span></div>
       <div class="tile"><b>Pending</b><span>a clean stock against moe-cache run at long context (34k–256k) on the 2026-11-04 files and on v0.3.6 (TEST-684); the long-context stock numbers here are from 2026-10-28</span></div>
     </div>
+    <p class="note"><b>Cleanliness not recorded.</b> The PC harness writes the text “not clean: owner work running” at the start of every run without checking anything, so that text is no evidence either way: the runs of 2026-11-03 and 2026-11-04 are neither proven clean nor proven disturbed. A run is called “not clean” here only with independent evidence (for example the 64k decode-after re-runs: the owner’s browser held 1.4 GB of VRAM, in the launcher log).</p>
   </section>
 
   <section>
@@ -117,7 +118,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         </tbody>
       </table>
     </div>
-    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. Every model here is bigger than the free RAM once the GPU and Windows have taken their share, except the two marked “fits in RAM”. <b>Dates and builds:</b> the rows for IQ3_XXS, IQ3_S, Qwen3.5-122B, GLM-5.3 and the two models that fit were re-measured on 2026-11-04 (overnight chain, the released v0.3.5 kit with the official llama.cpp b11966, launcher defaults, context 8192, a 13-token request, two runs each; every run was “not clean”: owner work was running on the PC). The rows for Q2_0 and IQ2_XS are from 2026-10-27/28 (llama.cpp 620d2225c, RESULTS 58–65) and were not re-run; later changes (128-row executor chunks, +3.9 % on Q2_0; async reads, +12 %, RESULTS 67) are in the 2026-11-04 rows but not in those two. The chart and its detail lines use the same numbers. These rows describe the v0.3.5 kit; the current pin is b12064, so a paired re-run is still open. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin’s decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
+    <p class="note">Each pair is two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), and the table shows the means. Every model here is bigger than the free RAM once the GPU and Windows have taken their share, except the two marked “fits in RAM”. <b>Dates and builds:</b> the rows for IQ3_XXS, IQ3_S, Qwen3.5-122B, GLM-5.3 and the two models that fit were re-measured on 2026-11-04 (overnight chain, the released v0.3.5 kit with the official llama.cpp b11966, launcher defaults, context 8192, a 13-token request, two runs each; cleanliness not recorded). The rows for Q2_0 and IQ2_XS are from 2026-10-27/28 (llama.cpp 620d2225c, RESULTS 58–65) and were not re-run; later changes (128-row executor chunks, +3.9 % on Q2_0; async reads, +12 %, RESULTS 67) are in the 2026-11-04 rows but not in those two. The chart and its detail lines use the same numbers. These rows describe the v0.3.5 kit; the current pin is b12064, so a paired re-run is still open. Q2_0: stock decodes it much faster than IQ2_XS (18.4 vs 14.9), so the plugin’s decode gain there is +20 % (code request +13 %); its prompt gain is 2.33× (3k-token prompt 120.8 vs 281 tok/s), which is what agent sessions wait on (RESULTS 63).</p>
   </section>
 
   <section>
@@ -146,7 +147,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section>
     <h2>Long prompts: v0.3.5 vs v0.3.4</h2>
-    <p>Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old, new; the PC was restarted that night and its baseline guard passed at 49.4 tok/s, but the guard log also notes “not clean: owner work running” at 02:09, so this run is not called clean (2026-11-03). Both versions ran on the official llama.cpp b11966 server. Two runs per cell (first / second).</p>
+    <p>Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old, new; the PC was restarted that night and its baseline guard passed at 49.4 tok/s, cleanliness not recorded (2026-11-03; the guard log's “not clean: owner work running” line is fixed harness text, not a check). Both versions ran on the official llama.cpp b11966 server. Two runs per cell (first / second).</p>
     <div class="scroll">
       <table>
         <thead><tr><th>Context, prompt</th><th class="n">v0.3.4 prompt tok/s</th><th class="n">v0.3.5 prompt tok/s</th><th class="n">change</th><th class="n">v0.3.4 decode tok/s</th><th class="n">v0.3.5 decode tok/s</th><th class="n">change</th></tr></thead>
@@ -167,12 +168,12 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section>
     <h2>Which Flash-Next file</h2>
-    <p><strong>Decode (first column): Q2_0 and IQ2_XS from 2026-10-28, IQ3_XXS and IQ3_S from the 2026-10-27 ABBA pairs (different days, so read each file against the same-day pair only); the second decode column is the 2026-11-04 ABBA. 3k/34k prompt speed and tasks were measured 2026-10-28 on v0.3.x (RESULTS 63). The two columns marked “v0.3.5, 2026-11-04” are new: the 34k and 64k prompts and the short answer after them, two passes each on the released v0.3.5 kit with llama.cpp b11966 (every run “not clean”: owner work was running). IQ2_XS and IQ3_XXS at 64k: the overnight run had no decode-after value (after the 64k prompt the model wrote only 2 tokens and ended its answer, so the follow-up generated 0 tokens: model behaviour, not a plugin fault; the prompt speeds above are valid, from the same not-clean overnight run). The decode-after values in those two cells are from a daytime re-run with the fixed harness (128 tokens) that was <b>not clean</b> (the owner’s browser held 1.4 GB of VRAM; its prompt speeds were about 40 % lower and are not used); a clean re-run is planned.</strong> Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.</p>
+    <p><strong>Decode (first column): Q2_0 and IQ2_XS from 2026-10-28, IQ3_XXS and IQ3_S from the 2026-10-27 ABBA pairs (different days, so read each file against the same-day pair only); the second decode column is the 2026-11-04 ABBA. 3k/34k prompt speed and tasks were measured 2026-10-28 on v0.3.x (RESULTS 63). The two columns marked “v0.3.5, 2026-11-04” are new: the 34k and 64k prompts and the short answer after them, two passes each on the released v0.3.5 kit with llama.cpp b11966 (cleanliness not recorded). IQ2_XS and IQ3_XXS at 64k: the overnight run had no decode-after value (after the 64k prompt the model wrote only 2 tokens and ended its answer, so the follow-up generated 0 tokens: model behaviour, not a plugin fault; the prompt speeds above are valid as far as the harness shows; cleanliness not recorded). The decode-after values in those two cells are from a daytime re-run with the fixed harness (128 tokens) that was <b>not clean</b> (the owner’s browser held 1.4 GB of VRAM; its prompt speeds were about 40 % lower and are not used); a clean re-run is planned.</strong> Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.</p>
     <div class="scroll">
       <table>
-        <thead><tr><th>File</th><th class="n">size</th><th class="n">decode tok/s<br>older runs<span class="sub">source and day in the cell</span></th><th class="n">decode tok/s<br>2026-11-04<span class="sub">v0.3.5 kit, not clean</span></th><th class="n">prompt tok/s<br>3k / 34k<span class="sub">2026-10-28</span></th><th class="n">prompt tok/s<br>34k / 64k<span class="sub">v0.3.5, 2026-11-04</span></th><th class="n">decode after the prompt<br>34k / 64k<span class="sub">v0.3.5, 2026-11-04</span></th><th class="n">tasks /202</th><th>verdict</th></tr></thead>
+        <thead><tr><th>File</th><th class="n">size</th><th class="n">decode tok/s<br>older runs<span class="sub">source and day in the cell</span></th><th class="n">decode tok/s<br>2026-11-04<span class="sub">v0.3.5 kit, cleanliness not recorded</span></th><th class="n">prompt tok/s<br>3k / 34k<span class="sub">2026-10-28</span></th><th class="n">prompt tok/s<br>34k / 64k<span class="sub">v0.3.5, 2026-11-04</span></th><th class="n">decode after the prompt<br>34k / 64k<span class="sub">v0.3.5, 2026-11-04</span></th><th class="n">tasks /202</th><th>verdict</th></tr></thead>
         <tbody>
-          <tr><td><b>Q2_0</b></td><td class="n">66.4 GB</td><td class="n"><b>22.2</b><span class="sub">2026-10-28, model on drive D:</span></td><td class="n">not re-run</td><td class="n"><b>281 / 287</b></td><td class="n">568 / 399<!-- claim:chain1103-q2_0-34k --><!-- claim:chain1103-q2_0-64k --></td><td class="n">27.4 / 25.5</td><td class="n">191</td><td><b>fastest of the 2026-10-28 set</b>. vs IQ2_XS (2026-10-28): decode +1.2 tok/s (+5.7 %; Q2_0 sat on the faster drive), prompts 3k / 34k +11 % / +19 % (2026-10-28), 34k / 64k +12.7 % / +25.9 % (2026-11-04, two passes, not clean), 1.6 GB smaller, +4 tasks (not proven). Q2_0 decode was not re-run on 2026-11-04, so no ranking against IQ3_XXS 22.87 (a different day and kit) is claimed</td></tr>
+          <tr><td><b>Q2_0</b></td><td class="n">66.4 GB</td><td class="n"><b>22.2</b><span class="sub">2026-10-28, model on drive D:</span></td><td class="n">not re-run</td><td class="n"><b>281 / 287</b></td><td class="n">568 / 399<!-- claim:chain1103-q2_0-34k --><!-- claim:chain1103-q2_0-64k --></td><td class="n">27.4 / 25.5</td><td class="n">191</td><td><b>fastest of the 2026-10-28 set</b>. vs IQ2_XS (2026-10-28): decode +1.2 tok/s (+5.7 %; Q2_0 sat on the faster drive), prompts 3k / 34k +11 % / +19 % (2026-10-28), 34k / 64k +12.7 % / +25.9 % (2026-11-04, two passes, cleanliness not recorded), 1.6 GB smaller, +4 tasks (not proven). Q2_0 decode was not re-run on 2026-11-04, so no ranking against IQ3_XXS 22.87 (a different day and kit) is claimed</td></tr>
           <tr><td>IQ3_XXS</td><td class="n">75.8 GB</td><td class="n">19.9<span class="sub">2026-10-27 ABBA (RESULTS 59)</span><!-- claim:card-decode-flashnext-iq3xxs --></td><td class="n">22.87<!-- claim:chain1103-iq3xxs --></td><td class="n">–</td><td class="n">349 / 182<!-- claim:chain1103-iq3xxs-34k --><!-- claim:chain1103-iq3xxs-64k --></td><td class="n">16.1 / 12.3<span class="sub">64k: daytime re-run, not clean (browser held 1.4 GB VRAM); clean re-run planned</span><!-- claim:chain1103-iq3xxs-64k-decode --></td><td class="n"><b>193</b></td><td><b>recommended default</b> (3-bit, reads best, popular for coding). The 2026-10-27 pair (19.9) and Q2_0 (22.2, 2026-10-28) are from different days, and on 2026-11-04 it decoded 22.87, so the old gap to Q2_0 is not used here. +2 tasks over Q2_0 (not proven)</td></tr>
           <tr><td>Coder IQ1_M<span class="sub">ISTA GSQ-RCO, 256 of 512 experts</span></td><td class="n">58.4 GB</td><td class="n">21.2<span class="sub">agent session, one run, no record</span></td><td class="n">not re-run</td><td class="n">–</td><td class="n">not re-run</td><td class="n">not re-run</td><td class="n">189</td><td><b>coding agents.</b> OpenCode session 55.5 s vs 73.4 s on IQ2_XS (−24 %, one run, RESULTS 63, no record); general knowledge not checked beyond the task set</td></tr>
           <tr><td>IQ2_XS</td><td class="n">68.0 GB</td><td class="n">21.0<span class="sub">2026-10-28; 21.94 in the 2026-10-27 ABBA</span></td><td class="n">not re-run</td><td class="n">253 / 242</td><td class="n">504 / 317<!-- claim:chain1103-iq2xs-34k --><!-- claim:chain1103-iq2xs-64k --></td><td class="n">24.7 / 16.9<span class="sub">64k: daytime re-run, not clean (browser held 1.4 GB VRAM); clean re-run planned</span><!-- claim:chain1103-iq2xs-64k-decode --></td><td class="n">187</td><td>superseded by Q2_0 in the 2026-10-28 set: lower decode and prompt speed, bigger, 4 fewer tasks (not proven)</td></tr>
@@ -196,7 +197,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         </tbody>
       </table>
     </div>
-    <p class="note">Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it cost 18 % decode and 45 % prompt speed in these single runs (2026-10-28) <!-- claim:card-decode-nemotron -->; two runs each on 2026-11-04 (top table, v0.3.5 kit, not clean) gave +6 % decode <!-- claim:chain1103-bolt -->, so there is no steady gain either way. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.</p>
+    <p class="note">Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it cost 18 % decode and 45 % prompt speed in these single runs (2026-10-28) <!-- claim:card-decode-nemotron -->; two runs each on 2026-11-04 (top table, v0.3.5 kit, cleanliness not recorded) gave +6 % decode <!-- claim:chain1103-bolt -->, so there is no steady gain either way. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.</p>
   </section>
 
   <section>
@@ -271,11 +272,11 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   <section>
     <h2>Where it does not help</h2>
     <ul>
-      <li><b>Models that fit in RAM.</b> Qwen3.6-35B (22 GB) decoded at the same speed with or without the plugin on 2026-10-27 (46.1 vs 45.6 tok/s without MTP, RESULTS 58); two runs each on 2026-11-04 gave 46.59 stock vs 51.80 moe-cache (+11 %, not clean) <!-- claim:chain1103-qwen36 -->. No steady gain, so the launcher runs stock. Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.</li>
+      <li><b>Models that fit in RAM.</b> Qwen3.6-35B (22 GB) decoded at the same speed with or without the plugin on 2026-10-27 (46.1 vs 45.6 tok/s without MTP, RESULTS 58); two runs each on 2026-11-04 gave 46.59 stock vs 51.80 moe-cache (+11 %, cleanliness not recorded) <!-- claim:chain1103-qwen36 -->. No steady gain, so the launcher runs stock. Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.</li>
       <li><b>Decode at long agent contexts.</b> On Flash-Next the 2.0–2.4× session gain comes from prompt processing. Decode at 65k-context agent settings is equal (21.5 vs 21.2 tok/s).</li>
       <li><b>CPU kernels.</b> The numbers here were measured with llama.cpp's own CPU kernels (ggml-cpu-zen4) on both sides. The plugin's exact Q2_0 executor kernel, on Windows since 2026-10-28, did not change the PC's decode (it is limited by RAM bandwidth). The gain comes from which experts are in RAM and how they are read, not from faster math.</li>
       <li><b>Cold start.</b> From a cold file cache the plugin reports ready 5.6 s later than stock (28.5 vs 22.9 s) while it loads its hot experts; the first answer wins it back. A warm restart answers 6 s sooner than stock.</li>
-      <li><b>Small samples.</b> Two runs per side on every decode pair (GLM with MTP too, 2026-11-04); long-context rows are one cold run per point. Every 2026-11-04 run was “not clean” (owner work was running). Run-to-run spread was under 1 tok/s on the 2026-10-27/28 pairs; for the 2026-11-04 pairs the spread per cell is on benchmarks/BOARD.md.</li>
+      <li><b>Small samples.</b> Two runs per side on every decode pair (GLM with MTP too, 2026-11-04); long-context rows are one cold run per point. The cleanliness of the 2026-11-04 runs is not recorded. Run-to-run spread was under 1 tok/s on the 2026-10-27/28 pairs; for the 2026-11-04 pairs the spread per cell is on benchmarks/BOARD.md.</li>
       <li><b>MTP on models without a head.</b> Flash-Next and the 122B files have no MTP head; a separate head file made both stock and moe-cache slower (see above).</li>
     </ul>
   </section>
@@ -357,7 +358,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       "mc": 22.87,
       "d": [
         "GPU expert layers: 8 (moe-cache; stock = launcher defaults, count not recorded)",
-        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · cleanliness not recorded",
         "moe-cache peak: VRAM 12732 MiB · process RAM 22838 MiB",
         "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_cfa905 · claim chain1103-iq3xxs"
       ]
@@ -369,7 +370,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       "mc": 19.62,
       "d": [
         "GPU expert layers: 6 (moe-cache; stock = launcher defaults, count not recorded)",
-        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · cleanliness not recorded",
         "moe-cache peak: VRAM 12211 MiB · process RAM 23779 MiB",
         "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_42b419 · claim chain1103-iq3s"
       ]
@@ -381,7 +382,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       "mc": 23.31,
       "d": [
         "GPU expert layers: 10 (moe-cache; stock = launcher defaults, count not recorded)",
-        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · cleanliness not recorded",
         "moe-cache peak: VRAM 12180 MiB · process RAM 21980 MiB",
         "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_15144c · claim chain1103-122b"
       ]
@@ -394,7 +395,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       "mtp": 8.17,
       "d": [
         "GPU expert layers: 0 (moe-cache; stock = launcher defaults, count not recorded)",
-        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · cleanliness not recorded",
         "moe-cache peak: VRAM 7867 MiB · process RAM 23632 MiB",
         "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_bea283 · claim chain1103-glm"
       ]
@@ -406,7 +407,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       "mc": 31.68,
       "d": [
         "GPU expert layers: not recorded (moe-cache; stock = launcher defaults, count not recorded)",
-        "ctx 8192 · 14-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "ctx 8192 · 14-token water request · ABBA, 2 runs each · cleanliness not recorded",
         "moe-cache peak: VRAM 10299 MiB · process RAM 12514 MiB",
         "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_00ce69 · claim chain1103-bolt"
       ]
@@ -419,7 +420,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       "mtp": 72.69,
       "d": [
         "GPU expert layers: 20 (moe-cache; stock = launcher defaults, count not recorded)",
-        "ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)",
+        "ctx 8192 · 13-token water request · ABBA, 2 runs each · cleanliness not recorded",
         "moe-cache peak: VRAM 12402 MiB · process RAM 12020 MiB",
         "v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_92657e · claim chain1103-qwen36"
       ]

@@ -6,7 +6,7 @@ Easier to install and keep up to date: a one-line install, `moe-cache launch` as
 
 ## Measured
 
-**What these numbers are.** Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), overnight run of 2026-11-04. They were measured on the **released v0.3.5 kit with the official llama.cpp b11966**. **v0.3.6 bundles b12064 and has not been re-measured against it**: a paired run is still open, so treat these as the v0.3.5 numbers. Every run was "not clean": other work of the owner was running on the PC. Order stock, moe-cache, moe-cache, stock (ABBA), two runs per arm, a 13-token request; the table shows the means. Records: `benchmarks/runs/2026-11-04_pc_*`, claims `chain1103-*`, board `benchmarks/BOARD.md`.
+**What these numbers are.** Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), overnight run of 2026-11-04. They were measured on the **released v0.3.5 kit with the official llama.cpp b11966**. **v0.3.6 bundles b12064 and has not been re-measured against it**: a paired run is still open, so treat these as the v0.3.5 numbers. The cleanliness of the runs is not recorded (the PC harness writes "not clean: owner work running" as fixed text at the start of every run, without checking, so that text is no evidence either way). Order stock, moe-cache, moe-cache, stock (ABBA), two runs per arm, a 13-token request; the table shows the means. Records: `benchmarks/runs/2026-11-04_pc_*`, claims `chain1103-*`, board `benchmarks/BOARD.md`.
 
 | Model | Decode, stock tok/s | Decode, moe-cache tok/s | Change |
 |---|---|---|---|
@@ -30,9 +30,9 @@ Models that fit in RAM: the launcher still runs plain llama.cpp for them; the tw
 | IQ3_XXS | 349 | 182 | 16.1 | 12.3 (*) |
 | IQ3_S | 278 | 221 | 13.4 | 11.9 |
 
-(*) From a daytime re-run, **not clean** (the owner's browser held 1.4 GB of VRAM): the overnight run had no value here because the model ended its answer after 2 tokens, and the daytime re-run with the fixed harness generated 128 tokens. A clean re-run is planned. The prompt speeds in the table are from the overnight run, which was also not clean (owner work was running).
+(*) From a daytime re-run, **not clean** (the owner's browser held 1.4 GB of VRAM): the overnight run had no value here because the model ended its answer after 2 tokens, and the daytime re-run with the fixed harness generated 128 tokens. A clean re-run is planned. The prompt speeds in the table are from the overnight run, whose cleanliness is also not recorded.
 
-**gpt-oss-120b, today's code against yesterday's** (two experimental kits, official llama.cpp b12064, 30,374-token prompt, ABBA, two runs each, not clean): prompt **73 -> 115 tok/s** (73.1 / 73.2 against 114.6 / 114.7; the fix keeps resident experts from being moved to the most-recently-used end during a long prompt). Decode after the prompt 8.8 -> 9.2 tok/s. Record `2026-11-04_pc_76a45c`, claim `chain1103-gptoss-623`. This compares two builds of moe-cache, not moe-cache against stock.
+**gpt-oss-120b, today's code against yesterday's** (two experimental kits, official llama.cpp b12064, 30,374-token prompt, ABBA, two runs each, cleanliness not recorded): prompt **73 -> 115 tok/s** (73.1 / 73.2 against 114.6 / 114.7; the fix keeps resident experts from being moved to the most-recently-used end during a long prompt). Decode after the prompt 8.8 -> 9.2 tok/s. Record `2026-11-04_pc_76a45c`, claim `chain1103-gptoss-623`. This compares two builds of moe-cache, not moe-cache against stock.
 
 **Not measured:** v0.3.6 against v0.3.5 on b12064; the "about +5-7 % on long prompts" that the CHANGELOG expects from b12064 is from runs with our former patch and is not a claim here.
 
