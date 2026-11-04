@@ -1196,7 +1196,7 @@ try:
     os.environ["LLAMA_SERVER"] = a; r = mc.find_llama_server(saved=""); check(r["path"] == a, "windows: the process environment still comes before the registry")
     del os.environ["LLAMA_SERVER"]; store["HKCU"].clear(); store["HKLM"].clear()
     r = mc.find_llama_server(saved=c); check(r["path"] == c, "windows: registry empty: the page's saved path")
-    pd = os.path.dirname(mkls("w", "onpath")); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd
+    _op = mkls("w", "onpath"); apis[_op] = "3"; pd = os.path.dirname(_op); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd       # a supported API: an unreadable one gives way to a folder server (LAUNCHER-689)
     r = mc.find_llama_server(saved=""); check(os.path.dirname(r["path"] or "") == pd and "PATH in the user environment" in r["source"], f"windows: llama-server on the PATH as the registry stores it ({r['source']})")
     store["HKCU"].clear()
     dl = os.path.join(win, "Downloads", "llama-b12000-bin-win-vulkan-x64"); os.makedirs(dl); open(os.path.join(dl, mc.llama_exe()), "wb").write(b"x")
