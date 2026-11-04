@@ -34,6 +34,7 @@
 #  include <sys/mman.h>
 #  include <sys/stat.h>
 #  include <signal.h>
+#  include <setjmp.h>
 #  include <unistd.h>
 #  define MOE_CACHE_EXPORT __attribute__((visibility("default")))
 #endif
@@ -375,6 +376,12 @@ inline void file_view_unmap(const char * p, size_t size) {
 // the new end and no message (audit A1-04). llama.cpp's own loader already refuses a file that is short at load time. This handler only says what
 // probably happened, then lets the default action run (SA_RESETHAND: the faulting instruction runs again and the process dies as before, core dump
 // included). Not installed when something else (a debugger helper, a sanitizer) already handles SIGBUS.
+// A scoped guard (CACHE-685): file_view_load runs its page touches inside one, so a read error or a cut-short file on THAT path returns false instead of
+// killing the server. Per thread; any SIGBUS outside a guard still prints the message below and dies.
+inline sigjmp_buf *& sigbus_guard() {
+    static thread_local sigjmp_buf * g = nullptr;
+    return g;
+}
 inline void install_sigbus_message() {
     static bool done = false;
     if (done) {
@@ -388,12 +395,16 @@ inline void install_sigbus_message() {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = [](int) {
+        if (sigbus_guard()) {
+            siglongjmp(*sigbus_guard(), 1);        // guarded: back to the sigsetjmp in file_view_load
+        }
         static const char msg[] = "moe-cache: bus error while reading the model file: the file was probably cut short, replaced or deleted while the server "
                                   "was running, or the disk / network share holding it dropped. Check the file and start again.\n";
         const ssize_t r = write(2, msg, sizeof(msg) - 1);       // async-signal-safe
         (void) r;
+        signal(SIGBUS, SIG_DFL);                                // the faulting instruction runs again and the process dies as before (core dump included)
     };
-    sa.sa_flags = SA_RESETHAND | SA_NODEFER;
+    sa.sa_flags = SA_NODEFER;
     sigaction(SIGBUS, &sa, nullptr);
 }
 #endif
@@ -462,8 +473,9 @@ inline const char * file_view_map(const char * path, size_t * size) {
     return nullptr;
 #endif
 }
-// bring [p, p + n) of a file view into this process's working set: one large read-ahead (PrefetchVirtualMemory), then a touch per page
-inline void file_view_load(const char * p, size_t n) {
+// bring [p, p + n) of a file view into this process's working set: one large read-ahead (PrefetchVirtualMemory), then a touch per page.
+// false: Linux could not read the pages (the file is cut short past this range, or a disk read error); the caller reports it. Windows: always true.
+inline bool file_view_load(const char * p, size_t n) {
 #ifdef _WIN32
     typedef BOOL (WINAPI * prefetch_fn)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
     static const prefetch_fn prefetch = (prefetch_fn) (void *) GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory");
@@ -480,9 +492,10 @@ inline void file_view_load(const char * p, size_t n) {
     }
     sum += (unsigned char) *(volatile const char *) p + (unsigned char) *(volatile const char *) (p + n - 1);
     (void) sum;
+    return true;
 #elif defined(__linux__)
     if (n == 0) {
-        return;
+        return true;
     }
     // one large read-ahead of the whole expert (MADV_WILLNEED), then map every page into this process (MADV_POPULATE_READ waits for the reads;
     // a touch per page where the kernel lacks it)
@@ -491,15 +504,33 @@ inline void file_view_load(const char * p, size_t n) {
 #ifndef MADV_POPULATE_READ
 #define MADV_POPULATE_READ 22
 #endif
-    if (madvise((void *) a, b - a, MADV_POPULATE_READ) != 0) {
-        unsigned sum = 0;
-        for (uintptr_t o = a; o < b; o += 4096) {
-            sum += (unsigned char) *(volatile const char *) o;
-        }
-        (void) sum;
+#ifndef MOE_CACHE_TEST_NO_POPULATE      // CI only: -DMOE_CACHE_TEST_NO_POPULATE tests the guarded touch below, which a kernel without MADV_POPULATE_READ takes
+    if (madvise((void *) a, b - a, MADV_POPULATE_READ) == 0) {
+        return true;
     }
+    if (errno == EFAULT || errno == EIO) {
+        return false;          // CACHE-685: past the end of a cut-short file, or a read error: touching the pages would be a SIGBUS
+    }
+#endif
+    // the kernel lacks MADV_POPULATE_READ (EINVAL) or could not for another reason: a touch per page, inside a guard, so a SIGBUS is a failure, not a crash
+    install_sigbus_message();
+    sigjmp_buf jb;
+    sigjmp_buf * const outer = sigbus_guard();
+    if (sigsetjmp(jb, 1) != 0) {
+        sigbus_guard() = outer;
+        return false;
+    }
+    sigbus_guard() = &jb;
+    unsigned sum = 0;
+    for (uintptr_t o = a; o < b; o += 4096) {
+        sum += (unsigned char) *(volatile const char *) o;
+    }
+    (void) sum;
+    sigbus_guard() = outer;
+    return true;
 #else
     (void) p; (void) n;
+    return true;
 #endif
 }
 // take whole pages of a file view out of the working set: they move to the standby list (still in RAM until the system needs the memory)
