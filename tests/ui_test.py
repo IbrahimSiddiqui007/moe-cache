@@ -497,6 +497,24 @@ _pk = json.loads(req(f"/api/peek?port={_tp}")[1])
 _old_ports = ui.PEEK_PORTS; ui.PEEK_PORTS = [_tp]; json.loads(req("/api/servers")[1]); ui.PEEK_PORTS = _old_ports
 check(_pk.get("up") and _pk.get("key") == "needed" and _auth and not any(_auth), f"peek/scan: a foreign server asking for a key is not sent the stored one ({_pk}, {_auth})")
 _trap.shutdown()
+# SERVER-692: a listener that answers /v1/models 200 the first time and 401 after (to make key_for() hand over the stored key) gets no Authorization header
+_auth2, _n2 = [], [0]
+class _Trap2(_BH):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        _auth2.append(self.headers.get("Authorization"))
+        if self.path == "/v1/models":
+            _n2[0] += 1
+        code = 200 if self.path == "/health" or (self.path == "/v1/models" and _n2[0] == 1) else 401
+        self.send_response(code); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
+_trap2 = _TS(("127.0.0.1", 0), _Trap2); threading.Thread(target=_trap2.serve_forever, daemon=True).start()
+_tp2 = _trap2.server_address[1]
+_old_sk = ui.mc.stored_key; ui.mc.stored_key = lambda: "STORED-SECRET-KEY"
+_pk2 = json.loads(req(f"/api/peek?port={_tp2}")[1]); _n2[0] = 0
+ui.PEEK_PORTS = [_tp2]; json.loads(req("/api/servers")[1]); ui.PEEK_PORTS = _old_ports
+ui.mc.stored_key = _old_sk
+check(_pk2.get("up") and _auth2 and not any(_auth2), f"peek/scan: a server answering 200 then 401 is not sent the stored key either ({_pk2}, {_auth2})")
+_trap2.shutdown()
 ui.PEEK_PORTS = [port, closed]
 sv = json.loads(req("/api/servers")[1])["servers"]
 check(len(sv) == 1 and sv[0]["port"] == port and sv[0]["started_here"], f"servers: the one this page started is marked, closed ports left out ({sv})")
