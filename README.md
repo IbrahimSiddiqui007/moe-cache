@@ -225,7 +225,7 @@ A newer model that fits in RAM + VRAM, measured on the same PC. One cold run per
 | Nemotron, moe-cache forced | 22.0 GB | plugin | 22.1 at 57k<br><sub>22.8 short</sub> | 329 at 57k | – | 59.2 s |
 | Flash-Next Q2_0 (for comparison) | 66.4 GB | moe-cache | 22.2 | 287 at 34k | 191 | –<br><sub>IQ2_XS 73.4 s, Coder 55.5 s</sub> |
 
-Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it cost 18 % decode and 45 % prompt speed in these single runs (2026-10-28); two runs each on 2026-11-04 (top table, v0.3.5 kit, not clean) gave +6 % decode, so there is no steady gain either way. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.
+Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it cost 18 % decode and 45 % prompt speed in these single runs (2026-10-28); two runs each on 2026-11-04 (top table, v0.3.5 kit, not clean) gave +6 % decode <!-- claim:chain1103-bolt -->, so there is no steady gain either way. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.
 
 ### GLM-5.3-Flash: best setting on this PC
 
@@ -237,7 +237,7 @@ Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and th
 - **Best:** the model on the faster drive and the launcher's default layers. The faster drive gave +3.6 % on chat text and +13 % on code (fixed memory, RESULTS 62).
 - **43 layers:** better for chat, but one agent turn (3k prompt + 300 tokens out) takes 99 s vs 95 s, so the default stays.
 - **Code is slow** (2.8 tok/s): GLM's code experts do not fit in the 14–19 GiB cache; the same request hits no better the second time. Needs more RAM, not a setting.
-- This table is from 2026-10-28 and has no stock side. The stock ratio for GLM is the 2026-11-04 pair in the top table (stock 2.98, moe-cache 6.27 tok/s, drive D:); the single stock run of 2026-10-27 (2.21 tok/s) was on drive C:.
+- This table is from 2026-10-28 and has no stock side. The stock ratio for GLM is the 2026-11-04 pair in the top table (stock 2.98, moe-cache 6.27 tok/s, drive D:) <!-- claim:chain1103-glm -->; the single stock run of 2026-10-27 (2.21 tok/s) was on drive C:.
 
 ### Qwen3.6-35B: a model that fits in RAM, with and without MTP
 
@@ -248,7 +248,7 @@ Qwen3.6-35B-A3B Q4_K_M (20 GB) fits in the 32 GB, so the launcher runs stock lla
 | stock llama-server | 46.01 / 46.10 | 68.28 / 68.92 | +49 % |
 | moe-cache (forced) | 45.57 / 45.62 | **70.29 / 70.20** | +54 % |
 
-Measured 2026-10-27 (older kit, llama.cpp 620d2225c): two measurements per cell, cold, PC above (RESULTS 58); the 2026-11-04 rows in the top table (+11 % without MTP, +56 % with MTP against stock without MTP) are a separate, newer run. About 78 % of the drafted tokens were accepted. Prompt processing is 5–8 % slower with MTP. Without MTP the plugin and stock decode at the same speed, as expected for a model that fits.
+Measured 2026-10-27 (older kit, llama.cpp 620d2225c): two measurements per cell, cold, PC above (RESULTS 58); the 2026-11-04 rows in the top table (+11 % without MTP, +56 % with MTP against stock without MTP) <!-- claim:chain1103-qwen36 --> are a separate, newer run. About 78 % of the drafted tokens were accepted. Prompt processing is 5–8 % slower with MTP. Without MTP the plugin and stock decode at the same speed, as expected for a model that fits.
 
 ### Why MTP is on for some models and off for others
 
@@ -280,7 +280,7 @@ On the big model the gain is in reading the prompt: the first answer comes about
 
 ### Where it does not help
 
-- **Models that fit in RAM.** Qwen3.6-35B (20 GB) decoded at the same speed with or without the plugin on 2026-10-27 (46.1 vs 45.6 tok/s without MTP, RESULTS 58); two runs each on 2026-11-04 gave 46.59 stock vs 51.80 moe-cache (+11 %, not clean). No steady gain, so the launcher runs stock. Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.
+- **Models that fit in RAM.** Qwen3.6-35B (20 GB) decoded at the same speed with or without the plugin on 2026-10-27 (46.1 vs 45.6 tok/s without MTP, RESULTS 58); two runs each on 2026-11-04 gave 46.59 stock vs 51.80 moe-cache (+11 %, not clean) <!-- claim:chain1103-qwen36 -->. No steady gain, so the launcher runs stock. Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.
 - **Decode at long agent contexts.** On Flash-Next the 2.0–2.4× session gain comes from prompt processing. Decode at 65k-context agent settings is equal (21.5 vs 21.2 tok/s).
 - **CPU kernels.** The numbers here were measured with llama.cpp's own CPU kernels (ggml-cpu-zen4) on both sides. The plugin's exact Q2_0 executor kernel, on Windows since 2026-10-28, did not change the PC's decode (it is limited by RAM bandwidth). The gain comes from which experts are in RAM and how they are read, not from faster math.
 - **Cold start.** From a cold file cache the plugin reports ready 5.6 s later than stock (28.5 vs 22.9 s) while it loads its hot experts; the first answer wins it back. A warm restart answers 6 s sooner than stock.
@@ -339,8 +339,8 @@ On Linux (older laptop runs, v0.2.x) the gains were 2.4x to 5.2x: [docs/RESULTS_
 
 | `--ram` | Windows desktop, Flash-Next IQ2_XS (68 GB), 16 GB GPU | Linux laptop, Qwen3-Next-80B (48.5 GB), about 2.6 GB GPU use |
 |---|---|---|
-| 24 GB | **21.81** (RESULTS §60) | **10.6**, stock 2.3 (RESULTS §6; v0.1 build) |
-| 20 GB | **21.00** (RESULTS §60) | **9.3**, stock 1.3 (RESULTS §6; v0.1 build) |
+| 24 GB | **21.81** (RESULTS §60) | **10.6**, stock 2.3 ([RESULTS_OLD_LAPTOP §6](docs/RESULTS_OLD_LAPTOP.md); v0.1 build) |
+| 20 GB | **21.00** (RESULTS §60) | **9.3**, stock 1.3 ([RESULTS_OLD_LAPTOP §6](docs/RESULTS_OLD_LAPTOP.md); v0.1 build) |
 | 16 GB | **20.03**, 92 % of the 24 GB speed (RESULTS §60, after the 2026-10-27 job-limit fix) | not measured |
 | 12 GB, 8 GB, 32 GB or more | not measured | not measured |
 
@@ -375,7 +375,7 @@ Everything, with methods and caveats: [docs/RESULTS.md](docs/RESULTS.md) (Window
 | [Control page](docs/GUI.md), [try it step by step](docs/CONTROL_PAGE_CHECK.md) | the browser app |
 | [How it works](docs/HOW_IT_WORKS.md) | the cache, the plugin, what it changes in llama.cpp (nothing) |
 | [Exactness](docs/EXACTNESS.md) | how "same tokens as stock" is checked |
-| [Results](docs/RESULTS.md) and the [benchmark card](docs/benchmark_card.html) | every measurement |
+| [Results](docs/RESULTS.md) (Windows desktop), [older laptop results](docs/RESULTS_OLD_LAPTOP.md) and the [benchmark card](docs/benchmark_card.html) | every measurement, newest first |
 | [Hardware and limits](docs/PLATFORMS.md) | what is tested where, known limitations |
 | [Configuration](docs/CONFIGURATION.md) | environment variables |
 | [FAQ](docs/FAQ.md) | questions, and how moe-cache compares with other projects |
