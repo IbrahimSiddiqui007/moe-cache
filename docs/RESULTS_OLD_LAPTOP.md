@@ -12,7 +12,7 @@ Results from the Linux laptop, v0.1 to v0.2.3.5 and some later runs of 2026-10-2
 
 Method: "clean" = CPU <= 58 C at start, no background load, fresh page cache, process memory limit via cgroup (`MemoryMax`, swap off), 4 prompts, temperature 0, seed 42, forward and reverse order; "steady" = mean of requests 2-4. Unclean runs are not reported in these tables. "Stock" = the same llama.cpp without the plugin. Raw data and scripts: `work/t7-plugin/` of the research repo. A later result on the same machine and model replaces an earlier one when it says so.
 
-Every result starts with a small table: date (from the heading, else from the git history of this file), machine, model and quant, kit or commit, llama.cpp build, settings and whether the run was clean. A cell says "not stated" when the result's text does not give it. The old heading is kept in small print under the table.
+Every result starts with a small table: date (from the heading, else from the git history of this file), machine (taken from the old header's list of sections per machine, not re-checked per result), model and quant, kit or commit, llama.cpp build, settings and whether the run was clean. A cell says "not stated" when the result's text does not give it. The old heading is kept in small print under the table.
 
 ## Contents
 
@@ -179,7 +179,7 @@ a private cache read as fast as page-cache read-ahead would keep both gains.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-26 evening | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Flash-Next, Q4_K_M, IQ2_XS | mentioned in the text: v0.2.3.5 | mentioned in the text: 23b0202a1 | idea I30; laptop | Not stated |
+| 2026-10-26 evening | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Flash-Next, Q4_K_M, IQ2_XS | versions and commits named in the text: v0.2.3.5 | mentioned in the text: 23b0202a1 | idea I30; laptop | Not stated |
 
 <sub>Old heading: 57. Agent-shaped benchmark (idea I30): replayed OpenCode and Hermes sessions, stock vs moe-cache (2026-10-26 evening, laptop)</sub>
 
@@ -456,7 +456,7 @@ chunk, so its long prompts run at under 6 tok/s. Ideas I3 (keep a share of the c
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-15 evening | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Flash-Next, Q4_K_M, IQ2_XS | mentioned in the text: v0.2.3.3 | 23b0202a1 (old file header: section 15 on) | launcher command lines, clean-run gate, page cache dropped before stock runs | Yes (clean-run gate, per heading) |
+| 2026-10-15 evening | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Flash-Next, Q4_K_M, IQ2_XS | versions and commits named in the text: v0.2.3.3 | 23b0202a1 (old file header: section 15 on) | launcher command lines, clean-run gate, page cache dropped before stock runs | Yes (clean-run gate, per heading) |
 
 <sub>Old heading: 46. Prompt processing, stock vs moe-cache (2026-10-15 evening; launcher command lines, clean-run gate, page cache dropped before stock runs)</sub>
 
@@ -477,7 +477,7 @@ so its row uses section 38's numbers, same launcher settings at ctx 8192.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-15 | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | Qwen3.5-122B-A10B, three UD quants | mentioned in the text: 02121c6 | mentioned in the text: 23b0202a1 | T27; unsloth UD quants, 24 GB limit, 8 GB GPU, launcher defaults | Not stated |
+| 2026-10-15 | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | Qwen3.5-122B-A10B, three UD quants | versions and commits named in the text: 02121c6 | mentioned in the text: 23b0202a1 | T27; unsloth UD quants, 24 GB limit, 8 GB GPU, launcher defaults | Not stated |
 
 <sub>Old heading: 45. Qwen3.5-122B-A10B at three bit widths (T27; unsloth UD quants, 24 GB limit, 8 GB GPU, launcher defaults, 2026-10-15)</sub>
 
@@ -499,7 +499,7 @@ model in 24 GB, so speed falls with file size; the gap to stock stays 4-5x becau
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-15 afternoon | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Qwen3.5-122B, Flash-Next, Q4_K_M, IQ2_XS | mentioned in the text: 02121c6 | mentioned in the text: 23b0202a1 | llama.cpp 23b0202a1, plugin from 02121c6, clean-run gate, 8 x 48 tokens, mean of requests 4-8 | Yes (clean-run gate, per heading) |
+| 2026-10-15 afternoon | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: Qwen3.6, Qwen3.5-122B, Flash-Next, Q4_K_M, IQ2_XS | versions and commits named in the text: 02121c6 | mentioned in the text: 23b0202a1 | llama.cpp 23b0202a1, plugin from 02121c6, clean-run gate, 8 x 48 tokens, mean of requests 4-8 | Yes (clean-run gate, per heading) |
 
 <sub>Old heading: 44. Re-measured for the README (2026-10-15 afternoon; llama.cpp 23b0202a1, plugin from 02121c6, clean-run gate, 8 x 48 tokens, mean of requests 4-8)</sub>
 
@@ -709,7 +709,7 @@ automatic sizing reaches.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-15 | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: gpt-oss, Granite, OLMoE, DeepSeek, Qwen3-Next, MXFP4, Q4_K_M | mentioned in the text: v0.2.0, v0.2.3.2 | mentioned in the text: 23b0202a1 | overnight; 24 GB hard limit | Not stated |
+| 2026-10-15 | Linux laptop (i7-13620H, RTX 4060 Laptop 8 GB, 30 GB RAM) | not in the heading; mentioned in the text: gpt-oss, Granite, OLMoE, DeepSeek, Qwen3-Next, MXFP4, Q4_K_M | versions and commits named in the text: v0.2.0, v0.2.3.2 | mentioned in the text: 23b0202a1 | overnight; 24 GB hard limit | Not stated |
 
 <sub>Old heading: 36. Identity on llama.cpp 23b0202a1: six more models and a second race (2026-10-15, overnight; 24 GB hard limit)</sub>
 

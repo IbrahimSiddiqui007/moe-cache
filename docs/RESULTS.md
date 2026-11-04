@@ -28,7 +28,7 @@ The Linux laptop results (Results 1-48, 51-53, 57, 66, 70) moved to [RESULTS_OLD
 
 Dates differ between sections on purpose: a result is true for the date, version and machine in its heading. Rules for reading it: a later section on the same machine and model replaces an earlier one when it says so.
 
-Every result starts with a small table: date (from the heading, else from the git history of this file), machine, model and quant, kit or commit, llama.cpp build, settings and whether the run was clean. A cell says "not stated" when the result's text does not give it; nothing was filled in by guessing. The result's old heading is kept in small print under the table.
+Every result starts with a small table: date (from the heading, else from the git history of this file), machine (taken from the old header's list of sections per machine, not re-checked per result), model and quant, kit or commit, llama.cpp build, settings and whether the run was clean. A cell says "not stated" when the result's text does not give it; nothing was filled in by guessing. The result's old heading is kept in small print under the table.
 
 Method: "clean" = CPU <= 58 C at start, no background load, fresh page cache, process memory limit via cgroup (`MemoryMax`, swap off),
 4 prompts, temperature 0, seed 42, forward and reverse order; "steady" = mean of requests 2-4. Unclean runs are not reported.
@@ -139,7 +139,7 @@ so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): d
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-11-03 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | mentioned in the text: v0.3.5, v0.3.4, 1309fcd | mentioned in the text: b11966 | clean: PC restarted at 02:03, baseline guard PASS at 49.4 tok/s, runs 02:30-03:25 | Yes (heading says clean) |
+| 2026-11-03 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | versions and commits named in the text: v0.3.5, v0.3.4, 1309fcd | mentioned in the text: b11966 | clean: PC restarted at 02:03, baseline guard PASS at 49.4 tok/s, runs 02:30-03:25 | Yes (heading says clean) |
 
 <sub>Old heading: 79. v0.3.5 vs v0.3.4 on long prompts, official b11966 server (Windows PC, 2026-11-03; clean: PC restarted at 02:03, baseline guard PASS at 49.4 tok/s, runs 02:30-03:25)</sub>
 
@@ -169,7 +169,7 @@ Text was not compared in this run. Only these models and depths are measured. So
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-11-02 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | mentioned in the text: v0.3.5, v0.3.4 | mentioned in the text: b11966 | next release; Windows PC; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13 | Yes (heading says clean) |
+| 2026-11-02 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | versions and commits named in the text: v0.3.5, v0.3.4 | mentioned in the text: b11966 | next release; Windows PC; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13 | Yes (heading says clean) |
 
 <sub>Old heading: 78. Experimental (next release) vs v0.3.4 on long prompts (Windows PC, 2026-11-02; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13)</sub>
 
@@ -231,7 +231,7 @@ One model, 34k tokens only. Other models and depths are not measured.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-31 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | DeepSeek V4.1 | mentioned in the text: v0.3.3 | mentioned in the text: b11966 | see the section | Not stated |
+| 2026-10-31 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | DeepSeek V4.1 | versions and commits named in the text: v0.3.3 | mentioned in the text: b11966 | see the section | Not stated |
 
 <sub>Old heading: 75. Buffered reads on the private-memory path, and the DeepSeek V4.1 "stop after 10 tokens" (Windows PC, 2026-10-31)</sub>
 
@@ -263,7 +263,7 @@ Same PC (7950X, RX 9070 XT 16 GB, 32 GB), llama.cpp Vulkan b11669, Flash-Next Q2
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-30 afternoon | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Q2_0 | mentioned in the text: v0.3.2, b3a6e45, e212dfa | mentioned in the text: b11669, b11966 | all "not clean": the owner's programs held ~15 GB RAM and some VRAM; one queue, kits e212dfa / b3a6e45 | No (heading says not clean) |
+| 2026-10-30 afternoon | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Q2_0 | versions and commits named in the text: v0.3.2, b3a6e45, e212dfa | mentioned in the text: b11669, b11966 | all "not clean": the owner's programs held ~15 GB RAM and some VRAM; one queue, kits e212dfa / b3a6e45 | No (heading says not clean) |
 
 <sub>Old heading: 73. v0.3.2 checks on the Windows PC (2026-10-30 afternoon; all "not clean": the owner's programs held ~15 GB RAM and some VRAM; one queue, kits e212dfa / b3a6e45)</sub>
 
@@ -434,7 +434,7 @@ differently); tokens were identical everywhere it was checked. Thinking stays as
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-28 23:32 -> 10-29 08:01 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.6, Qwen3.5-122B, GLM-5.3, Nemotron, Q2_0, IQ2_XXS | mentioned in the text: 28b022b, f478564, 15e09b1, 77e6e09, 8451a87 | mentioned in the text: 620d2225c, b11966, b11669 | pc-bench | Not stated |
+| 2026-10-28 23:32 -> 10-29 08:01 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.6, Qwen3.5-122B, GLM-5.3, Nemotron, Q2_0, IQ2_XXS | versions and commits named in the text: 28b022b, f478564, 15e09b1, 77e6e09, 8451a87 | mentioned in the text: 620d2225c, b11966, b11669 | pc-bench | Not stated |
 
 <sub>Old heading: 67. Overnight chain on the Windows PC (pc-bench, 2026-10-28 23:32 -> 10-29 08:01): N29, N22, N15, N30, N26, N27, N23, long context, Bolt, HIP, N25c, N18</sub>
 
@@ -615,7 +615,7 @@ and Qwen3.6 at 128k; peak **30.86 GiB** (hip_plugin run 1). Never past 28 GiB: N
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-28 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Nemotron 3.5 Bolt 74B-A9B; DeepSeek V4-Flash (desk estimate only) | mentioned in the text: 681f3bc | mentioned in the text: 620d2225c, b11966, ff0d396e3 | pc-glm; desk only | Not stated |
+| 2026-10-28 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Nemotron 3.5 Bolt 74B-A9B; DeepSeek V4-Flash (desk estimate only) | versions and commits named in the text: 681f3bc | mentioned in the text: 620d2225c, b11966, ff0d396e3 | pc-glm; desk only | Not stated |
 
 <sub>Old heading: 65. New models on the Windows PC (pc-glm, 2026-10-28 evening): Nemotron 3.5 Bolt 74B-A9B; DeepSeek V4-Flash (desk only)</sub>
 
@@ -652,7 +652,7 @@ launcher's default (stock) is right. Needs llama.cpp newer than 620d2225c (b1196
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-28 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0, Qwen3.5-122B, Qwen3.6 | mentioned in the text: 28b022b, f478564, 31ac159 | mentioned in the text: 620d2225c | pc-bench | Not stated in the heading; the text mentions runs that were not clean |
+| 2026-10-28 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0, Qwen3.5-122B, Qwen3.6 | versions and commits named in the text: 28b022b, f478564, 31ac159 | mentioned in the text: 620d2225c | pc-bench | Not stated in the heading; the text mentions runs that were not clean |
 
 <sub>Old heading: 64. Long context on the Windows PC (pc-bench, 2026-10-28 evening): 64k and 128k+ on Flash-Next Q2_0, the 122B and Qwen3.6</sub>
 
@@ -741,7 +741,7 @@ CPU expert phase's ~26 GB/s is the executor's, not the view's.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-28 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0, IQ3_S, Coder IQ1_M, IQ2_XS, IQ3_XXS | mentioned in the text: 681f3bc, 8cc6c7c | mentioned in the text: b11669 | pc-glm | Not stated |
+| 2026-10-28 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0, IQ3_S, Coder IQ1_M, IQ2_XS, IQ3_XXS | versions and commits named in the text: 681f3bc, 8cc6c7c | mentioned in the text: b11669 | pc-glm | Not stated |
 
 <sub>Old heading: 63. Flash-Next quant choice on the Windows PC (pc-glm, 2026-10-28): Q2_0, IQ3_S, Coder IQ1_M vs IQ2_XS / IQ3_XXS</sub>
 
@@ -823,7 +823,7 @@ Linux and Windows, no speed change on the PC); N20b killed (forcing the executor
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-28 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | GLM-5.3-Flash | mentioned in the text: 1d2d5a8, 681f3bc | mentioned in the text: 620d2225c | pc-glm | Not stated |
+| 2026-10-28 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | GLM-5.3-Flash | versions and commits named in the text: 1d2d5a8, 681f3bc | mentioned in the text: 620d2225c | pc-glm | Not stated |
 
 <sub>Old heading: 62. GLM max on the Windows PC (pc-glm, 2026-10-28): drive, GPU layers, MTP, long prompts, and why code is slow</sub>
 
@@ -894,7 +894,7 @@ draft context); the launcher now warns when `--n-cpu-moe` is below the planned n
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-27/28 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.6, GLM-5.3, Qwen3.5-122B, Granite, IQ3_XXS, IQ2_XS | mentioned in the text: 65facd1, 681f3bc, bbcec55, 570d351, 7c47642 | mentioned in the text: 620d2225c | I32, B13, F5, B11/B12, N13, N8, N3, N5 | Not stated |
+| 2026-10-27/28 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.6, GLM-5.3, Qwen3.5-122B, Granite, IQ3_XXS, IQ2_XS | versions and commits named in the text: 65facd1, 681f3bc, bbcec55, 570d351, 7c47642 | mentioned in the text: 620d2225c | I32, B13, F5, B11/B12, N13, N8, N3, N5 | Not stated |
 
 <sub>Old heading: 61. Windows desktop, 2026-10-27/28: list A (I32, B13, F5, B11/B12, N13, N8, N3, N5)</sub>
 
@@ -1220,7 +1220,7 @@ CPU's share of picks from 75 % to 40 % saves ~20 % of a token (ceiling ~+25 % de
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-27 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.5-122B, GLM-5.3, Granite, IQ2_XS, IQ3_XXS, IQ3_S, IQ2_XXS | mentioned in the text: 65facd1 | mentioned in the text: 620d2225c | no commit | Not stated |
+| 2026-10-27 evening | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, Qwen3.5-122B, GLM-5.3, Granite, IQ2_XS, IQ3_XXS, IQ3_S, IQ2_XXS | versions and commits named in the text: 65facd1 | mentioned in the text: 620d2225c | no commit | Not stated |
 
 <sub>Old heading: 59. Windows desktop, 2026-10-27 evening: the cache moves to read-only views of the model file (no commit) and beats stock</sub>
 
@@ -1280,7 +1280,7 @@ plugin --gpu-cache off 13.71 (12.6); 112948 uploads routed, text = stock. llama.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-27 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Qwen3.6, Flash-Next IQ2_XS and IQ3_XXS, GLM | mentioned in the text: ebc946f | mentioned in the text: 620d2225c, b11669 | see the section | Not stated in the heading; the text mentions runs that were not clean |
+| 2026-10-27 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Qwen3.6, Flash-Next IQ2_XS and IQ3_XXS, GLM | versions and commits named in the text: ebc946f | mentioned in the text: 620d2225c, b11669 | see the section | Not stated in the heading; the text mentions runs that were not clean |
 
 <sub>Old heading: 58. Windows desktop, 2026-10-27: fixes confirmed, MTP, Flash-Next IQ2_XS vs IQ3_XXS, GLM page file</sub>
 
@@ -1579,7 +1579,7 @@ for stock too; whether the shrink on GLM (idea I37) still happens with the apps 
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-26 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next, Qwen3.5-122B, GLM | mentioned in the text: 2dccf17 | mentioned in the text: b11669 | complete: Flash-Next, 122B, GLM | Yes (heading says clean) |
+| 2026-10-26 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next, Qwen3.5-122B, GLM | versions and commits named in the text: 2dccf17 | mentioned in the text: b11669 | complete: Flash-Next, 122B, GLM | Yes (heading says clean) |
 
 <sub>Old heading: 55. Windows desktop, clean WP2: apps closed, file cache flushed before every run (2026-10-26; complete: Flash-Next, 122B, GLM)</sub>
 
@@ -1673,7 +1673,7 @@ stats (`handover` note 122B_DIAG_PLAN) and the budget idea I40.
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-26 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, GLM-5.3, Qwen3.5-122B, Qwen3.6, Granite, IQ2_XS, IQ2_XXS, Q4_K_M, Q2_0, IQ3_XXS | mentioned in the text: 620d2225c, ff73ec1, 7a1b86f, db8e634 | mentioned in the text: b11669, 620d2225c | from the PC session, windows-kit/pc_results.md | Not stated |
+| 2026-10-26 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | not in the heading; mentioned in the text: Flash-Next, GLM-5.3, Qwen3.5-122B, Qwen3.6, Granite, IQ2_XS, IQ2_XXS, Q4_K_M, Q2_0, IQ3_XXS | versions and commits named in the text: ff73ec1, 7a1b86f, db8e634 | mentioned in the text: b11669, 620d2225c | from the PC session, windows-kit/pc_results.md | Not stated |
 
 <sub>Old heading: 54. Windows 11 desktop: Ryzen 9 7950X + RX 9070 XT (2026-10-26; from the PC session, windows-kit/pc_results.md)</sub>
 
@@ -1865,7 +1865,7 @@ ran the long prompt without a crash (table above).
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-10-16 | MSI Claw 8 AI+ (Windows 11) and mini PC (Ryzen 7 5800H, Vega 8 iGPU, 32 GB DDR4, Ubuntu 26.04) | OLMoE-1B-7B Q4_0 (Claw); Granite and Qwen3.6-35B-A3B Q4_K_M (mini PC) | mentioned in the text: 022c674 | mentioned in the text: b11669, 23b0202a1 | MSI Claw; mini PC, T7; from handover/claw_results.md "Round 2" and handover/moe-cache-t7/ | Not stated |
+| 2026-10-16 | MSI Claw 8 AI+ (Windows 11) and mini PC (Ryzen 7 5800H, Vega 8 iGPU, 32 GB DDR4, Ubuntu 26.04) | OLMoE-1B-7B Q4_0 (Claw); Granite and Qwen3.6-35B-A3B Q4_K_M (mini PC) | versions and commits named in the text: 022c674 | mentioned in the text: b11669, 23b0202a1 | MSI Claw; mini PC, T7; from handover/claw_results.md "Round 2" and handover/moe-cache-t7/ | Not stated |
 
 <sub>Old heading: 50. Windows round 2 (MSI Claw) and the first AMD machine (mini PC, T7) (2026-10-16; from handover/claw_results.md "Round 2" and handover/moe-cache-t7/)</sub>
 
