@@ -135,6 +135,17 @@ def llama_search_dirs():
             os.path.join(HERE, "llama")]            # the tarball's bundled official llama.cpp (the -ggml0.26 file)
 
 
+# llama.cpp commits (first 9 digits) that CI ran this plugin against: the tested "yes" rows of .github/workflows/identity.yml; the @commit entries of
+# MOE_CACHE_TESTED_GGML in src/moe_cache_plugin.cpp are a subset. tests/tested_commits_test.py fails when they disagree.
+TESTED_COMMITS = ("7fe450e19", "23b0202a1", "ff0d396e3", "51fe42c5d")
+
+
+def tested_commit(ver):
+    """True when `ver` ('commit 51fe42c5d', any length from 7 digits) is a build of TESTED_COMMITS."""
+    m = re.search(r"[0-9a-f]{7,}", ver or "")
+    return bool(m) and any(t.startswith(m.group(0)) or m.group(0).startswith(t) for t in TESTED_COMMITS)
+
+
 def ls_build(ls):
     """llama-server's build number (`--version`: 'version: 11966 (ff0d396e3)'), None when unknown."""
     try:
@@ -1886,9 +1897,10 @@ SERVER_HELP = """\
            lines say which of these were applied. Smoother PC, slower model. MOE_CACHE_LEAVE_ROOM=1 turns it on for good
 --gpu-margin GiB  VRAM the tuner leaves free next to everything it places (default about 0.47 GiB = 0.5 GB; raise it if the GPU runs out of memory with a large -ub)
 --ub auto|N  micro-batch size (prompt speed: 512 -> 2048 was +58 % at a 6k prompt). auto = the largest that fits next to the KV cache of --ctx
---ram GB   memory the server may use (default: the cgroup limit or free RAM). The cache sizes itself to stay below it. On Windows it is also set as a
-           job memory limit on llama-server only with MOE_CACHE_WIN_VIEW=0 (with the default file-view cache the experts use no commit and a job limit
-           would only cap llama.cpp's GPU memory, which Windows commits)
+--ram GB   memory the cache and the layer plan are sized to (default: the cgroup limit or free RAM). A sizing hint, NOT a RAM cap: the launcher sets no
+           limit on Linux (only a cgroup you set yourself is a hard limit). On Windows a job memory limit is set only for the plugin, only with --ram and
+           only with MOE_CACHE_WIN_VIEW=0; the default file-view cache, the on-demand listener and stock llama-server get none (a job limit counts GPU
+           memory too and broke Vulkan), so the server can use more RAM than --ram says
 --max-ram GB  hard cap on the whole server's memory (default: physical RAM minus max(4 GiB, 12.5 %), = 28 GiB on a 32 GiB machine; 0 = none).
            Same rule on Linux and Windows; --ram and the free-memory logic stay below it (MOE_CACHE_MAX_RAM_GB does the same)
            The cap is kept by planning (cache budget, layer plan), never by stopping a running server (owner's rule)
@@ -4252,11 +4264,11 @@ def check(argv):
         ver = m.group(0) if m else ""
         ok("llama-server", f"{lsp} ({ver or 'version unknown'})")
         facts["llama-server"] = f"{ver or 'version unknown'} ({lsp})"
-        if re.search(r"7fe450e|23b0202", ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
+        if tested_commit(ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
             warn("ggml version", "this llama.cpp build is not one we tested" + (f" ({ver})" if ver else "") + ": we tested " +
-                 ("b11669, b11966 and b12064 on Windows" if WINDOWS else "two llama.cpp commits on Linux (7fe450e19 and 23b0202a1) and b11966 and b12064") +
+                 ("b11669, b11966 and b12064 on Windows" if WINDOWS else "four llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966 and 51fe42c5d = b12064)") +
                  ". Other builds usually work; if the plugin does not load, the lines below say so (moe_cache.py update --check shows the newest build)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):

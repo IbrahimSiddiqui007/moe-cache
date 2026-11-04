@@ -1,13 +1,11 @@
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 0cd795a56..ff03eb4d0 100644
+index 7365c3bbb..4d8142930 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
-@@ -177,6 +177,19 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
+@@ -179,6 +179,30 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
      /*.n_tokens_per_seq =*/ 1,
  };
  
-+#include <mutex>
-+
 +#include <mutex>
 +
 +// number of live contexts per model: a second context (MTP / draft) shares the weights and keeps its own scheduler, so the move is refused
@@ -19,10 +17,23 @@ index 0cd795a56..ff03eb4d0 100644
 +    return llama_reloc_ctxs()[m];
 +}
 +
++// layout epoch per model: raised whenever expert tensors are moved or put back. A context whose scheduler was reserved under an older epoch holds
++// graphs that point at buffers which may be freed now, so it drops them before its next batch (a second context created while the layers were moved)
++static std::unordered_map<const llama_model *, uint64_t> & llama_reloc_epochs() { static std::unordered_map<const llama_model *, uint64_t> m; return m; }
++
++static uint64_t llama_reloc_epoch(const llama_model * m, bool bump) {
++    std::lock_guard<std::mutex> lock(llama_reloc_mtx());
++    uint64_t & e = llama_reloc_epochs()[m];
++    if (bump) {
++        e++;
++    }
++    return e;
++}
++
  llama_context::llama_context(
          const llama_model & model,
                llama_context_params params) :
-@@ -604,12 +617,23 @@ llama_context::llama_context(
+@@ -606,12 +630,24 @@ llama_context::llama_context(
              sampling.token_ids_full_vocab[i] = i;
          }
      }
@@ -30,6 +41,7 @@ index 0cd795a56..ff03eb4d0 100644
 +    {
 +        std::lock_guard<std::mutex> lock(llama_reloc_mtx());
 +        llama_reloc_ctxs()[&model]++;
++        reloc.epoch = llama_reloc_epochs()[&model];
 +    }
  }
  
@@ -46,7 +58,7 @@ index 0cd795a56..ff03eb4d0 100644
      // when training, ggml_opt allocates extra buffers through the scheduler, so the sizes no longer match the expectation
      if (!model.no_alloc() && !opt_ctx) {
          for (size_t i = 0; i < backend_ptrs.size(); ++i) {
-@@ -2068,6 +2092,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+@@ -2147,6 +2183,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
      output_swaps.clear();
      embd_batch_idxs.clear();
  
@@ -55,7 +67,7 @@ index 0cd795a56..ff03eb4d0 100644
      sched_reserve();
  
      bool did_optimize = false;
-@@ -2952,6 +2978,233 @@ ggml_status llama_context::graph_compute(
+@@ -3031,6 +3069,255 @@ ggml_status llama_context::graph_compute(
      return status;
  }
  
@@ -87,6 +99,8 @@ index 0cd795a56..ff03eb4d0 100644
 +    reloc.keep       = (size_t) std::max(0L, llama_reloc_env("LLAMA_DECODE_RELOC_KEEP_MIB", 768)) << 20;
 +    reloc.after      = (uint32_t) std::max(1L, llama_reloc_env("LLAMA_DECODE_RELOC_AFTER", 64));
 +    reloc.small      = (uint32_t) std::max<long>(llama_reloc_env("LLAMA_DECODE_RELOC_SMALL", 16), cparams.n_seq_max);
++    // test only (tests/decode_reloc_live.sh): 1 = the first reserve of reloc_to_decode throws, 2 = the second one (after the move) throws
++    reloc.fail       = (int) llama_reloc_env("LLAMA_DECODE_RELOC_FAIL", 0);
 +    if (reloc.ub_decode >= reloc.ub_prompt || reloc.max_layers <= 0) {
 +        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: nothing to do (decode ubatch %u, prompt ubatch %u, max layers %d)\n",
 +                __func__, reloc.ub_decode, reloc.ub_prompt, reloc.max_layers);
@@ -108,6 +122,7 @@ index 0cd795a56..ff03eb4d0 100644
 +}
 +
 +void llama_context::reloc_restore() {
++    const size_t n_restored = reloc.moved.size();
 +    for (auto it = reloc.moved.rbegin(); it != reloc.moved.rend(); ++it) {
 +        it->t->buffer = it->buf;
 +        it->t->data   = it->data;
@@ -117,6 +132,10 @@ index 0cd795a56..ff03eb4d0 100644
 +        ggml_backend_buffer_free(b);
 +    }
 +    reloc.bufs.clear();
++    if (n_restored > 0) {
++        reloc.epoch = llama_reloc_epoch(&model, true);
++        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: %zu expert tensors back in their original (host) buffers\n", __func__, n_restored);
++    }
 +}
 +
 +void llama_context::reloc_to_prompt() {
@@ -143,6 +162,9 @@ index 0cd795a56..ff03eb4d0 100644
 +    cparams.n_ubatch   = reloc.ub_decode;
 +    sched_need_reserve = true;
 +    try {
++        if (reloc.fail == 1) {
++            throw std::runtime_error("LLAMA_DECODE_RELOC_FAIL=1: injected failure of the first reserve");
++        }
 +        sched_reserve();
 +    } catch (const std::exception & ex) {
 +        LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: reserve with ubatch %u failed (%s), off\n", __func__, reloc.ub_decode, ex.what());
@@ -235,10 +257,15 @@ index 0cd795a56..ff03eb4d0 100644
 +        return false;
 +    }
 +
++    reloc.epoch = llama_reloc_epoch(&model, true);
++
 +    // 3. the splits depend on where the weights are: reserve again
 +    reloc_drop_graphs();
 +    sched_need_reserve = true;
 +    try {
++        if (reloc.fail == 2) {
++            throw std::runtime_error("LLAMA_DECODE_RELOC_FAIL=2: injected failure of the second reserve");
++        }
 +        sched_reserve();
 +    } catch (const std::exception & ex) {
 +        LLAMA_LOG_WARN("%s: LLAMA_DECODE_RELOC: reserve after the move failed (%s), moving back, off\n", __func__, ex.what());
@@ -255,6 +282,13 @@ index 0cd795a56..ff03eb4d0 100644
 +}
 +
 +void llama_context::reloc_step(uint32_t n_tokens) {
++    // another context moved or restored experts since this scheduler was reserved: its graphs may point at freed buffers
++    if (const uint64_t ep = llama_reloc_epoch(&model, false); ep != reloc.epoch) {
++        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: the expert layout of this model changed (another context), graphs dropped, reserve at this batch\n", __func__);
++        reloc_drop_graphs();
++        sched_need_reserve = true;
++        reloc.epoch = ep;
++    }
 +    if (!reloc.inited) {
 +        reloc_init();
 +    }
@@ -290,10 +324,10 @@ index 0cd795a56..ff03eb4d0 100644
      auto * lctx = static_cast<llama_context *>(user_data);
  
 diff --git a/src/llama-context.h b/src/llama-context.h
-index 39c5619df..459830f8b 100644
+index 39c5619df..886bd7738 100644
 --- a/src/llama-context.h
 +++ b/src/llama-context.h
-@@ -379,6 +379,35 @@ private:
+@@ -379,6 +379,37 @@ private:
  
      bool sched_need_reserve = true;
  
@@ -315,6 +349,8 @@ index 39c5619df..459830f8b 100644
 +        uint32_t run       = 0;
 +        int      max_layers = 8;
 +        size_t   keep       = 768ull << 20;
++        uint64_t epoch      = 0;       // the model's layout epoch this context's scheduler was reserved under
++        int      fail       = 0;       // test only: LLAMA_DECODE_RELOC_FAIL
 +        std::vector<reloc_moved>          moved;
 +        std::vector<ggml_backend_buffer_t> bufs;
 +    } reloc;

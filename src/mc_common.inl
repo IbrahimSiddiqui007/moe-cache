@@ -241,7 +241,7 @@ bool load_usage(const char * path, usage_t & u, uint64_t * fp) {
 // Hard cap on what the server may use in all (owner, 2026-10-29: "nothing more than 28 GB of system RAM", Linux and Windows alike): physical RAM
 // minus max(4 GiB, 12.5 %), = 28 GiB on a 32 GiB machine, so the OS, the desktop and the GPU driver keep room (Windows commit errors, Linux OOM).
 // MOE_CACHE_MAX_RAM_GB=N (decimal GB, as the launcher's --max-ram) sets it; 0 turns it off. The cache budget is the limit minus the rest of the
-// process (llama.cpp's host buffers, KV, compute), so the whole server stays under it. (size_t) -1 when off or unknown.
+// process (llama.cpp's host buffers, KV, compute). It is a sizing target, not a guarantee: pages of the memory-mapped model file that the cache does not hold (Windows file views) are not counted here, so the whole server can use more. (size_t) -1 when off or unknown.
 size_t ram_cap() {
     static const size_t cap = [] {
         if (const char * v = getenv("MOE_CACHE_MAX_RAM_GB")) {

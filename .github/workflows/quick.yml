@@ -60,6 +60,9 @@ jobs:
           python3 bin/moe_cache.py bench-record lint --warn
           python3 bin/moe_cache.py bench-record board --check || echo "::warning::benchmarks/BOARD.md is out of date: run bench-record board"
 
+      - name: README card block matches docs/benchmark_card.html
+        run: python3 tools/card_markdown.py --check
+
       - name: Scoop bucket push (local empty bucket repo; first push, unchanged, next version)
         run: |
           set -e; T=$(mktemp -d); git init -q --bare -b main "$T/b.git"
