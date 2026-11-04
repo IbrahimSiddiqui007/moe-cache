@@ -380,6 +380,7 @@ Everything, with methods and caveats: [docs/RESULTS.md](docs/RESULTS.md) (Window
 | [Control page](docs/GUI.md), [try it step by step](docs/CONTROL_PAGE_CHECK.md) | the browser app |
 | [How it works](docs/HOW_IT_WORKS.md) | the cache, the plugin, what it changes in llama.cpp (nothing) |
 | [Exactness](docs/EXACTNESS.md) | how "same tokens as stock" is checked |
+| [Conversation benchmark](docs/CONVERSATION_BENCH.md) | a long multi-turn chat that fills the context, stock against moe-cache, per depth band |
 | [Results](docs/RESULTS.md) (Windows desktop), [older laptop results](docs/RESULTS_OLD_LAPTOP.md) and the [benchmark card](docs/benchmark_card.html) | every measurement, newest first |
 | [Hardware and limits](docs/PLATFORMS.md) | what is tested where, known limitations |
 | [Configuration](docs/CONFIGURATION.md) | environment variables |

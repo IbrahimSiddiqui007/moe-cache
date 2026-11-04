@@ -1,0 +1,83 @@
+# Conversation benchmark: a long chat that fills the context
+
+One 32k prompt, or a chat at 8k context, does not show what a user sees in a long coding or agent session. There the model reads a history that grows turn
+after turn: most of it comes back from the server's prompt cache, but every new paste (a file, a log, a diff) still has to be read, and every answer is
+decoded at a deeper and deeper position. `tools/conversation_bench.py` plays such a session against a running `llama-server` and records what happened turn
+by turn. It is a measuring tool: nothing in this page is a measured result. Numbers go into this file only after a run has been recorded.
+
+## What one run does
+
+- A fixed script of user turns, built from a seed (default 42): small follow-up questions, code pastes, tool-output-like logs and a few big pastes. The same
+  seed gives the same conversation every time, so stock and moe-cache read exactly the same text. `--script FILE` plays your own JSON list of messages
+  instead.
+- Every turn is sent with the whole history so far (system message, all earlier turns and the model's earlier answers), `cache_prompt` on, temperature 0, a
+  fixed `--max-tokens` per answer (default 128). The answer is appended and the next turn follows, until the next turn would not fit into the context (`--ctx`,
+  default 65536; it is cut to the server's own `n_ctx` when `/props` reports one). The tool never sends a request it expects the server to refuse.
+- It stops with a reason: `context full`, `max turns reached`, `script ended`, or `error: ...` (the server's answer, for example an HTTP 400).
+
+Per turn it records: the turn number and kind, tokens added since the last answer, the depth before and after the answer, new tokens read and tokens reused
+from the cache, prompt and decode tok/s (the server's own `timings`), time to first token, and, when it can see them, the plugin's `hits_dec` and `misses_dec`
+for that turn. A value the server did not give is `null` in the run file and "not recorded" in the record.
+
+Per depth band (a quarter of the context each, 0-16k, 16-32k, 32-48k and 48-64k at 65536): the number of turns that start in the band, prompt tok/s
+(new tokens divided by prompt time, over turns that read at least 64 new tokens), decode tok/s (over turns that generated at least 16 tokens), the share of the
+prompt that came from the cache, the median time to first token, and the plugin's decode hit rate.
+
+## Commands
+
+Linux, a server that is already running (the plugin run needs `MOE_CACHE_STATS_SIGNAL=1` and its stderr in a file if you want hits and misses):
+
+```bash
+python3 tools/conversation_bench.py run --url http://127.0.0.1:8080 --arm moe-cache --ctx 65536 --max-tokens 128 --out run1.json \
+    --stats-pid $(pgrep -n llama-server) --stats-log server.err.log
+```
+
+Both servers up at once (a model small enough for two copies): stock, moe-cache, moe-cache, stock, then the record and the tables:
+
+```bash
+python3 tools/conversation_bench.py ab --stock-url http://127.0.0.1:8081 --plugin-url http://127.0.0.1:8082 --ctx 65536 --out-dir conv1
+```
+
+Run files from separate runs, in the order they were run, into one bench record (`docs/bench_record.schema.json`) and the tables:
+
+```bash
+python3 tools/conversation_bench.py assemble 1-stock.json 2-moe-cache.json 3-moe-cache.json 4-stock.json --out record.json \
+    --model /models/model.gguf --llama-server /path/to/llama-server --command-line "llama-server -m ... -c 65536"
+python3 tools/conversation_bench.py table record.json --turns
+python3 bin/moe_cache.py bench-record ingest record.json --machine pc
+```
+
+**Windows PowerShell, the whole A B B A on a PC with one model** (the PC cannot hold two servers, so the driver starts and stops one per run, flushes the
+file cache before each, waits for a quiet CPU, runs the conversation and assembles the record). The first line is a short trial, the second the real run with
+the Flash-Next IQ3_XXS file:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\dl\conv-trial -Model D:\models\Qwen3.8-Flash-Next-IQ3_XXS.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 8192 -MaxTurns 4
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\dl\conv -Model D:\models\Qwen3.8-Flash-Next-IQ3_XXS.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536
+```
+
+`-FlushOther` names other model files (never the one under test) that together are bigger than the RAM; `-Order "stock,mc,mc,stock"` is the default.
+Outputs in `-OutDir`: one `N-kind.json` per run (every turn), `record.json`, `tables.md`, the server logs and `progress.log`. The driver was written from
+`tools\agent_bench_pair.ps1` and has been **checked only with a fake server and a Python syntax check, not on a PC**: run the trial first.
+
+## What the tables mean, and what they cannot say
+
+- The side-by-side band table gives the mean over the runs of each arm. Two runs per arm is the same small sample as the other paired runs; look at the
+  per-run numbers in the record before quoting a ratio.
+- Prompt tok/s in a band is the speed of reading the NEW tokens of the turns that start there. A turn that mostly reuses the cache reads few new tokens, so
+  it is left out below 64 new tokens; the cache share is reported next to it.
+- Decode speed in a band is the speed of the answer at that depth. Answers that end early (the model writes an end-of-text token) can fall under 16 tokens
+  and then do not count; `--ignore-eos` makes every answer exactly `--max-tokens` long, and `--no-think` turns off a thinking model's reasoning (it adds
+  `chat_template_kwargs {"enable_thinking": false}`).
+- The token estimate before a turn is characters divided by 3, which is cautious: the last turns can stop a little short of the limit.
+- Texts are not compared between stock and moe-cache here (`identical_to_baseline` is "not checked"). The conversation is the same, the answers are the
+  model's own, so a different answer in turn 5 changes the history after it; use the identity tests for text.
+- Hits and misses come from the plugin's own counters (`MOE_CACHE_STATS_SIGNAL=1`: SIGUSR1 on Linux, the named event `Local\moe-cache-stats-<pid>` on
+  Windows). If the tool cannot reach them the columns stay empty.
+- A run on a machine that is busy is not a clean run: the record carries the conditions (`--baseline`, `--other-programs`, file cache state) like every other
+  record, and `docs/BENCHMARK_TEMPLATE.md` rules apply.
+
+## Test
+
+`tests/conversation_bench_test.py` runs the tool against a fake llama-server (no model): history growth, the stop at the limit, timing parsing, the band sums,
+A B B A order, the plugin counters per turn and the record format. It is in `tools/run_quick_tests.sh`.
