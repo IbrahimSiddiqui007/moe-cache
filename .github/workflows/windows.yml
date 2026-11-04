@@ -59,6 +59,7 @@ jobs:
             echo "FAIL: the DLL imports a DLL that is not a system or ggml DLL"; exit 1; fi
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/open_hint_test.cpp -o build/win/open_hint_test.exe -static      # WINDOWS-672: the file-open hint flags, natively
+          $MINGW_CXX -std=c++17 -O2 -Wall -Werror -Wno-unused-function -DMOE_CACHE_TEST_INPAGE_ERROR -Isrc tests/file_view_load_test.cpp -o build/win/file_view_load_test.exe -static      # CACHE-685: an in-page read error under the view is a false return, not a crash
           $MINGW_CXX -std=c++17 -O2 -Wall -Werror -Isrc tests/win_read_bench.cpp -o build/win/win_read_bench.exe -static
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/kernel_check.cpp -o build/win/kernel_check.exe -static     # the executor's Q2_0 kernels, as built for Windows
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -68,6 +69,7 @@ jobs:
             build/win/ggml-moe-cache.dll
             build/win/platform_test.exe
             build/win/open_hint_test.exe
+            build/win/file_view_load_test.exe
             build/win/win_read_bench.exe
             build/win/kernel_check.exe
       - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
@@ -165,6 +167,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "platform_test failed" }
           & "$env:GITHUB_WORKSPACE\dll\open_hint_test.exe"
           if ($LASTEXITCODE -ne 0) { throw "open_hint_test failed" }
+          & "$env:GITHUB_WORKSPACE\dll\file_view_load_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw "file_view_load_test failed" }
           Pop-Location
 
       - name: Official llama.cpp release (CPU) and the small MoE model

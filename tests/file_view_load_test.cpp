@@ -10,8 +10,34 @@ static void check(bool ok, const char * what) {
 }
 
 int main() {
-#ifndef __linux__
-    printf("file_view_load_test: skipped (Linux only)\n");
+#if defined(_WIN32) && defined(MOE_CACHE_TEST_INPAGE_ERROR)
+    // Windows cannot cut a mapped file short; the in-page error a dropped disk raises is simulated by the build switch (second page of a range)
+    char path[MAX_PATH];
+    GetTempPathA(MAX_PATH, path);
+    strcat(path, "fvl_test.bin");
+    FILE * f = fopen(path, "wb");
+    if (!f) {
+        printf("file_view_load_test: FAIL (temp file)\n");
+        return 1;
+    }
+    for (int i = 0; i < 8 * 4096; i++) {
+        fputc(i & 255, f);
+    }
+    fclose(f);
+    size_t n = 0;
+    const char * v = plat::file_view_map(path, &n);
+    check(v && n == 8 * 4096, "the file maps");
+    check(plat::file_view_load(v + 4096, 4096), "one page loads: true");
+    check(!plat::file_view_load(v, 3 * 4096), "a range whose second page raises the in-page error: false, no crash");
+    check(plat::file_view_load(v + 4096, 4096), "the thread still works afterwards: true");
+    check(!plat::file_view_load(v, 2 * 4096), "and the guard can fire again: false");
+    check(plat::file_view_load(v, 0), "an empty range: true");
+    plat::file_view_unmap(v, n);
+    DeleteFileA(path);
+    printf("file_view_load_test: %s\n", fails ? "FAIL" : "ok");
+    return fails ? 1 : 0;
+#elif !defined(__linux__)
+    printf("file_view_load_test: skipped (Linux, or Windows with MOE_CACHE_TEST_INPAGE_ERROR)\n");
     return 0;
 #else
     char path[] = "/var/tmp/fvl_test_XXXXXX";
