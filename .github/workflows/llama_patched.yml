@@ -201,7 +201,8 @@ jobs:
       - name: Live test of patch 0070 on lavapipe (software Vulkan) - layers move, fail=2, second context after the move
         timeout-minutes: 45
         run: |
-          DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
+          # ggml-vulkan at the pin skips a CPU-type Vulkan device (lavapipe) unless it is listed by index
+          GGML_VK_VISIBLE_DEVICES=0 DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
             tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
