@@ -1905,6 +1905,7 @@ REMOTE_GET = ("/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/api
 REMOTE_POST = ("/api/chat", "/api/chats/save")
 REMOTE_REFUSED = "this action is not offered to other computers (it starts or changes things on this PC, or reads a secret): do it on the PC itself (docs/LAN_ACCESS.md)"
 TOKEN_FAILS, TOKEN_WINDOW = 20, 60.0          # wrong tokens from one remote address before it is answered 429 for a minute
+GROUP_ERROR_SHOWN = 30      # seconds a failed group start is still reported after the page first got the reason
 MAX_EXTRA = 2              # servers the page may start besides the main one (GUI-013)
 CHAT_TIMEOUT = 3600         # seconds llama-server may stay silent in the chat (a long prefill of a big context on a slow machine); a module constant so a test can shorten it
 
@@ -2455,12 +2456,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # why the last group start stopped half way: on the server object (a handler is made per request, so `self.x = ...` on it is lost with the request), under a lock
     def get_group_error(self):
+        """The reason, or None. It stays for GROUP_ERROR_SHOWN seconds after the page first got it (the page polls: one read would lose it at the next poll), then goes."""
         with self.server.group_lock:
+            if self.server.group_error is None:
+                return None
+            now = time.time()
+            if self.server.group_error_seen is None:
+                self.server.group_error_seen = now
+            elif now - self.server.group_error_seen > GROUP_ERROR_SHOWN:
+                self.server.group_error = self.server.group_error_seen = None
             return self.server.group_error
 
     def set_group_error(self, v):
         with self.server.group_lock:
-            self.server.group_error = v
+            self.server.group_error, self.server.group_error_seen = v, None
 
     def group_items(self, body):
         """The models of a group request, checked like Start: [(settings, list entry)]. Two or three, each a listed model, distinct ports."""
@@ -2731,7 +2740,7 @@ def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
         allow_reuse_address = os.name != "nt"
     srv = _Srv((host, port), h)
     srv.daemon_threads = True
-    srv.group_error, srv.group_lock = None, threading.Lock()          # see Handler.set_group_error
+    srv.group_error, srv.group_error_seen, srv.group_lock = None, None, threading.Lock()          # see Handler.set_group_error
     return srv
 
 
