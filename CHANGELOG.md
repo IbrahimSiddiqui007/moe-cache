@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.6 (2026-11-04)
 
 | Area | Change |
 |---|---|

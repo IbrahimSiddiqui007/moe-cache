@@ -28,7 +28,7 @@ import argparse, glob, json, math, os, re, shutil, signal, socket, subprocess, s
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))) if os.path.dirname(os.path.abspath(__file__)) not in sys.path else None   # tests load this file by path
 from moe_cache_wintool import win_tool  # noqa: E402  (bin/: Windows helpers by full System32 path, AUD-034)
 
-VERSION = "0.3.5"                    # tools/set_version.sh fills this in with the release's version
+VERSION = "0.3.6"                    # tools/set_version.sh fills this in with the release's version
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WINDOWS = os.name == "nt"
 CACHE_DIR = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "moe-cache")
