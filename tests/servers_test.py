@@ -232,6 +232,27 @@ check(st == 200 and wait_ready(G1), "restarting the main server on another model
 check("--share-ram" in json.load(open(os.path.join(TMP, f"argv-{G1}.json"))), "the restarted main server counts what the other one holds (--share-ram)")
 check(req("/api/connect", {"agent": "opencode", "port": 4242})[0] == 400, "connect to a port the page did not start: refused")
 check("group_error" in json.loads(req("/api/servers")[1]), "the servers answer carries group_error (empty when fine)")
+# a group whose second server cannot start: /api/servers (a different request, a different handler object) must carry the reason
+srv3 = ui.make_server(0, "llama-server", token=TOKEN)
+srv3.RequestHandlerClass.store = srv.RequestHandlerClass.store
+threading.Thread(target=srv3.serve_forever, daemon=True).start()
+base_main, base = base, f"http://127.0.0.1:{srv3.server_address[1]}"
+_gb = free_port()
+_orig_start = ui.Runner.start
+def _fake_start(self, s, on_demand=False):
+    if s["port"] == _gb:
+        raise ValueError("no room for the second model")
+    self.settings, self.state = s, "ready"
+ui.Runner.start = _fake_start
+st, body = req("/api/servers/group", {"models": [{"model": alpha, "port": free_port()}, {"model": beta, "port": _gb}]})
+_ge, _end = None, time.time() + 15
+while time.time() < _end and not _ge:
+    _ge = json.loads(req("/api/servers")[1]).get("group_error"); time.sleep(0.2)
+check(st == 200 and _ge and "no room for the second model" in _ge and "keep running" in _ge, f"group: a second server that cannot start is reported in /api/servers ({st}, {_ge})")
+srv3.RequestHandlerClass.runner.state = "idle"
+ui.Runner.start = _orig_start
+srv3.shutdown()
+base = base_main
 page2 = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
 check("/api/servers/plan" in page2 and "/api/servers/group" in page2, "page: the split panel calls plan and group")
 
