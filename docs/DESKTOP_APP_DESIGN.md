@@ -93,7 +93,7 @@ the path. The embeddable zip needs its `python3NN._pth` to list `..\moe-cache\bi
 
 | Target | Format | Notes |
 |---|---|---|
-| Windows | NSIS `-setup.exe` (per user, no admin) and `.msi` | WebView2: the evergreen runtime ships with Windows 10 1803+/11; the NSIS installer uses Tauri's WebView2 bootstrapper as fallback. Unsigned → SmartScreen "More info → Run anyway", explained in the README. Windows Smart App Control can block unsigned exes outright (competitor issue #735 in strata_compare); the app inherits that limit, the browser page + `install.ps1` stays the fallback |
+| Windows | NSIS `-setup.exe` (per user, no admin) and `.msi` | WebView2: the evergreen runtime ships with Windows 10 1803+/11; the NSIS installer uses Tauri's WebView2 bootstrapper as fallback. Unsigned → SmartScreen "More info → Run anyway", explained in the README. Windows Smart App Control can block unsigned exes outright (reported for other unsigned desktop apps); the app inherits that limit, the browser page + `install.ps1` stays the fallback |
 | Linux | AppImage and `.deb` | needs `webkit2gtk-4.1` for the deb; the AppImage bundles the GTK / WebKit libs (so it is big) but not Python |
 
 Resources inside the app: `moe-cache/` (bin, ui, planner, models.json, the plugin), `python/` (Windows), and llama.cpp (the same official b12064

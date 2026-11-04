@@ -206,7 +206,7 @@ The last line says what to do about the first failure: wrong key (rerun `connect
 | OpenCode | lower `limit.context` (and set `limit.output`) of the `moe-cache` model in `opencode.json` | `"limit": {"context": 56000, "output": 8192}` |
 | Hermes | it needs `model.context_length` of at least 64,000, so keep 65536 there and give the server more room | start the server with `--ctx 81920` (Flash-Next KV is about 27.5 KB per token: about 0.4 GiB more than at 65536), run `connect hermes --write` (it copies the server's 81920), then `hermes config set model.context_length 65536` |
 
-A bigger server window costs KV memory and some speed at depth. Not measured by us: the advice follows from how the limits work and from Strata's agent chat, which reports the peak prompt in a 64K-window test falling from 83 % to 61 % when it summarises early (their number).
+A bigger server window costs KV memory and some speed at depth. Not measured by us: the advice follows from how the limits work.
 
 ## What makes agents fast or slow
 

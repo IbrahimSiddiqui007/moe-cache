@@ -110,7 +110,7 @@
 | Windows | When the file views are not used, experts are read through the file cache (`MOE_CACHE_WIN_BUFFERED=0` turns it off; RESULTS 75) |
 | Bug fixes | The API key no longer follows redirects; `--project` records q8_0 KV correctly; saved agent conversations match by their real tag; `bench-report` and `learn` servers die with their parent; `[`, `*`, `?` in model paths; failed file reopen or view mapping cleans up fully |
 | Launcher | Exit code 0xFFFFFFFF is named as stopped from outside |
-| Experiments | Many small executor, read and cache changes from the optimization audit (docs/moe-cache-optimization-audit-2026-10-31.md); the ones not proven exact are off by default behind `MOE_CACHE_*` switches and untested |
+| Experiments | Many small executor, read and cache changes from the 2026-10-31 optimization audit (kept in private notes); the ones not proven exact are off by default behind `MOE_CACHE_*` switches and untested |
 | Area | Change |
 |---|---|
 | Leave room for me | `--leave-room` and a control-page box for using the PC while a model runs (owner 2026-10-30: a big-model run made the desktop PC stutter): the server keeps max(8 GiB, 25 %) of the RAM free instead of max(4 GiB, 12.5 %), at least 2 GB of GPU memory, 2 physical cores, and runs at a lower priority (Windows below normal, Linux nice 10). Same rule on Linux and Windows; `MOE_CACHE_LEAVE_ROOM=1` turns it on for good. README and TROUBLESHOOTING: plug the monitor into the motherboard when the CPU has graphics |
@@ -604,7 +604,7 @@
 - The launcher tells the plugin how much memory llama-server's prompt cache needs (`MOE_CACHE_HOST_RESERVE_MIB`) instead of the plugin reading the command line
   (kept as a fallback).
 - `MOE_CACHE_GUARD=1` (tests only): an evicted expert's pages become inaccessible, so a read the plugin did not intercept crashes instead of seeing zeros.
-- README: a "When to use something else" table (stock llama.cpp when the model fits, Strata for Flash-Next / Qwen3.6 on 12 GB+ VRAM and 32 GB+ RAM), a table of
+- README: a "When to use something else" table (stock llama.cpp when the model fits), a table of
   which features need which loading method, the Flash-Next row, MTP and Vulkan claims qualified. QUICKSTART: 2x-12x instead of 2x-7x. BACKENDS: the OpenVINO NPU backend.
 - ROADMAP: llama.cpp version policy (API 3 first-class, API 2 bug fixes only, and when API 2 is dropped).
 - **The benchmark tool moved to its own repository**, [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark) (`bin/moe-cache-bench`, `bench/*.py`, BENCHMARKS.md, TEST_PROTOCOL.md).

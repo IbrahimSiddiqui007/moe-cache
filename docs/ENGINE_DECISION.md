@@ -2,10 +2,9 @@
 
 Short answer: **not now.** Stay a layer on top of ggml through v1.0, and make the decision on measurements, with one gate (below).
 
-## What the others do
+## What dedicated engines do
 
-Strata and Maya (from their README and release pages, re-read 2026-10-29; their code was not read) are dedicated engines, built on components of
-llama.cpp/ggml plus their own CUDA/AMD kernels, with a hot-expert tier in VRAM, experts in RAM and, for their largest models, the rest on SSD. Since 2026-10-14 both have widened: Strata (0.2.7.1) runs Qwen3.8-Flash-Next, Qwen3.6-35B and DeepSeek-V4.1-Flash and now reads what does not fit in RAM from SSD; Maya (started from Strata's code) runs GLM-5.3-Flash, DeepSeek-V4.1-Flash and MiniMax-M3.1-Flash. They need 32 GB RAM and 12 GB VRAM (Strata) or an NVIDIA GPU of compute capability 7.0+ (Maya), run on Windows and Linux (Maya on Windows: experimental), and report high speeds (Strata: 94 tok/s on an RTX 5070 for its 125B model at 2-bit, 64 GB RAM). An earlier version of this page said they cannot run models larger than RAM; that is no longer true for Strata's DeepSeek models.
+Dedicated engines are built on components of llama.cpp/ggml plus their own CUDA/AMD kernels, with a hot-expert tier in VRAM, experts in RAM and, for the largest models, the rest on SSD. We have not run any of them for this page and make no claim about their speed, design or limits; their numbers are theirs, not ours.
 
 ## What an own engine would buy
 
@@ -18,9 +17,9 @@ llama.cpp/ggml plus their own CUDA/AMD kernels, with a hot-expert tier in VRAM, 
 
 ## What it costs
 
-- Every model architecture must be re-implemented and validated token by token (llama.cpp has 100+). Strata and Maya each cover one model.
+- Every model architecture must be re-implemented and validated token by token (llama.cpp has 100+). A dedicated engine covers only the architectures it implements.
 - Tokenizers, chat templates, sampling, quantization formats, server API, long-term maintenance.
-- A much higher hardware floor in the reference engines (32 GB RAM, 12 GB VRAM). Our target (24 GB RAM, 4 to 8 GB VRAM, any MoE) is a different market.
+- A dedicated engine sets its own hardware floor. Our target (24 GB RAM, 4 to 8 GB VRAM, any MoE) is a different market.
 
 ## What the plugin already delivers without an engine
 
@@ -36,7 +35,7 @@ llama.cpp/ggml plus their own CUDA/AMD kernels, with a hot-expert tier in VRAM, 
 
 ## What we cannot claim
 
-The emulation ran on one machine with one model; the GPU tier has never been built; Strata/Maya's own performance depends on their own model choices and quantizations and is not comparable to our numbers.
+The emulation ran on one machine with one model; the GPU tier has never been built; the performance of dedicated engines depends on their own model choices and quantizations and is not comparable to our numbers.
 
 ## Gate result (2026-10-09, simulation and a small identity probe; no tier was built)
 

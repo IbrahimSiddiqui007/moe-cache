@@ -1213,7 +1213,7 @@ finally:
         if v is not None: os.environ[k] = v
     mc.default_llama_server(refresh=True)
 
-# linked model folders are scanned (scout 13 R13-3; Strata #3487), a link loop does not hang the scan
+# linked model folders are scanned (scout 13 R13-3), a link loop does not hang the scan
 if hasattr(os, "symlink") and not mc.WINDOWS:
     lk = os.path.join(TMP, "linkscan"); real_d = os.path.join(TMP, "linkscan_real", "sub"); os.makedirs(lk); os.makedirs(real_d)
     open(os.path.join(real_d, "Linked-Model-Q4_K_M.gguf"), "wb").write(b"GGUF" + b"\0" * 64)

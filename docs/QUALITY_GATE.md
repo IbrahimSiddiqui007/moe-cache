@@ -23,7 +23,7 @@ A level = the settings of one approximate package. A run passes when **all three
 | `exact` | none (plugin only) | 0.00001 | 100 % | 0 (identical) | RESULTS 25.3, CI identity |
 | `kv` | q8_0 KV cache (`-ctk q8_0 -ctv q8_0`) | 0.015 | 95 % | 2 | KL 0.0045 on its own, 0.012 on Vulkan (RESULTS 53, R11) |
 | `fast` | route skip + q8_0 KV (today's `--fast`) | 0.040 | 90 % | 4 | KL 0.025, top-1 93.6 % (25.3) |
-| `fewer` | `fast` + the lowest-ranked 2 experts dropped on CPU-held layers (B3) | 0.060 | 88 % | 5 | none: new; Q2_0 is already 80.6 % top-1 vs Q8_0 (Strata), errors stack |
+| `fewer` | `fast` + the lowest-ranked 2 experts dropped on CPU-held layers (B3) | 0.060 | 88 % | 5 | none: new; Q2_0 is already 80.6 % top-1 vs Q8_0 (a third-party figure, not re-measured by us), errors stack |
 
 Rules that apply to every level:
 

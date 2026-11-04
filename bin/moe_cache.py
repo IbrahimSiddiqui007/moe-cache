@@ -1953,7 +1953,7 @@ def decide(model, ram_gb=None, plugin_wanted=False, stock_wanted=False, machine=
 def prompt_cache_note(cram, extra, agent):
     """One plain line for the log (and so the control page's "What the launcher decided"): how much host RAM llama-server keeps for finished
     conversations (--cache-ram), how many conversations (slots) it serves at once and how many checkpoints each keeps. Two agents on one server
-    reuse each other's shared prompt only while the prompt cache holds it (Strata 0.2.3 sizes theirs from free memory; ours: 2048 MiB, or off below
+    reuse each other's shared prompt only while the prompt cache holds it (another project sizes its cache from free memory; ours: 2048 MiB, or off below
     16 GB of server memory where the RAM is worth more to the expert cache, RESULTS 44). Change it with: -- --cache-ram MiB."""
     if cram is None:
         mem = "this llama-server has no --cache-ram: its own prompt-cache default"
