@@ -64,6 +64,8 @@ class Fake(L.Deps):
     def verify(self, r, say): self.verified = getattr(self, "verified", []) + [r["id"]]; return self.verify_err
     def start(self, cmd): self.started.append(cmd); self.proc = FakeProc(cmd, self.dies); return self.proc
     def up(self, url, on_demand): self.polls += 1; return self.polls > self.up_after
+    served = None
+    def served_model(self, url): return self.served or os.path.basename(self.started[-1][3])       # the model the fake child was started with
     def connect(self, argv): self.connected.append(argv)
     def sleep(self, s): pass
     def text(self): return "\n".join(self.lines)
@@ -179,6 +181,34 @@ class Ctrl(Fake):
 f = Ctrl(); f.terminated = False
 rc = run(f, "--yes", "--model", MODEL)
 check(rc == 130 and "stopped while loading" in f.text() and f.connected == [], "Ctrl+C while loading: no traceback, the server is stopped, exit 130")
+
+# ---- 3d. LAUNCHER-690: ready needs our own live child and our own model ----
+class Squat(Fake):
+    def up(self, url, od): return True                  # something answers on the port from the start
+f = Squat(); f.dies = True
+rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode")
+check(rc == 1 and "ready:" not in f.text() and f.connected == [], "our child died but something else answers on the port: not ready, no agent connected")
+f = Squat(); f.served = "some-other-model.gguf"
+rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode", "--wait", "4")
+check("ready:" not in f.text() and f.connected == [] and "some-other-model.gguf" in f.text() and "another server may hold the port" in f.text(), "another model answers: not ready, and the message names it")
+f = Fake(); f.served = os.path.basename(MODEL).replace(".gguf", "-00001-of-00003.gguf")
+rc = run(f, "--yes", "--model", MODEL)
+check("ready:" in f.text(), "our own model (first shard name of a split file) answers: ready")
+f = Fake(); rc = run(f, "--yes", "--model", MODEL)
+check("ready:" in f.text(), "our child alive and our model: ready, as before")
+# agent mode starts the server with --alias (default_alias: the file name; an Ollama blob: its tag), so that is the name /v1/models reports
+f = Fake(); f.served = "my-agent-alias"; _da = L.mc.default_alias; L.mc.default_alias = lambda p: "my-agent-alias"
+rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode")
+L.mc.default_alias = _da
+check("ready:" in f.text() and f.connected, f"the server reports its alias (agent mode): ready ({f.text()[-160:]!r})")
+_blob = os.path.join(TMP, "models", "sha256-" + "a" * 64); open(_blob, "wb").write(b"x")
+f = Fake(); f.served = "qwen3.6-35b-a3b"; L.mc.default_alias = lambda p: "qwen3.6-35b-a3b"
+rc = run(f, "--yes", "--model", _blob, "--agent", "opencode")
+L.mc.default_alias = _da
+check("ready:" in f.text(), "an Ollama blob (sha256-... file name) served under its tag: ready")
+f = Fake(); f.served = "unrelated-alias"
+rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode", "--wait", "4")
+check("ready:" not in f.text(), "an alias that is not ours: still not ready")
 
 # ---- 4. things that go wrong ----
 f = Fake(llama=None)
