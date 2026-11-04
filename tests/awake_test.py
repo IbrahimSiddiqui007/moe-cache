@@ -26,27 +26,47 @@ c, rel, note = mc.keep_awake(cmd)
 check(c == cmd and "may sleep" in note, "MOE_CACHE_ALLOW_SLEEP=1 does the same")
 del os.environ["MOE_CACHE_ALLOW_SLEEP"]
 
-c, rel, note = mc.keep_awake(cmd)
+
 def locks():
-    return subprocess.run(["systemd-inhibit", "--list", "--no-pager"], capture_output=True, text=True).stdout
+    try:
+        return subprocess.run(["systemd-inhibit", "--list", "--no-pager"], capture_output=True, text=True).stdout
+    except OSError:
+        return ""
+
+
+def n_locks():
+    """How many moe-cache keep-awake locks are listed. A real launcher of another session (or another test run) on the same machine holds one with the
+    same text, so the checks below compare with the count taken before this test made its own lock, never with "none"."""
+    return locks().count("llama-server is running")
+
+
+def gone(limit=20.0):
+    """Wait until the lock is no longer listed (systemd-inhibit ends a moment after the pipe closes; on a busy machine that took more than the old fixed 0.5 / 1 s)."""
+    end = time.time() + limit
+    while time.time() < end and n_locks() > BASE:
+        time.sleep(0.1)
+BASE = n_locks()           # locks of other launchers already on this machine
+if BASE:
+    print(f"  note: {BASE} moe-cache keep-awake lock(s) of other launchers are held on this machine; counting only this test's own")
+c, rel, note = mc.keep_awake(cmd)
 if mc.WINDOWS:
     check("keeping the PC awake" in note and c == cmd, f"Windows: power request set, command unchanged ({note[:50]})")
     rel()
     check(True, "release call runs")
 elif note:
     check(c == cmd and "keeping the machine awake" in note, "Linux: the command stays llama-server's own (not wrapped)")
-    check("llama-server is running" in locks(), "the lock is listed while the server runs")
+    check(n_locks() == BASE + 1, "the lock is listed while the server runs (one more than before)")
     rel()
-    time.sleep(0.5)
-    check("llama-server is running" not in locks(), "the lock is gone after release")
+    gone()
+    check(n_locks() == BASE, "the lock is gone after release (back to the count before)")
     # a launcher that dies without releasing (kill -9) must not leave the lock: run the keep-awake in a child process and kill it
     code = "import sys, time; sys.path.insert(0, %r); import moe_cache as mc; c, r, n = mc.keep_awake(['x']); print('up', flush=True); time.sleep(60)" % os.path.join(HERE, "bin")
     q = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
     q.stdout.readline()
-    check("llama-server is running" in locks(), "a second launcher holds a lock")
+    check(n_locks() == BASE + 1, "a second launcher holds a lock")
     q.kill(); q.wait()
-    time.sleep(1.0)
-    check("llama-server is running" not in locks(), "killed launcher (kill -9): the lock is released by the closing pipe")
+    gone()
+    check(n_locks() == BASE, "killed launcher (kill -9): the lock is released by the closing pipe")
 else:
     check(c == cmd, "no systemd-inhibit / logind here: skipped quietly, command unchanged")
 

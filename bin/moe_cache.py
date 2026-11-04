@@ -159,11 +159,41 @@ def find_llama_server(saved=None):
     environment; on Windows LLAMA_SERVER as stored in the registry (user, then machine); the control page's saved path; the PATH (process, and on
     Windows the registry's); then every default folder (Windows: C:\\llama*, %USERPROFILE%\\llama*, Downloads\\llama-b*-bin-win-*, the kit; Linux:
     install.sh's build, ~/llama.cpp/build/bin, the kit). An explicit setting that points at a file wins; among the folders the newest build whose
-    ggml API a shipped plugin supports wins. Returns {"path", "source", "build", "api", "others", "looked"}; "path" is None when nothing was found."""
+    ggml API a shipped plugin supports wins. One exception to "the PATH comes before the folders": a PATH llama-server whose ggml API no shipped plugin
+    supports (the distro's, API 2, next to a kit that ships the API 3 plugin and a bundled llama.cpp) gives way to a default-folder one that has a supported
+    API, with a note (v0.3.6-beta2 smoke test: `check` failed on /usr/bin/llama-server and advised another download); with no supported one anywhere the
+    PATH one stays, as before. Returns {"path", "source", "build", "api", "others", "looked", "note"}; "path" is None when nothing was found."""
     looked = []
-    res = {"path": None, "source": None, "build": None, "api": None, "others": [], "looked": looked}
+    res = {"path": None, "source": None, "build": None, "api": None, "others": [], "looked": looked, "note": None}
     def hit(path, source):
         res.update(path=path, source=source, api=ls_api(path) if os.path.isabs(path) else None)
+        return res
+    def folder_candidates():
+        found = []
+        for d in llama_search_dirs():
+            r = next((os.path.join(d, x, llama_exe()) for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release"))
+                      if os.path.isfile(os.path.join(d, x, llama_exe()))), None)
+            looked.append(f"folder {d}: " + ("found" if r else "no llama-server"))
+            if r and os.path.abspath(r) not in found:
+                found.append(os.path.abspath(r))
+        return found
+    def supported_folder_instead(found_path, label):
+        """A default-folder llama-server with a supported API to use instead of the PATH one at found_path (None: keep the PATH one)."""
+        apis, api = shipped_apis(), ls_api(found_path)
+        if not (apis and api and api not in apis):
+            return None
+        found = folder_candidates()
+        good = [c for c in found if ls_api(c) in apis]
+        if not good:
+            return None
+        best = max(good, key=lambda c: (ls_build(c) or 0, os.path.getmtime(c)))
+        hit(best, "a default folder")
+        res["build"] = ls_build(best)
+        res["others"] = [c for c in found if c != best]
+        kit = os.path.abspath(best).startswith(os.path.abspath(HERE) + os.sep)
+        res["note"] = (f"{label} llama-server (ggml API {api}) skipped: no shipped plugin for it; using "
+                       + ("the kit's bundled llama-server" if kit else best) + f" (API {res['api']})")
+        looked.append(res["note"])
         return res
     explicit = [("LLAMA_SERVER", os.environ.get("LLAMA_SERVER"))] + [("LLAMA_SERVER in " + w, v) for w, v in win_registry_env("LLAMA_SERVER")]
     explicit.append(("the control page's saved path", saved if saved is not None else saved_llama_server()))
@@ -178,22 +208,16 @@ def find_llama_server(saved=None):
     w = shutil.which("llama-server")
     looked.append("PATH: " + ("llama-server" if w else "not on it"))
     if w:
-        return hit("llama-server", "PATH")
+        return supported_folder_instead(os.path.abspath(w), "PATH") or hit("llama-server", "PATH")
     if WINDOWS:
         for where, v in win_registry_env("PATH"):
             for d in v.split(";"):
                 r = resolve_llama_server(d) if d and os.path.isdir(d) and os.path.isfile(os.path.join(d, llama_exe())) else None
                 if r:
                     looked.append(f"PATH in {where}: {d}")
-                    return hit(r, "PATH in " + where)
+                    return supported_folder_instead(r, "PATH in " + where) or hit(r, "PATH in " + where)
         looked.append("PATH in the registry: not on it")
-    found = []
-    for d in llama_search_dirs():
-        r = next((os.path.join(d, x, llama_exe()) for x in ("", "bin", os.path.join("build", "bin"), os.path.join("build", "bin", "Release"))
-                  if os.path.isfile(os.path.join(d, x, llama_exe()))), None)
-        looked.append(f"folder {d}: " + ("found" if r else "no llama-server"))
-        if r and os.path.abspath(r) not in found:
-            found.append(os.path.abspath(r))
+    found = folder_candidates()
     if found:
         apis = shipped_apis()
         def rank(c):
@@ -227,7 +251,7 @@ def ls_found_line(ls):
         return None
     return (f"moe-cache: llama-server: {which(ls) if ls != 'llama-server' else ls} (found by {_LS['source']}"
             + (f", build b{_LS['build']}" if _LS.get("build") else "") + (f", ggml API {_LS['api']}" if _LS.get("api") else "")
-            + (f"; also found, not used: {', '.join(_LS['others'])}" if _LS.get("others") else "") + ")")
+            + (f"; also found, not used: {', '.join(_LS['others'])}" if _LS.get("others") else "") + (f"; {_LS['note']}" if _LS.get("note") else "") + ")")
 
 
 # ---- how a llama-server loads the plugin ----
@@ -1980,6 +2004,7 @@ class Machine:
     def load_env(self, ls, lib, method="auto"): return load_env(ls, lib, method)
     def vk_cache_cap(self, ls, model, listing=None): return vk_cache_cap(ls, model, listing)
     def run(self, cmd, **kw): return subprocess.run(cmd, **kw)
+    def planner_answer(self, model, ctx, ram_gib, vram_gib): return planner_answer(model, ctx, ram_gib, vram_gib)
     def lib_exists(self, lib): return os.path.isfile(lib)
 
     def other_llama_servers(self): return other_llama_servers()
@@ -2030,6 +2055,19 @@ class LaunchPlan:
     @property
     def kv(self):
         return "q8_0" if self.kv_q8 else "f16"
+
+    def numbers(self):
+        """ENGINE-029: the figures the control page shows, from this plan alone (the model's layers and sizes from the planner's answer, the placement the launcher
+        chose: n_cpu_moe, micro-batch, KV type). None when the planner gave no answer. The page used to combine planner_info, tuned and these fields itself."""
+        pl, tuned = self.planner_info, self.tuned
+        if not pl:
+            return None
+        ncmoe = int(self.n_cpu_moe) if str(self.n_cpu_moe).isdigit() else pl["n_cpu_moe"]
+        layers = pl["layers"]
+        return {"layers": layers, "gpu_expert_layers": max(0, layers - min(ncmoe, layers)), "n_cpu_moe": ncmoe, "cache_GiB": pl["cache_GiB"],
+                "cpu_experts_GiB": pl["cpu_experts_GiB"], "free_vram_GiB": pl["free_vram_GiB"],
+                "ub": int(self.ub) if str(self.ub).isdigit() else (tuned["ub"] if tuned else None), "kv_cache": self.kv,
+                "experts": pl["experts"], "used": pl["used"], "arch": pl["arch"]}
 
     def command_line(self, windows=None):
         """The line --dry-run prints: environment settings, then the command (PowerShell form on Windows); the API key is never shown."""
@@ -2083,6 +2121,9 @@ def parse_server(argv):
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
+    ap.add_argument("--lan", action="store_true")           # SERVER-016: listen on this PC's home-network address, API key forced (bin/moe_cache_lan.py, docs/LAN_ACCESS.md)
+    ap.add_argument("--lan-address", default=None)          # with --lan: which private address of this PC (default: the first one found)
+    ap.add_argument("--allow-public", action="store_true")  # lets --host / --lan listen on a public (internet) address; off by default
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
@@ -2389,6 +2430,523 @@ def launch_plan(a, extra, argv, machine=None, quiet=False):
     return plan
 
 
+_PLAN_MODULE = []
+
+
+def planner_answer(model, ctx, ram_gib=None, vram_gib=None):
+    """ENGINE-029: planner/plan.py's answer (the dict `plan.py --json` prints), computed in this process. The launcher used to start a second Python for it (about
+    0.06 s of every launch, and a second decision path nobody could step into); plan.py stays runnable as a script for people who call it directly.
+    Raises planner.plan.PlanError (a message for the user) or the GGUF reader's ValueError / OSError for a model it cannot read."""
+    if not _PLAN_MODULE:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("moe_cache_plan", os.path.join(HERE, "planner", "plan.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _PLAN_MODULE.append(mod)
+    return _PLAN_MODULE[0].plan_info(model, ctx=ctx, ram_gib=ram_gib, vram_gib=vram_gib)
+
+
+def plan_placement(a, model, ctx, ncmoe, machine):
+    """ENGINE-029, stage "placement": how many layers keep their experts on the GPU, from planner/plan.py (the first answer; the tuner below may refine it).
+    ncmoe: --n-cpu-moe as the user gave it (None: ask the planner). Returns (n_cpu_moe as text, the planner's answer as a dict or None, why it failed or None);
+    the answer carries the model's layers, experts, cache size and free VRAM that the control page shows."""
+    planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
+    if ncmoe is None:
+        ram_gib = float(f"{machine.mem_for_server(a.ram) / 2**30:.3f}") if (a.ram or machine.mem_cap()) else None      # the planner plans with the capped memory too
+        vram_gib = float(a.vram) if a.vram else None
+        try:
+            planner_info = machine.planner_answer(model, ctx, ram_gib, vram_gib)
+            ncmoe = str(planner_info["n_cpu_moe"])
+        except Exception as e:
+            # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
+            why = str(e) if type(e).__name__ == "PlanError" else f"{type(e).__name__}: {e}"
+            planner_info, planner_error = None, why
+            say(f"moe-cache: planner failed ({why}); keeping all experts on the CPU"); ncmoe = "999"
+    return ncmoe, planner_info, planner_error
+
+
+def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes):
+    """ENGINE-029, stage "tuner": micro-batch, GPU expert cache and the number of static expert layers, from the one shared tuner (planner/gguf_plan.py: tune),
+    with the VRAM other programs hold (desk reserve), --gpu-margin and --leave-room counted. Returns (tuned dict or None, the reserve in GB when the desktop
+    forced one or None, the micro-batch the user asked for or None)."""
+    tuned = None
+    desk_kw = None
+    ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
+    if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import tune
+            free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
+            if mm_bytes and free:
+                free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
+            kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
+            if a.gpu_margin is None:
+                # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
+                from gguf_plan import desk_reserve_gb
+                tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else machine.gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
+                if tf:
+                    res, used = desk_reserve_gb(*tf)
+                    if res > 0.5:
+                        desk_kw = kw["reserve_gb"] = res
+                        say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
+                            f"(--gpu-margin GiB to change)")
+                if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
+                    desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
+                    say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
+            if (ub_asked or "").isdigit():
+                kw["ub"] = int(ub_asked)
+            from gguf_plan import plan_rule_on
+            if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
+                from gguf_plan import find_fit_params, plan_table, plan_table_lines
+                kw["fit_params"] = find_fit_params(ls)
+                say("moe-cache: plan rule: compute-buffer reserve " + ("measured with " + kw["fit_params"] if kw["fit_params"] else "from the formula (no llama-fit-params found)"))
+                if a.dry_run and free:
+                    for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):
+                        say(line)
+            tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
+        except Exception:
+            tuned = None
+    return tuned, desk_kw, ub_asked
+
+
+def lan_stage(a, extra):
+    """SERVER-016, stage "network address": --lan serves the home network (the server listens on all interfaces because the launcher and the page reach it through
+    127.0.0.1; the address told to the user is the PC's private one), and any explicit --host is checked: a public address is refused without --allow-public. The
+    address rules live in bin/moe_cache_lan.py. extra gets "--host 0.0.0.0" for --lan. Returns the address to tell the user (None without --lan)."""
+    lan_addr = None
+    if a.lan or arg_after(extra, "--host"):
+        import moe_cache_lan as lan
+        addrs = lan.local_addresses()
+        if a.lan:
+            if arg_after(extra, "--host"):
+                raise SystemExit("--lan chooses the address itself: remove --host (or name the address with --lan-address ADDR)")
+            lan_addr, err = lan.pick_address(addrs, a.lan_address)
+            if err:
+                raise SystemExit("--lan: " + err)
+            extra += ["--host", "0.0.0.0"]
+        err = lan.check_bind(arg_after(extra, "--host"), addrs, a.allow_public) if arg_after(extra, "--host") else None
+        if err:
+            raise SystemExit("--host: " + err if not a.lan else "--lan: " + err)
+    return lan_addr
+
+
+def api_key_stage(a, extra, lan_addr=None):
+    """ENGINE-029, stage "API key": a key given on our command line or after `--` goes to llama-server through the environment (LLAMA_API_KEY), never its argument list; agent mode, --project and --lan always get the stable per-user key (--lan prints what the open port risks). Plain chat servers get none, but a CORS allow-list so a normal web page cannot read their answers. Returns (api_key or None, the environment settings for it)."""
+    api_key = take_api_key_from_args(extra) or a.api_key
+    if not api_key and (a.agent or a.project or a.lan):
+        api_key = stored_key(create=True)
+        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
+            "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
+    if a.lan:
+        import moe_cache_lan as lan
+        for line in lan.risk_lines(f"http://{lan_addr}:{a.port}", KEY_FILE if api_key == stored_key() else None):
+            say(line)
+    key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
+    if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
+        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
+        # Passed as the environment variable so a llama-server without the flag just ignores it
+        key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
+    return api_key, key_env
+
+
+def agent_stage(a, extra, model):
+    """ENGINE-029, stage "agent flags": --jinja, recurrent checkpoints, slot similarity, the alias and (without --no-warm / --project) the folder for saved conversations. extra grows in place. Returns (alias or None, slot folder or None)."""
+    alias = None
+    slotdir = None
+    if a.agent:
+        if not any(x in ("--jinja", "--no-jinja") for x in extra):
+            extra.append("--jinja")         # the default in current llama.cpp; explicit for older builds (tool calls need the model's own template)
+        if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None:
+            # models with recurrent layers keep a copy of that state per checkpoint in host RAM (about 60 MiB on Qwen3.6-35B), outside the cache's budget
+            # idea S03 (MOE_CACHE_CKPT=N, default 8): how many recurrent checkpoints each conversation keeps; more cost host RAM, fewer cost reprocessing
+            ck = os.environ.get("MOE_CACHE_CKPT", "8")
+            extra += ["--ctx-checkpoints", ck if ck.isdigit() else "8"]
+        # idea S02 (MOE_CACHE_SLOT_SIMILARITY=0..1, default unset = the server's own): a request takes a busy conversation's slot only if its prompt is at least
+        # this similar to what the slot holds, so a short request from another agent goes to a free slot instead of displacing a long conversation
+        sps = os.environ.get("MOE_CACHE_SLOT_SIMILARITY")
+        if sps and arg_after(extra, "-sps", "--slot-prompt-similarity") is None:
+            try:
+                if 0.0 <= float(sps) <= 1.0:
+                    extra += ["--slot-prompt-similarity", sps]
+            except ValueError:
+                pass
+        alias = arg_after(extra, "-a", "--alias")
+        if alias is None:
+            alias = default_alias(model)
+            extra += ["--alias", alias]
+        if not a.no_warm and not a.project:
+            if arg_after(extra, "--slot-save-path") is None:
+                slotdir = os.path.join(CACHE_DIR, "slots", "agent"); os.makedirs(slotdir, exist_ok=True)
+                extra += ["--slot-save-path", slotdir]
+            else:
+                slotdir = arg_after(extra, "--slot-save-path")
+    return alias, slotdir
+
+
+def gpu_stage(a, ls, win, machine):
+    """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
+    vram_user = a.vram
+    listing = machine.list_devices(ls) if win else None
+    gpu = machine.pick_gpu_full(listing) if win else None
+    if win and not a.vram and not machine.nvidia_reports():
+        # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
+        # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
+        g = gpu
+        ded = machine.win_dedicated_vram().get(g[1]) if g else None
+        if g and ded is not None and ded < 2**30:
+            # an integrated GPU (the Claw's Arc 140V, Ryzen APUs): Vulkan's "free" is shared system RAM, which the cache also counts;
+            # plan with the dedicated carve-out only, as Linux does (planner/plan.py amd_free)
+            say(f"moe-cache: GPU {g[1]} ({g[0]}) is integrated ({ded / 2**20:.0f} MiB of its own memory): planning without dedicated VRAM")
+            g = None
+        if g and g[2] > 0:
+            a.vram = f"{g[2] / 1024:.2f}"
+            say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
+            # XA-3: Vulkan's GPU allocations are charged to Windows commit; plan no more GPU memory than the free commit can carry next to llama-server's
+            # host buffers, so a desktop with a browser open gets a slower start instead of a crash (RESULTS 73)
+            cfree = machine.win_commit()[1]
+            capped = vram_for_commit(float(a.vram), cfree)
+            if capped < float(a.vram):
+                say(f"moe-cache: GPU plan {a.vram} -> {capped:.2f} GiB: Windows' free commit ({cfree / 1e9:.1f} GB, RAM + page file) must also carry "
+                    "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
+                a.vram = f"{capped:.2f}"
+    return vram_user, listing, gpu
+
+
+def plugin_lib_stage(ls, dry, stock, win, machine):
+    """ENGINE-029, stage "plugin build": which plugin library goes with this llama-server (MOE_CACHE_LIB gives way to the matching build when its backend API differs), and the refusals: llama-server missing, plugin not built, API mismatch. Returns the library path."""
+    lib = os.environ.get("MOE_CACHE_LIB")
+    if lib:
+        # moe-cache.bat sets MOE_CACHE_LIB to the first DLL it finds (the api3 one); for an older llama-server (ggml 0.24 / 0.25) that build refuses to load.
+        # An env value built for another API than the server uses gives way to the matching build the launcher finds itself (audit A4-01)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if want and have and want != have:
+            alt = machine.pick_lib(ls)
+            if alt != lib and machine.lib_exists(alt) and machine.lib_api(alt) == want:
+                say(f"moe-cache: MOE_CACHE_LIB {lib} was built for ggml backend API {have}, {ls} uses API {want}: using {alt} instead", err=True)
+                lib = alt
+    else:
+        lib = machine.pick_lib(ls)
+    if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
+        # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
+        # tarball users the wrong way (audit 2026-10-29 K2)
+        raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
+                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else " (Linux: the -ggml0.26 download has llama.cpp inside, or run ./install.sh; with your own llama.cpp the file is build/bin/llama-server)")
+                         + f". Looked: {machine.ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
+    if (line := machine.ls_found_line(ls)):
+        say(line)
+    if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if want and have and want != have:
+            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load; "
+                + api_advice(want), err=True)
+        if not machine.lib_exists(lib):
+            if os.environ.get("MOE_CACHE_LIB"):
+                raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
+            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
+    return lib
+
+
+def profile_stage(a, model, pname, dry):
+    """ENGINE-029, stage "usage profile": the path of the profile this model learns into (idea I18: with none yet, the shipped one for the model family is copied there, a learned profile made the first request 2.1-2.4x faster, RESULTS 16). Returns the path."""
+    profile = model_profile(model, pname, dry=dry)
+    if not os.path.isfile(profile) and not a.no_starter and not dry:
+        # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import model_key
+            key = model_key(model)
+            starter = os.path.join(HERE, "profiles", key + ".usage") if key else None
+            if starter and os.path.isfile(starter):
+                os.makedirs(CACHE_DIR, exist_ok=True)
+                shutil.copyfile(starter, profile)
+                say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
+        except Exception as e:
+            say(f"moe-cache: could not use a starter profile ({e})", err=True)
+    return profile
+
+
+def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
+    """ENGINE-029, stage "plugin environment": how the plugin is loaded (preload or backend path), the cache and memory settings of the plugin in environment form (RAM, cap, peers) and the memory cap the plan prints. --gpu-cache falls back to static layers when the plugin can only be loaded as a file. Returns (load settings, load method, gpu cache setting, environment, memory cap or None)."""
+    load, method = ([], "none (stock)") if stock else machine.load_env(ls, lib, a.load_method)
+    if gcache != "off" and not stock and method == "path":
+        # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
+        say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
+            "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
+        gcache = "off"
+    env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
+    if a.ram:
+        env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
+    cap = machine.mem_cap()
+    if a.max_ram:
+        env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
+    if a.peers and not stock:
+        # N2/MM2 (PROTOTYPE): the plugin writes its memory use into this folder once a second and reads the other servers' files; a quiet server gives memory to a busy
+        # one. --ram stays this server's own share. A stock llama-server (no plugin) is not in the folder: --share-ram counts it at start.
+        peers_dir = os.path.join(CACHE_DIR, "peers")
+        env.append(("MOE_CACHE_PEERS", peers_dir))
+        if cap:
+            env.append(("MOE_CACHE_PEER_CAP_GIB", f"{cap / 2**30:.2f}"))
+        say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/PLATFORMS.md)")
+    if cap:
+        say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
+            else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
+        if a.ram and float(a.ram) * 1e9 > cap:
+            say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
+    return load, method, gcache, env, cap
+
+
+def kv_stage(a, extra, ctx, ls, listing, machine):
+    """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
+    if (not a.fast and not a.exact and not a.stock and ctx >= 131072
+            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
+            and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
+        a.fast = "kv"
+        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
+            "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+    kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
+    if kv_q8:
+        extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
+    return kv_q8
+
+
+def fast_env_stage(a, env, stock, model, machine):
+    """ENGINE-029, stage "approximate modes": the plugin settings and the one plain line for --fast, --fast=2, --fast=fewer and --fast=kv; without --fast, the hint where it would pay (the model is much bigger than the memory it may use). env grows in place."""
+    if a.fast == "kv":
+        say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
+    elif a.fast:
+        env.append(("MOE_CACHE_ROUTE", "skip"))
+        if a.fast == "2":
+            env.append(("MOE_CACHE_ROUTE_DROP", "4"))
+            say("moe-cache: --fast=2: up to 4 low-ranked experts per token that are not in RAM are skipped (for memory much smaller than the model: "
+                "Flash-Next at 12 GB +43 %; about 1 top token in 28 differs from stock, KL 0.022; RESULTS 53)")
+        elif a.fast == "fewer":
+            env.append(("MOE_CACHE_FEWER", "2"))
+            say("moe-cache: --fast=fewer: --fast, and on the CPU-held layers the 2 lowest-ranked experts of every token are never computed (top-10 -> 8 on Flash-Next); "
+                "output no longer identical to stock, quality limits in docs/QUALITY_GATE.md (level fewer)")
+        else:
+            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
+    elif not stock:
+        # suggest --fast only where it pays: the model is much bigger than the memory it may use
+        try:
+            size = sum(os.path.getsize(p) for p in model_parts(model))
+            lim = float(a.ram) * 1e9 if a.ram else machine.mem_total()
+            if lim and size > 2 * lim:
+                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts for about +10 % (changes some tokens; off by default)")
+        except Exception:
+            pass
+
+
+def cpu_pin_stage(a, env, extra, stock, win, machine):
+    """ENGINE-029, stage "CPU cores": efficiency cores for the expert executor and pinning llama-server to the performance cores on hybrid CPUs (Windows core groups, Linux sysfs). env grows in place. Returns the pinning arguments for llama-server."""
+    if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and machine.has_cpu_atom():
+        ne = min(machine.cpu_atom_count(), 4)
+        if ne > 0:
+            env.append(("MOE_CACHE_EXEC_ECORES", str(ne)))
+            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
+    pinargs = []
+    hm = hybrid_masks(machine.win_cores()) if win else None
+    if machine.win_core_groups() > 1 and not a.no_pin:
+        say("moe-cache: " + WIN_GROUPS_NOTE)
+    if hm and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
+        pmask, ecpus = hm
+        if not a.no_pin:
+            pinargs = ["-C", hex(pmask), "--cpu-strict", "1"]
+            env.append(("MOE_CACHE_CPU_MASK", hex(pmask)))
+            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {hex(pmask)}); --no-pin to disable")
+        ne = min(len(ecpus), 4)
+        if ne and not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES"):
+            env += [("MOE_CACHE_EXEC_ECORES", str(ne)), ("MOE_CACHE_ECORE_MASK", hex(sum(1 << c for c in ecpus)))]
+            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
+    if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
+        mask = machine.perf_core_mask()
+        if mask:
+            pinargs = ["-C", mask, "--cpu-strict", "1"]
+            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
+    return pinargs
+
+
+def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine):
+    """ENGINE-029, stage "micro-batch and static layers": -ub from the tuner (or the user), and without a GPU cache the number of static expert layers from the same decision (the planner alone assumes a small compute buffer, RESULTS 61); the hint for --fast=kv; the MTP warning for an --n-cpu-moe that puts more layers on the GPU than planned. Returns (ub as text, n_cpu_moe as text, whether the tuner had no GPU memory figure)."""
+    ub = a.ub
+    if ub == "auto":
+        ub = "" if any(x in ("-ub", "--ubatch-size") for x in extra) else (str(tuned["ub"]) if tuned else "")
+    if ub and ub != "auto":
+        if not ub.isdigit():
+            say("moe-cache: --ub must be auto or a number")
+        else:
+            extra += ["-ub", ub, "-b", str(max(int(ub), 2048))]
+            say(f"moe-cache: micro-batch -ub {ub} (prompt processing; --ub N to change)")
+    # without a GPU cache, take the static expert layers from the same decision as the micro-batch (the planner alone assumes a small compute
+    # buffer and fills the card, so the long-prompt GPU block found no room next to -ub 2048: Flash-Next prefill 18 instead of 50+ tok/s)
+    no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))   # e.g. an integrated GPU: keep the planner's answer
+    if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned and not no_vram:
+        ncmoe = str(tuned["n_cpu_moe"])
+        if not kv_q8 and not a.fast:
+            try:
+                from gguf_plan import fast_kv_hint
+                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
+                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
+                if h:
+                    say("moe-cache: " + h)
+            except Exception:
+                pass
+    # MTP's draft context needs GPU memory next to the layers; with more expert layers on the GPU than planned, llama.cpp over-commits the card
+    # (it logs "failed to fit params to free device memory") and on Windows the spill then starves host memory: GGML_ASSERT(ctx->mem_buffer != NULL)
+    # while creating the draft context (GLM on the PC, 41 and 43 CPU layers with MTP; the planned 45 loads, RESULTS 62). Same warning on Linux.
+    if (ncmoe_user or "").isdigit() and tuned and not no_vram and gcache == "off" and "draft-mtp" in extra and int(ncmoe_user) < int(tuned["n_cpu_moe"]) < 999:
+        say(f"moe-cache: WARNING: --n-cpu-moe {ncmoe_user} puts more expert layers on the GPU than planned ({tuned['n_cpu_moe']}) while MTP is on: "
+            "MTP's draft context needs GPU memory too, and llama-server may abort at load (seen on GLM: GGML_ASSERT(ctx->mem_buffer != NULL)). "
+            f"Use --n-cpu-moe {tuned['n_cpu_moe']} or more, or --no-mtp", err=True)
+    return ub, ncmoe, no_vram
+
+
+def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine):
+    """ENGINE-029, stage "GPU expert cache and hybrid bank": the size of llama.cpp's GPU expert cache (--gpu-cache auto/MiB, capped by one Vulkan device buffer), or the hybrid bank (--hybrid); both put every expert on the CPU side (n_cpu_moe 999). env and extra grow in place. Returns n_cpu_moe as text."""
+    if gcache != "off" and ncmoe != "0":
+        gcmib = gcache
+        if gcache == "auto":
+            gcmib = str(tuned["gpu_cache_mib"]) if tuned and tuned["gpu_cache_mib"] else ""
+            for w in (tuned or {}).get("why", []):
+                say("moe-cache: tuner: " + w)
+        if not gcmib.isdigit():
+            say("moe-cache: --gpu-cache: could not work out a size (planner unavailable?), using the planner's static GPU layers"); gcmib = ""
+        else:
+            cap, lim = machine.vk_cache_cap(ls, model, listing)
+            if cap is not None and int(gcmib) > cap:
+                say(f"moe-cache: --gpu-cache: {gcmib} MiB capped to {cap} MiB: on Vulkan each of llama.cpp's cache banks must fit in one device buffer "
+                    f"({lim / 2**20:.0f} MiB on this GPU), a bigger cache aborts the load")
+                gcmib = str(cap)
+        if gcmib and int(gcmib) < 512:
+            say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
+        if gcmib:
+            ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
+            say(f"moe-cache: GPU expert cache of {gcmib} MiB; " + ("llama.cpp keeps the hottest experts on the GPU" if stock else "all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"))
+    if a.hybrid and ncmoe != "0":
+        ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))
+        say("moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)")
+        if not os.path.isfile(profile):
+            say(f"moe-cache: --hybrid: no usage profile yet ({profile}): the bank is chosen from it, so this first session runs without one")
+    return ncmoe
+
+
+def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
+    """ENGINE-029, stage "prompt cache": llama-server's --cache-ram (8 GiB by default, which competes with the expert cache): 2 GiB, 0 below 16 GB of memory, MOE_CACHE_PROMPT_CACHE_MIB, cut to what Windows' free commit can carry; and the host reserve told to the plugin. Yours after -- always wins. extra and env grow in place. Returns the cache size as text or None."""
+    cram = arg_after(extra, "--cache-ram", "-cram")
+    cram_auto = False             # True when the launcher chose it (yours after -- always wins)
+    if cram is None:
+        try:
+            if "--cache-ram" in ls_help(ls, machine.run):
+                # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
+                # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
+                lim = machine.mem_for_server(a.ram)
+                cram = "0" if lim and lim < 16e9 else "2048"
+                # idea L05 (MOE_CACHE_PROMPT_CACHE_MIB=N, unset = the rule above): set the prompt cache from evidence instead of the fixed split (0 = off); the number
+                # to use is the one where the saved reprocessing stops paying for the expert-cache RAM it takes (tools/agent_bench.py at two settings)
+                pcm = os.environ.get("MOE_CACHE_PROMPT_CACHE_MIB", "")
+                if re.fullmatch(r"[0-9]+", pcm):
+                    cram = pcm
+                extra += ["--cache-ram", cram]
+                cram_auto = True
+        except Exception:
+            pass
+    if win:     # XA-3: llama-server's own buffers and Vulkan's GPU memory need Windows commit (RAM + page file), not only free RAM
+        if not dry:
+            warn_heavy_background()
+        ctot, cfree = machine.win_commit()
+        if ctot and cfree:
+            say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
+            if cram_auto and re.fullmatch(r"[0-9]+", str(cram)):
+                fit, short = commit_plan(cfree, a.vram, int(cram))
+                if fit < int(cram):
+                    extra[len(extra) - 1 - extra[::-1].index("--cache-ram") + 1] = str(fit)
+                    say(f"moe-cache: prompt cache {cram} -> {fit} MiB so llama-server stays inside Windows' free commit (other programs hold the rest)", err=True)
+                    cram = str(fit)
+                if short:
+                    say(f"moe-cache: WARNING: Windows commit is nearly full ({cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB): llama-server may fail to allocate "
+                        "memory and stop. Close big programs, or set the page file to system-managed (or larger) in Windows' Advanced system settings", err=True)
+    say(prompt_cache_note(cram, extra, a.agent))
+    if cram is not None and re.fullmatch(r"[0-9-]+", cram):
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
+    elif a.agent:
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", "1024"))     # told to the plugin directly instead of it parsing our command line
+    return cram
+
+
+def stock_env_stage(a, env, stock, ncmoe, size, avail, method):
+    """ENGINE-029, stage "stock llama-server": a model that fits (or --stock) runs without the plugin: one line says so, every plugin setting leaves the environment, and a short-batch GPU offload threshold (T5, RESULTS 68) is added. Returns (environment, method)."""
+    if stock:
+        if a.stock:
+            say("moe-cache: --stock: running stock llama-server without the plugin, as asked (to compare; a model bigger than RAM is read through the file cache)")
+        else:
+            say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
+                "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
+        env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
+        method = "none (stock)"
+        if ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):
+            # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
+            # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
+            env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
+    return env, method
+
+
+def leave_room_stage(a, env, extra, pinargs, machine):
+    """ENGINE-029, stage "--leave-room": lower priority for llama-server and, unless threads are pinned or given, two physical cores left free. Returns the arguments for llama-server (a new list when -t was added)."""
+    if a.leave_room:
+        env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
+        if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
+            extra = extra + ["-t", str(max(1, machine.physical_cores() - LEAVE_ROOM_FREE_CORES))]    # hybrid CPUs keep their performance-core pinning
+            say(f"moe-cache: --leave-room: {LEAVE_ROOM_FREE_CORES} CPU cores left free (-t {extra[-1]})")
+    return extra
+
+
+def multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win):
+    """ENGINE-029, stage "--multi-gpu" (PROTOTYPE): the split across the cards and the second card for the long-prompt block. Returns (n_cpu_moe, arguments for llama-server)."""
+    if mg:
+        extra_before = extra
+        ncmoe, extra = multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win)
+        if extra is not extra_before and not stock and not os.environ.get("MOE_CACHE_GPU_DEV2"):
+            # N3/MG5 (PROTOTYPE): the plugin's long-prompt block may also use the second card of the --device list when it does not fit on the first
+            env.append(("MOE_CACHE_GPU_DEV2", "auto"))
+            say("moe-cache: --multi-gpu: the plugin's long-prompt GPU block may use the second card too (MOE_CACHE_GPU_DEV2=auto, PROTOTYPE)")
+    return ncmoe, extra
+
+
+def decode_reloc_stage(env, model, ctx, ub, ncmoe, extra, gcache):
+    """ENGINE-029, stage "decode relocation" (DECODE-630, PROTOTYPE, default off): layers back to the GPU after the prompt; needs llama.cpp patch 0070. env grows in place."""
+    if os.environ.get("MOE_CACHE_DECODE_RELOC"):       # DECODE-630 (PROTOTYPE, default off): layers back to the GPU after the prompt, needs llama.cpp patch 0070
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner")) if os.path.join(HERE, "planner") not in sys.path else None
+            import gguf_plan
+            from decode_reloc import launcher_env
+            r_env, r_note = launcher_env(os.environ, lay=gguf_plan.model_layout(model), ctx=ctx, ub=ub, ncmoe=ncmoe, extra=extra, gcache=gcache,
+                                         compute_mib=gguf_plan.compute_buffer_guess_mib)
+            env += r_env
+            if r_note:
+                say(r_note)
+        except Exception as e:
+            say(f"moe-cache: MOE_CACHE_DECODE_RELOC ignored: {e}", err=True)
+
+
+def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine):
+    """ENGINE-029, stage "command": CPU-only mode (--device none, -ngl 0), the llama-server command line with the placement and the pinning, --auto-fit for a dense model, and the line that says what the cache will manage. Returns (the command, the arguments for llama-server)."""
+    cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
+    if cpu_only:
+        extra = ["--device", "none"] + extra          # -ngl 0 alone still lets the KV cache land on a loaded GPU backend
+        say(f"moe-cache: CPU-only ({cpu_why}): --device none and -ngl 0, nothing is put on a GPU")
+    cmd = [ls, "-m", model, "-ngl", "0" if cpu_only else "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
+    if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
+        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load
+        del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
+        say("moe-cache: --auto-fit (PROTOTYPE): dense model, no experts: no -ngl / --n-cpu-moe given, llama.cpp's --fit places the layers by free GPU memory")
+    if method == "none (stock)":
+        pass
+    elif ncmoe == "0":
+        say(f"moe-cache: all experts fit in your GPU memory; the cache has nothing to manage for this model/context (profile {profile}; plugin loaded by {method})")
+    else:
+        say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")
+    return cmd, extra
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -2442,121 +3000,19 @@ def _launch_plan(a, extra, argv, machine):
     mm_file, mm_bytes, dense = None, 0, False
     if a.mmproj or a.auto_fit:
         mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
-    lib = os.environ.get("MOE_CACHE_LIB")
-    if lib:
-        # moe-cache.bat sets MOE_CACHE_LIB to the first DLL it finds (the api3 one); for an older llama-server (ggml 0.24 / 0.25) that build refuses to load.
-        # An env value built for another API than the server uses gives way to the matching build the launcher finds itself (audit A4-01)
-        want, have = machine.ls_api(ls), machine.lib_api(lib)
-        if want and have and want != have:
-            alt = machine.pick_lib(ls)
-            if alt != lib and machine.lib_exists(alt) and machine.lib_api(alt) == want:
-                say(f"moe-cache: MOE_CACHE_LIB {lib} was built for ggml backend API {have}, {ls} uses API {want}: using {alt} instead", err=True)
-                lib = alt
-    else:
-        lib = machine.pick_lib(ls)
-    if not dry and not (os.path.isfile(ls) or shutil.which(ls)):
-        # before the plugin check: without llama-server the build that fits is unknown, and "plugin not built: run ./build.sh" sent kit and
-        # tarball users the wrong way (audit 2026-10-29 K2)
-        raise SystemExit(f"moe-cache: llama-server not found: {ls}. Pass --llama-server PATH or set LLAMA_SERVER"
-                         + (r' (once for good: setx LLAMA_SERVER "D:\path\to\llama-server.exe", then a new window; or unpack llama.cpp to C:\llama; the control page asks for the path and remembers it)' if win else " (Linux: the -ggml0.26 download has llama.cpp inside, or run ./install.sh; with your own llama.cpp the file is build/bin/llama-server)")
-                         + f". Looked: {machine.ls_looked()}. The official release: {RELEASES_URL}. (moe_cache.py check tells what is missing)")
-    if (line := machine.ls_found_line(ls)):
-        say(line)
-    if not stock:     # a model that fits runs stock llama-server: no plugin build needed (Bolt on the PC failed here overnight 2026-10-29, T5)
-        want, have = machine.ls_api(ls), machine.lib_api(lib)
-        if want and have and want != have:
-            say(f"moe-cache: WARNING: {lib} was built for ggml backend API {have} but {ls} uses API {want}: the plugin will refuse to load; "
-                + api_advice(want), err=True)
-        if not machine.lib_exists(lib):
-            if os.environ.get("MOE_CACHE_LIB"):
-                raise SystemExit(f"MOE_CACHE_LIB points to a file that does not exist: {lib}")
-            raise SystemExit(f"plugin not built: run ./build.sh first (looked for {lib})")
-    vram_user = a.vram
-    listing = machine.list_devices(ls) if win else None
-    gpu = machine.pick_gpu_full(listing) if win else None
-    if win and not a.vram and not machine.nvidia_reports():
-        # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
-        # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
-        g = gpu
-        ded = machine.win_dedicated_vram().get(g[1]) if g else None
-        if g and ded is not None and ded < 2**30:
-            # an integrated GPU (the Claw's Arc 140V, Ryzen APUs): Vulkan's "free" is shared system RAM, which the cache also counts;
-            # plan with the dedicated carve-out only, as Linux does (planner/plan.py amd_free)
-            say(f"moe-cache: GPU {g[1]} ({g[0]}) is integrated ({ded / 2**20:.0f} MiB of its own memory): planning without dedicated VRAM")
-            g = None
-        if g and g[2] > 0:
-            a.vram = f"{g[2] / 1024:.2f}"
-            say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
-            # XA-3: Vulkan's GPU allocations are charged to Windows commit; plan no more GPU memory than the free commit can carry next to llama-server's
-            # host buffers, so a desktop with a browser open gets a slower start instead of a crash (RESULTS 73)
-            cfree = machine.win_commit()[1]
-            capped = vram_for_commit(float(a.vram), cfree)
-            if capped < float(a.vram):
-                say(f"moe-cache: GPU plan {a.vram} -> {capped:.2f} GiB: Windows' free commit ({cfree / 1e9:.1f} GB, RAM + page file) must also carry "
-                    "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
-                a.vram = f"{capped:.2f}"
+    lib = plugin_lib_stage(ls, dry, stock, win, machine)
+    vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
     ncmoe_user = a.n_cpu_moe
     mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
     ncmoe = a.n_cpu_moe
-    planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
-    if ncmoe is None:
-        p = [python_cmd(), os.path.join(HERE, "planner", "plan.py"), model, "--ctx", str(ctx), "--json"]
-        if a.ram or machine.mem_cap():
-            p += ["--ram-gib", f"{machine.mem_for_server(a.ram) / 2**30:.3f}"]      # the planner plans with the capped memory too
-        if a.vram: p += ["--vram-gib", a.vram]
-        r = None
-        try:
-            r = machine.run(p, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
-            planner_info = json.loads(r.stdout)
-            ncmoe = str(planner_info["n_cpu_moe"])
-        except Exception as e:
-            # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
-            why = (r.stderr.strip().splitlines() or [""])[-1] if r is not None else str(e)
-            planner_info, planner_error = None, why or str(e)
-            say(f"moe-cache: planner failed ({why or e}); keeping all experts on the CPU"); ncmoe = "999"
+    ncmoe, planner_info, planner_error = plan_placement(a, model, ctx, ncmoe, machine)
     # API key (DECISION_LLAMA_SERVER_KEY, option C): a key given on our command line or after `--` goes to llama-server through the environment
     # (LLAMA_API_KEY), not its argument list; agent mode and --project always get the stable per-user key. Plain chat servers get none, but a CORS
     # allow-list so a normal web page cannot read their answers.
-    api_key = take_api_key_from_args(extra) or a.api_key
-    if not api_key and (a.agent or a.project):
-        api_key = stored_key(create=True)
-        say(f"moe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in {KEY_FILE} "
-            "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
-    key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
-    if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
-        # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
-        # Passed as the environment variable so a llama-server without the flag just ignores it
-        key_env.append(("LLAMA_ARG_CORS_ORIGINS", "localhost"))
+    lan_addr = lan_stage(a, extra)
+    api_key, key_env = api_key_stage(a, extra, lan_addr)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
-    alias = None
-    slotdir = None
-    if a.agent:
-        if not any(x in ("--jinja", "--no-jinja") for x in extra):
-            extra.append("--jinja")         # the default in current llama.cpp; explicit for older builds (tool calls need the model's own template)
-        if arg_after(extra, "-ctxcp", "--ctx-checkpoints", "--swa-checkpoints") is None:
-            # models with recurrent layers keep a copy of that state per checkpoint in host RAM (about 60 MiB on Qwen3.6-35B), outside the cache's budget
-            # idea S03 (MOE_CACHE_CKPT=N, default 8): how many recurrent checkpoints each conversation keeps; more cost host RAM, fewer cost reprocessing
-            ck = os.environ.get("MOE_CACHE_CKPT", "8")
-            extra += ["--ctx-checkpoints", ck if ck.isdigit() else "8"]
-        # idea S02 (MOE_CACHE_SLOT_SIMILARITY=0..1, default unset = the server's own): a request takes a busy conversation's slot only if its prompt is at least
-        # this similar to what the slot holds, so a short request from another agent goes to a free slot instead of displacing a long conversation
-        sps = os.environ.get("MOE_CACHE_SLOT_SIMILARITY")
-        if sps and arg_after(extra, "-sps", "--slot-prompt-similarity") is None:
-            try:
-                if 0.0 <= float(sps) <= 1.0:
-                    extra += ["--slot-prompt-similarity", sps]
-            except ValueError:
-                pass
-        alias = arg_after(extra, "-a", "--alias")
-        if alias is None:
-            alias = default_alias(model)
-            extra += ["--alias", alias]
-        if not a.no_warm and not a.project:
-            if arg_after(extra, "--slot-save-path") is None:
-                slotdir = os.path.join(CACHE_DIR, "slots", "agent"); os.makedirs(slotdir, exist_ok=True)
-                extra += ["--slot-save-path", slotdir]
-            else:
-                slotdir = arg_after(extra, "--slot-save-path")
+    alias, slotdir = agent_stage(a, extra, model)
     extra += mtp_args(a.mtp, a.agent, ls, model, extra)
     extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
@@ -2572,303 +3028,42 @@ def _launch_plan(a, extra, argv, machine):
         pname = pname or a.project
         slotdir = os.path.join(CACHE_DIR, "slots", a.project); os.makedirs(slotdir, exist_ok=True)
         extra += ["--slot-save-path", slotdir]
-    profile = model_profile(model, pname, dry=dry)
-    if not os.path.isfile(profile) and not a.no_starter and not dry:
-        # idea I18: no profile yet: start from the shipped one for this model family (a learned profile made the first request 2.1-2.4x faster, RESULTS 16)
-        try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
-            from gguf_plan import model_key
-            key = model_key(model)
-            starter = os.path.join(HERE, "profiles", key + ".usage") if key else None
-            if starter and os.path.isfile(starter):
-                os.makedirs(CACHE_DIR, exist_ok=True)
-                shutil.copyfile(starter, profile)
-                say(f"moe-cache: no usage profile yet: starting from the shipped one for {key} (it learns from your prompts from now on)")
-        except Exception as e:
-            say(f"moe-cache: could not use a starter profile ({e})", err=True)
-    load, method = ([], "none (stock)") if stock else machine.load_env(ls, lib, a.load_method)
-    if gcache != "off" and not stock and method == "path":
-        # the plugin can feed llama.cpp's GPU cache only when preloaded; loaded as a file it would let the GPU read experts that are not in RAM (T7)
-        say("moe-cache: --gpu-cache needs a llama-server that links its backends directly (LD_PRELOAD loading); this one loads them as files "
-            "(GGML_BACKEND_PATH): using static GPU expert layers instead", err=True)
-        gcache = "off"
-    env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
-    if a.ram:
-        env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
-    cap = machine.mem_cap()
-    if a.max_ram:
-        env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
-    if a.peers and not stock:
-        # N2/MM2 (PROTOTYPE): the plugin writes its memory use into this folder once a second and reads the other servers' files; a quiet server gives memory to a busy
-        # one. --ram stays this server's own share. A stock llama-server (no plugin) is not in the folder: --share-ram counts it at start.
-        peers_dir = os.path.join(CACHE_DIR, "peers")
-        env.append(("MOE_CACHE_PEERS", peers_dir))
-        if cap:
-            env.append(("MOE_CACHE_PEER_CAP_GIB", f"{cap / 2**30:.2f}"))
-        say(f"moe-cache: --peers is a PROTOTYPE: this server shares {(cap or 0) / 2**30:.1f} GiB with every moe-cache server that names {peers_dir}; not run with two real servers yet (docs/PLATFORMS.md)")
-    if cap:
-        say(f"moe-cache: memory cap {cap / 2**30:.1f} GiB ({cap / 1e9:.1f} GB) for the whole server (" + ("--max-ram" if a.max_ram else "MOE_CACHE_MAX_RAM_GB" if os.environ.get("MOE_CACHE_MAX_RAM_GB")
-            else "physical RAM minus max(4 GiB, 12.5 %)") + "; --max-ram GB changes it)")
-        if a.ram and float(a.ram) * 1e9 > cap:
-            say(f"moe-cache: --ram {a.ram} GB is above the memory cap: the cap ({cap / 1e9:.1f} GB) wins", err=True)
+    profile = profile_stage(a, model, pname, dry)
+    load, method, gcache, env, cap = memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine)
     # --fast also stores the KV cache as q8_0 (idea I6: KL 0.0045 on its own, RESULTS 53): half the KV memory, which at agent-sized contexts is the
     # VRAM a bigger micro-batch needs. Your own -ctk / -ctv after the -- win.
     # at 128k+ context the q8_0 KV cache is the default (owner 2026-10-30): the quality gate passed it at 4k context (KL 0.0079, tasks = stock,
     # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (prompts about 2x). Not with --stock (that compares
     # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
     # -ctk/-ctv after --) keeps llama.cpp's f16 KV
-    if (not a.fast and not a.exact and not a.stock and ctx >= 131072
-            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
-            and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
-        a.fast = "kv"
-        say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
-            "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
-    kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
-    if kv_q8:
-        extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
+    kv_q8 = kv_stage(a, extra, ctx, ls, listing, machine)
     if a.project and not dry:
         try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same (after the KV types above are final)
             write_text_atomic(os.path.join(slotdir, "server.id"),
                               model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
         except OSError:
             pass
-    if a.fast == "kv":
-        say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
-    elif a.fast:
-        env.append(("MOE_CACHE_ROUTE", "skip"))
-        if a.fast == "2":
-            env.append(("MOE_CACHE_ROUTE_DROP", "4"))
-            say("moe-cache: --fast=2: up to 4 low-ranked experts per token that are not in RAM are skipped (for memory much smaller than the model: "
-                "Flash-Next at 12 GB +43 %; about 1 top token in 28 differs from stock, KL 0.022; RESULTS 53)")
-        elif a.fast == "fewer":
-            env.append(("MOE_CACHE_FEWER", "2"))
-            say("moe-cache: --fast=fewer: --fast, and on the CPU-held layers the 2 lowest-ranked experts of every token are never computed (top-10 -> 8 on Flash-Next); "
-                "output no longer identical to stock, quality limits in docs/QUALITY_GATE.md (level fewer)")
-        else:
-            say("moe-cache: --fast: low-ranked experts that are not in RAM are skipped (about +10 %, output no longer identical to stock)")
-    elif not stock:
-        # suggest --fast only where it pays: the model is much bigger than the memory it may use
-        try:
-            size = sum(os.path.getsize(p) for p in model_parts(model))
-            lim = float(a.ram) * 1e9 if a.ram else machine.mem_total()
-            if lim and size > 2 * lim:
-                say(f"moe-cache: the model is {size / lim:.1f}x the memory it may use: --fast skips rarely needed experts for about +10 % (changes some tokens; off by default)")
-        except Exception:
-            pass
-    if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and machine.has_cpu_atom():
-        ne = min(machine.cpu_atom_count(), 4)
-        if ne > 0:
-            env.append(("MOE_CACHE_EXEC_ECORES", str(ne)))
-            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
-    pinargs = []
-    hm = hybrid_masks(machine.win_cores()) if win else None
-    if machine.win_core_groups() > 1 and not a.no_pin:
-        say("moe-cache: " + WIN_GROUPS_NOTE)
-    if hm and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
-        pmask, ecpus = hm
-        if not a.no_pin:
-            pinargs = ["-C", hex(pmask), "--cpu-strict", "1"]
-            env.append(("MOE_CACHE_CPU_MASK", hex(pmask)))
-            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {hex(pmask)}); --no-pin to disable")
-        ne = min(len(ecpus), 4)
-        if ne and not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES"):
-            env += [("MOE_CACHE_EXEC_ECORES", str(ne)), ("MOE_CACHE_ECORE_MASK", hex(sum(1 << c for c in ecpus)))]
-            say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
-    if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
-        mask = machine.perf_core_mask()
-        if mask:
-            pinargs = ["-C", mask, "--cpu-strict", "1"]
-            say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
+    fast_env_stage(a, env, stock, model, machine)
+    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine)
     # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
-    tuned = None
-    desk_kw = None
-    ub_asked = a.ub if a.ub != "auto" else arg_after(extra, "-ub", "--ubatch-size")
-    if a.ub == "auto" or gcache == "auto" or (ub_asked or "").isdigit():
-        try:
-            sys.path.insert(0, os.path.join(HERE, "planner"))
-            from gguf_plan import tune
-            free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
-            if mm_bytes and free:
-                free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
-            kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
-            if a.gpu_margin is None:
-                # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
-                from gguf_plan import desk_reserve_gb
-                tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else machine.gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
-                if tf:
-                    res, used = desk_reserve_gb(*tf)
-                    if res > 0.5:
-                        desk_kw = kw["reserve_gb"] = res
-                        say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
-                            f"(--gpu-margin GiB to change)")
-                if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
-                    desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
-                    say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
-            if (ub_asked or "").isdigit():
-                kw["ub"] = int(ub_asked)
-            from gguf_plan import plan_rule_on
-            if plan_rule_on():          # MOE_CACHE_PLAN_RULE=1 (default off): reserve measured by llama-fit-params or from the formula, monotone in -ub
-                from gguf_plan import find_fit_params, plan_table, plan_table_lines
-                kw["fit_params"] = find_fit_params(ls)
-                say("moe-cache: plan rule: compute-buffer reserve " + ("measured with " + kw["fit_params"] if kw["fit_params"] else "from the formula (no llama-fit-params found)"))
-                if a.dry_run and free:
-                    for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):
-                        say(line)
-            tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
-        except Exception:
-            tuned = None
-    ub = a.ub
-    if ub == "auto":
-        ub = "" if any(x in ("-ub", "--ubatch-size") for x in extra) else (str(tuned["ub"]) if tuned else "")
-    if ub and ub != "auto":
-        if not ub.isdigit():
-            say("moe-cache: --ub must be auto or a number")
-        else:
-            extra += ["-ub", ub, "-b", str(max(int(ub), 2048))]
-            say(f"moe-cache: micro-batch -ub {ub} (prompt processing; --ub N to change)")
-    # without a GPU cache, take the static expert layers from the same decision as the micro-batch (the planner alone assumes a small compute
-    # buffer and fills the card, so the long-prompt GPU block found no room next to -ub 2048: Flash-Next prefill 18 instead of 50+ tok/s)
-    no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))   # e.g. an integrated GPU: keep the planner's answer
-    if gcache == "off" and ncmoe_user is None and ncmoe != "0" and tuned and not no_vram:
-        ncmoe = str(tuned["n_cpu_moe"])
-        if not kv_q8 and not a.fast:
-            try:
-                from gguf_plan import fast_kv_hint
-                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
-                                 **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
-                if h:
-                    say("moe-cache: " + h)
-            except Exception:
-                pass
-    # MTP's draft context needs GPU memory next to the layers; with more expert layers on the GPU than planned, llama.cpp over-commits the card
-    # (it logs "failed to fit params to free device memory") and on Windows the spill then starves host memory: GGML_ASSERT(ctx->mem_buffer != NULL)
-    # while creating the draft context (GLM on the PC, 41 and 43 CPU layers with MTP; the planned 45 loads, RESULTS 62). Same warning on Linux.
-    if (ncmoe_user or "").isdigit() and tuned and not no_vram and gcache == "off" and "draft-mtp" in extra and int(ncmoe_user) < int(tuned["n_cpu_moe"]) < 999:
-        say(f"moe-cache: WARNING: --n-cpu-moe {ncmoe_user} puts more expert layers on the GPU than planned ({tuned['n_cpu_moe']}) while MTP is on: "
-            "MTP's draft context needs GPU memory too, and llama-server may abort at load (seen on GLM: GGML_ASSERT(ctx->mem_buffer != NULL)). "
-            f"Use --n-cpu-moe {tuned['n_cpu_moe']} or more, or --no-mtp", err=True)
-    if gcache != "off" and ncmoe != "0":
-        gcmib = gcache
-        if gcache == "auto":
-            gcmib = str(tuned["gpu_cache_mib"]) if tuned and tuned["gpu_cache_mib"] else ""
-            for w in (tuned or {}).get("why", []):
-                say("moe-cache: tuner: " + w)
-        if not gcmib.isdigit():
-            say("moe-cache: --gpu-cache: could not work out a size (planner unavailable?), using the planner's static GPU layers"); gcmib = ""
-        else:
-            cap, lim = machine.vk_cache_cap(ls, model, listing)
-            if cap is not None and int(gcmib) > cap:
-                say(f"moe-cache: --gpu-cache: {gcmib} MiB capped to {cap} MiB: on Vulkan each of llama.cpp's cache banks must fit in one device buffer "
-                    f"({lim / 2**20:.0f} MiB on this GPU), a bigger cache aborts the load")
-                gcmib = str(cap)
-        if gcmib and int(gcmib) < 512:
-            say(f"moe-cache: --gpu-cache: only {gcmib} MiB of VRAM would be left, using the planner's static GPU layers"); gcmib = ""
-        if gcmib:
-            ncmoe = "999"; extra += ["--moe-cache-mib", gcmib]; env.append(("MOE_CACHE_GPU_CACHE", "1"))
-            say(f"moe-cache: GPU expert cache of {gcmib} MiB; " + ("llama.cpp keeps the hottest experts on the GPU" if stock else "all experts are managed by the plugin (RAM) and the hottest ones are computed on the GPU"))
-    if a.hybrid and ncmoe != "0":
-        ncmoe = "999"; env.append(("MOE_CACHE_HYBRID", os.environ.get("MOE_CACHE_HYBRID", "auto")))
-        say("moe-cache: --hybrid (experimental): the most used experts are computed on the GPU from a bank, the rest on the CPU in parallel (output no longer identical to stock)")
-        if not os.path.isfile(profile):
-            say(f"moe-cache: --hybrid: no usage profile yet ({profile}): the bank is chosen from it, so this first session runs without one")
+    tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
+    ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
+    ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
     if (a.hybrid or a.fast) and not os.environ.get("MOE_CACHE_GPU_MIN_TOKENS"):
         env.append(("MOE_CACHE_GPU_MIN_TOKENS", "64"))
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
     # (the plugin keeps the same amount free). Pass --cache-ram yourself to change it.
-    cram = arg_after(extra, "--cache-ram", "-cram")
-    cram_auto = False             # True when the launcher chose it (yours after -- always wins)
-    if cram is None:
-        try:
-            if "--cache-ram" in ls_help(ls, machine.run):
-                # below 16 GB the reserve is a large share of the expert cache (Qwen3.6-35B at 12 GB: 16.9 tok/s with 2048 MiB, 19.2 with 512, 22.6 with 0;
-                # RESULTS 44). The prompt cache only helps when one server switches between conversations; a single chat reuses its slot either way
-                lim = machine.mem_for_server(a.ram)
-                cram = "0" if lim and lim < 16e9 else "2048"
-                # idea L05 (MOE_CACHE_PROMPT_CACHE_MIB=N, unset = the rule above): set the prompt cache from evidence instead of the fixed split (0 = off); the number
-                # to use is the one where the saved reprocessing stops paying for the expert-cache RAM it takes (tools/agent_bench.py at two settings)
-                pcm = os.environ.get("MOE_CACHE_PROMPT_CACHE_MIB", "")
-                if re.fullmatch(r"[0-9]+", pcm):
-                    cram = pcm
-                extra += ["--cache-ram", cram]
-                cram_auto = True
-        except Exception:
-            pass
-    if win:     # XA-3: llama-server's own buffers and Vulkan's GPU memory need Windows commit (RAM + page file), not only free RAM
-        if not dry:
-            warn_heavy_background()
-        ctot, cfree = machine.win_commit()
-        if ctot and cfree:
-            say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
-            if cram_auto and re.fullmatch(r"[0-9]+", str(cram)):
-                fit, short = commit_plan(cfree, a.vram, int(cram))
-                if fit < int(cram):
-                    extra[len(extra) - 1 - extra[::-1].index("--cache-ram") + 1] = str(fit)
-                    say(f"moe-cache: prompt cache {cram} -> {fit} MiB so llama-server stays inside Windows' free commit (other programs hold the rest)", err=True)
-                    cram = str(fit)
-                if short:
-                    say(f"moe-cache: WARNING: Windows commit is nearly full ({cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB): llama-server may fail to allocate "
-                        "memory and stop. Close big programs, or set the page file to system-managed (or larger) in Windows' Advanced system settings", err=True)
-    say(prompt_cache_note(cram, extra, a.agent))
-    if cram is not None and re.fullmatch(r"[0-9-]+", cram):
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
-    elif a.agent:
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", "1024"))     # told to the plugin directly instead of it parsing our command line
-    if stock:
-        if a.stock:
-            say("moe-cache: --stock: running stock llama-server without the plugin, as asked (to compare; a model bigger than RAM is read through the file cache)")
-        else:
-            say(f"moe-cache: the model ({size / 1e9:.1f} GB) fits in the memory it may use ({avail / 1e9:.1f} GB): running stock llama-server without the plugin, "
-                "which is faster when everything fits (RESULTS 44). --always-plugin to use the plugin anyway.")
-        env = [(k, v) for k, v in env if not (k.startswith("MOE_CACHE") or k in ("LD_PRELOAD", "GGML_BACKEND_PATH"))]
-        method = "none (stock)"
-        if ncmoe != "0" and size and avail and size + STOCK_HEADROOM <= avail and not os.environ.get("GGML_OP_OFFLOAD_MIN_BATCH"):
-            # llama.cpp copies every CPU-held expert to the GPU for a batch of 32+ tokens (~1 s for Nemotron Bolt on the PC); the server cuts a prompt
-            # 4 tokens before its end for a checkpoint, so every prompt of 36+ tokens paid it. Short batches are faster on the CPU (T5, RESULTS 68)
-            env.append(("GGML_OP_OFFLOAD_MIN_BATCH", str(STOCK_OFFLOAD_MIN_BATCH)))
+    cram = prompt_cache_stage(a, extra, env, ls, machine, win, dry)
+    env, method = stock_env_stage(a, env, stock, ncmoe, size, avail, method)
     if not env_has(env, "ZES_ENABLE_SYSMAN"):
         env += sycl_sysman_env(ls, listing)
-    if a.leave_room:
-        env.append(("MOE_CACHE_LEAVE_ROOM", "1"))      # run_child_once starts llama-server at a lower priority
-        if not pinargs and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
-            extra = extra + ["-t", str(max(1, machine.physical_cores() - LEAVE_ROOM_FREE_CORES))]    # hybrid CPUs keep their performance-core pinning
-            say(f"moe-cache: --leave-room: {LEAVE_ROOM_FREE_CORES} CPU cores left free (-t {extra[-1]})")
-    if mg:
-        extra_before = extra
-        ncmoe, extra = multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, machine, win)
-        if extra is not extra_before and not stock and not os.environ.get("MOE_CACHE_GPU_DEV2"):
-            # N3/MG5 (PROTOTYPE): the plugin's long-prompt block may also use the second card of the --device list when it does not fit on the first
-            env.append(("MOE_CACHE_GPU_DEV2", "auto"))
-            say("moe-cache: --multi-gpu: the plugin's long-prompt GPU block may use the second card too (MOE_CACHE_GPU_DEV2=auto, PROTOTYPE)")
-    if os.environ.get("MOE_CACHE_DECODE_RELOC"):       # DECODE-630 (PROTOTYPE, default off): layers back to the GPU after the prompt, needs llama.cpp patch 0070
-        try:
-            sys.path.insert(0, os.path.join(HERE, "planner")) if os.path.join(HERE, "planner") not in sys.path else None
-            import gguf_plan
-            from decode_reloc import launcher_env
-            r_env, r_note = launcher_env(os.environ, lay=gguf_plan.model_layout(model), ctx=ctx, ub=ub, ncmoe=ncmoe, extra=extra, gcache=gcache,
-                                         compute_mib=gguf_plan.compute_buffer_guess_mib)
-            env += r_env
-            if r_note:
-                say(r_note)
-        except Exception as e:
-            say(f"moe-cache: MOE_CACHE_DECODE_RELOC ignored: {e}", err=True)
-    cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
-    if cpu_only:
-        extra = ["--device", "none"] + extra          # -ngl 0 alone still lets the KV cache land on a loaded GPU backend
-        say(f"moe-cache: CPU-only ({cpu_why}): --device none and -ngl 0, nothing is put on a GPU")
-    cmd = [ls, "-m", model, "-ngl", "0" if cpu_only else "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
-    if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
-        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load
-        del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
-        say("moe-cache: --auto-fit (PROTOTYPE): dense model, no experts: no -ngl / --n-cpu-moe given, llama.cpp's --fit places the layers by free GPU memory")
-    if method == "none (stock)":
-        pass
-    elif ncmoe == "0":
-        say(f"moe-cache: all experts fit in your GPU memory; the cache has nothing to manage for this model/context (profile {profile}; plugin loaded by {method})")
-    else:
-        say(f"moe-cache: experts of {ncmoe} layers stay on the CPU and are managed by the cache; profile {profile}; plugin loaded by {method}")
+    extra = leave_room_stage(a, env, extra, pinargs, machine)
+    ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
+    decode_reloc_stage(env, model, ctx, ub, ncmoe, extra, gcache)
+    cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine)
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
     # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows

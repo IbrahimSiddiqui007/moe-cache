@@ -84,112 +84,7 @@ def open_gguf(path):
             pass                          # unknown quantisation type or similar: use the built-in reader
     return MiniGGUF(path)
 
-ap = argparse.ArgumentParser(); ap.add_argument("model"); ap.add_argument("--ctx", type=int, default=32768); ap.add_argument("--kv", default="f16")
-ap.add_argument("--mtp", action="store_true"); ap.add_argument("--vram-gib", type=float); ap.add_argument("--ram-gib", type=float)
-ap.add_argument("--profile"); ap.add_argument("--check", type=int); ap.add_argument("--json", action="store_true")
-ap.add_argument("--shell", choices=["auto", "bash", "fish", "powershell"], default="auto", help="syntax of the environment lines printed (auto: fish when you run fish, PowerShell on Windows, else bash)")
-a = ap.parse_args()
 
-r = open_gguf(a.model)
-def val(key, default=None):
-    f = r.fields.get(key)
-    if f is None: return default
-    try: v = f.contents()
-    except Exception: v = f.parts[-1][0]
-    if isinstance(v, (list, tuple)) or hasattr(v, "__len__") and not isinstance(v, str): v = max(v) if len(v) else default
-    return v
-arch = str(val("general.architecture"))
-n_blocks = int(val(f"{arch}.block_count")); n_exp = int(val(f"{arch}.expert_count")); n_used = int(val(f"{arch}.expert_used_count"))
-nextn = int(val(f"{arch}.nextn_predict_layers", 0) or 0); n_main = n_blocks - nextn
-kv_heads = int(val(f"{arch}.attention.head_count_kv", 0) or val(f"{arch}.attention.head_count"))
-heads = int(val(f"{arch}.attention.head_count")); embd = int(val(f"{arch}.embedding_length"))
-if heads <= 0: sys.exit(f"{a.model}: the header says {arch}.attention.head_count = {heads}; cannot size the KV cache")
-key_len = int(val(f"{arch}.attention.key_length", embd // heads)); val_len = int(val(f"{arch}.attention.value_length", key_len))
-interval = int(val(f"{arch}.full_attention_interval", 0) or 0); ssm = val(f"{arch}.ssm.inner_size") is not None
-n_attn = n_main // interval if interval else n_main
-
-def all_tensors():
-    m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", a.model)
-    if not m:
-        return list(r.tensors)
-    out = []
-    for i in range(1, int(m[2]) + 1):
-        part = a.model[:m.start()] + f"-{i:05d}-of-{m[2]}.gguf"
-        out += list(r.tensors if part == a.model else open_gguf(part).tensors)
-    return out
-
-exp_layer = collections.defaultdict(int); core = 0; mtp_core = 0; table = 0
-for t in all_tensors():
-    m = re.match(r"blk\.(\d+)\.", t.name); layer = int(m[1]) if m else -1
-    if re.search(r"ffn_(gate_up|gate|up|down)_exps", t.name): exp_layer[layer] += int(t.n_bytes)   # gate_up = fused gate+up tensor (e.g. qwen4exp)
-    elif "per_layer_token_embd" in t.name: table += int(t.n_bytes)   # n-gram lookup table (qwen4exp): read from the file when needed, never on the GPU
-    elif layer >= n_main: mtp_core += int(t.n_bytes)
-    else: core += int(t.n_bytes)
-main_layers = [l for l in range(n_main) if l in exp_layer]
-if not main_layers: sys.exit("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF")
-per_layer = sum(exp_layer[l] for l in main_layers) / len(main_layers)
-mtp_experts = sum(v for l, v in exp_layer.items() if l >= n_main)
-KV_BYTES = {"f16": 2.0, "q8_0": 34 / 32, "q4_0": 18 / 32}
-if a.kv not in KV_BYTES: sys.exit(f"--kv must be one of {', '.join(KV_BYTES)}")
-kv_elem = KV_BYTES[a.kv]
-kv_bytes = n_attn * a.ctx * kv_heads * (key_len + val_len) * kv_elem
-rs_bytes = 0.2 * GIB if ssm else 0
-fixed = 0.65 * GIB; margin = 1.0 * GIB
-mtp_vram = (0.85 * GIB) if a.mtp else 0
-gpu_fixed = core + kv_bytes + rs_bytes + fixed + mtp_vram + (mtp_experts + mtp_core if a.mtp else 0)
-def predicted_vram(n_gpu_layers): return gpu_fixed + n_gpu_layers * per_layer
-
-def smi(q):
-    try: return float(subprocess.check_output(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"], stderr=subprocess.DEVNULL).decode().split()[0]) * 2**20
-    except Exception: return None
-def amd_free():
-    """free VRAM of the AMD GPU with the most VRAM (amdgpu sysfs); None when there is none. An integrated GPU's BIOS carve-out counts (dedicated, the OS
-    cannot use it; e.g. 3 GiB on the Vega 8 of the T7 mini PC); GTT (borrowed system RAM) never does; under 1 GiB of VRAM is skipped."""
-    best = None
-    for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
-        try:
-            if open(d + "/vendor").read().strip() != "0x1002": continue
-            tot = int(open(d + "/mem_info_vram_total").read()); used = int(open(d + "/mem_info_vram_used").read())
-        except Exception: continue
-        if tot >= 2**30 and (best is None or tot > best[0]): best = (tot, tot - used)
-    return best[1] if best else None
-gpu_name = "NVIDIA"
-free_vram = a.vram_gib * GIB if a.vram_gib is not None else smi("memory.free")
-if free_vram is None and a.vram_gib is None:
-    free_vram = amd_free(); gpu_name = "AMD"
-if a.check is not None:
-    n_gpu = n_main - a.check
-    print(f"{arch}: ncmoe {a.check} ({n_gpu} layers of experts on GPU) predicted VRAM {predicted_vram(n_gpu)/GIB:.2f} GiB (core {core/GIB:.2f}, KV {kv_bytes/GIB:.2f}, state {rs_bytes/GIB:.2f}, fixed {fixed/GIB:.2f}, experts {n_gpu*per_layer/GIB:.2f})"); sys.exit()
-if free_vram is None:
-    n_gpu = 0; note = "no NVIDIA or AMD GPU with its own memory found: all experts stay on the CPU (pass --vram-gib to override)"
-else:
-    room = free_vram - margin - gpu_fixed
-    n_gpu = max(0, min(n_main, int(room // per_layer))); note = "" if room > 0 else "GPU too small even for the core weights: use fewer layers on GPU (-ngl) or a smaller context"
-ncmoe = n_main - n_gpu
-def mem_avail():
-    if os.name == "nt":      # Windows has no /proc (found on the MSI Claw): GlobalMemoryStatusEx
-        import ctypes
-        class MS(ctypes.Structure):
-            _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32)] + [(n, ctypes.c_uint64) for n in
-                        ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile", "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]
-        m = MS(); m.dwLength = ctypes.sizeof(MS)
-        return m.ullAvailPhys if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else 8 * GIB
-    for l in open("/proc/meminfo"):
-        if l.startswith("MemAvailable"): return int(l.split()[1]) * 1024
-ram = a.ram_gib * GIB if a.ram_gib is not None else mem_avail()
-cpu_experts = ncmoe * per_layer + (mtp_experts if a.mtp else 0)
-cache = max(1.0 * GIB, min(cpu_experts * 1.02, ram - 3.0 * GIB))
-fits = cache >= cpu_experts
-frac = 0.9 if fits else 0.7
-cmd = ["llama-server", "-m", a.model, "-ngl", "99", "--n-cpu-moe", str(ncmoe), "-c", str(a.ctx), "-ctk", a.kv, "-ctv", a.kv, "-fa", "on", "--load-mode", "mmap", "--no-warmup"]
-if a.mtp: cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
-usage = a.profile or os.path.expanduser("~/.cache/moe-cache/" + os.path.basename(a.model) + ".usage")
-# the plugin sizes itself from the memory limit (MOE_CACHE_SIZE_GIB=auto); it learns from use and warm-starts the next run
-env = {"MOE_CACHE_SIZE_GIB": "auto", "MOE_CACHE_GGUF": a.model, "MOE_CACHE_PROFILE": usage, "MOE_CACHE_STATS": "1"}
-if a.ram_gib is not None: env["MOE_CACHE_RAM_GIB"] = str(a.ram_gib)
-info = dict(arch=arch, layers=n_main, experts=n_exp, used=n_used, expert_MB=per_layer / n_exp / 1e6, gpu_expert_layers=n_gpu, n_cpu_moe=ncmoe,
-            predicted_vram_GiB=predicted_vram(n_gpu) / GIB, free_vram_GiB=(free_vram or 0) / GIB, cpu_experts_GiB=cpu_experts / GIB, ram_available_GiB=ram / GIB,
-            cache_GiB=cache / GIB, cache_holds_all_cpu_experts=fits, note=note, env=env, command=cmd)
 def detect_shell(environ=None, windows=None):
     """CLEANUP-017: the shell whose syntax the printed environment lines should use: fish when FISH_VERSION is set or $SHELL ends in fish, PowerShell on Windows without a
     POSIX $SHELL (Git Bash / MSYS set one), else bash."""
@@ -215,10 +110,150 @@ def env_lines(env, shell):
     return [f"export {k}=" + ("'" + str(v).replace("'", "'\\''") + "'" if re.search(r"[^A-Za-z0-9_@%+=:,./-]", str(v)) else str(v)) for k, v in env.items()]
 
 
-if a.json: print(json.dumps(info, indent=1))
-else:
-    print(f"{arch}: {n_main} layers x {n_exp} experts (top-{n_used}), {per_layer/n_exp/1e6:.2f} MB/expert, experts {n_main*per_layer/GIB:.1f} GiB, core {core/GIB:.2f} GiB, KV@{a.ctx} {kv_bytes/GIB:.2f} GiB" + (f", n-gram table {table/GIB:.1f} GiB (stays in the file)" if table else ""))
-    print(f"GPU: free {free_vram/GIB:.2f} GiB -> {n_gpu} layers of experts on the GPU (predicted use {predicted_vram(n_gpu)/GIB:.2f} GiB)" if free_vram else "GPU: none")
-    print(f"RAM: available {ram/GIB:.1f} GiB -> expert cache {cache/GIB:.1f} GiB ({'holds every CPU expert' if fits else 'partial: ' + format(cache/cpu_experts*100, '.0f') + '% of CPU experts'})")
-    if note: print("NOTE:", note)
-    print("\n" + "\n".join(env_lines(env, detect_shell() if a.shell == "auto" else a.shell)) + "\n(plus LD_PRELOAD / GGML_BACKEND_PATH for the plugin: easier with bin/moe-cache-server)\n" + " ".join(cmd))
+def _compute(a):
+    """The placement plan for the namespace `a` (model, ctx, kv, mtp, vram_gib, ram_gib, profile, check). Returns (info dict, the figures the human report prints).
+    Raises PlanError with a message for a model it cannot plan."""
+
+    r = open_gguf(a.model)
+    def val(key, default=None):
+        f = r.fields.get(key)
+        if f is None: return default
+        try: v = f.contents()
+        except Exception: v = f.parts[-1][0]
+        if isinstance(v, (list, tuple)) or hasattr(v, "__len__") and not isinstance(v, str): v = max(v) if len(v) else default
+        return v
+    arch = str(val("general.architecture"))
+    n_blocks = int(val(f"{arch}.block_count")); n_exp = int(val(f"{arch}.expert_count")); n_used = int(val(f"{arch}.expert_used_count"))
+    nextn = int(val(f"{arch}.nextn_predict_layers", 0) or 0); n_main = n_blocks - nextn
+    kv_heads = int(val(f"{arch}.attention.head_count_kv", 0) or val(f"{arch}.attention.head_count"))
+    heads = int(val(f"{arch}.attention.head_count")); embd = int(val(f"{arch}.embedding_length"))
+    if heads <= 0: raise PlanError(f"{a.model}: the header says {arch}.attention.head_count = {heads}; cannot size the KV cache")
+    key_len = int(val(f"{arch}.attention.key_length", embd // heads)); val_len = int(val(f"{arch}.attention.value_length", key_len))
+    interval = int(val(f"{arch}.full_attention_interval", 0) or 0); ssm = val(f"{arch}.ssm.inner_size") is not None
+    n_attn = n_main // interval if interval else n_main
+
+    def all_tensors():
+        m = re.search(r"-(\d{5})-of-(\d{5})\.gguf$", a.model)
+        if not m:
+            return list(r.tensors)
+        out = []
+        for i in range(1, int(m[2]) + 1):
+            part = a.model[:m.start()] + f"-{i:05d}-of-{m[2]}.gguf"
+            out += list(r.tensors if part == a.model else open_gguf(part).tensors)
+        return out
+
+    exp_layer = collections.defaultdict(int); core = 0; mtp_core = 0; table = 0
+    for t in all_tensors():
+        m = re.match(r"blk\.(\d+)\.", t.name); layer = int(m[1]) if m else -1
+        if re.search(r"ffn_(gate_up|gate|up|down)_exps", t.name): exp_layer[layer] += int(t.n_bytes)   # gate_up = fused gate+up tensor (e.g. qwen4exp)
+        elif "per_layer_token_embd" in t.name: table += int(t.n_bytes)   # n-gram lookup table (qwen4exp): read from the file when needed, never on the GPU
+        elif layer >= n_main: mtp_core += int(t.n_bytes)
+        else: core += int(t.n_bytes)
+    main_layers = [l for l in range(n_main) if l in exp_layer]
+    if not main_layers: raise PlanError("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF")
+    per_layer = sum(exp_layer[l] for l in main_layers) / len(main_layers)
+    mtp_experts = sum(v for l, v in exp_layer.items() if l >= n_main)
+    KV_BYTES = {"f16": 2.0, "q8_0": 34 / 32, "q4_0": 18 / 32}
+    if a.kv not in KV_BYTES: raise PlanError(f"--kv must be one of {', '.join(KV_BYTES)}")
+    kv_elem = KV_BYTES[a.kv]
+    kv_bytes = n_attn * a.ctx * kv_heads * (key_len + val_len) * kv_elem
+    rs_bytes = 0.2 * GIB if ssm else 0
+    fixed = 0.65 * GIB; margin = 1.0 * GIB
+    mtp_vram = (0.85 * GIB) if a.mtp else 0
+    gpu_fixed = core + kv_bytes + rs_bytes + fixed + mtp_vram + (mtp_experts + mtp_core if a.mtp else 0)
+    def predicted_vram(n_gpu_layers): return gpu_fixed + n_gpu_layers * per_layer
+
+    def smi(q):
+        try: return float(subprocess.check_output(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"], stderr=subprocess.DEVNULL).decode().split()[0]) * 2**20
+        except Exception: return None
+    def amd_free():
+        """free VRAM of the AMD GPU with the most VRAM (amdgpu sysfs); None when there is none. An integrated GPU's BIOS carve-out counts (dedicated, the OS
+        cannot use it; e.g. 3 GiB on the Vega 8 of the T7 mini PC); GTT (borrowed system RAM) never does; under 1 GiB of VRAM is skipped."""
+        best = None
+        for d in glob.glob("/sys/class/drm/card[0-9]*/device"):
+            try:
+                if open(d + "/vendor").read().strip() != "0x1002": continue
+                tot = int(open(d + "/mem_info_vram_total").read()); used = int(open(d + "/mem_info_vram_used").read())
+            except Exception: continue
+            if tot >= 2**30 and (best is None or tot > best[0]): best = (tot, tot - used)
+        return best[1] if best else None
+    gpu_name = "NVIDIA"
+    free_vram = a.vram_gib * GIB if a.vram_gib is not None else smi("memory.free")
+    if free_vram is None and a.vram_gib is None:
+        free_vram = amd_free(); gpu_name = "AMD"
+    if a.check is not None:
+        n_gpu = n_main - a.check
+        print(f"{arch}: ncmoe {a.check} ({n_gpu} layers of experts on GPU) predicted VRAM {predicted_vram(n_gpu)/GIB:.2f} GiB (core {core/GIB:.2f}, KV {kv_bytes/GIB:.2f}, state {rs_bytes/GIB:.2f}, fixed {fixed/GIB:.2f}, experts {n_gpu*per_layer/GIB:.2f})"); return None, None      # --check: only that line (plan.py MODEL --check N is the old way to ask what N CPU layers would cost)
+    if free_vram is None:
+        n_gpu = 0; note = "no NVIDIA or AMD GPU with its own memory found: all experts stay on the CPU (pass --vram-gib to override)"
+    else:
+        room = free_vram - margin - gpu_fixed
+        n_gpu = max(0, min(n_main, int(room // per_layer))); note = "" if room > 0 else "GPU too small even for the core weights: use fewer layers on GPU (-ngl) or a smaller context"
+    ncmoe = n_main - n_gpu
+    def mem_avail():
+        if os.name == "nt":      # Windows has no /proc (found on the MSI Claw): GlobalMemoryStatusEx
+            import ctypes
+            class MS(ctypes.Structure):
+                _fields_ = [("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32)] + [(n, ctypes.c_uint64) for n in
+                            ("ullTotalPhys", "ullAvailPhys", "ullTotalPageFile", "ullAvailPageFile", "ullTotalVirtual", "ullAvailVirtual", "ullAvailExtendedVirtual")]
+            m = MS(); m.dwLength = ctypes.sizeof(MS)
+            return m.ullAvailPhys if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)) else 8 * GIB
+        for l in open("/proc/meminfo"):
+            if l.startswith("MemAvailable"): return int(l.split()[1]) * 1024
+    ram = a.ram_gib * GIB if a.ram_gib is not None else mem_avail()
+    cpu_experts = ncmoe * per_layer + (mtp_experts if a.mtp else 0)
+    cache = max(1.0 * GIB, min(cpu_experts * 1.02, ram - 3.0 * GIB))
+    fits = cache >= cpu_experts
+    frac = 0.9 if fits else 0.7
+    cmd = ["llama-server", "-m", a.model, "-ngl", "99", "--n-cpu-moe", str(ncmoe), "-c", str(a.ctx), "-ctk", a.kv, "-ctv", a.kv, "-fa", "on", "--load-mode", "mmap", "--no-warmup"]
+    if a.mtp: cmd += ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
+    usage = a.profile or os.path.expanduser("~/.cache/moe-cache/" + os.path.basename(a.model) + ".usage")
+    # the plugin sizes itself from the memory limit (MOE_CACHE_SIZE_GIB=auto); it learns from use and warm-starts the next run
+    env = {"MOE_CACHE_SIZE_GIB": "auto", "MOE_CACHE_GGUF": a.model, "MOE_CACHE_PROFILE": usage, "MOE_CACHE_STATS": "1"}
+    if a.ram_gib is not None: env["MOE_CACHE_RAM_GIB"] = str(a.ram_gib)
+    info = dict(arch=arch, layers=n_main, experts=n_exp, used=n_used, expert_MB=per_layer / n_exp / 1e6, gpu_expert_layers=n_gpu, n_cpu_moe=ncmoe,
+                predicted_vram_GiB=predicted_vram(n_gpu) / GIB, free_vram_GiB=(free_vram or 0) / GIB, cpu_experts_GiB=cpu_experts / GIB, ram_available_GiB=ram / GIB,
+                cache_GiB=cache / GIB, cache_holds_all_cpu_experts=fits, note=note, env=env, command=cmd)
+    shown = dict(arch=arch, n_main=n_main, n_exp=n_exp, n_used=n_used, per_layer=per_layer, core=core, kv_bytes=kv_bytes, table=table, free_vram=free_vram, n_gpu=n_gpu,
+                 predicted_vram=predicted_vram, ram=ram, cache=cache, cpu_experts=cpu_experts, fits=fits, note=note, env=env, cmd=cmd)
+    return info, shown
+
+
+class PlanError(Exception):
+    """A model the planner cannot plan (not a MoE GGUF, a header it cannot size the KV cache from, a bad --kv): the message is for the user."""
+
+
+def plan_info(model, ctx=32768, kv="f16", mtp=False, vram_gib=None, ram_gib=None, profile=None):
+    """ENGINE-029: the planner's answer as the dict `plan.py --json` prints, computed in this process (the launcher no longer starts a second Python for it).
+    Raises PlanError (or the reader's own ValueError / OSError) for a model it cannot read."""
+    ns = argparse.Namespace(model=model, ctx=ctx, kv=kv, mtp=mtp, vram_gib=vram_gib, ram_gib=ram_gib, profile=profile, check=None, json=True, shell="auto")
+    info, _ = _compute(ns)
+    return json.loads(json.dumps(info))          # plain JSON types, exactly what the --json output carries
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(); ap.add_argument("model"); ap.add_argument("--ctx", type=int, default=32768); ap.add_argument("--kv", default="f16")
+    ap.add_argument("--mtp", action="store_true"); ap.add_argument("--vram-gib", type=float); ap.add_argument("--ram-gib", type=float)
+    ap.add_argument("--profile"); ap.add_argument("--check", type=int); ap.add_argument("--json", action="store_true")
+    ap.add_argument("--shell", choices=["auto", "bash", "fish", "powershell"], default="auto", help="syntax of the environment lines printed (auto: fish when you run fish, PowerShell on Windows, else bash)")
+    a = ap.parse_args(argv)
+
+    try:
+        info, v = _compute(a)
+    except PlanError as e:
+        sys.exit(str(e))
+    if info is None:
+        return
+    arch, n_main, n_exp, n_used, per_layer, core, kv_bytes, table = v["arch"], v["n_main"], v["n_exp"], v["n_used"], v["per_layer"], v["core"], v["kv_bytes"], v["table"]
+    free_vram, n_gpu, predicted_vram, ram, cache, cpu_experts, fits, note, env, cmd = (v[k] for k in ("free_vram", "n_gpu", "predicted_vram", "ram", "cache", "cpu_experts", "fits", "note", "env", "cmd"))
+    if a.json: print(json.dumps(info, indent=1))
+    else:
+        print(f"{arch}: {n_main} layers x {n_exp} experts (top-{n_used}), {per_layer/n_exp/1e6:.2f} MB/expert, experts {n_main*per_layer/GIB:.1f} GiB, core {core/GIB:.2f} GiB, KV@{a.ctx} {kv_bytes/GIB:.2f} GiB" + (f", n-gram table {table/GIB:.1f} GiB (stays in the file)" if table else ""))
+        print(f"GPU: free {free_vram/GIB:.2f} GiB -> {n_gpu} layers of experts on the GPU (predicted use {predicted_vram(n_gpu)/GIB:.2f} GiB)" if free_vram else "GPU: none")
+        print(f"RAM: available {ram/GIB:.1f} GiB -> expert cache {cache/GIB:.1f} GiB ({'holds every CPU expert' if fits else 'partial: ' + format(cache/cpu_experts*100, '.0f') + '% of CPU experts'})")
+        if note: print("NOTE:", note)
+        print("\n" + "\n".join(env_lines(env, detect_shell() if a.shell == "auto" else a.shell)) + "\n(plus LD_PRELOAD / GGML_BACKEND_PATH for the plugin: easier with bin/moe-cache-server)\n" + " ".join(cmd))
+
+
+if __name__ == "__main__":
+    main()

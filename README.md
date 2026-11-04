@@ -12,7 +12,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 </p>
 
 <p align="center"><a href="docs/benchmark_card.html"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmark_card-dark.png"><img src="docs/benchmark_card.png" width="860" alt="Benchmark card: decode tokens per second, stock llama.cpp vs moe-cache, on a Windows PC with 32 GB RAM and a 16 GB graphics card"></picture></a></p>
-<p align="center"><sub>Windows desktop, 32 GB RAM + 16 GB graphics card; speeds measured 2026-10-27/28 with builds of that week (each row lists its test details; not recorded values say so). Full <a href="docs/benchmark_card.html">benchmark card</a> (long context, other models, agents); every number in <a href="docs/RESULTS.md">docs/RESULTS.md</a>. Older laptop results: <a href="docs/RESULTS.md#laptop-results-older-versions">docs/RESULTS.md</a>.</sub></p>
+<p align="center"><sub>Windows desktop, 32 GB RAM + 16 GB graphics card; speeds measured 2026-10-27/28 and, for six rows, 2026-11-04 with the v0.3.5 kit (each row lists its test details; not recorded values say so). Full <a href="docs/benchmark_card.html">benchmark card</a> (long context, other models, agents); every number in <a href="docs/RESULTS.md">docs/RESULTS.md</a>. Older laptop results: <a href="docs/RESULTS.md#laptop-results-older-versions">docs/RESULTS.md</a>.</sub></p>
 
 ## What it is
 
@@ -116,9 +116,9 @@ Keep each agent's own context limit below the server's, and set things up before
 
 The chart at the top is the Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), stock llama.cpp vs moe-cache with the same command line:
 
-- **+20 to +47 %** decode on the Flash-Next files that do not fit in RAM, **2.0x** on GLM-5.3-Flash (102 GB; one run each on the same drive, 4.44 vs 2.21 tok/s), 3.1x with MTP (one run).
+- **Re-measured 2026-11-04** (overnight chain, the released v0.3.5 kit with llama.cpp b11966, two runs each, ABBA, every run "not clean": owner work was running): decode **+53 %** on Flash-Next IQ3_XXS (14.96 vs 22.87 tok/s) <!-- claim:chain1103-iq3xxs -->, **+42 %** on IQ3_S (13.79 vs 19.62) <!-- claim:chain1103-iq3s -->, **+45 %** on Qwen3.5-122B (16.10 vs 23.31) <!-- claim:chain1103-122b -->, **2.1x** on GLM-5.3-Flash (102 GB; 2.98 vs 6.27 tok/s), 2.7x with MTP (8.17) <!-- claim:chain1103-glm -->. Flash-Next Q2_0 (+20 %) and IQ2_XS (+47 %) are from 2026-10-27/28 and were not re-run.
 - **2.0-2.4x** faster coding-agent sessions (OpenCode, Hermes) on Flash-Next.
-- Models that fit in RAM (Qwen3.6-35B, Nemotron Bolt): plain llama.cpp is as fast or faster, so the launcher runs it by itself.
+- Models that fit in RAM (Qwen3.6-35B, Nemotron Bolt): the launcher still runs plain llama.cpp by itself. Forced through moe-cache they decoded +11 % <!-- claim:chain1103-qwen36 --> and +6 % <!-- claim:chain1103-bolt --> against stock on 2026-11-04 (two runs each) and −1 % and −18 % in single runs on 2026-10-27/28: no steady gain, so the default stays.
 - **v0.3.5 vs v0.3.4 (Flash-Next Q2_0, Windows desktop, clean run 2026-11-03, both on the official llama.cpp b11966 server):** prompts of 34k / 64k / 128k tokens are read **+42 % / +38 % / +38 %** faster (575 vs 406, 435 vs 314, 421 vs 305 tok/s); decode after a long prompt is **6-10 % lower** (34k 26.7 vs 28.5, 64k 24.6 vs 27.2 tok/s), because the bigger prompt chunk leaves 2 fewer expert layers on the GPU. 256k prompts +26 % from the same change. [RESULTS section 79](docs/RESULTS.md)
 - Same text as stock on every model checked. On Linux (older laptop runs, v0.2.x) the gains were 2.4x to 5.2x.
 

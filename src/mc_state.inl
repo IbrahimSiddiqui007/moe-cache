@@ -26,94 +26,37 @@ bool block_device_ok(ggml_backend_dev_t d) {
 }
 #ifdef _WIN32
 void install_crash_report(state_t * s);
+void remove_crash_report();
 #endif
 
-struct state_t {
+#include "mc_state_route.h"
+#include "mc_state_testfault.h"
+#include "mc_state_gpu.h"
+#include "mc_state_pack_members.h"
+#include "mc_state_policy.h"
+#include "mc_state_rebalance_members.h"
+#include "mc_state_exec.h"
+#include "mc_state_times.h"
+#include "mc_state_prefetch.h"
+#include "mc_state_budget.h"
+#include "mc_state_profile_members.h"
+#include "mc_state_counters.h"
+#include "mc_state_workers.h"
+#include "mc_state_files.h"
+#include "mc_state_repack.h"
+#include "mc_state_view.h"
+#include "mc_state_livestats.h"
+#include "mc_state_scan.h"
+#include "mc_state_tables.h"
+#include "mc_state_lend.h"
+#include "mc_state_rbstats.h"
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_lend_t, state_rbstats_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
     // "all" for the default range (hi = 2^30 means no upper bound; the log printed "layers 0-1073741824", T7)
     std::string layer_range() const { return lo == 0 && hi >= (1 << 30) ? std::string("all") : std::to_string(lo) + "-" + std::to_string(hi); }
-    std::vector<plat::file_t> fds;              // one per GGUF file (split models have several)
-    std::vector<std::string> shard_paths;
-    std::vector<plat::file_t> fds_buf;          // buffered (no O_DIRECT) handles, opened only if a direct read keeps failing
-    std::mutex fds_buf_mu;
-    std::vector<std::atomic<bool>> direct_broken;   // per file: direct reads fail on this file system (EINVAL/EOPNOTSUPP): buffered reads from then on (AUD-011)
-    int    test_read_delay_us = 0;              // MOE_CACHE_TEST_READ_DELAY_US=N: test switch, background expert reads start N us late
-    int    fault_every = 0;                     // MOE_CACHE_FAULT_EVERY=N: test switch, every Nth expert read fails all its direct attempts
-    bool   test_poison = false;                 // MOE_CACHE_TEST_POISON_READS=1: test switch, a read first fills what it will write with 0xFF and waits
-                                                //   MOE_CACHE_TEST_READ_DELAY_US (what a page under an unbuffered Windows read looks like to other threads)
-    std::atomic<uint64_t> fault_ctr{0}, read_fallbacks{0};
-    std::unordered_map<std::string, int> file_shard;
-    ggml_backend_buffer_type_t repack_buft = nullptr;   // llama.cpp CPU_REPACK buffer type (mode on)
-    ggml_backend_buffer_t repack_buf = nullptr;         // a real repack buffer, used for init_tensor / set_tensor only
-    ggml_backend_buffer_t repack_tag = nullptr;         // empty buffer of the repack type, swapped in while an operation runs
-    std::atomic<uint64_t> repack_jobs{0};
-    ggml_backend_dev_t gpu_dev = nullptr;               // first GPU backend device, used for long prompts
-    ggml_backend_dev_t gpu_dev2 = nullptr;              // MOE_CACHE_GPU_DEV2 (default off, PROTOTYPE): a second card for long-prompt blocks that do not fit on the first
-    std::atomic<uint64_t> gpu_alt_blocks{0};            // blocks that ran on the second card
-    int    gpu_min_tokens = 32;                         // batches of at least this many tokens run their expert block on the GPU (0 = never)
-    std::atomic<uint64_t> hyb_groups{0}, hyb_picks{0}, hyb_hits{0};   // MOE_CACHE_HYBRID: layers split between GPU bank and CPU, picks, picks served by the bank
-    std::atomic<uint64_t> hyb_drops{0}, hyb_reloads{0}, hyb_reload_ns{0};
-    std::atomic<uint64_t> hyb_swaps{0}, hyb_swap_ns{0}, hyb_reverts{0};   // MOE_CACHE_HYBRID_ADAPT: experts swapped into the bank, time spent uploading them   // bank freed for a long prompt's GPU block, loaded again at the next decode step
-    std::atomic<uint64_t> gpu_segments{0}, gpu_fallbacks{0}, gpu_nomem{0}, gpu_split_blocks{0};   // gpu_nomem: blocks kept on the CPU because the GPU had too little free memory; gpu_split_blocks: blocks run in parts (N23)
-    std::atomic<uint64_t> gpu_up_bytes{0}, gpu_up_saved{0};     // gpu_up_saved: idea P11, bytes whose upload a held GPU copy made unnecessary
-    // live statistics: with MOE_CACHE_STATS_SIGNAL=1, SIGUSR1 makes the plugin print one "moe-cache-stats {json}" line (cumulative counters)
-    std::atomic<uint64_t> hits_dec{0}, misses_dec{0}, evict_age_sum{0};
-    bool cur_decode = false;                            // the group being prepared is a single-token (decode) step
-    // approximate routing (MOE_CACHE_ROUTE=skip|subst, decode and small batches, executor only; off by default; quality-gated, see docs/EXPERIMENTS.md):
-    // the lowest-ranked picks of a token that are NOT in RAM are dropped (skip) or replaced by the most recently used resident expert of that layer (subst).
-    // Ranked picks are in order of the router's weights, so the experts given up are the ones that contribute least.
-    int  route_mode = 0;                                // 0 off, 1 skip, 2 subst
-    int  route_keep = -1;                               // MOE_CACHE_ROUTE_KEEP: picks always honoured (default: all but the last route_drop)
-    int  route_drop = 2;                                // MOE_CACHE_ROUTE_DROP: lowest-ranked picks that may be skipped (--fast=2: 4)
-    uint64_t route_skipped = 0, route_substituted = 0, route_considered = 0;
-    // fewer experts (MOE_CACHE_FEWER=N, approximate, B3): on layers the executor computes (CPU-held), decode and small batches use only the top n_used-N picks
-    // (never fewer than half), whether they are in RAM or not. Prompt batches keep all picks. The router's weights are not renormalised (the dropped
-    // experts are the lowest-ranked ones); MOE_CACHE_FEWER_RENORM=1 is not implemented, quality is judged by the gate (docs/QUALITY_GATE.md, level fewer).
-    int  fewer = 0;
-    uint64_t fewer_dropped = 0, fewer_considered = 0;
-    std::unordered_map<const ggml_tensor *, std::vector<int32_t>> route_ids;   // ids tensor -> effective expert per (token, pick); -1 = skipped
-    FILE * trace_f = nullptr;                           // MOE_CACHE_TRACE_IDS=file: record the experts picked in every decode step (int16 layer, int16 n, n x int16 expert)
-    std::vector<uint64_t> layer_hits, layer_misses;     // per layer, updated under mu
     // ---- lookahead prefetch (MOE_CACHE_LOOKAHEAD=1): while layer N computes, predict the experts of layer N+1 from the router weights and read them
-    bool   siblings = true;                             // MOE_CACHE_SIBLINGS=0 turns the sibling batch load off
-    std::atomic<uint64_t> sibling_loads{0};
-    bool   cur_scan = false;                            // the group being prepared is a long prompt batch (MOE_CACHE_SCAN_TOKENS)
-    int    scan_tokens = 512;                           // MOE_CACHE_SCAN_TOKENS=N (default 512, 0 = off; I3, RESULTS 48): batches of N+ tokens load experts at the evict-first end, so the experts
-                                                        // cached before the prompt survive from chunk to chunk (with LRU a cyclic scan bigger than the cache keeps nothing)
-    uint64_t small_mapped = 0, small_over = 0;          // cache smaller than one op: experts mapped from the file (stock way) / loaded over the budget
-    bool   small_warned = false;
-    bool   lookahead = false;
-    bool   la_exec = false;                             // MOE_CACHE_LOOKAHEAD=2: lookahead together with the executor (it waits on the same loading flags)
-    size_t coalesce_bytes = (size_t) 16 << 20;          // MOE_CACHE_COALESCE_MIB=N (default 16, 0 = off): neighbouring expert reads merged up to N MiB
-                                                        // (synchronous reads; Flash-Next prompts: 2.5 -> 3.4 GB/s, prefill +14-24 %)
-    std::atomic<uint64_t> coalesced{0};                 // expert reads merged into the previous one
-    int    la_guess = 0;                                // experts looked at per layer (0 = the number used per token)
-    int    la_cap = 2;                                  // at most this many experts not yet in RAM are prefetched per layer
-    bool   la_ecores = true;                            // run the helper threads on the efficiency cores of a hybrid CPU
-    size_t max_nb2_all = 0;                             // largest expert slice, for the helper threads' bounce buffers
-    std::vector<std::thread> pf_threads;
-    std::thread stats_th;                                // snapshot thread (MOE_CACHE_STATS_SIGNAL: SIGUSR1 / event): joined in the destructor
-#ifdef _WIN32
-    std::thread save_th;                                 // profile save on request: joined in the destructor
-#endif
-    std::thread idle_th;                                 // idle release on request (SIGUSR2 / Local\moe-cache-idle-<pid>): joined in the destructor
-    bool   idle_released = false;                       // idle_release() ran and no graph came since: the next graph sets the working-set minimum again
-    uint64_t idle_releases = 0;
-    std::mutex pf_mu;
-    std::condition_variable pf_cv;
-    std::deque<std::function<void()>> pf_q;
-    bool   pf_stop = false;
-    std::condition_variable load_cv;                    // used with mu: a lookahead read finished
-    std::unordered_map<int, std::vector<int>> layer_tensors;   // layer -> indices into tensors
-    struct tmeta_t { int type; size_t off; size_t size; int shard; };
-    std::unordered_map<std::string, tmeta_t> tmeta;     // router and norm tensors of the GGUF
-    struct router_t { std::vector<float> w, bias, normw; bool ok = false; };
-    std::unordered_map<int, router_t> routers;
-    std::mutex router_mu;
-    std::unordered_map<int, std::vector<char>> pred_flags;     // layer -> experts predicted for it (under mu)
-    std::atomic<uint64_t> pf_issued{0}, pf_used{0}, pf_wasted{0}, pf_late{0}, pf_pred_total{0}, pf_pred_hit{0}, pf_skipped{0};
     bool   disabled = false;                    // setup failed or MOE_CACHE_DISABLE: the plugin claims nothing, the model loads normally
     bool   direct_ok = false;                   // read experts straight into place when the alignment allows
 #ifdef _WIN32
@@ -122,41 +65,6 @@ struct state_t {
 #else
     static constexpr bool win_buffered = false, win_random = false;
 #endif
-    // BO-1 (MOE_CACHE_PACK, see bin/moe_cache_pack.py): MODEL.moepack holds each expert's gate/up/down slices in one 4 KiB-aligned block; a missing expert is
-    // then one large unbuffered read instead of three. Replaces the file-view cache while it is in use (reads fill private memory).
-    struct pack_layer_t { uint64_t base = 0, stride = 0; int n_expert = 0, n = 0; std::string name[4]; size_t nb2[4] = {}, in_off[4] = {}; };
-    bool   pack_on = false;
-    plat::file_t pack_fd;
-    std::string pack_path;
-    std::vector<pack_layer_t> pack_layers;
-    std::unordered_map<std::string, std::pair<int, int>> pack_by_name;   // tensor name -> (layer record, slot)
-    std::atomic<uint64_t> pack_reads{0}, pack_bytes{0}, pack_slices{0}, pack_fallbacks{0};
-    bool   win_view = false;                    // file-view cache (default on Windows and Linux; MOE_CACHE_WIN_VIEW=0 / MOE_CACHE_LINUX_VIEW=0 turn it off; see the constructor)
-    std::vector<const char *> views;            // win_view: one read-only view per model file (split GGUF)
-    std::vector<size_t> view_sizes;
-    size_t view_bytes = 0;                      // win_view: resident bytes of experts held in the views (not private memory: not in rss_private())
-    size_t ws_min_cur = 0;                      // win_view: the hard working-set minimum set last (0 = none)
-    bool   ws_min_warned = false;
-    size_t budget = 0;
-    bool   commit_warned = false;      // Windows: the commit-limit warning was printed (tune())
-    bool   commit_fail_warned = false; // Windows: a refused expert commit was reported (commit_for())
-    uint64_t commit_evictions = 0;     // experts evicted because Windows refused a commit or system commit ran low
-    size_t budget_peak = 0;          // largest budget so far; a fall below half of it is reported once (shrink_warned)
-    bool shrink_warned = false;
-    bool   auto_mode = false;          // MOE_CACHE_SIZE_GIB=auto: size the cache from the real memory limit
-    size_t limit_bytes = 0;
-    size_t margin = (size_t) 1 << 30;  // keep this much below the limit (MOE_CACHE_MARGIN_GIB, default 1 GiB)
-    size_t pending_bytes = 0;          // expert bytes marked resident but not read yet
-    size_t max_budget = 0;             // all registered expert bytes
-    size_t min_budget = 0;
-    uint64_t tune_shrinks = 0, tune_grows = 0;
-    size_t resident_bytes = 0;
-    uint64_t epoch = 0;
-    // experts with epoch >= protect_epoch are used by the graph being prepared/computed: no eviction may take them. All groups of a graph are
-    // prepared before any is computed, so protecting only the current group (epoch == epoch) let a later group (or tune() shrinking the budget)
-    // evict an earlier group's experts before llama.cpp read them: decommitted memory on Windows (access violation, PC 2026-10-27), zeros on Linux
-    uint64_t protect_epoch = UINT64_MAX;
-    uint64_t cpu_check_reloads = 0;                     // experts cpu_path_check() had to load again (should stay 0)
     bool in_use(const node_t & n) const { return n.loading || n.epoch == epoch || n.epoch >= protect_epoch; }
 #ifdef _WIN32
     // once, at the first graph (llama.cpp has uploaded every tensor) and before the warm start fills the cache: release the model-file pages
@@ -241,41 +149,6 @@ struct state_t {
             update_ws_min();             // the first graph after an idle release holds the experts in RAM again (no-op on Linux)
         }
     }
-    std::unordered_map<std::string, std::pair<size_t, size_t>> file_tensors;
-    std::vector<std::unique_ptr<tinfo_t>> tensors;
-    std::unordered_map<const ggml_tensor *, int> by_tensor;
-    std::vector<node_t> nodes;
-    std::vector<uint32_t> node_owner;           // index in `tensors` of the tensor that owns each node (same size as nodes)
-    // Replacement policy. MOE_CACHE_POLICY=lru (default): one list, evict the least recently used. MOE_CACHE_POLICY=classlru (llama.cpp #31233):
-    // nclass LRU lists; a node's decayed use count crf (half-life classlru_hl decode tokens, kept after eviction) picks its list
-    // (class = min(nclass-1, floor(log2 crf))); the victim is the oldest evictable node of each list with the largest age / 2^class.
-    // Only the choice of victim changes, never what is computed. The plain policy is the same code with one list.
-    static constexpr int MAXCLS = 8;
-    int    mruc[MAXCLS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
-    int    lruc[MAXCLS] = { -1, -1, -1, -1, -1, -1, -1, -1 };
-    bool   classlru = false;
-    int    nclass = 1;
-    double classlru_hl = 128.0;
-    std::vector<float> decay_tab;                       // 2^(-dt / half-life) for dt = 0 .. size-1 (beyond: 0)
-    uint32_t tok = 0;                                   // decode token counter (classlru clock)
-    int    last_dec_layer = -1;
-    bool   track_crf = false;                           // keep the decayed use counts (classlru, or the idle rebalance wants them)
-    // idle rebalance (BO-2): while no graph runs for rb_idle_ms, read the experts with the highest decayed use count that are missing into free room or
-    // the room of the lowest-count resident ones (rb_choose), at most rb_cap_bytes per idle period, one expert at a time, stopping as soon as a graph starts
-    bool   rb_on = true;                                // BO-2 idle refill: on since 0.3.3 (won every PC pair, RESULTS 73); MOE_CACHE_IDLE_REBALANCE=0 turns it off
-    int    rb_idle_ms = 1500;
-    size_t rb_cap_bytes = (size_t) 512 << 20;
-    double rb_gain = 2.0, rb_min_score = 0.75;
-    std::thread rb_th;
-    std::condition_variable rb_cv;
-    bool   rb_stop = false;
-    int    graph_active = 0;                            // be_compute calls in flight (mu)
-    uint64_t graph_seq = 0;                             // graphs started (mu)
-    uint64_t rb_round_seq = ~0ull;                      // graph_seq of the last rebalance round: one round per idle period
-    // idea P20 (MOE_CACHE_PREFILL_LEND_MIB=N, default 0 = off): while long prompt batches run, the expert cache gives N MiB back to the system (the cache is cut by N and
-    // the surplus evicted), and takes them back at the first small (decode) graph
-    size_t lent_bytes = 0;
-    size_t lent_budget = 0;                             // the budget right after the lend (a cut by tune() meanwhile is not given back twice, AUD-021)
     void prefill_lend(int64_t max_tok) {
         static const size_t lend = getenv("MOE_CACHE_PREFILL_LEND_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_PREFILL_LEND_MIB"))) << 20 : 0;
         if (!lend) {
@@ -299,98 +172,10 @@ struct state_t {
         }
     }
 
-    bool last_long = false;                             // idea C07: the last graph ended on a long prompt batch (under mu)
-    std::atomic<uint64_t> last_end_ns{0};               // steady clock, end of the last graph
-    bool   rb_acted = false;                            // the last round read something: measure the next graphs
-    bool   rb_armed_dec = false, rb_armed_pre = false;  // count the hits of the first decode / prefill graph after a rebalance
-    bool   g_saw_dec = false, g_saw_pre = false;
-    uint64_t rb_rounds = 0, rb_reads = 0, rb_bytes_read = 0, rb_swaps = 0, rb_cancelled = 0, rb_evicted_bytes = 0;
-    uint64_t rb_dec_hits = 0, rb_dec_miss = 0, rb_pre_hits = 0, rb_pre_miss = 0;
-    uint64_t cls_promotions = 0, cls_demotions = 0;     // touches that moved a node to a higher / lower class list
-    int    unmatched = 0;              // expert tensors that could not be cached (see register_tensor)
-    // executor (MOE_CACHE_EXEC=1): asynchronous reads + the plugin's own expert matrix products for decode steps
-    bool   exec_on = true;                              // on by default; MOE_CACHE_EXEC=0 switches the executor off
-    bool   tiled_cache = false;                         // MOE_CACHE_TILED_CACHE=1 (D19, default off): the tiled/duplicate-id scan runs once per ids tensor and graph run instead of for gate, up and down
-    bool   exec_force = false;                          // MOE_CACHE_EXEC=2: the executor runs every eligible step (tests)
-    int    exec_chunk = 128;                            // MOE_CACHE_EXEC_CHUNK=N: weight rows per pool chunk; 128 decodes +3.9 % over 32 on the PC (N25, every ABBA pair), the arithmetic per row is unchanged
-    bool   exec_fuse = true;                            // gate and up of one layer share one pool job (same arithmetic, one barrier fewer): decode +0.3-2.6 % in every PC ABBA pair, text identical (E3, RESULTS 73); MOE_CACHE_EXEC_FUSE=0 turns it off
-    bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
-    int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
-    bool   exec_pool_decode = false;                    // MOE_CACHE_EXEC_POOL_DECODE=1 (DECODE-137, default off): size the pool from the first single-token graph (src/mc_poolsize.h)
-    int    exec_pool_n = 0;                             // compute threads of the current pool
-    bool   exec_pool_from_decode = false;               // the pool was built (or rebuilt) from a single-token graph
-    int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes
-    int    exec_ecores = 0;                             // extra workers on efficiency cores
-    int    exec_readers = 4;
-    std::unique_ptr<exec_pool_t> pool;
-    std::vector<std::thread> readers;
-    std::mutex rq_mu;
-    std::condition_variable rq_cv;
-    std::deque<io_job_t> rq;
-    // idea I13 (MOE_CACHE_READER_AFFINITY=1, Linux, default off): once the executor pool exists, the reader threads move to the CPUs the pool does not use
-    // (if any are left), so a read's completion is not queued behind a compute thread
-    std::vector<int> reader_cpus;
-    std::atomic<int> reader_aff_gen{0};
-    void set_reader_cpus(const std::vector<int> & pool_cpus) {
-        static const bool on = getenv("MOE_CACHE_READER_AFFINITY") && atoi(getenv("MOE_CACHE_READER_AFFINITY")) > 0;
-        if (!on) {
-            return;
-        }
-        std::lock_guard<std::mutex> lk(rq_mu);
-        reader_cpus.clear();
-        const int n = (int) std::thread::hardware_concurrency();
-        for (int c = 0; c < n; c++) {
-            if (std::find(pool_cpus.begin(), pool_cpus.end(), c) == pool_cpus.end()) {
-                reader_cpus.push_back(c);
-            }
-        }
-        reader_aff_gen++;
-    }
-    std::atomic<int> demand_pending{0};          // idea I02: demand reads queued or running in the reader threads (advisory prefetch reads wait while this is above 0)
-    bool   rq_stop = false;
-    std::atomic<uint64_t> exec_fused{0}, exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
-    uint64_t stepaside_graphs = 0, stepaside_waits = 0;   // executor graphs handed back to llama.cpp with everything resident / of them, graphs that had to wait for a load
-    // per weight type: wall time of the expert products (includes waiting for experts still loading), ops, expert bytes touched
-    std::atomic<uint64_t> exec_type_ns[64] = {}, exec_type_ops[64] = {}, exec_type_bytes[64] = {};
 
-    // usage profile and warm start
-    std::string profile_path;          // learn here and warm start from it
-    std::string warm_path;             // warm start only
-    bool   preload_on = false;
-    bool   preload_done = false;
-    double preload_frac = -1.0;        // < 0: everything if it fits, else 0.7
-    double profile_decay = 0.5;
-    uint64_t fingerprint = 0;
-    usage_t learned;
-    std::vector<std::vector<double>> session;   // [layer][expert] picks of this run
-    uint64_t groups_since_save = 0;
     std::mutex mu;
 
-    std::atomic<uint64_t> hits{0}, misses{0}, bytes{0}, groups{0}, ops{0}, graphs{0};
-    std::atomic<uint64_t> ns_prep{0}, ns_cpu{0}, ns_total{0}, ns_read{0}, evictions{0}, direct_jobs{0}, bounce_jobs{0}, async_in{0};
-    // MOE_CACHE_SEG_TIMES=1 (N23-F6): where the time outside our own work goes. gap = from the end of one of our graph splits to the start of the next
-    // (llama.cpp's other splits, the scheduler, copies, GPU waits), sync = the wait for inputs read asynchronously from the GPU (it contains the GPU
-    // time of the split before us), gpu_seg = long-prompt GPU blocks incl. uploads. gap buckets: < 0.2 ms, < 1 ms, < 5 ms, >= 5 ms.
-    std::atomic<uint64_t> ns_gap{0}, ns_sync{0}, ns_gpu_seg{0}, n_gap{0}, last_exit_ns{0};
-    std::atomic<uint64_t> gap_b_ns[4]{}, gap_b_n[4]{};
-    std::atomic<uint64_t> gap_faults{0}, in_faults{0}, last_exit_faults{0}, entry_faults{0}, top_gap_ns[4]{}, top_gap_graph[4]{}, top_gap_faults[4]{};   // faults of the process inside the gaps / inside our backend; the 4 longest gaps
-    // MOE_CACHE_E1_TIMES=1 (with MOE_CACHE_SEG_TIMES=1; E1 step 1): what the gaps and the long-prompt GPU blocks are made of.
-    // cpu: CPU time of the whole process (all threads) and of the graph thread alone, inside the gaps and inside our backend (a gap whose graph-thread CPU time is
-    // far below its wall time is waiting, not computing). blk[0] = blocks run in one part, blk[1] = blocks split into parts:
-    // wait = wait_experts inside the upload, up_faults = page faults during the upload, prep = from entering the block to the first upload,
-    // rows_comp = expert-matmul output rows the GPU computed, rows_use = rows kept (one per token and expert slot).
-    std::atomic<uint64_t> e1_gap_cpu_ns{0}, e1_in_cpu_ns{0}, e1_gap_tcpu_ns{0}, e1_in_tcpu_ns{0}, e1_last_cpu{0}, e1_last_tcpu{0}, e1_ent_cpu{0}, e1_ent_tcpu{0};
-    std::atomic<uint64_t> e1_blk_n[2]{}, e1_parts[2]{}, e1_up_ns[2]{}, e1_comp_ns[2]{}, e1_get_ns[2]{}, e1_wait_ns[2]{}, e1_up_faults[2]{}, e1_prep_ns[2]{}, e1_rows_comp[2]{}, e1_rows_use[2]{};
-    std::atomic<uint64_t> ex_quant_ns{0}, ex_build_ns{0}, ex_run_ns{0}, ex_part_ns[3]{}, ex_part_bytes[3]{}, ex_part_n[3]{};   // MOE_CACHE_EXEC_TIMES: executor phases; part 0 gate, 1 up, 2 down
 
-    // io workers
-    std::vector<std::thread> workers;
-    std::mutex wmu;
-    std::condition_variable wcv, dcv;
-    std::function<void(int)> task;
-    int    gen = 0;
-    int    busy = 0;
-    bool   stop = false;
 
     state_t() {
         stats = mcenv::env_on("MOE_CACHE_STATS");
@@ -1096,97 +881,92 @@ state_t & S() {
 // inside an expert tensor, which expert and its cache state. The Windows event log gives only the module offset (PC 2026-10-27: 0xC0000005 in
 // ggml-cpu-zen4.dll at a prompt of 11-16 tokens), which cannot tell an evicted expert from anything else. A first-chance handler reports faults in
 // expert memory (before anyone else sees them), the unhandled-exception filter any crash; both pass the exception on unchanged.
-state_t * g_crash_state = nullptr;
+std::atomic<state_t *> g_crash_state{nullptr};
+PVOID g_crash_veh = nullptr;
 std::atomic<int> g_crash_said{0};
 LPTOP_LEVEL_EXCEPTION_FILTER g_prev_filter = nullptr;
 
-// QUALITY-027: snprintf returns the length it WOULD have written; adding that to n and then passing sizeof(buf) - n let a long line (a module path of
-// 260 characters, many null nodes) wrap the size around and write past the buffer. This keeps n inside the buffer and writes nothing it cannot hold.
-int crash_cat(char * buf, size_t cap, int n, const char * fmt, ...) {
-    if (n < 0) {
-        n = 0;
-    }
-    if ((size_t) n >= cap) {
-        return (int) cap - 1;
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    const int r = vsnprintf(buf + n, cap - (size_t) n, fmt, ap);
-    va_end(ap);
-    if (r < 0) {
-        return n;
-    }
-    return (size_t) (n + r) >= cap ? (int) cap - 1 : n + r;
-}
-
 bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     const EXCEPTION_RECORD * er = ep ? ep->ExceptionRecord : nullptr;
-    state_t * s = g_crash_state;
+    state_t * s = g_crash_state.load();
     if (!er || !s || er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) {
         return false;
     }
     const uintptr_t addr = (uintptr_t) er->ExceptionInformation[1];
     const tinfo_t * hit = nullptr;
+    // WINDOWS-081: the tensor list changes under s->mu (registration); the handler never waits for that lock (the crashing thread may hold it), it skips the lookup
+    std::unique_lock<std::mutex> tl(s->mu, std::try_to_lock);
     for (const auto & t : s->tensors) {
+        if (!tl.owns_lock()) {
+            break;
+        }
         // a forgotten tensor (its buffer was freed) has data == nullptr and no experts: it would claim every address below one page
         if (t && t->data && t->n_expert > 0 && addr >= (uintptr_t) t->data && addr < (uintptr_t) t->data + t->nb2 * (size_t) t->n_expert + PAGE) {
             hit = t.get();
             break;
         }
     }
+    if (tl.owns_lock()) {
+        tl.unlock();
+    }
     if ((experts_only && !hit) || g_crash_said.exchange(1) != 0) {
         return false;
     }
+    // WINDOWS-081: from here on only the first crashing thread runs (the exchange above), so the large buffers are static: the handler itself used about 5.5 KB of
+    // the faulting thread's stack, which may be the very thing that ran out
+    static char mname[MAX_PATH];
+    static char fname[MAX_PATH];
+    static char buf[4096];
+    static CONTEXT ctx;
     const uintptr_t pc = (uintptr_t) er->ExceptionAddress;
     HMODULE mod = nullptr;
-    char mname[MAX_PATH] = "?";
+    strcpy(mname, "?");
     if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) pc, &mod)) {
         GetModuleFileNameA(mod, mname, MAX_PATH);
     }
     const char * base = std::max(strrchr(mname, '\\'), strrchr(mname, '/'));
     base = base ? base + 1 : mname;
     const ULONG_PTR kind = er->ExceptionInformation[0];
-    char buf[4096];
     int n = snprintf(buf, sizeof(buf), "moe-cache: crash: access violation at %s+0x%llx, %s address 0x%llx", base,
                      (unsigned long long) (pc - (uintptr_t) mod), kind == 0 ? "reading" : kind == 1 ? "writing" : "executing", (unsigned long long) addr);
     if (hit) {
         const size_t rel = addr - (uintptr_t) hit->data;
         const int64_t e = std::max<int64_t>(0, std::min<int64_t>((int64_t) (rel / hit->nb2), hit->n_expert - 1));
         const node_t & nd = s->nodes[(size_t) (hit->node0 + e)];
-        n = crash_cat(buf, sizeof(buf), n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
+        n = mccat::cat(buf, sizeof(buf), n, " = %s expert %lld (byte %zu of %zu): resident=%d loading=%d mapped=%d epoch=%llu (now %llu, protected from %llu); "
                       "cache %.2f of %.2f GiB, %llu evictions", hit->name.c_str(), (long long) e, rel - (size_t) e * hit->nb2, hit->nb2, (int) nd.resident,
                       (int) nd.loading, (int) nd.mapped, (unsigned long long) nd.epoch, (unsigned long long) s->epoch,
                       (unsigned long long) (s->protect_epoch == UINT64_MAX ? 0 : s->protect_epoch), s->resident_bytes / 1073741824.0,
                       s->budget / 1073741824.0, (unsigned long long) s->evictions);
     } else {
-        n = crash_cat(buf, sizeof(buf), n, " (not in the expert cache)");
+        n = mccat::cat(buf, sizeof(buf), n, " (not in the expert cache)");
     }
     // was the plugin handing a graph to the CPU backend? If so, its nodes without data (a NULL base + offset write points there)
     if (ggml_cgraph * g = g_cpu_graph.load()) {
         const int nn = ggml_graph_n_nodes(g);
         int nulls = 0;
-        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
+        n = mccat::cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside a plugin graph handed to the CPU backend (%d nodes)", nn);
         for (int i = 0; i < nn && n < (int) sizeof(buf) - 200; i++) {
             const ggml_tensor * t = ggml_graph_node(g, i);
             const bool null_src = (t->src[0] && !t->src[0]->data) || (t->src[1] && !t->src[1]->data);
             if (t->op != GGML_OP_NONE && (!t->data || null_src) && nulls++ < 8) {
-                n = crash_cat(buf, sizeof(buf), n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
+                n = mccat::cat(buf, sizeof(buf), n, "; node %d %s (%s) data=%p src0=%p src1=%p ne=%lld,%lld,%lld", i, t->name, ggml_op_desc(t),
                               t->data, t->src[0] ? t->src[0]->data : nullptr, t->src[1] ? t->src[1]->data : nullptr,
                               (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2]);
             }
         }
         if (!nulls) {
-            n = crash_cat(buf, sizeof(buf), n, "; no node or source without data");
+            n = mccat::cat(buf, sizeof(buf), n, "; no node or source without data");
         }
     } else {
-        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
+        n = mccat::cat(buf, sizeof(buf), n, "\nmoe-cache: crash: not inside a graph the plugin handed to the CPU backend");
     }
     // inside executor work (a pool worker or the compute thread's share): which op, task, row, column and output it was computing
     if (const exec_where_t & wh = g_exec_where; wh.op) {
-        n = crash_cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside the executor: op %s, task %p", wh.op, (const void *) wh.task);
+        n = mccat::cat(buf, sizeof(buf), n, "\nmoe-cache: crash: inside the executor: op %s, task %p", wh.op, (const void *) wh.task);
         if (wh.task) {
             n = std::min<int>(n, (int) sizeof(buf) - 2);
-            n = crash_cat(buf, sizeof(buf), n, " (weights %p, %d columns, %lld rows), row %lld, column %d, dst %p",
+            n = mccat::cat(buf, sizeof(buf), n, " (weights %p, %d columns, %lld rows), row %lld, column %d, dst %p",
                           (const void *) wh.task->w, wh.task->ncol, (long long) wh.task->rows, (long long) wh.r, wh.k, (const void *) wh.dst);
         }
     }
@@ -1200,16 +980,16 @@ bool crash_report(EXCEPTION_POINTERS * ep, bool experts_only) {
     }
     // stack of the faulting thread, module+offset per frame (x64 unwind tables)
     {
-        CONTEXT ctx = *ep->ContextRecord;
-        n = crash_cat(buf, sizeof(buf), n, "moe-cache: crash: stack");
+        ctx = *ep->ContextRecord;
+        n = mccat::cat(buf, sizeof(buf), n, "moe-cache: crash: stack");
         for (int f = 0; f < 20 && ctx.Rip && n < (int) sizeof(buf) - 120; f++) {
             HMODULE fm = nullptr;
-            char fname[MAX_PATH] = "?";
+            strcpy(fname, "?");
             if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR) ctx.Rip, &fm)) {
                 GetModuleFileNameA(fm, fname, MAX_PATH);
             }
             const char * fb = std::max(strrchr(fname, '\\'), strrchr(fname, '/'));
-            n = crash_cat(buf, sizeof(buf), n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
+            n = mccat::cat(buf, sizeof(buf), n, " %s+0x%llx", fb ? fb + 1 : fname, (unsigned long long) (ctx.Rip - (DWORD64) (uintptr_t) fm));
             DWORD64 image = 0;
             PRUNTIME_FUNCTION rf = RtlLookupFunctionEntry(ctx.Rip, &image, nullptr);
             if (rf) {
@@ -1241,8 +1021,18 @@ LONG WINAPI crash_filter(EXCEPTION_POINTERS * ep) {
 }
 void install_crash_report(state_t * s) {
     g_crash_state = s;
-    AddVectoredExceptionHandler(0, crash_veh);
+    g_crash_veh = AddVectoredExceptionHandler(0, crash_veh);
     g_prev_filter = SetUnhandledExceptionFilter(crash_filter);
+}
+// WINDOWS-081: when the state is deleted (an orderly unload) the handlers go with it; a crash after that is not ours to report on freed memory
+void remove_crash_report() {
+    g_crash_state = nullptr;
+    if (g_crash_veh) {
+        RemoveVectoredExceptionHandler(g_crash_veh);
+        g_crash_veh = nullptr;
+    }
+    SetUnhandledExceptionFilter(g_prev_filter);        // what was there before us (null: the system default)
+    g_prev_filter = nullptr;
 }
 #endif
 

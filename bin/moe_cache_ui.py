@@ -18,6 +18,7 @@ import moe_cache as mc  # noqa: E402
 import moe_cache_pick as picker  # noqa: E402
 import moe_cache_download as dl  # noqa: E402
 import moe_cache_concurrent as cc  # noqa: E402
+import moe_cache_lan as lan  # noqa: E402
 from moe_cache_wintool import win_tool  # noqa: E402
 
 HERE = mc.HERE
@@ -509,12 +510,8 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
                           else summary(out, mode, engine))
         return out
     no_vram = bool(tuned) and any("no GPU memory information" in w for w in tuned.get("why", []))
-    ncmoe = int(lp.n_cpu_moe) if str(lp.n_cpu_moe).isdigit() else plan["n_cpu_moe"]       # the launcher's choice
-    layers = plan["layers"]
-    gpu_layers = max(0, layers - min(ncmoe, layers))
-    out["numbers"] = {"layers": layers, "gpu_expert_layers": gpu_layers, "n_cpu_moe": ncmoe, "cache_GiB": plan["cache_GiB"],
-                      "cpu_experts_GiB": plan["cpu_experts_GiB"], "free_vram_GiB": plan["free_vram_GiB"], "ub": int(lp.ub) if str(lp.ub).isdigit() else (tuned["ub"] if tuned else None), "kv_cache": lp.kv,
-                      "experts": plan["experts"], "used": plan["used"], "arch": plan["arch"]}
+    out["numbers"] = lp.numbers()                      # ENGINE-029: the launch plan's own figures (placement, micro-batch, KV, model sizes)
+    ncmoe, layers, gpu_layers = out["numbers"]["n_cpu_moe"], out["numbers"]["layers"], out["numbers"]["gpu_expert_layers"]
     if stock and not stock_fits:
         out.update(kind="stock", verdict="runs stock llama-server, as asked (bigger than free RAM; to compare)")
         R.append("--stock: no plugin; experts that are not in the file cache are read from the SSD by the OS (usually much slower than moe-cache "
@@ -1153,7 +1150,8 @@ class Runner:
         self.warm = []                     # the launcher's "warm session:" lines (agent mode: saved / restored conversations)
         self.decisions = []                # what the launcher decided before starting llama-server (its "moe-cache: ..." lines up to the URL line)
         self.deciding = True
-        self.bench = {"state": "idle"}
+        if (getattr(self, "bench", None) or {}).get("state") != "running":      # a benchmark that restarts the server (cold start, compare) goes on: the page must not see it idle meanwhile
+            self.bench = {"state": "idle"}
         self.auto_key = None               # the launcher's key (agent mode, no key typed on the page)
         self.agent_guess = {}              # (file, mtime) -> agent name guessed from the conversation's start
         self.vision, self.vision_at = None, 0     # does the running llama-server take images (/props modalities.vision); asked once it is ready
@@ -1898,6 +1896,10 @@ class Store:
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; "
        "frame-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'")
 MAX_BODY = 64 * 1024
+# GUI-012 (--ui-lan, docs/LAN_ACCESS.md): what a request from another computer may not do. These change this PC outside the model: the llama-server path (a program to run),
+# a new model folder, an agent's config file, a download, Trash moves of saved agent conversations, a share report.
+REMOTE_BLOCKED = ("/api/llama", "/api/folders", "/api/connect", "/api/download/start", "/api/sessions/trash", "/api/share", "/api/share/cancel")
+TOKEN_FAILS, TOKEN_WINDOW = 20, 60.0          # wrong tokens from one remote address before it is answered 429 for a minute
 MAX_EXTRA = 2              # servers the page may start besides the main one (GUI-013)
 CHAT_TIMEOUT = 3600         # seconds llama-server may stay silent in the chat (a long prefill of a big context on a slow machine); a module constant so a test can shorten it
 
@@ -2008,6 +2010,8 @@ class Handler(BaseHTTPRequestHandler):
     store = None
     runner = None
     downloads = None
+    lan_hosts = ()              # GUI-012: the exact "ip:port" names this page answers to besides 127.0.0.1 and localhost (only with --ui-lan)
+    fails = {}                  # remote address -> times of wrong tokens
     extra = None                # GUI-013: {port: Runner} of the further servers this page started (the main one is `runner`)
     token = ""                  # random per run: the URL the launcher opens carries it once, the page keeps it in memory
     server_version = "moe-cache-ui"
@@ -2020,7 +2024,7 @@ class Handler(BaseHTTPRequestHandler):
         """Only pages from this server: the Host must be ours (no DNS rebinding), a foreign Origin is refused and the browser must say the request
         comes from this page (Sec-Fetch-Site same-origin, or 'none' for opening the page itself from the address bar or the launcher)."""
         port = self.server.server_address[1]
-        ok = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        ok = {f"127.0.0.1:{port}", f"localhost:{port}"} | set(self.lan_hosts)
         if self.headers.get("Host") not in ok:
             return False
         o = self.headers.get("Origin")
@@ -2028,6 +2032,26 @@ class Handler(BaseHTTPRequestHandler):
             return False
         site = self.headers.get("Sec-Fetch-Site")
         return site is None or site == "same-origin" or (navigation and (site == "none" or (cross_site and site == "cross-site")))
+
+    def remote(self):
+        """True when the request comes from another computer (only possible with --ui-lan)."""
+        return lan.classify(self.client_address[0]) != "loopback"
+
+    def token_ok(self):
+        """has_token() plus the lock-out for remote guessers: 20 wrong tokens from one address in a minute and that address gets 429."""
+        if self.has_token():
+            return True
+        if self.remote():
+            now = time.time()
+            fails = Handler.fails.setdefault(self.client_address[0], [])
+            fails[:] = [t for t in fails if now - t < TOKEN_WINDOW] + [now]
+        return False
+
+    def locked_out(self):
+        if not self.remote():
+            return False
+        now = time.time()
+        return len([t for t in Handler.fails.get(self.client_address[0], []) if now - t < TOKEN_WINDOW]) >= TOKEN_FAILS
 
     def has_token(self):
         """The per-run token, from the X-MoeCache-Token header only (the page sends it from memory on every request, scripts and tests too; there is
@@ -2062,7 +2086,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed(navigation=u.path in ("/", "/index.html")) and not (link and self.allowed(navigation=True, cross_site=True)):
             return self.send(403, {"error": "forbidden"})
         if u.path in ("/", "/index.html"):
-            if not link and not self.has_token():
+            if self.locked_out():
+                return self.send(429, {"error": "too many wrong tokens from this address: wait a minute"})
+            if not link and not self.token_ok():
                 return self.send(403, "<!doctype html><meta charset=utf-8><title>moe-cache</title><p style='font:15px system-ui;margin:2em'>Open the "
                                  "address the launcher printed (it ends in <code>?t=…</code>): this page only answers the user who started it. "
                                  "(The page keeps its token in memory only: reloading it needs that address again.)</p>", "text/html")
@@ -2070,7 +2096,9 @@ class Handler(BaseHTTPRequestHandler):
             # replaces the address (?t=...) at once, so it stays out of the history and, with no-referrer, out of every Referer
             page = open(PAGE, "rb").read().replace(b'<meta charset="utf-8">', b'<meta charset="utf-8">\n<meta name="moe-token" content="' + self.token.encode("ascii", "replace") + b'">', 1)
             return self.send(200, page, "text/html")
-        if not self.has_token():
+        if self.locked_out():
+            return self.send(429, {"error": "too many wrong tokens from this address: wait a minute"})
+        if not self.token_ok():
             return self.send(403, {"error": "forbidden: no or wrong page token (open the address the launcher printed)"})
         try:
             if u.path == "/api/system":
@@ -2145,8 +2173,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self.allowed() or not (self.headers.get("Content-Type") or "").startswith("application/json") or not self.has_token():
+        if self.locked_out():
+            return self.send(429, {"error": "too many wrong tokens from this address: wait a minute"})
+        if not self.allowed() or not (self.headers.get("Content-Type") or "").startswith("application/json") or not self.token_ok():
             return self.send(403, {"error": "forbidden"})
+        if self.path in REMOTE_BLOCKED and self.remote():
+            return self.send(403, {"error": "this action changes this PC outside the model: do it on the PC itself (docs/LAN_ACCESS.md)"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -2679,18 +2711,18 @@ def agents_state(url):
     return {"url": url, "agents": [opencode_state(url), hermes_state(url)]}
 
 
-def make_server(port=8070, ls=None, token=None):
+def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
     store = Store(ls or mc.default_llama_server())
     if not ls and (line := mc.ls_found_line(store.ls)):
         mc.say(line)
     downloads = dl.Downloads()
     downloads.on_change = lambda j: setattr(store, "models_at", 0)          # a finished download shows in the model list at once
-    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "extra": {}, "token": token or secrets.token_urlsafe(24)})
+    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "extra": {}, "lan_hosts": tuple(lan_hosts), "token": token or secrets.token_urlsafe(24)})
     class _Srv(ThreadingHTTPServer):
         # http.server sets SO_REUSEADDR; on Windows that lets a second instance bind the same port (a double-clicked moe-cache.bat twice gave two competing
         # managers on 8070 and "forbidden" pages from the wrong token). Linux needs it to restart on a port in TIME_WAIT, Windows does not.
         allow_reuse_address = os.name != "nt"
-    srv = _Srv(("127.0.0.1", port), h)
+    srv = _Srv((host, port), h)
     srv.daemon_threads = True
     srv.group_error, srv.group_lock = None, threading.Lock()          # see Handler.set_group_error
     return srv
@@ -2701,17 +2733,34 @@ def ui(argv):
     ap.add_argument("--ui-port", type=int, default=8070)
     ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--no-browser", action="store_true", help="do not open the page in the browser")
+    ap.add_argument("--ui-lan", action="store_true", help="also answer on this PC's home-network address (the page token is still required; some actions stay local). docs/LAN_ACCESS.md")
+    ap.add_argument("--lan-address", default=None, help="with --ui-lan: which private address of this PC to tell you (default: the first found)")
+    ap.add_argument("--allow-public", action="store_true", help="let --ui-lan listen although this PC has a public address (not recommended)")
     a = ap.parse_args(argv)
     if not WINDOWS:
         os.umask(0o077)         # chats (whole conversations, attached files), ui.json and bench.csv private to this user, as the launcher's files (audit U2)
+    host, lan_hosts, lan_addr = "127.0.0.1", (), None
+    if a.ui_lan:
+        addrs = lan.local_addresses()
+        lan_addr, err = lan.pick_address(addrs, a.lan_address)
+        err = err or lan.check_bind("0.0.0.0", addrs, a.allow_public)
+        if err:
+            raise SystemExit(f"moe-cache: --ui-lan: {err}")
+        host = "0.0.0.0"            # the page and the launcher reach the servers through 127.0.0.1; the Host check below lets in only this PC's own private addresses
+        lan_hosts = tuple(f"{x}:{a.ui_port}" for x in addrs if lan.classify(x) == "private")
     try:
-        srv = make_server(a.ui_port, a.llama_server)
+        srv = make_server(a.ui_port, a.llama_server, host=host, lan_hosts=lan_hosts)
     except OSError as e:
         raise SystemExit(f"moe-cache: cannot listen on 127.0.0.1:{a.ui_port} ({e}): --ui-port N to pick another port")
     if WINDOWS:
         threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
     mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
+    if a.ui_lan:
+        mc.say(f"moe-cache: LAN: the control page also answers at http://{lan_addr}:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token} (open exactly this address on the other computer)")
+        for line in lan.risk_lines(f"http://{lan_addr}:{srv.server_address[1]}")[1:]:
+            mc.say(line.replace("the API key is stored", "the page token is the part after ?t= above; the model server's API key is stored"))
+        mc.say("moe-cache: LAN: from another computer the page cannot set the llama-server path, add model folders, write agent configs, download models or share reports: do those on this PC")
     if not a.no_browser:
         t = threading.Timer(0.5, open_page, args=(url,))
         t.daemon = True

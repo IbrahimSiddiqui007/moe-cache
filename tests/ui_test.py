@@ -76,8 +76,10 @@ def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=Fal
     info = _planner[0](path, ctx, ram, vram)          # a RuntimeError here is the planner's refusal
     stock = ui.mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
     t = dict(TUNE)
-    return type("LP", (), {"engine": "stock" if stock else "plugin", "n_cpu_moe": str(t["n_cpu_moe"]), "ub": str(t["ub"]), "kv": "q8_0" if mode == "fast" else "f16",
-                           "planner_info": info, "tuned": t, "planner_error": None})()
+    lp = ui.mc.LaunchPlan()                          # the real class: the page now asks it for its numbers (ENGINE-029)
+    lp.engine, lp.n_cpu_moe, lp.ub, lp.kv_q8 = "stock" if stock else "plugin", str(t["n_cpu_moe"]), str(t["ub"]), mode == "fast"
+    lp.planner_info, lp.tuned, lp.planner_error = info, t, None
+    return lp
 real_view, ui.launcher_view = ui.launcher_view, fake_view
 
 p = ui.plan_model(small["path"], ram="2")
@@ -656,17 +658,27 @@ r = b.get("result", {})
 check(b["state"] == "done" and r.get("start") == "cold" and r.get("flush") == "fake flush" and r.get("load_s", "") != "", f"cold run recorded: start cold, flush line, load time ({b.get('error') or r.get('load_s')})")
 check(flushed == [(small["path"], [models])] and runner.p.pid != pid_before and runner.state == "ready", "the server was stopped, the model flushed, the server started again")
 check(json.loads(req("/api/bench")[1])["rows"][-1]["start"] == "cold", "cold / warm in the CSV")
+# the race behind that flake: Runner.start() -> reset() used to replace a running benchmark by "idle" until restart() put it back
+_r = ui.Runner()
+_r.bench = {"state": "running", "step": "run 2 of 2: starting the server again"}
+_r.reset({"model": "x"})
+check(_r.bench.get("state") == "running" and _r.state == "idle", "reset() keeps a running benchmark (a restart inside a benchmark must not show it idle)")
+_r.bench = {"state": "done"}
+_r.reset({"model": "x"})
+check(_r.bench == {"state": "idle"}, "reset() still clears a finished benchmark (a normal Start)")
 # compare (I42): measure, start again with Run as flipped (moe-cache -> stock), measure, then back to the user's settings
 flushed.clear()
 st, body = req("/api/bench", {"compare": True})
 check(st == 200 and json.loads(body).get("compare") is True, f"compare benchmark starts ({body[:100]})")
-deadline, steps = time.time() + 90, set()
+deadline, steps, states = time.time() + 90, set(), []
 while time.time() < deadline:
     b = json.loads(req("/api/status")[1])["bench"]
     steps.add(b.get("step", ""))
-    if b["state"] != "running":
+    states.append(b["state"])
+    if b["state"] in ("done", "failed"):        # not "anything but running": a restart used to show "idle" for a moment (windows.yml flake, 41694652982)
         break
-    time.sleep(0.2)
+    time.sleep(0.05)
+check("idle" not in states, f"compare: the page never sees the benchmark idle while the server restarts ({sorted(set(states))})")
 res = b.get("results") or []
 check(b["state"] == "done" and len(res) == 2 and res[0]["mode"].startswith("moe-cache") and res[1]["mode"].startswith("stock llama-server (--stock"),
       f"compare: one moe-cache run, then one stock run ({b.get('error')}; {[r['mode'] for r in res]})")
@@ -1011,19 +1023,18 @@ check(p["numbers"]["free_vram_GiB"] == 15.0 and not any("system RAM" in r or "st
 # --ram is GB; the planner's --ram-gib and the plugin's MOE_CACHE_RAM_GIB are GiB (B1: --ram 20 planned 21.5 GB under a 20 GB job limit)
 check(mc.ram_gib("20") == "18.626" and abs(float(mc.ram_gib(12.5)) * 2**30 - 12.5e9) < 1e6, f"ram_gib: GB -> GiB ({mc.ram_gib('20')})")
 seen = []
-real_run, ui.subprocess.run = ui.subprocess.run, (lambda p, **k: seen.append(p) or type("R", (), {"stdout": "{}", "stderr": ""})())
+real_pa, ui.mc.planner_answer = ui.mc.planner_answer, (lambda model, ctx, ram_gib=None, vram_gib=None: seen.append((model, ctx, ram_gib, vram_gib)) or {})
 ui.launcher_view = real_view
 try:
     try:
         ui.launcher_view(fn, "20", None, 8192, "exact", False, "plugin", None, None)
     except RuntimeError:
-        pass            # the mocked planner answers {}: only the command it was given matters here
+        pass            # the mocked planner answers {}: only what it was asked matters here
 finally:
-    ui.subprocess.run = real_run
+    ui.mc.planner_answer = real_pa
     ui.launcher_view = fake_view
-planner_cmds = [c for c in seen if isinstance(c, list) and any(str(x).endswith("plan.py") for x in c)]
-want_gib = f"{mc.mem_for_server('20') / 2**30:.3f}"   # 18.626, or less on a machine with less RAM (the launcher's RAM cap; CI runners have 16 GB)
-check(planner_cmds and planner_cmds[0][planner_cmds[0].index("--ram-gib") + 1] == want_gib, f"the page passes --ram 20 GB to the planner as {want_gib} GiB (capped GB -> GiB), through the launcher's plan ({planner_cmds})")
+want_gib = float(f"{mc.mem_for_server('20') / 2**30:.3f}")   # 18.626, or less on a machine with less RAM (the launcher's RAM cap; CI runners have 16 GB)
+check(seen and seen[0][2] == want_gib, f"the page passes --ram 20 GB to the planner as {want_gib} GiB (capped GB -> GiB), through the launcher's plan ({seen})")
 
 # ---- v0.3.2 page fixes: draft heads are not models, the verdict is not an error, readable selected buttons, the "Which model?" card ----
 import re, shutil, subprocess

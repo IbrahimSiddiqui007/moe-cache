@@ -52,6 +52,7 @@ jobs:
           if grep -v -i -E "KERNEL32|api-ms-win-crt|msvcrt|ggml-base.dll|ggml.dll|USER32|ADVAPI32" build/win/imports_dlls.txt; then
             echo "FAIL: the DLL imports a DLL that is not a system or ggml DLL"; exit 1; fi
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/platform_test.cpp -o build/win/platform_test.exe -static
+          $MINGW_CXX -std=c++17 -O2 -Isrc tests/open_hint_test.cpp -o build/win/open_hint_test.exe -static      # WINDOWS-672: the file-open hint flags, natively
           $MINGW_CXX -std=c++17 -O2 -Wall -Werror -Isrc tests/win_read_bench.cpp -o build/win/win_read_bench.exe -static
           $MINGW_CXX -std=c++17 -O2 -Isrc tests/kernel_check.cpp -o build/win/kernel_check.exe -static     # the executor's Q2_0 kernels, as built for Windows
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -60,6 +61,7 @@ jobs:
           path: |
             build/win/ggml-moe-cache.dll
             build/win/platform_test.exe
+            build/win/open_hint_test.exe
             build/win/win_read_bench.exe
             build/win/kernel_check.exe
       - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
@@ -140,6 +142,8 @@ jobs:
           Push-Location $env:RUNNER_TEMP
           & "$env:GITHUB_WORKSPACE\dll\platform_test.exe"
           if ($LASTEXITCODE -ne 0) { throw "platform_test failed" }
+          & "$env:GITHUB_WORKSPACE\dll\open_hint_test.exe"
+          if ($LASTEXITCODE -ne 0) { throw "open_hint_test failed" }
           Pop-Location
 
       - name: Official llama.cpp release (CPU) and the small MoE model
@@ -233,6 +237,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "win_cores: no CPU cores found (pwsh fails a step only on its last command)" }
           python tests/picker_test.py   # model picker: fake machines, no download
           if ($LASTEXITCODE -ne 0) { throw "model picker test failed" }
+          python tests/connect_agents_test.py
+          if ($LASTEXITCODE -ne 0) { throw "connect_agents test failed" }
+          python tests/connect_check_test.py
+          if ($LASTEXITCODE -ne 0) { throw "connect_check test failed" }
+          python tests/models_catalogue_test.py
+          if ($LASTEXITCODE -ne 0) { throw "models_catalogue test failed" }
+          python tests/model_parts_test.py
+          if ($LASTEXITCODE -ne 0) { throw "model_parts test failed" }
+          python tests/multigpu_test.py
+          if ($LASTEXITCODE -ne 0) { throw "multigpu test failed" }
           python tests/require_node_test.py     # AUD-094: ui_test skips its JavaScript checks, exit 0, when node is missing; this fails instead
           if ($LASTEXITCODE -ne 0) { throw "node is missing: the control page's JavaScript checks would be skipped" }
           $env:REQUIRE_NODE = "1"
@@ -321,11 +335,19 @@ jobs:
           Copy-Item "$env:GITHUB_WORKSPACE\dll\ggml-moe-cache.dll" build\win-api3\ggml-moe-cache.dll
           $env:LLAMA_SERVER = "$env:LLAMA_DIR\llama-server.exe"
           Remove-Item Env:MOE_CACHE_LIB -ErrorAction SilentlyContinue
+          # Wait for the page itself, not for a fixed time: the .bat prints the page address when the server listens, and /api/system answers when it serves.
+          # Typical start 3-7 s; over 50 runs on 2026-11-03 the tail was 11, 14, 18, 21, 29, 34, 52 s and one run gave up at 60 s with the .bat's output still empty
+          # (Python start on a fresh runner). So: wait until the .bat has died (then its output says why) or 240 s have passed (a hang), and print the times.
+          $t0 = Get-Date
           $p = Start-Process cmd -ArgumentList "/c","bin\moe-cache-ui.bat","--no-browser","--ui-port","8078" -RedirectStandardOutput ui_bat.out -RedirectStandardError ui_bat.err -PassThru -NoNewWindow
           $sys = $null
           $tok = $null
-          for ($i = 0; $i -lt 60 -and -not $tok; $i++) { Start-Sleep 1; $m = Select-String ui_bat.out -Pattern '\?t=([A-Za-z0-9_-]+)' -ErrorAction SilentlyContinue; if ($m) { $tok = $m.Matches[0].Groups[1].Value } }
-          for ($i = 0; $i -lt 30 -and $tok; $i++) { try { $sys = Invoke-RestMethod http://127.0.0.1:8078/api/system -Headers @{ "X-MoeCache-Token" = $tok }; break } catch { Start-Sleep 1 } }
+          for ($i = 0; $i -lt 480 -and -not $tok -and -not $p.HasExited; $i++) { Start-Sleep -Milliseconds 500; $m = Select-String ui_bat.out -Pattern '\?t=([A-Za-z0-9_-]+)' -ErrorAction SilentlyContinue; if ($m) { $tok = $m.Matches[0].Groups[1].Value } }
+          $tTok = [int]((Get-Date) - $t0).TotalSeconds
+          for ($i = 0; $i -lt 120 -and $tok -and -not $sys; $i++) { try { $sys = Invoke-RestMethod http://127.0.0.1:8078/api/system -Headers @{ "X-MoeCache-Token" = $tok } } catch { Start-Sleep -Milliseconds 500 } }
+          $tSys = [int]((Get-Date) - $t0).TotalSeconds
+          "one-click start: the page address after $tTok s, /api/system answered after $tSys s (the .bat " + $(if ($p.HasExited) { "had already ended" } else { "was still running" }) + ")"
+          if ($tTok -gt 15 -or -not $sys) { "slow or failed start, processes now:"; Get-Process -Name MsMpEng, python, py, cmd, where -ErrorAction SilentlyContinue | Select-Object Name, Id, CPU, StartTime | Format-Table | Out-String }
           taskkill /T /F /PID $p.Id | Out-Null
           Get-Content ui_bat.out, ui_bat.err
           if (-not $sys) { throw "the page did not come up" }

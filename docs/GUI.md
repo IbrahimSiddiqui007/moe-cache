@@ -32,7 +32,7 @@ Options (for all ways of starting):
 |---|---|
 | Python | `MOE_CACHE_PYTHON`, the `py` launcher, a `python.exe` that really runs |
 | The plugin (`MOE_CACHE_LIB`) | `ggml-moe-cache-api3.dll` or `ggml-moe-cache.dll` next to the `.bat` or one folder up, then `build\win-api3\`, `build\win\` |
-| llama-server (`LLAMA_SERVER`) | `LLAMA_SERVER` (the process environment; on Windows also as stored in the registry, user then machine, because `setx` writes there and a program started earlier does not see it), the path the control page saved, the `PATH` (on Windows also the registry's), then the default folders (Windows: `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build, `~/llama.cpp/build/bin`, the kit folder). Among the folders the newest build whose ggml API a shipped plugin supports wins, and one log line says which one. When none is found the control page asks for the path (checked with `--version`) and remembers it. |
+| llama-server (`LLAMA_SERVER`) | `LLAMA_SERVER` (the process environment; on Windows also as stored in the registry, user then machine, because `setx` writes there and a program started earlier does not see it), the path the control page saved, the `PATH` (on Windows also the registry's), then the default folders (Windows: `C:\llama*`, `%USERPROFILE%\llama*`, `Downloads\llama-b*-bin-win-*`, the kit folder; Linux: install.sh's build, `~/llama.cpp/build/bin`, the kit folder). Among the folders the newest build whose ggml API a shipped plugin supports wins, and one log line says which one. A `PATH` llama-server whose ggml API no shipped plugin supports (the distro's, next to a kit that ships the API 3 plugin and its own llama.cpp) gives way to a default-folder one that has a supported API, and the log line says so; with none supported anywhere the `PATH` one stays. When none is found the control page asks for the path (checked with `--version`) and remembers it. |
 
 It prints what it found. The same is shown in the page's header when you hold the mouse over it.
 
@@ -299,4 +299,4 @@ If you open the page without the password you see a short note: open the address
   loading or ready, model, context, slots, busy slots, whether it wants a key; the key is never returned), and `GET /api/servers` does that for
   ports 8080-8089, marking the one the page started. Only this machine is asked.
 - Tests: `tests/ui_test.py` (no model) and `tests/ui_live.py MODEL.gguf --llama-server PATH` (a real model); CI runs both on Linux and Windows.
-- Not yet: remote access, a desktop app (design draft APP2).
+- Remote access: only with `--ui-lan` (docs/LAN_ACCESS.md). Not yet: TLS, a desktop app (design draft APP2).

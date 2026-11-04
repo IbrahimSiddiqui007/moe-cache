@@ -58,6 +58,8 @@
 #include "mc_lru_rule.h"
 #include "mc_names.h"
 #include "mc_devpick.h"
+#include "mc_release_rule.h"
+#include "mc_cat.h"
 #include <cstdarg>
 #include "mc_shared_gpu.h"
 #ifndef _WIN32
