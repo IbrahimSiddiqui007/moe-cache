@@ -196,6 +196,19 @@ rc = run(f, "--yes", "--model", MODEL)
 check("ready:" in f.text(), "our own model (first shard name of a split file) answers: ready")
 f = Fake(); rc = run(f, "--yes", "--model", MODEL)
 check("ready:" in f.text(), "our child alive and our model: ready, as before")
+# agent mode starts the server with --alias (default_alias: the file name; an Ollama blob: its tag), so that is the name /v1/models reports
+f = Fake(); f.served = "my-agent-alias"; _da = L.mc.default_alias; L.mc.default_alias = lambda p: "my-agent-alias"
+rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode")
+L.mc.default_alias = _da
+check("ready:" in f.text() and f.connected, f"the server reports its alias (agent mode): ready ({f.text()[-160:]!r})")
+_blob = os.path.join(TMP, "models", "sha256-" + "a" * 64); open(_blob, "wb").write(b"x")
+f = Fake(); f.served = "qwen3.6-35b-a3b"; L.mc.default_alias = lambda p: "qwen3.6-35b-a3b"
+rc = run(f, "--yes", "--model", _blob, "--agent", "opencode")
+L.mc.default_alias = _da
+check("ready:" in f.text(), "an Ollama blob (sha256-... file name) served under its tag: ready")
+f = Fake(); f.served = "unrelated-alias"
+rc = run(f, "--yes", "--model", MODEL, "--agent", "opencode", "--wait", "4")
+check("ready:" not in f.text(), "an alias that is not ours: still not ready")
 
 # ---- 4. things that go wrong ----
 f = Fake(llama=None)

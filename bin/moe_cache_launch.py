@@ -22,13 +22,22 @@ USE_WORDS = {"chat": "plain chat", "agents": "a coding agent (64k context)", "do
 GIB = 2 ** 30
 
 
-def same_model(served, path):
-    """Does the model name a server reports (its path or alias, maybe a split file's first shard) name the file we started it with?"""
+def same_model(served, path, args=()):
+    """Does the model name a server reports name the file we started it with? Its path or file name (maybe a split file's first shard), or the alias it was
+    started with: agent mode gives it default_alias(path) (for an Ollama blob, the Ollama tag), and a --alias in `args` wins."""
     def stem(x):
         x = os.path.basename(str(x).replace("\\", "/")).lower()
         x = x[:-5] if x.endswith(".gguf") else x
         return re.sub(r"-0*1-of-0*\d+$", "", x)
-    return stem(served) == stem(path)
+    names = {stem(path)}
+    try:
+        names.add(stem(mc.default_alias(path)))
+    except Exception:
+        pass
+    alias = mc.arg_after(list(args), "-a", "--alias")
+    if alias:
+        names.add(stem(alias))
+    return stem(served) in names
 
 
 class Deps:
@@ -149,7 +158,7 @@ class Deps:
     def served_model(self, url):
         """The model name the server at `url` reports (/v1/models), or None."""
         try:
-            return mc.server_info(url, mc.key_for(url, None))[0]
+            return mc.server_info(url, mc.key_for(url, None, mc.launcher_owns(url)))[0]
         except Exception:
             return None
 
@@ -432,7 +441,7 @@ def launch(argv, deps=None):
                 return 1
             if deps.up(url, start == "on-demand") and child.poll() is None:
                 name = None if start == "on-demand" else deps.served_model(url)
-                if name is None or same_model(name, model_path):
+                if name is None or same_model(name, model_path, sargs):
                     ready = True
                     say(f"     ready: {url}  (chat page in your browser: {url})")
                     break
