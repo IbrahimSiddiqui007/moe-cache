@@ -910,7 +910,7 @@ function paintSessions(j) {
       <span class="s">slot ${f.slot} · ${f.tokens != null ? f.tokens.toLocaleString() : "?"} tokens · ${state(f)}${busy ? " · working" : ""}</span></div>
       <button class="x" data-trash="${esc(f.name)}" title="Move to the Trash">✕</button></div>`; }).join("");
   if (!j.files.length) h += `<div class="small" style="margin:0 8px">No saved agent conversations${live.length ? "" : " (Agent mode saves them)"}.</div>`;
-  if (live.length) h += `<div class="small" style="margin:4px 8px">Live slots: ${live.map(x => `${x.id}: ${x.tokens ?? 0} tok${x.processing ? " (working)" : ""}`).join(" · ")}</div>`;
+  if (live.length) h += `<div class="small" style="margin:4px 8px">Live slots: ${live.map(x => `${esc(x.id)}: ${Number.isFinite(Number(x.tokens)) ? Number(x.tokens) : 0} tok${x.processing ? " (working)" : ""}`).join(" · ")}</div>`;
   else if (typeof j.live == "string") h += `<div class="small err" style="margin:4px 8px">Live slots: ${esc(j.live)}</div>`;
   if (ev.length) h += `<ul class="why" style="margin:4px 8px">${ev.map(e => `<li>${new Date(e.t * 1000).toLocaleTimeString()} ${esc(e.line)}</li>`).join("")}</ul>`;
   h += `<div id="trashmsg" class="small" style="margin:0 8px"></div>`;
@@ -1160,7 +1160,9 @@ function chatHitsText(messages) {
   return h.n ? ` · expert hits ${(h.rate * 100).toFixed(1)} % over ${h.n} answer${h.n == 1 ? "" : "s"}` : "";
 }
 function chips(m, i, live) {
-  const t = m.meta || {}, out = [];
+  // the counters come from the server's stream (a llama-server this page did not start can send anything): numbers only, never markup
+  const t = {}, out = [];
+  for (const [k, v] of Object.entries(m.meta || {})) t[k] = k == "stopped" ? !!v : v == null ? v : (Number.isFinite(Number(v)) ? Number(v) : 0);
   if (live) out.push(`<span class="chip tps">writing · ${t.live_tps != null ? t.live_tps.toFixed(1) + " tok/s" : "…"}</span>`);
   else if (t.predicted_per_second) out.push(`<span class="chip tps">${t.predicted_per_second.toFixed(1)} tok/s</span>`);
   if (t.prompt_per_second && t.prompt_n > 1) out.push(`<span class="chip" title="${t.prompt_n} new prompt tokens${t.cache_n ? ", " + t.cache_n + " reused" : ""}">prefill ${t.prompt_per_second.toFixed(0)} tok/s</span>`);
@@ -1174,7 +1176,7 @@ function chips(m, i, live) {
 }
 function msgHTML(m, i, live) {
   if (m.role == "user")
-    return `<div class="msg user">${esc(m.shown ?? m.content)}${(m.images || []).length ? `<div class="att">${m.images.map(u => `<img class="pic" src="${u}" alt="attached image">`).join("")}</div>` : ""}${(m.files || []).length ? `<div class="att">${m.files.map(f => `<span class="file">${f.image ? "🖼" : "📄"} ${esc(f.name)} · ${f.tokens.toLocaleString()} tokens</span>`).join("")}</div>` : ""}</div>`;
+    return `<div class="msg user">${esc(m.shown ?? m.content)}${(m.images || []).length ? `<div class="att">${m.images.map(u => `<img class="pic" src="${esc(u)}" alt="attached image">`).join("")}</div>` : ""}${(m.files || []).length ? `<div class="att">${m.files.map(f => `<span class="file">${f.image ? "🖼" : "📄"} ${esc(f.name)} · ${f.tokens.toLocaleString()} tokens</span>`).join("")}</div>` : ""}</div>`;
   const [think, text] = splitThink(m);
   return `<div class="msg ai" data-i="${i}">${think && $("showthink").checked ? `<details class="think"${live && !text ? " open" : ""}><summary>${live && !text ? "Thinking…" : "Thinking"}</summary>${esc(think)}</details>` : ""}` +
     (m.error ? `<p class="errmsg">${esc(m.error)}</p>` : "") + md(text) + (live ? `<span class="cursor"></span>` : "") + chips(m, i, live) + "</div>";
@@ -1303,7 +1305,7 @@ async function addFiles(list) {
   paintAttached(); paintContext();
 }
 function paintAttached() {
-  $("attached").innerHTML = C.files.map((f, i) => `<span class="file">${f.image ? `<img class="thumb" src="${f.image}" alt="">` : "📄"} ${esc(f.name)} · ~${f.tokens.toLocaleString()} tokens <span class="x" data-i="${i}" title="Remove">✕</span></span>`).join("");
+  $("attached").innerHTML = C.files.map((f, i) => `<span class="file">${f.image ? `<img class="thumb" src="${esc(f.image)}" alt="">` : "📄"} ${esc(f.name)} · ~${f.tokens.toLocaleString()} tokens <span class="x" data-i="${i}" title="Remove">✕</span></span>`).join("");
   const all = (C.chat.files || []).map(f => ({ ...f, sent: true })).concat(C.files);
   $("filelist").innerHTML = all.length ? all.map(f => `<div class="line"><span class="n">${f.image ? "🖼" : "📄"} ${esc(f.name)} <span class="small">~${f.tokens.toLocaleString()} tokens · ${f.sent ? "sent" : "attached, not sent yet"}</span></span></div>`).join("")
     : `<div class="small">No files. Drop text, code or image files on the chat, or use 📎.</div>`;
