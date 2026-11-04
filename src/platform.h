@@ -480,7 +480,7 @@ inline bool file_view_load(const char * p, size_t n) {
     typedef BOOL (WINAPI * prefetch_fn)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
     static const prefetch_fn prefetch = (prefetch_fn) (void *) GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "PrefetchVirtualMemory");
     if (n == 0) {
-        return;
+        return true;
     }
     if (prefetch) {
         WIN32_MEMORY_RANGE_ENTRY r = { (void *) p, n };
