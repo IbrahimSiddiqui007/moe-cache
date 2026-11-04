@@ -500,6 +500,24 @@ _pk = json.loads(req(f"/api/peek?port={_tp}")[1])
 _old_ports = ui.PEEK_PORTS; ui.PEEK_PORTS = [_tp]; json.loads(req("/api/servers")[1]); ui.PEEK_PORTS = _old_ports
 check(_pk.get("up") and _pk.get("key") == "needed" and _auth and not any(_auth), f"peek/scan: a foreign server asking for a key is not sent the stored one ({_pk}, {_auth})")
 _trap.shutdown()
+# SERVER-692: a listener that answers /v1/models 200 the first time and 401 after (to make key_for() hand over the stored key) gets no Authorization header
+_auth2, _n2 = [], [0]
+class _Trap2(_BH):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        _auth2.append(self.headers.get("Authorization"))
+        if self.path == "/v1/models":
+            _n2[0] += 1
+        code = 200 if self.path == "/health" or (self.path == "/v1/models" and _n2[0] == 1) else 401
+        self.send_response(code); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"{}")
+_trap2 = _TS(("127.0.0.1", 0), _Trap2); threading.Thread(target=_trap2.serve_forever, daemon=True).start()
+_tp2 = _trap2.server_address[1]
+_old_sk = ui.mc.stored_key; ui.mc.stored_key = lambda: "STORED-SECRET-KEY"
+_pk2 = json.loads(req(f"/api/peek?port={_tp2}")[1]); _n2[0] = 0
+ui.PEEK_PORTS = [_tp2]; json.loads(req("/api/servers")[1]); ui.PEEK_PORTS = _old_ports
+ui.mc.stored_key = _old_sk
+check(_pk2.get("up") and _auth2 and not any(_auth2), f"peek/scan: a server answering 200 then 401 is not sent the stored key either ({_pk2}, {_auth2})")
+_trap2.shutdown()
 ui.PEEK_PORTS = [port, closed]
 sv = json.loads(req("/api/servers")[1])["servers"]
 check(len(sv) == 1 and sv[0]["port"] == port and sv[0]["started_here"], f"servers: the one this page started is marked, closed ports left out ({sv})")
@@ -1172,7 +1190,10 @@ try:
     check(any("no llama-server there" in x for x in r["looked"]), "the stale value is reported in the places looked")
     del os.environ["LLAMA_SERVER"]
     mc.shutil.which = real_which if real_which("llama-server") else (lambda n, *a, **k: "/usr/bin/llama-server" if n == "llama-server" else real_which(n, *a, **k))
-    r = mc.find_llama_server(saved=""); check(r["path"] == "llama-server" and r["source"] == "PATH", "order: PATH before the default folders")
+    _pw = os.path.abspath(mc.shutil.which("llama-server")); apis[_pw] = "3"       # a PATH server with a supported API (LAUNCHER-689: an unreadable one gives way to the kit's)
+    r = mc.find_llama_server(saved=""); check(r["path"] == _pw and r["source"] == "PATH", "order: PATH before the default folders (as an absolute path)")
+    del apis[_pw]
+    r = mc.find_llama_server(saved=""); check(r["source"] == "a default folder" and "unreadable" in (r["note"] or ""), "order: a PATH server whose API cannot be read gives way to a folder one with a supported API")
     mc.shutil.which = nopath
     # Windows: the registry as stored (setx), user before machine, %VARS% expanded, then the registry PATH
     store = {"HKCU": {}, "HKLM": {}}
@@ -1195,7 +1216,7 @@ try:
     os.environ["LLAMA_SERVER"] = a; r = mc.find_llama_server(saved=""); check(r["path"] == a, "windows: the process environment still comes before the registry")
     del os.environ["LLAMA_SERVER"]; store["HKCU"].clear(); store["HKLM"].clear()
     r = mc.find_llama_server(saved=c); check(r["path"] == c, "windows: registry empty: the page's saved path")
-    pd = os.path.dirname(mkls("w", "onpath")); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd
+    _op = mkls("w", "onpath"); apis[_op] = "3"; pd = os.path.dirname(_op); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd       # a supported API: an unreadable one gives way to a folder server (LAUNCHER-689)
     r = mc.find_llama_server(saved=""); check(os.path.dirname(r["path"] or "") == pd and "PATH in the user environment" in r["source"], f"windows: llama-server on the PATH as the registry stores it ({r['source']})")
     store["HKCU"].clear()
     dl = os.path.join(win, "Downloads", "llama-b12000-bin-win-vulkan-x64"); os.makedirs(dl); open(os.path.join(dl, mc.llama_exe()), "wb").write(b"x")
@@ -1293,6 +1314,29 @@ if node:
     check(r_ is not None and r_[3]["n"] == 0, "chat hits: answers without numbers (0/0, missing, NaN) are skipped")
     check(r_ is not None and r_[4:] == [" \u00b7 expert hits 90.0 % over 1 answer", " \u00b7 expert hits 80.0 % over 2 answers", "", ""], f"chat hits: the line under the title ({r_ and r_[4:]})")
 check('id="chatinfo"' in page and "chatHitsText(c.messages)" in page, "the chat title line shows the counter")
+
+# hostile counters in an answer's meta (a foreign server's SSE) must not become markup or break the page
+if node:
+    fn = re.search(r"const esc = [^\n]*\n", page).group(0) + re.search(r"function chips\(m, i, live\) \{.*?\n\}\n", page, re.S).group(0)
+    harness = ("const C = {chat: {messages: [1, 2]}};\n" + fn +
+               "const X = '\"><img src=x onerror=alert(1)>';\n"
+               "const m = {role: 'assistant', content: 'x', meta: {live_tps: X, predicted_per_second: X, prompt_per_second: X, prompt_n: X, cache_n: X, draft_n: X, draft_n_accepted: X, hit_rate: X, hits: X, misses: X, predicted_n: X, predicted_ms: X, stopped: true}};\n"
+               "const bools = {role: 'assistant', content: 'x', meta: {live_tps: true, predicted_per_second: true, prompt_per_second: true, prompt_n: true, cache_n: true, draft_n: true, draft_n_accepted: true, hit_rate: true, hits: true, misses: true, predicted_n: true, predicted_ms: true, stopped: 'yes'}};\n"
+               "const ok = {role: 'assistant', content: 'x', meta: {predicted_per_second: 12.34, prompt_per_second: 800, prompt_n: 50, cache_n: 7, hit_rate: 0.9, hits: 9, misses: 1, predicted_n: 20, predicted_ms: 1500}};\n"
+               "console.log(JSON.stringify([chips(m, 1, false), chips(m, 1, true), chips(ok, 1, false), chips(bools, 1, false), chips(bools, 1, true)]));\n")
+    hf = os.path.join(TMP, "chips.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and not any("<img" in h or "onerror" in h for h in r_[:2]), f"chips: hostile counters from a foreign server never become markup ({r_ and r_[0][:200]})")
+    check(r_ is not None and len(r_) == 5 and all(h.startswith('<div class="chips">') for h in r_[3:]), "chips: boolean counters (true) render, they do not break the answer")
+    check(r_ is not None and "12.3 tok/s" in r_[2] and "prefill 800 tok/s" in r_[2] and "hit 90.0 %" in r_[2] and "20 tokens" in r_[2], f"chips: honest numbers still show ({r_ and r_[2][:300]})")
+
+# every foreign string that reaches the page as markup goes through esc(): the live-slot ids of /api/plan and the image sources
+check("${esc(x.id)}: ${Number.isFinite(Number(x.tokens))" in page and 'src="${esc(u)}"' in page and 'src="${esc(f.image)}"' in page and 'src="${u}"' not in page and 'src="${f.image}"' not in page,
+      "page: live-slot ids and image sources are escaped")
 
 # the model list's menu: right-click, Shift+F10 / the menu key, the three-dots button; the items follow the server state
 check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),
