@@ -34,7 +34,7 @@ MODELS = {k: cat.legacy(m) for k, m in CAT.items()}
 
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
 SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default file on a 16 GB GPU (owner 2026-10-30): 3-bit, the most tasks right (193/202), reads best for coding; about 10 % slower decode than Q2_0",
-                "flash-next-q2_0": "faster: about 10 % more tokens per second than IQ3_XXS (e.g. for long thinking), 191/202 tasks, 9 GB smaller"}
+                "flash-next-q2_0": "smaller (9 GB less than IQ3_XXS), decoded faster than IQ2_XS on 2026-10-28 (not re-measured against IQ3_XXS), 191/202 tasks"}
 
 
 # ---- this machine ----
@@ -438,7 +438,7 @@ def recommend(spec, use, model=None):
                "Q2_0 is about 10 % faster (more tokens per second, e.g. for long thinking)"),
               ("flash-next-q2_0", cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0"), 32768,
                f"{PC}: 22-25 tok/s decode, 281-287 tok/s prompts, 191/202 tasks",
-               "faster: about 10 % more tokens per second than IQ3_XXS, 9 GB smaller"),
+               "smaller (9 GB less than IQ3_XXS), decoded faster than IQ2_XS on 2026-10-28 (not re-measured against IQ3_XXS)"),
               ("flash-next-q2_0", cap >= 24 and vram >= 6 and drive_ok("flash-next-q2_0"), 32768, None,
                f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size: 12.5 tok/s"),
               ("qwen3.5-122b", cap >= 24 and vram >= 6 and drive_ok("qwen3.5-122b"), 32768,

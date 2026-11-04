@@ -244,7 +244,7 @@
     }
    ],
    "notes": [
-    "The faster Flash-Next file: about 10 % more tokens per second than IQ3_XXS, 9 GB smaller. No quality difference between any two Flash-Next files is proven (all p > 0.05).",
+    "The smaller Flash-Next file (9 GB less than IQ3_XXS): it decoded faster than IQ2_XS on 2026-10-28; it was not re-measured against IQ3_XXS. No quality difference between any two Flash-Next files is proven (all p > 0.05).",
     "Decode is CPU-bound on the measured PC; the model card's +33 % does not reproduce."
    ],
    "warnings": [

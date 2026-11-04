@@ -139,7 +139,9 @@ so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): d
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-11-03 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | versions and commits named in the text: v0.3.5, v0.3.4, 1309fcd | mentioned in the text: b11966 | clean: PC restarted at 02:03, baseline guard PASS at 49.4 tok/s, runs 02:30-03:25 | Yes (heading says clean) |
+| 2026-11-03 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | versions and commits named in the text: v0.3.5, v0.3.4, 1309fcd | mentioned in the text: b11966 | clean: PC restarted at 02:03, baseline guard PASS at 49.4 tok/s, runs 02:30-03:25 | Not called clean here: the old heading says clean, but the baseline guard log records “not clean: owner work running” at 02:09 on 2026-11-03; the record has no other-programs field |
+
+<sub>Correction (2026-11-04): the heading below called this run clean; the guard's own log disagrees (see the Clean cell).</sub>
 
 <sub>Old heading: 79. v0.3.5 vs v0.3.4 on long prompts, official b11966 server (Windows PC, 2026-11-03; clean: PC restarted at 02:03, baseline guard PASS at 49.4 tok/s, runs 02:30-03:25)</sub>
 
@@ -169,7 +171,9 @@ Text was not compared in this run. Only these models and depths are measured. So
 
 | Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings (from the old heading) | Clean |
 |---|---|---|---|---|---|---|
-| 2026-11-02 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | unreleased experimental code (next release, later v0.3.5) against the released v0.3.4 | b11966 with patch 0022 (a patched server, not shipped) | next release; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13 | Yes (heading says clean) |
+| 2026-11-02 | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 (D:) | unreleased experimental code (next release, later v0.3.5) against the released v0.3.4 | b11966 with patch 0022 (a patched server, not shipped) | next release; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13 | Not called clean here: the old heading says clean, but the baseline guard log records “not clean: owner work running” at 12:02 on 2026-11-02; the record has no other-programs field |
+
+<sub>Correction (2026-11-04): the heading below called this run clean; the guard's own log disagrees (see the Clean cell).</sub>
 
 <sub>Old heading: 78. Experimental (next release) vs v0.3.4 on long prompts (Windows PC, 2026-11-02; clean: PC restarted at 11:47, baseline guard PASS at 48.6 tok/s, runs 13:19-14:13)</sub>
 

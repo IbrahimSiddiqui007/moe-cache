@@ -109,7 +109,7 @@ Keep each agent's own context limit below the server's, and set things up before
 
 ### Which model?
 
-`pick` decides from your RAM, graphics card, free disk and use (agents, chat, long documents). On a 32 GB RAM + 16 GB GPU PC: Qwen3.8-Flash-Next IQ3_XXS (76 GB) for general and agent use, the Q2_0 file (66 GB) for speed, Nemotron 3.5 Bolt 74B (22 GB, fits in RAM) for 128k contexts. `python3 bin/moe_cache.py models` lists every catalogue model with fits / tight / no for this PC, whether it is already downloaded and its measured speed (or "not measured"). All files and the rules: [docs/MODELS.md](docs/MODELS.md).
+`pick` decides from your RAM, graphics card, free disk and use (agents, chat, long documents). On a 32 GB RAM + 16 GB GPU PC: Qwen3.8-Flash-Next IQ3_XXS (76 GB) for general and agent use, the Q2_0 file (66 GB) as the smaller, faster-than-IQ2_XS file (measured 2026-10-28; not re-measured against IQ3_XXS), Nemotron 3.5 Bolt 74B (22 GB, fits in RAM) for 128k contexts. `python3 bin/moe_cache.py models` lists every catalogue model with fits / tight / no for this PC, whether it is already downloaded and its measured speed (or "not measured"). All files and the rules: [docs/MODELS.md](docs/MODELS.md).
 
 ## Results
 
@@ -131,8 +131,8 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 
 | Headline | What it is |
 |---|---|
-| +42 / +38 / +38 % | prompt reading speed at 34k / 64k / 128k tokens, v0.3.5 against v0.3.4 (Flash-Next Q2_0, clean run 2026-11-03, official llama.cpp b11966); decode after those prompts is 6–10 % lower <!-- claim:v035-vs-v034-34k --><!-- claim:v035-vs-v034-64k --><!-- claim:v035-vs-v034-128k --> |
-| 1.8× | prompt reading at 64k context, moe-cache against stock: a 63.5k-token prompt in about 289 against 525 s, decode +23 % at that depth (Flash-Next Q2_0; one cold run each, 2026-10-28, Steam running, so not clean) |
+| +42 / +38 / +38 % | prompt reading speed at 34k / 64k / 128k tokens, v0.3.5 against v0.3.4 (Flash-Next Q2_0, 2026-11-03, official llama.cpp b11966; baseline guard passed at 49.4 tok/s but its log notes “not clean: owner work running”, so not called clean); decode after those prompts is 6–10 % lower <!-- claim:v035-vs-v034-34k --><!-- claim:v035-vs-v034-64k --><!-- claim:v035-vs-v034-128k --> |
+| 1.8× | prompt reading at 64k context, moe-cache against stock: a 63.5k-token prompt in about 289 against 525 s, decode +23 % at that depth (Flash-Next Q2_0; one cold run each, 2026-10-28, Steam running, so not clean; RESULTS 64, no record) |
 | +26 % | prompt reading at the 256k setting with `-ub 2048` against `-ub 1024` (a 222k-token prompt; v0.3.5, 2026-11-03) <!-- claim:v035-ub2048-256k --> |
 | 2.0–2.4× | faster coding-agent sessions (OpenCode, Hermes) on Flash-Next IQ2_XS at 65k agent context (2026-10-27, two cold runs each) |
 | 8k chat | +42–53 % decode on three Qwen files and 2.1× on GLM-5.3 (2.7× with MTP), at 8k context with a 13-token prompt (2026-11-04, v0.3.5 kit, every run not clean) <!-- claim:chain1103-iq3xxs --><!-- claim:chain1103-iq3s --><!-- claim:chain1103-122b --><!-- claim:chain1103-glm --> |
@@ -142,14 +142,14 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 
 | Model (file size) | Context, prompt | GPU expert layers | stock | moe-cache | change |
 |---|---|---|---|---|---|
-| **Flash-Next Q2_0** (the faster file)<br><sub>66.4 GB, drive D:, two runs each, not interleaved; stock = launcher `--stock` defaults</sub> | 8192, short prompt (length not recorded) | 12 (moe-cache) | 18.41 | 22.16 | +20 % <!-- claim:card-decode-flashnext-q2_0 --> |
+| **Flash-Next Q2_0** (fastest of the 2026-10-28 set)<br><sub>66.4 GB, drive D:, two runs each, not interleaved; stock = launcher `--stock` defaults</sub> | 8192, short prompt (length not recorded) | 12 (moe-cache) | 18.41 | 22.16 | +20 % <!-- claim:card-decode-flashnext-q2_0 --> |
 | Qwen3-Next “Flash-Next” IQ2_XS<br><sub>68 GB, drive C:</sub> | 8192, short prompt (length not recorded) | 12 | 14.89 | 21.94 | +47 % <!-- claim:card-decode-flashnext-iq2xs --> |
 | Flash-Next IQ3_XXS<br><sub>76 GB, drive D:, 2026-11-04, v0.3.5 kit, two runs each (replaces 15.14 vs 19.86 of 2026-10-27)</sub> | 8192, 13 tokens | 8 | 14.96 | 22.87 | +53 % <!-- claim:chain1103-iq3xxs --> |
 | Flash-Next IQ3_S<br><sub>83.6 GB, drive D:, 2026-11-04 (replaces 12.92 vs 17.28 of 2026-10-27)</sub> | 8192, 13 tokens | 6 | 13.79 | 19.62 | +42 % <!-- claim:chain1103-iq3s --> |
 | Qwen3.5-122B UD-IQ2_XXS<br><sub>36.6 GB, drive D:, 2026-11-04 (replaces 15.95 vs 19.73 of 2026-10-28)</sub> | 8192, 13 tokens | 10 | 16.10 | 23.31 | +45 % <!-- claim:chain1103-122b --> |
 | GLM-5.3-Flash UD-IQ2_XXS<br><sub>102 GB, drive D:, two runs each, ABBA, 2026-11-04 (replaces the single pair 2.21 vs 4.44 of 2026-10-27)</sub> | 8192, 13 tokens | 0 | 2.98 | 6.27 | 2.1× <!-- claim:chain1103-glm --> |
 | GLM-5.3-Flash, moe-cache with `--mtp`<br><sub>two runs; stock without MTP is the other side (replaces the single run 6.92)</sub> | 8192, 13 tokens | 0 | 2.98 | 8.17 | 2.7× <!-- claim:chain1103-glm --> |
-| Nemotron 3.5 Bolt 74B-A9B<br><sub>22.0 GB, drive C:, **fits in RAM**: the launcher runs stock for it; moe-cache forced here to compare (two runs each, 2026-11-04; the single runs of 2026-10-28 gave −18 %)</sub> | 8192, 13 tokens | – | 29.99 | 31.68 | +6 % <!-- claim:chain1103-bolt --> |
+| Nemotron 3.5 Bolt 74B-A9B<br><sub>22.0 GB, drive C:, **fits in RAM**: the launcher runs stock for it; moe-cache forced here to compare (two runs each, 2026-11-04; the single runs of 2026-10-28 gave −18 %)</sub> | 8192, 14 tokens | – | 29.99 | 31.68 | +6 % <!-- claim:chain1103-bolt --> |
 | Qwen3.6-35B-A3B Q4_K_M<br><sub>22 GB, drive C:, **fits in RAM**: the launcher runs stock for it; moe-cache forced (two runs each, 2026-11-04; 2026-10-27 gave −1 %)</sub> | 8192, 13 tokens | – | 46.59 | 51.80 | +11 % <!-- claim:chain1103-qwen36 --> |
 | Qwen3.6-35B, moe-cache with MTP<br><sub>against stock without MTP; stock with MTP was not measured on 2026-11-04 (68.6 on 2026-10-27)</sub> | 8192, 13 tokens | – | 46.59 | 72.69 | +56 % <!-- claim:chain1103-qwen36 --> |
 
@@ -165,7 +165,7 @@ Test details for each row (the card draws the decode table as bars; same numbers
 | Flash-Next IQ3_S | 83.6 GB, drive D: | 13.79 | 19.62 | – | GPU expert layers: 6 (moe-cache; stock = launcher defaults, count not recorded)<br>ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)<br>moe-cache peak: VRAM 12211 MiB · process RAM 23779 MiB<br>v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_42b419 · claim chain1103-iq3s |
 | Qwen3.5-122B IQ2_XXS | 36.6 GB, drive D: | 16.10 | 23.31 | – | GPU expert layers: 10 (moe-cache; stock = launcher defaults, count not recorded)<br>ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)<br>moe-cache peak: VRAM 12180 MiB · process RAM 21980 MiB<br>v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_15144c · claim chain1103-122b |
 | GLM-5.3-Flash IQ2_XXS | 102 GB, drive D: | 2.98 | 6.27 | 8.17 | GPU expert layers: 0 (moe-cache; stock = launcher defaults, count not recorded)<br>ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)<br>moe-cache peak: VRAM 7867 MiB · process RAM 23632 MiB<br>v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_bea283 · claim chain1103-glm |
-| Nemotron 3.5 Bolt 74B | 22 GB, fits, drive C: | 29.99 | 31.68 | – | GPU expert layers: not recorded (moe-cache; stock = launcher defaults, count not recorded)<br>ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)<br>moe-cache peak: VRAM 10299 MiB · process RAM 12514 MiB<br>v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_00ce69 · claim chain1103-bolt |
+| Nemotron 3.5 Bolt 74B | 22 GB, fits, drive C: | 29.99 | 31.68 | – | GPU expert layers: not recorded (moe-cache; stock = launcher defaults, count not recorded)<br>ctx 8192 · 14-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)<br>moe-cache peak: VRAM 10299 MiB · process RAM 12514 MiB<br>v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_00ce69 · claim chain1103-bolt |
 | Qwen3.6-35B Q4_K_M | 22 GB, fits, drive C: | 46.59 | 51.80 | 72.69 | GPU expert layers: 20 (moe-cache; stock = launcher defaults, count not recorded)<br>ctx 8192 · 13-token water request · ABBA, 2 runs each · every run 'not clean' (owner work running)<br>moe-cache peak: VRAM 12402 MiB · process RAM 12020 MiB<br>v0.3.5 kit · llama.cpp b11966 (ff0d396e3) · 11-04 · run 2026-11-04_pc_92657e · claim chain1103-qwen36 |
 
 ### Long context (64k–256k)
@@ -180,7 +180,7 @@ Agent mode (`--agent --ctx N`), a real 63.5k-token text fed in chunks, decode of
 | Qwen3.5-122B, moe-cache, 64k | 266 / 217 | 19.69 | 17.26 | – |
 | Qwen3.6-35B, stock (fits), 64k | 848 / 739 | 67.21 | 59.09 | – |
 
-- **At 64k, Flash-Next with moe-cache** reads the whole 63.5k prompt 1.8× faster than stock (about 289 vs 525 s) and decodes 23 % faster at that depth (20.65 vs 16.83 tok/s).
+- **At 64k, Flash-Next with moe-cache** reads the whole 63.5k prompt 1.8× faster than stock (about 289 vs 525 s) and decodes 23 % faster at that depth (20.65 vs 16.83 tok/s) (RESULTS 64, one cold run per side, no record).
 - **The 256k setting is slower today:** the planner moves every expert layer to the CPU and uses `-ub 512`, so prefill is about half and decode at 4k is 19 % lower than at the 64k setting. The table above is v0.3.4. In v0.3.5 the planner uses `-ub 2048` at 256k: a 222k-token prompt reads 26 % faster (334.8 / 333.2 vs 263.4 / 265.8 tok/s, RESULTS 79); decode there is not re-measured. <!-- claim:v035-ub2048-256k -->
 - Decode falls 10–14 % with depth on every model (attention), with the plugin's hit rate still 95–97 %.
 - Saving the agent's conversation at 64k blocks the server for 1.7–2.4 s (5.5 s at 138k). At the 256k setting one decode after a save did not finish (under investigation).
@@ -188,7 +188,7 @@ Agent mode (`--agent --ctx N`), a real 63.5k-token text fed in chunks, decode of
 
 ### Long prompts: v0.3.5 vs v0.3.4
 
-Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old, new; the PC was restarted that night and its baseline check passed (clean run, 2026-11-03). Both versions ran on the official llama.cpp b11966 server. Two runs per cell (first / second).
+Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old, new; the PC was restarted that night and its baseline guard passed at 49.4 tok/s, but the guard log also notes “not clean: owner work running” at 02:09, so this run is not called clean (2026-11-03). Both versions ran on the official llama.cpp b11966 server. Two runs per cell (first / second).
 
 | Context, prompt | v0.3.4 prompt tok/s | v0.3.5 prompt tok/s | change | v0.3.4 decode tok/s | v0.3.5 decode tok/s | change |
 |---|---|---|---|---|---|---|
@@ -198,22 +198,22 @@ Windows desktop, Flash-Next Q2_0, cold file cache each run, order new, old, old,
 
 - Prompts are about 1.4× faster at the three depths.
 - **Decode after a long prompt is 6–10 % lower.** The bigger prompt chunk takes GPU memory, so 2 fewer expert layers fit on the GPU (39–40 on the CPU at 64k, against 37–38 for v0.3.4). With 2 more GPU layers at 64k decode was 26.6 / 26.9 against 23.7 / 22.9. <!-- claim:decode-room-64k -->
-- Other runs the same night: 256k setting (222k-token prompt) +26 % (334.8 / 333.2 vs 263.4 / 265.8 tok/s); Qwen3.5-122B at 64k +24 %; GLM-5.3-Flash at 30k +62 % with decode −6 %. <!-- claim:v035-ub2048-256k --><!-- claim:guard-122b-64k --><!-- claim:guard-glm-30k -->
+- Other runs the same night: 256k setting (222k-token prompt) +26 % (334.8 / 333.2 vs 263.4 / 265.8 tok/s); Qwen3.5-122B at 64k +24 %; GLM-5.3-Flash at 30k +62 % with decode −6 % (one run per arm). <!-- claim:v035-ub2048-256k --><!-- claim:guard-122b-64k --><!-- claim:guard-glm-30k -->
 - Source: RESULTS 79. Text was not compared in this run. The earlier “experimental” numbers (patched server) overstated this by about 5–7 %.
 
 ### Which Flash-Next file
 
-**Decode, 3k/34k prompt speed and tasks were measured 2026-10-28 on v0.3.x (RESULTS 63). The two columns marked “v0.3.5, 2026-11-04” are new: the 34k and 64k prompts and the short answer after them, two passes each on the released v0.3.5 kit with llama.cpp b11966 (every run “not clean”: owner work was running). IQ2_XS and IQ3_XXS at 64k: the overnight run had no decode-after value (after the 64k prompt the model wrote only 2 tokens and ended its answer, so the follow-up generated 0 tokens: model behaviour, not a plugin fault; the prompt speeds above are valid and clean). The decode-after values in those two cells are from a daytime re-run with the fixed harness (128 tokens) that was **not clean** (the owner’s browser held 1.4 GB of VRAM; its prompt speeds were about 40 % lower and are not used); a clean re-run is planned.** Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.
+**Decode (first column): Q2_0 and IQ2_XS from 2026-10-28, IQ3_XXS and IQ3_S from the 2026-10-27 ABBA pairs (different days, so read each file against the same-day pair only); the second decode column is the 2026-11-04 ABBA. 3k/34k prompt speed and tasks were measured 2026-10-28 on v0.3.x (RESULTS 63). The two columns marked “v0.3.5, 2026-11-04” are new: the 34k and 64k prompts and the short answer after them, two passes each on the released v0.3.5 kit with llama.cpp b11966 (every run “not clean”: owner work was running). IQ2_XS and IQ3_XXS at 64k: the overnight run had no decode-after value (after the 64k prompt the model wrote only 2 tokens and ended its answer, so the follow-up generated 0 tokens: model behaviour, not a plugin fault; the prompt speeds above are valid, from the same not-clean overnight run). The decode-after values in those two cells are from a daytime re-run with the fixed harness (128 tokens) that was **not clean** (the owner’s browser held 1.4 GB of VRAM; its prompt speeds were about 40 % lower and are not used); a clean re-run is planned.** Five GSQ-RCO files of Qwen3.8-Flash-Next through moe-cache on the same PC, launcher defaults, cold. Tasks = 202 exact-answer tasks, greedy. A slower file has to earn its place with clearly better quality.
 
-| File | size | decode tok/s | prompt tok/s 3k / 34k <sub>2026-10-28</sub> | prompt tok/s 34k / 64k <sub>v0.3.5, 2026-11-04</sub> | decode after the prompt 34k / 64k <sub>v0.3.5, 2026-11-04</sub> | tasks /202 | verdict |
-|---|---|---|---|---|---|---|---|
-| **Q2_0** | 66.4 GB | **22.2** | **281 / 287** | 568 / 399<!-- claim:chain1103-q2_0-34k --><!-- claim:chain1103-q2_0-64k --> | 27.4 / 25.5 | 191 | **the faster file** (about 10 % faster than IQ3_XXS). vs IQ2_XS: +1.2 tok/s (+5 %), prompts +11 % / +19 %, 1.6 GB smaller, +4 tasks (not proven) |
-| IQ3_XXS | 75.8 GB | 19.9 | – | 349 / 182<!-- claim:chain1103-iq3xxs-34k --><!-- claim:chain1103-iq3xxs-64k --> | 16.1 / 12.3<br><sub>64k: daytime re-run, not clean (browser held 1.4 GB VRAM); clean re-run planned</sub><!-- claim:chain1103-iq3xxs-64k-decode --> | **193** | **recommended default** (3-bit, reads best, popular for coding). vs Q2_0: −2.3 tok/s (−10 %) for +2 tasks (not proven) |
-| Coder IQ1_M<br><sub>ISTA GSQ-RCO, 256 of 512 experts</sub> | 58.4 GB | 21.2<br><sub>agent session</sub> | – | not re-run | not re-run | 189 | **coding agents.** OpenCode session 55.5 s vs 73.4 s on IQ2_XS (−24 %, one run); general knowledge not checked beyond the task set |
-| IQ2_XS | 68.0 GB | 21.0<br><sub>21.9 in the ABBA above</sub> | 253 / 242 | 504 / 317<!-- claim:chain1103-iq2xs-34k --><!-- claim:chain1103-iq2xs-64k --> | 24.7 / 16.9<br><sub>64k: daytime re-run, not clean (browser held 1.4 GB VRAM); clean re-run planned</sub><!-- claim:chain1103-iq2xs-64k-decode --> | 187 | superseded by Q2_0: slower everywhere, bigger, 4 fewer tasks (not proven) |
-| IQ3_S | 83.6 GB | 17.3 | – | 278 / 221<!-- claim:chain1103-iq3s-34k --><!-- claim:chain1103-iq3s-64k --> | 13.4 / 11.9 | 192 | **not worth it.** vs IQ3_XXS: −2.6 tok/s (−13 %), 7.8 GB bigger, −1 task |
+| File | size | decode tok/s older runs <sub>source and day in the cell</sub> | decode tok/s 2026-11-04 <sub>v0.3.5 kit, not clean</sub> | prompt tok/s 3k / 34k <sub>2026-10-28</sub> | prompt tok/s 34k / 64k <sub>v0.3.5, 2026-11-04</sub> | decode after the prompt 34k / 64k <sub>v0.3.5, 2026-11-04</sub> | tasks /202 | verdict |
+|---|---|---|---|---|---|---|---|---|
+| **Q2_0** | 66.4 GB | **22.2**<br><sub>2026-10-28, model on drive D:</sub> | not re-run | **281 / 287** | 568 / 399<!-- claim:chain1103-q2_0-34k --><!-- claim:chain1103-q2_0-64k --> | 27.4 / 25.5 | 191 | **fastest of the 2026-10-28 set**. vs IQ2_XS (2026-10-28): decode +1.2 tok/s (+5.7 %; Q2_0 sat on the faster drive), prompts 3k / 34k +11 % / +19 % (2026-10-28), 34k / 64k +12.7 % / +25.9 % (2026-11-04, two passes, not clean), 1.6 GB smaller, +4 tasks (not proven). Q2_0 decode was not re-run on 2026-11-04, so no ranking against IQ3_XXS 22.87 (a different day and kit) is claimed |
+| IQ3_XXS | 75.8 GB | 19.9<br><sub>2026-10-27 ABBA (RESULTS 59)</sub><!-- claim:card-decode-flashnext-iq3xxs --> | 22.87<!-- claim:chain1103-iq3xxs --> | – | 349 / 182<!-- claim:chain1103-iq3xxs-34k --><!-- claim:chain1103-iq3xxs-64k --> | 16.1 / 12.3<br><sub>64k: daytime re-run, not clean (browser held 1.4 GB VRAM); clean re-run planned</sub><!-- claim:chain1103-iq3xxs-64k-decode --> | **193** | **recommended default** (3-bit, reads best, popular for coding). The 2026-10-27 pair (19.9) and Q2_0 (22.2, 2026-10-28) are from different days, and on 2026-11-04 it decoded 22.87, so the old gap to Q2_0 is not used here. +2 tasks over Q2_0 (not proven) |
+| Coder IQ1_M<br><sub>ISTA GSQ-RCO, 256 of 512 experts</sub> | 58.4 GB | 21.2<br><sub>agent session, one run, no record</sub> | not re-run | – | not re-run | not re-run | 189 | **coding agents.** OpenCode session 55.5 s vs 73.4 s on IQ2_XS (−24 %, one run, RESULTS 63, no record); general knowledge not checked beyond the task set |
+| IQ2_XS | 68.0 GB | 21.0<br><sub>2026-10-28; 21.94 in the 2026-10-27 ABBA</sub> | not re-run | 253 / 242 | 504 / 317<!-- claim:chain1103-iq2xs-34k --><!-- claim:chain1103-iq2xs-64k --> | 24.7 / 16.9<br><sub>64k: daytime re-run, not clean (browser held 1.4 GB VRAM); clean re-run planned</sub><!-- claim:chain1103-iq2xs-64k-decode --> | 187 | superseded by Q2_0 in the 2026-10-28 set: lower decode and prompt speed, bigger, 4 fewer tasks (not proven) |
+| IQ3_S | 83.6 GB | 17.3<br><sub>2026-10-27 ABBA (RESULTS 59)</sub><!-- claim:card-decode-flashnext-iq3s --> | 19.62<!-- claim:chain1103-iq3s --> | – | 278 / 221<!-- claim:chain1103-iq3s-34k --><!-- claim:chain1103-iq3s-64k --> | 13.4 / 11.9 | 192 | **not worth it.** vs IQ3_XXS on the same night: 2026-10-27 ABBA 17.28 vs 19.86 (−2.6 tok/s, −13 %); 2026-11-04 ABBA 19.62 vs 22.87 (−3.25, −14.2 %); 7.8 GB bigger, −1 task |
 
-**No quality difference between any two files is proven**: on the tasks that changed, every paired sign test has p > 0.05 (e.g. IQ3_XXS vs IQ2_XS 10 / 4 tasks, p 0.18). Q2_0 vs IQ2_XS was a mirrored pair on the same day; in its decode run Q2_0 sat on the faster drive, so part of the +5 % may be the drive (the 34k-prompt pair had both on D:). IQ3_XXS and IQ3_S decode are the ABBA numbers from the table above. Stock vs moe-cache on Q2_0 is in the decode table above. Source: RESULTS 63.
+**No quality difference between any two files is proven**: on the tasks that changed, every paired sign test has p > 0.05 (e.g. IQ3_XXS vs IQ2_XS 10 / 4 tasks, p 0.18). Q2_0 vs IQ2_XS was a mirrored pair on the same day; in its decode run Q2_0 sat on the faster drive, so part of the +5.7 % may be the drive (the 34k-prompt pair had both on D:). The IQ3_XXS and IQ3_S numbers in the first decode column are the 2026-10-27 ABBA pairs; the 2026-11-04 ABBA numbers are in the second column and in the top table. Stock vs moe-cache on Q2_0 is in the decode table above. Source: RESULTS 63.
 
 ### Other models
 
@@ -227,7 +227,7 @@ A newer model that fits in RAM + VRAM, measured on the same PC. One cold run per
 
 Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and the launcher picks it by itself; forcing moe-cache on it cost 18 % decode and 45 % prompt speed in these single runs (2026-10-28) <!-- claim:card-decode-nemotron -->; two runs each on 2026-11-04 (top table, v0.3.5 kit, not clean) gave +6 % decode <!-- claim:chain1103-bolt -->, so there is no steady gain either way. moe-cache is for models bigger than memory. Tasks: 190 vs Flash-Next Q2_0's 191 (not proven, p 1.00); general knowledge beyond the task set not checked. DeepSeek V4-Flash was not tested (desk estimate only). Source: RESULTS 65.
 
-### GLM-5.3-Flash: best setting on this PC
+### GLM-5.3-Flash: best setting on this PC (2026-10-28, RESULTS 62, no record)
 
 | Setting (moe-cache, model on drive D:, apps closed, cold, ABBA) | chat text tok/s | code tok/s | 3k prompt tok/s |
 |---|---|---|---|
@@ -241,7 +241,7 @@ Nemotron fits in this PC's memory, so stock llama.cpp is the right choice and th
 
 ### Qwen3.6-35B: a model that fits in RAM, with and without MTP
 
-Qwen3.6-35B-A3B Q4_K_M (20 GB) fits in the 32 GB, so the launcher runs stock llama-server for it by itself; moe-cache was forced on here to compare. MTP = the model's own multi-token-prediction head on the GPU (`--spec-type draft-mtp --spec-draft-n-max 2`).
+Qwen3.6-35B-A3B Q4_K_M (22 GB) fits in the 32 GB, so the launcher runs stock llama-server for it by itself; moe-cache was forced on here to compare. MTP = the model's own multi-token-prediction head on the GPU (`--spec-type draft-mtp --spec-draft-n-max 2`).
 
 | Server | no MTP, tok/s | MTP, tok/s | MTP gain |
 |---|---|---|---|
@@ -258,7 +258,7 @@ With MTP a small extra head guesses the next two tokens, and the model then chec
 |---|---|---|---|
 | Qwen3.6-35B-A3B<br><sub>fits in RAM</sub> | in the file | decode +49 % stock, **+54 %** moe-cache (table above, 2026-10-27); agent sessions 13–25 % shorter (RESULTS 60) | on in agent mode; `--mtp` otherwise |
 | GLM-5.3-Flash<br><sub>102 GB, bigger than RAM</sub> | in the file (`blk.45.nextn`) | moe-cache 4.44 → **6.92 tok/s** (3.1× stock) on 2026-10-27 <!-- claim:card-decode-glm -->, text identical; one cold run on chat text. **Re-measured 2026-11-04** (v0.3.5 kit, two runs each, short water request): stock 2.98, moe-cache 6.27, with `--mtp` **8.17 tok/s** (2.7× stock) <!-- claim:chain1103-glm -->. Later runs (RESULTS 62, D:, fixed memory): chat text **+10–23 %** at 100 % draft acceptance, code **0 %** at 79 %: MTP's draft context takes memory the cache needed. With 2 extra GPU layers it does not fit (load abort). Before the file-view cache it lost (0.76–0.99 vs 2.0–2.2): MTP's GPU memory counts against Windows' commit and shrank the cache to 4.25 GiB | on in agent mode; `--mtp` otherwise |
-| Flash-Next (every quant), Qwen3.5-122B<br><sub>bigger than RAM</sub> | none in the files | a separate head file (unsloth Q8_0, 4.14 GB) on Flash-Next IQ2_XS: stock **−15 %**, moe-cache **−38 %**, with 73–74 % of drafts accepted. Checking three tokens at once on CPU-held experts cost more than the drafts saved. Measured before the file-view cache, not re-run | off: no head; separate head files are not supported (dropped) |
+| Flash-Next (every quant), Qwen3.5-122B<br><sub>bigger than RAM</sub> | none in the files | a separate head file (unsloth Q8_0, 4.14 GB) on Flash-Next IQ2_XS: stock **−15 %**, moe-cache **−38 %**, with 73–74 % of drafts accepted (RESULTS 58, no record). Checking three tokens at once on CPU-held experts cost more than the drafts saved. Measured before the file-view cache, not re-run | off: no head; separate head files are not supported (dropped) |
 
 The launcher reads the model file: MTP is turned on only when the file has `blk.N.nextn` tensors and llama-server has `draft-mtp`; it prints one line saying why it is on or off. `--no-mtp` turns it off. Sources: RESULTS 58 (Qwen3.6, head file), 60 and 62 (GLM).
 
@@ -271,7 +271,7 @@ Recorded OpenCode (5 requests) and Hermes (7 requests) sessions were replayed ag
 | Flash-Next IQ2_XS<br><sub>68 GB, bigger than RAM</sub> | OpenCode | 174.8 / **73.4** <br><sub>2.4× faster</sub> | 116.8 / **38.6** | 21.5 / 21.2 |
 |   | Hermes | 163.9 / **81.6** <br><sub>2.0× faster</sub> | 66.2 / **21.8** | 21.1 / 21.3 |
 | Flash-Next IQ2_XS, both at once<br><sub>two agents on one server</sub> | OpenCode + Hermes | 335 / **145** <br><sub>2.3× faster</sub> | 177–197 / **54–61** | – |
-| Qwen3.6-35B-A3B Q4_K_M, MTP on<br><sub>20 GB, fits in RAM</sub> | OpenCode | 27.8 / 26.4 <br><sub>5 % faster</sub> | 13.5 / 13.4 | 72.4 / 72.7 |
+| Qwen3.6-35B-A3B Q4_K_M, MTP on<br><sub>22 GB, fits in RAM</sub> | OpenCode | 27.8 / 26.4 <br><sub>5 % faster</sub> | 13.5 / 13.4 | 72.4 / 72.7 |
 |   | Hermes | 25.3 / 23.0 <br><sub>9 % faster</sub> | 5.2 / 5.1 | 71.5 / 72.2 |
 
 **Idle on-demand server** (`on-demand --idle-release`, default 5 min): after the idle time the plugin gives the cache's RAM back and the server keeps running: 17.39 / 17.55 GiB given back in two rounds, available RAM 6.4 → 24.4 GB. The next answer ran at 18.67 / 18.46 tok/s (pages come back from Windows' standby list, ~2.7 s, no disk reads), the one after at 22.37 / 22.12; a restart instead takes ~40 s (Flash-Next IQ2_XS, RESULTS 61).
@@ -280,11 +280,11 @@ On the big model the gain is in reading the prompt: the first answer comes about
 
 ### Where it does not help
 
-- **Models that fit in RAM.** Qwen3.6-35B (20 GB) decoded at the same speed with or without the plugin on 2026-10-27 (46.1 vs 45.6 tok/s without MTP, RESULTS 58); two runs each on 2026-11-04 gave 46.59 stock vs 51.80 moe-cache (+11 %, not clean) <!-- claim:chain1103-qwen36 -->. No steady gain, so the launcher runs stock. Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.
+- **Models that fit in RAM.** Qwen3.6-35B (22 GB) decoded at the same speed with or without the plugin on 2026-10-27 (46.1 vs 45.6 tok/s without MTP, RESULTS 58); two runs each on 2026-11-04 gave 46.59 stock vs 51.80 moe-cache (+11 %, not clean) <!-- claim:chain1103-qwen36 -->. No steady gain, so the launcher runs stock. Agent sessions are only 5–9 % shorter there, from faster follow-up prompts.
 - **Decode at long agent contexts.** On Flash-Next the 2.0–2.4× session gain comes from prompt processing. Decode at 65k-context agent settings is equal (21.5 vs 21.2 tok/s).
 - **CPU kernels.** The numbers here were measured with llama.cpp's own CPU kernels (ggml-cpu-zen4) on both sides. The plugin's exact Q2_0 executor kernel, on Windows since 2026-10-28, did not change the PC's decode (it is limited by RAM bandwidth). The gain comes from which experts are in RAM and how they are read, not from faster math.
 - **Cold start.** From a cold file cache the plugin reports ready 5.6 s later than stock (28.5 vs 22.9 s) while it loads its hot experts; the first answer wins it back. A warm restart answers 6 s sooner than stock.
-- **Small samples.** Two runs per side on every decode pair (GLM with MTP too, 2026-11-04); long-context rows are one cold run per point. Every 2026-11-04 run was “not clean” (owner work was running). Run-to-run spread was under 1 tok/s on the 2026-10-27/28 pairs; it was not checked for the 2026-11-04 pairs.
+- **Small samples.** Two runs per side on every decode pair (GLM with MTP too, 2026-11-04); long-context rows are one cold run per point. Every 2026-11-04 run was “not clean” (owner work was running). Run-to-run spread was under 1 tok/s on the 2026-10-27/28 pairs; for the 2026-11-04 pairs the spread per cell is on benchmarks/BOARD.md.
 - **MTP on models without a head.** Flash-Next and the 122B files have no MTP head; a separate head file made both stock and moe-cache slower (see above).
 
 ### Output quality
@@ -362,7 +362,7 @@ Everything, with methods and caveats: [docs/RESULTS.md](docs/RESULTS.md) (Window
 | Crash on a truncated or unreadable model file | a model file that is cut short or cannot be read can still crash the server instead of giving a clear error (CACHE-685, being fixed) |
 | Installers need `gh` or an explicit yes | `install.sh`, `install.ps1` and `update --apply` check the build attestation with the GitHub CLI (`gh`, logged in). Without it they stop and say what was and was not checked; `--yes-unverified` (or `MOE_CACHE_ALLOW_UNVERIFIED=1`) goes on with only the SHA256 check, which catches a damaged download but not a tampered release (RELEASE-686 fixed: no silent skip) |
 | GPU errors | with Vulkan a GPU error inside an expert block is caught and the block runs on the CPU (`MOE_CACHE_GPU_CATCH`, not yet seen with a real failure); on NVIDIA / CUDA a GPU error still ends the server |
-| Context length of the speed numbers | the 2026-11-04 decode numbers are short chats (8k context, 13-token prompt). Long-context (34k-256k) stock-against-moe-cache numbers are from 2026-10-28 (one file, one cold run) and the v0.3.5 against v0.3.4 comparison; a clean long-context stock run on the newest files is pending (TEST-684) |
+| Context length of the speed numbers | the 2026-11-04 decode numbers are short chats (8k context, a 13-14-token prompt). Long-context (34k-256k) stock-against-moe-cache numbers are from 2026-10-28 (one file, one cold run) and the v0.3.5 against v0.3.4 comparison; a clean long-context stock run on the newest files is pending (TEST-684) |
 | Not tested for this release | `winget install` and `scoop install` (manifests exist but are not submitted); Hermes Desktop and OpenCode Desktop on Windows (click-through still open); a full model run from the final zip |
 | Decode after long prompts | 6-10 % slower than v0.3.4 after a 34k-64k prompt (the bigger prompt chunk leaves 2 fewer expert layers on the GPU); prompts are about 1.4x faster. A later release aims to give that GPU memory back after the prompt |
 | Speed numbers | One PC, cold runs, mostly single series; yours depends on RAM, SSD and GPU. The Linux table is older (v0.2.3.5) |
