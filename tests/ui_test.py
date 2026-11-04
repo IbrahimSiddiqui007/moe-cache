@@ -1190,7 +1190,10 @@ try:
     check(any("no llama-server there" in x for x in r["looked"]), "the stale value is reported in the places looked")
     del os.environ["LLAMA_SERVER"]
     mc.shutil.which = real_which if real_which("llama-server") else (lambda n, *a, **k: "/usr/bin/llama-server" if n == "llama-server" else real_which(n, *a, **k))
-    r = mc.find_llama_server(saved=""); check(r["path"] == "llama-server" and r["source"] == "PATH", "order: PATH before the default folders")
+    _pw = os.path.abspath(mc.shutil.which("llama-server")); apis[_pw] = "3"       # a PATH server with a supported API (LAUNCHER-689: an unreadable one gives way to the kit's)
+    r = mc.find_llama_server(saved=""); check(r["path"] == _pw and r["source"] == "PATH", "order: PATH before the default folders (as an absolute path)")
+    del apis[_pw]
+    r = mc.find_llama_server(saved=""); check(r["source"] == "a default folder" and "unreadable" in (r["note"] or ""), "order: a PATH server whose API cannot be read gives way to a folder one with a supported API")
     mc.shutil.which = nopath
     # Windows: the registry as stored (setx), user before machine, %VARS% expanded, then the registry PATH
     store = {"HKCU": {}, "HKLM": {}}
@@ -1213,7 +1216,7 @@ try:
     os.environ["LLAMA_SERVER"] = a; r = mc.find_llama_server(saved=""); check(r["path"] == a, "windows: the process environment still comes before the registry")
     del os.environ["LLAMA_SERVER"]; store["HKCU"].clear(); store["HKLM"].clear()
     r = mc.find_llama_server(saved=c); check(r["path"] == c, "windows: registry empty: the page's saved path")
-    pd = os.path.dirname(mkls("w", "onpath")); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd
+    _op = mkls("w", "onpath"); apis[_op] = "3"; pd = os.path.dirname(_op); store["HKCU"]["PATH"] = r"C:\nowhere;" + pd       # a supported API: an unreadable one gives way to a folder server (LAUNCHER-689)
     r = mc.find_llama_server(saved=""); check(os.path.dirname(r["path"] or "") == pd and "PATH in the user environment" in r["source"], f"windows: llama-server on the PATH as the registry stores it ({r['source']})")
     store["HKCU"].clear()
     dl = os.path.join(win, "Downloads", "llama-b12000-bin-win-vulkan-x64"); os.makedirs(dl); open(os.path.join(dl, mc.llama_exe()), "wb").write(b"x")
