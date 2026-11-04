@@ -7,7 +7,7 @@ only on the launcher's code and on the model's GGUF header.
    python3 tests/launch_plan_test.py MODEL.gguf            compare with tests/launch_plan_golden.json (skipped when the model is not the recorded one)
    python3 tests/launch_plan_test.py MODEL.gguf --record   write the golden file from the current code
 The recorded model is Qwen3.6-35B-A3B (Ollama blob sha256-d372de8e...): reading its header is cheap, nothing is loaded."""
-import contextlib, io, json, os, sys, tempfile, types
+import contextlib, io, json, os, re, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "bin"))
@@ -94,7 +94,19 @@ CASES = [
     ("gpu_cache_auto_128k", ["--ram", "12", "--vram", "8", "--gpu-cache", "auto", "--ctx", "131072"], []),
     ("extra_threads_user", ["--ram", "12"], ["-t", "4"]),
     ("extra_jinja_user", ["--ram", "12", "--agent"], ["--no-jinja"]),
+    # SERVER-016 (--lan) and the --host rules, with the PC's addresses fixed by MOE_CACHE_LAN_ADDRS (CASE_LAN_ADDRS below)
+    ("lan", ["--ram", "12", "--lan"], []),
+    ("lan_address_chosen", ["--ram", "12", "--lan", "--lan-address", "192.168.1.20"], []),
+    ("lan_and_host_refused", ["--ram", "12", "--lan"], ["--host", "10.0.0.2"]),
+    ("host_private", ["--ram", "12"], ["--host", "192.168.1.20"]),
+    ("host_public_refused", ["--ram", "12"], ["--host", "203.0.113.5"]),
+    ("host_public_allowed", ["--ram", "12", "--allow-public"], ["--host", "203.0.113.5"]),
+    ("host_any_public_pc_refused", ["--ram", "12"], ["--host", "0.0.0.0"]),
+    ("host_any_public_pc_allowed", ["--ram", "12", "--allow-public"], ["--host", "0.0.0.0"]),
+    ("host_any_private_pc", ["--ram", "12"], ["--host", "0.0.0.0"]),
 ]
+DEFAULT_LAN_ADDRS = "192.168.1.20"
+CASE_LAN_ADDRS = {"host_any_public_pc_refused": "192.168.1.20,203.0.113.5", "host_any_public_pc_allowed": "192.168.1.20,203.0.113.5"}
 
 
 def make_synthetic_model(path, n_layers=40, n_expert=256, ne0=2048, ne1=512):
@@ -180,7 +192,7 @@ def fake_machine(m, tmp):
     return calls, real_access
 
 
-def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None):
+def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None, lan_addrs=None):
     m = MACHINES[machine_name]
     saved = (mc.WINDOWS, mc.CACHE_DIR, mc.KEY_FILE, mc.subprocess.run, os.access, os.environ.copy(), mc.other_llama_servers)
     for k in [k for k in os.environ if k.startswith("MOE_CACHE_") or k in ("LLAMA_API_KEY", "LLAMA_SERVER", "GGML_OP_OFFLOAD_MIN_BATCH")]:
@@ -189,6 +201,7 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None)
     rc = None
     extra_result = None
     calls, _ = fake_machine(m, tmp)
+    os.environ["MOE_CACHE_LAN_ADDRS"] = lan_addrs or DEFAULT_LAN_ADDRS            # the PC's addresses (restored with the rest of the environment below)
     ls = os.path.join(tmp, "llama-server")
     lib = os.path.join(tmp, "libggml-moe-cache.so")
     open(ls, "w").close(); open(lib, "w").close()
@@ -211,7 +224,9 @@ def run_case(machine_name, opts, extra, model, tmp, flag="--dry-run", call=None)
         for a, b in ((model, "<MODEL>"), (tmp, "<TMP>"), (HERE, "<HERE>")):
             s = s.replace(a, b)
         return s
-    res = {"rc": rc, "stdout": norm(out.getvalue()), "stderr": norm(err.getvalue()), "calls": [norm(" ".join(map(str, c))) for c in calls]}
+    stderr = norm(err.getvalue())
+    stderr = re.sub(r"usage: moe_cache\.py server.*?(?=moe_cache\.py server: error)", "usage: <argparse usage text>\n", stderr, flags=re.S)       # a new option must not rewrite every refusal golden
+    res = {"rc": rc, "stdout": norm(out.getvalue()), "stderr": stderr, "calls": [norm(" ".join(map(str, c))) for c in calls]}
     if call:
         res["call"] = extra_result
     return res
@@ -406,7 +421,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for mname in MACHINES:
             for cname, opts, extra in CASES:
-                results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp)
+                results[f"{mname}/{cname}"] = run_case(mname, opts, extra, model, tmp, lan_addrs=CASE_LAN_ADDRS.get(cname))
     fp = fingerprint(model)
     inj_bad = injection_test(model) + lib_env_test(model) + leave_room_test(model) + page_test(model)
     # --plan-json is the same plan as --dry-run: the lines the page shows (dry_run_lines) are the dry run's lines in the same order, nothing else is printed
@@ -414,7 +429,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for mname in MACHINES:
             for cname, opts, extra in CASES:
-                r = run_case(mname, opts, extra, model, tmp, flag="--plan-json")
+                r = run_case(mname, opts, extra, model, tmp, flag="--plan-json", lan_addrs=CASE_LAN_ADDRS.get(cname))
                 base = results[f"{mname}/{cname}"]
                 if base["rc"] not in (None, 0):          # the dry run stops with an error (e.g. --mtp on a model without an MTP head): same error, same code
                     err_b = [l for l in base["stderr"].splitlines() if l.startswith("SystemExit:")]
