@@ -9,6 +9,8 @@ TMP = tempfile.mkdtemp(prefix="moe-check-test-")
 HOME = os.path.join(TMP, "home"); os.makedirs(HOME)
 WORK = os.path.join(TMP, "work"); os.makedirs(WORK)
 os.environ["HOME"] = os.environ["USERPROFILE"] = HOME
+os.environ["LOCALAPPDATA"] = HOME      # hermes keeps its files in %LOCALAPPDATA%\\hermes on Windows
+HERMES_DIR = "hermes" if os.name == "nt" else ".hermes"
 os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")
 for v in ("CODEX_HOME", "PI_CODING_AGENT_DIR", "LLAMA_API_KEY", "XDG_CONFIG_HOME", "HERMES_HOME", "OPENCODE_CONFIG"):
     os.environ.pop(v, None)
@@ -91,6 +93,9 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
         for e in ev:
             self.wfile.write(b"data: " + json.dumps(e).encode() + b"\n\n")
+        if MODE["m"] == "streamerr":      # AGENTS-626: the reply dies with an error after some text
+            self.wfile.write(b"data: " + json.dumps({"error": {"message": "decode failed: out of memory"}, "type": "error"}).encode() + b"\n\n")
+            return
         self.wfile.write(b"data: [DONE]\n\n")
 
 
@@ -128,8 +133,8 @@ def setup(agent):
     """Write the agent's config the way `connect --write` does (hermes: by hand, it needs the hermes program)."""
     MODE.update(m="ok", ctx=65536)
     if agent == "hermes":
-        os.makedirs(os.path.join(HOME, ".hermes"), exist_ok=True)
-        open(os.path.join(HOME, ".hermes", "config.yaml"), "w").write(
+        os.makedirs(os.path.join(HOME, HERMES_DIR), exist_ok=True)
+        open(os.path.join(HOME, HERMES_DIR, "config.yaml"), "w").write(
             f"model:\n  provider: custom\n  base_url: {URL}/v1\n  default: {MODEL}\n  context_length: 65536\n  api_key: {KEY}\nother:\n  base_url: x\n")
         return 0
     return run(agent, "--write", "--url", URL, "--api-key", KEY)[0]
@@ -169,7 +174,7 @@ for ag in AGENTS:
     # key: the server now wants KEY, the config holds another one
     MODE.update(m="badkey", ctx=65536)
     cfgs = {"codex": ".codex/config.toml", "pi": ".pi/agent/models.json", "openclaw": ".openclaw/openclaw.json", "qwen": ".qwen/settings.json",
-            "aider": ".aider.moe-cache.conf.yml", "opencode": ".config/opencode/opencode.json", "hermes": ".hermes/config.yaml", "claude": None}
+            "aider": ".aider.moe-cache.conf.yml", "opencode": ".config/opencode/opencode.json", "hermes": HERMES_DIR + "/config.yaml", "claude": None}
     path = os.path.join(WORK, ".claude", "settings.local.json") if ag == "claude" else os.path.join(HOME, cfgs[ag])
     good = open(path).read()
     open(path, "w").write(good.replace(KEY, "wrong-key") if ag != "qwen" else good.replace(KEY, "wrong-key"))
@@ -184,6 +189,36 @@ for ag in AGENTS:
     rc, j = result(ag)
     check(rc == 1 and "name" in j["verdict"] and steps(j)["models"]["result"] == "fail", f"{ag}: wrong model name -> mismatch named ({j['verdict'][:70]})")
     open(mpath, "w").write(mgood)
+
+print("-- a stream that dies with an error after some text (AGENTS-626 a)")
+for ag in ("opencode", "codex", "claude"):
+    setup(ag)
+    MODE["m"] = "streamerr"
+    rc, j = result(ag)
+    ch = steps(j)["chat"]
+    check(rc == 1 and not j["ok"] and ch["result"] == "fail" and "out of memory" in ch["detail"], f"{ag}: text then error -> chat FAIL with the error text ({ch['result']}: {ch['detail'][:60]})")
+    MODE["m"] = "ok"
+
+print("-- the YAML reader: comments and flow style (AGENTS-626 b)")
+import moe_cache_check as cc  # noqa: E402
+ycfg = os.path.join(TMP, "y.yml")
+
+
+def rd(agent, text):
+    open(ycfg, "w", encoding="utf-8").write(text)
+    return cc.read_config(agent, ycfg)
+
+
+a = rd("aider", "# header comment\nopenai-api-base: http://h:1/v1   # trailing\nopenai-api-key: 'k#1'  # the key\nmodel: openai/m1\n"
+                "extra: {a: 1}\nlist: [x, y]\n  # indented comment\nread: [a.md, b.md] # c\n")
+check(a == {"url": "http://h:1/v1", "key": "k#1", "model": "m1", "window": None}, f"aider: comments, a quoted # and flow values: {a}")
+check(rd("aider", "openai-api-base: \"http://h:2/v1\" # q\nmodel: openai/m2\n")["url"] == "http://h:2/v1", "aider: quoted value with a trailing comment")
+check(rd("aider", "# openai-api-base: http://no\nmodel: x\n") is None, "aider: a commented-out key is not read")
+hh = rd("hermes", "# top\nmodel:  # the model block\n  # a comment line\n  provider: custom   # ours\n  base_url: \"http://h:3/v1\"  # url\n  default: m3\n"
+                  "  api_key: 'k2'\n  context_length: 65536 # tokens\n  extra: {a: 1}\n  list: [x, y]\nother: {z: 1}\n")
+check(hh == {"url": "http://h:3/v1", "key": "k2", "model": "m3", "window": 65536}, f"hermes: block with comments and flow values: {hh}")
+hf = rd("hermes", "model: {provider: custom, base_url: 'http://h:4/v1', default: m4, context_length: 8192, tags: [x, y]}  # flow\n")
+check(hf == {"url": "http://h:4/v1", "key": cc._clean_key(None), "model": "m4", "window": 8192}, f"hermes: the model block in flow style: {hf}")
 
 print("-- no server / no config yet")
 srv.shutdown(); srv.server_close()

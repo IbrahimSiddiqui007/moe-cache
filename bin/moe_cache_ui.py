@@ -1148,7 +1148,8 @@ class Runner:
         self.warm = []                     # the launcher's "warm session:" lines (agent mode: saved / restored conversations)
         self.decisions = []                # what the launcher decided before starting llama-server (its "moe-cache: ..." lines up to the URL line)
         self.deciding = True
-        self.bench = {"state": "idle"}
+        if (getattr(self, "bench", None) or {}).get("state") != "running":      # a benchmark that restarts the server (cold start, compare) goes on: the page must not see it idle meanwhile
+            self.bench = {"state": "idle"}
         self.auto_key = None               # the launcher's key (agent mode, no key typed on the page)
         self.agent_guess = {}              # (file, mtime) -> agent name guessed from the conversation's start
         self.vision, self.vision_at = None, 0     # does the running llama-server take images (/props modalities.vision); asked once it is ready

@@ -15,6 +15,8 @@ def check(ok, what):
 
 tmp = tempfile.mkdtemp(prefix="parts-")
 for d in ("plain", "models [new]", "a*b", "q?x"):
+    if os.name == "nt" and d in ("a*b", "q?x"):
+        continue            # Windows file names cannot hold * or ? (WinError 123); the brackets above cover the glob escaping there
     os.makedirs(os.path.join(tmp, d))
     stem = "Big" if d == "plain" else "Big [Q4]"
     names = [f"{stem}-{i:05d}-of-00003.gguf" for i in (1, 2, 3)]

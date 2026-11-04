@@ -1,0 +1,190 @@
+{
+ "conditions": {
+  "baseline_check": "PASS (baseline_guard.log, 2026-11-04 01:41-01:48)",
+  "cpu_temp_c": "not recorded",
+  "file_cache": "not recorded",
+  "gpu_temp_c": "not recorded",
+  "other_programs": "owner work was running (every run 'not clean')",
+  "system_cpu_busy_before_pct": "not recorded",
+  "system_ram_free_before_mib": "not recorded",
+  "uptime_h": "not recorded",
+  "vram_in_use_before_mib": "not recorded"
+ },
+ "created_utc": "2026-11-04 06:56",
+ "hardware": {
+  "cpu_cores": 16,
+  "cpu_model": "AMD Ryzen 9 7950X 16-Core Processor",
+  "cpu_threads": 32,
+  "gpu_driver": "32.0.32015.7029",
+  "gpu_model": "AMD Radeon RX 9070 XT",
+  "os": "Windows 11",
+  "os_build": "26200",
+  "power_plan": "not recorded",
+  "ram_gib": 31,
+  "ram_speed_mts": "not recorded",
+  "ram_type": "DDR5",
+  "storage": {
+   "drive": "not recorded",
+   "interface": "not recorded",
+   "model": "not recorded"
+  },
+  "vram_mib": "not recorded"
+ },
+ "model": {
+  "file": "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS",
+  "quant": "IQ3_XXS",
+  "sha256_full": "not recorded",
+  "sha256_head16MiB": "not recorded",
+  "size_gb": 75.8,
+  "source_url": "not recorded"
+ },
+ "notes": [
+  "2026-11-04T03:03:59 run 1 (pass1) start; not clean: owner work running; available RAM 26.5 GiB of 31.1",
+  "2026-11-04T03:06:33 run 1 (pass1) end; peak RAM in use on the PC 28.6 GiB",
+  "2026-11-04T03:32:33 run 2 (pass2) start; not clean: owner work running; available RAM 26.6 GiB of 31.1",
+  "2026-11-04T03:35:07 run 2 (pass2) end; peak RAM in use on the PC 28.6 GiB",
+  "decode_tps in this record is the speed of the short answer after the long prompt (decode after a long prompt), from the harness' decode_after_tps. 'reprocessed' (prompt tokens read again by the follow-up): pass1 1, pass2 1.",
+  "text_sha256 holds the first 10 hex digits of the harness' text md5, not a sha256.",
+  "Source: the overnight chain of 2026-11-04 01:36-06:56 on the PC (restarted 01:34; baseline guard: PASS (baseline_guard.log, 2026-11-04 01:41-01:48)). Every run was 'not clean': owner work was running."
+ ],
+ "outputs": {
+  "baseline_arm": "stock",
+  "identical_to_baseline": "not checked",
+  "text_sha256_by_arm": {
+   "pass1": [
+    "FEE67CDEAD"
+   ],
+   "pass2": [
+    "FEE67CDEAD"
+   ]
+  }
+ },
+ "protocol": {
+  "arms": [
+   "pass1",
+   "pass2"
+  ],
+  "n_predict": "not recorded",
+  "order": "single",
+  "prompt_set": "34k-token prompt, then a short answer",
+  "prompt_sha256": "not recorded",
+  "prompt_tokens": 33979,
+  "runs_per_arm": 1,
+  "sampler": "not recorded",
+  "seed": "not recorded",
+  "temperature": "not recorded"
+ },
+ "record_schema": 1,
+ "reproduce": {
+  "commands": [],
+  "kit": "the released v0.3.5 kit with the official llama.cpp b11966 (launcher defaults)",
+  "model_url": "not recorded"
+ },
+ "runs": [
+  {
+   "arm": "pass1",
+   "cache_hit_pct": 73.7,
+   "cpu_avg_pct": 6.9,
+   "cpu_peak_pct": 48.3,
+   "decode_tps": 16.64,
+   "disk_read_gb": "not recorded",
+   "error": "",
+   "gpu_blocks": 714,
+   "index": 1,
+   "load_s": 26.3,
+   "ok": true,
+   "process_private_peak_mib": 17266.0,
+   "process_ram_peak_mib": 24141.0,
+   "prompt_tokens": 33979,
+   "prompt_tps": 348.3,
+   "system_cpu_avg_pct": 9.6,
+   "system_cpu_peak_pct": 50.6,
+   "system_ram_free_min_mib": 2625.0,
+   "text_sha256": "FEE67CDEAD",
+   "ttft_s": "not recorded",
+   "vram_source": "not recorded",
+   "vram_system_peak_mib": 14503.0,
+   "vram_used_peak_mib": 13636.0,
+   "wall_s": 98.7
+  },
+  {
+   "arm": "pass2",
+   "cache_hit_pct": 74.1,
+   "cpu_avg_pct": 7.1,
+   "cpu_peak_pct": 58.5,
+   "decode_tps": 15.49,
+   "disk_read_gb": "not recorded",
+   "error": "",
+   "gpu_blocks": 714,
+   "index": 1,
+   "load_s": 27.2,
+   "ok": true,
+   "process_private_peak_mib": 17208.0,
+   "process_ram_peak_mib": 24071.0,
+   "prompt_tokens": 33979,
+   "prompt_tps": 349.5,
+   "system_cpu_avg_pct": 9.9,
+   "system_cpu_peak_pct": 62.3,
+   "system_ram_free_min_mib": 2529.0,
+   "text_sha256": "FEE67CDEAD",
+   "ttft_s": "not recorded",
+   "vram_source": "not recorded",
+   "vram_system_peak_mib": 14503.0,
+   "vram_used_peak_mib": 13636.0,
+   "wall_s": 98.4
+  }
+ ],
+ "settings": {
+  "batch": "not recorded",
+  "command_line": "not recorded",
+  "ctx": 40960,
+  "environment": {},
+  "fast_flag": "not recorded",
+  "flash_attn": "not recorded",
+  "gpu_expert_layers": 6,
+  "kv_type_k": "not recorded",
+  "kv_type_v": "not recorded",
+  "mtp": "not recorded",
+  "n_cpu_moe": 42,
+  "n_layer": 48,
+  "ngl": "not recorded",
+  "threads": "not recorded",
+  "ubatch": 2048
+ },
+ "software": {
+  "llama_backend": "Vulkan",
+  "llama_build": 11966,
+  "llama_commit": "ff0d396e3",
+  "moe_cache_commit": "not recorded",
+  "moe_cache_version": "0.3.5",
+  "plugin_file": "not recorded",
+  "plugin_sha256_prefix": "not recorded",
+  "python": "not recorded"
+ },
+ "summary": {
+  "pass1": {
+   "cache_hit_pct": 73.7,
+   "cpu_avg_pct": 6.9,
+   "cpu_peak_pct": 48.3,
+   "decode_tps": 16.64,
+   "process_ram_peak_mib": 24141.0,
+   "prompt_tps": 348.3,
+   "runs": 1,
+   "system_ram_free_min_mib": 2625.0,
+   "ttft_s": "not recorded",
+   "vram_used_peak_mib": 13636.0
+  },
+  "pass2": {
+   "cache_hit_pct": 74.1,
+   "cpu_avg_pct": 7.1,
+   "cpu_peak_pct": 58.5,
+   "decode_tps": 15.49,
+   "process_ram_peak_mib": 24071.0,
+   "prompt_tps": 349.5,
+   "runs": 1,
+   "system_ram_free_min_mib": 2529.0,
+   "ttft_s": "not recorded",
+   "vram_used_peak_mib": 13636.0
+  }
+ }
+}

@@ -397,9 +397,31 @@ inline void install_sigbus_message() {
     sigaction(SIGBUS, &sa, nullptr);
 }
 #endif
+// WINDOWS-672 (an A/B switch, default off): the read-ahead hint the file view's file handle is opened with. 0 = none: FILE_ATTRIBUTE_NORMAL only, exactly as
+// before (the default); 1 = FILE_FLAG_SEQUENTIAL_SCAN; 2 = FILE_FLAG_RANDOM_ACCESS. MOE_CACHE_WIN_OPEN_HINT=sequential|random; anything else is off. The flag
+// changes the cache manager's read-ahead for the file object behind the section, not the bytes read. Written without Windows headers so Linux can test it.
+inline int file_open_hint(const char * v) {
+    if (v && strcmp(v, "sequential") == 0) {
+        return 1;
+    }
+    if (v && strcmp(v, "random") == 0) {
+        return 2;
+    }
+    return 0;
+}
+inline unsigned file_view_open_flags(int hint) {
+    return 0x00000080u /* FILE_ATTRIBUTE_NORMAL */ | (hint == 1 ? 0x08000000u /* FILE_FLAG_SEQUENTIAL_SCAN */ : hint == 2 ? 0x10000000u /* FILE_FLAG_RANDOM_ACCESS */ : 0u);
+}
 inline const char * file_view_map(const char * path, size_t * size) {
 #ifdef _WIN32
-    HANDLE f = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    static const int hint = [] {
+        const int h = file_open_hint(getenv("MOE_CACHE_WIN_OPEN_HINT"));
+        if (h) {
+            fprintf(stderr, "moe-cache: MOE_CACHE_WIN_OPEN_HINT=%s: the model file view is opened with FILE_FLAG_%s (A/B switch)\n", h == 1 ? "sequential" : "random", h == 1 ? "SEQUENTIAL_SCAN" : "RANDOM_ACCESS");
+        }
+        return h;
+    }();
+    HANDLE f = CreateFileW(widen(path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, file_view_open_flags(hint), nullptr);
     if (f == INVALID_HANDLE_VALUE) {
         return nullptr;
     }

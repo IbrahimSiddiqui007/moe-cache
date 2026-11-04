@@ -105,11 +105,11 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   |---|---|---|---|---|
   | Flash-Next Q2_0 (66.4 GB, D:, not interleaved; RESULTS 63) | 12 | 18.41 | **22.16** | +20 % |
   | Flash-Next IQ2_XS (68 GB) | 12 | 14.89 | **21.94** | +47 % |
-  | Flash-Next IQ3_XXS (76 GB) | 9 | 15.14 | **19.86** | +31 % |
-  | Flash-Next IQ3_S (84 GB) | 7 | 12.92 | **17.28** | +34 % |
-  | Qwen3.5-122B UD-IQ2_XXS (34 GB), re-measured 2026-10-28 (RESULTS 61) | 12 | 15.95 | **19.73** | +24 % |
-  | GLM-5.3-Flash UD-IQ2_XXS (102 GB, C:), one pair (RESULTS 59) | 3 | 2.21 | **4.44** | **2.0x** |
-  | GLM-5.3-Flash, same model, plugin with `--mtp` (single run, drive D:, RESULTS 62) | 3 | 2.21 (C:) | 6.92 | 3.1x, not a paired comparison |
+  | Flash-Next IQ3_XXS (76 GB), re-measured 2026-11-04 (v0.3.5 kit, b11966, two runs each) | 8 | 14.96 | **22.87** | +53 % <!-- claim:chain1103-iq3xxs --> |
+  | Flash-Next IQ3_S (84 GB), re-measured 2026-11-04 | 6 | 13.79 | **19.62** | +42 % <!-- claim:chain1103-iq3s --> |
+  | Qwen3.5-122B UD-IQ2_XXS (34 GB), re-measured 2026-11-04 | 10 | 16.10 | **23.31** | +45 % <!-- claim:chain1103-122b --> |
+  | GLM-5.3-Flash UD-IQ2_XXS (102 GB, D:), re-measured 2026-11-04, two runs each | 0 | 2.98 | **6.27** | **2.1x** <!-- claim:chain1103-glm --> |
+  | GLM-5.3-Flash, same runs, plugin with `--mtp` (two runs) | 0 | 2.98 | 8.17 | 2.7x <!-- claim:chain1103-glm --> |
 
   Text byte-identical to stock on Flash-Next IQ2_XS, IQ3_S, the 122B and GLM. Coding-agent sessions (recorded OpenCode / Hermes replays, Flash-Next
   IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). The

@@ -76,6 +76,64 @@ def config_path(agent, given):
     return os.path.join(d, "opencode.json")
 
 
+def _yaml_uncomment(v):
+    """A YAML value without its trailing `# comment` (a # inside quotes, or not after a space, stays)."""
+    q = None
+    for i, ch in enumerate(v):
+        if q:
+            if ch == "\\" and q == '"':
+                continue
+            if ch == q:
+                q = None
+        elif ch in "\"'" and (i == 0 or v[i - 1] in " \t[{,:"):
+            q = ch
+        elif ch == "#" and (i == 0 or v[i - 1] in " \t"):
+            return v[:i].rstrip()
+    return v.strip()
+
+
+def _yaml_flow(v):
+    """'{a: 1, b: [x, y]}' -> dict (best effort, scalars as text/number); None when v is not a flow mapping."""
+    v = v.strip()
+    if not (v.startswith("{") and v.endswith("}")):
+        return None
+    out, depth, cur, q, parts = {}, 0, "", None, []
+    for ch in v[1:-1]:
+        if q:
+            q = None if ch == q else q
+        elif ch in "\"'":
+            q = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            parts.append(cur)
+            cur = ""
+            continue
+        cur += ch
+    parts.append(cur)
+    for part in parts:
+        k, sep, val = part.partition(":")
+        if sep and k.strip():
+            out[k.strip().strip("\"'")] = _yaml_scalar(val)
+    return out
+
+
+def _yaml_scalar(v):
+    """One YAML value as Python: quotes removed, comment dropped, numbers read; a flow list/mapping comes back as its text."""
+    v = _yaml_uncomment(v)
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        try:
+            return json.loads(v) if v[0] == '"' else v[1:-1].replace("''", "'")
+        except ValueError:
+            return v[1:-1]
+    try:
+        return json.loads(v)
+    except ValueError:
+        return v
+
+
 def read_config(agent, cfg):
     """{"url","key","model","window"} as the agent's config holds them, None when the file or our entry in it is missing; ValueError when unreadable."""
     if not os.path.isfile(cfg):
@@ -95,12 +153,9 @@ def read_config(agent, cfg):
     if agent == "aider":
         kv = {}
         for ln in open(cfg, encoding="utf-8").read().splitlines():
-            mm = re.match(r"^([\w-]+):\s*(.*)$", ln)
-            if mm and not ln.startswith("#"):
-                try:
-                    kv[mm.group(1)] = json.loads(mm.group(2))
-                except ValueError:
-                    kv[mm.group(1)] = mm.group(2).strip()
+            mm = re.match(r"^([\w-]+):(?:\s+(.*))?$", ln)
+            if mm:
+                kv[mm.group(1)] = _yaml_scalar(mm.group(2) or "")
         if "openai-api-base" not in kv:
             return None
         model, window = _strip(kv.get("model"), "openai/"), None
@@ -114,14 +169,18 @@ def read_config(agent, cfg):
     if agent == "hermes":
         kv, inside = {}, False
         for ln in open(cfg, encoding="utf-8").read().splitlines():
-            if re.match(r"^model:\s*$", ln):
+            fm = re.match(r"^model:\s*(\{.*)$", ln)
+            if fm:
+                kv.update({k: str(v) for k, v in (_yaml_flow(_yaml_uncomment(fm.group(1))) or {}).items()})
+                inside = False
+            elif re.match(r"^model:\s*(#.*)?$", ln):
                 inside = True
             elif inside and ln and not ln[0].isspace() and not ln.startswith("#"):
                 inside = False
             elif inside:
-                mm = re.match(r"^\s+([\w.]+):\s*(.*?)\s*$", ln)
+                mm = re.match(r"^\s+([\w.]+):(?:\s+(.*?))?\s*$", ln)
                 if mm:
-                    kv[mm.group(1)] = mm.group(2).strip("\"'")
+                    kv[mm.group(1)] = str(_yaml_scalar(mm.group(2) or ""))
         if kv.get("provider") != "custom" or not kv.get("base_url"):
             return None
         return {"url": kv["base_url"], "key": _clean_key(kv.get("api_key")), "model": kv.get("default"),
@@ -323,6 +382,8 @@ def request_body(proto, model, history, tools, max_tokens):
 def http_fix(status, err, what, agent):
     """(detail, fix) for a failed request."""
     low = err.lower()
+    if status == 200:
+        return f"the stream died with an error: {err[:140]}", "the server failed while answering: see its log for the reason"
     if status == 0:
         return f"no answer ({err[:120]})", f"the connection broke: is the server still running? {START}"
     if status in (401, 403):
@@ -419,7 +480,7 @@ def check_agent(agent, url_given=None, config=None, as_json=False, timeout=180, 
         add("chat", None, t0, "needs steps 1-2")
     else:
         r = stream(root, proto, key, request_body(proto, model, [("user", "Say hello in three words.")], False, 64), timeout)
-        if r.status != 200 and r.status or r.error and not (r.text or r.reasoning):
+        if r.status != 200 and r.status or r.error:
             d, f = http_fix(r.status, r.error, {"chat": "/v1/chat/completions", "responses": "/v1/responses", "messages": "/v1/messages"}[proto], agent)
             add("chat", False, t0, d, f)
         elif r.text.strip():
@@ -438,7 +499,7 @@ def check_agent(agent, url_given=None, config=None, as_json=False, timeout=180, 
     else:
         hist = [("user", ASK)]
         r = stream(root, proto, key, request_body(proto, model, hist, True, 512), timeout)
-        if (r.status and r.status != 200) or (r.error and not r.calls):
+        if (r.status and r.status != 200) or r.error:
             d, f = http_fix(r.status, r.error, "tool calls", agent)
             add("tool call", False, t0, d, f)
         elif not r.calls:
@@ -460,7 +521,7 @@ def check_agent(agent, url_given=None, config=None, as_json=False, timeout=180, 
                 cid = c["id"] or "call_check1"
                 hist += [("call", cid, c["name"], json.dumps(args)), ("result", cid, RESULT)]
                 r2 = stream(root, proto, key, request_body(proto, model, hist, True, 512), timeout)
-                if (r2.status and r2.status != 200) or (r2.error and not r2.text):
+                if (r2.status and r2.status != 200) or r2.error:
                     d, f = http_fix(r2.status, r2.error, "tool results", agent)
                     add("tool call", False, t0, "call ok, but sending the result back failed: " + d, f)
                 elif r2.text.strip():
