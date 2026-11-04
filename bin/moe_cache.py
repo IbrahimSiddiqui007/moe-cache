@@ -2250,6 +2250,9 @@ def parse_server(argv):
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
+    ap.add_argument("--lan", action="store_true")           # SERVER-016: listen on this PC's home-network address, API key forced (bin/moe_cache_lan.py, docs/LAN_ACCESS.md)
+    ap.add_argument("--lan-address", default=None)          # with --lan: which private address of this PC (default: the first one found)
+    ap.add_argument("--allow-public", action="store_true")  # lets --host / --lan listen on a public (internet) address; off by default
     ap.add_argument("--stock", action="store_true")
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
@@ -2635,13 +2638,39 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
     return tuned, desk_kw, ub_asked
 
 
-def api_key_stage(a, extra):
-    """ENGINE-029, stage "API key": a key given on our command line or after `--` goes to llama-server through the environment (LLAMA_API_KEY), never its argument list; agent mode and --project always get the stable per-user key; plain chat servers get none, but a CORS allow-list. Returns (api_key or None, the environment settings for it)."""
+def lan_stage(a, extra):
+    """SERVER-016, stage "network address": --lan serves the home network (the server listens on all interfaces because the launcher and the page reach it through
+    127.0.0.1; the address told to the user is the PC's private one), and any explicit --host is checked: a public address is refused without --allow-public. The
+    address rules live in bin/moe_cache_lan.py. extra gets "--host 0.0.0.0" for --lan. Returns the address to tell the user (None without --lan)."""
+    lan_addr = None
+    if a.lan or arg_after(extra, "--host"):
+        import moe_cache_lan as lan
+        addrs = lan.local_addresses()
+        if a.lan:
+            if arg_after(extra, "--host"):
+                raise SystemExit("--lan chooses the address itself: remove --host (or name the address with --lan-address ADDR)")
+            lan_addr, err = lan.pick_address(addrs, a.lan_address)
+            if err:
+                raise SystemExit("--lan: " + err)
+            extra += ["--host", "0.0.0.0"]
+        err = lan.check_bind(arg_after(extra, "--host"), addrs, a.allow_public) if arg_after(extra, "--host") else None
+        if err:
+            raise SystemExit("--host: " + err if not a.lan else "--lan: " + err)
+    return lan_addr
+
+
+def api_key_stage(a, extra, lan_addr=None):
+    """ENGINE-029, stage "API key": a key given on our command line or after `--` goes to llama-server through the environment (LLAMA_API_KEY), never its argument list; agent mode, --project, --lan and any other non-loopback --host always get the stable per-user key; plain chat servers get none, but a CORS allow-list. Returns (api_key or None, the environment settings for it)."""
     api_key = take_api_key_from_args(extra) or a.api_key
-    if not api_key and (a.agent or a.project):
+    import moe_cache_lan as lan
+    host_open = bool(arg_after(extra, "--host")) and not lan.is_loopback_host(arg_after(extra, "--host"))        # ANY non-loopback bind gets a key, --lan or not
+    if not api_key and (a.agent or a.project or a.lan or host_open):
         api_key = stored_key(create=True)
-        say(f"moe-cache: this server needs an API key (agent mode / projects keep conversations on disk); it is stored in {KEY_FILE} "
+        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else '--host ' + arg_after(extra, '--host') + ': other computers can reach it' if host_open else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
             "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
+    if a.lan:
+        for line in lan.risk_lines(f"http://{lan_addr}:{a.port}", KEY_FILE if api_key == stored_key() else None):
+            say(line)
     key_env = [("LLAMA_API_KEY", api_key)] if api_key else []
     if "--cors-origins" not in extra and "LLAMA_ARG_CORS_ORIGINS" not in os.environ:
         # llama-server answers any website's cross-origin request by default (it echoes the Origin back); `localhost` allows only local pages.
@@ -3110,7 +3139,8 @@ def _launch_plan(a, extra, argv, machine):
     # API key (DECISION_LLAMA_SERVER_KEY, option C): a key given on our command line or after `--` goes to llama-server through the environment
     # (LLAMA_API_KEY), not its argument list; agent mode and --project always get the stable per-user key. Plain chat servers get none, but a CORS
     # allow-list so a normal web page cannot read their answers.
-    api_key, key_env = api_key_stage(a, extra)
+    lan_addr = lan_stage(a, extra)
+    api_key, key_env = api_key_stage(a, extra, lan_addr)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias, slotdir = agent_stage(a, extra, model)
     extra += mtp_args(a.mtp, a.agent, ls, model, extra)
