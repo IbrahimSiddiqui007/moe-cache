@@ -1266,6 +1266,35 @@ def pid_alive(pid):
     return True
 
 
+def pid_start(pid):
+    """An opaque token for when process `pid` started ('' when it cannot be read): a record that names a pid also names this token, so a pid the system
+    handed to another program later (pid reuse) is not taken for the process that wrote the record."""
+    try:
+        if WINDOWS:
+            import ctypes
+            from ctypes import wintypes
+            k = ctypes.windll.kernel32
+            h = k.OpenProcess(0x1000, False, int(pid))
+            if not h:
+                return ""
+            t = [wintypes.FILETIME() for _ in range(4)]
+            ok = k.GetProcessTimes(h, *[ctypes.byref(x) for x in t])
+            k.CloseHandle(h)
+            return f"{t[0].dwHighDateTime}.{t[0].dwLowDateTime}" if ok else ""
+        if sys.platform.startswith("linux"):
+            return open(f"/proc/{int(pid)}/stat").read().rsplit(")", 1)[1].split()[19]        # field 22: start time in clock ticks since boot
+        return subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True, timeout=3).stdout.strip().replace(" ", "_")
+    except Exception:
+        return ""
+
+
+def pid_is(pid, start):
+    """Is `pid` alive and, when the record gave a start token, still the process that started then?"""
+    if not pid_alive(pid):
+        return False
+    return not start or pid_start(pid) == start
+
+
 def _url_port(url):
     try:
         return urllib.parse.urlsplit(url if "://" in url else "http://" + url).port
@@ -1284,7 +1313,7 @@ class OwnsPort:
             try:
                 os.makedirs(SERVER_DIR, mode=0o700, exist_ok=True)
                 with open(self.path, "w") as f:
-                    f.write(str(os.getpid()))
+                    f.write(f"{os.getpid()} {pid_start(os.getpid())}".strip())
             except OSError:
                 self.path = None
         return self
@@ -1292,7 +1321,7 @@ class OwnsPort:
     def __exit__(self, *a):
         if self.path:
             try:
-                if open(self.path).read().strip() == str(os.getpid()):
+                if open(self.path).read().split()[0] == str(os.getpid()):
                     os.remove(self.path)
             except OSError:
                 pass
@@ -1307,14 +1336,15 @@ def launcher_owns(url):
     if not port:
         return False
     try:
-        if pid_alive(int(open(os.path.join(SERVER_DIR, f"{port}.pid")).read().split()[0])):
+        rec = open(os.path.join(SERVER_DIR, f"{port}.pid")).read().split()
+        if pid_is(int(rec[0]), rec[1] if len(rec) > 1 else ""):
             return True
     except (OSError, ValueError, IndexError):
         pass
     try:
-        pid, oport = (int(x) for x in open(os.path.join(CACHE_DIR, "on-demand.pid")).read().split()[:2])
-        return oport == port and pid_alive(pid)
-    except (OSError, ValueError):
+        rec = open(os.path.join(CACHE_DIR, "on-demand.pid")).read().split()
+        return int(rec[1]) == port and pid_is(int(rec[0]), rec[2] if len(rec) > 2 else "")
+    except (OSError, ValueError, IndexError):
         return False
 
 

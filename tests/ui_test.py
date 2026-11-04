@@ -348,6 +348,11 @@ http.server.ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 ''')
 with socket.socket() as sck:
     sck.bind(("127.0.0.1", 0)); od_port = sck.getsockname()[1]
+def own_port(p):
+    """The fake launcher / listener of these tests does not write the record a real launcher writes while it holds a port (mc.OwnsPort); write it, as the real one would, so the page may send the launcher's key there."""
+    os.makedirs(ui.mc.SERVER_DIR, exist_ok=True)
+    open(os.path.join(ui.mc.SERVER_DIR, f"{p}.pid"), "w").write(str(os.getpid()))
+own_port(od_port)
 json.dump(od_port, open(os.path.join(TMP, "od_calls.json.port"), "w"))
 ui.ON_DEMAND_CMD = [sys.executable, fake_od]
 os.environ["EXPECT_KEY"] = AUTO_KEY
@@ -748,6 +753,7 @@ for bad in ([sys.executable, "-c", "import sys; sys.exit(3)"], [sys.executable, 
 ui.KEY_CMD = saved_cmd
 with socket.socket() as so:
     so.bind(("127.0.0.1", 0)); port2 = so.getsockname()[1]
+own_port(port2)
 st, body = req("/api/start", {"model": small["path"], "port": port2, "ram": "1", "agent": True})
 deadline = time.time() + 30
 while time.time() < deadline:

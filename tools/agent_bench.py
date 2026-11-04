@@ -253,6 +253,15 @@ def _key_for(url):
     """No key given: when the server answers 401/403 without one, use moe-cache's stored per-user key (agent mode and --project servers
     require it), the same rule as `moe_cache.py connect`; '' otherwise."""
     u = urllib.parse.urlparse(url)
+    # the stored key goes only to a server this user's launcher is running on this PC right now (bin/moe_cache.py launcher_owns); any other host or port, however it
+    # answers, gets nothing and is not even asked (SERVER-692)
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin"))
+        import moe_cache as _mc
+        if not _mc.launcher_owns(url):
+            return ""
+    except Exception:
+        return ""
     try:
         c = http.client.HTTPConnection(u.hostname, u.port or 80, timeout=5); c.request("GET", "/v1/models"); st = c.getresponse().status; c.close()
     except OSError:
