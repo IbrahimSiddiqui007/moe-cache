@@ -73,7 +73,7 @@ jobs:
         run: tools/apply_llama_patches.sh llama.cpp
       - name: Vulkan SDK
         run: |
-          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          curl.exe --retry 5 --retry-all-errors --retry-delay 10 -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
           # sha256 as LunarG publishes it (https://sdk.lunarg.com/sdk/sha/1.4.357.0/windows/vulkan_sdk.exe.txt, read 2026-11-03): a changed installer stops here (AUD-063). Update with VULKAN_VERSION.
           if ((Get-FileHash "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" -Algorithm SHA256).Hash -ne '81F474711E9042F4CD22B31B2F7A8870DB2E428B21586FB43DD80150BE97310D') { throw "VulkanSDK installer: wrong sha256 (VULKAN_VERSION changed? update the hash from LunarG's sha page)" }
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
