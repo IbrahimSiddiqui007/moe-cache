@@ -159,6 +159,7 @@ def fake_machine(m, tmp):
     mc.vk_cache_cap = lambda ls, model, listing=None: (None, None)
     mc.default_llama_server = lambda refresh=False: os.path.join(tmp, "llama-server")
     mc.python_cmd = lambda: "python3"
+    mc.physical_cores = lambda: 10                      # --leave-room leaves two cores free: the golden says -t 8 on any machine (a 2-core CI runner said -t 1)
     mc.planner_answer = lambda model, ctx, ram_gib=None, vram_gib=None: dict(PLANNER_ANSWER)       # ENGINE-029: the planner runs in this process; the answer is fixed here
     # --share-ram counts the llama-servers running on the machine: Linux reads /proc (none, whatever runs here); Windows asks tasklist through subprocess.run,
     # which is faked below and recorded in `calls`
