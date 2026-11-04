@@ -1298,8 +1298,9 @@ if node:
     harness = ("const C = {chat: {messages: [1, 2]}};\n" + fn +
                "const X = '\"><img src=x onerror=alert(1)>';\n"
                "const m = {role: 'assistant', content: 'x', meta: {live_tps: X, predicted_per_second: X, prompt_per_second: X, prompt_n: X, cache_n: X, draft_n: X, draft_n_accepted: X, hit_rate: X, hits: X, misses: X, predicted_n: X, predicted_ms: X, stopped: true}};\n"
+               "const bools = {role: 'assistant', content: 'x', meta: {live_tps: true, predicted_per_second: true, prompt_per_second: true, prompt_n: true, cache_n: true, draft_n: true, draft_n_accepted: true, hit_rate: true, hits: true, misses: true, predicted_n: true, predicted_ms: true, stopped: 'yes'}};\n"
                "const ok = {role: 'assistant', content: 'x', meta: {predicted_per_second: 12.34, prompt_per_second: 800, prompt_n: 50, cache_n: 7, hit_rate: 0.9, hits: 9, misses: 1, predicted_n: 20, predicted_ms: 1500}};\n"
-               "console.log(JSON.stringify([chips(m, 1, false), chips(m, 1, true), chips(ok, 1, false)]));\n")
+               "console.log(JSON.stringify([chips(m, 1, false), chips(m, 1, true), chips(ok, 1, false), chips(bools, 1, false), chips(bools, 1, true)]));\n")
     hf = os.path.join(TMP, "chips.js"); open(hf, "w", encoding="utf-8").write(harness)
     o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
     try:
@@ -1307,7 +1308,12 @@ if node:
     except Exception:
         r_ = None; print(o.stdout[-300:], o.stderr[-500:])
     check(r_ is not None and not any("<img" in h or "onerror" in h for h in r_[:2]), f"chips: hostile counters from a foreign server never become markup ({r_ and r_[0][:200]})")
+    check(r_ is not None and len(r_) == 5 and all(h.startswith('<div class="chips">') for h in r_[3:]), "chips: boolean counters (true) render, they do not break the answer")
     check(r_ is not None and "12.3 tok/s" in r_[2] and "prefill 800 tok/s" in r_[2] and "hit 90.0 %" in r_[2] and "20 tokens" in r_[2], f"chips: honest numbers still show ({r_ and r_[2][:300]})")
+
+# every foreign string that reaches the page as markup goes through esc(): the live-slot ids of /api/plan and the image sources
+check("${esc(x.id)}: ${Number.isFinite(Number(x.tokens))" in page and 'src="${esc(u)}"' in page and 'src="${esc(f.image)}"' in page and 'src="${u}"' not in page and 'src="${f.image}"' not in page,
+      "page: live-slot ids and image sources are escaped")
 
 # the model list's menu: right-click, Shift+F10 / the menu key, the three-dots button; the items follow the server state
 check(all(x in page for x in ('id="rowmenu"', 'class="rowbtn"', '"contextmenu"', 'e.key == "ContextMenu"', 'e.shiftKey', 'tabindex="0"', "Show in folder", "Copy path", "Plan / Why")),
