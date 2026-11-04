@@ -21,7 +21,7 @@ GH_LOG = os.path.join(T, "gh.log")
 open(os.path.join(FAKEBIN, "gh"), "w").write('''#!/bin/sh
 case "$1 $2" in
   "auth status") exit ${FAKE_GH_AUTH:-0};;
-  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; exit ${FAKE_GH_VERIFY:-0};;
+  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; [ -z "${FAKE_GH_MSG:-}" ] || echo "$FAKE_GH_MSG" >&2; exit ${FAKE_GH_VERIFY:-0};;
 esac
 exit 1
 '''); os.chmod(os.path.join(FAKEBIN, "gh"), 0o755)
@@ -84,7 +84,17 @@ rc, out = run(rA, "9.9.1", "--yes-unverified", PATH=NOGH)
 check(rc == 0 and "WARNING: continuing without the build attestation" in out and "NOT checked" in out and os.access(shim, os.X_OK), "--yes-unverified with no gh: installs, with a warning that says what was not checked")
 rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0, "...(uninstalled again)")
 rc, out = run(rA, "9.9.1", MOE_CACHE_ALLOW_UNVERIFIED="1", FAKE_GH_VERIFY="1")
-check(rc == 0 and "WARNING" in out, "MOE_CACHE_ALLOW_UNVERIFIED=1 with a failing verify: installs, with a warning")
+check(rc != 0 and "REFUSED" in out and "FAILED" in out and "never override" in out and not os.path.exists(prefix), "MOE_CACHE_ALLOW_UNVERIFIED=1 does NOT override a verification that ran and FAILED")
+rc, out = run(rA, "9.9.1", "--yes-unverified", FAKE_GH_VERIFY="1")
+check(rc != 0 and "never override" in out and not os.path.exists(prefix) and not os.path.exists(shim), "--yes-unverified does NOT override a failed verification either")
+rc, out = run(rA, "9.9.1", FAKE_GH_VERIFY="1", FAKE_GH_MSG="dial tcp: lookup api.github.com: no such host")
+check(rc != 0 and "REFUSED" in out and "could not reach GitHub" in out and not os.path.exists(prefix), "GitHub unreachable (the check could not run), no flag: refused")
+rc, out = run(rA, "9.9.1", "--yes-unverified", FAKE_GH_VERIFY="1", FAKE_GH_MSG="dial tcp: lookup api.github.com: no such host")
+check(rc == 0 and "WARNING" in out and "could not reach GitHub" in out and os.access(shim, os.X_OK), "a verify that could not run (GitHub unreachable) + --yes-unverified: installs, with a warning")
+rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0, "...(uninstalled again)")
+open(GH_LOG, "w").close()
+rc, out = run(rA, "9.9.1")
+check(rc == 0 and "--signer-workflow IbrahimSiddiqui007/moe-cache/.github/workflows/release.yml" in open(GH_LOG).read(), "gh attestation verify is called with the pinned --signer-workflow")
 rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0, "...(uninstalled again)")
 rc, out = run(release("9.9.1", tamper=True), "9.9.1", "--yes-unverified", PATH=NOGH)
 check(rc != 0 and "REFUSED" in out and "sha256" in out and not os.path.exists(prefix), "--yes-unverified never skips the sha256: a wrong hash is still refused")

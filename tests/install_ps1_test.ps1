@@ -25,6 +25,9 @@ src = 'import sys\nprint("moe-cache %s" if sys.argv[1:2] == ["--version"] else "
 with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as f:
     f.writestr(n + "/bin/moe_cache.py", src)
     f.writestr(n + "/LICENSE", "x")
+    for extra in ("moe-cache.exe", "ggml-moe-cache-api3.dll", "llama/llama-server.exe"):
+        if mode != "nodll" or extra != "ggml-moe-cache-api3.dll":
+            f.writestr(n + "/" + extra, "x")
     if mode == "slip":
         f.writestr(n + "/../../evil.txt", "x")
 h = hashlib.sha256(open(z, "rb").read()).hexdigest()
@@ -47,7 +50,7 @@ function Set-UserPath([string]$v) { $k = [Microsoft.Win32.Registry]::CurrentUser
 
 # RELEASE-686: a fake gh.cmd first on PATH (FAKE_GH_AUTH / FAKE_GH_VERIFY = exit codes). Without a verified build attestation the installer stops unless -YesUnverified / MOE_CACHE_ALLOW_UNVERIFIED=1.
 $fakeGh = Join-Path $T 'fakegh'; New-Item -ItemType Directory -Force -Path $fakeGh | Out-Null
-Set-Content -LiteralPath (Join-Path $fakeGh 'gh.cmd') -Encoding ASCII -Value @('@echo off', 'if "%1 %2"=="auth status" exit /b %FAKE_GH_AUTH%', 'if "%1 %2"=="attestation verify" exit /b %FAKE_GH_VERIFY%', 'exit /b 1')
+Set-Content -LiteralPath (Join-Path $fakeGh 'gh.cmd') -Encoding ASCII -Value @('@echo off', 'if "%1 %2"=="auth status" exit /b %FAKE_GH_AUTH%', 'if "%1 %2"=="attestation verify" if defined FAKE_GH_LOG echo %*>>"%FAKE_GH_LOG%"', 'if "%1 %2"=="attestation verify" if defined FAKE_GH_MSG echo %FAKE_GH_MSG% 1>&2', 'if "%1 %2"=="attestation verify" exit /b %FAKE_GH_VERIFY%', 'exit /b 1')
 $env:FAKE_GH_AUTH = '0'; $env:FAKE_GH_VERIFY = '0'
 $origProcPath = $env:PATH
 $env:PATH = "$fakeGh;$origProcPath"
@@ -84,10 +87,39 @@ try {
     Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
     $env:FAKE_GH_VERIFY = '1'; $env:MOE_CACHE_ALLOW_UNVERIFIED = '1'; $env:PATH = "$fakeGh;$origProcPath"
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
-    Check ($r.Code -eq 0 -and $r.Out -match 'WARNING' -and (Test-Path (Join-Path $kit 'bin\moe_cache.py'))) 'MOE_CACHE_ALLOW_UNVERIFIED=1 with a failing verify: installs, with a warning'
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'FAILED' -and $r.Out -match 'never override' -and -not (Test-Path $kit) -and -not (Test-Path $shim)) 'MOE_CACHE_ALLOW_UNVERIFIED=1 does NOT override a verification that ran and FAILED'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-YesUnverified')
+    Check ($r.Code -ne 0 -and $r.Out -match 'never override' -and -not (Test-Path $kit)) '-YesUnverified does NOT override a failed verification either'
+    $env:FAKE_GH_MSG = 'dial tcp: lookup api.github.com: no such host'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -eq 0 -and $r.Out -match 'WARNING' -and $r.Out -match 'could not reach GitHub' -and (Test-Path (Join-Path $kit 'bin\moe_cache.py'))) 'a verify that could not run (GitHub unreachable) + MOE_CACHE_ALLOW_UNVERIFIED=1: installs, with a warning'
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-Uninstall')
     Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
-    Remove-Item Env:\MOE_CACHE_ALLOW_UNVERIFIED; $env:FAKE_GH_VERIFY = '0'
+    Remove-Item Env:\MOE_CACHE_ALLOW_UNVERIFIED
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'could not reach GitHub' -and -not (Test-Path $kit)) 'GitHub unreachable without the flag: refused'
+    Remove-Item Env:\FAKE_GH_MSG
+    # the pinned signer workflow
+    $env:FAKE_GH_VERIFY = '0'; $env:FAKE_GH_LOG = Join-Path $T 'gh_args.log'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -eq 0 -and (Get-Content -LiteralPath $env:FAKE_GH_LOG -Raw) -match '--signer-workflow IbrahimSiddiqui007/moe-cache/.github/workflows/release.yml' -and (Get-Content -LiteralPath $env:FAKE_GH_LOG -Raw) -match '-R IbrahimSiddiqui007/moe-cache') 'gh attestation verify is called with -R and the pinned --signer-workflow'
+    Remove-Item Env:\FAKE_GH_LOG
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-Uninstall')
+    Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
+    # required files after the unpack (antivirus may have removed one)
+    $r = Run-Installer (New-Release 'nodll' '9.9.1' 'nodll') '9.9.1' @()
+    Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'ggml-moe-cache-api3.dll' -and $r.Out -match 'antivirus' -and -not (Test-Path $kit) -and -not (Test-Path (Join-Path $root 'kit.part'))) 'a kit missing a required file (the plugin DLL) is refused, names the file and mentions the antivirus'
+    # the shim finds Python through a folder with a non-ASCII (Arabic) name: the where.exe lookup under such a user name (Critic B3; not reproducible on the PC, kept as a regression check)
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    $arab = -join ([char[]](0x0645, 0x062C, 0x0644, 0x062F)); $junc = Join-Path $T ("py_" + $arab)
+    cmd /c mklink /J "$junc" (Split-Path $py.Source) | Out-Null
+    $savedPath = $env:PATH; $env:PATH = "$junc;$env:SystemRoot\System32"
+    try { $o = (& cmd /c "`"$shim`" launch --x" 2>&1 | Out-String).Trim() } finally { $env:PATH = $savedPath }
+    Check ($o -eq 'args: launch --x') "the moe-cache command finds Python through a folder with an Arabic name ($o)"
+    cmd /c rmdir "$junc" | Out-Null
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-Uninstall')
+    Check ($r.Code -eq 0 -and -not (Test-Path $kit)) '...(uninstalled again)'
+    $env:FAKE_GH_VERIFY = '0'
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-DryRun')
     Check ($r.Code -eq 0 -and $r.Out -match 'would download') '-DryRun does not need gh'
 
