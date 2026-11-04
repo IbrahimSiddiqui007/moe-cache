@@ -102,7 +102,7 @@ class H(http.server.BaseHTTPRequestHandler):
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
 URL = f"http://127.0.0.1:{srv.server_port}"
-mc.key_for = lambda url, given=None: given or KEY
+mc.key_for = lambda url, given=None, trusted=False: given or KEY
 AGENTS = ["hermes", "opencode", "claude", "codex", "pi", "openclaw", "aider", "qwen"]
 
 
