@@ -1034,13 +1034,13 @@ const nextPort = () => { const used = new Set((S.servers.managed || []).map(x =>
 async function loadServers() {
   let j; try { j = await api("/api/servers"); } catch (e) { return; }
   const managed = j.managed || [], other = (j.servers || []).filter(x => !x.started_here);
-  S.servers = { managed, other, max: j.max_extra };
+  S.servers = { managed, other, max: j.max_extra, groupError: j.group_error };
   if (S.chatPort && !managed.concat(other).some(x => x.port == S.chatPort)) S.chatPort = null;
   paintServers(); paintChatTarget();
 }
 function paintServers() {
   const { managed, other } = S.servers, can = S.status.state == "ready" && S.sel && managed.length <= S.servers.max;
-  $("c-servers").hidden = !(managed.length > 1 || other.length);
+  $("c-servers").hidden = !(managed.length > 1 || other.length || S.models.length > 1);
   const chatBtn = (port, why) => `<button class="rowbtn" data-chat="${port}" ${why ? `disabled title="${esc(why)}"` : ""}>${(S.chatPort || (managed.find(x => x.main) || {}).port) == port ? "chatting here" : "Chat here"}</button>`;
   $("servers").innerHTML = managed.map(x => `<div class="line"><span class="dot ${x.state == "ready" ? "ok" : "warn"}"></span><span class="n"><b>:${x.port}</b> ${esc(shortName(x.model || "") || "?")}
     <br><span class="small">${x.main ? "main server of this page" : "started here"} · ${esc(x.state)}${x.mode ? " · " + esc(x.mode) : ""}${x.live_tps ? ` · ${x.live_tps.toFixed(1)} tok/s` : ""}${x.vision ? " · images" : ""}</span></span>
@@ -1049,16 +1049,42 @@ function paintServers() {
     <br><span class="small">started elsewhere · ${x.health == "ready" ? "ready" : "loading"}${x.ctx ? " · ctx " + x.ctx.toLocaleString() : ""}${x.slots != null ? ` · ${x.busy || 0} of ${x.slots} slots busy` : ""}${x.key ? " · needs a key" + (x.key == "rejected" ? " (ours is refused)" : "") : ""}</span></span>
     ${x.health == "ready" ? chatBtn(x.port, x.key ? "this server wants an API key; the page sends its key only to servers it started" : "") : ""}</div>`).join("") +
     (other.length ? `<div class="hint">Servers started outside this page (a script, the terminal, another page) can be chatted with here when they need no key; Start and Stop act on this page's own servers only.</div>` : "") +
+    (S.servers.groupError ? `<div class="pwarn small">${esc(S.servers.groupError)}</div>` : "") +
     `<div class="row small" style="margin-top:8px"><button id="srvadd" ${can ? "" : "disabled"} title="Starts the model selected on the left, with the settings in Settings, on another port">Start another server</button><input type="number" id="srvport" min="1" max="65535" value="${nextPort()}" style="width:80px" aria-label="Port of the new server"></div>
-    <div class="hint">Every server loads its own model into this PC's memory: the plan's numbers are for one model alone. Two big models at once will not fit; two small ones, or one model and a small one, can.</div>`;
+    <div class="hint">Every server loads its own model into this PC's memory: the plan's numbers are for one model alone. Two big models at once will not fit; two small ones, or one model and a small one, can.</div>` + pairPanel();
+}
+// MULTIMODEL-010 (prototype): two models at once under ONE memory cap. "Show the split" asks the page server for the plan; "Start both" starts them with it.
+function pairPanel() {
+  if (S.models.length < 2) return "";
+  const opt = i => S.models.map((m, k) => `<option value="${k}"${k == i ? " selected" : ""}>${esc(shortName(m.name))} · ${fmtGB(m.size)}</option>`).join("");
+  const keep = id => ($(id) && $(id).value) || "";
+  return `<details class="pair" open><summary>Two models at once (prototype)</summary>
+    <div class="small">Both under one memory cap, started together with their own share of RAM, VRAM and CPU cores; the plugin servers then trade memory while running. Not speed-tested.</div>
+    <div class="row"><select id="pairA" aria-label="First model">${opt(keep("pairA") || 0)}</select><select id="pairB" aria-label="Second model">${opt(keep("pairB") || 1)}</select></div>
+    <div class="row small"><button id="pairShow">Show the split</button><button id="pairGo" class="primary">Start both</button><span id="pairMsg"></span></div><div id="pairOut">${S.pairOut || ""}</div></details>`;
+}
+async function pairCall(path) {
+  const a = S.models[+$("pairA").value], b = S.models[+$("pairB").value];
+  if (!a || !b || a == b) throw new Error("pick two different models");
+  const st = settings(), base = { mode: st.mode, ctx: st.ctx, agent: st.agent, engine: st.engine, leave_room: st.leave_room };
+  return api(path, { models: [Object.assign({ model: a.path, port: 8080 }, base), Object.assign({ model: b.path, port: 8081 }, base)] });
+}
+function pairTable(v) {
+  const gb = x => x == null ? "–" : x.toFixed(1) + " GB";
+  return `<table class="mach">${v.rows.map(r => `<tr><td>${esc(shortName(r.name))}</td><td>${gb(r.ram_gb)} RAM · ${esc(r.engine)} · ${esc(r.kind)}${r.launcher.includes("--vram") ? " · " + r.launcher[r.launcher.indexOf("--vram") + 1] + " GiB VRAM" : ""}${r.llama.length ? " · cores " + esc(r.llama[1]) : ""}</td></tr>`).join("")}</table>
+    <div class="small">memory cap ${fmtGB(v.cap)} · ${v.cores} physical cores${v.vram_free ? " · free VRAM " + fmtGB(v.vram_free) : ""}</div>` +
+    (v.why || []).map(w => `<div class="${v.ok ? "small" : "pwarn"}">${esc(w)}</div>`).join("") +
+    (v.ok ? "" : `<div class="pwarn">These two do not fit together: run them one at a time (moe-cache on-demand swaps between models).</div>`);
 }
 $("servers").onclick = async e => {
   const b = e.target.closest("button"); if (!b) return;
   try {
     if (b.dataset.chat) { S.chatPort = +b.dataset.chat == ((S.servers.managed.find(x => x.main) || {}).port) ? null : +b.dataset.chat; paintServers(); paintChatTarget(); }
     else if (b.dataset.stop) { await api("/api/servers/stop", { port: +b.dataset.stop }); setTimeout(loadServers, 1500); }
+    else if (b.id == "pairShow") { $("pairMsg").textContent = "planning…"; const v = await pairCall("/api/servers/plan"); S.pairOut = $("pairOut").innerHTML = pairTable(v); $("pairMsg").textContent = ""; }
+    else if (b.id == "pairGo") { $("pairMsg").textContent = "starting…"; const j = await pairCall("/api/servers/group"); S.pairOut = $("pairOut").innerHTML = pairTable(j.plan); $("pairMsg").textContent = "started: the main server first, then the second"; setTimeout(loadServers, 2000); }
     else if (b.id == "srvadd") { await api("/api/servers/start", Object.assign(settings(), { port: $("srvport").value })); showErr(""); loadServers(); }
-  } catch (er) { showErr(er.message); }
+  } catch (er) { showErr(er.message); if ($("pairMsg")) $("pairMsg").textContent = ""; }
 };
 function paintChatTarget() {
   const x = S.chatPort && S.servers.managed.concat(S.servers.other).find(y => y.port == S.chatPort);

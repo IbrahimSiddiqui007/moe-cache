@@ -19,17 +19,19 @@ def check(ok, what):
         fails.append(what)
 
 models = os.path.join(TMP, "models"); os.makedirs(models)
-for n in ("Alpha-Q4_K_M.gguf", "Beta-Q4_K_M.gguf"):
+for n in ("Alpha-Q4_K_M.gguf", "Beta-Q4_K_M.gguf", "Gamma-Q4_K_M.gguf", "Delta-Q4_K_M.gguf"):
     open(os.path.join(models, n), "wb").write(b"GGUF" + b"\0" * 1000)
 ui.default_folders = lambda: [models]
 ui.ollama_roots = lambda: []
-alpha, beta = os.path.join(models, "Alpha-Q4_K_M.gguf"), os.path.join(models, "Beta-Q4_K_M.gguf")
+alpha, beta, gamma, delta = (os.path.join(models, n + "-Q4_K_M.gguf") for n in ("Alpha", "Beta", "Gamma", "Delta"))
 
 fake = os.path.join(TMP, "fake_launcher.py")
 open(fake, "w").write(r'''
 import json, sys, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
 port = int(sys.argv[sys.argv.index("--port") + 1]); name = sys.argv[1].replace("\\", "/").split("/")[-1]
+open(os.path.join(os.environ["FAKE_ARGV_DIR"], f"argv-{port}.json"), "w").write(json.dumps(sys.argv[1:]))
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def do_GET(self):
@@ -46,6 +48,7 @@ print(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}", flush=Tru
 while True:
     time.sleep(1)
 ''')
+os.environ["FAKE_ARGV_DIR"] = TMP
 ui.LAUNCHER = [sys.executable, fake]
 ui.KEY_CMD = [sys.executable, "-c", "print('k')"]
 
@@ -86,9 +89,9 @@ st, body = req("/api/servers/start", {"model": beta, "port": P2})
 check(st == 200 and wait_ready(P2), f"a second server starts on {P2} and gets ready")
 m = {x["port"]: x for x in json.loads(req("/api/servers")[1])["managed"]}
 check(set(m) == {P1, P2} and m[P1]["main"] and not m[P2]["main"] and "Beta" in m[P2]["model"], f"managed list: main and extra ({[(p, x['main'], x['state']) for p, x in m.items()]})")
-st, body = req("/api/servers/start", {"model": beta, "port": P3})
+st, body = req("/api/servers/start", {"model": gamma, "port": P3})
 check(st == 200, "a third server (the second extra) is allowed")
-st, body = req("/api/servers/start", {"model": beta, "port": free_port()})
+st, body = req("/api/servers/start", {"model": delta, "port": free_port()})
 check(st == 400 and "at most 2" in body, "a fourth server is refused")
 check(req("/api/servers/start", {"model": "/etc/passwd", "port": free_port()})[0] == 400, "an unlisted model is refused (the same checks as Start)")
 req("/api/servers/stop", {"port": P3}); time.sleep(1)
@@ -143,6 +146,94 @@ while time.time() < end and any(x["port"] == P2 for x in json.loads(req("/api/se
 check(not any(x["port"] == P2 for x in json.loads(req("/api/servers")[1])["managed"]), "the stopped server is gone from the list")
 check(any(x["port"] == P1 for x in json.loads(req("/api/servers")[1])["managed"]), "the main server keeps running")
 check(chat(P2)[0] == 400, "chat with the stopped server: refused")
+
+
+# ---- MULTIMODEL-010: the split for two models at once ----
+GIB = 2**30
+M = lambda n, gb: {"name": n, "path": "/nope/" + n + ".gguf", "size": int(gb * 1e9)}           # unreadable path: counts as MoE
+inp = {"cap": 28 * GIB, "vram_free": 8 * GIB, "cores": [0, 1, 2, 3, 4, 5, 6, 7]}
+v = ui.group_plan_view([M("A", 22), M("B", 16)], inp)
+total = sum(r["ram_gb"] for r in v["rows"]) * 1e9
+check(v["ok"] and all(r["engine"] == "plugin" for r in v["rows"]) and total <= 28 * GIB * 1.001, f"split: two MoE models under one cap, shares add up to {total / GIB:.1f} GiB of 28 ({[(r['name'], r['ram_gb'], r['engine']) for r in v['rows']]})")
+masks = [r["llama"][1] for r in v["rows"]]
+cores = [int(m, 16) for m in masks]
+check(len(masks) == 2 and cores[0] & cores[1] == 0 and all(r["llama"][2:4] == ["--cpu-strict", "1"] for r in v["rows"]), f"split: disjoint core slices ({masks})")
+check(all("--vram" in r["launcher"] for r in v["rows"]), "split: each model gets a VRAM share")
+small = ui.group_plan_view([M("A", 3), M("B", 2)], inp)
+check(small["ok"] and all(r["engine"] == "stock" for r in small["rows"]), "split: two models that both fit run as stock llama-server")
+tight = ui.group_plan_view([M("A", 40), M("B", 40)], dict(inp, cap=12 * GIB))
+check(not tight["ok"] and tight["why"] and all(r["engine"] == "swap" for r in tight["rows"]), f"split: floors above the cap: no split, says why ({tight['why']})")
+weighted = ui.group_plan_view([dict(M("A", 22), weight=3), M("B", 22)], inp)
+check(weighted["rows"][0]["ram_gb"] > weighted["rows"][1]["ram_gb"], "split: the model used more gets more memory")
+check(ui.group_plan_view([M("A", 22), M("B", 16)], dict(inp, cores=[0]))["rows"][0]["llama"] == [], "split: fewer cores than models: no pinning")
+
+for r in [srv.RequestHandlerClass.runner] + list(srv.RequestHandlerClass.extra.values()):
+    r.stop()
+time.sleep(1)
+for r in list(srv.RequestHandlerClass.extra.values()):
+    r.stop()
+srv.RequestHandlerClass.extra.clear()
+ui.group_inputs = lambda: dict(inp)
+G1, G2 = free_port(), free_port()
+st, body = req("/api/servers/plan", {"models": [{"model": alpha, "port": G1}, {"model": beta, "port": G2, "weight": 2}]})
+pl = json.loads(body)
+check(st == 200 and pl["ok"] and pl["ports"] == [G1, G2] and len(pl["rows"]) == 2 and not json.loads(req("/api/servers")[1])["managed"], "plan: answers without starting anything")
+check(req("/api/servers/plan", {"models": [{"model": alpha}]})[0] == 400 and req("/api/servers/plan", {"models": [{"model": alpha}, {"model": "/etc/passwd"}]})[0] == 400, "plan: one model, or an unlisted one: 400")
+check(req("/api/servers/plan", {"models": [{"model": alpha, "port": 9000}, {"model": beta, "port": 9000}]})[0] == 400, "plan: the same port twice: 400")
+ui.group_inputs = lambda: dict(inp, cap=1 * GIB)
+big = [{"name": "A", "path": alpha, "size": 40 * GIB}, {"name": "B", "path": beta, "size": 40 * GIB}]
+check(not ui.group_plan_view(big)["ok"], "group: refused when the floors do not fit (view)")
+st, body = req("/api/servers/group", {"models": [{"model": alpha, "port": G1}, {"model": beta, "port": G2}]})
+check(st == 400 and "do not fit together" in body and not json.loads(req("/api/servers")[1])["managed"], f"group: under a 1 GiB cap nothing starts and the answer says why ({body[:100]})")
+ui.group_inputs = lambda: dict(inp)
+st, body = req("/api/servers/group", {"models": [{"model": alpha, "port": G1}, {"model": beta, "port": G2}]})
+check(st == 200 and json.loads(body)["ports"] == [G1, G2], f"group: starts both ({body[:120]})")
+check(wait_ready(G1) and wait_ready(G2), "group: both reach ready, one after the other")
+a1 = json.load(open(os.path.join(TMP, f"argv-{G1}.json"))); a2 = json.load(open(os.path.join(TMP, f"argv-{G2}.json")))
+check("--peers" in a1 and "--peers" in a2 and "--ram" in a1 and "--ram" in a2, f"group: both servers got --ram and --peers ({a1[-8:]})")
+i1, i2 = a1.index("--"), a2.index("--")
+check(a1[i1 + 1] == "-C" and a2[i2 + 1] == "-C" and a1[i1 + 2] != a2[i2 + 2] and a1[-1] == "--metrics", f"group: each got its own core mask after -- ({a1[i1:]}, {a2[i2:]})")
+check(req("/api/servers/group", {"models": [{"model": alpha, "port": free_port()}, {"model": beta, "port": free_port()}]})[0] == 400, "group: refused while servers of the page run")
+st, body = chat(G2)
+check(st == 200 and f"on {G2}" in body, "group: chat reaches the second server")
+
+# a second server next to a running one counts the RAM the first holds
+req("/api/servers/stop", {"port": G2}); time.sleep(2)
+st, body = req("/api/servers/start", {"model": beta, "port": G2})
+check(st == 200 and json.loads(body)["share_ram"] is True and wait_ready(G2), "next to a running server: started with --share-ram")
+check("--share-ram" in json.load(open(os.path.join(TMP, f"argv-{G2}.json"))), "next to a running server: the launcher got --share-ram")
+
+# ---- rules for two servers at once ----
+st, body = req("/api/servers/start", {"model": alpha, "port": free_port()})
+check(st == 400 and "already running" in body and "overwrite" in body, f"same model as a running server: refused ({body[:90]})")
+st, body = req("/api/servers/plan", {"models": [{"model": alpha, "port": 9101}, {"model": alpha, "port": 9102}]})
+check(st == 400 and "twice" in body, "a group with one model twice: refused")
+_real_held = ui.Handler.held_bytes
+ui.Handler.held_bytes = lambda self: 27 * GIB
+ui.group_inputs = lambda: dict(inp, cap=28 * GIB)
+st, body = req("/api/servers/start", {"model": gamma, "port": free_port()})
+check(st == 400 and "not enough memory next to the running servers" in body and "Stop one" in body, f"third model while the running ones hold 27 of 28 GiB: refused with numbers ({body[:110]})")
+ui.Handler.held_bytes = _real_held
+st, body = req("/api/servers/start", {"model": gamma, "port": free_port(), "ram": 1})
+check(st in (200, 400) and "not enough memory" not in body, "a typed --ram skips the check (the user decided)")
+# stop the main server: the other one keeps running and answers
+st, _ = req("/api/stop", {})
+end = time.time() + 30
+while time.time() < end and json.loads(req("/api/status")[1])["state"] not in ("exited", "idle", "stopped"):
+    time.sleep(0.3)
+mm = {x["port"]: x for x in json.loads(req("/api/servers")[1])["managed"]}
+check(G2 in mm and mm[G2]["state"] == "ready" and G1 not in mm, "stopping the main server leaves the other running")
+st, body = chat(G2)
+check(st == 200 and f"on {G2}" in body, "the other one still answers")
+st, body = req("/api/start", {"model": beta, "port": G1})
+check(st == 400 and "already running" in body, "restarting the main server on the model the other one runs: refused")
+st, body = req("/api/start", {"model": alpha, "port": G1})
+check(st == 200 and wait_ready(G1), "restarting the main server on another model works")
+check("--share-ram" in json.load(open(os.path.join(TMP, f"argv-{G1}.json"))), "the restarted main server counts what the other one holds (--share-ram)")
+check(req("/api/connect", {"agent": "opencode", "port": 4242})[0] == 400, "connect to a port the page did not start: refused")
+check("group_error" in json.loads(req("/api/servers")[1]), "the servers answer carries group_error (empty when fine)")
+page2 = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
+check("/api/servers/plan" in page2 and "/api/servers/group" in page2, "page: the split panel calls plan and group")
 
 # the page
 page = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
