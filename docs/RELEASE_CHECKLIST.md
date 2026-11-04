@@ -50,7 +50,7 @@ Do this on the files from the release page, not on the checkout. A release once 
 | 11 | Windows | unzip the kit (Properties > Unblock first), double-click `moe-cache.bat`: the control page opens; import a model; press Start; send one chat message |
 | 12 | Windows | `python bin\moe_cache.py pick` runs; `python bin\moe_cache.py check D:\models\model.gguf --run` passes |
 | 13 | both | every `bin/*.py` of the unpacked kit or tarball imports from there alone (`tools/make_windows_kit.sh` checks the kit's launcher modules itself) |
-| 14 | Linux, Windows | on a copy installed by `install.sh` / `install.ps1` from the **previous** release: `moe-cache update --apply --dry-run` names the new tag; after `update --apply --yes` the new version runs, the old one is still there (Linux: `versions/`, roll back with `ln -sfn versions/<old folder> <prefix>/current`; Windows: the folder `kit.prev`) |
+| 14 | Linux, Windows | on a copy installed by `install.sh` / `install.ps1` from the **previous release that has an installer** (`install.sh` / `install.ps1`; v0.3.5 had none, so v0.3.6 was tested from its beta2): `moe-cache update --apply --dry-run` names the new tag; after `update --apply --yes` the new version runs, the old one is still there (Linux: `versions/`, roll back with `ln -sfn versions/<old folder> <prefix>/current`; Windows: the folder `kit.prev`) |
 
 README "Known issues" must name anything from steps 9-14 that was **not** done (for example "a full model run from the final zip was not tested").
 
