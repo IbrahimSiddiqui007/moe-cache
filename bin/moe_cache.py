@@ -135,6 +135,17 @@ def llama_search_dirs():
             os.path.join(HERE, "llama")]            # the tarball's bundled official llama.cpp (the -ggml0.26 file)
 
 
+# llama.cpp commits (first 9 digits) that CI ran this plugin against: the tested "yes" rows of .github/workflows/identity.yml; the @commit entries of
+# MOE_CACHE_TESTED_GGML in src/moe_cache_plugin.cpp are a subset. tests/tested_commits_test.py fails when they disagree.
+TESTED_COMMITS = ("7fe450e19", "23b0202a1", "ff0d396e3", "51fe42c5d")
+
+
+def tested_commit(ver):
+    """True when `ver` ('commit 51fe42c5d', any length from 7 digits) is a build of TESTED_COMMITS."""
+    m = re.search(r"[0-9a-f]{7,}", ver or "")
+    return bool(m) and any(t.startswith(m.group(0)) or m.group(0).startswith(t) for t in TESTED_COMMITS)
+
+
 def ls_build(ls):
     """llama-server's build number (`--version`: 'version: 11966 (ff0d396e3)'), None when unknown."""
     try:
@@ -4110,11 +4121,11 @@ def check(argv):
         ver = m.group(0) if m else ""
         ok("llama-server", f"{lsp} ({ver or 'version unknown'})")
         facts["llama-server"] = f"{ver or 'version unknown'} ({lsp})"
-        if re.search(r"7fe450e|23b0202", ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
+        if tested_commit(ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
             warn("ggml version", "this llama.cpp build is not one we tested" + (f" ({ver})" if ver else "") + ": we tested " +
-                 ("b11669, b11966 and b12064 on Windows" if WINDOWS else "two llama.cpp commits on Linux (7fe450e19 and 23b0202a1) and b11966 and b12064") +
+                 ("b11669, b11966 and b12064 on Windows" if WINDOWS else "four llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966 and 51fe42c5d = b12064)") +
                  ". Other builds usually work; if the plugin does not load, the lines below say so (moe_cache.py update --check shows the newest build)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):
