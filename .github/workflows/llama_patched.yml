@@ -194,6 +194,27 @@ jobs:
         run: |
           LIVE_NGL=0 DECODE_RELOC_EXPECT=any DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
             tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
+      # Critic round 4 #7: the CPU-only run above skips every check that needs a real move. lavapipe (software Vulkan, installed above) is a GPU device to ggml, so here
+      # the layers really move (DECODE_RELOC_EXPECT=moved: the run fails if they do not): the reserve failure after the move (fail=2) and a second context created after
+      # the move are exercised. The 2400-token run is left out (too slow on a software GPU); it runs in the CPU-only step above and on the laptop. Also the first run
+      # of the move code on Vulkan, without a real card: a device OOM is still untested (docs/DECODE_RELOC_DESIGN.md).
+      # granite (1B) takes more than 45 minutes on a software GPU, so this run uses a tiny random-weight MoE (gpt-oss, as identity.yml: same recipe, same pinned revision).
+      - name: Tiny MoE model for the lavapipe run (random gpt-oss weights, converted with this llama.cpp's own script)
+        run: |
+          python3 -m pip install -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
+          python3 -m pip install -q -e llama.cpp/gguf-py
+          R=tengomucho/tiny-random-gpt-oss; REV=2109d1ee033bb4191af6dd950fda542c9c351dc8; mkdir -p tiny-gptoss
+          for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json; do
+            curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
+          done
+          python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss-f16.gguf --outtype f16
+          ls -la tiny-gptoss-f16.gguf
+      - name: Live test of patch 0070 on lavapipe (software Vulkan) - layers move, fail=2, second context after the move
+        timeout-minutes: 25
+        run: |
+          # ggml-vulkan at the pin skips a CPU-type Vulkan device (lavapipe) unless it is listed by index
+          GGML_VK_VISIBLE_DEVICES=0 DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
+            tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/tiny-gptoss-f16.gguf"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llama-patched-linux-x64
