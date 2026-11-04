@@ -43,7 +43,8 @@ chk "fail=1: first reserve throws, the log says why" "grep -q 'reserve with ubat
 chk "fail=1: process finished (exit 0), tokens equal to the switch off" "[ \"\$(cat $OUT/f1.rc)\" = 0 ] && cmp -s '$OUT/off.txt' '$OUT/f1.txt'"
 chkm "fail=2: reserve after the move throws, moved back, the log says why" "! grep -q 'layers of experts moved' '$OUT/f2.err' && grep -q 'reserve after the move failed (LLAMA_DECODE_RELOC_FAIL=2' '$OUT/f2.err' && grep -q 'expert tensors back in their original' '$OUT/f2.err'"
 chk "fail=2: process finished (exit 0), tokens equal to the switch off" "[ \"\$(cat $OUT/f2.rc)\" = 0 ] && cmp -s '$OUT/off.txt' '$OUT/f2.txt'"
-chk "fail=1/2: no second try (one failure line each)" "[ \"\$(grep -c 'failed (LLAMA_DECODE_RELOC_FAIL' '$OUT/f1.err')\" = 1 ] && [ \"\$(grep -c 'failed (LLAMA_DECODE_RELOC_FAIL' '$OUT/f2.err')\" = 1 ]"
+chk "fail=1: no second try (one failure line)" "[ \"\$(grep -c 'failed (LLAMA_DECODE_RELOC_FAIL' '$OUT/f1.err')\" = 1 ]"
+chkm "fail=2: no second try (one failure line)" "[ \"\$(grep -c 'failed (LLAMA_DECODE_RELOC_FAIL' '$OUT/f2.err')\" = 1 ]"
 # test 2: second context created after the move
 chkm "late 2nd context: layers were moved first, then the first context moved back (log)" "grep -q 'layers of experts moved' '$OUT/l_on.err' && grep -q 'another context was created, moving back' '$OUT/l_on.err'"
 chk "late 2nd context: no crash (exit 0) with the switch on and off" "[ \"\$(cat $OUT/l_on.rc)\" = 0 ] && [ \"\$(cat $OUT/l_off.rc)\" = 0 ]"
