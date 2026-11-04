@@ -164,7 +164,7 @@ def _compute(a):
     def predicted_vram(n_gpu_layers): return gpu_fixed + n_gpu_layers * per_layer
 
     def smi(q):
-        try: return float(subprocess.check_output(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"], stderr=subprocess.DEVNULL).decode().split()[0]) * 2**20
+        try: return float(subprocess.check_output(["nvidia-smi", f"--query-gpu={q}", "--format=csv,noheader,nounits"], stderr=subprocess.DEVNULL, timeout=5).decode().split()[0]) * 2**20
         except Exception: return None
     def amd_free():
         """free VRAM of the AMD GPU with the most VRAM (amdgpu sysfs); None when there is none. An integrated GPU's BIOS carve-out counts (dedicated, the OS
