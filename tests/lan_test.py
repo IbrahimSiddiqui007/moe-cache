@@ -63,7 +63,17 @@ check(rc != 0, "launcher --host public with a key: still refused without --allow
 rc, out = launcher("192.168.1.20")
 check(rc == 0 and "--host" not in out and "LAN" not in out, "launcher without --lan: no --host, nothing about LAN (default stays 127.0.0.1)")
 rc, out = launcher("192.168.1.20", "--", "--host", "192.168.1.20")
-check(rc == 0 and "WARNING" in out, "launcher --host with a private address and no key: allowed, with its old warning")
+check(rc == 0 and "LLAMA_API_KEY=(hidden)" in out and "other computers can reach it" in out and "WARNING" not in out, "launcher --host with a private address and no key: the stored key is forced (no warning needed)")
+rc, out = launcher("192.168.1.20", "--", "--host", "0.0.0.0")
+check(rc == 0 and "LLAMA_API_KEY=(hidden)" in out, "launcher --host 0.0.0.0 (no --lan): key forced too")
+rc, out = launcher("192.168.1.20", "--", "--host", "127.0.0.1")
+check(rc == 0 and "other computers can reach it" not in out and "LLAMA_API_KEY" not in out, "launcher --host 127.0.0.1: nothing forced")
+rc, out = launcher("192.168.1.20", "--", "--host", "::")
+check(rc != 0 and "IPv6" in out and "--allow-public" in out, "launcher --host :: is refused like a public address")
+rc, out = launcher("192.168.1.20", "--allow-public", "--", "--host", "::")
+check(rc == 0 and "LLAMA_API_KEY=(hidden)" in out, "launcher --host :: --allow-public: allowed, key forced")
+check(lan.is_loopback_host("") and lan.is_loopback_host("127.0.0.1") and lan.is_loopback_host("localhost") and lan.is_loopback_host("::1") and not lan.is_loopback_host("0.0.0.0") and not lan.is_loopback_host("192.168.1.2") and not lan.is_loopback_host("::"), "is_loopback_host: only this PC counts")
+check("IPv6" in (lan.check_bind("::", ["192.168.1.20"]) or "") and lan.check_bind("::", ["192.168.1.20"], True) is None, "bind: :: is refused without --allow-public even when no public IPv4 is known")
 
 # ---- the page server with a fake remote client ----
 TOKEN = "lan-token-1"

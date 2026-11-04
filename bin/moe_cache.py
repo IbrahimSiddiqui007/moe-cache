@@ -2534,9 +2534,10 @@ def _launch_plan(a, extra, argv, machine):
         if err:
             raise SystemExit("--host: " + err if not a.lan else "--lan: " + err)
     api_key = take_api_key_from_args(extra) or a.api_key
-    if not api_key and (a.agent or a.project or a.lan):
+    host_open = bool(arg_after(extra, "--host")) and not lan.is_loopback_host(arg_after(extra, "--host"))        # ANY non-loopback bind gets a key, --lan or not
+    if not api_key and (a.agent or a.project or a.lan or host_open):
         api_key = stored_key(create=True)
-        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
+        say(f"moe-cache: this server needs an API key ({'--lan: other computers can reach it' if a.lan else '--host ' + arg_after(extra, '--host') + ': other computers can reach it' if host_open else 'agent mode / projects keep conversations on disk'}); it is stored in {KEY_FILE} "
             "(`python3 bin/moe_cache.py key` prints it; `connect hermes|opencode --write` puts it into the agent's config)")
     if a.lan:
         for line in lan.risk_lines(f"http://{lan_addr}:{a.port}", KEY_FILE if api_key == stored_key() else None):
