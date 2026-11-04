@@ -111,7 +111,7 @@ GET_ALLOWED = {"/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/ap
                "/api/bench", "/api/servers", "/api/chats", "/api/log"}
 GET_DENIED = {"/api/key", "/api/agents", "/api/sessions", "/api/peek", "/api/share"}
 POST_ALLOWED = {"/api/chat", "/api/chats/save"}
-POST_DENIED = {"/api/chats/trash", "/api/folders", "/api/download/start", "/api/download/cancel", "/api/servers/start", "/api/servers/stop", "/api/llama", "/api/start",
+POST_DENIED = {"/api/chats/trash", "/api/folders", "/api/download/start", "/api/download/cancel", "/api/servers/start", "/api/servers/stop", "/api/servers/group", "/api/servers/plan", "/api/llama", "/api/start",
                "/api/pick/use", "/api/command", "/api/sessions/trash", "/api/bench", "/api/share", "/api/share/cancel", "/api/stop", "/api/connect"}
 check(get_routes == GET_ALLOWED | GET_DENIED, f"routes: every GET route has a remote decision (undecided: {sorted(get_routes ^ (GET_ALLOWED | GET_DENIED))})")
 check(post_routes == POST_ALLOWED | POST_DENIED, f"routes: every POST route has a remote decision (undecided: {sorted(post_routes ^ (POST_ALLOWED | POST_DENIED))})")

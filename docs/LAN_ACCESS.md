@@ -64,7 +64,7 @@ The page token is needed for all of it. Anything not listed is 403 (so is any ro
 | `POST /api/chats/save` | allowed (saves the conversation next to the others, size-limited) |
 | `GET /api/key` | **403**: the key is typed by hand on the other computer (`moe_cache.py key` on this PC) |
 | `GET /api/agents`, `/api/sessions`, `/api/peek`, `/api/share` | 403 (agent config files, saved agent conversations, probing ports, reports) |
-| `POST /api/start`, `/api/stop`, `/api/bench`, `/api/servers/start`, `/api/servers/stop`, `/api/pick/use`, `/api/command` | 403 (they start, stop, load or change settings) |
+| `POST /api/start`, `/api/stop`, `/api/bench`, `/api/servers/start`, `/api/servers/stop`, `/api/servers/group`, `/api/servers/plan` (the two-model split panel starts servers), `/api/pick/use`, `/api/command` | 403 (they start, stop, load or change settings) |
 | `POST /api/llama`, `/api/folders`, `/api/connect`, `/api/download/start`, `/api/download/cancel`, `/api/chats/trash`, `/api/sessions/trash`, `/api/share`, `/api/share/cancel` | 403 (paths, files, downloads, Trash, reports) |
 
 Which computers count as "home network": the server listens on every network card (`0.0.0.0`) so that 127.0.0.1 keeps working, and the ranges 172.16/12 and
