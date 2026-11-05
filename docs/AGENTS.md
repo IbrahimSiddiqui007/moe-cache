@@ -56,8 +56,8 @@ Not covered yet: Oh My Pi (its `~/.omp/agent/models.yml` is YAML, only third-par
 
 | Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin; RESULTS 60, 63) |
 |---|---|---|
-| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default since 0.3.2 | decode 19.9 tok/s, 193/202 tasks, reads best for coding (RESULTS 63) |
-| the smaller file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB) | decode 22.2 tok/s on 2026-10-28 (not re-measured against IQ3_XXS), prompts 281 tok/s at 3k and 287 at 34k tokens (vs IQ2_XS: +5.7 % decode, +11 % / +19 % prompts), 191/202 tasks |
+| general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default since v0.3.7 (owner 2026-11-05) | decode 22.2 tok/s on 2026-10-28, 191/202 tasks; measured 2026-11-05, record pending: at 64k prompts +86.9 % and decode +50.7 % over IQ3_XXS, a flat ~27 tok/s through a 65k conversation |
+| the higher-quality file | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default from 0.3.2 to 0.3.6 | decode 19.9 tok/s (2026-10-27), 193/202 tasks (the most), reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
 | coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
 
 No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say

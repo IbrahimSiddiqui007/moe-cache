@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+| Area | Change |
+|---|---|
+| Default model | Flash-Next **Q2_0** is the default Flash-Next file again (`pick`, `launch`, the catalogue and the docs; owner decision 2026-11-05). IQ3_XXS stays listed as the higher-quality option. Measured 2026-11-05 on the Windows PC (records pending, not ingested yet): at 64k Q2_0 reads prompts 86.9 % faster and decodes 50.7 % faster than IQ3_XXS and decodes a flat ~27 tok/s through a 65k multi-turn conversation; top-1 agreement with IQ3_S is 73.3 % for Q2_0 against 76.5 % for IQ3_XXS. |
+
 ## 0.3.6 (2026-11-04)
 
 | Area | Change |

@@ -121,8 +121,8 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
 
   | File | Size | Plugin decode (tok/s) | Prompt tok/s, 3k / 34k tokens | Tasks /202 | Use it |
   |---|---|---|---|---|---|
-  | **Q2_0** | 66.4 GB | **22.2** | **281 / 287** | 191 | **fastest of the 2026-10-28 set** (not re-measured against IQ3_XXS, whose 2026-11-04 decode was 22.87): vs IQ2_XS +5.7 % decode, prompts +11 % / +19 %, smaller. In the decode pair Q2_0 ran from D: and IQ2_XS from C:, so part of the +5 % may be the drive (the 34k pair had both on D:) |
-  | IQ3_XXS | 75.8 GB | 19.9 (stock 15.1) | - | **193** | **recommended default** (since 0.3.2): 3-bit, most tasks right, reads best for coding; about 10 % slower |
+  | **Q2_0** | 66.4 GB | **22.2** | **281 / 287** | 191 | **the default since v0.3.7** (owner 2026-11-05; at 64k prompts +86.9 % and decode +50.7 % over IQ3_XXS, a flat ~27 tok/s through a 65k conversation, measured 2026-11-05, record pending); fastest of the 2026-10-28 set: vs IQ2_XS +5.7 % decode, prompts +11 % / +19 %, smaller. In the decode pair Q2_0 ran from D: and IQ2_XS from C:, so part of the +5 % may be the drive (the 34k pair had both on D:) |
+  | IQ3_XXS | 75.8 GB | 19.9 (stock 15.1) | - | **193** | **the higher-quality option** (the default from 0.3.2 to 0.3.6): 3-bit, most tasks right, reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
   | ISTA GSQ-RCO Coder IQ1_M | 58.4 GB | 21.2 (in an agent session) | - | 189 | coding agents: half the experts (256 of 512); OpenCode session 55.5 s vs 73.4 s on IQ2_XS, one run. General knowledge not checked beyond the task set |
   | IQ2_XS | 68.0 GB | 21.0 same day as Q2_0 (21.9 in RESULTS 59, stock 14.9) | 253 / 242 | 187 | superseded by Q2_0. The other IQ2_XS numbers on this page were measured on IQ2_XS |
   | IQ3_S | 83.6 GB | 17.3 (stock 12.9) | - | 192 | not worth it: slower and bigger than IQ3_XXS for no gain |

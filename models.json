@@ -244,7 +244,7 @@
     }
    ],
    "notes": [
-    "The smaller Flash-Next file (9 GB less than IQ3_XXS): it decoded faster than IQ2_XS on 2026-10-28; it was not re-measured against IQ3_XXS. No quality difference between any two Flash-Next files is proven (all p > 0.05).",
+    "The default Flash-Next file since v0.3.7 (owner 2026-11-05), 9 GB smaller than IQ3_XXS; it decoded faster than IQ2_XS on 2026-10-28. Measured 2026-11-05 on the PC (record pending, not ingested yet): at 64k Q2_0 reads prompts 86.9 % faster and decodes 50.7 % faster than IQ3_XXS, and decodes a flat ~27 tok/s through a 65k multi-turn conversation. No quality difference between any two Flash-Next files is proven on the 202-task set (all p > 0.05); top-1 agreement with IQ3_S is 73.3 % (Q2_0) against 76.5 % (IQ3_XXS), measured 2026-11-05, record pending.",
     "Decode is CPU-bound on the measured PC; the model card's +33 % does not reproduce."
    ],
    "warnings": [
@@ -316,7 +316,7 @@
     }
    ],
    "notes": [
-    "The default Flash-Next file on a 16 GB GPU (owner 2026-10-30): 3-bit, the most tasks right (193/202), reads best for coding; about 10 % slower decode than Q2_0."
+    "The higher-quality Flash-Next file (the default from 0.3.2 to 0.3.6; Q2_0 is the default since v0.3.7, owner 2026-11-05): 3-bit, the most tasks right (193/202), top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context (at 64k Q2_0 reads prompts 86.9 % faster and decodes 50.7 % faster, measured 2026-11-05, record pending)."
    ],
    "warnings": [
     "Bigger than the RAM the server may use: moe-cache keeps the hot experts in RAM and reads the rest from the drive (SSD needed)."
