@@ -2,14 +2,14 @@
 # Runs only when asked: push to the branch ci/llama-patched or ci/llama-patched-* (manual dispatch needs the file on main). release.yml does not use it. See patches/llama.cpp/README.md.
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
 # Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first.
-name: llama-patched
+name: llama-patched-b12110
 on:
   workflow_dispatch:
   push:
     branches: [ci/llama-patched, 'ci/llama-patched-**']
 
 env:
-  LLAMA_COMMIT: 51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c   # b12064
+  LLAMA_COMMIT: cd959bae99ff4bed22bef2604f45241c09bbb8c8   # b12110 (includes fac3a894 / #31114); UPSTREAM-015 test build, NO patches
   VULKAN_VERSION: "1.4.357.0"
   CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=ON"
 
@@ -32,9 +32,6 @@ jobs:
           ref: ${{ env.LLAMA_COMMIT }}
           path: llama.cpp
           fetch-depth: 0   # the build number names the prebuilt UI and the version line
-      - name: Apply the patches
-        shell: bash
-        run: tools/apply_llama_patches.sh llama.cpp
       - run: choco install ninja
       - name: Build
         shell: cmd
@@ -68,9 +65,6 @@ jobs:
           ref: ${{ env.LLAMA_COMMIT }}
           path: llama.cpp
           fetch-depth: 0
-      - name: Apply the patches
-        shell: bash
-        run: tools/apply_llama_patches.sh llama.cpp
       - name: Vulkan SDK
         run: |
           curl.exe --retry 5 --retry-all-errors --retry-delay 10 -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
@@ -107,38 +101,6 @@ jobs:
         with:
           name: llama-patched-win-vulkan-x64
           path: pkg/llama-patched-win-x64
-      - name: Granite test model (pinned by sha256, as windows.yml)
-        run: |
-          Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
-          $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
-          if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
-      - name: Smoke test, switch unset and set
-        run: |
-          $dir = "$PWD\pkg\llama-patched-win-x64"
-          Get-ChildItem $dir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
-          if (-not (Test-Path "$dir\llama-server.exe")) { throw "no llama-server.exe in the package" }
-          & "$dir\llama-server.exe" --version
-          $body = '{"prompt":"The quick brown fox jumps over the lazy dog. The quick brown fox","n_predict":100,"temperature":0,"seed":1,"cache_prompt":false}'
-          function Run($name, $reloc, $port) {
-            Remove-Item Env:LLAMA_DECODE_RELOC -ErrorAction SilentlyContinue
-            if ($reloc) { $env:LLAMA_DECODE_RELOC = "1"; $env:LLAMA_DECODE_RELOC_AFTER = "16" }
-            $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port",$port,"--no-warmup","-lv","4" -RedirectStandardError "$name.err" -RedirectStandardOutput "$name.out" -PassThru
-            $ok = $false
-            for ($i = 0; $i -lt 180; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/health").StatusCode -eq 200) { $ok = $true; break } } catch {}; Start-Sleep 1 }
-            if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content "$name.err" -Tail 40; throw "${name}: server never became ready" }
-            $r = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body "http://127.0.0.1:$port/completion"
-            Stop-Process -Id $p.Id; Start-Sleep 2
-            (($r.Content | ConvertFrom-Json).content)
-          }
-          $off = Run "off" $false 8101
-          $on = Run "on" $true 8102
-          Write-Host "off: $off"; Write-Host "on:  $on"
-          if (-not $off -or $off.Length -lt 20) { throw "the unset run produced no text" }
-          if ($off -ne $on) { throw "text differs with LLAMA_DECODE_RELOC=1 (CPU only: nothing can move, so it must be identical)" }
-          if (Select-String -Path off.err -Pattern "reloc_" -Quiet) { throw "the patch logged with the switch unset" }
-          Write-Host "--- patch lines in on.err / on.out:"; Select-String -Path on.err,on.out -Pattern "reloc|RELOC|n_ubatch|ubatch" | ForEach-Object { $_.Line } | Select-Object -First 20
-          if (-not (Select-String -Path on.err,on.out -Pattern "LLAMA_DECODE_RELOC on" -Quiet)) { Get-Content on.err -Tail 60; throw "switch set: no 'LLAMA_DECODE_RELOC on' line (see the lines above)" }
-          Select-String -Path on.err -Pattern "reloc_" | ForEach-Object { $_.Line }
       - name: Zip and sha256
         run: |
           Compress-Archive -Path pkg\llama-patched-win-x64 -DestinationPath llama-patched-win-x64.zip
@@ -152,39 +114,3 @@ jobs:
           path: |
             llama-patched-win-x64.zip
             llama-patched-win-x64.zip.sha256
-
-  linux:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          persist-credentials: false
-          repository: ggml-org/llama.cpp
-          ref: ${{ env.LLAMA_COMMIT }}
-          path: llama.cpp
-          fetch-depth: 0
-      - name: Apply the patches
-        run: tools/apply_llama_patches.sh llama.cpp
-      - name: Vulkan SDK
-        run: |
-          # apt-key is deprecated and trusts the key for every repository: a keyring used only by the LunarG source (AUD-063)
-          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo gpg --dearmor -o /usr/share/keyrings/lunarg-archive-keyring.gpg
-          echo "deb [signed-by=/usr/share/keyrings/lunarg-archive-keyring.gpg] https://packages.lunarg.com/vulkan jammy main" | sudo tee /etc/apt/sources.list.d/lunarg-vulkan-jammy.list
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk libssl-dev
-      - name: Build
-        working-directory: llama.cpp
-        run: |
-          cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS
-          cmake --build build --config Release --target llama-server -j $(nproc)
-          build/bin/llama-server --version
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: llama-patched-linux-x64
-          path: |
-            llama.cpp/build/bin/llama-server
-            llama.cpp/build/bin/*.so
