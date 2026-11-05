@@ -78,7 +78,9 @@ def check(ok, what):
         fails.append(what)
 
 compute, backend, hybrid = read("src/mc_compute.inl"), read("src/mc_backend.inl"), read("src/mc_hybrid.inl")
-lru, state, rebal = read("src/mc_state_lru.inl"), read("src/mc_state.inl"), read("src/mc_state_rebalance.inl")
+lru, rebal = read("src/mc_state_lru.inl"), read("src/mc_state_rebalance.inl")
+# the state struct's members live in src/mc_state_*.h since cleanup-002; read them together with mc_state.inl
+state = read("src/mc_state.inl") + "".join("\n" + read("src/" + h) for h in sorted(os.listdir(os.path.join(HERE, "src"))) if h.startswith("mc_state_") and h.endswith(".h"))
 
 check(check_gpu_catch(compute, backend, hybrid) == [], f"GPU_CATCH: both GPU blocks run inside mcguard::guarded() ({check_gpu_catch(compute, backend, hybrid)})")
 check(check_lru(lru) == [], f"LRU rule: the sibling path asks the rule ({check_lru(lru)})")
