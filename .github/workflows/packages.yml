@@ -1,6 +1,6 @@
 # Package managers, after a release (owner's OK 2026-10-30): fills the scoop and winget manifests from the PUBLISHED Windows zip (sha256 and build
 # attestation checked first), pushes the scoop manifest to our bucket and, once switched on, sends the winget manifests to microsoft/winget-pkgs.
-#   automatic: when the release workflow succeeded on a tag      by hand: Actions tab -> packages -> Run workflow -> tag (e.g. v0.3.3)
+#   automatic: when the release workflow succeeded on a tag (it stops at once while the release is still a draft; run it by hand after publishing)      by hand: Actions tab -> packages -> Run workflow -> tag (e.g. v0.3.3)
 # Owner's setup (each part is skipped with a notice until it is there):
 #   scoop   repo IbrahimSiddiqui007/scoop-moe-cache (may be empty) + secret SCOOP_BUCKET_TOKEN (fine-grained token: that repo only, Contents read/write)
 #   winget  first version submitted once by hand, then secret WINGET_TOKEN (classic token with the repo scope, as wingetcreate's README asks) + variable WINGET_SUBMIT=true;
@@ -45,6 +45,8 @@ jobs:
           TAG: ${{ inputs.tag || github.event.workflow_run.head_branch }}
         run: |
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || { echo "::error::not a release tag: $TAG"; exit 1; }
+          # since v0.3.7 the release workflow leaves a draft until a person publishes it (tools/publish_release.sh): nothing may be sent to scoop / winget for a draft
+          [ "$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = false ] || { echo "::notice::$TAG is still a draft: publish it (tools/publish_release.sh $TAG), then run this workflow by hand with the tag"; exit 1; }
           gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isPrerelease,publishedAt --jq '"prerelease=\(.isPrerelease)\npublished=\(.publishedAt[0:10])"' >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 

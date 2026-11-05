@@ -1,7 +1,7 @@
 # Release workflow: builds the portable plugin from the tagged commit on a clean GitHub runner, signs the tarball with a GitHub build
 # attestation (provenance: which commit and workflow produced it) and attaches it to the release; the windows-kit job does the same for the Windows zip.
-#   push a tag v0.1.3        -> build, attest, draft release; windows-kit adds the Windows zip; the publish job then makes it public (latest, unless the tag has a
-#                               suffix like -beta1: then pre-release, not latest)
+#   push a tag v0.1.3        -> build, attest, draft release; windows-kit adds the Windows zip; the publish job checks both sets are there and leaves the DRAFT.
+#                               A person publishes it after the smoke test: tools/publish_release.sh v0.1.3 (latest, unless the tag has a suffix like -beta1: then pre-release)
 #   Actions tab -> Run workflow -> build only (not attested); the tarball is kept as a workflow artifact, nothing is published
 # Users verify a download with:  gh attestation verify moe-cache-v0.1.3-linux-x86_64.tar.gz -R IbrahimSiddiqui007/moe-cache
 name: release
@@ -202,15 +202,17 @@ jobs:
         run: gh release upload "$TAG" dist/moe-cache-v*-windows-x64.zip dist/SHA256SUMS-windows --clobber
 
   publish:
-    # the last step: only now does the release become public (and "latest"); until then releases/latest/download/ still points at the previous version.
-    # a failed build or Windows kit leaves a draft that nobody sees; fix, then re-run the workflow
+    # the last step of the workflow, and since v0.3.7 it does NOT publish (owner 2026-11-05: no pre-release; the draft's own files are smoke-tested first).
+    # It checks that both sets of files are attached and leaves a DRAFT that nobody sees; releases/latest/download/ keeps pointing at the previous version.
+    # After the smoke test of the draft, a person publishes it: tools/publish_release.sh vX.Y.Z (checks the same files, then makes it public / latest).
+    name: publish (checks the draft; a person publishes it)
     if: github.ref_type == 'tag'
     needs: [build, windows-kit]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Check both sets of files are attached, then publish
+      - name: Check both sets of files are attached (the release stays a draft)
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -220,9 +222,5 @@ jobs:
           for pat in "moe-cache-v$V-linux-x86_64.tar.gz" "SHA256SUMS" "install.sh" "install.ps1" "moe-cache-v$V-windows-x64.zip" "SHA256SUMS-windows"; do
             echo "$assets" | grep -Fxq "$pat" || { echo "FAIL: $pat is not attached to $TAG; the release stays a draft"; exit 1; }
           done
-          # a tag with a suffix (v0.3.6-beta1, v0.3.6-rc1) is a pre-release and never "latest" (it also keeps packages.yml from sending it to winget)
-          case "$V" in
-            *-*) gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false ;;
-            *)   gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease=false --latest ;;
-          esac
-          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '"published: draft=\(.isDraft) prerelease=\(.isPrerelease)"'
+          echo "all six files are attached to the draft $TAG. Smoke-test the draft's own files, then publish: tools/publish_release.sh $TAG"
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq '"isDraft=\(.isDraft)"'

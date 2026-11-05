@@ -11,7 +11,7 @@ For whoever cuts a release. Checked against `.github/workflows/*.yml`, `tools/se
 | `windows` | daily 03:30 UTC (`main`) and 04:30 UTC (`experimental`), by hand, push to branch `windows-ci` | the same identity test on a Windows runner, the DLL, the launcher and the kit |
 | `sanitize` | Mondays 06:00 UTC, by hand | ThreadSanitizer and AddressSanitizer builds on the hardest identity setups (forced eviction, delayed reads); a report that names plugin code fails it |
 | `release` | a pushed tag `v*`, or by hand (build only, nothing published) | builds the Linux tarballs and the Windows kit, attests them, creates the release |
-| `packages` | after `release` finishes, by hand | fills the scoop and winget manifests from the published Windows zip after its sha256 and attestation are checked (pre-releases are skipped for winget unless a repository variable says otherwise) |
+| `packages` | after `release` finishes (stops by itself while the release is a draft), by hand after publishing | fills the scoop and winget manifests from the published Windows zip after its sha256 and attestation are checked (pre-releases are skipped for winget unless a repository variable says otherwise) |
 
 The release workflow already has its own gates:
 
@@ -19,8 +19,8 @@ The release workflow already has its own gates:
 |---|---|---|
 | `identity`, `windows` and `quick` each have a successful run that **tested** the tagged commit (RELEASE-687: each ends with a `record` job that uploads the artifact `tested-sha` = `git rev-parse HEAD` of what it tested; `tools/release_gate.sh` compares it with the tag's commit, the run's own head sha is not used) | first step of the `build` job (tags only) | the build stops; run the missing workflow on the tag (`gh workflow run NAME.yml --ref vX.Y.Z`), then re-run `release`. A run from before this change has no artifact and does not count |
 | install.sh names the tag; install.ps1 gets the version; the package carries the official llama.cpp; no newer glibc than 2.34 | `build` job | the build stops |
-| both the Linux and the Windows files are attached | `publish` job | the release stays a **draft** that nobody sees |
-| a tag with a suffix (`-beta1`, `-rc1`) | `publish` job | published as a pre-release and never as "latest" |
+| both the Linux and the Windows files are attached | `publish` job | the release stays a **draft** that nobody sees (it stays one even when they are: a person publishes it with `tools/publish_release.sh` after the smoke test) |
+| a tag with a suffix (`-beta1`, `-rc1`) | `tools/publish_release.sh` | published as a pre-release and never as "latest" |
 
 The release text is `docs/RELEASE_NOTES_<tag>.md` when that file exists, else a short default text plus GitHub's generated notes. `tools/set_version.sh` needs the notes file to exist already.
 
@@ -37,12 +37,12 @@ Do these in order. Every command runs from the repository root.
 | 5 | No competitor name in any public file | `git grep -i -n -E 'NAME1\|NAME2' -- . ':!archive'` with the names from the owner's list (the list itself is not kept in the repository); the result must be empty |
 | 5b | Published numbers have current claims | `python3 bin/moe_cache.py bench-record lint` must print no problem (`quick` only warns; the `release` workflow fails a tag on any problem). `python3 tools/claims_gate.py` runs it. The only way past is `docs/claims_waiver.txt`, one line `waived: owner DATE; expires DATE; claims ID_OR_GLOB[,...]; files FILE[,...]; reason: TEXT` (format in `tools/claims_gate.py`): it must name the claim ids and the files, may run at most 30 days, and an expired or unnamed waiver fails the gate. Written by the owner for that release and deleted afterwards |
 | 6 | Push `experimental`, wait for `quick`; run `identity` and `windows` on the commit that will be tagged | `gh workflow run identity.yml --ref experimental` and `gh workflow run windows.yml --ref experimental`; they must be green on **that** commit |
-| 7 | Tag a pre-release first when the release workflow or an installer changed | `git tag vX.Y.Z-beta1 && git push origin vX.Y.Z-beta1`: it publishes as a pre-release, never "latest". Install from it (step 9), then tag the real version |
-| 8 | Tag the release | `git tag vX.Y.Z && git push origin vX.Y.Z`; watch `release` until the `publish` job is green |
+| 7 | No pre-release tag (owner decision 2026-11-05, from v0.3.7 on): the draft release is the test | the draft is private until a person publishes it, so the packaged files can be smoke-tested (section 3) before anyone can download them; `-beta`/`-rc` tags stay possible for a risky workflow change |
+| 8 | Tag the release (the owner pushes it) | `git tag vX.Y.Z && git push origin vX.Y.Z`; watch `release` until the `publish` job is green: it only checks that all six files are attached and leaves a **draft**. Smoke-test the draft (section 3, files downloaded from the draft with `gh release download vX.Y.Z`), then `tools/publish_release.sh vX.Y.Z` (latest, title `moe-cache vX.Y.Z`), then `gh workflow run packages.yml -f tag=vX.Y.Z` (it stops by itself on a draft) |
 
 ## 3. Smoke test of the packaged files (on the main user path)
 
-Do this on the files from the release page, not on the checkout. A release once shipped without `bin/moe_cache_pick.py` because only the checkout was tested.
+Do this on the files of the **draft** release (`gh release download vX.Y.Z -R IbrahimSiddiqui007/moe-cache -D <new folder>`, then `sha256sum -c SHA256SUMS`), not on the checkout. A release once shipped without `bin/moe_cache_pick.py` because only the checkout was tested.
 
 | # | Where | Check |
 |---|---|---|
@@ -61,6 +61,7 @@ README "Known issues" must name anything from steps 9-14 that was **not** done (
 |---|---|
 | The release page | pre-release or latest as intended; the six file names the `publish` job checks are all there; the title is `moe-cache vX.Y.Z` with no "(beta)" (owner decision from v0.3.7 on; before it the workflow wrote "(beta)" on every title) |
 | `main` follows the tag (RELEASE-700) | after the release is published, and only for a stable tag: `git fetch origin --tags && git merge-base --is-ancestor origin/main vX.Y.Z^{commit}` must succeed (exit 0), then fast-forward `main` to the **tagged commit** with `git push origin vX.Y.Z^{commit}:refs/heads/main`. Never `experimental`'s head (it may be ahead of the tag), never `--force`. When `merge-base` fails, `main` has a commit the tag lacks: stop and tell the owner |
+| The published release's installers | `install.sh` into a temporary prefix, then `update --apply` from a copy of the previous release, both against the **published** release (they cannot use a draft) |
 | `packages` | ran for a stable tag, did not run for a suffix tag |
 | The one-line installs | `releases/latest/download/install.sh` and `install.ps1` are the new versions |
 | Ledger and README | the "Known issues in vX.Y.Z" heading and the benchmark lines name the released version |
