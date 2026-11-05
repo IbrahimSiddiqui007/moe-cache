@@ -210,6 +210,19 @@ class Stats:
         return None
 
 
+def proc_read_bytes(pid):
+    """Bytes the process read from storage so far (Linux /proc/<pid>/io), or None where the OS gives no such counter (Windows: the plugin's own read_bytes
+    counter is used instead, and a stock server's disk reads are not recorded)."""
+    try:
+        with open(f"/proc/{int(pid)}/io") as f:
+            for line in f:
+                if line.startswith("read_bytes:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def delta(s0, s1, key):
     if s0 is None or s1 is None or key not in s0 or key not in s1:
         return None
@@ -219,8 +232,17 @@ def delta(s0, s1, key):
 # ---------------------------------------------------------------- one conversation
 
 def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="conversation-bench", timeout=1800, stats=None, max_turns=None,
-                     script=None, no_think=False, ignore_eos=False, log=print):
-    """Play the conversation; returns the run dict (turns, bands, stop reason)."""
+                     script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None):
+    """Play the conversation; returns the run dict (turns, bands, stop reason). monitor_pid: llama-server's pid, sampled during the whole run for VRAM, process
+    RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py)."""
+    smp = None
+    if monitor_pid:
+        try:
+            import moe_cache_record as rr
+            smp = rr.Sampler(int(monitor_pid)); smp.start()
+        except Exception as ex:
+            log(f"no resource sampling: {type(ex).__name__}: {ex}")
+    io0 = proc_read_bytes(monitor_pid) if monitor_pid else None
     turns, history = [], [{"role": "system", "content": SYSTEM}]
     prev_total, n, stop = 0, 0, "max turns reached"
     t_start = time.time()
@@ -261,6 +283,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
                "decode_tps": round(tm["predicted_per_second"], 2) if tm.get("predicted_per_second") is not None else None,
                "ttft_s": round(r["ttft_s"], 3) if r["ttft_s"] is not None else None, "wall_s": round(r["wall_s"], 2),
                "hits_dec": delta(s0, s1, "hits_dec"), "misses_dec": delta(s0, s1, "misses_dec"),
+               "read_gb": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "read_bytes")),
                "answer_chars": len(r["text"]), "answer_sha256": hashlib.sha256(r["text"].encode("utf-8")).hexdigest()[:16]}
         turns.append(row)
         log(f"  [{arm}] turn {n:3d} {pick['kind']:<11} +{row['tokens_added']} tok  depth {row['depth_before']}->{row['depth_after']}  "
@@ -278,6 +301,14 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
            "user_turns_sha256": hashlib.sha256("\n".join(m["content"] for m in history if m["role"] == "user").encode("utf-8")).hexdigest()[:16],
            "created_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")}
     run["bands"] = bands(turns, ctx)
+    if smp is not None:
+        run["monitor"] = smp.stop()
+    rb = [t["read_gb"] for t in turns if t["read_gb"] is not None]
+    io1 = proc_read_bytes(monitor_pid) if monitor_pid else None
+    if rb:
+        run["disk_read_gb"], run["disk_read_source"] = round(sum(rb), 2), "the plugin's own read_bytes counter, summed over the turns"
+    elif io0 is not None and io1 is not None:
+        run["disk_read_gb"], run["disk_read_source"] = round((io1 - io0) / 1e9, 2), "/proc/<pid>/io read_bytes of llama-server over the run"
     return run
 
 
@@ -319,7 +350,10 @@ def overall(run):
     dt = [t for t in ts if (t["predicted_n"] or 0) >= MIN_PREDICTED_N and t["predicted_ms"]]
     tot = sum(t["depth_before"] for t in ts if t["cache_n"] is not None and t["depth_before"] is not None)
     tt = [t["ttft_s"] for t in ts if t["ttft_s"] is not None]
-    return {"prompt_tps": sum(t["prompt_n"] for t in pt) / (sum(t["prompt_ms"] for t in pt) / 1000) if pt else None,
+    h = [t for t in ts if t["hits_dec"] is not None and t["misses_dec"] is not None]
+    hs, ms = sum(t["hits_dec"] for t in h), sum(t["misses_dec"] for t in h)
+    return {"hit_rate_dec_pct": 100 * hs / (hs + ms) if h and hs + ms else None,
+            "prompt_tps": sum(t["prompt_n"] for t in pt) / (sum(t["prompt_ms"] for t in pt) / 1000) if pt else None,
             "decode_tps": sum(t["predicted_n"] for t in dt) / (sum(t["predicted_ms"] for t in dt) / 1000) if dt else None,
             "ttft_s": statistics.median(tt) if tt else None,
             "cache_hit_pct": 100 * sum(t["cache_n"] for t in ts if t["cache_n"] is not None) / tot if tot else None}
@@ -329,11 +363,14 @@ def _f(x, n=1):
     return "-" if x is None else (f"{x:.{n}f}" if isinstance(x, float) else str(x))
 
 
+NO_CACHE = "n/a (no cache)"
+
+
 def turn_table(run):
     rows = ["| turn | kind | tokens added | depth before | depth after | prompt tok/s | new / cached tokens | decode tok/s | first token s | hits_dec / misses_dec |",
             "|---|---|---|---|---|---|---|---|---|---|"]
     for t in run["turns"]:
-        hm = "-" if t["hits_dec"] is None else f"{t['hits_dec']} / {t['misses_dec']}"
+        hm = (NO_CACHE if run["arm"] == "stock" else "-") if t["hits_dec"] is None else f"{t['hits_dec']} / {t['misses_dec']}"
         rows.append(f"| {t['turn']} | {t['kind']} | {_f(t['tokens_added'])} | {_f(t['depth_before'])} | {_f(t['depth_after'])} | {_f(t['prompt_tps'])} | "
                     f"{_f(t['prompt_n'])} / {_f(t['cache_n'])} | {_f(t['decode_tps'])} | {_f(t['ttft_s'], 2)} | {hm} |")
     return "\n".join(rows)
@@ -356,7 +393,7 @@ def band_table(runs):
     for i, b in enumerate(runs[0]["bands"]):
         cells = [b["band"], "/".join(str(r["bands"][i]["turns"]) for r in runs)]
         for key, n in (("prompt_tps", 1), ("decode_tps", 1), ("cache_reuse_pct", 1), ("ttft_median_s", 2), ("hit_rate_dec_pct", 1)):
-            cells += [_f(mean(a, i, key), n) for a in arms]
+            cells += [(NO_CACHE if key == "hit_rate_dec_pct" and a == "stock" else _f(mean(a, i, key), n)) for a in arms]
         if len(arms) == 2:
             for key in ("prompt_tps", "decode_tps"):
                 x, y = mean(arms[0], i, key), mean(arms[1], i, key)
@@ -364,7 +401,7 @@ def band_table(runs):
         rows.append("| " + " | ".join(cells) + " |")
     note = ("Runs in this order: " + ", ".join(f"{r['arm']} ({r['final_depth']} tokens, {len(r['turns'])} turns, stopped: {r['stop_reason']})" for r in runs) +
             ". Prompt tok/s = new tokens read / prompt time over turns with at least 64 new tokens; decode tok/s = over turns with at least 16 generated tokens; "
-            "a band is the depth of the prompt before the answer. '-' = not measured or not enough turns.")
+            "a band is the depth of the prompt before the answer. '-' = not measured or not enough turns; the stock server has no expert cache, so its hit rate is n/a.")
     return "\n".join(rows) + "\n\n" + note
 
 
@@ -380,8 +417,13 @@ def build_record(runs, a):
         o = overall(run)
         e = rr.run_entry(run["arm"], counts[run["arm"]], {"prompt_tps": o["prompt_tps"], "decode_tps": o["decode_tps"], "ttft_s": o["ttft_s"], "wall_s": run["wall_s"],
                                                            "prompt_tokens": run["final_depth"], "cache_hit_pct": o["cache_hit_pct"],
+                                                           "load_s": run.get("load_s"), "disk_read_gb": run.get("disk_read_gb"),
                                                            "error": run["stop_reason"] if run["stop_reason"].startswith("error") else "",
-                                                           "text_sha256": run["user_turns_sha256"]})
+                                                           "text_sha256": run["user_turns_sha256"]}, run.get("monitor"))
+        e["hit_rate_dec_pct"] = rr.rnd(o["hit_rate_dec_pct"], 1) if o["hit_rate_dec_pct"] is not None else ("n/a (no cache)" if run["arm"] == "stock" else rr.NR)
+        e["disk_read_source"] = run.get("disk_read_source", rr.NR)
+        e["settings"] = run.get("settings") or rr.NR
+        e["server_log_facts"] = run.get("server_log_facts") or rr.NR
         e["turns"] = run["turns"]
         e["bands"] = run["bands"]
         e["stop_reason"] = run["stop_reason"]
@@ -393,13 +435,24 @@ def build_record(runs, a):
     proto = {"arms": sorted(counts), "order": order, "runs_per_arm": max(counts.values()), "prompt_set": f"conversation script, seed {r0['seed']}, filled to a {r0['ctx']}-token context",
              "prompt_sha256": r0["user_turns_sha256"], "prompt_tokens": max(depths) if depths else rr.NR,
              "n_predict": r0["max_tokens"], "temperature": 0, "seed": 42, "sampler": "greedy, cache_prompt on, chat template of the model"}
-    st = rr.settings_from(a.command_line or "", log_lines=None)
+    given = getattr(a, "command_line", None) or getattr(a, "server_cmd", None)
+    if given:
+        st = rr.settings_from(given, env={}, log_lines=None)
+        src = "the command line given to assemble / ab"
+    else:
+        first = next((r for r in runs if r.get("settings") and r["settings"].get("command_line") not in (None, rr.NR)), None)
+        st = dict(first["settings"]) if first else rr.settings_from("", env={}, log_lines=None)
+        src = f"the {first['arm']} run" if first else "nothing (no command line was given)"
     st["ctx"] = r0["ctx"] if st.get("ctx") in (None, rr.NR) else st["ctx"]
     cond = rr.conditions_now(cold={"cold": True, "warm": False}.get(a.cache), baseline=a.baseline, other_programs=a.other_programs)
     rec = rr.assemble(env, st, cond, proto, entries, reproduce={"commands": ["python tools/conversation_bench.py run --ctx %d --max-tokens %d --seed %d ..." % (r0["ctx"], r0["max_tokens"], r0["seed"])],
                                                                 "kit": rr.NR, "model_url": rr.nr(a.model_url)},
                       notes=["conversation benchmark (TEST-699): the same seeded multi-turn conversation per run, history re-sent every turn with the prompt cache on",
                              "runs in this order: " + ", ".join(seq),
+                             f"settings in this record: {src}; each run carries its own settings, server-log facts, resource peaks, load time and disk reads (runs[]), "
+                             "because the arms can start llama-server with different GPU layers",
+                             "resource peaks come from the bench-report sampler on llama-server's process tree; VRAM is the server's own share when the OS reports it, else the whole "
+                             "card (runs[].vram_source says which); disk reads are the plugin's own counter or /proc/<pid>/io on Linux, else not recorded",
                              "per-turn and per-depth-band numbers are in runs[].turns and runs[].bands; the summary below is the mean over whole runs"])
     rec["outputs"]["identical_to_baseline"] = "not checked"
     return rec
@@ -430,6 +483,11 @@ def _run_args(p):
     p.add_argument("--ignore-eos", action="store_true", help="make every answer exactly --max-tokens long (the model may ramble)")
     p.add_argument("--stats-pid", type=int, help="llama-server's pid, to read the plugin's counters (needs --stats-log and MOE_CACHE_STATS_SIGNAL=1)")
     p.add_argument("--stats-log", help="the server's stderr log file")
+    p.add_argument("--monitor-pid", type=int, help="llama-server's pid: VRAM, process RAM, free RAM and CPU peaks are sampled during the run (the bench-report sampler)")
+    p.add_argument("--command-line", dest="server_cmd", help="the llama-server command line of this run (ctx, ub, GPU layers, flags go into the record); an 'env A=1 B=2 ' prefix "
+                   "records environment variables; @FILE reads the text from a file")
+    p.add_argument("--server-log", help="llama-server's log file (layer counts and buffer sizes are read from it)")
+    p.add_argument("--load-s", type=float, help="seconds from the server start to its first ready answer (measured by the driver)")
 
 
 def _one(a, url, arm, log=print):
@@ -442,7 +500,25 @@ def _one(a, url, arm, log=print):
     stats = Stats(a.stats_pid, a.stats_log) if a.stats_pid and a.stats_log else None
     script = load_script(a.script) if a.script else None
     log(f"conversation: arm {arm}, {url}, context {ctx}, {a.max_tokens} tokens per answer, seed {a.seed}")
-    return run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, a.no_think, a.ignore_eos, log)
+    run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, a.no_think, a.ignore_eos, log, a.monitor_pid)
+    try:
+        import moe_cache_record as rr
+        lines = []
+        if a.server_log and os.path.exists(a.server_log):
+            with open(a.server_log, "rb") as f:
+                lines = f.read(40_000_000).decode("utf-8", "replace").splitlines()
+        cmd = a.server_cmd or ""
+        if cmd.startswith("@"):                  # --command-line @FILE: the text is in a file (quotes and spaces survive PowerShell's argument passing)
+            with open(cmd[1:], encoding="utf-8-sig") as f:
+                cmd = f.read().strip()
+        run["command_line"] = cmd
+        run["settings"] = rr.settings_from(cmd, env={}, log_lines=lines)
+        run["server_log_facts"] = rr.parse_llama_log(lines)
+    except Exception as ex:
+        log(f"settings not read: {type(ex).__name__}: {ex}")
+    if a.load_s is not None:
+        run["load_s"] = round(a.load_s, 1)
+    return run
 
 
 def main(argv=None):
@@ -452,7 +528,7 @@ def main(argv=None):
     p = sub.add_parser("ab"); p.add_argument("--stock-url", required=True); p.add_argument("--plugin-url", required=True); p.add_argument("--out-dir", required=True)
     p.add_argument("--order", default="stock,moe-cache,moe-cache,stock"); _run_args(p)
     for q in (p,):
-        q.add_argument("--llama-server"); q.add_argument("--backend"); q.add_argument("--command-line"); q.add_argument("--baseline"); q.add_argument("--other-programs")
+        q.add_argument("--llama-server"); q.add_argument("--backend"); q.add_argument("--baseline"); q.add_argument("--other-programs")
         q.add_argument("--cache", choices=["cold", "warm"]); q.add_argument("--model-file"); q.add_argument("--model-url")
     p = sub.add_parser("assemble"); p.add_argument("runs", nargs="+"); p.add_argument("--out", required=True)
     p.add_argument("--model", help="the model .gguf (hashes and quant are read from it)"); p.add_argument("--llama-server"); p.add_argument("--backend"); p.add_argument("--model-url")

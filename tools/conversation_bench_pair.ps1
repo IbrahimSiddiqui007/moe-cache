@@ -42,6 +42,12 @@ $m = @($dry | Where-Object { $_ -match "llama-server\.exe" })
 if ($m.Count -eq 0) { Log "could not get the launcher's command (dry run printed no llama-server line)"; $dry | ForEach-Object { Log "  $_" }; exit 1 }
 $stockArgs = (($m[$m.Count - 1] -replace '^.*llama-server\.exe"?\s+', '') -replace "'", '"')
 Log "stock arguments: $stockArgs"
+# the moe-cache command: the same dry run with the plugin (its llama-server line shows the GPU/CPU layer plan the launcher chose for the plugin arm)
+$env:MOE_CACHE_LIB = $Lib
+$dryMc = @(& python $launcher server $Model --agent --ctx $Ctx --always-plugin --ram $Ram --port $Port --llama-server $LlamaServer --no-warm --dry-run "--" --alias $Alias 2>&1 | ForEach-Object { "$_" })
+$mm = @($dryMc | Where-Object { $_ -match "llama-server\.exe" })
+$mcArgs = if ($mm.Count -gt 0) { (($mm[$mm.Count - 1] -replace '^.*llama-server\.exe"?\s+', '') -replace "'", '"') } else { "" }
+Log "moe-cache arguments: $mcArgs"
 $kl = @(& python $launcher key 2>&1 | ForEach-Object { "$_" } | Where-Object { $_ } | ForEach-Object { $_.Trim() })
 $key = $kl[$kl.Count - 1]     # the stored per-user key (made on first use); never logged
 
@@ -65,11 +71,11 @@ foreach ($kind in $kinds) {
     Remove-Item Env:LLAMA_API_KEY -ErrorAction SilentlyContinue
     $p = Start-Process -FilePath $LlamaServer -ArgumentList $stockArgs -PassThru -RedirectStandardOutput $so -RedirectStandardError $se -WindowStyle Hidden
   }
-  $ready = $false; $t0 = Get-Date
+  $ready = $false; $t0 = Get-Date; $loadS = 0
   while (((Get-Date) - $t0).TotalSeconds -lt 1800) {
     Start-Sleep 2
     if ($p.HasExited) { break }
-    try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 3).StatusCode -eq 200) { $ready = $true; break } } catch {}
+    try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$Port/health" -TimeoutSec 3).StatusCode -eq 200) { $ready = $true; $loadS = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1); break } } catch {}
   }
   if (-not $ready) { Log "run $k ($kind): the server did not become ready (see $se)"; Stop-Tree $p; exit 1 }
   if ($kind -eq "mc") {
@@ -87,8 +93,14 @@ foreach ($kind in $kinds) {
   $json = Join-Path $OutDir "$tag.json"; $txt = Join-Path $OutDir "$tag.txt"
   $ba = @($bench, "run", "--url", "http://127.0.0.1:$Port", "--arm", $(if ($kind -eq "mc") { "moe-cache" } else { "stock" }), "--ctx", "$Ctx", "--max-tokens", "$MaxTokens", "--out", $json)
   if ($MaxTurns -gt 0) { $ba += @("--max-turns", "$MaxTurns") }
+  # every run: resource peaks (VRAM, process RAM, free RAM, CPU) sampled by the runner on llama-server's pid, the run's own command line (GPU layers, ctx, ub),
+  # llama-server's log (layer counts, buffer sizes) and the load time measured above
+  $llama = @(Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | Sort-Object CreationDate -Descending)
+  $cmdText = if ($kind -eq "mc") { "env MOE_CACHE_LIB=$Lib MOE_CACHE_STATS_SIGNAL=1 llama-server $mcArgs" } else { "llama-server $stockArgs" }
+  $cmdFile = Join-Path $OutDir "cmd-$tag.txt"; Set-Content -Path $cmdFile -Value $cmdText -Encoding UTF8
+  $ba += @("--command-line", "@$cmdFile", "--server-log", $se, "--load-s", "$loadS")
+  if ($llama.Count -gt 0) { $ba += @("--monitor-pid", "$($llama[0].ProcessId)") }
   if ($kind -eq "mc") {
-    $llama = @(Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | Sort-Object CreationDate -Descending)
     if ($llama.Count -gt 0) { $ba += @("--stats-pid", "$($llama[0].ProcessId)", "--stats-log", $se) }
     $env:LLAMA_API_KEY = $key
   }
@@ -106,7 +118,7 @@ foreach ($kind in $kinds) {
 }
 if ($runs.Count -eq $kinds.Count) {
   $rec = Join-Path $OutDir "record.json"
-  $aa = @($bench, "assemble") + $runs + @("--out", $rec, "--model", $Model, "--llama-server", $LlamaServer, "--command-line", $stockArgs, "--cache", "cold")
+  $aa = @($bench, "assemble") + $runs + @("--out", $rec, "--model", $Model, "--llama-server", $LlamaServer, "--cache", "cold")
   if ($Baseline) { $aa += @("--baseline", $Baseline) }
   if ($OtherPrograms) { $aa += @("--other-programs", $OtherPrograms) }
   & python @aa 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath (Join-Path $OutDir "tables.md") | ForEach-Object { Log $_ }
