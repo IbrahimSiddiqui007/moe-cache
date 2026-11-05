@@ -1,5 +1,5 @@
 diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 7365c3bbb..de2b2ea9b 100644
+index 7365c3bbb..de4e7f07a 100644
 --- a/src/llama-context.cpp
 +++ b/src/llama-context.cpp
 @@ -179,6 +179,32 @@ static const llm_fused_op_probe llm_fused_op_top_k_mask_probe = {
@@ -69,7 +69,7 @@ index 7365c3bbb..de2b2ea9b 100644
      sched_reserve();
  
      bool did_optimize = false;
-@@ -3031,6 +3071,306 @@ ggml_status llama_context::graph_compute(
+@@ -3031,6 +3071,327 @@ ggml_status llama_context::graph_compute(
      return status;
  }
  
@@ -113,14 +113,14 @@ index 7365c3bbb..de2b2ea9b 100644
 +    reloc.small      = (uint32_t) std::max<long>(llama_reloc_env("LLAMA_DECODE_RELOC_SMALL", 16), cparams.n_seq_max);
 +    // test only (tests/decode_reloc_live.sh): 1 = the first reserve of reloc_to_decode throws, 2 = the second one (after the move) throws
 +    reloc.fail       = (int) llama_reloc_env("LLAMA_DECODE_RELOC_FAIL", 0);
-+    if (reloc.ub_decode >= reloc.ub_prompt || reloc.max_layers <= 0) {
++    if (reloc.ub_decode >= reloc.ub_prompt || reloc.max_layers < 0) {
 +        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: nothing to do (decode ubatch %u, prompt ubatch %u, max layers %d)\n",
 +                __func__, reloc.ub_decode, reloc.ub_prompt, reloc.max_layers);
 +        return;
 +    }
 +    reloc.on = true;
-+    LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC on: prompt ubatch %u, decode ubatch %u, up to %d layers, keep %zu MiB free, after %u small batches\n",
-+            __func__, reloc.ub_prompt, reloc.ub_decode, reloc.max_layers, reloc.keep >> 20, reloc.after);
++    LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC on: prompt ubatch %u, decode ubatch %u, up to %d layers%s, keep %zu MiB free, after %u small batches\n",
++            __func__, reloc.ub_prompt, reloc.ub_decode, reloc.max_layers, reloc.max_layers == 0 ? " (shrink only)" : "", reloc.keep >> 20, reloc.after);
 +}
 +
 +void llama_context::reloc_drop_graphs() {
@@ -169,6 +169,18 @@ index 7365c3bbb..de2b2ea9b 100644
 +        return false;
 +    }
 +
++    // the compute buffers of all backends of this context, in bytes (shrink-only mode logs them)
++    auto compute_bytes = [&]() {
++        size_t t = 0;
++        if (sched) {
++            for (auto & b : backends) {
++                t += ggml_backend_sched_get_buffer_size(sched.get(), b.get());
++            }
++        }
++        return t;
++    };
++    const size_t cb_before = compute_bytes();
++
 +    // 1. smaller micro-batch: the big compute buffer is freed, a small one is reserved
 +    reloc_drop_graphs();
 +    cparams.n_ubatch   = reloc.ub_decode;
@@ -184,6 +196,15 @@ index 7365c3bbb..de2b2ea9b 100644
 +        cparams.n_ubatch   = reloc.ub_prompt;
 +        sched_need_reserve = true;
 +        return false;
++    }
++
++    // LLAMA_DECODE_RELOC_MAX_LAYERS=0: shrink only. The small micro-batch stays, no expert moves (the VRAM the big compute buffer held is simply not used for
++    // anything else); a prompt chunk over the decode micro-batch puts the big one back (reloc_to_prompt).
++    if (reloc.max_layers == 0) {
++        reloc.decode = true;
++        LLAMA_LOG_INFO("%s: LLAMA_DECODE_RELOC: shrink only (no layer moves): compute buffers %.2f MiB -> %.2f MiB, ubatch %u -> %u, %.1f ms\n",
++                __func__, cb_before / 1048576.0, compute_bytes() / 1048576.0, reloc.ub_prompt, reloc.ub_decode, (ggml_time_us() - t0) / 1000.0);
++        return true;
 +    }
 +
 +    // 2. the host layers, last first, that fit in the free memory of the device their other weights sit on

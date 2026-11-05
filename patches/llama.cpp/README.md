@@ -72,4 +72,6 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 
 **PC run 2026-11-05, nothing moved (fixed):** with the moe-cache plugin the host experts are in the plugin's `MOE_CACHE` buffer, which is not "host" memory, so every layer was skipped, and the log line printed `free 0 MiB` because the memory was never queried. The patch now accepts that buffer (copy through `ggml_backend_tensor_get`, which loads evicted experts first), reads the free memory again for up to 300 ms if it is too low, and its "no layer fits" line gives the real figure or "not queried" plus the skipped layers by reason. `LLAMA_DECODE_RELOC_FAKE_FREE_MIB` (test only) pretends the device has that much free memory. Details: `docs/DECODE_RELOC_DESIGN.md`.
 
+**Shrink only (`LLAMA_DECODE_RELOC_MAX_LAYERS=0`):** drop the big compute buffer after the prompt and reserve at `LLAMA_DECODE_RELOC_UB`, move nothing; a big prompt chunk puts the big buffer back. Before, 0 meant off. See `docs/DECODE_RELOC_DESIGN.md`.
+
 **Test (about 70 minutes, Windows PC):** the A B B A table in `docs/DECODE_RELOC_DESIGN.md`.

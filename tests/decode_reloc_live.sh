@@ -38,6 +38,9 @@ if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
   run pl_off env -u LLAMA_DECODE_RELOC "${PENV[@]}" "$EXE/live" "$MODEL" late2
   run pl_on env LLAMA_DECODE_RELOC=1 "${PENV[@]}" "$EXE/live" "$MODEL" late2
 fi
+# shrink only (LLAMA_DECODE_RELOC_MAX_LAYERS=0): the small micro-batch during decode, nothing moves, the big one comes back for a big chunk
+run sh_on env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_MAX_LAYERS=0 "$EXE/live" "$MODEL"
+[ -z "${DECODE_RELOC_PLUGIN:-}" ] || run shp_on env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_MAX_LAYERS=0 "${PENV[@]}" "$EXE/live" "$MODEL"
 fail=0
 MOVED=0; grep -q 'layers of experts moved to the GPU' "$OUT/on.err" && MOVED=1
 chkm() { if [ "$MOVED" = 1 ]; then chk "$@"; else echo "skip $1 (no layer could move on this machine: $(grep -h 'no layer fits\|not on a GPU' "$OUT/on.err" | head -1 | cut -c1-120))"; fi; }
@@ -50,6 +53,13 @@ chk "tokens equal with the switch on and off (prompt, decode, restore, move back
 chk "slot save/restore in the decode phase reproduces the tokens (on)" "grep -q 'restore_matches: yes' '$OUT/on.txt'"
 chk "second context: move refused" "grep -q 'another context' '$OUT/two.err' && ! grep -q 'layers of experts moved' '$OUT/two.err'"
 chk "second context: tokens unchanged" "cmp -s '$OUT/off.txt' '$OUT/two.txt'"
+# shrink only: works on any machine (no move needed)
+shrink_ok() { awk '/shrink only/ { for (i = 1; i <= NF; i++) if ($i == "buffers") { a = $(i+1); b = $(i+4) } } END { exit !(a > 0 && b + 0 < a + 0) }' "$1"; }
+chk "shrink only (MAX_LAYERS=0): the small micro-batch is reserved and the compute buffers get smaller, nothing moves, moved back for the big chunk" "[ \"\$(cat $OUT/sh_on.rc)\" = 0 ] && grep -q 'shrink only (no layer moves)' '$OUT/sh_on.err' && ! grep -q 'layers of experts moved' '$OUT/sh_on.err' && grep -q 'back to the prompt layout' '$OUT/sh_on.err' && cmp -s '$OUT/off.txt' '$OUT/sh_on.txt'"
+chk "shrink only: the logged compute buffers shrank (INFO line: A MiB -> B MiB with B < A)" "$(declare -f shrink_ok); shrink_ok '$OUT/sh_on.err'"
+if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
+  chk "shrink only with the plugin loaded (experts evicted): exit 0, tokens equal to the switch off" "[ \"\$(cat $OUT/shp_on.rc)\" = 0 ] && grep -q 'shrink only (no layer moves)' '$OUT/shp_on.err' && cmp -s '$OUT/p_off.txt' '$OUT/shp_on.txt'"
+fi
 # diagnostics
 if [ "$MOVED" = 1 ]; then
   chk "no layer fits: the log names the memory figure and the reasons (fake free memory 50 MiB)" "[ \"\$(cat $OUT/f3.rc)\" = 0 ] && grep -q 'no layer fits (50 MiB free of 50 MiB' '$OUT/f3.err' && grep -q 'too big for the free memory' '$OUT/f3.err' && cmp -s '$OUT/off.txt' '$OUT/f3.txt'"
