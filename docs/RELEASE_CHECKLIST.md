@@ -46,12 +46,12 @@ Do this on the files of the **draft** release (`gh release download vX.Y.Z -R Ib
 
 | # | Where | Check |
 |---|---|---|
-| 9 | Linux | take the tarball (or run the one-line `install.sh`): `moe-cache --version` names the new version; `moe-cache launch` reaches the model suggestion; `bin/moe-cache-check MODEL.gguf --run` says "cache runs: yes" |
-| 10 | Linux | `gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache` for the tarball, `install.sh` and `install.ps1`; the `sha256sum -c SHA256SUMS` line matches |
-| 11 | Windows | unzip the kit (Properties > Unblock first), double-click `moe-cache.bat`: the control page opens; import a model; press Start; send one chat message |
+| 9 | Linux | on the **draft's own files**: `gh release download vX.Y.Z -R IbrahimSiddiqui007/moe-cache -D <new empty folder>`, unpack the tarball: `moe-cache --version` names the new version; `pick` runs; `check` passes with the bundled llama-server **while a different `llama-server` is on the PATH**; the control page starts; a server starts with the small test model (no big model needed). `install.sh` itself cannot be tested on a draft: it is step 14, after publishing |
+| 10 | Linux | in the download folder: `sha256sum -c SHA256SUMS`, and `gh attestation verify FILE -R IbrahimSiddiqui007/moe-cache --signer-workflow IbrahimSiddiqui007/moe-cache/.github/workflows/release.yml` for **each** file (tarball, `install.sh`, `install.ps1`; the Windows zip with `SHA256SUMS-windows`) |
+| 11 | Windows | download the draft's zip into a **new** folder (`C:\dl\...`; never delete on the test PC: move old folders to `D:\to_delete`), check its sha256 against `SHA256SUMS-windows`, unzip (Properties > Unblock first), double-click `moe-cache.bat`: the control page opens; import a model; press Start; send one chat message (with no big model: `--version`, `check`, `pick` and the control page) |
 | 12 | Windows | `python bin\moe_cache.py pick` runs; `python bin\moe_cache.py check D:\models\model.gguf --run` passes |
 | 13 | both | every `bin/*.py` of the unpacked kit or tarball imports from there alone (`tools/make_windows_kit.sh` checks the kit's launcher modules itself) |
-| 14 | Linux, Windows | on a copy installed by `install.sh` / `install.ps1` from the **previous release that has an installer** (`install.sh` / `install.ps1`; v0.3.5 had none, so v0.3.6 was tested from its beta2): `moe-cache update --apply --dry-run` names the new tag; after `update --apply --yes` the new version runs, the old one is still there (Linux: `versions/`, roll back with `ln -sfn versions/<old folder> <prefix>/current`; Windows: the folder `kit.prev`) |
+| 14 | Linux, Windows | **after publishing** (they need the published release; `MOE_CACHE_BASE_URL` is refused by the attestation rule): `install.sh` into a temporary prefix, and on a copy installed by `install.sh` / `install.ps1` from the **previous release that has an installer** (`install.sh` / `install.ps1`; v0.3.5 had none, so v0.3.6 was tested from its beta2): `moe-cache update --apply --dry-run` names the new tag; after `update --apply --yes` the new version runs, the old one is still there (Linux: `versions/`, roll back with `ln -sfn versions/<old folder> <prefix>/current`; Windows: the folder `kit.prev`) |
 
 README "Known issues" must name anything from steps 9-14 that was **not** done (for example "a full model run from the final zip was not tested").
 
@@ -65,6 +65,7 @@ README "Known issues" must name anything from steps 9-14 that was **not** done (
 | `packages` | ran for a stable tag, did not run for a suffix tag |
 | The one-line installs | `releases/latest/download/install.sh` and `install.ps1` are the new versions |
 | Ledger and README | the "Known issues in vX.Y.Z" heading and the benchmark lines name the released version |
+| Rollback | if anything fails after publishing: `gh release edit vX.Y.Z -R IbrahimSiddiqui007/moe-cache --draft=true` (the previous release is "latest" again), then check that `releases/latest/download/install.sh` is the previous version's installer again; fix, re-run the smoke test on the draft, publish again with `tools/publish_release.sh` |
 
 ## 5. Cadence
 
