@@ -1,4 +1,4 @@
-# moe-cache v0.3.7 (release candidate text, date set at tagging)
+# moe-cache v0.3.7 (2026-11-05)
 
 **What this release is.** A default-model change (Flash-Next **Q2_0** again), the first multi-turn conversation benchmark, home-network serving that is off by default and key-protected, safer installers and key handling, and a lot of tidying of the numbers we publish. **Every speed number below was measured on the v0.3.6 kit; v0.3.7 itself has not been measured on the PC yet** (see "Not measured").
 
