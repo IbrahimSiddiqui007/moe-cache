@@ -1,0 +1,11 @@
+---
+id: "conv65k-q2_0"
+runs: ["2026-11-05_pc_b0a7e6"]
+cells: [{"run": "2026-11-05_pc_b0a7e6", "arm": "stock", "metric": "prompt_tps"}, {"run": "2026-11-05_pc_b0a7e6", "arm": "stock", "metric": "decode_tps"}, {"run": "2026-11-05_pc_b0a7e6", "arm": "moe-cache", "metric": "prompt_tps", "vs": "stock"}, {"run": "2026-11-05_pc_b0a7e6", "arm": "moe-cache", "metric": "decode_tps", "vs": "stock"}]
+valid_moe_cache: ["0.3.6", "0.3.6"]
+valid_llama_builds: [12064, 12064]
+withdrawn: ""
+---
+# Flash-Next Q2_0 in a 65k conversation (46 turns to 65,379 tokens): moe-cache reads new prompt tokens 2.11x as fast as stock (424.5 vs 201.4 tok/s) and decodes 27.09 against 22.37 tok/s (+21 %), flat at 26.9-27.1 tok/s in every depth band
+
+Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), PC, 2026-11-05. A seeded multi-turn conversation (tools/conversation_bench.py, seed 42, 128 tokens per answer, history re-sent every turn, prompt cache on, temperature 0) filled the 65,536 context in 46 turns (65,379 tokens). Order stock, moe-cache, moe-cache, stock, two runs per arm, cold file cache before each run, a quiet-CPU gate before each run (CPU load 4 %, 4 %, 6 %, 0 % in progress.log); other programs and baseline check not recorded, so cleanliness is not recorded. Q2_0 file, launcher defaults, 40 expert layers on the CPU, -ub 2048, plugin kit head5 (v0.3.6) with MOE_CACHE_LIB ggml-moe-cache-api3.dll; the record's plugin_file field names an API 2 DLL found by a file search, the server ran the API 3 DLL (settings.environment). The llama.cpp build is not recorded in this record (the same day's chain on the same kit recorded b12064). Per depth band (0-16k / 16-32k / 32-48k / 48-64k), means of two runs per arm, prompt tok/s stock vs moe-cache: 75.3 vs 390.6, 253.5 vs 542.0, 241.1 vs 464.1, 194.3 vs 318.6; decode tok/s stock vs moe-cache: 22.1 vs 27.0, 19.7 vs 26.9, 21.5 vs 27.0, 23.1 vs 27.1; median time to first token stock vs moe-cache: 1.23 vs 0.70 s, 10.29 vs 4.29 s, 8.93 vs 3.75 s, 0.71 vs 0.70 s; plugin decode hit rate 99.0, 98.8, 99.2, 99.5 %. Prompt tok/s = new tokens read divided by prompt time over turns with at least 64 new tokens; decode over turns with at least 16 generated tokens.

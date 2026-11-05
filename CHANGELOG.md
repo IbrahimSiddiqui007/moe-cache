@@ -4,6 +4,11 @@
 
 | Area | Change |
 |---|---|
+| Conversation benchmark | `tools/conversation_bench.py` (run / ab / assemble / table) and `tools/conversation_bench_pair.ps1` play a seeded multi-turn conversation up to a context limit (default 65,536 tokens), per turn and per depth band, stock against moe-cache, one bench record per run set with VRAM, RAM, CPU, load time, disk reads and settings; `docs/CONVERSATION_BENCH.md`; fake-server test in the quick set. |
+| Home network | `--lan` and `--ui-lan` serve to the home network with the key forced, public addresses refused and the page limited to an allow-list of routes for other computers; any non-loopback `--host` forces the key. |
+| Keys and installers | The stored API key goes only to a server this launcher started; installers refuse a cut-off script, never skip a failed attestation, pin the signer workflow and check the required files; `update --apply` refuses a downgrade without `--allow-downgrade`; a cut-short model file ends with a clear message (Linux; a guard on Windows, tested with a simulated error). |
+| Numbers | The README shows the whole benchmark card as tables (`tools/card_markdown.py`, checked in CI); `docs/RESULTS.md` is split (Windows) with `docs/RESULTS_OLD_LAPTOP.md`; every card row says its context and prompt; "not clean" text written by the old PC harness is now "cleanliness not recorded"; a release tag fails on number problems unless a signed waiver names the claims and an expiry (`tools/claims_gate.py`). No comparisons with other projects in public text (checked by `tests/public_names_test.py`). |
+| Documented | `--ram` is a sizing hint, not a RAM cap (Windows default path and Linux); `MOE_CACHE_GPU_CATCH` is Vulkan only (CUDA errors still abort). |
 | Default model | Flash-Next **Q2_0** is the default Flash-Next file again (`pick`, `launch`, the catalogue and the docs; owner decision 2026-11-05). IQ3_XXS stays listed as the higher-quality option. Measured 2026-11-05 on the Windows PC (records pending, not ingested yet): at 64k Q2_0 reads prompts 86.9 % faster and decodes 50.7 % faster than IQ3_XXS and decodes a flat ~27 tok/s through a 65k multi-turn conversation; top-1 agreement with IQ3_S is 73.3 % for Q2_0 against 76.5 % for IQ3_XXS. |
 
 ## 0.3.6 (2026-11-04)

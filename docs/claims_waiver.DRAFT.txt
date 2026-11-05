@@ -1,0 +1,1 @@
+waived: owner 2026-11-05; expires 2026-11-19; claims chain1103-*,v035-*,guard-*,card-decode-*,conv65k-*,quant-abba-*; files README.md,docs/benchmark_card.html; reason: v0.3.7 not yet measured on the PC; the numbers are v0.3.6 kit or older and are labelled with their date and build; older unclaimed numbers say which RESULTS section they come from

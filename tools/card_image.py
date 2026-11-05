@@ -2,7 +2,7 @@
 """Render the top of docs/benchmark_card.html (title, headline numbers, decode chart) to PNGs for the README (GitHub shows no HTML pages inline):
 docs/benchmark_card.png (light) and docs/benchmark_card-dark.png. Run it after every change to the card (the README rule: numbers, card, image in one step).
 
-    python3 tools/card_image.py [--chrome PATH] [--sections 2] [--width 940]
+    python3 tools/card_image.py [--chrome PATH] [--sections 3] [--width 940]
 
 Needs Google Chrome or Chromium (headless) and Pillow. The card is copied to a temporary file with the later sections hidden and the theme fixed."""
 import argparse, os, re, shutil, subprocess, sys, tempfile
@@ -45,7 +45,7 @@ def render(chrome, html, theme, sections, width, out):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--chrome", default=find_chrome())
-    ap.add_argument("--sections", type=int, default=2, help="how many <section>s of the card to show (default 2: headline numbers + decode chart)")
+    ap.add_argument("--sections", type=int, default=3, help="how many <section>s of the card to show (default 3: headline numbers, the conversation tables + decode chart)")
     ap.add_argument("--width", type=int, default=940)
     a = ap.parse_args()
     if not a.chrome:

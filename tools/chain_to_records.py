@@ -41,11 +41,11 @@ AB = {"gptoss_623": ("gpt-oss-120b-MXFP4", "MXFP4", 63.4, "30k-token prompt (30,
 def load(facts_dir):
     items = {}
     for f in sorted(glob.glob(os.path.join(facts_dir, "*.facts.json"))):
-        d = json.load(open(f, encoding="utf-8"))
+        d = json.load(open(f, encoding="utf-8-sig"))
         items.setdefault(d["item"], []).append(d)
     for v in items.values():
         v.sort(key=lambda d: int(d["run"]))
-    return items, json.load(open(os.path.join(facts_dir, "chain.json"), encoding="utf-8"))
+    return items, json.load(open(os.path.join(facts_dir, "chain.json"), encoding="utf-8-sig"))
 
 
 def hardware(chain):
@@ -113,6 +113,49 @@ def build(item, facts, chain, baseline):
     return rec
 
 
+# two quants of one model as the two arms, one file per arm (chain of 2026-11-05: quant_abba = Q2_0 against IQ3_XXS on a 64k prompt, order A B B A)
+QUANT2 = {"quant_abba": "Flash-Next GSQ-RCO: Q2_0 and IQ3_XXS (one file per arm)"}
+SIZES = {"Q2_0": 66.4, "IQ3_XXS": 75.8}
+
+
+def build_quant2(item, facts, chain, date):
+    """The two arms are two quants (arm = the quant). Everything the facts hold is stored; the harness' own clean check (clean_check) is the cleanliness evidence."""
+    arms = list(dict.fromkeys(d["arm"] for d in facts))
+    runs, idx, notes = [], {}, []
+    for d in facts:
+        r = d["results"][0]
+        idx[d["arm"]] = idx.get(d["arm"], 0) + 1
+        mon = d.get("monitor") or {}
+        runs.append(rr.run_entry(d["arm"], idx[d["arm"]], {"prompt_tps": r.get("prompt_tps"), "decode_tps": r.get("decode_after_tps"), "wall_s": r.get("wall_s"), "load_s": d.get("load_s"),
+                                                           "prompt_tokens": r.get("prompt_n"), "cache_hit_pct": r.get("hit_pct"), "gpu_blocks": r.get("gpu_segments"),
+                                                           "text_sha256": d.get("text_md5")}, mon))
+        c = d.get("clean_check") or {}
+        notes.append(f"run {d['run']} ({d['arm']}): harness clean check at {c.get('time', NR)}: clean = {c.get('clean', NR)}; windows {c.get('windows') or 'none'}; RAM over 0.5 GB {c.get('ram_over_0_5_gb') or 'none'}; "
+                     f"VRAM over 0.3 GiB {c.get('vram_over_0_3_gib') or 'none'}; CPU busy over 10 s {c.get('cpu_busy_pct_10s', NR)} %; uptime {c.get('uptime_h', NR)} h; "
+                     f"{d['cpu_expert_layers']} expert layers on the CPU, {d['gpu_expert_layers']} on the GPU; 'reprocessed' (prompt tokens read again by the follow-up) {r.get('reprocessed')}.")
+    g = facts[0]
+    notes.append("decode_tps in this record is the speed of the short answer after the 64k prompt (decode after a long prompt), from the harness' decode_after_tps. "
+                 "text_sha256 holds the first 10 hex digits of the harness' text md5, not a sha256. The two arms use different model files, so the layer plan differs per arm (launcher defaults).")
+    notes.append(f"Source: chain of 2026-11-05 on the PC ({chain.get('os')}, booted {chain.get('boot')}); plugin {g.get('plugin')}, ggml {g.get('ggml')} ({g.get('ggml_commit')}), official llama.cpp {g.get('llama_build')}.")
+    env = {"hardware": hardware(chain),
+           "software": {"moe_cache_version": g.get("plugin", NR).lstrip("v"), "moe_cache_commit": NR, "plugin_file": NR, "plugin_sha256_prefix": NR, "llama_backend": "Vulkan",
+                        "llama_build": int(str(g.get("llama_build", "")).lstrip("b") or 0) or NR, "llama_commit": g.get("ggml_commit", NR), "python": NR},
+           "model": {"file": QUANT2[item], "quant": " / ".join(arms), "size_gb": NR, "sha256_full": NR, "sha256_head16MiB": NR, "source_url": NR}}
+    settings = {"batch": NR, "command_line": NR, "ctx": g.get("ctx", NR), "environment": {}, "fast_flag": NR, "flash_attn": NR, "gpu_expert_layers": NR,  # differs per arm (see the notes)
+                "kv_type_k": NR, "kv_type_v": NR, "mtp": NR, "n_cpu_moe": NR, "n_layer": g.get("model_layers", NR), "ngl": NR, "threads": NR, "ubatch": g.get("ub", NR)}
+    cl0 = [d.get("clean_check") or {} for d in facts]
+    allclean = all(c.get("clean") is True for c in cl0)
+    cond = {"baseline_check": f"harness clean check before every run: {'all four clean' if allclean else 'not all clean'} (windows, RAM, VRAM and CPU checks, see notes)",
+            "cpu_temp_c": NR, "file_cache": NR, "gpu_temp_c": NR, "other_programs": "none found by the harness check" if allclean else "see notes",
+            "system_cpu_busy_before_pct": cl0[0].get("cpu_busy_pct_10s", NR), "system_ram_free_before_mib": round(cl0[0].get("available_ram_gb", 0) * 1024) if cl0[0].get("available_ram_gb") else NR,
+            "uptime_h": cl0[0].get("uptime_h", NR), "vram_in_use_before_mib": NR}
+    proto = {"arms": arms, "n_predict": NR, "order": "ABBA", "prompt_set": "64k-token prompt (61,843 tokens), then a short answer", "prompt_sha256": NR,
+             "prompt_tokens": g["results"][0].get("prompt_n", NR), "runs_per_arm": max(idx.values()), "sampler": NR, "seed": NR, "temperature": NR}
+    import datetime
+    return rr.assemble(env, settings, cond, proto, runs, {"commands": [], "kit": f"kit head5 ({chain.get('kit_head5', {}).get('value', NR)}) with plugin {g.get('plugin')} and llama.cpp {g.get('llama_build')}", "model_url": NR}, notes,
+                       now=datetime.datetime.fromisoformat(date + "T20:00:00").replace(tzinfo=datetime.timezone.utc))
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("facts_dir")
@@ -130,6 +173,16 @@ def main(argv):
         if a.only and item not in a.only:
             continue
         base = item.replace("_fix", "")
+        if item in QUANT2:
+            rec = build_quant2(item, items[item], chain, a.date)
+            errs = rr.validate(rec, sch) if sch else []
+            path = os.path.join(a.out, item + ".json")
+            json.dump(rec, open(path, "w", encoding="utf-8"), indent=1, ensure_ascii=False)
+            rid = ""
+            if a.ingest and not errs:
+                rid, _ = cl.ingest(path, date=a.date, machine="pc")
+            print(f"{item}: {len(rec['runs'])} runs, {'valid' if not errs else 'INVALID: ' + '; '.join(errs[:2])} {rid}")
+            continue
         if item not in CARD and item not in AB and not (base.rsplit("_", 1)[0] in QUANT and base.endswith(("_34k", "_64k"))):
             continue
         rec = build(item, items[item], chain, baseline)
