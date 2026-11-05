@@ -59,7 +59,8 @@ README "Known issues" must name anything from steps 9-14 that was **not** done (
 
 | Step | Check |
 |---|---|
-| The release page | pre-release or latest as intended; the six file names the `publish` job checks are all there |
+| The release page | pre-release or latest as intended; the six file names the `publish` job checks are all there; the title is `moe-cache vX.Y.Z` with no "(beta)" (owner decision from v0.3.7 on; before it the workflow wrote "(beta)" on every title) |
+| `main` follows the tag (RELEASE-700) | after the release is published, and only for a stable tag: `git fetch origin --tags && git merge-base --is-ancestor origin/main vX.Y.Z^{commit}` must succeed (exit 0), then fast-forward `main` to the **tagged commit** with `git push origin vX.Y.Z^{commit}:refs/heads/main`. Never `experimental`'s head (it may be ahead of the tag), never `--force`. When `merge-base` fails, `main` has a commit the tag lacks: stop and tell the owner |
 | `packages` | ran for a stable tag, did not run for a suffix tag |
 | The one-line installs | `releases/latest/download/install.sh` and `install.ps1` are the new versions |
 | Ledger and README | the "Known issues in vX.Y.Z" heading and the benchmark lines name the released version |
