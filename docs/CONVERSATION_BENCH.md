@@ -23,6 +23,18 @@ Per depth band (a quarter of the context each, 0-16k, 16-32k, 32-48k and 48-64k 
 (new tokens divided by prompt time, over turns that read at least 64 new tokens), decode tok/s (over turns that generated at least 16 tokens), the share of the
 prompt that came from the cache, the median time to first token, and the plugin's decode hit rate.
 
+## What every run records besides the turns
+
+The owner's full-metrics rule: a run is only useful with its conditions. Each run in the record carries: peak VRAM, peak process RAM (working set and private
+bytes), the lowest free system RAM and CPU averages and peaks (sampled during the run by the same sampler `bench-report` uses, on llama-server's process
+tree: `--monitor-pid`), the load time (`--load-s`, from the server start to its first ready answer), disk reads (the plugin's own `read_bytes` counter when
+its counters are reachable, `/proc/<pid>/io` on Linux for a stock server; on Windows a stock server's disk reads are not recorded), and the run's own
+settings: the llama-server command line (`--command-line TEXT` or `--command-line @FILE`, with an `env A=1 ` prefix for environment variables), so ctx, `-ub`,
+`--n-cpu-moe`, flash attention and KV types are stored, and the server log (`--server-log`) for the layer count, so the GPU expert layers are worked out the same
+way as in other records. The two arms can start llama-server with different layer plans, so settings are per run; the record's own settings block is taken from
+the first run and a note says so. `runs[].vram_source` says whether VRAM is the server's own share or the whole card. A value that could not be read stays
+"not recorded". The stock arm has no expert cache: its hit rate is written "n/a (no cache)", not left empty.
+
 ## Commands
 
 Linux, a server that is already running (the plugin run needs `MOE_CACHE_STATS_SIGNAL=1` and its stderr in a file if you want hits and misses):

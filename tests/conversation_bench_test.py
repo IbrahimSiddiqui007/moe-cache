@@ -151,5 +151,45 @@ D.n_ctx = 100            # every request is refused with HTTP 400
 bad = cb.run_conversation(ud, "stock", 4096, 32, 42, "", "m", 30, None, None, None, False, False, quiet)
 check(bad["stop_reason"].startswith("error: HTTP 400") and len(bad["turns"]) == 1, "an HTTP error ends the run with its reason")
 
+# ---- full metrics (owner's rule): resource peaks, load time, disk reads, per-run settings; stock hit rate is n/a, not a dash
+E_srv, ue = start("E", 4096, 100.0, 10.0)
+slog = os.path.join(tempfile.mkdtemp(), "server.log")
+open(slog, "w").write("llm_load_print_meta: n_layer          = 48\nload_tensors: offloaded 49/49 layers to GPU\nVulkan0 model buffer size = 5000.00 MiB\nVulkan0 KV buffer size = 600.00 MiB\n")
+out2 = tempfile.mkdtemp()
+cmdfile = os.path.join(out2, "cmd.txt")
+open(cmdfile, "w", encoding="utf-8-sig").write("env MOE_CACHE_STATS_SIGNAL=1 llama-server -m \"C:\\my models\\x.gguf\" -c 4096 -ub 2048 --n-cpu-moe 30 -ngl 99\n")
+rc = cb.main(["run", "--url", ue, "--arm", "stock", "--ctx", "4096", "--max-tokens", "32", "--max-turns", "6", "--monitor-pid", str(os.getpid()),
+              "--command-line", "@" + cmdfile, "--server-log", slog, "--load-s", "42.5",
+              "--out", os.path.join(out2, "1-stock.json")])
+rs = json.load(open(os.path.join(out2, "1-stock.json")))
+check(rc == 0 and rs["load_s"] == 42.5 and rs["settings"]["ctx"] == 4096 and rs["settings"]["ubatch"] == 2048 and rs["settings"]["n_cpu_moe"] == 30, "load time and the run's own settings (ctx, ub, n-cpu-moe) are stored")
+check(rs["settings"]["gpu_expert_layers"] == 18 and rs["settings"]["environment"].get("MOE_CACHE_STATS_SIGNAL") == "1", "GPU expert layers come from n_layer in the server log (48 - 30) and the env prefix is kept")
+check(isinstance(rs["monitor"]["process_ram_peak_mib"], (int, float)) and rs["monitor"]["samples"] >= 1, "resource peaks are sampled with the bench-report sampler (process RAM here)")
+if os.name != "nt":
+    log2 = os.path.join(tempfile.mkdtemp(), "server.err.log"); n2 = {"n": 0}
+    def on2(sig, frm):
+        n2["n"] += 1
+        open(log2, "a").write("moe-cache-stats " + json.dumps({"hits_dec": 10 * n2["n"], "misses_dec": 2 * n2["n"], "read_bytes": 2_000_000_000 * n2["n"]}) + "\n")
+    open(log2, "w").close(); old2 = signal.signal(signal.SIGUSR1, on2)
+    try:
+        F, uf = start("F", 4096, 200.0, 20.0)
+        rp = cb.run_conversation(uf, "moe-cache", 4096, 32, 42, "", "m", 30, cb.Stats(os.getpid(), log2), 4, None, False, False, quiet)
+        check(all(t["read_gb"] == 2.0 for t in rp["turns"]) and rp["disk_read_gb"] == 8.0, "disk reads per turn and per run come from the plugin's read_bytes counter (2 GB per turn here)")
+        runs3 = [rs, rp, dict(rp), dict(rs)]
+        for r in runs3: r.setdefault("settings", None)
+        ns = type("A", (), dict(model=None, llama_server=None, backend=None, model_url=None, command_line=None, server_cmd=None, baseline=None, other_programs=None, cache=None))()
+        rec3 = cb.build_record(runs3, ns)
+        check(rr.validate(rec3, rr.load_schema()) == [], "a record with monitor, settings and disk reads still validates")
+        e0, e1 = rec3["runs"][0], rec3["runs"][1]
+        check(isinstance(e0["process_ram_peak_mib"], (int, float)) and e0["load_s"] == 42.5, "the stock run carries its peaks and load time")
+        check(e1["disk_read_gb"] == 8.0 and e1["hit_rate_dec_pct"] == 83.3, "the plugin run carries disk reads and the decode hit rate")
+        check(e0["hit_rate_dec_pct"] == "n/a (no cache)", "the stock run's hit rate is n/a (no cache) in the record")
+        tab3 = cb.band_table(runs3)
+        check("n/a (no cache)" in tab3 and "moe-cache hit rate %" in tab3, "the stock hit-rate cells in the band table say n/a (no cache), not a dash")
+        check("n/a (no cache)" in cb.turn_table(rs), "the stock per-turn table says n/a (no cache)")
+        check(rec3["runs"][0]["settings"]["ctx"] == 4096 and "settings in this record" in " ".join(rec3["notes"]), "per-run settings and the note on where the record's settings come from are in the record")
+    finally:
+        signal.signal(signal.SIGUSR1, old2)
+
 print("conversation bench test: " + ("PASS" if not fails else f"FAIL ({len(fails)})"))
 sys.exit(1 if fails else 0)
