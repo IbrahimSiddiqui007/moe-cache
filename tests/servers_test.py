@@ -55,7 +55,7 @@ ui.KEY_CMD = [sys.executable, "-c", "print('k')"]
 def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close(); return p
 P1, P2, P3 = free_port(), free_port(), free_port()
-ui.PEEK_PORTS = range(1, 65536)             # the test servers use random ports; the real page asks 8080-8089
+ui.PEEK_PORTS = [P1, P2, P3]               # the test servers use random ports; only those are peeked (a sweep of every port hit a real llama-server of another session and timed out)
 
 TOKEN = "srv-token"
 srv = ui.make_server(0, "llama-server", token=TOKEN)
