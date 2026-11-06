@@ -520,7 +520,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             // crashed with an access violation). Linux used a 90 % rule while evicted experts read as zeros; with the file view (its default since
             // 191e6d4) they are read from the disk on this thread and stay mapped outside the cache's budget, so both systems pack now (audit
             // 2026-10-29). At 100 % use it is the same single copy.
-            if (!ok || pack_used.size() == (size_t) n_as) {
+            // PREFILL-638: with the keeper on (MOE_CACHE_GPU_KEEP_MIB) the block uploads whole tensors, which the keeper can hold between chunks (a packed copy is never held)
+            static const bool keeper_on = getenv("MOE_CACHE_GPU_KEEP_MIB") && atoi(getenv("MOE_CACHE_GPU_KEEP_MIB")) > 0;
+            if (!mcpackrule::pack_block(ok, pack_used.size(), (size_t) n_as, keeper_on)) {
                 pack_used.clear();
             }
         }
