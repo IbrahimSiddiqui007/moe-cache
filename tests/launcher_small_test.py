@@ -114,4 +114,12 @@ check("loading 6.0 GB" in ll and "about 2-12 s" in ll, f"loading line: size and 
 check("size unknown" in mc.loading_line(os.path.join(tmp2, "none.gguf")), "loading line: missing file gives a line, no crash")
 # DOCS-047: the --fast help gives the PC figure beside the laptop figure
 check("0.0120 on the PC" in mc.SERVER_HELP, "--fast help quotes the PC KL value")
+# DOCS-058 item 19: the registry name and the listed name need not match exactly
+D = {"AMD Radeon(TM) RX 9070 XT": 16 << 30, "AMD Radeon(TM) Graphics": 512 << 20}
+check(mc.dedicated_for("AMD Radeon(TM) RX 9070 XT", D) == 16 << 30, "dedicated VRAM: exact name")
+check(mc.dedicated_for("AMD Radeon RX 9070 XT (RADV GFX1201)", D) == 16 << 30, "dedicated VRAM: listed name has no (TM) and a driver suffix")
+check(mc.dedicated_for("NVIDIA GeForce RTX 4090", D) == -1, "dedicated VRAM: unknown adapter -1")
+lst = "Available devices:\n  Vulkan0: AMD Radeon Graphics (2048 MiB, 2000 MiB free)\n  Vulkan1: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n"
+mc.win_dedicated_vram = lambda: D
+check(mc.pick_gpu_full(lst)[1] == "AMD Radeon RX 9070 XT", "the discrete card wins although the registry spells its name differently")
 sys.exit(1 if fails else 0)

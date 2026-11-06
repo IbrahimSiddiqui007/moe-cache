@@ -635,6 +635,20 @@ def win_driver_version(name):
     return ""
 
 
+def dedicated_for(name, ded):
+    """DOCS-058 item 19: dedicated VRAM of the adapter `name` that llama.cpp lists, from win_dedicated_vram()'s {registry name: bytes}. Exact name first;
+    otherwise the registry name and the listed name may differ in trademark signs, case or a suffix (the Vulkan name can carry the driver), so a name
+    contained in the other (after dropping (R), (TM), (C) and extra blanks, at least 8 letters) counts, and the largest match wins. -1 = not found."""
+    def norm(t):
+        t = re.sub(r"\((?:r|tm|c)\)|[\u00ae\u2122\u00a9]", "", t, flags=re.I)
+        return re.sub(r"\s+", " ", t).strip().lower()
+    if name in ded:
+        return ded[name]
+    n = norm(name)
+    hits = [v for k, v in ded.items() if len(norm(k)) >= 8 and len(n) >= 8 and (norm(k) in n or n in norm(k))]
+    return max(hits) if hits else -1
+
+
 def pick_gpu(listing):
     g = pick_gpu_full(listing)
     return g[:3] if g else None
@@ -649,7 +663,7 @@ def pick_gpu_full(listing):
         m = re.search(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+)$", listing, re.M)     # a device line without memory figures
         return (m.group(1), m.group(2).strip(), 0, 0) if m else None
     ded = win_dedicated_vram()
-    d = max(devs, key=lambda x: (ded.get(x[1].strip(), -1), int(x[3])))
+    d = max(devs, key=lambda x: (dedicated_for(x[1].strip(), ded), int(x[3])))
     return d[0], d[1].strip(), int(d[3]), int(d[2])
 
 
