@@ -254,19 +254,26 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     arch = m.get("general.architecture")
     g = lambda k, d=None: m.get(f"{arch}.{k}", d)
     blocks, heads, kvh = g("block_count"), g("attention.head_count"), g("attention.head_count_kv")
-    if not isinstance(blocks, int) or not isinstance(heads, int) or isinstance(kvh, list) or isinstance(heads, list) or \
+    if isinstance(heads, list):         # LAUNCHER-741 (b): per-layer head counts (zero on layers without attention): the widest layer gives the head size
+        heads = max((h for h in heads if isinstance(h, int)), default=0)
+    kv_list = kvh if isinstance(kvh, list) and all(isinstance(x, int) and x >= 0 for x in kvh) else None
+    if not isinstance(blocks, int) or not isinstance(heads, int) or (isinstance(kvh, list) and kv_list is None) or \
             g("attention.key_length_mla") is not None or g("attention.kv_lora_rank") is not None or g("attention.sliding_window") is not None:
         return None
     if heads <= 0:
         return None
-    kvh = kvh or heads
+    kvh = (max(kv_list) if kv_list else heads) if kv_list is not None else (kvh or heads)
     n_main = blocks - int(g("nextn_predict_layers", 0) or 0)
     k_len = g("attention.key_length") or (g("embedding_length", 0) // heads)
     v_len = g("attention.value_length") or k_len
     interval = int(g("full_attention_interval", 0) or 0)
     n_attn = n_main // interval if interval else n_main
     elem = KV_ELEM[bool(kv_q8)]
-    per_tok = n_attn * kvh * (k_len + v_len) * elem
+    if kv_list is not None:                                   # llama.cpp sizes each layer by its own n_head_kv
+        n_attn = sum(1 for x in kv_list[:n_main] if x > 0)
+        per_tok = sum(kv_list[:n_main]) * (k_len + v_len) * elem
+    else:
+        per_tok = n_attn * kvh * (k_len + v_len) * elem
     if g("attention.indexer.key_length"):
         per_tok += 2 * n_attn * g("attention.indexer.key_length") * elem    # the indexer's cache: 2 x key_length per token and attention layer (PC, 256k: 1536 MiB f16)
     state = 0

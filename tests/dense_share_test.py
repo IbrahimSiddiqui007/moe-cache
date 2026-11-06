@@ -59,6 +59,23 @@ with tempfile.TemporaryDirectory() as tmp:
     r = run(dense, ["--auto-fit"])
     check("-ngl" not in cmdline(r) and "--n-cpu-moe" not in cmdline(r) and "PROTOTYPE" in r["stdout"], "dense + --auto-fit: no -ngl, no --n-cpu-moe, says prototype")
     check("-ngl 40" in cmdline(run(dense, ["--auto-fit"], ["-ngl", "40"])), "dense + --auto-fit + user -ngl 40: the user's value stands")
+    class PlanError(Exception):
+        pass
+    class DenseMachine:
+        def mem_cap(self): return None
+        def mem_for_server(self, ram): return 12 * GIB
+        def planner_answer(self, *a): raise PlanError("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF")
+    import contextlib, io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        nc, info, err = mc.plan_placement(type("A", (), {"ram": 12, "vram": None})(), dense, 8192, None, DenseMachine())
+    check(nc == "999" and info is None and "no expert tensors (dense)" in buf.getvalue() and "--auto-fit" in buf.getvalue() and "-ngl 99" in buf.getvalue() and "planner failed" not in buf.getvalue(),
+          "LAUNCHER-732: the planner's 'not a MoE' failure on a dense model prints one honest line (no experts, -ngl 99, --auto-fit), plan unchanged (999)")
+    DenseMachine.planner_answer = lambda self, *a: (_ for _ in ()).throw(PlanError("disk on fire"))
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        mc.plan_placement(type("A", (), {"ram": 12, "vram": None})(), dense, 8192, None, DenseMachine())
+    check("planner failed (disk on fire)" in buf.getvalue(), "any other planner failure keeps the old line")
 
     r = run(dense, ["--mmproj", "auto"])
     check(f"--mmproj {dense.replace('vision-7b-Q4.gguf', 'mmproj-vision-7b-f16.gguf')}".replace(tmp, "<TMP>") in cmdline(r), "--mmproj auto finds the projector next to the model and passes it")

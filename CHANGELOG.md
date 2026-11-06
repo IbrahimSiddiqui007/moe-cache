@@ -10,6 +10,7 @@
 | Archived | Patch 0070 (give GPU layers back after the prompt, DECODE-630) and its launcher hook `MOE_CACHE_DECODE_RELOC` lost the paired runs and moved to `archive/` with a restore note. |
 | Archived | Fifteen switches that stayed off moved to `archive/plugin/` and `archive/llama.cpp/` with restore patches (reader affinity, warm sort, async coalesce, demand first, layer share, evict siblings, residency check, refill after prompt, preload skip tokens, GPU upload threads, GPU stage threads, plan cost, compute DB, idle adapt, proxy keepalive) and patch 0005 (tokenize cache). |
 | Prompt | With `MOE_CACHE_GPU_KEEP_MIB` above 0 the long-prompt GPU block uploads whole expert tensors, so the keeper can hold a layer between chunks (the first layer-wise prefill test held nothing because every block was packed; PREFILL-638). Off by default; needs the PC re-test. |
+| Launcher | A dense model (no expert tensors) gets one honest line instead of "planner failed; keeping all experts on the CPU": it says -ngl 99 puts every layer on the GPU and points to `--auto-fit` (LAUNCHER-732). The KV size of models with a per-layer KV head list is summed from the header instead of falling back to the flat 40 KB per token (LAUNCHER-741 b). |
 | Documented | The pack file's payload is not verified byte by byte (CACHE-695). |
 
 ## 0.3.7 (2026-11-05)
