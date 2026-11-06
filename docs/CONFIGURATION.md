@@ -53,7 +53,6 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*` 
 | Variable | What it does | Default | Who |
 |---|---|---|---|
 | `MOE_CACHE_ALLOW_SLEEP` | Lets the computer go to sleep while the server runs. Set to `1`, `true` or `yes` (same as `--allow-sleep`). Normally the launcher holds a sleep block so a long run is not cut off. | off (sleep is blocked while the server runs) | everyone |
-| `MOE_CACHE_ASYNC_COALESCE` | Experimental: when background reads are queued, neighbouring experts in the file are fetched as one bigger read instead of several small ones. Any number above 0 turns it on. | off | internal/testing |
 | `MOE_CACHE_CKPT` | Agent mode only (`--agent`): how many saved snapshots of the model's running state each conversation keeps, for models with recurrent layers. More snapshots use more RAM; fewer mean more re-reading of the prompt. Non-numeric values fall back to 8. Ignored if you pass the llama.cpp checkpoint flag yourself. | 8 | advanced |
 | `MOE_CACHE_CLASSES` | Number of usage classes for the `classlru` cache policy (only used when `MOE_CACHE_POLICY=classlru`). Clamped to 2 to 8. Has no effect with the plain `lru` policy. | 4 | advanced |
 | `MOE_CACHE_COMPUTE_DB` | Path to a JSON file of GPU working-memory sizes measured on your model (from llama-server logs). The planner can only raise its memory reserve from it, never lower it. A missing or damaged file is ignored. | off (built-in table only) | advanced |

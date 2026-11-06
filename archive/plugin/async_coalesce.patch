@@ -1,0 +1,48 @@
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index 0984a69..78f348b 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -53,6 +53,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | Variable | What it does | Default | Who |
+ |---|---|---|---|
+ | `MOE_CACHE_ALLOW_SLEEP` | Lets the computer go to sleep while the server runs. Set to `1`, `true` or `yes` (same as `--allow-sleep`). Normally the launcher holds a sleep block so a long run is not cut off. | off (sleep is blocked while the server runs) | everyone |
++| `MOE_CACHE_ASYNC_COALESCE` | Experimental: when background reads are queued, neighbouring experts in the file are fetched as one bigger read instead of several small ones. Any number above 0 turns it on. | off | internal/testing |
+ | `MOE_CACHE_CKPT` | Agent mode only (`--agent`): how many saved snapshots of the model's running state each conversation keeps, for models with recurrent layers. More snapshots use more RAM; fewer mean more re-reading of the prompt. Non-numeric values fall back to 8. Ignored if you pass the llama.cpp checkpoint flag yourself. | 8 | advanced |
+ | `MOE_CACHE_CLASSES` | Number of usage classes for the `classlru` cache policy (only used when `MOE_CACHE_POLICY=classlru`). Clamped to 2 to 8. Has no effect with the plain `lru` policy. | 4 | advanced |
+ | `MOE_CACHE_COMPUTE_DB` | Path to a JSON file of GPU working-memory sizes measured on your model (from llama-server logs). The planner can only raise its memory reserve from it, never lower it. A missing or damaged file is ignored. | off (built-in table only) | advanced |
+diff --git b/src/mc_state_lru.inl a/src/mc_state_lru.inl
+index dfcc09b..7c9db17 100644
+--- b/src/mc_state_lru.inl
++++ a/src/mc_state_lru.inl
+@@ -418,6 +418,31 @@
+             // hand the reads to the reader threads and return: the executor waits for each expert's flag when it needs it
+             std::vector<pack_job_t *> pjs;
+             pack_extract(jobs, pjs);
++            // idea I01 (MOE_CACHE_ASYNC_COALESCE=1, default off): neighbouring experts of a tensor (neighbours in the file and in memory) are queued as ONE read,
++            // as the synchronous path does; the reader clears the loading flag of every expert in it. The first expert of a merge waits for the whole read.
++            static const bool async_co = getenv("MOE_CACHE_ASYNC_COALESCE") && atoi(getenv("MOE_CACHE_ASYNC_COALESCE")) > 0;
++            if (async_co && coalesce_bytes && jobs.size() > 1) {
++                std::sort(jobs.begin(), jobs.end(), [](const io_job_t & a, const io_job_t & b) { return a.fdi != b.fdi ? a.fdi < b.fdi : a.off < b.off; });
++                std::vector<io_job_t> merged;
++                merged.reserve(jobs.size());
++                for (const auto & j : jobs) {
++                    if (!merged.empty()) {
++                        io_job_t & m = merged.back();
++                        if (m.direct && j.direct && !m.rtensor && !j.rtensor && !m.pk && !j.pk && m.node >= 0 && j.node >= 0 && m.fdi == j.fdi &&
++                            m.off + m.nb2 == j.off && m.dst + m.nb2 == j.dst && m.nb2 + j.nb2 <= coalesce_bytes) {
++                            if (!m.more) {
++                                m.more = new std::vector<int>();
++                            }
++                            m.more->push_back(j.node);
++                            m.nb2 += j.nb2;
++                            coalesced++;
++                            continue;
++                        }
++                    }
++                    merged.push_back(j);
++                }
++                jobs.swap(merged);
++            }
+             const size_t njobs = jobs.size() + pjs.size();
+             if (njobs) {
+                 demand_pending.fetch_add((int) njobs, std::memory_order_relaxed);
