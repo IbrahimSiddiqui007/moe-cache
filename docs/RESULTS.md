@@ -12,7 +12,7 @@ The Linux laptop results (Results 1-48, 51-53, 57, 66, 70) moved to [RESULTS_OLD
 | MSI Claw 8 AI+ | Core Ultra 7 258V (4P + 4LPE) | Arc 140V iGPU | 32 GB | Windows 11 | not stated | Result 49-50 (2026-10-15/16): llama.cpp b11669 (Vulkan, ggml 0.27.0); test model OLMoE-1B-7B Q4_0 |
 | Mini PC | Ryzen 7 5800H (Zen 3, AVX2) | Vega 8 iGPU (3 GiB carve-out), Vulkan (RADV) | 32 GB DDR4 | Ubuntu 26.04 | not stated | Result 50 (2026-10-16): llama.cpp 23b0202a1 |
 
-## Current state (2026-11-04): where the numbers that apply to the next release are
+## Current state (2026-11-06): where the numbers that apply to v0.3.7 are
 
 | Question | Section | Note |
 |---|---|---|
@@ -20,8 +20,8 @@ The Linux laptop results (Results 1-48, 51-53, 57, 66, 70) moved to [RESULTS_OLD
 | v0.3.7 candidate: real 65k conversations on Flash-Next Q2_0 (default) and IQ3_XXS, stock against moe-cache, per depth band | 80 | claims `v037-conv-q2_0`, `v037-conv-iq3xxs`, `v037-fits-qwen36`; the numbers on the README card |
 | v0.3.5 against v0.3.4, long prompts, official llama.cpp b11966 server (the numbers to quote) | 79 | prompts +42 % at 34k, +38 % at 64k and 128k; decode -6 % at 34k, -10 % at 64k (Windows PC, Flash-Next Q2_0) |
 | The same comparison with a patched server and patch 0022 (not shipped) | 78 | prompts overstated by about 5-7 %; its 64k follow-up shows 39 CPU layers fix the placement (decode 26.1-26.8) |
-| The 2026-11-04 overnight chain (decode stock vs moe-cache on six models, 34k / 64k prompts on three Flash-Next files; v0.3.5 kit, llama.cpp b11966, every run not clean) | none yet (records and claims `chain1103-*`) | [benchmarks/BOARD.md](../benchmarks/BOARD.md), the README card and [benchmark_card.html](benchmark_card.html); not written up as a numbered result |
-| v0.3.6 (bundles llama.cpp b12064) | none | its speed has not been re-measured; the `chain1103-*` claims show "stale" on the board until a run on v0.3.6 is recorded |
+| The 2026-11-04 overnight chain (decode stock vs moe-cache on six models, 34k / 64k prompts on three Flash-Next files; v0.3.5 kit, llama.cpp b11966, every run not clean) | none (records and claims `chain1103-*`; stale for v0.3.7) | [benchmarks/BOARD.md](../benchmarks/BOARD.md), the README card and [benchmark_card.html](benchmark_card.html); not written up as a numbered result |
+| v0.3.7 candidate kit f928d1c (bundles the official llama.cpp b12064) | 80 | measured 2026-11-05/06 on the PC; the numbers on the README card. v0.3.6 was not re-measured on its own; Result 80 compares the candidate with the v0.3.6 kit's conversation runs of 2026-11-05 (unpaired) |
 | Windows desktop, stock vs plugin, short context, per model | 59-63 | file-view cache, GLM 2.0x paired (4.44 vs 2.21 tok/s, section 59) |
 | Agent sessions, stock vs plugin | 57, 60 | recorded OpenCode / Hermes replays |
 | Approximate modes and their quality | 72, and QUALITY_GATE.md | KV q8_0, fewer experts |

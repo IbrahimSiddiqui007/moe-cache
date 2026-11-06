@@ -1,7 +1,7 @@
 <h1 align="center">moe-cache</h1>
 
 <p align="center"><b>Run Mixture-of-Experts models that are bigger than your RAM, without the speed cliff.</b><br>
-A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
+A plugin for an unmodified <code>llama-server</code>. No fork, no patch: the Windows kit and the Linux ggml 0.26 tarball bundle the official llama.cpp b12064 build as released upstream. A small optional patch set for it exists in <code>patches/llama.cpp</code>; it is off by default and not part of the kit.</p>
 
 <p align="center">
 <img alt="status" src="https://img.shields.io/badge/status-v0.3.7-blue">
