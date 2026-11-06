@@ -22,7 +22,7 @@ N=moe-cache-v$V-windows-x64; K="$X/kit/$N"; mkdir -p "$K"
 cp "$X/build/win-api2/ggml-moe-cache.dll" "$K/ggml-moe-cache-api2.dll"
 cp "$X/build/win-api3/ggml-moe-cache.dll" "$K/ggml-moe-cache-api3.dll"
 # moe-cache.exe: runs moe-cache.bat from its own real folder (winget's portable installs need an .exe and start it through a symlink)
-"${MINGW_CXX:-x86_64-w64-mingw32-g++}" -x c -O2 -Wall -municode -static -o "$K/moe-cache.exe" "$X/tools/win_launcher.c"   # MINGW_CXX as build.sh
+"${MINGW_CXX:-x86_64-w64-mingw32-g++}" -x c -O2 -Wall -municode -static -DMC_VERSION="\"$V\"" -o "$K/moe-cache.exe" "$X/tools/win_launcher.c"   # MINGW_CXX as build.sh
 # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
 for d in "$K"/ggml-moe-cache-api*.dll "$K/moe-cache.exe"; do
   i=$(x86_64-w64-mingw32-objdump -p "$d" | grep "DLL Name") || { echo "FAIL: no import list for $d"; exit 1; }

@@ -5,6 +5,12 @@
 #include <wchar.h>
 #include <stdio.h>
 
+#ifndef MC_VERSION
+#define MC_VERSION "unknown"      /* tools/make_windows_kit.sh passes -DMC_VERSION='"X.Y.Z"' */
+#endif
+
+static int same(const wchar_t *a, const wchar_t *b) { return !wcscmp(a, b); }
+
 static const wchar_t *skip_program_name(const wchar_t *c) {      /* the rest of our own command line, as Windows gave it */
     if (*c == L'"') { c++; while (*c && *c != L'"') c++; if (*c) c++; }
     else while (*c && *c != L' ' && *c != L'\t') c++;
@@ -26,6 +32,19 @@ int wmain(void) {
             p = real;
             if (!wcsncmp(p, L"\\\\?\\UNC\\", 8)) { real[6] = L'\\'; p = real + 6; }   /* \\?\UNC\server\x -> \\server\x */
             else if (!wcsncmp(p, L"\\\\?\\", 4)) p = real + 4;                      /* \\?\C:\x -> C:\x */
+        }
+    }
+    /* WINDOWS-675: --version and --help answer here and exit; every other argument goes to moe-cache.bat (which opens the control page) */
+    {
+        const wchar_t *a = skip_program_name(GetCommandLineW());
+        if (same(a, L"--version") || same(a, L"-V")) { printf("moe-cache %s\n", MC_VERSION); return 0; }
+        if (same(a, L"--help") || same(a, L"-h") || same(a, L"/?")) {
+            printf("moe-cache %s\n\n"
+                   "moe-cache.exe starts the moe-cache control page (the same as moe-cache.bat) and passes its arguments on.\n"
+                   "  moe-cache.exe --version   print the version and exit\n"
+                   "  moe-cache.exe --help      print this and exit\n"
+                   "The command line is python bin\\moe_cache.py (python bin\\moe_cache.py --help lists the commands).\n", MC_VERSION);
+            return 0;
         }
     }
     wchar_t dir[32768];

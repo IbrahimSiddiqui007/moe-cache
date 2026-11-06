@@ -12,13 +12,16 @@ done
 echo "ok: win_launcher.c passes the std handles on"
 if ! command -v "$CC" >/dev/null 2>&1; then echo "SKIP: win_launcher_test needs $CC (mingw-w64); nothing checked"; exit 0; fi
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-"$CC" -x c -O2 -Wall -Werror -municode -static -o "$T/moe-cache.exe" tools/win_launcher.c || { echo "FAIL: win_launcher.c does not compile"; exit 1; }
+"$CC" -x c -O2 -Wall -Werror -municode -static -DMC_VERSION='"9.9.9"' -o "$T/moe-cache.exe" tools/win_launcher.c || { echo "FAIL: win_launcher.c does not compile"; exit 1; }
 echo "ok: win_launcher.c compiles"
 if ! command -v wine >/dev/null 2>&1; then echo "SKIP: wine not found, redirect behaviour not run (compile only)"; exit 0; fi
 # a stand-in kit: the batch file prints a line to stdout, a line to stderr, and echoes what it reads from stdin
 printf '@echo off\r\necho OUT-%%1\r\necho ERR-%%1 1>&2\r\nset /p L=\r\necho IN-%%L%%\r\n' > "$T/moe-cache.bat"
 export WINEPREFIX="$T/prefix" WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml="
 cd "$T"
+# WINDOWS-675: --version and --help print and exit without starting the batch file
+wine ./moe-cache.exe --version 2>/dev/null | tr -d '\r' | grep -q '^moe-cache 9.9.9$' || { echo "FAIL: moe-cache.exe --version"; exit 1; }
+echo "ok: moe-cache.exe --version prints and exits"
 echo hello | wine ./moe-cache.exe xyz > out.txt 2> err.txt
 rc=$?
 fail=0
