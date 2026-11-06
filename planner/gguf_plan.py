@@ -254,19 +254,26 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     arch = m.get("general.architecture")
     g = lambda k, d=None: m.get(f"{arch}.{k}", d)
     blocks, heads, kvh = g("block_count"), g("attention.head_count"), g("attention.head_count_kv")
-    if not isinstance(blocks, int) or not isinstance(heads, int) or isinstance(kvh, list) or isinstance(heads, list) or \
+    if isinstance(heads, list):         # LAUNCHER-741 (b): per-layer head counts (zero on layers without attention): the widest layer gives the head size
+        heads = max((h for h in heads if isinstance(h, int)), default=0)
+    kv_list = kvh if isinstance(kvh, list) and all(isinstance(x, int) and x >= 0 for x in kvh) else None
+    if not isinstance(blocks, int) or not isinstance(heads, int) or (isinstance(kvh, list) and kv_list is None) or \
             g("attention.key_length_mla") is not None or g("attention.kv_lora_rank") is not None or g("attention.sliding_window") is not None:
         return None
     if heads <= 0:
         return None
-    kvh = kvh or heads
+    kvh = (max(kv_list) if kv_list else heads) if kv_list is not None else (kvh or heads)
     n_main = blocks - int(g("nextn_predict_layers", 0) or 0)
     k_len = g("attention.key_length") or (g("embedding_length", 0) // heads)
     v_len = g("attention.value_length") or k_len
     interval = int(g("full_attention_interval", 0) or 0)
     n_attn = n_main // interval if interval else n_main
     elem = KV_ELEM[bool(kv_q8)]
-    per_tok = n_attn * kvh * (k_len + v_len) * elem
+    if kv_list is not None:                                   # llama.cpp sizes each layer by its own n_head_kv
+        n_attn = sum(1 for x in kv_list[:n_main] if x > 0)
+        per_tok = sum(kv_list[:n_main]) * (k_len + v_len) * elem
+    else:
+        per_tok = n_attn * kvh * (k_len + v_len) * elem
     if g("attention.indexer.key_length"):
         per_tok += 2 * n_attn * g("attention.indexer.key_length") * elem    # the indexer's cache: 2 x key_length per token and attention layer (PC, 256k: 1536 MiB f16)
     state = 0
@@ -510,61 +517,6 @@ _COMPUTE_MIB_NOT_PICKED = {131072: {2048: 3150}}
 _PROMPT_GAIN = {512: 1.0, 1024: 1.26, 2048: 1.58}      # measured prefill speed-up of a bigger micro-batch (6k-token prompt)
 
 
-# idea L01 (MOE_CACHE_COMPUTE_DB=FILE, unset = off): GPU compute buffers measured on THIS model (the "compute buffer size" lines of llama-server's log),
-# kept by model layout, context and micro-batch. tune() takes the larger of the table above and a measured value; `python3 gguf_plan.py --record-buffer
-# MODEL CTX UB LOGFILE` adds a measurement. A conservative store: it only ever raises a reserve, and a missing or damaged file means the table above.
-def compute_db_key(lay):
-    return f"{lay['n_layers']}:{int(lay['expert_bytes_per_layer'])}:{int(lay['other_bytes'])}"
-
-
-def _compute_db():
-    f = os.environ.get("MOE_CACHE_COMPUTE_DB")
-    if not f:
-        return None, {}
-    try:
-        with open(f) as fh:
-            d = json.load(fh)
-        return f, d if isinstance(d, dict) else {}
-    except (OSError, ValueError):
-        return f, {}
-
-
-def measured_buffer_mib(lay, ctx, ub):
-    """Largest measured buffer (MiB) of this model at the smallest measured context >= ctx with this micro-batch; None if there is none."""
-    f, d = _compute_db()
-    rows = [e for e in d.get(compute_db_key(lay), []) if isinstance(e, dict) and e.get("ub") == ub and isinstance(e.get("ctx"), int) and e["ctx"] >= ctx]
-    if not rows:
-        return None
-    c0 = min(e["ctx"] for e in rows)
-    return max(float(e["mib"]) for e in rows if e["ctx"] == c0)
-
-
-def parse_compute_buffer_mib(log_text):
-    """Largest GPU 'compute buffer size = X MiB' in a llama-server log (CPU lines are skipped), or None."""
-    vals = [float(m.group(2)) for m in re.finditer(r"(\S+) compute buffer size =\s*([\d.]+) MiB", log_text) if not m.group(1).upper().startswith("CPU")]
-    return max(vals) if vals else None
-
-
-def record_compute_buffer(path, ctx, ub, mib):
-    f, d = _compute_db()
-    if not f:
-        return False
-    key = compute_db_key(model_layout(path))
-    rows = [e for e in d.get(key, []) if isinstance(e, dict)]
-    for e in rows:
-        if e.get("ctx") == ctx and e.get("ub") == ub:
-            e["mib"] = max(float(e["mib"]), float(mib))
-            break
-    else:
-        rows.append({"ctx": int(ctx), "ub": int(ub), "mib": float(mib)})
-    d[key] = rows
-    tmp = f"{f}.{os.getpid()}.tmp"
-    with open(tmp, "w") as fh:
-        json.dump(d, fh)
-    os.replace(tmp, f)
-    return True
-
-
 def compute_buffer_mib(ctx, ub):
     key = next((k for k in sorted(_COMPUTE_MIB) if ctx <= k), None)
     return _COMPUTE_MIB[key].get(ub) if key else None
@@ -757,9 +709,6 @@ def rule_buffer_mib(path, lay, ctx, ub, kv_q8=False, fit_params=None, ubs=PLAN_U
             m, s = formula_buffer_mib(ctx, u), "formula"
         else:
             s = "llama-fit-params"
-        d = measured_buffer_mib(lay, ctx, u)       # a buffer logged on this model (MOE_CACHE_COMPUTE_DB) can only raise it
-        if d is not None and d > m:
-            m, s = d, "measured log"
         if m >= best:
             best, src = m, s
     return best, src
@@ -835,16 +784,12 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     if rule and fit_params:
         prefetch_fit_params(fit_params, path, ctx, [u for u in PLAN_UBS if u <= max(ub or 0, 2048)] + ([ub] if ub else []), kv_q8)
 
-    def cbm(u, guess):        # idea L01: the table, raised by a buffer measured on this model when MOE_CACHE_COMPUTE_DB has one
+    def cbm(u, guess):
         if rule:              # MOE_CACHE_PLAN_RULE=1: the table only says whether u is a candidate (as before); the number is the rule's
             if not guess and compute_buffer_mib(ctx, u) is None:
                 return None
             return rule_buffer_mib(path, lay, ctx, u, kv_q8, fit_params)[0]
-        st = compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
-        m = measured_buffer_mib(lay, ctx, u)
-        if m is None:
-            return st
-        return m if st is None and guess else (None if st is None else max(st, m))
+        return compute_buffer_guess_mib(ctx, u) if guess else compute_buffer_mib(ctx, u)
     # long prompts run their expert block on the GPU and upload one whole layer of experts for it: the micro-batch, the cache and static layers must
     # all leave that room (measured on Flash-Next: without it the block failed to allocate and prompt processing fell back to the CPU, 18-24 tok/s instead
     # of 50-60). The block needs 923 MiB for a 704 MiB layer at -ub 1024 (weights plus the batch's intermediate results), so 1.35x plus headroom
@@ -857,13 +802,10 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
         return ((1.6 if u > 1024 else 1.35) * lay["expert_bytes_per_layer"] + (160 + 256) * 1048576) if lay["expert_bytes_per_layer"] else 0
     best = None
     fixed_ub = ub
-    plan_cost = os.environ.get("MOE_CACHE_PLAN_COST") not in (None, "", "0")
     # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
     keep_1024 = ctx > 32768 and "gpt-oss" in (sampling_meta(path).get("arch") or "")
     for ub in ((fixed_ub,) if fixed_ub else ((1024, 512) if keep_1024 else (2048, 1024, 512))):
-        # idea L02 (MOE_CACHE_PLAN_COST=1, default off): from 64k context on a long prompt dominates the request and -ub 2048 is the fastest measured
-        # (RESULTS 61: 128k and 256k), so 2048 is a candidate there with its measured or estimated (high) buffer, not skipped for lack of a table row
-        buf = cbm(ub, bool(fixed_ub) or (plan_cost and ctx >= 65536))
+        buf = cbm(ub, bool(fixed_ub))
         if buf is None:
             continue
         block = block_for(ub)
@@ -932,12 +874,6 @@ def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):
 
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) == 6 and sys.argv[1] == "--record-buffer":
-        mib = parse_compute_buffer_mib(open(sys.argv[5], errors="replace").read())
-        if mib is None or not record_compute_buffer(sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), mib):
-            raise SystemExit("nothing recorded (no GPU compute buffer line in the log, or MOE_CACHE_COMPUTE_DB is not set)")
-        print(f"recorded {mib:.0f} MiB")
-        raise SystemExit(0)
     for p in sys.argv[1:]:
         n, lay, free = fit_n_cpu_moe(p)
         t = tune(p)

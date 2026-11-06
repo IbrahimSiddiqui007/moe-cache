@@ -1,0 +1,71 @@
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index e682a4d..0984a69 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -58,6 +58,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_COMPUTE_DB` | Path to a JSON file of GPU working-memory sizes measured on your model (from llama-server logs). The planner can only raise its memory reserve from it, never lower it. A missing or damaged file is ignored. | off (built-in table only) | advanced |
+ | `MOE_CACHE_CPU_MASK` | Hex bitmask of CPUs (bit i = CPU i) the expert worker threads are pinned to. Overrides automatic pinning. Does nothing if `MOE_CACHE_CPU_PIN=off`. | unset (automatic on hybrid Intel CPUs) | set by the launcher |
+ | `MOE_CACHE_CXXFLAGS` | Build-time only, not read at run time: extra compiler flags for building the plugin. Mentioned in the code for `-DMOE_CACHE_NODE_PAD=1`, which pads each cache entry to its own cache line (about 40 bytes more per entry). | no extra flags (padding off) | internal/testing |
++| `MOE_CACHE_DEMAND_FIRST` | Experimental: background guessed reads wait (up to about 5 ms) while reads the model is actually waiting for are queued, so guesses never delay needed experts. Any number above 0 turns it on. | off | internal/testing |
+ | `MOE_CACHE_E1_SAMPLE` | Windows-only diagnostic, used with `MOE_CACHE_E1_TIMES=1`: samples roughly every 15 ms what the main thread is doing between our graphs and reports it in the stats JSON. Any value (even empty) turns it on. | off | internal/testing |
+ | `MOE_CACHE_E1_TIMES` | Diagnostic timers that break down the gaps between graphs and the long-prompt GPU blocks. Only active together with `MOE_CACHE_SEG_TIMES=1`. | off | internal/testing |
+ | `MOE_CACHE_ECOQOS_OFF` | Windows only: set to `1` to stop Windows from throttling the process as a low-power one (EcoQoS) and from ignoring its timer requests. Does nothing on other systems. | off | advanced |
+diff --git b/src/mc_state_exec.h a/src/mc_state_exec.h
+index f7d40a7..86e21e1 100644
+--- b/src/mc_state_exec.h
++++ a/src/mc_state_exec.h
+@@ -22,6 +22,7 @@ struct state_exec_t {
+     std::mutex rq_mu;
+     std::condition_variable rq_cv;
+     std::deque<io_job_t> rq;
++    std::atomic<int> demand_pending{0};          // idea I02: demand reads queued or running in the reader threads (advisory prefetch reads wait while this is above 0)
+     bool   rq_stop = false;
+     std::atomic<uint64_t> exec_fused{0}, exec_ops{0}, exec_mismatch{0}, exec_wait_ns{0}, exec_checked{0};
+     uint64_t stepaside_graphs = 0, stepaside_waits = 0;   // executor graphs handed back to llama.cpp with everything resident / of them, graphs that had to wait for a load
+diff --git b/src/mc_state_io.inl a/src/mc_state_io.inl
+index bdcb148..78490c5 100644
+--- b/src/mc_state_io.inl
++++ a/src/mc_state_io.inl
+@@ -42,6 +42,7 @@
+                     }
+                 }
+                 load_cv.notify_all();
++                demand_pending.fetch_sub(1, std::memory_order_relaxed);
+                 continue;
+             }
+             read_job(j, bounce);
+@@ -58,6 +59,7 @@
+             }
+             delete j.more;
+             load_cv.notify_all();
++            demand_pending.fetch_sub(1, std::memory_order_relaxed);
+         }
+     }
+ 
+@@ -263,6 +265,14 @@
+                     }
+                     bounce_size = need;
+                 }
++                // idea I02 (MOE_CACHE_DEMAND_FIRST=1, default off): an advisory read waits (at most ~5 ms) while demand reads are queued or running, so a guess never
++                // delays an expert the executor is waiting for.
++                static const bool demand_first = getenv("MOE_CACHE_DEMAND_FIRST") && atoi(getenv("MOE_CACHE_DEMAND_FIRST")) > 0;
++                if (demand_first) {
++                    for (int w = 0; w < 100 && demand_pending.load(std::memory_order_relaxed) > 0; w++) {
++                        std::this_thread::sleep_for(std::chrono::microseconds(50));
++                    }
++                }
+                 read_job(j, bounce);
+                 {
+                     std::lock_guard<std::mutex> lk(mu);
+diff --git b/src/mc_state_lru.inl a/src/mc_state_lru.inl
+index 087d2fa..dfcc09b 100644
+--- b/src/mc_state_lru.inl
++++ a/src/mc_state_lru.inl
+@@ -420,6 +420,7 @@
+             pack_extract(jobs, pjs);
+             const size_t njobs = jobs.size() + pjs.size();
+             if (njobs) {
++                demand_pending.fetch_add((int) njobs, std::memory_order_relaxed);
+                 {
+                     std::lock_guard<std::mutex> ql(rq_mu);
+                     for (pack_job_t * pj : pjs) {

@@ -8,6 +8,10 @@
 | Agents | `connect NAME --undo` restores the first backup; later connects keep numbered backups (`.bak.1` ...); `connect claude --write` adds the settings file to `.gitignore` of a git project (AGENTS-714). |
 | llama.cpp patches | Patch 0020: checkpoints count twice against the async slot-save cap, stale `*.tmp` slot files older than an hour are removed (PATCH-712). Patch 0030: `GGML_VK_GLOBAL_PRIORITY` accepts low, medium, high only (PATCH-713). |
 | Archived | Patch 0070 (give GPU layers back after the prompt, DECODE-630) and its launcher hook `MOE_CACHE_DECODE_RELOC` lost the paired runs and moved to `archive/` with a restore note. |
+| Archived | Fifteen switches that stayed off moved to `archive/plugin/` and `archive/llama.cpp/` with restore patches (reader affinity, warm sort, async coalesce, demand first, layer share, evict siblings, residency check, refill after prompt, preload skip tokens, GPU upload threads, GPU stage threads, plan cost, compute DB, idle adapt, proxy keepalive) and patch 0005 (tokenize cache). |
+| Prompt | With `MOE_CACHE_GPU_KEEP_MIB` above 0 the long-prompt GPU block uploads whole expert tensors, so the keeper can hold a layer between chunks (the first layer-wise prefill test held nothing because every block was packed; PREFILL-638). Off by default; needs the PC re-test. |
+| Launcher | A dense model (no expert tensors) gets one honest line instead of "planner failed; keeping all experts on the CPU": it says -ngl 99 puts every layer on the GPU and points to `--auto-fit` (LAUNCHER-732). The KV size of models with a per-layer KV head list is summed from the header instead of falling back to the flat 40 KB per token (LAUNCHER-741 b). |
+| Quality tool | `tools/expert_mix.py`: per-expert mix of two quantisations written as Q6_K/Q8_0 for a plugin-free KL test (cold-first from a usage profile, controls at fraction 0 and 1), header-only `types` listing and `mix --dry-run` (MODELS-759/760). |
 | Documented | The pack file's payload is not verified byte by byte (CACHE-695). |
 
 ## 0.3.7 (2026-11-05)

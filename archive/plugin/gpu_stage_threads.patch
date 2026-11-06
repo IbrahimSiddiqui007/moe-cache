@@ -1,0 +1,38 @@
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index 00b4c5f..764ed00 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -84,6 +84,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_GPU_SHARE_UP` | Experimental. In a split block, uploads the parts that are the same for every part (everything except that part's experts and ids) only once. 1/on/true/yes turns it on. | off | internal/testing |
+ | `MOE_CACHE_GPU_SPLIT_ADAPT` | Experimental. Tries the first split that fits and the next two in turn, then keeps the one with the lowest measured time per used expert. 1/on/true/yes turns it on. | off | internal/testing |
+ | `MOE_CACHE_GPU_STAGE` | Experimental. Copies a part's expert weights into one pinned (non-swappable) buffer first and uploads from there in one copy per tensor, preparing the next part while the GPU works. Needs the pinned read-back path and a split block. 1/on/true/yes turns it on. | off | internal/testing |
++| `MOE_CACHE_GPU_STAGE_THREADS` | With GPU_STAGE: splits each staging copy of 8 MiB or more across N threads. N is clamped to 1 to 8; unset (or below 1) means 1 thread. | 1 | internal/testing |
+ | `MOE_CACHE_GPU_TMPL` | Experimental. Keeps finished long-prompt GPU graphs and reuses them for later blocks of the same shape, padding blocks that use a few more or fewer experts. Ignored if MOE_CACHE_GPU_KEEP_MIB is above 0. 1/on/true/yes turns it on. | off | internal/testing |
+ | `MOE_CACHE_HALFLIFE` | How fast old expert-use counts fade in the smart (class-based) eviction policy, in decode steps: a count halves after this many steps. Values below 1 are raised to 1. Read as a number. | 128 | advanced |
+ | `MOE_CACHE_HYBRID_COMPACT` | Experimental, hybrid GPU mode: when some of the experts a token needs are missing, the GPU computes only the ones that are present (and only those rows are read back) instead of all of them. 1/on/true/yes turns it on. | off | internal/testing |
+diff --git b/src/mc_backend.inl a/src/mc_backend.inl
+index 7dfcd46..5e5beb4 100644
+--- b/src/mc_backend.inl
++++ a/src/mc_backend.inl
+@@ -1181,7 +1181,20 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
+                 char * dst = stage + st.second + (k - plo) * st.first->nb[2];
+                 const char * src = (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2];
+                 const size_t nbytes = r * st.first->nb[2];
+-                memcpy(dst, src, nbytes);
++                // idea P06 (MOE_CACHE_GPU_STAGE_THREADS=N, default 1): a copy of 8 MiB or more is split over N threads (the calling one and N-1 short-lived helpers)
++                static const int nth = getenv("MOE_CACHE_GPU_STAGE_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_STAGE_THREADS")))) : 1;
++                if (nth > 1 && nbytes >= ((size_t) 8 << 20)) {
++                    std::vector<std::thread> hs;
++                    const size_t part = (nbytes / (size_t) nth + 4095) / 4096 * 4096;
++                    for (int ti2 = 1; ti2 < nth; ti2++) {
++                        const size_t o = std::min(nbytes, part * (size_t) ti2), n2 = std::min(nbytes - o, part);
++                        hs.emplace_back([=] { memcpy(dst + o, src + o, n2); });
++                    }
++                    memcpy(dst, src, std::min(nbytes, part));
++                    for (auto & h : hs) { h.join(); }
++                } else {
++                    memcpy(dst, src, nbytes);
++                }
+             }
+         };
+         if (interleave) {

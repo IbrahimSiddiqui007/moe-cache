@@ -1,0 +1,48 @@
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index df48c0e..655ce59 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -113,6 +113,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_PROFILE_DECAY` | A number from 0 to 1: how much of the previously learned expert-usage profile is kept when it is combined with this session's usage when the profile is saved (0 forgets old usage, 1 keeps it fully). Bad values are ignored with a warning. | 0.5 | advanced |
+ | `MOE_CACHE_PROMPT_CACHE_MIB` | Sets llama-server's prompt cache size (`--cache-ram`) in MiB, replacing the launcher's rule. Only a plain whole number counts; 0 turns the prompt cache off. | Unset (0 under 16 GB of server RAM, otherwise 2048 MiB) | advanced |
+ | `MOE_CACHE_PROXY_KEEPALIVE` | Only when exactly `1`: the on-demand proxy keeps one connection per client thread and server port and reuses it for the next request, instead of opening a new one each time. | Off | advanced |
++| `MOE_CACHE_REFILL_AFTER_PROMPT` | A number above 0 makes the cache refill start sooner after a long prompt (after an eighth of the usual idle wait, at least 20 ms), so the generation working set is ready earlier. | Off | advanced |
+ | `MOE_CACHE_SLOT_SIMILARITY` | Launcher: a new request may take over a busy conversation's slot only if its prompt is at least this similar (0 to 1) to what the slot holds, so a short request from another agent does not push out a long conversation. Passed on as `--slot-prompt-similarity`. | unset (llama-server's own default). Values outside 0..1 or not numbers are ignored; an explicit `-sps` in your arguments wins. | advanced |
+ | `MOE_CACHE_TEST_DUP_IDS` | Test switch. Makes picks 1 to N-1 of every token repeat pick 0, to check the plugin survives repeated expert ids. Changes the model's output, so never use it for real work. Used by `tests/dup_ids.sh`. | off (0; values of 1 or less do nothing) | internal/testing |
+ | `MOE_CACHE_TEST_POISON_READS` | Test switch. Each background expert read first fills its target with 0xFF bytes and waits (the `MOE_CACHE_TEST_READ_DELAY_US` time), to catch code that reads an expert before it has fully loaded. Any value except `0` turns it on. Slows loading. | off | internal/testing |
+diff --git b/src/mc_state_rbstats.h a/src/mc_state_rbstats.h
+index cb4a6e7..24e6cd8 100644
+--- b/src/mc_state_rbstats.h
++++ a/src/mc_state_rbstats.h
+@@ -3,6 +3,7 @@
+ #pragma once
+ 
+ struct state_rbstats_t {
++    bool last_long = false;                             // idea C07: the last graph ended on a long prompt batch (under mu)
+     std::atomic<uint64_t> last_end_ns{0};               // steady clock, end of the last graph
+     bool   rb_acted = false;                            // the last round read something: measure the next graphs
+     bool   rb_armed_dec = false, rb_armed_pre = false;  // count the hits of the first decode / prefill graph after a rebalance
+diff --git b/src/mc_state_rebalance.inl a/src/mc_state_rebalance.inl
+index 76801b9..448e878 100644
+--- b/src/mc_state_rebalance.inl
++++ a/src/mc_state_rebalance.inl
+@@ -22,6 +22,7 @@
+         {
+             std::lock_guard<std::mutex> lk(mu);
+             graph_active--;
++            last_long = cur_scan;       // idea C07: the graph that just ended was a long prompt batch
+             if (g_saw_dec) { rb_armed_dec = false; }
+             if (g_saw_pre) { rb_armed_pre = false; }
+         }
+@@ -53,7 +54,10 @@
+                 continue;
+             }
+             const uint64_t now = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+-            const uint64_t wait_ms = (uint64_t) rb_idle_ms;
++            // idea C07 (MOE_CACHE_REFILL_AFTER_PROMPT=1, default off): after a long prompt batch the refill starts after an eighth of the idle time, so the decode
++            // working set is being arranged while the prompt's last chunks finish and the first tokens run
++            static const bool after_prompt = getenv("MOE_CACHE_REFILL_AFTER_PROMPT") && atoi(getenv("MOE_CACHE_REFILL_AFTER_PROMPT")) > 0;
++            const uint64_t wait_ms = (after_prompt && last_long) ? (uint64_t) std::max(20, rb_idle_ms / 8) : (uint64_t) rb_idle_ms;
+             if (now - last_end_ns.load() < wait_ms * 1000000ull) {
+                 continue;
+             }

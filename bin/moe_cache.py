@@ -2590,7 +2590,12 @@ def plan_placement(a, model, ctx, ncmoe, machine):
             # say why (the Claw's planner failed on /proc/meminfo and this line blamed the gguf package, which was not the cause)
             why = str(e) if type(e).__name__ == "PlanError" else f"{type(e).__name__}: {e}"
             planner_info, planner_error = None, why
-            say(f"moe-cache: planner failed ({why}); keeping all experts on the CPU"); ncmoe = "999"
+            if "does not look like a MoE" in why:       # LAUNCHER-732: a dense model has no experts to place; the old line blamed the planner and talked about experts
+                say("moe-cache: this model has no expert tensors (dense): the cache has nothing to manage. The command passes -ngl 99, so every layer goes to the GPU: "
+                    "a file bigger than free GPU memory spills into shared RAM (Windows) or fails to load. Add --auto-fit to let llama.cpp place the layers (PROTOTYPE), "
+                    "or give your own -ngl after --"); ncmoe = "999"
+            else:
+                say(f"moe-cache: planner failed ({why}); keeping all experts on the CPU"); ncmoe = "999"
     return ncmoe, planner_info, planner_error
 
 

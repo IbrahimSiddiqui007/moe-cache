@@ -520,7 +520,9 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             // crashed with an access violation). Linux used a 90 % rule while evicted experts read as zeros; with the file view (its default since
             // 191e6d4) they are read from the disk on this thread and stay mapped outside the cache's budget, so both systems pack now (audit
             // 2026-10-29). At 100 % use it is the same single copy.
-            if (!ok || pack_used.size() == (size_t) n_as) {
+            // PREFILL-638: with the keeper on (MOE_CACHE_GPU_KEEP_MIB) the block uploads whole tensors, which the keeper can hold between chunks (a packed copy is never held)
+            static const bool keeper_on = getenv("MOE_CACHE_GPU_KEEP_MIB") && atoi(getenv("MOE_CACHE_GPU_KEEP_MIB")) > 0;
+            if (!mcpackrule::pack_block(ok, pack_used.size(), (size_t) n_as, keeper_on)) {
                 pack_used.clear();
             }
         }
@@ -1181,20 +1183,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 char * dst = stage + st.second + (k - plo) * st.first->nb[2];
                 const char * src = (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2];
                 const size_t nbytes = r * st.first->nb[2];
-                // idea P06 (MOE_CACHE_GPU_STAGE_THREADS=N, default 1): a copy of 8 MiB or more is split over N threads (the calling one and N-1 short-lived helpers)
-                static const int nth = getenv("MOE_CACHE_GPU_STAGE_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_STAGE_THREADS")))) : 1;
-                if (nth > 1 && nbytes >= ((size_t) 8 << 20)) {
-                    std::vector<std::thread> hs;
-                    const size_t part = (nbytes / (size_t) nth + 4095) / 4096 * 4096;
-                    for (int ti2 = 1; ti2 < nth; ti2++) {
-                        const size_t o = std::min(nbytes, part * (size_t) ti2), n2 = std::min(nbytes - o, part);
-                        hs.emplace_back([=] { memcpy(dst + o, src + o, n2); });
-                    }
-                    memcpy(dst, src, std::min(nbytes, part));
-                    for (auto & h : hs) { h.join(); }
-                } else {
-                    memcpy(dst, src, nbytes);
-                }
+                memcpy(dst, src, nbytes);
             }
         };
         if (interleave) {
@@ -1349,46 +1338,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     continue;
                 }
                 timed_wait(t, 0, t->ne[2]);           // whole expert tensors (no-op for activations and ids)
-                // idea PL03/VK01 (MOE_CACHE_GPU_UPLOAD_THREADS=N, default 1 = off): a whole expert tensor of 32 MiB or more goes up in N disjoint slices copied by N threads
-                // (the calling one and N-1 short-lived helpers). Only worth it if one thread writing through the PCIe window is the limit (the link is Gen5 and the
-                // single-thread rate is below it); a helper-thread failure is a warning and that slice is then copied by the caller.
-                // SAFE ONLY WHEN THE CARD IS WRITTEN THROUGH ITS PCIe WINDOW (resizable BAR on: the Vulkan buffer is device-local AND host-visible and tensor_set is a plain
-                // memcpy, ggml-vulkan-buffers.cpp). Without it tensor_set goes through ONE shared staging buffer and ONE shared fence per device (write_2d: sync_staging,
-                // device->fence, waitForFences, resetFences), so two threads corrupt each other's data or hang (audit, round 4). The plugin has no public way to tell: check
-                // the heap in `vulkaninfo` (a device-local, host-visible type as large as the card) before using this switch.
-                static const int up_threads = []() {
-                    const int n = getenv("MOE_CACHE_GPU_UPLOAD_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_UPLOAD_THREADS")))) : 1;
-                    if (n > 1) {
-                        fprintf(stderr, "moe-cache: MOE_CACHE_GPU_UPLOAD_THREADS=%d: uploads are copied by %d threads. Only safe with resizable BAR on (device-local, host-visible "
-                                        "memory as large as the card); without it the shared staging buffer and fence of the Vulkan backend are used by all threads at once\n", n, n);
-                    }
-                    return n;
-                }();
-                const size_t up_bytes = ggml_nbytes(d);
-                if (up_threads > 1 && up_bytes >= ((size_t) 32 << 20)) {
-                    const size_t per = ((up_bytes / (size_t) up_threads) + 4095) & ~(size_t) 4095;
-                    std::vector<std::thread> hs;
-                    std::vector<std::pair<size_t, size_t>> redo;
-                    std::mutex redo_mu;
-                    for (size_t o = per; o < up_bytes; o += per) {
-                        const size_t n2 = std::min(per, up_bytes - o);
-                        try {
-                            hs.emplace_back([=, &redo, &redo_mu] {
-                                ggml_backend_tensor_set(d, (const char *) t->data + o, o, n2);
-                            });
-                        } catch (const std::exception &) {
-                            std::lock_guard<std::mutex> lk(redo_mu);
-                            redo.emplace_back(o, n2);
-                        }
-                    }
-                    ggml_backend_tensor_set(d, t->data, 0, std::min(per, up_bytes));
-                    for (auto & h : hs) { h.join(); }
-                    for (auto & r : redo) {
-                        ggml_backend_tensor_set(d, (const char *) t->data + r.first, r.first, r.second);
-                    }
-                } else {
-                    ggml_backend_tensor_set(d, t->data, 0, up_bytes);
-                }
+                ggml_backend_tensor_set(d, t->data, 0, ggml_nbytes(d));
                 s.gpu_up_bytes += ggml_nbytes(d);
             } else {
                 // activations / ids that are views: pack row by row

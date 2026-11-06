@@ -1,0 +1,45 @@
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index 36173f2..df2936b 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -62,6 +62,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_E1_TIMES` | Diagnostic timers that break down the gaps between graphs and the long-prompt GPU blocks. Only active together with `MOE_CACHE_SEG_TIMES=1`. | off | internal/testing |
+ | `MOE_CACHE_ECOQOS_OFF` | Windows only: set to `1` to stop Windows from throttling the process as a low-power one (EcoQoS) and from ignoring its timer requests. Does nothing on other systems. | off | advanced |
+ | `MOE_CACHE_ECORE_MASK` | Hex bitmask of efficiency cores the extra expert worker threads may use, for systems without Linux sysfs (Windows). Used together with `MOE_CACHE_EXEC_ECORES`, which says how many to use. | unset | set by the launcher |
++| `MOE_CACHE_EVICT_SIBLINGS` | Experimental: when an expert is dropped from the cache, its other parts (gate, up, down) go too if idle, so an expert is whole or gone. Any number above 0 turns it on. | off | internal/testing |
+ | `MOE_CACHE_EXEC_FUSE_ANY` | Experimental: lets the gate and up matrices of an expert be computed together even when their weight types or row sizes differ. `1`, `on`, `true` or `yes` turn it on. | off | internal/testing |
+ | `MOE_CACHE_EXEC_SCRATCH` | Reuses per-thread working lists instead of allocating them for every small CPU batch. Set to `0` (or `off`/`false`/`no`) to turn it off. | on | internal/testing |
+ | `MOE_CACHE_EXEC_SHARE_IN` | Lets the gate and up matrices share one prepared copy of their input (same values, less work). Set to `0` (or `off`/`false`/`no`) to turn it off. | on | internal/testing |
+diff --git b/src/mc_state_lru.inl a/src/mc_state_lru.inl
+index 0243fe6..4d9e204 100644
+--- b/src/mc_state_lru.inl
++++ a/src/mc_state_lru.inl
+@@ -123,6 +123,28 @@
+         resident_bytes -= ti.nb2;
+         if (ti.view) { view_bytes -= ti.nb2; }
+         evictions++;
++        // idea C05 (MOE_CACHE_EVICT_SIBLINGS=1, default off): the other slices (gate, up, down) of the same expert go with it when they are idle, so an expert is
++        // either whole or gone and a later read does not find two of three slices missing
++        static const bool sib = getenv("MOE_CACHE_EVICT_SIBLINGS") && atoi(getenv("MOE_CACHE_EVICT_SIBLINGS")) > 0;
++        static thread_local bool in_sib = false;
++        if (sib && !in_sib && ti.layer >= 0) {
++            in_sib = true;
++            auto lt = layer_tensors.find(ti.layer);
++            if (lt != layer_tensors.end()) {
++                for (int tix : lt->second) {
++                    const tinfo_t & ot = *tensors[(size_t) tix];
++                    if (&ot == &ti || (int64_t) e >= ot.n_expert) {
++                        continue;
++                    }
++                    const int sn = ot.node0 + (int) e;
++                    const node_t & nd = nodes[(size_t) sn];
++                    if (nd.resident && !nd.loading && !in_use(nd)) {
++                        evict(sn);
++                    }
++                }
++            }
++            in_sib = false;
++        }
+     }
+ 
+     // cache smaller than one op: map expert e of ti straight from the model file over its own address (copy-on-write file pages, the way stock

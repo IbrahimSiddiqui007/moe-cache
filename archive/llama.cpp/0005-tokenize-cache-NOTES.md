@@ -1,0 +1,7 @@
+## 0005-tokenize-cache (S08)
+
+**What:** `common_tokenize(vocab, text, add_special, parse_special)` (common/common.cpp) is the one place the server tokenizes prompts, including the text that comes out of the chat template. With `LLAMA_TOKENIZE_CACHE=1` it keeps the result of the last 4 texts of at least 4096 bytes. A call with the same text, flags and vocab returns the stored tokens; anything else is tokenized as before. Unset = no cache, no extra copy of any text.
+
+**Soundness:** the key is the whole text (compared byte for byte), both flags, the vocab pointer plus a signature (vocab size, type, the text of 16 tokens spread over the vocab, because a reloaded model can reuse an address). Nothing is reused across different texts: tokenizing a prefix and a suffix separately does not give the tokens of the whole text (merges across the boundary), so a prefix cache is not sound and is not done. Chat templates are not cached: only the tokenizing of their output is. Risk: two vocabs with the same size, type and 16 sampled token texts at the same address would collide (only after unloading and loading a different model in the same process, no case known); a few MB of memory per cached text (text copy + tokens).
+
+**Honest scope:** it only helps when the exact same long text arrives again (retry, regenerate, the same benchmark prompt, n choices of one request). An agent loop that appends to its history changes the text every request and never hits. The prompt-prefix KV reuse in the server is separate and unchanged.

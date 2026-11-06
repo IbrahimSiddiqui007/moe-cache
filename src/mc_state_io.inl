@@ -14,23 +14,6 @@
                 j = rq.front();
                 rq.pop_front();
             }
-#ifdef __linux__
-            static thread_local int aff_seen = 0;
-            if (aff_seen != reader_aff_gen.load()) {
-                std::vector<int> cp;
-                {
-                    std::lock_guard<std::mutex> lk(rq_mu);
-                    cp = reader_cpus;
-                    aff_seen = reader_aff_gen.load();
-                }
-                if (!cp.empty()) {
-                    cpu_set_t set;
-                    CPU_ZERO(&set);
-                    for (int c : cp) { if (c < CPU_SETSIZE) { CPU_SET(c, &set); } }
-                    sched_setaffinity(0, sizeof(set), &set);
-                }
-            }
-#endif
             const size_t need = round_up(std::max(max_nb2_all, j.nb2)) + 2 * PAGE;     // a merged read (I01) can be longer than any one expert
             if (bounce_size < need) {
                 plat::aligned_free_page(bounce);
@@ -59,7 +42,6 @@
                     }
                 }
                 load_cv.notify_all();
-                demand_pending.fetch_sub(1, std::memory_order_relaxed);
                 continue;
             }
             read_job(j, bounce);
@@ -76,7 +58,6 @@
             }
             delete j.more;
             load_cv.notify_all();
-            demand_pending.fetch_sub(1, std::memory_order_relaxed);
         }
     }
 
@@ -281,14 +262,6 @@
                         abort();
                     }
                     bounce_size = need;
-                }
-                // idea I02 (MOE_CACHE_DEMAND_FIRST=1, default off): an advisory read waits (at most ~5 ms) while demand reads are queued or running, so a guess never
-                // delays an expert the executor is waiting for.
-                static const bool demand_first = getenv("MOE_CACHE_DEMAND_FIRST") && atoi(getenv("MOE_CACHE_DEMAND_FIRST")) > 0;
-                if (demand_first) {
-                    for (int w = 0; w < 100 && demand_pending.load(std::memory_order_relaxed) > 0; w++) {
-                        std::this_thread::sleep_for(std::chrono::microseconds(50));
-                    }
                 }
                 read_job(j, bounce);
                 {
@@ -617,10 +590,6 @@
                 fprintf(stderr, "moe-cache: lookahead: prefetched %llu experts, used %llu, wasted %llu, late %llu; prediction recall %.1f%% (%llu of %llu), skipped %llu\n",
                         (unsigned long long) pf_issued, (unsigned long long) pf_used, (unsigned long long) pf_wasted, (unsigned long long) pf_late,
                         pf_pred_total ? 100.0 * pf_pred_hit / pf_pred_total : 0.0, (unsigned long long) pf_pred_hit, (unsigned long long) pf_pred_total, (unsigned long long) pf_skipped);
-            }
-            if (res_checked) {
-                fprintf(stderr, "moe-cache: residency check: %llu of %llu sampled pages of experts marked resident were not in RAM (%.2f %%)\n", (unsigned long long) res_missing,
-                        (unsigned long long) res_checked, 100.0 * (double) res_missing / (double) res_checked);
             }
             if (exec_on) {
                 // ", checked N, mismatches M" stays right after "itself": CI greps that exact sequence (identity.yml, executor byte-check)

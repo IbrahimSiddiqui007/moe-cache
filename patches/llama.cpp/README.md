@@ -4,11 +4,11 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
 
 **Pinned base:** release `b12064`, commit `51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c` (ggml 0.28.0). Moved from b11966 (`ff0d396e3`) on 2026-11-03; patches 0004, 0005, 0020, 0030 and 0040 were checked against b12064 with `git apply --check` (all apply). 0022 (upstream #31266) and 0027 (upstream #30881 + #31418) are merged upstream and moved to `archive/`.
 
-Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
+Patches: `0004-ple-prefetch-ahead`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
 
 ## Rules
 
-Patches that lost a paired run move to `archive/` at the top of the repo, with how to restore them (0070-decode-reloc, DECODE-630: `archive/llama.cpp/`).
+Patches that lost a paired run move to `archive/` at the top of the repo, with how to restore them (0005-tokenize-cache, PATCH-022, and 0070-decode-reloc, DECODE-630: `archive/llama.cpp/`).
 
 1. Small numbered patches: `0001-short-name.patch`, `0002-...`, applied in name order. One idea per patch.
 2. Each patch has its own runtime switch (an environment variable or flag), **off by default**. A patch only becomes default-on after a paired run (with and without it) shows a win.
@@ -27,6 +27,15 @@ Owner's decision, 2026-11-02. We do not rebuild for every llama.cpp release. Pat
 | Upstream speed gain that a paired run confirms | full paired PC run |
 
 Non-security moves wait at most a week, so one test cycle covers everything pending. Before a move, losing patches go to `archive/`, so only patches still in play are re-checked.
+
+Checklist for every move:
+
+| Step | What |
+|---|---|
+| 1 | Archive the patches that lost their test (no repeatable gain, or covered upstream) into `archive/llama.cpp/` with a restore note in `archive/README.md`; only live patches are re-checked against the new pin (PATCH-129; first run at the next move, UPSTREAM-039) |
+| 2 | AMD: do not pick a build from 10-13 to 10-16 (host-import regression, Linux confirmed; #29741, #30468). Pins b11669 and b11966 are outside that range (UPSTREAM-016) |
+| 3 | Read the open Vulkan memory pull requests and note which ones touch the allocation or host-import path before choosing the build |
+| 4 | Pin tracking is by hand today; an automatic check of new releases is an open item on the roadmap |
 
 ## Apply
 
@@ -57,11 +66,3 @@ It checks the base commit, runs `git apply --check` on each patch, then applies 
 **Compiled:** `libllama` (Linux, Release). Not run: no Gemma 4 model on the laptop. The Windows branch is the existing upstream `llama_prefetch`, not compiled here.
 
 **Test (under 20 minutes, Windows PC):** a Gemma 4 GGUF with lazy PLE (the default `--lazy-mode auto` decides; the log line `enabling prefetch for 'per_layer_token_embd.weight'` must appear), same long prompt (about 34k tokens), `MOE_CACHE_SEG_TIMES=1`, A B B A with A = unset and B = `LLAMA_PLE_PREFETCH_AHEAD=1`, cold file cache each run if you can (otherwise the rows are already resident and nothing can be seen). Compare total prompt time and the per-ubatch time of the first rows. Accept only if B is faster by more than the A-vs-A spread; output tokens must be identical.
-
-## 0005-tokenize-cache (S08)
-
-**What:** `common_tokenize(vocab, text, add_special, parse_special)` (common/common.cpp) is the one place the server tokenizes prompts, including the text that comes out of the chat template. With `LLAMA_TOKENIZE_CACHE=1` it keeps the result of the last 4 texts of at least 4096 bytes. A call with the same text, flags and vocab returns the stored tokens; anything else is tokenized as before. Unset = no cache, no extra copy of any text.
-
-**Soundness:** the key is the whole text (compared byte for byte), both flags, the vocab pointer plus a signature (vocab size, type, the text of 16 tokens spread over the vocab, because a reloaded model can reuse an address). Nothing is reused across different texts: tokenizing a prefix and a suffix separately does not give the tokens of the whole text (merges across the boundary), so a prefix cache is not sound and is not done. Chat templates are not cached: only the tokenizing of their output is. Risk: two vocabs with the same size, type and 16 sampled token texts at the same address would collide (only after unloading and loading a different model in the same process, no case known); a few MB of memory per cached text (text copy + tokens).
-
-**Honest scope:** it only helps when the exact same long text arrives again (retry, regenerate, the same benchmark prompt, n choices of one request). An agent loop that appends to its history changes the text every request and never hits. The prompt-prefix KV reuse in the server is separate and unchanged.

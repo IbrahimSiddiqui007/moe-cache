@@ -385,6 +385,27 @@ _meta_gguf(_gl, [("general.architecture", "glm5-next"), ("glm5-next.block_count"
                  ("glm5-next.attention.key_length_mla", 256)])
 check(gguf_plan.kv_bytes(_gl, 65536) is None, "kv_bytes: MLA layout -> None (the flat 40 KB per token stays)")
 
+# LAUNCHER-741 (b): a plain Llama-like 32B is sized from the header (about 256 KB per token f16, the flat 40 KB would be 6x too little); a per-layer KV head list is summed
+_ll = os.path.join(_md, "llama32_kv.gguf")
+_meta_gguf(_ll, [("general.architecture", "llama"), ("llama.block_count", 64), ("llama.attention.head_count", 64), ("llama.attention.head_count_kv", 8),
+                 ("llama.embedding_length", 8192)])
+_kl = gguf_plan.kv_bytes(_ll, 1000)
+check(_kl == 1000 * 64 * 8 * 256 * 2, f"kv_bytes: Llama-like 32B (64 layers, 8 KV heads, head 128) = {(_kl or 0) / 1000 / 1024:.0f} KiB per token (want 256)")
+def _meta_arr_gguf(path, kv, arrays):
+    def s(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
+    body = b""
+    for k, v in kv:
+        body += s(k) + (struct.pack("<I", 8) + s(v) if isinstance(v, str) else struct.pack("<II", 4, v))
+    for k, vals in arrays:
+        body += s(k) + struct.pack("<IIQ", 9, 4, len(vals)) + b"".join(struct.pack("<I", x) for x in vals)
+    head = b"GGUF" + struct.pack("<IQQ", 3, 0, len(kv) + len(arrays)) + body
+    open(path, "wb").write(head + b"\0" * (-len(head) % 32))
+_pl = os.path.join(_md, "perlayer_kv.gguf")
+_meta_arr_gguf(_pl, [("general.architecture", "llama"), ("llama.block_count", 4), ("llama.attention.key_length", 128), ("llama.attention.value_length", 128)],
+               [("llama.attention.head_count", [32, 32, 32, 32]), ("llama.attention.head_count_kv", [8, 0, 4, 8])])
+_kp = gguf_plan.kv_bytes(_pl, 1000)
+check(_kp == 1000 * (8 + 0 + 4 + 8) * 256 * 2, f"kv_bytes: per-layer KV head list [8, 0, 4, 8] is summed ({_kp})")
+
 # N28: at 128k+ in exact mode, one line suggesting --fast (q8_0 KV) when it frees 2+ GPU expert layers; nothing below 128k
 def _full_gguf(path, kv, tensors):
     def s(x): b = x.encode(); return struct.pack("<Q", len(b)) + b
