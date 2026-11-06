@@ -34,7 +34,7 @@ def release(ver, modules=True):
 
 # RELEASE-686: a fake gh.cmd first on PATH (FAKE_GH_AUTH / FAKE_GH_VERIFY = exit codes): the installer and the updater refuse without a verified build attestation
 FAKEGH = os.path.join(T, "fakegh"); os.makedirs(FAKEGH, exist_ok=True)
-open(os.path.join(FAKEGH, "gh.cmd"), "w").write("@echo off\r\nif \"%1 %2\"==\"auth status\" exit /b %FAKE_GH_AUTH%\r\nif \"%1 %2\"==\"attestation verify\" exit /b %FAKE_GH_VERIFY%\r\nexit /b 1\r\n")
+open(os.path.join(FAKEGH, "gh.cmd"), "w").write("@echo off\r\nif \"%1 %2\"==\"auth status\" (if not \"%FAKE_GH_AUTH%\"==\"0\" (echo github.com 1>&2 & echo   X Failed to log in to github.com account fake 1>&2)) & if \"%1 %2\"==\"auth status\" exit /b %FAKE_GH_AUTH%\r\nif \"%1 %2\"==\"attestation verify\" exit /b %FAKE_GH_VERIFY%\r\nexit /b 1\r\n")
 genv = dict(os.environ, PATH=FAKEGH + os.pathsep + os.environ["PATH"], FAKE_GH_AUTH="0", FAKE_GH_VERIFY="0")
 
 def ps(*args, env=None):
@@ -70,6 +70,10 @@ failed = os.path.join(root, "kit.failed"); os.rename(failed, os.path.join(T, "fa
 for label, extra in (("gh not logged in", dict(FAKE_GH_AUTH="1")), ("gh verify fails", dict(FAKE_GH_VERIFY="1"))):
     rc, out = say_to_str(lambda: up.apply("9.9.1", kit, tag="v9.9.2", yes=True, windows=True, env=dict(genv, **extra), base_url=url(release("9.9.2"))))
     check(rc == 1 and "REFUSED" in out and "NOT checked" in out and "--yes-unverified" in out and shim_version() == "moe-cache 9.9.1" and not os.path.isdir(os.path.join(root, "kit.prev")), f"{label}: update refused, nothing changed")
+# the real gh prints its login report on stderr: install.ps1 itself must still say why it stopped (it once ended with only "github.com ... Stopped")
+r9 = release("9.9.4")
+rc, out = ps(os.path.join(r9, "install.ps1"), "-Root", os.path.join(T, "root_nogh"), "-NoPath", "-BaseUrl", r9, "-Version", "9.9.4", env=dict(genv, FAKE_GH_AUTH="1"))
+check(rc != 0 and "NOT checked" in out and "gh auth login" in out and "-YesUnverified" in out, f"install.ps1 with a gh that has no working login names the reason and the way out ({out.strip()[-300:]})")
 rc, out = say_to_str(lambda: up.apply("9.9.1", kit, tag="v9.9.2", yes=True, windows=True, env=genv, base_url=url(release("9.9.2"))))
 check(rc == 0 and shim_version() == "moe-cache 9.9.2", f"update to 9.9.2 ({out.strip()[-200:]})")
 check(os.path.isdir(os.path.join(root, "kit.prev")) and not os.path.isdir(os.path.join(root, "kit.old")), "...the previous kit stays as kit.prev")
