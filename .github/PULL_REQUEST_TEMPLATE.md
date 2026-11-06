@@ -4,7 +4,7 @@
 
 ## Tests
 
-<!-- For each: Passed / Failed / Not run (and why). The list is in docs/CODING_STANDARDS.md ("Tests"). -->
+<!-- For each: Passed / Failed / Not run (and why). The list is in docs/internal/CODING_STANDARDS.md ("Tests"). -->
 
 | Check | Result |
 |---|---|

@@ -247,5 +247,5 @@ claim's own first/second spread and the new record's spread. Exit 1 when a cell 
 
 ## Old RESULTS.md sections (up to 79)
 
-Sections 1-79 of `docs/RESULTS.md` keep their text; where they lack a field, the field is not recorded. `bench-record card FILE --as results --section N --title "..."`
+Sections 1-79 of `docs/results-archive/RESULTS.md` keep their text; where they lack a field, the field is not recorded. `bench-record card FILE --as results --section N --title "..."`
 still prints the old-style section for anyone who wants one in `RESULTS.md`.

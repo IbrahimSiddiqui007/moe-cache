@@ -9,7 +9,7 @@
 // The child is desktop/app_entry.py (staged as app_entry.py): the control page plus a stable address line and a parent-gone watch on its stdin, so
 // the shell vanishing (crash, kill) still stops the model. Without it the shell falls back to `moe_cache.py ui` and the human address line.
 // Everything the user sees is the control page, so a change there lands in the browser page and the app alike.
-// Design: docs/DESKTOP_APP_DESIGN.md.
+// Design: docs/internal/DESKTOP_APP_DESIGN.md.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::io::{BufRead, BufReader, Read, Write};

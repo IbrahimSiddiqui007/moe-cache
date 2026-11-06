@@ -2,7 +2,7 @@
 
 A Tauri 2 shell around the moe-cache control page. It starts `bin/moe_cache.py ui --ui-port 0 --no-browser` as a child process, reads the page's
 address from its output, and shows the page in its own window, with a tray icon (Open / Start model / Stop model / Quit) and one instance only.
-Design, process model, packaging, updater, risks and plan: [docs/DESKTOP_APP_DESIGN.md](../docs/DESKTOP_APP_DESIGN.md).
+Design, process model, packaging, updater, risks and plan: [docs/internal/DESKTOP_APP_DESIGN.md](../docs/internal/DESKTOP_APP_DESIGN.md).
 
 Status (2026-11-03): runs on Linux (window shows the control page, chat streams), CI builds Windows NSIS (30.5 MB, with the kit: plugin DLLs and
 llama.cpp Vulkan) + MSI and Linux AppImage + deb. Tray: Open, Start model, Stop model, Restart control page, Start at login (off by default), Quit.

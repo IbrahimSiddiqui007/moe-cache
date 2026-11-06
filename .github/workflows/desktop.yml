@@ -1,6 +1,6 @@
 # Desktop app (Tauri 2 shell around the control page). Runs by hand (workflow_dispatch, which GitHub offers only once this file is on the default
 # branch) on pull requests that touch desktop/ or this file, and on pushes to claude/desktop-* branches (so a desktop branch builds without a PR). Never on a tag.
-# Design: docs/DESKTOP_APP_DESIGN.md. No signing of the installer (no code-signing certificate by decision);
+# Design: docs/internal/DESKTOP_APP_DESIGN.md. No signing of the installer (no code-signing certificate by decision);
 # update-file signing (TAURI_SIGNING_PRIVATE_KEY) is added with the updater milestone.
 name: desktop
 

@@ -8,4 +8,4 @@ withdrawn: ""
 ---
 # Flash-Next Q2_0 decodes 22.16 tok/s with moe-cache against 18.41 stock (+20 %); a 3k-token prompt reads 2.33x faster
 
-Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Two runs each, not interleaved. Source: docs/RESULTS.md section 63; the benchmark card's decode table.
+Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Two runs each, not interleaved. Source: docs/results-archive/RESULTS.md section 63; the benchmark card's decode table.

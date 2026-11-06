@@ -406,7 +406,7 @@ def peek_servers(ports=None, own=None, extra=()):
     return [dict(res[p], started_here=p == own or p in extra) for p in ports if p in res and res[p].get("up")]
 
 
-# Measured decode speeds from README "Results" / docs/RESULTS.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
+# Measured decode speeds from README "Results" / docs/results-archive/RESULTS.md, by model family (gguf_plan.model_key) and file size (GB, so each quant has its own
 # row): (machine, RAM GB, setting, stock tok/s or None, moe-cache tok/s, where). Machines: laptop = i7-13620H, 31 GB RAM, RTX 4060 8 GB, Linux;
 # PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
 LAPTOP, PC = "laptop", "PC"
@@ -622,7 +622,7 @@ def server_args(s):
     if s.get("leave_room"):
         a.append("--leave-room")
     if s.get("peers"):
-        a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (docs/TWO_MODELS_DESIGN.md)
+        a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (docs/internal/TWO_MODELS_DESIGN.md)
     if s.get("share_ram"):
         a.append("--share-ram")            # a second server next to a running one: count the RAM the other llama-servers hold
     if s.get("llama_server"):
@@ -2006,7 +2006,7 @@ def open_page(url):
     t.start()
 
 
-# ---- MULTIMODEL-010: two models at once, one memory cap (docs/TWO_MODELS_DESIGN.md) ----
+# ---- MULTIMODEL-010: two models at once, one memory cap (docs/internal/TWO_MODELS_DESIGN.md) ----
 _KIND = {}
 
 

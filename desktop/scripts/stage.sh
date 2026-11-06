@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copy the kit files the app needs into src-tauri/resources/moe-cache/ (what `bundle.resources` packs).
-# Usage: scripts/stage.sh [--with-plugin PATH_TO_PLUGIN_FILE]...   (the plugin and llama.cpp are added by the CI job; see docs/DESKTOP_APP_DESIGN.md)
+# Usage: scripts/stage.sh [--with-plugin PATH_TO_PLUGIN_FILE]...   (the plugin and llama.cpp are added by the CI job; see docs/internal/DESKTOP_APP_DESIGN.md)
 set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"; repo="$(cd "$here/.." && pwd)"
 dst="$here/src-tauri/resources/moe-cache"

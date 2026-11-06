@@ -8,4 +8,4 @@ withdrawn: "ran during a slowdown of the whole PC (the same CPU work took 22 % l
 ---
 # Qwen3.5-122B IQ2_XXS decodes 16.13 tok/s with moe-cache against 13.88 stock (+16 %)
 
-Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Source: docs/RESULTS.md section 59.
+Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Source: docs/results-archive/RESULTS.md section 59.

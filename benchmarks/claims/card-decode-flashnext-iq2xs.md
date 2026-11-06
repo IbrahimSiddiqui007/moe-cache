@@ -8,4 +8,4 @@ withdrawn: ""
 ---
 # Flash-Next IQ2_XS decodes 21.94 tok/s with moe-cache against 14.89 stock (+47 %)
 
-Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Cold ABBA, drive C:, 12 GPU expert layers. Source: docs/RESULTS.md section 59; the benchmark card.
+Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Cold ABBA, drive C:, 12 GPU expert layers. Source: docs/results-archive/RESULTS.md section 59; the benchmark card.

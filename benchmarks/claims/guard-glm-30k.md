@@ -8,4 +8,4 @@ withdrawn: ""
 ---
 # GLM-5.3-Flash at 30k: the new default reads prompts 62 % faster than -ub 1024; decode 6 % lower
 
-Guard run on the Windows PC, official b11966 server, cold, order A B B A, two runs per arm. Decode was written down once per arm, so its spread is not known. Source: docs/RESULTS.md section 79.
+Guard run on the Windows PC, official b11966 server, cold, order A B B A, two runs per arm. Decode was written down once per arm, so its spread is not known. Source: docs/results-archive/RESULTS.md section 79.

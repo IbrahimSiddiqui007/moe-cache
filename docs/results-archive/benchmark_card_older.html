@@ -72,7 +72,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   <header>
     <div class="eyebrow">Benchmark card · measured 2026-10-27 to 2026-11-05 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
-    <p class="note"><b>Older measurements, not current.</b> This page is the benchmark card as it stood before v0.3.7: the numbers are from the v0.3.5 and v0.3.6 kits (llama.cpp b11966, b12064 and 620d2225c), older than the current release, and their claims are stale for v0.3.7. They are kept with their dates for history. The current numbers are on <a href="benchmark_card.html">the benchmark card</a>.</p>
+    <p class="note"><b>Older measurements, not current.</b> This page is the benchmark card as it stood before v0.3.7: the numbers are from the v0.3.5 and v0.3.6 kits (llama.cpp b11966, b12064 and 620d2225c), older than the current release, and their claims are stale for v0.3.7. They are kept with their dates for history. The current numbers are on <a href="../benchmark_card.html">the benchmark card</a>.</p>
 
     <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC it decoded faster than stock llama-server on every model bigger than the RAM that was tested (short chats at 8k context, and 65k conversations on Q2_0 and IQ3_XXS, 2026-11-05; tables below). The 256-token answers checked were byte-identical to stock (without MTP); a different GPU layer split can change a token while the meaning stays.</p>
     <div class="machine">
@@ -359,7 +359,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
   </section>
 
-  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md">docs/RESULTS.md</a> (Windows desktop, newest first) and <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS_OLD_LAPTOP.md">docs/RESULTS_OLD_LAPTOP.md</a> (the Linux laptop). Result numbers in this card (§58 to §65, §79) are sections of RESULTS.md. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md">docs/results-archive/RESULTS.md</a> (Windows desktop, newest first) and <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS_OLD_LAPTOP.md">docs/results-archive/RESULTS_OLD_LAPTOP.md</a> (the Linux laptop). Result numbers in this card (§58 to §65, §79) are sections of RESULTS.md. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
 </div>
 
 <script>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Turn docs/benchmark_card.html into Markdown (tables, lists, claim markers kept) and put it into README.md between
+"""Turn docs/benchmark_card.html into Markdown (tables, lists, claim markers kept) and put it into docs/RESULTS_CURRENT.md between
 `<!-- card:begin -->` and `<!-- card:end -->`, so GitHub shows the whole card, not only an image of its top. The README rule: numbers, card, PNGs and README
 change in one step.
 
@@ -18,7 +18,7 @@ from html.parser import HTMLParser
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CARD = os.path.join(ROOT, "docs", "benchmark_card.html")
-README = os.path.join(ROOT, "README.md")
+README = os.path.join(ROOT, "docs", "RESULTS_CURRENT.md")
 BEGIN, END = "<!-- card:begin -->", "<!-- card:end -->"
 VOID = {"br", "meta", "link", "img", "hr", "input"}
 
@@ -192,16 +192,16 @@ def main():
         text = open(README, encoding="utf-8").read()
         m = re.search(re.escape(BEGIN) + r".*?" + re.escape(END), text, flags=re.S)
         if not m:
-            print("README.md has no %s ... %s block" % (BEGIN, END))
+            print("docs/RESULTS_CURRENT.md has no %s ... %s block" % (BEGIN, END))
             sys.exit(1)
         if "--check" in sys.argv:
             if m.group(0) != md:
-                print("README.md's card block differs from docs/benchmark_card.html: run python3 tools/card_markdown.py --write")
+                print("docs/RESULTS_CURRENT.md's card block differs from docs/benchmark_card.html: run python3 tools/card_markdown.py --write")
                 sys.exit(1)
-            print("README.md's card block matches the card")
+            print("docs/RESULTS_CURRENT.md's card block matches the card")
             return
         open(README, "w", encoding="utf-8", newline="\n").write(text[:m.start()] + md + text[m.end():])
-        print("README.md card block written (%d lines)" % md.count("\n"))
+        print("docs/RESULTS_CURRENT.md card block written (%d lines)" % md.count("\n"))
         return
     print(md)
 

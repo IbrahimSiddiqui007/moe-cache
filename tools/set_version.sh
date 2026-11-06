@@ -9,9 +9,9 @@
 #       install.sh            MOE_CACHE_REF default (the release workflow checks it matches the tag)
 #       src/mc_state.inl      the plugin's start-up banner
 #       bin/moe_cache.py      VERSION (--version, the check header)
-#     docs/RELEASE_NOTES_vVERSION.md (the release text the release workflow uses) must exist already: write it first, the script does not invent it.
+#     docs/releases/RELEASE_NOTES_vVERSION.md (the release text the release workflow uses) must exist already: write it first, the script does not invent it.
 #     docs/ROADMAP.md and the history lines in README.md stay as they are (they are prose; review them in git diff).
-#  2. Older flow, kept: every place holds the placeholder 0.0.0.TBD and docs/RELEASE_NOTES_v0.0.0.TBD.md exists: the placeholder is replaced
+#  2. Older flow, kept: every place holds the placeholder 0.0.0.TBD and docs/releases/RELEASE_NOTES_v0.0.0.TBD.md exists: the placeholder is replaced
 #     everywhere and the notes file is renamed.
 set -e
 cd "$(dirname "$0")/.."
@@ -21,7 +21,7 @@ V="$1"; P=0.0.0.TBD
 esc() { printf '%s' "$1" | sed 's/[][\.*^$/&]/\\&/g'; }      # a version as a sed pattern / replacement
 B="${V//-/--}"                                                # shields.io badge text: a dash is written as two
 
-FILES="CHANGELOG.md README.md docs/ROADMAP.md docs/SECURITY.md install.sh src/mc_state.inl bin/moe_cache.py docs/RELEASE_NOTES_v$P.md"
+FILES="CHANGELOG.md README.md docs/ROADMAP.md docs/SECURITY.md install.sh src/mc_state.inl bin/moe_cache.py docs/releases/RELEASE_NOTES_v$P.md"
 have_placeholder=1
 for f in $FILES; do [ -f "$f" ] && grep -q -F "$P" "$f" || have_placeholder=0; done
 
@@ -29,9 +29,9 @@ if [ "$have_placeholder" = 1 ]; then
   sed -i "s/status-v$P%20beta/status-v$B%20beta/" README.md
   sed -i "s/^## $P ([0-9-]*)/## $V ($(date +%Y-%m-%d))/" CHANGELOG.md
   for f in $FILES; do sed -i "s/$P/$V/g" "$f"; done
-  git mv "docs/RELEASE_NOTES_v$P.md" "docs/RELEASE_NOTES_v$V.md" 2>/dev/null || mv "docs/RELEASE_NOTES_v$P.md" "docs/RELEASE_NOTES_v$V.md"
+  git mv "docs/releases/RELEASE_NOTES_v$P.md" "docs/releases/RELEASE_NOTES_v$V.md" 2>/dev/null || mv "docs/releases/RELEASE_NOTES_v$P.md" "docs/releases/RELEASE_NOTES_v$V.md"
   if grep -rn -F "$P" --exclude-dir=.git --exclude=set_version.sh .; then echo "placeholder still found above"; exit 1; fi
-  echo "version $V set in: $FILES (renamed to docs/RELEASE_NOTES_v$V.md). Review with git diff; nothing committed or tagged."
+  echo "version $V set in: $FILES (renamed to docs/releases/RELEASE_NOTES_v$V.md). Review with git diff; nothing committed or tagged."
   exit 0
 fi
 
@@ -42,7 +42,7 @@ C="$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' bin/moe_cache.py | head -n 1)"
 CB="${C//-/--}"; Ce="$(esc "$C")"; Ve="$(esc "$V")"
 fail() { echo "$1 (nothing was changed)"; exit 1; }
 grep -q '^## Unreleased' CHANGELOG.md                       || fail 'CHANGELOG.md has no "## Unreleased" heading to turn into the release heading'
-[ -f "docs/RELEASE_NOTES_v$V.md" ]                           || fail "docs/RELEASE_NOTES_v$V.md does not exist: write the release notes first (the release workflow publishes them)"
+[ -f "docs/releases/RELEASE_NOTES_v$V.md" ]                           || fail "docs/releases/RELEASE_NOTES_v$V.md does not exist: write the release notes first (the release workflow publishes them)"
 grep -q "status-v$CB%20beta" README.md                      || fail "README.md: no status badge for v$C"
 grep -q "MOE_CACHE_REF:-v$C}" install.sh                    || fail "install.sh: MOE_CACHE_REF default is not v$C"
 grep -q "plugin v$C (ggml backend API" src/mc_state.inl     || fail "src/mc_state.inl: the start-up banner does not say v$C"

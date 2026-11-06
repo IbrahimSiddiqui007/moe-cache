@@ -22,7 +22,7 @@ The release workflow already has its own gates:
 | both the Linux and the Windows files are attached | `publish` job | the release stays a **draft** that nobody sees (it stays one even when they are: a person publishes it with `tools/publish_release.sh` after the smoke test) |
 | a tag with a suffix (`-beta1`, `-rc1`) | `tools/publish_release.sh` | published as a pre-release and never as "latest" |
 
-The release text is `docs/RELEASE_NOTES_<tag>.md` when that file exists, else a short default text plus GitHub's generated notes. `tools/set_version.sh` needs the notes file to exist already.
+The release text is `docs/releases/RELEASE_NOTES_<tag>.md` when that file exists, else a short default text plus GitHub's generated notes. `tools/set_version.sh` needs the notes file to exist already.
 
 ## 2. Before you tag
 
@@ -31,7 +31,7 @@ Do these in order. Every command runs from the repository root.
 | # | Step | Command or check |
 |---|---|---|
 | 1 | Merge the latest `origin/experimental`; quick tests green locally | `nice -n 19 tools/run_quick_tests.sh` |
-| 2 | Write `docs/RELEASE_NOTES_vX.Y.Z.md` and the `## Unreleased` part of `CHANGELOG.md` | numbers only from `docs/RESULTS.md` and `docs/RESULTS_OLD_LAPTOP.md`; plain words. Style of the notes (DOCS-703): one line per change, each with its measured gain and the issue number, credit the contributor by name, plain tone, and this release's own numbers (never last release's). After promoting to `main`, open the card footer: its links to `RESULTS.md` and `RESULTS_OLD_LAPTOP.md` (blob/main) resolve only once `main` has the files |
+| 2 | Write `docs/releases/RELEASE_NOTES_vX.Y.Z.md` and the `## Unreleased` part of `CHANGELOG.md` | numbers only from `docs/results-archive/RESULTS.md` and `docs/results-archive/RESULTS_OLD_LAPTOP.md`; plain words. Style of the notes (DOCS-703): one line per change, each with its measured gain and the issue number, credit the contributor by name, plain tone, and this release's own numbers (never last release's). After promoting to `main`, open the card footer: its links to `RESULTS.md` and `RESULTS_OLD_LAPTOP.md` (blob/main) resolve only once `main` has the files |
 | 3 | Put the version into every place that names it | `tools/set_version.sh X.Y.Z`, then read `git diff` (it changes the changelog heading, the README badge and "Known issues" heading, `install.sh` `MOE_CACHE_REF`, the plugin banner and `VERSION` in `bin/moe_cache.py`) |
 | 4 | The docs agree with the code | `python3 tools/env_names_check.py` (every `MOE_CACHE_` name the code reads is in the docs); the pinned llama.cpp build is the same in `tools/make_windows_kit.sh`, `tools/make_release.sh`, `README.md`, `docs/INSTALL.md` |
 | 5 | No competitor name in any public file | `git grep -i -n -E 'NAME1\|NAME2' -- . ':!archive'` with the names from the owner's list (the list itself is not kept in the repository); the result must be empty |
@@ -75,6 +75,6 @@ Small releases are safer than big ones, because each one has fewer changes to bl
 
 | Idea | Why it is not in yet |
 |---|---|
-| Build the release text from `CHANGELOG.md` instead of a hand-written notes file | the notes file carries measured tables that the changelog does not; a generated text would need a check that every number comes from `docs/RESULTS.md` |
+| Build the release text from `CHANGELOG.md` instead of a hand-written notes file | the notes file carries measured tables that the changelog does not; a generated text would need a check that every number comes from `docs/results-archive/RESULTS.md` |
 | Run the `update --apply` test (step 14) in the workflow against the draft release | needs the draft's files to be reachable without a login; try it on a `-beta` tag first |
 | A scheduled run of step 9 on the newest published release (install, `--version`, `check --run` on the small test model) | nightly cost is small, but it needs a runner that can fetch the test model; today `identity` only tests the checkout |

@@ -72,7 +72,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   <header>
     <div class="eyebrow">Benchmark card · v0.3.7 · measured 2026-11-05/06 · Windows desktop</div>
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
-    <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC, in a real 65,000-token conversation (code pastes, logs and follow-ups, sent turn by turn with the whole history), it reads new prompt tokens faster and decodes faster than stock llama-server on the models that are bigger than the RAM. Older measurements (8k chats, long prompts, agent sessions, other models) are on <a href="benchmark_card_older.html">the older card page</a>.</p>
+    <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC, in a real 65,000-token conversation (code pastes, logs and follow-ups, sent turn by turn with the whole history), it reads new prompt tokens faster and decodes faster than stock llama-server on the models that are bigger than the RAM. Older measurements (8k chats, long prompts, agent sessions, other models) are on <a href="results-archive/benchmark_card_older.html">the older card page</a>.</p>
     <div class="machine">
       <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>v0.3.7 candidate kit f928d1c, official llama.cpp b12064 (51fe42c5d) Vulkan</span>
     </div>
@@ -157,7 +157,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section>
     <h2>Output quality</h2>
-    <p>The plugin does not change the math: on Flash-Next Q2_0 at a 34k prompt the plugin's answer was the same text as stock's (v0.3.7 candidate, chain log only, no record yet). Earlier checks on other models and kits are on the <a href="benchmark_card_older.html">older card page</a>. A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token while the meaning stays; <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/EXACTNESS.md">docs/EXACTNESS.md</a> lists exactly what is checked.</p>
+    <p>The plugin does not change the math: on Flash-Next Q2_0 at a 34k prompt the plugin's answer was the same text as stock's (v0.3.7 candidate, chain log only, no record yet). Earlier checks on other models and kits are on the <a href="results-archive/benchmark_card_older.html">older card page</a>. A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token while the meaning stays; <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/EXACTNESS.md">docs/EXACTNESS.md</a> lists exactly what is checked.</p>
   </section>
 
   <section>
@@ -191,7 +191,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
   </section>
 
-  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md">docs/RESULTS.md</a> (Windows desktop, newest first) and <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS_OLD_LAPTOP.md">docs/RESULTS_OLD_LAPTOP.md</a> (the Linux laptop); older card: <a href="benchmark_card_older.html">benchmark_card_older.html</a>. Result numbers named in this card are sections of RESULTS.md. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md">docs/results-archive/RESULTS.md</a> (Windows desktop, newest first) and <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS_OLD_LAPTOP.md">docs/results-archive/RESULTS_OLD_LAPTOP.md</a> (the Linux laptop); older card: <a href="results-archive/benchmark_card_older.html">benchmark_card_older.html</a>. Result numbers named in this card are sections of RESULTS.md. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
 </div>
 
 <script>

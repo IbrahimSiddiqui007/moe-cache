@@ -2,7 +2,7 @@
 
 moe-cache runs MoE models bigger than your RAM inside an **unmodified** llama-server. Its default promise is simple: the answer is the one stock
 llama.cpp gives for the same model, settings and layer split. This page lists how that is checked, when the checks run, and where the promise has limits.
-Numbers and logs: [RESULTS](RESULTS.md) and [RESULTS_OLD_LAPTOP](RESULTS_OLD_LAPTOP.md) (the identity checks of results 1, 10 and 36 are in the laptop file); the approximate modes: [QUALITY_GATE.md](QUALITY_GATE.md).
+Numbers and logs: [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md) (the identity checks of results 1, 10 and 36 are in the laptop file); the approximate modes: [QUALITY_GATE.md](QUALITY_GATE.md).
 
 ## What "the same" means
 

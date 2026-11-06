@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entry point the desktop shell runs instead of `moe_cache.py ui` (design: docs/DESKTOP_APP_DESIGN.md, section 8 items 2-4).
+"""Entry point the desktop shell runs instead of `moe_cache.py ui` (design: docs/internal/DESKTOP_APP_DESIGN.md, section 8 items 2-4).
 
 It is the control page, unchanged (bin/moe_cache_ui.py), plus three things the shell needs and the page does not do by itself:
 

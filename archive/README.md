@@ -44,7 +44,7 @@ Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 202
 | llama.cpp/0042-n-outputs-max.patch | `LLAMA_N_OUTPUTS_MAX=8` | at 39 CPU layers 585 / 598 off, 606 / 590 on | inside noise | VRAM is short at 128k+ |
 | llama.cpp/0002-server-adaptive-draft-length.patch | `LLAMA_SPEC_ADAPT` | MTP decode 16.35 both | no gain | another draft model |
 | llama.cpp/0003-vulkan-mmid-vec-max-tokens.patch | `GGML_VK_MMID_VEC_MAX_TOKENS` | 16.45 vs 16.2-16.35 | no gain | - |
-| plugin/decode_tier.patch (design: docs/DECODE_TIER_DESIGN.md; also deletes `src/mc_tier.h`, `tests/tier_test.cpp`) | `MOE_CACHE_DECODE_TIER=38,39` (+ `_CHECK`, `_KEEP_MIB`) | 2026-11-03, 64k ctx, 34k prompt, restarted PC: check mode exact (0 groups above 0.05); decode 26.71 / 26.22 vs 26.72 / 26.65, prompt 311 / 313 vs 488 / 585 | kill check: no decode gain, prompt -41 % (letting llama.cpp place 2 more layers gives +15 %: the gain needs the loader, see the engine re-check) | a llama.cpp patch keeps a decode-only GPU copy of layers |
+| plugin/decode_tier.patch (design: docs/internal/DECODE_TIER_DESIGN.md; also deletes `src/mc_tier.h`, `tests/tier_test.cpp`) | `MOE_CACHE_DECODE_TIER=38,39` (+ `_CHECK`, `_KEEP_MIB`) | 2026-11-03, 64k ctx, 34k prompt, restarted PC: check mode exact (0 groups above 0.05); decode 26.71 / 26.22 vs 26.72 / 26.65, prompt 311 / 313 vs 488 / 585 | kill check: no decode gain, prompt -41 % (letting llama.cpp place 2 more layers gives +15 %: the gain needs the loader, see the engine re-check) | a llama.cpp patch keeps a decode-only GPU copy of layers |
 
 ### PC 2026-11-05 (IQ3_XXS, 64k prompt, timers off, A B B A + C + R)
 

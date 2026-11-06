@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Draw docs/img/results.svg (the README chart) from the ROWS table below. Every number must come from docs/RESULTS.md: the section is in each row.
+"""Draw docs/img/results.svg (the README chart) from the ROWS table below. Every number must come from docs/results-archive/RESULTS.md: the section is in each row.
    python3 tools/make_results_chart.py            (writes docs/img/results.svg)"""
 import os
 
@@ -45,7 +45,7 @@ def main():
         o.append(f'<text x="840" y="{y + 30}" font-size="13" font-weight="bold" text-anchor="end" fill="{TXT}">{ratio:.1f}x</text>')
         y += heights[i]
     y += 12
-    o.append(f'<text x="20" y="{y}" font-size="12" fill="{TXT}">Clean runs on one laptop (i7-13620H, RTX 4060 8 GB, NVMe), paired where marked in docs/RESULTS.md (section, version).</text>')
+    o.append(f'<text x="20" y="{y}" font-size="12" fill="{TXT}">Clean runs on one laptop (i7-13620H, RTX 4060 8 GB, NVMe), paired where marked in docs/results-archive/RESULTS.md (section, version).</text>')
     o.append(f'<text x="20" y="{y + 20}" font-size="12" fill="{TXT}">"N GB RAM" = memory limit set with a cgroup on a 31 GB machine; the model file is evicted from the page cache before limited stock runs.</text>')
     o.append('</svg>')
     open(OUT, "w").write("\n".join(o) + "\n")

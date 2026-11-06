@@ -20,7 +20,7 @@ def norm(n):
 
 
 def main(argv):
-    files = argv or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "benchmark_card.html")]
+    files = argv or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "RESULTS_CURRENT.md"), os.path.join(ROOT, "docs", "benchmark_card.html")]
     claims, runs = mc.load_claims(mc.BENCH), mc.load_runs(mc.BENCH)
     status, _ = mc.compute_status(claims, runs)
     blob = {i: norm(str(c)) for i, c in claims.items()}

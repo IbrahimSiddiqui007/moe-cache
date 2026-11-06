@@ -114,7 +114,7 @@ Run `python3 bin/moe_cache.py bench-report MODEL.gguf` (or press **Share my numb
 ## What speed to expect
 
 Rule of thumb from our measurements (see `RESULTS.md`): if the model fits in your RAM, use stock llama.cpp (llama.cpp's own GPU expert cache, `--moe-cache-mib`, is optional there; it was slower on our Vulkan PC, RESULTS 59): moe-cache adds nothing there.
-If it does not fit, we measured 2x to 12x stock on Linux and 1.2x to 2x decode on the Windows PC ([RESULTS.md](RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](RESULTS_OLD_LAPTOP.md) for Linux; the README has a short table). Example: a 48 GB model in a 20 GB memory limit ran at 9.3 tok/s instead of 1.3.
+If it does not fit, we measured 2x to 12x stock on Linux and 1.2x to 2x decode on the Windows PC ([RESULTS.md](results-archive/RESULTS.md) for Windows, [RESULTS_OLD_LAPTOP.md](results-archive/RESULTS_OLD_LAPTOP.md) for Linux; the README has a short table). Example: a 48 GB model in a 20 GB memory limit ran at 9.3 tok/s instead of 1.3.
 
 ## Which llama-server do I use?
 

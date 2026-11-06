@@ -7,6 +7,41 @@ bin/moe-cache-server MODEL.gguf --agent            # context 65536, tool calls, 
 python3 bin/moe_cache.py connect opencode --write  # or: connect hermes --write   (add --url http://127.0.0.1:PORT for another port)
 ```
 
+## Connecting Hermes Agent and OpenCode (moved here from the README, 2026-11-06)
+
+Start the server in agent mode (or let on-demand start it when an agent asks), then point the agent at it. One command writes the agent's config; the old config is kept as `.bak`.
+
+```bash
+python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart   # loads the model on the first request, unloads it when idle
+# or by hand: bin/moe-cache-server /path/to/model.gguf --agent                # context 65536, tool calls, API key, warm sessions
+```
+
+### Hermes Agent
+
+| Step | What to do |
+|---|---|
+| Install | Hermes Agent CLI, or Hermes Desktop on Windows (hermes-agent.nousresearch.com). Windows: add `%LOCALAPPDATA%\hermes\bin` to PATH so `connect` finds `hermes` |
+| Connect | `python3 bin/moe_cache.py connect hermes --write` (or the control page's **Connect Hermes** button): provider `custom`, URL, model name, context 65536 and the API key go into Hermes' `config.yaml`. Hermes Desktop reads the same file |
+| Use | `hermes chat` (CLI), `hermes dashboard` (web UI), or Hermes Desktop: Settings > Model shows the moe-cache model |
+| Measured | Windows desktop, Flash-Next IQ2_XS (68 GB, bigger than RAM), a recorded Hermes bug-fix session: about half the time with moe-cache as with stock llama.cpp, first token about three times sooner (2026-10-27, kit of that day, no benchmark record; numbers: [RESULTS section 60](results-archive/RESULTS.md) and the [older card page](results-archive/benchmark_card_older.html)) |
+
+### OpenCode
+
+| Step | What to do |
+|---|---|
+| Install | OpenCode CLI, or OpenCode Desktop (opencode.ai/download) |
+| Connect | `python3 bin/moe_cache.py connect opencode --write` (or **Connect OpenCode** on the control page): adds a `moe-cache` provider to `opencode.json` (or `opencode.jsonc`) and selects it; OpenCode Desktop reads the same folder |
+| Use | `opencode`, `opencode web`, or OpenCode Desktop; pick `moe-cache/<model>` in the model list |
+| Measured | same PC and model, a recorded OpenCode bug-fix session: less than half the time with moe-cache as with stock llama.cpp, first token about three times sooner (same day and kit, no benchmark record; numbers: [RESULTS section 60](results-archive/RESULTS.md) and the [older card page](results-archive/benchmark_card_older.html)) |
+
+### Other agents
+
+`connect` also writes the config for **Claude Code, Codex CLI, Pi, OpenClaw, Aider and Qwen Code**: `python3 bin/moe_cache.py connect NAME --write` (without `--write` it only prints the settings; the first backup of your config is kept as `.bak`). Checked against the real programs with a small model on 2026-11-03: Codex CLI, Pi, OpenClaw, Aider, OpenCode and Claude Code completed a turn (Claude Code with its settings exported in the shell); Qwen Code read its config but the 1.7B test model returned an empty answer, so it is not proven yet; Hermes was checked on 2026-10-29. Details: [docs/AGENTS.md](AGENTS.md).
+
+**Check it works:** `python3 bin/moe_cache.py connect NAME --check` sends one prompt and one tool call the way that agent does and prints pass/fail per step with the likely fix (wrong key, model name, window too big, tool calls off).
+
+Keep each agent's own context limit below the server's, and set things up before a session: details, desktop apps and on-demand in [docs/AGENTS.md](AGENTS.md).
+
 ## More agents: Codex CLI, Pi, OpenClaw, Aider, Qwen Code
 
 `python3 bin/moe_cache.py connect NAME` prints what it would write; `--write` merges it (`--url` for another port, `--config PATH` for another file). Common rules: the first backup is kept as `.bak` and never replaced (a later connect that finds a changed file also keeps it as `.bak.1`, `.bak.2`, the last five), `connect NAME --undo` puts the first backup back (the file as it was is kept as `.undone`; no server needed), `connect claude --write` adds `.claude/settings.local.json` to `.gitignore` of a git project, the file is private (mode 0600, it holds the API key), the key is the stable one from `moe_cache.py key`, the window the agent is told is the server's context minus 12.5 % headroom (65536 becomes 57344, see "Keep the agent's own context limit below the server's"), every model the endpoint lists is added (on-demand with several models), and a file that is not the expected format is refused and left untouched. The default URL is the on-demand listener's port when `on-demand` has a model. The formats come from each agent's own documentation (links in the table); run against the real agents on 2026-11-03 (table "Checked with the real agents" below) and, for the file handling, by `tests/connect_agents_test.py` (fake configs: missing file, existing provider, malformed file).
@@ -225,7 +260,7 @@ with a 9 GiB cache, OpenCode 1.19.4, task "fix the bug in calc.py"):
 | whole session: OpenCode 1 / OpenCode 2 / after restart / Hermes | | 78 s / 30 s / 39 s / 55 s |
 
 With Flash-Next (64 GB, 23 GB limit) the cold first turn is 7,461 tokens in 186 s; after a restart with the warm session the whole OpenCode
-session takes 112 s instead of 242 s. Details: [RESULTS_OLD_LAPTOP.md, results 51-52](RESULTS_OLD_LAPTOP.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
+session takes 112 s instead of 242 s. Details: [RESULTS_OLD_LAPTOP.md, results 51-52](results-archive/RESULTS_OLD_LAPTOP.md). Saved conversations live in `~/.cache/moe-cache/slots/agent/`, one file per
 model, context and slot.
 
 OpenCode's title request runs in parallel in its own slot and does not disturb the main conversation.
@@ -267,7 +302,7 @@ The replay generates greedily and stops at the recorded number of tokens, so sto
 same prompt reuse. Follow-up turns re-send the agent's original assistant message, which the server processes again if the model now writes something
 else (a few hundred tokens per turn). Recording replaces the home folder, user and host names. Agent-mode servers want the per-user API key: the replay sends `LLAMA_API_KEY`, or the launcher's stored key when the server asks for one (`--api-key` to give another). Start the server fresh for a cold first turn (with
 `--agent`, also give it an empty `--slot-save-path` after `--`, or it restores the last warm session). Measured on the laptop, stock vs moe-cache:
-[RESULTS_OLD_LAPTOP.md, result 57](RESULTS_OLD_LAPTOP.md).
+[RESULTS_OLD_LAPTOP.md, result 57](results-archive/RESULTS_OLD_LAPTOP.md).
 
 ## Agent notes
 

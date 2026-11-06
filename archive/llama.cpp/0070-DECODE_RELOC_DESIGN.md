@@ -4,7 +4,7 @@
 
 ## The problem in three lines
 At 64k, `-ub 2048` reads the prompt about 1.4x faster than `-ub 512`, but its compute buffer leaves room for 2 fewer expert layers on the 16 GB card. The PC measured the cost (DECODE-210 sizing, 2026-11-03, A B B A, 64k): `-ub 512` with 38 CPU layers decodes 26.63 / 26.92 tok/s, `-ub 2048` with 40 CPU layers 23.74 / 22.91 (+15 %); prompt 294 / 276 against 406 / 460 tok/s. The wish: prompt with 2048, decode with 38 layers.
-Earlier work: the plugin route (a decode tier of whole layers kept by the plugin, `docs/DECODE_TIER_DESIGN.md`) was built and killed on the PC (exact, decode -1 %, prompt -41 %, `archive/plugin/decode_tier.patch`). Its own result said the +15 % needs llama.cpp's placement of the layers. This is that route.
+Earlier work: the plugin route (a decode tier of whole layers kept by the plugin, `docs/internal/DECODE_TIER_DESIGN.md`) was built and killed on the PC (exact, decode -1 %, prompt -41 %, `archive/plugin/decode_tier.patch`). Its own result said the +15 % needs llama.cpp's placement of the layers. This is that route.
 
 ## Options (design table, written before building)
 Gain column: the measured ceiling is +15 % decode at 64k (2 layers); everything else is a guess and says so. "Break-even" = generated tokens after which the one-time switch cost has paid back, using 42.9 ms per token (23.3 tok/s) against 37.3 ms (26.8 tok/s), i.e. 5.6 ms saved per token.

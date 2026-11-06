@@ -8,4 +8,4 @@ withdrawn: ""
 ---
 # Qwen3.6-35B-A3B (fits in RAM) decodes at the same speed with or without the plugin (46.06 stock, 45.60 forced); with MTP 70.25 against 68.60 stock
 
-Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Two cold runs each; about 78 % of MTP drafts accepted. Source: docs/RESULTS.md section 58; the benchmark card.
+Windows PC, launcher defaults, cold file cache, llama.cpp 620d2225c (build number not recorded), moe-cache version not recorded. Only the decode speed of the water-cycle request was written down per run; prompt speed, VRAM, RAM and CPU were not recorded. Two cold runs each; about 78 % of MTP drafts accepted. Source: docs/results-archive/RESULTS.md section 58; the benchmark card.

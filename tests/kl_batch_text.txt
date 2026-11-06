@@ -12,7 +12,7 @@ A plugin for an unmodified <code>llama-server</code>. No fork, no patch.</p>
 </p>
 
 <p align="center"><a href="docs/benchmark_card.html"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/benchmark_card-dark.png"><img src="docs/benchmark_card.png" width="860" alt="Benchmark card: decode tokens per second, stock llama.cpp vs moe-cache, on a Windows PC with 32 GB RAM and a 16 GB graphics card"></picture></a></p>
-<p align="center"><sub>Windows desktop, 32 GB RAM + 16 GB graphics card; speeds measured 2026-10-27/28 with builds of that week (each row lists its test details; not recorded values say so). Full <a href="docs/benchmark_card.html">benchmark card</a> (long context, other models, agents); every number in <a href="docs/RESULTS.md">docs/RESULTS.md</a>. Older laptop results: <a href="docs/RESULTS.md#laptop-results-older-versions">docs/RESULTS.md</a>.</sub></p>
+<p align="center"><sub>Windows desktop, 32 GB RAM + 16 GB graphics card; speeds measured 2026-10-27/28 with builds of that week (each row lists its test details; not recorded values say so). Full <a href="docs/benchmark_card.html">benchmark card</a> (long context, other models, agents); every number in <a href="docs/results-archive/RESULTS.md">docs/results-archive/RESULTS.md</a>. Older laptop results: <a href="docs/results-archive/RESULTS.md#laptop-results-older-versions">docs/results-archive/RESULTS.md</a>.</sub></p>
 
 ## What it is
 
@@ -70,7 +70,7 @@ python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart   # l
 | Install | Hermes Agent CLI, or Hermes Desktop on Windows (hermes-agent.nousresearch.com). Windows: add `%LOCALAPPDATA%\hermes\bin` to PATH so `connect` finds `hermes` |
 | Connect | `python3 bin/moe_cache.py connect hermes --write` (or the control page's **Connect Hermes** button): provider `custom`, URL, model name, context 65536 and the API key go into Hermes' `config.yaml`. Hermes Desktop reads the same file |
 | Use | `hermes chat` (CLI), `hermes dashboard` (web UI), or Hermes Desktop: Settings > Model shows the moe-cache model |
-| Measured | Windows desktop, Flash-Next IQ2_XS (68 GB, bigger than RAM), a recorded Hermes bug-fix session: **81.6 s with moe-cache vs 163.9 s stock (2.0x)**, first token 21.8 vs 66.2 s ([RESULTS section 60](docs/RESULTS.md)) |
+| Measured | Windows desktop, Flash-Next IQ2_XS (68 GB, bigger than RAM), a recorded Hermes bug-fix session: **81.6 s with moe-cache vs 163.9 s stock (2.0x)**, first token 21.8 vs 66.2 s ([RESULTS section 60](docs/results-archive/RESULTS.md)) |
 
 #### OpenCode
 
@@ -79,7 +79,7 @@ python3 bin/moe_cache.py on-demand /path/to/model.gguf --install-autostart   # l
 | Install | OpenCode CLI, or OpenCode Desktop (opencode.ai/download) |
 | Connect | `python3 bin/moe_cache.py connect opencode --write` (or **Connect OpenCode** on the control page): adds a `moe-cache` provider to `opencode.json` (or `opencode.jsonc`) and selects it; OpenCode Desktop reads the same folder |
 | Use | `opencode`, `opencode web`, or OpenCode Desktop; pick `moe-cache/<model>` in the model list |
-| Measured | same PC and model, a recorded OpenCode bug-fix session: **73.4 s with moe-cache vs 174.8 s stock (2.4x)**, first token 38.6 vs 116.8 s ([RESULTS section 60](docs/RESULTS.md)) |
+| Measured | same PC and model, a recorded OpenCode bug-fix session: **73.4 s with moe-cache vs 174.8 s stock (2.4x)**, first token 38.6 vs 116.8 s ([RESULTS section 60](docs/results-archive/RESULTS.md)) |
 
 Claude Code: `python3 bin/moe_cache.py connect claude` prints the settings (`--write` puts them in this folder's `.claude/settings.local.json`). Keep each agent's own context limit below the server's, and set things up before a session: details, desktop apps and on-demand in [docs/AGENTS.md](docs/AGENTS.md).
 
@@ -94,10 +94,10 @@ The chart at the top is the Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32
 - **+20 to +47 %** decode on the Flash-Next files that do not fit in RAM, **2.0x** on GLM-5.3-Flash (102 GB; one run each on the same drive, 4.44 vs 2.21 tok/s), 3.1x with MTP (one run).
 - **2.0-2.4x** faster coding-agent sessions (OpenCode, Hermes) on Flash-Next.
 - Models that fit in RAM (Qwen3.6-35B, Nemotron Bolt): plain llama.cpp is as fast or faster, so the launcher runs it by itself.
-- **v0.3.5 vs v0.3.4 (Flash-Next Q2_0, Windows desktop, clean run 2026-11-03, both on the official llama.cpp b11966 server):** prompts of 34k / 64k / 128k tokens are read **+42 % / +38 % / +38 %** faster (575 vs 406, 435 vs 314, 421 vs 305 tok/s); decode after a long prompt is **6-10 % lower** (34k 26.7 vs 28.5, 64k 24.6 vs 27.2 tok/s), because the bigger prompt chunk leaves 2 fewer expert layers on the GPU. 256k prompts +26 % from the same change. [RESULTS section 79](docs/RESULTS.md)
+- **v0.3.5 vs v0.3.4 (Flash-Next Q2_0, Windows desktop, clean run 2026-11-03, both on the official llama.cpp b11966 server):** prompts of 34k / 64k / 128k tokens are read **+42 % / +38 % / +38 %** faster (575 vs 406, 435 vs 314, 421 vs 305 tok/s); decode after a long prompt is **6-10 % lower** (34k 26.7 vs 28.5, 64k 24.6 vs 27.2 tok/s), because the bigger prompt chunk leaves 2 fewer expert layers on the GPU. 256k prompts +26 % from the same change. [RESULTS section 79](docs/results-archive/RESULTS.md)
 - Same text as stock on every model checked. On Linux (older laptop runs, v0.2.x) the gains were 2.4x to 5.2x.
 
-Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html), [docs/RESULTS.md](docs/RESULTS.md). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md)).
+Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html), [docs/results-archive/RESULTS.md](docs/results-archive/RESULTS.md). Measure your own machine: the control page's **Share my numbers** button, or `python3 bin/moe_cache.py bench-report MODEL.gguf` ([docs/SHARE_YOUR_NUMBERS.md](docs/SHARE_YOUR_NUMBERS.md)).
 
 
 ## Known issues in v0.3.5 (honest list)
@@ -125,12 +125,12 @@ Everything, with methods and caveats: [benchmark card](docs/benchmark_card.html)
 | [Control page](docs/GUI.md), [try it step by step](docs/CONTROL_PAGE_CHECK.md) | the browser app |
 | [How it works](docs/HOW_IT_WORKS.md) | the cache, the plugin, what it changes in llama.cpp (nothing) |
 | [Exactness](docs/EXACTNESS.md) | how "same tokens as stock" is checked |
-| [Results](docs/RESULTS.md) and the [benchmark card](docs/benchmark_card.html) | every measurement |
+| [Results](docs/results-archive/RESULTS.md) and the [benchmark card](docs/benchmark_card.html) | every measurement |
 | [Hardware and limits](docs/PLATFORMS.md) | what is tested where, known limitations |
 | [Configuration](docs/CONFIGURATION.md) | environment variables |
 | [FAQ](docs/FAQ.md) | questions, and how moe-cache compares with other projects |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | wrong-looking answers, slow runs, start problems |
-| [Coding standards](docs/CODING_STANDARDS.md) | rules for anyone building or testing moe-cache |
+| [Coding standards](docs/internal/CODING_STANDARDS.md) | rules for anyone building or testing moe-cache |
 | [Compatibility](docs/COMPATIBILITY.md), [Roadmap](docs/ROADMAP.md), [Security and privacy](docs/SECURITY.md) | |
 
 ## Support
@@ -613,7 +613,7 @@ A row whose line says `not recorded` is a row that still has to be measured (or 
 
 ## RESULTS.md section template
 
-Every new section in `docs/RESULTS.md` starts with this heading line and carries the same fields (`bench-record card FILE --as results` fills it):
+Every new section in `docs/results-archive/RESULTS.md` starts with this heading line and carries the same fields (`bench-record card FILE --as results` fills it):
 
 ```markdown
 ## N. TITLE (MACHINE, DATE; clean / not clean: REASON; PC restarted at HH:MM, baseline guard PASS at X tok/s, runs HH:MM-HH:MM)

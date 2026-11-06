@@ -8,7 +8,7 @@
   ingest RECORD.json            copy a record into runs/ under its canonical name
   claim add|show|list           create a claim from run ids; show one with its computed values; list all with their status
   board                         write BOARD.md and JOURNAL.md (--check: exit 1 if they are out of date)
-  lint [FILES]                  README.md and docs/benchmark_card.html: every performance number needs a `<!-- claim:ID -->` of a current claim
+  lint [FILES]                  README.md, docs/RESULTS_CURRENT.md and docs/benchmark_card.html: every performance number needs a `<!-- claim:ID -->` of a current claim
   replay CLAIM                  the commands that reproduce a claim; with --record NEW.json compare a new record with the claim inside a noise band
 
 A claim's status is computed, never typed: current / stale (the moe-cache version or the llama.cpp pin moved past what the claim is valid for) / superseded (a
@@ -441,7 +441,7 @@ def lint_file(path, claims, status, root=ROOT):
 def cmd_lint(a, bdir):
     claims, runs = load_claims(bdir), load_runs(bdir)
     status, _ = compute_status(claims, runs)
-    files = a.files or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "benchmark_card.html")]
+    files = a.files or [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "docs", "RESULTS_CURRENT.md"), os.path.join(ROOT, "docs", "benchmark_card.html")]
     total = 0
     for f in files:
         probs, shown, ok = lint_file(f, claims, status)

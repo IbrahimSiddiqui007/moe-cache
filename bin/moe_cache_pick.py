@@ -3,7 +3,7 @@
 
 Reads this machine (RAM and the server's hard cap, dedicated VRAM, free disk, SSD or HDD, AVX2 / AVX-512, llama-server's build), asks what the
 model is for (agents and coding at 64k+ context, plain chat, long documents) and recommends one model, file, context and launcher options.
-Every rule below comes from a measurement in docs/RESULTS.md; where nothing was measured on that class of machine the result says so
+Every rule below comes from a measurement in docs/results-archive/RESULTS.md; where nothing was measured on that class of machine the result says so
 ("untested on this class of machine"). It never downloads anything by itself: it prints the command (size and source), and the launcher asks
 before running it. `--apply` (or the page's "Use it") writes the choice into the settings the launcher and the control page keep (ui.json):
 `moe_cache.py server` and `on-demand` without a model then use it, and `connect hermes|opencode` reads it from that server.

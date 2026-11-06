@@ -13,8 +13,8 @@ and whether it still holds is **computed**, not remembered.
 Status of a claim: **current**, **stale** (the moe-cache version or the llama.cpp pin moved past what the claim is valid for; the number may still hold, nobody has
 re-measured), **superseded** (a newer claim covers the same cell) or **withdrawn** (written by hand, with the reason). A value nobody measured is `not recorded`.
 
-Runs that were converted from [docs/RESULTS.md](../docs/RESULTS.md) (everything before the record format existed) say so in their `notes`: only the numbers written
-down at the time are in them, and VRAM, process RAM and CPU are `not recorded`. `docs/RESULTS.md` stays as the numbered history up to section 79.
+Runs that were converted from [docs/results-archive/RESULTS.md](../docs/results-archive/RESULTS.md) (everything before the record format existed) say so in their `notes`: only the numbers written
+down at the time are in them, and VRAM, process RAM and CPU are `not recorded`. `docs/results-archive/RESULTS.md` stays as the numbered history up to section 79.
 
 Commands (all `python3 bin/moe_cache.py bench-record ...`; the format and the rules are in [docs/BENCHMARK_TEMPLATE.md](../docs/BENCHMARK_TEMPLATE.md), the schema in
 [docs/bench_record.schema.json](../docs/bench_record.schema.json)):

@@ -8,4 +8,4 @@ withdrawn: ""
 ---
 # At 64k, 2 more expert layers on the GPU (-ub 512, 38 CPU layers) decode 15 % faster than -ub 2048 with 40
 
-Check run behind the decode loss in v0.3.5: Flash-Next Q2_0, Windows PC, official b11966 server, cold, two runs per arm. Prompt speed was not written down. Source: docs/RESULTS.md section 79.
+Check run behind the decode loss in v0.3.5: Flash-Next Q2_0, Windows PC, official b11966 server, cold, two runs per arm. Prompt speed was not written down. Source: docs/results-archive/RESULTS.md section 79.
