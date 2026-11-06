@@ -194,6 +194,21 @@ jobs:
         shell: bash
         run: desktop/src-tauri/resources/python/python.exe desktop/tests/shell_contract_test.py
 
+      # GUI-696: the signing key never sits in a step that installs packages. The CLI comes from the lockfile (npm ci fails when package.json and
+      # package-lock.json disagree; --ignore-scripts keeps package install scripts from running), then the build step, which is the only one that sees the key.
+      - name: Install the Tauri CLI from the lockfile (no secrets in this step)
+        working-directory: desktop
+        shell: bash
+        run: npm ci --no-audit --no-fund --ignore-scripts
+
+      - name: Refuse the placeholder update key on a tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          if head -c 11 desktop/src-tauri/update-pubkey.txt | grep -q PLACEHOLDER; then
+            echo "desktop/src-tauri/update-pubkey.txt is still the PLACEHOLDER: a tagged build would ship an app that cannot verify updates"; exit 1
+          fi
+
       - name: Build
         working-directory: desktop
         shell: bash
@@ -202,10 +217,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          npm install --no-audit --no-fund
           extra=()
           if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then extra=(--config '{"bundle":{"createUpdaterArtifacts":true}}'); echo "update files will be signed"; fi
-          npx tauri build --bundles ${{ matrix.bundles }} "${extra[@]}"
+          npx --no-install tauri build --bundles ${{ matrix.bundles }} "${extra[@]}"
 
       - name: Sizes
         shell: bash
