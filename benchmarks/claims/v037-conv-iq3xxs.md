@@ -2,7 +2,7 @@
 id: "v037-conv-iq3xxs"
 runs: ["2026-11-05_pc_d1b3b3"]
 cells: [{"run": "2026-11-05_pc_d1b3b3", "arm": "stock", "metric": "prompt_tps"}, {"run": "2026-11-05_pc_d1b3b3", "arm": "stock", "metric": "decode_tps"}, {"run": "2026-11-05_pc_d1b3b3", "arm": "moe-cache", "metric": "prompt_tps", "vs": "stock"}, {"run": "2026-11-05_pc_d1b3b3", "arm": "moe-cache", "metric": "decode_tps", "vs": "stock"}]
-valid_moe_cache: ["0.3.7", "0.3.7"]
+valid_moe_cache: ["0.3.7", "0.3.7.1"]
 valid_llama_builds: [12064, 12064]
 withdrawn: ""
 ---
