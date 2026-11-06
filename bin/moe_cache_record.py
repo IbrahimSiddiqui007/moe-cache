@@ -675,8 +675,9 @@ def git_commit(root):
 
 
 def llama_build(version_line):
-    """(build number, commit) from `llama-server --version` text ('version: 11966 (ff0d396e3)')."""
-    m = re.search(r"version:\s*(\d+)\s*\(([0-9a-f]{6,})\)", version_line or "")
+    """(build number, commit) from `llama-server --version` text: 'version: 0.8.0-dev (build 12064, commit 51fe42c5d)' (b12000 and later) or the old
+    'version: 11966 (ff0d396e3)'."""
+    m = re.search(r"\(build\s+(\d+),\s*commit\s+([0-9a-f]{6,})\)", version_line or "") or re.search(r"version:\s*(\d+)\s*\(([0-9a-f]{6,})\)", version_line or "")
     return (int(m.group(1)), m.group(2)) if m else (None, None)
 
 

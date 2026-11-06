@@ -208,5 +208,8 @@ check(rec6["software"]["plugin_file"] == rr.NR, "a record without a MOE_CACHE_LI
 check("version: 12064 (51fe42c5d)" in rr._run([sys.executable, "-c", "import sys; sys.stderr.write('version: 12064 (51fe42c5d)\\n')"], both=True)
       and rr._run([sys.executable, "-c", "import sys; sys.stderr.write('x')"]) == "", "_run(both=True) keeps stderr, where llama-server prints --version")
 
+check(rr.llama_build("version: 0.8.0-dev (build 12064, commit 51fe42c5d)\nbuilt with Clang 20.1.8") == (12064, "51fe42c5d")
+      and rr.llama_build("version: 11966 (ff0d396e3)") == (11966, "ff0d396e3"), "llama_build reads the new '(build N, commit C)' and the old 'version: N (C)' lines")
+
 print("conversation bench test: " + ("PASS" if not fails else f"FAIL ({len(fails)})"))
 sys.exit(1 if fails else 0)
