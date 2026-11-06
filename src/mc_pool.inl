@@ -48,9 +48,11 @@ struct exec_job_t {
     int64_t  ne00 = 0;
     size_t   nb01 = 0;
     ggml_vec_dot_t dot = nullptr;
-    std::atomic<int> next{0};
-    std::atomic<int> done{0};
-    uint64_t t_pub_ns = 0;     // MOE_CACHE_EXEC_TIMES: when run() published the job
+    // DECODE-148: the two counters every worker writes sit on their own cache lines, away from the read-only fields above and from each other,
+    // so a claim (next) does not make the others' reads of chunk/nch/tasks miss (false sharing). Same results; speed to be confirmed by a paired run.
+    alignas(64) std::atomic<int> next{0};
+    alignas(64) std::atomic<int> done{0};
+    alignas(64) uint64_t t_pub_ns = 0;     // MOE_CACHE_EXEC_TIMES: when run() published the job
 };
 
 inline uint64_t exec_now_ns() { return (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
