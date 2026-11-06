@@ -20,8 +20,11 @@ FAKEBIN = os.path.join(T, "fakebin"); os.makedirs(FAKEBIN)
 GH_LOG = os.path.join(T, "gh.log")
 open(os.path.join(FAKEBIN, "gh"), "w").write('''#!/bin/sh
 case "$1 $2" in
-  "auth status") exit ${FAKE_GH_AUTH:-0};;
-  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; [ -z "${FAKE_GH_MSG:-}" ] || echo "$FAKE_GH_MSG" >&2; exit ${FAKE_GH_VERIFY:-0};;
+  "auth status") exit ${FAKE_GH_AUTH_STATUS:-0};;   # exits 1 when ANY saved account is bad, whatever the active one can do: never the gate
+  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"
+    [ "${FAKE_GH_AUTH:-0}" = 0 ] || { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }   # no working login
+    echo "Loaded digest sha256:abc for file (progress text on stderr, as the real gh prints)" >&2
+    [ -z "${FAKE_GH_MSG:-}" ] || echo "$FAKE_GH_MSG" >&2; exit ${FAKE_GH_VERIFY:-0};;
 esac
 exit 1
 '''); os.chmod(os.path.join(FAKEBIN, "gh"), 0o755)
@@ -80,6 +83,10 @@ check(rc == 0 and open(GH_LOG).read() == "", "--dry-run asks gh nothing and inst
 rc, out = run(rA, "9.9.1")          # a mirror (MOE_CACHE_BASE_URL is set) is NOT a reason to skip: gh is asked, verifies the downloaded file
 check(rc == 0 and "build attestation verified" in out and "tar.gz" in open(GH_LOG).read() and "-R IbrahimSiddiqui007/moe-cache" in open(GH_LOG).read(), "a mirror folder with a working gh: the file is verified (not skipped)")
 rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0 and not os.path.exists(prefix), "...(uninstalled again)")
+# the PC bug (2026-11-06): `gh auth status` exits 1 because a SECOND saved account has a bad token, while the active login works and verify passes
+rc, out = run(rA, "9.9.1", FAKE_GH_AUTH_STATUS="1")
+check(rc == 0 and "build attestation verified" in out, f"gh auth status failing (a bad second account) does not stop an install whose verify passes ({out.strip()[-120:]})")
+rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0, "...(uninstalled again)")
 rc, out = run(rA, "9.9.1", "--yes-unverified", PATH=NOGH)
 check(rc == 0 and "WARNING: continuing without the build attestation" in out and "NOT checked" in out and os.access(shim, os.X_OK), "--yes-unverified with no gh: installs, with a warning that says what was not checked")
 rc, out = run(rA, "9.9.1", "--uninstall"); check(rc == 0, "...(uninstalled again)")

@@ -154,6 +154,7 @@ MAX_SCRIPT = 2_000_000      # the installer scripts are a few tens of KB; anythi
 SIGNER_WORKFLOW = f"{REPO}/.github/workflows/release.yml"      # only an attestation made by this repository's release workflow counts (as packages.yml)
 # gh output that means "gh could not reach GitHub / the service said later", not "the file does not match its attestation"
 _NETWORK = re.compile(r"no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5\d\d|rate limit|unexpected EOF", re.I)
+_NOLOGIN = re.compile(r"gh auth login|not logged in|authentication required|requires authentication|HTTP 401|bad credentials|GH_TOKEN", re.I)
 
 
 def attestation(path, env=None):
@@ -164,14 +165,14 @@ def attestation(path, env=None):
     gh = shutil.which("gh", path=env.get("PATH"))
     if not gh:
         return "skipped", "gh (the GitHub command line tool) is not installed"
-    if subprocess.run([gh, "auth", "status"], capture_output=True, env=dict(env)).returncode:
-        return "skipped", "gh is installed but not logged in (run: gh auth login)"
     r = subprocess.run([gh, "attestation", "verify", path, "-R", REPO, "--signer-workflow", SIGNER_WORKFLOW], capture_output=True, text=True, env=dict(env))
     if r.returncode == 0:
         return "verified", "build attestation of the installer verified (gh)"
     out = (r.stderr or r.stdout).strip()
     if _NETWORK.search(out):
         return "skipped", "gh could not reach GitHub to verify: " + out[-200:]
+    if _NOLOGIN.search(out):      # not gated on `gh auth status`: it exits 1 when any saved account has a bad token although the active one works
+        return "skipped", "gh has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working `gh auth login` (see: gh auth status)"
     return "failed", "gh attestation verify FAILED: " + out[-300:]
 
 

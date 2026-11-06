@@ -35,8 +35,11 @@ os.makedirs(bindir)
 FAKEBIN = os.path.join(T, "fakebin"); os.makedirs(FAKEBIN)
 open(os.path.join(FAKEBIN, "gh"), "w").write('''#!/bin/sh
 case "$1 $2" in
-  "auth status") exit ${FAKE_GH_AUTH:-0};;
-  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"; [ -z "${FAKE_GH_MSG:-}" ] || echo "$FAKE_GH_MSG" >&2; exit ${FAKE_GH_VERIFY:-0};;
+  "auth status") exit ${FAKE_GH_AUTH_STATUS:-0};;   # exits 1 when ANY saved account is bad, whatever the active one can do: never the gate
+  "attestation verify") echo "$@" >> "${FAKE_GH_LOG:-/dev/null}"
+    [ "${FAKE_GH_AUTH:-0}" = 0 ] || { echo "To get started with GitHub CLI, please run:  gh auth login" >&2; exit 4; }   # no working login
+    echo "Loaded digest sha256:abc for file (progress text on stderr, as the real gh prints)" >&2
+    [ -z "${FAKE_GH_MSG:-}" ] || echo "$FAKE_GH_MSG" >&2; exit ${FAKE_GH_VERIFY:-0};;
 esac
 exit 1
 '''); os.chmod(os.path.join(FAKEBIN, "gh"), 0o755)
@@ -89,6 +92,9 @@ def still_9_9_1():
 for label, extra, why in (("gh not installed", dict(PATH=NOGH), "is not installed"), ("gh not logged in", dict(FAKE_GH_AUTH="1"), "not logged in"), ("gh verify fails", dict(FAKE_GH_VERIFY="1"), "verify FAILED")):
     rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", yes=True, env=dict(env, **extra), base_url="file://" + r2))
     check(rc == 1 and "REFUSED" in out and "NOT checked" in out and why in out and "--yes-unverified" in out and still_9_9_1(), f"{label}: update refused, says what was not checked, nothing changed")
+# the PC bug (2026-11-06): `gh auth status` fails for a bad second account, the active login works: the update goes on (verify decides)
+st, note = up.attestation(os.path.join(r2, [f for f in os.listdir(r2) if f.endswith(".tar.gz")][0]), env=dict(env, FAKE_GH_AUTH_STATUS="1"))
+check(st == "verified", f"update check: gh auth status failing does not skip the attestation ({st}: {note})")
 open(GH_LOG, "w").close()
 rc, out = say_to_str(lambda: up.apply("9.9.1", here1, tag="v9.9.2", dry=True, env=dict(env, PATH=NOGH), base_url="file://" + r2))
 check(rc == 0 and "nothing was downloaded" in out, "--dry-run does not need gh")
