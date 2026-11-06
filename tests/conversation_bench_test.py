@@ -244,4 +244,16 @@ check(rc == 0 and rh["threads"] == 16 and rh["n_layer"] == 48 and rh["gpu_expert
       f"two --server-log files (stderr and stdout) are read together: threads {rh['threads']}, n_layer {rh['n_layer']}, GPU expert layers {rh['gpu_expert_layers']}, KV {rh['kv_type_k']}")
 
 print("conversation bench test: " + ("PASS" if not fails else f"FAIL ({len(fails)})"))
+# TEST-754: the cost-model fit recovers known A, B, C from synthetic turns
+def syn(ub, A=3.0, B=1.2, C=0.06):
+    out = []
+    cache = 0
+    for n in (900, 2500, 300, 4000, 1500, 700, 3200, 2048, 5000):
+        d = cache + n / 2
+        out.append({"error": None, "prompt_n": n, "cache_n": cache, "prompt_ms": 1000 * (A * -(-n // ub) + B * n / 1000 + C * (n / 1000) * (d / 1000))})
+        cache += n
+    return out
+f = cb.cost_fit_runs([(syn(2048), 2048), (syn(4096), 4096)])
+check(f is not None and abs(f["a_s_per_pass"] - 3.0) < 0.01 and abs(f["b_s_per_1k"] - 1.2) < 0.01 and abs(f["c_s_per_1k_x_1k_depth"] - 0.06) < 0.001, f"fit over two -ub arms recovers A, B, C ({f})")
+check(cb.cost_fit([], 2048) is None, "fit: too few turns gives None, no crash")
 sys.exit(1 if fails else 0)

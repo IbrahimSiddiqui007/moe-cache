@@ -386,6 +386,52 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
 
 # ---------------------------------------------------------------- summaries
 
+def cost_fit(turns, ub):
+    """TEST-754: prompt time per turn = A x passes + B x (new tokens / 1k) + C x (new tokens / 1k) x (depth / 1k), least squares over the turns that read a prompt.
+    passes = ceil(new tokens / ub) (every pass pays the fixed cost of going over the experts once); depth = tokens already cached + half the new ones.
+    Returns {"a_s_per_pass", "b_s_per_1k", "c_s_per_1k_x_1k_depth", "turns", "ub", "rms_s"}, or None with fewer than 4 usable turns (or a flat system).
+    With one -ub the passes column is nearly proportional to the tokens, so A and B only separate when -ub differs between runs: run the same chat at
+    -ub 2048 and -ub 4096 and fit them together (pass several runs: cost_fit_runs)."""
+    rows = []
+    for t in turns:
+        if t.get("error") or not t.get("prompt_n") or not t.get("prompt_ms") or not ub:
+            continue
+        n = t["prompt_n"]; d = (t.get("cache_n") or 0) + n / 2
+        rows.append(([-(-n // ub), n / 1000, (n / 1000) * (d / 1000)], t["prompt_ms"] / 1000))
+    return _lsq(rows, ub)
+
+
+def cost_fit_runs(runs_with_ub):
+    """The same fit over the turns of several runs, each (turns, ub): lets an -ub 4096 run separate A from B."""
+    rows = []
+    for turns, ub in runs_with_ub:
+        for t in turns:
+            if t.get("error") or not t.get("prompt_n") or not t.get("prompt_ms") or not ub:
+                continue
+            n = t["prompt_n"]; d = (t.get("cache_n") or 0) + n / 2
+            rows.append(([-(-n // ub), n / 1000, (n / 1000) * (d / 1000)], t["prompt_ms"] / 1000))
+    return _lsq(rows, "/".join(str(u) for _, u in runs_with_ub))
+
+
+def _lsq(rows, ub):
+    if len(rows) < 4:
+        return None
+    m = [[sum(r[0][i] * r[0][j] for r in rows) for j in range(3)] + [sum(r[0][i] * r[1] for r in rows)] for i in range(3)]
+    for c in range(3):                                   # Gauss-Jordan with partial pivoting
+        piv = max(range(c, 3), key=lambda r: abs(m[r][c]))
+        if abs(m[piv][c]) < 1e-9:
+            return None
+        m[c], m[piv] = m[piv], m[c]
+        m[c] = [v / m[c][c] for v in m[c]]
+        for r in range(3):
+            if r != c:
+                f = m[r][c]
+                m[r] = [v - f * w for v, w in zip(m[r], m[c])]
+    A, B, C = m[0][3], m[1][3], m[2][3]
+    rms = (sum((y - (A * x[0] + B * x[1] + C * x[2])) ** 2 for x, y in rows) / len(rows)) ** 0.5
+    return {"a_s_per_pass": round(A, 3), "b_s_per_1k": round(B, 3), "c_s_per_1k_x_1k_depth": round(C, 4), "turns": len(rows), "ub": ub, "rms_s": round(rms, 3)}
+
+
 def band_edges(ctx, k=4):
     w = ctx / k
     return [(int(i * w), int((i + 1) * w)) for i in range(k)]
@@ -568,6 +614,7 @@ def _run_args(p):
     p.add_argument("--command-line", dest="server_cmd", help="the llama-server command line of this run (ctx, ub, GPU layers, flags go into the record); an 'env A=1 B=2 ' prefix "
                    "records environment variables; @FILE reads the text from a file")
     p.add_argument("--server-log", action="append", help="llama-server's log file (layer counts, threads and buffer sizes are read from it); repeat for stdout and stderr, the plugin prints to stdout")
+    p.add_argument("--ub", type=int, default=2048, help="the server's -ub, used for the cost-model fit when the command line does not say (default 2048)")
     p.add_argument("--load-s", type=float, help="seconds from the server start to its first ready answer (measured by the driver)")
 
 
@@ -603,6 +650,15 @@ def _one(a, url, arm, log=print):
         run["server_log_facts"] = rr.parse_llama_log(lines)
     except Exception as ex:
         log(f"settings not read: {type(ex).__name__}: {ex}")
+    ub = (run.get("settings") or {}).get("ub") if isinstance(run.get("settings"), dict) else None
+    try:
+        ub = int(ub) if ub else a.ub
+    except (TypeError, ValueError):
+        ub = a.ub
+    fit = cost_fit(run["turns"], ub)
+    run["cost_fit"] = fit
+    log("cost-model fit per turn (prompt time = A per pass + B per 1k tokens + C per 1k tokens x 1k depth): " + (json.dumps(fit) if fit else "not enough turns")
+        + "; A and B separate only with a second -ub (the -ub 4096 arm)")
     if a.load_s is not None:
         run["load_s"] = round(a.load_s, 1)
     return run
