@@ -151,7 +151,7 @@ Records: `benchmarks/runs/2026-11-05_pc_b21c0e.json` (Q2_0), `..._d1b3b3.json` (
 |---|---|---|---|---|---|---|---|---|---|---|
 | Flash-Next Q2_0 | 65379 | 46 | 194.5 | 430.01 | 2.21x | 22.46 | 26.98 | +20.1 % | 613.0 | 387.8 |
 | Flash-Next IQ3_XXS | 65371 | 49 | 44.81 | 188.24 | 4.20x | 16.0 | 21.73 | +35.8 % | 1851.5 | 662.9 |
-| Qwen3.6-35B (fits in RAM, plugin forced) | 65373 | 33 | 983.67 | 1265.07 | 1.29x | 65.06 | 68.67 | +5.5 % | 111.0 | 93.1 |
+| Qwen3.6-35B (fits in RAM, plugin forced) | 65373 | 33 | 983.67 | 1265.07 | 1.29x | 65.06 | 68.67 | +5.6 % | 111.0 | 93.1 |
 
 Per depth band (0-16k / 16-32k / 32-48k / 48-64k; prompt tok/s stock -> moe-cache, decode tok/s stock -> moe-cache):
 
@@ -169,7 +169,7 @@ Peaks over the runs, stock / moe-cache (the bench-report sampler; VRAM is the se
 | Flash-Next IQ3_XXS | 13798 / 14585 | 26204 / 19990 | 250 / 6641 | 10.95 / 26.5 |
 | Qwen3.6-35B | 13851 / 14115 | 22378 / 11854 | 4532 / 14937 | 21.9 / 24.65 |
 
-**A model that fits in RAM (Qwen3.6-35B, plugin forced).** The launcher runs plain llama.cpp for this model by itself. Forced through moe-cache it read prompts 1.29x as fast and decoded 68.67 against 65.06 tok/s (+6 %) with about half the process RAM. One model on one machine; the older laptop measurements of models that fit in RAM disagree (stock was as fast or faster), so this is **not** a general claim and no launcher default changed.
+**A model that fits in RAM (Qwen3.6-35B, plugin forced).** The launcher runs plain llama.cpp for this model by itself. Forced through moe-cache it read prompts 1.29x as fast and decoded 68.67 against 65.06 tok/s (+5.6 %) with about half the process RAM (11.6 against 21.9 GiB at the peak). One model on one machine; the older laptop measurements of models that fit in RAM disagree (stock was as fast or faster), so this is **not** a general claim and no launcher default changed.
 
 **Q2_0 against IQ3_XXS on one 64k prompt, moe-cache on both, order Q2_0, IQ3_XXS, IQ3_XXS, Q2_0** (chain log `v037_quant.log`, 61,843-token prompt, then 128 tokens): Q2_0 prompt 418.1 tok/s (435.3 / 400.9), decode after the prompt 24.97 (25.17 / 24.76), plugin decode hit rate 98.8 %; IQ3_XXS prompt 204.7 (205.3 / 204.1), decode 12.96 (13.66 / 12.26), hit rate 92.2 %. Q2_0 over IQ3_XXS: prompt +104.3 %, decode +92.6 % (pair 1 +84.3 %, pair 2 +102.0 % on decode). Noise seen in the same-arm pairs of 2026-11-04: decode 0.1-0.2 %, prompt 0.2-1.7 %. The clean check of the first run (Q2_0) printed "clean: NO" because its CPU counter came back empty; windows, RAM and VRAM checks were clean, and the three other runs were clean. The launcher plans a different GPU layer count per file.
 

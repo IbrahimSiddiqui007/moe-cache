@@ -30,7 +30,7 @@
 
 **Identity at a 34k prompt on Q2_0** (plugin then stock; chain log, no record): the answers are the same text; plugin prompt 560.4 against stock 260.2 tok/s, decode after the prompt 26.47 against 24.04 tok/s. One pair.
 
-**A model that fits in RAM** (Qwen3.6-35B, plugin forced; the launcher runs stock for it by itself): in a 65k conversation moe-cache read prompts 1.29x as fast and decoded 68.67 against 65.06 tok/s (+6 %) with a process RAM peak of about 11.9 against 22.4 GB. One model on one machine; older laptop runs of models that fit disagree, so this is not a general claim and the default (stock for a model that fits) is unchanged. Claim `v037-fits-qwen36`.
+**A model that fits in RAM** (Qwen3.6-35B, plugin forced; the launcher runs stock for it by itself): in a 65k conversation moe-cache read prompts 1.29x as fast and decoded 68.67 against 65.06 tok/s (+5.6 %) with a process RAM peak of 11.6 against 21.9 GiB (11,854 against 22,378 MiB). One model on one machine; older laptop runs of models that fit disagree, so this is not a general claim and the default (stock for a model that fits) is unchanged. Claim `v037-fits-qwen36`.
 
 **Quality** (measured 2026-11-05, record pending: no record, no claim): top-1 agreement with IQ3_S is 73.3 % for Q2_0 and 76.5 % for IQ3_XXS. That is why IQ3_XXS stays listed as the higher-quality option.
 
