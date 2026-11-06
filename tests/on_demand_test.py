@@ -409,6 +409,20 @@ except Exception as e:
 check("on-demand: a request sent at once is answered after the check", st == 200 and '"on_demand"' in body and t_ans and t_ans >= 2.5, (st, body, t_ans))
 p.terminate(); p.wait(30)
 
+# 8 (GUI-776, GUI-777): --remember-only checks and remembers, then RETURNS and never opens the port (the control page runs the listener itself)
+PORT = free_port()
+code = ("import sys; sys.path.insert(0, sys.argv[1]); import moe_cache_on_demand as od; "
+        "od.LAUNCHER = [sys.executable, '-c', 'pass']; sys.exit(od.on_demand(sys.argv[2:]))")
+t0 = time.time()
+r = subprocess.run([sys.executable, "-c", code, os.path.join(ROOT, "bin"), choice["model"], "--port", str(PORT), "--remember-only"],
+                   capture_output=True, text=True, timeout=60, env=dict(os.environ, LLAMA_SERVER=sys.executable))
+check("--remember-only: returns 0 at once, says it remembered the model", r.returncode == 0 and "remembered" in r.stdout and time.time() - t0 < 20, (r.returncode, r.stdout[-200:], r.stderr[-200:]))
+check("--remember-only: no listener was left on the port", not mc.port_busy(PORT))
+check("--remember-only: the port is remembered", (od.load_choice() or {}).get("port") == PORT, od.load_choice())
+r = subprocess.run([sys.executable, "-c", code, os.path.join(ROOT, "bin"), "--remember-only"], capture_output=True, text=True, timeout=60)
+check("--remember-only without a model is refused", r.returncode != 0 and "needs the model" in (r.stderr + r.stdout), (r.stderr + r.stdout)[-200:])
+
+
 
 # LAUNCHER-005 (A3-16): launcher options before the model do not swallow it
 M = "MODEL.gguf"

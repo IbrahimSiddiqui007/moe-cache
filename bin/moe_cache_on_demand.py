@@ -828,6 +828,7 @@ def on_demand(argv):
     ap.add_argument("--start-timeout", type=int, default=900, help="seconds to wait for the model to load")
     ap.add_argument("--install-autostart", action="store_true", help="start the listener at login (systemd --user unit / Windows Startup folder)")
     ap.add_argument("--remove-autostart", action="store_true", help="undo --install-autostart and stop the listener")
+    ap.add_argument("--remember-only", action="store_true", help="check and remember MODEL and its options, then return (no listener is started; the control page uses this, then runs the listener itself)")
     ap.add_argument("--stop", action="store_true", help="stop a running listener (and its model)")
     ap.add_argument("--status", action="store_true", help="print the remembered choice and whether the listener runs")
     ap.add_argument("--forget-key", action="store_true", help="remembering a default without --api-key keeps the custom key of an earlier one (a port or idle change "
@@ -867,7 +868,10 @@ def on_demand(argv):
         port = a.port or (c or {}).get("port") or 8080
         if mc.port_busy(port):
             raise SystemExit(f"port {port} is already in use (another server, or on-demand already runs: moe_cache.py on-demand --status)")
-        srv = Server(("127.0.0.1", port), Handler)
+        if not a.remember_only:
+            srv = Server(("127.0.0.1", port), Handler)
+    if a.remember_only and not a.model:
+        raise SystemExit("--remember-only needs the model: moe_cache.py on-demand MODEL.gguf [options] --remember-only")
     if a.add and not a.model:
         raise SystemExit("give the model to add: moe_cache.py on-demand MODEL.gguf [options] --add")
     if a.add and not c:
@@ -926,6 +930,8 @@ def on_demand(argv):
             say(f"on-demand: remembered {os.path.basename(model)} with {' '.join(args) or 'the default options'} ({CHOICE_FILE})"
                 + (f"; the added models ({', '.join(model_alias(e['model'], e.get('args', [])) for e in old.get('extra') or [])}) are forgotten"
                    if old.get("extra") else ""))
+        if a.remember_only:
+            return 0
     elif not c:
         from moe_cache_pick import pick_missing
         raise SystemExit("no model chosen yet: moe_cache.py on-demand MODEL.gguf [launcher options] (" +

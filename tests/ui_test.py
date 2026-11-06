@@ -331,7 +331,10 @@ calls = json.load(open(log)) if os.path.exists(log) else []
 calls.append(sys.argv[1:]); json.dump(calls, open(log, "w"))
 if sys.argv[1:]:                                   # remember step: `on-demand MODEL --port P ...`
     print("on-demand: remembered " + os.path.basename(sys.argv[1]), flush=True)
-    sys.exit(3 if "--ctx" in sys.argv and sys.argv[sys.argv.index("--ctx") + 1] == "777" else 0)
+    if "--ctx" in sys.argv and sys.argv[sys.argv.index("--ctx") + 1] == "777":
+        sys.exit(3)
+    if "--remember-only" in sys.argv:              # like the real command: without this flag it goes on as the listener and never returns (GUI-776, GUI-777)
+        sys.exit(0)
 port = int(json.load(open(log + ".port")))
 state = ["idle"]
 class H(http.server.BaseHTTPRequestHandler):
@@ -383,7 +386,8 @@ st, _ = req("/api/stop", {})
 deadline = time.time() + 15
 while time.time() < deadline and json.loads(req("/api/status")[1])["state"] not in ("stopped", "exited"):
     time.sleep(0.3)
-check(json.loads(req("/api/status")[1])["state"] in ("stopped", "exited"), "on-demand: Stop ends the listener")
+check(json.loads(req("/api/status")[1])["state"] in ("stopped", "exited"), "on-demand: Stop ends the listener (state)")
+check(not ui.mc.port_busy(od_port), "on-demand: Stop really ends the listener (its port is free again; GUI-777)")
 ui.ON_DEMAND_CMD = [sys.executable, "-c", "raise SystemExit(9)"]
 st, body = req("/api/start", {"model": small["path"], "port": port, "ram": "1", "ctx": 8192, "mode": "exact", "agent": True, "api_key": "sekrit-123"})
 check(st == 200, f"POST /api/start ({body[:120]})")
@@ -1133,6 +1137,13 @@ for nm, t in (("light", light), ("dark", dark)):
             r_.update((k.strip(), v.strip()) for k, v in (d.split(":", 1) for d in m.group(1).split(";") if ":" in d))
         c = contrast(resolve(r_["background"], t), resolve(r_["color"], t))
         check(c >= 4.5, f"{nm} theme, {sel} text on the accent: contrast {c:.1f} (>= 4.5)")
+    # DOCS-031: Stop / Stop generating (button.danger): white on the dark theme's light red was 2.4:1
+    r_ = {}
+    for m in re.finditer(r"(?:^|\})\s*button\.danger\s*\{([^}]*)\}", html):
+        r_.update((k.strip(), v.strip()) for k, v in (d.split(":", 1) for d in m.group(1).split(";") if ":" in d))
+    full = lambda h: "#" + "".join(ch * 2 for ch in h[1:]) if len(h) == 4 else h
+    c = contrast(full(resolve(r_["background"], t)), full(resolve(r_["color"], t)))
+    check(c >= 4.5, f"{nm} theme, button.danger (Stop): text on the red: contrast {c:.1f} (>= 4.5)")
 check(resolve(rule(".cache")["color"], light) == light["text"], "the 'runs with moe-cache' class is neutral text, not the warning colour")
 check("seg button.on { background:var(--accent); color:#fff" not in html and "color:var(--bg)" not in rule(".seg button.on").get("color", ""), "no leftover selected rule with the page background as text colour")
 

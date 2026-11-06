@@ -634,7 +634,9 @@ def on_demand_args(s):
     """GUI-022: `moe_cache.py on-demand` arguments that remember the page's settings (the listener adds --agent itself and takes --port as its own option)."""
     a = server_args(s)
     i = a.index("--")
-    return [x for x in a[:i] if x != "--agent"] + a[i:]
+    # --remember-only: without it `on-demand MODEL ...` goes on as the listener and never returns, so this step hung for good (GUI-776) and the page
+    # held no process to stop (GUI-777); the page starts the listener itself below
+    return [x for x in a[:i] if x != "--agent"] + ["--remember-only"] + a[i:]
 
 
 def shown_command(s, windows=None):
@@ -1173,6 +1175,7 @@ class Runner:
     def reset(self, s):
         self.settings = s
         self.state, self.rc, self.started = "idle", None, None
+        self.stop_requested = False
         self.log = collections.deque(maxlen=500)
         self.seq = 0
         self.mode = ""
@@ -1259,6 +1262,9 @@ class Runner:
             self.rc, self.state = rc, "exited"
             self.add_line(f"ui: Start on first request was refused (exit code {rc})")
             return
+        if self.stop_requested:            # Stop was pressed while the settings were being checked: no listener
+            self.state = "stopped"
+            return
         self.auto_key = launcher_key()
         try:
             kw = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "env": child_env()}
@@ -1277,6 +1283,11 @@ class Runner:
         threading.Thread(target=self.read, args=(p,), daemon=True).start()
         self.poll_on_demand(p)
         p.wait()
+        if self.p is p:                   # not when another server has been started meanwhile
+            if self.state == "stopping":      # GUI-777: Stop ended it; the state says so (the listener's own end stops the model it started)
+                self.state = "stopped"
+            elif self.state in ("starting", "waiting", "ready"):
+                self.rc, self.state = p.returncode, "exited"
 
     def poll_on_demand(self, p):
         port = int(self.settings.get("port") or 8080)
@@ -1348,8 +1359,12 @@ class Runner:
         return {"in_use": True, "source": "typed on this page" if self.settings.get("api_key") else "the launcher's agent key (stable for your user)",
                 "ends": k[-4:]}
 
+    stop_requested = False
+
     def stop(self):
         p = self.p
+        if self.state == "starting" and (not p or p.poll() is not None):
+            self.stop_requested = True       # on-demand: the settings are still being checked, the listener is not started yet (life_on_demand looks)
         if not p or p.poll() is not None:
             return
         self.state = "stopping"
