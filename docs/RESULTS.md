@@ -17,6 +17,7 @@ The Linux laptop results (Results 1-48, 51-53, 57, 66, 70) moved to [RESULTS_OLD
 | Question | Section | Note |
 |---|---|---|
 | **What is true now, per machine, model and setting; every published number is a claim on recorded runs** | [benchmarks/BOARD.md](../benchmarks/BOARD.md) | new results go to `benchmarks/` (runs, claims, board); this file stays as the numbered history up to Result 79, which is also converted there |
+| v0.3.7 candidate: real 65k conversations on Flash-Next Q2_0 (default) and IQ3_XXS, stock against moe-cache, per depth band | 80 | claims `v037-conv-q2_0`, `v037-conv-iq3xxs`, `v037-fits-qwen36`; the numbers on the README card |
 | v0.3.5 against v0.3.4, long prompts, official llama.cpp b11966 server (the numbers to quote) | 79 | prompts +42 % at 34k, +38 % at 64k and 128k; decode -6 % at 34k, -10 % at 64k (Windows PC, Flash-Next Q2_0) |
 | The same comparison with a patched server and patch 0022 (not shipped) | 78 | prompts overstated by about 5-7 %; its 64k follow-up shows 39 CPU layers fix the placement (decode 26.1-26.8) |
 | The 2026-11-04 overnight chain (decode stock vs moe-cache on six models, 34k / 64k prompts on three Flash-Next files; v0.3.5 kit, llama.cpp b11966, every run not clean) | none yet (records and claims `chain1103-*`) | [benchmarks/BOARD.md](../benchmarks/BOARD.md), the README card and [benchmark_card.html](benchmark_card.html); not written up as a numbered result |
@@ -38,6 +39,7 @@ Method: "clean" = CPU <= 58 C at start, no background load, fresh page cache, pr
 
 | Result | Date | Machine | Subject | File |
 |---|---|---|---|---|
+| [80](#result-80-v037-candidate-65k-conversations-q2_0-against-iq3_xxs-at-64k-identity-at-34k-a-model-that-fits-in-ram) | 2026-11-05 evening to 2026-11-06 | Windows 11 desktop | v0.3.7 candidate: 65k conversations, Q2_0 against IQ3_XXS at 64k, identity at 34k, a model that fits in RAM | this file |
 | [79](#result-79-v035-vs-v034-on-long-prompts-official-b11966-server) | 2026-11-03 | Windows 11 desktop | v0.3.5 vs v0.3.4 on long prompts, official b11966 server | this file |
 | [78](#result-78-experimental-vs-v034-on-long-prompts) | 2026-11-02 | Windows 11 desktop | Experimental vs v0.3.4 on long prompts | this file |
 | [77](#result-77-baseline-guard-deepseek-glm-mtp-host_out-at-64k-and-the-batch-slowdown-stair) | 2026-10-31 | Windows 11 desktop | Baseline guard, DeepSeek, GLM MTP, HOST_OUT at 64k, and the batch slowdown stair | this file |
@@ -134,6 +136,55 @@ planner then kept the long-prompt GPU block its room (RESULTS 67 / 69, paired ru
 so the launcher runs stock llama.cpp for it (needs llama.cpp b11966 or newer): decode 27.9 tok/s (23-25 at 114k-228k tokens), prompts 595 tok/s at
 57k and 721 at 114k, 190/202 tasks (Flash-Next Q2_0 191, not proven), OpenCode session 47.8 s (the fastest measured). moe-cache forced on it is slower
 (decode 22.1, prompt 329 at 57k): the plugin is for models bigger than memory. DeepSeek V4-Flash: not tested.
+
+## Result 80. v0.3.7 candidate: 65k conversations, Q2_0 against IQ3_XXS at 64k, identity at 34k, a model that fits in RAM
+
+| Date | Machine | Model + quant | Kit / commit | llama.cpp build | Settings | Clean |
+|---|---|---|---|---|---|---|
+| 2026-11-05 evening to 2026-11-06 early morning (record times 2026-11-05 21:42, 23:11, 23:51; chain log 2026-11-06 03:11-03:38) | Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5) | Flash-Next Q2_0 and IQ3_XXS (GSQ-RCO), Qwen3.6-35B | v0.3.7 candidate kit f928d1c (plugin v0.3.7, API 3 DLL sha prefix 938556bf26c5), timers off | official b12064 (51fe42c5d) | context 65,536, launcher defaults, `-ub 2048`, cold file cache every run, A B B A | the chain's clean check found no window, RAM or VRAM disturbance; its CPU counter came back empty in two checks (the chain's item 10 and the first run of the quant pair), so those two are not proven clean; the conversation records do not store the check |
+
+Records: `benchmarks/runs/2026-11-05_pc_b21c0e.json` (Q2_0), `..._d1b3b3.json` (IQ3_XXS), `..._11ff0f.json` (Qwen3.6); claims `v037-conv-q2_0`, `v037-conv-iq3xxs`, `v037-fits-qwen36`. The records' software labels were corrected on 2026-11-06 from the run files (plugin DLL, llama.cpp build), no number changed (a note in each record says so). The Q2_0 against IQ3_XXS pair and the identity run below are chain-log numbers: **no record, no claim**.
+
+**65k conversations** (`tools/conversation_bench.py`, seed 42, 128 tokens per answer, history re-sent every turn, prompt cache on, temperature 0; order stock, moe-cache, moe-cache, stock; means of two runs per arm; wall = the whole conversation, seconds):
+
+| Model | Final depth (tokens) | Turns | Prompt tok/s, stock | Prompt tok/s, moe-cache | Ratio | Decode tok/s, stock | Decode tok/s, moe-cache | Change | Wall s, stock | Wall s, moe-cache |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Flash-Next Q2_0 | 65379 | 46 | 194.5 | 430.01 | 2.21x | 22.46 | 26.98 | +20.1 % | 613.0 | 387.8 |
+| Flash-Next IQ3_XXS | 65371 | 49 | 44.81 | 188.24 | 4.20x | 16.0 | 21.73 | +35.8 % | 1851.5 | 662.9 |
+| Qwen3.6-35B (fits in RAM, plugin forced) | 65373 | 33 | 983.67 | 1265.07 | 1.29x | 65.06 | 68.67 | +5.5 % | 111.0 | 93.1 |
+
+Per depth band (0-16k / 16-32k / 32-48k / 48-64k; prompt tok/s stock -> moe-cache, decode tok/s stock -> moe-cache):
+
+| Model | Prompt tok/s | Prompt ratio | Decode tok/s | Decode ratio |
+|---|---|---|---|---|
+| Q2_0 | 66.4 -> 393.2, 246.7 -> 551.0, 231.3 -> 470.9, 201.8 -> 321.9 | 5.92x, 2.23x, 2.04x, 1.60x | 22.4 -> 26.8, 20.6 -> 26.9, 21.8 -> 26.8, 22.9 -> 27.1 | 1.19x, 1.31x, 1.23x, 1.18x |
+| IQ3_XXS | 39.7 -> 234.1, 55.5 -> 245.7, 44.8 -> 186.7, 38.0 -> 145.4 | 5.90x, 4.42x, 4.17x, 3.82x | 15.4 -> 21.6, 12.0 -> 20.2, 12.6 -> 21.8, 17.9 -> 22.0 | 1.41x, 1.68x, 1.74x, 1.23x |
+| Qwen3.6-35B | 544.7 -> 771.1, 1085.2 -> 1469.8, 1100.3 -> 1360.5, 935.9 -> 1156.5 | 1.42x, 1.35x, 1.24x, 1.24x | 61.9 -> 70.5, 63.7 -> 67.7, 62.9 -> 64.7, 69.7 -> 71.5 | 1.14x, 1.06x, 1.03x, 1.03x |
+
+Peaks over the runs, stock / moe-cache (the bench-report sampler; VRAM is the server's own share when the OS reports it, else the whole card):
+
+| Model | VRAM peak MiB | Process RAM peak MiB | Lowest free system RAM MiB | CPU average % |
+|---|---|---|---|---|
+| Flash-Next Q2_0 | 12694 / 13429 | 25955 / 19373 | 111 / 6970 | 23.15 / 28.3 |
+| Flash-Next IQ3_XXS | 13798 / 14585 | 26204 / 19990 | 250 / 6641 | 10.95 / 26.5 |
+| Qwen3.6-35B | 13851 / 14115 | 22378 / 11854 | 4532 / 14937 | 21.9 / 24.65 |
+
+**A model that fits in RAM (Qwen3.6-35B, plugin forced).** The launcher runs plain llama.cpp for this model by itself. Forced through moe-cache it read prompts 1.29x as fast and decoded 68.67 against 65.06 tok/s (+6 %) with about half the process RAM. One model on one machine; the older laptop measurements of models that fit in RAM disagree (stock was as fast or faster), so this is **not** a general claim and no launcher default changed.
+
+**Q2_0 against IQ3_XXS on one 64k prompt, moe-cache on both, order Q2_0, IQ3_XXS, IQ3_XXS, Q2_0** (chain log `v037_quant.log`, 61,843-token prompt, then 128 tokens): Q2_0 prompt 418.1 tok/s (435.3 / 400.9), decode after the prompt 24.97 (25.17 / 24.76), plugin decode hit rate 98.8 %; IQ3_XXS prompt 204.7 (205.3 / 204.1), decode 12.96 (13.66 / 12.26), hit rate 92.2 %. Q2_0 over IQ3_XXS: prompt +104.3 %, decode +92.6 % (pair 1 +84.3 %, pair 2 +102.0 % on decode). Noise seen in the same-arm pairs of 2026-11-04: decode 0.1-0.2 %, prompt 0.2-1.7 %. The clean check of the first run (Q2_0) printed "clean: NO" because its CPU counter came back empty; windows, RAM and VRAM checks were clean, and the three other runs were clean. The launcher plans a different GPU layer count per file.
+
+**Identity at a 34k prompt, Q2_0, plugin then stock** (chain log `v037_ident.log`): the answers are the same text (md5 CE3FF63681); plugin prompt 560.4 tok/s (33,979 tokens in 61.3 s) against stock 260.2 tok/s (131.4 s); decode after the prompt 26.47 against 24.04 tok/s. One pair.
+
+**Against the v0.3.6 kit of the day before** (2026-11-05, records `..._b0a7e6` and `..._952d95`; different days, not paired, same PC and script):
+
+| Arm | Prompt tok/s, v0.3.6 kit | Prompt tok/s, v0.3.7 candidate | Change | Decode tok/s, v0.3.6 kit | Decode tok/s, v0.3.7 candidate | Change |
+|---|---|---|---|---|---|---|
+| Q2_0, moe-cache | 424.5 | 430.01 | +1.3 % | 27.09 | 26.98 | -0.4 % |
+| Q2_0, stock | 201.4 | 194.5 | -3.4 % | 22.37 | 22.46 | +0.4 % |
+| IQ3_XXS, moe-cache | 214.66 | 188.24 | -12.3 % | 22.04 | 21.73 | -1.4 % |
+| IQ3_XXS, stock | 44.15 | 44.81 | +1.5 % | 16.43 | 16.0 | -2.6 % |
+
+Q2_0 is unchanged within a few percent; **IQ3_XXS with moe-cache read new prompt tokens 12 % slower on the v0.3.7 candidate** (and the 64k pair above gives 204.7 against 238.45 tok/s, 14 % slower; its decode after the prompt 12.96 against 16.12). Not explained; it could be a kit difference or a day-to-day difference, because the runs are not paired.
 
 ## Result 79. v0.3.5 vs v0.3.4 on long prompts, official b11966 server
 
