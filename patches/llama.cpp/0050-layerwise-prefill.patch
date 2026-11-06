@@ -1,0 +1,976 @@
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 0cd795a..4c7a963 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -7,6 +7,7 @@
+ #include "llama-batch.h"
+ #include "llama-io.h"
+ #include "llama-memory.h"
++#include "llama-memory-hybrid-idx.h"
+ #include "llama-mmap.h"
+ #include "llama-model.h"
+ #include "llama-moe-cache.h"
+@@ -14,6 +15,7 @@
+ #include "llama-sampler.h"
+ #include "llama.h"
+ 
++#include <algorithm>
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
+@@ -1720,6 +1722,71 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
+     return res;
+ }
+ 
++llm_graph_result * llama_context::process_ubatch_lw(const llama_ubatch & ubatch, llama_memory_context_i * mctx, int32_t il0, int32_t il1,
++        const float * in, float * out, ggml_status & ret) {
++    auto * res = get_gf_res_prev();
++
++    // every segment has its own topology, and a stock graph must not take this one for the one it could reuse
++    gf_res_prev_active = nullptr;
++    res->reset();
++
++    ggml_backend_sched_reset(sched.get());
++    ggml_backend_sched_set_eval_callback(sched.get(), cparams.cb_eval, cparams.cb_eval_user_data);
++
++    auto gparams = graph_params(res, ubatch, mctx, ctx_type_to_graph_type(cparams.ctx_type));
++    gparams.lw_l0 = il0;
++    gparams.lw_l1 = il1;
++    gparams.lw_in = in;
++
++    int64_t t0 = ggml_time_us();
++    auto lap = [&](int i) {
++        const int64_t t1 = ggml_time_us();
++        lw_us[i] += t1 - t0;
++        t0 = t1;
++    };
++
++    auto * gf = model.build_graph(gparams);
++    if (!gf) {
++        LLAMA_LOG_ERROR("%s: failed to initialize graph\n", __func__);
++        ret = GGML_STATUS_FAILED;
++        return nullptr;
++    }
++    lap(0);
++
++    if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
++        LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
++        ret = GGML_STATUS_ALLOC_FAILED;
++        return nullptr;
++    }
++    lap(1);
++
++    res->set_inputs(&ubatch);
++    lap(2);
++
++    const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
++    if (status != GGML_STATUS_SUCCESS) {
++        LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
++        ret = status;
++        return nullptr;
++    }
++
++    if (out) {
++        GGML_ASSERT(res->t_lw_out != nullptr);
++        // the buffer-level get does not wait for the (asynchronous) compute stream of a GPU backend: wait here
++        ggml_backend_sched_synchronize(sched.get());
++        lap(3);
++        ggml_backend_tensor_get(res->t_lw_out, out, 0, ggml_nbytes(res->t_lw_out));
++        lap(4);
++    } else {
++        lap(3);
++    }
++    lw_segments++;
++
++    ret = GGML_STATUS_SUCCESS;
++
++    return res;
++}
++
+ int llama_context::encode(const llama_batch_ext & batch_inp) {
+     if (batch_inp.tokens.empty()) {
+         LLAMA_LOG_ERROR("%s: n_tokens == 0\n", __func__);
+@@ -2152,65 +2219,8 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+         ggml_backend_event_wait(layer_inp_backend, ev_layer_inp_read.get());
+     }
+ 
+-    do {
+-        const auto & ubatch = mctx->get_ubatch();
+-
+-        // count the outputs in this ubatch
+-        {
+-            int32_t n_outputs_new = 0;
+-
+-            if (n_outputs_all == n_tokens_all) {
+-                n_outputs_new = ubatch.n_tokens;
+-            } else {
+-                for (uint32_t i = 0; i < ubatch.n_tokens; i++) {
+-                    n_outputs_new += (int32_t) (ubatch.output[i] != 0);
+-                }
+-            }
+-
+-            // needs to happen before the graph is built
+-            n_outputs = n_outputs_new;
+-        }
+-
+-        ggml_status status;
+-
+-        const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
+-
+-        if (!res) {
+-            // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
+-            llama_pos pos_min[LLAMA_MAX_SEQ];
+-            for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
+-                pos_min[s] = std::numeric_limits<llama_pos>::max();
+-            }
+-
+-            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
+-                const auto & seq_id = ubatch.seq_id[i][0];
+-
+-                pos_min[seq_id] = std::min(pos_min[seq_id], ubatch.pos[i]);
+-            }
+-
+-            for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
+-                if (pos_min[s] == std::numeric_limits<llama_pos>::max()) {
+-                    continue;
+-                }
+-
+-                LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
+-
+-                memory->seq_rm(s, pos_min[s], -1);
+-            }
+-
+-            switch (status) {
+-                case GGML_STATUS_ABORTED:      return  2;
+-                case GGML_STATUS_ALLOC_FAILED: return -2;
+-                case GGML_STATUS_FAILED:       return -3;
+-                case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
+-            }
+-        }
+-
+-        // plot the computation graph in dot format (for debugging purposes)
+-        //if (n_past%100 == 0) {
+-        //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
+-        //}
+-
++    // what is done with the result of a ubatch: logits, embeddings, nextn rows, sampling data (shared by the stock loop and the layer-wise one)
++    auto finish_ubatch = [&](const llm_graph_result * res, const llama_ubatch & ubatch) {
+         auto * t_logits  = res->get_logits();
+         auto * t_embd    = cparams.embeddings       ? res->get_embd()     : nullptr;
+         auto * t_h_nextn = cparams.embeddings_nextn ? res->get_h_nextn()  : nullptr;
+@@ -2336,6 +2346,225 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
+ 
+         n_outputs_prev += n_outputs;
+         n_tokens_prev  += ubatch.n_tokens;
++    };
++
++
++    // LLAMA_LAYERWISE_PREFILL=N (default off): N ubatches form a group and go through layer 0, then layer 1, ... so the experts
++    // of a layer are read once for the group (docs/LAYERWISE_DESIGN.md in moe-cache). qwen4exp only; anything else is stock.
++    static const int lw_env = [] { const char * v = getenv("LLAMA_LAYERWISE_PREFILL"); return v ? atoi(v) : 0; }();
++    bool lw_on = false;
++    if (lw_env > 0) {
++        const char * why = nullptr;
++        if (lw_env < 2) {
++            why = "needs at least 2 chunks per group";
++        } else if (model.arch != LLM_ARCH_QWEN4EXP) {
++            why = "only for qwen4exp";
++        } else if (n_tokens_all <= cparams.n_ubatch) {
++            why = nullptr; // a single chunk: nothing to share, and not worth a line
++        } else if (output_all || embd_all || has_samplers || cparams.embeddings_nextn) {
++            why = "embeddings, sampler offload and nextn rows are not supported";
++        } else if (std::any_of(cparams.embeddings_layer_inp.begin(), cparams.embeddings_layer_inp.end(), [](bool b) { return b; })) {
++            why = "layer inputs are not supported";
++        } else if (dynamic_cast<llama_memory_hybrid_idx_context *>(mctx.get()) == nullptr) {
++            why = "the memory is not the hybrid indexer memory";
++        } else {
++            lw_on = true;
++            for (const auto & tok : batch_inp.tokens) {
++                if (tok.seq_ids.size() != 1 || *tok.seq_ids.begin() != *batch_inp.tokens[0].seq_ids.begin()) {
++                    lw_on = false;
++                    why = "one sequence per batch only";
++                    break;
++                }
++            }
++        }
++        static bool lw_said = false;
++        if (why && !lw_said) {
++            lw_said = true;
++            LLAMA_LOG_WARN("%s: LLAMA_LAYERWISE_PREFILL=%d ignored: %s\n", __func__, lw_env, why);
++        }
++    }
++
++    if (lw_on) {
++        const int32_t n_il = (int32_t) hparams.n_layer();
++
++        static bool lw_told = false;
++        if (!lw_told) {
++            lw_told = true;
++            LLAMA_LOG_INFO("%s: layer-wise prefill on: %d ubatches of %u tokens per group, %d layers, hidden state held in host memory (LLAMA_LAYERWISE_PREFILL)\n",
++                    __func__, lw_env, cparams.n_ubatch, n_il);
++        }
++
++        // hidden state of each chunk of the group between two layers: n_embd * hc floats per token (host memory)
++        std::vector<std::vector<float>> bnd((size_t) lw_env);
++
++        bool more = true;
++        while (more) {
++            mctx->lw_clear();
++
++            // place the group: apply() once per ubatch, in order, and keep what the graphs need from it
++            std::vector<const llama_ubatch *> ubs;
++            std::vector<int32_t>              nouts;
++            while (true) {
++                const auto & ub = mctx->get_ubatch();
++
++                int32_t n_outputs_new = 0;
++                if (n_outputs_all == n_tokens_all) {
++                    n_outputs_new = ub.n_tokens;
++                } else {
++                    for (uint32_t i = 0; i < ub.n_tokens; i++) {
++                        n_outputs_new += (int32_t) (ub.output[i] != 0);
++                    }
++                }
++
++                if (!mctx->apply() || !mctx->lw_save()) {
++                    LLAMA_LOG_ERROR("%s: layer-wise prefill: failed to place a ubatch\n", __func__);
++                    return -3;
++                }
++
++                ubs.push_back(&ub);
++                nouts.push_back(n_outputs_new);
++
++                more = mctx->next();
++                if (!more || ubs.size() == (size_t) lw_env) {
++                    break;
++                }
++            }
++
++            // one more snapshot, of the cursor after the group: lw_load() moves it back and forth, and the next group starts here
++            if (!mctx->lw_save()) {
++                LLAMA_LOG_ERROR("%s: layer-wise prefill: failed to place a ubatch\n", __func__);
++                return -3;
++            }
++
++            const size_t n_hc = (size_t) hparams.n_embd * hparams.dsv4_hc_mult;
++            for (size_t k = 0; k < ubs.size(); ++k) {
++                bnd[k].resize(n_hc * ubs[k]->n_tokens);
++            }
++
++            for (int32_t il = 0; il < n_il; ++il) {
++                for (size_t k = 0; k < ubs.size(); ++k) {
++                    const auto & ub = *ubs[k];
++
++                    if (!mctx->lw_load(k)) {
++                        LLAMA_LOG_ERROR("%s: layer-wise prefill: cannot go back to a ubatch\n", __func__);
++                        return -3;
++                    }
++
++                    // needs to happen before the graph is built
++                    n_outputs = nouts[k];
++
++                    ggml_status status;
++
++                    const bool is_last = il == n_il - 1;
++
++                    const auto * res = process_ubatch_lw(ub, mctx.get(), il, il + 1, il == 0 ? nullptr : bnd[k].data(), is_last ? nullptr : bnd[k].data(), status);
++
++                    if (!res) {
++                        // same as the stock path: take the positions of the group out of the memory
++                        llama_pos pos_min[LLAMA_MAX_SEQ];
++                        for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
++                            pos_min[s] = std::numeric_limits<llama_pos>::max();
++                        }
++                        for (const auto * u : ubs) {
++                            for (uint32_t i = 0; i < u->n_tokens; ++i) {
++                                const auto & seq_id = u->seq_id[i][0];
++                                pos_min[seq_id] = std::min(pos_min[seq_id], u->pos[i]);
++                            }
++                        }
++                        for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
++                            if (pos_min[s] == std::numeric_limits<llama_pos>::max()) {
++                                continue;
++                            }
++                            LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
++                            memory->seq_rm(s, pos_min[s], -1);
++                        }
++
++                        switch (status) {
++                            case GGML_STATUS_ABORTED:      return  2;
++                            case GGML_STATUS_ALLOC_FAILED: return -2;
++                            case GGML_STATUS_FAILED:       return -3;
++                            case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
++                        }
++                    }
++
++                    if (is_last) {
++                        finish_ubatch(res, ub);
++                    }
++                }
++            }
++
++            if (!mctx->lw_load(ubs.size())) {
++                LLAMA_LOG_ERROR("%s: layer-wise prefill: cannot go back to a ubatch\n", __func__);
++                return -3;
++            }
++        }
++        mctx->lw_clear();
++
++        LLAMA_LOG_INFO("%s: layer-wise prefill: %" PRId64 " segment graphs, build %.0f ms, alloc %.0f ms, set inputs %.0f ms, compute (to the wait) %.0f ms, hidden state out %.0f ms\n",
++                __func__, lw_segments, lw_us[0] / 1e3, lw_us[1] / 1e3, lw_us[2] / 1e3, lw_us[3] / 1e3, lw_us[4] / 1e3);
++        lw_segments = 0;
++        std::fill(std::begin(lw_us), std::end(lw_us), 0);
++    } else
++    do {
++        const auto & ubatch = mctx->get_ubatch();
++
++        // count the outputs in this ubatch
++        {
++            int32_t n_outputs_new = 0;
++
++            if (n_outputs_all == n_tokens_all) {
++                n_outputs_new = ubatch.n_tokens;
++            } else {
++                for (uint32_t i = 0; i < ubatch.n_tokens; i++) {
++                    n_outputs_new += (int32_t) (ubatch.output[i] != 0);
++                }
++            }
++
++            // needs to happen before the graph is built
++            n_outputs = n_outputs_new;
++        }
++
++        ggml_status status;
++
++        const auto * res = process_ubatch(ubatch, ctx_type_to_graph_type(cparams.ctx_type), mctx.get(), status);
++
++        if (!res) {
++            // the last ubatch failed or was aborted -> remove all positions of that ubatch from the memory module
++            llama_pos pos_min[LLAMA_MAX_SEQ];
++            for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
++                pos_min[s] = std::numeric_limits<llama_pos>::max();
++            }
++
++            for (uint32_t i = 0; i < ubatch.n_tokens; ++i) {
++                const auto & seq_id = ubatch.seq_id[i][0];
++
++                pos_min[seq_id] = std::min(pos_min[seq_id], ubatch.pos[i]);
++            }
++
++            for (int s = 0; s < LLAMA_MAX_SEQ; ++s) {
++                if (pos_min[s] == std::numeric_limits<llama_pos>::max()) {
++                    continue;
++                }
++
++                LLAMA_LOG_WARN("%s: removing memory module entries for seq_id = %d, pos = [%d, +inf)\n", __func__, s, pos_min[s]);
++
++                memory->seq_rm(s, pos_min[s], -1);
++            }
++
++            switch (status) {
++                case GGML_STATUS_ABORTED:      return  2;
++                case GGML_STATUS_ALLOC_FAILED: return -2;
++                case GGML_STATUS_FAILED:       return -3;
++                case GGML_STATUS_SUCCESS:      GGML_ABORT("should not happen");
++            }
++        }
++
++        // plot the computation graph in dot format (for debugging purposes)
++        //if (n_past%100 == 0) {
++        //    ggml_graph_dump_dot(gf, NULL, "llama.dot");
++        //}
++
++        finish_ubatch(res, ubatch);
+     } while (mctx->next());
+ 
+     if (layer_inp_dev && ev_layer_inp_written) {
+diff --git a/src/llama-context.h b/src/llama-context.h
+index 39c5619..a0d6c55 100644
+--- a/src/llama-context.h
++++ b/src/llama-context.h
+@@ -151,6 +151,21 @@ struct llama_context {
+             llama_memory_context_i * mctx,
+                        ggml_status & ret);
+ 
++    // LLAMA_LAYERWISE_PREFILL: one segment graph (layers il0..il1-1) of one ubatch, no graph reuse. The memory context is
++    // not applied (lw_load() put it back). in/out: host buffers of the hidden state at the segment's edges (null at the model's)
++    // layer-wise prefill: microseconds spent per stage of one decode() call, and the segments run (logged when the call ends)
++    int64_t lw_us[5] = { 0, 0, 0, 0, 0 };  // build, alloc, set_inputs, compute + wait, hidden-state copy out
++    int64_t lw_segments = 0;
++
++    llm_graph_result * process_ubatch_lw(
++                const llama_ubatch & ubatch,
++            llama_memory_context_i * mctx,
++                           int32_t   il0,
++                           int32_t   il1,
++                       const float * in,
++                             float * out,
++                       ggml_status & ret);
++
+     int encode(const llama_batch_ext & batch_inp);
+     int decode(const llama_batch_ext & batch_inp);
+ 
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index fe8bdeb..1792a34 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -131,6 +131,13 @@ static llm_attn_mask build_attn_inp_attn_mask(
+ 
+ // impl
+ 
++void llm_graph_input_lw::set_input(const llama_ubatch * ubatch) {
++    GGML_UNUSED(ubatch);
++
++    GGML_ASSERT(t != nullptr && src != nullptr);
++    ggml_backend_tensor_set(t, src, 0, ggml_nbytes(t));
++}
++
+ void llm_graph_input_embd::set_input(const llama_ubatch * ubatch) {
+     if (ubatch->token) {
+         const int64_t n_tokens = ubatch->n_tokens;
+@@ -1410,6 +1417,7 @@ void llm_graph_result::reset() {
+     t_embd        = nullptr;
+     t_embd_pooled = nullptr;
+     t_h_nextn     = nullptr;
++    t_lw_out      = nullptr;
+ 
+     t_layer_inp.resize(LLAMA_MAX_LAYERS + 1);
+     std::fill(t_layer_inp.begin(), t_layer_inp.end(), nullptr);
+@@ -1457,6 +1465,9 @@ void llm_graph_result::set_outputs(const llm_graph_params & params) {
+     if (t_h_nextn != nullptr) {
+         ggml_set_output(t_h_nextn);
+     }
++    if (t_lw_out != nullptr) {
++        ggml_set_output(t_lw_out);
++    }
+     {
+         const auto & embeddings_layer_inp = params.cparams.embeddings_layer_inp;
+         for (size_t il = 0; il < embeddings_layer_inp.size() && !params.cparams.embeddings_layer_inp_dev; ++il) {
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index 37b47ac..823625f 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -172,6 +172,19 @@ public:
+     const int64_t n_embd_state = 0;
+ };
+ 
++// layer-wise prefill (LLAMA_LAYERWISE_PREFILL): the hidden state a segment graph starts from, copied from the chunk's host buffer
++class llm_graph_input_lw : public llm_graph_input_i {
++public:
++    llm_graph_input_lw(const float * src) : src(src) {}
++    virtual ~llm_graph_input_lw() = default;
++
++    void set_input(const llama_ubatch * ubatch) override;
++
++    ggml_tensor * t = nullptr; // F32 [n_embd, hc, n_tokens]
++
++    const float * src;
++};
++
+ // original batch index of each ubatch token, used as set_rows destination rows
+ class llm_graph_input_batch_idxs : public llm_graph_input_i {
+ public:
+@@ -834,6 +847,12 @@ struct llm_graph_params {
+ 
+     llm_graph_result * res;
+ 
++    // layer-wise prefill: build only the layers [lw_l0, lw_l1) (lw_l1 < 0: all of them, the stock graph). From the second
++    // segment on the hidden state comes from lw_in (an input of the graph), and every segment but the last exposes it as t_lw_out
++    int32_t       lw_l0 = 0;
++    int32_t       lw_l1 = -1;
++    const float * lw_in = nullptr;
++
+     // return true if the "other" params would result in a graph with the same topology as with the current params
+     //   having the same topology allows us to reuse the graph in some cases
+     bool allow_reuse(const llm_graph_params & other) const {
+@@ -969,6 +988,7 @@ public:
+     ggml_tensor * t_embd        = nullptr;
+     ggml_tensor * t_embd_pooled = nullptr;
+     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
++    ggml_tensor * t_lw_out      = nullptr; // layer-wise prefill: hidden state after the last layer of the segment
+ 
+     std::vector<ggml_tensor *> t_layer_inp;
+ 
+diff --git a/src/llama-kv-cache.cpp b/src/llama-kv-cache.cpp
+index 84f547a..2ab2b76 100644
+--- a/src/llama-kv-cache.cpp
++++ b/src/llama-kv-cache.cpp
+@@ -3004,6 +3004,31 @@ bool llama_kv_cache_context::apply() {
+     return true;
+ }
+ 
++bool llama_kv_cache_context::lw_save() {
++    if (ubatches.empty()) {
++        return false;
++    }
++
++    lw_saved.emplace_back(i_cur, n_kv);
++
++    return true;
++}
++
++void llama_kv_cache_context::lw_clear() {
++    lw_saved.clear();
++}
++
++bool llama_kv_cache_context::lw_load(size_t i) {
++    if (i >= lw_saved.size()) {
++        return false;
++    }
++
++    i_cur = lw_saved[i].first;
++    n_kv  = lw_saved[i].second;
++
++    return true;
++}
++
+ llama_memory_status llama_kv_cache_context::get_status() const {
+     return status;
+ }
+diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
+index 9ed36c5..69b12c8 100644
+--- a/src/llama-kv-cache.h
++++ b/src/llama-kv-cache.h
+@@ -402,6 +402,10 @@ public:
+     bool next()  override;
+     bool apply() override;
+ 
++    bool lw_save()         override;
++    bool lw_load(size_t i) override;
++    void lw_clear()        override;
++
+     llama_memory_status  get_status() const override;
+     const llama_ubatch & get_ubatch() const override;
+ 
+@@ -482,4 +486,7 @@ private:
+ 
+     // see llama_kv_cache::get_n_kv_rows
+     uint32_t n_kv_rows = 0;
++
++    // layer-wise prefill: (i_cur, n_kv) of each ubatch, saved right after its apply()
++    std::vector<std::pair<size_t, int32_t>> lw_saved;
+ };
+diff --git a/src/llama-memory-hybrid-idx.cpp b/src/llama-memory-hybrid-idx.cpp
+index da17476..86559b9 100644
+--- a/src/llama-memory-hybrid-idx.cpp
++++ b/src/llama-memory-hybrid-idx.cpp
+@@ -519,6 +519,58 @@ llama_memory_hybrid_idx_context::llama_memory_hybrid_idx_context(
+ 
+ llama_memory_hybrid_idx_context::~llama_memory_hybrid_idx_context() = default;
+ 
++struct llama_memory_hybrid_idx_context::lw_snap {
++    size_t   i_cur    = 0;
++    size_t   i_kpool  = SIZE_MAX;
++    std::unique_ptr<kpool_state> st;
++    std::shared_ptr<const llama_memory_hybrid_idx::kpool_layout> lay;
++};
++
++const llama_memory_hybrid_idx::kpool_layout & llama_memory_hybrid_idx_context::kpool_lay() const {
++    return lw_cur && lw_cur->lay ? *lw_cur->lay : mem->kpool_layout_get();
++}
++
++bool llama_memory_hybrid_idx_context::lw_save() {
++    if (!llama_memory_hybrid_context::lw_save() || (ctx_idx && !ctx_idx->lw_save())) {
++        return false;
++    }
++
++    auto s = std::make_shared<lw_snap>();
++    s->i_cur   = i_cur;
++    s->i_kpool = i_kpool;
++    if (kpool_st) {
++        s->st  = std::make_unique<kpool_state>(*kpool_st);
++        s->lay = std::make_shared<const llama_memory_hybrid_idx::kpool_layout>(mem->kpool_layout_get());
++    }
++    lw_saved.push_back(std::move(s));
++
++    return true;
++}
++
++bool llama_memory_hybrid_idx_context::lw_load(size_t i) {
++    if (i >= lw_saved.size() || !llama_memory_hybrid_context::lw_load(i) || (ctx_idx && !ctx_idx->lw_load(i))) {
++        return false;
++    }
++
++    lw_cur  = lw_saved[i];
++    i_cur   = lw_cur->i_cur;
++    i_kpool = lw_cur->i_kpool;
++    if (lw_cur->st) {
++        kpool_st = std::make_unique<kpool_state>(*lw_cur->st);
++    }
++
++    return true;
++}
++
++void llama_memory_hybrid_idx_context::lw_clear() {
++    llama_memory_hybrid_context::lw_clear();
++    if (ctx_idx) {
++        ctx_idx->lw_clear();
++    }
++    lw_saved.clear();
++    lw_cur.reset();
++}
++
+ bool llama_memory_hybrid_idx_context::next() {
+     // Clear only after a successful ubatch.
+     if (i_cur == 0 && mem != nullptr) {
+@@ -739,7 +791,7 @@ void llama_memory_hybrid_idx_context::set_input_kpool(ggml_tensor * pool_cells,
+     const uint32_t n_kv  = get_idx()->get_n_kv();
+ 
+     const auto & st  = kpool_cur();
+-    const auto & lay = mem->kpool_layout_get();
++    const auto & lay = kpool_lay();
+ 
+     const uint32_t n_tokens = ubatch->n_tokens;
+     const uint32_t n_pool   = (uint32_t) pool_cells->ne[0];
+diff --git a/src/llama-memory-hybrid-idx.h b/src/llama-memory-hybrid-idx.h
+index 59940db..102d861 100644
+--- a/src/llama-memory-hybrid-idx.h
++++ b/src/llama-memory-hybrid-idx.h
+@@ -178,6 +178,11 @@ public:
+     bool next()  override;
+     bool apply() override;
+ 
++    // layer-wise prefill: also keeps the k-pool state and layout each ubatch was placed with
++    bool lw_save()         override;
++    bool lw_load(size_t i) override;
++    void lw_clear()        override;
++
+     //
+     // llama_memory_hybrid_idx_context specific API
+     //
+@@ -230,6 +235,13 @@ private:
+     // Whether this context tracks k-pool states.
+     bool kpool_track() const;
+ 
++    // layer-wise prefill: the k-pool layout is memory wide and grows with every apply(), so a ubatch that is read again
++    // later needs the copy made when it was placed
++    struct lw_snap;
++    std::vector<std::shared_ptr<lw_snap>> lw_saved;
++    std::shared_ptr<lw_snap> lw_cur;
++    const llama_memory_hybrid_idx::kpool_layout & kpool_lay() const;
++
+     // Positions each sequence must re-pool from, cleared only after the first ubatch succeeds
+     llama_memory_hybrid_idx::stale_pos_t mem_idx_stale_batch = llama_memory_hybrid_idx::stale_pos_clean();
+ };
+diff --git a/src/llama-memory-hybrid.cpp b/src/llama-memory-hybrid.cpp
+index 7d3b279..2654af5 100644
+--- a/src/llama-memory-hybrid.cpp
++++ b/src/llama-memory-hybrid.cpp
+@@ -266,6 +266,32 @@ bool llama_memory_hybrid_context::apply() {
+     return res;
+ }
+ 
++bool llama_memory_hybrid_context::lw_save() {
++    if (!ctx_attn->lw_save() || !ctx_recr->lw_save()) {
++        return false;
++    }
++
++    lw_saved.push_back(i_next);
++
++    return true;
++}
++
++bool llama_memory_hybrid_context::lw_load(size_t i) {
++    if (i >= lw_saved.size() || !ctx_attn->lw_load(i) || !ctx_recr->lw_load(i)) {
++        return false;
++    }
++
++    i_next = lw_saved[i];
++
++    return true;
++}
++
++void llama_memory_hybrid_context::lw_clear() {
++    ctx_attn->lw_clear();
++    ctx_recr->lw_clear();
++    lw_saved.clear();
++}
++
+ llama_memory_status llama_memory_hybrid_context::get_status() const {
+     return status;
+ }
+diff --git a/src/llama-memory-hybrid.h b/src/llama-memory-hybrid.h
+index 2b4d126..d30d975 100644
+--- a/src/llama-memory-hybrid.h
++++ b/src/llama-memory-hybrid.h
+@@ -117,6 +117,10 @@ public:
+     bool next()  override;
+     bool apply() override;
+ 
++    bool lw_save()         override;
++    bool lw_load(size_t i) override;
++    void lw_clear()        override;
++
+     llama_memory_status  get_status() const override;
+     const llama_ubatch & get_ubatch() const override;
+ 
+@@ -137,4 +141,7 @@ private:
+     const llama_memory_context_ptr ctx_recr;
+ 
+     const llama_memory_status status;
++
++    // layer-wise prefill: i_next of each saved ubatch
++    std::vector<size_t> lw_saved;
+ };
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 9213ac1..ebd8510 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -1322,6 +1322,50 @@ bool llama_memory_recurrent_context::apply() {
+     return true;
+ }
+ 
++bool llama_memory_recurrent_context::lw_save() {
++    if (ubatches.empty() || is_full) {
++        return false;
++    }
++
++    // the source ids are read now, as set_input() would do right after apply()
++    lw_cur = nullptr;
++
++    lw_snap s;
++    s.i_next = i_next;
++    s.head   = mem->head;
++    s.n      = mem->n;
++    s.rs_z   = mem->rs_z;
++    s.s_copy.resize(mem->n);
++    for (uint32_t i = 0; i < mem->n; ++i) {
++        s.s_copy[i] = s_copy((int) i);
++    }
++
++    lw_saved.push_back(std::move(s));
++
++    return true;
++}
++
++void llama_memory_recurrent_context::lw_clear() {
++    lw_saved.clear();
++    lw_cur = nullptr;
++}
++
++bool llama_memory_recurrent_context::lw_load(size_t i) {
++    if (i >= lw_saved.size()) {
++        return false;
++    }
++
++    const lw_snap & s = lw_saved[i];
++
++    i_next    = s.i_next;
++    mem->head = s.head;
++    mem->n    = s.n;
++    mem->rs_z = s.rs_z;
++    lw_cur    = &s;
++
++    return true;
++}
++
+ llama_memory_status llama_memory_recurrent_context::get_status() const {
+     return status;
+ }
+@@ -1361,6 +1405,12 @@ ggml_tensor * llama_memory_recurrent_context::get_p_l(int32_t il) const {
+ }
+ 
+ int32_t llama_memory_recurrent_context::s_copy(int i) const {
++    // layer-wise prefill: the ids saved with the ubatch
++    if (lw_cur) {
++        GGML_ASSERT((size_t) i < lw_cur->s_copy.size());
++        return lw_cur->s_copy[i];
++    }
++
+     const uint32_t cell_idx = i + mem->head;
+     const int32_t  src0     = mem->cells[cell_idx].src0;
+ 
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+index 6442fc1..c12bc43 100644
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -169,6 +169,10 @@ public:
+     bool next()  override;
+     bool apply() override;
+ 
++    bool lw_save()         override;
++    bool lw_load(size_t i) override;
++    void lw_clear()        override;
++
+     llama_memory_status  get_status() const override;
+     const llama_ubatch & get_ubatch() const override;
+ 
+@@ -202,4 +206,16 @@ private:
+     //
+ 
+     const bool is_full = false;
++
++    // layer-wise prefill: what find_slot() and s_copy() gave for each ubatch. find_slot() rewrites the source ids and
++    // s_copy() resets rs_idx, so neither can be asked again for an earlier ubatch
++    struct lw_snap {
++        size_t   i_next = 0;
++        uint32_t head   = 0;
++        uint32_t n      = 0;
++        int32_t  rs_z   = -1;
++        std::vector<int32_t> s_copy;
++    };
++    std::vector<lw_snap> lw_saved;
++    const lw_snap * lw_cur = nullptr;
+ };
+diff --git a/src/llama-memory.h b/src/llama-memory.h
+index 37d01ed..1770059 100644
+--- a/src/llama-memory.h
++++ b/src/llama-memory.h
+@@ -95,6 +95,13 @@ struct llama_memory_context_i {
+ 
+     // get the status of the memory context - used for error handling and checking if any updates would be applied
+     virtual llama_memory_status get_status() const = 0;
++
++    // layer-wise prefill (LLAMA_LAYERWISE_PREFILL): apply() runs once per ubatch, in order, and lw_save() keeps what
++    // the graph of that ubatch needs from it (call it right after apply()). lw_load(i) puts the i-th saved ubatch back as
++    // the current one without another apply(). The default refuses, so a memory type without it is processed the stock way.
++    virtual bool lw_save()          { return false; }
++    virtual bool lw_load(size_t i)  { GGML_UNUSED(i); return false; }
++    virtual void lw_clear()         {}   // forget the saved ubatches (a new group starts)
+ };
+ 
+ using llama_memory_context_ptr = std::unique_ptr<llama_memory_context_i>;
+diff --git a/src/models/qwen4exp.cpp b/src/models/qwen4exp.cpp
+index 6066538..355806e 100644
+--- a/src/models/qwen4exp.cpp
++++ b/src/models/qwen4exp.cpp
+@@ -465,36 +465,75 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+                 "the indexer cache must track the attention cache cell for cell");
+     }
+ 
++    // LLAMA_LAYERWISE_PREFILL: a segment graph holds the layers [il0, il1) only. Inputs that none of its layers read are not
++    // built (set_inputs would find them unallocated), and the ones that always get data are added to the graph by hand.
++    const bool lw   = params.lw_l1 >= 0;
++    const int  il0  = lw ? params.lw_l0 : 0;
++    const int  il1  = lw ? params.lw_l1 : n_layer;
++    const bool first = il0 == 0;
++    const bool last  = il1 == n_layer;
++
++    bool seg_ple = false, seg_qsa = false;
++    for (int il = il0; il < il1; ++il) {
++        seg_ple = seg_ple || hparams.is_ple(il);
++        seg_qsa = seg_qsa || (!hparams.is_recr(il) && hparams.dsv4_compress_ratios[il] > 0);
++    }
++
+     ggml_tensor * ple_emb = nullptr;
+-    if (hparams.ple_n_heads > 0) {
++    if (hparams.ple_n_heads > 0 && (!lw || seg_ple)) {
+         ple_emb = build_inp_ple(mctx_hyb);
+         // make sure ple_emb and build_inp_embd are in the same graph split
+         ggml_build_forward_expand(gf, ple_emb);
+     }
+ 
+-    ggml_tensor * inpL = build_inp_embd(model.tok_embd);
+-    cb(inpL, "model.input_embed", -1);
+-    ggml_build_forward_expand(gf, inpL);
++    ggml_tensor * inpL = nullptr;
++    if (first) {
++        inpL = build_inp_embd(model.tok_embd);
++        cb(inpL, "model.input_embed", -1);
++        ggml_build_forward_expand(gf, inpL);
++    }
+ 
+     // the QSA layers share one set of k-pool inputs
+     // the CUDA lightning indexer takes 32 or 64 heads, QSA has a few, so it scores with plain ops
+     llm_graph_input_kpool * inp_kpool = nullptr;
+-    if (mctx_idx && hparams.indexer_kpool > 0) {
++    if (mctx_idx && hparams.indexer_kpool > 0 && (!lw || seg_qsa)) {
+         inp_kpool = build_inp_kpool(mctx_hyb);
+     }
+ 
+     ggml_tensor * inp_pos     = build_inp_pos();
+-    ggml_tensor * inp_out_ids = build_inp_out_ids();
++    ggml_tensor * inp_out_ids = (!lw || last) ? build_inp_out_ids() : nullptr;
++
++    if (lw) {
++        std::vector<ggml_tensor *> lw_keep = { inp_pos, inp->get_attn()->self_k_idxs, inp->get_attn()->self_v_idxs, inp->get_recr()->s_copy };
++        lw_keep.insert(lw_keep.end(), inp->get_attn()->self_k_rot.begin(), inp->get_attn()->self_k_rot.end());
++        lw_keep.insert(lw_keep.end(), inp->get_attn()->self_v_rot.begin(), inp->get_attn()->self_v_rot.end());
++        for (ggml_tensor * t : lw_keep) {
++            if (t) {
++                ggml_build_forward_expand(gf, t);
++            }
++        }
++    }
+ 
+-    // the wide residual starts as hc identical copies of the embedding
+-    ggml_tensor * res_hc = ggml_repeat_4d(ctx0,
+-            ggml_reshape_3d(ctx0, inpL, n_embd, 1, n_tokens),
+-            n_embd, hc, n_tokens, 1);
+-    cb(res_hc, "hc_init", -1);
+-    // make sure hc_init is in the same graph split as the first layer (-sm tensor)
+-    ggml_build_forward_expand(gf, res_hc);
++    ggml_tensor * res_hc = nullptr;
++    if (first) {
++        // the wide residual starts as hc identical copies of the embedding
++        res_hc = ggml_repeat_4d(ctx0,
++                ggml_reshape_3d(ctx0, inpL, n_embd, 1, n_tokens),
++                n_embd, hc, n_tokens, 1);
++        cb(res_hc, "hc_init", -1);
++        // make sure hc_init is in the same graph split as the first layer (-sm tensor)
++        ggml_build_forward_expand(gf, res_hc);
++    } else {
++        // the hidden state the previous segment of this chunk left
++        auto inp_lw = std::make_unique<llm_graph_input_lw>(params.lw_in);
++        inp_lw->t = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_embd, hc, n_tokens);
++        ggml_set_input(inp_lw->t);
++        ggml_set_name(inp_lw->t, "lw_in");
++        res_hc = inp_lw->t;
++        res->add_input(std::move(inp_lw));
++    }
+ 
+-    for (int il = 0; il < n_layer; ++il) {
++    for (int il = il0; il < il1; ++il) {
+         if ((size_t) il < cparams.embeddings_layer_inp.size() && cparams.embeddings_layer_inp[il]) {
+             res->t_layer_inp[il] = hc_stream_mean(ctx0, res_hc);
+             cb(res->t_layer_inp[il], "layer_inp", il);
+@@ -552,6 +591,14 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
+         cb(res_hc, "l_last", il);
+     }
+ 
++    if (!last) {
++        // the next segment of this chunk starts from this
++        GGML_ASSERT(ggml_is_contiguous(res_hc) && res_hc->type == GGML_TYPE_F32);
++        res->t_lw_out = res_hc;
++        ggml_build_forward_expand(gf, res_hc);
++        return;
++    }
++
+     // the MTP head reads the hc-wide residual, before the final mixer
+     res->t_h_nextn = ggml_reshape_2d(ctx0, res_hc, n_embd*hc, res_hc->ne[2]);
+     cb(res->t_h_nextn, "h_nextn", -1);
+diff --git a/tests/test-llama-archs.cpp b/tests/test-llama-archs.cpp
+index 0e61eba..c8b5323 100644
+--- a/tests/test-llama-archs.cpp
++++ b/tests/test-llama-archs.cpp
+@@ -230,13 +230,19 @@ struct kv_writer {
+ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+     gguf_context_ptr ret(gguf_init_empty());
+     kv_writer ms(arch, ret.get());
+-    const uint32_t n_ctx = 256;
++    // LLAMA_TEST_QWEN4EXP_{LAYERS,CTX,TOPK}: a deeper model with a longer context and a real indexer top-k, to save a model for
++    // checking LLAMA_LAYERWISE_PREFILL (only read for qwen4exp with --out)
++    auto env_u32 = [](const char * name, uint32_t def) {
++        const char * v = getenv(name);
++        return v ? (uint32_t) atoi(v) : def;
++    };
++    const uint32_t n_ctx = arch == LLM_ARCH_QWEN4EXP ? env_u32("LLAMA_TEST_QWEN4EXP_CTX", 256) : 256;
+ 
+     uint32_t n_vocab = 128;
+     uint32_t n_embd  = 256;
+     uint32_t n_head  = 2;
+     uint32_t n_ff    = 384;
+-    uint32_t n_layer = 2;
++    uint32_t n_layer = arch == LLM_ARCH_QWEN4EXP ? env_u32("LLAMA_TEST_QWEN4EXP_LAYERS", 2) : 2;
+     if (arch == LLM_ARCH_LLAMA4) {
+         n_layer = 4; // hparams.n_no_rope_layer_step is hard-coded to 4
+     } else if (arch == LLM_ARCH_MAION_CODER) {
+@@ -512,7 +518,7 @@ static gguf_context_ptr get_gguf_ctx(const llm_arch arch, const bool moe) {
+     // note: using a realistic top-k here makes the results unstable and hard to match between CPU and GPU
+     //       a large value makes things deterministic since all data is selected by the indexer
+     //ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        uint32_t(8));
+-    ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        uint32_t(131072));
++    ms.add_kv(LLM_KV_ATTENTION_INDEXER_TOP_K,        arch == LLM_ARCH_QWEN4EXP ? env_u32("LLAMA_TEST_QWEN4EXP_TOPK", 131072) : uint32_t(131072));
+ 
+     ms.add_kv(LLM_KV_ATTENTION_INDEXER_BLOCK_SIZE,   uint32_t(4));
+     ms.add_kv(LLM_KV_ATTENTION_INDEXER_KPOOL,        uint32_t(4));
