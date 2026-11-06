@@ -54,6 +54,31 @@ Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 202
 
 Restore: copy `llama.cpp/0070-decode-reloc.patch` back to `patches/llama.cpp/` and `llama.cpp/0070-DECODE_RELOC_DESIGN.md` to `docs/DECODE_RELOC_DESIGN.md`, then `git apply archive/plugin/decode_reloc_launcher.patch` from the top of the repo (it restores the launcher hook, tests, CI steps and the doc rows; later changes to `.github/workflows/llama_patched.yml`, `bin/moe_cache.py` or the README may need a small manual fix). The patch was checked with `git apply --check` on the tree it was removed from.
 
+### Switches that stayed off, removed on 2026-11-06 (v0.3.8 cleanup; the Critic marked each safe on 2026-11-05)
+
+Each patch is the removal read backwards: `git apply archive/plugin/NAME.patch` from the top of the repo puts the switch, its code and its `docs/CONFIGURATION.md` row back (checked with `git apply --check` on the tree each one was removed from; later edits of the same lines may need a small manual fix).
+
+| File | Switch | Why archived | Retest if |
+|---|---|---|---|
+| plugin/reader_affinity.patch | `MOE_CACHE_READER_AFFINITY` (TEST-004) | off, no gain seen; ideas triage 2026-11-05 | reads queue behind compute threads on a many-core CPU |
+| plugin/warm_sort.patch | `MOE_CACHE_WARM_SORT` (CACHE-129) | PC test 2026-11-05 (cache switch bundle): no gain, prompt -3.4 % | a disk that reads in file order much faster than at random |
+| plugin/async_coalesce.patch | `MOE_CACHE_ASYNC_COALESCE` (CACHE-062) | same bundle, no gain. The merged-read code (`io_job_t::more`, `coalesced`) is shared with the synchronous path and stays | - |
+| plugin/demand_first.patch | `MOE_CACHE_DEMAND_FIRST` and the `demand_pending` counter (CACHE-112) | same bundle, no gain | guessed reads are shown to delay needed ones |
+| plugin/layer_share.patch | `MOE_CACHE_LAYER_SHARE` (CACHE-110) | built, never measured, off | one layer is shown to hold most of the cache |
+| plugin/evict_siblings.patch | `MOE_CACHE_EVICT_SIBLINGS` (CACHE-110) | same | - |
+| plugin/residency_check.patch | `MOE_CACHE_RESIDENCY_CHECK` (CACHE-110) | a diagnostic only (mincore sample at exit), off | the OS is suspected of reclaiming cached experts |
+| plugin/refill_after_prompt.patch | `MOE_CACHE_REFILL_AFTER_PROMPT` (CACHE-110) | built, never measured, off | - |
+| plugin/preload_skip_tokens.patch | `MOE_CACHE_PRELOAD_SKIP_TOKENS` (CACHE-110) | built, never measured, off | - |
+| plugin/gpu_upload_threads.patch | `MOE_CACHE_GPU_UPLOAD_THREADS` (PREFILL-187) | PC test 2026-11-05: no gain; unsafe without resizable BAR | uploads are shown to be limited by one thread |
+| plugin/gpu_stage_threads.patch | `MOE_CACHE_GPU_STAGE_THREADS` (CACHE-051) | PC test 2026-11-05: its parent `GPU_STAGE` lost; this only worked with it. `GPU_STAGE` itself is still in the tree (PREFILL-060 is only partly archived) | - |
+| plugin/plan_cost.patch | `MOE_CACHE_PLAN_COST` (ENGINE-003) | off; ideas triage | the planner must pick `-ub 2048` at 64k+ with no table row |
+| plugin/compute_db.patch | `MOE_CACHE_COMPUTE_DB`, `gguf_plan.py --record-buffer` (PATCH-010) | off, never used | per-model compute buffers must be recorded |
+| plugin/idle_adapt.patch | `MOE_CACHE_IDLE_ADAPT` (AGENTS-015) | off; its own estimate is under 1 % | tool pauses are long and varied |
+| plugin/proxy_keepalive.patch | `MOE_CACHE_PROXY_KEEPALIVE` (AGENTS-019) | off, setup cost per request is small against a model reply | many very short agent calls |
+| llama.cpp/0005-tokenize-cache.patch (notes: llama.cpp/0005-tokenize-cache-NOTES.md) | `LLAMA_TOKENIZE_CACHE` (PATCH-022) | exact match only; an agent loop changes the text every request | the same long prompt arrives again and again |
+
+Not touched on purpose: `MOE_CACHE_WIN_OPEN_HINT` (WINDOWS-672) stays until the 30-minute Windows read-path gate has run, and every row the Critic marked "SHIPPED, DO NOT REMOVE" or "archive only part" (PREFILL-184, PREFILL-060, CACHE-115, CACHE-131, MULTIGPU-001, -008, -011, LINUX-006, DECODE-059). DECODE-045, DECODE-057, PATCH-001 and PATCH-126 had no code left to move.
+
 ### Merged upstream (2026-11-03, pin move b11966 -> b12064)
 
 | File | Switch | Result | Why archived | Retest if |
