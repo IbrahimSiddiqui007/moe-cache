@@ -839,6 +839,9 @@ def fake_run(cmd, *a, **k):
         return type("R", (), {"stdout": "", "stderr": "version: 12345 (abcdef0)\nbuilt with fake\n", "returncode": 0})()
     return real_run(cmd, *a, **k)
 _sp.run = fake_run
+st, j = preq("/api/llama", {"path": os.path.dirname(fakels)}); check(st == 400 and "not a compiled program" in j.get("error", str(j)), f"/api/llama: a file that is not a program (GUI-697) is refused before it is run ({st})")
+ui.LLAMA_EXTRA_ROOTS.append(TMP)
+open(fakels, "wb").write(b"\x7fELF fake")     # a program header, so the later checks reach --version
 st, j = preq("/api/system")
 check(st == 200 and "llama_found" in j and "llama_looked" in j and j["llama_releases"].startswith("https://github.com/ggml-org/llama.cpp"), "/api/system: llama_found, where it looked, the release link")
 check(preq("/api/llama", {"path": os.path.join(TMP, "nowhere", LS_NAME)})[0] == 400, "/api/llama: a path with no llama-server is refused")

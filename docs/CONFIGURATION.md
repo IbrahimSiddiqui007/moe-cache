@@ -154,7 +154,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*` 
 | `MOE_CACHE_IO_THREADS` | Parallel readers in total for loading experts (the calling thread reads too, so N means N readers). | 6 | advanced |
 | `MOE_CACHE_LEAVE_ROOM` | `1` turns on `--leave-room` for good: your own programs come first. Smoother PC, slower model. | 0 (off) | everyone |
 | `MOE_CACHE_LIB` | Windows `moe-cache-ui.bat` only: the plugin DLL to use. Unset: the .bat looks for the plugin DLL itself (see the comment at the top of the file). | unset | advanced |
-| `MOE_CACHE_PACK` | Experimental: `1` uses the pack file made by `moe_cache.py pack` (next to the model), or a path to one. The plugin reads packed experts only when asked. | off | advanced |
+| `MOE_CACHE_PACK` | Experimental: `1` uses the pack file made by `moe_cache.py pack` (next to the model), or a path to one. The plugin reads packed experts only when asked. Only the header and 16 sampled pages of the pack are checked at load (CACHE-695), not every byte: remake the pack with `moe_cache.py pack` whenever the model file or the pack file may have been damaged or changed. | off | advanced |
 | `MOE_CACHE_PEERS` | Folder where servers started with `--peers` (prototype) write their memory use once a second and read the others' files. Set by the launcher. | set by --peers | set by the launcher |
 | `MOE_CACHE_PEER_CAP_GIB` | The memory, in GiB, that the servers of one `--peers` folder share. Set by the launcher. | set by --peers | set by the launcher |
 | `MOE_CACHE_PLAN_RULE` | `1`: the planner reserve is measured by `llama-fit-params` or taken from the formula, and grows monotonically with `-ub` (plan rule). Off by default. | off | advanced |

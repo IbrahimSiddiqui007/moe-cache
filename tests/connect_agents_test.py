@@ -157,6 +157,38 @@ put(qw, "not json")
 rc, _, _ = run("qwen", "--write")
 check(isinstance(rc, str) and "not plain JSON" in rc and open(qw).read() == "not json", "qwen: malformed file refused, untouched")
 
+# ---- AGENTS-714: numbered backups and --undo ----
+put(qw, orig); os.remove(qw + ".bak") if os.path.exists(qw + ".bak") else None
+for f in os.listdir(os.path.dirname(qw)):
+    if ".bak." in f or f.endswith(".undone"):
+        os.remove(os.path.join(os.path.dirname(qw), f))
+run("qwen", "--write")                                   # first connect: .bak = the user's file
+put(qw, json.dumps({"modelProviders": {"openai": []}, "edited": "after the first connect"}))
+run("qwen", "--write")                                   # file differs from .bak: numbered copy .bak.1
+check(os.path.isfile(qw + ".bak.1") and "edited" in open(qw + ".bak.1").read() and open(qw + ".bak").read() == orig, "AGENTS-714: a later connect keeps the file as it was in .bak.1, the first .bak stays")
+run("qwen", "--write"); run("qwen", "--write")
+check(not os.path.exists(qw + ".bak.3"), "AGENTS-714: repeating the same connect makes no further numbered copy")
+rc, out, err = run("qwen", "--undo")
+check(rc == 0 and open(qw).read() == orig and os.path.isfile(qw + ".undone"), f"AGENTS-714: --undo puts the first backup back and keeps the current file as .undone ({rc})")
+os.remove(qw); os.remove(qw + ".bak")
+rc, out, err = run("qwen", "--undo")
+check(rc == 1 and "nothing to undo" in err, "AGENTS-714: --undo with no backup says so")
+rc, _, _ = run("qwen", "--undo", "--write")
+check(isinstance(rc, int) or rc is not None, "AGENTS-714: --undo with --write is refused by the argument parser")
+cx = os.path.join(HOME, ".codex", "config.toml")
+if tomllib:
+    put(cx, 'model = "mine"\n'); os.remove(cx + ".bak") if os.path.exists(cx + ".bak") else None
+    run("codex", "--write")
+    rc, _, _ = run("codex", "--undo")
+    check(rc == 0 and open(cx).read() == 'model = "mine"\n', "AGENTS-714: codex --undo restores the user's file")
+
+# ---- AGENTS-714: the Claude settings file is added to .gitignore of a git project ----
+gp = os.path.join(TMP, "gitproj"); os.makedirs(os.path.join(gp, ".git"))
+check(mc.gitignore_settings_local(gp) is True and open(os.path.join(gp, ".gitignore")).read() == ".claude/settings.local.json\n", "AGENTS-714: a git project gets the line")
+check(mc.gitignore_settings_local(gp) is False, "AGENTS-714: the line is not added twice")
+npj = os.path.join(TMP, "nogit"); os.makedirs(npj)
+check(mc.gitignore_settings_local(npj) is False and not os.path.exists(os.path.join(npj, ".gitignore")), "AGENTS-714: a folder without .git is left alone")
+
 # ---- Aider ----
 ac = os.path.join(HOME, ".aider.moe-cache.conf.yml"); am = os.path.join(HOME, ".aider.moe-cache.model.metadata.json")
 rc, out, _ = run("aider")

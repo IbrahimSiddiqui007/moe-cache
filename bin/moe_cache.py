@@ -3613,6 +3613,27 @@ def write_claude_settings(cfg, env):
     return bak
 
 
+def gitignore_settings_local(folder):
+    """AGENTS-714: .claude/settings.local.json holds the API key; in a git project it is added to .gitignore when no line already covers it.
+    Returns True when a line was added. Never touches a folder that is not a git project."""
+    if not os.path.isdir(os.path.join(folder, ".git")):
+        return False
+    gi = os.path.join(folder, ".gitignore")
+    try:
+        old = open(gi, encoding="utf-8").read() if os.path.isfile(gi) else ""
+    except OSError:
+        return False
+    names = (".claude/settings.local.json", "/.claude/settings.local.json", "settings.local.json", ".claude/", "/.claude/", ".claude", "/.claude", ".claude/*")
+    if any(l.strip() in names for l in old.splitlines()):
+        return False
+    try:
+        with open(gi, "a", encoding="utf-8") as f:
+            f.write(("" if not old or old.endswith("\n") else "\n") + ".claude/settings.local.json\n")
+    except OSError:
+        return False
+    return True
+
+
 def project_folder_hint(cwd):
     """A warning when cwd is a sub-folder of a project (a parent holds .git or .claude) and has no .claude of its own: Claude Code started in the project root
     would not read a settings file written here. None otherwise."""
@@ -3664,7 +3685,96 @@ def keep_first_backup(cfg):
         shutil.copy2(cfg, cfg + ".bak")
         if not WINDOWS:
             os.chmod(cfg + ".bak", 0o600)
+    elif os.path.isfile(cfg):
+        keep_numbered_backup(cfg)
     return cfg + ".bak" if os.path.isfile(cfg + ".bak") else None
+
+
+NUMBERED_BACKUPS = 5
+
+
+def keep_numbered_backup(cfg):
+    """AGENTS-714: besides the first backup (.bak), the file as it was before this write is kept as cfg.bak.1, .2, ... when it differs from the newest copy
+    (the last NUMBERED_BACKUPS stay), so a second connect that changed something can be walked back. Returns the new path, None when nothing was copied."""
+    nums = sorted((int(m.group(1)), f) for f in glob.glob(glob.escape(cfg) + ".bak.*") for m in [re.search(r"\.bak\.(\d+)$", f)] if m)
+    newest = nums[-1][1] if nums else cfg + ".bak"
+    try:
+        if open(newest, "rb").read() == open(cfg, "rb").read():
+            return None
+    except OSError:
+        return None
+    new = f"{cfg}.bak.{(nums[-1][0] + 1) if nums else 1}"
+    shutil.copy2(cfg, new)
+    if not WINDOWS:
+        os.chmod(new, 0o600)
+    for _n, f in nums[:max(0, len(nums) + 1 - NUMBERED_BACKUPS)]:
+        try:
+            os.unlink(f)
+        except OSError:
+            pass
+    return new
+
+
+def agent_config_paths(agent, config=None):
+    """The files `connect AGENT --write` changes by default (for --undo); the second one of aider is its model metadata file."""
+    home = os.path.expanduser("~")
+    if config:
+        cfg = config
+    elif agent == "codex":
+        cfg = os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "config.toml")
+    elif agent == "pi":
+        cfg = os.path.join(os.environ.get("PI_CODING_AGENT_DIR") or os.path.join(home, ".pi", "agent"), "models.json")
+    elif agent == "openclaw":
+        cfg = os.path.join(home, ".openclaw", "openclaw.json")
+    elif agent == "qwen":
+        cfg = os.path.join(home, ".qwen", "settings.json")
+    elif agent == "aider":
+        cfg = os.path.join(home, ".aider.moe-cache.conf.yml")
+    elif agent == "claude":
+        cfg = os.path.join(os.getcwd(), ".claude", "settings.local.json")
+    else:
+        cfg = opencode_config_target(os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config"), "opencode", "opencode.json"))[0]
+    out = [cfg]
+    if agent == "pi":
+        out.append(os.path.join(os.path.dirname(cfg), "settings.json"))
+    if agent == "aider":
+        out.append(os.path.join(os.path.dirname(os.path.abspath(cfg)), ".aider.moe-cache.model.metadata.json"))
+    return out
+
+
+def connect_undo(a):
+    """connect AGENT --undo: put back what the agent's config was before the first connect (the .bak copy; Claude Code's lives in the cache folder), or, with no
+    backup, remove what connect added where that is exact (Codex's marked block; Aider's files, which connect made). The file as it is now is kept first
+    as cfg.undone so nothing is lost. Hermes keeps its own config: the .bak path is in the message connect printed."""
+    if a.agent == "hermes":
+        raise SystemExit("moe-cache: Hermes: copy config.yaml.bak (kept beside Hermes' config.yaml by connect) back over config.yaml; `hermes config path` shows where it is")
+    n = 0
+    for cfg in agent_config_paths(a.agent, a.config):
+        real = os.path.realpath(cfg)
+        bak = claude_backup_path(cfg) if a.agent == "claude" else real + ".bak"
+        if os.path.isfile(bak):
+            if os.path.isfile(real):
+                shutil.copy2(real, real + ".undone")
+            shutil.copy2(bak, real)
+            say(f"moe-cache: {a.agent}: {real} is the file from before the first connect again (from {bak}); the file as it was is kept as {real}.undone")
+            n += 1
+        elif a.agent == "aider" and os.path.isfile(real):
+            os.replace(real, real + ".undone")
+            say(f"moe-cache: aider: {real} moved to {real}.undone (connect had made it)")
+            n += 1
+        elif a.agent == "codex" and os.path.isfile(real) and CODEX_BEGIN in open(real, encoding="utf-8").read():
+            text = open(real, encoding="utf-8").read()
+            shutil.copy2(real, real + ".undone")
+            b = text.index(CODEX_BEGIN)
+            e = text.find(CODEX_END, b)
+            e = len(text) if e < 0 else (text.find("\n", e) + 1 or len(text))
+            write_private(real, text[:b] + text[e:])
+            say(f"moe-cache: codex: the moe-cache block is removed from {real}; the file as it was is kept as {real}.undone (top-level model lines connect added may stay: check model_provider)")
+            n += 1
+    if not n:
+        say(f"moe-cache: {a.agent}: nothing to undo: no backup and no marked block for {', '.join(agent_config_paths(a.agent, a.config))}", err=True)
+        return 1
+    return 0
 
 
 def file_eol(cfg):
@@ -3977,6 +4087,7 @@ def connect(argv):
     ap.add_argument("--url", help="the server (default: the on-demand endpoint's port when `on-demand` has a model, else http://127.0.0.1:8080)")
     ap.add_argument("--api-key", default=None, help="the server's API key (default: LLAMA_API_KEY for a server on this machine, else the stored key when the server asks for one)")
     ap.add_argument("--write", action="store_true")
+    ap.add_argument("--undo", action="store_true", help="put the agent's config back as it was before the first connect (the .bak copy; the file as it is now is kept as .undone); no server needed")
     ap.add_argument("--config", help="file to merge into (opencode: ~/.config/opencode/opencode.json; claude: ./.claude/settings.local.json of this folder; codex: ~/.codex/config.toml; pi: ~/.pi/agent/models.json; openclaw: ~/.openclaw/openclaw.json; qwen: ~/.qwen/settings.json; aider: ~/.aider.moe-cache.conf.yml)")
     ap.add_argument("--check", action="store_true", help="prove the agent's setup works end to end (config, /v1/models, a streamed chat, a tool-call round trip, the window); "
                     "with --write, after writing; exit 0/1")
@@ -3986,6 +4097,10 @@ def connect(argv):
     if a.json and not a.check:
         ap.error("--json goes with --check")
     a.url_given = a.url
+    if a.undo:
+        if a.write or a.check:
+            ap.error("--undo does not go with --write or --check")
+        return connect_undo(a)
     if a.check and not a.write:
         return connect_check(a)
     try:
@@ -4077,6 +4192,8 @@ def connect_apply(a):
         bak = write_claude_settings(cfg, env)
         say(f"Claude Code in {os.path.dirname(os.path.dirname(cfg)) or '.'} now uses {name} at {a.url} (context {ctx}); config {os.path.realpath(cfg)}"
             + (f" (old file kept as {bak}, outside the project)" if bak else "") + "; run: claude")
+        if not a.config and gitignore_settings_local(os.getcwd()):
+            say("moe-cache: added .claude/settings.local.json to .gitignore (the file holds the API key)")
         hint = None if a.config else project_folder_hint(os.getcwd())
         if hint:
             say("moe-cache: warning: " + hint, err=True)

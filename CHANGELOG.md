@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.8 (unreleased)
+
+| Area | Change |
+|---|---|
+| Control page | The "llama.cpp not found" box refuses a file that is not a compiled program, sits outside the home, program and kit folders, or can be written by other users (GUI-697). |
+| Agents | `connect NAME --undo` restores the first backup; later connects keep numbered backups (`.bak.1` ...); `connect claude --write` adds the settings file to `.gitignore` of a git project (AGENTS-714). |
+| llama.cpp patches | Patch 0020: checkpoints count twice against the async slot-save cap, stale `*.tmp` slot files older than an hour are removed (PATCH-712). Patch 0030: `GGML_VK_GLOBAL_PRIORITY` accepts low, medium, high only (PATCH-713). |
+| Documented | The pack file's payload is not verified byte by byte (CACHE-695). |
+
 ## 0.3.7 (2026-11-05)
 
 | Area | Change |

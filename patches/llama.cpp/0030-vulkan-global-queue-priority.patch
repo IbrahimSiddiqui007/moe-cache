@@ -2,13 +2,13 @@ diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vu
 index 44e2d7b14..8568c1a37 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -4793,12 +4793,62 @@ vk_device ggml_vk_get_device(size_t idx) {
+@@ -4793,12 +4793,61 @@ vk_device ggml_vk_get_device(size_t idx) {
  #endif
          device->name = GGML_VK_NAME + std::to_string(idx);
  
-+        // moe-cache patch 0030: GGML_VK_GLOBAL_PRIORITY = low | medium | high | realtime asks the driver to schedule this process's
++        // moe-cache patch 0030: GGML_VK_GLOBAL_PRIORITY = low | medium | high asks the driver to schedule this process's
 +        // queues ahead of (or behind) other programs' GPU work (VK_KHR_global_priority). Unset = unchanged. If the driver refuses
-+        // (for example "high" and "realtime" can need extra rights), the device is created the normal way and a line is printed.
++        // (for example "high" can need extra rights), the device is created the normal way and a line is printed.
 +        VkQueueGlobalPriorityKHR global_prio = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR;
 +        bool want_global_prio = false;
 +        if (const char * e = getenv("GGML_VK_GLOBAL_PRIORITY")) {
@@ -16,8 +16,7 @@ index 44e2d7b14..8568c1a37 100644
 +            if (strcmp(e, "low") == 0)           { global_prio = VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR; }
 +            else if (strcmp(e, "medium") == 0)   { global_prio = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR; }
 +            else if (strcmp(e, "high") == 0)     { global_prio = VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR; }
-+            else if (strcmp(e, "realtime") == 0) { global_prio = VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR; }
-+            else { known = false; GGML_LOG_WARN("ggml_vulkan: GGML_VK_GLOBAL_PRIORITY=%s ignored (low, medium, high, realtime)\n", e); }
++            else { known = false; GGML_LOG_WARN("ggml_vulkan: GGML_VK_GLOBAL_PRIORITY=%s ignored (low, medium, high)\n", e); }
 +            if (known) {
 +                bool have_ext = false;
 +                for (const auto & ext : ext_props) {

@@ -28,16 +28,28 @@ index 2bd1ab9ec..3fecb3e64 100644
          if (!sleeping) {
              // destroy() is already called when entering sleeping state
              // we don't call it again here to avoid double free
-@@ -3240,6 +3252,103 @@ private:
+@@ -3240,6 +3252,115 @@ private:
                      }
  
                      GGML_ASSERT(packed.size() % sizeof(llama_token) == 0);
 +
 +                    // LLAMA_SLOT_SAVE_ASYNC=1 (default off): the sequence state is copied into memory here and a thread writes the file (to a temporary
 +                    // name, renamed when complete), so the server loop is not held by the disk. The answer to the request is sent when the file is
-+                    // complete. States above LLAMA_SLOT_SAVE_ASYNC_MAX_MIB (default 4096, counting checkpoints) and servers with a draft context are
++                    // complete. States above LLAMA_SLOT_SAVE_ASYNC_MAX_MIB (default 4096, counting the checkpoints twice, as they are copied) and servers with a draft context are
 +                    // saved as before.
 +                    static const bool save_async = [] { const char * v = getenv("LLAMA_SLOT_SAVE_ASYNC"); return v && atoi(v) > 0; }();
++                    static bool stale_tmp_cleaned = false;   // PATCH-712: *.tmp files older than an hour in the save folder (a killed server leaves them) are removed once per run
++                    if (save_async && !stale_tmp_cleaned) {
++                        stale_tmp_cleaned = true;
++                        std::error_code ec_tmp;
++                        for (const auto & de : std::filesystem::directory_iterator(std::filesystem::u8path(filepath).parent_path(), ec_tmp)) {
++                            const std::string name = de.path().filename().string();
++                            if (name.size() > 4 && name.compare(name.size() - 4, 4, ".tmp") == 0 && de.is_regular_file(ec_tmp) &&
++                                std::filesystem::file_time_type::clock::now() - de.last_write_time(ec_tmp) > std::chrono::hours(1)) {
++                                std::filesystem::remove(de.path(), ec_tmp);
++                            }
++                        }
++                    }
 +                    if (save_async && ctx_dft == nullptr) {
 +                        static const size_t max_bytes = [] {
 +                            const char * v = getenv("LLAMA_SLOT_SAVE_ASYNC_MAX_MIB");
@@ -48,7 +60,7 @@ index 2bd1ab9ec..3fecb3e64 100644
 +                            n_ckpt_bytes += cur.data_tgt.size() + cur.data_dft.size() + cur.data_spec.size();
 +                        }
 +                        const size_t n_state = llama_state_seq_get_size_ext(ctx_tgt, slot->id, LLAMA_STATE_SEQ_FLAGS_NONE);
-+                        if (n_state > 8 && n_state + n_ckpt_bytes <= max_bytes) {
++                        if (n_state > 8 && n_state + 2 * n_ckpt_bytes <= max_bytes) {   // PATCH-712: the checkpoints are copied once more for the thread, so they count twice
 +                            std::vector<uint8_t> state(n_state);
 +                            const size_t n_got = llama_state_seq_get_data_ext(ctx_tgt, state.data(), state.size(), slot->id, LLAMA_STATE_SEQ_FLAGS_NONE);
 +                            if (n_got == n_state) {

@@ -252,6 +252,41 @@ def system_info():
 
 # ---- the plan and why (I33): the same rules and tools as the launcher ----
 
+LLAMA_EXTRA_ROOTS = []        # folders the page may take a llama-server from besides the usual ones (the tests add their own)
+
+
+def llama_path_refusal(path):
+    """GUI-697: why a file the page was given must not be run as llama-server (None when it may be). It has to be a compiled program (ELF, PE or
+    Mach-O header, not a script), sit under the user's home, a program folder or a folder the launcher searches itself, and on Linux not be
+    writable by other users."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError as e:
+        return f"cannot be read ({e})"
+    if not (head[:4] == b"\x7fELF" or head[:2] == b"MZ" or head in (b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf", b"\xca\xfe\xba\xbe")):
+        return "it is not a compiled program (a script or another file named llama-server)"
+    real = os.path.normcase(os.path.realpath(path))
+    roots = [os.path.expanduser("~"), "/usr", "/opt", "/snap", "/nix", os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+             os.environ.get("LOCALAPPDATA"), os.environ.get("SystemDrive") and os.environ["SystemDrive"] + "\\llama"] + list(mc.llama_search_dirs()) + LLAMA_EXTRA_ROOTS
+    ok = False
+    for root in roots:
+        if root:
+            root = os.path.normcase(os.path.realpath(root))
+            if real == root or real.startswith(root.rstrip(os.sep) + os.sep):
+                ok = True
+                break
+    if not ok:
+        return "it is outside the home folder, the program folders and the kit folders; copy it into one of them first"
+    if os.name == "posix":
+        st = os.stat(real)
+        if st.st_mode & 0o022:
+            return "other users can write to it"
+        if st.st_uid not in (0, os.getuid()):
+            return "it belongs to another user"
+    return None
+
+
 class PagePlanMachine(mc.Machine):
     """The machine for plans built inside the page: the plugin build need not exist yet (the page only describes what a start would do) and
     `llama-server --list-devices` is asked once per llama-server for 30 s, not once per model of the list."""
@@ -1867,6 +1902,9 @@ class Store:
             raise ValueError(f"no llama-server at '{path}': give the full path of {mc.llama_exe()} (or the folder that holds it)")
         if os.path.basename(r).lower() not in ("llama-server", "llama-server.exe"):
             raise ValueError(f"'{r}' is not named {mc.llama_exe()}")
+        bad = llama_path_refusal(r)               # GUI-697: nothing is run until the file looks like a real program in a normal place
+        if bad:
+            raise ValueError(f"'{r}' is not used: {bad}")
         try:
             o = subprocess.run([r, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
             text = (o.stdout + o.stderr).strip()
