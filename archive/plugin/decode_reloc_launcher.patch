@@ -1,0 +1,663 @@
+diff --git b/.github/workflows/llama_patched.yml a/.github/workflows/llama_patched.yml
+index 1fff304..6d32ed9 100644
+--- b/.github/workflows/llama_patched.yml
++++ a/.github/workflows/llama_patched.yml
+@@ -90,8 +90,10 @@ jobs:
+           name: llama-patched-win-vulkan-x64
+           path: llama.cpp/build/bin/Release/ggml-vulkan.dll
+ 
+-  # One zip for the Windows PC: the server + CPU backends from windows-server and ggml-vulkan.dll from windows-vulkan in one folder, with its sha256, after a
+-  # smoke test: the server starts and answers a short greedy completion with text. A CI runner has no GPU; the PC tests decide whether a patch stays.
++  # One zip for the Windows PC (DECODE-630 test): the server + CPU backends from windows-server and ggml-vulkan.dll from windows-vulkan in one folder, with its
++  # sha256, after a smoke test: the server starts with LLAMA_DECODE_RELOC unset and set (-ub 2048, 100 tokens: more than the 64 small batches that start the
++  # switch) and the text is identical. A CI runner has no GPU, so nothing can move there: the test proves the switch is inert and its "no layer fits" path
++  # puts everything back; the real move is the PC's A B B A (handover/parts/overnight_20261104/items/30_decode_reloc.ps1).
+   windows-package:
+     needs: [windows-server, windows-vulkan]
+     runs-on: windows-2025
+@@ -110,22 +112,33 @@ jobs:
+           Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
+           $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
+           if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
+-      - name: Smoke test
++      - name: Smoke test, switch unset and set
+         run: |
+           $dir = "$PWD\pkg\llama-patched-win-x64"
+           Get-ChildItem $dir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
+           if (-not (Test-Path "$dir\llama-server.exe")) { throw "no llama-server.exe in the package" }
+           & "$dir\llama-server.exe" --version
+           $body = '{"prompt":"The quick brown fox jumps over the lazy dog. The quick brown fox","n_predict":100,"temperature":0,"seed":1,"cache_prompt":false}'
+-          $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port","8101","--no-warmup" -RedirectStandardError "smoke.err" -RedirectStandardOutput "smoke.out" -PassThru
+-          $ok = $false
+-          for ($i = 0; $i -lt 180; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8101/health").StatusCode -eq 200) { $ok = $true; break } } catch {}; Start-Sleep 1 }
+-          if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content smoke.err -Tail 40; throw "smoke: server never became ready" }
+-          $r = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body "http://127.0.0.1:8101/completion"
+-          Stop-Process -Id $p.Id
+-          $text = (($r.Content | ConvertFrom-Json).content)
+-          Write-Host "text: $text"
+-          if (-not $text -or $text.Length -lt 20) { throw "the smoke run produced no text" }
++          function Run($name, $reloc, $port) {
++            Remove-Item Env:LLAMA_DECODE_RELOC -ErrorAction SilentlyContinue
++            if ($reloc) { $env:LLAMA_DECODE_RELOC = "1"; $env:LLAMA_DECODE_RELOC_AFTER = "16" }
++            $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port",$port,"--no-warmup","-lv","4" -RedirectStandardError "$name.err" -RedirectStandardOutput "$name.out" -PassThru
++            $ok = $false
++            for ($i = 0; $i -lt 180; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/health").StatusCode -eq 200) { $ok = $true; break } } catch {}; Start-Sleep 1 }
++            if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content "$name.err" -Tail 40; throw "${name}: server never became ready" }
++            $r = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body "http://127.0.0.1:$port/completion"
++            Stop-Process -Id $p.Id; Start-Sleep 2
++            (($r.Content | ConvertFrom-Json).content)
++          }
++          $off = Run "off" $false 8101
++          $on = Run "on" $true 8102
++          Write-Host "off: $off"; Write-Host "on:  $on"
++          if (-not $off -or $off.Length -lt 20) { throw "the unset run produced no text" }
++          if ($off -ne $on) { throw "text differs with LLAMA_DECODE_RELOC=1 (CPU only: nothing can move, so it must be identical)" }
++          if (Select-String -Path off.err -Pattern "reloc_" -Quiet) { throw "the patch logged with the switch unset" }
++          Write-Host "--- patch lines in on.err / on.out:"; Select-String -Path on.err,on.out -Pattern "reloc|RELOC|n_ubatch|ubatch" | ForEach-Object { $_.Line } | Select-Object -First 20
++          if (-not (Select-String -Path on.err,on.out -Pattern "LLAMA_DECODE_RELOC on" -Quiet)) { Get-Content on.err -Tail 60; throw "switch set: no 'LLAMA_DECODE_RELOC on' line (see the lines above)" }
++          Select-String -Path on.err -Pattern "reloc_" | ForEach-Object { $_.Line }
+       - name: Zip and sha256
+         run: |
+           Compress-Archive -Path pkg\llama-patched-win-x64 -DestinationPath llama-patched-win-x64.zip
+@@ -169,6 +182,45 @@ jobs:
+           cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS
+           cmake --build build --config Release --target llama-server -j $(nproc)
+           build/bin/llama-server --version
++      # Critic fix list 8: the live test of patch 0070 runs on every patched build, not only by hand. Real patched libllama (the build above) and a small
++      # MoE model, CPU only (LIVE_NGL=0: a runner has no GPU, so nothing can move): the patch must stay inert (identical text over 2400 tokens, 4 prompts,
++      # switch off vs on), the injected reserve failure (LLAMA_DECODE_RELOC_FAIL=1) must be survived, a second context must be refused. The checks that need a
++      # real move (fail=2, a second context after the move) are skipped with a line that says so; the laptop run (tests/decode_reloc_live.sh with a GPU) and the PC run cover them.
++      - name: Granite test model (pinned by sha256, as windows-package)
++        run: |
++          curl -fsSL --retry 5 --retry-delay 10 -o granite.gguf "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
++          echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
++      # The moe-cache plugin (build.sh --portable needs only g++) is loaded in the second half of each live run: with it the experts of the host layers are in the plugin's
++      # MOE_CACHE buffer, which is not "host" memory, and they must still move (the PC run of 2026-11-05 moved nothing for that reason).
++      - name: moe-cache plugin for the live test (API 3, portable)
++        run: |
++          GGML_API=3 ./build.sh --portable
++          ls -la build/libggml-moe-cache.so
++      - name: Live test of patch 0070 (patched libllama + tiny MoE model, CPU only)
++        run: |
++          DECODE_RELOC_PLUGIN="$PWD/build/libggml-moe-cache.so" DECODE_RELOC_PLUGIN_CACHE_GIB=0.0005 LIVE_NGL=0 DECODE_RELOC_EXPECT=any DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
++            tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
++      # Critic round 4 #7: the CPU-only run above skips every check that needs a real move. lavapipe (software Vulkan, installed above) is a GPU device to ggml, so here
++      # the layers really move (DECODE_RELOC_EXPECT=moved: the run fails if they do not): the reserve failure after the move (fail=2) and a second context created after
++      # the move are exercised. The 2400-token run is left out (too slow on a software GPU); it runs in the CPU-only step above and on the laptop. Also the first run
++      # of the move code on Vulkan, without a real card: a device OOM is still untested (docs/DECODE_RELOC_DESIGN.md).
++      # granite (1B) takes more than 45 minutes on a software GPU, so this run uses a tiny random-weight MoE (gpt-oss, as identity.yml: same recipe, same pinned revision).
++      - name: Tiny MoE model for the lavapipe run (random gpt-oss weights, converted with this llama.cpp's own script)
++        run: |
++          python3 -m pip install -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
++          python3 -m pip install -q -e llama.cpp/gguf-py
++          R=tengomucho/tiny-random-gpt-oss; REV=2109d1ee033bb4191af6dd950fda542c9c351dc8; mkdir -p tiny-gptoss
++          for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json; do
++            curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
++          done
++          python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss-f16.gguf --outtype f16
++          ls -la tiny-gptoss-f16.gguf
++      - name: Live test of patch 0070 on lavapipe (software Vulkan) - layers move, fail=2, second context after the move
++        timeout-minutes: 25
++        run: |
++          # ggml-vulkan at the pin skips a CPU-type Vulkan device (lavapipe) unless it is listed by index
++          DECODE_RELOC_PLUGIN="$PWD/build/libggml-moe-cache.so" DECODE_RELOC_PLUGIN_CACHE_GIB=0.0005 GGML_VK_VISIBLE_DEVICES=0 DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
++            tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/tiny-gptoss-f16.gguf"
+       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+           name: llama-patched-linux-x64
+diff --git b/README.md a/README.md
+index 2b26e0d..6d0e9a3 100644
+--- b/README.md
++++ a/README.md
+@@ -259,7 +259,7 @@ Everything, with methods and caveats: [docs/RESULTS.md](docs/RESULTS.md) (Window
+ | GPU errors | with Vulkan a GPU error inside an expert block is caught and the block runs on the CPU (`MOE_CACHE_GPU_CATCH`, not yet seen with a real failure); on NVIDIA / CUDA a GPU error still ends the server |
+ | Context length of the speed numbers | the numbers on the card are real 65k conversations on Flash-Next Q2_0 and IQ3_XXS, two runs per arm, one PC, a v0.3.7 candidate kit (the clean check's CPU counter was empty in two checks, see the note on the card); Q2_0 against IQ3_XXS on one 64k prompt and the identity check are chain-log numbers without records yet (release notes); nothing is measured beyond 65k on v0.3.7 |
+ | Not tested for this release | `winget install` and `scoop install` (manifests exist but are not submitted); Hermes Desktop and OpenCode Desktop on Windows (click-through still open); a full model run from the final zip |
+-| Decode after long prompts | on the v0.3.5 kit decode after a 34k-64k prompt was slower than on v0.3.4 (the bigger prompt chunk leaves 2 fewer expert layers on the GPU, RESULTS 79); giving that memory back after the prompt (patch 0070) was tried on the PC on 2026-11-05 and lost, so it is archived (`archive/README.md`); a smaller prompt chunk keeps decode faster at the price of a slower prompt |
++| Decode after long prompts | on the v0.3.5 kit decode after a 34k-64k prompt was slower than on v0.3.4 (the bigger prompt chunk leaves 2 fewer expert layers on the GPU, RESULTS 79); patch 0070 is a prototype for giving that memory back, off by default, and a PC run on 2026-11-05 moved nothing |
+ | IQ3_XXS prompt speed varies | IQ3_XXS prompt speed deep in a 65k conversation varies from night to night on the test PC (145 tok/s at 48k-64k depth in the overnight run <!-- claim:v037-conv-iq3xxs -->, about 30 % more the day before on the v0.3.6 kit). A same-session check of the v0.3.6 and v0.3.7 kits on a 64k prompt gave the same speed, so it is not the plugin; treat IQ3_XXS numbers as good to about 25 %. Q2_0 was unchanged. Details: RESULTS 80 |
+ | Speed numbers | One PC, cold runs, mostly single series; yours depends on RAM, SSD and GPU. The Linux table is older (v0.2.3.5) |
+ 
+diff --git b/bin/moe_cache.py a/bin/moe_cache.py
+index 91a9366..2690b03 100755
+--- b/bin/moe_cache.py
++++ a/bin/moe_cache.py
+@@ -3041,6 +3041,22 @@ def multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncm
+     return ncmoe, extra
+ 
+ 
++def decode_reloc_stage(env, model, ctx, ub, ncmoe, extra, gcache):
++    """ENGINE-029, stage "decode relocation" (DECODE-630, PROTOTYPE, default off): layers back to the GPU after the prompt; needs llama.cpp patch 0070. env grows in place."""
++    if os.environ.get("MOE_CACHE_DECODE_RELOC"):       # DECODE-630 (PROTOTYPE, default off): layers back to the GPU after the prompt, needs llama.cpp patch 0070
++        try:
++            sys.path.insert(0, os.path.join(HERE, "planner")) if os.path.join(HERE, "planner") not in sys.path else None
++            import gguf_plan
++            from decode_reloc import launcher_env
++            r_env, r_note = launcher_env(os.environ, lay=gguf_plan.model_layout(model), ctx=ctx, ub=ub, ncmoe=ncmoe, extra=extra, gcache=gcache,
++                                         compute_mib=gguf_plan.compute_buffer_guess_mib)
++            env += r_env
++            if r_note:
++                say(r_note)
++        except Exception as e:
++            say(f"moe-cache: MOE_CACHE_DECODE_RELOC ignored: {e}", err=True)
++
++
+ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine):
+     """ENGINE-029, stage "command": CPU-only mode (--device none, -ngl 0), the llama-server command line with the placement and the pinning, --auto-fit for a dense model, and the line that says what the cache will manage. Returns (the command, the arguments for llama-server)."""
+     cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
+@@ -3176,6 +3192,7 @@ def _launch_plan(a, extra, argv, machine):
+         env += sycl_sysman_env(ls, listing)
+     extra = leave_room_stage(a, env, extra, pinargs, machine)
+     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
++    decode_reloc_stage(env, model, ctx, ub, ncmoe, extra, gcache)
+     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine)
+     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
+     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index 230c28d..052e698 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -137,6 +137,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_API_KEY` | Name of the variable that `moe_cache.py connect` writes into the config of Hermes and Qwen Code so the agent sends the server's API key. Set by `connect`; you do not set it yourself. | set by connect | set by the launcher |
+ | `MOE_CACHE_ASYNC_IN` | Upload the input rows of the GPU path asynchronously. `1` on, `0` off. Unset: on for AMD GPUs on Vulkan only (PC micro-benchmark 210 to 137 us per layer; no gain on NVIDIA or Intel). | unset (AMD on Vulkan only) | advanced |
+ | `MOE_CACHE_AVX512` | `1` turns on the AVX-512 kernels for IQ-quantised weights. They were written without an AVX-512 machine to test on, and even with the switch they run only after a self-check passes. | off | advanced |
++| `MOE_CACHE_DECODE_RELOC` | `1` turns on the DECODE-630 prototype: after the prompt, the experts of the last host layers move to the GPU memory the big compute buffer freed. Needs llama.cpp patch 0070 (`patches/llama.cpp/README.md`, `docs/DECODE_RELOC_DESIGN.md`); the launcher says so and ignores it when it cannot use it. | off | advanced |
+ | `MOE_CACHE_DIRECT` | `1` / `0` forces reading experts straight into place (when the alignment allows) on or off. Unset: on when the model does not fit in the memory limit. | unset (decided from the model size) | advanced |
+ | `MOE_CACHE_EXEC_CHUNK` | Weight rows per chunk of the expert pool. 128 decoded 3.9 % faster than 32 on the PC (every paired run); the arithmetic per row is unchanged. | 128 | advanced |
+ | `MOE_CACHE_EXEC_MAXCOL` | Largest batch (in tokens, 1 to 8) the expert executor takes; bigger batches go the other way. | built-in limit | advanced |
+diff --git b/patches/llama.cpp/README.md a/patches/llama.cpp/README.md
+index 353af0f..5e7e456 100644
+--- b/patches/llama.cpp/README.md
++++ a/patches/llama.cpp/README.md
+@@ -4,11 +4,11 @@ The Windows kit and the Linux `-ggml0.26` tarball bundle an official llama.cpp b
+ 
+ **Pinned base:** release `b12064`, commit `51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c` (ggml 0.28.0). Moved from b11966 (`ff0d396e3`) on 2026-11-03; patches 0004, 0005, 0020, 0030 and 0040 were checked against b12064 with `git apply --check` (all apply). 0022 (upstream #31266) and 0027 (upstream #30881 + #31418) are merged upstream and moved to `archive/`.
+ 
+-Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
++Patches: `0004-ple-prefetch-ahead`, `0005-tokenize-cache`, `0020-server-slot-save-async`, `0030-vulkan-global-queue-priority`, `0040-reserve-top-tensors`, `0070-decode-reloc` (sections below). Nothing is default-on: every patch is off unless its switch is set, until a paired run wins.
+ 
+ ## Rules
+ 
+-Patches that lost a paired run move to `archive/` at the top of the repo, with how to restore them (0070-decode-reloc, DECODE-630: `archive/llama.cpp/`).
++Patches that lost a paired run move to `archive/` at the top of the repo, with how to restore them.
+ 
+ 1. Small numbered patches: `0001-short-name.patch`, `0002-...`, applied in name order. One idea per patch.
+ 2. Each patch has its own runtime switch (an environment variable or flag), **off by default**. A patch only becomes default-on after a paired run (with and without it) shows a win.
+@@ -65,3 +65,13 @@ It checks the base commit, runs `git apply --check` on each patch, then applies
+ **Soundness:** the key is the whole text (compared byte for byte), both flags, the vocab pointer plus a signature (vocab size, type, the text of 16 tokens spread over the vocab, because a reloaded model can reuse an address). Nothing is reused across different texts: tokenizing a prefix and a suffix separately does not give the tokens of the whole text (merges across the boundary), so a prefix cache is not sound and is not done. Chat templates are not cached: only the tokenizing of their output is. Risk: two vocabs with the same size, type and 16 sampled token texts at the same address would collide (only after unloading and loading a different model in the same process, no case known); a few MB of memory per cached text (text copy + tokens).
+ 
+ **Honest scope:** it only helps when the exact same long text arrives again (retry, regenerate, the same benchmark prompt, n choices of one request). An agent loop that appends to its history changes the text every request and never hits. The prompt-prefix KV reuse in the server is separate and unchanged.
++
++**Compiled and run (Linux, laptop RTX 4060 8 GB, CUDA, b12064 + the other five patches apply):** `tests/decode_reloc_live.sh` (a 71 MB test model `qwen4exp-moe.gguf`, experts of layers 0..2 in plain host memory, prompt chunk 256, decode chunk 32, switch after 8 small batches): 300-token prompt, 30 decode tokens, slot save, 20 tokens, clear and restore, 20 tokens, a 100-token batch, 10 tokens. Seven checks pass: no patch log line without the switch; "3 layers of experts moved to the GPU" (6 MiB, 7.2 ms); "back to the prompt layout" (0.4 ms) on the 100-token batch; the token ids of the whole run are byte-identical with the switch on and off; restoring the saved slot in the decode phase reproduces the next 20 tokens; with a second context on the same model (MTP / draft stand-in) the move is refused and the tokens are unchanged. **Not run:** a big model, the plugin, a real `llama-server` (MTP, checkpoints, several slots), Vulkan, Windows; the 1.3 GiB copy time is unknown. The test model's experts sit in plain `CPU` buffers there; on a CUDA build `--n-cpu-moe` puts them in `CUDA_Host` buffers, which the patch also treats as host memory (first run, 3 layers moved).
++
++**Tests added 2026-11-04 (Critic section 9/10; `tests/decode_reloc_live.sh`, laptop RTX 4060, same tiny model):** (1) `LLAMA_DECODE_RELOC_FAIL=1|2` is a test-only switch that makes the first / the second reserve of the move throw: the run goes on, the experts are put back (log line `expert tensors back in their original (host) buffers`), the log says why, the switch turns itself off, the tokens equal the run with the switch off. (2) A second context created after the move: this found a crash (CUDA illegal memory access): the first context moved back and freed the GPU copy, the second kept a graph reserved while the experts were on the GPU. Fixed with a per-model layout epoch: every move or restore raises it and every context whose scheduler is older drops its graphs before its next batch. (3) Long greedy run, 4 prompts (50 / 700 / 300 / 1500 tokens, the 700 and 1500 arrive in the decode phase and move the layers back), 2400 generated tokens: switch off and on, same ids and same text. **Vulkan at b12064:** a device allocation that fails in the reserve (compute buffer or the patch's own buffer) comes back as a null buffer and `sched_reserve` throws, which the patch catches. The lazy `ggml_vk_preallocate_buffers` at the first compute is different: it rethrows `vk::SystemError`, `llama_decode` has no catch, so a device OOM there ends the process. It only grows buffers that the bigger prompt graph already sized, so it is unlikely but not excluded; the PC test's rule is: the server process must not exit after the line `layers of experts moved`.
++
++**PC run 2026-11-05, nothing moved (fixed):** with the moe-cache plugin the host experts are in the plugin's `MOE_CACHE` buffer, which is not "host" memory, so every layer was skipped, and the log line printed `free 0 MiB` because the memory was never queried. The patch now accepts that buffer (copy through `ggml_backend_tensor_get`, which loads evicted experts first), reads the free memory again for up to 300 ms if it is too low, and its "no layer fits" line gives the real figure or "not queried" plus the skipped layers by reason. `LLAMA_DECODE_RELOC_FAKE_FREE_MIB` (test only) pretends the device has that much free memory. Details: `docs/DECODE_RELOC_DESIGN.md`.
++
++**Shrink only (`LLAMA_DECODE_RELOC_MAX_LAYERS=0`):** drop the big compute buffer after the prompt and reserve at `LLAMA_DECODE_RELOC_UB`, move nothing; a big prompt chunk puts the big buffer back. Before, 0 meant off. See `docs/DECODE_RELOC_DESIGN.md`.
++
++**Test (about 70 minutes, Windows PC):** the A B B A table in `docs/DECODE_RELOC_DESIGN.md`.
+diff --git b/planner/decode_reloc.py a/planner/decode_reloc.py
+new file mode 100644
+index 0000000..26cc799
+--- /dev/null
++++ a/planner/decode_reloc.py
+@@ -0,0 +1,72 @@
++"""Give GPU layers back after the prompt (ledger DECODE-630): the launcher side.
++
++Idea: size the card for the big prompt chunk (-ub 2048), then, once the prompt is read and the server only decodes, shrink the chunk to
++-ub 512 and move the experts of a few more layers onto the GPU in the memory the big compute buffer held. The work is done inside llama.cpp
++by patches/llama.cpp/0070-decode-reloc.patch (env LLAMA_DECODE_RELOC, off unless set). This file only decides, in plain numbers, whether to
++switch it on and what to tell it. Switch: MOE_CACHE_DECODE_RELOC=1 (default off). Design: docs/DECODE_RELOC_DESIGN.md.
++
++Pure functions, no GPU and no GGUF needed for `size_extra` and `launcher_env` with `lay` and the buffer sizes passed in (tests/decode_reloc_test.py).
++"""
++import os
++
++SWITCH = "MOE_CACHE_DECODE_RELOC"
++DEFAULT_DECODE_UB = 512
++HARD_MAX_LAYERS = 8
++KEEP_MIB = 768            # VRAM that stays free after the move (the plugin's block buffer is held, other programs, growth)
++_MiB = 1048576
++
++
++def enabled(environ=None):
++    v = (environ if environ is not None else os.environ).get(SWITCH, "")
++    return v.strip().lower() in ("1", "on", "true", "yes")
++
++
++def block_mib(layer_bytes, ub):
++    """The long-prompt block room the planner keeps for a micro-batch (gguf_plan.tune: block_for, table rule)."""
++    return ((1.6 if ub > 1024 else 1.35) * layer_bytes + (160 + 256) * _MiB) / _MiB if layer_bytes else 0.0
++
++
++def size_extra(layer_bytes, cpu_layers, compute_prompt_mib, compute_decode_mib, ub_prompt, ub_decode):
++    """How much room the switch to the small chunk frees and how many whole layers that is.
++    Returns dict(freed_mib, layer_mib, expected_extra, max_layers). expected_extra rounds down and counts no leftover (conservative);
++    max_layers (what the patch may try) is one more, because the patch looks at the real free memory and stops when a layer does not fit."""
++    if not layer_bytes or cpu_layers <= 0:
++        return {"freed_mib": 0.0, "layer_mib": 0.0, "expected_extra": 0, "max_layers": 0}
++    freed = max(0.0, compute_prompt_mib - compute_decode_mib) + max(0.0, block_mib(layer_bytes, ub_prompt) - block_mib(layer_bytes, ub_decode))
++    layer_mib = layer_bytes / _MiB
++    extra = min(cpu_layers, int(freed // layer_mib))
++    return {"freed_mib": freed, "layer_mib": layer_mib, "expected_extra": extra,
++            "max_layers": min(cpu_layers, HARD_MAX_LAYERS, extra + 1) if extra > 0 else 0}
++
++
++_NO_GO = ("--device", "-dev", "--tensor-split", "-ts", "--override-tensor", "-ot", "--spec-type", "--draft-mtp", "--model-draft", "-md")
++
++
++def launcher_env(environ, *, lay, ctx, ub, ncmoe, extra, gcache, compute_mib):
++    """-> (env pairs for llama-server, one line to show or None).
++    `lay` is gguf_plan.model_layout(); `compute_mib(ctx, ub)` gives the planner's GPU compute buffer in MiB.
++    Nothing is added unless MOE_CACHE_DECODE_RELOC is set; a reason is returned when it is set and cannot be used."""
++    if not enabled(environ):
++        return [], None
++    no = lambda why: ([], f"moe-cache: {SWITCH} ignored: {why}")
++    if gcache != "off":
++        return no("a GPU expert cache is in use (static layers only)")
++    if not str(ncmoe).isdigit() or int(ncmoe) <= 0 or int(ncmoe) >= (lay.get("n_layers") or 0):
++        return no("no mix of CPU and GPU expert layers to rebalance (--n-cpu-moe " + str(ncmoe) + ")")
++    bad = [x for x in extra if x in _NO_GO or "mtp" in str(x).lower() or str(x).startswith(("--device=", "--override-tensor=", "--tensor-split="))]
++    if bad:
++        return no(f"not supported with {bad[0]} (one GPU, no MTP / draft model, no -ot)")
++    try:
++        ubd = int(environ.get(SWITCH + "_UB") or DEFAULT_DECODE_UB)
++        ubp = int(ub)
++    except (TypeError, ValueError):
++        return no("the micro-batch is not a number")
++    if ubd >= ubp:
++        return no(f"the prompt chunk {ubp} is not larger than the decode chunk {ubd}")
++    s = size_extra(lay.get("expert_bytes_per_layer") or 0, int(ncmoe), compute_mib(ctx, ubp) or 0, compute_mib(ctx, ubd) or 0, ubp, ubd)
++    if s["max_layers"] <= 0:
++        return no(f"going from -ub {ubp} to {ubd} frees {s['freed_mib']:.0f} MiB, less than one layer ({s['layer_mib']:.0f} MiB)")
++    pairs = [("LLAMA_DECODE_RELOC", "1"), ("LLAMA_DECODE_RELOC_UB", str(ubd)), ("LLAMA_DECODE_RELOC_MAX_LAYERS", str(s["max_layers"])),
++             ("LLAMA_DECODE_RELOC_KEEP_MIB", str(int(environ.get(SWITCH + "_KEEP_MIB") or KEEP_MIB)))]
++    return pairs, (f"moe-cache: {SWITCH}=1: after the prompt -ub {ubp} becomes {ubd} and up to {s['max_layers']} more layers of experts move to the GPU "
++                   f"(planner estimate {s['expected_extra']} from {s['freed_mib']:.0f} MiB freed; needs the patched llama.cpp, patch 0070; PROTOTYPE)")
+diff --git b/tests/decode_reloc_live.cpp a/tests/decode_reloc_live.cpp
+new file mode 100644
+index 0000000..6fe8505
+--- /dev/null
++++ a/tests/decode_reloc_live.cpp
+@@ -0,0 +1,151 @@
++// Tiny-model check for llama.cpp patch 0070 (LLAMA_DECODE_RELOC, DECODE-630). Not part of tools/run_quick_tests.sh: it needs a patched llama.cpp
++// build (CUDA) and a small MoE GGUF. tests/decode_reloc_live.sh builds and runs it.
++//   decode_reloc_live MODEL.gguf [twoctx|late2|long]
++// Prints token ids only (greedy), so two runs (LLAMA_DECODE_RELOC unset / =1) can be compared with diff:
++//   phase 1: prompt of 300 tokens in chunks of 256, then 30 single-token steps (the decode phase starts after LLAMA_DECODE_RELOC_AFTER of them)
++//   phase 2: save the sequence state (warm-session slot save), 20 more tokens (G2), clear, restore, 20 tokens again (G3); G3 must equal G2
++//   phase 3: a 100-token batch (more than the decode chunk: the layers move back), then 10 tokens
++// "twoctx": a second context on the same model is created first (MTP / draft stand-in); the patch must refuse, the tokens must not change.
++// "late2":  the second context is created AFTER the first one moved the layers (prompt, 30 steps), runs its own prompt and 30 steps, then the first
++//           context goes on for 20 steps: its reloc_step sees two live contexts and moves back; no crash, tokens equal to the run with the switch off.
++// "long":   greedy identity, 4 prompts (50 / 700 / 300 / 1500 tokens, one batch each) x 600 generated tokens = 2400 tokens, memory cleared between
++//           prompts, default LLAMA_DECODE_RELOC_UB (512) and AFTER (64): the 700 and 1500 token batches arrive in the decode phase (more than 512:
++//           the layers move back). Prints the token ids and the text (non-printable bytes escaped) per prompt.
++// LLAMA_DECODE_RELOC_FAIL=1|2 (test only, in the patch) makes the first / second reserve of the move throw: default mode, tokens must equal the off run.
++#include "llama.h"
++#include "ggml-backend.h"
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <vector>
++#include <string>
++
++static int argmax(const float * l, int n) { int b = 0; for (int i = 1; i < n; i++) if (l[i] > l[b]) b = i; return b; }
++
++static int step(llama_context * ctx, std::vector<llama_token> & t, int n_vocab, std::vector<int> & out) {
++    llama_batch b = llama_batch_get_one(t.data(), (int32_t) t.size());
++    if (llama_decode(ctx, b) != 0) { fprintf(stderr, "decode failed\n"); return -1; }
++    int id = argmax(llama_get_logits_ith(ctx, -1), n_vocab);
++    out.push_back(id);
++    return id;
++}
++
++static void dump(const char * n, const std::vector<int> & v) { printf("%s:", n); for (int x : v) printf(" %d", x); printf("\n"); }
++
++int main(int argc, char ** argv) {
++    if (argc < 2) { fprintf(stderr, "usage: %s MODEL [twoctx|late2|long]\n", argv[0]); return 2; }
++    const bool twoctx = argc > 2 && !strcmp(argv[2], "twoctx");
++    const bool late2  = argc > 2 && !strcmp(argv[2], "late2");
++    const bool lng    = argc > 2 && !strcmp(argv[2], "long");
++    ggml_backend_load_all();
++    llama_backend_init();
++    llama_model_params mp = llama_model_default_params();
++    mp.n_gpu_layers = getenv("LIVE_NGL") ? atoi(getenv("LIVE_NGL")) : 99;     // LIVE_NGL=0: CPU only (CI without a GPU: the patch must stay inert)
++    // the experts of layers 0..2 stay in host memory (plain CPU buffer, as --n-cpu-moe 3 does)
++    llama_model_tensor_buft_override ov[2] = { { "blk\\.[0-2]\\.ffn_.*_exps", ggml_backend_cpu_buffer_type() }, { nullptr, nullptr } };
++    mp.tensor_buft_overrides = ov;
++    llama_model * model = llama_model_load_from_file(argv[1], mp);
++    if (!model) { fprintf(stderr, "load failed\n"); return 1; }
++    const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
++    llama_context_params cp = llama_context_default_params();
++    cp.n_ctx = 2048; cp.n_batch = 256; cp.n_ubatch = 256; cp.n_seq_max = 1;
++    if (lng) { cp.n_ctx = 4096; cp.n_batch = 2048; cp.n_ubatch = 2048; }
++    llama_context * ctx2 = twoctx ? llama_init_from_model(model, cp) : nullptr;
++    llama_context * ctx = llama_init_from_model(model, cp);
++    if (!ctx) { fprintf(stderr, "context failed\n"); return 1; }
++
++    auto tok = [&](int i) { return (llama_token) (5 + (i * 7) % 50 % n_vocab); };
++    if (lng) {
++        const llama_vocab * vocab = llama_model_get_vocab(model);
++        const int lens[4] = { 50, 700, 300, 1500 };
++        const int n_gen = 600;
++        for (int k = 0; k < 4; k++) {
++            llama_memory_clear(llama_get_memory(ctx), true);
++            const int seed = 3 + 4 * k;
++            std::vector<llama_token> t(lens[k]);
++            for (int i = 0; i < lens[k]; i++) t[i] = (llama_token) ((5 + (i * seed + (i * i) % 97) % 400) % n_vocab);
++            std::vector<int> g, sink;
++            int last = step(ctx, t, n_vocab, sink);
++            if (last < 0) return 1;
++            g.push_back(last);
++            for (int i = 1; i < n_gen; i++) { std::vector<llama_token> u = { (llama_token) last }; last = step(ctx, u, n_vocab, g); if (last < 0) return 1; }
++            char name[16]; snprintf(name, sizeof name, "P%d", k);
++            dump(name, g);
++            printf("T%d: ", k);
++            for (int id : g) {
++                char buf[256]; int n = llama_token_to_piece(vocab, id, buf, sizeof buf, 0, true);
++                for (int j = 0; j < n; j++) { unsigned char c = buf[j]; if (c >= 32 && c < 127 && c != 92) putchar(c); else printf("\\x%02x", c); }
++            }
++            printf("\n");
++        }
++        llama_free(ctx);
++        llama_model_free(model);
++        return 0;
++    }
++    if (late2) {
++        std::vector<int> a1, a2, a3, a4, sk;
++        int p = 0, l = -1;
++        while (p < 300) {
++            int n = std::min(256, 300 - p);
++            std::vector<llama_token> t(n);
++            for (int i = 0; i < n; i++) t[i] = tok(p + i);
++            l = step(ctx, t, n_vocab, sk);
++            if (l < 0) return 1;
++            p += n;
++        }
++        for (int i = 0; i < 30; i++) { std::vector<llama_token> t = { (llama_token) l }; l = step(ctx, t, n_vocab, a1); if (l < 0) return 1; }
++        llama_context * c2 = llama_init_from_model(model, cp);   // the layers of ctx are moved now
++        if (!c2) { fprintf(stderr, "second context failed\n"); return 1; }
++        int l2 = -1; p = 0;
++        while (p < 300) {
++            int n = std::min(256, 300 - p);
++            std::vector<llama_token> t(n);
++            for (int i = 0; i < n; i++) t[i] = tok(p + i);
++            l2 = step(c2, t, n_vocab, sk);
++            if (l2 < 0) return 1;
++            p += n;
++        }
++        for (int i = 0; i < 30; i++) { std::vector<llama_token> t = { (llama_token) l2 }; l2 = step(c2, t, n_vocab, a2); if (l2 < 0) return 1; }
++        for (int i = 0; i < 20; i++) { std::vector<llama_token> t = { (llama_token) l }; l = step(ctx, t, n_vocab, a3); if (l < 0) return 1; }
++        for (int i = 0; i < 10; i++) { std::vector<llama_token> t = { (llama_token) l2 }; l2 = step(c2, t, n_vocab, a4); if (l2 < 0) return 1; }
++        dump("A1", a1); dump("A2", a2); dump("A3", a3); dump("A4", a4);
++        printf("ctx2_matches_ctx1: %s\n", a1 == a2 ? "yes" : "NO");
++        llama_free(c2);
++        llama_free(ctx);
++        llama_model_free(model);
++        return 0;
++    }
++    std::vector<int> g1, g2, g3, g4, sink;
++    int pos = 0, last = -1;
++    while (pos < 300) {                                       // phase 1: prompt chunks
++        int n = std::min(256, 300 - pos);
++        std::vector<llama_token> t(n);
++        for (int i = 0; i < n; i++) t[i] = tok(pos + i);
++        last = step(ctx, t, n_vocab, sink);
++        pos += n;
++    }
++    for (int i = 0; i < 30; i++) { std::vector<llama_token> t = { (llama_token) last }; last = step(ctx, t, n_vocab, g1); }
++    // phase 2: slot save / restore in the decode phase
++    std::vector<uint8_t> state(llama_state_seq_get_size(ctx, 0));
++    llama_state_seq_get_data(ctx, state.data(), state.size(), 0);
++    const int last_saved = last;
++    for (int i = 0; i < 20; i++) { std::vector<llama_token> t = { (llama_token) last }; last = step(ctx, t, n_vocab, g2); }
++    llama_memory_clear(llama_get_memory(ctx), true);
++    llama_state_seq_set_data(ctx, state.data(), state.size(), 0);
++    last = last_saved;
++    for (int i = 0; i < 20; i++) { std::vector<llama_token> t = { (llama_token) last }; last = step(ctx, t, n_vocab, g3); }
++    // phase 3: a new prompt chunk bigger than the decode chunk, then decode again
++    {
++        std::vector<llama_token> t(100);
++        for (int i = 0; i < 100; i++) t[i] = tok(1000 + i);
++        last = step(ctx, t, n_vocab, sink);
++    }
++    for (int i = 0; i < 10; i++) { std::vector<llama_token> t = { (llama_token) last }; last = step(ctx, t, n_vocab, g4); }
++
++    dump("G1", g1); dump("G2", g2); dump("G3", g3); dump("G4", g4);
++    printf("restore_matches: %s\n", g2 == g3 ? "yes" : "NO");
++    llama_free(ctx);
++    if (ctx2) llama_free(ctx2);
++    llama_model_free(model);
++    return g2 == g3 ? 0 : 3;
++}
+diff --git b/tests/decode_reloc_live.sh a/tests/decode_reloc_live.sh
+new file mode 100755
+index 0000000..1c18eac
+--- /dev/null
++++ a/tests/decode_reloc_live.sh
+@@ -0,0 +1,115 @@
++#!/bin/bash
++# Tiny-model check of llama.cpp patch 0070 (DECODE-630); needs a CUDA build of the patched llama.cpp and a small MoE GGUF. Not in the quick set.
++#   tests/decode_reloc_live.sh LLAMA_CPP_DIR BUILD_DIR MODEL.gguf
++# Env: DECODE_RELOC_EXPECT=moved (default) the switch-on run must really move layers (a machine with a GPU, e.g. the laptop);
++#      DECODE_RELOC_EXPECT=any   CI without a real GPU (llama_patched.yml): checks that need a move are skipped, with a line saying so, when none happened;
++#      DECODE_RELOC_SKIP_LONG=1  leave out the 2400-token run (a software GPU such as lavapipe is too slow for it);
++#      DECODE_RELOC_PLUGIN=LIB   also run with the moe-cache plugin loaded (GGML_BACKEND_PATH) and a 2 MB cache so experts are evicted: the experts of the host layers
++#                                (DECODE_RELOC_PLUGIN_CACHE_GIB, default 0.002) are then in the plugin's MOE_CACHE buffer (not "host" memory) and must still move, through get_tensor, with the same tokens;
++#      DECODE_RELOC_EXE_DIR=DIR  where the test program is put (default: a temporary folder); a build with dynamic backends (GGML_BACKEND_DL) finds them next to the program.
++# Runs tests/decode_reloc_live.cpp with the switch unset and set (and with a second context) and compares the token ids. Also:
++#   reserve failure: LLAMA_DECODE_RELOC_FAIL=1 (first reserve throws) and =2 (reserve after the move throws): the run goes on, the layers are back, tokens equal
++#   late second context: created after the move; the first context moves back at its next batch; no crash, tokens equal
++#   long greedy identity: 2400 tokens, 4 prompts (700 and 1500 tokens arrive in the decode phase), off vs on; identical yes/no and the first differing token are reported (a difference is not a failure)
++set -e
++export LC_ALL=C
++SRC="${1:?llama.cpp dir}"; BLD="${2:?build dir}"; MODEL="${3:?model}"
++HERE="$(cd "$(dirname "$0")" && pwd)"
++OUT="$(mktemp -d)"; EXE="${DECODE_RELOC_EXE_DIR:-$OUT}"; EXPECT="${DECODE_RELOC_EXPECT:-moved}"
++g++ -std=c++17 -O1 -Wall -I"$SRC/include" -I"$SRC/ggml/include" "$HERE/decode_reloc_live.cpp" -L"$BLD/bin" -lllama -lggml -lggml-base -Wl,-rpath,"$BLD/bin" -o "$EXE/live"
++export LLAMA_DECODE_RELOC_UB=32 LLAMA_DECODE_RELOC_AFTER=8 LLAMA_DECODE_RELOC_KEEP_MIB=200
++env -u LLAMA_DECODE_RELOC "$EXE/live" "$MODEL" > "$OUT/off.txt" 2> "$OUT/off.err"
++LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" > "$OUT/on.txt" 2> "$OUT/on.err"
++LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" twoctx > "$OUT/two.txt" 2> "$OUT/two.err"
++# a run that may fail: keep its exit code in $OUT/NAME.rc, do not stop the script
++run() { local n="$1"; shift; set +e; "$@" > "$OUT/$n.txt" 2> "$OUT/$n.err"; echo $? > "$OUT/$n.rc"; set -e; }
++run f1 env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_FAIL=1 "$EXE/live" "$MODEL"
++run f2 env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_FAIL=2 "$EXE/live" "$MODEL"
++run l_off env -u LLAMA_DECODE_RELOC "$EXE/live" "$MODEL" late2
++run l_on env LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" late2
++[ -n "${DECODE_RELOC_SKIP_LONG:-}" ] || run g_off env -u LLAMA_DECODE_RELOC -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB "$EXE/live" "$MODEL" long
++[ -n "${DECODE_RELOC_SKIP_LONG:-}" ] || run g_on env -u LLAMA_DECODE_RELOC_UB -u LLAMA_DECODE_RELOC_AFTER -u LLAMA_DECODE_RELOC_KEEP_MIB LLAMA_DECODE_RELOC=1 "$EXE/live" "$MODEL" long
++# diagnostics: the memory figure is the real one (or says it was not queried); LLAMA_DECODE_RELOC_FAKE_FREE_MIB (test only) pretends the device has little free memory
++run f3 env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_FAKE_FREE_MIB=50 "$EXE/live" "$MODEL"
++if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
++  PENV=(GGML_BACKEND_PATH="$DECODE_RELOC_PLUGIN" MOE_CACHE_GGUF="$MODEL" MOE_CACHE_SIZE_GIB="${DECODE_RELOC_PLUGIN_CACHE_GIB:-0.002}" MOE_CACHE_STATS=1)
++  run p_off env -u LLAMA_DECODE_RELOC "${PENV[@]}" "$EXE/live" "$MODEL"
++  run p_on env LLAMA_DECODE_RELOC=1 "${PENV[@]}" "$EXE/live" "$MODEL"
++  run pl_off env -u LLAMA_DECODE_RELOC "${PENV[@]}" "$EXE/live" "$MODEL" late2
++  run pl_on env LLAMA_DECODE_RELOC=1 "${PENV[@]}" "$EXE/live" "$MODEL" late2
++fi
++# shrink only (LLAMA_DECODE_RELOC_MAX_LAYERS=0): the small micro-batch during decode, nothing moves, the big one comes back for a big chunk
++run sh_on env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_MAX_LAYERS=0 "$EXE/live" "$MODEL"
++[ -z "${DECODE_RELOC_PLUGIN:-}" ] || run shp_on env LLAMA_DECODE_RELOC=1 LLAMA_DECODE_RELOC_MAX_LAYERS=0 "${PENV[@]}" "$EXE/live" "$MODEL"
++fail=0
++MOVED=0; grep -q 'layers of experts moved to the GPU' "$OUT/on.err" && MOVED=1
++chkm() { if [ "$MOVED" = 1 ]; then chk "$@"; else echo "skip $1 (no layer could move on this machine: $(grep -h 'no layer fits\|not on a GPU' "$OUT/on.err" | head -1 | cut -c1-120))"; fi; }
++chk() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
++chk "switch unset: no patch log line" "! grep -q reloc_ '$OUT/off.err'"
++[ "$EXPECT" != moved ] || chk "EXPECT=moved: the switch-on run moved layers" "[ $MOVED = 1 ]"
++chkm "switch on: layers moved" "grep -q 'layers of experts moved to the GPU' '$OUT/on.err'"
++chkm "switch on: moved back for the big chunk" "grep -q 'back to the prompt layout' '$OUT/on.err'"
++chk "tokens equal with the switch on and off (prompt, decode, restore, move back, decode)" "cmp -s '$OUT/off.txt' '$OUT/on.txt'"
++chk "slot save/restore in the decode phase reproduces the tokens (on)" "grep -q 'restore_matches: yes' '$OUT/on.txt'"
++chk "second context: move refused" "grep -q 'another context' '$OUT/two.err' && ! grep -q 'layers of experts moved' '$OUT/two.err'"
++chk "second context: tokens unchanged" "cmp -s '$OUT/off.txt' '$OUT/two.txt'"
++# shrink only: works on any machine (no move needed)
++shrink_ok() { awk '/shrink only/ { for (i = 1; i <= NF; i++) if ($i == "buffers") { a = $(i+1); b = $(i+4) } } END { exit !(a > 0 && b + 0 < a + 0) }' "$1"; }
++chk "shrink only (MAX_LAYERS=0): the small micro-batch is reserved and the compute buffers get smaller, nothing moves, moved back for the big chunk" "[ \"\$(cat $OUT/sh_on.rc)\" = 0 ] && grep -q 'shrink only (no layer moves)' '$OUT/sh_on.err' && ! grep -q 'layers of experts moved' '$OUT/sh_on.err' && grep -q 'back to the prompt layout' '$OUT/sh_on.err' && cmp -s '$OUT/off.txt' '$OUT/sh_on.txt'"
++chk "shrink only: the logged compute buffers shrank (INFO line: A MiB -> B MiB with B < A)" "$(declare -f shrink_ok); shrink_ok '$OUT/sh_on.err'"
++if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
++  chk "shrink only with the plugin loaded (experts evicted): exit 0, tokens equal to the switch off" "[ \"\$(cat $OUT/shp_on.rc)\" = 0 ] && grep -q 'shrink only (no layer moves)' '$OUT/shp_on.err' && cmp -s '$OUT/p_off.txt' '$OUT/shp_on.txt'"
++fi
++# diagnostics
++if [ "$MOVED" = 1 ]; then
++  chk "no layer fits: the log names the memory figure and the reasons (fake free memory 50 MiB)" "[ \"\$(cat $OUT/f3.rc)\" = 0 ] && grep -q 'no layer fits (50 MiB free of 50 MiB' '$OUT/f3.err' && grep -q 'too big for the free memory' '$OUT/f3.err' && cmp -s '$OUT/off.txt' '$OUT/f3.txt'"
++else
++  chk "no layer fits (no GPU here): the log says the memory was not queried and counts the layers not on a GPU" "[ \"\$(cat $OUT/f3.rc)\" = 0 ] && grep -q 'device memory not queried' '$OUT/f3.err' && grep -Eq '[1-9][0-9]* not on a GPU' '$OUT/f3.err' && cmp -s '$OUT/off.txt' '$OUT/f3.txt'"
++fi
++if [ -n "${DECODE_RELOC_PLUGIN:-}" ]; then
++  chk "plugin: the experts are in the MOE_CACHE buffer and the cache evicted (2 MB cache)" "grep -q 'buffer type overridden to MOE_CACHE' '$OUT/p_on.err' && grep -Eq 'evictions=[1-9]' '$OUT/p_on.err'"
++  chk "plugin: exit 0, tokens equal with the switch on and off (experts evicted while the layers move)" "[ \"\$(cat $OUT/p_on.rc)\" = 0 ] && [ \"\$(cat $OUT/p_off.rc)\" = 0 ] && cmp -s '$OUT/p_off.txt' '$OUT/p_on.txt'"
++  chkm "plugin: layers moved, read through the moe-cache buffer" "grep -q 'of them read through the moe-cache buffer' '$OUT/p_on.err' && ! grep -q 'of them read through the moe-cache buffer' '$OUT/p_off.err'"
++  chk "plugin, second context after the move: no crash, tokens equal to the switch off" "[ \"\$(cat $OUT/pl_on.rc)\" = 0 ] && cmp -s '$OUT/pl_off.txt' '$OUT/pl_on.txt'"
++fi
++# test 1: reserve failure
++chk "fail=1: first reserve throws, the log says why" "grep -q 'reserve with ubatch 32 failed (LLAMA_DECODE_RELOC_FAIL=1' '$OUT/f1.err' && ! grep -q 'layers of experts moved' '$OUT/f1.err'"
++chk "fail=1: process finished (exit 0), tokens equal to the switch off" "[ \"\$(cat $OUT/f1.rc)\" = 0 ] && cmp -s '$OUT/off.txt' '$OUT/f1.txt'"
++chkm "fail=2: reserve after the move throws, moved back, the log says why" "! grep -q 'layers of experts moved' '$OUT/f2.err' && grep -q 'reserve after the move failed (LLAMA_DECODE_RELOC_FAIL=2' '$OUT/f2.err' && grep -q 'expert tensors back in their original' '$OUT/f2.err'"
++chk "fail=2: process finished (exit 0), tokens equal to the switch off" "[ \"\$(cat $OUT/f2.rc)\" = 0 ] && cmp -s '$OUT/off.txt' '$OUT/f2.txt'"
++chk "fail=1: no second try (one failure line)" "[ \"\$(grep -c 'failed (LLAMA_DECODE_RELOC_FAIL' '$OUT/f1.err')\" = 1 ]"
++chkm "fail=2: no second try (one failure line)" "[ \"\$(grep -c 'failed (LLAMA_DECODE_RELOC_FAIL' '$OUT/f2.err')\" = 1 ]"
++# test 2: second context created after the move
++chkm "late 2nd context: layers were moved first, then the first context moved back (log)" "grep -q 'layers of experts moved' '$OUT/l_on.err' && grep -q 'another context was created, moving back' '$OUT/l_on.err'"
++chk "late 2nd context: no crash (exit 0) with the switch on and off" "[ \"\$(cat $OUT/l_on.rc)\" = 0 ] && [ \"\$(cat $OUT/l_off.rc)\" = 0 ]"
++chk "late 2nd context: tokens of both contexts equal to the switch off" "cmp -s '$OUT/l_off.txt' '$OUT/l_on.txt'"
++# test 3: long greedy identity
++if [ -n "${DECODE_RELOC_SKIP_LONG:-}" ]; then echo "skip long greedy identity (DECODE_RELOC_SKIP_LONG)"; else
++ntok=$(grep -E '^P[0-9]:' "$OUT/g_on.txt" | wc -w); ntok=$((ntok - 4))
++chk "long: at least 2000 tokens generated ($ntok), exit 0" "[ $ntok -ge 2000 ] && [ \"\$(cat $OUT/g_on.rc)\" = 0 ] && [ \"\$(cat $OUT/g_off.rc)\" = 0 ]"
++chkm "long: layers moved at least twice and moved back at least twice (700 and 1500 token batches in the decode phase)" "[ \$(grep -c 'layers of experts moved' '$OUT/g_on.err') -ge 2 ] && [ \$(grep -c 'back to the prompt layout' '$OUT/g_on.err') -ge 2 ]"
++if cmp -s "$OUT/g_off.txt" "$OUT/g_on.txt"; then echo "ok   long: text and token ids byte-identical, switch off vs on"
++else
++  # owner's rule: semantic similarity, not byte identity (CPU -> GPU expert matmuls may change floats). A difference is reported, not a failure; a crash,
++  # garbage or a wrong restore is (the checks above and the fail=1/2, late2 checks).
++  echo "DIFF long: not byte-identical, switch off vs on (reported, not a failure; compare the text below by eye)"
++  python3 -I - "$OUT/g_off.txt" "$OUT/g_on.txt" <<'PY'
++import sys
++a = open(sys.argv[1]).read().splitlines(); b = open(sys.argv[2]).read().splitlines()
++for la, lb in zip(a, b):
++    if la != lb:
++        name = la.split(":")[0]
++        if name.startswith("T"):
++            print("  first differing text char in", name, "at index", next((i for i, (x, y) in enumerate(zip(la, lb)) if x != y), min(len(la), len(lb))))
++        else:
++            ta, tb = la.split()[1:], lb.split()[1:]
++            i = next((i for i, (x, y) in enumerate(zip(ta, tb)) if x != y), min(len(ta), len(tb)))
++            print("  first differing token in", name, "at generated index", i, ": off", ta[i:i+1], "on", tb[i:i+1], "; tokens differing in this prompt:", sum(x != y for x, y in zip(ta, tb)), "of", len(ta))
++        break
++else:
++    print("  line counts differ:", len(a), len(b))
++PY
++fi
++fi
++echo "logs in $OUT"
++exit $fail
+diff --git b/tests/decode_reloc_test.py a/tests/decode_reloc_test.py
+new file mode 100644
+index 0000000..4f806c0
+--- /dev/null
++++ a/tests/decode_reloc_test.py
+@@ -0,0 +1,89 @@
++#!/usr/bin/env python3
++"""DECODE-630 (layers back to the GPU after the prompt), model-free: the planner side (planner/decode_reloc.py) and the link to the llama.cpp patch.
++   python3 tests/decode_reloc_test.py
++Checks: default off; the 64k Flash-Next numbers give the 2 layers the PC measured; refusals say why; the env names the launcher writes are the ones
++patch 0070 reads; the patch is off unless LLAMA_DECODE_RELOC is set."""
++import glob, os, re, sys
++
++HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++sys.path.insert(0, os.path.join(HERE, "planner"))
++import decode_reloc as dr   # noqa: E402
++import gguf_plan            # noqa: E402
++
++MiB = 1048576
++fails = []
++
++
++def check(name, ok, detail=""):
++    print(("ok   " if ok else "FAIL ") + name + (("  " + str(detail)) if detail and not ok else ""))
++    if not ok:
++        fails.append(name)
++
++
++# Flash-Next at 64k (planner table): compute buffer 1750 MiB at -ub 2048, 690 at 512; one expert layer 676 MiB; 40 of 48 layers on the CPU
++LAY = {"n_layers": 48, "expert_bytes_per_layer": 676 * MiB}
++cm = gguf_plan.compute_buffer_guess_mib
++common = dict(lay=LAY, ctx=65536, ub=2048, ncmoe="40", extra=[], gcache="off", compute_mib=cm)
++
++# 1. default off: nothing added, nothing printed
++check("off by default", dr.launcher_env({}, **common) == ([], None))
++check("off for 0", dr.launcher_env({dr.SWITCH: "0"}, **common) == ([], None))
++
++# 2. on: the numbers
++s = dr.size_extra(676 * MiB, 40, 1750, 690, 2048, 512)
++check("64k freed = compute 1060 + block 169", abs(s["freed_mib"] - (1060 + (1.6 - 1.35) * 676)) < 0.5, s)
++check("64k expected extra layers = 1 (no leftover counted)", s["expected_extra"] == 1, s)
++check("64k the patch may try 2 (= the 2 layers measured on the PC)", s["max_layers"] == 2, s)
++pairs, note = dr.launcher_env({dr.SWITCH: "1"}, **common)
++d = dict(pairs)
++check("env pairs", d.get("LLAMA_DECODE_RELOC") == "1" and d.get("LLAMA_DECODE_RELOC_UB") == "512" and d.get("LLAMA_DECODE_RELOC_MAX_LAYERS") == "2"
++      and d.get("LLAMA_DECODE_RELOC_KEEP_MIB") == "768", pairs)
++check("note names the patch and PROTOTYPE", note and "0070" in note and "PROTOTYPE" in note, note)
++pairs, _ = dr.launcher_env({dr.SWITCH: "1", dr.SWITCH + "_UB": "1024", dr.SWITCH + "_KEEP_MIB": "512"}, **common)
++check("decode chunk and keep from the environment", dict(pairs).get("LLAMA_DECODE_RELOC_UB") == "1024" and dict(pairs).get("LLAMA_DECODE_RELOC_KEEP_MIB") == "512", pairs)
++
++# 3. refusals, each with a reason
++on = {dr.SWITCH: "1"}
++for name, kw in [("gpu cache", dict(gcache="2000")), ("all experts on the GPU", dict(ncmoe="0")), ("all experts on the CPU", dict(ncmoe="48")),
++                 ("ncmoe not a number", dict(ncmoe="auto")), ("same chunk", dict(ub=512)), ("chunk not a number", dict(ub="x")),
++                 ("mtp", dict(extra=["--spec-type", "draft-mtp"])), ("two cards", dict(extra=["--device", "CUDA0,CUDA1"])),
++                 ("override-tensor", dict(extra=["-ot", "exps=CPU"]))]:
++    p, why = dr.launcher_env(on, **{**common, **kw})
++    check("refused: " + name, p == [] and why and "ignored" in why, (p, why))
++tiny = dr.size_extra(100 * MiB, 40, 700, 690, 2048, 512)
++check("size_extra: small buffers free less than one layer", tiny["expected_extra"] == 0 or tiny["max_layers"] >= 0)
++p, why = dr.launcher_env(on, **{**common, "lay": {"n_layers": 48, "expert_bytes_per_layer": 8000 * MiB}})
++check("refused: freed room below one layer says so", p == [] and "less than one layer" in why, why)
++check("size_extra: no layers", dr.size_extra(0, 0, 1750, 690, 2048, 512)["max_layers"] == 0)
++check("cap at 8", dr.size_extra(10 * MiB, 40, 100000, 0, 2048, 512)["max_layers"] == 8)
++
++# 4. the link to the patch: every env name the launcher writes is read by the patch, and the patch is off unless the switch is set
++pf = sorted(glob.glob(os.path.join(HERE, "patches", "llama.cpp", "0070-*.patch")))
++check("patch 0070 exists", len(pf) == 1, pf)
++if pf:
++    text = open(pf[0], encoding="utf-8").read()
++    for n in ("LLAMA_DECODE_RELOC", "LLAMA_DECODE_RELOC_UB", "LLAMA_DECODE_RELOC_MAX_LAYERS", "LLAMA_DECODE_RELOC_KEEP_MIB", "LLAMA_DECODE_RELOC_AFTER", "LLAMA_DECODE_RELOC_SMALL"):
++        check("patch reads " + n, '"' + n + '"' in text, n)
++    check("patch is off without the switch", re.search(r'if \(!e \|\| !\*e \|\| strcmp\(e, "0"\) == 0\)', text) is not None)
++    check("patch refuses the MoE cache and training", "moe_cache_size != 0" in text and "cparams.training" in text)
++    check("patch does not touch the plugin", "mc_" not in "".join(l for l in text.splitlines() if l.startswith("+++")))
++
++# 5. through the real launcher (dry run, the fake machines of launch_plan_test): off adds nothing, on adds the four variables and one line, on both OS
++import tempfile  # noqa: E402
++sys.path.insert(0, os.path.join(HERE, "tests"))
++import launch_plan_test as lpt  # noqa: E402
++tmp = tempfile.mkdtemp(prefix="decode_reloc_test_")
++model = os.path.join(tmp, "m.gguf")
++lpt.make_synthetic_model(model)
++for mach in lpt.MACHINES:
++    off = lpt.run_case(mach, ["--ram", "12", "--ctx", "65536"], [], model, tmp)
++    on = lpt.run_case(mach, ["--ram", "12", "--ctx", "65536"], [], model, tmp, call=lambda: os.environ.__setitem__("MOE_CACHE_DECODE_RELOC", "1"))
++    ot, nt = off["stdout"] + off["stderr"], on["stdout"] + on["stderr"]
++    check(f"launcher {mach}: off adds nothing", off["rc"] == 0 and "RELOC" not in ot, ot[-300:])
++    check(f"launcher {mach}: on adds the variables and the line", on["rc"] == 0 and "LLAMA_DECODE_RELOC" in nt and "LLAMA_DECODE_RELOC_UB" in nt
++          and "MOE_CACHE_DECODE_RELOC=1: after the prompt -ub 2048 becomes 512" in nt, nt[-300:])
++    check(f"launcher {mach}: the server command line is unchanged", "-ub 2048 -b 2048" in nt and "--n-cpu-moe" in nt)
++
++
++print("FAIL: %d" % len(fails) if fails else "decode_reloc_test: all ok")
++sys.exit(1 if fails else 0)
+diff --git b/tools/run_quick_tests.sh a/tools/run_quick_tests.sh
+index 6f364ee..04779a9 100755
+--- b/tools/run_quick_tests.sh
++++ a/tools/run_quick_tests.sh
+@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.." || exit 1
+ PY_TESTS="ui_test lan_test flip_key_test guard_wiring_test security_test bench_report_test bench_record_test on_demand_test warm_test awake_test doctor_test desk_margin_test oom_retry_test
+  diffusion_test picker_test gguf_hostile_test pack_test launch_plan_test model_id_test linux_bundle_test heavy_background_test bench_orphan_test
+  budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test
+- cgroup_test planner_test model_links_test public_names_test claims_gate_test conversation_bench_test stage0_records_test update_check_test autostart_test fill_manifests_test connect_agents_test connect_check_test launch_test install_sh_test update_apply_test update_apply_win_test models_catalogue_test wintool_test fast_arg_test launch_state_test sycl_sysman_test agents_state_test sanitize_ci_test fetch_test probe_cache_test fit_cache_test plan_shell_test doctor_arch_test slow_path_test readme_margin_test launcher_small_test cpu_only_test hip_hint_test win_memcap_test workflow_yaml_test stitch_gguf_test download_test agent_guess_test chat_images_test servers_test print_systemd_test undefined_names_test launch_stage_test golden_calls_diff tested_commits_test llama_search_test llama_path_test"
++ cgroup_test planner_test model_links_test public_names_test claims_gate_test conversation_bench_test stage0_records_test update_check_test autostart_test fill_manifests_test connect_agents_test connect_check_test launch_test install_sh_test update_apply_test update_apply_win_test models_catalogue_test wintool_test fast_arg_test launch_state_test sycl_sysman_test agents_state_test sanitize_ci_test decode_reloc_test fetch_test probe_cache_test fit_cache_test plan_shell_test doctor_arch_test slow_path_test readme_margin_test launcher_small_test cpu_only_test hip_hint_test win_memcap_test workflow_yaml_test stitch_gguf_test download_test agent_guess_test chat_images_test servers_test print_systemd_test undefined_names_test launch_stage_test golden_calls_diff tested_commits_test llama_search_test llama_path_test"
+ SH_TESTS="apply_llama_patches_test release_gate_test set_version_test friend_scrub_test win_launcher_test build_api_test"
+ CPP_TESTS="gpu_fallback abort lru_rule names devpick ramguard poolsize release_rule cat open_hint"       # PREFILL-172 (GPU error -> CPU result, no half-written state), SERVER-012 (abort callback stops the plugin's chunks)
+ # tests that exist but are not part of the list above, with the reason

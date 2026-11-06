@@ -46,6 +46,14 @@ Results: Flash-Next Q2_0, 34k prompt, -ub 1024, RX 9070 XT + 7950X, Windows, 202
 | llama.cpp/0003-vulkan-mmid-vec-max-tokens.patch | `GGML_VK_MMID_VEC_MAX_TOKENS` | 16.45 vs 16.2-16.35 | no gain | - |
 | plugin/decode_tier.patch (design: docs/DECODE_TIER_DESIGN.md; also deletes `src/mc_tier.h`, `tests/tier_test.cpp`) | `MOE_CACHE_DECODE_TIER=38,39` (+ `_CHECK`, `_KEEP_MIB`) | 2026-11-03, 64k ctx, 34k prompt, restarted PC: check mode exact (0 groups above 0.05); decode 26.71 / 26.22 vs 26.72 / 26.65, prompt 311 / 313 vs 488 / 585 | kill check: no decode gain, prompt -41 % (letting llama.cpp place 2 more layers gives +15 %: the gain needs the loader, see the engine re-check) | a llama.cpp patch keeps a decode-only GPU copy of layers |
 
+### PC 2026-11-05 (IQ3_XXS, 64k prompt, timers off, A B B A + C + R)
+
+| File | Switch | Result | Why archived | Retest if |
+|---|---|---|---|---|
+| llama.cpp/0070-decode-reloc.patch (design: llama.cpp/0070-DECODE_RELOC_DESIGN.md) + plugin/decode_reloc_launcher.patch (launcher hook `planner/decode_reloc.py`, the stage in `bin/moe_cache.py`, `tests/decode_reloc_test.py`, `tests/decode_reloc_live.*`, the CI steps, the `MOE_CACHE_DECODE_RELOC` row) | `LLAMA_DECODE_RELOC=1` (launcher: `MOE_CACHE_DECODE_RELOC=1`), DECODE-630 | moving 2 layers back to the GPU after the prompt: decode 11.41 vs 12.07 tok/s (-5.5 %), prompt 171.6 vs 184.0 (-6.8 %); shrink-only mode -21 %. The gain came from the smaller `-ub`, not from the layers (C and R +39.7 % / +48.6 % decode, prompts -16 / -21 %) | all three forms lost; the 64k decode loss is GPU memory spilling into system RAM at `-ub 2048` | a GPU with much more free VRAM after the prompt |
+
+Restore: copy `llama.cpp/0070-decode-reloc.patch` back to `patches/llama.cpp/` and `llama.cpp/0070-DECODE_RELOC_DESIGN.md` to `docs/DECODE_RELOC_DESIGN.md`, then `git apply archive/plugin/decode_reloc_launcher.patch` from the top of the repo (it restores the launcher hook, tests, CI steps and the doc rows; later changes to `.github/workflows/llama_patched.yml`, `bin/moe_cache.py` or the README may need a small manual fix). The patch was checked with `git apply --check` on the tree it was removed from.
+
 ### Merged upstream (2026-11-03, pin move b11966 -> b12064)
 
 | File | Switch | Result | Why archived | Retest if |

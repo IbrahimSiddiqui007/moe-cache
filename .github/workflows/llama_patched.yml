@@ -90,10 +90,8 @@ jobs:
           name: llama-patched-win-vulkan-x64
           path: llama.cpp/build/bin/Release/ggml-vulkan.dll
 
-  # One zip for the Windows PC (DECODE-630 test): the server + CPU backends from windows-server and ggml-vulkan.dll from windows-vulkan in one folder, with its
-  # sha256, after a smoke test: the server starts with LLAMA_DECODE_RELOC unset and set (-ub 2048, 100 tokens: more than the 64 small batches that start the
-  # switch) and the text is identical. A CI runner has no GPU, so nothing can move there: the test proves the switch is inert and its "no layer fits" path
-  # puts everything back; the real move is the PC's A B B A (handover/parts/overnight_20261104/items/30_decode_reloc.ps1).
+  # One zip for the Windows PC: the server + CPU backends from windows-server and ggml-vulkan.dll from windows-vulkan in one folder, with its sha256, after a
+  # smoke test: the server starts and answers a short greedy completion with text. A CI runner has no GPU; the PC tests decide whether a patch stays.
   windows-package:
     needs: [windows-server, windows-vulkan]
     runs-on: windows-2025
@@ -112,33 +110,22 @@ jobs:
           Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
           $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
           if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
-      - name: Smoke test, switch unset and set
+      - name: Smoke test
         run: |
           $dir = "$PWD\pkg\llama-patched-win-x64"
           Get-ChildItem $dir | Select-Object Name, Length | Format-Table | Out-String | Write-Host
           if (-not (Test-Path "$dir\llama-server.exe")) { throw "no llama-server.exe in the package" }
           & "$dir\llama-server.exe" --version
           $body = '{"prompt":"The quick brown fox jumps over the lazy dog. The quick brown fox","n_predict":100,"temperature":0,"seed":1,"cache_prompt":false}'
-          function Run($name, $reloc, $port) {
-            Remove-Item Env:LLAMA_DECODE_RELOC -ErrorAction SilentlyContinue
-            if ($reloc) { $env:LLAMA_DECODE_RELOC = "1"; $env:LLAMA_DECODE_RELOC_AFTER = "16" }
-            $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port",$port,"--no-warmup","-lv","4" -RedirectStandardError "$name.err" -RedirectStandardOutput "$name.out" -PassThru
-            $ok = $false
-            for ($i = 0; $i -lt 180; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$port/health").StatusCode -eq 200) { $ok = $true; break } } catch {}; Start-Sleep 1 }
-            if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content "$name.err" -Tail 40; throw "${name}: server never became ready" }
-            $r = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body "http://127.0.0.1:$port/completion"
-            Stop-Process -Id $p.Id; Start-Sleep 2
-            (($r.Content | ConvertFrom-Json).content)
-          }
-          $off = Run "off" $false 8101
-          $on = Run "on" $true 8102
-          Write-Host "off: $off"; Write-Host "on:  $on"
-          if (-not $off -or $off.Length -lt 20) { throw "the unset run produced no text" }
-          if ($off -ne $on) { throw "text differs with LLAMA_DECODE_RELOC=1 (CPU only: nothing can move, so it must be identical)" }
-          if (Select-String -Path off.err -Pattern "reloc_" -Quiet) { throw "the patch logged with the switch unset" }
-          Write-Host "--- patch lines in on.err / on.out:"; Select-String -Path on.err,on.out -Pattern "reloc|RELOC|n_ubatch|ubatch" | ForEach-Object { $_.Line } | Select-Object -First 20
-          if (-not (Select-String -Path on.err,on.out -Pattern "LLAMA_DECODE_RELOC on" -Quiet)) { Get-Content on.err -Tail 60; throw "switch set: no 'LLAMA_DECODE_RELOC on' line (see the lines above)" }
-          Select-String -Path on.err -Pattern "reloc_" | ForEach-Object { $_.Line }
+          $p = Start-Process "$dir\llama-server.exe" -ArgumentList "-m","granite.gguf","-ngl","0","-ub","2048","-b","2048","-c","4096","--port","8101","--no-warmup" -RedirectStandardError "smoke.err" -RedirectStandardOutput "smoke.out" -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 180; $i++) { try { if ((Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:8101/health").StatusCode -eq 200) { $ok = $true; break } } catch {}; Start-Sleep 1 }
+          if (-not $ok) { Stop-Process -Id $p.Id -ErrorAction SilentlyContinue; Get-Content smoke.err -Tail 40; throw "smoke: server never became ready" }
+          $r = Invoke-WebRequest -UseBasicParsing -Method Post -ContentType application/json -Body $body "http://127.0.0.1:8101/completion"
+          Stop-Process -Id $p.Id
+          $text = (($r.Content | ConvertFrom-Json).content)
+          Write-Host "text: $text"
+          if (-not $text -or $text.Length -lt 20) { throw "the smoke run produced no text" }
       - name: Zip and sha256
         run: |
           Compress-Archive -Path pkg\llama-patched-win-x64 -DestinationPath llama-patched-win-x64.zip
@@ -182,45 +169,6 @@ jobs:
           cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS
           cmake --build build --config Release --target llama-server -j $(nproc)
           build/bin/llama-server --version
-      # Critic fix list 8: the live test of patch 0070 runs on every patched build, not only by hand. Real patched libllama (the build above) and a small
-      # MoE model, CPU only (LIVE_NGL=0: a runner has no GPU, so nothing can move): the patch must stay inert (identical text over 2400 tokens, 4 prompts,
-      # switch off vs on), the injected reserve failure (LLAMA_DECODE_RELOC_FAIL=1) must be survived, a second context must be refused. The checks that need a
-      # real move (fail=2, a second context after the move) are skipped with a line that says so; the laptop run (tests/decode_reloc_live.sh with a GPU) and the PC run cover them.
-      - name: Granite test model (pinned by sha256, as windows-package)
-        run: |
-          curl -fsSL --retry 5 --retry-delay 10 -o granite.gguf "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
-          echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
-      # The moe-cache plugin (build.sh --portable needs only g++) is loaded in the second half of each live run: with it the experts of the host layers are in the plugin's
-      # MOE_CACHE buffer, which is not "host" memory, and they must still move (the PC run of 2026-11-05 moved nothing for that reason).
-      - name: moe-cache plugin for the live test (API 3, portable)
-        run: |
-          GGML_API=3 ./build.sh --portable
-          ls -la build/libggml-moe-cache.so
-      - name: Live test of patch 0070 (patched libllama + tiny MoE model, CPU only)
-        run: |
-          DECODE_RELOC_PLUGIN="$PWD/build/libggml-moe-cache.so" DECODE_RELOC_PLUGIN_CACHE_GIB=0.0005 LIVE_NGL=0 DECODE_RELOC_EXPECT=any DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
-            tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/granite.gguf"
-      # Critic round 4 #7: the CPU-only run above skips every check that needs a real move. lavapipe (software Vulkan, installed above) is a GPU device to ggml, so here
-      # the layers really move (DECODE_RELOC_EXPECT=moved: the run fails if they do not): the reserve failure after the move (fail=2) and a second context created after
-      # the move are exercised. The 2400-token run is left out (too slow on a software GPU); it runs in the CPU-only step above and on the laptop. Also the first run
-      # of the move code on Vulkan, without a real card: a device OOM is still untested (docs/DECODE_RELOC_DESIGN.md).
-      # granite (1B) takes more than 45 minutes on a software GPU, so this run uses a tiny random-weight MoE (gpt-oss, as identity.yml: same recipe, same pinned revision).
-      - name: Tiny MoE model for the lavapipe run (random gpt-oss weights, converted with this llama.cpp's own script)
-        run: |
-          python3 -m pip install -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
-          python3 -m pip install -q -e llama.cpp/gguf-py
-          R=tengomucho/tiny-random-gpt-oss; REV=2109d1ee033bb4191af6dd950fda542c9c351dc8; mkdir -p tiny-gptoss
-          for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json; do
-            curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
-          done
-          python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss-f16.gguf --outtype f16
-          ls -la tiny-gptoss-f16.gguf
-      - name: Live test of patch 0070 on lavapipe (software Vulkan) - layers move, fail=2, second context after the move
-        timeout-minutes: 25
-        run: |
-          # ggml-vulkan at the pin skips a CPU-type Vulkan device (lavapipe) unless it is listed by index
-          DECODE_RELOC_PLUGIN="$PWD/build/libggml-moe-cache.so" DECODE_RELOC_PLUGIN_CACHE_GIB=0.0005 GGML_VK_VISIBLE_DEVICES=0 DECODE_RELOC_EXPECT=moved DECODE_RELOC_SKIP_LONG=1 DECODE_RELOC_EXE_DIR="$PWD/llama.cpp/build/bin" \
-            tests/decode_reloc_live.sh "$PWD/llama.cpp" "$PWD/llama.cpp/build" "$PWD/tiny-gptoss-f16.gguf"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llama-patched-linux-x64

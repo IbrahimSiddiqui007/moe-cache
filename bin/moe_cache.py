@@ -3041,22 +3041,6 @@ def multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncm
     return ncmoe, extra
 
 
-def decode_reloc_stage(env, model, ctx, ub, ncmoe, extra, gcache):
-    """ENGINE-029, stage "decode relocation" (DECODE-630, PROTOTYPE, default off): layers back to the GPU after the prompt; needs llama.cpp patch 0070. env grows in place."""
-    if os.environ.get("MOE_CACHE_DECODE_RELOC"):       # DECODE-630 (PROTOTYPE, default off): layers back to the GPU after the prompt, needs llama.cpp patch 0070
-        try:
-            sys.path.insert(0, os.path.join(HERE, "planner")) if os.path.join(HERE, "planner") not in sys.path else None
-            import gguf_plan
-            from decode_reloc import launcher_env
-            r_env, r_note = launcher_env(os.environ, lay=gguf_plan.model_layout(model), ctx=ctx, ub=ub, ncmoe=ncmoe, extra=extra, gcache=gcache,
-                                         compute_mib=gguf_plan.compute_buffer_guess_mib)
-            env += r_env
-            if r_note:
-                say(r_note)
-        except Exception as e:
-            say(f"moe-cache: MOE_CACHE_DECODE_RELOC ignored: {e}", err=True)
-
-
 def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine):
     """ENGINE-029, stage "command": CPU-only mode (--device none, -ngl 0), the llama-server command line with the placement and the pinning, --auto-fit for a dense model, and the line that says what the cache will manage. Returns (the command, the arguments for llama-server)."""
     cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
@@ -3192,7 +3176,6 @@ def _launch_plan(a, extra, argv, machine):
         env += sycl_sysman_env(ls, listing)
     extra = leave_room_stage(a, env, extra, pinargs, machine)
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
-    decode_reloc_stage(env, model, ctx, ub, ncmoe, extra, gcache)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine)
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
