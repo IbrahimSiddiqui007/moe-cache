@@ -1181,20 +1181,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 char * dst = stage + st.second + (k - plo) * st.first->nb[2];
                 const char * src = (const char *) st.first->data + (size_t) pack_used[k] * st.first->nb[2];
                 const size_t nbytes = r * st.first->nb[2];
-                // idea P06 (MOE_CACHE_GPU_STAGE_THREADS=N, default 1): a copy of 8 MiB or more is split over N threads (the calling one and N-1 short-lived helpers)
-                static const int nth = getenv("MOE_CACHE_GPU_STAGE_THREADS") ? std::max(1, std::min(8, atoi(getenv("MOE_CACHE_GPU_STAGE_THREADS")))) : 1;
-                if (nth > 1 && nbytes >= ((size_t) 8 << 20)) {
-                    std::vector<std::thread> hs;
-                    const size_t part = (nbytes / (size_t) nth + 4095) / 4096 * 4096;
-                    for (int ti2 = 1; ti2 < nth; ti2++) {
-                        const size_t o = std::min(nbytes, part * (size_t) ti2), n2 = std::min(nbytes - o, part);
-                        hs.emplace_back([=] { memcpy(dst + o, src + o, n2); });
-                    }
-                    memcpy(dst, src, std::min(nbytes, part));
-                    for (auto & h : hs) { h.join(); }
-                } else {
-                    memcpy(dst, src, nbytes);
-                }
+                memcpy(dst, src, nbytes);
             }
         };
         if (interleave) {
