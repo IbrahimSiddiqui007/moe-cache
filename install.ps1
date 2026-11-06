@@ -194,12 +194,10 @@ function Install-MoeCache {
             $gh = Get-Command gh -ErrorAction SilentlyContinue
             if (-not $gh) { $attWhy = 'gh (the GitHub command line tool) is not installed' }
             else {
-                # gh writes its "not logged in / token invalid" report to stderr; under $ErrorActionPreference = 'Stop' Windows PowerShell 5.1 turns that
-                # first line ("github.com") into a terminating error and the install ended with only "github.com ... Stopped". Continue + catch keeps the reason.
-                $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'; $authCode = 1
-                try { & $gh.Source auth status *> $null; $authCode = $LASTEXITCODE } catch { $authCode = 1 } finally { $ErrorActionPreference = $prevEap }
-                if ($authCode -ne 0) { $attWhy = 'gh is installed but has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working `gh auth login` (see: gh auth status)' }
-                else {
+                # NOT gated on `gh auth status`: it exits 1 when any saved account has a bad token although the active one works (seen on the PC: a
+                # second, expired account), and its report goes to stderr, which Windows PowerShell 5.1 turns into a terminating error under
+                # $ErrorActionPreference = 'Stop'. The verify call decides: its exit code is all that counts, its text only names the reason.
+                if ($true) {
                     # --signer-workflow: only an attestation made by this repository's release workflow counts (packages.yml pins it the same way)
                     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
                     try { $vout = (& $gh.Source attestation verify (Join-Path $tmp "$name.zip") -R $Repo --signer-workflow "$Repo/.github/workflows/release.yml" 2>&1 | Out-String) } finally { $ErrorActionPreference = $prevEap }
@@ -207,6 +205,7 @@ function Install-MoeCache {
                     $vtail = $vout.Trim(); if ($vtail.Length -gt 300) { $vtail = $vtail.Substring($vtail.Length - 300) }
                     if ($vcode -eq 0) { $attOk = $true }
                     elseif ($vout -match '(?i)no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5\d\d|rate limit|unexpected EOF') { $attWhy = "gh could not reach GitHub to verify (network): $vtail" }      # the check could not run: -YesUnverified may go on
+                    elseif ($vout -match '(?i)gh auth login|not logged in|authentication required|requires authentication|HTTP 401|bad credentials|GH_TOKEN') { $attWhy = 'gh has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working `gh auth login` (see: gh auth status)' }
                     else { $attFailed = $true; $attWhy = "gh attestation verify FAILED: $vtail" }
                 }
             }

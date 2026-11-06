@@ -98,12 +98,15 @@ if [ $BUILD = 0 ] && [ -z "$LLAMA_SHA_GIVEN" ] && [ $OWN = 0 ] && [ ! -f "$SELF_
   # with `gh attestation verify`; when that cannot be done the install stops unless the user asked for it (--yes-unverified / MOE_CACHE_ALLOW_UNVERIFIED=1).
   ATT_WHY=""
   if ! command -v gh >/dev/null; then ATT_WHY="gh (the GitHub command line tool) is not installed"
-  elif ! gh auth status >/dev/null 2>&1; then ATT_WHY="gh is installed but not logged in (run: gh auth login)"
   else
+    # not gated on `gh auth status`: it exits 1 when ANY saved account has a bad token, although the active one works (seen on the PC: a second, expired
+    # account). The verify call itself decides; its exit code is all that counts, its text only names the reason.
     # --signer-workflow: only an attestation made by this repository's release workflow counts (packages.yml pins it the same way)
     VOUT="$(gh attestation verify "$TMP/$REL_NAME.tar.gz" -R IbrahimSiddiqui007/moe-cache --signer-workflow IbrahimSiddiqui007/moe-cache/.github/workflows/release.yml 2>&1)" && ATT_OK=1 || {
       if printf '%s' "$VOUT" | grep -qiE 'no such host|dial tcp|i/o timeout|timed out|timeout|connection (refused|reset)|network is unreachable|could not resolve|temporary failure|tls handshake|no route to host|offline|HTTP 5[0-9][0-9]|rate limit|unexpected EOF'; then
         ATT_WHY="gh could not reach GitHub to verify (network): $(printf '%s' "$VOUT" | tail -c 200)"      # the check could not run: --yes-unverified may go on
+      elif printf '%s' "$VOUT" | grep -qiE 'gh auth login|not logged in|authentication required|requires authentication|HTTP 401|bad credentials|GH_TOKEN'; then
+        ATT_WHY="gh has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working \`gh auth login\` (see: gh auth status)"
       else ATT_FAILED=1; ATT_WHY="gh attestation verify FAILED: $(printf '%s' "$VOUT" | tail -c 300)"; fi; }
   fi
   if [ "${ATT_FAILED:-0}" = 1 ]; then

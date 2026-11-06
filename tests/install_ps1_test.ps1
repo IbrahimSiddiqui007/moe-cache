@@ -50,8 +50,8 @@ function Set-UserPath([string]$v) { $k = [Microsoft.Win32.Registry]::CurrentUser
 
 # RELEASE-686: a fake gh.cmd first on PATH (FAKE_GH_AUTH / FAKE_GH_VERIFY = exit codes). Without a verified build attestation the installer stops unless -YesUnverified / MOE_CACHE_ALLOW_UNVERIFIED=1.
 $fakeGh = Join-Path $T 'fakegh'; New-Item -ItemType Directory -Force -Path $fakeGh | Out-Null
-Set-Content -LiteralPath (Join-Path $fakeGh 'gh.cmd') -Encoding ASCII -Value @('@echo off', 'if "%1 %2"=="auth status" exit /b %FAKE_GH_AUTH%', 'if "%1 %2"=="attestation verify" if defined FAKE_GH_LOG echo %*>>"%FAKE_GH_LOG%"', 'if "%1 %2"=="attestation verify" if defined FAKE_GH_MSG echo %FAKE_GH_MSG% 1>&2', 'if "%1 %2"=="attestation verify" exit /b %FAKE_GH_VERIFY%', 'exit /b 1')
-$env:FAKE_GH_AUTH = '0'; $env:FAKE_GH_VERIFY = '0'
+Set-Content -LiteralPath (Join-Path $fakeGh 'gh.cmd') -Encoding ASCII -Value @('@echo off', 'if "%1 %2"=="auth status" exit /b %FAKE_GH_AUTH_STATUS%', 'if "%1 %2"=="attestation verify" if defined FAKE_GH_LOG echo %*>>"%FAKE_GH_LOG%"', 'if "%1 %2"=="attestation verify" if not "%FAKE_GH_AUTH%"=="0" (echo To get started with GitHub CLI, please run:  gh auth login 1>&2 & exit /b 4)', 'if "%1 %2"=="attestation verify" echo Loaded digest sha256:abc, progress text on stderr as the real gh prints 1>&2', 'if "%1 %2"=="attestation verify" if defined FAKE_GH_MSG echo %FAKE_GH_MSG% 1>&2', 'if "%1 %2"=="attestation verify" exit /b %FAKE_GH_VERIFY%', 'exit /b 1')
+$env:FAKE_GH_AUTH = '0'; $env:FAKE_GH_AUTH_STATUS = '0'; $env:FAKE_GH_VERIFY = '0'
 $origProcPath = $env:PATH
 $env:PATH = "$fakeGh;$origProcPath"
 $origPath = Get-UserPath
@@ -76,6 +76,12 @@ try {
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
     Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'not logged in' -and -not (Test-Path $kit)) 'gh not logged in: refused, nothing installed'
     $env:FAKE_GH_AUTH = '0'
+    # the PC bug (2026-11-06): `gh auth status` exits 1 (a second saved account has a bad token) while verify passes and prints progress on stderr: the install goes on
+    $env:FAKE_GH_AUTH_STATUS = '1'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
+    Check ($r.Code -eq 0 -and $r.Out -match 'build attestation verified' -and (Test-Path (Join-Path $kit 'bin\moe_cache.py'))) 'gh auth status failing (bad second account) does not stop an install whose verify passes'
+    $env:FAKE_GH_AUTH_STATUS = '0'
+    $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @('-Uninstall')
     $env:PATH = (($origProcPath -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'gh.exe')) -and -not (Test-Path (Join-Path $_ 'gh.cmd')) }) -join ';'
     $r = Run-Installer (New-Release 'good1' '9.9.1' 'ok') '9.9.1' @()
     Check ($r.Code -ne 0 -and $r.Out -match 'REFUSED' -and $r.Out -match 'is not installed' -and -not (Test-Path $kit)) 'gh not installed: refused, nothing installed'
