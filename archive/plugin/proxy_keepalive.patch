@@ -1,0 +1,70 @@
+diff --git b/bin/moe_cache_on_demand.py a/bin/moe_cache_on_demand.py
+index 1d3bf7c..da9981a 100644
+--- b/bin/moe_cache_on_demand.py
++++ a/bin/moe_cache_on_demand.py
+@@ -497,6 +497,9 @@ class Pool:
+             b.stop(reason)
+ 
+ 
++_conns = threading.local()      # S06: kept-alive connections to the model server, per client thread
++
++
+ class Handler(BaseHTTPRequestHandler):
+     protocol_version = "HTTP/1.1"
+     server_version = "moe-cache-on-demand"
+@@ -614,13 +617,28 @@ class Handler(BaseHTTPRequestHandler):
+             b.busy(-1)
+ 
+     def proxy(self, port, data):
+-        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
++        # idea S06 (MOE_CACHE_PROXY_KEEPALIVE=1, default off): one kept-alive connection per client thread and server port is reused for the next request;
++        # a reused connection the server had closed is replaced once (nothing of the request was processed then)
++        keep = os.environ.get("MOE_CACHE_PROXY_KEEPALIVE") == "1"
++        pool = getattr(_conns, "pool", None)
++        if pool is None:
++            pool = _conns.pool = {}
++        conn = pool.pop(port, None) if keep else None
++        reused = conn is not None
++        if conn is None:
++            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
+         hdrs = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+         if data is not None:
+             hdrs["Content-Length"] = str(len(data))
+         try:
+-            conn.request(self.command, self.path, body=data, headers=hdrs)
+-            r = conn.getresponse()
++            try:
++                conn.request(self.command, self.path, body=data, headers=hdrs)
++                r = conn.getresponse()
++            except (http.client.RemoteDisconnected, http.client.CannotSendRequest, BrokenPipeError, ConnectionResetError) if reused else () :
++                conn.close()
++                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3600)
++                conn.request(self.command, self.path, body=data, headers=hdrs)
++                r = conn.getresponse()
+         except OSError as e:
+             conn.close()
+             return self.reply(502, {"error": {"message": f"the model server did not answer: {e}", "type": "unavailable_error", "code": 502}})
+@@ -653,7 +671,10 @@ class Handler(BaseHTTPRequestHandler):
+         except OSError:                                 # BrokenPipe / ConnectionReset / (Windows) ConnectionAborted
+             self.close_connection = True                # the agent hung up: closing ours makes llama-server stop generating
+         finally:
+-            conn.close()
++            if keep and not r.will_close and r.isclosed():
++                pool[port] = conn           # the response was read to its end: the connection can serve the next request
++            else:
++                conn.close()
+ 
+     do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = do_HEAD = handle_any
+ 
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index 3469ba1..dadb93c 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -106,6 +106,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_PROC_PRIO` | Windows only (does nothing elsewhere). Any value starting with `h` raises the process CPU priority to High; any other non-empty value raises it to Above Normal. Prints whether Windows accepted it. | Off (priority unchanged) | advanced |
+ | `MOE_CACHE_PROFILE_DECAY` | A number from 0 to 1: how much of the previously learned expert-usage profile is kept when it is combined with this session's usage when the profile is saved (0 forgets old usage, 1 keeps it fully). Bad values are ignored with a warning. | 0.5 | advanced |
+ | `MOE_CACHE_PROMPT_CACHE_MIB` | Sets llama-server's prompt cache size (`--cache-ram`) in MiB, replacing the launcher's rule. Only a plain whole number counts; 0 turns the prompt cache off. | Unset (0 under 16 GB of server RAM, otherwise 2048 MiB) | advanced |
++| `MOE_CACHE_PROXY_KEEPALIVE` | Only when exactly `1`: the on-demand proxy keeps one connection per client thread and server port and reuses it for the next request, instead of opening a new one each time. | Off | advanced |
+ | `MOE_CACHE_SLOT_SIMILARITY` | Launcher: a new request may take over a busy conversation's slot only if its prompt is at least this similar (0 to 1) to what the slot holds, so a short request from another agent does not push out a long conversation. Passed on as `--slot-prompt-similarity`. | unset (llama-server's own default). Values outside 0..1 or not numbers are ignored; an explicit `-sps` in your arguments wins. | advanced |
+ | `MOE_CACHE_TEST_DUP_IDS` | Test switch. Makes picks 1 to N-1 of every token repeat pick 0, to check the plugin survives repeated expert ids. Changes the model's output, so never use it for real work. Used by `tests/dup_ids.sh`. | off (0; values of 1 or less do nothing) | internal/testing |
+ | `MOE_CACHE_TEST_POISON_READS` | Test switch. Each background expert read first fills its target with 0xFF bytes and waits (the `MOE_CACHE_TEST_READ_DELAY_US` time), to catch code that reads an expert before it has fully loaded. Any value except `0` turns it on. Slows loading. | off | internal/testing |
