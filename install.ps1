@@ -194,8 +194,11 @@ function Install-MoeCache {
             $gh = Get-Command gh -ErrorAction SilentlyContinue
             if (-not $gh) { $attWhy = 'gh (the GitHub command line tool) is not installed' }
             else {
-                & $gh.Source auth status *> $null
-                if ($LASTEXITCODE -ne 0) { $attWhy = 'gh is installed but not logged in (run: gh auth login)' }
+                # gh writes its "not logged in / token invalid" report to stderr; under $ErrorActionPreference = 'Stop' Windows PowerShell 5.1 turns that
+                # first line ("github.com") into a terminating error and the install ended with only "github.com ... Stopped". Continue + catch keeps the reason.
+                $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'; $authCode = 1
+                try { & $gh.Source auth status *> $null; $authCode = $LASTEXITCODE } catch { $authCode = 1 } finally { $ErrorActionPreference = $prevEap }
+                if ($authCode -ne 0) { $attWhy = 'gh is installed but has no working login (not logged in, or its token is invalid or expired): the attestation check needs a working `gh auth login` (see: gh auth status)' }
                 else {
                     # --signer-workflow: only an attestation made by this repository's release workflow counts (packages.yml pins it the same way)
                     $prevEap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
