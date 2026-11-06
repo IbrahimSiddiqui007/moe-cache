@@ -3,7 +3,7 @@
 limit, the server's timings are read, the per-depth-band numbers add up, stock and plugin servers are run in A B B A order, the plugin's counters are
 read per turn, and the record validates against docs/bench_record.schema.json.
    python3 tests/conversation_bench_test.py"""
-import http.server, json, os, signal, socketserver, sys, tempfile, threading
+import hashlib, http.server, json, os, signal, socketserver, sys, tempfile, threading
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "tools"))
@@ -190,6 +190,23 @@ if os.name != "nt":
         check(rec3["runs"][0]["settings"]["ctx"] == 4096 and "settings in this record" in " ".join(rec3["notes"]), "per-run settings and the note on where the record's settings come from are in the record")
     finally:
         signal.signal(signal.SIGUSR1, old2)
+
+# ---- the record names the plugin the moe-cache server ran (its MOE_CACHE_LIB), not a DLL found by a file search; --version is read from stderr too
+mc_lib = dict(rs, arm="moe-cache", settings=dict(rs["settings"], environment=dict(rs["settings"]["environment"], MOE_CACHE_LIB="C:\\kit\\ggml-moe-cache-api3.dll")))
+ns4 = type("A", (), dict(model=None, llama_server=None, backend=None, model_url=None, command_line=None, server_cmd=None, baseline=None, other_programs=None, cache=None))()
+rec4 = cb.build_record([dict(rs), mc_lib, dict(mc_lib), dict(rs)], ns4)
+check(rec4["software"]["plugin_file"] == "ggml-moe-cache-api3.dll" and rec4["software"]["plugin_sha256_prefix"] == rr.NR,
+      f"plugin_file comes from the moe-cache run's MOE_CACHE_LIB, hash not recorded when the file is not on this machine ({rec4['software']['plugin_file']})")
+real_lib = os.path.join(tempfile.mkdtemp(), "ggml-moe-cache-api3.dll"); open(real_lib, "wb").write(b"plugin bytes")
+mc_real = dict(mc_lib, settings=dict(mc_lib["settings"], environment=dict(mc_lib["settings"]["environment"], MOE_CACHE_LIB=real_lib)))
+rec5 = cb.build_record([dict(rs), mc_real, dict(mc_real), dict(rs)], ns4)
+check(rec5["software"]["plugin_file"] == "ggml-moe-cache-api3.dll" and rec5["software"]["plugin_sha256_prefix"] == hashlib.sha256(b"plugin bytes").hexdigest()[:12],
+      "plugin_file and its hash come from the DLL the server ran when it exists here")
+check(rr.validate(rec4, rr.load_schema()) == [] and rr.validate(rec5, rr.load_schema()) == [], "both records still validate")
+rec6 = cb.build_record([dict(rs), dict(rs)], ns4)
+check(rec6["software"]["plugin_file"] == rr.NR, "a record without a MOE_CACHE_LIB says the plugin is not recorded (no file search)")
+check("version: 12064 (51fe42c5d)" in rr._run([sys.executable, "-c", "import sys; sys.stderr.write('version: 12064 (51fe42c5d)\\n')"], both=True)
+      and rr._run([sys.executable, "-c", "import sys; sys.stderr.write('x')"]) == "", "_run(both=True) keeps stderr, where llama-server prints --version")
 
 print("conversation bench test: " + ("PASS" if not fails else f"FAIL ({len(fails)})"))
 sys.exit(1 if fails else 0)

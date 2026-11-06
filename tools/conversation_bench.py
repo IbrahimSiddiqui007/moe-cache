@@ -409,8 +409,15 @@ def band_table(runs):
 
 def build_record(runs, a):
     import moe_cache_record as rr
-    env = rr.collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url) if (a.model or a.llama_server) else \
-        rr.collect_environment(None, None, listing="", version_line="", backend=a.backend)
+    # the plugin this record names is the one the moe-cache server ran (MOE_CACHE_LIB of its own command line), never a file search next to the launcher
+    lib = next((r["settings"]["environment"]["MOE_CACHE_LIB"] for r in runs if isinstance(r.get("settings"), dict)
+                and isinstance(r["settings"].get("environment"), dict) and r["settings"]["environment"].get("MOE_CACHE_LIB")), None)
+    env = rr.collect_environment(a.model, a.llama_server, backend=a.backend, model_url=a.model_url, lib=lib if lib and os.path.isfile(lib) else None) \
+        if (a.model or a.llama_server) else rr.collect_environment(None, None, listing="", version_line="", backend=a.backend, lib=lib if lib and os.path.isfile(lib) else None)
+    if lib and not os.path.isfile(lib):
+        env["software"].update(plugin_file=os.path.basename(lib.replace("\\", "/")), plugin_sha256_prefix=rr.NR)
+    elif not lib:
+        env["software"].update(plugin_file=rr.NR, plugin_sha256_prefix=rr.NR)
     entries, counts = [], {}
     for run in runs:
         counts[run["arm"]] = counts.get(run["arm"], 0) + 1

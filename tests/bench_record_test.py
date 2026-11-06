@@ -21,7 +21,7 @@ def check(cond, what):
 files, cmds = {}, {}                     # fake file system and fake commands: key = path / command name -> text (or a function of the argv)
 rr.READ = lambda p: files.get(p, "")
 rr.GLOB = lambda pat: sorted({k for f in files for k in (f, os.path.dirname(f)) if __import__("fnmatch").fnmatch(k, pat)})
-rr.RUN = lambda cmd, timeout=20: (cmds[cmd[0]](cmd) if callable(cmds.get(cmd[0])) else cmds.get(cmd[0], ""))
+rr.RUN = lambda cmd, timeout=20, both=False: (cmds[cmd[0]](cmd) if callable(cmds.get(cmd[0])) else cmds.get(cmd[0], ""))
 
 # ---- 1. pure parsers
 name, cores, logical = rr.parse_cpuinfo("processor\t: 0\nmodel name\t: Test CPU 9\nphysical id\t: 0\ncore id\t: 0\nprocessor\t: 1\nmodel name\t: Test CPU 9\nphysical id\t: 0\ncore id\t: 0\n"

@@ -32,15 +32,15 @@ def rnd(x, n=1):
 
 # ---------------------------------------------------------------- OS access (tests replace RUN and READ)
 
-def _run(cmd, timeout=20):
-    """stdout of a command ('' when it is missing, fails or is too slow)."""
+def _run(cmd, timeout=20, both=False):
+    """stdout of a command ('' when it is missing, fails or is too slow); both=True adds stderr (llama-server prints --version there)."""
     try:
         if not shutil.which(cmd[0]):
             return ""
         flags = 0x08000000 if IS_WIN else 0              # CREATE_NO_WINDOW
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, creationflags=flags) if IS_WIN \
             else subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
-        return r.stdout if r.returncode == 0 else ""
+        return ((r.stdout or "") + (r.stderr or "") if both else r.stdout) if r.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError, ValueError):
         return ""
 
@@ -689,7 +689,7 @@ def collect_environment(model=None, llama_server=None, listing=None, version_lin
     if llama_server and listing is None:
         listing = RUN([llama_server, "--list-devices"], timeout=60) + ""
     if llama_server and version_line is None:
-        out = RUN([llama_server, "--version"], timeout=60)
+        out = RUN([llama_server, "--version"], timeout=60, both=True)
         version_line = next((l for l in out.splitlines() if "version" in l), "")
     hw = pr.hardware(model)
     hw.update(pr.gpu(listing))
