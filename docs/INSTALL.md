@@ -7,7 +7,7 @@ Nothing here needs administrator rights or root. No telemetry: the installers ta
 | Command | What it does |
 |---|---|
 | `moe-cache update --check` | says whether a newer moe-cache or llama.cpp is out; downloads nothing |
-| `moe-cache update --apply` | asks, then downloads the newest stable release's installer, checks its build attestation with `gh` (installed and logged in; without it the update stops and says what was not checked, unless `--yes-unverified` or `MOE_CACHE_ALLOW_UNVERIFIED=1`), and runs it; the installer checks the package's sha256 (and attestation) and puts the old install back if anything fails. Only for a copy the installer put there; `--tag vX.Y.Z` picks another release (an older one than the running copy is refused unless you add `--allow-downgrade`), `--dry-run` shows the plan, `--yes` skips the question |
+| `moe-cache update --apply` | asks, then downloads the newest stable release's installer, checks its build attestation with `gh` (if `gh` is installed; without a working `gh` the update stops and says what was not checked, unless `--yes-unverified` or `MOE_CACHE_ALLOW_UNVERIFIED=1`), and runs it; the installer checks the package's sha256 (and attestation) and puts the old install back if anything fails. Only for a copy the installer put there; `--tag vX.Y.Z` picks another release (an older one than the running copy is refused unless you add `--allow-downgrade`), `--dry-run` shows the plan, `--yes` skips the question |
 | after the update | it runs the new command's `--version` and imports the launcher modules from the new folder (no model needed); if that fails it goes back to the old version by itself |
 | roll back by hand | Linux: `update --apply` keeps the old version in `versions/`; `ln -sfn versions/<old folder> <prefix>/current` makes it current again (the command is printed). Windows: the old kit stays as `kit.prev` in the install folder (`%LOCALAPPDATA%\moe-cache`); close moe-cache, rename `kit` to `kit.failed` and `kit.prev` to `kit` |
 
@@ -43,7 +43,7 @@ Downloaded on its own, `install.sh` installs the release: it fetches the `-ggml0
 
 **Asking a coding agent to do it for you?** Give it [AI_SETUP.md](AI_SETUP.md): numbered steps with the exact commands, what to expect, and the rules (it asks before downloading a model or editing an agent's config).
 
-**While releases are marked "pre-release"** (all of them are, during the beta), GitHub's `releases/latest/` address does not find them and answers 404. Use the version in the address instead: `https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/vX.Y.Z/install.ps1` (and `install.sh`), `vX.Y.Z` being the newest number on the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases). The installer you download this way installs exactly that release.
+Releases are normal (not pre-release) releases, so the `releases/latest/` addresses above always give the newest one. To install a specific version, put it in the address instead: `https://github.com/IbrahimSiddiqui007/moe-cache/releases/download/vX.Y.Z/install.ps1` (or `install.sh`), `vX.Y.Z` being a number from the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases); the installer you download this way installs exactly that release.
 
 ## Terminal guide: `moe-cache launch`
 
