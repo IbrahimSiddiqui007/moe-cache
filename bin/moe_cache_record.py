@@ -170,8 +170,17 @@ def parse_typeperf(text):
 def parse_llama_log(lines):
     """Facts from llama-server's own log: n_layer, offloaded layers, buffers per device (MiB), threads, flash attention.
     {'n_layer', 'offloaded', 'offload_total', 'buffers': {device: {'model','KV','compute',...}}, 'vram_from_log_mib'}."""
-    d = {"n_layer": None, "offloaded": None, "offload_total": None, "buffers": {}}
+    d = {"n_layer": None, "offloaded": None, "offload_total": None, "buffers": {}, "threads": None, "plugin_layers": None, "plugin_cpu_expert_layers": None}
     for l in lines:
+        m = re.search(r"\bn_threads\s*=\s*(\d+)", l)            # 'llama threadpool init, n_threads = 16' (b12000+ prints this at the default verbosity)
+        if m and d["threads"] is None:
+            d["threads"] = int(m.group(1))
+        m = re.search(r"\((\d+) layers x \d+ experts\)", l)       # the plugin's 'profile ... loaded (48 layers x 512 experts)' (stdout/stderr of the server)
+        if m and d["plugin_layers"] is None:
+            d["plugin_layers"] = int(m.group(1))
+        m = re.search(r"experts of (\d+) layers stay on the CPU", l)
+        if m and d["plugin_cpu_expert_layers"] is None:
+            d["plugin_cpu_expert_layers"] = int(m.group(1))
         m = re.search(r"\bn_layer\s*=\s*(\d+)", l)
         if m and d["n_layer"] is None:
             d["n_layer"] = int(m.group(1))
@@ -196,7 +205,8 @@ def parse_cmdline(line):
                 return m.group(1)
         return None
     num = lambda s: int(s) if s is not None and s.isdigit() else s
-    return {"ctx": num(flag("-c", "--ctx-size")), "ub": num(flag("-ub", "--ubatch-size")), "b": num(flag("-b", "--batch-size")),
+    mm = re.search(r'(?:^|\s)(?:-m|--model)[\s=]+("([^"]+)"|\S+)', line)
+    return {"model": (mm.group(2) or mm.group(1)) if mm else None, "ctx": num(flag("-c", "--ctx-size")), "ub": num(flag("-ub", "--ubatch-size")), "b": num(flag("-b", "--batch-size")),
             "n_cpu_moe": 0 if re.search(r"(?:^|\s)(--cpu-moe|-cmoe)(\s|$)", line) and flag("--n-cpu-moe") is None else num(flag("--n-cpu-moe", "-ncmoe")),
             "all_experts_on_cpu": bool(re.search(r"(?:^|\s)(--cpu-moe|-cmoe)(\s|$)", line)),
             "ngl": num(flag("-ngl", "--n-gpu-layers")), "kv_k": flag("-ctk", "--cache-type-k"), "kv_v": flag("-ctv", "--cache-type-v"),
@@ -670,8 +680,15 @@ def sha256_text(s):
 
 
 def git_commit(root):
+    """Short commit of the checkout at `root`; in an unpacked kit (no .git) the kit's REVISION file, else the 'built from commit XXXX' line of README_WINDOWS.txt."""
     out = RUN(["git", "-C", root, "rev-parse", "--short=9", "HEAD"], timeout=10).strip()
-    return out or None
+    if out:
+        return out
+    for rel, rx in (("REVISION", r"^\s*([0-9a-f]{7,40})\s*$"), ("README_WINDOWS.txt", r"built from commit ([0-9a-f]{7,40})")):
+        m = re.search(rx, READ(os.path.join(root, rel)) or "", re.M)
+        if m:
+            return m.group(1)
+    return None
 
 
 def llama_build(version_line):
@@ -725,29 +742,73 @@ def collect_environment(model=None, llama_server=None, listing=None, version_lin
 
 
 def _file_quant(model):
+    """The quant of a GGUF: its general.file_type name, else the type holding most of the expert bytes (Q2_0 files carry no file_type name). None if unreadable."""
     try:
         sys.path.insert(0, HERE)
         import moe_cache_model as mm
-        return mm.file_quant(model) or None
+        m = mm.identity(model)
+        return m.file_quant or m.expert_quant or None
     except Exception:
         return None
 
 
-def settings_from(cmdline, env=None, log_lines=None, extra=None):
+def _gguf_layers(model):
+    """Block count (n_layer) from the GGUF header of `model`, or None where the file is not here / not readable (the PC that ran the server has it)."""
+    try:
+        sys.path.insert(0, HERE)
+        import moe_cache_model as mm
+        return mm.identity(model).n_layers or None
+    except Exception:
+        return None
+
+
+KV_DEFAULT = "f16 (llama.cpp default: no -ctk/-ctv on the command line)"
+
+
+def settings_from(cmdline, env=None, log_lines=None, extra=None, model=None):
     """The Settings section: the full launcher command line, every MOE_CACHE_* / GGML_* / LLAMA_* variable (from `env` and from an 'env A=1 ...' prefix of the
-    line), ctx / ub / b / n-cpu-moe / GPU expert layers / KV type / flags, the server log's layer counts."""
+    line), ctx / ub / b / n-cpu-moe / GPU expert layers / KV type / flags, the server log's layer counts. Every value comes from a fact: the command line, the
+    server log (stderr and stdout lines together), or the model's own GGUF header (`model`, default: the -m path of the command line). `fact_sources` says which.
+    A value none of them gives stays "not recorded"."""
     cmdline = cmdline or ""
     p = parse_cmdline(cmdline)
     lg = parse_llama_log(log_lines or [])
     envs = {k: v for k, v in sorted((env or os.environ).items()) if re.match(r"(MOE_CACHE|GGML|LLAMA)_", k) and k != "LLAMA_API_KEY"}
     envs.update(env_in_line(cmdline))
-    n_layer = lg["n_layer"] or lg["offload_total"] and lg["offload_total"] - 1
+    src = {}
+    n_layer = lg["n_layer"]
+    if n_layer:
+        src["n_layer"] = "server log (n_layer)"
+    elif lg["offload_total"]:
+        n_layer, src["n_layer"] = lg["offload_total"] - 1, "server log (offloaded layers - 1)"
+    elif lg["plugin_layers"]:
+        n_layer, src["n_layer"] = lg["plugin_layers"], "plugin log line (layers x experts)"
+    else:
+        mp = model or p["model"]
+        n_layer = _gguf_layers(mp) if mp and os.path.isfile(mp) else None
+        if n_layer:
+            src["n_layer"] = "GGUF header block_count of " + os.path.basename(mp)
+    n_cpu_moe = p["n_cpu_moe"]
+    if n_cpu_moe is None and lg["plugin_cpu_expert_layers"] is not None:
+        n_cpu_moe, src["n_cpu_moe"] = lg["plugin_cpu_expert_layers"], "plugin log line (experts of N layers stay on the CPU)"
     gpu_exp = NR
-    if p["n_cpu_moe"] is not None and isinstance(p["n_cpu_moe"], int) and n_layer:
-        gpu_exp = max(0, n_layer - p["n_cpu_moe"]) if not p["all_experts_on_cpu"] else 0
-    s = {"command_line": nr(cmdline), "environment": envs or {}, "ctx": nr(p["ctx"]), "ubatch": nr(p["ub"]), "batch": nr(p["b"]), "n_cpu_moe": nr(p["n_cpu_moe"]),
-         "n_layer": nr(n_layer), "gpu_expert_layers": gpu_exp, "ngl": nr(p["ngl"]), "kv_type_k": nr(p["kv_k"]), "kv_type_v": nr(p["kv_v"]),
-         "flash_attn": nr(p["flash_attn"]), "mtp": "yes" if p["mtp"] else "no", "fast_flag": "yes" if "--fast" in cmdline else "no", "threads": nr(p["threads"])}
+    if isinstance(n_cpu_moe, int) and n_layer:
+        gpu_exp = max(0, n_layer - n_cpu_moe) if not p["all_experts_on_cpu"] else 0
+        src["gpu_expert_layers"] = "n_layer - n_cpu_moe"
+    kv_k, kv_v = p["kv_k"], p["kv_v"]
+    if cmdline.strip():                      # a real command line without -ctk / -ctv runs llama.cpp's default cache type
+        if kv_k is None:
+            kv_k, src["kv_type_k"] = KV_DEFAULT, "llama.cpp default (not on the command line)"
+        if kv_v is None:
+            kv_v, src["kv_type_v"] = KV_DEFAULT, "llama.cpp default (not on the command line)"
+    threads = p["threads"]
+    if threads is None and lg["threads"]:
+        threads, src["threads"] = lg["threads"], "server log (llama threadpool init, n_threads)"
+    s = {"command_line": nr(cmdline), "environment": envs or {}, "ctx": nr(p["ctx"]), "ubatch": nr(p["ub"]), "batch": nr(p["b"]), "n_cpu_moe": nr(n_cpu_moe),
+         "n_layer": nr(n_layer), "gpu_expert_layers": gpu_exp, "ngl": nr(p["ngl"]), "kv_type_k": nr(kv_k), "kv_type_v": nr(kv_v),
+         "flash_attn": nr(p["flash_attn"]), "mtp": "yes" if p["mtp"] else "no", "fast_flag": "yes" if "--fast" in cmdline else "no", "threads": nr(threads)}
+    if src:
+        s["fact_sources"] = src
     s.update(extra or {})
     return s
 

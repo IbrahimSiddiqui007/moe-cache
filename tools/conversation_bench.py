@@ -15,7 +15,7 @@ Per turn: tokens added, depth before and after, prompt and decode tok/s (the ser
 the plugin's hits_dec / misses_dec of that turn when --stats-pid and --stats-log are given (the plugin must run with MOE_CACHE_STATS_SIGNAL=1; its
 stderr goes to the log). Per depth band (a quarter of the context each): the same, summed over the turns that start in that band.
 A value the server did not give is null in the run file and "not recorded" in the record; nothing is guessed. Standard library only. Docs: docs/CONVERSATION_BENCH.md."""
-import argparse, datetime, hashlib, http.client, json, os, random, re, signal, statistics, sys, time, urllib.parse
+import argparse, datetime, hashlib, http.client, json, os, random, re, signal, statistics, subprocess, sys, time, urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -211,8 +211,26 @@ class Stats:
 
 
 def proc_read_bytes(pid):
-    """Bytes the process read from storage so far (Linux /proc/<pid>/io), or None where the OS gives no such counter (Windows: the plugin's own read_bytes
-    counter is used instead, and a stock server's disk reads are not recorded)."""
+    """Bytes the process read so far, or None. Linux: /proc/<pid>/io read_bytes (storage reads, mmap page-ins included). Windows: ReadTransferCount of
+    GetProcessIoCounters (explicit ReadFile reads only: memory-mapped page-ins are NOT in it, so for a server started with --load-mode mmap it is a lower bound)."""
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            class IOC(ctypes.Structure):
+                _fields_ = [(n, ctypes.c_ulonglong) for n in ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount", "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+            k = ctypes.WinDLL("kernel32", use_last_error=True)
+            k.OpenProcess.restype = wintypes.HANDLE
+            h = k.OpenProcess(0x1000, False, int(pid))      # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return None
+            try:
+                c = IOC()
+                return int(c.ReadTransferCount) if k.GetProcessIoCounters(h, ctypes.byref(c)) else None
+            finally:
+                k.CloseHandle(h)
+        except Exception:
+            return None
     try:
         with open(f"/proc/{int(pid)}/io") as f:
             for line in f:
@@ -221,6 +239,53 @@ def proc_read_bytes(pid):
     except (OSError, ValueError):
         pass
     return None
+
+
+def parse_drive_raw(text):
+    """The cumulative Disk Read Bytes of one drive from `Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk ... | Select -Expand DiskReadBytesPersec` text:
+    the first whole number in it, or None."""
+    m = re.search(r"^\s*(\d+)\s*$", text or "", re.M)
+    return int(m.group(1)) if m else None
+
+
+def drive_read_bytes(letter):
+    """Windows only: bytes ever read from the physical disk that holds drive `letter` (the raw cumulative counter behind 'PhysicalDisk\\Disk Read Bytes/sec'; the
+    whole drive, other programs included, memory-mapped page-ins included). None elsewhere or when the counter cannot be read."""
+    if os.name != "nt" or not letter or not re.fullmatch(r"[A-Za-z]", letter):
+        return None
+    ps = ("(Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk | Where-Object { $_.Name -like '* %s:' } | Select-Object -First 1).DiskReadBytesPersec" % letter.upper())
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps], capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_drive_raw(out)
+
+
+def model_drive(cmd):
+    """Drive letter of the -m path in a Windows llama-server command line, or None."""
+    m = re.search(r'(?:^|\s)(?:-m|--model)[\s=]+"?([A-Za-z]):[\\/]', cmd or "")
+    return m.group(1).upper() if m else None
+
+
+def disk_read_facts(plugin_gb, nt, io0, io1, dr0, dr1, drive):
+    """The run's disk-read fields. Order of trust: the plugin's own counter (plugin_gb: per-turn values, summed); on Linux /proc/<pid>/io; on Windows the model
+    drive's raw disk counter (sees mapped page-ins), else the process ReadTransferCount (a lower bound with mmap). The process figure is always kept next to it.
+    Nothing readable: no field (the record says "not recorded")."""
+    out = {}
+    if io0 is not None and io1 is not None:
+        out["disk_read_process_gb"] = round((io1 - io0) / 1e9, 2)
+        out["disk_read_process_source"] = ("/proc/<pid>/io read_bytes of llama-server over the run" if not nt else
+                                           "Windows ReadTransferCount of llama-server over the run (explicit reads only; memory-mapped page-ins are not counted: a lower bound with --load-mode mmap)")
+    if plugin_gb:
+        out["disk_read_gb"], out["disk_read_source"] = round(sum(plugin_gb), 2), "the plugin's own read_bytes counter, summed over the turns"
+    elif not nt and "disk_read_process_gb" in out:
+        out["disk_read_gb"], out["disk_read_source"] = out["disk_read_process_gb"], out["disk_read_process_source"]
+    elif dr0 is not None and dr1 is not None:
+        out["disk_read_gb"] = round((dr1 - dr0) / 1e9, 2)
+        out["disk_read_source"] = f"Windows PhysicalDisk raw Disk Read Bytes of the model's drive {drive}: over the run, whole drive (other programs and mapped page-ins included)"
+    elif "disk_read_process_gb" in out:
+        out["disk_read_gb"], out["disk_read_source"] = out["disk_read_process_gb"], out["disk_read_process_source"]
+    return out
 
 
 def delta(s0, s1, key):
@@ -232,7 +297,7 @@ def delta(s0, s1, key):
 # ---------------------------------------------------------------- one conversation
 
 def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="conversation-bench", timeout=1800, stats=None, max_turns=None,
-                     script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None):
+                     script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None, drive=None):
     """Play the conversation; returns the run dict (turns, bands, stop reason). monitor_pid: llama-server's pid, sampled during the whole run for VRAM, process
     RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py)."""
     smp = None
@@ -243,6 +308,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
         except Exception as ex:
             log(f"no resource sampling: {type(ex).__name__}: {ex}")
     io0 = proc_read_bytes(monitor_pid) if monitor_pid else None
+    dr0 = drive_read_bytes(drive) if drive else None
     turns, history = [], [{"role": "system", "content": SYSTEM}]
     prev_total, n, stop = 0, 0, "max turns reached"
     t_start = time.time()
@@ -284,6 +350,9 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
                "ttft_s": round(r["ttft_s"], 3) if r["ttft_s"] is not None else None, "wall_s": round(r["wall_s"], 2),
                "hits_dec": delta(s0, s1, "hits_dec"), "misses_dec": delta(s0, s1, "misses_dec"),
                "read_gb": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "read_bytes")),
+               "gpu_blocks": delta(s0, s1, "gpu_segments"),
+               "gpu_up_saved_gb": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "gpu_up_saved")),
+               "ssd_wait_s": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "ns_ssd_wait")),
                "answer_chars": len(r["text"]), "answer_sha256": hashlib.sha256(r["text"].encode("utf-8")).hexdigest()[:16]}
         turns.append(row)
         log(f"  [{arm}] turn {n:3d} {pick['kind']:<11} +{row['tokens_added']} tok  depth {row['depth_before']}->{row['depth_after']}  "
@@ -305,10 +374,13 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
         run["monitor"] = smp.stop()
     rb = [t["read_gb"] for t in turns if t["read_gb"] is not None]
     io1 = proc_read_bytes(monitor_pid) if monitor_pid else None
-    if rb:
-        run["disk_read_gb"], run["disk_read_source"] = round(sum(rb), 2), "the plugin's own read_bytes counter, summed over the turns"
-    elif io0 is not None and io1 is not None:
-        run["disk_read_gb"], run["disk_read_source"] = round((io1 - io0) / 1e9, 2), "/proc/<pid>/io read_bytes of llama-server over the run"
+    dr1 = drive_read_bytes(drive) if drive else None
+    # the plugin's own counters, run total = the sum over the turns (the same rule as the disk reads: time between turns is not counted)
+    for field in ("gpu_blocks", "gpu_up_saved_gb", "ssd_wait_s"):
+        vals = [t[field] for t in turns if t.get(field) is not None]
+        if vals:
+            run[field] = round(sum(vals), 3) if field != "gpu_blocks" else int(sum(vals))
+    run.update(disk_read_facts(rb, os.name == "nt", io0, io1, dr0, dr1, drive))
     return run
 
 
@@ -424,11 +496,13 @@ def build_record(runs, a):
         o = overall(run)
         e = rr.run_entry(run["arm"], counts[run["arm"]], {"prompt_tps": o["prompt_tps"], "decode_tps": o["decode_tps"], "ttft_s": o["ttft_s"], "wall_s": run["wall_s"],
                                                            "prompt_tokens": run["final_depth"], "cache_hit_pct": o["cache_hit_pct"],
-                                                           "load_s": run.get("load_s"), "disk_read_gb": run.get("disk_read_gb"),
+                                                           "load_s": run.get("load_s"), "disk_read_gb": run.get("disk_read_gb"), "gpu_blocks": run.get("gpu_blocks"),
                                                            "error": run["stop_reason"] if run["stop_reason"].startswith("error") else "",
                                                            "text_sha256": run["user_turns_sha256"]}, run.get("monitor"))
         e["hit_rate_dec_pct"] = rr.rnd(o["hit_rate_dec_pct"], 1) if o["hit_rate_dec_pct"] is not None else ("n/a (no cache)" if run["arm"] == "stock" else rr.NR)
         e["disk_read_source"] = run.get("disk_read_source", rr.NR)
+        for k in ("disk_read_process_gb", "disk_read_process_source", "gpu_up_saved_gb", "ssd_wait_s"):
+            e[k] = run.get(k, rr.NR)
         e["settings"] = run.get("settings") or rr.NR
         e["server_log_facts"] = run.get("server_log_facts") or rr.NR
         e["turns"] = run["turns"]
@@ -493,7 +567,7 @@ def _run_args(p):
     p.add_argument("--monitor-pid", type=int, help="llama-server's pid: VRAM, process RAM, free RAM and CPU peaks are sampled during the run (the bench-report sampler)")
     p.add_argument("--command-line", dest="server_cmd", help="the llama-server command line of this run (ctx, ub, GPU layers, flags go into the record); an 'env A=1 B=2 ' prefix "
                    "records environment variables; @FILE reads the text from a file")
-    p.add_argument("--server-log", help="llama-server's log file (layer counts and buffer sizes are read from it)")
+    p.add_argument("--server-log", action="append", help="llama-server's log file (layer counts, threads and buffer sizes are read from it); repeat for stdout and stderr, the plugin prints to stdout")
     p.add_argument("--load-s", type=float, help="seconds from the server start to its first ready answer (measured by the driver)")
 
 
@@ -507,17 +581,23 @@ def _one(a, url, arm, log=print):
     stats = Stats(a.stats_pid, a.stats_log) if a.stats_pid and a.stats_log else None
     script = load_script(a.script) if a.script else None
     log(f"conversation: arm {arm}, {url}, context {ctx}, {a.max_tokens} tokens per answer, seed {a.seed}")
-    run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, a.no_think, a.ignore_eos, log, a.monitor_pid)
+    cmd = a.server_cmd or ""
     try:
-        import moe_cache_record as rr
-        lines = []
-        if a.server_log and os.path.exists(a.server_log):
-            with open(a.server_log, "rb") as f:
-                lines = f.read(40_000_000).decode("utf-8", "replace").splitlines()
-        cmd = a.server_cmd or ""
         if cmd.startswith("@"):                  # --command-line @FILE: the text is in a file (quotes and spaces survive PowerShell's argument passing)
             with open(cmd[1:], encoding="utf-8-sig") as f:
                 cmd = f.read().strip()
+    except OSError as ex:
+        log(f"command line file not read: {ex}")
+        cmd = ""
+    run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, a.no_think, a.ignore_eos, log, a.monitor_pid,
+                           model_drive(cmd) if os.name == "nt" else None)
+    try:
+        import moe_cache_record as rr
+        lines = []
+        for lf in (a.server_log or []):
+            if os.path.exists(lf):
+                with open(lf, "rb") as f:
+                    lines += f.read(40_000_000).decode("utf-8", "replace").splitlines()
         run["command_line"] = cmd
         run["settings"] = rr.settings_from(cmd, env={}, log_lines=lines)
         run["server_log_facts"] = rr.parse_llama_log(lines)

@@ -56,6 +56,7 @@ for m in "$K"/bin/*.py; do grep -oE "^\s*(import|from) moe_cache[a-z_]*" "$m"; d
   [ -f "$K/bin/$mod.py" ] || { echo "FAIL: $mod.py is imported but not in the kit"; exit 1; }
 done
 sed "s/@VERSION@/$V/g; s/@COMMIT@/$(git rev-parse --short HEAD)/g" "$X/tools/README_WINDOWS.txt" | sed 's/$/\r/' > "$K/README_WINDOWS.txt"
+git rev-parse --short HEAD > "$K/REVISION"     # the kit has no .git: the benchmark record reads its commit from here
 printf '@echo off\r\nrem moe-cache control page: double-click. "moe-cache.bat --shortcut" adds it to the Start menu.\r\ncall "%%~dp0bin\\moe-cache-ui.bat" %%*\r\n' > "$K/moe-cache.bat"
 find "$K" -name __pycache__ -prune -exec rm -rf {} +
 mkdir -p dist

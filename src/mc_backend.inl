@@ -336,8 +336,15 @@ static void wait_experts(state_t & s, const ggml_tensor * t, int64_t e0, int64_t
     const tinfo_t & ti = *s.tensors[it->second];
     for (int64_t e = e0; e < e0 + n && e < ti.n_expert; e++) {
         const bool * f = &s.nodes[(size_t) (ti.node0 + e)].loading;
-        while (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
-            std::this_thread::yield();
+        if (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
+            // Stage 0 (IQ3_XXS speed plan): the compute side really waits for a read still in flight (SSD or page-in). Counters only, the clock is read only on
+            // this slow path, so a flag that is already clear costs what it did before (one atomic load)
+            const auto w0 = std::chrono::steady_clock::now();
+            while (__atomic_load_n(f, __ATOMIC_ACQUIRE)) {
+                std::this_thread::yield();
+            }
+            s.ns_ssd_wait += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - w0).count();
+            s.n_ssd_wait++;
         }
     }
 }

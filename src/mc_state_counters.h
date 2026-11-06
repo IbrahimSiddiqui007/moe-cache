@@ -4,5 +4,5 @@
 
 struct state_counters_t {
     std::atomic<uint64_t> hits{0}, misses{0}, bytes{0}, groups{0}, ops{0}, graphs{0};
-    std::atomic<uint64_t> ns_prep{0}, ns_cpu{0}, ns_total{0}, ns_read{0}, evictions{0}, direct_jobs{0}, bounce_jobs{0}, async_in{0};
+    std::atomic<uint64_t> ns_prep{0}, ns_cpu{0}, ns_total{0}, ns_read{0}, ns_ssd_wait{0}, n_ssd_wait{0}, evictions{0}, direct_jobs{0}, bounce_jobs{0}, async_in{0};
 };

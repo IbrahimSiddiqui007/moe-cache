@@ -211,5 +211,37 @@ check("version: 12064 (51fe42c5d)" in rr._run([sys.executable, "-c", "import sys
 check(rr.llama_build("version: 0.8.0-dev (build 12064, commit 51fe42c5d)\nbuilt with Clang 20.1.8") == (12064, "51fe42c5d")
       and rr.llama_build("version: 11966 (ff0d396e3)") == (11966, "ff0d396e3"), "llama_build reads the new '(build N, commit C)' and the old 'version: N (C)' lines")
 
+# ---- Stage 0: gpu_blocks, upload bytes avoided and SSD wait of a run are the difference between the first and the last snapshot; extra --server-log files are read
+if os.name != "nt":
+    log4 = os.path.join(tempfile.mkdtemp(), "server.err.log"); n4 = {"n": 0}
+    def on4(sig, frm):
+        n4["n"] += 1
+        open(log4, "a").write("moe-cache-stats " + json.dumps({"hits_dec": 10 * n4["n"], "misses_dec": 2 * n4["n"], "read_bytes": 1_000_000_000 * n4["n"], "gpu_segments": 100 * n4["n"],
+                                                               "gpu_up_saved": 3_000_000_000 * n4["n"], "ns_ssd_wait": 1_500_000_000 * n4["n"]}) + "\n")
+    open(log4, "w").close(); old4 = signal.signal(signal.SIGUSR1, on4)
+    try:
+        G, ug = start("G", 4096, 100.0, 10.0)
+        r4 = cb.run_conversation(ug, "moe-cache", 4096, 32, 42, "", "m", 30, cb.Stats(os.getpid(), log4), 4, None, False, False, quiet)
+        check(all(t["gpu_blocks"] == 100 and t["gpu_up_saved_gb"] == 3.0 and t["ssd_wait_s"] == 1.5 for t in r4["turns"]), "per turn: GPU blocks, upload GB avoided and SSD wait seconds are snapshot differences (100, 3.0, 1.5)")
+        check(r4["gpu_blocks"] == 400 and r4["gpu_up_saved_gb"] == 12.0 and r4["ssd_wait_s"] == 6.0, "per run: 4 turns give 400 GPU blocks, 12 GB avoided, 6 s SSD wait")
+        ns6 = type("A", (), dict(model=None, llama_server=None, backend=None, model_url=None, command_line=None, server_cmd=None, baseline=None, other_programs=None, cache=None))()
+        rec7 = cb.build_record([dict(r4), dict(r4)], ns6)
+        e7 = rec7["runs"][0]
+        check(e7["gpu_blocks"] == 400 and e7["gpu_up_saved_gb"] == 12.0 and e7["ssd_wait_s"] == 6.0 and rr.validate(rec7, rr.load_schema()) == [], "the record carries gpu_blocks, gpu_up_saved_gb and ssd_wait_s and still validates")
+    finally:
+        signal.signal(signal.SIGUSR1, old4)
+no2 = cb.run_conversation(ua, "stock", 4096, 32, 42, "", "m", 30, None, 2, None, False, False, quiet)
+check("gpu_blocks" not in no2 and all(t["gpu_blocks"] is None for t in no2["turns"]), "without the plugin's counters gpu_blocks is absent, so the record says not recorded")
+out7 = tempfile.mkdtemp()
+so_log, se_log = os.path.join(out7, "o.log"), os.path.join(out7, "e.log")
+open(so_log, "w").write("moe-cache: profile x loaded (48 layers x 512 experts)\nmoe-cache: experts of 42 layers stay on the CPU and are managed by the cache\n")
+open(se_log, "w").write("0.12.691.866 I cmn          init: llama threadpool init, n_threads = 16\n")
+H, uh = start("H", 4096, 100.0, 10.0)
+rc = cb.main(["run", "--url", uh, "--arm", "stock", "--ctx", "4096", "--max-tokens", "16", "--max-turns", "2", "--command-line", "llama-server -m x.gguf -c 4096 --n-cpu-moe 42 -ngl 99",
+              "--server-log", se_log, "--server-log", so_log, "--out", os.path.join(out7, "r.json")])
+rh = json.load(open(os.path.join(out7, "r.json")))["settings"]
+check(rc == 0 and rh["threads"] == 16 and rh["n_layer"] == 48 and rh["gpu_expert_layers"] == 6 and str(rh["kv_type_k"]).startswith("f16"),
+      f"two --server-log files (stderr and stdout) are read together: threads {rh['threads']}, n_layer {rh['n_layer']}, GPU expert layers {rh['gpu_expert_layers']}, KV {rh['kv_type_k']}")
+
 print("conversation bench test: " + ("PASS" if not fails else f"FAIL ({len(fails)})"))
 sys.exit(1 if fails else 0)

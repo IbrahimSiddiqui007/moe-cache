@@ -416,6 +416,7 @@
             j += ",\"pack\":[" + std::to_string(pack_reads.load()) + "," + std::to_string(pack_bytes.load()) + "," + std::to_string(pack_slices.load()) + "," + std::to_string(pack_fallbacks.load()) + "]" + ",\"exec_fused\":" + std::to_string(exec_fused.load()) + ",\"exec_ops\":" + std::to_string(exec_ops.load()) + ",\"exec_checked\":" + std::to_string(exec_checked.load()) +
                  ",\"exec_mismatch\":" + std::to_string(exec_mismatch.load()) + ",\"idle_releases\":" + std::to_string(idle_releases) +
                  ",\"pool_parks\":" + std::to_string(pool ? pool->parks.load() : 0) + ",\"async_in\":" + std::to_string(async_in.load()) +
+                 ",\"gpu_up_saved\":" + std::to_string(gpu_up_saved.load()) + ",\"ns_ssd_wait\":" + std::to_string(ns_ssd_wait.load()) + ",\"n_ssd_wait\":" + std::to_string(n_ssd_wait.load()) +
                  ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
                  ",\"n_gap\":" + std::to_string(n_gap.load()) + ",\"gap_b_ns\":[" + std::to_string(gap_b_ns[0].load()) + "," + std::to_string(gap_b_ns[1].load()) + "," +
                  std::to_string(gap_b_ns[2].load()) + "," + std::to_string(gap_b_ns[3].load()) + "]";

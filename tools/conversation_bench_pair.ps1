@@ -98,7 +98,7 @@ foreach ($kind in $kinds) {
   $llama = @(Get-CimInstance Win32_Process -Filter "Name='llama-server.exe'" | Sort-Object CreationDate -Descending)
   $cmdText = if ($kind -eq "mc") { "env MOE_CACHE_LIB=$Lib MOE_CACHE_STATS_SIGNAL=1 llama-server $mcArgs" } else { "llama-server $stockArgs" }
   $cmdFile = Join-Path $OutDir "cmd-$tag.txt"; Set-Content -Path $cmdFile -Value $cmdText -Encoding UTF8
-  $ba += @("--command-line", "@$cmdFile", "--server-log", $se, "--load-s", "$loadS")
+  $ba += @("--command-line", "@$cmdFile", "--server-log", $se, "--server-log", $so, "--load-s", "$loadS")
   if ($llama.Count -gt 0) { $ba += @("--monitor-pid", "$($llama[0].ProcessId)") }
   if ($kind -eq "mc") {
     if ($llama.Count -gt 0) { $ba += @("--stats-pid", "$($llama[0].ProcessId)", "--stats-log", $se) }
