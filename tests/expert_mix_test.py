@@ -3,7 +3,13 @@
 file A or file B. Uses the numpy codec (Q8_0 and Q4_0 inputs, Q8_0 output); when a libggml is given in EXPERT_MIX_LIBGGML the ggml codec is compared with it too.
    python3 tests/expert_mix_test.py"""
 import os, struct, sys, tempfile
-import numpy as np
+try:
+    import numpy as np
+except ImportError:             # the tool needs numpy; CI installs it (quick.yml), a contributor machine without it skips
+    if os.environ.get("CI"):
+        raise
+    print("expert_mix_test: skipped (numpy is not installed)")
+    sys.exit(0)
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "tools"))
