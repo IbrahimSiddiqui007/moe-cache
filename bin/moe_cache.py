@@ -448,6 +448,17 @@ def model_parts(model):
     return [model]
 
 
+def loading_line(model):
+    """CACHE-181: one line before llama-server starts: how much is read and a rough time. The range is from a slow SATA SSD (0.5 GB/s) to a fast NVMe
+    drive (3 GB/s); a file already in the OS page cache loads faster, so it is an upper bound for a cold load, not a promise."""
+    try:
+        gb = sum(os.path.getsize(f) for f in model_parts(model)) / 1e9
+    except OSError:
+        return "moe-cache: loading the model (size unknown); a first load of a big model can take minutes, the server prints when it is ready"
+    lo, hi = max(1, round(gb / 3.0)), max(2, round(gb / 0.5))
+    return f"moe-cache: loading {gb:.1f} GB, about {lo}-{hi} s on a cold start (fast NVMe to SATA SSD; less when the file is already cached); the server prints when it is ready"
+
+
 def plugin_off_line(line):
     """True for the plugin's lines that say it is not caching (setup failed, MOE_CACHE_DISABLE, wrong backend API); its other "refused" lines
     (a working-set minimum or memory Windows did not grant) are warnings of a plugin that keeps running."""
@@ -1995,13 +2006,13 @@ def exit_reason(rc, ready):
 
 SERVER_HELP = """\
 --fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
-           also a q8_0 KV cache (half the KV memory; KL 0.0045 on its own, RESULTS 53).
+           also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/RESULTS.md R11, RESULTS 53).
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    keep the f16 KV cache at 128k+ (no --fast=kv default)
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
-           Flash-Next at 12 GB: 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
+           Flash-Next at 12 GB (laptop; not yet measured on the PC): 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
@@ -3220,6 +3231,7 @@ def run_launch_plan(plan):
     if port_busy(port):
         raise SystemExit(f"moe-cache: port {port} is already in use (another llama-server, or on-demand: moe_cache.py on-demand --status); "
                          f"stop it or pick another with --port")
+    say(loading_line(model))      # CACHE-181: the first load of a big model is silent for minutes
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")) and not project_id_ok(slotdir, a.project):
         say(f"moe-cache: not restoring the saved state of project {a.project}: it has no record of the model, context and cache types it was made with, "
             "or they differ from this server's (a state is only valid for the same model file); save it again with `moe_cache.py project save`", err=True)

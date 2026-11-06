@@ -105,4 +105,13 @@ check(bool(n1) and "keeps 2 GB of GPU" not in n1[0] and "leaves 2 CPU cores free
 check(any("CPU cores left free" in t for t in n1), f"leave-room: cores are reported when -t was set ({n1})")
 n2 = notes("--", "-t", "4")
 check(not any("CPU cores left free" in t for t in n2), "leave-room: with your own -t no cores claim")
+# CACHE-181: the loading line names the size and a seconds range; a missing file still gives a line
+lf = os.path.join(tmp2, "m.gguf")
+with open(lf, "wb") as fh:
+    fh.truncate(6_000_000_000)
+ll = mc.loading_line(lf)
+check("loading 6.0 GB" in ll and "about 2-12 s" in ll, f"loading line: size and range ({ll})")
+check("size unknown" in mc.loading_line(os.path.join(tmp2, "none.gguf")), "loading line: missing file gives a line, no crash")
+# DOCS-047: the --fast help gives the PC figure beside the laptop figure
+check("0.0120 on the PC" in mc.SERVER_HELP, "--fast help quotes the PC KL value")
 sys.exit(1 if fails else 0)
