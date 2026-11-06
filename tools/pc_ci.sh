@@ -30,7 +30,7 @@ step() {      # step NAME COMMAND...: runs, times, logs to $LOGDIR/laptop.log
 }
 summary() {
   echo; echo "commit $SHA ($REF)"; echo "log folder: $LOGDIR"
-  { printf 'step\twhere\tresult\tminutes\n'; awk -F'\t' '{printf "%s\t%s\t%s\t%.1f\n",$1,$2,$3,$4/60}' "$ROWS"; } | column -t -s $'\t'
+  { printf 'step\twhere\tresult\tminutes\n'; awk -F'\t' '{printf "%s\t%s\t%s\t%.2f\n",$1,$2,$3,$4/60}' "$ROWS"; } | column -t -s $'\t'
   if [ $FAIL = 0 ]; then echo "ALL PASS"; else echo "FAILED (see the log folder)"; fi
   exit $FAIL
 }
