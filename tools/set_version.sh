@@ -43,16 +43,16 @@ CB="${C//-/--}"; Ce="$(esc "$C")"; Ve="$(esc "$V")"
 fail() { echo "$1 (nothing was changed)"; exit 1; }
 grep -q '^## Unreleased' CHANGELOG.md                       || fail 'CHANGELOG.md has no "## Unreleased" heading to turn into the release heading'
 [ -f "docs/RELEASE_NOTES_v$V.md" ]                           || fail "docs/RELEASE_NOTES_v$V.md does not exist: write the release notes first (the release workflow publishes them)"
-grep -q "status-v$CB%20beta" README.md                      || fail "README.md: no status badge for v$C"
+grep -q "status-v$CB\(%20beta\)\{0,1\}-" README.md          || fail "README.md: no status badge for v$C"
 grep -q "MOE_CACHE_REF:-v$C}" install.sh                    || fail "install.sh: MOE_CACHE_REF default is not v$C"
 grep -q "plugin v$C (ggml backend API" src/mc_state.inl     || fail "src/mc_state.inl: the start-up banner does not say v$C"
 sed -i "s/^## Unreleased.*/## $V ($(date +%Y-%m-%d))/" CHANGELOG.md
-sed -i "s/status-v$(esc "$CB")%20beta/status-v$(esc "$B")%20beta/; s/^## Known issues in v$Ce\b/## Known issues in v$Ve/" README.md
+sed -i "s/status-v$(esc "$CB")\(%20beta\)\{0,1\}-/status-v$(esc "$B")\1-/; s/^## Known issues in v$Ce\b/## Known issues in v$Ve/" README.md
 sed -i "s/MOE_CACHE_REF:-v$Ce}/MOE_CACHE_REF:-v$Ve}/" install.sh
 sed -i "s/plugin v$Ce (ggml backend API/plugin v$Ve (ggml backend API/" src/mc_state.inl
 sed -i "s/^VERSION = \"$Ce\"/VERSION = \"$Ve\"/" bin/moe_cache.py
 # every place must now say V
-for pair in "CHANGELOG.md:^## $Ve (" "README.md:status-v$(esc "$B")%20beta" "install.sh:MOE_CACHE_REF:-v$Ve}" "src/mc_state.inl:plugin v$Ve (" "bin/moe_cache.py:^VERSION = \"$Ve\""; do
+for pair in "CHANGELOG.md:^## $Ve (" "README.md:status-v$(esc "$B")" "install.sh:MOE_CACHE_REF:-v$Ve}" "src/mc_state.inl:plugin v$Ve (" "bin/moe_cache.py:^VERSION = \"$Ve\""; do
   grep -q -- "${pair#*:}" "${pair%%:*}" || { echo "FAIL: ${pair%%:*} does not name $V after the edit"; exit 1; }
 done
 echo "version $C -> $V in: CHANGELOG.md README.md install.sh src/mc_state.inl bin/moe_cache.py. Review README.md / docs/ROADMAP.md prose with git diff; nothing committed or tagged."

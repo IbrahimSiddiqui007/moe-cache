@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.7.1 (2026-11-06)
+
+| Area | Change |
+|---|---|
+| Installers | `install.ps1`, `install.sh` and `update --apply` no longer ask `gh auth status` whether the build attestation can be checked. That command exits 1 when any saved GitHub account has a bad token, even if the active login works, and Windows PowerShell 5.1 ended the install on its first line of output with only "github.com ... Stopped". The exit code of `gh attestation verify` now decides, and its text names the reason (no working login, GitHub unreachable, or a failed check, which nothing overrides). Nothing else changed from v0.3.7. |
+
 ## 0.3.7 (2026-11-05)
 
 | Area | Change |
