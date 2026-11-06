@@ -28,6 +28,15 @@ Owner's decision, 2026-11-02. We do not rebuild for every llama.cpp release. Pat
 
 Non-security moves wait at most a week, so one test cycle covers everything pending. Before a move, losing patches go to `archive/`, so only patches still in play are re-checked.
 
+Checklist for every move:
+
+| Step | What |
+|---|---|
+| 1 | Archive the patches that lost their test (no repeatable gain, or covered upstream) into `archive/llama.cpp/` with a restore note in `archive/README.md`; only live patches are re-checked against the new pin (PATCH-129; first run at the next move, UPSTREAM-039) |
+| 2 | AMD: do not pick a build from 10-13 to 10-16 (host-import regression, Linux confirmed; #29741, #30468). Pins b11669 and b11966 are outside that range (UPSTREAM-016) |
+| 3 | Read the open Vulkan memory pull requests and note which ones touch the allocation or host-import path before choosing the build |
+| 4 | Pin tracking is by hand today; an automatic check of new releases is an open item on the roadmap |
+
 ## Apply
 
 ```bash
