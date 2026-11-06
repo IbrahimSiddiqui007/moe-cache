@@ -1033,6 +1033,7 @@ check(not ui.mc.decide(small["path"], f"{(sz + ui.mc.STOCK_HEADROOM - 1) / 1e9}"
 fn = os.path.join(TMP, "Flash-Next-IQ2_XS.gguf")
 gguf_header(fn, [("general.architecture", "qwen4exp"), ("qwen4exp.block_count", 48), ("qwen4exp.expert_count", 512)])
 amd = {"device": "Vulkan0", "adapter": "AMD Radeon RX 9070 XT"}
+real_drv, ui.mc.win_driver_version = ui.mc.win_driver_version, (lambda name: "")      # the driver of the machine running the test (a PC with the fixed AMD driver) must not decide: unknown = the workaround applies
 rs = ui.windows_amd_rules(amd, fn, agent=True, windows=True)
 check(len(rs) == 1 and "--ctx-checkpoints 0" in rs[0] and "agents:" in rs[0] and not any("system RAM" in r or "stay on the CPU" in r for r in rs),
       f"Flash-Next on an AMD GPU: checkpoints off; no 'all experts on the CPU' rule any more ({rs})")
@@ -1040,6 +1041,7 @@ check(ui.mc.WINDOWS == (os.name == "nt"), "the launcher's WINDOWS flag is put ba
 check(ui.windows_amd_rules(amd, blob, windows=True) == [], "Qwen3.6: no AMD rule")
 check(ui.windows_amd_rules({"device": "CUDA0", "adapter": "NVIDIA GeForce RTX 4060"}, fn, windows=True) == [], "NVIDIA: no AMD rule")
 check(ui.windows_amd_rules(amd, fn, windows=False) == [], "Linux: no AMD rule")
+ui.mc.win_driver_version = real_drv
 ui.WINDOWS, ui._GPU["gpu"] = True, dict(amd, free=15 * 2**30, integrated=False)
 _planner[0] = lambda path, ctx, ram, vram, kv="f16": dict(PLAN, free_vram_GiB=float(vram or 0))
 real_decide, ui.mc.decide = ui.mc.decide, (lambda path, ram=None, plugin_wanted=False, stock_wanted=False: (stock_wanted, 68e9, 24e9))

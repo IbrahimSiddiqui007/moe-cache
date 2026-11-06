@@ -64,6 +64,9 @@ jobs:
 
   build:
     needs: kit
+    permissions:
+      contents: read
+      actions: write        # only for the cache pruning step below (gh cache delete)
     strategy:
       fail-fast: false
       matrix:
@@ -87,14 +90,21 @@ jobs:
         shell: bash
         run: rustup toolchain install stable --profile minimal && rustup default stable
 
-      - name: Cache Cargo
-        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+      # Cache policy (docs/internal/PC_CI.md, "Actions cache"): GitHub scopes a cache to the branch that saved it, and a run can read only its own branch, the default
+      # branch (main) and, for pull requests, the base branch. So work branches only RESTORE (never save: a copy per branch is what filled the 10 GB limit with 8 caches
+      # of 1-1.5 GB, the same key stored once per branch) and only main / experimental SAVE, one entry per OS. The key names what changes the build (OS image, Cargo.toml,
+      # Cargo.lock); restore-keys falls back to the newest older entry of the same OS, which cargo then rebuilds only where the lock changed (correct, just warmer).
+      - name: Cache Cargo (restore)
+        id: cargo_cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
             desktop/src-tauri/target
           key: desktop-${{ matrix.os }}-${{ hashFiles('desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            desktop-${{ matrix.os }}-
 
       - name: Linux libraries
         if: runner.os == 'Linux'
@@ -168,6 +178,28 @@ jobs:
         run: |
           npm install --no-audit --no-fund
           npx tauri build --bundles ${{ matrix.bundles }}
+
+      # Only main and experimental save (see the restore step). A save is skipped when the exact key was restored; the prune step keeps one entry per OS on this branch.
+      - name: Cache Cargo (save, main and experimental only)
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/experimental') && steps.cargo_cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            desktop/src-tauri/target
+          key: desktop-${{ matrix.os }}-${{ hashFiles('desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/Cargo.lock') }}
+
+      - name: Cache Cargo (prune older entries of this OS on this branch)
+        if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/experimental') && steps.cargo_cache.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KEEP: desktop-${{ matrix.os }}-${{ hashFiles('desktop/src-tauri/Cargo.toml', 'desktop/src-tauri/Cargo.lock') }}
+        run: |
+          gh cache list --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF" --key "desktop-${{ matrix.os }}-" --limit 100 --json id,key --jq '.[] | select(.key != env.KEEP) | .id' > old_caches.txt || true
+          cat old_caches.txt
+          while read -r id; do [ -n "$id" ] && gh cache delete "$id" --repo "$GITHUB_REPOSITORY" || true; done < old_caches.txt
 
       - name: Sizes
         shell: bash
