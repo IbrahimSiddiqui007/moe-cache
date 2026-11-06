@@ -17,6 +17,12 @@
 | Test tool | `tools/stage2_arms.py`: the four IQ3_XXS stage 2 arms (shipped, -ub 4096 with the output-row cap, plus q8_0 KV, shipped plus q8_0 KV) checked with the launcher's `--dry-run`, and the PC lines for them. |
 | Documented | The pack file's payload is not verified byte by byte (CACHE-695). |
 
+## 0.3.7.1 (2026-11-06)
+
+| Area | Change |
+|---|---|
+| Installers | `install.ps1`, `install.sh` and `update --apply` no longer ask `gh auth status` whether the build attestation can be checked. That command exits 1 when any saved GitHub account has a bad token, even if the active login works, and Windows PowerShell 5.1 ended the install on its first line of output with only "github.com ... Stopped". The exit code of `gh attestation verify` now decides, and its text names the reason (no working login, GitHub unreachable, or a failed check, which nothing overrides). Nothing else changed from v0.3.7. |
+
 ## 0.3.7 (2026-11-05)
 
 | Area | Change |

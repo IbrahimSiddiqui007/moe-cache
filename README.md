@@ -4,7 +4,7 @@
 A plugin for an unmodified <code>llama-server</code>. No fork, no patch: the Windows kit and the Linux ggml 0.26 tarball bundle the official llama.cpp b12064 build as released upstream. A small optional patch set for it exists in <code>patches/llama.cpp</code>; it is off by default and not part of the kit.</p>
 
 <p align="center">
-<img alt="status" src="https://img.shields.io/badge/status-v0.3.7-blue">
+<img alt="status" src="https://img.shields.io/badge/status-v0.3.7.1-blue">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
 <img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b12064%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
@@ -106,7 +106,7 @@ Each number is the mean of two cold runs in the order stock, moe-cache, moe-cach
 - **Cold start.** From a cold file cache the plugin reports ready a few seconds later than stock while it loads its hot experts; the first answer wins it back (RESULTS 61).
 - **Small samples.** Two runs per arm, one PC, one seeded script, a v0.3.7 candidate kit. Cleanliness: see the note under the headline numbers.
 
-## Known issues in v0.3.7 (honest list)
+## Known issues in v0.3.7.1 (honest list)
 
 | Issue | Detail |
 |---|---|
@@ -140,7 +140,7 @@ Each number is the mean of two cold runs in the order stock, moe-cache, moe-cach
 | [Conversation benchmark](docs/CONVERSATION_BENCH.md) | a long multi-turn chat that fills the context, stock against moe-cache, per depth band |
 | [Current results](docs/RESULTS_CURRENT.md) and the [benchmark card page](docs/benchmark_card.html) | the whole card, per-depth tables, method, commands |
 | [Older results](docs/results-archive/RESULTS.md) (Windows desktop), [older laptop results](docs/results-archive/RESULTS_OLD_LAPTOP.md) | every earlier measurement, newest first |
-| [Release notes](docs/releases/RELEASE_NOTES_v0.3.7.md), [changelog](CHANGELOG.md) | what changed in each version |
+| [Release notes](docs/releases/RELEASE_NOTES_v0.3.7.1.md), [changelog](CHANGELOG.md) | what changed in each version |
 | [Hardware and limits](docs/PLATFORMS.md) | what is tested where, known limitations |
 | [Configuration](docs/CONFIGURATION.md) | environment variables |
 | [FAQ](docs/FAQ.md) | questions, and how moe-cache compares with other projects |
