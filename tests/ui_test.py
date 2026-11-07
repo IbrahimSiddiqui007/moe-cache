@@ -1020,6 +1020,62 @@ if node:
     check("getPropertyValue" in _cs and not re.search(r"#[0-9a-fA-F]{3,6}\b", _cs) and all(v in _cs for v in ("--panel", "--accent", "--ok", "--warn", "--muted")), "card: colours are read from the page's CSS variables at draw time (both themes)")
 check('id="sharecard"' in page and 'id="sharecardsave"' in page and 'id="shareremoved"' in page, "the page has Copy image, Save image and the removed-items line")
 
+
+# stage 4: the Results view (API: only listed ids, no paths; page: charts and the per-turn table on the page's own code, untrusted record text is escaped)
+_rd = ui.REPORT_DIR
+os.makedirs(_rd, exist_ok=True)
+rec_res = {"record_schema": 1, "model": {"file": "M<script>alert(1)</script>.gguf"}, "hardware": {"gpu_model": "GPU", "ram_gib": 32}, "conditions": {"file_cache": "cold", "memory_limit": "EMULATED 16 GB"},
+           "runs": [{"arm": a, "index": i + 1, "ok": True, "prompt_tps": p_, "decode_tps": d_, "vram_used_peak_mib": 2048.0, "process_ram_peak_mib": 4096.0, "cpu_avg_pct": 30.0,
+                     "bands": [{"band": "0k-2k", "turns": 2, "prompt_tps": p_, "decode_tps": d_, "hit_rate_dec_pct": None if a == "stock" else 80.0}, {"band": "2k-4k", "turns": 2, "prompt_tps": p_ / 2, "decode_tps": d_ / 2, "hit_rate_dec_pct": None if a == "stock" else 70.0}],
+                     "turns": [{"turn": 0, "kind": "code<b>", "depth_before": 100, "depth_after": 900, "prompt_n": 800, "cache_n": 0, "prompt_tps": p_, "decode_tps": d_, "ttft_s": 1.5, "predicted_n": 100, "read_gb": 0.5, "hits_dec": None if a == "stock" else 8, "misses_dec": None if a == "stock" else 2},
+                               {"turn": 1, "kind": "followup", "depth_before": 1000, "depth_after": 1200, "prompt_n": 30, "cache_n": 900, "prompt_tps": p_, "decode_tps": d_ / 2, "ttft_s": 0.1, "predicted_n": 100, "read_gb": 0.0, "hits_dec": None, "misses_dec": None}]}
+                    for i, (a, p_, d_) in enumerate((("stock", 100.0, 10.0), ("moe-cache", 200.0, 20.0), ("moe-cache", 190.0, 21.0), ("stock", 98.0, 10.5)))]}
+json.dump({"scrubbed": {}, "record": rec_res}, open(os.path.join(_rd, "moe-cache-report-20260101-0000.json"), "w"))
+json.dump(rec_res, open(os.path.join(_rd, "moe-cache-report-20260101-0000.record.json"), "w"))     # the same record again: hidden by the .json
+json.dump({"no": "record"}, open(os.path.join(_rd, "other.json"), "w"))
+st, body = req("/api/results"); lst = json.loads(body)["results"] if st == 200 else []
+ids = [x["id"] for x in lst]
+check(st == 200 and "r:moe-cache-report-20260101-0000.json" in ids and "r:moe-cache-report-20260101-0000.record.json" not in ids, f"/api/results: lists the reports' records, once each ({ids})")
+st, body = req("/api/results?id=" + urllib.parse.quote("r:moe-cache-report-20260101-0000.json"))
+check(st == 200 and json.loads(body)["record"]["record_schema"] == 1 and len(json.loads(body)["record"]["runs"]) == 4, "/api/results?id=: the record behind a report's .json")
+for bad_id in ("r:../etc/passwd", "r:other.json.json", "x:a.json", "r:/etc/passwd", "../../etc/passwd", "r:" + "a" * 200 + ".json"):
+    check(req("/api/results?id=" + urllib.parse.quote(bad_id))[0] == 400, f"/api/results: id {bad_id[:24]!r} is refused (400)")
+check(req("/api/results?id=" + urllib.parse.quote("r:other.json"))[0] == 400, "/api/results: a file without a record: 400 with the reason")
+check("/api/results" not in ui.REMOTE_GET, "/api/results stays on this PC (not in the LAN allow-list)")
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"const nz = [^\n]*\n", r"const cfmt = [^\n]*\n", r"function niceMax\(v\) \{.*?\n\}\n", r"function chartSvg\(spec, col, hidden\) \{.*?\n\}\n",
+                                                                 r"function resultCharts\(rec\) \{.*?\n\}\n", r"function turnsHtml\(run\) \{.*?\n\}\n"))
+    harness = ("const esc = s => String(s).replace(/[&<>\"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;'}[c]));\n" + fn +
+               "const COL = {stock:'#444444', moe:'#555555', gpu:'#666666', ok:'#777777', warn:'#888888', bad:'#999999', text:'#333333', muted:'#444444', line:'#222222', panel:'#111111'};\n"
+               "const rec = " + json.dumps(rec_res) + ";\nconst specs = resultCharts(rec);\n"
+               "console.log(JSON.stringify({titles: specs.map(s => s.title), types: specs.map(s => s.type), svgs: specs.map(s => chartSvg(s, COL, new Set())), hid: chartSvg(specs[0], COL, new Set(['moe-cache'])),\n"
+               "  turns: turnsHtml(rec.runs[1]), none: turnsHtml({}), empty: resultCharts({runs: []}).length, ratio: specs[0].series.map(s => s.values)}));\n")
+    hf = os.path.join(TMP, "charts.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-600:])
+    check(r_ is not None and r_["titles"][:2] == ["Prompt reading speed", "Answer speed"] and "Answer speed by conversation depth" in r_["titles"] and "Expert cache hit rate by depth (decode)" in r_["titles"]
+          and "Answer speed turn by turn" in r_["titles"] and "GPU memory in use (peak)" in r_["titles"] and r_["empty"] == 0, f"charts: speed bars, depth lines, hit rate, turn by turn, resources ({r_ and r_['titles']})")
+    if r_:
+        import xml.dom.minidom
+        okx = True
+        for sv in r_["svgs"] + [r_["hid"]]:
+            try:
+                xml.dom.minidom.parseString(sv)
+            except Exception as e:
+                okx = False; print(e)
+        check(okx, "charts: every SVG is well-formed XML")
+        check("1.97x" in r_["svgs"][0], "charts: the bar chart prints the moe-cache / stock ratio")
+        check(r_["hid"].count("<rect") < r_["svgs"][0].count("<rect"), "charts: a hidden series (legend click) is not drawn")
+        allsv = "".join(r_["svgs"])
+        check(not re.search(r"#[0-9a-fA-F]{3,6}", re.sub(r"#[0-9]{6}", "", allsv)) and "#555555" in allsv and "#444444" in allsv, "charts: stock is the muted colour, moe-cache the accent; all colours come from the page's tokens (none of their own)")
+        check("<script>" not in r_["turns"] and "<b>" not in r_["turns"].replace("<br>", "") .replace("<th", "").replace("</th", "") and "code&lt;b&gt;" in r_["turns"], "charts: text from a record is escaped in the per-turn table")
+        check("SSD MB per token" in r_["turns"] and ">5.00<" in r_["turns"] and "80.0 %" in r_["turns"] and "no per-turn numbers" in r_["none"], "per-turn table: SSD MB per token (0.5 GB / 100 tokens = 5.00), expert hits, and a clear line for a run without turns")
+    _cc = re.search(r"function chartColours\(\) \{.*?\n\}\n", page, re.S).group(0)
+    check("getPropertyValue" in _cc and not re.search(r"#[0-9a-fA-F]{3,6}\b", _cc) and all(v in _cc for v in ("--muted", "--accent", "--gpu", "--ok", "--warn", "--bad", "--panel")), "charts: colours are read from the page's CSS variables at draw time (both themes)")
+check(all(x in page for x in ('id="resdlg"', 'id="reslist"', 'id="rescharts"', 'id="resturns"', 'id="resopen"', 'id="chart-tip"')), "the page has the Results dialog, its list, charts, per-turn table and the button")
 import re as _re2
 _pr = page_html[page_html.index("async function paintReady"):page_html.index("async function paintShare")]
 check(not _re2.search(r"#[0-9a-fA-F]{3,6}\b|rgb\(", _pr) and "var(--" not in _pr and 'class="dot' in _pr, "the ready panel takes its colours from the page's .dot classes (both themes), none of its own")

@@ -250,6 +250,48 @@ def system_info():
             "gpu_detecting": WINDOWS and not _GPU["done"]}
 
 
+# ---- the Results view: the records this machine has (the reports' .record.json / .json, the repository's benchmarks/runs) ----
+
+RESULT_ID = re.compile(r"^[rb]:[A-Za-z0-9._-]{1,120}\.json$")
+MAX_RESULT = 30_000_000
+
+
+def result_roots():
+    return {"r": REPORT_DIR, "b": os.path.join(os.path.dirname(HERE), "benchmarks", "runs")}
+
+
+def result_files():
+    """[{id, name, source, mtime, size}] newest first. The id is the kind and the file name only: a path from the page never reaches the disk."""
+    out = []
+    for k, root in result_roots().items():
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for n in names:
+            if not n.endswith(".json") or n.startswith(".") or (n.endswith(".record.json") and n[:-12] + ".json" in names):      # the report's .json holds the same record
+                continue
+            try:
+                st = os.stat(os.path.join(root, n))
+            except OSError:
+                continue
+            if os.path.isfile(os.path.join(root, n)) and st.st_size <= MAX_RESULT:
+                out.append({"id": f"{k}:{n}", "name": n[:-5], "source": "your reports" if k == "r" else "benchmarks/runs (the board)", "mtime": st.st_mtime, "size": st.st_size})
+    return sorted(out, key=lambda x: -x["mtime"])
+
+
+def read_result(rid):
+    """The benchmark record behind an id from result_files() (a bench-report .json holds it under "record"); ValueError when there is none."""
+    if not isinstance(rid, str) or not RESULT_ID.match(rid) or rid not in {x["id"] for x in result_files()}:
+        raise ValueError("unknown result (refresh the list)")
+    with open(os.path.join(result_roots()[rid[0]], rid[2:]), encoding="utf-8") as f:
+        d = json.load(f)
+    rec = d.get("record") if isinstance(d, dict) and isinstance(d.get("record"), dict) else d
+    if not isinstance(rec, dict) or "record_schema" not in rec:
+        raise ValueError("this file holds no benchmark record (a report written without one)")
+    return rec
+
+
 # ---- the plan and why (I33): the same rules and tools as the launcher ----
 
 LLAMA_EXTRA_ROOTS = []        # folders the page may take a llama-server from besides the usual ones (the tests add their own)
@@ -2220,6 +2262,10 @@ class Handler(BaseHTTPRequestHandler):
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
+            if u.path == "/api/results":                    # the Results view: which records exist, and one of them
+                if q.get("id"):
+                    return self.send(200, {"id": q["id"], "record": read_result(q["id"])})
+                return self.send(200, {"results": result_files()[:200]})
             if u.path == "/api/ready":                      # the ready-to-measure panel: what could make a report unusable, with the fix, and the time to expect
                 import moe_cache_bench as mb
                 return self.send(200, mb.readiness(self.known(q.get("model")), pairs=number(q.get("pairs") or 2, 1, 4, int, "pairs"), chat=q.get("chat") == "1",

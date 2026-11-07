@@ -199,6 +199,11 @@ button.danger { border-color:var(--ink); }
 .seg button.on:disabled { background:var(--muted); color:var(--panel); }
 .modal { position:fixed; inset:0; background:var(--shade); display:flex; align-items:center; justify-content:center; z-index:200; padding:16px; }
 .modal .box { background:var(--panel); color:var(--text); border:1.5px solid var(--ink); border-radius:4px; box-shadow:4px 4px 0 var(--shade); padding:14px 18px; width:min(560px, 100%); max-height:100%; overflow:auto; }
+.modal .box.wide { width:min(1040px, 100%); }
+#chart-tip { position:fixed; pointer-events:none; z-index:300; background:var(--panel); color:var(--text); border:1px solid var(--ink); border-radius:4px; padding:6px 9px; font-size:12px; max-width:340px; box-shadow:2px 2px 0 var(--shade); }
+.chart { margin:10px 0 14px; } .chart .ctitle { font-weight:600; } .chart svg { width:100%; height:auto; display:block; }
+.chart .leg { cursor:pointer; margin-right:12px; font-size:12px; white-space:nowrap; } .chart .leg.off { opacity:.35; }
+.chart .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:4px; vertical-align:-1px; }
 .modal h3 { margin:0 0 6px; } .modal input[type=text] { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); font:inherit; }
 .modal .row { display:flex; gap:8px; margin-top:8px; }
 .pickcard { margin-top:8px; border:1.5px solid var(--ink); border-radius:4px; background:var(--panel); padding:10px 12px; font-size:13px; color:var(--text); }
@@ -399,7 +404,7 @@ button.danger { border-color:var(--ink); }
         <div id="benchres" class="scrollx"></div>
         <div class="sharebox" id="sharebox">
           <div id="ready" class="small" hidden></div>
-          <div class="row"><button id="fair" class="primary" title="Cold start, stock then moe-cache then moe-cache then stock, twice (2 pairs), and a verdict that says whether the difference is larger than the noise">Fair comparison</button><button id="share" title="One pair (stock, moe-cache, moe-cache, stock): faster, less certain. Writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button><button id="readyagain" class="ghost small" title="Check the machine again">Check again</button></div>
+          <div class="row"><button id="fair" class="primary" title="Cold start, stock then moe-cache then moe-cache then stock, twice (2 pairs), and a verdict that says whether the difference is larger than the noise">Fair comparison</button><button id="share" title="One pair (stock, moe-cache, moe-cache, stock): faster, less certain. Writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button><button id="resopen" title="Charts and per-turn numbers of your reports and of the board's runs">Results</button><button id="readyagain" class="ghost small" title="Check the machine again">Check again</button></div>
           <div class="small" id="sharestate"></div>
           <div class="small" style="margin-top:4px"><label><input type="checkbox" id="sharechat" checked> <b>Long chat (recommended)</b>: each run plays one real multi-turn conversation filled to a long context (16k to 65k, from your RAM): the method the published numbers use. Takes much longer; untick for the short test.</label></div>
           <div class="small" style="margin-top:4px"><label><input type="checkbox" id="shareforce"> Measure anyway when the model fits in RAM (moe-cache would not be used otherwise)</label></div>
@@ -418,6 +423,17 @@ button.danger { border-color:var(--ink); }
     </aside>
   </div>
 </div>
+
+<!-- ================= Results: charts of a benchmark record ================= -->
+<div class="modal" id="resdlg" hidden><div class="box wide" role="dialog" aria-labelledby="restitle">
+  <h3 id="restitle">Results</h3>
+  <div class="row" style="margin-top:0"><select id="reslist" aria-label="Which result"></select><button id="resclose" class="ghost">Close</button></div>
+  <div class="small" id="resmeta" style="margin:6px 0"></div>
+  <div id="rescharts"></div>
+  <div class="small" style="margin-top:8px"><b>Per turn</b> <select id="resrun" aria-label="Which run"></select></div>
+  <div class="scrollx" id="resturns"></div>
+</div></div>
+<div id="chart-tip" hidden></div>
 
 <!-- ================= llama.cpp not found ================= -->
 <div class="modal" id="llamadlg" hidden><div class="box" role="dialog" aria-labelledby="llamatitle">
@@ -961,6 +977,142 @@ async function paintReady(force) {
     box.hidden = false;
   } catch (e) { box.hidden = true; }
 }
+// ---- Results: charts of a benchmark record (the chart engine of the old benchmark page, recoloured to this page's tokens: colours are read at draw time) ----
+const nz = v => typeof v == "number" && isFinite(v);
+const cfmt = (v, d) => !nz(v) ? "-" : d !== undefined ? v.toFixed(d) : Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 10 ? v.toFixed(1) : v.toFixed(2);
+function niceMax(v) {
+  if (!(v > 0)) return 1;
+  const e = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (v <= m * e) return m * e;
+  return 10 * e;
+}
+function chartColours() {
+  const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  return { stock: v("--muted"), moe: v("--accent"), gpu: v("--gpu"), ok: v("--ok"), warn: v("--warn"), bad: v("--bad"), text: v("--text"), muted: v("--muted"), line: v("--line"), panel: v("--panel") };
+}
+// spec: {title, note, unit, type: 'bar'|'line', cats: [...], series: [{name, color: key of the colours, values: [...], tips: [html per category], dash}], dec, ratio}
+function chartSvg(spec, col, hidden) {
+  const W = 860, H = spec.height || 300, L = 62, R = 16, T = 12, B = 46, vis = spec.series.filter(s => !hidden.has(s.name));
+  const pw = W - L - R, ph = H - T - B, n = spec.cats.length;
+  let top = 0;
+  for (const s of vis) for (const v of s.values) if (nz(v)) top = Math.max(top, v);
+  const ymax = spec.unit == "%" ? 100 : niceMax(top * 1.12 || 1), Y = v => T + ph - ph * v / ymax;
+  let g = "";
+  for (let i = 0; i <= 5; i++) {
+    const y = T + ph - ph * i / 5, v = ymax * i / 5;
+    g += `<line x1="${L}" y1="${y.toFixed(1)}" x2="${W - R}" y2="${y.toFixed(1)}" stroke="${col.line}" stroke-width="1"/><text x="${L - 8}" y="${(y + 4).toFixed(1)}" text-anchor="end" font-size="11" fill="${col.muted}">${+v.toPrecision(3)}</text>`;
+  }
+  const gw = pw / Math.max(1, n);
+  if (spec.type == "line") {
+    const X = i => L + (n > 1 ? pw * i / (n - 1) : pw / 2);
+    const step = Math.max(1, Math.ceil(n / 14));
+    for (let i = 0; i < n; i += step) g += `<text x="${X(i).toFixed(1)}" y="${H - 22}" text-anchor="middle" font-size="11" fill="${col.text}">${esc(spec.cats[i])}</text>`;
+    for (const s of vis) {
+      const c = col[s.color], pts = s.values.map((v, i) => nz(v) ? [X(i), Y(v), i] : null).filter(Boolean);
+      if (pts.length > 1) g += `<polyline fill="none" stroke="${c}" stroke-width="2.4"${s.dash ? ' stroke-dasharray="6 4"' : ""} points="${pts.map(p => p[0].toFixed(1) + "," + p[1].toFixed(1)).join(" ")}"/>`;
+      for (const p of pts) g += `<circle data-i="${p[2]}" data-s="${esc(s.name)}" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="4.5" fill="${c}" style="cursor:crosshair"/>`;
+    }
+  } else {
+    const bw = Math.min(70, gw * 0.8 / Math.max(1, vis.length));
+    for (let i = 0; i < n; i++) {
+      const cx = L + gw * i + gw / 2;
+      vis.forEach((s, si) => {
+        const v = s.values[i];
+        if (!nz(v)) return;
+        const x = cx - bw * vis.length / 2 + si * bw, y0 = Y(v);
+        g += `<rect data-i="${i}" data-s="${esc(s.name)}" x="${(x + 2).toFixed(1)}" y="${y0.toFixed(1)}" width="${(bw - 4).toFixed(1)}" height="${Math.max(0, T + ph - y0).toFixed(1)}" rx="3" fill="${col[s.color]}" style="cursor:crosshair"/>`;
+        if (bw > 32) g += `<text x="${(x + bw / 2).toFixed(1)}" y="${(y0 - 5).toFixed(1)}" text-anchor="middle" font-size="11.5" font-weight="600" fill="${col.text}" pointer-events="none">${cfmt(v, spec.dec)}</text>`;
+      });
+      g += `<text x="${cx.toFixed(1)}" y="${H - 24}" text-anchor="middle" font-size="12" fill="${col.text}">${esc(spec.cats[i])}</text>`;
+      const a = spec.series[0] && spec.series[0].values[i], b = spec.series[1] && spec.series[1].values[i];
+      if (spec.ratio && vis.length == 2 && nz(a) && nz(b) && a > 0) g += `<text x="${cx.toFixed(1)}" y="${H - 7}" text-anchor="middle" font-size="13" font-weight="700" fill="${col.moe}">${(b / a).toFixed(2)}x</text>`;
+    }
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(spec.title)}">${g}</svg>`;
+}
+function chartTip(spec, i, name) {
+  const col = chartColours();
+  return `<b>${esc(spec.cats[i])}</b>` + spec.series.map(s => `<br><span style="color:${col[s.color]}">●</span> ${esc(s.name)}: <b>${cfmt(s.values[i], spec.dec)}</b> ${esc(spec.unit || "")}`).join("") +
+    (spec.series.find(s => s.name == name && s.tips && s.tips[i]) ? "<br>" + spec.series.find(s => s.name == name).tips[i] : "");
+}
+// the charts a record has data for
+function resultCharts(rec) {
+  const runs = rec.runs || [], out = [], arms = ["stock", "moe-cache"], names = { stock: "stock", "moe-cache": "moe-cache" }, key = { stock: "stock", "moe-cache": "moe" };
+  const mean = xs => { xs = xs.filter(nz); return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null; };
+  const of = arm => runs.filter(r => r.arm == arm && r.ok !== false);
+  const ser = (f, extra) => arms.filter(a => of(a).length).map(a => Object.assign({ name: names[a], color: key[a], values: f(a) }, extra ? extra(a) : {}));
+  for (const [k, label, d] of [["prompt_tps", "Prompt reading speed", 0], ["decode_tps", "Answer speed", 1]]) {
+    if (!runs.some(r => nz(r[k]))) continue;
+    out.push({ title: label, unit: "tokens/s", type: "bar", dec: d, ratio: true, cats: ["mean of the runs"], series: ser(a => [mean(of(a).map(r => r[k]))],
+      a => ({ tips: ["per run: " + of(a).map(r => cfmt(r[k], d)).join(", ")] })) });
+  }
+  const nb = Math.max(0, ...runs.map(r => (r.bands || []).length));
+  if (nb) for (const [k, label] of [["prompt_tps", "Prompt reading by conversation depth"], ["decode_tps", "Answer speed by conversation depth"], ["hit_rate_dec_pct", "Expert cache hit rate by depth (decode)"]]) {
+    const cats = (runs.find(r => (r.bands || []).length == nb).bands).map(b => b.band);
+    const s = ser(a => cats.map((_, i) => mean(of(a).map(r => (r.bands || [])[i] && r.bands[i][k]))), a => ({ tips: cats.map((_, i) => `${of(a).length} run(s), ${(of(a)[0].bands[i] || {}).turns} turn(s) in this band`) }));
+    if (s.some(x => x.values.some(nz))) out.push({ title: label, unit: k == "hit_rate_dec_pct" ? "%" : "tokens/s", type: "line", dec: k == "decode_tps" ? 1 : 0, cats, series: s.filter(x => x.values.some(nz)) });
+  }
+  const nt = Math.max(0, ...runs.map(r => (r.turns || []).length));
+  if (nt) {
+    const tr = a => Array.from({ length: nt }, (_, i) => mean(of(a).map(r => (r.turns || [])[i] && r.turns[i].decode_tps)));
+    const t0 = (runs.find(r => (r.turns || []).length == nt) || runs[0]).turns;
+    out.push({ title: "Answer speed turn by turn", note: "x: tokens of conversation before the answer", unit: "tokens/s", type: "line", dec: 1, cats: t0.map(t => cfmt((t.depth_before || 0) / 1000, 1) + "k"),
+      series: ser(tr, a => ({ tips: t0.map((t, i) => `turn ${i}: ${esc(t.kind || "")}, ${t.prompt_n} new / ${t.cache_n} cached tokens, first token ${cfmt(t.ttft_s, 2)} s`) })) });
+  }
+  const res = [["vram_used_peak_mib", "GPU memory in use (peak)", "GiB", 1024], ["process_ram_peak_mib", "Server RAM (peak)", "GiB", 1024], ["cpu_avg_pct", "CPU use (average, all cores)", "%", 1]];
+  for (const [k, label, unit, div] of res)
+    if (runs.some(r => nz(r[k]))) out.push({ title: label, unit, type: "bar", dec: 1, cats: ["mean of the runs"], series: ser(a => [mean(of(a).map(r => nz(r[k]) ? r[k] / div : null))]) });
+  return out;
+}
+// the per-turn numbers of one run (the deep view: new and cached tokens, speeds, SSD read per answered token, expert hits)
+function turnsHtml(run) {
+  const t = (run && run.turns) || [];
+  if (!t.length) return '<div class="small">This run has no per-turn numbers (only conversation runs do).</div>';
+  const f = (v, d) => nz(v) ? v.toFixed(d) : "–";
+  return `<table><tr><th>turn</th><th>kind</th><th class="num">depth</th><th class="num">new / cached</th><th class="num">prompt tok/s</th><th class="num">answer tok/s</th><th class="num">first token s</th><th class="num">SSD MB per token</th><th class="num">expert hits</th></tr>` +
+    t.map(x => `<tr><td>${esc(x.turn)}</td><td>${esc(x.kind || "")}</td><td class="num">${f(x.depth_after, 0)}</td><td class="num">${f(x.prompt_n, 0)} / ${f(x.cache_n, 0)}</td><td class="num">${f(x.prompt_tps, 0)}</td><td class="num">${f(x.decode_tps, 1)}</td><td class="num">${f(x.ttft_s, 2)}</td>` +
+      `<td class="num">${nz(x.read_gb) && x.predicted_n ? f(1000 * x.read_gb / x.predicted_n, 2) : "–"}</td><td class="num">${nz(x.hits_dec) && x.hits_dec + x.misses_dec ? f(100 * x.hits_dec / (x.hits_dec + x.misses_dec), 1) + " %" : "–"}</td></tr>`).join("") + "</table>";
+}
+let resRec = null, resHidden = new Set();
+function drawResults() {
+  const host = $("rescharts"), col = chartColours();
+  if (!resRec) { host.innerHTML = ""; return; }
+  const specs = resultCharts(resRec);
+  host.innerHTML = specs.length ? "" : '<div class="small">This record has no numbers to chart.</div>';
+  specs.forEach((spec, si) => {
+    const box = document.createElement("div"); box.className = "chart";
+    box.innerHTML = `<div class="ctitle">${esc(spec.title)}</div>${spec.note ? `<div class="small">${esc(spec.note)}</div>` : ""}<div>` +
+      spec.series.map(s => `<span class="leg${resHidden.has(s.name) ? " off" : ""}" data-leg="${esc(s.name)}"><span class="sw" style="background:${col[s.color]}"></span>${esc(s.name)}</span>`).join("") + "</div>" + chartSvg(spec, col, resHidden);
+    host.appendChild(box);
+    box.querySelectorAll("[data-leg]").forEach(el => el.onclick = () => { const k = el.dataset.leg; resHidden.has(k) ? resHidden.delete(k) : resHidden.add(k); drawResults(); });
+    const tip = $("chart-tip");
+    box.querySelectorAll("[data-i]").forEach(el => {
+      el.onmousemove = ev => { tip.innerHTML = chartTip(spec, +el.dataset.i, el.dataset.s); tip.hidden = false; tip.style.left = Math.min(innerWidth - 350, ev.clientX + 14) + "px"; tip.style.top = Math.min(innerHeight - 120, ev.clientY + 14) + "px"; };
+      el.onmouseleave = () => { tip.hidden = true; };
+    });
+  });
+}
+async function showResult(id) {
+  try {
+    const j = await api("/api/results?id=" + encodeURIComponent(id));
+    resRec = j.record; resHidden = new Set();
+    const hw = resRec.hardware || {}, m = resRec.model || {}, c = resRec.conditions || {};
+    $("resmeta").textContent = [m.file, hw.gpu_model, hw.ram_gib ? Math.round(hw.ram_gib) + " GB RAM" : null, c.file_cache ? c.file_cache + " start" : null, c.memory_limit].filter(x => x && x != "not recorded").join(" · ");
+    const runs = resRec.runs || [];
+    $("resrun").innerHTML = runs.map((r, i) => `<option value="${i}">${esc(r.arm)} run ${esc(r.index != null ? r.index : i + 1)}</option>`).join("");
+    $("resturns").innerHTML = turnsHtml(runs.find(r => (r.turns || []).length) || runs[0]);
+    const first = runs.findIndex(r => (r.turns || []).length); if (first >= 0) $("resrun").value = first;
+    drawResults();
+  } catch (e) { $("resmeta").textContent = String(e.message || e); resRec = null; drawResults(); }
+}
+async function openResults() {
+  $("resdlg").hidden = false;
+  try {
+    const j = await api("/api/results");
+    $("reslist").innerHTML = j.results.length ? j.results.map(r => `<option value="${esc(r.id)}">${esc(r.name)} (${esc(r.source)})</option>`).join("") : '<option value="">no results yet: run Fair comparison or Share my numbers</option>';
+    if (j.results.length) showResult(j.results[0].id); else { resRec = null; drawResults(); $("resturns").innerHTML = ""; $("resmeta").textContent = ""; }
+  } catch (e) { $("resmeta").textContent = String(e.message || e); }
+}
 // what the sharing step took out of the text, in words (kinds and counts come from the report: bench-report's scrubber)
 function removedText(r) {
   const k = Object.keys(r || {});
@@ -1499,6 +1651,10 @@ $("sharecopy").onclick = async () => {
   catch (e) { t.select(); try { document.execCommand("copy"); $("sharemsg").textContent = "copied"; } catch (e2) { $("sharemsg").textContent = "select the text and copy it by hand"; } }
   setTimeout(() => $("sharemsg").textContent = "", 3000);
 };
+$("resopen").onclick = openResults;
+$("resclose").onclick = () => { $("resdlg").hidden = true; $("chart-tip").hidden = true; };
+$("reslist").onchange = () => showResult($("reslist").value);
+$("resrun").onchange = () => { $("resturns").innerHTML = turnsHtml(((resRec || {}).runs || [])[+$("resrun").value]); };
 $("sharecard").onclick = async () => {
   try {
     const blob = await cardPng(shareRec);
