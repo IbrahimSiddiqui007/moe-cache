@@ -53,6 +53,8 @@ If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says w
 
 **Using the PC while the model runs?** Tick **Leave room for me** on the control page (or `--leave-room`): the model leaves more RAM, GPU memory and CPU to your own programs and gets a little slower. A CPU with its own graphics: plug the monitor into the motherboard. The GPU also draws your desktop, and the screen flickers or the browser stutters while a long prompt runs? Reserve GPU memory for it with `--gpu-margin GiB` (for example `--gpu-margin 3`): the launcher plans fewer expert layers on the GPU and leaves that much free. Without the option it already keeps more free when other programs hold GPU memory at start.
 
+**Long prompts (agents, documents)?** The opt-in long-prompt mode (`--long-prompt`, or **Long-prompt mode** on the control page) reads long prompts faster and answers a little slower: on Flash-Next IQ3_XXS in a 65k conversation prompts +35 % and answers -10 % <!-- claim:v038-conv-iq3xxs-fastkv --> (measured with all expert layers on the CPU side; the mode now keeps a few more on the GPU and is being measured again). It uses the q8_0 KV cache, so answers may differ slightly in wording, and it only switches on when your card has room for it. Off by default.
+
 ### Linux
 
 | Step | What to do |
@@ -85,7 +87,7 @@ Step by step for each agent, the desktop apps and the context limit to set: [doc
 
 ### Which model?
 
-`pick` decides from your RAM, graphics card, free disk and use (agents, chat, long documents). On a 32 GB RAM + 16 GB GPU PC: Qwen3.8-Flash-Next Q2_0 (66 GB, the default since v0.3.7) for general and agent use: in a real 65k conversation moe-cache reads new prompt tokens 2.2× as fast as stock and decodes 26.98 against 22.46 tok/s <!-- claim:v037-conv-q2_0 -->; Q2_0 is also faster than IQ3_XXS at long context (chain log of 2026-11-06, no record yet), the IQ3_XXS file (76 GB) is the higher-quality option (top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0; measured 2026-11-05, record pending), Nemotron 3.5 Bolt 74B (22 GB, fits in RAM) for 128k contexts. `python3 bin/moe_cache.py models` lists every catalogue model with fits / tight / no for this PC, whether it is already downloaded and its measured speed (or "not measured"). All files and the rules: [docs/MODELS.md](docs/MODELS.md).
+`pick` decides from your RAM, graphics card, free disk and use (agents, chat, long documents). On a 32 GB RAM + 16 GB GPU PC: Qwen3.8-Flash-Next IQ3_XXS (76 GB, the default again since v0.3.8) for general and agent use: in a real 65k conversation moe-cache reads new prompt tokens 4.2× as fast as stock <!-- claim:v037-conv-iq3xxs -->; the Q2_0 file (66 GB) is the faster option: in the same kind of conversation it reads prompts 2.2× as fast as stock and decodes 26.98 against 22.46 tok/s <!-- claim:v037-conv-q2_0 -->, and it is also faster than IQ3_XXS at long context (chain log of 2026-11-06, no record yet), at a little less exactness (top-1 agreement with IQ3_S 73.3 % against 76.5 % for IQ3_XXS; measured 2026-11-05, record pending), Nemotron 3.5 Bolt 74B (22 GB, fits in RAM) for 128k contexts. `python3 bin/moe_cache.py models` lists every catalogue model with fits / tight / no for this PC, whether it is already downloaded and its measured speed (or "not measured"). All files and the rules: [docs/MODELS.md](docs/MODELS.md).
 
 ## Results
 
@@ -93,10 +95,19 @@ Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), a real 65k
 
 | Model (file size) | Context, prompt | stock | moe-cache | change |
 |---|---|---|---|---|
-| **Flash-Next Q2_0** (the default)<br><sub>66.4 GB, drive D:, two runs each, ABBA</sub> | 65,536, a 46-turn conversation | 22.46 | 26.98 | +20 % <!-- claim:v037-conv-q2_0 --> |
-| Flash-Next IQ3_XXS (the higher-quality option)<br><sub>75.8 GB, drive D:, two runs each, ABBA</sub> | 65,536, a 49-turn conversation | 16.0 | 21.73 | +36 % <!-- claim:v037-conv-iq3xxs --> |
+| **Flash-Next IQ3_XXS** (the default)<br><sub>75.8 GB, drive D:, two runs each, ABBA</sub> | 65,536, a 49-turn conversation | 16.0 | 21.73 | +36 % <!-- claim:v037-conv-iq3xxs --> |
+| Flash-Next Q2_0 (the faster option)<br><sub>66.4 GB, drive D:, two runs each, ABBA</sub> | 65,536, a 46-turn conversation | 22.46 | 26.98 | +20 % <!-- claim:v037-conv-q2_0 --> |
 
 Each number is the mean of two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), whole conversation. Both files are bigger than the free RAM once the GPU and Windows have taken their share. Stock = the same llama-server command the launcher builds for the plugin, without the plugin.
+
+**Status of the decode numbers by depth.** The benchmark script was found to produce very short answers deep into the 65k conversation, so the decode speed of the deeper bands in the table above was measured over only a few tokens; the prompt numbers are not affected. The script is fixed in v0.3.8 (real answers, 256 tokens, sizes from the server's own token count). Flash-Next IQ3_XXS, the default, has been measured again with it (the comparison against stock and the Q2_0 numbers have not):
+
+| Flash-Next IQ3_XXS, 65k conversation with real answers (head kit, two runs each, no stock arm) | new prompt tokens, tok/s | decode, tok/s |
+|---|---|---|
+| shipped setting (`--ub 2048`, f16 KV) | 223.1 / 223.2 <!-- claim:v038-conv-iq3xxs-shipped --> | 18.33 / 18.23 <!-- claim:v038-conv-iq3xxs-shipped --> |
+| opt-in `--ub 4096 --fast=kv` (q8_0 KV) | 301.2 / 301.1 <!-- claim:v038-conv-iq3xxs-fastkv --> | 16.47 / 16.58 <!-- claim:v038-conv-iq3xxs-fastkv --> |
+
+The setting with `--ub 4096 --fast=kv` reads prompts about 35 % faster and decodes about 10 % slower than the shipped one, and its q8_0 KV cache is not byte-identical to stock; it stays opt-in.
 
 ### Where it does not help
 
@@ -119,10 +130,9 @@ Each number is the mean of two cold runs in the order stock, moe-cache, moe-cach
 | A failed model read still aborts | a model file that is cut short or cannot be read stops the server. On Linux it now prints a clear message; on Windows a guard for the in-page read error is in, tested with a simulated error in CI but not with a real cut-short file on a PC (CACHE-685) |
 | Installers need `gh` or an explicit yes | `install.sh`, `install.ps1` and `update --apply` check the build attestation with the GitHub CLI (`gh`; its own `attestation verify` decides, not a login check). Without a working `gh` they stop and say what was and was not checked; `--yes-unverified` (or `MOE_CACHE_ALLOW_UNVERIFIED=1`) goes on with only the SHA256 check, which catches a damaged download but not a tampered release (RELEASE-686 fixed: no silent skip) |
 | GPU errors | with Vulkan a GPU error inside an expert block is caught and the block runs on the CPU (`MOE_CACHE_GPU_CATCH`, not yet seen with a real failure); on NVIDIA / CUDA a GPU error still ends the server |
-| Context length of the speed numbers | the numbers on the card are real 65k conversations on Flash-Next Q2_0 and IQ3_XXS, two runs per arm, one PC, a v0.3.7 candidate kit (the clean check's CPU counter was empty in two checks, see the note on the card); Q2_0 against IQ3_XXS on one 64k prompt and the identity check are chain-log numbers without records yet (release notes); nothing is measured beyond 65k on v0.3.7 |
+| Context length of the speed numbers | the numbers on the card are real 65k conversations on Flash-Next IQ3_XXS and Q2_0, two runs per arm, one PC, a v0.3.7 candidate kit (the clean check's CPU counter was empty in two checks, see the note on the card); Q2_0 against IQ3_XXS on one 64k prompt and the identity check are chain-log numbers without records yet (release notes); nothing is measured beyond 65k on v0.3.7 |
 | Not tested for this release | `winget install` and `scoop install` (manifests exist but are not submitted); Hermes Desktop and OpenCode Desktop on Windows (click-through still open); a full model run from the final zip |
 | Decode after long prompts | on the v0.3.5 kit decode after a 34k-64k prompt was slower than on v0.3.4 (the bigger prompt chunk leaves 2 fewer expert layers on the GPU, RESULTS 79); giving that memory back after the prompt (patch 0070) was tried on the PC on 2026-11-05 and lost, so it is archived (`archive/README.md`); a smaller prompt chunk keeps decode faster at the price of a slower prompt |
-| Conversation decode by depth | in the v0.3.7 65k conversation runs the model answered with very few tokens from about turn 11 (its thinking used the answer length), so the decode speed of the deeper bands is measured over short answers; the prompt numbers are not affected. The benchmark driver now asks for visible answers and warns about short ones; the decode numbers by band will be measured again |
 | IQ3_XXS prompt speed varies | IQ3_XXS prompt speed deep in a 65k conversation varies from night to night on the test PC (145 tok/s at 48k-64k depth in the overnight run <!-- claim:v037-conv-iq3xxs -->, about 30 % more the day before on the v0.3.6 kit). A same-session check of the v0.3.6 and v0.3.7 kits on a 64k prompt (two runs per kit, PC log, no record) showed no slowdown bigger than the run-to-run swing, so we do not think it is the plugin; treat IQ3_XXS numbers as good to about 25 %. Q2_0 was unchanged. Details: RESULTS 80 |
 | Speed numbers | One PC, cold runs, mostly single series; yours depends on RAM, SSD and GPU. The Linux table is older (v0.2.3.5) |
 

@@ -20,8 +20,8 @@ def check(ok, what):
 ORDER = []           # which server answered, in order
 
 
-def toks(m):
-    return len(m["content"]) // 4 + 8
+def toks(m, div=4):
+    return len(m["content"]) // div + 8
 
 
 class Fake(http.server.BaseHTTPRequestHandler):
@@ -38,17 +38,28 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         s = self.server
+        div = getattr(s, "tok_div", 4)
+        if self.path == "/tokenize":                      # llama-server's tokenizer endpoint (a server without it answers 404)
+            if getattr(s, "no_tokenize", False):
+                self.send_response(404); self.end_headers(); return
+            b = json.dumps({"tokens": list(range(len(body.get("content", "")) // div))}).encode()
+            self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+            return
         s.requests.append(body)
         ORDER.append(s.name)
         msgs = body["messages"]
-        total = sum(toks(m) for m in msgs)
-        if total + body["max_tokens"] > s.n_ctx:
+        total = sum(toks(m, div) for m in msgs)
+        if getattr(s, "llama_rule", False):               # llama.cpp: refuses only a prompt over the context, with this message
+            if total > s.n_ctx:
+                b = json.dumps({"error": {"code": 400, "message": f"the request ({total} tokens) exceeds the available context size ({s.n_ctx} tokens), try increasing it", "type": "exceed_context_size_error"}}).encode()
+                self.send_response(400); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b); return
+        elif total + body["max_tokens"] > s.n_ctx:
             self.send_response(400); self.end_headers(); self.wfile.write(b'{"error":"exceeds the context"}'); return
         common = 0
         for a, b in zip(s.last, msgs):
             if a != b:
                 break
-            common += toks(b)
+            common += toks(b, div)
         pn = total - common
         answer = f"Answer {len(msgs)}: " + "word " * 30
         pred = body["max_tokens"] // 2
@@ -283,4 +294,43 @@ check(runL["answer_stats"]["median_tokens"] == 128 and runL["answer_stats"]["war
 st = cb.answer_stats([{"predicted_n": 40, "answer_chars": 0}] * 3 + [{"predicted_n": 40, "answer_chars": 90}], 24)
 check(st["empty_turns"] == 3 and any("no visible answer" in w for w in st["warnings"]), "more than a quarter of the turns without a visible answer: a warning")
 check(cb.answer_stats([], 24)["warnings"] == [], "no turns: no warning, no crash")
+
+# ---- cause finding (2026-11-07): answers are kept, the system message / hint / temperature / empty marker can be changed, the stats say what follows a short answer
+C5, uc5 = start("C5", 8192, 100.0, 10.0)
+rc = cb.main(["run", "--url", uc5, "--arm", "stock", "--ctx", "8192", "--max-turns", "3", "--system", "neutral", "--hint", "Explain in detail.", "--temperature", "0.7",
+              "--out", os.path.join(tempfile.mkdtemp(), "r5.json")])
+rq = C5.requests
+check(rc == 0 and all(r["messages"][0]["content"] == cb.NEUTRAL_SYSTEM and r["temperature"] == 0.7 and r["messages"][-1]["content"].endswith("Explain in detail.") for r in rq),
+      "--system neutral, --temperature and --hint reach the request")
+C6, uc6 = start("C6", 8192, 100.0, 10.0)
+r6 = cb.run_conversation(uc6, "stock", 8192, 32, 42, "", "m", 30, None, 3, None, True, False, lambda *a: None)
+check(all("answer_head" in t and t["answer_head"].startswith("Answer ") and "finish_reason" in t for t in r6["turns"]), "every turn keeps the first characters of the answer and its finish reason")
+r7 = cb.run_conversation(uc6, "stock", 8192, 32, 42, "", "m", 30, None, 2, None, True, False, lambda *a: None, None, None, False, 24, None, 0.0, "(no visible answer)", None, False)
+check(all("answer_head" not in t for t in r7["turns"]), "keep_answers off: no answer text in the run")
+seq = [40, 40, 2, 2, 2, 40, 2, 40]
+turns = [{"turn": i, "kind": "followup" if i % 2 else "code", "predicted_n": n, "answer_chars": 5, "finish_reason": "stop"} for i, n in enumerate(seq)]
+st = cb.answer_stats(turns, 24)
+check(st["first_short_turn"] == 2 and st["p_short_after_short"] == 0.5 and st["p_short_after_long"] == 0.667 and st["finish_reasons"] == {"stop": 8} and set(st["median_by_kind"]) == {"code", "followup"},
+      f"answer_stats: first short turn, chance of a short answer after a short / a long one, median by kind ({st['first_short_turn']}, {st['p_short_after_short']}, {st['p_short_after_long']})")
+
+# ---- 2026-11-07: turns are sized by the server's own token count; a context-size refusal ends the run as "context full", not as an error
+def heavy(name, n_ctx, **kw):
+    s, u = start(name, n_ctx, 100.0, 10.0)
+    s.tok_div, s.llama_rule = 1, True               # 1 character per token (far denser than any real text: the old guess of 3 undershoots by a lot), the refusal rule and message of llama.cpp
+    for k, v in kw.items():
+        setattr(s, k, v)
+    return s, u
+check(cb.count_tokens(heavy("T0", 4096)[1], "", "x" * 100) == 100, "count_tokens asks /tokenize (100 characters = 100 tokens on the dense fake)")
+check(cb.count_tokens(heavy("T0b", 4096, no_tokenize=True)[1], "", "x" * 100) is None, "a server without /tokenize gives None, not a crash")
+check(cb.is_context_error("HTTP 400: {\"error\":{\"message\":\"the request (66515 tokens) exceeds the available context size (65536 tokens), try increasing it\"}}")
+      and not cb.is_context_error("HTTP 500: boom") and not cb.is_context_error(None), "the context-size refusal is recognised, other errors are not")
+T1, ut1 = heavy("T1", 8192)
+q1 = cb.run_conversation(ut1, "stock", 8192, 256, 42, "", "m", 30, None, None, None, True, False, quiet, None, None, True, 24)
+check(q1["stop_reason"] == "context full" and q1["final_depth"] is not None and q1["final_depth"] <= 8192 and not any(t["error"] for t in q1["turns"]),
+      f"dense tokens, /tokenize: the run ends with context full, no error, final depth {q1['final_depth']} within 8192 ({len(q1['turns'])} turns)")
+T2, ut2 = heavy("T2", 16384, no_tokenize=True)
+q2 = cb.run_conversation(ut2, "stock", 16384, 256, 42, "", "m", 30, None, None, None, True, False, quiet, None, None, True, 24)
+check(q2["stop_reason"] == "context full" and q2["final_depth"] is not None and not any(t["error"] for t in q2["turns"]),
+      f"dense tokens, no /tokenize: the guess may be low, a 400 context refusal still ends as context full ({q2['stop_reason']}, final depth {q2['final_depth']})")
+check(T2.requests and True, "the no-/tokenize run did send requests")
 sys.exit(1 if fails else 0)

@@ -37,8 +37,8 @@ check(abs(cap(32) - 28 * GIB) < 1 and abs(cap(16) - 12 * GIB) < 1 and abs(cap(64
 TABLE = [
     ("16 GB RAM / 6 GB VRAM laptop", machine(16, 6), {"agents": ("qwen3.6-35b", 65536), "chat": ("qwen3.6-35b", 32768), "docs": ("qwen3.6-35b", 65536)}),
     ("32 GB / 8 GB", machine(32, 8), {"agents": ("bolt", 65536), "chat": ("flash-next-q2_0", 32768), "docs": ("bolt", 65536)}),
-    ("32 GB / 16 GB (the PC)", machine(32, 16), {"agents": ("bolt", 131072), "chat": ("flash-next-q2_0", 32768), "docs": ("bolt", 131072)}),
-    ("64 GB / 16 GB", machine(64, 16), {"agents": ("bolt", 131072), "chat": ("flash-next-q2_0", 32768), "docs": ("bolt", 131072)}),
+    ("32 GB / 16 GB (the PC)", machine(32, 16), {"agents": ("bolt", 131072), "chat": ("flash-next-iq3_xxs", 32768), "docs": ("bolt", 131072)}),
+    ("64 GB / 16 GB", machine(64, 16), {"agents": ("bolt", 131072), "chat": ("flash-next-iq3_xxs", 32768), "docs": ("bolt", 131072)}),
     ("32 GB, no GPU", machine(32, 0), {"agents": ("qwen3.6-35b", 65536), "chat": ("qwen3.6-35b", 32768), "docs": ("qwen3.6-35b", 65536)}),
 ]
 recs = {}
@@ -51,13 +51,18 @@ for label, m, want in TABLE:
 # measured vs untested wording: only where docs/RESULTS has a number for that class
 pc = "32 GB / 16 GB (the PC)"
 check(not recs[(pc, "agents")]["untested"] and "47.8 s" in recs[(pc, "agents")]["measured"], "PC agents: measured (OpenCode 47.8 s)")
-check(not recs[(pc, "chat")]["untested"] and "22-25 tok/s" in recs[(pc, "chat")]["measured"] and "2026-11-05" in recs[(pc, "chat")]["measured"] and "record pending" in recs[(pc, "chat")]["measured"],
-      "PC chat: Q2_0, the default Flash-Next file (owner 2026-11-05), 22-25 tok/s and the 2026-11-05 numbers labelled record pending")
-check(any(a["id"] == "flash-next-iq3_xxs" and "higher-quality" in a["why"] and "76.5" in a["why"] for a in recs[(pc, "chat")]["alternatives"]), "PC chat: IQ3_XXS offered as the higher-quality alternative with its 2026-11-05 top-1 number")
+check(not recs[(pc, "chat")]["untested"] and "19.9 tok/s" in recs[(pc, "chat")]["measured"], "PC chat: IQ3_XXS, the default Flash-Next file (owner 2026-10-30), measured 19.9 tok/s")
+check(any(a["id"] == "flash-next-q2_0" and "faster" in a["why"] for a in recs[(pc, "chat")]["alternatives"]), "PC chat: Q2_0 offered as the faster alternative")
 check(recs[("32 GB / 8 GB", "agents")]["untested"] and recs[("32 GB / 8 GB", "agents")]["measured"] == "untested on this class of machine",
       "32/8 agents (Bolt, measured only with a 16 GB GPU): 'untested on this class of machine'")
 check(recs[("32 GB / 8 GB", "chat")]["untested"] and "IQ2_XS" in recs[("32 GB / 8 GB", "chat")]["why"][0], "32/8 chat: untested, names the sibling file that was measured")
-check(recs[("64 GB / 16 GB", "chat")]["id"] == "flash-next-q2_0" and not recs[("64 GB / 16 GB", "chat")]["untested"], "64/16 chat: Q2_0 with the 16 GB GPU numbers")
+# owner 2026-11-07: IQ3_XXS is the default Flash-Next file again, Q2_0 is the faster option (v0.3.8)
+check(recs[(pc, "chat")]["id"] == "flash-next-iq3_xxs" and recs[(pc, "chat")]["alternatives"][0]["id"] == "flash-next-q2_0" and "faster option" in recs[(pc, "chat")]["alternatives"][0]["why"],
+      "PC chat: IQ3_XXS first, Q2_0 named as the faster option")
+check(pk.SIBLINGS_WHY["flash-next-iq3_xxs"].startswith("the default Flash-Next file (owner 2026-11-07)") and pk.SIBLINGS_WHY["flash-next-q2_0"].startswith("the faster option (owner 2026-11-07)"),
+      "the sibling texts say which file is the default and which is the faster option")
+check(not any("86.9" in v or "50.7" in v for v in pk.SIBLINGS_WHY.values()), "no unrecorded 2026-11-05 percentages in the sibling texts")
+check(recs[("64 GB / 16 GB", "chat")]["id"] == "flash-next-iq3_xxs" and not recs[("64 GB / 16 GB", "chat")]["untested"], "64/16 chat: IQ3_XXS with the 16 GB GPU numbers")
 check(not recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["untested"] and "22.6" in recs[("16 GB RAM / 6 GB VRAM laptop", "agents")]["measured"],
       "16/6 agents: Qwen3.6 with moe-cache at 12 GB was measured (22.6 tok/s)")
 check("9.9" in recs[("32 GB, no GPU", "agents")]["measured"], "no GPU: the no-GPU measurement is quoted")
@@ -67,7 +72,7 @@ check(any("without a GPU" in w for w in recs[("32 GB, no GPU", "agents")]["warni
 check(recs[(pc, "agents")]["engine"].startswith("stock") and recs[(pc, "chat")]["engine"].startswith("moe-cache"), "engine: Bolt stock, Flash-Next moe-cache on 32 GB")
 check(recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["engine"].startswith("moe-cache"), "engine: Qwen3.6 (21.7 GB) needs moe-cache on 16 GB")
 check(recs[(pc, "agents")]["args"] == ["--agent", "--ctx", "131072"] and "--agent" not in recs[(pc, "chat")]["args"], "args: --agent only for agents")
-check(any(a["id"] == "flash-next-q2_0" for a in recs[(pc, "agents")]["alternatives"]), "PC agents: the Flash-Next line (Q2_0, the default file) is offered as the alternative")
+check(any(a["id"] == "flash-next-iq3_xxs" for a in recs[(pc, "agents")]["alternatives"]), "PC agents: the Flash-Next line (IQ3_XXS) is offered as the alternative")
 check(any(a["id"] == "flash-next-q2_0" and "--fast" in a["why"] for a in recs[("16 GB RAM / 6 GB VRAM laptop", "chat")]["alternatives"]),
       "16/6 chat: Flash-Next offered only as the --fast alternative (measured at 12 GB)")
 
@@ -109,9 +114,9 @@ check(r["id"] == "bolt" and any("hard disk" in w for w in r["warnings"]), f"HDD:
 r = pk.recommend(machine(32, 16, disk_gb=50), "chat")
 check(r["id"] == "qwen3.5-122b" and any("free disk" in w for w in r["warnings"]), f"50 GB free disk: the 122B instead of Flash-Next ({r['id']})")
 r = pk.recommend(machine(32, 16, disk_gb=10), "chat")
-check(r["id"] == "flash-next-q2_0" and r["fits_disk"] is False and r["download"] is None and r["local"] is None,
+check(r["id"] == "flash-next-iq3_xxs" and r["fits_disk"] is False and r["download"] is None and r["local"] is None,
       f"10 GB free disk, nothing local: still the model that suits the machine, but no download is offered ({r['id']})")
-check(abs(r["disk_missing"] - (pk.MODELS["flash-next-q2_0"]["size"] + 2e9 - 10e9)) < 1 and "disk is too small" in r["why"][0] and "missing" in r["why"][0]
+check(abs(r["disk_missing"] - (pk.MODELS["flash-next-iq3_xxs"]["size"] + 2e9 - 10e9)) < 1 and "disk is too small" in r["why"][0] and "missing" in r["why"][0]
       and any("GB of disk missing" in w for w in r["warnings"]), f"10 GB free disk: says plainly how much disk is missing ({r['disk_missing'] / 1e9:.1f} GB)")
 check(any("not on this machine and" in l and "no download is offered" in l for l in pk.rec_lines(r)) and not any("download (you run it" in l for l in pk.rec_lines(r)),
       "10 GB free disk: the text output has no download line")
@@ -215,7 +220,7 @@ check(pk.picked() == (model, 131072, True), f"picked(): (file, context, agent) (
 r2 = pk.recommend(machine(32, 16), "chat")
 pk.apply(r2)
 s = json.load(open(pk.SETTINGS_FILE))
-check(s["pick"]["id"] == "flash-next-q2_0" and s["pick"]["model"] is None and s["last"]["model"] == model,
+check(s["pick"]["id"] == "flash-next-iq3_xxs" and s["pick"]["model"] is None and s["last"]["model"] == model,
       "apply of a model not downloaded yet: remembered, but Start keeps the last file")
 check(pk.picked() is None, "picked(): None while the picked file is not here")
 check("you picked" in pk.pick_missing() and "--use chat --apply" in pk.pick_missing(), f"pick_missing: names the pick and the next step ({pk.pick_missing()[:80]})")

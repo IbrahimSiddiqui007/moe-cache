@@ -345,10 +345,10 @@ class PagePlanMachine(mc.Machine):
         return text
 
 
-def launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False):
+def launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, long_prompt=False):
     """The launcher's own plan for these settings (XA-2): the same arguments the Start button passes, planned quietly in this process with
     mc.launch_plan; nothing is started or written. Raises RuntimeError with the planner's own words when the model cannot be planned."""
-    s = {"model": path, "ctx": ctx, "ram": ram, "vram": vram, "mode": mode, "agent": agent, "engine": engine, "mtp": mtp, "llama_server": ls, "leave_room": leave_room}
+    s = {"model": path, "ctx": ctx, "ram": ram, "vram": vram, "mode": mode, "agent": agent, "engine": engine, "mtp": mtp, "llama_server": ls, "leave_room": leave_room, "long_prompt": long_prompt}
     args = server_args(s)
     i = args.index("--")
     a, extra, argv = mc.parse_server(args[:i] + ["--plan-json"] + args[i:])
@@ -459,7 +459,7 @@ MEASURED = {
     ("qwen4exp-48x512", 68.0): [(LAPTOP, 24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31"),
                                 (PC, 32, "16 GB GPU", 14.89, 21.94, "RESULTS 59; agent sessions 2.0-2.4x faster, RESULTS 60"),
                                 (PC, 16, "16 GB GPU, --ram 16", None, 20.03, "RESULTS 60: 92 % of the 24 GB speed")],
-    ("qwen4exp-48x512", 66.4): [(PC, 32, "16 GB GPU", 18.41, 22.16, "RESULTS 63 (Q2_0, the default Flash-Next file since v0.3.7; IQ3_XXS is the higher-quality option): prompts 2.33x stock")],
+    ("qwen4exp-48x512", 66.4): [(PC, 32, "16 GB GPU", 18.41, 22.16, "RESULTS 63 (Q2_0, the faster file; IQ3_XXS is the default): prompts 2.33x stock")],
     ("qwen4exp-48x512", 58.4): [(PC, 32, "16 GB GPU, coding agent", None, 21.24, "RESULTS 63 (Coder IQ1_M): agent session 24 % shorter than IQ2_XS")],
     ("qwen4exp-48x512", 76.0): [(PC, 32, "16 GB GPU", 15.14, 19.86, "RESULTS 59")],
     ("qwen4exp-48x512", 83.6): [(PC, 32, "16 GB GPU", 12.92, 17.28, "RESULTS 59")],
@@ -555,7 +555,7 @@ def windows_amd_rules(gpu, path, agent=False, windows=WINDOWS):
     return reasons
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None, leave_room=False):
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None, leave_room=False, long_prompt=False):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units).
     engine: auto (the launcher decides), plugin (--always-plugin) or stock (--stock). mtp: None (auto), True, False; ls: llama-server for its MTP check."""
     if engine == "stock":
@@ -581,7 +581,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     else:
         R.append("free RAM unknown: set a RAM budget")
     try:
-        lp = launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room)     # engine, GPU layers, micro-batch, KV: what the launcher would start with
+        lp = launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room, long_prompt)     # engine, GPU layers, micro-batch, KV: what the launcher would start with
         plan, tuned, stock = lp.planner_info, lp.tuned, lp.engine == "stock"
     except Exception as e:
         stock = mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
@@ -663,6 +663,8 @@ def server_args(s):
             a.append("--no-warm")          # neither restores nor saves agent conversations
     if s.get("leave_room"):
         a.append("--leave-room")
+    if s.get("long_prompt"):
+        a.append("--long-prompt")          # v0.3.8, opt-in: -ub 4096 + the q8_0 KV cache when the memory plan allows
     if s.get("peers"):
         a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (docs/internal/TWO_MODELS_DESIGN.md)
     if s.get("share_ram"):
@@ -2250,12 +2252,12 @@ class Handler(BaseHTTPRequestHandler):
                 m = self.known(q.get("model"))
                 ps = self.settings(dict(q, model=m))             # the same checks as Start (numbers in range, no nan / inf)
                 q = {"ram": str(ps["ram"]) if "ram" in ps else "", "vram": str(ps["vram"]) if "vram" in ps else "", "ctx": str(ps.get("ctx", 8192)),
-                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"], "mtp": ps["mtp"], "leave_room": ps["leave_room"]}
-                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"], q["leave_room"])
+                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"], "mtp": ps["mtp"], "leave_room": ps["leave_room"], "long_prompt": ps["long_prompt"]}
+                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"], q["leave_room"], q["long_prompt"])
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
-                                                                             q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls, q["leave_room"]))
+                                                                             q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls, q["leave_room"], q["long_prompt"]))
                 return self.send(200, dict(hit[1], here=measured_here(m)))       # the benchmark lines are fresh even when the plan is cached
             if u.path == "/api/agents":                     # GUI-025: the agents' config files, read back
                 return self.send(200, agents_state(self.runner.status()["url"] if self.runner.state in ("ready", "waiting") else None))
@@ -2696,7 +2698,7 @@ class Handler(BaseHTTPRequestHandler):
              "engine": d.get("engine") if d.get("engine") in ("auto", "plugin", "stock") else "auto",
              "mtp": {"on": True, "off": False}.get(str(d.get("mtp")).lower()),
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"),
-             "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+             "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "long_prompt": str(d.get("long_prompt")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
         if s["engine"] == "stock":
             s["mode"] = "exact"                   # --fast and --hybrid need the plugin
         for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),

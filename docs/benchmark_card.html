@@ -80,8 +80,8 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section aria-label="Headline numbers">
     <div class="tiles">
-      <div class="tile"><b>2.2×</b><span>prompt reading in a real 65k conversation on Flash-Next Q2_0, the default (430.0 vs 194.5 tok/s for stock); decode 26.98 vs 22.46 tok/s (+20 %); the whole conversation takes 388 s instead of 613 s. v0.3.7 candidate kit, PC, 46 turns to 65,379 tokens, A B B A, two runs per arm <!-- claim:v037-conv-q2_0 --></span></div>
-      <div class="tile"><b>4.2×</b><span>the same on Flash-Next IQ3_XXS, the higher-quality option (188.2 vs 44.8 tok/s); decode 21.73 vs 16.00 tok/s (+36 %); 663 s instead of 1,852 s; 49 turns to 65,371 tokens <!-- claim:v037-conv-iq3xxs --></span></div>
+      <div class="tile"><b>4.2×</b><span>prompt reading in a real 65k conversation on Flash-Next IQ3_XXS, the default (188.2 vs 44.8 tok/s); decode 21.73 vs 16.00 tok/s (+36 %); 663 s instead of 1,852 s; 49 turns to 65,371 tokens <!-- claim:v037-conv-iq3xxs --></span></div>
+      <div class="tile"><b>2.2×</b><span>the same on Flash-Next Q2_0, the faster option (430.0 vs 194.5 tok/s for stock); decode 26.98 vs 22.46 tok/s (+20 %); the whole conversation takes 388 s instead of 613 s. v0.3.7 candidate kit, PC, 46 turns to 65,379 tokens, A B B A, two runs per arm <!-- claim:v037-conv-q2_0 --></span></div>
       <div class="tile"><b>Same text</b><span>Flash-Next Q2_0 at a 34k prompt: the plugin's answer was the same text as stock's (v0.3.7 candidate; from the chain log, no record yet)</span></div>
       <div class="tile"><b>Not here</b><span>Q2_0 against IQ3_XXS on one 64k prompt (chain log only, no record yet) and the quality comparison are in the release notes; the 8k chats, long prompts, agent sessions and other models are on the older card page</span></div>
     </div>
@@ -91,19 +91,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
   <section>
     <h2>A real 65k conversation, stock against moe-cache, per depth band</h2>
     <p>Windows desktop, v0.3.7 kit f928d1c, official llama.cpp b12064, timers off, launcher defaults. A seeded conversation (code pastes, logs, follow-ups; <code>tools/conversation_bench.py</code>, seed 42, 128 tokens per answer) is sent turn by turn with the whole history, prompt cache on, temperature 0, until the 65,536-token context is full. Order stock, moe-cache, moe-cache, stock; the table shows the mean of the two runs per arm; cold file cache before every run. Prompt tok/s = new tokens read divided by prompt time, over turns with at least 64 new tokens; decode over turns with at least 16 generated tokens; the band is the depth of the prompt before the answer. The 48k–64k band holds most turns, mostly small follow-ups.</p>
-    <p><b>Flash-Next Q2_0 (the default), 46 turns to 65,379 tokens.</b> Whole run: moe-cache reads new prompt tokens at 430.01 against 194.5 tok/s and decodes 26.98 against 22.46 tok/s. <!-- claim:v037-conv-q2_0 --></p>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>Depth band</th><th class="n">turns per run</th><th class="n">stock prompt tok/s</th><th class="n">moe-cache prompt tok/s</th><th class="n">prompt ratio</th><th class="n">stock decode tok/s</th><th class="n">moe-cache decode tok/s</th><th class="n">decode ratio</th><th class="n">first token s, stock</th><th class="n">first token s, moe-cache</th><th class="n">plugin decode hit rate %</th></tr></thead>
-        <tbody>
-          <tr><td>0k-16k</td><td class="n">6</td><td class="n">66.4</td><td class="n"><b>393.2</b></td><td class="n up">5.92×</td><td class="n">22.4</td><td class="n"><b>26.8</b></td><td class="n up">1.19×</td><td class="n">1.18</td><td class="n">0.75</td><td class="n">98.8</td></tr><!-- claim:v037-conv-q2_0 -->
-          <tr><td>16k-32k</td><td class="n">4</td><td class="n">246.7</td><td class="n"><b>551.0</b></td><td class="n up">2.23×</td><td class="n">20.6</td><td class="n"><b>26.9</b></td><td class="n up">1.31×</td><td class="n">11.24</td><td class="n">4.30</td><td class="n">98.8</td></tr><!-- claim:v037-conv-q2_0 -->
-          <tr><td>32k-48k</td><td class="n">6</td><td class="n">231.3</td><td class="n"><b>470.9</b></td><td class="n up">2.04×</td><td class="n">21.8</td><td class="n"><b>26.8</b></td><td class="n up">1.23×</td><td class="n">9.58</td><td class="n">3.71</td><td class="n">99.2</td></tr><!-- claim:v037-conv-q2_0 -->
-          <tr><td>48k-64k</td><td class="n">30</td><td class="n">201.8</td><td class="n"><b>321.9</b></td><td class="n up">1.60×</td><td class="n">22.9</td><td class="n"><b>27.1</b></td><td class="n up">1.18×</td><td class="n">0.75</td><td class="n">0.71</td><td class="n">99.5</td></tr><!-- claim:v037-conv-q2_0 -->
-        </tbody>
-      </table>
-    </div>
-    <p><b>Flash-Next IQ3_XXS (the higher-quality option), 49 turns to 65,371 tokens.</b> Whole run: moe-cache 188.24 against 44.81 tok/s for new prompt tokens, decode 21.73 against 16.0 tok/s. <!-- claim:v037-conv-iq3xxs --></p>
+    <p><b>Flash-Next IQ3_XXS (the default), 49 turns to 65,371 tokens.</b> Whole run: moe-cache 188.24 against 44.81 tok/s for new prompt tokens, decode 21.73 against 16.0 tok/s. <!-- claim:v037-conv-iq3xxs --></p>
     <div class="scroll">
       <table>
         <thead><tr><th>Depth band</th><th class="n">turns per run</th><th class="n">stock prompt tok/s</th><th class="n">moe-cache prompt tok/s</th><th class="n">prompt ratio</th><th class="n">stock decode tok/s</th><th class="n">moe-cache decode tok/s</th><th class="n">decode ratio</th><th class="n">first token s, stock</th><th class="n">first token s, moe-cache</th><th class="n">plugin decode hit rate %</th></tr></thead>
@@ -115,10 +103,22 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         </tbody>
       </table>
     </div>
+    <p><b>Flash-Next Q2_0 (the faster option), 46 turns to 65,379 tokens.</b> Whole run: moe-cache reads new prompt tokens at 430.01 against 194.5 tok/s and decodes 26.98 against 22.46 tok/s. <!-- claim:v037-conv-q2_0 --></p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Depth band</th><th class="n">turns per run</th><th class="n">stock prompt tok/s</th><th class="n">moe-cache prompt tok/s</th><th class="n">prompt ratio</th><th class="n">stock decode tok/s</th><th class="n">moe-cache decode tok/s</th><th class="n">decode ratio</th><th class="n">first token s, stock</th><th class="n">first token s, moe-cache</th><th class="n">plugin decode hit rate %</th></tr></thead>
+        <tbody>
+          <tr><td>0k-16k</td><td class="n">6</td><td class="n">66.4</td><td class="n"><b>393.2</b></td><td class="n up">5.92×</td><td class="n">22.4</td><td class="n"><b>26.8</b></td><td class="n up">1.19×</td><td class="n">1.18</td><td class="n">0.75</td><td class="n">98.8</td></tr><!-- claim:v037-conv-q2_0 -->
+          <tr><td>16k-32k</td><td class="n">4</td><td class="n">246.7</td><td class="n"><b>551.0</b></td><td class="n up">2.23×</td><td class="n">20.6</td><td class="n"><b>26.9</b></td><td class="n up">1.31×</td><td class="n">11.24</td><td class="n">4.30</td><td class="n">98.8</td></tr><!-- claim:v037-conv-q2_0 -->
+          <tr><td>32k-48k</td><td class="n">6</td><td class="n">231.3</td><td class="n"><b>470.9</b></td><td class="n up">2.04×</td><td class="n">21.8</td><td class="n"><b>26.8</b></td><td class="n up">1.23×</td><td class="n">9.58</td><td class="n">3.71</td><td class="n">99.2</td></tr><!-- claim:v037-conv-q2_0 -->
+          <tr><td>48k-64k</td><td class="n">30</td><td class="n">201.8</td><td class="n"><b>321.9</b></td><td class="n up">1.60×</td><td class="n">22.9</td><td class="n"><b>27.1</b></td><td class="n up">1.18×</td><td class="n">0.75</td><td class="n">0.71</td><td class="n">99.5</td></tr><!-- claim:v037-conv-q2_0 -->
+        </tbody>
+      </table>
+    </div>
     <ul>
+      <li>The stock IQ3_XXS conversation took 1,852 s against 663 s with moe-cache, for the same 49 turns. <!-- claim:v037-conv-iq3xxs --></li>
       <li>With moe-cache the Q2_0 conversation decodes at 26.8–27.1 tok/s in every depth band; stock decodes at 20.6–22.9 tok/s. <!-- claim:v037-conv-q2_0 --></li>
       <li>The first answer after a big paste is the visible gap: at 16k–32k depth the median first-token time is 4.30 s with moe-cache against 11.24 s stock on Q2_0, and 9.40 s against 46.45 s on IQ3_XXS. <!-- claim:v037-conv-q2_0 --><!-- claim:v037-conv-iq3xxs --></li>
-      <li>The stock IQ3_XXS conversation took 1,852 s against 663 s with moe-cache, for the same 49 turns. <!-- claim:v037-conv-iq3xxs --></li>
     </ul>
   </section>
 
@@ -136,8 +136,8 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <table>
         <thead><tr><th>Model (file size)</th><th>Context, prompt</th><th class="n">stock</th><th class="n">moe-cache</th><th class="n">change</th></tr></thead>
         <tbody>
-          <tr><td><b>Flash-Next Q2_0</b> (the default)<span class="sub">66.4 GB, drive D:, two runs each, ABBA</span></td><td>65,536, a 46-turn conversation</td><td class="n">22.46</td><td class="n">26.98</td><td class="n up">+20 %</td></tr><!-- claim:v037-conv-q2_0 -->
-          <tr><td>Flash-Next IQ3_XXS (the higher-quality option)<span class="sub">75.8 GB, drive D:, two runs each, ABBA</span></td><td>65,536, a 49-turn conversation</td><td class="n">16.0</td><td class="n">21.73</td><td class="n up">+36 %</td></tr><!-- claim:v037-conv-iq3xxs -->
+          <tr><td><b>Flash-Next IQ3_XXS</b> (the default)<span class="sub">75.8 GB, drive D:, two runs each, ABBA</span></td><td>65,536, a 49-turn conversation</td><td class="n">16.0</td><td class="n">21.73</td><td class="n up">+36 %</td></tr><!-- claim:v037-conv-iq3xxs -->
+          <tr><td>Flash-Next Q2_0 (the faster option)<span class="sub">66.4 GB, drive D:, two runs each, ABBA</span></td><td>65,536, a 46-turn conversation</td><td class="n">22.46</td><td class="n">26.98</td><td class="n up">+20 %</td></tr><!-- claim:v037-conv-q2_0 -->
         </tbody>
       </table>
     </div>
@@ -198,18 +198,6 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 (function () {
   var data = [
     {
-      "m": "Flash-Next Q2_0, 65k conversation",
-      "s": "66.4 GB, drive D:",
-      "stock": 22.46,
-      "mc": 26.98,
-      "d": [
-        "40 expert layers on the CPU, launcher defaults, both arms",
-        "ctx 65536 · 46 turns to 65,379 tokens · ABBA, 2 runs each · cold file cache",
-        "moe-cache peak: VRAM 13429 MiB · process RAM 19373 MiB (stock 25955 MiB)",
-        "v0.3.7 kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_b21c0e · claim v037-conv-q2_0"
-      ]
-    },
-    {
       "m": "Flash-Next IQ3_XXS, 65k conversation",
       "s": "75.8 GB, drive D:",
       "stock": 16.0,
@@ -219,6 +207,18 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         "ctx 65536 · 49 turns to 65,371 tokens · ABBA, 2 runs each · cold file cache",
         "moe-cache peak: VRAM 14585 MiB · process RAM 19990 MiB (stock 26204 MiB)",
         "v0.3.7 kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_d1b3b3 · claim v037-conv-iq3xxs"
+      ]
+    },
+    {
+      "m": "Flash-Next Q2_0, 65k conversation",
+      "s": "66.4 GB, drive D:",
+      "stock": 22.46,
+      "mc": 26.98,
+      "d": [
+        "40 expert layers on the CPU, launcher defaults, both arms",
+        "ctx 65536 · 46 turns to 65,379 tokens · ABBA, 2 runs each · cold file cache",
+        "moe-cache peak: VRAM 13429 MiB · process RAM 19373 MiB (stock 25955 MiB)",
+        "v0.3.7 kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_b21c0e · claim v037-conv-q2_0"
       ]
     }
   ];

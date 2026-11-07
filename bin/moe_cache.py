@@ -2012,6 +2012,9 @@ SERVER_HELP = """\
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    keep the f16 KV cache at 128k+ (no --fast=kv default)
+--long-prompt  opt-in long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache (--fast=kv), only when the memory plan of this card leaves room for
+           it (otherwise nothing changes, and the start-up line says so). Flash-Next IQ3_XXS in a 65k conversation on the PC: prompts about 35 % faster, answers about 10 % slower;
+           for agents and documents. The q8_0 KV cache may change the wording of answers a little (same meaning in our checks). Not with --exact, --stock or your own --ub
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
            Flash-Next at 12 GB (laptop; not yet measured on the PC): 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
@@ -2255,6 +2258,7 @@ def parse_server(argv):
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
+    ap.add_argument("--long-prompt", action="store_true")      # opt-in long-prompt mode (v0.3.8, owner 2026-11-07): -ub 4096 + --fast=kv when the memory plan allows
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true"); ap.add_argument("--no-sched-tuning", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
@@ -2637,8 +2641,9 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
                     res, used = desk_reserve_gb(*tf)
                     if res > 0.5:
                         desk_kw = kw["reserve_gb"] = res
-                        say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
-                            f"(--gpu-margin GiB to change)")
+                        if not getattr(a, "lp_retune", False):
+                            say(f"moe-cache: other programs hold {used:.1f} GiB of the GPU memory: keeping {res:.1f} GB free for them and the long-prompt block "
+                                f"(--gpu-margin GiB to change)")
                 if a.leave_room and kw.get("reserve_gb", 0) < LEAVE_ROOM_VRAM_GB:
                     desk_kw = kw["reserve_gb"] = LEAVE_ROOM_VRAM_GB
                     say(f"moe-cache: --leave-room: {LEAVE_ROOM_VRAM_GB:.0f} GB of GPU memory kept free for the desktop")
@@ -2652,6 +2657,8 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
                 if a.dry_run and free:
                     for line in plan_table_lines(plan_table(model, ctx, free=free, kv_q8=kv_q8, reserve_gb=kw.get("reserve_gb", 0.5), fit_params=kw["fit_params"]), ctx):
                         say(line)
+            if getattr(a, "long_prompt", False) and not (ub_asked or "").isdigit() and getattr(a, "lp_kv", False):
+                kw["long_prompt"] = True
             tuned = tune(model, ctx, free=free, want_cache=gcache != "off", kv_q8=kv_q8, **kw)
         except Exception:
             tuned = None
@@ -2853,17 +2860,54 @@ def kv_stage(a, extra, ctx, ls, listing, machine):
         a.fast = "kv"
         say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
             "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+    a.lp_kv = False
+    if getattr(a, "long_prompt", False) and not a.fast and a.ub == "auto" and not any(x in ("-ub", "--ubatch-size") for x in extra):          # the long-prompt mode stores the KV cache as q8_0 (the measured setting is --fast=kv); undone below when -ub 4096 does not fit
+        if a.exact or a.stock:
+            raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
+        if not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra) and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls))):
+            a.fast, a.lp_kv = "kv", True
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
     if kv_q8:
         extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
     return kv_q8
 
 
+def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked):
+    """The opt-in long-prompt mode (--long-prompt, v0.3.8, owner 2026-11-07): -ub 4096 with the q8_0 KV cache, measured on Flash-Next IQ3_XXS in a 65k conversation on the PC
+    (prompts +35 %, answers -10 %; claims v038-conv-iq3xxs-shipped / -fastkv). It applies only when the memory plan of this card leaves room for -ub 4096 (the tuner tried it first);
+    when it does not, nothing changes: the q8_0 KV cache is undone (alone it lost prompt speed in the same test) and the normal plan is made again. Returns kv_q8, tuned, desk_kw, ub_asked."""
+    if not getattr(a, "long_prompt", False):
+        return kv_q8, tuned, desk_kw, ub_asked
+    user_ub = a.ub != "auto" or any(x in ("-ub", "--ubatch-size") for x in extra)
+    if user_ub:
+        say("moe-cache: --long-prompt: your own --ub wins, so the long-prompt mode changes nothing")
+        return kv_q8, tuned, desk_kw, ub_asked
+    if not getattr(a, "lp_kv", False):
+        say("moe-cache: --long-prompt: no GPU found, or your own -ctk/-ctv, or --fast is set: the long-prompt mode changes nothing")
+        return kv_q8, tuned, desk_kw, ub_asked
+    if tuned and tuned.get("ub") == 4096:
+        say("moe-cache: --long-prompt: a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, answers come a little slower; the q8_0 KV cache may change the "
+            "wording of answers slightly, the meaning stayed the same in our checks)")
+        return kv_q8, tuned, desk_kw, ub_asked
+    # -ub 4096 does not fit this card's memory plan: undo the KV cache and plan again as without the flag
+    for i in range(len(extra) - 3):
+        if extra[i:i + 4] == ["-ctk", "q8_0", "-ctv", "q8_0"]:
+            del extra[i:i + 4]
+            break
+    a.fast, a.lp_kv = None, False
+    say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card (or the plan is not a GPU plan), so nothing changes: the normal micro-batch and the f16 KV cache stay")
+    a.lp_retune = True                                       # the "other programs hold" line was said by the first plan
+    tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, False, mm_bytes)
+    return False, tuned, desk_kw, ub_asked
+
+
 def fast_env_stage(a, env, stock, model, machine):
     """ENGINE-029, stage "approximate modes": the plugin settings and the one plain line for --fast, --fast=2, --fast=fewer and --fast=kv; without --fast, the hint where it would pay (the model is much bigger than the memory it may use). env grows in place."""
     if a.no_sched_tuning:
         env.append(("MOE_CACHE_SCHED_TUNING", "0"))       # WINDOWS-013: Windows scheduling tweaks are on by default (the plugin reads this); nothing happens elsewhere
-    if a.fast == "kv":
+    if a.fast == "kv" and getattr(a, "lp_kv", False):
+        pass                                                    # --long-prompt says what it did after the memory plan (long_prompt_stage)
+    elif a.fast == "kv":
         say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
     elif a.fast:
         env.append(("MOE_CACHE_ROUTE", "skip"))
@@ -3185,6 +3229,7 @@ def _launch_plan(a, extra, argv, machine):
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
+    kv_q8, tuned, desk_kw, ub_asked = long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked)
     ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
     ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)

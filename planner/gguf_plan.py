@@ -513,7 +513,9 @@ _COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024:
                 262144: {512: 1403, 1024: 2983, 2048: 3979}}
 # Measured but never auto-picked (None above): still the size llama-server takes when the user asks for that micro-batch (audit 2026-10-29 L1:
 # without these, -ub 2048 at 128k/256k was guessed at 990 MiB, about 2-3 GiB short, so the long-prompt block found no room)
-_COMPUTE_MIB_NOT_PICKED = {131072: {2048: 3150}}
+_COMPUTE_MIB_NOT_PICKED = {131072: {2048: 3150},
+                           # -ub 4096 at 64k, IQ3_XXS, f16 KV, PC night chain 2026-11-07 (item 15): 4,660 MiB (2,021 MiB at -ub 2048 on the same file); used only by the long-prompt mode
+                           65536: {4096: 4660}}
 _PROMPT_GAIN = {512: 1.0, 1024: 1.26, 2048: 1.58}      # measured prefill speed-up of a bigger micro-batch (6k-token prompt)
 
 
@@ -538,6 +540,11 @@ def compute_buffer_guess_mib(ctx, ub):
         b = row[near] * max(ub, 512) / near * ctx / top
     if b is None:
         b = max(v.get(2048) or 0 for v in _COMPUTE_MIB.values()) * max(ub, 512) / 2048
+        # a micro-batch between two measured ones never needs more than the larger measured one (the -ub 4096 row at 64k, 2026-11-07)
+        larger = [v for k in set(_COMPUTE_MIB) | set(_COMPUTE_MIB_NOT_PICKED) if k >= ctx
+                  for u2, v in {**_COMPUTE_MIB.get(k, {}), **_COMPUTE_MIB_NOT_PICKED.get(k, {})}.items() if u2 > ub and v]
+        if larger:
+            b = min(b, min(larger))
     return b
 
 
@@ -764,13 +771,14 @@ def plan_table_lines(rows, ctx):
     return out
 
 
-def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None):
+def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5, ub=None, fit_params=None, long_prompt=False):
     """One decision for everything that competes for VRAM: micro-batch, GPU expert cache or static expert layers, and how much is left.
 
     Returns a dict: n_cpu_moe, ub, gpu_cache_mib (0 = use static layers), expected VRAM use and a list of reasons. Rules come from measurements
     (docs/internal/PERFORMANCE_ANALYSIS.md): a GPU cache below about 1.5 GiB is slower than static layers; bigger micro-batches speed up prompts but need
     compute buffer that grows with the context; the disk lookup table never counts as GPU weight. ub: a micro-batch the user chose (the rest is
-    planned around it; without this a chosen -ub left no room for the long-prompt block and long prompts ran on the CPU, RESULTS 61).
+    planned around it; without this a chosen -ub left no room for the long-prompt block and long prompts ran on the CPU, RESULTS 61). long_prompt: the opt-in
+    long-prompt mode (--long-prompt): -ub 4096 is tried first and taken only when the memory plan leaves room for it (no GPU cache wanted, no -ub chosen); else the usual ladder.
     """
     lay = model_layout(path)
     free = free if free is not None else free_vram_bytes()
@@ -804,8 +812,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
     fixed_ub = ub
     # gpt-oss (2026-11-02): chunk 2048 at ctx 40960 gave prompts +73 % but decode 14.9 -> 9.9 with one layer's difference, cause not known: it keeps the old choice above 32k
     keep_1024 = ctx > 32768 and "gpt-oss" in (sampling_meta(path).get("arch") or "")
-    for ub in ((fixed_ub,) if fixed_ub else ((1024, 512) if keep_1024 else (2048, 1024, 512))):
-        buf = cbm(ub, bool(fixed_ub))
+    try_4096 = bool(long_prompt) and not fixed_ub and not want_cache and not keep_1024
+    for ub in ((fixed_ub,) if fixed_ub else (((4096,) if try_4096 else ()) + ((1024, 512) if keep_1024 else (2048, 1024, 512)))):
+        buf = cbm(ub, bool(fixed_ub) or ub == 4096)
         if buf is None:
             continue
         block = block_for(ub)
@@ -840,9 +849,9 @@ def tune(path, ctx=8192, free=None, kv_q8=False, want_cache=True, reserve_gb=0.5
                  if mtpb else f"{gpu_layers} layers of experts stay on the GPU")
         why.append(f"{where} ({int(block // 1048576)} MiB kept free for the long-prompt GPU block"
                    + (")" if not want_cache else "; a cache would be under 1.5 GiB or under 4 % of the experts)"))
-    why.append(f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
+    why.append(f"micro-batch {ub} (long-prompt mode: the memory plan leaves room for it)" if ub == 4096 else f"micro-batch {ub} (about {_PROMPT_GAIN.get(ub, 1.0):.2f}x the prompt speed of 512)")
     return {"n_cpu_moe": n_cpu_moe, "ub": ub, "gpu_cache_mib": cache_mib, "kv_mib": int(kv // 1048576),
-            "compute_mib": cbm(ub, True) if fixed_ub or not best else cbm(ub, False), "why": why}
+            "compute_mib": cbm(ub, True) if fixed_ub or not best or ub == 4096 else cbm(ub, False), "why": why}
 
 
 def fast_kv_hint(path, ctx, free=None, reserve_gb=0.5, ub=None, min_ctx=131072):

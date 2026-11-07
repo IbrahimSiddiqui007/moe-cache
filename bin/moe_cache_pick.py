@@ -32,10 +32,13 @@ CATALOGUE = cat.load()
 CAT = cat.models_dict(CATALOGUE)
 MODELS = {k: cat.legacy(m) for k, m in CAT.items()}
 
-NEWQ_UI = "measured 2026-11-05 (record pending): at 64k prompts +86.9 % and decode +50.7 % over IQ3_XXS, a flat ~27 tok/s through a 65k conversation"
 SIBLINGS = {"flash-next-q2_0": "flash-next-iq3_xxs", "flash-next-iq3_xxs": "flash-next-q2_0"}
-SIBLINGS_WHY = {"flash-next-iq3_xxs": "the higher-quality Flash-Next file (owner 2026-11-05): 3-bit, the most tasks right (193/202), top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context",
-                "flash-next-q2_0": "the default Flash-Next file since v0.3.7 (owner 2026-11-05): 9 GB smaller than IQ3_XXS, at 64k prompts +86.9 % and decode +50.7 % over IQ3_XXS (measured 2026-11-05, record pending), 191/202 tasks"}
+# Q2_0 against IQ3_XXS, recorded numbers only: the v0.3.7 65k conversation on the PC (whole run, new prompt tokens: 430.0 against 188.2 tok/s with moe-cache; the decode numbers of
+# those runs rest on short answers from turn 11, so no decode figure is quoted here) and the 2026-11-05 quality check (top-1 agreement with IQ3_S, record pending)
+Q2_FAST = "reads prompts about 2.3 times as fast as IQ3_XXS in a 65k conversation (430.0 against 188.2 tok/s, v0.3.7 records) and decodes faster"
+Q2_LESS = "a little less exact (top-1 agreement with IQ3_S 73.3 % against 76.5 % for IQ3_XXS, measured 2026-11-05, record pending), 191/202 tasks against 193"
+SIBLINGS_WHY = {"flash-next-iq3_xxs": "the default Flash-Next file (owner 2026-11-07): 3-bit, the most tasks right (193/202), top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context",
+                "flash-next-q2_0": f"the faster option (owner 2026-11-07): 9 GB smaller than IQ3_XXS, {Q2_FAST}; {Q2_LESS}"}
 
 
 # ---- this machine ----
@@ -432,15 +435,15 @@ def recommend(spec, use, model=None):
                "the smallest candidate (3B active): the one that still runs agents at 64k on this machine")]
     elif use == "chat":
         R += [("glm-5.3", fits("glm-5.3"), 32768, None, "fits in your RAM: the biggest candidate, stock llama.cpp"),
-              # Q2_0 is the default Flash-Next file again (owner 2026-11-05: at 64k prompts +86.9 % and decode +50.7 % over IQ3_XXS, a flat ~27 tok/s in a 65k
-              # conversation; records pending); IQ3_XXS stays the higher-quality sibling (the earlier default, owner 2026-10-30)
-              ("flash-next-q2_0", cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0"), 32768,
-               f"{PC}: 22-25 tok/s decode, 281-287 tok/s prompts, 191/202 tasks (2026-10-28); {NEWQ_UI}",
-               "the default Flash-Next file since v0.3.7: 9 GB smaller than IQ3_XXS and faster at long context; bigger than your RAM, moe-cache keeps the hot experts in RAM. "
-               "IQ3_XXS is the higher-quality option (193/202 tasks, top-1 agreement with IQ3_S 76.5 % against 73.3 %, measured 2026-11-05, record pending)"),
+              # IQ3_XXS is the default Flash-Next file again (owner 2026-11-07: most people use it, and the measured quality loss of Q2_0 is small but the name puts people off);
+              # Q2_0 is the faster option (earlier default: IQ3_XXS 2026-10-30, Q2_0 2026-11-05)
               ("flash-next-iq3_xxs", cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs"), 32768,
                f"{PC}: 19.9 tok/s decode (2026-10-27), 193/202 tasks (the most)",
-               "the higher-quality Flash-Next file: 3-bit, reads best and the most tasks right (top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0, measured 2026-11-05, record pending); slower than Q2_0 at long context (at 64k Q2_0 decodes +50.7 % faster, same date)"),
+               "the default Flash-Next file: 3-bit, reads best and the most tasks right (top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0, measured 2026-11-05, record pending); "
+               "bigger than your RAM, moe-cache keeps the hot experts in RAM. Q2_0 is the faster option (9 GB smaller, " + Q2_FAST + ")"),
+              ("flash-next-q2_0", cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0"), 32768,
+               f"{PC}: 22-25 tok/s decode, 281-287 tok/s prompts, 191/202 tasks (2026-10-28)",
+               "the faster option: 9 GB smaller than IQ3_XXS, " + Q2_FAST + "; " + Q2_LESS),
               ("flash-next-q2_0", cap >= 24 and vram >= 6 and drive_ok("flash-next-q2_0"), 32768, None,
                f"the documented default; measured on {LAPTOP} only with the IQ2_XS file of the same size: 12.5 tok/s"),
               ("qwen3.5-122b", cap >= 24 and vram >= 6 and drive_ok("qwen3.5-122b"), 32768,
@@ -560,11 +563,11 @@ def recommend(spec, use, model=None):
         if lk != k and lk not in (a["id"] for a in alts) and len(alts) < 2:
             alts.append({"id": lk, "name": MODELS[lk]["name"], "why": "already on this machine (not the best fit for it)",
                          "fit": fit(spec, lk, {"chat": 32768}.get(use, 65536), use, local)})
-    if use == "agents" and k != "flash-next-q2_0" and cap >= 24 and vram >= 12 and drive_ok("flash-next-q2_0") and placeable("flash-next-q2_0"):
-        alts.append({"id": "flash-next-q2_0", "name": MODELS["flash-next-q2_0"]["name"],
-                     "why": f"the default Flash-Next file since v0.3.7, moe-cache; long context measured with Q2_0 on {PC}: "
-                            f"20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (2026-10-28); {NEWQ_UI}; IQ3_XXS is the higher-quality option (193/202 tasks)",
-                     "fit": fit(spec, "flash-next-q2_0", 65536, use, local)})
+    if use == "agents" and k != "flash-next-iq3_xxs" and cap >= 24 and vram >= 12 and drive_ok("flash-next-iq3_xxs") and placeable("flash-next-iq3_xxs"):
+        alts.append({"id": "flash-next-iq3_xxs", "name": MODELS["flash-next-iq3_xxs"]["name"],
+                     "why": f"the default Flash-Next file (3-bit, 193/202 tasks), moe-cache; long context measured with Q2_0 on {PC}: "
+                            "20.7 tok/s at 64k, 15.3 at 128k, prompts 170-266 tok/s (2026-10-28); Q2_0 is the faster option (" + Q2_FAST + ")",
+                     "fit": fit(spec, "flash-next-iq3_xxs", 65536, use, local)})
     out = {"id": k, "name": m["name"], "use": use, "size": size_of(k, local), "ctx": ctx, "args": args, "engine": engine,
            "measured": measured or "untested on this class of machine", "untested": not measured, "key": key_numbers(measured), "why": [why], "warnings": warn,
            "alternatives": alts[:2], "fit": fit(spec, k, ctx, use, local), "memory": memory, "local": local.get(k), "fits_disk": fits_disk, "disk_missing": missing,
