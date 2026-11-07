@@ -30,6 +30,7 @@ SYSTEM = "You are a careful coding assistant working in the user's repository. A
 # earlier 1-2 token replies, so the deep turns decoded a handful of tokens. The command line now asks for a visible answer: thinking off, 256 tokens, and every user
 # message ends with ANSWER_HINT. --legacy brings the old behaviour back (comparable with the v0.3.7 records).
 ANSWER_HINT = "\n\n(Please answer in at least three full sentences.)"
+NEUTRAL_SYSTEM = "You are a careful coding assistant working in the user's repository."
 MIN_MEDIAN_ANSWER = 24          # median answer tokens below this: the run carries a warning (a conversation of one-word answers measures nothing about decode)
 SHORT_ANSWER = 8                # an answer of fewer tokens than this counts as short
 
@@ -124,7 +125,7 @@ def server_ctx(url, api_key, timeout=10):
 
 def chat(url, body, api_key, timeout):
     """One streamed chat request -> dict: text, reasoning (chars), ttft_s, wall_s, timings, usage, status, error."""
-    res = {"text": "", "reasoning_chars": 0, "ttft_s": None, "wall_s": None, "timings": None, "usage": None, "status": None, "error": None}
+    res = {"text": "", "finish_reason": None, "reasoning_chars": 0, "ttft_s": None, "wall_s": None, "timings": None, "usage": None, "status": None, "error": None}
     c, base = _conn(url, timeout)
     hdr = {"Content-Type": "application/json"}
     if api_key:
@@ -153,6 +154,8 @@ def chat(url, body, api_key, timeout):
                     continue
                 for ch in j.get("choices") or []:
                     dl = ch.get("delta") or {}
+                    if ch.get("finish_reason"):
+                        res["finish_reason"] = ch["finish_reason"]
                     if dl.get("content"):
                         res["text"] += dl["content"]
                     if dl.get("reasoning_content"):
@@ -303,7 +306,8 @@ def delta(s0, s1, key):
 # ---------------------------------------------------------------- one conversation
 
 def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="conversation-bench", timeout=1800, stats=None, max_turns=None,
-                     script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None, drive=None, answer_hint=False, min_median=MIN_MEDIAN_ANSWER):
+                     script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None, drive=None, answer_hint=False, min_median=MIN_MEDIAN_ANSWER,
+                     system=None, temperature=0.0, empty_marker="(no visible answer)", hint_text=None, keep_answers=True):
     """Play the conversation; returns the run dict (turns, bands, stop reason). monitor_pid: llama-server's pid, sampled during the whole run for VRAM, process
     RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py)."""
     smp = None
@@ -315,7 +319,8 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             log(f"no resource sampling: {type(ex).__name__}: {ex}")
     io0 = proc_read_bytes(monitor_pid) if monitor_pid else None
     dr0 = drive_read_bytes(drive) if drive else None
-    turns, history = [], [{"role": "system", "content": SYSTEM}]
+    hint = ANSWER_HINT if hint_text is None else hint_text
+    turns, history = [], [{"role": "system", "content": SYSTEM if system is None else system}]
     prev_total, n, stop = 0, 0, "max turns reached"
     t_start = time.time()
     while max_turns is None or n < max_turns:
@@ -324,7 +329,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             cand = (script[n] if (script and attempt == 0 and n < len(script)) else None) if script else make_turn(seed, n, attempt)
             if script and cand is None:
                 stop = "script ended"; break
-            est = (len(cand["text"]) + (len(ANSWER_HINT) if answer_hint else 0)) / CHARS_PER_TOKEN + MARGIN
+            est = (len(cand["text"]) + (len(hint) if answer_hint else 0)) / CHARS_PER_TOKEN + MARGIN
             if prev_total + est + max_tokens <= ctx:
                 pick = cand; break
             if script:
@@ -333,8 +338,8 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             if stop == "max turns reached":
                 stop = "context full"
             break
-        history.append({"role": "user", "content": pick["text"] + (ANSWER_HINT if answer_hint else "")})
-        body = {"model": model, "messages": history, "max_tokens": max_tokens, "temperature": 0, "seed": 42, "stream": True,
+        history.append({"role": "user", "content": pick["text"] + (hint if answer_hint else "")})
+        body = {"model": model, "messages": history, "max_tokens": max_tokens, "temperature": temperature, "seed": 42, "stream": True,
                 "stream_options": {"include_usage": True}, "cache_prompt": True}
         if no_think:
             body["chat_template_kwargs"] = {"enable_thinking": False}
@@ -359,7 +364,10 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
                "gpu_blocks": delta(s0, s1, "gpu_segments"),
                "gpu_up_saved_gb": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "gpu_up_saved")),
                "ssd_wait_s": (lambda d: round(d / 1e9, 3) if d is not None else None)(delta(s0, s1, "ns_ssd_wait")),
-               "answer_chars": len(r["text"]), "answer_sha256": hashlib.sha256(r["text"].encode("utf-8")).hexdigest()[:16]}
+               "answer_chars": len(r["text"]), "answer_sha256": hashlib.sha256(r["text"].encode("utf-8")).hexdigest()[:16],
+               "finish_reason": r.get("finish_reason"), "reasoning_chars": r.get("reasoning_chars", 0)}
+        if keep_answers:
+            row["answer_head"] = r["text"][:400]          # the first 400 characters of the visible answer: what the 1-2 token answers actually say
         turns.append(row)
         log(f"  [{arm}] turn {n:3d} {pick['kind']:<11} +{row['tokens_added']} tok  depth {row['depth_before']}->{row['depth_after']}  "
             f"prompt {row['prompt_tps']} tok/s ({row['prompt_n']} new, {row['cache_n']} cached)  decode {row['decode_tps']} tok/s  ttft {row['ttft_s']} s"
@@ -368,7 +376,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             stop = "error: " + str(r["error"])[:200]
             history.pop()
             break
-        history.append({"role": "assistant", "content": r["text"] if r["text"] else "(no visible answer)"})
+        history.append({"role": "assistant", "content": r["text"] if r["text"] else empty_marker})
         prev_total = row["depth_after"] if row["depth_after"] is not None else prev_total + int(est)
         n += 1
     run = {"arm": arm, "url": url, "ctx": ctx, "max_tokens": max_tokens, "seed": seed, "turns": turns, "stop_reason": stop,
@@ -410,7 +418,21 @@ def answer_stats(turns, min_median=MIN_MEDIAN_ANSWER):
                         "rest on very short answers and the conversation cannot judge meaning (use the default settings, not --legacy, or give --script with longer questions)")
     if turns and empty * 4 > len(turns):
         warnings.append(f"{empty} of {len(turns)} turns have no visible answer (thinking may use the whole --max-tokens)")
-    return {"median_tokens": med, "short_turns": short, "empty_turns": empty, "turns": len(turns), "warnings": warnings}
+    # for finding the cause: does a short answer make the next one short (the model copying its own history), where does it start, and which kinds of user turn get short answers
+    ps = [(t.get("predicted_n"), t.get("kind")) for t in turns if t.get("predicted_n") is not None]
+    after_short = [b[0] < SHORT_ANSWER for a, b in zip(ps, ps[1:]) if a[0] < SHORT_ANSWER]
+    after_long = [b[0] < SHORT_ANSWER for a, b in zip(ps, ps[1:]) if a[0] >= SHORT_ANSWER]
+    by_kind = {}
+    for x, k in ps:
+        by_kind.setdefault(k, []).append(x)
+    first_short = next((t["turn"] for t in turns if t.get("predicted_n") is not None and t["predicted_n"] < SHORT_ANSWER), None)
+    reasons = {}
+    for t in turns:
+        reasons[str(t.get("finish_reason"))] = reasons.get(str(t.get("finish_reason")), 0) + 1
+    return {"median_tokens": med, "short_turns": short, "empty_turns": empty, "turns": len(turns), "warnings": warnings, "first_short_turn": first_short,
+            "p_short_after_short": round(sum(after_short) / len(after_short), 3) if after_short else None,
+            "p_short_after_long": round(sum(after_long) / len(after_long), 3) if after_long else None,
+            "median_by_kind": {k: statistics.median(v) for k, v in by_kind.items()}, "finish_reasons": reasons}
 
 def cost_fit(turns, ub):
     """TEST-754: prompt time per turn = A x passes + B x (new tokens / 1k) + C x (new tokens / 1k) x (depth / 1k), least squares over the turns that read a prompt.
@@ -636,6 +658,11 @@ def _run_args(p):
     p.add_argument("--think", action="store_true", help="leave thinking to the server's default (the old behaviour; the thinking block uses the answer length)")
     p.add_argument("--no-answer-hint", action="store_true", help="do not end every user message with 'Please answer in at least three full sentences.'")
     p.add_argument("--legacy", action="store_true", help="the v0.3.7 settings: --think, --no-answer-hint and --max-tokens 128 (comparable with the old records)")
+    p.add_argument("--system", help="the system message ('neutral' = the default without 'Answer briefly.'; any other text is used as it is; default: the original text)")
+    p.add_argument("--hint", help="the sentence added to every user message instead of the default one")
+    p.add_argument("--temperature", type=float, default=0.0, help="sampling temperature (default 0, greedy)")
+    p.add_argument("--empty-marker", default="(no visible answer)", help="what goes into the history when an answer has no visible text (default '(no visible answer)'; '' stores an empty answer)")
+    p.add_argument("--no-keep-answers", action="store_true", help="do not save the first 400 characters of every answer in the run")
     p.add_argument("--min-median-answer", type=int, default=MIN_MEDIAN_ANSWER, help="warn when the median answer is under this many tokens (default %d)" % MIN_MEDIAN_ANSWER)
     p.add_argument("--ignore-eos", action="store_true", help="make every answer exactly --max-tokens long (the model may ramble)")
     p.add_argument("--stats-pid", type=int, help="llama-server's pid, to read the plugin's counters (needs --stats-log and MOE_CACHE_STATS_SIGNAL=1)")
@@ -667,7 +694,7 @@ def _one(a, url, arm, log=print):
         ctx = sc
     stats = Stats(a.stats_pid, a.stats_log) if a.stats_pid and a.stats_log else None
     script = load_script(a.script) if a.script else None
-    log(f"conversation: arm {arm}, {url}, context {ctx}, {a.max_tokens} tokens per answer, seed {a.seed}, thinking {'off' if no_think else 'server default'}, answer hint {'on' if hint else 'off'}")
+    log(f"conversation: arm {arm}, {url}, context {ctx}, {a.max_tokens} tokens per answer, seed {a.seed}, temperature {a.temperature}, system {'neutral' if a.system == 'neutral' else ('custom' if a.system else 'original')}, thinking {'off' if no_think else 'server default'}, answer hint {'on' if hint else 'off'}")
     cmd = a.server_cmd or ""
     try:
         if cmd.startswith("@"):                  # --command-line @FILE: the text is in a file (quotes and spaces survive PowerShell's argument passing)
@@ -677,7 +704,8 @@ def _one(a, url, arm, log=print):
         log(f"command line file not read: {ex}")
         cmd = ""
     run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, no_think, a.ignore_eos, log, a.monitor_pid,
-                           model_drive(cmd) if os.name == "nt" else None, hint, a.min_median_answer)
+                           model_drive(cmd) if os.name == "nt" else None, hint, a.min_median_answer,
+                           NEUTRAL_SYSTEM if a.system == "neutral" else a.system, a.temperature, a.empty_marker, a.hint, not a.no_keep_answers)
     try:
         import moe_cache_record as rr
         lines = []

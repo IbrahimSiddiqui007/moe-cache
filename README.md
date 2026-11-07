@@ -98,6 +98,8 @@ Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), a real 65k
 
 Each number is the mean of two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), whole conversation. Both files are bigger than the free RAM once the GPU and Windows have taken their share. Stock = the same llama-server command the launcher builds for the plugin, without the plugin.
 
+**Status of the decode numbers by depth.** The benchmark script was found to produce very short answers deep into the 65k conversation, so the decode speed of the deeper bands was measured over only a few tokens; the prompt numbers are not affected. The fix is in v0.3.8, the cause is being pinned down, and the decode numbers by depth will be measured again with it.
+
 ### Where it does not help
 
 - **Models that fit in RAM.** The launcher runs plain llama.cpp for them by itself. Forced through moe-cache, Qwen3.6-35B in a 65k conversation was somewhat faster than stock (one model, one PC, see RESULTS 80), while earlier laptop runs of models that fit showed stock as fast or faster; no steady gain, so the default stays.
@@ -122,7 +124,6 @@ Each number is the mean of two cold runs in the order stock, moe-cache, moe-cach
 | Context length of the speed numbers | the numbers on the card are real 65k conversations on Flash-Next Q2_0 and IQ3_XXS, two runs per arm, one PC, a v0.3.7 candidate kit (the clean check's CPU counter was empty in two checks, see the note on the card); Q2_0 against IQ3_XXS on one 64k prompt and the identity check are chain-log numbers without records yet (release notes); nothing is measured beyond 65k on v0.3.7 |
 | Not tested for this release | `winget install` and `scoop install` (manifests exist but are not submitted); Hermes Desktop and OpenCode Desktop on Windows (click-through still open); a full model run from the final zip |
 | Decode after long prompts | on the v0.3.5 kit decode after a 34k-64k prompt was slower than on v0.3.4 (the bigger prompt chunk leaves 2 fewer expert layers on the GPU, RESULTS 79); giving that memory back after the prompt (patch 0070) was tried on the PC on 2026-11-05 and lost, so it is archived (`archive/README.md`); a smaller prompt chunk keeps decode faster at the price of a slower prompt |
-| Conversation decode by depth | in the v0.3.7 65k conversation runs the model answered with very few tokens from about turn 11 (its thinking used the answer length), so the decode speed of the deeper bands is measured over short answers; the prompt numbers are not affected. The benchmark driver now asks for visible answers and warns about short ones; the decode numbers by band will be measured again |
 | IQ3_XXS prompt speed varies | IQ3_XXS prompt speed deep in a 65k conversation varies from night to night on the test PC (145 tok/s at 48k-64k depth in the overnight run <!-- claim:v037-conv-iq3xxs -->, about 30 % more the day before on the v0.3.6 kit). A same-session check of the v0.3.6 and v0.3.7 kits on a 64k prompt (two runs per kit, PC log, no record) showed no slowdown bigger than the run-to-run swing, so we do not think it is the plugin; treat IQ3_XXS numbers as good to about 25 %. Q2_0 was unchanged. Details: RESULTS 80 |
 | Speed numbers | One PC, cold runs, mostly single series; yours depends on RAM, SSD and GPU. The Linux table is older (v0.2.3.5) |
 

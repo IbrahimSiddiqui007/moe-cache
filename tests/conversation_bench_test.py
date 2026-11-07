@@ -283,4 +283,22 @@ check(runL["answer_stats"]["median_tokens"] == 128 and runL["answer_stats"]["war
 st = cb.answer_stats([{"predicted_n": 40, "answer_chars": 0}] * 3 + [{"predicted_n": 40, "answer_chars": 90}], 24)
 check(st["empty_turns"] == 3 and any("no visible answer" in w for w in st["warnings"]), "more than a quarter of the turns without a visible answer: a warning")
 check(cb.answer_stats([], 24)["warnings"] == [], "no turns: no warning, no crash")
+
+# ---- cause finding (2026-11-07): answers are kept, the system message / hint / temperature / empty marker can be changed, the stats say what follows a short answer
+C5, uc5 = start("C5", 8192, 100.0, 10.0)
+rc = cb.main(["run", "--url", uc5, "--arm", "stock", "--ctx", "8192", "--max-turns", "3", "--system", "neutral", "--hint", "Explain in detail.", "--temperature", "0.7",
+              "--out", os.path.join(tempfile.mkdtemp(), "r5.json")])
+rq = C5.requests
+check(rc == 0 and all(r["messages"][0]["content"] == cb.NEUTRAL_SYSTEM and r["temperature"] == 0.7 and r["messages"][-1]["content"].endswith("Explain in detail.") for r in rq),
+      "--system neutral, --temperature and --hint reach the request")
+C6, uc6 = start("C6", 8192, 100.0, 10.0)
+r6 = cb.run_conversation(uc6, "stock", 8192, 32, 42, "", "m", 30, None, 3, None, True, False, lambda *a: None)
+check(all("answer_head" in t and t["answer_head"].startswith("Answer ") and "finish_reason" in t for t in r6["turns"]), "every turn keeps the first characters of the answer and its finish reason")
+r7 = cb.run_conversation(uc6, "stock", 8192, 32, 42, "", "m", 30, None, 2, None, True, False, lambda *a: None, None, None, False, 24, None, 0.0, "(no visible answer)", None, False)
+check(all("answer_head" not in t for t in r7["turns"]), "keep_answers off: no answer text in the run")
+seq = [40, 40, 2, 2, 2, 40, 2, 40]
+turns = [{"turn": i, "kind": "followup" if i % 2 else "code", "predicted_n": n, "answer_chars": 5, "finish_reason": "stop"} for i, n in enumerate(seq)]
+st = cb.answer_stats(turns, 24)
+check(st["first_short_turn"] == 2 and st["p_short_after_short"] == 0.5 and st["p_short_after_long"] == 0.667 and st["finish_reasons"] == {"stop": 8} and set(st["median_by_kind"]) == {"code", "followup"},
+      f"answer_stats: first short turn, chance of a short answer after a short / a long one, median by kind ({st['first_short_turn']}, {st['p_short_after_short']}, {st['p_short_after_long']})")
 sys.exit(1 if fails else 0)
