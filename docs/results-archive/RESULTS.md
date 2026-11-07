@@ -171,7 +171,7 @@ Peaks over the runs, stock / moe-cache (the bench-report sampler; VRAM is the se
 
 **A model that fits in RAM (Qwen3.6-35B, plugin forced).** The launcher runs plain llama.cpp for this model by itself. Forced through moe-cache it read prompts 1.29x as fast and decoded 68.67 against 65.06 tok/s (+5.6 %) with about half the process RAM (11.6 against 21.9 GiB at the peak). One model on one machine; the older laptop measurements of models that fit in RAM disagree (stock was as fast or faster), so this is **not** a general claim and no launcher default changed.
 
-**Q2_0 against IQ3_XXS on one 64k prompt, moe-cache on both, order Q2_0, IQ3_XXS, IQ3_XXS, Q2_0** (chain log `v037_quant.log`, 61,843-token prompt, then 128 tokens): Q2_0 prompt 418.1 tok/s (435.3 / 400.9), decode after the prompt 24.97 (25.17 / 24.76), plugin decode hit rate 98.8 %; IQ3_XXS prompt 204.7 (205.3 / 204.1), decode 12.96 (13.66 / 12.26), hit rate 92.2 %. Q2_0 over IQ3_XXS: prompt +104.3 %, decode +92.6 % (pair 1 +84.3 %, pair 2 +102.0 % on decode). Noise seen in the same-arm pairs of 2026-11-04: decode 0.1-0.2 %, prompt 0.2-1.7 %. The clean check of the first run (Q2_0) printed "clean: NO" because its CPU counter came back empty; windows, RAM and VRAM checks were clean, and the three other runs were clean. The launcher plans a different GPU layer count per file.
+**Q2_0 against IQ3_XXS on one 64k prompt, moe-cache on both, order Q2_0, IQ3_XXS, IQ3_XXS, Q2_0** (chain log `v037_quant.log`, the same p64k prompt as the 11-05 pair, 61,843 tokens, then 128 tokens): Q2_0 prompt 418.1 tok/s (435.3 / 400.9), decode after the prompt 24.97 (25.17 / 24.76), plugin decode hit rate 98.8 %; IQ3_XXS prompt 204.7 (205.3 / 204.1), decode 12.96 (13.66 / 12.26), hit rate 92.2 %. Q2_0 over IQ3_XXS: prompt +104.3 %, decode +92.6 % (pair 1 +84.3 %, pair 2 +102.0 % on decode). Noise seen in the same-arm pairs of 2026-11-04: decode 0.1-0.2 %, prompt 0.2-1.7 %. The clean check of the first run (Q2_0) printed "clean: NO" because its CPU counter came back empty; windows, RAM and VRAM checks were clean, and the three other runs were clean. The launcher plans a different GPU layer count per file.
 
 **Identity at a 34k prompt, Q2_0, plugin then stock** (chain log `v037_ident.log`): the answers are the same text (md5 CE3FF63681); plugin prompt 560.4 tok/s (33,979 tokens in 61.3 s) against stock 260.2 tok/s (131.4 s); decode after the prompt 26.47 against 24.04 tok/s. One pair.
 
@@ -184,15 +184,15 @@ Peaks over the runs, stock / moe-cache (the bench-report sampler; VRAM is the se
 | IQ3_XXS, moe-cache | 214.66 | 188.24 | -12.3 % | 22.04 | 21.73 | -1.4 % |
 | IQ3_XXS, stock | 44.15 | 44.81 | +1.5 % | 16.43 | 16.0 | -2.6 % |
 
-Q2_0 is unchanged within a few percent; **IQ3_XXS with moe-cache read new prompt tokens 12 % slower on the v0.3.7 candidate** (and the 64k pair above gives 204.7 against 238.45 tok/s, 14 % slower; its decode after the prompt 12.96 against 16.12). **Not a plugin change.** The kit check (PC, 2026-11-06 09:42-10:19, IQ3_XXS, one 64k prompt, order A B C C B A, every run's clean check passed) ran three kits in one session:
+Q2_0 is unchanged within a few percent; **IQ3_XXS with moe-cache read new prompt tokens 12 % slower on the v0.3.7 candidate** (and the 64k pair above gives 204.7 against 238.45 tok/s, 14 % slower; its decode after the prompt 12.96 against 16.12). **No slowdown from the plugin that the runs can show.** The kit check (PC log of 2026-11-06 09:42-10:19, no benchmark record and no claim; IQ3_XXS, one 64k prompt, order A B C C B A, every run's clean check passed; two runs per kit) ran three kits in one session:
 
 | Kit | Prompt tok/s (mean; the two runs) | Decode tok/s (mean) |
 |---|---|---|
-| v0.3.6 | 203.6 (175.7 first run after boot, 231.4) | 13.24 |
+| v0.3.6 | 203.6 (175.7, 231.4) | 13.24 |
 | v0.3.6 plus the cleanup change only | 230.9 (229.5, 232.2) | 16.43 |
 | v0.3.7 | 230.2 (228.7, 231.6) | 14.65 |
 
-The v0.3.6 and v0.3.7 kits read the prompt at the same speed (about 230 tok/s) once the first run after boot is set aside, and decode swings between 12.6 and 16.7 tok/s inside the same kit. So the lower IQ3_XXS numbers of the overnight conversation are run-to-run and night-to-night variation on this PC, not code: IQ3_XXS speed is good to about 25 %. Q2_0 was unchanged.
+Five of the six prompt runs sit at 229-232 tok/s; only one v0.3.6 run (175.7) is low, and v0.3.7 reads the prompt as fast as any. Decode swings between 12.6 and 16.7 tok/s inside the same kit (v0.3.7: 16.66 and 12.64). With two runs per kit we can say that no slowdown bigger than this run-to-run swing shows up between the kits, not that the kits are exactly equal. So the lower IQ3_XXS numbers of the overnight conversation fit run-to-run and night-to-night variation on this PC and no plugin change; treat IQ3_XXS speed as good to about 25 %. Q2_0 was unchanged.
 
 ## Result 79. v0.3.5 vs v0.3.4 on long prompts, official b11966 server
 

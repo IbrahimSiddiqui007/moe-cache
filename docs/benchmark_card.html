@@ -74,7 +74,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     <h1>MoE models bigger than RAM, stock llama.cpp vs moe-cache</h1>
     <p class="lede">moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM and reads the rest from disk. On this 32 GB Windows PC, in a real 65,000-token conversation (code pastes, logs and follow-ups, sent turn by turn with the whole history), it reads new prompt tokens faster and decodes faster than stock llama-server on the models that are bigger than the RAM. Older measurements (8k chats, long prompts, agent sessions, other models) are on <a href="results-archive/benchmark_card_older.html">the older card page</a>.</p>
     <div class="machine">
-      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>v0.3.7 candidate kit f928d1c, official llama.cpp b12064 (51fe42c5d) Vulkan</span>
+      <span>Ryzen 9 7950X (16 cores)</span><span>RX 9070 XT 16 GB</span><span>32 GB DDR5</span><span>Windows 11</span><span>v0.3.7 kit f928d1c (the code released as v0.3.7; v0.3.7.1 only changes the installers and the banner), official llama.cpp b12064 (51fe42c5d) Vulkan</span>
     </div>
   </header>
 
@@ -90,7 +90,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
 
   <section>
     <h2>A real 65k conversation, stock against moe-cache, per depth band</h2>
-    <p>Windows desktop, v0.3.7 candidate kit f928d1c, official llama.cpp b12064, timers off, launcher defaults. A seeded conversation (code pastes, logs, follow-ups; <code>tools/conversation_bench.py</code>, seed 42, 128 tokens per answer) is sent turn by turn with the whole history, prompt cache on, temperature 0, until the 65,536-token context is full. Order stock, moe-cache, moe-cache, stock; the table shows the mean of the two runs per arm; cold file cache before every run. Prompt tok/s = new tokens read divided by prompt time, over turns with at least 64 new tokens; decode over turns with at least 16 generated tokens; the band is the depth of the prompt before the answer. The 48k–64k band holds most turns, mostly small follow-ups.</p>
+    <p>Windows desktop, v0.3.7 kit f928d1c, official llama.cpp b12064, timers off, launcher defaults. A seeded conversation (code pastes, logs, follow-ups; <code>tools/conversation_bench.py</code>, seed 42, 128 tokens per answer) is sent turn by turn with the whole history, prompt cache on, temperature 0, until the 65,536-token context is full. Order stock, moe-cache, moe-cache, stock; the table shows the mean of the two runs per arm; cold file cache before every run. Prompt tok/s = new tokens read divided by prompt time, over turns with at least 64 new tokens; decode over turns with at least 16 generated tokens; the band is the depth of the prompt before the answer. The 48k–64k band holds most turns, mostly small follow-ups.</p>
     <p><b>Flash-Next Q2_0 (the default), 46 turns to 65,379 tokens.</b> Whole run: moe-cache reads new prompt tokens at 430.01 against 194.5 tok/s and decodes 26.98 against 22.46 tok/s. <!-- claim:v037-conv-q2_0 --></p>
     <div class="scroll">
       <table>
@@ -151,7 +151,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
       <li><b>Short answers at shallow depth.</b> The gain in a conversation comes from reading prompts and from keeping the hot experts in RAM; a short chat on a model that already fits in RAM does not gain.</li>
       <li><b>CPU kernels.</b> The numbers here were measured with llama.cpp's own CPU kernels on both sides; the gain comes from which experts are in RAM and how they are read, not from faster math.</li>
       <li><b>Cold start.</b> From a cold file cache the plugin reports ready a few seconds later than stock while it loads its hot experts; the first answer wins it back (RESULTS 61).</li>
-      <li><b>Small samples.</b> Two runs per arm, one PC, one seeded script, a v0.3.7 candidate kit. Cleanliness: see the note under the headline numbers.</li>
+      <li><b>Small samples.</b> Two runs per arm, one PC, one seeded script, one v0.3.7 kit. Cleanliness: see the note under the headline numbers.</li>
     </ul>
   </section>
 
@@ -191,7 +191,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     </div>
   </section>
 
-  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS.md">docs/results-archive/RESULTS.md</a> (Windows desktop, newest first) and <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/RESULTS_OLD_LAPTOP.md">docs/results-archive/RESULTS_OLD_LAPTOP.md</a> (the Linux laptop); older card: <a href="results-archive/benchmark_card_older.html">benchmark_card_older.html</a>. Result numbers named in this card are sections of RESULTS.md. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
+  <footer>Full tables and raw notes: <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/results-archive/RESULTS.md">docs/results-archive/RESULTS.md</a> (Windows desktop, newest first) and <a href="https://github.com/IbrahimSiddiqui007/moe-cache/blob/main/docs/results-archive/RESULTS_OLD_LAPTOP.md">docs/results-archive/RESULTS_OLD_LAPTOP.md</a> (the Linux laptop); older card: <a href="results-archive/benchmark_card_older.html">benchmark_card_older.html</a>. Result numbers named in this card are sections of RESULTS.md. Source: <a href="https://github.com/IbrahimSiddiqui007/moe-cache">github.com/IbrahimSiddiqui007/moe-cache</a>.</footer>
 </div>
 
 <script>
@@ -206,7 +206,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         "40 expert layers on the CPU, launcher defaults, both arms",
         "ctx 65536 · 46 turns to 65,379 tokens · ABBA, 2 runs each · cold file cache",
         "moe-cache peak: VRAM 13429 MiB · process RAM 19373 MiB (stock 25955 MiB)",
-        "v0.3.7 candidate kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_b21c0e · claim v037-conv-q2_0"
+        "v0.3.7 kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_b21c0e · claim v037-conv-q2_0"
       ]
     },
     {
@@ -218,7 +218,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
         "42 expert layers on the CPU, launcher defaults, both arms",
         "ctx 65536 · 49 turns to 65,371 tokens · ABBA, 2 runs each · cold file cache",
         "moe-cache peak: VRAM 14585 MiB · process RAM 19990 MiB (stock 26204 MiB)",
-        "v0.3.7 candidate kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_d1b3b3 · claim v037-conv-iq3xxs"
+        "v0.3.7 kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_d1b3b3 · claim v037-conv-iq3xxs"
       ]
     }
   ];

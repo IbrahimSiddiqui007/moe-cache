@@ -1,4 +1,4 @@
-# moe-cache v0.3.7 (2026-11-05)
+# moe-cache v0.3.7 (2026-11-06)
 
 **What this release is.** A default-model change (Flash-Next **Q2_0** again), the first multi-turn conversation benchmark, home-network serving that is off by default and key-protected, safer installers and key handling, and a lot of tidying of the numbers we publish. **Every speed number below was measured on the v0.3.7 candidate kit f928d1c** (see "Measured").
 
@@ -36,7 +36,7 @@
 
 **How clean were these runs.** The conversation records do not store the clean check. The overnight chain's own check (windows, RAM, VRAM and CPU before every run) found no window, RAM or VRAM disturbance; its CPU counter came back empty in two checks (the chain's item 10 and the first run of the quant pair, printed as "clean: NO"), so those two are not proven clean; paired runs agreed within 1 %. The text "not clean: owner work running" that PC chains before 2026-11-05 wrote at the start of every run was fixed text, not a check; where it was used we say "cleanliness not recorded".
 
-**Not measured:** a conversation longer than 65k; any file other than Q2_0 and IQ3_XXS in a conversation; Linux; v0.3.7 against v0.3.6 in a paired run. Unpaired, against the v0.3.6 kit of the day before: Q2_0 with moe-cache is unchanged within a few percent, IQ3_XXS with moe-cache read new prompt tokens 12 % slower (and 14 % slower on the 64k prompt) than the night before; a same-session check of the v0.3.6 and v0.3.7 kits gave the same speed, so this is night-to-night variation on the test PC, not the code (see Known issues and RESULTS 80). One PC, two runs per arm, one seeded script.
+**Not measured:** a conversation longer than 65k; any file other than Q2_0 and IQ3_XXS in a conversation; Linux; v0.3.7 against v0.3.6 in a paired run. Unpaired, against the v0.3.6 kit of the day before: Q2_0 with moe-cache is unchanged within a few percent, IQ3_XXS with moe-cache read new prompt tokens 12 % slower (and 14 % slower on the 64k prompt) than the night before; a same-session check of the v0.3.6 and v0.3.7 kits showed no slowdown bigger than the run-to-run swing, so we read this as night-to-night variation on the test PC, not the code (see Known issues and RESULTS 80). One PC, two runs per arm, one seeded script.
 
 ## New for users
 
@@ -61,7 +61,7 @@
 | CUDA errors still abort | The GPU-error catch (`MOE_CACHE_GPU_CATCH`, on by default) works for Vulkan only. On NVIDIA / CUDA a GPU error still ends the server (llama.cpp calls `abort()`). The catch has not yet met a real Vulkan failure either. |
 | Desktop app not included | The desktop app (the `desktop/` folder) is not part of this release; use the browser control page (`python3 bin/moe_cache.py ui`). |
 | Windows read-error guard | Tested with a simulated in-page error only; a real cut-short model file on Windows was not tried. |
-| IQ3_XXS prompt speed varies | IQ3_XXS prompt speed deep in a 65k conversation varies from night to night on the test PC: the overnight run read new prompt tokens at 145 tok/s at 48k-64k depth (188 tok/s the day before, on the v0.3.6 kit). A same-session check of the v0.3.6 and v0.3.7 kits on a 64k prompt gave the same speed (about 230 tok/s), so it is not the plugin. Treat IQ3_XXS numbers as good to about 25 %. Q2_0, the default, was unchanged (RESULTS 80). |
+| IQ3_XXS prompt speed varies | IQ3_XXS prompt speed deep in a 65k conversation varies from night to night on the test PC: the overnight run read new prompt tokens at 145 tok/s at 48k-64k depth (188 tok/s the day before, on the v0.3.6 kit). A same-session check of the v0.3.6 and v0.3.7 kits on a 64k prompt (two runs per kit, about 230 tok/s on five of six runs; PC log, no record) showed no slowdown bigger than the run-to-run swing, so we do not think it is the plugin. Treat IQ3_XXS numbers as good to about 25 %. Q2_0, the default, was unchanged (RESULTS 80). |
 | Number checks | The numbers on the README card have current claims (`bench-record lint` is clean without a waiver). Older numbers (8k chats, long prompts, agent sessions, other models) moved to `docs/benchmark_card_older.html` with their dates; their claims are stale for v0.3.7. Q2_0 against IQ3_XXS on a 64k prompt, the identity run and the top-1 quality numbers have no benchmark record yet. |
 | One PC | All Windows numbers are one desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB). NVIDIA, Intel graphics and Windows 10 are untested; Linux numbers are older (the laptop file). |
 
