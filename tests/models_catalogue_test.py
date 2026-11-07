@@ -94,7 +94,7 @@ for vram, ram in SERIES:
         ok &= r["fit"]["verdict"] in ("fits", "tight") and set(r["fit"]) == {"verdict", "reason", "reasons"} and all("fit" in a for a in r["alternatives"])
 check(ok, "pick: every recommendation on the grid carries a fit verdict (never 'no') and its alternatives too")
 r = pk.recommend(pc, "chat")
-check(r["id"] == "flash-next-q2_0" and r["fit"]["verdict"] == "fits" and r["alternatives"][0]["id"] == "flash-next-iq3_xxs", "PC chat: Q2_0 is the default Flash-Next file (owner 2026-11-05), IQ3_XXS the higher-quality sibling, verdict fits")
+check(r["id"] == "flash-next-iq3_xxs" and r["fit"]["verdict"] == "fits" and r["alternatives"][0]["id"] == "flash-next-q2_0", "PC chat: IQ3_XXS stays the default Flash-Next file, Q2_0 the faster sibling, verdict fits")
 r = pk.recommend(pc, "agents")
 check(r["id"] == "bolt" and r["ctx"] == 131072 and r["fit"]["verdict"] == "fits", "PC agents: Bolt at 128k, fits")
 with contextlib.redirect_stdout(io.StringIO()) as out:
