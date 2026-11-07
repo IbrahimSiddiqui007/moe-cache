@@ -969,7 +969,7 @@ async function paintShare(st) {
   $("shareforce").disabled = $("sharechat").disabled = running;
   if (shareKey == key) return; shareKey = key;
   const box = $("sharestate");
-  if (running) { box.textContent = "measuring " + (sh.model || "") + (sh.pairs > 1 ? " (fair comparison, " + sh.pairs + " pairs)" : "") + (sh.chat ? " (long chat)" : "") + ": " + (sh.step || "starting") + (sh.chat ? " (a long chat takes 30-120 minutes per pair;" : " (5-20 minutes per pair; the progress lines are in the log below)"; $("shareout").hidden = true; return; }
+  if (running) { box.textContent = "measuring " + (sh.model || "") + (sh.pairs > 1 ? " (fair comparison, " + sh.pairs + " pairs)" : "") + (sh.chat ? " (long chat)" : "") + ": " + (sh.step || "starting") + (sh.chat ? " (a long chat takes 30-120 minutes per pair; the progress lines are in the log below)" : " (5-20 minutes per pair; the progress lines are in the log below)"); $("shareout").hidden = true; return; }
   if (sh.state == "fits") { box.innerHTML = `<span class="err">${esc(sh.error || "")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "failed") { box.innerHTML = `<span class="err">${esc(sh.error || "failed")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "cancelled") { box.textContent = "cancelled. The server is stopped: press Start to run a model again."; $("shareout").hidden = true; return; }
