@@ -1226,6 +1226,11 @@ check("about 1 token in 40-50 comes out different" in re.search(r"const MODEHINT
 
 # the card: run the page's own loadPick() under node with a stub DOM and look at the HTML it builds
 node = shutil.which("node")
+if node:       # the WHOLE page script must parse: the per-function checks never load it as one (a missing parenthesis once left the page blank)
+    _js = os.path.join(TMP, "page_all.js")
+    open(_js, "w", encoding="utf-8").write(re.search(r"<script[^>]*>(.*)</script>", open(ui.PAGE, encoding="utf-8").read(), re.S).group(1))
+    _o = subprocess.run([node, "--check", _js], capture_output=True, text=True, timeout=60)
+    check(_o.returncode == 0, "the page's whole script parses (node --check)" + ("" if _o.returncode == 0 else ": " + _o.stderr[:300]))
 if node:
     spec2 = dict(fake_spec, local={}, disk_kind="HDD")
     jj = {"machine": spec2, "lines": ui.picker.spec_lines(spec2), "recommendations": [ui.picker.recommend(spec2, "agents")]}     # what /api/pick sends

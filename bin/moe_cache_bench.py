@@ -512,7 +512,19 @@ def rec_for_issue(record, chat):
     return out
 
 
-def report_md(d):
+RECORD_HOLE = "@@RECORD-JSON@@"
+
+
+def scrubbed_report(d, scrub):
+    """The report text, scrubbed. The record's JSON is scrubbed value by value BEFORE it is written (scrubbing the dumped text would turn a Windows path's
+    escaped backslashes into invalid JSON, and an issue's record could then not be read back)."""
+    if not d.get("record"):
+        return scrub(report_md(d))
+    block = json.dumps(scrub_all(rec_for_issue(d["record"], bool(d.get("chat"))), scrub), indent=1, ensure_ascii=False)
+    return scrub(report_md(d, record_json=RECORD_HOLE)).replace(RECORD_HOLE, block)
+
+
+def report_md(d, record_json=None):
     """The report as GitHub markdown, sections in a fixed order (tests/bench_report_test.py checks them)."""
     s, f = d["summary"], d["facts"]
     v = lambda x, unit="": "-" if x is None else f"{x}{unit}"
@@ -572,7 +584,7 @@ def report_md(d):
         gaps = rec.not_recorded_fields(d["record"])
         if gaps:
             lines += ["", f"Not recorded on this machine ({len(gaps)} fields): " + ", ".join(g.replace("$.", "") for g in gaps[:12]) + (" ..." if len(gaps) > 12 else "")]
-        lines += ["", "<details><summary>Record (JSON)</summary>", "", "```json", json.dumps(rec_for_issue(d["record"], bool(d.get("chat"))), indent=1, ensure_ascii=False), "```", "", "</details>"]
+        lines += ["", "<details><summary>Record (JSON)</summary>", "", "```json", record_json if record_json is not None else json.dumps(rec_for_issue(d["record"], bool(d.get("chat"))), indent=1, ensure_ascii=False), "```", "", "</details>"]
     lines += ["", "_No prompts, answers, user name, host name or folder names are in this report. Nothing was uploaded._"]
     return "\n".join(lines) + "\n"
 
@@ -722,7 +734,7 @@ def bench_report(argv):
         notes.append(f"benchmark record not built ({type(e).__name__}: {e})")
         d["notes"] = notes
     scrub = scrubber()
-    md = scrub(report_md(d))
+    md = scrubbed_report(d, scrub)
     d["scrubbed"] = dict(scrub.counts)         # what was removed from the text above, by kind (the control page lists it before Copy)
     os.makedirs(a.out, exist_ok=True)
     base = os.path.join(a.out, "moe-cache-report-" + datetime.datetime.now().strftime("%Y%m%d-%H%M"))
