@@ -16,6 +16,7 @@
 | Archived | Layer-wise prefill patch 0050 ported to b12064 (`archive/llama.cpp/0050-layerwise-prefill-b12064.patch`, logits equal to stock on the tiny qwen4exp model) for the PREFILL-638 re-test; still off the shipped set. |
 | Test tool | `tools/stage2_arms.py`: the four IQ3_XXS stage 2 arms (shipped, -ub 4096 with the output-row cap, plus q8_0 KV, shipped plus q8_0 KV) checked with the launcher's `--dry-run`, and the PC lines for them. |
 | Archived | Five switches that lost the night chain of 2026-11-07 moved to `archive/plugin/` with restore patches: GPU extra ops, pool spin, prefill lend (and its header and test), executor pool for decode (and its header and test), probe cache. Layer-wise prefill (0050) and the output-row cap (0042) are recorded as lost in `archive/README.md`. |
+| Benchmark driver | `tools/conversation_bench.py` and `conversation_bench_pair.ps1`: thinking off, 256 tokens and an answer hint by default, `--legacy` for the old settings, a WARNING (and `answer_stats` in the run) when the median answer is under 24 tokens or a quarter of the turns are empty. Records made before this have decode numbers by band that rest on short answers (docs/CONVERSATION_BENCH.md). |
 | Documented | The pack file's payload is not verified byte by byte (CACHE-695). |
 
 ## 0.3.7.1 (2026-11-06)
