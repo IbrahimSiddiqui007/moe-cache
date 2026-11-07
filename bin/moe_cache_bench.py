@@ -101,10 +101,39 @@ def doctor_facts(model, ls, ram):
     return rc != 0, facts, fixes
 
 
-def launcher_plan(model, ls, ram, ctx, extra):
+def limit_prefix(gb):
+    """The command words that start a program in a user cgroup with a hard memory limit and no swap (Linux, systemd). The launcher reads that limit by itself and sizes
+    its plan to it, so stock and moe-cache both see the same smaller machine."""
+    return ["systemd-run", "--user", "--scope", "--quiet", "-p", f"MemoryMax={gb:g}G", "-p", "MemoryHigh=infinity", "-p", "MemorySwapMax=0", "--"]
+
+
+_LIMIT_OK = []
+
+
+def can_limit():
+    """(ok, why not): memory-limit emulation needs Linux and a working `systemd-run --user`."""
+    if _LIMIT_OK:
+        return _LIMIT_OK[0]
+    if not sys.platform.startswith("linux"):
+        res = (False, "memory-limit emulation is Linux only (Windows has no limit for the file cache)")
+    elif not shutil.which("systemd-run"):
+        res = (False, "systemd-run was not found (a user systemd is needed for the limit)")
+    else:
+        try:
+            r = subprocess.run(limit_prefix(64) + ["true"], capture_output=True, text=True, timeout=30)
+            res = (r.returncode == 0, "" if r.returncode == 0 else "systemd-run --user could not start a limited scope: " + (r.stderr.strip().splitlines() or ["?"])[-1][:120])
+        except (OSError, subprocess.SubprocessError) as e:
+            res = (False, f"systemd-run --user failed: {e}")
+    _LIMIT_OK.append(res)
+    return res
+
+
+def launcher_plan(model, ls, ram, ctx, extra, limit_gb=None):
     """The launcher's own decision for this model (a dry run): ('plugin' or 'stock', the llama-server command line it would run)."""
     cmd = [sys.executable, os.path.join(HERE, "moe_cache.py"), "server", model, "--llama-server", ls, "--ctx", str(ctx), "--plan-json"]
     cmd += (["--ram", str(ram)] if ram else []) + list(extra)
+    if limit_gb:
+        cmd = limit_prefix(limit_gb) + cmd         # the plan is made inside the same limit the runs will have
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     try:        # XA-2: the launcher's plan as data (engine and command line), not text parsed from a dry run
         plan = json.loads(r.stdout)
@@ -151,6 +180,8 @@ def _launch(model, mode, a, port, tee=None, extra=()):
     appended to the file `tee` when given: the plugin's counters are read from it), the sampler watches its process tree."""
     cmd = [sys.executable, os.path.join(HERE, "moe_cache.py"), "server", model, "--llama-server", a.llama_server, "--port", str(port),
            "--ctx", str(a.ctx), "--no-warm", "--stock" if mode == "stock" else "--always-plugin"] + (["--ram", str(a.ram)] if a.ram else []) + list(extra) + list(a.extra)
+    if getattr(a, "limit_gb", None):
+        cmd = limit_prefix(a.limit_gb) + cmd          # EMULATED smaller machine: both arms, the same hard limit
     env = dict(os.environ, MOE_CACHE_STATS_SIGNAL="1")
     kw = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     if mc.WINDOWS:
@@ -433,7 +464,7 @@ def estimate(size_gb, pairs, chat_ctx_tokens=0):
     return round(runs * (75 + 4 * size_gb + 600 * chat_ctx_tokens / 65536) / 60), round(runs * size_gb)
 
 
-def readiness(model, pairs=2, ram=None, chat=False):
+def readiness(model, pairs=2, ram=None, chat=False, limit_gb=None):
     """The ready-to-measure panel: [{id, level 'ok'|'warn'|'bad'|'info', text, fix}] for the model about to be measured (the checks that make a report unusable:
     the model fits in RAM, little free disk, battery, other big programs, power plan, temperature). Reads only; the doctor's own checks stay in `check`."""
     pr = rec.probe()
@@ -441,6 +472,13 @@ def readiness(model, pairs=2, ram=None, chat=False):
     add = lambda id_, level, text, fix="": rows.append({"id": id_, "level": level, "text": text, "fix": fix})
     size = sum(os.path.getsize(p) for p in mc.model_parts(model)) / 1e9
     tot = (mc.win_memory()[0] / 1e9) if mc.WINDOWS and mc.win_memory()[0] else mc.meminfo_total_gb()
+    if limit_gb:
+        ok_, why_ = can_limit()
+        if not ok_:
+            add("limit", "bad", why_, "Untick the memory-limit test.")
+        else:
+            add("limit", "info", f"EMULATED machine: a hard {limit_gb:g} GB memory limit on both arms (this computer has {tot:.0f} GB); the report says so.")
+        tot = min(tot, limit_gb) if tot else limit_gb
     if tot:
         if size >= tot * 0.9:
             add("size", "ok", f"The model ({size:.0f} GB) is bigger than the usable RAM ({tot:.0f} GB): moe-cache is meant for this.")
@@ -532,6 +570,7 @@ def report_md(d, record_json=None):
              "",
              f"moe-cache {d['version']} · report schema {SCHEMA} · {d['date']} UTC · **{d['start']}** · mode {d['mode']}",
              "",
+             *([f"**EMULATED machine: {d['emulated_limit_gb']:g} GB memory limit** (a hard cgroup limit with no swap on both arms; see Notes). Not a real {d['emulated_limit_gb']:g} GB computer.", ""] if d.get("emulated_limit_gb") else []),
              *([f"**Long chat** (the published method: one real multi-turn conversation filled to a {d['chat']['ctx']}-token context, thinking off, 256-token answers; "
                 f"prompt and decode tok/s are means over the whole conversation)", ""] if d.get("chat") else []),
              f"**Result:** moe-cache {v(s['moe-cache']['decode'])} tok/s vs stock {v(s['stock']['decode'])} tok/s decode ({v(s['decode_x'], 'x')}), "
@@ -615,6 +654,8 @@ def build_chat_record(a, d, chat_runs, devices, llama, cond):
                                cache="warm" if a.warm else "cold", baseline=a.baseline, other_programs=a.other_programs)
     r = cb.build_record(chat_runs, ns)
     r["software"]["moe_cache_version"] = mc.VERSION
+    if a.limit_gb:
+        r["conditions"]["memory_limit"] = f"EMULATED {a.limit_gb:g} GB (cgroup MemoryMax, swap off) on a machine with {mc.meminfo_total_gb():.0f} GB"
     r["notes"] = list(r.get("notes", [])) + d["notes"]
     return r
 
@@ -627,6 +668,8 @@ def bench_report(argv):
     ap.add_argument("--ram", help="GB the cache may use (as `server`); default: what is free")
     ap.add_argument("--ctx", type=int, default=None, help="context of the servers (default 8192; with --chat: from the RAM, 16k to 65k)")
     ap.add_argument("--chat", action="store_true", help="long chat (the published method): each run plays one real multi-turn conversation filled to --ctx, tools/conversation_bench.py")
+    ap.add_argument("--limit-gb", type=float, default=None, help="Linux: EMULATE a smaller machine: every server of the report runs in a cgroup with this hard memory limit and no swap "
+                    "(systemd-run --user). Both arms get it, the launcher sizes its plan to it, and the report says EMULATED. The limit counts the file cache of the model, as RAM does")
     ap.add_argument("--max-turns", type=int, default=0, help="--chat: stop each conversation after this many turns (0 = fill the context; for a trial)")
     ap.add_argument("--prompt-tokens", type=int, default=2000)
     ap.add_argument("--tokens", type=int, default=128, help="tokens in the timed answer")
@@ -650,6 +693,13 @@ def bench_report(argv):
     if a.chat and a.fast:
         mc.say("bench-report: --chat measures the exact mode; leave --fast out", err=True); return 2
     ram_gb = mc.win_memory()[0] / 1e9 if mc.WINDOWS and mc.win_memory()[0] else mc.meminfo_total_gb()
+    if a.limit_gb:
+        ok_, why_ = can_limit()
+        if not ok_:
+            mc.say("bench-report: --limit-gb: " + why_, err=True); return 2
+        if a.limit_gb < 4 or (ram_gb and a.limit_gb >= ram_gb - 1):
+            mc.say(f"bench-report: --limit-gb {a.limit_gb:g} must be at least 4 and below this machine's RAM ({ram_gb or 0:.0f} GB): nothing would be emulated", err=True); return 2
+        ram_gb = a.limit_gb                      # the chat context and the fit rule use the emulated size
     a.ctx = a.ctx or (chat_ctx(ram_gb) if a.chat else 8192)
     mc.say("moe-cache bench-report: about " + ("30-120 minutes for a long chat (4 conversations per pair)" if a.chat else "5-20 minutes") + "; leave the machine alone (close the browser and games: they hold GPU memory)")
     if not os.path.isfile(a.model):
@@ -664,8 +714,8 @@ def bench_report(argv):
                 mc.say("  " + l, err=True)
         return 2
     chat_extra = ["--agent"] if a.chat else []
-    plan_mode, plan_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, a.extra + chat_extra)
-    stock_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, ["--stock"] + chat_extra)[1]
+    plan_mode, plan_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, a.extra + chat_extra, a.limit_gb)
+    stock_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, ["--stock"] + chat_extra, a.limit_gb)[1]
     fits = plan_mode == "stock"
     if fits and not a.force_plugin:
         mc.say("bench-report: this model fits in your RAM, so moe-cache would not be used (the launcher runs stock llama.cpp). "
@@ -703,6 +753,9 @@ def bench_report(argv):
     ram_total = mc.win_memory()[0] / 1e9 if mc.WINDOWS and mc.win_memory()[0] else mc.meminfo_total_gb()
     if fits:
         notes.append("the model fits in RAM: moe-cache was forced (--force-plugin); the launcher would run stock")
+    if a.limit_gb:
+        notes.append(f"EMULATED machine: every server ran in a cgroup with a hard {a.limit_gb:g} GB memory limit and no swap (systemd-run --user, Linux), on a machine with "
+                     f"{mc.meminfo_total_gb():.0f} GB. The limit counts the model's file cache like RAM does; storage and CPU are this machine's. Not the same as a real {a.limit_gb:g} GB computer")
     if a.ram:
         notes.append(f"cache limit by --ram {a.ram} GB, not an OS memory limit")
     s_ = summarize(runs, exact=not a.fast and not a.chat)
@@ -715,7 +768,7 @@ def bench_report(argv):
          "mode": f"fast={a.fast}" if a.fast else "exact, long chat" if a.chat else "exact", "os": f"{platform.system()} {platform.release()} ({platform.version()})", "facts": facts,
          "backend": backend_of(devices), "llama": llama,
          "model": model_section(a.model, size, ram_total),
-         "plan": plan_summary(plan_line), "scenario": a.scenario, "gap": a.gap, "fits": "yes (forced)" if fits else "no", "prompt_tokens": a.prompt_tokens, "order": order(a.pairs),
+         "emulated_limit_gb": a.limit_gb or None, "plan": plan_summary(plan_line), "scenario": a.scenario, "gap": a.gap, "fits": "yes (forced)" if fits else "no", "prompt_tokens": a.prompt_tokens, "order": order(a.pairs),
          "summary": s_, "notes": notes, "stock_plan": plan_summary(stock_line),
          "runs": [{k: v for k, v in r.items() if k not in ("text", "log_facts", "chat")} for r in runs]}
     chat_runs = [r["chat"] for r in runs if r.get("chat")]
@@ -727,6 +780,8 @@ def bench_report(argv):
                 notes.append(f"{r['arm']}: {w}")
     try:
         cond["file_cache"] = "cold" if start == "COLD" else "warm"
+        if a.limit_gb:
+            cond["memory_limit"] = f"EMULATED {a.limit_gb:g} GB (cgroup MemoryMax, swap off) on a machine with {mc.meminfo_total_gb():.0f} GB"
         d["record"] = build_chat_record(a, d, chat_runs, devices, llama, cond) if a.chat and len(chat_runs) == len(runs) else build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, cond) if not a.chat else None
         if a.chat and d["record"] is None:
             notes.append("no benchmark record: not every conversation finished")

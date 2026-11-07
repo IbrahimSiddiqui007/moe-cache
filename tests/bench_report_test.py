@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """bench-report (R2-1): report sections and order, backend line, privacy, fit rule, identity, cold/warm stamp, run order. No model, no server:
 the doctor, the launcher's plan, the runs and llama-server's device list are replaced by fakes. Same file on Linux and Windows CI."""
-import json, os, socket, sys, tempfile
+import json, os, re as _re_l, socket, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -120,7 +120,7 @@ mb.mc.port_busy = lambda p: False
 flush_ok = [True]
 ui.flush_model_cache = lambda m, other: (flush_ok[0], "flushed" if flush_ok[0] else "no folder with other big files")
 plan = ["plugin"]
-mb.launcher_plan = lambda m, ls, ram, ctx, extra: (plan[0], "env MOE_CACHE_SIZE_GIB=auto llama-server -m x -c 8192 --n-cpu-moe 30")
+mb.launcher_plan = lambda m, ls, ram, ctx, extra, limit_gb=None: (plan[0], "env MOE_CACHE_SIZE_GIB=auto llama-server -m x -c 8192 --n-cpu-moe 30")
 try:
     out = os.path.join(tmp, "out dir")
     rc = mb.bench_report([model, "--out", out, "--llama-server", "llama-server"])
@@ -221,6 +221,31 @@ try:
     mb.run_chat_arm, mb.mc.stored_key = saved_chat
     for sv in servers.values():
         sv.shutdown()
+
+
+    # memory-limit emulation (--limit-gb): refused where it cannot work, both arms get the limit, the report says EMULATED, the record says it and stays valid
+    check(mb.limit_prefix(16)[:4] == ["systemd-run", "--user", "--scope", "--quiet"] and "MemoryMax=16G" in mb.limit_prefix(16) and "MemorySwapMax=0" in mb.limit_prefix(16) and mb.limit_prefix(16)[-1] == "--", "limit: systemd-run user scope, MemoryMax, no swap")
+    saved_lim = mb.can_limit
+    mb.can_limit = lambda: (False, "memory-limit emulation is Linux only")
+    check(mb.bench_report([model, "--out", out, "--limit-gb", "16", "--warm"]) == 2, "limit: refused (exit 2) where the system cannot limit")
+    mb.can_limit = lambda: (True, "")
+    check(mb.bench_report([model, "--out", out, "--limit-gb", "2", "--warm"]) == 2 and mb.bench_report([model, "--out", out, "--limit-gb", "100000", "--warm"]) == 2, "limit: under 4 GB or not below the RAM: refused")
+    seen_lim = []
+    saved_run_one = mb.run_one
+    mb.run_one = lambda m_, mode, a_, port: (seen_lim.append(a_.limit_gb), fake_run(m_, mode, a_, port))[1]
+    plans_lim = []
+    saved_plan = mb.launcher_plan
+    mb.launcher_plan = lambda m_, ls_, ram_, ctx_, extra_, limit_gb=None: (plans_lim.append(limit_gb), saved_plan(m_, ls_, ram_, ctx_, extra_))[1]
+    mb.mc.meminfo_total_gb = lambda: 64.0
+    out3 = os.path.join(tmp, "limit out")
+    rc = mb.bench_report([model, "--out", out3, "--limit-gb", "16", "--warm"])
+    mdl_ = open(os.path.join(out3, [f for f in os.listdir(out3) if f.endswith(".md")][-1]), encoding="utf-8").read()
+    recl = json.loads(_re_l.search(r"```json\n(.*?)\n```", mdl_, _re_l.S).group(1))
+    check(recl["conditions"].get("memory_limit", "").startswith("EMULATED 16 GB") and rr.validate(recl, rr.load_schema()) == [], "limit: the record carries conditions.memory_limit and stays valid")
+    check(rc == 0 and seen_lim == [16.0] * 4 and plans_lim == [16.0, 16.0], f"limit: every run and both plans get the limit ({seen_lim}, {plans_lim})")
+    check("**EMULATED machine: 16 GB memory limit**" in mdl_ and "EMULATED machine: every server ran in a cgroup" in mdl_ and mdl_.find("EMULATED") < mdl_.find("**Result:**"), "limit: the report says EMULATED above the result and explains it in the notes")
+    mb.run_one, mb.launcher_plan = saved_run_one, saved_plan
+    mb.can_limit = saved_lim
 
     plan[0] = "stock"; calls.clear()
     check(mb.bench_report([model, "--out", out, "--warm"]) == 3 and calls == [], "model fits in RAM -> exit 3, nothing run")

@@ -1496,7 +1496,7 @@ class Runner:
             time.sleep(1)
 
     # -- "Share my numbers": `moe_cache.py bench-report MODEL` as a child process, its lines in the log, its markdown for the page --
-    def start_share(self, model, other=(), agent=False, force=False, pairs=1, chat=False):
+    def start_share(self, model, other=(), agent=False, force=False, pairs=1, chat=False, limit_gb=None):
         if self.share.get("state") == "running":
             raise ValueError("a report is already being made")
         if self.bench.get("state") == "running":
@@ -1512,7 +1512,7 @@ class Runner:
             raise ValueError("pick a model file (.gguf) in the list first")
         self.share_p = None                 # a finished child of an earlier report must not answer for this one
         self.share = {"state": "running", "started": time.time(), "model": os.path.basename(model), "step": "starting", "lines": [], "agent": bool(agent),
-                      "force": bool(force), "pairs": int(pairs), "chat": bool(chat)}
+                      "force": bool(force), "pairs": int(pairs), "chat": bool(chat), "limit_gb": limit_gb}
         threading.Thread(target=self.run_share, args=(model, list(other), bool(agent), bool(force), self.share), daemon=True).start()
 
     def run_share(self, model, other, agent, force, sh):
@@ -1527,6 +1527,8 @@ class Runner:
             cmd += ["--pairs", str(sh["pairs"])]
         if sh.get("chat"):
             cmd += ["--chat"]
+        if sh.get("limit_gb"):
+            cmd += ["--limit-gb", f"{sh['limit_gb']:g}"]
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         env.pop("LLAMA_API_KEY", None)
         lines, p = [], None
@@ -1551,7 +1553,7 @@ class Runner:
                     mc._kill_with_parent_windows(p)
                 except Exception:
                     pass
-            self.add_line("ui: share my numbers: bench-report " + os.path.basename(model) + (" (agent scenario)" if agent else "") + (" (measure anyway)" if force else "") + (f" (fair comparison: {sh['pairs']} pairs)" if sh.get("pairs", 1) > 1 else "") + (" (long chat)" if sh.get("chat") else ""))
+            self.add_line("ui: share my numbers: bench-report " + os.path.basename(model) + (" (agent scenario)" if agent else "") + (" (measure anyway)" if force else "") + (f" (fair comparison: {sh['pairs']} pairs)" if sh.get("pairs", 1) > 1 else "") + (" (long chat)" if sh.get("chat") else "") + (f" (EMULATED {sh['limit_gb']:g} GB limit)" if sh.get("limit_gb") else ""))
             for raw in iter(p.stdout.readline, b""):
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 lines.append(line)
@@ -2220,7 +2222,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, self.runner.status())
             if u.path == "/api/ready":                      # the ready-to-measure panel: what could make a report unusable, with the fix, and the time to expect
                 import moe_cache_bench as mb
-                return self.send(200, mb.readiness(self.known(q.get("model")), pairs=number(q.get("pairs") or 2, 1, 4, int, "pairs"), chat=q.get("chat") == "1"))
+                return self.send(200, mb.readiness(self.known(q.get("model")), pairs=number(q.get("pairs") or 2, 1, 4, int, "pairs"), chat=q.get("chat") == "1",
+                                                   limit_gb=number(q.get("limit") or None, 4, 4096, float, "limit")))
             if u.path == "/api/share":                      # the finished report (markdown) for the box on the page
                 return self.send(200, dict(self.runner.share, issue_url=ISSUE_URL, report_dir=REPORT_DIR))
             if u.path == "/api/bench":
@@ -2361,7 +2364,8 @@ class Handler(BaseHTTPRequestHandler):
                 other = [os.path.abspath(os.path.expanduser(x)) for x in other if x.strip()] or self.store.folders()
                 other = [x for x in other if os.path.exists(x)]
                 self.runner.start_share(str(body.get("model") or ""), other=other, agent=bool(body.get("agent")), force=bool(body.get("force")),
-                                         pairs=number(body.get("pairs") or 1, 1, 4, int, "pairs"), chat=bool(body.get("chat")))
+                                         pairs=number(body.get("pairs") or 1, 1, 4, int, "pairs"), chat=bool(body.get("chat")),
+                                         limit_gb=number(body.get("limit_gb") or None, 4, 4096, float, "limit_gb"))
                 return self.send(200, self.runner.share_public())
             if self.path == "/api/share/cancel":
                 return self.send(200, {"ok": self.runner.cancel_share()})
