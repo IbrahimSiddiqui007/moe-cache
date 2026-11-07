@@ -53,7 +53,7 @@ If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says w
 
 **Using the PC while the model runs?** Tick **Leave room for me** on the control page (or `--leave-room`): the model leaves more RAM, GPU memory and CPU to your own programs and gets a little slower. A CPU with its own graphics: plug the monitor into the motherboard. The GPU also draws your desktop, and the screen flickers or the browser stutters while a long prompt runs? Reserve GPU memory for it with `--gpu-margin GiB` (for example `--gpu-margin 3`): the launcher plans fewer expert layers on the GPU and leaves that much free. Without the option it already keeps more free when other programs hold GPU memory at start.
 
-**Long prompts (agents, documents)?** The opt-in long-prompt mode (`--long-prompt`, or **Long-prompt mode** on the control page) reads long prompts faster and answers a little slower: on Flash-Next IQ3_XXS in a 65k conversation prompts +35 % and answers -10 % <!-- claim:v038-conv-iq3xxs-fastkv -->. It uses the q8_0 KV cache, so answers may differ slightly in wording, and it only switches on when your card has room for it. Off by default.
+**Long prompts (agents, documents)?** The opt-in long-prompt mode (`--long-prompt`, or **Long-prompt mode** on the control page) reads long prompts faster and answers a little slower: on Flash-Next IQ3_XXS in a 65k conversation prompts +35 % and answers -10 % <!-- claim:v038-conv-iq3xxs-fastkv --> (measured with all expert layers on the CPU side; the mode now keeps a few more on the GPU and is being measured again). It uses the q8_0 KV cache, so answers may differ slightly in wording, and it only switches on when your card has room for it. Off by default.
 
 ### Linux
 

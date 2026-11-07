@@ -540,6 +540,11 @@ def compute_buffer_guess_mib(ctx, ub):
         b = row[near] * max(ub, 512) / near * ctx / top
     if b is None:
         b = max(v.get(2048) or 0 for v in _COMPUTE_MIB.values()) * max(ub, 512) / 2048
+        # a micro-batch between two measured ones never needs more than the larger measured one (the -ub 4096 row at 64k, 2026-11-07)
+        larger = [v for k in set(_COMPUTE_MIB) | set(_COMPUTE_MIB_NOT_PICKED) if k >= ctx
+                  for u2, v in {**_COMPUTE_MIB.get(k, {}), **_COMPUTE_MIB_NOT_PICKED.get(k, {})}.items() if u2 > ub and v]
+        if larger:
+            b = min(b, min(larger))
     return b
 
 
