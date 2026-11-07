@@ -6,9 +6,9 @@
 # Stock = the llama-server command the launcher prints for --agent --dry-run (computed once). moe-cache = the launcher with --agent --always-plugin and
 # MOE_CACHE_STATS_SIGNAL=1, so the plugin's hits_dec / misses_dec are read per turn from the server's stderr log.
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\dl\conv -Model D:\models\Qwen3.8-Flash-Next-IQ3_XXS.gguf `
-#       -Alias flash -Ram 24 -FlushOther "D:\other-models" [-Ctx 65536] [-MaxTokens 128] [-Order "stock,mc,mc,stock"] [-MaxTurns 0]
+#       -Alias flash -Ram 24 -FlushOther "D:\other-models" [-Ctx 65536] [-MaxTokens 256] [-Legacy] [-Order "stock,mc,mc,stock"] [-MaxTurns 0]
 param([Parameter(Mandatory = $true)][string]$OutDir, [Parameter(Mandatory = $true)][string]$Model, [Parameter(Mandatory = $true)][string]$Alias,
-      [Parameter(Mandatory = $true)][int]$Ram, [Parameter(Mandatory = $true)][string]$FlushOther, [int]$Ctx = 65536, [int]$MaxTokens = 128,
+      [Parameter(Mandatory = $true)][int]$Ram, [Parameter(Mandatory = $true)][string]$FlushOther, [int]$Ctx = 65536, [int]$MaxTokens = 0, [switch]$Legacy,
       [string]$Order = "stock,mc,mc,stock", [int]$MaxTurns = 0, [int]$Port = 8099, [string]$LlamaServer = "C:\llama-vk\llama-server.exe",
       [string]$Lib = "C:\moe-cache-kit\ggml-moe-cache-api3.dll", [string]$Repo = "C:\moe-cache", [string]$Baseline = "", [string]$OtherPrograms = "")
 $ErrorActionPreference = "Continue"
@@ -91,7 +91,10 @@ foreach ($kind in $kinds) {
   }
   Log "run $k ($kind): server up, CPU load $load % ($(if ($quiet -ge 3) { 'quiet' } else { 'NOT quiet after 5 min' }))"
   $json = Join-Path $OutDir "$tag.json"; $txt = Join-Path $OutDir "$tag.txt"
-  $ba = @($bench, "run", "--url", "http://127.0.0.1:$Port", "--arm", $(if ($kind -eq "mc") { "moe-cache" } else { "stock" }), "--ctx", "$Ctx", "--max-tokens", "$MaxTokens", "--out", $json)
+  $ba = @($bench, "run", "--url", "http://127.0.0.1:$Port", "--arm", $(if ($kind -eq "mc") { "moe-cache" } else { "stock" }), "--ctx", "$Ctx", "--out", $json)
+  # 2026-11-07: the driver's defaults are thinking off, 256 tokens and an answer hint on every question; -Legacy is the v0.3.7 setting (thinking on, 128 tokens, no hint)
+  if ($MaxTokens -gt 0) { $ba += @("--max-tokens", "$MaxTokens") }
+  if ($Legacy) { $ba += @("--legacy") }
   if ($MaxTurns -gt 0) { $ba += @("--max-turns", "$MaxTurns") }
   # every run: resource peaks (VRAM, process RAM, free RAM, CPU) sampled by the runner on llama-server's pid, the run's own command line (GPU layers, ctx, ub),
   # llama-server's log (layer counts, buffer sizes) and the load time measured above
