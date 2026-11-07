@@ -2,7 +2,7 @@
 """bench_record_test (docs/BENCHMARK_TEMPLATE.md): the benchmark record's collector without a model, a server or a GPU. Linux and Windows readers are driven with
 fake /proc files and fake command output (nvidia-smi, lsblk, typeperf, powercfg, PowerShell JSON); the Sampler with a fake probe; the record against the schema;
 the renderers (card lines, row, RESULTS section, issue body); and a smoke run of the real probe on this machine's own process. Same file on both systems."""
-import json, os, sys, tempfile, time
+import json, os, re, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -359,6 +359,51 @@ check(out["samples"] >= 2 and isinstance(out["process_ram_peak_mib"], (int, floa
 check(isinstance(out["system_ram_free_min_mib"], (int, float)) and isinstance(out["cpu_avg_pct"], (int, float)), f"real probe: free RAM and CPU % read (cpu avg {out['cpu_avg_pct']} %)")
 model = os.path.join(tmp, "m.gguf")
 open(model, "wb").write(b"GGUF" + b"\0" * 4096)
+
+# ---- 6c. records from GitHub issues (community): found in the report's JSON block, validated, written as community-N, never executed
+body_ok = "### The report\n\n## moe-cache benchmark report\n\nText; `rm -rf ~`; $(touch /tmp/should-not-exist)\n\n<details><summary>Record (JSON)</summary>\n\n```json\n" + json.dumps(rec_a, indent=1) + "\n```\n\n</details>\n\n### Backend\n\nVulkan\n"
+r_, why_ = cc.extract_record(body_ok)
+check(r_ is not None and r_["record_schema"] == rec_a["record_schema"], "ingest-issue: the record is found inside the pasted report")
+check(cc.extract_record("no json here")[0] is None and "no JSON block" in cc.extract_record("no json here")[1], "ingest-issue: an issue without a record says so")
+check(cc.extract_record("```json\n{\"a\": 1,\n```")[0] is None and "does not parse" in cc.extract_record("```json\n{\"a\": 1,\n```")[1], "ingest-issue: a cut JSON block says it did not parse")
+check(cc.extract_record("```json\n{\"a\": 1}\n```")[0] is None, "ingest-issue: JSON without record_schema is not a record")
+check(cc.extract_record("x" * (cc.MAX_ISSUE_BODY + 1))[0] is None, "ingest-issue: a body over 2 MB is refused")
+rid_i, comment_i = cc.ingest_issue(body_ok, 7, bdir)
+check(rid_i is not None and re.fullmatch(r"2026-11-01_community-7_[0-9a-f]{6}", rid_i) and os.path.exists(os.path.join(bdir, "runs", rid_i + ".json")), f"ingest-issue: written as DATE_community-N_ID ({rid_i})")
+check("Record check: valid" in comment_i and cc.COMMENT_MARK in comment_i and "| decode tok/s |" in comment_i and "| prompt tok/s |" in comment_i and not os.path.exists("/tmp/should-not-exist"), "ingest-issue: the comment has the board row; nothing in the text was run")
+check(cc.ingest_issue(body_ok, 7, bdir)[0] == rid_i and not [f for f in os.listdir(os.path.join(bdir, "runs")) if f.startswith(".incoming")], "ingest-issue: the same issue again changes nothing; no temp file left")
+n_runs = len(os.listdir(os.path.join(bdir, "runs")))
+rid_c, comment_c = cc.ingest_issue(body_ok, 7, bdir, write=False)
+check(rid_c is None and len(os.listdir(os.path.join(bdir, "runs"))) == n_runs and "Record check: valid" in comment_c, "ingest-issue --check: validates, writes nothing")
+bad_rec = json.loads(json.dumps(rec_a)); del bad_rec["hardware"]
+rid_b, comment_b = cc.ingest_issue("```json\n" + json.dumps(bad_rec) + "\n```", 8, bdir)
+check(rid_b is None and "not valid" in comment_b and "hardware" in comment_b and len(os.listdir(os.path.join(bdir, "runs"))) == n_runs, "ingest-issue: an invalid record is not written; the comment names the problem")
+rows = cc.board_rows(rec_a)
+check(len(rows) == 2 and all(r[6] for r in rows), "ingest-issue: a board row per metric with a reading")
+fast = json.loads(json.dumps(rec_a))
+for r in fast["runs"]:
+    r["decode_tps"] = 10.0 if r["arm"] == "stock" else 10.4
+check([r for r in cc.board_rows(fast) if r[0].startswith("decode")][0][6].startswith("within noise"), "ingest-issue: +4 % reads 'within noise: do not claim'")
+bodyf = os.path.join(tmp, "issue.txt"); open(bodyf, "w", encoding="utf-8").write(body_ok)
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc_ = cc.main(["--dir", bdir, "ingest-issue", "--file", bodyf, "--check"])
+check(rc_ == 0 and "Record check: valid" in buf.getvalue(), "ingest-issue --check --file: exit 0 and the comment on stdout")
+open(bodyf, "w").write("nothing")
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    rc_ = cc.main(["--dir", bdir, "ingest-issue", "--file", bodyf, "--check"])
+check(rc_ == 1 and "no record found" in buf.getvalue(), "ingest-issue --check: exit 1 and the reason when there is no record")
+saved_fetch = cc.fetch_issue_body
+cc.fetch_issue_body = lambda n, repo=cc.REPO: body_ok
+with contextlib.redirect_stdout(io.StringIO()):
+    rc_ = cc.main(["--dir", bdir, "ingest-issue", "9"])
+check(rc_ == 0 and any(f.startswith("2026-11-01_community-9_") for f in os.listdir(os.path.join(bdir, "runs"))), "ingest-issue N: fetches the issue text and writes community-N")
+cc.fetch_issue_body = saved_fetch
+wf = open(os.path.join(os.path.dirname(HERE), ".github", "workflows", "benchmark_issue.yml"), encoding="utf-8").read()
+run_lines = [l for l in wf.splitlines() if re.match(r"\s+(run:|printf|python3|gh |old=|if |test |else|fi)", l)]
+check("${{" not in "\n".join(run_lines) and wf.count("github.event.issue.body") == 1 and "ISSUE_BODY: ${{ github.event.issue.body }}" in wf, "workflow: the issue text goes in only through an environment variable, never into a script line")
+check("contents: read" in wf and "issues: write" in wf and "contents: write" not in wf and "--check" in wf and "ingest-issue --file" in wf and "pull_request_target" not in wf, "workflow: read-only code, issues write only, --check only (nothing is added to the repository)")
 envr = rr.collect_environment(model, None, listing="", version_line="version: 1 (abcdef1)", backend="CPU only")
 check(envr["model"]["file"] == "m.gguf" and envr["model"]["sha256_head16MiB"] != NR and envr["software"]["llama_build"] == 1 and envr["software"]["python"], "collect: model file, hash prefix, llama build, python")
 check(not [e for e in rr.validate({"hardware": envr["hardware"], "software": envr["software"], "model": envr["model"]},
