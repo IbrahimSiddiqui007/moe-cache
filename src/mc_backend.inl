@@ -423,10 +423,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     std::unordered_set<const ggml_tensor *> inside;
     for (int i = first; i <= last; i++) {
         ggml_tensor * n = ggml_graph_node(cg, i);
-        // idea P16 (MOE_CACHE_GPU_EXTRA_OPS=1, default off): plain element-wise nodes between the expert matrices (clamp, scale) may stay in the GPU block
-        // instead of sending the whole block back to the CPU; they read only nodes of the block
-        static const bool extra_ops = mcenv::env_on("MOE_CACHE_GPU_EXTRA_OPS");
-        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu && !(extra_ops && i > first && (n->op == GGML_OP_CLAMP || n->op == GGML_OP_SCALE))) {
+        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu) {
             return false;
         }
         inside.insert(n);

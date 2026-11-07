@@ -1,0 +1,28 @@
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index cf6db6a..4e0a049 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -71,6 +71,7 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*`
+ | `MOE_CACHE_GPU_FREE_AFTER_PROMPT` | Off by default. `1` gives the long-prompt block's GPU buffer back (up to about one layer of experts) as soon as the prompt is over, so decoding and other programs have that video memory. The next long prompt allocates it again. |
+ | `MOE_CACHE_GPU_COMPACT` | Experimental: for a block split over GPU parts, each part computes only the rows whose expert it holds. Results may differ slightly in rounding, so check quality. `1`, `on`, `true` or `yes` turn it on. | off | internal/testing |
+ | `MOE_CACHE_GPU_EVENTS` | Experimental: waits for the GPU result copy using an event instead of a full GPU synchronise. `1`, `on`, `true` or `yes` turn it on. | off | internal/testing |
++| `MOE_CACHE_GPU_EXTRA_OPS` | Experimental: simple element-wise steps (clamp, scale) between expert matrices stay in the GPU block instead of sending the whole block back to the CPU. `1`, `on`, `true` or `yes` turn it on. | off | internal/testing |
+ | `MOE_CACHE_GPU_INTERLEAVE` | Experimental. When the GPU path uploads expert weights in pieces, sends all three weight tensors (gate, up, down) of a run of neighbouring experts before moving on, instead of one whole tensor at a time. Any true value turns it on (1, on, true, yes). | off | internal/testing |
+ | `MOE_CACHE_GPU_MEM_LOG` | Makes the launcher print how much GPU memory llama-server holds, about once a second (only when it changes by 64 MiB or more), plus a peak summary at exit. Log only; speed and answers do not change. Any value other than empty or 0 turns it on. | off | advanced |
+ | `MOE_CACHE_GPU_OVERLAP` | Experimental. Waits for the next part's experts to be read from disk while the GPU is still copying results back, instead of afterwards. Needs the pinned read-back path and a block split into more than one part. 1/on/true/yes turns it on. | off | internal/testing |
+diff --git b/src/mc_backend.inl a/src/mc_backend.inl
+index fd06249..9090bbd 100644
+--- b/src/mc_backend.inl
++++ a/src/mc_backend.inl
+@@ -423,7 +423,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
+     std::unordered_set<const ggml_tensor *> inside;
+     for (int i = first; i <= last; i++) {
+         ggml_tensor * n = ggml_graph_node(cg, i);
+-        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu) {
++        // idea P16 (MOE_CACHE_GPU_EXTRA_OPS=1, default off): plain element-wise nodes between the expert matrices (clamp, scale) may stay in the GPU block
++        // instead of sending the whole block back to the CPU; they read only nodes of the block
++        static const bool extra_ops = mcenv::env_on("MOE_CACHE_GPU_EXTRA_OPS");
++        if (n->op != GGML_OP_MUL_MAT_ID && n->op != g_op_glu && !(extra_ops && i > first && (n->op == GGML_OP_CLAMP || n->op == GGML_OP_SCALE))) {
+             return false;
+         }
+         inside.insert(n);
