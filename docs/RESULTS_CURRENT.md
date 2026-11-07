@@ -14,7 +14,7 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 | GPU | RX 9070 XT 16 GB |
 | RAM | 32 GB DDR5 |
 | OS | Windows 11 |
-| llama.cpp builds | v0.3.7 candidate kit f928d1c, official llama.cpp b12064 (51fe42c5d) Vulkan |
+| llama.cpp builds | v0.3.7 kit f928d1c (the code released as v0.3.7; v0.3.7.1 only changes the installers and the banner), official llama.cpp b12064 (51fe42c5d) Vulkan |
 
 | Headline | What it is |
 |---|---|
@@ -27,7 +27,7 @@ moe-cache is a llama.cpp plugin that keeps the experts a model uses most in RAM 
 
 ### A real 65k conversation, stock against moe-cache, per depth band
 
-Windows desktop, v0.3.7 candidate kit f928d1c, official llama.cpp b12064, timers off, launcher defaults. A seeded conversation (code pastes, logs, follow-ups; `tools/conversation_bench.py`, seed 42, 128 tokens per answer) is sent turn by turn with the whole history, prompt cache on, temperature 0, until the 65,536-token context is full. Order stock, moe-cache, moe-cache, stock; the table shows the mean of the two runs per arm; cold file cache before every run. Prompt tok/s = new tokens read divided by prompt time, over turns with at least 64 new tokens; decode over turns with at least 16 generated tokens; the band is the depth of the prompt before the answer. The 48k–64k band holds most turns, mostly small follow-ups.
+Windows desktop, v0.3.7 kit f928d1c, official llama.cpp b12064, timers off, launcher defaults. A seeded conversation (code pastes, logs, follow-ups; `tools/conversation_bench.py`, seed 42, 128 tokens per answer) is sent turn by turn with the whole history, prompt cache on, temperature 0, until the 65,536-token context is full. Order stock, moe-cache, moe-cache, stock; the table shows the mean of the two runs per arm; cold file cache before every run. Prompt tok/s = new tokens read divided by prompt time, over turns with at least 64 new tokens; decode over turns with at least 16 generated tokens; the band is the depth of the prompt before the answer. The 48k–64k band holds most turns, mostly small follow-ups.
 
 **Flash-Next Q2_0 (the default), 46 turns to 65,379 tokens.** Whole run: moe-cache reads new prompt tokens at 430.01 against 194.5 tok/s and decodes 26.98 against 22.46 tok/s. <!-- claim:v037-conv-q2_0 -->
 
@@ -64,8 +64,8 @@ Test details for each row (the card draws the decode table as bars; same numbers
 
 | Model | Size, drive | stock tok/s | moe-cache tok/s | with MTP tok/s | Test details |
 |---|---|---|---|---|---|
-| Flash-Next Q2_0, 65k conversation | 66.4 GB, drive D: | 22.46 | 26.98 | – | 40 expert layers on the CPU, launcher defaults, both arms<br>ctx 65536 · 46 turns to 65,379 tokens · ABBA, 2 runs each · cold file cache<br>moe-cache peak: VRAM 13429 MiB · process RAM 19373 MiB (stock 25955 MiB)<br>v0.3.7 candidate kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_b21c0e · claim v037-conv-q2_0 |
-| Flash-Next IQ3_XXS, 65k conversation | 75.8 GB, drive D: | 16.00 | 21.73 | – | 42 expert layers on the CPU, launcher defaults, both arms<br>ctx 65536 · 49 turns to 65,371 tokens · ABBA, 2 runs each · cold file cache<br>moe-cache peak: VRAM 14585 MiB · process RAM 19990 MiB (stock 26204 MiB)<br>v0.3.7 candidate kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_d1b3b3 · claim v037-conv-iq3xxs |
+| Flash-Next Q2_0, 65k conversation | 66.4 GB, drive D: | 22.46 | 26.98 | – | 40 expert layers on the CPU, launcher defaults, both arms<br>ctx 65536 · 46 turns to 65,379 tokens · ABBA, 2 runs each · cold file cache<br>moe-cache peak: VRAM 13429 MiB · process RAM 19373 MiB (stock 25955 MiB)<br>v0.3.7 kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_b21c0e · claim v037-conv-q2_0 |
+| Flash-Next IQ3_XXS, 65k conversation | 75.8 GB, drive D: | 16.00 | 21.73 | – | 42 expert layers on the CPU, launcher defaults, both arms<br>ctx 65536 · 49 turns to 65,371 tokens · ABBA, 2 runs each · cold file cache<br>moe-cache peak: VRAM 14585 MiB · process RAM 19990 MiB (stock 26204 MiB)<br>v0.3.7 kit f928d1c · llama.cpp b12064 (51fe42c5d) · record 2026-11-05_pc_d1b3b3 · claim v037-conv-iq3xxs |
 
 ### Where it does not help
 
@@ -73,7 +73,7 @@ Test details for each row (the card draws the decode table as bars; same numbers
 - **Short answers at shallow depth.** The gain in a conversation comes from reading prompts and from keeping the hot experts in RAM; a short chat on a model that already fits in RAM does not gain.
 - **CPU kernels.** The numbers here were measured with llama.cpp's own CPU kernels on both sides; the gain comes from which experts are in RAM and how they are read, not from faster math.
 - **Cold start.** From a cold file cache the plugin reports ready a few seconds later than stock while it loads its hot experts; the first answer wins it back (RESULTS 61).
-- **Small samples.** Two runs per arm, one PC, one seeded script, a v0.3.7 candidate kit. Cleanliness: see the note under the headline numbers.
+- **Small samples.** Two runs per arm, one PC, one seeded script, one v0.3.7 kit. Cleanliness: see the note under the headline numbers.
 
 ### Output quality
 
