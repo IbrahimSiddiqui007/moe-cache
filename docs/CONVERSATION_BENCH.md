@@ -12,7 +12,7 @@ by turn. It is a measuring tool: nothing in this page is a measured result. Numb
   instead.
 - Every turn is sent with the whole history so far (system message, all earlier turns and the model's earlier answers), `cache_prompt` on, temperature 0, a
   fixed `--max-tokens` per answer (default 256; 128 with `--legacy`), thinking off, and every user message ends with "Please answer in at least three full sentences." (see "Visible answers" below). The answer is appended and the next turn follows, until the next turn would not fit into the context (`--ctx`,
-  default 65536; it is cut to the server's own `n_ctx` when `/props` reports one). The tool never sends a request it expects the server to refuse.
+  default 65536; it is cut to the server's own `n_ctx` when `/props` reports one). The tool never sends a request it expects the server to refuse: before each turn it asks the server's `/tokenize` for the real size of the new user message (a characters-per-token guess only when the server has no `/tokenize`), adds the real depth of the last answer, a margin for the chat template and `--max-tokens`, and stops with `context full` when that would not fit. If the server still refuses a later turn as too big for the context (HTTP 400 "exceeds the available context size"), the run ends as `context full` too, not as an error; a refusal of the very first turn stays an error (the context is too small).
 - It stops with a reason: `context full`, `max turns reached`, `script ended`, or `error: ...` (the server's answer, for example an HTTP 400).
 
 Per turn it records: the turn number and kind, tokens added since the last answer, the depth before and after the answer, new tokens read and tokens reused

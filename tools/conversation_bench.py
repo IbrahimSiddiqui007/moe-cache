@@ -123,6 +123,32 @@ def server_ctx(url, api_key, timeout=10):
         return None
 
 
+def count_tokens(url, api_key, text, timeout=30):
+    """The server's own token count of `text` (POST /tokenize); None when the server has no such endpoint or does not answer. The turn planning uses it instead of a
+    characters-per-token guess: code and logs are much denser than 3 characters per token, and with 256-token answers the guess let a request run over the context."""
+    try:
+        c, base = _conn(url, timeout)
+        hdr = {"Content-Type": "application/json"}
+        if api_key:
+            hdr["Authorization"] = "Bearer " + api_key
+        c.request("POST", base + "/tokenize", body=json.dumps({"content": text, "add_special": False}).encode(), headers=hdr)
+        r = c.getresponse()
+        data = r.read()
+        c.close()
+        if r.status != 200:
+            return None
+        toks = json.loads(data).get("tokens")
+        return len(toks) if isinstance(toks, list) else None
+    except Exception:
+        return None
+
+
+def is_context_error(err):
+    """True for the server's refusal of a request that does not fit the context (llama.cpp: HTTP 400 'the request (N tokens) exceeds the available context size (M tokens)')."""
+    e = str(err or "").lower()
+    return "400" in e and ("exceeds the available context" in e or "exceed_context_size" in e or "exceeds the context" in e or "context size" in e)
+
+
 def chat(url, body, api_key, timeout):
     """One streamed chat request -> dict: text, reasoning (chars), ttft_s, wall_s, timings, usage, status, error."""
     res = {"text": "", "finish_reason": None, "reasoning_chars": 0, "ttft_s": None, "wall_s": None, "timings": None, "usage": None, "status": None, "error": None}
@@ -322,6 +348,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
     hint = ANSWER_HINT if hint_text is None else hint_text
     turns, history = [], [{"role": "system", "content": SYSTEM if system is None else system}]
     prev_total, n, stop = 0, 0, "max turns reached"
+    use_tokenize = True
     t_start = time.time()
     while max_turns is None or n < max_turns:
         pick = None
@@ -329,7 +356,12 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             cand = (script[n] if (script and attempt == 0 and n < len(script)) else None) if script else make_turn(seed, n, attempt)
             if script and cand is None:
                 stop = "script ended"; break
-            est = (len(cand["text"]) + (len(hint) if answer_hint else 0)) / CHARS_PER_TOKEN + MARGIN
+            full = cand["text"] + (hint if answer_hint else "")
+            real = count_tokens(url, api_key, full) if use_tokenize else None
+            if real is None and use_tokenize:
+                use_tokenize = False                       # no /tokenize: the guess below, and it is not asked again
+                log("  (the server has no /tokenize: turns are sized by characters, with the safety net of a context-full answer)")
+            est = (real + MARGIN) if real is not None else (len(full) / CHARS_PER_TOKEN + MARGIN)
             if prev_total + est + max_tokens <= ctx:
                 pick = cand; break
             if script:
@@ -347,6 +379,11 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             body["ignore_eos"] = True
         s0 = stats.snapshot() if stats else None
         r = chat(url, body, api_key, timeout)
+        if is_context_error(r["error"]) and turns:         # safety net: the size estimate was a little low; this is the end of the context, not a failure of the run (a refusal of the very first turn stays an error: the context is too small)
+            history.pop()
+            stop = "context full"
+            log(f"  [{arm}] turn {n:3d}: the server says the request does not fit the context ({str(r['error'])[:120]}): stopping as context full")
+            break
         s1 = stats.snapshot() if stats else None
         tm, us = r["timings"] or {}, r["usage"] or {}
         prompt_len = (tm["prompt_n"] + tm.get("cache_n", 0)) if "prompt_n" in tm else us.get("prompt_tokens")
@@ -380,7 +417,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
         prev_total = row["depth_after"] if row["depth_after"] is not None else prev_total + int(est)
         n += 1
     run = {"arm": arm, "url": url, "ctx": ctx, "max_tokens": max_tokens, "seed": seed, "turns": turns, "stop_reason": stop,
-           "final_depth": turns[-1]["depth_after"] if turns else None, "wall_s": round(time.time() - t_start, 1),
+           "final_depth": next((t["depth_after"] for t in reversed(turns) if t.get("depth_after") is not None), None), "wall_s": round(time.time() - t_start, 1),
            "user_turns_sha256": hashlib.sha256("\n".join(m["content"] for m in history if m["role"] == "user").encode("utf-8")).hexdigest()[:16],
            "created_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")}
     run["bands"] = bands(turns, ctx)
