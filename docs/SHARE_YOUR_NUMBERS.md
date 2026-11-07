@@ -54,4 +54,10 @@ published numbers use (see [CONVERSATION_BENCH.md](CONVERSATION_BENCH.md)). It t
 it writes `...record.json` with every turn (the report itself holds the record without the per-turn lists: an issue takes 65,000 characters); `python bin/moe_cache.py bench-record ingest FILE.record.json`
 adds it to `benchmarks/`.
 
+**Before you share, and after.** The report box says exactly what was removed from the text (home folder, user and host name, folder paths, with counts); what is in the box is what **Copy**
+copies. **Copy image** (or **Save image**) draws a small result card from the record in the page, in the page's colours: model, machine, four numbers, the verdict, nothing else. When
+you open the issue, a check comments within a minute: "Record check: valid" with the row the board would show for your numbers, or what is wrong with the record (it reads the JSON block as
+text and runs nothing). The maintainer adds a valid record with `python bin/moe_cache.py bench-record ingest-issue NUMBER` (it lands in `benchmarks/runs/` as `DATE_community-NUMBER_ID.json`;
+claims on the board stay hand-made).
+
 Answers look wrong, loop, or the speed is far from the README? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) before you open an issue.
