@@ -581,7 +581,7 @@ check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-
       "Don't restore: --no-warm (agent mode only)")
 check("--leave-room" in ui.server_args({"model": "m.gguf", "leave_room": True}) and "--leave-room" not in ui.server_args({"model": "m.gguf"}),
       "Leave room for me: --leave-room on the Start command (owner 2026-10-30)")
-_html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "index.html")).read()
+_html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "index.html"), encoding="utf-8").read()
 check('id="leaveroom"' in _html and "leave_room: $(\"leaveroom\").checked" in _html and "&leave_room=" in _html and "last.leave_room" in _html,
       "Leave room for me: the box, sent with Start and the plan, remembered")
 
