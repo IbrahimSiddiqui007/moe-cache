@@ -46,4 +46,12 @@ The runs go stock, moe-cache, moe-cache, stock (`--pairs 2` repeats that), so bo
 the wait for the first token of every turn. Options: `--ram GB` (cache size),
 `--ctx`, `--tokens`, `--prompt-tokens`, `--fast` (measures an approximate mode; identity is then n/a), `--force-plugin` (measure a model that fits).
 
+**Fair comparison and Long chat (control page).** The Benchmark card has a **Fair comparison** button (cold start, stock moe-cache moe-cache stock, two pairs; same as `--pairs 2`),
+a **ready-to-measure** panel above it (model against RAM, free disk, battery, other big programs, power plan, temperature, minutes to expect) and every report ends its
+header with a **Verdict**: a difference under 10 %, or inside the spread of the runs themselves, is "within noise: do not claim". **Long chat (recommended)** is
+`--chat`: each run plays one real multi-turn conversation filled to a long context (16k up to 20 GB of RAM, 32k up to 28 GB, else 65k; `--ctx` overrides), the method the
+published numbers use (see [CONVERSATION_BENCH.md](CONVERSATION_BENCH.md)). It takes 30-120 minutes per pair on a big model; `--max-turns 6` makes a trial. Besides the report
+it writes `...record.json` with every turn (the report itself holds the record without the per-turn lists: an issue takes 65,000 characters); `python bin/moe_cache.py bench-record ingest FILE.record.json`
+adds it to `benchmarks/`.
+
 Answers look wrong, loop, or the speed is far from the README? See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) before you open an issue.

@@ -933,6 +933,12 @@ check(any(l == "share: bench-report: run 2/4: moe-cache ..." for l in lg) and an
 st, body = req("/api/share", {"model": big_one, "pairs": 9}); check(st == 400 and "pairs" in body, f"share: pairs above 4: 400 ({st})")
 req("/api/share", {"model": big_one, "pairs": 2}); sh = share_state({"done", "failed"})
 check(sh["state"] == "done" and sh["pairs"] == 2 and "--pairs 2" in json.loads(req("/api/share")[1])["markdown"], "Fair comparison: --pairs 2 is passed to bench-report")
+req("/api/share", {"model": big_one, "pairs": 2, "chat": True, "agent": True}); sh = share_state({"done", "failed"})
+mdc = json.loads(req("/api/share")[1])["markdown"]
+check(sh["state"] == "done" and sh["chat"] and "--chat" in mdc and "--pairs 2" in mdc and "--scenario" not in mdc, "Long chat: --chat is passed, and the agent scenario is dropped (two different tests)")
+rdc = json.loads(req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2&chat=1")[1])
+rds = json.loads(req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2&chat=0")[1])
+check(rdc["chat_ctx"] in (16384, 32768, 65536) and rds["chat_ctx"] == 0 and rdc["minutes"] > rds["minutes"] and "long chat" in rdc["checks"][-1]["text"], "/api/ready?chat=1: the estimate counts the conversation and names its context")
 st, body = req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2")
 rd = json.loads(body) if st == 200 else {}
 check(st == 200 and {c["id"] for c in rd.get("checks", [])} >= {"size", "disk", "power", "programs", "plan", "temp", "estimate"} and rd.get("pairs") == 2, f"/api/ready: the panel's checks ({st})")
@@ -958,7 +964,7 @@ st, _ = req("/api/share", {"model": fits, "force": True}); check(st == 200, "aft
 share_state({"done", "failed", "fits"})
 ui.SHARE_CMD, ui.REPORT_DIR = saved_share
 page_html = open(ui.PAGE, encoding="utf-8").read()
-check(all(x in page_html for x in ('id="fair"', 'id="ready"', 'id="sharenoise"', 'id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
+check(all(x in page_html for x in ('id="fair"', 'id="sharechat"', 'id="ready"', 'id="sharenoise"', 'id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
       "the page has the Share my numbers button, the report box, Copy, the issue button, Cancel, 'measure anyway' and says nothing is uploaded")
 
 import re as _re2

@@ -4,6 +4,7 @@
 
 | Area | Change |
 |---|---|
+| Control page / bench-report | **Long chat** (`bench-report --chat`, tick "Long chat (recommended)" in Share my numbers): the published method, one real multi-turn conversation per run filled to 16k / 32k / 65k by RAM, stock moe-cache moe-cache stock on a cold file cache, both arms through the launcher plan with `--agent`; writes the report and a full `.record.json` for `bench-record ingest`. One Python driver for Linux and Windows (the PowerShell and shell pair drivers stay as they are). First real laptop run: Granite 1B at 8k, 4 conversations in 68 s (benchmark fold-in, stage 2). |
 | Control page / bench-report | **Fair comparison** button in the Benchmark card (cold start, stock moe-cache moe-cache stock, 2 pairs), a **ready-to-measure** panel before the run (model vs RAM, disk, battery, big programs, power plan, temperature, time and GB estimate) and a **noise verdict** in every report: under 10 % or inside the runs' own spread is "within noise: do not claim" (benchmark fold-in, stage 1). |
 | Control page | The "llama.cpp not found" box refuses a file that is not a compiled program, sits outside the home, program and kit folders, or can be written by other users (GUI-697). |
 | Agents | `connect NAME --undo` restores the first backup; later connects keep numbered backups (`.bak.1` ...); `connect claude --write` adds the settings file to `.gitignore` of a git project (AGENTS-714). |

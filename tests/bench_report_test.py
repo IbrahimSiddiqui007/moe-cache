@@ -7,6 +7,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import moe_cache_bench as mb  # noqa: E402
 import moe_cache_ui as ui  # noqa: E402
+import moe_cache_record as rr  # noqa: E402
 
 FAILS = []
 
@@ -134,6 +135,71 @@ try:
     md = open(os.path.join(out, sorted(f for f in os.listdir(out) if f.endswith(".md"))[-1]), encoding="utf-8").read()
     check(rc == 0 and "tokens DIFFERENT" in md and "tokens differ: stock and moe-cache ran" in md, "different tokens: reported with the explanation, exit 0")
     FAKE_TEXT["moe-cache"] = "same"
+
+
+    # long chat (--chat): the arms play the real conversation against fake servers (as tests/conversation_bench_test.py); the report carries the band table, the
+    # verdict and a record that validates; the whole record (with turns) goes to .record.json, the issue text has none
+    import http.server, socketserver, threading, types
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import conversation_bench as cb
+
+    class FakeSrv(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+        log_message = lambda *a: None
+
+        def do_GET(self):
+            b = json.dumps({"default_generation_settings": {"n_ctx": 4096}}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            s_ = self.server
+            msgs = body["messages"]; total = sum(len(m["content"]) // 4 + 8 for m in msgs)
+            common = sum(len(b["content"]) // 4 + 8 for a_, b in zip(s_.last, msgs) if a_ == b) if s_.last else 0
+            pn = total - common
+            ans = "word " * 60
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+            self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": ans}}]}).encode() + b"\n\n")
+            tm = {"prompt_n": pn, "cache_n": common, "prompt_ms": pn / s_.p * 1000, "prompt_per_second": s_.p, "predicted_n": 60, "predicted_ms": 60 / s_.d * 1000, "predicted_per_second": s_.d}
+            self.wfile.write(b"data: " + json.dumps({"choices": [], "timings": tm, "usage": {"prompt_tokens": total, "completion_tokens": 60}}).encode() + b"\n\n")
+            self.wfile.write(b"data: [DONE]\n\n")
+            s_.last = msgs + [{"role": "assistant", "content": ans}]
+
+    class Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+    servers = {}
+    for name, p_, d_ in (("stock", 100.0, 10.0), ("moe-cache", 200.0, 20.0)):
+        sv = Srv(("127.0.0.1", 0), FakeSrv); sv.p, sv.d, sv.last = p_, d_, []
+        threading.Thread(target=sv.serve_forever, daemon=True).start(); servers[name] = sv
+    chat_calls = []
+
+    def fake_chat(model_, mode, a, port, workdir, key, plan_line):
+        chat_calls.append((mode, a.ctx, a.max_turns, key))
+        ns = cb.default_args(ctx=a.ctx, max_turns=a.max_turns or None, timeout=30, server_cmd=plan_line, load_s=3.0)
+        run = cb._one(ns, "http://127.0.0.1:%d" % servers[mode].server_address[1], mode, log=lambda m: None)
+        o = cb.overall(run)
+        return {"mode": mode, "error": "", "chat": run, "decode": o["decode_tps"], "prefill": o["prompt_tps"], "ttft_s": o["ttft_s"], "load_s": 3.0, "plugin_active": mode == "moe-cache"}
+    saved_chat = (mb.run_chat_arm, mb.mc.stored_key)
+    mb.run_chat_arm = fake_chat; mb.mc.stored_key = lambda create=False: "test-key"
+    out2 = os.path.join(tmp, "chat out")
+    rc = mb.bench_report([model, "--out", out2, "--chat", "--ctx", "4096", "--max-turns", "6", "--llama-server", "llama-server"])
+    fl = sorted(os.listdir(out2))
+    check(rc == 0 and any(f.endswith(".record.json") for f in fl), f"--chat: exit 0, the whole record is written next to the report ({fl})")
+    mdc = open(os.path.join(out2, [f for f in fl if f.endswith(".md")][-1]), encoding="utf-8").read()
+    check([c[0] for c in chat_calls] == ["stock", "moe-cache", "moe-cache", "stock"] and all(c[1] == 4096 and c[2] == 6 and c[3] == "test-key" for c in chat_calls), "--chat: A B B A, the context, the turn limit and the key reach every run")
+    check("**Long chat**" in mdc and "| band |" in mdc and "2.00x" in mdc and "**Verdict:** moe-cache vs stock" in mdc and "not checked (long chat)" in mdc, "--chat: the report has the long-chat header, the band table (2.00x) and the verdict")
+    recc = json.load(open(os.path.join(out2, [f for f in fl if f.endswith(".record.json")][0]), encoding="utf-8"))
+    check(rr.validate(recc, rr.load_schema()) == [] and all("turns" in r for r in recc["runs"]) and recc["protocol"]["order"] == "ABBA", "--chat: the full record validates (turns kept, ABBA)")
+    import re as _re
+    issue_rec = json.loads(_re.search(r"```json\n(.*?)\n```", mdc, _re.S).group(1))
+    check(all("turns" not in r for r in issue_rec["runs"]) and rr.validate(issue_rec, rr.load_schema()) == [] and len(mdc) < 60000, f"--chat: the issue text carries the record without per-turn lists, valid, under 60k characters ({len(mdc)})")
+    check("test-key" not in mdc and "test-key" not in open(os.path.join(out2, [f for f in fl if f.endswith(".json") and not f.endswith("record.json")][0])).read(), "--chat: the API key is in no output file")
+    check(mb.bench_report([model, "--out", out2, "--chat", "--scenario", "agent"]) == 2 and mb.bench_report([model, "--out", out2, "--chat", "--fast"]) == 2, "--chat with --scenario agent or --fast: refused (exit 2)")
+    check((mb.chat_ctx(16), mb.chat_ctx(20), mb.chat_ctx(24), mb.chat_ctx(32), mb.chat_ctx(64), mb.chat_ctx(None)) == (16384, 16384, 32768, 65536, 65536, 65536), "chat context by RAM: 16k up to 20 GB, 32k up to 28 GB, else 65k")
+    check(mb.estimate(66, 1, 65536)[0] > mb.estimate(66, 1, 0)[0] + 30, "the long chat's time estimate adds the conversation (about 10 min per run at 65k)")
+    mb.run_chat_arm, mb.mc.stored_key = saved_chat
+    for sv in servers.values():
+        sv.shutdown()
 
     plan[0] = "stock"; calls.clear()
     check(mb.bench_report([model, "--out", out, "--warm"]) == 3 and calls == [], "model fits in RAM -> exit 3, nothing run")

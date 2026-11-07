@@ -4,10 +4,11 @@ order stock, moe-cache, moe-cache, stock (per pair), with the launcher's own def
 (moe-cache-report-YYYYMMDD-HHMM.md + .json). It only measures: nothing is downloaded, uploaded or changed, and the report holds no prompts, answers,
 user name, host name or folder names. Standard library only; the same code on both systems (no systemd-run: the cache size is the launcher's --ram).
 docs/SHARE_YOUR_NUMBERS.md is the recipe."""
-import argparse, contextlib, datetime, io, json, os, platform, re, shutil, socket, subprocess, sys, threading, time
+import argparse, contextlib, datetime, io, json, os, platform, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.append(os.path.join(os.path.dirname(HERE), "tools"))      # tools/conversation_bench.py (--chat); both kits have tools/ next to bin/
 import moe_cache as mc  # noqa: E402
 import moe_cache_record as rec  # noqa: E402
 
@@ -245,9 +246,6 @@ def run_one(model, mode, a, port):
         _stop_server(p, port)
 
 
-CHAT_MAX_TOKENS = 128
-
-
 def chat_ctx(ram_gb):
     """Context of the long chat for this machine (report section 7): 16k up to 20 GB of RAM, 32k up to 28 GB, else the published 65k."""
     return 16384 if ram_gb and ram_gb <= 20 else 32768 if ram_gb and ram_gb <= 28 else 65536
@@ -256,7 +254,6 @@ def chat_ctx(ram_gb):
 def run_chat_arm(model, mode, a, port, workdir, key, plan_line):
     """One long-chat run (the published method, tools/conversation_bench.py): server through the launcher with --agent, the conversation up to the context,
     resource peaks, the plugin's counters per turn. {'mode', 'error', 'chat': the run dict, 'decode', 'prefill', 'ttft_s', 'load_s', 'plugin_active', 'hit_rate'}."""
-    import types
     import conversation_bench as cb
     import moe_cache_ui as ui
     log = os.path.join(workdir, f"server-{mode}-{int(time.time())}.log")
@@ -269,9 +266,8 @@ def run_chat_arm(model, mode, a, port, workdir, key, plan_line):
             return res
         load_s = round(time.time() - t0, 1)
         pid = ui.child_pid(p.pid) or p.pid
-        ns = types.SimpleNamespace(ctx=a.ctx, max_tokens=CHAT_MAX_TOKENS, seed=42, api_key=key, model="conversation-bench", timeout=1800, stats_pid=pid if mode != "stock" else None,
-                                   stats_log=log if mode != "stock" else None, script=None, max_turns=a.max_turns or None, no_think=True, ignore_eos=False, monitor_pid=pid,
-                                   server_cmd=plan_line, server_log=[log], load_s=load_s)
+        ns = cb.default_args(ctx=a.ctx, api_key=key, stats_pid=pid if mode != "stock" else None, stats_log=log if mode != "stock" else None, max_turns=a.max_turns or None,
+                             monitor_pid=pid, server_cmd=plan_line, server_log=[log], load_s=load_s)
         run = cb._one(ns, f"http://127.0.0.1:{port}", "stock" if mode == "stock" else "moe-cache", log=lambda m: mc.say("bench-report:   " + m))
         o = cb.overall(run)
         res.update(chat=run, decode=o["decode_tps"], prefill=o["prompt_tps"], ttft_s=o["ttft_s"], load_s=load_s, hit_rate=o["hit_rate_dec_pct"], wall_s=run.get("wall_s"),
@@ -421,13 +417,14 @@ def _big_programs(limit_gb=1.0):
     return sorted(((n, round(g, 1)) for n, g in best.items()), key=lambda x: -x[1])[:4]
 
 
-def estimate(size_gb, pairs):
-    """(minutes, GB read at most) for a report: 4 runs per pair, each a cold start (the model is read again) plus about 75 s of prompt and answer."""
+def estimate(size_gb, pairs, chat_ctx_tokens=0):
+    """(minutes, GB read at most) for a report: 4 runs per pair, each a cold start (the model is read again) plus about 75 s of prompt and answer; a long chat adds
+    about 10 minutes per 65k tokens of conversation (one moe-cache run at 65k took 388 s on the PC, stock is slower)."""
     runs = 4 * max(1, pairs)
-    return round(runs * (75 + 4 * size_gb) / 60), round(runs * size_gb)
+    return round(runs * (75 + 4 * size_gb + 600 * chat_ctx_tokens / 65536) / 60), round(runs * size_gb)
 
 
-def readiness(model, pairs=2, ram=None):
+def readiness(model, pairs=2, ram=None, chat=False):
     """The ready-to-measure panel: [{id, level 'ok'|'warn'|'bad'|'info', text, fix}] for the model about to be measured (the checks that make a report unusable:
     the model fits in RAM, little free disk, battery, other big programs, power plan, temperature). Reads only; the doctor's own checks stay in `check`."""
     pr = rec.probe()
@@ -466,9 +463,12 @@ def readiness(model, pairs=2, ram=None):
         add("temp", "info", "CPU temperature not readable: the report says \"not recorded\", and a run cannot be called clean.")
     else:
         add("temp", "warn" if t >= 70 else "ok", f"CPU temperature {t:.0f} C.", "Let the machine cool down first (a hot start throttles the first runs)." if t >= 70 else "")
-    mins, gb = estimate(size, pairs)
-    add("estimate", "info", f"About {mins} minutes and up to {gb} GB read from the drive for {pairs} pair(s) (stock, moe-cache, moe-cache, stock; cold start). Rough; leave the machine alone.")
-    return {"model": os.path.basename(model), "size_gb": round(size, 1), "ready": not any(r["level"] == "bad" for r in rows), "pairs": pairs, "minutes": mins, "gb_read": gb, "checks": rows}
+    ctx = chat_ctx(tot) if chat else 0
+    mins, gb = estimate(size, pairs, ctx)
+    add("estimate", "info", f"About {mins} minutes and up to {gb} GB read from the drive for {pairs} pair(s) (stock, moe-cache, moe-cache, stock; cold start"
+        + (f"; long chat to {ctx // 1024}k tokens" if chat else "") + "). Rough; leave the machine alone.")
+    return {"model": os.path.basename(model), "size_gb": round(size, 1), "ready": not any(r["level"] == "bad" for r in rows), "pairs": pairs, "minutes": mins, "gb_read": gb,
+            "chat_ctx": ctx, "checks": rows}
 
 
 def summarize(runs, exact):
@@ -495,6 +495,14 @@ def summarize(runs, exact):
     return out
 
 
+def rec_for_issue(record, chat):
+    """The record without its notes; a long chat's per-turn lists are left out too (they stay in the .record.json file: an issue holds 65,000 characters, a 65k conversation has ~150 turns)."""
+    out = {k: v for k, v in record.items() if k != "notes"}
+    if chat:
+        out["runs"] = [{k: v for k, v in r.items() if k != "turns"} for r in record.get("runs", [])]
+    return out
+
+
 def report_md(d):
     """The report as GitHub markdown, sections in a fixed order (tests/bench_report_test.py checks them)."""
     s, f = d["summary"], d["facts"]
@@ -503,6 +511,8 @@ def report_md(d):
              "",
              f"moe-cache {d['version']} · report schema {SCHEMA} · {d['date']} UTC · **{d['start']}** · mode {d['mode']}",
              "",
+             *([f"**Long chat** (the published method: one real multi-turn conversation filled to a {d['chat']['ctx']}-token context, thinking off, 256-token answers; "
+                f"prompt and decode tok/s are means over the whole conversation)", ""] if d.get("chat") else []),
              f"**Result:** moe-cache {v(s['moe-cache']['decode'])} tok/s vs stock {v(s['stock']['decode'])} tok/s decode ({v(s['decode_x'], 'x')}), "
              f"prompt {v(s['moe-cache']['prefill'])} vs {v(s['stock']['prefill'])} tok/s, tokens {s['identity']}",
              "",
@@ -527,16 +537,23 @@ def report_md(d):
              f"| Stock plan | {d.get('stock_plan', '-')} |",
              f"| Fits in RAM | {d['fits']} |",
              "",
-             "| | stock | moe-cache | ratio |", "|---|---|---|---|",
-             f"| decode tok/s (mean; runs) | {v(s['stock']['decode'])}; {s['stock']['decode_runs']} | {v(s['moe-cache']['decode'])}; {s['moe-cache']['decode_runs']} | {v(s['decode_x'], 'x')} |",
-             f"| prompt tok/s ({d['prompt_tokens']} tokens) | {v(s['stock']['prefill'])} | {v(s['moe-cache']['prefill'])} | {v(s['prefill_x'], 'x')} |",
-             f"| time to first token, s | {v(s['stock']['ttft_s'])} | {v(s['moe-cache']['ttft_s'])} | |",
-             f"| server start, s | {v(s['stock']['load_s'])} | {v(s['moe-cache']['load_s'])} | |",
-             *([f"| agent turns: time to first token, s (turn 1 / 2 / 3, {d.get('gap', 0)} s gaps) | {' / '.join(map(str, s['stock'].get('agent_ttft_s') or ['-']))} | "
-                f"{' / '.join(map(str, s['moe-cache'].get('agent_ttft_s') or ['-']))} | |"] if d.get("scenario") == "agent" else []),
-             f"| cache hit rate | | {v(s['moe-cache']['hit_rate'], ' %')} | |",
-             f"| read from the drive | | {v(s['moe-cache']['gb_read'], ' GB')} | |",
-             "",
+             *(["| | stock | moe-cache | ratio |", "|---|---|---|---|",
+                f"| decode tok/s (mean over the conversation; per run) | {v(s['stock']['decode'])}; {s['stock']['decode_runs']} | {v(s['moe-cache']['decode'])}; {s['moe-cache']['decode_runs']} | {v(s['decode_x'], 'x')} |",
+                f"| prompt tok/s (new tokens read; per run) | {v(s['stock']['prefill'])}; {s['stock']['prefill_runs']} | {v(s['moe-cache']['prefill'])}; {s['moe-cache']['prefill_runs']} | {v(s['prefill_x'], 'x')} |",
+                f"| time to first token, median s | {v(s['stock']['ttft_s'])} | {v(s['moe-cache']['ttft_s'])} | |",
+                f"| server start, s | {v(s['stock']['load_s'])} | {v(s['moe-cache']['load_s'])} | |",
+                f"| cache hit rate (decode) | | {v(s['moe-cache']['hit_rate'], ' %')} | |",
+                "", d["chat"]["bands"]] if d.get("chat") else [
+                "| | stock | moe-cache | ratio |", "|---|---|---|---|",
+                f"| decode tok/s (mean; runs) | {v(s['stock']['decode'])}; {s['stock']['decode_runs']} | {v(s['moe-cache']['decode'])}; {s['moe-cache']['decode_runs']} | {v(s['decode_x'], 'x')} |",
+                f"| prompt tok/s ({d['prompt_tokens']} tokens) | {v(s['stock']['prefill'])} | {v(s['moe-cache']['prefill'])} | {v(s['prefill_x'], 'x')} |",
+                f"| time to first token, s | {v(s['stock']['ttft_s'])} | {v(s['moe-cache']['ttft_s'])} | |",
+                f"| server start, s | {v(s['stock']['load_s'])} | {v(s['moe-cache']['load_s'])} | |",
+                *([f"| agent turns: time to first token, s (turn 1 / 2 / 3, {d.get('gap', 0)} s gaps) | {' / '.join(map(str, s['stock'].get('agent_ttft_s') or ['-']))} | "
+                   f"{' / '.join(map(str, s['moe-cache'].get('agent_ttft_s') or ['-']))} | |"] if d.get("scenario") == "agent" else []),
+                f"| cache hit rate | | {v(s['moe-cache']['hit_rate'], ' %')} | |",
+                f"| read from the drive | | {v(s['moe-cache']['gb_read'], ' GB')} | |",
+                ""]),
              f"Checks: tokens {s['identity']}; plugin active {'yes' if s['plugin_active'] else 'NO'}; order {' / '.join(d['order'])}",
              ]
     if d["notes"]:
@@ -546,7 +563,7 @@ def report_md(d):
         gaps = rec.not_recorded_fields(d["record"])
         if gaps:
             lines += ["", f"Not recorded on this machine ({len(gaps)} fields): " + ", ".join(g.replace("$.", "") for g in gaps[:12]) + (" ..." if len(gaps) > 12 else "")]
-        lines += ["", "<details><summary>Record (JSON)</summary>", "", "```json", json.dumps({k: v for k, v in d["record"].items() if k != "notes"}, indent=1, ensure_ascii=False), "```", "", "</details>"]
+        lines += ["", "<details><summary>Record (JSON)</summary>", "", "```json", json.dumps(rec_for_issue(d["record"], bool(d.get("chat"))), indent=1, ensure_ascii=False), "```", "", "</details>"]
     lines += ["", "_No prompts, answers, user name, host name or folder names are in this report. Nothing was uploaded._"]
     return "\n".join(lines) + "\n"
 
@@ -569,13 +586,27 @@ def build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, condit
                         reproduce={"commands": [cmd.strip()], "kit": "https://github.com/IbrahimSiddiqui007/moe-cache/releases", "model_url": a.model_url or rec.NR, "prompt_file": "built into bin/moe_cache_bench.py (PARA, DECODE_PROMPT)"})
 
 
+def build_chat_record(a, d, chat_runs, devices, llama, cond):
+    """The long chat's record: tools/conversation_bench.py build_record on the runs this report played (ABBA), the cold / warm stamp of this report."""
+    import types
+    import conversation_bench as cb
+    ns = types.SimpleNamespace(model=a.model, llama_server=a.llama_server, backend=d["backend"], model_url=a.model_url, command_line=None, server_cmd=None,
+                               cache="warm" if a.warm else "cold", baseline=a.baseline, other_programs=a.other_programs)
+    r = cb.build_record(chat_runs, ns)
+    r["software"]["moe_cache_version"] = mc.VERSION
+    r["notes"] = list(r.get("notes", [])) + d["notes"]
+    return r
+
+
 def bench_report(argv):
     ap = argparse.ArgumentParser(prog="moe_cache.py bench-report", description="measure stock llama-server and moe-cache on this machine and write a report "
                                  "to paste into a GitHub issue (docs/SHARE_YOUR_NUMBERS.md). Measures only; nothing is uploaded.")
     ap.add_argument("model")
     ap.add_argument("--llama-server", default=mc.default_llama_server())
     ap.add_argument("--ram", help="GB the cache may use (as `server`); default: what is free")
-    ap.add_argument("--ctx", type=int, default=8192)
+    ap.add_argument("--ctx", type=int, default=None, help="context of the servers (default 8192; with --chat: from the RAM, 16k to 65k)")
+    ap.add_argument("--chat", action="store_true", help="long chat (the published method): each run plays one real multi-turn conversation filled to --ctx, tools/conversation_bench.py")
+    ap.add_argument("--max-turns", type=int, default=0, help="--chat: stop each conversation after this many turns (0 = fill the context; for a trial)")
     ap.add_argument("--prompt-tokens", type=int, default=2000)
     ap.add_argument("--tokens", type=int, default=128, help="tokens in the timed answer")
     ap.add_argument("--pairs", type=int, default=1, help="each pair runs stock, moe-cache, moe-cache, stock")
@@ -593,7 +624,13 @@ def bench_report(argv):
     ap.add_argument("--load-timeout", type=int, default=1800)
     a = ap.parse_args(argv)
     a.extra = ["--fast=" + a.fast] if a.fast else []
-    mc.say("moe-cache bench-report: about 5-20 minutes; leave the machine alone (close the browser and games: they hold GPU memory)")
+    if a.chat and a.scenario == "agent":
+        mc.say("bench-report: --chat and --scenario agent are two different tests: use one", err=True); return 2
+    if a.chat and a.fast:
+        mc.say("bench-report: --chat measures the exact mode; leave --fast out", err=True); return 2
+    ram_gb = mc.win_memory()[0] / 1e9 if mc.WINDOWS and mc.win_memory()[0] else mc.meminfo_total_gb()
+    a.ctx = a.ctx or (chat_ctx(ram_gb) if a.chat else 8192)
+    mc.say("moe-cache bench-report: about " + ("30-120 minutes for a long chat (4 conversations per pair)" if a.chat else "5-20 minutes") + "; leave the machine alone (close the browser and games: they hold GPU memory)")
     if not os.path.isfile(a.model):
         mc.say(f"bench-report: model not found: {a.model}", err=True); return 2
     if mc.port_busy(a.port):
@@ -605,8 +642,9 @@ def bench_report(argv):
             if l.startswith("[FAIL]"):
                 mc.say("  " + l, err=True)
         return 2
-    plan_mode, plan_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, a.extra)
-    stock_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, ["--stock"])[1]
+    chat_extra = ["--agent"] if a.chat else []
+    plan_mode, plan_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, a.extra + chat_extra)
+    stock_line = launcher_plan(a.model, a.llama_server, a.ram, a.ctx, ["--stock"] + chat_extra)[1]
     fits = plan_mode == "stock"
     if fits and not a.force_plugin:
         mc.say("bench-report: this model fits in your RAM, so moe-cache would not be used (the launcher runs stock llama.cpp). "
@@ -616,6 +654,8 @@ def bench_report(argv):
     notes, start = [], "WARM" if a.warm else "COLD"
     other = [x for x in a.flush_from.split(",") if x]
     runs = []
+    workdir = tempfile.mkdtemp(prefix="moe-cache-chat-") if a.chat else None
+    key = mc.stored_key(create=True) if a.chat else ""
     cond = rec.conditions_now(cold=None if a.warm else True if start == "COLD" else False, baseline=a.baseline, other_programs=a.other_programs)      # one second of CPU sampling; uptime, free RAM, VRAM in use, temperatures
     for i, mode in enumerate(order(a.pairs)):
         if not a.warm:
@@ -625,7 +665,12 @@ def bench_report(argv):
                     notes.append(f"cold start failed ({why}): stock and moe-cache are not comparable with the README rows (WARM)")
                 start = "WARM"
         mc.say(f"bench-report: run {i + 1}/{len(order(a.pairs))}: {mode} ...")
-        r = {"mode": mode, "error": f"port {a.port} still in use by the previous server"} if mc.port_busy(a.port) else run_one(a.model, mode, a, a.port)
+        if mc.port_busy(a.port):
+            r = {"mode": mode, "error": f"port {a.port} still in use by the previous server"}
+        elif a.chat:
+            r = run_chat_arm(a.model, mode, a, a.port, workdir, key, plan_line if mode != "stock" else stock_line)
+        else:
+            r = run_one(a.model, mode, a, a.port)
         if r.get("error"):
             notes.append(f"run {i + 1} ({mode}): {r['error']}")
             mc.say(f"bench-report: run {i + 1} failed: {r['error']}", err=True)
@@ -639,20 +684,31 @@ def bench_report(argv):
         notes.append("the model fits in RAM: moe-cache was forced (--force-plugin); the launcher would run stock")
     if a.ram:
         notes.append(f"cache limit by --ram {a.ram} GB, not an OS memory limit")
-    s_ = summarize(runs, exact=not a.fast)
+    s_ = summarize(runs, exact=not a.fast and not a.chat)
+    if a.chat:
+        s_["identity"] = "not checked (long chat)"
     if s_["identity"] == "DIFFERENT":
         notes.append("tokens differ: stock and moe-cache ran with the launcher's own plans (stock plan above), and a layer computed on the GPU instead of "
                      "the CPU can change the last digits and then a token; the same-split identity proof is the CI identity suite. Please report it anyway")
     d = {"schema": SCHEMA, "version": mc.VERSION, "date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M"), "start": start,
-         "mode": f"fast={a.fast}" if a.fast else "exact", "os": f"{platform.system()} {platform.release()} ({platform.version()})", "facts": facts,
+         "mode": f"fast={a.fast}" if a.fast else "exact, long chat" if a.chat else "exact", "os": f"{platform.system()} {platform.release()} ({platform.version()})", "facts": facts,
          "backend": backend_of(devices), "llama": llama,
          "model": model_section(a.model, size, ram_total),
          "plan": plan_summary(plan_line), "scenario": a.scenario, "gap": a.gap, "fits": "yes (forced)" if fits else "no", "prompt_tokens": a.prompt_tokens, "order": order(a.pairs),
          "summary": s_, "notes": notes, "stock_plan": plan_summary(stock_line),
-         "runs": [{k: v for k, v in r.items() if k not in ("text", "log_facts")} for r in runs]}
+         "runs": [{k: v for k, v in r.items() if k not in ("text", "log_facts", "chat")} for r in runs]}
+    chat_runs = [r["chat"] for r in runs if r.get("chat")]
+    if a.chat and chat_runs:
+        import conversation_bench as cb
+        d["chat"] = {"ctx": a.ctx, "bands": cb.band_table(chat_runs)}
+        for r in chat_runs:
+            for w in (r.get("answer_stats") or {}).get("warnings", []):
+                notes.append(f"{r['arm']}: {w}")
     try:
         cond["file_cache"] = "cold" if start == "COLD" else "warm"
-        d["record"] = build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, cond)
+        d["record"] = build_chat_record(a, d, chat_runs, devices, llama, cond) if a.chat and len(chat_runs) == len(runs) else build_record(a, argv, d, runs, devices, llama, plan_line, stock_line, cond) if not a.chat else None
+        if a.chat and d["record"] is None:
+            notes.append("no benchmark record: not every conversation finished")
     except Exception as e:          # the record is an addition: a report without it is still a report
         notes.append(f"benchmark record not built ({type(e).__name__}: {e})")
         d["notes"] = notes
@@ -662,6 +718,8 @@ def bench_report(argv):
     base = os.path.join(a.out, "moe-cache-report-" + datetime.datetime.now().strftime("%Y%m%d-%H%M"))
     open(base + ".md", "w", encoding="utf-8").write(md)
     open(base + ".json", "w", encoding="utf-8").write(json.dumps(scrub_all(d, scrub), indent=1, ensure_ascii=False))
+    if a.chat and d.get("record"):         # the whole record with every turn: what `bench-record ingest` takes
+        open(base + ".record.json", "w", encoding="utf-8").write(json.dumps(scrub_all(d["record"], scrub), indent=1, ensure_ascii=False))
     mc.say("")
     mc.say(md)
     mc.say(f"bench-report: written {base}.md and .json. Paste the .md into a new issue: https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml")

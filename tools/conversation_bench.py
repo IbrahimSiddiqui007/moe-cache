@@ -648,6 +648,15 @@ def _run_args(p):
     p.add_argument("--load-s", type=float, help="seconds from the server start to its first ready answer (measured by the driver)")
 
 
+def default_args(**over):
+    """The `run` options with their defaults (what the command line would give), overridden by keyword: for a driver in Python (bench-report --chat)."""
+    p = argparse.ArgumentParser()
+    _run_args(p)
+    a = p.parse_args([])
+    vars(a).update(over)
+    return a
+
+
 def _settings(a):
     """-> (max_tokens, no_think, answer_hint) from the command line: the new defaults, or the v0.3.7 ones under --legacy / --think / --no-answer-hint."""
     legacy = getattr(a, "legacy", False)
