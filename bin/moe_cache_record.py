@@ -1095,7 +1095,7 @@ def cmd_assemble(a):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] and (argv[0] in ("ingest", "claim", "board", "lint", "replay") or argv[0] == "--dir"):          # benchmarks/: runs, claims, board
+    if argv[:1] and (argv[0] in ("ingest", "ingest-issue", "claim", "board", "lint", "replay") or argv[0] == "--dir"):          # benchmarks/: runs, claims, board
         import moe_cache_claims
         return moe_cache_claims.main(argv)
     ap = argparse.ArgumentParser(prog="moe_cache_record.py", description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
