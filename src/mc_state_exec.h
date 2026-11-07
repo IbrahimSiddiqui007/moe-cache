@@ -11,9 +11,7 @@ struct state_exec_t {
     bool   exec_fuse = true;                            // gate and up of one layer share one pool job (same arithmetic, one barrier fewer): decode +0.3-2.6 % in every PC ABBA pair, text identical (E3, RESULTS 73); MOE_CACHE_EXEC_FUSE=0 turns it off
     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
-    bool   exec_pool_decode = false;                    // MOE_CACHE_EXEC_POOL_DECODE=1 (DECODE-137, default off): size the pool from the first single-token graph (src/mc_poolsize.h)
     int    exec_pool_n = 0;                             // compute threads of the current pool
-    bool   exec_pool_from_decode = false;               // the pool was built (or rebuilt) from a single-token graph
     int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes
     int    exec_ecores = 0;                             // extra workers on efficiency cores
     int    exec_readers = 4;

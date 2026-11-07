@@ -663,7 +663,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         if (const char * v = getenv("MOE_CACHE_EXEC_THREADS")) {
             exec_threads = std::max(0, std::min(64, atoi(v)));
         }
-        exec_pool_decode = mcenv::env_on("MOE_CACHE_EXEC_POOL_DECODE");
         if (const char * v = getenv("MOE_CACHE_EXEC_ECORES")) {
             exec_ecores = std::max(0, std::min(32, atoi(v)));
         }

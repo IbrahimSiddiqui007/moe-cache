@@ -48,7 +48,6 @@
 #include "mc_profile_path.h"
 #include "mc_tested.h"
 #include "mc_ramguard.h"
-#include "mc_poolsize.h"
 #include "mc_rebalance.h"
 #include "mc_peers.h"
 #include "mc_env.h"

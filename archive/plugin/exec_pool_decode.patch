@@ -1,0 +1,202 @@
+diff --git b/docs/CONFIGURATION.md a/docs/CONFIGURATION.md
+index 4424410..9fa3458 100644
+--- b/docs/CONFIGURATION.md
++++ a/docs/CONFIGURATION.md
+@@ -20,6 +20,7 @@
+ | `MOE_CACHE_EXEC=0` | switch the expert executor off (default on) |
+ | `MOE_CACHE_EXEC_ECORES=N` | let the executor use N efficiency cores as well (the launcher sets up to 4 on hybrid Intel CPUs; `--no-ecores` to disable) |
+ | `MOE_CACHE_EXEC_THREADS=N`, `MOE_CACHE_EXEC_READERS=N` | compute threads (default: what llama.cpp asks for) and background reader threads (default 4) |
++| `MOE_CACHE_EXEC_POOL_DECODE=1` | default off. With an explicit `-tb` different from `-t`, the executor pool is rebuilt once from the first single-token graph, so decode runs on `-t` threads (stock: the first graph, usually a prompt, sizes it). `MOE_CACHE_EXEC_THREADS` still wins. See docs/internal/RAM_GUARD_AND_POOL_DESIGN.md |
+ | `MOE_CACHE_RAM_LOCK=1` | default off, Linux only. Locks the cache's private memory (mlock2 on fault) so the kernel cannot swap it. Needs `ulimit -l unlimited` / `LimitMEMLOCK=infinity`; if the limit is hit it says so once and carries on unlocked |
+ | `MOE_CACHE_DROP_READAHEAD=1` | default off, Linux only. After the startup fill, drops the model files' page cache copy (posix_fadvise DONTNEED). Not done in file-view mode (there the page cache is the cache) |
+ | `MOE_CACHE_GPU_SUM=0` | turn off the GPU sum: on by default since 2026-11-02, a long-prompt block also takes the router-weight multiply and the add chain after its last expert, so only their sum is read back (paired on the PC: 34k prompts +33 %, 128k +22 %, text byte-identical; `src/mc_device.inl`) |
+diff --git b/docs/internal/RAM_GUARD_AND_POOL_DESIGN.md a/docs/internal/RAM_GUARD_AND_POOL_DESIGN.md
+index 3fe8df4..5ce8d56 100644
+--- b/docs/internal/RAM_GUARD_AND_POOL_DESIGN.md
++++ a/docs/internal/RAM_GUARD_AND_POOL_DESIGN.md
+@@ -8,7 +8,7 @@ All three are switches, default off, output identical to stock (nothing here tou
+ |---|---|---|---|---|---|
+ | CACHE-153 keep the cache out of swap | `MOE_CACHE_RAM_LOCK=1` | `mlock2(MLOCK_ONFAULT)` on every range the cache commits; `munlock` before an eviction gives the pages back (`MADV_DONTNEED` refuses locked pages) | `src/mc_ramguard.h`, hooks in `mem_commit` / `mem_decommit` in `src/platform.h` | none: only the kernel's swap choice changes | limit hit (`RLIMIT_MEMLOCK`, 8 MiB by default for a user) -> one stderr line, guard off, cache goes on unlocked |
+ | CACHE-058 drop read-ahead | `MOE_CACHE_DROP_READAHEAD=1` | once, after the startup fill: `posix_fadvise(DONTNEED)` on each model file | `drop_readahead()` in `src/mc_state_profile.inl`, called from `src/mc_compute.inl` after `preload()` | none | skipped in file-view mode (page cache is the cache); mapped pages are never dropped by the kernel |
+-| DECODE-137 two pools (archived 2026-11-07: decode +0.6 %, `archive/plugin/exec_pool_decode.patch`) | `MOE_CACHE_EXEC_POOL_DECODE=1` | pool built as before for a first prompt graph, rebuilt once to `-t` threads at the first single-token graph if the count differs | `src/mc_poolsize.h`, `exec_run_graph` in `src/mc_compute.inl` | thread count only shares out rows, each row is summed the same way | `MOE_CACHE_EXEC_THREADS` wins; no rebuild when counts are equal |
++| DECODE-137 two pools | `MOE_CACHE_EXEC_POOL_DECODE=1` | pool built as before for a first prompt graph, rebuilt once to `-t` threads at the first single-token graph if the count differs | `src/mc_poolsize.h`, `exec_run_graph` in `src/mc_compute.inl` | thread count only shares out rows, each row is summed the same way | `MOE_CACHE_EXEC_THREADS` wins; no rebuild when counts are equal |
+ 
+ Windows: CACHE-153 and CACHE-058 are clean no-ops (the file-view cache keeps its pages in the working set already). Windows still gets DECODE-137. The desktop PC is Windows, so the two RAM items need the laptop or a Linux boot to be measured.
+ 
+@@ -17,6 +17,7 @@ Windows: CACHE-153 and CACHE-058 are clean no-ops (the file-view cache keeps its
+ | Test | What it proves | Run |
+ |---|---|---|
+ | `tests/ramguard_test.cpp` | off by default; 4 MiB file: 1024 cached pages before the drop, 0 after; locked pages refuse `MADV_DONTNEED`, unlocked accept | `tools/run_quick_tests.sh` |
++| `tests/poolsize_test.cpp` | build / keep / rebuild-once rules, `EXEC_THREADS` wins, prompt graphs never rebuild | `tools/run_quick_tests.sh` |
+ | `tests/identity.sh` on qwen4exp-moe.gguf (71 MB) with all three switches and `-t 2 -tb 4`, laptop 2026-11-03 | 4/4 prompts identical; drop line shown; lock refused by the 8 MiB limit and the guard switched itself off with its message | by hand |
+ 
+ Not exercised live: the pool rebuild (the tiny model never builds the pool, the executor steps aside when everything is resident) and a successful lock (hard memlock limit here is 8 MiB). Both need the PC chain below.
+diff --git b/src/mc_compute.inl a/src/mc_compute.inl
+index 8a4ad37..0be4bff 100644
+--- b/src/mc_compute.inl
++++ a/src/mc_compute.inl
+@@ -123,8 +123,23 @@ void cpu_path_check(state_t & s, ggml_cgraph * cg) {
+ enum ggml_status exec_run_graph(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg) {
+     g_tiled_cache = s.tiled_cache;
+     g_tiled_run++;
++    long long graph_tokens = 0;      // largest token count of an expert product here (1 = a decode step)
++    if (s.exec_pool_decode) {
++        for (int i = 0, nn = ggml_graph_n_nodes(cg); i < nn; i++) {
++            const ggml_tensor * q = ggml_graph_node(cg, i);
++            if (q->op == GGML_OP_MUL_MAT_ID && q->src[2]) { graph_tokens = std::max<long long>(graph_tokens, q->src[2]->ne[1]); }
++        }
++    }
++    const mcpool::decision_t pd = mcpool::decide(s.exec_pool_decode, (bool) s.pool, s.exec_pool_n, s.exec_pool_from_decode, s.exec_threads, c->n_threads, graph_tokens);
++    if (pd.act == mcpool::action_t::rebuild) {
++        fprintf(stderr, "moe-cache: executor pool resized from %d to %d compute threads for decode (MOE_CACHE_EXEC_POOL_DECODE)\n", s.exec_pool_n, pd.threads);
++        s.pool.reset();
++    }
++    if (s.exec_pool_decode && graph_tokens == 1) {
++        s.exec_pool_from_decode = true;
++    }
+     if (!s.pool) {
+-        const int n = s.exec_threads > 0 ? s.exec_threads : (c->n_threads > 0 ? c->n_threads : 1);
++        const int n = pd.threads;
+         s.exec_pool_n = n;
+         static const std::vector<int> pins = pin_cpus();
+         std::vector<int> cpus;
+diff --git b/src/mc_poolsize.h a/src/mc_poolsize.h
+new file mode 100644
+index 0000000..a52c49f
+--- /dev/null
++++ a/src/mc_poolsize.h
+@@ -0,0 +1,37 @@
++// DECODE-137: size of the executor's thread pool when -tb differs from -t. Header-only, no ggml (tests/poolsize_test.cpp).
++//
++// Stock: the pool is built once from the first graph's thread count. llama-server's first graph is usually a prompt, so with an explicit -tb
++// the pool gets -tb threads and every decode step then runs on that many, not on -t. With MOE_CACHE_EXEC_POOL_DECODE=1 (default off) the pool is
++// built as before for a first prompt graph (it has to work now), and rebuilt ONCE when the first single-token graph shows a different count.
++// MOE_CACHE_EXEC_THREADS=N still wins over both. The thread count only decides how rows are shared out; every row is summed in the same order.
++#pragma once
++
++namespace mcpool {
++
++enum class action_t { keep, build, rebuild };
++
++struct decision_t {
++    action_t act = action_t::keep;
++    int threads = 0;        // pool size to build (compute threads, including the calling thread)
++};
++
++// have_pool / pool_n / pool_from_decode: what exists now. exec_threads: MOE_CACHE_EXEC_THREADS (0 = unset). n_threads: what llama.cpp asks for this
++// graph. graph_tokens: the largest token count of a MUL_MAT_ID in the graph (1 = a decode step).
++inline decision_t decide(bool enabled, bool have_pool, int pool_n, bool pool_from_decode, int exec_threads, int n_threads, long long graph_tokens) {
++    decision_t d;
++    const int want = exec_threads > 0 ? exec_threads : (n_threads > 0 ? n_threads : 1);
++    if (!have_pool) {
++        d.act = action_t::build;
++        d.threads = want;
++        return d;
++    }
++    if (enabled && !pool_from_decode && exec_threads <= 0 && graph_tokens == 1) {
++        if (want != pool_n) {
++            d.act = action_t::rebuild;
++            d.threads = want;
++        }
++    }
++    return d;
++}
++
++}  // namespace mcpool
+diff --git b/src/mc_state.inl a/src/mc_state.inl
+index 5cc4542..ad672cf 100644
+--- b/src/mc_state.inl
++++ a/src/mc_state.inl
+@@ -663,6 +663,7 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
+         if (const char * v = getenv("MOE_CACHE_EXEC_THREADS")) {
+             exec_threads = std::max(0, std::min(64, atoi(v)));
+         }
++        exec_pool_decode = mcenv::env_on("MOE_CACHE_EXEC_POOL_DECODE");
+         if (const char * v = getenv("MOE_CACHE_EXEC_ECORES")) {
+             exec_ecores = std::max(0, std::min(32, atoi(v)));
+         }
+diff --git b/src/mc_state_exec.h a/src/mc_state_exec.h
+index 13198ba..f7d40a7 100644
+--- b/src/mc_state_exec.h
++++ a/src/mc_state_exec.h
+@@ -11,7 +11,9 @@ struct state_exec_t {
+     bool   exec_fuse = true;                            // gate and up of one layer share one pool job (same arithmetic, one barrier fewer): decode +0.3-2.6 % in every PC ABBA pair, text identical (E3, RESULTS 73); MOE_CACHE_EXEC_FUSE=0 turns it off
+     bool   exec_check = false;                          // MOE_CACHE_EXEC_CHECK=1: recompute every op the stock way and compare (slow, for tests)
+     int    exec_threads = 0;                            // 0 = the thread count llama.cpp asks for
++    bool   exec_pool_decode = false;                    // MOE_CACHE_EXEC_POOL_DECODE=1 (DECODE-137, default off): size the pool from the first single-token graph (src/mc_poolsize.h)
+     int    exec_pool_n = 0;                             // compute threads of the current pool
++    bool   exec_pool_from_decode = false;               // the pool was built (or rebuilt) from a single-token graph
+     int    exec_maxcol = EXEC_MAXCOL;                   // MOE_CACHE_EXEC_MAXCOL=N (1-8): largest batch (tokens) the executor takes
+     int    exec_ecores = 0;                             // extra workers on efficiency cores
+     int    exec_readers = 4;
+diff --git b/src/moe_cache_plugin.cpp a/src/moe_cache_plugin.cpp
+index f402d9f..160b74c 100644
+--- b/src/moe_cache_plugin.cpp
++++ a/src/moe_cache_plugin.cpp
+@@ -48,6 +48,7 @@
+ #include "mc_profile_path.h"
+ #include "mc_tested.h"
+ #include "mc_ramguard.h"
++#include "mc_poolsize.h"
+ #include "mc_rebalance.h"
+ #include "mc_peers.h"
+ #include "mc_env.h"
+diff --git b/tests/poolsize_test.cpp a/tests/poolsize_test.cpp
+new file mode 100644
+index 0000000..d0f4c6a
+--- /dev/null
++++ a/tests/poolsize_test.cpp
+@@ -0,0 +1,40 @@
++// Checks src/mc_poolsize.h (DECODE-137).
++//   g++ -std=c++17 -Wall -Wextra -Werror -Isrc tests/poolsize_test.cpp -o /tmp/poolsize_test && /tmp/poolsize_test
++#include "mc_poolsize.h"
++#include <cstdio>
++#include <initializer_list>
++
++static int fails = 0;
++#define CHECK(c) do { if (!(c)) { fprintf(stderr, "FAIL line %d: %s\n", __LINE__, #c); fails++; } } while (0)
++
++int main() {
++    using namespace mcpool;
++    // no pool yet: build from the graph's count, switch or not, prompt or decode (stock behaviour)
++    for (bool on : { false, true }) {
++        for (long long tok : { 1ll, 512ll }) {
++            const decision_t d = decide(on, false, 0, false, 0, 12, tok);
++            CHECK(d.act == action_t::build && d.threads == 12);
++        }
++    }
++    // MOE_CACHE_EXEC_THREADS wins when building
++    CHECK(decide(true, false, 0, false, 0 + 8, 12, 1).threads == 8);
++    // switch off: a pool built for -tb 12 stays, decode with -t 6 changes nothing
++    CHECK(decide(false, true, 12, false, 0, 6, 1).act == action_t::keep);
++    // switch on: first decode graph with a different count rebuilds once, to the decode count
++    decision_t d = decide(true, true, 12, false, 0, 6, 1);
++    CHECK(d.act == action_t::rebuild && d.threads == 6);
++    // after that (built from a decode graph) never again, however the counts move
++    CHECK(decide(true, true, 6, true, 0, 12, 1).act == action_t::keep);
++    CHECK(decide(true, true, 6, true, 0, 6, 1).act == action_t::keep);
++    // a prompt graph never rebuilds
++    CHECK(decide(true, true, 6, false, 0, 12, 512).act == action_t::keep);
++    // same count (no explicit -tb): nothing to do, even on the first decode graph
++    CHECK(decide(true, true, 6, false, 0, 6, 1).act == action_t::keep);
++    // an explicit MOE_CACHE_EXEC_THREADS fixes the size
++    CHECK(decide(true, true, 8, false, 8, 6, 1).act == action_t::keep);
++    // odd inputs
++    CHECK(decide(true, false, 0, false, 0, 0, 1).threads == 1);
++    if (fails) { fprintf(stderr, "%d check(s) failed\n", fails); return 1; }
++    printf("poolsize_test: ok\n");
++    return 0;
++}
+diff --git b/tools/run_quick_tests.sh a/tools/run_quick_tests.sh
+index 97eae80..44a54cc 100755
+--- b/tools/run_quick_tests.sh
++++ a/tools/run_quick_tests.sh
+@@ -13,7 +13,7 @@ PY_TESTS="ui_test planner_smi_test lan_test flip_key_test guard_wiring_test secu
+  budget_test concurrent_test dense_share_test model_parts_test multi_gpu_launch_test multigpu_test project_id_test redirect_key_test plan_rule_test
+  cgroup_test planner_test model_links_test public_names_test claims_gate_test conversation_bench_test stage0_records_test update_check_test autostart_test fill_manifests_test connect_agents_test connect_check_test launch_test install_sh_test update_apply_test update_apply_win_test models_catalogue_test wintool_test fast_arg_test launch_state_test sycl_sysman_test agents_state_test sanitize_ci_test fetch_test probe_cache_test fit_cache_test plan_shell_test doctor_arch_test slow_path_test readme_margin_test launcher_small_test cpu_only_test hip_hint_test win_memcap_test workflow_yaml_test stitch_gguf_test download_test agent_guess_test chat_images_test servers_test print_systemd_test undefined_names_test launch_stage_test golden_calls_diff tested_commits_test llama_search_test llama_path_test expert_mix_test doc_links_test stage2_arms_test"
+ SH_TESTS="apply_llama_patches_test release_gate_test set_version_test friend_scrub_test win_launcher_test build_api_test"
+-CPP_TESTS="gpu_fallback abort lru_rule names devpick ramguard release_rule cat open_hint pack_rule"       # PREFILL-172 (GPU error -> CPU result, no half-written state), SERVER-012 (abort callback stops the plugin's chunks)
++CPP_TESTS="gpu_fallback abort lru_rule names devpick ramguard poolsize release_rule cat open_hint pack_rule"       # PREFILL-172 (GPU error -> CPU result, no half-written state), SERVER-012 (abort callback stops the plugin's chunks)
+ # tests that exist but are not part of the list above, with the reason
+ NOT_QUICK="require_node_test"      # run below only when CI or REQUIRE_NODE is set: it fails on a machine without node (ui_test would skip its JS checks silently)
+ 
