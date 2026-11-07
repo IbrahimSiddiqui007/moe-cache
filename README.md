@@ -105,7 +105,7 @@ Each number is the mean of two cold runs in the order stock, moe-cache, moe-cach
 | Flash-Next IQ3_XXS, 65k conversation with real answers (head kit, two runs each, no stock arm) | new prompt tokens, tok/s | decode, tok/s |
 |---|---|---|
 | shipped setting (`--ub 2048`, f16 KV) | 223.1 / 223.2 <!-- claim:v038-conv-iq3xxs-shipped --> | 18.33 / 18.23 <!-- claim:v038-conv-iq3xxs-shipped --> |
-| opt-in `--ub 4096 --fast=kv` (q8_0 KV) | 301.2 / 301.1 <!-- claim:v038-conv-iq3xxs-fastkv --> | 16.47 / 16.58 <!-- claim:v038-conv-iq3xxs-fastkv --> |
+| opt-in `--ub 4096 --fast=kv` (q8_0 KV; all 48 expert layers on the CPU in these runs) | 301.2 / 301.1 <!-- claim:v038-conv-iq3xxs-fastkv --> | 16.47 / 16.58 <!-- claim:v038-conv-iq3xxs-fastkv --> |
 
 The setting with `--ub 4096 --fast=kv` reads prompts about 35 % faster and decodes about 10 % slower than the shipped one, and its q8_0 KV cache is not byte-identical to stock; it stays opt-in.
 

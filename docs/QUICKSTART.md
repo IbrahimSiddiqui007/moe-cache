@@ -13,7 +13,7 @@ No model yet? `python3 bin/moe_cache.py pick` names one for your machine and pri
 **Fastest way on a fresh Ubuntu / Debian machine:** `./install.sh` (see the README). The rest of this page is the manual route.
 
 You need: Linux, `python3`, and a MoE model in GGUF format. With the `-ggml0.26` release file (Option A in section 1) that is all: it includes the official llama.cpp b12064 build, so no compiler and no separate `llama-server` are needed. Only if you build the plugin yourself (Option B) or use another llama.cpp do you also need `g++` and a `llama-server` from a **shared-library** llama.cpp build (a distro package or an official release).
-The plugin is built and tested against three llama.cpp versions, and **a plugin build only works with the ggml backend API it was compiled for**:
+The plugin is built and tested against four llama.cpp versions (the table below), and **a plugin build only works with the ggml backend API it was compiled for**:
 
 | llama.cpp | ggml | backend API | build the plugin with |
 |---|---|---|---|
@@ -46,7 +46,7 @@ The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_
 
 ## 1. Get it (2 minutes)
 
-**Option A, prebuilt plugin (no compiler needed; the `-ggml0.26` file also includes the official llama.cpp b12064 Vulkan + CPU build in `llama/`, which the launcher finds by itself; the other file needs your own llama.cpp of the 7fe450e19 era):** download the newest `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` from the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases), check it against `SHA256SUMS`, unpack it and `cd` into the folder. Releases built by GitHub Actions (v0.1.3 and later) can also be verified with `gh attestation verify moe-cache-vX.Y.Z-linux-x86_64.tar.gz -R IbrahimSiddiqui007/moe-cache`, which proves the file was built from the tagged commit.
+**Option A, prebuilt plugin (no compiler needed; the `-ggml0.26` file also includes the official llama.cpp b12064 Vulkan + CPU build in `llama/`, which the launcher finds by itself; the other file needs your own llama.cpp of the 7fe450e19 era):** download the newest `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` (or, for your own older llama.cpp, `moe-cache-vX.Y.Z-linux-x86_64.tar.gz`) from the [Releases page](https://github.com/IbrahimSiddiqui007/moe-cache/releases), check it against `SHA256SUMS`, unpack it and `cd` into the folder. Releases built by GitHub Actions (v0.1.3 and later) can also be verified with `gh attestation verify moe-cache-vX.Y.Z-linux-x86_64.tar.gz -R IbrahimSiddiqui007/moe-cache`, which proves the file was built from the tagged commit.
 The plugin in it needs glibc 2.34 or newer and a libstdc++ from GCC 12 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later; RHEL 9 has an older libstdc++; the release workflow checks both) and a llama.cpp built with shared ggml libraries.
 Each release has two Linux files; take the one that matches your llama.cpp's ggml: `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz` for ggml 0.26 and newer (llama.cpp 23b0202a1 and newer, including today's ggml 0.28 releases), `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` for ggml 0.24 / 0.25 (up to commit 7fe450e19). `bin/moe-cache-check` says so when the plugin and your llama-server do not match.
 
@@ -81,7 +81,7 @@ It runs the model once without and once with the plugin and compares the generat
 bin/moe-cache-server /path/to/model.gguf --ram 12 --ctx 8192 --llama-server /path/to/llama-server --open
 ```
 
-- `--ram 12` is how much memory (GB) the server may use. The cache sizes itself to stay under it. Leave it out to use the free RAM.
+- `--ram 12` is the memory (GB) the cache and the GPU/CPU plan are sized for. It is a sizing hint, not a hard limit (the hard cap is `--max-ram`). Leave it out to use the free RAM.
 - The tool asks the planner how many layers' experts can live on your GPU and keeps the rest in the managed cache.
 - `--open` opens the web UI in your browser (it is the built-in llama.cpp UI at http://localhost:8080). The same address is an OpenAI-compatible API, so tools like Open WebUI, editors and scripts can connect to it.
 - `--dry-run` prints the exact command without starting anything.
@@ -125,7 +125,7 @@ If it does not fit, we measured 2x to 12x stock on Linux and 1.2x to 2x decode o
 
 ## Update, uninstall
 
-Update: download the newer tarball (or `git pull && ./build.sh`). Uninstall: first `python3 bin/moe_cache.py on-demand --remove-autostart` if you set up the on-demand endpoint (its service would keep starting from the deleted folder), then delete the folder. Other files: `~/.cache/moe-cache/` (usage profiles, control-page settings `ui.json`, the API key `api.key`), benchmark results in `~/.local/share/moe-cache-bench/`, and agent configs that `connect --write` changed (their old versions are kept as `.bak` next to them).
+Update: `python3 bin/moe_cache.py update --check`, then `update --apply` (or download the newer tarball, or `git pull && ./build.sh`). Uninstall: first `python3 bin/moe_cache.py on-demand --remove-autostart` if you set up the on-demand endpoint (its service would keep starting from the deleted folder), then delete the folder. Other files: `~/.cache/moe-cache/` (usage profiles, control-page settings `ui.json`, the API key `api.key`), benchmark results in `~/.local/share/moe-cache-bench/`, and agent configs that `connect --write` changed (their old versions are kept as `.bak` next to them).
 
 ## Troubleshooting
 
@@ -134,5 +134,5 @@ Update: download the newer tarball (or `git pull && ./build.sh`). Uninstall: fir
 | `libggml-base.so not found` | `GGML_LIB_DIR=/dir/with/libggml-base.so ./build.sh` |
 | `plugin disabled` message | `MOE_CACHE_GGUF` must be the model file the server loads; with `moe-cache-server` this is automatic |
 | Warning about an untested ggml version | Usually fine. If the server crashes at start, rebuild against matching headers or set `MOE_CACHE_DISABLE=1` to run without the plugin |
-| Server killed by the system ("out of memory") | Lower `--ram`, or close other programs; the cache keeps its own memory under `--ram` but the rest of the system matters |
+| Server killed by the system ("out of memory") | Lower `--ram`, or close other programs; the cache sizes itself to `--ram` but is not a hard limit, and the rest of the system matters |
 | Slower than stock | Normal when the model fits in RAM and the cache is cold: run `bin/moe-cache-learn` once, or just use it for a while |
