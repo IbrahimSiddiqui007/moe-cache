@@ -37,25 +37,33 @@ def backend_of(list_devices):
 
 
 def scrubber():
-    """A function that removes what identifies the person: home folder, user name, host name (applied to every line of the report)."""
+    """A function that removes what identifies the person: home folder, user name, host name (applied to every line of the report).
+    scrub.counts says how many of each kind it removed (the control page shows them before Copy); scrub.counts.clear() starts a new count."""
     home = os.path.expanduser("~")
     words = [w for w in {os.environ.get("USERNAME", ""), os.environ.get("USER", ""), socket.gethostname()} if len(w) >= 3]
+    counts = {}
+    def sub(label, pat, repl, text, flags=0):
+        text, n = re.subn(pat, repl, text, flags=flags)
+        if n:
+            counts[label] = counts.get(label, 0) + n
+        return text
     def scrub(text):
         text = str(text)
         for h in {home, home.replace("\\", "/")}:
             if len(h) > 3:
-                text = re.sub(re.escape(h), "~", text, flags=re.I)
+                text = sub("home folder", re.escape(h), "~", text, re.I)
         for w in words:
-            text = re.sub(r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])", "<name>", text, flags=re.I)
+            text = sub("user name or host name", r"(?<![A-Za-z0-9])" + re.escape(w) + r"(?![A-Za-z0-9])", "<name>", text, re.I)
         # any other folder path down to its last part: drive-letter paths may have spaces in folder names (D:\\Private Stuff\\x.gguf),
         # / and ~/ paths may not (so "a / b" text stays); URLs (://) are left alone
         # Windows extended prefixes (\\?\C:\x, \\?\UNC\NAS\share\x) become the plain form, then UNC paths (\\NAS\share\x.gguf) go down to the last part too (AUD-032)
         text = re.sub(r"\\\\[?.]\\UNC\\", lambda m: "\\\\", text, flags=re.I)
         text = re.sub(r"\\\\[?.]\\", "", text)
-        text = re.sub(r"(?<![\w\\])\\\\(?:[^\n|`'\"<>()\\/:]+\\)+([^\s|`'\"<>()\\/,;]*)", r"\1", text)
-        text = re.sub(r"(?<![\w:/])[A-Za-z]:[\\/](?:[^\n|`'\"<>()\\/:]+[\\/])+([^\s|`'\"<>()\\/,;]*)", r"\1", text)
-        text = re.sub(r"(?<![\w:/])(?:~[\\/]|/)(?:[^\s|`'\"<>()\\/]+[\\/])+([^\s|`'\"<>()\\/]*)", r"\1", text)
+        text = sub("folder path", r"(?<![\w\\])\\\\(?:[^\n|`'\"<>()\\/:]+\\)+([^\s|`'\"<>()\\/,;]*)", r"\1", text)
+        text = sub("folder path", r"(?<![\w:/])[A-Za-z]:[\\/](?:[^\n|`'\"<>()\\/:]+[\\/])+([^\s|`'\"<>()\\/,;]*)", r"\1", text)
+        text = sub("folder path", r"(?<![\w:/])(?:~[\\/]|/)(?:[^\s|`'\"<>()\\/]+[\\/])+([^\s|`'\"<>()\\/]*)", r"\1", text)
         return text
+    scrub.counts = counts
     return scrub
 
 
@@ -715,6 +723,7 @@ def bench_report(argv):
         d["notes"] = notes
     scrub = scrubber()
     md = scrub(report_md(d))
+    d["scrubbed"] = dict(scrub.counts)         # what was removed from the text above, by kind (the control page lists it before Copy)
     os.makedirs(a.out, exist_ok=True)
     base = os.path.join(a.out, "moe-cache-report-" + datetime.datetime.now().strftime("%Y%m%d-%H%M"))
     open(base + ".md", "w", encoding="utf-8").write(md)
@@ -724,5 +733,6 @@ def bench_report(argv):
     mc.say("")
     mc.say(md)
     mc.say(f"bench-report: written {base}.md and .json. Paste the .md into a new issue: https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml")
+    mc.say("bench-report: removed from the text: " + (", ".join(f"{n} x {k}" for k, n in d["scrubbed"].items()) or "nothing needed removing") + ".")
     mc.say("bench-report: no prompts, answers, user name, host name or folder names are in the report; nothing was uploaded.")
     return 0

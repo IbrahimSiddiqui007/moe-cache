@@ -1588,7 +1588,13 @@ class Runner:
                     md = f.read(MAX_REPORT)
             except OSError as e:
                 return sh.update(state="failed", error=f"could not read the report: {e}", step="")
-            return sh.update(state="done", path=path, markdown=md, step="")
+            removed = {}
+            try:
+                with open(os.path.splitext(path)[0] + ".json", encoding="utf-8") as f:
+                    removed = json.load(f).get("scrubbed") or {}
+            except (OSError, ValueError, AttributeError):
+                pass
+            return sh.update(state="done", path=path, markdown=md, removed=removed if isinstance(removed, dict) else {}, step="")
         if rc == 3:
             return sh.update(state="fits", error="This model fits in your RAM, so moe-cache would not be used (the launcher runs stock llama.cpp). Pick a bigger model in the list (Settings > Which model?) or tick \"Measure anyway\".", step="")
         err += [l.strip() for l in lines if "[FAIL]" in l]                  # the doctor's lines that say what to fix

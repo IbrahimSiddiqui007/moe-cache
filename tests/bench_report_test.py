@@ -123,6 +123,7 @@ try:
           "benchmark record: the card's detail lines and the record are in the report, and the record is valid against the schema")
     check(rj["record"]["outputs"]["identical_to_baseline"] == "yes" and rj["record"]["protocol"]["order"] == "ABBA" and len(rj["record"]["runs"]) == 4, "record: ABBA, four runs, identity yes")
     check("2.0x" in md, "decode ratio 2.0x in the result line")
+    check(isinstance(rj.get("scrubbed"), dict) and rj["scrubbed"].get("user name or host name", 0) >= 1 and rj["scrubbed"].get("folder path", 0) >= 1, f"the .json lists what was removed, by kind ({rj.get('scrubbed')})")
 
     calls.clear(); flush_ok[0] = False
     rc = mb.bench_report([model, "--out", out, "--llama-server", "llama-server", "--flush-from", ""])
