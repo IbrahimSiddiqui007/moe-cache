@@ -103,6 +103,12 @@ def notes(*extra_args):
 n1 = notes()
 check(bool(n1) and "keeps 2 GB of GPU" not in n1[0] and "leaves 2 CPU cores free" not in n1[0], "leave-room: the first line no longer claims GPU memory and cores before they are decided")
 check(any("CPU cores left free" in t for t in n1), f"leave-room: cores are reported when -t was set ({n1})")
+def plan_env(*extra_args):
+    a, ex, argv = mc.parse_server([m, "--llama-server", os.path.join(tmp2, "llama-server"), "--no-pin", "--always-plugin", "--plan-json", *extra_args])
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        return dict(mc.launch_plan(a, ex, argv, machine=M(tmp2), quiet=True).env)
+check("MOE_CACHE_SCHED_TUNING" not in plan_env(), "WINDOWS-013: no --no-sched-tuning: the plugin's own default (scheduling bundle on) applies, nothing is set")
+check(plan_env("--no-sched-tuning").get("MOE_CACHE_SCHED_TUNING") == "0", "WINDOWS-013: --no-sched-tuning sets MOE_CACHE_SCHED_TUNING=0 for the plugin")
 n2 = notes("--", "-t", "4")
 check(not any("CPU cores left free" in t for t in n2), "leave-room: with your own -t no cores claim")
 # CACHE-181: the loading line names the size and a seconds range; a missing file still gives a line
