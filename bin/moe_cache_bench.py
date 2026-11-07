@@ -11,6 +11,7 @@ sys.path.insert(0, HERE)
 sys.path.append(os.path.join(os.path.dirname(HERE), "tools"))      # tools/conversation_bench.py (--chat); both kits have tools/ next to bin/
 import moe_cache as mc  # noqa: E402
 import moe_cache_record as rec  # noqa: E402
+from moe_cache_wintool import win_tool  # noqa: E402  (AUD-034: Windows tools by their System32 path)
 
 SCHEMA = 1
 DECODE_PROMPT = "Write a short story about a lighthouse keeper who finds a message in a bottle."
@@ -392,7 +393,7 @@ def _big_programs(limit_gb=1.0):
     out = []
     try:
         if mc.WINDOWS:
-            r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+            r = subprocess.run([win_tool("tasklist"), "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
             for row in r.stdout.splitlines():
                 f = [x.strip('"') for x in row.split('","')]
                 if len(f) >= 5:
