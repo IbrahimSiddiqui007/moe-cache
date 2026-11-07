@@ -405,8 +405,9 @@ button.danger { border-color:var(--ink); }
           <div class="small" style="margin-top:4px"><label><input type="checkbox" id="shareforce"> Measure anyway when the model fits in RAM (moe-cache would not be used otherwise)</label></div>
           <div id="shareout" hidden>
             <div id="sharenoise" class="small" style="margin-bottom:4px"></div>
+            <div id="shareremoved" class="small" style="margin-bottom:4px"></div>
             <textarea id="sharemd" rows="12" readonly spellcheck="false" aria-label="The report"></textarea>
-            <div class="row" style="margin-top:4px"><button id="sharecopy">Copy</button><button id="shareissue" class="primary">Open the issue page</button><span class="small" id="sharemsg"></span></div>
+            <div class="row" style="margin-top:4px"><button id="sharecopy">Copy</button><button id="sharecard" title="A picture with the four numbers, drawn here from the report (no folder, user or host names)">Copy image</button><button id="sharecardsave" class="ghost">Save image</button><button id="shareissue" class="primary">Open the issue page</button><span class="small" id="sharemsg"></span></div>
           </div>
         </div>
       </div></details>
@@ -948,7 +949,7 @@ function compareTable(rows, model) {
     so rows with a RAM number favour stock. The fair test is RAM on <b>auto</b> with a model bigger than this computer's RAM.</div>` : "");
 }
 const SHARE_DEFAULT = "Measures stock llama.cpp and moe-cache on the model selected in the list (5-20 minutes; a running server is stopped first) and writes a report you can paste into a GitHub issue. Nothing is uploaded: the report holds no prompts, answers, user name, host name or folder names.";
-let shareKey = "", shareUrl = "", readyKey = "";
+let shareKey = "", shareUrl = "", readyKey = "", shareRec = null;
 async function paintReady(force) {
   const box = $("ready"), card = $("c-bench");
   if (!S.sel || !card.open) { box.hidden = true; return; }
@@ -960,6 +961,73 @@ async function paintReady(force) {
     box.hidden = false;
   } catch (e) { box.hidden = true; }
 }
+// what the sharing step took out of the text, in words (kinds and counts come from the report: bench-report's scrubber)
+function removedText(r) {
+  const k = Object.keys(r || {});
+  return "This is exactly what Copy copies. " + (k.length ? "Removed before sharing: " + k.map(x => r[x] + " x " + x).join(", ") + "." : "Nothing needed removing (no folder, user or host name was found).") + " Nothing is uploaded.";
+}
+// the result card: the report's record -> numbers -> an SVG built from the page's own colours -> PNG (no outside program)
+function recordOf(md) {
+  const m = String(md || "").match(/```json\n([\s\S]*?)\n```/g);
+  if (!m) return null;
+  for (const b of m.reverse()) { try { const r = JSON.parse(b.replace(/^```json\n/, "").replace(/\n```$/, "")); if (r && r.record_schema) return r; } catch (e) {} }
+  return null;
+}
+function cardFacts(rec) {
+  const run = (arm, k) => (rec.runs || []).filter(r => r.arm == arm && typeof r[k] == "number").map(r => r[k]);
+  const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  const spread = xs => xs.length > 1 && mean(xs) ? 100 * (Math.max(...xs) - Math.min(...xs)) / mean(xs) : 0;
+  const f = { noise: 10, rows: [] };
+  for (const [k, label] of [["prompt_tps", "Prompt reading, tok/s"], ["decode_tps", "Answers, tok/s"]]) {
+    const a = run("stock", k), b = run("moe-cache", k);
+    f.noise = Math.max(f.noise, spread(a), spread(b));
+    f.rows.push({ label, stock: mean(a), moe: mean(b), digits: k == "decode_tps" ? 1 : 0 });
+  }
+  const hw = rec.hardware || {}, sw = rec.software || {}, m = rec.model || {}, c = rec.conditions || {}, st = rec.settings || {}, p = rec.protocol || {};
+  const known = x => x && x != "not recorded";
+  f.title = String(m.file || "model");
+  f.machine = [hw.gpu_model, hw.ram_gib ? Math.round(hw.ram_gib) + " GB RAM" : null].filter(known).join(" · ");
+  f.setup = [known(c.file_cache) ? String(c.file_cache).toUpperCase() + " start" : null, p.runs_per_arm ? Math.round(p.runs_per_arm / 2) + " pair" + (p.runs_per_arm > 2 ? "s" : "") : null,
+             known(st.ctx) ? "ctx " + st.ctx : null, known(sw.moe_cache_version) ? "v" + sw.moe_cache_version : null].filter(x => x).join(" · ");
+  const ok = f.rows.filter(r => r.stock && r.moe);
+  f.claim = ok.length > 0 && ok.some(r => Math.abs(r.moe / r.stock - 1) * 100 >= f.noise);
+  f.verdict = !ok.length ? "No ratio: one side has no measurement" : f.claim ? "Larger than the noise (+-" + Math.round(f.noise) + " %)" : "Within noise (+-" + Math.round(f.noise) + " %): no claim";
+  return f;
+}
+const xmlEsc = t => String(t).replace(/[&<>"]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[ch]));
+function cardSvg(rec, col) {
+  const f = cardFacts(rec), W = 640, H = 360, barX = 40, barW = 400;
+  const mx = r => Math.max(r.stock || 0, r.moe || 0) || 1, num = (v, d) => v == null ? "–" : v.toFixed(d);
+  let y = 150, out = "";
+  for (const r of f.rows) {
+    const ratio = r.stock && r.moe ? (r.moe / r.stock).toFixed(2) + "x" : "";
+    out += `<text x="${barX}" y="${y}" fill="${col.muted}" font-size="13">${xmlEsc(r.label)}</text>`;
+    out += `<text x="${W - 40}" y="${y}" fill="${col.text}" font-size="20" font-weight="700" text-anchor="end">${ratio}</text>`;
+    for (const [i, name, v, c] of [[0, "stock", r.stock, col.muted], [1, "moe-cache", r.moe, col.accent]]) {
+      const by = y + 8 + i * 24, w = v ? Math.max(2, barW * v / mx(r)) : 0;
+      out += `<rect x="${barX}" y="${by}" width="${w}" height="16" rx="3" fill="${c}"/>`;
+      out += `<text x="${barX + w + 8}" y="${by + 13}" fill="${col.text}" font-size="13">${num(v, r.digits)} <tspan fill="${col.muted}">${name}</tspan></text>`;
+    }
+    y += 90;
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" font-family="system-ui, -apple-system, Segoe UI, sans-serif">` +
+    `<rect width="${W}" height="${H}" rx="10" fill="${col.panel}" stroke="${col.line}" stroke-width="2"/>` +
+    `<text x="40" y="46" fill="${col.accent}" font-size="22" font-weight="700">moe-cache</text><text x="${W - 40}" y="46" fill="${col.muted}" font-size="13" text-anchor="end">${xmlEsc(f.setup)}</text>` +
+    `<text x="40" y="78" fill="${col.text}" font-size="16" font-weight="600">${xmlEsc(f.title.length > 60 ? f.title.slice(0, 57) + "..." : f.title)}</text>` +
+    `<text x="40" y="100" fill="${col.muted}" font-size="13">${xmlEsc(f.machine)}</text>` + out +
+    `<text x="40" y="${H - 22}" fill="${f.claim ? col.ok : col.warn}" font-size="14" font-weight="600">${xmlEsc(f.verdict)}</text></svg>`;
+}
+function cardColours() {
+  const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
+  return { panel: v("--panel"), line: v("--line"), text: v("--text"), muted: v("--muted"), accent: v("--accent"), ok: v("--ok"), warn: v("--warn") };
+}
+async function cardPng(rec) {
+  const img = new Image();
+  await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error("the picture could not be drawn")); img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(cardSvg(rec, cardColours())); });
+  const cv = document.createElement("canvas"); cv.width = 1280; cv.height = 720;
+  cv.getContext("2d").drawImage(img, 0, 0, 1280, 720);
+  return await new Promise((ok, bad) => cv.toBlob(b => b ? ok(b) : bad(new Error("no image")), "image/png"));
+}
 function verdictOf(md) { const m = /\*\*Verdict:\*\*\s*(.+)/.exec(md || ""); return m ? m[1].trim() : ""; }
 async function paintShare(st) {
   const sh = st.share || {}, key = [sh.state, sh.started, sh.step, sh.has_markdown, !!S.sel].join("|"), running = sh.state == "running";
@@ -969,7 +1037,7 @@ async function paintShare(st) {
   $("shareforce").disabled = $("sharechat").disabled = running;
   if (shareKey == key) return; shareKey = key;
   const box = $("sharestate");
-  if (running) { box.textContent = "measuring " + (sh.model || "") + (sh.pairs > 1 ? " (fair comparison, " + sh.pairs + " pairs)" : "") + (sh.chat ? " (long chat)" : "") + ": " + (sh.step || "starting") + (sh.chat ? " (a long chat takes 30-120 minutes per pair;" : " (5-20 minutes per pair; the progress lines are in the log below)"; $("shareout").hidden = true; return; }
+  if (running) { box.textContent = "measuring " + (sh.model || "") + (sh.pairs > 1 ? " (fair comparison, " + sh.pairs + " pairs)" : "") + (sh.chat ? " (long chat)" : "") + ": " + (sh.step || "starting") + (sh.chat ? " (a long chat takes 30-120 minutes per pair; the progress lines are in the log below)" : " (5-20 minutes per pair; the progress lines are in the log below)"); $("shareout").hidden = true; return; }
   if (sh.state == "fits") { box.innerHTML = `<span class="err">${esc(sh.error || "")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "failed") { box.innerHTML = `<span class="err">${esc(sh.error || "failed")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "cancelled") { box.textContent = "cancelled. The server is stopped: press Start to run a model again."; $("shareout").hidden = true; return; }
@@ -979,6 +1047,9 @@ async function paintShare(st) {
     $("sharemd").value = j.markdown || "";
     const vd = verdictOf(j.markdown);
     $("sharenoise").innerHTML = vd ? `<b class="${/^Within noise|^No ratio/.test(vd) ? "err" : ""}">Verdict:</b> ${esc(vd)}` : "";
+    $("shareremoved").textContent = removedText(j.removed);
+    shareRec = recordOf(j.markdown);
+    $("sharecard").disabled = $("sharecardsave").disabled = !shareRec;
     $("shareout").hidden = false;
     box.textContent = "done. The report is saved in " + (j.path || "the reports folder") + ". Nothing was uploaded: copy it, press the issue button and paste it there. The server is stopped; press Start to use it again.";
     return;
@@ -1427,6 +1498,20 @@ $("sharecopy").onclick = async () => {
   try { await navigator.clipboard.writeText(t.value); $("sharemsg").textContent = "copied"; }
   catch (e) { t.select(); try { document.execCommand("copy"); $("sharemsg").textContent = "copied"; } catch (e2) { $("sharemsg").textContent = "select the text and copy it by hand"; } }
   setTimeout(() => $("sharemsg").textContent = "", 3000);
+};
+$("sharecard").onclick = async () => {
+  try {
+    const blob = await cardPng(shareRec);
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    $("sharemsg").textContent = "image copied";
+  } catch (e) { $("sharemsg").textContent = "could not copy the image here: use Save image"; }
+  setTimeout(() => $("sharemsg").textContent = "", 4000);
+};
+$("sharecardsave").onclick = async () => {
+  try {
+    const a = document.createElement("a"); a.href = URL.createObjectURL(await cardPng(shareRec)); a.download = "moe-cache-result.png"; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) { $("sharemsg").textContent = String(e.message || e); }
 };
 $("shareissue").onclick = () => { if (shareUrl) window.open(shareUrl, "_blank", "noopener"); };
 $("copykey").onclick = async () => {
