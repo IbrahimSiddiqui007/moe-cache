@@ -154,7 +154,7 @@ The setting with `--ub 4096 --fast=kv` reads prompts about 35 % faster and decod
 | [Release notes](docs/releases/RELEASE_NOTES_v0.3.7.1.md), [changelog](CHANGELOG.md) | what changed in each version |
 | [Hardware and limits](docs/PLATFORMS.md) | what is tested where, known limitations |
 | [Configuration](docs/CONFIGURATION.md) | environment variables |
-| [FAQ](docs/FAQ.md) | questions, and how moe-cache compares with other projects |
+| [FAQ](docs/FAQ.md) | questions and answers |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) | wrong-looking answers, slow runs, start problems |
 | [Internal notes](docs/internal/) | design notes, coding standards, release checklist: for people building or testing moe-cache |
 | [Compatibility](docs/COMPATIBILITY.md), [Roadmap](docs/ROADMAP.md), [Security and privacy](docs/SECURITY.md) | |
