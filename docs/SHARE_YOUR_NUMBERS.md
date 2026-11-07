@@ -54,6 +54,13 @@ published numbers use (see [CONVERSATION_BENCH.md](CONVERSATION_BENCH.md)). It t
 it writes `...record.json` with every turn (the report itself holds the record without the per-turn lists: an issue takes 65,000 characters); `python bin/moe_cache.py bench-record ingest FILE.record.json`
 adds it to `benchmarks/`.
 
+**Results, memory-limit test, presets (control page).** **Results** opens charts of your own reports and of the board's runs (`benchmarks/runs/`): speed bars with the moe-cache / stock ratio,
+speed by conversation depth, expert cache hit rate, turn by turn, GPU and RAM peaks, and a per-turn table with the SSD read per answered token; click a legend entry to hide a series. The charts use
+the page's colours in both themes. On Linux with a user systemd, **Test as a smaller machine** (or `bench-report --limit-gb 16`) runs both arms inside a hard memory limit with no swap, so a 64 GB
+machine can show what a 16 or 32 GB machine would do; the report says **EMULATED** above the result and in the record (`conditions.memory_limit`). It is not a real smaller computer: the limit counts
+the model's file cache like RAM does, but the drive and CPU are yours. Windows has no such limit for the file cache. The panel above the buttons suggests settings for your RAM (16 GB class: a smaller MoE, 16k;
+32 GB: Flash-Next Q2_0, 65k; 64 GB and more: take a bigger model or test as 32 GB) and **Use** applies them.
+
 **Before you share, and after.** The report box says exactly what was removed from the text (home folder, user and host name, folder paths, with counts); what is in the box is what **Copy**
 copies. **Copy image** (or **Save image**) draws a small result card from the record in the page, in the page's colours: model, machine, four numbers, the verdict, nothing else. When
 you open the issue, a check comments within a minute: "Record check: valid" with the row the board would show for your numbers, or what is wrong with the record (it reads the JSON block as
