@@ -11,7 +11,7 @@ The 65k conversation of the card below was first run with a script that produced
 | shipped setting (`--ub 2048`, f16 KV) | 223.1 / 223.2 <!-- claim:v038-conv-iq3xxs-shipped --> | 18.33 / 18.23 <!-- claim:v038-conv-iq3xxs-shipped --> |
 | opt-in `--ub 4096 --fast=kv` (q8_0 KV) | 301.2 / 301.1 <!-- claim:v038-conv-iq3xxs-fastkv --> | 16.47 / 16.58 <!-- claim:v038-conv-iq3xxs-fastkv --> |
 
-Shipped: 42 turns to 65,280 tokens, median answer 85 tokens. Opt-in: 43 turns to 65,221 tokens, median answer 92 tokens; against the shipped setting prompt +35.0 %, decode -9.6 % <!-- claim:v038-conv-iq3xxs-fastkv -->. Records `2026-11-07_pc_87fefb`, `_d38756` (shipped), `_796a07`, `_3e0cea` (opt-in). Stock and Q2_0 with the fixed script are not measured yet.
+Shipped: 42 turns to 65,280 tokens, median answer 85 tokens. Opt-in: 43 turns to 65,221 tokens, median answer 92 tokens; against the shipped setting prompt +35.0 %, decode -9.6 % <!-- claim:v038-conv-iq3xxs-fastkv -->. Records `2026-11-07_pc_87fefb`, `_d38756` (shipped), `_53db60`, `_719b3b` (opt-in, corrected records of the runs first ingested as `_796a07` and `_3e0cea`, whose settings showed the default plan). Stock and Q2_0 with the fixed script are not measured yet.
 
 <!-- card:begin -->
 
