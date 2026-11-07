@@ -65,9 +65,6 @@ struct exec_pool_t {
     std::atomic<int> inside{0};
     std::atomic<int> parked{0};
     std::atomic<uint64_t> parks{0};    // times a worker fell asleep (stats "pool_parks"; idea N30: each one costs an OS wake-up at the next layer)
-    // MOE_CACHE_POOL_SPIN_US=N: a worker keeps spinning N microseconds after its last job before it sleeps (0 = the fixed 40,000 pauses).
-    // The GPU part between two CPU expert layers can outlast the fixed spin, so every layer may wake the workers through the OS (N30)
-    const int spin_us = [] { const char * v = getenv("MOE_CACHE_POOL_SPIN_US"); return v ? std::max(0, std::min(1000000, atoi(v))) : 0; }();
     // MOE_CACHE_EXEC_TIMES=1 (idea N25): where the executor's wall time goes. busy = threads inside the dot products, flagwait = spinning for an expert
     // still being read, wake = from publish to the moment a worker starts on the job (sum over workers), n_wake = workers that did.
     const bool times = mcenv::env_on("MOE_CACHE_EXEC_TIMES");
@@ -167,15 +164,12 @@ struct exec_pool_t {
                 uint32_t seen = gen.load(std::memory_order_acquire);
                 for (;;) {
                     int spins = 0;
-                    auto idle_from = std::chrono::steady_clock::now();
                     while (gen.load(std::memory_order_acquire) == seen) {
                         if (stop.load(std::memory_order_relaxed)) {
                             return;
                         }
                         ++spins;
-                        const bool keep = spin_us > 0 ? ((spins & 1023) != 0 ||
-                                                         std::chrono::steady_clock::now() - idle_from < std::chrono::microseconds(spin_us))
-                                                      : spins < 40000;
+                        const bool keep = spins < 40000;
                         if (keep) {
                             cpu_relax();
                         } else {
@@ -189,7 +183,6 @@ struct exec_pool_t {
                             cv.wait(lk, [&] { return stop.load() || gen.load() != seen; });
                             parked.fetch_sub(1);
                             spins = 0;
-                            idle_from = std::chrono::steady_clock::now();
                         }
                     }
                     seen = gen.load(std::memory_order_acquire);

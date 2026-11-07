@@ -143,7 +143,6 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*` 
 | `MOE_CACHE_PEER_CAP_GIB` | The memory, in GiB, that the servers of one `--peers` folder share. Set by the launcher. | set by --peers | set by the launcher |
 | `MOE_CACHE_PLAN_RULE` | `1`: the planner reserve is measured by `llama-fit-params` or taken from the formula, and grows monotonically with `-ub` (plan rule). Off by default. | off | advanced |
 | `MOE_CACHE_POLL` | Poll value handed to the CPU thread pool (how hard idle compute threads poll before they sleep). Unset: the backend's own default. | unset | advanced |
-| `MOE_CACHE_POOL_SPIN_US` | A pool worker keeps spinning this many microseconds after its last job before it sleeps. `0` keeps the fixed number of pauses (about 40,000). Clamped to 0 to 1,000,000. | 0 | advanced |
 | `MOE_CACHE_PRELOAD_ALL` | `0` turns off loading every CPU expert in layer order at start when they all fit in the cache and there is no profile (filling on demand decodes about 15 % slower). | on | advanced |
 | `MOE_CACHE_PRELOAD_FRAC` | Fraction (0 to 1) used by the start-up preload (see `MOE_CACHE_PRELOAD_ALL`). A value outside 0..1 is ignored with a message. | built-in | advanced |
 | `MOE_CACHE_PROMPT_PROGRESS` | `1`: a streaming request that does not say otherwise gets `"return_progress": true`, so llama-server sends prompt progress. | off | advanced |
