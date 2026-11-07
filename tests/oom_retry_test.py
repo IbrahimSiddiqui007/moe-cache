@@ -31,6 +31,10 @@ if mode == "oom_once" and n == 0:
     sys.stderr.write("ggml_vulkan: Device memory allocation of size 940714752 failed.\\nfailed to load model\\n"); sys.exit(1)
 if mode == "oom_always":
     sys.stderr.write("ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory\\n"); sys.exit(1)
+if mode == "kv_abort_once" and n == 0:       # llama.cpp b12064 + Granite 1B + q8_0 K and V: the scheduler's hash set is full in the --fit probe, at any context
+    sys.stderr.write("/home/runner/work/llama.cpp/llama.cpp/ggml/src/ggml-impl.h:330: fatal error\\n"); os.abort()
+if mode == "kv_abort_always":
+    sys.stderr.write("/home/runner/work/llama.cpp/llama.cpp/ggml/src/ggml-impl.h:330: fatal error\\n"); sys.exit(1)
 if mode == "other":
     sys.stderr.write("error: something else\\n"); sys.exit(1)
 sys.stderr.write("moe-cache: fake ok, extra=%s\\n" % sys.argv[3:]); sys.exit(0)
@@ -52,4 +56,25 @@ rc, calls, starts = run("other")
 check(rc == 1 and calls == 0 and starts == 1, f"another failure: no retry (rc {rc}, started {starts}x)")
 rc, calls, starts = run("oom_once", retry=False)
 check(rc == 1 and starts == 1, f"no oom_retry given (user fixed the plan): fails as before (rc {rc})")
+
+# the llama.cpp abort in the scheduler with a q8_0 KV cache the launcher chose (found with the 131072 default on Granite 1B, 2026-11-07): one retry with the f16 KV cache
+check(bool(mc.GGML_ABORT_RE.search("D:/a/llama.cpp/llama.cpp/ggml/src\\ggml-impl.h:330: fatal error")) and bool(mc.GGML_ABORT_RE.search("/x/ggml/src/ggml-impl.h:301: fatal error")),
+      "recognised: the ggml-impl.h fatal error line (Windows and Linux paths)")
+check(not mc.GGML_ABORT_RE.search("ggml.c:1234: GGML_ASSERT(x) failed") and not mc.GGML_ABORT_RE.search("srv: fatal error in the web ui"), "not recognised: other asserts and unrelated text")
+def run_kv(mode, retry=True):
+    mark = os.path.join(TMP, f"kv_{mode}_{retry}")
+    calls = []
+    def kv_retry():
+        calls.append(1)
+        return [sys.executable, fake, mark, "kv_abort_always" if mode == "kv_abort_always" else "ok", "f16-kv"]
+    rc = mc.run_child([sys.executable, fake, mark, mode], dict(os.environ), kv_retry=kv_retry if retry else None)
+    return rc, len(calls), int(open(mark).read())
+rc, calls, starts = run_kv("kv_abort_once")
+check(rc == 0 and calls == 1 and starts == 2, f"llama.cpp abort with the launcher's q8_0 KV: retried once with f16 and succeeded (rc {rc}, asked {calls}x, started {starts}x)")
+rc, calls, starts = run_kv("kv_abort_always")
+check(rc != 0 and calls == 1 and starts == 2, f"the abort twice: one retry only (rc {rc}, started {starts}x)")
+rc, calls, starts = run_kv("kv_abort_once", retry=False)
+check(rc != 0 and starts == 1, f"no kv_retry (your own -ctk/-ctv): fails as before, no retry (rc {rc})")
+rc, calls, starts = run_kv("other")
+check(rc == 1 and calls == 0 and starts == 1, f"another failure: no KV retry (rc {rc}, started {starts}x)")
 sys.exit(1 if fails else 0)

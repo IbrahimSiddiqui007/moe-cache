@@ -1787,17 +1787,26 @@ GPU_OOM_RE = re.compile(r"ErrorOutOfDeviceMemory|Device memory allocation .* fai
                         r"(failed to allocate|unable to allocate) (Vulkan|CUDA|ROCm|HIP|SYCL)\w* (compute )?buffer", re.I)
 
 
-def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None):
+# llama.cpp's own abort when its scheduler's hash set is full ("ggml-impl.h:330: fatal error", ggml_backend_sched_split_graph, found in llama.cpp's --fit probe):
+# seen on the stock server too, with a q8_0 K and V cache on Granite 1B, at any context (2026-11-07). The launcher's q8_0 default from 128k on made it look like a 131072 crash.
+GGML_ABORT_RE = re.compile(r"ggml-impl\.h:\d+: fatal error")
+
+
+def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None, kv_retry=None):
     """run_child_once, and when llama-server stops before it is ready because the GPU ran out of memory at load (another program took the memory
     after the plan was made: desktop PC 2026-10-30, the control page planned with 13.4 GiB free), ask `oom_retry()` for a new command (it measures the
     free GPU memory again and plans again) and start once more. One retry only."""
     with OwnsPort(port):
-        return _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry)
+        return _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry)
 
 
-def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry):
+def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry=None):
     rc, seen = run_child_once(cmd, env, port, expect_plugin, mem_limit, allow_sleep)
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)
+    if rc not in (0, None) and not quiet and kv_retry and seen.get("kvabort") and not seen["ready"]:
+        new = kv_retry()
+        if new:
+            return run_child_once(new, env, port, expect_plugin, mem_limit, allow_sleep, final=True)[0]
     if rc not in (0, None) and not quiet and oom_retry and seen["oom"] and not seen["ready"]:
         new = oom_retry()
         if new:
@@ -1945,6 +1954,8 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
+            if GGML_ABORT_RE.search(line.decode(errors="replace")):
+                seen["kvabort"] = True
             if b"moe-cache:" in line:
                 seen["plugin"] = True
                 seen["last"] = line.decode(errors="replace").strip()
@@ -3318,8 +3329,25 @@ def run_launch_plan(plan):
         except Exception as e:
             say(f"moe-cache: llama-server ran out of GPU memory while loading; could not plan again ({e})", err=True)
             return None
+    def kv_retry():
+        """llama.cpp aborted at load (the scheduler's hash set is full) with the q8_0 K and V cache this launcher chose (--fast, or the default from 128k on):
+        start once more with the f16 cache. Not when -ctk / -ctv came from the user (kv_q8 is False then)."""
+        if not kv_q8:
+            return None
+        new, i = [], 0
+        while i < len(cmd):
+            if cmd[i] in ("-ctk", "-ctv") and i + 1 < len(cmd) and cmd[i + 1] == "q8_0":
+                i += 2
+                continue
+            new.append(cmd[i])
+            i += 1
+        if new == cmd:
+            return None
+        say("moe-cache: llama.cpp aborted at load with the q8_0 KV cache (ggml-impl.h fatal error: seen with stock llama-server b12064 on Granite 1B, any context): "
+            "trying again once with the f16 KV cache (--exact does that from the start)", err=True)
+        return new
     return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit,
-                     allow_sleep=a.allow_sleep, oom_retry=oom_retry)
+                     allow_sleep=a.allow_sleep, oom_retry=oom_retry, kv_retry=kv_retry)
 
 
 def warm_save_wait(n_tokens, last_tokens, bytes_per_token, poll=10, idle_polls=2, per_gb=20, small_wait=180, small_per_gb=30, small_cap=600):
