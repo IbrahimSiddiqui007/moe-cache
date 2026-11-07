@@ -72,6 +72,26 @@ nv = mb.summarize([r2("stock", 20.0), r2("moe-cache", 10.0), r2("moe-cache", 10.
 check(nv["claimable"] and nv["decode"] == "slower" and "SLOWER" in nv["sentence"], "noise: a clear slowdown is reported as slower, not hidden")
 check(not mb.summarize([r2("stock", 10.0)], exact=True)["noise"]["claimable"], "noise: a side without runs: nothing to claim")
 
+
+# 3d. the record's JSON in the report stays valid JSON when a Windows path (escaped backslashes) is in it, and the path is still scrubbed
+sc = mb.scrubber()
+dd = {"record": {"record_schema": 1, "hardware": {"storage": {"drive": "C:\\Users\\Someone Else\\models\\x.gguf", "unc": "\\\\NAS\\share\\big\\y.gguf"}}, "notes": ["n"], "runs": [{"turns": [1], "arm": "stock"}]},
+      "facts": {}, "summary": {}, "notes": []}
+mb.report_md_saved = mb.report_md
+mb.report_md = lambda d_, record_json=None: "head\n```json\n" + (record_json if record_json is not None else "?") + "\n```\ntail C:\\Users\\Someone Else\\z.gguf\n"
+try:
+    mdw = mb.scrubbed_report(dd, sc)
+finally:
+    mb.report_md = mb.report_md_saved
+import re as _rw
+blkw = _rw.search(r"```json\n(.*?)\n```", mdw, _rw.S).group(1)
+try:
+    jw = json.loads(blkw)
+except ValueError as e_:
+    jw = None
+check(jw is not None and jw["hardware"]["storage"]["drive"] == "x.gguf" and jw["hardware"]["storage"]["unc"] == "y.gguf" and "Someone Else" not in mdw and "z.gguf" in mdw and "Users" not in mdw,
+      f"a Windows path in the record: the JSON block stays valid and the path is cut to its last part ({blkw[:120]!r})")
+
 # 3c. the ready-to-measure panel (reads only)
 mdl = os.path.join(tempfile.mkdtemp(prefix="moe-ready-"), "x.gguf")
 open(mdl, "wb").write(b"GGUF" + b"\0" * 4096)
