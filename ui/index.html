@@ -398,10 +398,12 @@ button.danger { border-color:var(--ink); }
         <div class="small" id="otherrow" hidden><span>Other big files to read (folders, separated by ;):</span><input type="text" id="other" style="width:100%"></div>
         <div id="benchres" class="scrollx"></div>
         <div class="sharebox" id="sharebox">
-          <div class="row"><button id="share" class="primary" title="Measures stock llama.cpp and moe-cache on the selected model and writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button></div>
+          <div id="ready" class="small" hidden></div>
+          <div class="row"><button id="fair" class="primary" title="Cold start, stock then moe-cache then moe-cache then stock, twice (2 pairs), and a verdict that says whether the difference is larger than the noise">Fair comparison</button><button id="share" title="One pair (stock, moe-cache, moe-cache, stock): faster, less certain. Writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button><button id="readyagain" class="ghost small" title="Check the machine again">Check again</button></div>
           <div class="small" id="sharestate"></div>
           <div class="small" style="margin-top:4px"><label><input type="checkbox" id="shareforce"> Measure anyway when the model fits in RAM (moe-cache would not be used otherwise)</label></div>
           <div id="shareout" hidden>
+            <div id="sharenoise" class="small" style="margin-bottom:4px"></div>
             <textarea id="sharemd" rows="12" readonly spellcheck="false" aria-label="The report"></textarea>
             <div class="row" style="margin-top:4px"><button id="sharecopy">Copy</button><button id="shareissue" class="primary">Open the issue page</button><span class="small" id="sharemsg"></span></div>
           </div>
@@ -945,15 +947,28 @@ function compareTable(rows, model) {
     so rows with a RAM number favour stock. The fair test is RAM on <b>auto</b> with a model bigger than this computer's RAM.</div>` : "");
 }
 const SHARE_DEFAULT = "Measures stock llama.cpp and moe-cache on the model selected in the list (5-20 minutes; a running server is stopped first) and writes a report you can paste into a GitHub issue. Nothing is uploaded: the report holds no prompts, answers, user name, host name or folder names.";
-let shareKey = "", shareUrl = "";
+let shareKey = "", shareUrl = "", readyKey = "";
+async function paintReady(force) {
+  const box = $("ready"), card = $("c-bench");
+  if (!S.sel || !card.open) { box.hidden = true; return; }
+  if (!force && readyKey == S.sel) return; readyKey = S.sel;
+  try {
+    const j = await api("/api/ready?model=" + encodeURIComponent(S.sel) + "&pairs=2");
+    const dot = { ok: "ok", warn: "warn", bad: "bad", info: "" };
+    box.innerHTML = `<b>Ready to measure?</b>` + j.checks.map(c => `<div><span class="dot ${dot[c.level]}"></span>${esc(c.text)}${c.fix ? ` <span class="${c.level == "bad" ? "err" : ""}">${esc(c.fix)}</span>` : ""}</div>`).join("");
+    box.hidden = false;
+  } catch (e) { box.hidden = true; }
+}
+function verdictOf(md) { const m = /\*\*Verdict:\*\*\s*(.+)/.exec(md || ""); return m ? m[1].trim() : ""; }
 async function paintShare(st) {
   const sh = st.share || {}, key = [sh.state, sh.started, sh.step, sh.has_markdown, !!S.sel].join("|"), running = sh.state == "running";
-  $("share").disabled = running || !S.sel || (st.bench || {}).state == "running";
+  paintReady(false);
+  $("share").disabled = $("fair").disabled = running || !S.sel || (st.bench || {}).state == "running";
   $("sharecancel").hidden = !running;
   $("shareforce").disabled = running;
   if (shareKey == key) return; shareKey = key;
   const box = $("sharestate");
-  if (running) { box.textContent = "measuring " + (sh.model || "") + ": " + (sh.step || "starting") + " (5-20 minutes; the progress lines are in the log below)"; $("shareout").hidden = true; return; }
+  if (running) { box.textContent = "measuring " + (sh.model || "") + (sh.pairs > 1 ? " (fair comparison, " + sh.pairs + " pairs)" : "") + ": " + (sh.step || "starting") + " (5-20 minutes per pair; the progress lines are in the log below)"; $("shareout").hidden = true; return; }
   if (sh.state == "fits") { box.innerHTML = `<span class="err">${esc(sh.error || "")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "failed") { box.innerHTML = `<span class="err">${esc(sh.error || "failed")}</span>`; $("shareout").hidden = true; return; }
   if (sh.state == "cancelled") { box.textContent = "cancelled. The server is stopped: press Start to run a model again."; $("shareout").hidden = true; return; }
@@ -961,6 +976,8 @@ async function paintShare(st) {
     const j = await api("/api/share");
     shareUrl = j.issue_url || "";
     $("sharemd").value = j.markdown || "";
+    const vd = verdictOf(j.markdown);
+    $("sharenoise").innerHTML = vd ? `<b class="${/^Within noise|^No ratio/.test(vd) ? "err" : ""}">Verdict:</b> ${esc(vd)}` : "";
     $("shareout").hidden = false;
     box.textContent = "done. The report is saved in " + (j.path || "the reports folder") + ". Nothing was uploaded: copy it, press the issue button and paste it there. The server is stopped; press Start to use it again.";
     return;
@@ -1391,13 +1408,17 @@ $("bench").onclick = async () => {
   const compare = $("compare").checked;
   try { await api("/api/bench", { cold, other, compare }); poll(); } catch (e) { showErr(e.message); }
 };
-$("share").onclick = async () => {
+$("c-bench").addEventListener("toggle", () => paintReady(false));
+$("readyagain").onclick = () => paintReady(true);
+$("fair").onclick = () => startShare(2);
+$("share").onclick = () => startShare(1);
+async function startShare(pairs) {
   if (!S.sel) { showErr("Pick a model in the list first."); return; }
   const up = ["starting", "ready", "waiting", "stopping"].includes(S.status.state);
   if (up && switchNeedsConfirm(S.live, C.busy) && !confirm("The running model is still answering a request (an agent or the chat). Measuring stops it now. Go on anyway?")) return;
   const other = $("other").value.split(";").map(x => x.trim()).filter(Boolean);
-  try { await api("/api/share", { model: S.sel, force: $("shareforce").checked, agent: !!$("agent").checked, other }); poll(); } catch (e) { showErr(e.message); }
-};
+  try { await api("/api/share", { model: S.sel, force: $("shareforce").checked, agent: !!$("agent").checked, other, pairs }); poll(); } catch (e) { showErr(e.message); }
+}
 $("sharecancel").onclick = async () => { try { await api("/api/share/cancel", {}); poll(); } catch (e) { showErr(e.message); } };
 $("sharecopy").onclick = async () => {
   const t = $("sharemd");

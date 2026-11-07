@@ -58,6 +58,35 @@ def fake_run(model_, mode, a, port, text="Once upon a time"):
             "plugin_active": mode == "moe-cache", "hit_rate": 90.0 if mode == "moe-cache" else None, "load_s": 5.0, "error": "",
             **({"agent_ttft_s": [9.0, 1.0, 0.5] if mode == "stock" else [4.0, 0.8, 0.4], "agent_decode": [10.0, 10.0, 10.0]} if getattr(a, "scenario", "") == "agent" else {})}
 
+# 3b. the noise label: under 10 % is never a claim; the arms' own spread widens the band
+r2 = lambda mode, dec, pre=100.0: {"mode": mode, "decode": dec, "prefill": pre, "text": "a", "plugin_active": mode == "moe-cache"}
+nv = mb.summarize([r2("stock", 10.0, 100.0), r2("moe-cache", 19.0, 190.0), r2("moe-cache", 19.4, 192.0), r2("stock", 10.2, 101.0)], exact=True)["noise"]
+check(nv["claimable"] and nv["decode"] == "faster" and nv["prefill"] == "faster" and "larger than the noise" in nv["sentence"] and "1.9x on prompt reading" in nv["sentence"],
+      f"noise: 1.9x with tight runs is a claim ({nv['sentence']})")
+nv = mb.summarize([r2("stock", 10.0), r2("moe-cache", 10.6), r2("moe-cache", 10.7), r2("stock", 10.1)], exact=True)["noise"]
+check(not nv["claimable"] and nv["decode"] == "within noise" and nv["sentence"].startswith("Within noise") and "do not claim" in nv["sentence"], f"noise: +5 % is not a claim ({nv['sentence']})")
+nv = mb.summarize([r2("stock", 8.0), r2("moe-cache", 11.0), r2("moe-cache", 9.0), r2("stock", 12.0)], exact=True)["noise"]
+check(nv["noise_pct"] > 30 and nv["decode"] == "within noise", f"noise: noisy runs widen the band beyond 10 % ({nv['noise_pct']} %, 1.0x)")
+nv = mb.summarize([r2("stock", 20.0), r2("moe-cache", 10.0), r2("moe-cache", 10.2), r2("stock", 20.2)], exact=True)["noise"]
+check(nv["claimable"] and nv["decode"] == "slower" and "SLOWER" in nv["sentence"], "noise: a clear slowdown is reported as slower, not hidden")
+check(not mb.summarize([r2("stock", 10.0)], exact=True)["noise"]["claimable"], "noise: a side without runs: nothing to claim")
+
+# 3c. the ready-to-measure panel (reads only)
+mdl = os.path.join(tempfile.mkdtemp(prefix="moe-ready-"), "x.gguf")
+open(mdl, "wb").write(b"GGUF" + b"\0" * 4096)
+saved_ready = (mb._on_battery, mb._big_programs, mb.mc.meminfo_total_gb, mb.mc.win_memory)
+mb._on_battery = lambda: True; mb._big_programs = lambda limit_gb=1.0: [("browser", 3.2)]
+mb.mc.meminfo_total_gb = lambda: 32.0; mb.mc.win_memory = lambda: (0, 0)
+rd = mb.readiness(mdl, pairs=2)
+lv = {c["id"]: c for c in rd["checks"]}
+check(lv["size"]["level"] == "bad" and not rd["ready"] and lv["size"]["fix"], "ready: a model that fits in RAM is flagged bad, with the way out")
+check(lv["power"]["level"] == "warn" and "charger" in lv["power"]["fix"] and lv["programs"]["level"] == "warn" and "browser 3.2 GB" in lv["programs"]["text"], "ready: battery and big programs are warnings with a fix")
+mb._on_battery = lambda: False; mb._big_programs = lambda limit_gb=1.0: []
+mb.mc.meminfo_total_gb = lambda: 0.000001
+rd = mb.readiness(mdl, pairs=2)
+check(rd["ready"] and {c["id"]: c for c in rd["checks"]}["power"]["level"] == "ok" and rd["checks"][-1]["id"] == "estimate" and rd["minutes"] >= 8, "ready: bigger than RAM on mains: ready, with an estimate")
+check(mb.estimate(66, 2)[0] > mb.estimate(66, 1)[0] and mb.estimate(66, 1)[1] == 4 * 66, "ready: the estimate grows with the pairs; GB read = runs x model size")
+mb._on_battery, mb._big_programs, mb.mc.meminfo_total_gb, mb.mc.win_memory = saved_ready
 
 FAKE_TEXT = {"stock": "same", "moe-cache": "same"}
 facts = {"system": "Linux 6.8", "cpu": "Test CPU", "ram": "32 GB total", "gpu": f"Vulkan0 (Test GPU), driver 1.2 on {host}", "moe-cache": "0.3.2",
@@ -80,6 +109,7 @@ try:
     js = open(os.path.join(out, files[0]), encoding="utf-8").read()
     order_ = ["moe-cache benchmark report", "**Result:**", "| OS |", "| **Backend** | **Vulkan** |", "| llama.cpp |", "| File |", "| Launcher plan |",
               "| decode tok/s", "| prompt tok/s", "Checks: tokens IDENTICAL", "No prompts, answers"]
+    check("**Verdict:** moe-cache vs stock" in md and md.find("**Verdict:**") < md.find("| Machine |"), "the report carries the noise verdict above the tables")
     pos = [md.find(x) for x in order_]
     check(all(p >= 0 for p in pos) and pos == sorted(pos), "report sections present and in order")
     check("**COLD**" in md and calls == ["stock", "moe-cache", "moe-cache", "stock"], "COLD, and the runs went stock, moe-cache, moe-cache, stock")

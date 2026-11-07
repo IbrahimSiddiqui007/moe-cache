@@ -4,7 +4,7 @@ order stock, moe-cache, moe-cache, stock (per pair), with the launcher's own def
 (moe-cache-report-YYYYMMDD-HHMM.md + .json). It only measures: nothing is downloaded, uploaded or changed, and the report holds no prompts, answers,
 user name, host name or folder names. Standard library only; the same code on both systems (no systemd-run: the cache size is the launcher's --ram).
 docs/SHARE_YOUR_NUMBERS.md is the recipe."""
-import argparse, contextlib, datetime, io, json, os, platform, re, socket, subprocess, sys, threading, time
+import argparse, contextlib, datetime, io, json, os, platform, re, shutil, socket, subprocess, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -259,6 +259,144 @@ def mean(xs):
     return round(sum(xs) / len(xs), 2) if xs else None
 
 
+NOISE_FLOOR_PCT = 10        # the project rule: a difference under 10 % is never a claim
+
+
+def spread_pct(xs):
+    """(max - min) / mean of one arm's runs, in percent; None with fewer than two runs."""
+    xs = [x for x in xs if isinstance(x, (int, float)) and x > 0]
+    return round(100 * (max(xs) - min(xs)) / (sum(xs) / len(xs)), 1) if len(xs) >= 2 else None
+
+
+def noise_verdict(out):
+    """The noise label (rule: under 10 % is not a claim). Per metric the ratio is compared with the larger of 10 % and the spread of either arm's own runs;
+    {'noise_pct', 'decode': 'faster|slower|within noise|n/a', 'prefill': ..., 'sentence', 'claimable'}."""
+    spreads = [spread_pct(out[m].get(k + "_runs")) for m in ("stock", "moe-cache") for k in ("decode", "prefill")]
+    noise = max([NOISE_FLOOR_PCT] + [x for x in spreads if x is not None])
+    v = {"noise_pct": noise}
+    for k in ("decode", "prefill"):
+        x = out.get(k + "_x")
+        v[k] = "n/a" if x is None else "within noise" if abs(x - 1) * 100 < noise else "faster" if x > 1 else "slower"
+    word = {"prefill": "prompt reading", "decode": "answers"}
+    part = [f"{out[k + '_x']}x on {word[k]}" for k in ("prefill", "decode") if v[k] in ("faster", "slower")]
+    if all(v[k] == "n/a" for k in ("decode", "prefill")):
+        v["sentence"], v["claimable"] = "No ratio: one side has no successful run. Nothing to claim.", False
+    elif part:
+        v["claimable"] = True
+        slow = [k for k in ("prefill", "decode") if v[k] == "slower"]
+        v["sentence"] = ("moe-cache vs stock: " + ", ".join(part) + f"; the difference is larger than the noise (+-{noise:g} %)"
+                         + ("; but it is SLOWER on " + " and ".join(word[k] for k in slow) if slow else "") + ".")
+    else:
+        v["claimable"] = False
+        v["sentence"] = f"Within noise (+-{noise:g} %): do not claim a difference."
+    return v
+
+
+def _on_battery():
+    """True when the computer runs on battery, False on mains, None when unknown (desktops, no sensor)."""
+    if mc.WINDOWS:
+        try:
+            import ctypes
+            class SPS(ctypes.Structure):
+                _fields_ = [("ac", ctypes.c_ubyte), ("flag", ctypes.c_ubyte), ("pct", ctypes.c_ubyte), ("sf", ctypes.c_ubyte), ("life", ctypes.c_ulong), ("full", ctypes.c_ulong)]
+            st = SPS()
+            if ctypes.windll.kernel32.GetSystemPowerStatus(ctypes.byref(st)) and st.ac in (0, 1):
+                return st.ac == 0
+        except Exception:
+            pass
+        return None
+    try:
+        sup = [d for d in os.listdir("/sys/class/power_supply") if open(f"/sys/class/power_supply/{d}/type").read().strip() == "Battery"]
+        if not sup:
+            return None
+        ac = [d for d in os.listdir("/sys/class/power_supply") if open(f"/sys/class/power_supply/{d}/type").read().strip() == "Mains"]
+        if ac:
+            return not any(open(f"/sys/class/power_supply/{d}/online").read().strip() == "1" for d in ac)
+        return open(f"/sys/class/power_supply/{sup[0]}/status").read().strip() == "Discharging"
+    except OSError:
+        return None
+
+
+def _big_programs(limit_gb=1.0):
+    """Names and GB of other programs holding over limit_gb of RAM (llama-server and python excluded); [] when none or unknown."""
+    out = []
+    try:
+        if mc.WINDOWS:
+            r = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+            for row in r.stdout.splitlines():
+                f = [x.strip('"') for x in row.split('","')]
+                if len(f) >= 5:
+                    kb = int(re.sub(r"\D", "", f[4]) or 0)
+                    out.append((f[0], kb / 1048576))
+        else:
+            for pid in os.listdir("/proc"):
+                if pid.isdigit():
+                    try:
+                        rss = int(open(f"/proc/{pid}/statm").read().split()[1]) * 4096 / 1e9
+                        if rss > limit_gb:
+                            out.append((open(f"/proc/{pid}/comm").read().strip(), rss))
+                    except (OSError, ValueError, IndexError):
+                        pass
+    except (OSError, subprocess.SubprocessError):
+        return []
+    mine = ("llama-server", "python", "python3", "moe_cache", "moe-cache")
+    best = {}
+    for n, g in out:
+        if g > limit_gb and not n.lower().startswith(mine):
+            best[n] = best.get(n, 0) + g
+    return sorted(((n, round(g, 1)) for n, g in best.items()), key=lambda x: -x[1])[:4]
+
+
+def estimate(size_gb, pairs):
+    """(minutes, GB read at most) for a report: 4 runs per pair, each a cold start (the model is read again) plus about 75 s of prompt and answer."""
+    runs = 4 * max(1, pairs)
+    return round(runs * (75 + 4 * size_gb) / 60), round(runs * size_gb)
+
+
+def readiness(model, pairs=2, ram=None):
+    """The ready-to-measure panel: [{id, level 'ok'|'warn'|'bad'|'info', text, fix}] for the model about to be measured (the checks that make a report unusable:
+    the model fits in RAM, little free disk, battery, other big programs, power plan, temperature). Reads only; the doctor's own checks stay in `check`."""
+    pr = rec.probe()
+    rows = []
+    add = lambda id_, level, text, fix="": rows.append({"id": id_, "level": level, "text": text, "fix": fix})
+    size = sum(os.path.getsize(p) for p in mc.model_parts(model)) / 1e9
+    tot = (mc.win_memory()[0] / 1e9) if mc.WINDOWS and mc.win_memory()[0] else mc.meminfo_total_gb()
+    if tot:
+        if size >= tot * 0.9:
+            add("size", "ok", f"The model ({size:.0f} GB) is bigger than the usable RAM ({tot:.0f} GB): moe-cache is meant for this.")
+        else:
+            add("size", "bad", f"The model ({size:.0f} GB) fits in {tot:.0f} GB of RAM, so the launcher runs stock llama.cpp and there is nothing to compare.",
+                "Pick a bigger model, or tick \"Measure anyway\" for a stress case.")
+    try:
+        free = shutil.disk_usage(os.path.dirname(os.path.abspath(model))).free / 1e9
+        add("disk", "ok" if free >= 10 else "warn", f"{free:.0f} GB free on the model's drive.", "" if free >= 10 else "Free at least 10 GB: the system and the saved sessions write there.")
+    except OSError:
+        add("disk", "info", "Free disk space not readable.")
+    bat = _on_battery()
+    add("power", "info" if bat is None else "warn" if bat else "ok", "Plugged in (or no battery)." if not bat else "Running on battery.",
+        "Plug in the charger: on battery the CPU slows down and the numbers are not comparable." if bat else "")
+    big = _big_programs()
+    add("programs", "warn" if big else "ok", ("Other big programs: " + ", ".join(f"{n} {g} GB" for n, g in big) + ".") if big else "No other program holds over 1 GB of RAM.",
+        "Close them (browser tabs and games also hold GPU memory)." if big else "")
+    try:
+        plan = pr.power_plan() if hasattr(pr, "power_plan") else rec.NR
+    except Exception:
+        plan = rec.NR
+    if plan and plan != rec.NR:
+        slow = bool(re.search(r"power-saver|power saver|Power saver", str(plan), re.I))
+        add("plan", "warn" if slow else "ok", f"Power plan: {plan}.", "Switch to Balanced or Performance." if slow else "")
+    else:
+        add("plan", "info", "Power plan not recorded on this machine.")
+    t = (pr.temperatures() or {}).get("cpu_c")
+    if t is None:
+        add("temp", "info", "CPU temperature not readable: the report says \"not recorded\", and a run cannot be called clean.")
+    else:
+        add("temp", "warn" if t >= 70 else "ok", f"CPU temperature {t:.0f} C.", "Let the machine cool down first (a hot start throttles the first runs)." if t >= 70 else "")
+    mins, gb = estimate(size, pairs)
+    add("estimate", "info", f"About {mins} minutes and up to {gb} GB read from the drive for {pairs} pair(s) (stock, moe-cache, moe-cache, stock; cold start). Rough; leave the machine alone.")
+    return {"model": os.path.basename(model), "size_gb": round(size, 1), "ready": not any(r["level"] == "bad" for r in rows), "pairs": pairs, "minutes": mins, "gb_read": gb, "checks": rows}
+
+
 def summarize(runs, exact):
     """Means per side, ratios and the identity verdict (decode texts of stock vs moe-cache, byte for byte)."""
     side = {m: [r for r in runs if r["mode"] == m and not r.get("error")] for m in ("stock", "moe-cache")}
@@ -266,6 +404,7 @@ def summarize(runs, exact):
     for m, rs in side.items():
         out[m] = {k: mean([r.get(k) for r in rs]) for k in ("decode", "prefill", "ttft_s", "hit_rate", "gb_read", "load_s")}
         out[m]["decode_runs"] = [round(r["decode"], 2) for r in rs if isinstance(r.get("decode"), (int, float))]
+        out[m]["prefill_runs"] = [round(r["prefill"], 1) for r in rs if isinstance(r.get("prefill"), (int, float))]
         turns = [r["agent_ttft_s"] for r in rs if r.get("agent_ttft_s")]
         out[m]["agent_ttft_s"] = [mean([t_[i] for t_ in turns if len(t_) > i]) for i in range(max((len(t_) for t_ in turns), default=0))]
     texts = {m: {r.get("text", "") for r in rs} for m, rs in side.items()}
@@ -278,6 +417,7 @@ def summarize(runs, exact):
     ratio = lambda k: round(out["moe-cache"][k] / out["stock"][k], 2) if out["moe-cache"][k] and out["stock"][k] else None
     out["decode_x"], out["prefill_x"] = ratio("decode"), ratio("prefill")
     out["plugin_active"] = any(r.get("plugin_active") for r in side["moe-cache"])
+    out["noise"] = noise_verdict(out)
     return out
 
 
@@ -291,6 +431,8 @@ def report_md(d):
              "",
              f"**Result:** moe-cache {v(s['moe-cache']['decode'])} tok/s vs stock {v(s['stock']['decode'])} tok/s decode ({v(s['decode_x'], 'x')}), "
              f"prompt {v(s['moe-cache']['prefill'])} vs {v(s['stock']['prefill'])} tok/s, tokens {s['identity']}",
+             "",
+             f"**Verdict:** {s['noise']['sentence']}",
              "",
              "| Machine | |", "|---|---|",
              f"| OS | {d['os']} |",

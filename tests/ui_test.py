@@ -2,7 +2,7 @@
 """Control page (GUI1, bin/moe_cache_ui.py) without a model: fake GGUF files, a mocked planner and a fake launcher that answers /health and
 prints the lines llama-server and the plugin print (timings, 'moe-cache-stats {json}'). Linux and Windows; standard library only.
    python3 tests/ui_test.py"""
-import http.client, json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.request
+import http.client, json, os, socket, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TMP = tempfile.mkdtemp(prefix="moe-ui-test-")
@@ -927,7 +927,17 @@ check("args: --out --flush-from --scenario agent" in full["markdown"], f"agent m
 check(full["path"].startswith(ui.REPORT_DIR) and os.path.isfile(full["path"]) and full["issue_url"].endswith("template=benchmark_report.yml") and full["report_dir"] == ui.REPORT_DIR,
       "the report file is in the reports folder; the issue page link is the benchmark template")
 lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
+check(any(l.startswith("ui: share my numbers") and "fair comparison" not in l for l in lg), "one pair: no --pairs in the child's command")
 check(any(l == "share: bench-report: run 2/4: moe-cache ..." for l in lg) and any(l.startswith("ui: share my numbers") for l in lg), "the child's lines are in the log pane")
+# Fair comparison: 2 pairs reach bench-report as --pairs 2; out-of-range values are refused; the panel's checks come from /api/ready
+st, body = req("/api/share", {"model": big_one, "pairs": 9}); check(st == 400 and "pairs" in body, f"share: pairs above 4: 400 ({st})")
+req("/api/share", {"model": big_one, "pairs": 2}); sh = share_state({"done", "failed"})
+check(sh["state"] == "done" and sh["pairs"] == 2 and "--pairs 2" in json.loads(req("/api/share")[1])["markdown"], "Fair comparison: --pairs 2 is passed to bench-report")
+st, body = req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2")
+rd = json.loads(body) if st == 200 else {}
+check(st == 200 and {c["id"] for c in rd.get("checks", [])} >= {"size", "disk", "power", "programs", "plan", "temp", "estimate"} and rd.get("pairs") == 2, f"/api/ready: the panel's checks ({st})")
+check(req("/api/ready?model=" + urllib.parse.quote(os.path.join(TMP, "x.gguf")))[0] == 400 and req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=9")[0] == 400, "/api/ready: unknown model and pairs out of range: 400")
+check("/api/ready" not in ui.REMOTE_GET, "/api/ready stays on this PC (not in the LAN allow-list)")
 # exit 3: the model fits; 'measure anyway' passes --force-plugin
 fits = gguf_file("Fits-In-RAM.gguf")
 req("/api/share", {"model": fits}); sh = share_state({"fits", "done", "failed"})
@@ -948,8 +958,12 @@ st, _ = req("/api/share", {"model": fits, "force": True}); check(st == 200, "aft
 share_state({"done", "failed", "fits"})
 ui.SHARE_CMD, ui.REPORT_DIR = saved_share
 page_html = open(ui.PAGE, encoding="utf-8").read()
-check(all(x in page_html for x in ('id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
+check(all(x in page_html for x in ('id="fair"', 'id="ready"', 'id="sharenoise"', 'id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
       "the page has the Share my numbers button, the report box, Copy, the issue button, Cancel, 'measure anyway' and says nothing is uploaded")
+
+import re as _re2
+_pr = page_html[page_html.index("async function paintReady"):page_html.index("async function paintShare")]
+check(not _re2.search(r"#[0-9a-fA-F]{3,6}\b|rgb\(", _pr) and "var(--" not in _pr and 'class="dot' in _pr, "the ready panel takes its colours from the page's .dot classes (both themes), none of its own")
 
 srv.shutdown()
 
