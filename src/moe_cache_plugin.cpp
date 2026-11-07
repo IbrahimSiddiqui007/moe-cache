@@ -43,7 +43,6 @@
 #include "mc_retry.h"
 #include "mc_exit.h"
 #include "mc_msg.h"
-#include "mc_lend.h"
 #include "mc_pack_check.h"
 #include "mc_ident.h"
 #include "mc_profile_path.h"

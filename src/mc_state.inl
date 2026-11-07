@@ -48,9 +48,8 @@ void remove_crash_report();
 #include "mc_state_livestats.h"
 #include "mc_state_scan.h"
 #include "mc_state_tables.h"
-#include "mc_state_lend.h"
 #include "mc_state_rbstats.h"
-struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_lend_t, state_rbstats_t {
+struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, state_policy_t, state_rebalance_t, state_exec_t, state_times_t, state_prefetch_t, state_budget_t, state_profile_t, state_counters_t, state_workers_t, state_files_t, state_repack_t, state_view_t, state_livestats_t, state_scan_t, state_tables_t, state_rbstats_t {
     bool   cache_on = false;
     bool   stats = false;
     int    lo = 0, hi = 1 << 30;
@@ -109,28 +108,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
         if (idle_released) {
             idle_released = false;
             update_ws_min();             // the first graph after an idle release holds the experts in RAM again (no-op on Linux)
-        }
-    }
-    void prefill_lend(int64_t max_tok) {
-        static const size_t lend = getenv("MOE_CACHE_PREFILL_LEND_MIB") ? (size_t) std::max(0, atoi(getenv("MOE_CACHE_PREFILL_LEND_MIB"))) << 20 : 0;
-        if (!lend) {
-            return;
-        }
-        std::lock_guard<std::mutex> lk(mu);
-        if (max_tok >= scan_tokens && !lent_bytes && budget > lend) {
-            lent_bytes = lend;
-            budget -= lend;
-            lent_budget = budget;
-            while (resident_bytes > budget) {
-                int v = pick_victim();
-                if (v < 0) { break; }
-                evict(v);
-            }
-            fprintf(stderr, "moe-cache: long prompt: the expert cache lends %.0f MiB to the system until decode (MOE_CACHE_PREFILL_LEND_MIB)\n", lend / 1048576.0);
-        } else if (max_tok < scan_tokens && lent_bytes) {
-            budget += mclend::restore_amount(lent_bytes, lent_budget, budget);
-            if (max_budget && budget > max_budget) { budget = max_budget; }
-            lent_bytes = 0;
         }
     }
 

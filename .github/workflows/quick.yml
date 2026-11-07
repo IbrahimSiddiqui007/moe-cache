@@ -43,7 +43,7 @@ jobs:
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -Isrc tests/file_view_load_test.cpp -o /tmp/fvl_test && /tmp/fvl_test    # CACHE-685: a file cut short under the view is a false return, not a SIGBUS
           g++ -std=c++17 -Wall -Werror -Wno-unused-function -DMOE_CACHE_TEST_NO_POPULATE -Isrc tests/file_view_load_test.cpp -o /tmp/fvl_test2 && /tmp/fvl_test2    # the same through the guarded page touch (kernels without MADV_POPULATE_READ)
           # 2026-11-03 audit fixes: each is a standalone program (no ggml, no model)
-          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check lend profile_path; do
+          for t in env_flag gpu_guard shared_gpu read_retry exit ident pack_check profile_path; do
             g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-function -Isrc tests/${t}_test.cpp -o /tmp/${t}_test -lpthread && /tmp/${t}_test
           done
           for t in wake_pipe reserve_msg; do      # these two include platform.h without -Wextra
