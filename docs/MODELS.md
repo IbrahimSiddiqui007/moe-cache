@@ -55,7 +55,7 @@ machine it says "untested on this class of machine". The rules, from the measure
 
 | Your machine | Agents / coding (64k-256k) | Plain chat | Long documents |
 |---|---|---|---|
-| **32 GB RAM + 16 GB GPU** (measured) | **Nemotron 3.5 Bolt 74B** at 128k, stock: decode 27.9 (24.9 at 114k), OpenCode session 47.8 s | **Flash-Next IQ3_XXS**: 19.9 tok/s, 193/202 tasks, reads best for coding (Q2_0: 24-25 tok/s, about 10 % faster, 191/202) | **Bolt**: prompts 595 tok/s at 57k, 721 at 114k (Flash-Next Q2_0 170-220 at 128k) |
+| **32 GB RAM + 16 GB GPU** (measured) | **Nemotron 3.5 Bolt 74B** at 128k, stock: decode 27.9 (24.9 at 114k), OpenCode session 47.8 s | **Flash-Next IQ3_XXS**: 19.9 tok/s, 193/202 tasks, reads best for coding (Q2_0: 24-25 tok/s, faster, 191/202; the two speeds come from different kits, so no percentage) | **Bolt**: prompts 595 tok/s at 57k, 721 at 114k (Flash-Next Q2_0 170-220 at 128k) |
 | 32 GB + 8 GB GPU | Bolt at 64k (untested with 8 GB) | Flash-Next Q2_0 (untested; the IQ2_XS file of the same size gave 12.5 tok/s on 24 GB + 8 GB) | Bolt at 64k (untested) |
 | 64 GB + 16 GB GPU | Bolt | Flash-Next IQ3_XXS (untested here) | Bolt |
 | 128 GB+ | Bolt | GLM-5.3-Flash (fits; untested) | Bolt |
