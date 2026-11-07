@@ -4903,7 +4903,7 @@ def pack_cmd(argv):
     return pack_main(argv)
 
 
-REPO_API = "https://api.github.com/repos/IbrahimSiddiqui007/moe-cache/releases?per_page=10"     # list: /latest skips pre-releases (ours are beta)
+REPO_API = "https://api.github.com/repos/IbrahimSiddiqui007/moe-cache/releases?per_page=10"     # list: /latest skips pre-releases and drafts
 LLAMA_API = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=10"     # newest bNNNNN build tag (the /latest one is an old v0.x tag)
 
 
