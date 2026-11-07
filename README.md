@@ -98,7 +98,14 @@ Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM, Vulkan), a real 65k
 
 Each number is the mean of two cold runs in the order stock, moe-cache, moe-cache, stock (ABBA), whole conversation. Both files are bigger than the free RAM once the GPU and Windows have taken their share. Stock = the same llama-server command the launcher builds for the plugin, without the plugin.
 
-**Status of the decode numbers by depth.** The benchmark script was found to produce very short answers deep into the 65k conversation, so the decode speed of the deeper bands was measured over only a few tokens; the prompt numbers are not affected. The fix is in v0.3.8, the cause is being pinned down, and the decode numbers by depth will be measured again with it.
+**Status of the decode numbers by depth.** The benchmark script was found to produce very short answers deep into the 65k conversation, so the decode speed of the deeper bands in the table above was measured over only a few tokens; the prompt numbers are not affected. The script is fixed in v0.3.8 (real answers, 256 tokens, sizes from the server's own token count). Flash-Next IQ3_XXS, the default, has been measured again with it (the comparison against stock and the Q2_0 numbers have not):
+
+| Flash-Next IQ3_XXS, 65k conversation with real answers (head kit, two runs each, no stock arm) | new prompt tokens, tok/s | decode, tok/s |
+|---|---|---|
+| shipped setting (`--ub 2048`, f16 KV) | 223.1 / 223.2 <!-- claim:v038-conv-iq3xxs-shipped --> | 18.33 / 18.23 <!-- claim:v038-conv-iq3xxs-shipped --> |
+| opt-in `--ub 4096 --fast=kv` (q8_0 KV) | 301.2 / 301.1 <!-- claim:v038-conv-iq3xxs-fastkv --> | 16.47 / 16.58 <!-- claim:v038-conv-iq3xxs-fastkv --> |
+
+The setting with `--ub 4096 --fast=kv` reads prompts about 35 % faster and decodes about 10 % slower than the shipped one, and its q8_0 KV cache is not byte-identical to stock; it stays opt-in.
 
 ### Where it does not help
 
