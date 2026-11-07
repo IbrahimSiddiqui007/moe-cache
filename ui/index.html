@@ -407,6 +407,8 @@ button.danger { border-color:var(--ink); }
           <div class="row"><button id="fair" class="primary" title="Cold start, stock then moe-cache then moe-cache then stock, twice (2 pairs), and a verdict that says whether the difference is larger than the noise">Fair comparison</button><button id="share" title="One pair (stock, moe-cache, moe-cache, stock): faster, less certain. Writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button><button id="resopen" title="Charts and per-turn numbers of your reports and of the board's runs">Results</button><button id="readyagain" class="ghost small" title="Check the machine again">Check again</button></div>
           <div class="small" id="sharestate"></div>
           <div class="small" style="margin-top:4px"><label><input type="checkbox" id="sharechat" checked> <b>Long chat (recommended)</b>: each run plays one real multi-turn conversation filled to a long context (16k to 65k, from your RAM): the method the published numbers use. Takes much longer; untick for the short test.</label></div>
+          <div class="small" id="limitrow" style="margin-top:4px" hidden><label for="sharelimit">Test as a smaller machine (EMULATED memory limit on both arms, Linux):</label>
+            <select id="sharelimit"><option value="">no: this machine as it is</option></select></div>
           <div class="small" style="margin-top:4px"><label><input type="checkbox" id="shareforce"> Measure anyway when the model fits in RAM (moe-cache would not be used otherwise)</label></div>
           <div id="shareout" hidden>
             <div id="sharenoise" class="small" style="margin-bottom:4px"></div>
@@ -593,6 +595,9 @@ async function loadSystem() {
   $("sys").title = `${s.os} · RAM ${fmtGB(s.ram_total)} (${fmtGB(s.ram_avail)} free)` + (s.gpu ? ` · ${s.gpu} ${fmtGiB(s.vram_free)} free` : " · no GPU found") + (s.gpu_detecting ? " · looking for the GPU…" : "") +
     "\nllama-server: " + s.llama_server + "\nplugin: " + s.plugin;
   $("ram").max = Math.max(8, Math.ceil((s.ram_total || 32e9) / 1e9));
+  const lim = $("sharelimit"), tot = (s.ram_total || 0) / 1e9;      // the memory-limit test: Linux only, sizes below this machine's RAM
+  if (lim.options.length == 1 && /linux/i.test(s.os || "") && tot > 12) for (const g of [8, 16, 24, 32, 48]) if (g < tot - 2) lim.add(new Option(g + " GB machine", g));
+  $("limitrow").hidden = lim.options.length < 2;
   $("vram").max = Math.max(1, Math.ceil((s.vram_total || s.vram_free || 8 * 2 ** 30) / 2 ** 30));
   if (!S.inited) {
     S.inited = true;
@@ -971,10 +976,12 @@ async function paintReady(force) {
   if (!S.sel || !card.open) { box.hidden = true; return; }
   if (!force && readyKey == S.sel) return; readyKey = S.sel;
   try {
-    const j = await api("/api/ready?model=" + encodeURIComponent(S.sel) + "&pairs=2&chat=" + ($("sharechat").checked ? 1 : 0));
+    const j = await api("/api/ready?model=" + encodeURIComponent(S.sel) + "&pairs=2&chat=" + ($("sharechat").checked ? 1 : 0) + "&limit=" + encodeURIComponent($("sharelimit").value));
     const dot = { ok: "ok", warn: "warn", bad: "bad", info: "" };
-    box.innerHTML = `<b>Ready to measure?</b>` + j.checks.map(c => `<div><span class="dot ${dot[c.level]}"></span>${esc(c.text)}${c.fix ? ` <span class="${c.level == "bad" ? "err" : ""}">${esc(c.fix)}</span>` : ""}</div>`).join("");
+    const pr = j.preset;
+    box.innerHTML = (pr ? `<div><b>Your machine:</b> ${esc(pr.text)} <button class="small" id="usepreset">Use</button></div>` : "") + `<b>Ready to measure?</b>` + j.checks.map(c => `<div><span class="dot ${dot[c.level]}"></span>${esc(c.text)}${c.fix ? ` <span class="${c.level == "bad" ? "err" : ""}">${esc(c.fix)}</span>` : ""}</div>`).join("");
     box.hidden = false;
+    if (pr && $("usepreset")) $("usepreset").onclick = () => { $("sharechat").checked = pr.chat; if (pr.emulate_gb && [...$("sharelimit").options].some(o => +o.value == pr.emulate_gb)) $("sharelimit").value = pr.emulate_gb; paintReady(true); };
   } catch (e) { box.hidden = true; }
 }
 // ---- Results: charts of a benchmark record (the chart engine of the old benchmark page, recoloured to this page's tokens: colours are read at draw time) ----
@@ -1186,7 +1193,7 @@ async function paintShare(st) {
   paintReady(false);
   $("share").disabled = $("fair").disabled = running || !S.sel || (st.bench || {}).state == "running";
   $("sharecancel").hidden = !running;
-  $("shareforce").disabled = $("sharechat").disabled = running;
+  $("shareforce").disabled = $("sharechat").disabled = $("sharelimit").disabled = running;
   if (shareKey == key) return; shareKey = key;
   const box = $("sharestate");
   if (running) { box.textContent = "measuring " + (sh.model || "") + (sh.pairs > 1 ? " (fair comparison, " + sh.pairs + " pairs)" : "") + (sh.chat ? " (long chat)" : "") + ": " + (sh.step || "starting") + (sh.chat ? " (a long chat takes 30-120 minutes per pair; the progress lines are in the log below)" : " (5-20 minutes per pair; the progress lines are in the log below)"); $("shareout").hidden = true; return; }
@@ -1633,7 +1640,7 @@ $("bench").onclick = async () => {
   try { await api("/api/bench", { cold, other, compare }); poll(); } catch (e) { showErr(e.message); }
 };
 $("c-bench").addEventListener("toggle", () => paintReady(false));
-$("sharechat").onchange = () => paintReady(true);
+$("sharechat").onchange = $("sharelimit").onchange = () => paintReady(true);
 $("readyagain").onclick = () => paintReady(true);
 $("fair").onclick = () => startShare(2);
 $("share").onclick = () => startShare(1);
@@ -1642,7 +1649,7 @@ async function startShare(pairs) {
   const up = ["starting", "ready", "waiting", "stopping"].includes(S.status.state);
   if (up && switchNeedsConfirm(S.live, C.busy) && !confirm("The running model is still answering a request (an agent or the chat). Measuring stops it now. Go on anyway?")) return;
   const other = $("other").value.split(";").map(x => x.trim()).filter(Boolean);
-  try { await api("/api/share", { model: S.sel, force: $("shareforce").checked, agent: !!$("agent").checked, other, pairs, chat: $("sharechat").checked }); poll(); } catch (e) { showErr(e.message); }
+  try { await api("/api/share", { model: S.sel, force: $("shareforce").checked, agent: !!$("agent").checked, other, pairs, chat: $("sharechat").checked, limit_gb: $("sharelimit").value || null }); poll(); } catch (e) { showErr(e.message); }
 }
 $("sharecancel").onclick = async () => { try { await api("/api/share/cancel", {}); poll(); } catch (e) { showErr(e.message); } };
 $("sharecopy").onclick = async () => {

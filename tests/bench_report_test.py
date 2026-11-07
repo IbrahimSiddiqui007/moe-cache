@@ -92,6 +92,15 @@ except ValueError as e_:
 check(jw is not None and jw["hardware"]["storage"]["drive"] == "x.gguf" and jw["hardware"]["storage"]["unc"] == "y.gguf" and "Someone Else" not in mdw and "z.gguf" in mdw and "Users" not in mdw,
       f"a Windows path in the record: the JSON block stays valid and the path is cut to its last part ({blkw[:120]!r})")
 
+
+# 3e. presets by machine size (report section 7)
+check(mb.preset_for(16, 66)["ctx"] == 16384 and "smaller MoE" in mb.preset_for(16, 66)["text"] and mb.preset_for(16, 66)["emulate_gb"] is None, "preset: 16 GB -> a smaller MoE, 16k")
+check(mb.preset_for(32, 66)["ctx"] == 65536 and "Flash-Next Q2_0" in mb.preset_for(32, 66)["text"] and mb.preset_for(32, 66)["pairs"] == 2, "preset: 32 GB -> Flash-Next Q2_0, 65k, 2 pairs")
+check(mb.preset_for(24, 40)["ctx"] == 32768, "preset: 24 GB -> 32k")
+pb = mb.preset_for(64, 66, can_emulate=True)
+check(pb["emulate_gb"] == 32 and "EMULATED" in pb["text"] and mb.preset_for(64, 66, can_emulate=False)["emulate_gb"] is None and "Linux with systemd" in mb.preset_for(64, 66, can_emulate=False)["text"], "preset: 64 GB -> emulate 32 GB when the system can, else say what is needed")
+check(mb.preset_for(64, 80, can_emulate=True)["emulate_gb"] is None, "preset: a model that does not fit a 64 GB machine needs no emulation")
+
 # 3c. the ready-to-measure panel (reads only)
 mdl = os.path.join(tempfile.mkdtemp(prefix="moe-ready-"), "x.gguf")
 open(mdl, "wb").write(b"GGUF" + b"\0" * 4096)

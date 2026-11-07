@@ -464,6 +464,28 @@ def estimate(size_gb, pairs, chat_ctx_tokens=0):
     return round(runs * (75 + 4 * size_gb + 600 * chat_ctx_tokens / 65536) / 60), round(runs * size_gb)
 
 
+def preset_for(ram_gb, size_gb=None, can_emulate=False):
+    """Machine-size preset (report section 7): {'ram_gb', 'ctx', 'pairs', 'chat', 'emulate_gb', 'text'}. The context is the long chat's own choice for that RAM; a machine
+    with plenty of RAM for the model gets the emulated 32 GB limit when the system can do it (otherwise the text says what to do)."""
+    ram = float(ram_gb or 0)
+    p = {"ram_gb": round(ram), "ctx": chat_ctx(ram), "pairs": 2, "chat": True, "emulate_gb": None}
+    ctx = f"{p['ctx'] // 1024}k"
+    if ram and ram <= 20:
+        p["text"] = (f"{p['ram_gb']} GB machine: test a smaller MoE model from `pick` (the 66 GB default would read the drive all the time), long chat at {ctx}, 2 pairs. "
+                     "The drive decides the speed: say which drive, and plug the laptop in.")
+    elif ram and ram <= 48:
+        p["text"] = f"{p['ram_gb']} GB machine: Flash-Next Q2_0 (the published setting), long chat at {ctx}, 2 pairs. Cold start needs other big files on Windows (--flush-from)."
+    else:
+        nearly_fits = size_gb is None or (ram and size_gb < ram * 1.1)       # a model clearly bigger than the RAM is the stress case already
+        if can_emulate and ram > 40 and nearly_fits:
+            p["emulate_gb"] = 32
+            p["text"] = (f"{p['ram_gb']} GB machine: the model nearly fits, so stock would keep it all in the file cache and the result would say 'fits'. Test as a 32 GB machine "
+                         f"(EMULATED memory limit on both arms), long chat at {ctx}, 2 pairs, or take a bigger model.")
+        else:
+            p["text"] = f"{p['ram_gb']} GB machine: long chat at {ctx}, 2 pairs; take a model bigger than the RAM" + ("." if can_emulate else " (the memory-limit test needs Linux with systemd).")
+    return p
+
+
 def readiness(model, pairs=2, ram=None, chat=False, limit_gb=None):
     """The ready-to-measure panel: [{id, level 'ok'|'warn'|'bad'|'info', text, fix}] for the model about to be measured (the checks that make a report unusable:
     the model fits in RAM, little free disk, battery, other big programs, power plan, temperature). Reads only; the doctor's own checks stay in `check`."""
@@ -472,6 +494,7 @@ def readiness(model, pairs=2, ram=None, chat=False, limit_gb=None):
     add = lambda id_, level, text, fix="": rows.append({"id": id_, "level": level, "text": text, "fix": fix})
     size = sum(os.path.getsize(p) for p in mc.model_parts(model)) / 1e9
     tot = (mc.win_memory()[0] / 1e9) if mc.WINDOWS and mc.win_memory()[0] else mc.meminfo_total_gb()
+    real_tot = tot
     if limit_gb:
         ok_, why_ = can_limit()
         if not ok_:
@@ -515,7 +538,7 @@ def readiness(model, pairs=2, ram=None, chat=False, limit_gb=None):
     add("estimate", "info", f"About {mins} minutes and up to {gb} GB read from the drive for {pairs} pair(s) (stock, moe-cache, moe-cache, stock; cold start"
         + (f"; long chat to {ctx // 1024}k tokens" if chat else "") + "). Rough; leave the machine alone.")
     return {"model": os.path.basename(model), "size_gb": round(size, 1), "ready": not any(r["level"] == "bad" for r in rows), "pairs": pairs, "minutes": mins, "gb_read": gb,
-            "chat_ctx": ctx, "checks": rows}
+            "chat_ctx": ctx, "preset": preset_for(real_tot, size, can_limit()[0]), "checks": rows}
 
 
 def summarize(runs, exact):
