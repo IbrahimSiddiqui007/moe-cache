@@ -2041,6 +2041,8 @@ SERVER_HELP = """\
 --stock    run stock llama-server without the plugin whatever the model's size (to compare stock and moe-cache on the same model)
 --allow-sleep  let the machine sleep while the server runs (by default it is kept awake without changing a power setting: Windows power request,
            Linux systemd-inhibit; MOE_CACHE_ALLOW_SLEEP=1 does the same)
+--no-sched-tuning  Windows: do not lower the power throttling (EcoQoS) or raise the CPU and GPU priority of the server one step (on by default since v0.3.8: +2.0 % prompt speed on the
+           test PC, decode the same; MOE_CACHE_SCHED_TUNING=0 does the same)
 --no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
 --agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
            (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
@@ -2254,7 +2256,7 @@ def parse_server(argv):
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
-    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true")
+    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true"); ap.add_argument("--no-sched-tuning", action="store_true")
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
@@ -2859,6 +2861,8 @@ def kv_stage(a, extra, ctx, ls, listing, machine):
 
 def fast_env_stage(a, env, stock, model, machine):
     """ENGINE-029, stage "approximate modes": the plugin settings and the one plain line for --fast, --fast=2, --fast=fewer and --fast=kv; without --fast, the hint where it would pay (the model is much bigger than the memory it may use). env grows in place."""
+    if a.no_sched_tuning:
+        env.append(("MOE_CACHE_SCHED_TUNING", "0"))       # WINDOWS-013: Windows scheduling tweaks are on by default (the plugin reads this); nothing happens elsewhere
     if a.fast == "kv":
         say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
     elif a.fast:
