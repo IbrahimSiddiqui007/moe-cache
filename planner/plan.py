@@ -123,6 +123,8 @@ def _compute(a):
         if isinstance(v, (list, tuple)) or hasattr(v, "__len__") and not isinstance(v, str): v = max(v) if len(v) else default
         return v
     arch = str(val("general.architecture"))
+    if not val(f"{arch}.expert_count"):        # a dense model has no expert_count key at all (the old int(None) raised TypeError before the check below)
+        raise PlanError("no expert tensors (blk.N.ffn_{gate,up,down,gate_up}_exps) found: this does not look like a MoE GGUF")
     n_blocks = int(val(f"{arch}.block_count")); n_exp = int(val(f"{arch}.expert_count")); n_used = int(val(f"{arch}.expert_used_count"))
     nextn = int(val(f"{arch}.nextn_predict_layers", 0) or 0); n_main = n_blocks - nextn
     kv_heads = int(val(f"{arch}.attention.head_count_kv", 0) or val(f"{arch}.attention.head_count"))

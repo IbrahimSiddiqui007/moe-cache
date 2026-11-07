@@ -55,10 +55,18 @@ with tempfile.TemporaryDirectory() as tmp:
 
     base = run(moe, [])
     check(cmdline(base) == cmdline(run(moe, ["--auto-fit"])), "MoE model with --auto-fit: same command line (nothing to fit by layers)")
-    check("-ngl 99" in cmdline(run(dense, [])), "dense, flags off: -ngl 99 as before")
+    check("-ngl" not in cmdline(run(dense, [])) and "--n-cpu-moe" not in cmdline(run(dense, [])), "LAUNCHER-732: dense, no flags: no -ngl 99 (llama.cpp's --fit places the layers; -ngl 99 aborts a file bigger than the GPU)")
+    check("-ngl 99" in cmdline(run(dense, ["--no-auto-fit"])), "dense + --no-auto-fit: -ngl 99 as before")
     r = run(dense, ["--auto-fit"])
-    check("-ngl" not in cmdline(r) and "--n-cpu-moe" not in cmdline(r) and "PROTOTYPE" in r["stdout"], "dense + --auto-fit: no -ngl, no --n-cpu-moe, says prototype")
+    check("-ngl" not in cmdline(r) and "--n-cpu-moe" not in cmdline(r) and "--fit" in r["stdout"], "dense + --auto-fit: no -ngl, no --n-cpu-moe, says why")
     check("-ngl 40" in cmdline(run(dense, ["--auto-fit"], ["-ngl", "40"])), "dense + --auto-fit + user -ngl 40: the user's value stands")
+    try:                       # LAUNCHER-732: a real dense header has no <arch>.expert_count at all; the planner used to die with TypeError (int(None)) before saying "not a MoE"
+        import plan as planmod                       # the real planner (launch_plan_test replaces mc.planner_answer with a fixed answer)
+        planmod.plan_info(dense, ctx=8192)
+        got = "no error"
+    except Exception as e:
+        got = type(e).__name__ + ": " + str(e)
+    check(got.startswith("PlanError") and "does not look like a MoE" in got, "LAUNCHER-732: planner on a dense header (no expert_count): PlanError 'not a MoE', not TypeError (" + got[:40] + ")")
     class PlanError(Exception):
         pass
     class DenseMachine:
@@ -69,8 +77,8 @@ with tempfile.TemporaryDirectory() as tmp:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         nc, info, err = mc.plan_placement(type("A", (), {"ram": 12, "vram": None})(), dense, 8192, None, DenseMachine())
-    check(nc == "999" and info is None and "no expert tensors (dense)" in buf.getvalue() and "--auto-fit" in buf.getvalue() and "-ngl 99" in buf.getvalue() and "planner failed" not in buf.getvalue(),
-          "LAUNCHER-732: the planner's 'not a MoE' failure on a dense model prints one honest line (no experts, -ngl 99, --auto-fit), plan unchanged (999)")
+    check(nc == "999" and info is None and "no expert tensors (dense)" in buf.getvalue() and "planner failed" not in buf.getvalue(),
+          "LAUNCHER-732: the planner's 'not a MoE' failure on a dense model prints one honest line (no experts), plan unchanged (999)")
     DenseMachine.planner_answer = lambda self, *a: (_ for _ in ()).throw(PlanError("disk on fire"))
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
