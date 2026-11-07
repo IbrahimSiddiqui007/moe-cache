@@ -16,7 +16,7 @@
   moe_cache.py connect hermes|opencode|claude|codex|pi|openclaw|aider|qwen [--url URL] [--write]   point Hermes Agent, OpenCode, Claude Code, Codex CLI, Pi, OpenClaw, Aider or Qwen Code at a running server (start it with --agent); --check proves the setup works (models, chat, tool call, window; --json)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
-  moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read (BO-1)
+  moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
   moe_cache.py --version                                                   print the moe-cache version
@@ -2013,7 +2013,7 @@ SERVER_HELP = """\
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    keep the f16 KV cache at 128k+ (no --fast=kv default)
 --long-prompt  opt-in long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache (--fast=kv), only when the memory plan of this card leaves room for
-           it (otherwise nothing changes, and the start-up line says so). Flash-Next IQ3_XXS in a 65k conversation on the PC: prompts about 35 % faster, answers about 10 % slower;
+           it (otherwise nothing changes, and the start-up line says so). Flash-Next IQ3_XXS in a 65k conversation on the PC: prompts about 35 % faster, answers about 10 % slower (measured with every expert layer on the CPU side; this mode keeps a few on the GPU, being measured again);
            for agents and documents. The q8_0 KV cache may change the wording of answers a little (same meaning in our checks). Not with --exact, --stock or your own --ub
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
@@ -2874,7 +2874,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine):
 
 def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked):
     """The opt-in long-prompt mode (--long-prompt, v0.3.8, owner 2026-11-07): -ub 4096 with the q8_0 KV cache, measured on Flash-Next IQ3_XXS in a 65k conversation on the PC
-    (prompts +35 %, answers -10 %; claims v038-conv-iq3xxs-shipped / -fastkv). It applies only when the memory plan of this card leaves room for -ub 4096 (the tuner tried it first);
+    (prompts +35 %, answers -10 %; claims v038-conv-iq3xxs-shipped / -fastkv; those runs kept all 48 expert layers on the CPU, so the shipped plan is unmeasured). It applies only when the memory plan of this card leaves room for -ub 4096 (the tuner tried it first);
     when it does not, nothing changes: the q8_0 KV cache is undone (alone it lost prompt speed in the same test) and the normal plan is made again. Returns kv_q8, tuned, desk_kw, ub_asked."""
     if not getattr(a, "long_prompt", False):
         return kv_q8, tuned, desk_kw, ub_asked

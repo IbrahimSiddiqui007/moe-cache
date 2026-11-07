@@ -17,7 +17,7 @@ Checked on the Windows PC (two saved gh accounts, one expired): the fixed `insta
 
 ## Measured
 
-No new measurements: nothing that changes speed or output was touched. The v0.3.7 numbers in `docs/RELEASE_NOTES_v0.3.7.md` stand for this release. The only difference in `src/` from v0.3.7 is the plugin's start-up banner (`git diff v0.3.7 v0.3.7.1 -- src`), so the three v0.3.7 claims (`v037-conv-q2_0`, `v037-conv-iq3xxs`, `v037-fits-qwen36`) now say "valid up to 0.3.7.1" in `benchmarks/claims/`; the claims check (tags only) would otherwise call them stale because the version number moved.
+No new measurements: nothing that changes speed or output was touched. The v0.3.7 numbers in `docs/releases/RELEASE_NOTES_v0.3.7.md` stand for this release. The only difference in `src/` from v0.3.7 is the plugin's start-up banner (`git diff v0.3.7 v0.3.7.1 -- src`), so the three v0.3.7 claims (`v037-conv-q2_0`, `v037-conv-iq3xxs`, `v037-fits-qwen36`) now say "valid up to 0.3.7.1" in `benchmarks/claims/`; the claims check (tags only) would otherwise call them stale because the version number moved.
 
 ## Update
 

@@ -94,7 +94,7 @@ The README has the short path; this page keeps every option. Moved here from the
 
 **Windows 11?** Go to the [Windows quick start](#windows-quick-start-experimental) below (7 steps, [docs/WINDOWS.md](WINDOWS.md) has the details). **Linux?** Read on.
 
-**You need:** a `llama-server` from llama.cpp's official downloads (the Windows `.zip` and the Linux `llama-bNNNNN-bin-ubuntu-*.tar.gz` files are built with the shared ggml libraries moe-cache needs; we tested the Windows ones, not the Linux ones) or your own build with `-DBUILD_SHARED_LIBS=ON`; Python 3.8 or newer (3.11 or newer only for `connect codex --write`); and a MoE model as a `.gguf` file (step 2 below). A GPU is optional. Tested llama.cpp: b12064 (Windows, the build in the kit); commits `23b0202a1` (ggml 0.26.0, backend API 3) and `7fe450e19` (ggml 0.25.1, API 2) (Linux), each Linux API needs its own plugin build, see [docs/QUICKSTART.md](QUICKSTART.md). Other versions may work; `check` tells you.
+**You need:** a `llama-server` from llama.cpp's official downloads (the Windows `.zip` and the Linux `llama-bNNNNN-bin-ubuntu-*.tar.gz` files are built with the shared ggml libraries moe-cache needs; we tested the Windows ones, not the Linux ones) or your own build with `-DBUILD_SHARED_LIBS=ON`; Python 3.8 or newer (3.11 or newer only for `connect codex --write`); and a MoE model as a `.gguf` file (step 2 below). A GPU is optional. Tested llama.cpp: b12064 (Windows, the build in the kit); b11966 (`ff0d396e3`); commits `23b0202a1` (ggml 0.26.0, backend API 3) and `7fe450e19` (ggml 0.25.1, API 2) (Linux), each Linux API needs its own plugin build, see [docs/QUICKSTART.md](QUICKSTART.md). Other versions may work; `check` tells you.
 Ollama user? The models in `ollama list` are plain GGUF files: the path is on the line starting with `FROM` in `ollama show NAME --modelfile`.
 
 ### 1. Install (pick one)
@@ -138,7 +138,7 @@ Models are single `.gguf` files from Hugging Face, 20-120 GB each. **Not sure wh
 Every line says OK, WARN or FAIL and what to do about it (it also times a short read test on the model's drive and warns when the drive is too slow). Add `--run` to also start llama-server with the plugin for one short request (about a
 minute): "cache runs: yes" means the cache really computed on your machine. **Run this first, on Windows too.** `check` and `doctor` are the same command; it checks the GPU, RAM, the model's drive and llama-server, and ends with a table of your GPU, driver, RAM, disk and llama-server and a list of what to fix.
 If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command (GiB of VRAM left free; default about 0.5).
-**Using the PC while a model runs?** By default moe-cache takes almost everything (RAM up to total minus 4 GiB, the GPU, all cores), so the desktop can stutter. Tick **Leave room for me** on the control page, or add `--leave-room`: the server then keeps 8 GiB or 25 % of the RAM (whichever is more), 2 GB of GPU memory and 2 CPU cores free and runs at a lower priority; smoother PC, slower model (`MOE_CACHE_LEAVE_ROOM=1` makes it the default). A desktop with a CPU that has its own graphics (most Ryzen 7000/9000, Intel non-F): plug the monitor into the **motherboard**, so the graphics card holds no desktop memory at all.
+**Using the PC while a model runs?** By default moe-cache takes almost everything (RAM up to total minus 4 GiB or 12.5 %, whichever is more, the GPU, all cores), so the desktop can stutter. Tick **Leave room for me** on the control page, or add `--leave-room`: the server then keeps 8 GiB or 25 % of the RAM (whichever is more), 2 GB of GPU memory and 2 CPU cores free and runs at a lower priority; smoother PC, slower model (`MOE_CACHE_LEAVE_ROOM=1` makes it the default). A desktop with a CPU that has its own graphics (most Ryzen 7000/9000, Intel non-F): plug the monitor into the **motherboard**, so the graphics card holds no desktop memory at all.
 
 ### 4. Run your model
 
@@ -147,7 +147,7 @@ Not sure which model fits your machine? `python3 bin/moe_cache.py pick` recommen
 ```bash
 bin/moe-cache-server /path/to/model.gguf --ram 12 --llama-server /path/to/llama-server --open
 ```
-`--ram 12` is the memory (GB) it may use; leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
+`--ram 12` tells the launcher to size the cache and the GPU/CPU plan for 12 GB (a sizing hint, not a limit; the hard cap is `--max-ram`); leave it out to use what is free. The launcher plans the GPU/CPU split from your free VRAM, starts `llama-server` with the plugin and opens the chat page (the same address, `http://localhost:8080`, is an OpenAI-compatible API for editors, Open WebUI and scripts).
 
 **The first start is slow.** The server is ready after about 20 seconds (RESULTS 64: 14-19 s); the first answer to a long prompt can take minutes on a model bigger than your RAM (a cold first turn of 7,461 tokens took 186 s on our laptop, [docs/AGENTS.md](AGENTS.md); a 63k-token prompt about 5 minutes on our Windows PC, RESULTS 64). The chat page shows progress. Later turns are much faster because the conversation is kept.
 
@@ -177,7 +177,7 @@ python3 bin/moe_cache.py connect hermes --write      # and/or: connect opencode 
 Several models: `on-demand /path/to/model2.gguf --add` adds one; the request's `"model"` picks it, one is loaded at a time (`connect opencode` lists them all).
 Or start a server yourself with `bin/moe-cache-server /path/to/model.gguf --agent` and run the same `connect` line. Measured on a Windows desktop
 (RESULTS 60, recorded sessions replayed, cold, stock vs moe-cache): Flash-Next (68 GB on 32 GB RAM) OpenCode session 175 -> 73 s, Hermes 164 -> 82 s,
-two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM) 5-9 % faster. Details and the Desktop-app steps: [docs/AGENTS.md](AGENTS.md).
+two agents at once 335 -> 145 s; Qwen3.6-35B (fits in RAM): within noise, so use stock llama.cpp there. Details and the Desktop-app steps: [docs/AGENTS.md](AGENTS.md).
 
 ### Windows quick start (experimental)
 
