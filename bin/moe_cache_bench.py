@@ -136,34 +136,74 @@ def model_section(model, size_gb, ram_total_gb):
     return d
 
 
-def run_one(model, mode, a, port):
-    """One server start through `moe_cache.py server` (stock: --stock, moe-cache: --always-plugin), one long prompt and one greedy answer.
-    {'mode', 'decode', 'prefill', 'prompt_tokens', 'ttft_s', 'text', 'plugin_active', 'hit_rate', 'gb_read', 'load_s', 'error'}."""
-    import moe_cache_ui as ui
+def _launch(model, mode, a, port, tee=None, extra=()):
+    """The server of one run, through `moe_cache.py server` (stock: --stock, moe-cache: --always-plugin). (process, lines, sampler): lines fill from its output (also
+    appended to the file `tee` when given: the plugin's counters are read from it), the sampler watches its process tree."""
     cmd = [sys.executable, os.path.join(HERE, "moe_cache.py"), "server", model, "--llama-server", a.llama_server, "--port", str(port),
-           "--ctx", str(a.ctx), "--no-warm", "--stock" if mode == "stock" else "--always-plugin"] + (["--ram", str(a.ram)] if a.ram else []) + list(a.extra)
+           "--ctx", str(a.ctx), "--no-warm", "--stock" if mode == "stock" else "--always-plugin"] + (["--ram", str(a.ram)] if a.ram else []) + list(extra) + list(a.extra)
     env = dict(os.environ, MOE_CACHE_STATS_SIGNAL="1")
     kw = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     if mc.WINDOWS:
         kw["creationflags"] = 0x00000200                  # CREATE_NEW_PROCESS_GROUP
     elif sys.platform.startswith("linux"):
         kw["preexec_fn"] = mc._die_with_parent_linux      # "Cancel" on the control page SIGTERMs this process alone: the server must not stay behind
-    t0 = time.time()
     p = subprocess.Popen(cmd, **kw)
     lines = []
-    threading.Thread(target=lambda: [lines.append(l.decode(errors="replace").rstrip()) for l in iter(p.stdout.readline, b"")], daemon=True).start()
-    res = {"mode": mode, "error": ""}
+    def pump():
+        f = open(tee, "ab") if tee else None
+        try:
+            for raw in iter(p.stdout.readline, b""):
+                lines.append(raw.decode(errors="replace").rstrip())
+                if f:
+                    f.write(raw); f.flush()
+        finally:
+            if f:
+                f.close()
+    threading.Thread(target=pump, daemon=True).start()
     smp = rec.Sampler(p.pid, log_lines=lines)         # VRAM, process RAM, free RAM, CPU % while this run goes on (the launcher's tree: llama-server is its child)
     smp.start()
+    return p, lines, smp
+
+
+def _wait_ready(p, lines, port, t0, timeout):
+    """None when the server answers /health, else the reason it did not."""
+    while not mc.healthy(port):
+        if p.poll() is not None:
+            return "the server stopped while loading: " + next((l for l in reversed(lines) if l.strip()), "no output")
+        if time.time() - t0 > timeout:
+            return f"the server was not ready after {timeout} s"
+        time.sleep(1)
+    return None
+
+
+def _stop_server(p, port):
+    if p.poll() is None:
+        p.terminate()
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+    for _ in range(60):          # Windows: llama-server ends a moment after the launcher; the next run needs the port
+        if not mc.port_busy(port):
+            break
+        time.sleep(1)
+
+
+def _log_facts(lines):
+    return {"lines": [l for l in lines if re.search(r"n_layer\s*=|offloaded \d+/\d+|buffer size\s*=", l)][:60]}
+
+
+def run_one(model, mode, a, port):
+    """One server start through `moe_cache.py server` (stock: --stock, moe-cache: --always-plugin), one long prompt and one greedy answer.
+    {'mode', 'decode', 'prefill', 'prompt_tokens', 'ttft_s', 'text', 'plugin_active', 'hit_rate', 'gb_read', 'load_s', 'error'}."""
+    import moe_cache_ui as ui
+    t0 = time.time()
+    p, lines, smp = _launch(model, mode, a, port)
+    res = {"mode": mode, "error": ""}
     try:
-        while not mc.healthy(port):
-            if p.poll() is not None:
-                res["error"] = "the server stopped while loading: " + next((l for l in reversed(lines) if l.strip()), "no output")
-                return res
-            if time.time() - t0 > a.load_timeout:
-                res["error"] = f"the server was not ready after {a.load_timeout} s"
-                return res
-            time.sleep(1)
+        res["error"] = _wait_ready(p, lines, port, t0, a.load_timeout) or ""
+        if res["error"]:
+            return res
         res["load_s"] = round(time.time() - t0, 1)
         t_req = time.time()
         url = f"http://127.0.0.1:{port}/completion"
@@ -201,17 +241,51 @@ def run_one(model, mode, a, port):
         return res
     finally:
         res["monitor"] = smp.stop()
-        res["log_facts"] = {"lines": [l for l in lines if re.search(r"n_layer\s*=|offloaded \d+/\d+|buffer size\s*=", l)][:60]}
-        if p.poll() is None:
-            p.terminate()
-            try:
-                p.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                p.kill()
-        for _ in range(60):          # Windows: llama-server ends a moment after the launcher; the next run needs the port
-            if not mc.port_busy(port):
-                break
-            time.sleep(1)
+        res["log_facts"] = _log_facts(lines)
+        _stop_server(p, port)
+
+
+CHAT_MAX_TOKENS = 128
+
+
+def chat_ctx(ram_gb):
+    """Context of the long chat for this machine (report section 7): 16k up to 20 GB of RAM, 32k up to 28 GB, else the published 65k."""
+    return 16384 if ram_gb and ram_gb <= 20 else 32768 if ram_gb and ram_gb <= 28 else 65536
+
+
+def run_chat_arm(model, mode, a, port, workdir, key, plan_line):
+    """One long-chat run (the published method, tools/conversation_bench.py): server through the launcher with --agent, the conversation up to the context,
+    resource peaks, the plugin's counters per turn. {'mode', 'error', 'chat': the run dict, 'decode', 'prefill', 'ttft_s', 'load_s', 'plugin_active', 'hit_rate'}."""
+    import types
+    import conversation_bench as cb
+    import moe_cache_ui as ui
+    log = os.path.join(workdir, f"server-{mode}-{int(time.time())}.log")
+    t0 = time.time()
+    p, lines, smp = _launch(model, mode, a, port, tee=log, extra=["--agent"])
+    res = {"mode": mode, "error": ""}
+    try:
+        res["error"] = _wait_ready(p, lines, port, t0, a.load_timeout) or ""
+        if res["error"]:
+            return res
+        load_s = round(time.time() - t0, 1)
+        pid = ui.child_pid(p.pid) or p.pid
+        ns = types.SimpleNamespace(ctx=a.ctx, max_tokens=CHAT_MAX_TOKENS, seed=42, api_key=key, model="conversation-bench", timeout=1800, stats_pid=pid if mode != "stock" else None,
+                                   stats_log=log if mode != "stock" else None, script=None, max_turns=a.max_turns or None, no_think=True, ignore_eos=False, monitor_pid=pid,
+                                   server_cmd=plan_line, server_log=[log], load_s=load_s)
+        run = cb._one(ns, f"http://127.0.0.1:{port}", "stock" if mode == "stock" else "moe-cache", log=lambda m: mc.say("bench-report:   " + m))
+        o = cb.overall(run)
+        res.update(chat=run, decode=o["decode_tps"], prefill=o["prompt_tps"], ttft_s=o["ttft_s"], load_s=load_s, hit_rate=o["hit_rate_dec_pct"], wall_s=run.get("wall_s"),
+                   plugin_active=any("moe-cache: cache mode" in l for l in lines))
+        if run["stop_reason"].startswith("error"):
+            res["error"] = run["stop_reason"]
+        return res
+    except (ValueError, OSError) as e:
+        res["error"] = f"{type(e).__name__}: {e}"
+        return res
+    finally:
+        res["monitor"] = smp.stop()
+        res["log_facts"] = _log_facts(lines)
+        _stop_server(p, port)
 
 
 def server_info(ls):
