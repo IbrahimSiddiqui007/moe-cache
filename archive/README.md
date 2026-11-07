@@ -81,6 +81,20 @@ Each patch is the removal read backwards: `git apply archive/plugin/NAME.patch` 
 
 Not touched on purpose: `MOE_CACHE_WIN_OPEN_HINT` (WINDOWS-672) stays until the 30-minute Windows read-path gate has run, and every row the Critic marked "SHIPPED, DO NOT REMOVE" or "archive only part" (PREFILL-184, PREFILL-060, CACHE-115, CACHE-131, MULTIGPU-001, -008, -011, LINUX-006, DECODE-059). DECODE-045, DECODE-057, PATCH-001 and PATCH-126 had no code left to move.
 
+### Night chain 2026-11-07 (PC, kit k39c8e0b / v037rc, timers off; the chain's own keep/kill rules)
+
+Removed on 2026-11-07; each patch is the removal read backwards (`git apply archive/plugin/NAME.patch` from the top of the repo; checked with `git apply --check` on the tree it was removed from).
+
+| File | Switch | Result | Why archived | Retest if |
+|---|---|---|---|---|
+| plugin/gpu_extra_ops.patch | `MOE_CACHE_GPU_EXTRA_OPS` (PREFILL-054) | prompt -0.3 %, decode +0.4 %, text identical | no gain | a model with clamp/scale between the expert matrices on the GPU path |
+| plugin/pool_spin_us.patch | `MOE_CACHE_POOL_SPIN_US` (DECODE-075) | 300 us: prompt +6.2 % (pairs +18.4 / -3.8), decode -0.1 %; 1000 us: +0.9 % / +0.1 % | inside the pair spread, decode flat | workers are shown to sleep between layers (`pool_parks` high) |
+| plugin/prefill_lend_mib.patch (also removes `src/mc_lend.h`, `tests/lend_test.cpp`) | `MOE_CACHE_PREFILL_LEND_MIB` (PREFILL-032) | LEND_MIB=2048: prompt -2.6 % (pairs -1.2 / -4.0), decode +1.3 %, text identical | prompt lost | RAM pressure during prompts on a smaller machine |
+| plugin/exec_pool_decode.patch (also removes `src/mc_poolsize.h`, `tests/poolsize_test.cpp`) | `MOE_CACHE_EXEC_POOL_DECODE` (DECODE-137) | `-t 16 -tb 32`: decode +0.6 % (pairs +0.3 / +0.8) | no gain | a CPU where `-tb` and `-t` differ much |
+| plugin/probe_cache.patch | `MOE_CACHE_PROBE_CACHE` (ENGINE-021) | start-up saves 367 ms (off 372 ms, on 4.6 ms) | the rule needed 1000 ms | the probe becomes slow on some driver |
+| llama.cpp/0050-layerwise-prefill-b12064.patch (second attempt, keeper fix) | `LLAMA_LAYERWISE_PREFILL=N` + `MOE_CACHE_GPU_KEEP_MIB` (PREFILL-638) | IQ3_XXS 34k prompt: N=8 prompt -51.9 % (241 vs 501), uploads 684 vs 652 GB (did not fall); N=34 uploads 0 GB but prompt -77.9 %, decode -10.4 % | the 8-layer mode does not cut uploads, the 34-layer mode costs far more in graph machinery than it saves | the machinery (one graph per layer and chunk, hidden state through host memory) becomes much cheaper |
+| llama.cpp/0042-n-outputs-max.patch | `LLAMA_N_OUTPUTS_MAX` (PATCH-128) | compute buffers identical with and without it: 2,021 MiB at `-ub 2048`, 4,660 MiB at `-ub 4096` | inert by design at b12064: llama-server sets `n_outputs_max` = 4 itself (n_parallel auto 4) and 0042 acts only when it is 0. The real top tensor is the lightning-indexer score tensor (512 MiB at `-ub 2048`), which 0042 does not touch | the indexer score tensor is chunked and the logits reserve grows again |
+
 ### Merged upstream (2026-11-03, pin move b11966 -> b12064)
 
 | File | Switch | Result | Why archived | Retest if |
