@@ -748,7 +748,10 @@ def bench_report(argv):
     notes, start = [], "WARM" if a.warm else "COLD"
     other = [x for x in a.flush_from.split(",") if x]
     runs = []
-    workdir = tempfile.mkdtemp(prefix="moe-cache-chat-") if a.chat else None
+    workdir = tempfile.mkdtemp(prefix="moe-cache-chat-") if a.chat else None      # the servers' logs (paths, command lines): removed when this process ends
+    if workdir:
+        import atexit
+        atexit.register(shutil.rmtree, workdir, True)
     key = mc.stored_key(create=True) if a.chat else ""
     cond = rec.conditions_now(cold=None if a.warm else True if start == "COLD" else False, baseline=a.baseline, other_programs=a.other_programs)      # one second of CPU sampling; uptime, free RAM, VRAM in use, temperatures
     for i, mode in enumerate(order(a.pairs)):

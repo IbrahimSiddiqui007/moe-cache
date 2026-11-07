@@ -1082,6 +1082,30 @@ if node:
         check("SSD MB per token" in r_["turns"] and ">5.00<" in r_["turns"] and "80.0 %" in r_["turns"] and "no per-turn numbers" in r_["none"], "per-turn table: SSD MB per token (0.5 GB / 100 tokens = 5.00), expert hits, and a clear line for a run without turns")
     _cc = re.search(r"function chartColours\(\) \{.*?\n\}\n", page, re.S).group(0)
     check("getPropertyValue" in _cc and not re.search(r"#[0-9a-fA-F]{3,6}\b", _cc) and all(v in _cc for v in ("--muted", "--accent", "--gpu", "--ok", "--warn", "--bad", "--panel")), "charts: colours are read from the page's CSS variables at draw time (both themes)")
+if node:
+    hostile = json.loads(json.dumps(rec_res))
+    for r_h in hostile["runs"]:
+        r_h["bands"][0]["turns"] = "<img src=x onerror=alert(1)>"
+        r_h["bands"][0]["band"] = "<svg onload=alert(2)>"
+        r_h["turns"][0]["prompt_n"] = "<img src=x onerror=alert(3)>"
+        r_h["turns"][0]["cache_n"] = "<b onmouseover=alert(4)>"
+        r_h["turns"][0]["ttft_s"] = "<i>"
+        r_h["arm"] = r_h["arm"]
+    fnh = "".join(re.search(pat, page, re.S).group(0) for pat in (r"const nz = [^\n]*\n", r"const cfmt = [^\n]*\n", r"function niceMax\(v\) \{.*?\n\}\n", r"function chartSvg\(spec, col, hidden\) \{.*?\n\}\n",
+                                                                  r"function resultCharts\(rec\) \{.*?\n\}\n", r"function turnsHtml\(run\) \{.*?\n\}\n"))
+    hh = ("const esc = s => String(s).replace(/[&<>\"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;'}[c]));\n" + fnh +
+          "const COL = {stock:'#444444', moe:'#555555', gpu:'#666666', ok:'#777777', warn:'#888888', bad:'#999999', text:'#333333', muted:'#444444', line:'#222222', panel:'#111111'};\n"
+          "const rec = " + json.dumps(hostile) + ";\nconst specs = resultCharts(rec);\n"
+          "const all = specs.map(s => chartSvg(s, COL, new Set())).join('') + specs.map(s => (s.series || []).map(x => (x.tips || []).join('')).join('')).join('') + turnsHtml(rec.runs[1]);\n"
+          "console.log(JSON.stringify({all}));\n")
+    hfh = os.path.join(TMP, "hostile.js"); open(hfh, "w", encoding="utf-8").write(hh)
+    oh = subprocess.run([node, hfh], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        allh = json.loads(oh.stdout.strip().splitlines()[-1])["all"]
+    except Exception:
+        allh = None; print(oh.stdout[-300:], oh.stderr[-500:])
+    check(allh is not None and not re.search(r"<(img|svg|b|i)\b[^>]*(onerror|onload|onmouseover)", allh) and "<img" not in allh and "&lt;img src=x onerror=alert(1)&gt;" in allh and "&lt;img src=x onerror=alert(3)&gt;" in allh,
+          "charts: a hostile record (img / svg / b tags with event handlers in turns, cached tokens, band names) renders as text in the tips, the SVG and the per-turn table")
 check(all(x in page for x in ('id="resdlg"', 'id="reslist"', 'id="rescharts"', 'id="resturns"', 'id="resopen"', 'id="chart-tip"')), "the page has the Results dialog, its list, charts, per-turn table and the button")
 import re as _re2
 _pr = page_html[page_html.index("async function paintReady"):page_html.index("async function paintShare")]

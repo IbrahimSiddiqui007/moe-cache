@@ -405,7 +405,7 @@ button.danger { border-color:var(--ink); }
         <div id="benchres" class="scrollx"></div>
         <div class="sharebox" id="sharebox">
           <div id="ready" class="small" hidden></div>
-          <div class="row"><button id="fair" class="primary" title="Cold start, stock then moe-cache then moe-cache then stock, twice (2 pairs), and a verdict that says whether the difference is larger than the noise">Fair comparison</button><button id="share" title="One pair (stock, moe-cache, moe-cache, stock): faster, less certain. Writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button><button id="resopen" title="Charts and per-turn numbers of your reports and of the board's runs">Results</button><button id="readyagain" class="ghost small" title="Check the machine again">Check again</button></div>
+          <div class="row"><button id="fair" class="primary" title="Cold start, stock then moe-cache then moe-cache then stock, twice (2 pairs), and a verdict that says whether the difference is larger than the noise. With Long chat ticked this takes hours on a big model: the panel shows the estimate">Fair comparison</button><button id="share" title="One pair (stock, moe-cache, moe-cache, stock): faster, less certain. Writes a report for a GitHub issue">Share my numbers</button><button id="sharecancel" hidden>Cancel</button><button id="resopen" title="Charts and per-turn numbers of your reports and of the board's runs">Results</button><button id="readyagain" class="ghost small" title="Check the machine again">Check again</button></div>
           <div class="small" id="sharestate"></div>
           <div class="small" style="margin-top:4px"><label><input type="checkbox" id="sharechat" checked> <b>Long chat (recommended)</b>: each run plays one real multi-turn conversation filled to a long context (16k to 65k, from your RAM): the method the published numbers use. Takes much longer; untick for the short test.</label></div>
           <div class="small" id="limitrow" style="margin-top:4px" hidden><label for="sharelimit">Test as a smaller machine (EMULATED memory limit on both arms, Linux):</label>
@@ -970,8 +970,8 @@ function compareTable(rows, model) {
     (rows.some(r => r.ram_gb != "auto") ? `<div class="hint">A RAM budget limits moe-cache only: stock llama-server still uses all free RAM through the file cache,
     so rows with a RAM number favour stock. The fair test is RAM on <b>auto</b> with a model bigger than this computer's RAM.</div>` : "");
 }
-const SHARE_DEFAULT = "Measures stock llama.cpp and moe-cache on the model selected in the list (5-20 minutes; a running server is stopped first) and writes a report you can paste into a GitHub issue. Nothing is uploaded: the report holds no prompts, answers, user name, host name or folder names.";
-let shareKey = "", shareUrl = "", readyKey = "", shareRec = null;
+const SHARE_DEFAULT = "Measures stock llama.cpp and moe-cache on the model selected in the list (a short test takes 5-20 minutes, the Long chat 30-120 minutes per pair: the panel above gives the estimate for your model; a running server is stopped first) and writes a report you can paste into a GitHub issue. Nothing is uploaded: the report holds no prompts, answers, user name, host name or folder names.";
+let shareKey = "", shareUrl = "", readyKey = "", shareRec = null, readyMinutes = 0;
 async function paintReady(force) {
   const box = $("ready"), card = $("c-bench");
   if (!S.sel || !card.open) { box.hidden = true; return; }
@@ -979,6 +979,7 @@ async function paintReady(force) {
   try {
     const j = await api("/api/ready?model=" + encodeURIComponent(S.sel) + "&pairs=2&chat=" + ($("sharechat").checked ? 1 : 0) + "&limit=" + encodeURIComponent($("sharelimit").value));
     const dot = { ok: "ok", warn: "warn", bad: "bad", info: "" };
+    readyMinutes = j.minutes || 0;
     const pr = j.preset;
     box.innerHTML = (pr ? `<div><b>Your machine:</b> ${esc(pr.text)} <button class="small" id="usepreset">Use</button></div>` : "") + `<b>Ready to measure?</b>` + j.checks.map(c => `<div><span class="dot ${dot[c.level]}"></span>${esc(c.text)}${c.fix ? ` <span class="${c.level == "bad" ? "err" : ""}">${esc(c.fix)}</span>` : ""}</div>`).join("");
     box.hidden = false;
@@ -1057,7 +1058,7 @@ function resultCharts(rec) {
   const nb = Math.max(0, ...runs.map(r => (r.bands || []).length));
   if (nb) for (const [k, label] of [["prompt_tps", "Prompt reading by conversation depth"], ["decode_tps", "Answer speed by conversation depth"], ["hit_rate_dec_pct", "Expert cache hit rate by depth (decode)"]]) {
     const cats = (runs.find(r => (r.bands || []).length == nb).bands).map(b => b.band);
-    const s = ser(a => cats.map((_, i) => mean(of(a).map(r => (r.bands || [])[i] && r.bands[i][k]))), a => ({ tips: cats.map((_, i) => `${of(a).length} run(s), ${(of(a)[0].bands[i] || {}).turns} turn(s) in this band`) }));
+    const s = ser(a => cats.map((_, i) => mean(of(a).map(r => (r.bands || [])[i] && r.bands[i][k]))), a => ({ tips: cats.map((_, i) => `${esc(of(a).length)} run(s), ${esc((of(a)[0].bands[i] || {}).turns)} turn(s) in this band`) }));
     if (s.some(x => x.values.some(nz))) out.push({ title: label, unit: k == "hit_rate_dec_pct" ? "%" : "tokens/s", type: "line", dec: k == "decode_tps" ? 1 : 0, cats, series: s.filter(x => x.values.some(nz)) });
   }
   const nt = Math.max(0, ...runs.map(r => (r.turns || []).length));
@@ -1065,7 +1066,7 @@ function resultCharts(rec) {
     const tr = a => Array.from({ length: nt }, (_, i) => mean(of(a).map(r => (r.turns || [])[i] && r.turns[i].decode_tps)));
     const t0 = (runs.find(r => (r.turns || []).length == nt) || runs[0]).turns;
     out.push({ title: "Answer speed turn by turn", note: "x: tokens of conversation before the answer", unit: "tokens/s", type: "line", dec: 1, cats: t0.map(t => cfmt((t.depth_before || 0) / 1000, 1) + "k"),
-      series: ser(tr, a => ({ tips: t0.map((t, i) => `turn ${i}: ${esc(t.kind || "")}, ${t.prompt_n} new / ${t.cache_n} cached tokens, first token ${cfmt(t.ttft_s, 2)} s`) })) });
+      series: ser(tr, a => ({ tips: t0.map((t, i) => `turn ${i}: ${esc(t.kind || "")}, ${esc(t.prompt_n)} new / ${esc(t.cache_n)} cached tokens, first token ${esc(cfmt(t.ttft_s, 2))} s`) })) });
   }
   const res = [["vram_used_peak_mib", "GPU memory in use (peak)", "GiB", 1024], ["process_ram_peak_mib", "Server RAM (peak)", "GiB", 1024], ["cpu_avg_pct", "CPU use (average, all cores)", "%", 1]];
   for (const [k, label, unit, div] of res)
@@ -1646,6 +1647,8 @@ $("readyagain").onclick = () => paintReady(true);
 $("fair").onclick = () => startShare(2);
 $("share").onclick = () => startShare(1);
 async function startShare(pairs) {
+  const est = Math.round(readyMinutes * pairs / 2);
+  if (est > 60 && !confirm("This will take about " + est + " minutes (" + pairs + " pair" + (pairs > 1 ? "s" : "") + (est > 60 && $("sharechat").checked ? ", long chat" : "") + ") and the machine should be left alone. Start?")) return;
   if (!S.sel) { showErr("Pick a model in the list first."); return; }
   const up = ["starting", "ready", "waiting", "stopping"].includes(S.status.state);
   if (up && switchNeedsConfirm(S.live, C.busy) && !confirm("The running model is still answering a request (an agent or the chat). Measuring stops it now. Go on anyway?")) return;
