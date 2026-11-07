@@ -887,7 +887,7 @@ for i in range(1, 5):
 os.makedirs(out, exist_ok=True)
 base = os.path.join(out, "moe-cache-report-20261030-1200")
 md = "# moe-cache report\\n\\n| decode tok/s | 12.3 |\\n|---|---|\\nargs: " + " ".join(x for x in a[1:] if not os.path.isabs(x)) + "\\n"
-open(base + ".md", "w").write(md); open(base + ".json", "w").write("{}")
+open(base + ".md", "w").write(md); open(base + ".json", "w").write('{"scrubbed": {"home folder": 2, "user name or host name": 1}}')
 print(md, flush=True)
 print("bench-report: written %s.md and .json. Paste the .md into a new issue: https://example.invalid" % base, flush=True)
 print("bench-report: no prompts, answers, user name, host name or folder names are in the report; nothing was uploaded.", flush=True)
@@ -924,6 +924,7 @@ check(sh["state"] == "done" and sh["has_markdown"] and "markdown" not in sh, f"t
 check(json.loads(req("/api/status")[1])["state"] in ("stopped", "exited", "idle"), "share: the running server was stopped first")
 full = json.loads(req("/api/share")[1])
 check("args: --out --flush-from --scenario agent" in full["markdown"], f"agent mode becomes --scenario agent, the folders --flush-from ({full['markdown'].splitlines()[-1]})")
+check(full.get("removed") == {"home folder": 2, "user name or host name": 1}, f"the share state lists what was removed (read from the report's .json): {full.get('removed')}")
 check(full["path"].startswith(ui.REPORT_DIR) and os.path.isfile(full["path"]) and full["issue_url"].endswith("template=benchmark_report.yml") and full["report_dir"] == ui.REPORT_DIR,
       "the report file is in the reports folder; the issue page link is the benchmark template")
 lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
@@ -966,6 +967,58 @@ ui.SHARE_CMD, ui.REPORT_DIR = saved_share
 page_html = open(ui.PAGE, encoding="utf-8").read()
 check(all(x in page_html for x in ('id="fair"', 'id="sharechat"', 'id="ready"', 'id="sharenoise"', 'id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
       "the page has the Share my numbers button, the report box, Copy, the issue button, Cancel, 'measure anyway' and says nothing is uploaded")
+
+
+# stage 3: the result card (record -> facts -> SVG with the page's colours) and the "removed before sharing" line, run on the page's own code under node
+import shutil, subprocess
+node = shutil.which("node")
+page = page_html
+if node:       # the WHOLE page script must parse: the per-function checks never load it as one (a missing parenthesis once left the page blank)
+    _js = os.path.join(TMP, "page_all.js")
+    open(_js, "w", encoding="utf-8").write(re.search(r"<script[^>]*>(.*)</script>", page_html, re.S).group(1))
+    _o = subprocess.run([node, "--check", _js], capture_output=True, text=True, timeout=60)
+    check(_o.returncode == 0, "the page's whole script parses (node --check)" + ("" if _o.returncode == 0 else ": " + _o.stderr[:300]))
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"function removedText\(r\) \{.*?\n\}\n", r"function recordOf\(md\) \{.*?\n\}\n", r"function cardFacts\(rec\) \{.*?\n\}\n",
+                                                                 r"const xmlEsc = [^\n]*\n", r"function cardSvg\(rec, col\) \{.*?\n\}\n"))
+    mk = lambda dec_a, dec_b, pre_a, pre_b, cache="cold": {"record_schema": 1, "model": {"file": "Big<&>-Q2_0.gguf"}, "hardware": {"gpu_model": "RX 9070 XT", "ram_gib": 31.0},
+        "software": {"moe_cache_version": "0.3.7.1"}, "conditions": {"file_cache": cache}, "settings": {"ctx": 65536}, "protocol": {"runs_per_arm": 4},
+        "runs": [{"arm": "stock", "decode_tps": dec_a[0], "prompt_tps": pre_a[0]}, {"arm": "moe-cache", "decode_tps": dec_b[0], "prompt_tps": pre_b[0]},
+                 {"arm": "moe-cache", "decode_tps": dec_b[1], "prompt_tps": pre_b[1]}, {"arm": "stock", "decode_tps": dec_a[1], "prompt_tps": pre_a[1]}]}
+    recs = [mk([10, 10.2], [19, 19.4], [100, 101], [190, 192]), mk([10, 10.1], [10.4, 10.5], [100, 100], [101, 102]), mk([10, 10], [10, 10], [100, 100], [100, 100])]
+    recs[2]["runs"] = [r for r in recs[2]["runs"] if r["arm"] == "stock"]
+    md = "text\n```json\n" + json.dumps(recs[0]) + "\n```\nmore\n"
+    harness = ("const esc = t => t;\n" + fn + "const COL = {panel:'#111111', line:'#222222', text:'#333333', muted:'#444444', accent:'#555555', ok:'#666666', warn:'#777777'};\n"
+               "const recs = " + json.dumps(recs) + ";\nconst md = " + json.dumps(md) + ";\n"
+               "console.log(JSON.stringify({rec: recordOf(md) && recordOf(md).record_schema, none: recordOf('no json'), bad: recordOf('```json\\n{oops\\n```'), svgs: recs.map(r => cardSvg(r, COL)),\n"
+               "  facts: recs.map(cardFacts), removed: [removedText({'home folder': 2, 'user name or host name': 3}), removedText({})]}));\n")
+    hf = os.path.join(TMP, "card.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and r_["rec"] == 1 and r_["none"] is None and r_["bad"] is None, "card: the record is found in the report's JSON block; text without one or a cut block gives none")
+    if r_:
+        import xml.dom.minidom
+        for i, sv in enumerate(r_["svgs"]):
+            try:
+                xml.dom.minidom.parseString(sv); okx = True
+            except Exception as e:
+                okx = False; print(e)
+            check(okx, f"card {i}: the SVG is well-formed XML (a model name with < & is escaped)")
+        s0, s1, s2 = r_["svgs"]
+        check("1.91x" in s0 or "1.90x" in s0 or "1.89x" in s0, "card 0: the ratio is written on the bars")
+        check(r_["facts"][0]["claim"] is True and "Larger than the noise" in s0 and "#666666" in s0, "card 0: 1.9x with tight runs: 'Larger than the noise' in the ok colour")
+        check(r_["facts"][1]["claim"] is False and "Within noise" in s1 and "#777777" in s1, "card 1: +4 % reads 'Within noise ... no claim' in the warning colour")
+        check("No ratio" in s2, "card 2: a record without moe-cache runs says no ratio")
+        check(all(c in s0 for c in ("#111111", "#222222", "#333333", "#444444", "#555555")) and not re.search(r"#[0-9a-fA-F]{3,6}", re.sub(r"#[0-7]{6}", "", s0)),
+              "card: every colour comes from the page's variables (the stub's six), none of its own")
+        check("RX 9070 XT" in s0 and "31 GB RAM" in s0 and "COLD start" in s0 and "2 pairs" in s0 and "ctx 65536" in s0 and "v0.3.7.1" in s0, "card: machine, RAM, cold start, pairs, context and version are on it")
+        check("Removed before sharing: 2 x home folder, 3 x user name or host name" in r_["removed"][0] and "Nothing needed removing" in r_["removed"][1], "preview: the removed items are listed with counts; none says so")
+    _cs = re.search(r"function cardColours\(\) \{.*?\n\}\n", page, re.S).group(0)
+    check("getPropertyValue" in _cs and not re.search(r"#[0-9a-fA-F]{3,6}\b", _cs) and all(v in _cs for v in ("--panel", "--accent", "--ok", "--warn", "--muted")), "card: colours are read from the page's CSS variables at draw time (both themes)")
+check('id="sharecard"' in page and 'id="sharecardsave"' in page and 'id="shareremoved"' in page, "the page has Copy image, Save image and the removed-items line")
 
 import re as _re2
 _pr = page_html[page_html.index("async function paintReady"):page_html.index("async function paintShare")]
