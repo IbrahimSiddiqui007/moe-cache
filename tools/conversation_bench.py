@@ -26,6 +26,12 @@ MARGIN = 48                 # tokens of slack for the chat template around a tur
 MIN_PROMPT_N = 64           # a turn that read fewer new tokens does not enter the prompt-speed mean (timer noise)
 MIN_PREDICTED_N = 16        # the same for decode speed
 SYSTEM = "You are a careful coding assistant working in the user's repository. Answer briefly."
+# TEST-699 fix (2026-11-07): with the old settings (thinking on, 128 tokens) the thinking block used the answer length and, from about turn 11, the model copied its own
+# earlier 1-2 token replies, so the deep turns decoded a handful of tokens. The command line now asks for a visible answer: thinking off, 256 tokens, and every user
+# message ends with ANSWER_HINT. --legacy brings the old behaviour back (comparable with the v0.3.7 records).
+ANSWER_HINT = "\n\n(Please answer in at least three full sentences.)"
+MIN_MEDIAN_ANSWER = 24          # median answer tokens below this: the run carries a warning (a conversation of one-word answers measures nothing about decode)
+SHORT_ANSWER = 8                # an answer of fewer tokens than this counts as short
 
 # ---------------------------------------------------------------- the fixed script
 
@@ -297,7 +303,7 @@ def delta(s0, s1, key):
 # ---------------------------------------------------------------- one conversation
 
 def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="conversation-bench", timeout=1800, stats=None, max_turns=None,
-                     script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None, drive=None):
+                     script=None, no_think=False, ignore_eos=False, log=print, monitor_pid=None, drive=None, answer_hint=False, min_median=MIN_MEDIAN_ANSWER):
     """Play the conversation; returns the run dict (turns, bands, stop reason). monitor_pid: llama-server's pid, sampled during the whole run for VRAM, process
     RAM, free RAM and CPU peaks (the same Sampler as bench-report, bin/moe_cache_record.py)."""
     smp = None
@@ -318,7 +324,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             cand = (script[n] if (script and attempt == 0 and n < len(script)) else None) if script else make_turn(seed, n, attempt)
             if script and cand is None:
                 stop = "script ended"; break
-            est = len(cand["text"]) / CHARS_PER_TOKEN + MARGIN
+            est = (len(cand["text"]) + (len(ANSWER_HINT) if answer_hint else 0)) / CHARS_PER_TOKEN + MARGIN
             if prev_total + est + max_tokens <= ctx:
                 pick = cand; break
             if script:
@@ -327,7 +333,7 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
             if stop == "max turns reached":
                 stop = "context full"
             break
-        history.append({"role": "user", "content": pick["text"]})
+        history.append({"role": "user", "content": pick["text"] + (ANSWER_HINT if answer_hint else "")})
         body = {"model": model, "messages": history, "max_tokens": max_tokens, "temperature": 0, "seed": 42, "stream": True,
                 "stream_options": {"include_usage": True}, "cache_prompt": True}
         if no_think:
@@ -370,6 +376,11 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
            "user_turns_sha256": hashlib.sha256("\n".join(m["content"] for m in history if m["role"] == "user").encode("utf-8")).hexdigest()[:16],
            "created_utc": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")}
     run["bands"] = bands(turns, ctx)
+    run["thinking"] = not no_think
+    run["answer_hint"] = bool(answer_hint)
+    run["answer_stats"] = answer_stats(turns, min_median)
+    for w in run["answer_stats"]["warnings"]:
+        log("WARNING: " + w)
     if smp is not None:
         run["monitor"] = smp.stop()
     rb = [t["read_gb"] for t in turns if t["read_gb"] is not None]
@@ -385,6 +396,21 @@ def run_conversation(url, arm, ctx, max_tokens=128, seed=42, api_key="", model="
 
 
 # ---------------------------------------------------------------- summaries
+
+def answer_stats(turns, min_median=MIN_MEDIAN_ANSWER):
+    """How long the answers were: median tokens, the turns with a short (< SHORT_ANSWER tokens) or empty visible answer, and warnings when the median is under
+    min_median or more than a quarter of the turns have no visible answer. Decode speed measured on one-word answers says little about decode."""
+    n = [t["predicted_n"] for t in turns if t.get("predicted_n") is not None]
+    empty = sum(1 for t in turns if t.get("answer_chars") == 0)
+    short = sum(1 for x in n if x < SHORT_ANSWER)
+    med = statistics.median(n) if n else None
+    warnings = []
+    if med is not None and med < min_median:
+        warnings.append(f"the median answer is {med:g} tokens (under {min_median}): {short} of {len(n)} answers are shorter than {SHORT_ANSWER} tokens; deep-turn decode numbers "
+                        "rest on very short answers and the conversation cannot judge meaning (use the default settings, not --legacy, or give --script with longer questions)")
+    if turns and empty * 4 > len(turns):
+        warnings.append(f"{empty} of {len(turns)} turns have no visible answer (thinking may use the whole --max-tokens)")
+    return {"median_tokens": med, "short_turns": short, "empty_turns": empty, "turns": len(turns), "warnings": warnings}
 
 def cost_fit(turns, ub):
     """TEST-754: prompt time per turn = A x passes + B x (new tokens / 1k) + C x (new tokens / 1k) x (depth / 1k), least squares over the turns that read a prompt.
@@ -561,7 +587,7 @@ def build_record(runs, a):
     depths = [r["final_depth"] for r in runs if r["final_depth"] is not None]
     proto = {"arms": sorted(counts), "order": order, "runs_per_arm": max(counts.values()), "prompt_set": f"conversation script, seed {r0['seed']}, filled to a {r0['ctx']}-token context",
              "prompt_sha256": r0["user_turns_sha256"], "prompt_tokens": max(depths) if depths else rr.NR,
-             "n_predict": r0["max_tokens"], "temperature": 0, "seed": 42, "sampler": "greedy, cache_prompt on, chat template of the model"}
+             "n_predict": r0["max_tokens"], "temperature": 0, "seed": 42, "sampler": "greedy, cache_prompt on, chat template of the model" + ("" if r0.get("thinking") is None else (", thinking " + ("on" if r0["thinking"] else "off") + (", answer hint on" if r0.get("answer_hint") else ", answer hint off")))}
     given = getattr(a, "command_line", None) or getattr(a, "server_cmd", None)
     if given:
         st = rr.settings_from(given, env={}, log_lines=None)
@@ -599,14 +625,18 @@ def _key(url, given):
 
 def _run_args(p):
     p.add_argument("--ctx", type=int, default=65536, help="context limit to fill (default 65536; capped at the server's n_ctx when /props gives it)")
-    p.add_argument("--max-tokens", type=int, default=128, help="answer length per turn (default 128)")
+    p.add_argument("--max-tokens", type=int, default=None, help="answer length per turn (default 256; 128 with --legacy)")
     p.add_argument("--seed", type=int, default=42, help="seed of the conversation script")
     p.add_argument("--max-turns", type=int, default=None)
     p.add_argument("--script", help="JSON list of user messages to play instead of the seeded script")
     p.add_argument("--api-key", default="")
     p.add_argument("--model", default="conversation-bench", help="model name sent in the request (the server ignores it unless --alias is used)")
     p.add_argument("--timeout", type=int, default=1800)
-    p.add_argument("--no-think", action="store_true", help="send chat_template_kwargs enable_thinking=false")
+    p.add_argument("--no-think", action="store_true", help="thinking off (the default now; kept so old command lines still work)")
+    p.add_argument("--think", action="store_true", help="leave thinking to the server's default (the old behaviour; the thinking block uses the answer length)")
+    p.add_argument("--no-answer-hint", action="store_true", help="do not end every user message with 'Please answer in at least three full sentences.'")
+    p.add_argument("--legacy", action="store_true", help="the v0.3.7 settings: --think, --no-answer-hint and --max-tokens 128 (comparable with the old records)")
+    p.add_argument("--min-median-answer", type=int, default=MIN_MEDIAN_ANSWER, help="warn when the median answer is under this many tokens (default %d)" % MIN_MEDIAN_ANSWER)
     p.add_argument("--ignore-eos", action="store_true", help="make every answer exactly --max-tokens long (the model may ramble)")
     p.add_argument("--stats-pid", type=int, help="llama-server's pid, to read the plugin's counters (needs --stats-log and MOE_CACHE_STATS_SIGNAL=1)")
     p.add_argument("--stats-log", help="the server's stderr log file")
@@ -618,7 +648,17 @@ def _run_args(p):
     p.add_argument("--load-s", type=float, help="seconds from the server start to its first ready answer (measured by the driver)")
 
 
+def _settings(a):
+    """-> (max_tokens, no_think, answer_hint) from the command line: the new defaults, or the v0.3.7 ones under --legacy / --think / --no-answer-hint."""
+    legacy = getattr(a, "legacy", False)
+    think = legacy or getattr(a, "think", False)
+    hint = not (legacy or getattr(a, "no_answer_hint", False))
+    mt = a.max_tokens if a.max_tokens is not None else (128 if legacy else 256)
+    return mt, not think, hint
+
+
 def _one(a, url, arm, log=print):
+    a.max_tokens, no_think, hint = _settings(a)
     key = _key(url, a.api_key)
     ctx = a.ctx
     sc = server_ctx(url, key)
@@ -627,7 +667,7 @@ def _one(a, url, arm, log=print):
         ctx = sc
     stats = Stats(a.stats_pid, a.stats_log) if a.stats_pid and a.stats_log else None
     script = load_script(a.script) if a.script else None
-    log(f"conversation: arm {arm}, {url}, context {ctx}, {a.max_tokens} tokens per answer, seed {a.seed}")
+    log(f"conversation: arm {arm}, {url}, context {ctx}, {a.max_tokens} tokens per answer, seed {a.seed}, thinking {'off' if no_think else 'server default'}, answer hint {'on' if hint else 'off'}")
     cmd = a.server_cmd or ""
     try:
         if cmd.startswith("@"):                  # --command-line @FILE: the text is in a file (quotes and spaces survive PowerShell's argument passing)
@@ -636,8 +676,8 @@ def _one(a, url, arm, log=print):
     except OSError as ex:
         log(f"command line file not read: {ex}")
         cmd = ""
-    run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, a.no_think, a.ignore_eos, log, a.monitor_pid,
-                           model_drive(cmd) if os.name == "nt" else None)
+    run = run_conversation(url, arm, ctx, a.max_tokens, a.seed, key, a.model, a.timeout, stats, a.max_turns, script, no_think, a.ignore_eos, log, a.monitor_pid,
+                           model_drive(cmd) if os.name == "nt" else None, hint, a.min_median_answer)
     try:
         import moe_cache_record as rr
         lines = []

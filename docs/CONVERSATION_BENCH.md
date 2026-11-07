@@ -11,7 +11,7 @@ by turn. It is a measuring tool: nothing in this page is a measured result. Numb
   seed gives the same conversation every time, so stock and moe-cache read exactly the same text. `--script FILE` plays your own JSON list of messages
   instead.
 - Every turn is sent with the whole history so far (system message, all earlier turns and the model's earlier answers), `cache_prompt` on, temperature 0, a
-  fixed `--max-tokens` per answer (default 128). The answer is appended and the next turn follows, until the next turn would not fit into the context (`--ctx`,
+  fixed `--max-tokens` per answer (default 256; 128 with `--legacy`), thinking off, and every user message ends with "Please answer in at least three full sentences." (see "Visible answers" below). The answer is appended and the next turn follows, until the next turn would not fit into the context (`--ctx`,
   default 65536; it is cut to the server's own `n_ctx` when `/props` reports one). The tool never sends a request it expects the server to refuse.
 - It stops with a reason: `context full`, `max turns reached`, `script ended`, or `error: ...` (the server's answer, for example an HTTP 400).
 
@@ -40,7 +40,7 @@ the first run and a note says so. `runs[].vram_source` says whether VRAM is the 
 Linux, a server that is already running (the plugin run needs `MOE_CACHE_STATS_SIGNAL=1` and its stderr in a file if you want hits and misses):
 
 ```bash
-python3 tools/conversation_bench.py run --url http://127.0.0.1:8080 --arm moe-cache --ctx 65536 --max-tokens 128 --out run1.json \
+python3 tools/conversation_bench.py run --url http://127.0.0.1:8080 --arm moe-cache --ctx 65536 --out run1.json \
     --stats-pid $(pgrep -n llama-server) --stats-log server.err.log
 ```
 
@@ -79,8 +79,7 @@ Outputs in `-OutDir`: one `N-kind.json` per run (every turn), `record.json`, `ta
 - Prompt tok/s in a band is the speed of reading the NEW tokens of the turns that start there. A turn that mostly reuses the cache reads few new tokens, so
   it is left out below 64 new tokens; the cache share is reported next to it.
 - Decode speed in a band is the speed of the answer at that depth. Answers that end early (the model writes an end-of-text token) can fall under 16 tokens
-  and then do not count; `--ignore-eos` makes every answer exactly `--max-tokens` long, and `--no-think` turns off a thinking model's reasoning (it adds
-  `chat_template_kwargs {"enable_thinking": false}`).
+  and then do not count; `--ignore-eos` makes every answer exactly `--max-tokens` long, and thinking is off by default (`chat_template_kwargs {"enable_thinking": false}`; `--think` leaves it to the server).
 - The token estimate before a turn is characters divided by 3, which is cautious: the last turns can stop a little short of the limit.
 - Texts are not compared between stock and moe-cache here (`identical_to_baseline` is "not checked"). The conversation is the same, the answers are the
   model's own, so a different answer in turn 5 changes the history after it; use the identity tests for text.
@@ -93,3 +92,9 @@ Outputs in `-OutDir`: one `N-kind.json` per run (every turn), `record.json`, `ta
 
 `tests/conversation_bench_test.py` runs the tool against a fake llama-server (no model): history growth, the stop at the limit, timing parsing, the band sums,
 A B B A order, the plugin counters per turn and the record format. It is in `tools/run_quick_tests.sh`.
+
+## Visible answers (changed 2026-11-07)
+
+The first version asked for 128 tokens with the model's thinking on. The thinking block used the answer length, so many answers were empty, and from about turn 11 the model copied its own earlier one- or two-token replies: both arms (f16 and q8_0 KV, stock and moe-cache) answered with 1-2 tokens deep in the conversation. Prompt reading was not affected (the user turns and their size are the same), but the decode speed of the deeper bands was measured over a handful of tokens and the conversation could not be used to judge meaning. The driver now defaults to thinking off, 256 tokens per answer and the answer hint on every user message; `--legacy` (`-Legacy` in `conversation_bench_pair.ps1`) restores the old settings so a run stays comparable with the v0.3.7 records, `--think`, `--no-answer-hint` and `--max-tokens` change one setting each. Every run carries `thinking`, `answer_hint` and `answer_stats` (median answer tokens, short and empty turns); when the median is under `--min-median-answer` (24 tokens) or more than a quarter of the turns have no visible answer, the log and the run say WARNING. A record made with the new defaults says "thinking off, answer hint on" in its sampler line.
+
+Records made before this change (n_predict 128, thinking on): the v0.3.7 conversation records of 2026-11-05 and the night-chain conversations of 2026-11-06/07 (`v037-conv-q2_0`, `v037-conv-iq3xxs`, TEST-684, TEST-754). Their prompt numbers stand; their decode numbers per depth band rest on short answers from turn 11 on and are not to be quoted as "decode at 60k" without that caveat. Re-measure with the new defaults before a release quotes decode by band.

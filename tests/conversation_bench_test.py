@@ -256,4 +256,31 @@ def syn(ub, A=3.0, B=1.2, C=0.06):
 f = cb.cost_fit_runs([(syn(2048), 2048), (syn(4096), 4096)])
 check(f is not None and abs(f["a_s_per_pass"] - 3.0) < 0.01 and abs(f["b_s_per_1k"] - 1.2) < 0.01 and abs(f["c_s_per_1k_x_1k_depth"] - 0.06) < 0.001, f"fit over two -ub arms recovers A, B, C ({f})")
 check(cb.cost_fit([], 2048) is None, "fit: too few turns gives None, no crash")
+
+# ---- 2026-11-07: visible answers (thinking off, 256 tokens, answer hint) and the short-answer warning; --legacy keeps the v0.3.7 behaviour
+import argparse as _ap
+def _args(*argv):
+    ap = _ap.ArgumentParser(); cb._run_args(ap); return ap.parse_args(list(argv))
+check(cb._settings(_args()) == (256, True, True), "defaults: 256 tokens, thinking off, answer hint on")
+check(cb._settings(_args("--legacy")) == (128, False, False), "--legacy: 128 tokens, thinking on, no hint (the v0.3.7 settings)")
+check(cb._settings(_args("--think")) == (256, False, True) and cb._settings(_args("--no-answer-hint")) == (256, True, False) and cb._settings(_args("--max-tokens", "64")) == (64, True, True), "--think, --no-answer-hint and --max-tokens each change one thing")
+check(cb._settings(_args("--no-think")) == (256, True, True), "--no-think from old command lines is accepted and changes nothing")
+C1, uc1 = start("C1", 8192, 100.0, 10.0)
+rc = cb.main(["run", "--url", uc1, "--arm", "moe-cache", "--ctx", "8192", "--max-turns", "6", "--out", os.path.join(tempfile.mkdtemp(), "r.json")])
+rq = C1.requests
+check(rc == 0 and all(r["max_tokens"] == 256 and r.get("chat_template_kwargs") == {"enable_thinking": False} for r in rq), "a default run asks for 256 tokens with thinking off")
+check(all(r["messages"][-1]["content"].endswith(cb.ANSWER_HINT) for r in rq) and all(not m["content"].endswith(cb.ANSWER_HINT) or m["role"] == "user" for r in rq for m in r["messages"]), "every user message ends with the answer hint")
+C2, uc2 = start("C2", 8192, 100.0, 10.0)
+rc = cb.main(["run", "--url", uc2, "--arm", "moe-cache", "--ctx", "8192", "--max-turns", "4", "--legacy", "--out", os.path.join(tempfile.mkdtemp(), "r.json")])
+rq = C2.requests
+check(rc == 0 and all(r["max_tokens"] == 128 and "chat_template_kwargs" not in r and not r["messages"][-1]["content"].endswith(cb.ANSWER_HINT) for r in rq), "--legacy asks for 128 tokens, leaves thinking to the server and adds no hint")
+msgs = []
+runS = cb.run_conversation(start("C3", 8192, 100.0, 10.0)[1], "stock", 8192, 8, 42, "", "m", 30, None, 4, None, True, False, msgs.append, None, None, True, 24)
+check(runS["thinking"] is False and runS["answer_hint"] is True and runS["answer_stats"]["median_tokens"] == 4 and runS["answer_stats"]["warnings"] and any("WARNING" in m for m in msgs),
+      f"answers of 4 tokens: the run carries a warning and the log says WARNING ({runS['answer_stats']['median_tokens']})")
+runL = cb.run_conversation(start("C4", 8192, 100.0, 10.0)[1], "stock", 8192, 256, 42, "", "m", 30, None, 4, None, True, False, lambda *a: None, None, None, True, 24)
+check(runL["answer_stats"]["median_tokens"] == 128 and runL["answer_stats"]["warnings"] == [], "answers of 128 tokens: no warning")
+st = cb.answer_stats([{"predicted_n": 40, "answer_chars": 0}] * 3 + [{"predicted_n": 40, "answer_chars": 90}], 24)
+check(st["empty_turns"] == 3 and any("no visible answer" in w for w in st["warnings"]), "more than a quarter of the turns without a visible answer: a warning")
+check(cb.answer_stats([], 24)["warnings"] == [], "no turns: no warning, no crash")
 sys.exit(1 if fails else 0)
