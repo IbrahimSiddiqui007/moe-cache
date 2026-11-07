@@ -31,7 +31,7 @@ step() {      # step NAME COMMAND...: runs, times, logs to $LOGDIR/laptop.log
 summary() {
   echo; echo "commit $SHA ($REF)"; echo "log folder: $LOGDIR"
   { printf 'step\twhere\tresult\tminutes\n'; awk -F'\t' '{printf "%s\t%s\t%s\t%.2f\n",$1,$2,$3,$4/60}' "$ROWS"; } | column -t -s $'\t'
-  if [ $FAIL = 0 ]; then echo "ALL PASS"; else echo "FAILED (see the log folder)"; fi
+  if [ $FAIL = 0 ]; then echo "ALL PASS$([ $MODEL = 0 ] && grep -q 'skipped' "$ROWS" && echo ' (model steps skipped: run with --model for the identity steps)')"; else echo "FAILED (see the log folder)"; fi
   exit $FAIL
 }
 
@@ -99,6 +99,8 @@ pcssh "powershell -NoProfile -ExecutionPolicy Bypass -File $TOOLS_WIN\\pc_ci_win
 scp -q -o BatchMode=yes "$PC:$WORKU/results.tsv" "$LOGDIR/pc_results.tsv" 2>>"$LOGDIR/laptop.log"
 scp -q -o BatchMode=yes "$PC:$WORKU/pc_ci.log" "$LOGDIR/pc_ci.log" 2>>"$LOGDIR/laptop.log"
 if [ -s "$LOGDIR/pc_results.tsv" ]; then
+  # the PC script ends with a "pc_ci finished" row; without it (ssh dropped, script died) the run is incomplete and must not pass
+  grep -q -P '^pc_ci finished\t' "$LOGDIR/pc_results.tsv" || row "PC run did not finish (no end marker: connection lost?)" PC FAIL $((SECONDS - t0))
   tail -n +2 "$LOGDIR/pc_results.tsv" | tr -d '\r' | while IFS=$'\t' read -r s g r sec; do printf '%s\t%s\t%s\t%s\n' "$s" "PC/$g" "$r" "$sec"; done >> "$ROWS"
   grep -q -P '\tFAIL' <(tail -n +2 "$LOGDIR/pc_results.tsv" | tr -d '\r') && FAIL=1
 else

@@ -59,6 +59,19 @@ function Assert-LogMatch([string]$Path, [string]$Pattern, [string]$Message) {
   if (-not (Select-String -Path $Path -Pattern $Pattern -Quiet)) { throw $Message }
 }
 
+function Start-ModelWatchdog {
+  # a watchdog for the model group, started with its first step: after -ModelMinutes it stops any llama-server of ours (by path, never by name alone)
+  $script:ModelWatchdog = Start-Job -ArgumentList $ModelSeconds, $CacheDir, $Work -ScriptBlock {
+    param($Seconds, $Cache, $WorkDir)
+    Start-Sleep -Seconds ($Seconds + 60)
+    foreach ($server in (Get-Process -Name "llama-server" -ErrorAction SilentlyContinue)) {
+      if ($server.Path -and ($server.Path.StartsWith($Cache, [StringComparison]::OrdinalIgnoreCase) -or $server.Path.StartsWith($WorkDir, [StringComparison]::OrdinalIgnoreCase))) {
+        Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+      }
+    }
+  }
+}
+
 function Invoke-CiStep {
   param([string]$Name, [string]$Group, [scriptblock]$Body)
   if ($Group -eq "model" -and -not $Model) {
@@ -66,7 +79,7 @@ function Invoke-CiStep {
     return
   }
   if ($Group -eq "model") {
-    if (-not $ModelStart) { $script:ModelStart = Get-Date }
+    if (-not $ModelStart) { $script:ModelStart = Get-Date; Start-ModelWatchdog }
     if (((Get-Date) - $ModelStart).TotalSeconds -gt $ModelSeconds) {
       Add-Content -Encoding ascii $ResultFile "$Name`t$Group`tFAIL (model time limit $ModelMinutes min)`t0"
       $script:AnyFail = $true
@@ -92,19 +105,6 @@ function Invoke-CiStep {
   }
   $sec = [int]((Get-Date) - $t0).TotalSeconds
   Add-Content -Encoding ascii $ResultFile "$Name`t$Group`t$result`t$sec"
-}
-
-# --- a watchdog for the model group: after -ModelMinutes it stops any llama-server of ours (by path, never by name alone)
-if ($Model) {
-  $ModelWatchdog = Start-Job -ArgumentList $ModelSeconds, $CacheDir, $Work, $KitZip -ScriptBlock {
-    param($Seconds, $Cache, $WorkDir, $Kit)
-    Start-Sleep -Seconds ($Seconds + 60)
-    foreach ($p in (Get-Process -Name "llama-server" -ErrorAction SilentlyContinue)) {
-      if ($p.Path -and ($p.Path.StartsWith($Cache, [StringComparison]::OrdinalIgnoreCase) -or $p.Path.StartsWith($WorkDir, [StringComparison]::OrdinalIgnoreCase))) {
-        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-      }
-    }
-  }
 }
 
 # ---------------------------------------------------------------- tests group (no model is loaded)
@@ -352,4 +352,6 @@ Invoke-CiStep "identity: executor forced on and byte-checked" "model" {
 
 if ($ModelWatchdog) { Stop-Job $ModelWatchdog -ErrorAction SilentlyContinue; Remove-Job $ModelWatchdog -Force -ErrorAction SilentlyContinue }
 Copy-Item (Join-Path $env:TEMP "moe-cache-test\*.txt") $RunTemp -ErrorAction SilentlyContinue
+$stepCount = @(Get-Content $ResultFile).Count - 1
+Add-Content -Encoding ascii $ResultFile "pc_ci finished`t$stepCount steps`t$(if ($AnyFail) { 'FAIL' } else { 'pass' })`t0"
 if ($AnyFail) { exit 1 } else { exit 0 }
