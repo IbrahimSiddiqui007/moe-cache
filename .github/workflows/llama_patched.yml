@@ -8,10 +8,12 @@ on:
   push:
     branches: [ci/llama-patched, 'ci/llama-patched-**']
 
+# LLAMA_CONNECT=OFF: at b12064 =ON makes CMake download a prebuilt llama-connect binary from github.com (scripts/connect-download.cmake, 3 tries, no sha256) at
+# configure/build time; a github.com 504 broke the build on 2026-11-08. We build only llama-server (+ test-backend-ops), not that tool. The option is OFF by default upstream.
 env:
   LLAMA_COMMIT: 51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c   # b12064
   VULKAN_VERSION: "1.4.357.0"
-  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=ON"
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=OFF"
 
 permissions:
   contents: read
@@ -71,14 +73,29 @@ jobs:
       - name: Apply the patches
         shell: bash
         run: tools/apply_llama_patches.sh llama.cpp
+      - name: Cache restore (Vulkan SDK installer; a miss downloads below, with retries)
+        id: vksdk
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/vksdk
+          key: dl-vulkansdk-1.4.357.0-81f47471
       - name: Vulkan SDK
         run: |
-          curl.exe --retry 5 --retry-all-errors --retry-delay 10 -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
-          # sha256 as LunarG publishes it (https://sdk.lunarg.com/sdk/sha/1.4.357.0/windows/vulkan_sdk.exe.txt, read 2026-11-03): a changed installer stops here (AUD-063). Update with VULKAN_VERSION.
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\vksdk" | Out-Null
+          # sha256 as LunarG publishes it (https://sdk.lunarg.com/sdk/sha/1.4.357.0/windows/vulkan_sdk.exe.txt, read 2026-11-03): a changed installer stops here (AUD-063). Update with VULKAN_VERSION (and the cache key).
+          & tools\ci\fetch.ps1 -Url "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe" -Out "$env:RUNNER_TEMP\vksdk\VulkanSDK-Installer.exe" -Sha256 81F474711E9042F4CD22B31B2F7A8870DB2E428B21586FB43DD80150BE97310D
+          if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for the Vulkan SDK installer (see the ci_fetch lines above)" }
+          Copy-Item "$env:RUNNER_TEMP\vksdk\VulkanSDK-Installer.exe" "$env:RUNNER_TEMP\VulkanSDK-Installer.exe"
           if ((Get-FileHash "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" -Algorithm SHA256).Hash -ne '81F474711E9042F4CD22B31B2F7A8870DB2E428B21586FB43DD80150BE97310D') { throw "VulkanSDK installer: wrong sha256 (VULKAN_VERSION changed? update the hash from LunarG's sha page)" }
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+      - name: Cache save (Vulkan SDK installer; only after the sha256 check and a working install)
+        if: steps.vksdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/vksdk
+          key: dl-vulkansdk-1.4.357.0-81f47471
       - run: choco install ninja
       - name: Build
         working-directory: llama.cpp
@@ -97,6 +114,9 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4   (for tools/ci/fetch.ps1)
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: llama-patched-win-server-x64
@@ -105,11 +125,26 @@ jobs:
         with:
           name: llama-patched-win-vulkan-x64
           path: pkg/llama-patched-win-x64
+      - name: Cache restore (granite; a miss downloads below, with retries)
+        id: granite
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
       - name: Granite test model (pinned by sha256, as windows.yml)
         run: |
-          Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
+          New-Item -ItemType Directory -Force dl | Out-Null
+          & tools\ci\fetch.ps1 -Url "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -Out dl\granite.gguf -Sha256 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb
+          if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for granite.gguf (see the ci_fetch lines above)" }
+          Copy-Item dl\granite.gguf granite.gguf
           $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
           if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
+      - name: Cache save (granite; only after the sha256 check)
+        if: steps.granite.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
       - name: Smoke test
         run: |
           $dir = "$PWD\pkg\llama-patched-win-x64"
@@ -159,10 +194,11 @@ jobs:
       - name: Vulkan SDK
         run: |
           # apt-key is deprecated and trusts the key for every repository: a keyring used only by the LunarG source (AUD-063)
-          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo gpg --dearmor -o /usr/share/keyrings/lunarg-archive-keyring.gpg
+          tools/ci/fetch.sh https://packages.lunarg.com/lunarg-signing-key-pub.asc "$RUNNER_TEMP/lunarg-signing-key-pub.asc"   # retried (no pinned hash: apt checks the packages against this key)
+          cat "$RUNNER_TEMP/lunarg-signing-key-pub.asc" | sudo gpg --dearmor -o /usr/share/keyrings/lunarg-archive-keyring.gpg
           echo "deb [signed-by=/usr/share/keyrings/lunarg-archive-keyring.gpg] https://packages.lunarg.com/vulkan jammy main" | sudo tee /etc/apt/sources.list.d/lunarg-vulkan-jammy.list
-          sudo apt-get update -y
-          sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk libssl-dev
+          sudo apt-get -o Acquire::Retries=5 update -y
+          sudo apt-get -o Acquire::Retries=5 install -y build-essential mesa-vulkan-drivers vulkan-sdk libssl-dev
       - name: Build
         working-directory: llama.cpp
         run: |

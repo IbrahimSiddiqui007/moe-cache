@@ -39,11 +39,11 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: mingw-w64 (UCRT when available, the C runtime of official llama.cpp and of the kit; else posix/msvcrt)
         run: |
-          sudo apt-get update -q
-          if sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
+          sudo apt-get -o Acquire::Retries=5 update -q
+          if sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
             echo "MINGW_CXX=x86_64-w64-mingw32ucrt-g++" >> "$GITHUB_ENV"
           else
-            sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+            sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
             echo "MINGW_CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
           fi
       - name: Plugin DLL (API 3, with debug info for crash offsets; same code) and the platform test, warnings are errors
@@ -72,8 +72,22 @@ jobs:
             build/win/file_view_load_test.exe
             build/win/win_read_bench.exe
             build/win/kernel_check.exe
+      - name: Cache restore (kit's llama.cpp zip; a miss downloads in the kit step, with retries and the pinned sha256)
+        id: kitzip
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-zips
+          key: dl-kit-llama-b12064-vulkan-e0fee991
       - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
+        env:
+          LLAMA_ZIP_CACHE: ${{ runner.temp }}/llama-zips
         run: tools/make_windows_kit.sh 0.0.0-ci
+      - name: Cache save (kit's llama.cpp zip; only after a build that passed its sha256)
+        if: steps.kitzip.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-zips
+          key: dl-kit-llama-b12064-vulkan-e0fee991
       - name: scoop / winget manifests filled from the kit (valid JSON / YAML, hash = the zip's; nothing submitted)
         run: |
           python3 packaging/fill_manifests.py dist/moe-cache-v0.0.0-ci-windows-x64.zip
@@ -171,21 +185,37 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "file_view_load_test failed" }
           Pop-Location
 
-      - name: Official llama.cpp release (CPU) and the small MoE model
+      - name: Cache restore (dlcache; a miss downloads below, with retries)
+        id: dlcache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-win-llama-b12064-c1ced735-granite-3a2ec1c2
+      - name: Official llama.cpp release (CPU) and the small MoE model (cache first, else retried downloads; sha256 pinned either way)
         run: |
+          New-Item -ItemType Directory -Force dl | Out-Null
           $zip = "llama-$env:LLAMA_RELEASE-bin-win-cpu-x64.zip"
-          Invoke-WebRequest -UseBasicParsing "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/$zip" -OutFile $zip
-          # RELEASE-008: pinned sha256 of llama-b12064-bin-win-cpu-x64.zip (24608998 bytes); change it together with LLAMA_RELEASE
-          $zh = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          # RELEASE-008: pinned sha256 of llama-b12064-bin-win-cpu-x64.zip (24608998 bytes); change it together with LLAMA_RELEASE (and the cache key above)
+          & tools\ci\fetch.ps1 -Url "https://github.com/ggml-org/llama.cpp/releases/download/$env:LLAMA_RELEASE/$zip" -Out "dl\$zip" -Sha256 c1ced7358438e19c2af6debefe188280ba39ac0242352719cd30d931ca8eec73
+          if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for ${zip} (see the ci_fetch lines above)" }
+          & tools\ci\fetch.ps1 -Url "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -Out dl\granite.gguf -Sha256 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb
+          if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for granite.gguf (see the ci_fetch lines above)" }
+          # the files are checked again here whether they came from the cache or the network: a cache entry never replaces the pin
+          $zh = (Get-FileHash "dl\$zip" -Algorithm SHA256).Hash.ToLower()
           if ($zh -ne "c1ced7358438e19c2af6debefe188280ba39ac0242352719cd30d931ca8eec73") { throw "${zip}: wrong sha256 $zh" }
-          Expand-Archive $zip -DestinationPath llama
+          $h = (Get-FileHash dl\granite.gguf -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
+          Expand-Archive "dl\$zip" -DestinationPath llama
           $srv = Get-ChildItem -Recurse llama -Filter llama-server.exe | Select-Object -First 1
           "LLAMA_DIR=$($srv.DirectoryName)" | Out-File -Append $env:GITHUB_ENV
           Get-ChildItem $srv.DirectoryName -Filter "ggml*.dll" | ForEach-Object { $_.Name }
-          Invoke-WebRequest -UseBasicParsing "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" -OutFile granite.gguf
-          $h = (Get-FileHash granite.gguf -Algorithm SHA256).Hash.ToLower()
-          if ($h -ne "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb") { throw "granite.gguf: wrong sha256 $h" }
-
+          Copy-Item dl\granite.gguf granite.gguf
+      - name: Cache save (dlcache; only after a download that passed its sha256)
+        if: steps.dlcache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-win-llama-b12064-c1ced735-granite-3a2ec1c2
       - name: The kit as a user gets it (unzipped elsewhere, no MOE_CACHE_LIB, no repository) - check finds the kit's API 3 DLL and the cache runs
         run: |
           Expand-Archive kitzip\moe-cache-v0.0.0-ci-windows-x64.zip -DestinationPath $env:RUNNER_TEMP\kit

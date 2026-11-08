@@ -53,7 +53,7 @@ jobs:
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
+        run: sudo apt-get -o Acquire::Retries=5 update && sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
 
       - name: llama.cpp at the pin (CPU only, shared libraries)
         run: |
@@ -82,10 +82,22 @@ jobs:
           g++ -O2 -std=c++17 -Isrc tests/kernel_variants.cpp -o /tmp/kernel_variants -ldl
           env -u LD_PRELOAD /tmp/kernel_variants llama.cpp/build/bin check | tee kernel_variants.txt
 
+      - name: Cache restore (granite; a miss downloads below, with retries)
+        id: granite
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
       - name: Small MoE model
         run: |
-          curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
+          mkdir -p dl && tools/ci/fetch.sh https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf dl/granite.gguf 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb && cp dl/granite.gguf granite.gguf
           echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+      - name: Cache save (granite; only after the sha256 check)
+        if: steps.granite.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
 
       - name: Launcher (bin/moe_cache.py) - dry run and check, the bash wrappers call it
         env:
@@ -335,14 +347,21 @@ jobs:
           KL_PLUGIN_ENV: "MOE_CACHE_SIZE_GIB=0.2 MOE_CACHE_EXEC=2"
         run: tests/kl_batch.sh granite.gguf --chunks 4 | tee identity_kl_batch8.txt
 
+      - name: Cache restore (tiny gpt-oss source files, pinned by commit 2109d1ee)
+        id: tinygptoss
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: tiny-gptoss
+          key: dl-tiny-gptoss-2109d1ee
       - name: Tiny gpt-oss model (separate gate/up/down calls; random weights, converted with this llama.cpp's own script)
         run: |
-          python3 -m pip install -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
-          python3 -m pip install -q -e llama.cpp/gguf-py
+          python3 -m pip install --retries 8 --timeout 60 -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
+          python3 -m pip install --retries 8 --timeout 60 -q -e llama.cpp/gguf-py
           # a random-weight model with an untied output layer (llama.cpp's gpt-oss loader needs output.weight; the 41 MB tiny models tie it)
           R=tengomucho/tiny-random-gpt-oss; REV=2109d1ee033bb4191af6dd950fda542c9c351dc8; mkdir -p tiny-gptoss
+          # files pinned by the commit $REV (no per-file sha256): cached by that commit, else retried
           for f in config.json generation_config.json model.safetensors special_tokens_map.json tokenizer.json tokenizer_config.json; do
-            curl -L -f -s -o tiny-gptoss/$f "https://huggingface.co/$R/resolve/$REV/$f"
+            tools/ci/fetch.sh "https://huggingface.co/$R/resolve/$REV/$f" tiny-gptoss/$f || exit 1
           done
           python3 llama.cpp/convert_hf_to_gguf.py tiny-gptoss --outfile tiny-gptoss-f16.gguf --outtype f16
           # Q2_0: the executor takes IQ / Q2_0 expert weights by default (its own waits for experts still loading)
@@ -354,6 +373,13 @@ jobs:
           timeout 60 llama.cpp/build/bin/llama-server -m tiny-gptoss.gguf -c 2048 --port 8097 > tiny_srv.log 2>&1 || true
           grep -iE "error|failed|unknown|invalid|exception|model loaded|listening" tiny_srv.log | head -20 || true
           tail -15 tiny_srv.log
+
+      - name: Cache save (tiny gpt-oss source files; only after the model converted)
+        if: steps.tinygptoss.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: tiny-gptoss
+          key: dl-tiny-gptoss-2109d1ee
 
       - name: Identity on gpt-oss (Q2_0, executor graphs) with background reads delayed (catches a missing wait in the executor's own path)
         env:
