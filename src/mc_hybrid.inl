@@ -23,6 +23,7 @@ void hybrid_upload(moe_cache_backend_ctx * c, state_t & s) {
 }
 
 void hybrid_drop(moe_cache_backend_ctx * c, state_t & s) {
+    hybrid_pg_clear(c);                // persistent graphs point into the bank
     ggml_backend_buffer_free(c->hb_buf);
     c->hb_buf = nullptr;
     c->hb_dropped = true;
@@ -296,6 +297,7 @@ bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
         n_exp++;
     }
     if (c->hb_ctx) {
+        hybrid_pg_clear(c);
         ggml_free(c->hb_ctx);
         c->hb.clear();
     }
@@ -446,65 +448,134 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         }
     }
     const int64_t R = (int64_t) hrows.size();
-    // the GPU graph: same nodes, weights replaced by the bank, ids by the slots (misses point at slot 0; their columns are not used)
-    ggml_init_params ip = { ggml_tensor_overhead() * 4 * (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
-    ggml_context * ctx = ctx_new(c, ip);
-    if (!ctx) {
-        return false;
-    }
-    std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
-    std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
-    ggml_tensor * gids = compact ? ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, R) : ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n_tok);
-    ggml_set_input(gids);
-    for (ggml_tensor * n : seg) {
-        int64_t nne[GGML_MAX_DIMS] = { n->ne[0], n->ne[1], n->ne[2], n->ne[3] };
-        if (compact) { nne[1] = 1; nne[2] = R; }
-        ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, nne);
-        nn->op = n->op;
-        memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
-        for (int k = 0; k < GGML_MAX_SRC; k++) {
-            const ggml_tensor * src = n->src[k];
-            if (!src) {
-                continue;
-            }
-            if (clone.count(src)) {
-                nn->src[k] = clone[src];
-            } else if (n->op == GGML_OP_MUL_MAT_ID && k == 0) {
-                nn->src[k] = c->hb[s.by_tensor.at(src)].first;
-            } else if (n->op == GGML_OP_MUL_MAT_ID && k == 2) {
-                nn->src[k] = gids;
-            } else {
-                // uploaded row by row below: whole rows of F32 / I32 only (the same rule as gpu_segment)
-                if (src->nb[0] != ggml_type_size(src->type) || (src->type != GGML_TYPE_F32 && src->type != GGML_TYPE_I32)) {
-                    ctx_free(c, ctx);
-                    return false;
-                }
-                int64_t sne[GGML_MAX_DIMS] = { src->ne[0], src->ne[1], src->ne[2], src->ne[3] };
-                if (compact) { sne[1] = 1; sne[2] = R; }
-                ggml_tensor * nt = ggml_new_tensor(ctx, src->type, GGML_MAX_DIMS, sne);
-                ggml_set_input(nt);
-                clone[src] = nt;
-                uploads.emplace_back(src, nt);
-                nn->src[k] = nt;
+    // MOE_CACHE_HYBRID_PERSIST=1 (default off): the graph of this layer's block is built once and reused while the block has the same shape (see hb_pg_t)
+    static const bool persist = mcenv::env_on("MOE_CACHE_HYBRID_PERSIST");
+    const bool use_pg = persist && !compact;
+    std::vector<int64_t> sig;
+    moe_cache_backend_ctx::hb_pg_t * pg = nullptr;
+    if (use_pg) {
+        sig.push_back(n_used); sig.push_back(n_tok);
+        for (ggml_tensor * n : seg) {
+            sig.push_back(n->op); sig.push_back(n->type);
+            for (int k = 0; k < GGML_MAX_DIMS; k++) { sig.push_back(n->ne[k]); }
+            for (int k = 0; k < GGML_MAX_SRC; k++) {
+                const ggml_tensor * src = n->src[k];
+                sig.push_back(src ? (int64_t) src->type * 8 + src->ne[0] : -1);
+                if (src && n->op == GGML_OP_MUL_MAT_ID && k == 0) { sig.push_back(c->hb.at(s.by_tensor.at(src)).first->ne[2]); }
+                if (src) { for (int d = 1; d < GGML_MAX_DIMS; d++) { sig.push_back(src->ne[d]); } sig.push_back((int64_t) ggml_is_contiguous(src)); }
             }
         }
-        clone[n] = nn;
+        auto it = c->hpg.find(layer);
+        if (it != c->hpg.end() && it->second.g && it->second.sig == sig) {
+            pg = &it->second;
+        }
     }
-    ggml_tensor * gout = clone[seg.back()];
-    ggml_set_output(gout);
-    ggml_cgraph * g = ggml_new_graph(ctx);
-    ggml_build_forward_expand(g, gout);
-    if (!gpu_graph_supported(c, g) || !ggml_gallocr_alloc_graph(c->galloc, g)) {
-        ctx_free(c, ctx);
-        return false;
+    // the GPU graph: same nodes, weights replaced by the bank, ids by the slots (misses point at slot 0; their columns are not used)
+    ggml_context * ctx = nullptr;
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> clone;
+    std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> uploads;
+    ggml_tensor * gids = nullptr, * gout = nullptr;
+    ggml_cgraph * g = nullptr;
+    ggml_gallocr_t own_ga = nullptr;
+    auto release = [&]() {                  // drop whatever this call built or reused (a persistent graph goes back to be built again)
+        if (use_pg && c->hpg.count(layer)) {
+            auto & e = c->hpg[layer];
+            if (e.ga) { ggml_gallocr_free(e.ga); }
+            if (e.ctx) { ggml_free(e.ctx); }
+            c->hpg.erase(layer);
+            ctx = nullptr;
+        } else if (ctx) {
+            ctx_free(c, ctx);
+            ctx = nullptr;
+        }
+    };
+    if (pg) {
+        // reuse: pair this call's source tensors with the graph's input tensors in the order the build met them
+        gids = pg->gids; gout = pg->gout; g = pg->g;
+        std::unordered_set<const ggml_tensor *> in_seg(seg.begin(), seg.end()), seen;
+        size_t k_in = 0;
+        for (ggml_tensor * n : seg) {
+            for (int k = 0; k < GGML_MAX_SRC; k++) {
+                const ggml_tensor * src = n->src[k];
+                if (!src || in_seg.count(src) || (n->op == GGML_OP_MUL_MAT_ID && (k == 0 || k == 2)) || !seen.insert(src).second) {
+                    continue;
+                }
+                uploads.emplace_back(src, pg->in[k_in++]);
+            }
+        }
+    } else {
+        ggml_init_params ip = { ggml_tensor_overhead() * 4 * (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
+        ctx = ctx_new(c, ip);
+        if (!ctx) {
+            return false;
+        }
+        gids = compact ? ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, R) : ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n_tok);
+        ggml_set_input(gids);
+        for (ggml_tensor * n : seg) {
+            int64_t nne[GGML_MAX_DIMS] = { n->ne[0], n->ne[1], n->ne[2], n->ne[3] };
+            if (compact) { nne[1] = 1; nne[2] = R; }
+            ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, nne);
+            nn->op = n->op;
+            memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
+            for (int k = 0; k < GGML_MAX_SRC; k++) {
+                const ggml_tensor * src = n->src[k];
+                if (!src) {
+                    continue;
+                }
+                if (clone.count(src)) {
+                    nn->src[k] = clone[src];
+                } else if (n->op == GGML_OP_MUL_MAT_ID && k == 0) {
+                    nn->src[k] = c->hb[s.by_tensor.at(src)].first;
+                } else if (n->op == GGML_OP_MUL_MAT_ID && k == 2) {
+                    nn->src[k] = gids;
+                } else {
+                    // uploaded row by row below: whole rows of F32 / I32 only (the same rule as gpu_segment)
+                    if (src->nb[0] != ggml_type_size(src->type) || (src->type != GGML_TYPE_F32 && src->type != GGML_TYPE_I32)) {
+                        ctx_free(c, ctx);
+                        return false;
+                    }
+                    int64_t sne[GGML_MAX_DIMS] = { src->ne[0], src->ne[1], src->ne[2], src->ne[3] };
+                    if (compact) { sne[1] = 1; sne[2] = R; }
+                    ggml_tensor * nt = ggml_new_tensor(ctx, src->type, GGML_MAX_DIMS, sne);
+                    ggml_set_input(nt);
+                    clone[src] = nt;
+                    uploads.emplace_back(src, nt);
+                    nn->src[k] = nt;
+                }
+            }
+            clone[n] = nn;
+        }
+        gout = clone[seg.back()];
+        ggml_set_output(gout);
+        g = ggml_new_graph(ctx);
+        ggml_build_forward_expand(g, gout);
+        if (use_pg) {
+            own_ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
+        }
+        if (!gpu_graph_supported(c, g) || !(own_ga ? ggml_gallocr_alloc_graph(own_ga, g) : ggml_gallocr_alloc_graph(c->galloc, g))) {
+            if (own_ga) { ggml_gallocr_free(own_ga); }
+            ctx_free(c, ctx);
+            return false;
+        }
+        if (use_pg) {                       // keep it: the context and allocator now belong to the layer's entry
+            ctx_keep(c, ctx);
+            auto & e = c->hpg[layer];
+            e = {};
+            e.ctx = ctx; e.ga = own_ga; e.g = g; e.gids = gids; e.gout = gout; e.sig = sig;
+            for (auto & up : uploads) { e.in.push_back(up.second); }
+            pg = &e;
+        }
     }
     lap(1);
     if (compact) {
         ggml_backend_tensor_set(gids, crid.data(), 0, crid.size() * sizeof(int32_t));
+    } else if (pg) {
+        ggml_backend_tensor_set_async(c->gpu, gids, rid.data(), 0, rid.size() * sizeof(int32_t));
     } else {
         ggml_backend_tensor_set(gids, rid.data(), 0, rid.size() * sizeof(int32_t));
     }
     std::vector<uint8_t> pack;
+    std::vector<std::vector<uint8_t>> packs;      // persistent path: async copies still read these when the loop moves on
     for (auto & up : uploads) {
         const ggml_tensor * t = up.first;
         if (compact) {          // one input row per hit pick
@@ -518,22 +589,31 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             continue;
         }
         if (ggml_is_contiguous(t)) {
-            ggml_backend_tensor_set(up.second, t->data, 0, ggml_nbytes(up.second));
+            if (pg) {
+                ggml_backend_tensor_set_async(c->gpu, up.second, t->data, 0, ggml_nbytes(up.second));
+            } else {
+                ggml_backend_tensor_set(up.second, t->data, 0, ggml_nbytes(up.second));
+            }
             continue;
         }
         const size_t es = ggml_type_size(t->type);
-        pack.assign(ggml_nbytes(up.second), 0);
+        std::vector<uint8_t> & pk = pg ? (packs.emplace_back(), packs.back()) : pack;
+        pk.assign(ggml_nbytes(up.second), 0);
         size_t o = 0;
         for (int64_t i3 = 0; i3 < t->ne[3]; i3++) for (int64_t i2 = 0; i2 < t->ne[2]; i2++) for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
-            memcpy(pack.data() + o, (const char *) t->data + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3], (size_t) t->ne[0] * es);
+            memcpy(pk.data() + o, (const char *) t->data + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3], (size_t) t->ne[0] * es);
             o += (size_t) t->ne[0] * es;
         }
-        ggml_backend_tensor_set(up.second, pack.data(), 0, pack.size());
+        if (pg) {
+            ggml_backend_tensor_set_async(c->gpu, up.second, pk.data(), 0, pk.size());
+        } else {
+            ggml_backend_tensor_set(up.second, pk.data(), 0, pk.size());
+        }
     }
     lap(2);
     if (ggml_backend_graph_compute_async(c->gpu, g) != GGML_STATUS_SUCCESS) {
         ggml_backend_synchronize(c->gpu);    // part of it may have been submitted: let it finish before the buffers are used again
-        ctx_free(c, ctx);
+        release();
         return false;
     }
     lap(3);
@@ -548,11 +628,17 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         }
     }
     lap(4);
-    ggml_backend_synchronize(c->gpu);
-    lap(5);
     ggml_tensor * out = seg.back();
     std::vector<float> res((size_t) ggml_nelements(out));
-    ggml_backend_tensor_get(gout, res.data(), 0, ggml_nbytes(gout));
+    if (pg) {                                // one wait for the compute and the copy back
+        ggml_backend_tensor_get_async(c->gpu, gout, res.data(), 0, ggml_nbytes(gout));
+        ggml_backend_synchronize(c->gpu);
+        lap(5);
+    } else {
+        ggml_backend_synchronize(c->gpu);
+        lap(5);
+        ggml_backend_tensor_get(gout, res.data(), 0, ggml_nbytes(gout));
+    }
     if (compact) {
         for (int64_t r = 0; r < R; r++) {
             memcpy((char *) out->data + (int64_t) hrows[(size_t) r].second * out->nb[1] + (int64_t) hrows[(size_t) r].first * out->nb[2], res.data() + (size_t) (r * out->ne[0]), (size_t) out->ne[0] * sizeof(float));
@@ -565,7 +651,9 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             }
         }
     }
-    ctx_free(c, ctx);
+    if (!pg) {
+        ctx_free(c, ctx);
+    }
     lap(6);
     for (int i = 0; i < 7; i++) {
         s.hyb_ph_ns[i] += ph[i];
