@@ -36,7 +36,7 @@ def type_name(t):
 # ---- codecs: dequantise a slice to float32, quantise float32 rows to the fine type ----
 
 class GgmlCodec:
-    """libggml through ctypes (the build that knows both input types; Q2_0 needs ggml 0.28 / llama.cpp b12064 or newer)."""
+    """libggml through ctypes (the build that knows both input types; Q2_0 needs ggml 0.28 / llama.cpp b12064 or newer; the kit now bundles b12207)."""
     class Traits(ctypes.Structure):
         _fields_ = [("type_name", ctypes.c_char_p), ("blck_size", ctypes.c_int64), ("blck_interleave", ctypes.c_int64), ("type_size", ctypes.c_size_t),
                     ("is_quantized", ctypes.c_bool), ("to_float", ctypes.c_void_p), ("from_float_ref", ctypes.c_void_p)]

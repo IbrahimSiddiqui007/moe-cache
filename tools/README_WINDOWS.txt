@@ -6,7 +6,7 @@ identical to stock llama.cpp. If your model fits in RAM, stock llama.cpp is fast
 launcher then runs it stock by itself.
 
 1. What you need
-   - llama.cpp: INCLUDED in this kit (folder llama\: llama.cpp b12064 Vulkan build for AMD,
+   - llama.cpp: INCLUDED in this kit (folder llama\: llama.cpp b12207 Vulkan build for AMD,
      Intel and NVIDIA cards, built from the official source with moe-cache's small patch set;
      every patch is built in but OFF, see llama\PATCHES-moe-cache.txt; MIT licence in that
      folder). Nothing to download. For the official build instead, download it from the

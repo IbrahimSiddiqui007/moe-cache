@@ -19,7 +19,7 @@ $ErrorActionPreference = "Continue"
 $ProgressPreference = "SilentlyContinue"
 
 # pinned exactly as in windows.yml (LLAMA_RELEASE, RELEASE-008) and the Granite file of the workflow
-$LlamaRelease = "b12064"
+$LlamaRelease = "b12207"
 $LlamaZipName = "llama-$LlamaRelease-bin-win-cpu-x64.zip"
 $LlamaZipSha = "c1ced7358438e19c2af6debefe188280ba39ac0242352719cd30d931ca8eec73"
 $GraniteUrl = "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"

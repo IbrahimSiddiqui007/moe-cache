@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       llama_build:
-        description: "llama.cpp in the kits: patched (our b12064 build, every patch built in and off; what a tag always uses) or official (the unmodified release build)"
+        description: "llama.cpp in the kits: patched (our b12207 build, every patch built in and off; what a tag always uses) or official (the unmodified release build)"
         type: choice
         options: [patched, official]
         default: patched
@@ -25,7 +25,7 @@ defaults:
     shell: bash     # bash -eo pipefail: without it "kernel_check | tee" hides a failing kernel check
 
 jobs:
-  # Since v0.3.8 the kits bundle OUR patched llama.cpp build (b12064 + patches/llama.cpp/*.patch, every patch built in and OFF), built by llama_patched.yml in this same
+  # Since v0.3.8 the kits bundle OUR patched llama.cpp build (b12207 + patches/llama.cpp/*.patch, every patch built in and OFF), built by llama_patched.yml in this same
   # run (so it also runs the temperature-0 identity check against the official build). A tag always uses it; a manual run may pick `official` (the old way).
   llama-patched:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.llama_build != 'official' }}
@@ -88,7 +88,7 @@ jobs:
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ runner.temp }}/llama-tgz
-          key: dl-tgz-llama-b12064-ubuntu-vulkan-156e0010
+          key: dl-tgz-llama-b12207-ubuntu-vulkan-178a5d6a
 
       - name: The patched llama.cpp build for the Linux tarball (llama_patched.yml of this run; skipped for a manual run with llama_build = official)
         if: ${{ needs.llama-patched.result == 'success' }}
@@ -117,7 +117,7 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ runner.temp }}/llama-tgz
-          key: dl-tgz-llama-b12064-ubuntu-vulkan-156e0010
+          key: dl-tgz-llama-b12207-ubuntu-vulkan-178a5d6a
 
       - name: The ggml0.26 tarball carries the llama.cpp build (patched, or the official one for a manual run) and the launcher finds it (no model); the API-2 tarball does not
         run: |
@@ -130,7 +130,7 @@ jobs:
           echo "$out" | grep -Eq 'llama-server +[^ ]*/llama/llama-server' || { echo "FAIL: moe_cache.py check did not find the bundled llama-server"; exit 1; }
           if [ "${{ needs.llama-patched.result }}" = success ]; then
             NUMS=$(cd patches/llama.cpp && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -)   # the patch folder is the one list
-            echo "$out" | grep -Fq "llama.cpp b12064 + moe-cache patches $NUMS built in, all off" || { echo "FAIL: check did not print the patched-build line"; exit 1; }
+            echo "$out" | grep -Fq "llama.cpp b12207 + moe-cache patches $NUMS built in, all off" || { echo "FAIL: check did not print the patched-build line"; exit 1; }
             grep -Fq "patches ($NUMS)" "$r/llama/README-moe-cache.txt" || { echo "FAIL: the bundled README does not name the patches"; exit 1; }
           elif [ -f "$r/llama/PATCHES-moe-cache.txt" ]; then echo "FAIL: an official-build tarball carries a patch note"; exit 1; fi
           if echo "$out" | grep -Eq '\[FAIL\] +(llama-server|ggml version|shared ggml)'; then echo "FAIL: check rejects the bundled llama.cpp"; exit 1; fi
@@ -231,7 +231,7 @@ jobs:
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ runner.temp }}/llama-zips
-          key: dl-kit-llama-b12064-vulkan-e0fee991
+          key: dl-kit-llama-b12207-vulkan-c8c84eff
 
       - name: The patched llama.cpp build for the Windows kit (llama_patched.yml of this run; skipped for a manual run with llama_build = official)
         if: ${{ needs.llama-patched.result == 'success' }}
@@ -256,7 +256,7 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then V="${GITHUB_REF_NAME#v}"; else V=0.0.0-ci; fi
           tools/make_windows_kit.sh "$V"
           if [ "${{ needs.llama-patched.result }}" = success ]; then
-            unzip -p "dist/moe-cache-v$V-windows-x64.zip" "moe-cache-v$V-windows-x64/llama/PATCHES-moe-cache.txt" | tr -d '\r' | grep -Fx "llama.cpp b12064 + moe-cache patches $(cd patches/llama.cpp && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -) built in, all off" || { echo "FAIL: the kit's llama has no patched-build note"; exit 1; }
+            unzip -p "dist/moe-cache-v$V-windows-x64.zip" "moe-cache-v$V-windows-x64/llama/PATCHES-moe-cache.txt" | tr -d '\r' | grep -Fx "llama.cpp b12207 + moe-cache patches $(cd patches/llama.cpp && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -) built in, all off" || { echo "FAIL: the kit's llama has no patched-build note"; exit 1; }
             unzip -l "dist/moe-cache-v$V-windows-x64.zip" | grep -E 'llama/(llama-server\.exe|ggml-vulkan\.dll)' | wc -l | grep -qx 2 || { echo "FAIL: llama-server.exe / ggml-vulkan.dll missing from the kit"; exit 1; }
           fi
           python3 packaging/fill_manifests.py "dist/moe-cache-v$V-windows-x64.zip"   # scoop / winget manifests (a check here; packages.yml publishes them after the release)
@@ -266,7 +266,7 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ runner.temp }}/llama-zips
-          key: dl-kit-llama-b12064-vulkan-e0fee991
+          key: dl-kit-llama-b12207-vulkan-c8c84eff
 
       - name: Attest build provenance
         if: github.ref_type == 'tag'   # as in the build job: a manual run on a branch must not get the same signature as a release

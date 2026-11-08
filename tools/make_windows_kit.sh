@@ -8,7 +8,7 @@
 #   README_WINDOWS.txt            what to install and the first commands
 #   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 / 0.27 (b11669 and newer); -api2.dll for ggml 0.25
 #   bin\ planner\ ui\ tools\ profiles\ docs\ LICENSE   the launcher, the page and what they read (Python 3.8+, standard library only)
-#   llama\                        the llama.cpp Vulkan build (b12064, MIT) so a friend downloads one zip: our patched build (patches built in, all off) when LLAMA_PATCHED_WIN_DIR is set, else the official one
+#   llama\                        the llama.cpp Vulkan build (b12207, MIT) so a friend downloads one zip: our patched build (patches built in, all off) when LLAMA_PATCHED_WIN_DIR is set, else the official one
 set -e
 cd "$(dirname "$0")/.."
 V="$1"; [ -n "$V" ] || { echo "usage: tools/make_windows_kit.sh VERSION"; exit 1; }
@@ -38,7 +38,7 @@ mkdir -p "$K/docs/img" && cp "$X"/docs/img/gui-3pane-desktop.png "$K/docs/img/" 
 cp "$X/LICENSE" "$X/CHANGELOG.md" "$X/models.json" "$K/"     # the model catalogue (bin/moe_cache_catalogue.py reads it from the folder above bin)
 # one download for friends: the official, unmodified llama.cpp Vulkan build in llama\ (MIT; its licence is copied next to it). Pinned and checked
 # against the release asset's sha256; MOE_CACHE_KIT_NO_LLAMA=1 builds the kit without it (the launcher then searches C:\llama and the rest as before)
-LLAMA_TAG=b12064; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=e0fee991887711ce74cb9c1f7715a1234e27d94f13ccfc594dc01310e5da6e22
+LLAMA_TAG=b12207; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=c8c84eff8b7eae83602d3cf2dd6defe16c47d1011b4a2514905c1817e3a909ca
 # LLAMA_PATCHED_WIN_DIR=DIR (the release workflow sets it: the unpacked llama_patched.yml server + ggml-vulkan.dll) bundles OUR patched build of the same pin
 # instead, every patch built in and off (tools/bundle_llama_patched.sh). Unset = the official build as below.
 if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_WIN_DIR:-}" ]; then

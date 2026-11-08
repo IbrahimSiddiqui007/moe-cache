@@ -137,7 +137,7 @@ def llama_search_dirs():
 
 # llama.cpp commits (first 9 digits) that CI ran this plugin against: the tested "yes" rows of .github/workflows/identity.yml; the @commit entries of
 # MOE_CACHE_TESTED_GGML in src/moe_cache_plugin.cpp are a subset. tests/tested_commits_test.py fails when they disagree.
-TESTED_COMMITS = ("7fe450e19", "23b0202a1", "ff0d396e3", "51fe42c5d")
+TESTED_COMMITS = ("7fe450e19", "23b0202a1", "ff0d396e3", "51fe42c5d", "998200491")
 
 
 def tested_commit(ver):
@@ -160,7 +160,7 @@ def ls_build(ls):
 
 def llama_patch_line(ls):
     """The one-line note the kit's patched llama.cpp carries next to llama-server (PATCHES-moe-cache.txt, written by tools/bundle_llama_patched.sh), e.g.
-    'llama.cpp b12064 + moe-cache patches 0004,0020,0030,0040,0090 built in, all off'. None for an official or any other build (no such file)."""
+    'llama.cpp b12207 + moe-cache patches 0004,0020,0030,0040,0090 built in, all off'. None for an official or any other build (no such file)."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(ls)), "PATCHES-moe-cache.txt"), encoding="utf-8", errors="replace") as f:
             line = f.readline().strip()
@@ -4864,7 +4864,7 @@ def check(argv):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
             warn("ggml version", "this llama.cpp build is not one we tested" + (f" ({ver})" if ver else "") + ": we tested " +
-                 ("b11669, b11966 and b12064 on Windows" if WINDOWS else "four llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966 and 51fe42c5d = b12064)") +
+                 ("b11669, b11966, b12064 and b12207 on Windows" if WINDOWS else "five llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966, 51fe42c5d = b12064 and 998200491 = b12207)") +
                  ". Other builds usually work; if the plugin does not load, the lines below say so (moe_cache.py update --check shows the newest build)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):
