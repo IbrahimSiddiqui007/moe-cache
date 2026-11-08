@@ -393,6 +393,16 @@
                  ",\"ns_gap\":" + std::to_string(ns_gap.load()) + ",\"ns_sync\":" + std::to_string(ns_sync.load()) + ",\"ns_gpu_seg\":" + std::to_string(ns_gpu_seg.load()) +
                  ",\"n_gap\":" + std::to_string(n_gap.load()) + ",\"gap_b_ns\":[" + std::to_string(gap_b_ns[0].load()) + "," + std::to_string(gap_b_ns[1].load()) + "," +
                  std::to_string(gap_b_ns[2].load()) + "," + std::to_string(gap_b_ns[3].load()) + "]";
+            if (hyb_groups) {       // hybrid bank: layer steps, picks served by the bank, swaps, time per phase (ns, summed), bank freed / reloaded for prompts
+                j += ",\"hyb\":{\"groups\":" + std::to_string(hyb_groups.load()) + ",\"picks\":" + std::to_string(hyb_picks.load()) + ",\"hits\":" + std::to_string(hyb_hits.load()) +
+                     ",\"swaps\":" + std::to_string(hyb_swaps.load()) + ",\"swap_ns\":" + std::to_string(hyb_swap_ns.load()) + ",\"ensure_ns\":" + std::to_string(hyb_ens_ns.load()) +
+                     ",\"set_ns\":" + std::to_string(hyb_set_ns.load()) + ",\"drops\":" + std::to_string(hyb_drops.load()) + ",\"reloads\":" + std::to_string(hyb_reloads.load()) +
+                     ",\"reload_ns\":" + std::to_string(hyb_reload_ns.load()) + ",\"phase_ns\":[";
+                for (int k = 0; k < 7; k++) {
+                    j += std::string(k ? "," : "") + std::to_string(hyb_ph_ns[k].load());
+                }
+                j += "]}";
+            }
             if (mcenv::env_on("MOE_CACHE_SEG_TIMES")) {
                 uint64_t mj = 0;
                 const uint64_t f = process_faults(&mj);
