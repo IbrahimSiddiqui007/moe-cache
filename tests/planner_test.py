@@ -103,6 +103,69 @@ rc, out = dry_nolib("--ram", FIT, "--vram", "0.3")
 del os.environ["GGML_OP_OFFLOAD_MIN_BATCH"]
 check(rc == 0 and "GGML_OP_OFFLOAD_MIN_BATCH=512" not in out, "launcher stock: the user's GGML_OP_OFFLOAD_MIN_BATCH is kept")
 check("GGML_OP_OFFLOAD_MIN_BATCH" not in dry("--vram", "0.3"), "launcher plugin run: no GGML_OP_OFFLOAD_MIN_BATCH")
+# plugin_for_partial_offload (v0.3.8): the model fits in RAM, then (a) every expert fits the GPU -> stock; (b) some expert layers stay on the CPU -> the plugin;
+# --stock, --cpu-only and MOE_CACHE_STOCK_WHEN_FITS=1 -> stock; the plugin library missing (above) -> stock without asking for it. Real plugin build, no --always-plugin.
+sys.path.insert(0, os.path.join(HERE, "bin"))
+import moe_cache as _mc
+def dry_lib(*extra, env_extra=None):
+    env = dict(os.environ, MOE_CACHE_MAX_RAM_GB="0", **(env_extra or {}))
+    env.setdefault("MOE_CACHE_LIB", os.path.join(HERE, "build", "libggml-moe-cache.so"))
+    r = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "server", model, "--dry-run", "--ram", FIT, *extra],
+                       capture_output=True, text=True, timeout=300, env=env)
+    return r.returncode, r.stdout + r.stderr
+PARTIAL = "some layers keep their experts on the CPU"
+def runs_plugin(out): return "LD_PRELOAD" in out or "GGML_BACKEND_PATH" in out
+rc, out = dry_lib("--vram", "64")
+check(rc == 0 and PARTIAL not in out and not runs_plugin(out) and "running stock llama-server" in out, f"fits in RAM and every expert fits the GPU: stock (rc {rc})")
+rc, out = dry_lib("--vram", "0.3")
+check(rc == 0 and PARTIAL in out and runs_plugin(out) and (ncmoe(out) or 0) > 0, f"fits in RAM, {ncmoe(out)} expert layers on the CPU: the plugin runs")
+rc, out = dry_lib("--vram", "0.3", "--stock")
+check(rc == 0 and PARTIAL not in out and not runs_plugin(out), "partial offload with --stock: stock")
+rc, out = dry_lib("--vram", "0.3", env_extra={"MOE_CACHE_STOCK_WHEN_FITS": "1"})
+check(rc == 0 and PARTIAL not in out and not runs_plugin(out), "partial offload with MOE_CACHE_STOCK_WHEN_FITS=1: stock")
+rc, out = dry_lib("--vram", "0.3", env_extra={"MOE_CACHE_STOCK_WHEN_FITS": "0"})
+check(rc == 0 and PARTIAL in out and runs_plugin(out), "MOE_CACHE_STOCK_WHEN_FITS=0 is not the switch: the plugin still runs")
+# NO GPU (owner decision 2026-11-08): the plugin-for-fits default is NOT limited to machines with a GPU. --vram takes only positive numbers, so 0.05 GiB stands for "no usable GPU
+# memory": the planner puts every expert layer on the CPU and the plugin still runs (the unit checks below use the planner's own 0.0 answer)
+rc, out = dry_lib("--vram", "0.05")
+check(rc == 0 and PARTIAL in out and runs_plugin(out) and ncmoe(out) == lay["n_layers"], f"almost no GPU memory, fits in RAM: the plugin runs, all {ncmoe(out)} expert layers on the CPU (rc {rc})")
+_nogpu = _mc.planner_answer(model, 8192, 32.0, 0.0)
+check(_nogpu["n_cpu_moe"] == lay["n_layers"], f"planner with 0 GiB of GPU memory: every expert layer on the CPU ({_nogpu['n_cpu_moe']} of {lay['n_layers']})")
+# the unit: a fake machine, each branch of the function
+class _M:
+    lib = "/x/libggml-moe-cache.so"
+    def __init__(self, ncmoe_=5, exists=True, ls_api="3", lib_api="3", raises=False):
+        self.n, self.ex, self.la, self.lb, self.rs = ncmoe_, exists, ls_api, lib_api, raises
+    def pick_lib(self, ls): return self.lib
+    def ls_api(self, ls): return self.la
+    def lib_api(self, lib): return self.lb
+    def lib_exists(self, lib): return self.ex
+    def mem_cap(self): return None
+    def mem_for_server(self, ram): return 32 * GIB
+    def planner_answer(self, model, ctx, ram, vram):
+        if self.rs: raise RuntimeError("no planner answer")
+        return {"n_cpu_moe": self.n}
+_A = lambda **kw: __import__("types").SimpleNamespace(**{**dict(stock=False, cpu_only=False, ram="32", vram=None), **kw})
+_old_env = {k: os.environ.pop(k, None) for k in ("MOE_CACHE_STOCK_WHEN_FITS", "MOE_CACHE_LIB")}
+try:
+    f = lambda a, m: _mc.plugin_for_partial_offload(a, "llama-server", model, 8192, m)
+    check(bool(f(_A(), _M(5))), "plugin_for_partial_offload: experts on the CPU -> the line (plugin)")
+    check(f(_A(), _M(0)) is None, "plugin_for_partial_offload: every expert on the GPU (n_cpu_moe 0) -> None (stock)")
+    check(f(_A(stock=True), _M(5)) is None and f(_A(cpu_only=True), _M(5)) is None, "plugin_for_partial_offload: --stock and --cpu-only -> None")
+    os.environ["MOE_CACHE_STOCK_WHEN_FITS"] = "1"
+    check(f(_A(), _M(5)) is None, "plugin_for_partial_offload: MOE_CACHE_STOCK_WHEN_FITS=1 -> None")
+    del os.environ["MOE_CACHE_STOCK_WHEN_FITS"]
+    check(f(_A(), _M(5, exists=False)) is None, "plugin_for_partial_offload: no plugin build -> None")
+    check(f(_A(), _M(5, ls_api="2", lib_api="3")) is None, "plugin_for_partial_offload: plugin built for another backend API -> None")
+    check(f(_A(), _M(5, raises=True)) is None, "plugin_for_partial_offload: planner fails -> None (stock)")
+    os.environ["MOE_CACHE_LIB"] = os.path.join(HERE, "no-such-dir", "libggml-moe-cache.so")
+    check(f(_A(), _M(5, exists=False)) is None, "plugin_for_partial_offload: MOE_CACHE_LIB names a missing file -> None (was: asked for the plugin because the default build existed)")
+    del os.environ["MOE_CACHE_LIB"]
+    # no GPU: the planner puts every expert layer on the CPU (--vram 0): the plugin is asked for, no GPU requirement (owner decision 2026-11-08)
+    check(bool(f(_A(vram="0"), _M(lay["n_layers"]))), "plugin_for_partial_offload: no GPU (all expert layers on the CPU) -> the plugin, as on a GPU machine")
+finally:
+    for k, v in _old_env.items():
+        if v is not None: os.environ[k] = v
 rc, out = dry_nolib("--ram", "4", "--always-plugin")
 check(rc != 0 and "MOE_CACHE_LIB points to a file that does not exist" in out, "launcher, plugin missing, --always-plugin: stops with the missing-file message")
 
@@ -305,6 +368,12 @@ for _c in sorted(gguf_plan._COMPUTE_MIB):      # audit 2026-10-29 L1: -ub 2048 a
           f"compute buffer guess at {_c}: 2048 >= 1024 >= 512 ({[gguf_plan.compute_buffer_guess_mib(_c, u) for u in (2048, 1024, 512)]})")
 check(gguf_plan.compute_buffer_guess_mib(262144, 2048) >= 3979 and gguf_plan.compute_buffer_mib(262144, 2048) == 3979,
       "compute buffer: 2048 at 256k is a candidate with its measured size (picked since 2026-11-03: prompts +26 %)")
+# -ub 4096 exists for ONE measured pair (Flash-Next IQ3_XXS at 64k: 4660 MiB); everything else is the extrapolation, pinned here so a change to it is a decision
+_g4 = {c: gguf_plan.compute_buffer_guess_mib(c, 4096) for c in (8192, 32768, 65536, 131072, 262144, 524288)}
+check(gguf_plan.compute_buffer_mib(65536, 4096) is None and _g4[65536] == 4660 and _g4[8192] == 4660 and _g4[32768] == 4660,
+      f"-ub 4096 guess: up to 64k the single measured value (4660 MiB, Flash-Next IQ3_XXS at 64k) is reused ({_g4})")
+check(_g4[131072] == 7958 and _g4[262144] == 7958 and _g4[524288] == 15916 and _g4[131072] >= _g4[65536],
+      f"-ub 4096 guess: 128k/256k scale the 2048 rows x2 (7958), above 256k it grows with the context (15916) ({_g4})")
 _run = gguf_plan.subprocess.run      # audit 2026-10-29 L4: two NVIDIA GPUs print two lines; the tuner read none
 gguf_plan.subprocess.run = lambda *a, **k: types.SimpleNamespace(stdout="24564, 300\n12288, 100\n")
 try:

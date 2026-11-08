@@ -71,6 +71,13 @@ def run_kv(mode, retry=True):
     return rc, len(calls), int(open(mark).read())
 rc, calls, starts = run_kv("kv_abort_once")
 check(rc == 0 and calls == 1 and starts == 2, f"llama.cpp abort with the launcher's q8_0 KV: retried once with f16 and succeeded (rc {rc}, asked {calls}x, started {starts}x)")
+_said = []
+_say0 = mc.say
+mc.say = lambda text, *a_, **k_: (_said.append(text), _say0(text, *a_, **k_))[1]
+os.remove(os.path.join(TMP, "kv_kv_abort_once_True"))          # the fake counts its starts in this file: start over so it aborts once more
+run_kv("kv_abort_once")
+mc.say = _say0
+check(any("abort line that triggered the f16 KV retry" in x and "ggml-impl.h:330: fatal error" in x for x in _said), "the f16 KV retry logs which abort line matched")
 rc, calls, starts = run_kv("kv_abort_always")
 check(rc != 0 and calls == 1 and starts == 2, f"the abort twice: one retry only (rc {rc}, started {starts}x)")
 rc, calls, starts = run_kv("kv_abort_once", retry=False)
