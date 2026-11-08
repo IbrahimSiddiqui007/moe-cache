@@ -77,6 +77,36 @@ with tempfile.TemporaryDirectory() as tmp:
     check(r_none is not None and r_none["n_off"] is None, "dense_ffn_split: even every FFN in RAM too big -> n_off None (caller keeps --fit)")
     check(gp.dense_ffn_split(moe, 8192, 4 * GIB) is None, "dense_ffn_split: a MoE model is not its business")
     check(gp.dense_ffn_split(dense, 8192, None) is None, "dense_ffn_split: GPU memory unknown -> None")
+    import types                             # LAUNCHER-732: the launcher side of the FFN plan and the dense thread rule, with fixed machine answers
+    class GpuMachine:
+        def __init__(self, free): self.free = free
+        def free_vram_bytes(self): return self.free
+    A = types.SimpleNamespace(vram=None, gpu_margin=None, no_ffn_ram=False)
+    import contextlib, io as _io
+    with contextlib.redirect_stdout(_io.StringIO()):
+        ot = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(1.5 * GIB), [])
+        mc.MMPROJ_VRAM_HEADROOM = int(0.02 * GIB)
+        ot_mm = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(1.5 * GIB), [], mm_bytes=int(0.05 * GIB))
+        ot_user = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(1.5 * GIB), ["-ot", "x"])
+        ot_off = mc.dense_ffn_override(types.SimpleNamespace(vram=None, gpu_margin=None, no_ffn_ram=True), dense, 8192, False, None, GpuMachine(1.5 * GIB), [])
+        ot_big = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(64 * GIB), [])
+    check(bool(ot) and ot.startswith("blk\\.(") and ot.endswith("\\.weight=CPU"), "dense_ffn_override: too big for the GPU -> an -ot text for the last layers")
+    check(bool(ot_mm) and len(ot_mm) > len(ot), "dense_ffn_override: a vision projector takes GPU memory -> more FFN layers in RAM")
+    check(ot_user is None and ot_off is None and ot_big is None, "dense_ffn_override: your own -ot, --no-ffn-ram, a model that fits -> nothing")
+    class PinMachine:
+        def has_cpu_atom(self): return False
+        def win_core_groups(self): return 1
+        def has_cpu_core(self): return True
+        def perf_core_mask(self): return "0x555"
+        def dense_core_mask(self): return ("0xff", 8)
+        def win_cores(self): return None
+        def free_vram_bytes(self): return 8 * GIB
+    P = lambda dense_, cpu_only=False, extra=(): mc.cpu_pin_stage(types.SimpleNamespace(no_ecores=True, no_pin=False, cpu_only=cpu_only), [], list(extra), True, False, PinMachine(), dense_)
+    with contextlib.redirect_stdout(_io.StringIO()):
+        pd, pd_cpu, pm, pu = P(True), P(True, cpu_only=True), P(False), P(True, extra=["-t", "3"])
+    check(pd == ["-C", "0xff", "--cpu-strict", "1", "-t", "8", "-Cb", "0x555", "--cpu-strict-batch", "1", "-tb", "6"], "dense thread rule: 8 decode threads on 4 cores, 6 single batch threads (%s)" % " ".join(pd))
+    check(pd_cpu == ["-C", "0x555", "--cpu-strict", "1"] and pm == pd_cpu, "dense thread rule: --cpu-only and non-dense models keep one thread per performance core")
+    check(pu == ["-C", "0x555", "--cpu-strict", "1"], "dense thread rule: your own -t stands")
     class PlanError(Exception):
         pass
     class DenseMachine:

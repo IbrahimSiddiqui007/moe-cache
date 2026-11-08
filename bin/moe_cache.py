@@ -2972,7 +2972,7 @@ def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False):
             say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
         mask = machine.perf_core_mask()
-        dm = machine.dense_core_mask() if dense else None
+        dm = machine.dense_core_mask() if (dense and not a.cpu_only and machine.free_vram_bytes()) else None        # the two free cores are for the GPU driver: no GPU, no reason
         if dm and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
             pinargs = ["-C", dm[0], "--cpu-strict", "1", "-t", str(dm[1])]
             if mask and not any(x in ("-tb", "--threads-batch", "-Cb", "--cpu-mask-batch") for x in extra):
@@ -3131,7 +3131,7 @@ def multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncm
     return ncmoe, extra
 
 
-def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra):
+def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes=0):
     """Owner lever (a), LAUNCHER-732: a pure-attention dense model bigger than the GPU keeps attention, KV and most weights on the GPU and sends the FFN weights of the last
     layers to the RAM (-ot), instead of llama.cpp's layer split, whose CPU layers also compute attention over their KV (14B at 32k: 0.9 tok/s split vs 3.4-4.0 this way).
     Returns the -ot text or None (then --fit places the layers). --no-ffn-ram turns it off; your own -ot / -ngl after -- stand."""
@@ -3141,6 +3141,8 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import dense_ffn_split
         free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()
+        if free and mm_bytes:
+            free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)           # a vision projector's weights and compute buffer sit in VRAM too (same as the tuner)
         kv_q8 = kv_q8 or arg_after(extra, "-ctk", "--cache-type-k") in ("q8_0", "q4_0")       # your own cache type after -- counts (q4_0 is sized as q8_0: a little too much)
         r = dense_ffn_split(model, ctx, free, kv_q8=kv_q8, margin_gib=a.gpu_margin if a.gpu_margin is not None else 0.25)
     except Exception:
@@ -3160,7 +3162,7 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra):
     return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
 
 
-def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8=False):
+def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8=False, mm_bytes=0):
     """ENGINE-029, stage "command": CPU-only mode (--device none, -ngl 0), the llama-server command line with the placement and the pinning, --auto-fit for a dense model, and the line that says what the cache will manage. Returns (the command, the arguments for llama-server)."""
     cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
     if cpu_only:
@@ -3172,7 +3174,7 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         # LAUNCHER-732 (laptop, RTX 4060 8 GB, Qwen3-14B Q4_K_M 8.4 GiB): -ngl 99 aborts at load ("n_gpu_layers already set by user to 99"); llama.cpp's own --fit
         # keeps 1 GiB free by default (6.3 tok/s), --fit-target 256 MiB places more layers (8.2 tok/s, same text). With -ngl set, --fit is off (fit.cpp).
         del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
-        ot = dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra)
+        ot = dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes)
         if ot:
             cmd += ["-ot", ot]
             return cmd, extra
@@ -3310,7 +3312,7 @@ def _launch_plan(a, extra, argv, machine):
         env += sycl_sysman_env(ls, listing)
     extra = leave_room_stage(a, env, extra, pinargs, machine)
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
-    cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8)
+    cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
     # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows
