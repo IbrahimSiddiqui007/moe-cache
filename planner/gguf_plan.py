@@ -207,6 +207,49 @@ def model_layout(path):
             "mtp_blocks": len(mtp & set(layers))}
 
 
+SMI_GAP_GIB = 0.40           # nvidia-smi (total - used) is 0.4 GiB more than CUDA can allocate on the RTX 4060 8 GB laptop (8146 vs 7745 MiB at idle); the first live run ran out of memory without it
+DENSE_FIXED_GIB = 0.30        # CUDA context + compute buffer (-ub 512) besides the weights and the KV cache; the token embedding stays on the CPU. RTX 4060 8 GB: Qwen3-8B at 16k f16 peaked at 6.88 GiB (4.33 weights + 2.25 KV), Qwen3-14B q8_0 fits at 32k with 25 FFN layers off and not with 22
+
+
+def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
+    """LAUNCHER-732 / owner lever (a): a dense, pure-attention model bigger than the GPU. -> dict(first_layer, n_layers, n_off, ffn_gib, need_gib, free_gib, kv_gib, fits_all)
+    with the FFN weights of the last n_off layers sent to the CPU while attention, the KV cache and the rest of the weights stay on the GPU, or None when this is not the
+    right plan (MoE, hybrid recurrent model, no GPU memory known, the model plus its KV already fits, or even all FFN weights on the CPU leave it too big).
+    Measured (Qwen3-14B Q4_K_M, RTX 4060 8 GB, q8_0 KV): at 32k tokens a plain layer split decodes 0.9 tok/s, FFN in RAM 3.4-4.0; at 16k 1.4 vs 4.4-5.5; at 4k 3.3 vs 4.4-5.4.
+    The layer split wins only below about 2k tokens. A hybrid model (Qwen3.5/3.6/3.8: recurrent layers, little KV) did not gain: its layer split is faster (27B: 1.88 vs 1.2 tok/s)."""
+    GiB = 2**30
+    try:
+        m = read_meta(shards(path)[0])
+        arch = m.get("general.architecture")
+        if m.get(f"{arch}.expert_count") or m.get(f"{arch}.full_attention_interval") or m.get(f"{arch}.ssm.inner_size") is not None or not free_bytes:
+            return None
+        ffn, total, emb, n_blocks = {}, 0, 0, int(m.get(f"{arch}.block_count", 0))
+        for pth in shards(path):
+            for name, size in read_tensors(pth):
+                total += size
+                emb += size if name == "token_embd.weight" else 0
+                mm = re.match(r"blk\.(\d+)\.ffn_(up|down|gate|gate_up)\.weight$", name)
+                if mm:
+                    ffn[int(mm.group(1))] = ffn.get(int(mm.group(1)), 0) + size
+        kv = kv_bytes(path, ctx, kv_q8=kv_q8)
+        if not ffn or kv is None or len(ffn) != n_blocks:
+            return None
+    except Exception:
+        return None
+    per = sum(ffn.values()) / len(ffn)
+    free = free_bytes / GiB - SMI_GAP_GIB
+    need = (total - emb) / GiB + kv / GiB + DENSE_FIXED_GIB + margin_gib
+    out = {"n_layers": n_blocks, "ffn_gib": per / GiB, "need_gib": need, "free_gib": free, "kv_gib": kv / GiB, "fits_all": need <= free, "n_off": 0, "first_layer": n_blocks}
+    if need <= free:
+        return out
+    n_off = int(-(-(need - free) * GiB // per))
+    if n_off > n_blocks:
+        out["n_off"] = None            # even every FFN on the CPU does not fit: the caller keeps llama.cpp's --fit
+        return out
+    out["n_off"], out["first_layer"] = n_off, n_blocks - n_off
+    return out
+
+
 def read_meta(path):
     """-> {key: value} of the GGUF header: numbers and strings, arrays of numbers up to 4096 entries as lists (longer arrays are skipped)."""
     out = {}

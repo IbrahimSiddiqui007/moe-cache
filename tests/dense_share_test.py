@@ -67,6 +67,16 @@ with tempfile.TemporaryDirectory() as tmp:
     except Exception as e:
         got = type(e).__name__ + ": " + str(e)
     check(got.startswith("PlanError") and "does not look like a MoE" in got, "LAUNCHER-732: planner on a dense header (no expert_count): PlanError 'not a MoE', not TypeError (" + got[:40] + ")")
+    import gguf_plan as gp                  # LAUNCHER-732 lever (a): FFN weights in RAM for a dense model bigger than the GPU
+    big, small = 64 * GIB, 0.85 * GIB
+    r_fit = gp.dense_ffn_split(dense, 8192, big)
+    r_some = gp.dense_ffn_split(dense, 8192, 1.20 * GIB, margin_gib=0.0)
+    r_none = gp.dense_ffn_split(dense, 8192, small, margin_gib=0.0)
+    check(r_fit and r_fit["fits_all"] and r_fit["n_off"] == 0, "dense_ffn_split: model fits the GPU -> nothing moved")
+    check(r_some and r_some["n_off"] and r_some["first_layer"] + r_some["n_off"] == r_some["n_layers"], "dense_ffn_split: too big -> the FFN of the LAST layers goes to RAM (%s)" % str(r_some and (r_some["first_layer"], r_some["n_off"])))
+    check(r_none is not None and r_none["n_off"] is None, "dense_ffn_split: even every FFN in RAM too big -> n_off None (caller keeps --fit)")
+    check(gp.dense_ffn_split(moe, 8192, 4 * GIB) is None, "dense_ffn_split: a MoE model is not its business")
+    check(gp.dense_ffn_split(dense, 8192, None) is None, "dense_ffn_split: GPU memory unknown -> None")
     class PlanError(Exception):
         pass
     class DenseMachine:

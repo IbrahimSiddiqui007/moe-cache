@@ -2056,6 +2056,8 @@ SERVER_HELP = """\
            one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
 --cpu-only    run on the CPU only: llama-server gets --device none and -ngl 0 (also chosen by itself when --list-devices shows no GPU)
+--no-ffn-ram  dense model bigger than the GPU: by default attention, the KV cache and most weights stay on the GPU and the FFN weights of the last layers stay in RAM (-ot), which keeps long chats usable (Qwen3-14B on an 8 GB card at 32k tokens: 3.8 tok/s against 1.0 with a plain layer split); this brings llama.cpp's --fit layer split back
+--no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
            Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
@@ -2267,6 +2269,7 @@ def parse_server(argv):
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
     ap.add_argument("--cpu-only", action="store_true", help="run on the CPU only: --device none and -ngl 0 (also chosen by itself when llama-server lists no GPU)")
     ap.add_argument("--auto-fit", action="store_true")      # MM6: a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; since the dense route (LAUNCHER-732) this is the default for dense models
+    ap.add_argument("--no-ffn-ram", action="store_true")    # dense models bigger than the GPU: no FFN-weights-in-RAM plan (-ot), llama.cpp's --fit layer split instead
     ap.add_argument("--no-auto-fit", action="store_true")   # dense models: go back to the blind -ngl 99
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
@@ -3107,7 +3110,36 @@ def multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncm
     return ncmoe, extra
 
 
-def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine):
+def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra):
+    """Owner lever (a), LAUNCHER-732: a pure-attention dense model bigger than the GPU keeps attention, KV and most weights on the GPU and sends the FFN weights of the last
+    layers to the RAM (-ot), instead of llama.cpp's layer split, whose CPU layers also compute attention over their KV (14B at 32k: 0.9 tok/s split vs 3.4-4.0 this way).
+    Returns the -ot text or None (then --fit places the layers). --no-ffn-ram turns it off; your own -ot / -ngl after -- stand."""
+    if getattr(a, "no_ffn_ram", False) or any(x in ("-ot", "--override-tensor") or x.startswith("--override-tensor=") for x in extra):
+        return None
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import dense_ffn_split
+        free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()
+        kv_q8 = kv_q8 or arg_after(extra, "-ctk", "--cache-type-k") in ("q8_0", "q4_0")       # your own cache type after -- counts (q4_0 is sized as q8_0: a little too much)
+        r = dense_ffn_split(model, ctx, free, kv_q8=kv_q8, margin_gib=a.gpu_margin if a.gpu_margin is not None else 0.25)
+    except Exception:
+        return None
+    if not r:
+        return None
+    if r["n_off"] is None:
+        say(f"moe-cache: dense model: the KV cache for {ctx} tokens ({r['kv_gib']:.1f} GiB) leaves too little GPU memory even with every FFN weight in RAM; llama.cpp's --fit places the layers"
+            + ("" if kv_q8 else " (a q8_0 KV cache halves it, approximate: moe-cache-server ... -- -ctk q8_0 -ctv q8_0)"))
+        return None
+    if not r["n_off"]:
+        return None
+    layers = "|".join(str(i) for i in range(r["first_layer"], r["n_layers"]))
+    say(f"moe-cache: dense model: attention, the KV cache and the other weights stay on the GPU; the FFN weights of layers {r['first_layer']}-{r['n_layers'] - 1} ({r['n_off']} of {r['n_layers']}, "
+        f"{r['n_off'] * r['ffn_gib']:.1f} GiB) stay in RAM (-ot; the model plus a {ctx}-token KV cache needs {r['need_gib']:.1f} GiB, the GPU has {r['free_gib']:.1f}). "
+        "A plain layer split would run the attention of the RAM layers on the CPU: far slower in long chats. --no-ffn-ram turns this off")
+    return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
+
+
+def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8=False):
     """ENGINE-029, stage "command": CPU-only mode (--device none, -ngl 0), the llama-server command line with the placement and the pinning, --auto-fit for a dense model, and the line that says what the cache will manage. Returns (the command, the arguments for llama-server)."""
     cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
     if cpu_only:
@@ -3118,8 +3150,12 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
     if dense and not cpu_only and not user_ngl and (a.auto_fit or not a.no_auto_fit):
         # LAUNCHER-732 (laptop, RTX 4060 8 GB, Qwen3-14B Q4_K_M 8.4 GiB): -ngl 99 aborts at load ("n_gpu_layers already set by user to 99"); llama.cpp's own --fit
         # keeps 1 GiB free by default (6.3 tok/s), --fit-target 256 MiB places more layers (8.2 tok/s, same text). With -ngl set, --fit is off (fit.cpp).
-        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]
         del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
+        ot = dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra)
+        if ot:
+            cmd += ["-ot", ot]
+            return cmd, extra
+        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]
         margin = ""
         try:
             if not any(x in ("-fitt", "--fit-target", "--fit") or x.startswith(("--fit-target=",)) for x in extra) and "--fit-target" in ls_help(ls, machine.run):
@@ -3253,7 +3289,7 @@ def _launch_plan(a, extra, argv, machine):
         env += sycl_sysman_env(ls, listing)
     extra = leave_room_stage(a, env, extra, pinargs, machine)
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
-    cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine)
+    cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8)
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
     # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows
