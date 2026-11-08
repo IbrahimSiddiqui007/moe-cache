@@ -13,7 +13,7 @@ Arms:
   adapt-layer    layer-top + decayed-count rule: every E tokens, up to S swaps, ALL counts x decay per round, a missing expert comes in only if its
                  count beats the coldest resident expert of ITS layer
   oracle-layer   best static equal-per-layer bank for this request (upper bound for fixed per-layer ranges)
-Ideas of per-layer slot ranges, decayed counts and swap batches come from published designs of other engines (Strata, MIT); no code copied."""
+Policy ideas (per-layer slot ranges, decayed counts, swap batches) are from published designs; no code copied."""
 import argparse, collections, json, sys
 
 
