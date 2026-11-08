@@ -2189,6 +2189,20 @@ class Machine:
             return None
 
 
+    def dense_core_mask(self):
+        """(hex mask, thread count) for a dense model that runs partly on the CPU next to a GPU: BOTH hardware threads of all performance cores but two (Linux hybrid CPUs),
+        so the GPU driver's threads have cores of their own. Laptop i7-13620H (6 P-cores), Qwen3-14B, FFN in RAM: 8 threads on 4 cores 8.7 tok/s, 12 threads 7.3, the old
+        6 single threads (one per core) 5.1; layer split 8.3 vs 5.9-6.8; RAM only +8 %; a MoE does not gain (17.3 with 6 singles, 12-14 with 8 threads). None when unreadable."""
+        try:
+            cores = parse_cpus(open("/sys/devices/cpu_core/cpus").read())
+            prim = sorted(c for c in cores if min(parse_cpus(open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read())) == c)
+            use = prim[:max(1, len(prim) - 2)]
+            cpus = sorted({t for c in use for t in parse_cpus(open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read())})
+            return hex(sum(1 << c for c in cpus)), len(cpus)
+        except Exception:
+            return None
+
+
 class LaunchPlan:
     """What server() will do: the decisions (engine stock/plugin, GPU layers, micro-batch, KV type, prompt cache), the environment and the llama-server
     command line, and every line the launcher said while deciding (notes: (text, is_error)). Built by launch_plan(); run_launch_plan() runs it."""
@@ -2935,7 +2949,7 @@ def fast_env_stage(a, env, stock, model, machine):
             pass
 
 
-def cpu_pin_stage(a, env, extra, stock, win, machine):
+def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False):
     """ENGINE-029, stage "CPU cores": efficiency cores for the expert executor and pinning llama-server to the performance cores on hybrid CPUs (Windows core groups, Linux sysfs). env grows in place. Returns the pinning arguments for llama-server."""
     if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and machine.has_cpu_atom():
         ne = min(machine.cpu_atom_count(), 4)
@@ -2958,7 +2972,14 @@ def cpu_pin_stage(a, env, extra, stock, win, machine):
             say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
         mask = machine.perf_core_mask()
-        if mask:
+        dm = machine.dense_core_mask() if dense else None
+        if dm and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
+            pinargs = ["-C", dm[0], "--cpu-strict", "1", "-t", str(dm[1])]
+            if mask and not any(x in ("-tb", "--threads-batch", "-Cb", "--cpu-mask-batch") for x in extra):
+                pinargs += ["-Cb", mask, "--cpu-strict-batch", "1", "-tb", str(bin(int(mask, 16)).count("1"))]       # prompt batches: one thread per performance core (8k chat, 14B: prompt 107 -> 143 tok/s, decode 9.6 -> 10.1; 12 batch threads no better)
+            say(f"moe-cache: hybrid CPU, dense model: {dm[1]} decode threads on both hardware threads of all performance cores but two (-C {dm[0]}), the GPU driver keeps the other two; "
+                "+30-70 % decode against one thread per core when part of the model runs on the CPU (laptop, Qwen3-14B); prompt batches keep one thread per performance core; --no-pin to disable")
+        elif mask:
             pinargs = ["-C", mask, "--cpu-strict", "1"]
             say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
     return pinargs
@@ -3270,7 +3291,7 @@ def _launch_plan(a, extra, argv, machine):
         except OSError:
             pass
     fast_env_stage(a, env, stock, model, machine)
-    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine)
+    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine, dense)
     # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
