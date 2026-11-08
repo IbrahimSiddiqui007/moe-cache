@@ -91,3 +91,21 @@ Replay on a real Flash-Next decode trace (laptop, 8 prompts, 1,398 tokens, `tool
 - A decode-only profile does not beat the shipped one on this trace, so the prompt-heavy profile counting (every group is counted, prompts included) is not what limits the bank hit.
 - Faster swap rounds are the lever (+5 to +16 points) and already exist as `MOE_CACHE_HYBRID_ADAPT=N,K`.
 - The replay overshoots the PC by about 25 points, so the replay is not trusted for the long chat until a trace of the real chat is replayed (PC item 09_gpu_bank_hit records it).
+
+## 8. Update 2026-11-08 late: the real 64k chat (PC item 09) and the trace analysis (`tools/gpu_tier_trace_analysis.py`)
+
+Measured on the PC (IQ3_XXS p64k, bank 4,104 experts): bank hit 27.4 % (shipped swaps), 35.9 % (every 4 tokens, 96 swaps; 2,302 swaps) and 38.5 % (every 4, 24 swaps; 1,209 swaps); swap time 0.04-0.18 s per run. The decode routing of the chat (196 tokens, one answer) was recorded.
+
+| Policy on that trace (cold bank) | Bank hit | Swaps per token |
+|---|---|---|
+| fixed, shipped profile | 31.2 % | 0 |
+| plugin rule, every 8 tokens, 16 swaps | 35.9 % | 2.0 |
+| plugin rule, every 4, 24 | 41.3 % | 6.0 |
+| plugin rule, every 4, 96 | 55.1 % | 20.3 |
+| future-knowing oracle at the same rates: 8/16, 4/24, 4/96 | 38.3 / 47.0 / 67.0 % | 2 / 6 / 24 |
+| best static bank of this trace (in-sample) | 69.0 % | 0 |
+| offline optimum per layer (MIN) | 83.2 % | 46.8 |
+
+- The shipped profile bank overlaps the chat's own hot set per layer by only 0.20 (Jaccard), and the hot set changes between 48-token windows (0.32; with 196 tokens part of that is sampling noise). A third of a layer's picks repeat from the previous token (0.32).
+- At 6 swaps per token even a future-knowing policy stays near 47 %; 45 % is a ceiling there, not a target.
+- Per layer (122 us saved per hit, 270 us paid per layer step) every layer wins; with 82 us saved per hit (the plain executor's cost per CPU pick) only 15 of 48 layers win and the bank everywhere is -0.94 ms per token.
