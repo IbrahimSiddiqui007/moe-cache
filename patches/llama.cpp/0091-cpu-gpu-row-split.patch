@@ -1,0 +1,392 @@
+diff --git a/ggml/src/ggml-cpu/CMakeLists.txt b/ggml/src/ggml-cpu/CMakeLists.txt
+index 8327c52..b657395 100644
+--- a/ggml/src/ggml-cpu/CMakeLists.txt
++++ b/ggml/src/ggml-cpu/CMakeLists.txt
+@@ -56,6 +56,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
+         ggml-cpu/vec.cpp
+         ggml-cpu/ops.h
+         ggml-cpu/ops.cpp
++        ggml-cpu/cpu-gpu-split.h
++        ggml-cpu/cpu-gpu-split.cpp
+         )
+ 
+     target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
+diff --git a/ggml/src/ggml-cpu/cpu-gpu-split.cpp b/ggml/src/ggml-cpu/cpu-gpu-split.cpp
+new file mode 100644
+index 0000000..6404398
+--- /dev/null
++++ b/ggml/src/ggml-cpu/cpu-gpu-split.cpp
+@@ -0,0 +1,262 @@
++// CPU + GPU row split of the decode-time mat-vec on host-resident weights (moe-cache patch 0091).
++//
++// The CPU backend computes the first rows of a weight matrix, a GPU computes the last rows from the same host memory:
++// the weights are copied by DMA from page-locked memory (cudaHostRegister) into a small staging tensor on the GPU, the
++// mat-vec runs there, and the result comes back through a pinned bounce buffer. Both halves run at the same time, which
++// uses the PCIe bandwidth that the CPU decode leaves free. Whole thing is off unless GGML_CPU_GPU_SPLIT=<fraction> is set.
++
++#include "cpu-gpu-split.h"
++
++#include "ggml-backend.h"
++#include "ggml-impl.h"
++
++#include <chrono>
++#include <cstdlib>
++#include <cstring>
++#include <mutex>
++#include <unordered_map>
++#include <unordered_set>
++
++namespace {
++
++struct plan {
++    ggml_context *        ctx   = nullptr;
++    ggml_tensor *         w     = nullptr;
++    ggml_tensor *         x     = nullptr;
++    ggml_tensor *         out   = nullptr;
++    ggml_cgraph *         graph = nullptr;
++    ggml_backend_buffer_t buf   = nullptr;
++    bool                  ok    = false;
++};
++
++struct pending {
++    plan *  p;
++    int64_t n_cpu;
++    int64_t n_gpu;
++};
++
++struct state {
++    bool                  enabled  = false;
++    bool                  stats    = false;
++    bool                  serial   = false; // debug: wait for the GPU inside begin() to time the GPU path alone
++    double                t_gpu_us = 0, gpu_bytes = 0;
++    double                frac     = 0.0;
++    int64_t               min_rows = 1024;
++    ggml_backend_t        gpu      = nullptr;
++    bool                (*reg_host)(void *, size_t) = nullptr;
++    ggml_backend_buffer_t bounce   = nullptr;
++    char *                bounce_x = nullptr;
++    char *                bounce_o = nullptr;
++    size_t                bounce_half = 0;
++
++    std::unordered_map<ggml_backend_buffer_t, bool> registered; // buffer -> registered ok
++    std::unordered_map<uint64_t, plan>              plans;
++
++    pending cur;
++
++    // stats
++    int64_t n_ops = 0;
++    double  t_begin_us = 0, t_wait_us = 0, t_cpu_us = 0;
++    std::chrono::steady_clock::time_point t_mark;
++
++    ~state() {
++        if (stats && n_ops > 0) {
++            fprintf(stderr, "cpu_gpu_split: ops %lld, frac %.3f, begin %.1f us/op, cpu rows %.1f us/op, gpu wait after cpu done %.1f us/op\n",
++                    (long long) n_ops, frac, t_begin_us / n_ops, t_cpu_us / n_ops, t_wait_us / n_ops);
++            if (serial) {
++                fprintf(stderr, "cpu_gpu_split: serial GPU path %.1f us/op, %.2f GB/s of weights\n", t_gpu_us / n_ops, gpu_bytes / t_gpu_us / 1e3);
++            }
++        }
++    }
++};
++
++state & st() {
++    static state s;
++    return s;
++}
++
++std::once_flag g_once;
++std::mutex     g_mutex;
++
++void init() {
++    state & s = st();
++    const char * e = getenv("GGML_CPU_GPU_SPLIT");
++    if (!e || !*e) {
++        return;
++    }
++    const double f = atof(e);
++    if (!(f > 0.0 && f < 1.0)) {
++        return;
++    }
++    const char * m = getenv("GGML_CPU_GPU_SPLIT_MIN_ROWS");
++    if (m && *m) {
++        s.min_rows = atoll(m);
++    }
++    s.stats  = getenv("GGML_CPU_GPU_SPLIT_STATS") != nullptr;
++    s.serial = getenv("GGML_CPU_GPU_SPLIT_SERIAL") != nullptr;
++
++    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
++        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
++        if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_GPU) {
++            continue;
++        }
++        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
++        auto fn = (bool (*)(void *, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_register_host_buffer");
++        ggml_backend_buffer_type_t hbuft = ggml_backend_dev_host_buffer_type(dev);
++        if (!fn || !hbuft) {
++            continue; // this backend cannot pin host memory
++        }
++        ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
++        if (!be) {
++            continue;
++        }
++        s.bounce_half = 4u << 20;
++        s.bounce = ggml_backend_buft_alloc_buffer(hbuft, 2 * s.bounce_half);
++        if (!s.bounce) {
++            ggml_backend_free(be);
++            continue;
++        }
++        s.bounce_x = (char *) ggml_backend_buffer_get_base(s.bounce);
++        s.bounce_o = s.bounce_x + s.bounce_half;
++        s.gpu      = be;
++        s.reg_host = fn;
++        s.enabled  = true;
++        fprintf(stderr, "cpu_gpu_split: on, GPU share %.3f of the rows, device %s\n", f, ggml_backend_dev_name(dev));
++        s.frac = f;
++        return;
++    }
++    fprintf(stderr, "cpu_gpu_split: GGML_CPU_GPU_SPLIT set but no usable GPU backend; split off\n");
++}
++
++bool eligible(const ggml_tensor * dst) {
++    const ggml_tensor * a = dst->src[0];
++    const ggml_tensor * b = dst->src[1];
++    if (dst->op != GGML_OP_MUL_MAT || !a || !b) return false;
++    if (b->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) return false;
++    if (b->ne[1] != 1 || b->ne[2] != 1 || b->ne[3] != 1 || a->ne[2] != 1 || a->ne[3] != 1) return false;
++    if (!ggml_is_contiguous(a) || !ggml_is_contiguous(b) || !ggml_is_contiguous(dst)) return false;
++    if (a->ne[1] < st().min_rows) return false;
++    if (a->buffer == nullptr || a->view_src != nullptr) return false;
++    // plain host weights only (not a repacked or other extra buffer type)
++    if (!ggml_backend_buffer_is_host(a->buffer) || strstr(ggml_backend_buffer_name(a->buffer), "REPACK") != nullptr) return false;
++    if (ggml_backend_buffer_get_usage(a->buffer) != GGML_BACKEND_BUFFER_USAGE_WEIGHTS) return false;
++    if (ggml_is_quantized(a->type) && a->ne[0] % ggml_blck_size(a->type) != 0) return false;
++    return true;
++}
++
++int64_t gpu_rows_for(const ggml_tensor * dst) {
++    const int64_t n  = dst->src[0]->ne[1];
++    int64_t       ng = (int64_t) (st().frac * (double) n);
++    ng -= ng % 32;
++    return ng > 0 && ng < n ? ng : 0;
++}
++
++plan * get_plan(const ggml_tensor * a, int64_t ng) {
++    state & s = st();
++    const uint64_t key = ((uint64_t) a->type << 56) ^ ((uint64_t) a->ne[0] << 28) ^ (uint64_t) ng;
++    auto it = s.plans.find(key);
++    if (it != s.plans.end()) {
++        return &it->second;
++    }
++    plan & p = s.plans[key];
++    ggml_init_params ip = { ggml_tensor_overhead() * 8 + ggml_graph_overhead() + 4096, nullptr, true };
++    p.ctx   = ggml_init(ip);
++    p.w     = ggml_new_tensor_2d(p.ctx, a->type, a->ne[0], ng);
++    p.x     = ggml_new_tensor_1d(p.ctx, GGML_TYPE_F32, a->ne[0]);
++    ggml_tensor * mm = ggml_mul_mat(p.ctx, p.w, p.x);
++    p.out   = mm;
++    p.graph = ggml_new_graph(p.ctx);
++    ggml_build_forward_expand(p.graph, mm);
++    if (!ggml_backend_supports_op(s.gpu, mm) || (size_t) (a->ne[0] * 4) > s.bounce_half || (size_t) (ng * 4) > s.bounce_half) {
++        return &p; // ok = false
++    }
++    ggml_backend_buffer_type_t gbuft = ggml_backend_get_default_buffer_type(s.gpu);
++    p.buf = ggml_backend_alloc_ctx_tensors_from_buft(p.ctx, gbuft);
++    p.ok  = p.buf != nullptr;
++    return &p;
++}
++
++bool ensure_registered(const ggml_tensor * a) {
++    state & s = st();
++    auto it = s.registered.find(a->buffer);
++    if (it != s.registered.end()) {
++        return it->second;
++    }
++    if (strstr(ggml_backend_buffer_name(a->buffer), "Host") != nullptr) { // already page-locked by the GPU backend
++        s.registered[a->buffer] = true;
++        return true;
++    }
++    void * base = ggml_backend_buffer_get_base(a->buffer);
++    size_t size = ggml_backend_buffer_get_size(a->buffer);
++    const bool ok = s.reg_host(base, size);
++    s.registered[a->buffer] = ok;
++    if (!ok) {
++        fprintf(stderr, "cpu_gpu_split: cannot page-lock the weight buffer (%.1f MiB); no split for tensors in it\n", size / 1048576.0);
++    }
++    return ok;
++}
++
++} // namespace
++
++extern "C" int64_t ggml_cpu_gpu_split_rows(const struct ggml_tensor * dst) {
++    std::call_once(g_once, init);
++    if (!st().enabled || !eligible(dst)) {
++        return 0;
++    }
++    const int64_t ng = gpu_rows_for(dst);
++    if (ng == 0) {
++        return 0;
++    }
++    // all fallible setup happens here, so every thread gets the same answer
++    std::lock_guard<std::mutex> lock(g_mutex);
++    if (!ensure_registered(dst->src[0])) {
++        return 0;
++    }
++    return get_plan(dst->src[0], ng)->ok ? ng : 0;
++}
++
++extern "C" int64_t ggml_cpu_gpu_split_begin(const struct ggml_tensor * dst, void ** handle) {
++    state & s = st();
++    const int64_t ng = ggml_cpu_gpu_split_rows(dst);
++    if (ng == 0) {
++        return 0;
++    }
++    std::lock_guard<std::mutex> lock(g_mutex);
++    const ggml_tensor * a = dst->src[0];
++    const ggml_tensor * b = dst->src[1];
++    const auto t0 = std::chrono::steady_clock::now();
++
++    plan * p = get_plan(a, ng);
++    const int64_t nc = a->ne[1] - ng;
++
++    memcpy(s.bounce_x, b->data, ggml_nbytes(b));
++    ggml_backend_tensor_set_async(s.gpu, p->x, s.bounce_x, 0, ggml_nbytes(b));
++    ggml_backend_tensor_set_async(s.gpu, p->w, (const char *) a->data + (size_t) nc * a->nb[1], 0, (size_t) ng * a->nb[1]);
++    GGML_ASSERT(ggml_backend_graph_compute_async(s.gpu, p->graph) == GGML_STATUS_SUCCESS);
++    ggml_backend_tensor_get_async(s.gpu, p->out, s.bounce_o, 0, (size_t) ng * sizeof(float));
++
++    if (s.serial) {
++        const auto ts = std::chrono::steady_clock::now();
++        ggml_backend_synchronize(s.gpu);
++        s.t_gpu_us   += std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - t0).count();
++        s.gpu_bytes  += (double) ng * a->nb[1];
++        (void) ts;
++    }
++    s.cur = { p, nc, ng };
++    *handle = &s.cur;
++    s.t_mark = std::chrono::steady_clock::now();
++    s.t_begin_us += std::chrono::duration<double, std::micro>(s.t_mark - t0).count();
++    return ng;
++}
++
++extern "C" void ggml_cpu_gpu_split_finish(struct ggml_tensor * dst, void * handle) {
++    state & s = st();
++    pending * pd = (pending *) handle;
++    const auto t1 = std::chrono::steady_clock::now();
++    ggml_backend_synchronize(s.gpu);
++    const auto t2 = std::chrono::steady_clock::now();
++    memcpy((float *) dst->data + pd->n_cpu, s.bounce_o, (size_t) pd->n_gpu * sizeof(float));
++    s.n_ops++;
++    s.t_cpu_us  += std::chrono::duration<double, std::micro>(t1 - s.t_mark).count();
++    s.t_wait_us += std::chrono::duration<double, std::micro>(t2 - t1).count();
++}
+diff --git a/ggml/src/ggml-cpu/cpu-gpu-split.h b/ggml/src/ggml-cpu/cpu-gpu-split.h
+new file mode 100644
+index 0000000..c3502f9
+--- /dev/null
++++ b/ggml/src/ggml-cpu/cpu-gpu-split.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++// Optional CPU + GPU row split of the decode-time mat-vec on host-resident weights (moe-cache patch 0091).
++// Off unless GGML_CPU_GPU_SPLIT=<fraction of rows for the GPU, 0..1> is set.
++
++#include "ggml.h"
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// Called by thread 0 of the CPU backend before it computes `dst` (a MUL_MAT).
++// Returns 0 when the op is not split (the CPU computes all rows). Otherwise returns the number of rows (the last
++// ones) the GPU computes, and `*handle` must be passed to ggml_cpu_gpu_split_finish().
++int64_t ggml_cpu_gpu_split_begin(const struct ggml_tensor * dst, void ** handle);
++
++// Called by thread 0 after the CPU finished its rows: waits for the GPU and writes its rows into dst.
++void ggml_cpu_gpu_split_finish(struct ggml_tensor * dst, void * handle);
++
++// Cheap check used by all threads (same answer as begin() would give for "split or not", before any state changes).
++int64_t ggml_cpu_gpu_split_rows(const struct ggml_tensor * dst);
++
++#ifdef __cplusplus
++}
++#endif
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index f4eaea5..bc17674 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -5,6 +5,7 @@
+ #include "ggml-backend.h"
+ #include "traits.h"
+ #include "ggml-cpu-impl.h"
++#include "cpu-gpu-split.h"
+ #include "ggml-impl.h"
+ #include "quants.h"
+ #include "ggml-threading.h"
+@@ -1261,9 +1262,42 @@ static void ggml_compute_forward_mul_mat_one_chunk(
+     }
+ }
+ 
++static void ggml_compute_forward_mul_mat_rows(
++        const struct ggml_compute_params * params,
++              struct ggml_tensor * dst);
++
++// moe-cache 0091: optional CPU + GPU row split of the decode mat-vec (GGML_CPU_GPU_SPLIT, off by default)
+ void ggml_compute_forward_mul_mat(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
++    const int64_t n_gpu = ggml_cpu_gpu_split_rows(dst);
++    if (n_gpu == 0) {
++        ggml_compute_forward_mul_mat_rows(params, dst);
++        return;
++    }
++
++    void * handle = NULL;
++    if (params->ith == 0) {
++        // cannot fail: everything that can fail was checked in ggml_cpu_gpu_split_rows()
++        GGML_ASSERT(ggml_cpu_gpu_split_begin(dst, &handle) == n_gpu);
++    }
++
++    // the CPU computes the first rows; src0 and dst are shortened in local copies
++    struct ggml_tensor src0_cpu = *dst->src[0];
++    struct ggml_tensor dst_cpu  = *dst;
++    src0_cpu.ne[1]  = dst->src[0]->ne[1] - n_gpu;
++    dst_cpu.ne[0]   = src0_cpu.ne[1];
++    dst_cpu.src[0]  = &src0_cpu;
++    ggml_compute_forward_mul_mat_rows(params, &dst_cpu);
++
++    if (handle) {
++        ggml_cpu_gpu_split_finish(dst, handle);
++    }
++}
++
++static void ggml_compute_forward_mul_mat_rows(
++        const struct ggml_compute_params * params,
++              struct ggml_tensor * dst) {
+ 
+     const struct ggml_tensor * src0 = dst->src[0];
+     const struct ggml_tensor * src1 = dst->src[1];
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 06956ce..010f2d0 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -164,7 +164,7 @@ static bool ggml_cuda_pinned_memory_disabled() {
+ }
+ 
+ static bool ggml_cuda_register_host_enabled() {
+-    static const bool enabled = ggml_cuda_env_flag("GGML_CUDA_REGISTER_HOST");
++    static const bool enabled = ggml_cuda_env_flag("GGML_CUDA_REGISTER_HOST") || ggml_cuda_env_set("GGML_CPU_GPU_SPLIT"); // moe-cache 0091: the CPU+GPU split needs page-locked weights
+     return enabled;
+ }
+ 
+@@ -5526,6 +5526,11 @@ bool ggml_backend_cuda_register_host_buffer(void * buffer, size_t size) {
+ 
+ #if CUDART_VERSION >= 11010 || defined(GGML_USE_MUSA) || defined(GGML_USE_HIP)
+     cudaError_t err = cudaHostRegister(buffer, size, cudaHostRegisterPortable | cudaHostRegisterReadOnly);
++    if (err != cudaSuccess) {
++        // moe-cache 0091: some GPUs (laptop RTX 4060) do not support read-only registration; plain page-locking works
++        (void)cudaGetLastError();
++        err = cudaHostRegister(buffer, size, cudaHostRegisterPortable);
++    }
+     if (err != cudaSuccess) {
+         // clear the error
+         (void)cudaGetLastError();
