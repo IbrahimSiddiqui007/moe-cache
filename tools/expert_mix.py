@@ -12,7 +12,7 @@ Experts are ranked by the usage profile (profiles/*.usage: 'XUSE', layers, exper
 ffn_*_exps tensors change; every other tensor is copied byte for byte from A. Each expert is dequantised with libggml's own to_float and written with
 ggml_quantize_chunk, one expert at a time, so memory stays at a few MB (still run big files under: systemd-run --user --scope -p MemoryMax=20G).
 Header reading and the tensor table come from tools/stitch_gguf.py. Output is a NEW file; an existing file is never overwritten."""
-import argparse, concurrent.futures, ctypes, json, os, struct, sys
+import argparse, concurrent.futures, contextlib, ctypes, json, os, struct, sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -134,6 +134,45 @@ def pick_from_b(usage, fraction):
     return {(l, e) for _, l, e in order[:k]}
 
 
+class Model:
+    """A model as one tensor table, also when it is split into several files (NAME-00001-of-0000N.gguf): give the first file, the others are found next to it.
+    Each tensor dict carries the file it lives in ("shard"). The output of a mix is ONE file, so the split.* metadata is left out when writing."""
+    SPLIT = __import__("re").compile(r"-(\d{5})-of-(\d{5})\.gguf$")
+
+    def __init__(self, path):
+        first = sg.Gguf(path)
+        n = int(first.meta.get("split.count", 1))
+        paths = [path]
+        if n > 1:
+            m = self.SPLIT.search(path)
+            if not m or int(m.group(1)) != 1 or int(m.group(2)) != n:
+                raise MixError(f"{path}: the file says it is part 1 of {n}; give the first file, named NAME-00001-of-{n:05d}.gguf")
+            paths = [path[:m.start()] + f"-{i:05d}-of-{n:05d}.gguf" for i in range(1, n + 1)]
+            missing = [q for q in paths if not os.path.isfile(q)]
+            if missing:
+                raise MixError(f"{path}: part(s) missing: {', '.join(missing)}")
+        self.shards = [first] + [sg.Gguf(q) for q in paths[1:]]
+        self.path, self.meta, self.version, self.alignment = path, first.meta, first.version, first.alignment
+        self.size = sum(g.size for g in self.shards)
+        self.tensors = [dict(t, shard=g) for g in self.shards for t in g.tensors]
+        self.by_name = {t["name"]: t for t in self.tensors}
+        if len(self.by_name) != len(self.tensors):
+            raise MixError(f"{path}: duplicate tensor names across the parts")
+        want = first.meta.get("split.tensors.count")
+        if want is not None and int(want) != len(self.tensors):
+            raise MixError(f"{path}: the parts hold {len(self.tensors)} tensors but the header says {want}")
+
+    def kv_without_split(self, f):
+        """-> (number of entries, raw bytes) of the first file's metadata without split.* entries."""
+        g, out, n = self.shards[0], b"", 0
+        for key, start, end in g.kv_spans:
+            if not key.startswith("split."):
+                f.seek(start)
+                out += f.read(end - start)
+                n += 1
+        return n, out
+
+
 # ---- the two commands ----
 
 def expert_tensors(g):
@@ -141,7 +180,7 @@ def expert_tensors(g):
 
 
 def cmd_types(args):
-    files = [sg.Gguf(p) for p in args.files]
+    files = [Model(p) for p in args.files]
     for g in files:
         groups = {}
         for t in g.tensors:
@@ -149,7 +188,7 @@ def cmd_types(args):
             groups.setdefault((kind, type_name(t["type"])), [0, 0])
             groups[(kind, type_name(t["type"]))][0] += 1
             groups[(kind, type_name(t["type"]))][1] += t["bytes"]
-        print(f"{g.path}: {len(g.tensors)} tensors, {g.size / 1e9:.2f} GB, architecture {g.meta.get('general.architecture')}")
+        print(f"{g.path}: {len(g.tensors)} tensors in {len(g.shards)} file(s), {g.size / 1e9:.2f} GB, architecture {g.meta.get('general.architecture')}")
         for (kind, ty), (n, by) in sorted(groups.items()):
             print(f"  {kind:8s} {ty:8s} {n:5d} tensors {by / 1e9:8.2f} GB")
     if len(files) == 2:
@@ -176,7 +215,7 @@ def mix_plan(a, b, fine):
 def cmd_mix(args):
     fine = FINE[args.fine]
     codec = GgmlCodec(args.libggml) if args.libggml else PyCodec()
-    a, b = sg.Gguf(args.a), sg.Gguf(args.b)
+    a, b = Model(args.a), Model(args.b)
     sg.check_pair(a, b)
     if not 0.0 <= args.fraction <= 1.0:
         raise MixError("--fraction is between 0 and 1")
@@ -207,26 +246,33 @@ def cmd_mix(args):
         print(f"expert_mix dry run: {len(plan)} tensors, output {cur / 1e9:.2f} GB, {sum(1 for p in plan if p['expert'])} expert tensors "
               f"({len(small_tensors)} would use Q8_0 because their rows are not a multiple of 256 columns), {len(chosen)} of {n_l * n_e} experts from B; nothing written")
         return 0
-    with open(a.path, "rb") as fa, open(b.path, "rb") as fb, open(args.out, "wb") as o:
-        o.write(sg.MAGIC + struct.pack("<IQQ", a.version, len(plan), a.n_kv))
-        fa.seek(a.kv_start)
-        o.write(fa.read(a.kv_end - a.kv_start))
+    with contextlib.ExitStack() as stack, open(args.out, "wb") as o:
+        handles = {}
+        def fh(g):                           # one open handle per part file
+            if g.path not in handles:
+                handles[g.path] = stack.enter_context(open(g.path, "rb"))
+            return handles[g.path]
+        n_kv, kv = a.kv_without_split(fh(a.shards[0]))
+        o.write(sg.MAGIC + struct.pack("<IQQ", a.version, len(plan), n_kv))
+        o.write(kv)
         for p, off in zip(plan, offs):
             nb = p["name"].encode()
             o.write(struct.pack("<Q", len(nb)) + nb + struct.pack("<I", len(p["dims"])) + b"".join(struct.pack("<Q", d) for d in p["dims"]) + struct.pack("<IQ", p["type"], off))
         sg._pad(o, a.alignment)
         for p in plan:
             if not p["expert"]:
-                sg._copy(fa, a.data_start + p["src"]["offset"], p["bytes"], o)
+                sh = p["src"]["shard"]
+                sg._copy(fh(sh), sh.data_start + p["src"]["offset"], p["bytes"], o)
             else:
                 ne0, ne1, ne = p["dims"]
                 raws = []
                 for e in range(ne):                  # one tensor at a time: its slices are read in order, converted on several threads, written in order
                     from_b = (p["layer"], e) in chosen
-                    g, f = (b, fb) if from_b else (a, fa)
+                    g = b if from_b else a
                     t = g.by_name[p["name"]]
+                    f = fh(t["shard"])
                     row_in = codec.row_size(t["type"], ne0)
-                    f.seek(g.data_start + t["offset"] + e * ne1 * row_in)
+                    f.seek(t["shard"].data_start + t["offset"] + e * ne1 * row_in)
                     raw = f.read(ne1 * row_in)
                     if len(raw) != ne1 * row_in:
                         raise MixError(f"{g.path}: short read in {p['name']} expert {e}")

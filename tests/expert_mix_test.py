@@ -124,6 +124,46 @@ check(rc == 2 and "exists" in err, "an existing output is never overwritten")
 rc, _, err = run("mix", "--a", A, "--b", B, "--fraction", "0.5", "--usage", usage, "--out", os.path.join(tmp, "q6.gguf"))
 check(rc == 0 and {t["type"] for t in sg.Gguf(os.path.join(tmp, "q6.gguf")).tensors if t["name"].startswith("blk.")} == {8}, f"default q6_k: 64-column tensors fall back to Q8_0 ({err.strip()[:60]})")
 
+# A model in two files (NAME-00001-of-00002.gguf, as Hugging Face ships the big ones): the expert tensors in part 1, token_embd in part 2.
+# 2026-11-08 the PC mix of Flash-Next read part 1 only (1,223 of 1,224 tensors) and copied split.count = 2 into a one-file output, which llama.cpp refuses.
+def kv_u16(k, v): return s(k) + struct.pack("<IH", 2, v)
+def split_copy(src, prefix):
+    """Rewrite one test file as two parts with split.* metadata; -> path of part 1."""
+    g = sg.Gguf(src)
+    data = open(src, "rb").read()
+    parts = [[t for t in g.tensors if t["name"].startswith("blk.")], [t for t in g.tensors if not t["name"].startswith("blk.")]]
+    base = kv_str("general.architecture", "test") + kv_u32("test.block_count", N_L) + kv_u32("test.expert_count", N_E) + kv_u32("general.alignment", 32)
+    for no, tens in enumerate(parts):
+        kv = base + kv_u16("split.no", no) + kv_u16("split.count", 2) + struct.pack("<Q", len("split.tensors.count")) + b"split.tensors.count" + struct.pack("<Ii", 5, len(g.tensors))
+        info, off, blobs = b"", 0, []
+        for t in tens:
+            raw = data[g.data_start + t["offset"]:][:t["bytes"]]
+            info += s(t["name"]) + struct.pack("<I", len(t["dims"])) + b"".join(struct.pack("<Q", d) for d in t["dims"]) + struct.pack("<IQ", t["type"], off)
+            off += (len(raw) + 31) // 32 * 32
+            blobs.append(raw + b"\0" * (-len(raw) % 32))
+        head = b"GGUF" + struct.pack("<IQQ", 3, len(tens), 7) + kv + info
+        head += b"\0" * (-len(head) % 32)
+        open(f"{prefix}-{no + 1:05d}-of-00002.gguf", "wb").write(head + b"".join(blobs))
+    return f"{prefix}-00001-of-00002.gguf"
+
+As, Bs = split_copy(A, os.path.join(tmp, "as")), split_copy(B, os.path.join(tmp, "bs"))
+check(len(sg.Gguf(As).tensors) == 2 and em.Model(As).shards[1].path.endswith("-00002-of-00002.gguf") and len(em.Model(As).tensors) == 3, "a two-file model is read as one table (2 + 1 tensors)")
+MS = os.path.join(tmp, "mix_split.gguf")
+rc, out, err = run("mix", "--a", As, "--b", Bs, "--fraction", "0.5", "--usage", usage, "--fine", "q8_0", "--out", MS)
+check(rc == 0, f"mix of two-file models: written ({err.strip()})")
+gs, deqs = read_experts(MS)
+check(len(gs.tensors) == 3 and "token_embd.weight" in gs.by_name, f"the one-file output holds all 3 tensors, also the one from part 2 ({len(gs.tensors)})")
+check(not any(k.startswith("split.") for k, _, _ in gs.kv_spans) and gs.meta.get("general.architecture") == "test", "the output has no split.* metadata (llama.cpp would look for a part 2) and keeps the rest")
+want_b = em.pick_from_b(u, 0.5)
+check(all(np.abs(deqs[k] - (deqB[k] if k in want_b else deqA[k])).max() < 0.02 * max(np.abs(deqA[k]).max(), np.abs(deqB[k]).max()) for k in deqs), "two-file mix: every expert equals its source")
+emb = np.frombuffer(open(MS, "rb").read()[gs.data_start + gs.by_name["token_embd.weight"]["offset"]:][:128], dtype=np.float32)
+check((emb == np.arange(32, dtype=np.float32)).all(), "two-file mix: the tensor from part 2 is copied byte for byte")
+os.rename(os.path.join(tmp, "as-00002-of-00002.gguf"), os.path.join(tmp, "as-gone.gguf"))
+rc, _, err = run("mix", "--a", As, "--b", Bs, "--fraction", "0.5", "--usage", usage, "--fine", "q8_0", "--out", os.path.join(tmp, "x.gguf"))
+check(rc == 2 and "missing" in err, "a missing part is refused, nothing written")
+rc, _, err = run("mix", "--a", os.path.join(tmp, "bs-00002-of-00002.gguf"), "--b", Bs, "--fraction", "0.5", "--usage", usage, "--fine", "q8_0", "--out", os.path.join(tmp, "y.gguf"))
+check(rc == 2 and "first file" in err, "part 2 given as --a is refused")
+
 lib = os.environ.get("EXPERT_MIX_LIBGGML")
 if lib and os.path.isfile(lib):          # Q6_K through libggml: 64 columns fall back to Q8_0 for that tensor, threads give the same bytes as one thread
     outs = []

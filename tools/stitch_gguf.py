@@ -60,6 +60,8 @@ def _skip_value(f, t):
 def _read_value(f, t):
     if t == STRING:
         return f.read(_u64(f)).decode("utf-8", "replace")
+    if t in (2, 3):
+        return struct.unpack("<H" if t == 2 else "<h", f.read(2))[0]
     if t in (4, 5):
         return struct.unpack("<I" if t == 4 else "<i", f.read(4))[0]
     if t in (10, 11):
@@ -82,12 +84,15 @@ class Gguf:
             n_tensors, n_kv = _u64(f), _u64(f)
             self.kv_start = f.tell()
             self.meta = {}
+            self.kv_spans = []         # (key, start, end) of each metadata entry, so a writer can drop some (split.* of a multi-file model)
             for _ in range(n_kv):
+                start = f.tell()
                 key = f.read(_u64(f)).decode("utf-8", "replace")
                 t = _u32(f)
-                v = _read_value(f, t) if key in ("general.architecture", "general.alignment", "general.name") or key.endswith((".block_count", ".expert_count")) else _skip_value(f, t)
+                v = _read_value(f, t) if key in ("general.architecture", "general.alignment", "general.name") or key.endswith((".block_count", ".expert_count")) or key.startswith("split.") else _skip_value(f, t)
                 if v is not None:
                     self.meta[key] = v
+                self.kv_spans.append((key, start, f.tell()))
             self.kv_end = f.tell()
             self.n_kv = n_kv
             self.tensors = []          # dicts in file order
