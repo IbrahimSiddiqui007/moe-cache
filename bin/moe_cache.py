@@ -674,7 +674,7 @@ def pick_gpu_full(listing):
         m = re.search(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+)$", listing, re.M)     # a device line without memory figures
         return (m.group(1), m.group(2).strip(), 0, 0) if m else None
     ded = win_dedicated_vram()
-    d = max(devs, key=lambda x: (dedicated_for(x[1].strip(), ded), int(x[3])))
+    d = max(devs, key=lambda x: (not IGPU_NAME_RE.search(x[1].strip()), dedicated_for(x[1].strip(), ded), int(x[3])))      # LAUNCHER-983: a card that is not integrated (by name) first, then dedicated memory, then free memory
     return d[0], d[1].strip(), int(d[3]), int(d[2])
 
 
@@ -1955,7 +1955,7 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
-            cpn = cpu_placement_note(line, cpu_run=("--device none" in " ".join(cmd) or " -ngl 0 " in " ".join(cmd) + " "))
+            cpn = None if EXPECT_CPU_WORK[0] else cpu_placement_note(line, cpu_run=("--device none" in " ".join(cmd) or " -ngl 0 " in " ".join(cmd) + " "))
             if cpn and cpn[0] not in seen.setdefault("cpuplace", set()):
                 seen["cpuplace"].add(cpn[0])
                 say(cpn[1], err=True)
@@ -2900,55 +2900,33 @@ def dense_fit_free(a, machine):
 
 
 def dense_gpu_fit_pair(a, model, ctx, machine):
-    """LAUNCHER-982: (f16 fit, q8_0 fit) of a model without experts at `ctx` from planner/gguf_plan.py dense_gpu_fit(); None when the layout or the GPU memory is unknown."""
+    """LAUNCHER-982: (f16 fit, q8_0 fit) of a model without experts at `ctx` from planner/gguf_plan.py dense_gpu_fit(); None when the layout or the GPU memory is unknown.
+    Constants: with llama-server's own free-memory figure (--vram, or --list-devices on Windows AMD / Intel) compute buffer + context 0.20 GiB and no margin, calibrated on the PC
+    (Qwen3.8-27B Q3_K_XL on the 16 GB RX 9070 XT, 14.65 GiB free, 2026-11-08: f16 KV at 32k and q8_0 KV at 64k run all on the GPU at 26.5 / 26.6 tok/s, f16 at 64k spills to 18.9);
+    with nvidia-smi / sysfs the CUDA-measured 0.30 GiB + 0.25 GiB margin and the 0.4 GiB reporting gap."""
     free, gap = dense_fit_free(a, machine)
     if not free:
         return None
     try:
         from gguf_plan import dense_gpu_fit
-        m = a.gpu_margin if a.gpu_margin is not None else 0.25
-        f16 = dense_gpu_fit(model, ctx, free, False, m, gap)
-        q8 = dense_gpu_fit(model, ctx, free, True, m, gap)
+        if a.vram:
+            fixed, m = 0.20, (a.gpu_margin if a.gpu_margin is not None else 0.0)
+        else:
+            fixed, m = None, (a.gpu_margin if a.gpu_margin is not None else 0.25)
+        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed)
+        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed)
     except Exception:
         return None
     return (f16, q8) if f16 and q8 else None
 
 
 def gpu_fit_words(r, kv_name):
-    """The numbers behind 'all on GPU', plain: model + KV + compute + margin = need of free."""
-    return (f"model {r['model_gib']:.1f} + {kv_name} KV {r['kv_gib']:.1f} + compute {r['fixed_gib']:.1f} + margin {r['margin_gib']:.2f} = {r['need_gib']:.1f} GiB of {r['free_gib']:.1f} GiB free")
+    """The numbers behind a fit estimate, plain: model + KV + compute (+ margin) = need of free."""
+    return (f"model {r['model_gib']:.1f} + {kv_name} KV {r['kv_gib']:.1f} + compute {r['fixed_gib']:.1f}" + (f" + margin {r['margin_gib']:.2f}" if r['margin_gib'] else "")
+            + f" = {r['need_gib']:.1f} GiB of {r['free_gib']:.1f} GiB free")
 
 
-def all_on_gpu_line(a, model, ctx, extra, machine, dense, ncmoe, ffn_ot, cpu_only):
-    """LAUNCHER-983: one plain line, in the dry run and at start: is the whole model on the GPU, and if not why and what it costs."""
-    if cpu_only:
-        return "moe-cache: all on GPU: no (CPU-only run)"
-    if not dense:
-        if ncmoe in (None, "0"):
-            return "moe-cache: all on GPU: yes (every expert fits the GPU memory)" if ncmoe == "0" else None
-        return f"moe-cache: all on GPU: no (by design: the experts of {ncmoe} layers are on the CPU side; attention, shared weights and the KV cache are on the GPU)"
-    if ffn_ot:
-        return "moe-cache: all on GPU: no (by design: the FFN weights of the last layers stay in RAM, attention and the KV cache on the GPU; see the line above)"
-    kv_q8 = (arg_after(extra, "-ctk", "--cache-type-k") or "f16") in ("q8_0", "q4_0")
-    pair = dense_gpu_fit_pair(a, model, ctx, machine)
-    if not pair:
-        return None
-    r = pair[1] if kv_q8 else pair[0]
-    name = "q8_0" if kv_q8 else "f16"
-    if r["fits"]:
-        return "moe-cache: all on GPU: yes (" + gpu_fit_words(r, name) + ")"
-    other = pair[0] if kv_q8 else pair[1]
-    tip = []
-    if r["ctx_fit"] >= 4096:
-        tip.append(f"--ctx {r['ctx_fit'] // 1024 * 1024} keeps it all on the GPU")
-    if not kv_q8 and other["fits"] is not None and other["over_gib"] < r["over_gib"]:
-        tip.append("an 8-bit KV cache (no --exact, no -ctk f16) needs " + f"{r['over_gib'] - other['over_gib']:.1f} GiB less")
-    if r.get("np1_saves_gib", 0) >= 0.25:
-        tip.append(f"one conversation slot (-- -np 1) saves {r['np1_saves_gib']:.1f} GiB")
-    return (f"moe-cache: all on GPU: NO (" + gpu_fit_words(r, name) + f"): about {r['over_gib']:.1f} GiB too much, so llama.cpp moves layers or the attention over the KV cache to the CPU "
-            "and decode gets much slower (Qwen3.8-27B on the 16 GB RX 9070 XT at 64k: 35 -> 19 tok/s)" + ("; " + "; ".join(tip) if tip else ""))
-
-
+EXPECT_CPU_WORK = [False]     # set by command_stage: the plan itself puts work on the CPU (the log scan then stays quiet)
 CPU_ATTN_RE = re.compile(r"layer\s+(\d+) is assigned to device (\S+) but Flash Attention over K/V rows is assigned to device CPU")
 OFFLOADED_RE = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
 
@@ -2972,24 +2950,21 @@ def cpu_placement_note(line, cpu_run=False):
 IGPU_NAME_RE = re.compile(r"(Radeon\(TM\) Graphics|Radeon\s+\d{3}M|UHD Graphics|Iris|Intel\(R\) Graphics|Graphics$)", re.I)
 
 
-def igpu_device_note(extra, listing):
-    """LAUNCHER-983: a warning when --device / -dev names an integrated GPU (by name: 'Radeon(TM) Graphics', 'UHD Graphics', 'Iris') while the listing also has a card that is not one,
-    else None. The launcher's own pick is the card with the most dedicated memory (Windows), so leaving --device out is the safe advice."""
-    dev = arg_after(extra, "--device", "-dev")
-    if not dev or dev.lower() == "none" or not listing:
+def auto_gpu_device(extra, listing, cpu_only=False, multi_gpu=False):
+    """LAUNCHER-983 (owner's choice 2026-11-09): the --device value that leaves integrated GPUs out when the listing has at least one integrated GPU (by name: 'Radeon(TM) Graphics',
+    'UHD Graphics', 'Iris') AND at least one card that is not: (ids joined by commas, names, all listed ids). The plan, the control page and now the server use the same cards; two real
+    cards still split as llama.cpp does by default. None when there is nothing to leave out, an integrated GPU is the only kind (used as before), the user chose (--device / -dev / -ts /
+    -sm / --main-gpu), or the CPU / the multi-GPU prototype is wanted."""
+    if cpu_only or multi_gpu or not listing:
         return None
-    devs = re.findall(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+?) \((\d+) MiB, (\d+) MiB free\)", listing, re.M)
-    names = {d[0]: d[1].strip() for d in devs}
-    discrete = [d for d in devs if not IGPU_NAME_RE.search(d[1].strip())]
-    if not discrete:
+    if any(x in ("--device", "-dev", "-ts", "--tensor-split", "-sm", "--split-mode", "--main-gpu", "-mg") or x.startswith(("--device=", "--tensor-split=", "--split-mode=", "--main-gpu=")) for x in extra):
         return None
-    best = max(discrete, key=lambda d: int(d[3]))
-    for token in dev.split(","):
-        n = names.get(token.strip())
-        if n and IGPU_NAME_RE.search(n):
-            return (f"moe-cache: WARNING: --device {token.strip()} is the integrated GPU ({n}), but {best[0]} ({best[1].strip()}) is a discrete card: the integrated one shares system RAM and is far "
-                    f"slower. Use --device {best[0]} or leave --device out (the launcher picks the card with the most dedicated memory itself)")
-    return None
+    devs = re.findall(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL)\d*): (.+?) \((\d+) MiB, (\d+) MiB free\)", listing, re.M)
+    igpu = [d for d in devs if IGPU_NAME_RE.search(d[1].strip())]
+    real = [d for d in devs if not IGPU_NAME_RE.search(d[1].strip())]
+    if not igpu or not real:
+        return None
+    return ",".join(d[0] for d in real), ", ".join(d[1].strip() for d in real), [d[0] for d in devs]
 
 
 def plugin_for_partial_offload(a, ls, model, ctx, machine):
@@ -3149,13 +3124,13 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         # spills less); --exact keeps f16 and the 'all on GPU' line says what it costs
         pair = dense_gpu_fit_pair(a, a.model, ctx, machine)
         if pair and not pair[0]["fits"]:
-            a.fast = "kv"
+            a.fast, a.dense_kv = "kv", True
             if pair[1]["fits"]:
-                say(f"moe-cache: context {ctx // 1024}k: the f16 KV cache does not fit the GPU next to the model ({gpu_fit_words(pair[0], 'f16')}): q8_0 KV cache, so the whole model stays on the GPU "
-                    "(--exact keeps f16 and lets llama.cpp move work to the CPU)")
+                say(f"moe-cache: context {ctx // 1024}k: the f16 KV cache does not fit the GPU next to the model ({gpu_fit_words(pair[0], 'f16')}): q8_0 KV cache, which does "
+                    "(half the GPU memory for the same context; --exact keeps f16 and lets llama.cpp move work to the CPU)")
             else:
-                say(f"moe-cache: context {ctx // 1024}k: neither KV type fits the GPU next to the model; q8_0 KV cache (needs {pair[0]['over_gib'] - pair[1]['over_gib']:.1f} GiB less than f16) so the least goes to the CPU "
-                    "(--exact keeps f16)")
+                say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache (half the GPU memory of f16, same context); the model with its KV cache is still {pair[1]['over_gib']:.1f} GiB over the GPU, "
+                    "so part of it runs from system RAM (llama.cpp's --fit places it)")
     a.lp_kv = False
     # the long-prompt mode is the default (owner 2026-11-08, measured: prompts +77 %, answers +1.8 %, claim v038-longprompt-default) for a GPU plan of a big model at agent-sized
     # contexts; --long-prompt asks for it at any context. Not with --no-long-prompt, --exact, --stock, a model that runs on plain llama.cpp or a dense model, and below LONG_PROMPT_MIN_CTX
@@ -3212,8 +3187,8 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
 
 def fast_env_stage(a, env, stock, model, machine):
     """ENGINE-029, stage "approximate modes": the plugin settings and the one plain line for --fast, --fast=2, --fast=fewer and --fast=kv; without --fast, the hint where it would pay (the model is much bigger than the memory it may use). env grows in place."""
-    if a.fast == "kv" and getattr(a, "lp_kv", False):
-        pass                                                    # --long-prompt says what it did after the memory plan (long_prompt_stage)
+    if a.fast == "kv" and (getattr(a, "lp_kv", False) or getattr(a, "dense_kv", False)):
+        pass                                                    # --long-prompt says what it did after the memory plan (long_prompt_stage); the dense KV choice said it in kv_stage
     elif a.fast == "kv":
         say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
     elif a.fast:
@@ -3496,9 +3471,14 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
             pass
         say("moe-cache: dense model, no experts: no -ngl 99 (it makes a file bigger than the GPU abort at load); llama.cpp's --fit places the layers by free GPU memory" + margin
             + ("" if a.auto_fit else ". --no-auto-fit brings -ngl 99 back"))
-    gl = all_on_gpu_line(a, model, ctx, extra, machine, dense, ncmoe if not dense else None, bool(dense and "-ot" in cmd), cpu_only)
-    if gl:
-        say(gl, err=gl.startswith("moe-cache: all on GPU: NO"))
+    # LAUNCHER-983: tell the log scan whether work on the CPU is part of this plan (experts on the CPU by design, FFN weights in RAM, CPU-only, a dense model the estimate says is over the GPU)
+    expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and "-ot" in cmd))
+    if dense and not expect:
+        pair = dense_gpu_fit_pair(a, model, ctx, machine)
+        kv_name = arg_after(extra, "-ctk", "--cache-type-k") or "f16"
+        r = (pair[1] if kv_name in ("q8_0", "q4_0") else pair[0]) if pair else None
+        expect = bool(r and not r["fits"])
+    EXPECT_CPU_WORK[0] = expect
     if method == "none (stock)":
         pass
     elif ncmoe == "0":
@@ -3567,13 +3547,13 @@ def _launch_plan(a, extra, argv, machine):
             say(why); stock = False
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
-    if arg_after(extra, "--device", "-dev"):
-        try:
-            ig = igpu_device_note(extra, listing if listing is not None else machine.list_devices(ls))
-        except Exception:
-            ig = None
-        if ig:
-            say(ig, err=True)
+    try:
+        ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
+    except Exception:
+        ag = None
+    if ag:
+        extra += ["--device", ag[0]]
+        say(f"moe-cache: GPUs: {', '.join(ag[2])}; using {ag[0]} ({ag[1]}): the integrated GPU is left out (it shares system RAM and is far slower); --device after -- chooses otherwise")
     ncmoe_user = a.n_cpu_moe
     mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
     ncmoe = a.n_cpu_moe

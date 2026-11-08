@@ -54,23 +54,37 @@ with tempfile.TemporaryDirectory() as tmp:
     bad_at = gp.dense_gpu_fit(model, cf + 1024, mid * GIB, False)
     check(cf > 0 and ok_at["fits"] and not bad_at["fits"], "dense_gpu_fit: ctx_fit is the largest multiple of 1024 that fits (%d)" % cf)
     check(gp.dense_gpu_fit(model, ctx, None, False) is None, "dense_gpu_fit: no GPU memory figure -> None")
-    # --- the launcher, dry run on a fake machine (--vram gives the free memory) ---
+    # --- the launcher, dry run on a fake machine (--vram gives the free memory; with it compute + context 0.20 GiB and no margin, the PC calibration) ---
     run = lambda vram, extra_opts=(), extra=(): lp.run_case("linux", ["--ram", "12", "--vram", f"{vram:.3f}", "--ctx", str(ctx)] + list(extra_opts), list(extra), model, tmp)
     out = lambda r: r["stdout"] + "\n" + r.get("stderr", "")
     cmd = lambda r: next((l for l in r["stdout"].splitlines() if "llama-server" in l and " -m " in l), "")
-    roomy = run(a16["need_gib"] + 1)
-    check("-ctk" not in cmd(roomy) and "all on GPU: yes" in roomy["stdout"], "dry run, room for f16: f16 KV, 'all on GPU: yes'")
-    tight = run(mid)
-    check("-ctk q8_0" in cmd(tight) and "q8_0 KV cache, so the whole model stays on the GPU" in tight["stdout"] and "all on GPU: yes" in tight["stdout"],
-          "dry run, f16 too big but q8_0 fits: q8_0 KV chosen, says why, 'all on GPU: yes'")
-    exact = run(mid, ["--exact"])
-    check("-ctk" not in cmd(exact) and "all on GPU: NO" in out(exact), "dry run, --exact keeps f16 and says all on GPU: NO")
-    user = run(mid, extra=["-ctk", "f16", "-ctv", "f16"])
-    check("-ctk q8_0" not in cmd(user) and "all on GPU: NO" in out(user), "dry run, your own -ctk f16 stands, all on GPU: NO")
-    n4 = gp.dense_gpu_fit(model, 4096, 64 * GIB, True)
-    none = run((a8["need_gib"] + n4["need_gib"]) / 2)          # q8_0 does not fit 8192 but fits 4096
-    check("-ctk q8_0" in cmd(none) and "neither KV type fits" in out(none) and "all on GPU: NO" in out(none) and "--ctx" in out(none).split("all on GPU: NO")[1],
-          "dry run, neither fits: q8_0 (spills least), says so, names a context that fits")
+    pc = lambda c, q: gp.dense_gpu_fit(model, ctx, 64 * GIB, q, 0.0, 0.0, 0.20)["need_gib"]
+    f16_need, q8_need = pc(ctx, False), pc(ctx, True)
+    roomy = run(f16_need + 1)
+    check("-ctk" not in cmd(roomy) and "KV cache does not fit" not in out(roomy), "dry run, room for f16: f16 KV, nothing said")
+    tight = run((f16_need + q8_need) / 2)
+    check("-ctk q8_0" in cmd(tight) and "q8_0 KV cache, which does" in out(tight) and "same context" in out(tight) and "-c 8192" in cmd(tight), "dry run, f16 too big but q8_0 fits: q8_0 KV chosen, says why, the context stays")
+    exact = run((f16_need + q8_need) / 2, ["--exact"])
+    check("-ctk" not in cmd(exact), "dry run, --exact keeps f16")
+    user = run((f16_need + q8_need) / 2, extra=["-ctk", "f16", "-ctv", "f16"])
+    check("-ctk q8_0" not in cmd(user), "dry run, your own -ctk f16 stands")
+    none = run(q8_need / 2)
+    check("-ctk q8_0" in cmd(none) and "-c 8192" in cmd(none) and "part of it runs from system RAM" in out(none) and "all on GPU" not in out(none), "dry run, neither fits: q8_0, the context stays, says part runs from RAM, no 'all on GPU' line")
+    check("all on GPU" not in out(roomy) and "all on GPU" not in out(tight), "no 'all on GPU' line anywhere")
+    # --- automatic best GPU (owner's choice: --device only to leave integrated GPUs out) ---
+    listing = ("Available devices:\n  Vulkan0: AMD Radeon(TM) Graphics (24000 MiB, 23000 MiB free)\n  Vulkan1: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n")
+    ag = mc.auto_gpu_device([], listing)
+    check(ag and ag[0] == "Vulkan1", "auto GPU: integrated Vulkan0 (more 'free' shared memory) and the 9070 XT -> --device Vulkan1")
+    two = listing + "  Vulkan2: AMD Radeon RX 7900 XT (20000 MiB, 19000 MiB free)\n"
+    check(mc.auto_gpu_device([], two)[0] == "Vulkan1,Vulkan2", "auto GPU: iGPU + two real cards -> both real cards (they still split as llama.cpp does)")
+    check(mc.auto_gpu_device(["--device", "Vulkan0"], listing) is None and mc.auto_gpu_device(["-ts", "1,1"], listing) is None, "auto GPU: your own --device / -ts stands")
+    check(mc.auto_gpu_device([], listing, cpu_only=True) is None and mc.auto_gpu_device([], listing, multi_gpu=True) is None, "auto GPU: not for --cpu-only or --multi-gpu")
+    check(mc.auto_gpu_device([], "Available devices:\n  Vulkan0: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n") is None, "auto GPU: one GPU -> nothing to choose")
+    only_i = "Available devices:\n  Vulkan0: Intel(R) Arc(TM) Graphics (20000 MiB, 19000 MiB free)\n  Vulkan1: AMD Radeon(TM) Graphics (24000 MiB, 23000 MiB free)\n"
+    check(mc.auto_gpu_device([], only_i) is None, "auto GPU: only integrated GPUs -> nothing is left out, used as before")
+    cc = "Available devices:\n  CUDA0: NVIDIA GeForce RTX 3090 (24000 MiB, 23000 MiB free)\n  CUDA1: NVIDIA GeForce RTX 3090 (24000 MiB, 23000 MiB free)\n"
+    check(mc.auto_gpu_device([], cc) is None, "auto GPU: two real cards, no integrated GPU -> nothing added (llama.cpp splits)")
+    check(mc.pick_gpu_full(listing)[0] == "Vulkan1", "pick_gpu_full (plan and control page): a card that is not integrated comes first even on Linux")
     # --- the log scan ---
     line = b"llama_context: layer 41 is assigned to device Vulkan1 but Flash Attention over K/V rows is assigned to device CPU\n"
     n = mc.cpu_placement_note(line)
@@ -80,12 +94,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check(mc.cpu_placement_note("load_tensors: offloaded 65/65 layers to GPU") is None, "log scan: everything offloaded -> nothing")
     check(mc.cpu_placement_note("load_tensors: offloaded 0/65 layers to GPU", cpu_run=True) is None, "log scan: a CPU-only run asked for 0 layers -> nothing")
     check(mc.cpu_placement_note("srv  load_model: loading model 'x'") is None, "log scan: an ordinary line -> nothing")
-    # --- the integrated GPU warning ---
-    listing = ("Available devices:\n  Vulkan0: AMD Radeon(TM) Graphics (24000 MiB, 23000 MiB free)\n  Vulkan1: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n")
-    w = mc.igpu_device_note(["--device", "Vulkan0"], listing)
-    check(w and "integrated GPU" in w and "Vulkan1" in w, "iGPU: --device Vulkan0 (Radeon Graphics) while Vulkan1 is the 9070 XT -> warning naming the better device")
-    check(mc.igpu_device_note(["--device", "Vulkan1"], listing) is None, "iGPU: --device on the discrete card -> nothing")
-    check(mc.igpu_device_note([], listing) is None and mc.igpu_device_note(["--device", "none"], listing) is None, "iGPU: no --device / none -> nothing")
+    # --- planned CPU work stays quiet ---
+    mc.EXPECT_CPU_WORK[0] = True
+    check(mc.EXPECT_CPU_WORK[0] is True, "log scan flag exists (the pump skips the note while the plan itself puts work on the CPU)")
+    mc.EXPECT_CPU_WORK[0] = False
 if fails:
     print("FAILED: " + "; ".join(fails)); sys.exit(1)
 print("all ok")
