@@ -1,0 +1,28 @@
+The harbour town of Aldermouth sits where the river Wend meets the sea, and for three hundred years its fortunes have followed the tide. In spring the fishing boats leave before dawn, their lanterns strung out across the grey water like a loose necklace, and the market on the quay opens only when the first catch is in. The older fishermen say that the weather can be read from the gulls: when they gather on the roofs of the net sheds, a storm is coming; when they follow the boats far out, the herring are running. Nobody in the town has ever kept a written record of these sayings, yet they are right more often than the forecasts on the radio.
+
+def merge_intervals(intervals):
+    """Merge overlapping closed intervals and return them sorted by start."""
+    result = []
+    for start, end in sorted(intervals):
+        if result and start <= result[-1][1]:
+            result[-1][1] = max(result[-1][1], end)
+        else:
+            result.append([start, end])
+    return result
+
+for pair in merge_intervals([(1, 3), (2, 6), (8, 10), (9, 12), (15, 18)]):
+    print(f"{pair[0]:>3} - {pair[1]:<3}")
+
+La ville de Strasbourg possède l'une des plus belles cathédrales gothiques d'Europe. Chaque année, des milliers de visiteurs montent les trois cent trente marches de la flèche pour contempler la plaine d'Alsace, les Vosges à l'ouest et la Forêt-Noire à l'est. Die Münsterbauhütte, die Werkstatt der Steinmetze, arbeitet bis heute ohne Unterbrechung an der Erhaltung des Gebäudes, und viele Handwerker lernen ihr Fach dort vom Vater oder von der Mutter.
+
+Total revenue for the quarter was 4,812,300 dollars, up 6.4 percent on the same quarter last year, while operating costs rose by only 2.1 percent. The board therefore approved a modest increase in the maintenance budget, on the condition that every project report its progress in writing each month. Questions about the new reporting form should be sent to the finance office, which will answer within two working days.
+
+SELECT customer_id, COUNT(*) AS orders, SUM(total) AS spent
+FROM orders
+WHERE created_at >= DATE '2026-01-01'
+GROUP BY customer_id
+HAVING COUNT(*) > 3
+ORDER BY spent DESC
+LIMIT 10;
+
+When the lamp finally went out, the room was quiet for a long time. Outside, the snow kept falling on the empty street, covering the footprints of the last visitors, and somewhere far off a train sounded its horn as it crossed the bridge. She folded the letter, put it back in the drawer, and decided that tomorrow she would answer it.

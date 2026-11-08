@@ -499,6 +499,9 @@ button.danger { border-color:var(--ink); }
     <label class="check"><input type="checkbox" id="agent"> Agent mode <span class="small">(--agent: 64k context, tool calls, warm sessions)</span></label>
     <label class="check"><input type="checkbox" id="nowarm"> Don't restore saved agent sessions <span class="small">(--no-warm: nothing is saved either)</span></label>
     <label class="check"><input type="checkbox" id="longprompt" checked> Long-prompt mode <span class="small">(on by default from 32k context: reads long prompts about 77 % faster, answers as fast; for agents and documents. Needs room on the graphics card, otherwise nothing changes. Untick it for answers identical to stock llama.cpp: this mode stores the KV cache as q8_0, so wording may differ slightly)</span></label>
+    <label>Approximate speed tiers (--approx) <span class="small">off by default</span></label>
+    <select id="approx"><option value="">Off: same answers as the settings above</option><option value="safe">Safe: 8-bit KV cache, the model's own drafting</option><option value="careful">Careful: also skips rarely used experts</option><option value="aggressive">Aggressive: skips more experts</option></select>
+    <div class="hint" id="approxhint">Off. Every tier below changes some answers: they are NOT identical to plain llama.cpp's. Each mode has a quality limit (docs/QUALITY_GATE.md) and runs only for models it was measured on; at the start a short check against the exact setting steps the tier down when the answers drift too far. The plan above does not show a tier.</div>
     <label class="check"><input type="checkbox" id="leaveroom"> Leave room for me <span class="small">(--leave-room: I use this PC while the model runs; more RAM, GPU memory and CPU stay mine, the model is slower)</span></label>
     <h4>Server</h4>
     <div class="row">
@@ -572,7 +575,7 @@ $("aboutsessions").onclick = () => alert("In Agent mode the launcher saves each 
 /* ---------- settings (unchanged rules from the GUI1/GUI2 page) ---------- */
 function settings() {
   return { model: S.sel, ram: $("ram").value > 0 ? $("ram").value : "", vram: $("vram").value > 0 ? $("vram").value : "", ctx: S.ctx, mode: S.engine == "stock" ? "exact" : S.mode,
-           engine: S.engine, mtp: S.mtp, agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, leave_room: $("leaveroom").checked, no_long_prompt: !$("longprompt").checked, port: $("port").value, api_key: $("apikey").value };
+           engine: S.engine, mtp: S.mtp, agent: $("agent").checked, no_warm: $("agent").checked && $("nowarm").checked, leave_room: $("leaveroom").checked, no_long_prompt: !$("longprompt").checked, approx: $("approx").value, port: $("port").value, api_key: $("apikey").value };
 }
 function planKey(m) { const s = settings(); return [m, s.ram, s.vram, s.ctx, s.mode, s.agent, s.engine, s.mtp, s.leave_room, s.no_long_prompt].join("|"); }
 const segPainters = [];
@@ -584,6 +587,10 @@ function seg(sel, key, cb) {
 }
 const MODEHINT = { exact: "Exact: same output as stock llama.cpp (default).", fast: "Fast (--fast): skips experts that are rarely needed and not in RAM. About 10 % faster; about 1 token in 40-50 comes out different.",
                    hybrid: "Hybrid (--hybrid, experimental): the most used experts run on the GPU, the rest on the CPU; some tokens come out different from stock." };
+const APPROXHINT = { "": "Off. Every tier below changes some answers: they are NOT identical to plain llama.cpp's. Each mode has a quality limit (docs/QUALITY_GATE.md) and runs only for models it was measured on; at the start a short check against the exact setting steps the tier down when the answers drift too far. The plan above does not show a tier.",
+  safe: "Safe: answers are NOT identical to stock. The KV cache is stored in 8 bit (mean KL 0.0045-0.015 against stock) and, if the model has the head, it drafts 2 tokens ahead and checks them. Every expert is still computed. Limit: KL 0.015, same top token 95 %.",
+  careful: "Careful: answers are NOT identical to stock. Rarely picked experts that are not in RAM are skipped (about +10 %; about 1 token in 40-50 differs), 8-bit KV cache, own drafting. Limit: KL 0.040, same top token 90 %.",
+  aggressive: "Aggressive: answers are NOT identical to stock. Up to 4 low-ranked experts per token are skipped (about 1 token in 28 differs); for memory much smaller than the model. Fastest, least faithful. Limit: KL 0.060, same top token 88 %." };
 const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (faster decode; the output can differ slightly for some models); the plan's Why list says what it will do.",
                   on: "--mtp: always use the model's MTP head (Start stops with a message when the model or llama-server cannot).",
                   off: "--no-mtp: never." };
@@ -1739,6 +1746,7 @@ window.addEventListener("hashchange", openHash);
   $("agent").onchange = () => { if ($("agent").checked && S.ctx < 65536) { S.ctx = 65536; segPainters.forEach(p => p()); } settingsChanged(); };
   $("leaveroom").onchange = () => settingsChanged();
   $("longprompt").onchange = () => settingsChanged();
+  $("approx").onchange = () => { $("approxhint").textContent = APPROXHINT[$("approx").value] || APPROXHINT[""]; settingsChanged(); };
   await loadModels(false);
   if (S.sys.llama_found === false) askLlama();
   else if (!S.models.length && !(S.sys.last || {}).model && !S.sys.pick) { openS(); S.pickLoaded = true; loadPick(); }   // first run: suggest a model

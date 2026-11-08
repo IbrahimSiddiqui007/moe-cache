@@ -2034,6 +2034,11 @@ SERVER_HELP = """\
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
+--approx safe|careful|aggressive  OFF by default. Opt-in speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
+           head (every expert is computed). careful: --fast (rarely picked experts not in RAM are skipped, about 1 token in 40-50 differs) + the same. aggressive: --fast=2 (up to 4 low-ranked experts skipped, about 1 token
+           in 28 differs). Each mode has a quality gate (docs/QUALITY_GATE.md, docs/CONFIGURATION.md) and runs only for models with a gate record, else --approx-unverified. Your own --fast wins and is reported.
+           At the start a short canary (about 256 scored tokens, against the exact setting of the same model) re-measures the tier and steps it down when the KL divergence is past its gate
+           (--no-approx-canary skips it; it guards, it never proves). Not with --exact or --stock. --approx-off MODE removes one mode (kv8, spec-exact, fast1, fast2)
 --profile NAME  use (and keep learning) a separate usage profile for one kind of work, e.g. coding, thinking, research; default: one shared profile
 --project NAME  its own profile plus a saved prompt state (KV cache) restored at start; save it with: moe_cache.py project save NAME
 --gpu-cache off|auto|MIB  (Linux, preload method only) llama.cpp's GPU expert cache (--moe-cache-mib) on top of this cache. auto = all free VRAM the tuner sees minus --gpu-margin GiB.
@@ -2272,7 +2277,8 @@ class LaunchPlan:
                 "windows_job_limit_bytes": self.win_limit, "argv": list(self.cmd),
                 "env": [[k, "(hidden)" if k == "LLAMA_API_KEY" else v] for k, v in self.env + self.key_env],
                 "command_line": self.command_line(), "reasons": self.reasons, "warnings": self.warnings,
-                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines()}
+                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines(),
+                **({"approx": getattr(self.a, "approx_info")} if getattr(self.a, "approx_info", None) else {})}
 
 
 def parse_server(argv):
@@ -2309,6 +2315,8 @@ def parse_server(argv):
     ap.add_argument("--agent", action="store_true"); ap.add_argument("--no-warm", action="store_true"); ap.add_argument("--no-starter", action="store_true"); ap.add_argument("--api-key", default=os.environ.get("LLAMA_API_KEY"))
     ap.add_argument("--mtp", action="store_true", default=None); ap.add_argument("--no-mtp", dest="mtp", action="store_false")
     ap.add_argument("--no-sampling-defaults", action="store_true")
+    ap.add_argument("--approx", choices=["exact", "safe", "careful", "aggressive"], default=None)      # QUALITY-970: opt-in tiers that change answers (bin/moe_cache_approx.py); off by default
+    ap.add_argument("--approx-off", action="append", default=[], metavar="MODE"); ap.add_argument("--approx-unverified", action="store_true"); ap.add_argument("--no-approx-canary", action="store_true")
     ap.add_argument("--print-systemd", action="store_true")  # SERVER-005: print docs/moe-cache-server.service filled with this command line and the memory limits, and exit
     ap.add_argument("--plan-json", action="store_true")      # print the launch plan as JSON (argv, environment, reasons, warnings) and exit; nothing is started
     extra = []
@@ -2391,6 +2399,7 @@ def systemd_unit(a, extra, argv, template=None):
 
 
 def server(argv):
+    full_argv = list(argv)
     a, extra, argv = parse_server(argv)
     if a.print_systemd:
         if not a.model:
@@ -2409,7 +2418,62 @@ def server(argv):
     if a.plan_json:
         print(json.dumps(plan.to_dict(), indent=1))
         return 0
+    if getattr(a, "approx_info", None) and not a.dry_run:
+        final = approx_canary(plan)
+        if final and final != a.approx:
+            argv_full = list(full_argv)
+            i = next((k for k, t in enumerate(argv_full) if t == "--approx" or t.startswith("--approx=")), None)
+            if i is not None:
+                argv_full[i:i + (1 if "=" in argv_full[i] else 2)] = [f"--approx={final}"]
+                a2, extra2, argv2 = parse_server(argv_full)
+                plan = launch_plan(a2, extra2, argv2)
+                if getattr(a2, "approx_info", None):
+                    a2.approx_info["canary"] = f"stepped down from {a.approx} to {final}"
     return run_launch_plan(plan)
+
+
+def approx_canary(plan):
+    """QUALITY-970 startup canary for --approx: about 256 scored tokens (tools/approx_canary.txt: prose, code, French and German, numbers, SQL) through llama-perplexity with this
+    launch's own placement flags, against the exact setting of the same model (no route skip, f16 KV cache). The tier is stepped down when the KL divergence or the top-token share
+    is past its gate (bin/moe_cache_approx.py GATE_LEVELS). A result is stamped per model file, plugin library and tier, so the next start does not measure again. It guards, it never proves,
+    and a canary that cannot run (no llama-perplexity, a failed run) leaves the tier as asked and says so. Returns the tier to run, or None when nothing was checked."""
+    import tempfile
+    import moe_cache_approx as ax
+    a = plan.a
+    info = a.approx_info
+    if a.no_approx_canary or a.approx == "exact":
+        info["canary"] = "off"
+        return None
+    perp = shutil.which("llama-perplexity", path=os.path.dirname(os.path.abspath(plan.ls)) + os.pathsep + os.environ.get("PATH", "")) or shutil.which("llama-perplexity.exe", path=os.path.dirname(os.path.abspath(plan.ls)))
+    if not perp or not os.path.isfile(ax.CANARY_TEXT):
+        info["canary"] = "skipped: no llama-perplexity next to llama-server"
+        say("moe-cache: --approx: canary skipped (llama-perplexity not found next to llama-server): the tier runs as asked, nothing was checked")
+        return None
+    stampdir = os.path.join(CACHE_DIR, "approx")
+    lib = getattr(plan, "lib", None) or ""
+    base_env = {k: v for k, v in plan.env if k not in ax.ROUTE_ENV}
+    place = ax.model_args_from_cmd(plan.cmd)
+    with tempfile.TemporaryDirectory(prefix="approx_canary_") as work:
+        raw = ax.make_measure(perp, plan.model, ax.CANARY_TEXT, place, ax.tier_kv, ax.tier_env, base_env, work)
+
+        def measure(tier):
+            key = ax.canary_key(plan.model, lib, tier)
+            rec = ax.stamp_read(stampdir, key)
+            if rec and "kld" in rec:
+                return rec["kld"], rec["top1"]
+            say(f"moe-cache: --approx {tier}: startup canary (about 256 tokens against the exact setting; the first start of this model and kit only)")
+            got = raw(tier)
+            if got:
+                ax.stamp_write(stampdir, key, {"kld": got[0], "top1": got[1], "tier": tier, "model": os.path.basename(plan.model), "time": int(time.time())})
+            return got
+        final, hist, note = ax.canary_decide(a.approx, measure)
+    for t, kld, top1, ok in hist:
+        say(f"moe-cache: --approx {t}: canary mean KL {kld:.4f}, same top token {top1:.1f} % -> " + ("within its gate" if ok else f"PAST its gate (limit {ax.GATE_LEVELS[ax.TIERS[t]['gate']][0]}): stepping down"))
+    if note:
+        say("moe-cache: --approx: " + note, err=final != a.approx)
+    info["canary"] = ("passed" if final == a.approx and not note else note or f"stepped down to {final}")
+    info["canary_history"] = [{"tier": t, "kld": k, "top1": p, "ok": ok} for t, k, p, ok in hist]
+    return final if hist or note else None
 
 
 MMPROJ_VRAM_HEADROOM = 0.5e9      # compute buffer of the vision encoder, on top of the projector's file size (estimate; llama.cpp's own memory margin does not count it either)
@@ -2905,6 +2969,32 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     return load, method, gcache, env, cap
 
 
+def approx_stage(a, model):
+    """QUALITY-970, stage "approximate tier": --approx safe|careful|aggressive turns on a group of the switches below (bin/moe_cache_approx.py): a.fast, the 8-bit KV cache
+    (a.approx_kv) and the model's own MTP drafting (a.approx_spec). Off unless asked. Your own --fast wins; --exact and --stock refuse. Sets a.approx_info (the control page and --plan-json show it)."""
+    a.approx_kv = a.approx_spec = False
+    a.approx_info = None
+    if not a.approx:
+        if a.approx_off or a.approx_unverified:
+            raise SystemExit("--approx-off / --approx-unverified need --approx safe|careful|aggressive")
+        return
+    import moe_cache_approx as ax
+    if a.approx != "exact" and (a.exact or a.stock):
+        raise SystemExit(f"--approx {a.approx} does not go with --{'exact' if a.exact else 'stock'}: the tier changes the answers, that option asks for the same answers as stock")
+    try:
+        r = ax.resolve(a.approx, os.path.basename(model), off=a.approx_off, unverified=a.approx_unverified, user_fast=a.fast)
+    except ax.ApproxError as e:
+        raise SystemExit(str(e))
+    if r["fast"] and not a.fast:
+        a.fast = r["fast"]
+    a.approx_kv, a.approx_spec = r["kv"], r["spec"]
+    if r["kv"] and not a.fast and not getattr(a, "long_prompt", False) and not a.no_long_prompt:
+        a.long_prompt = True              # safe keeps the long-prompt mode where it applies (-ub 4096 with the same 8-bit KV cache); kv_stage turns the KV cache on anyway where it does not
+    for l in r["lines"]:
+        say(l)
+    a.approx_info = {"tier": r["tier"], "gate": r["gate"], "modes": r["modes"], "canary": None}
+
+
 def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
     if (not a.fast and not a.exact and not a.stock and ctx >= 131072
@@ -2924,6 +3014,9 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
             raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
         if not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra) and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls))):
             a.fast, a.lp_kv = "kv", True
+    if (getattr(a, "approx_kv", False) and not a.fast and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
+            and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):
+        a.fast = "kv"                       # --approx safe: the 8-bit KV cache at any context (where the long-prompt mode did not already switch it on)
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
     if kv_q8:
         extra += ["-ctk", "q8_0", "-ctv", "q8_0"]
@@ -2947,6 +3040,10 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
     if tuned and tuned.get("ub") == 4096:
         say("moe-cache: long-prompt mode" + ("" if loud else " (the default; --no-long-prompt or --exact turns it off)") + ": a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, "
             "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: same top token in 94-95 % of positions, the meaning stayed the same in our checks)")
+        return kv_q8, tuned, desk_kw, ub_asked
+    if getattr(a, "approx_kv", False):         # --approx safe asked for the 8-bit KV cache itself: it stays, the micro-batch is the usual one
+        a.lp_kv = False
+        loud and say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card; --approx safe keeps the 8-bit KV cache with the usual micro-batch")
         return kv_q8, tuned, desk_kw, ub_asked
     # -ub 4096 does not fit this card's memory plan: undo the KV cache and plan again as without the flag
     for i in range(len(extra) - 3):
@@ -3284,6 +3381,7 @@ def _launch_plan(a, extra, argv, machine):
         say("moe-cache: --hybrid replaces --gpu-cache: the GPU memory goes to the hybrid bank"); gcache = "off"
     if not os.path.isfile(model):
         raise SystemExit(f"usage: moe-cache-server MODEL.gguf [options]  (model file not found: '{model}')")
+    approx_stage(a, model)
     if a.stock and (a.fast or a.hybrid or a.always_plugin):
         raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock, machine=machine)
@@ -3306,7 +3404,7 @@ def _launch_plan(a, extra, argv, machine):
     api_key, key_env = api_key_stage(a, extra, lan_addr)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias, slotdir = agent_stage(a, extra, model)
-    extra += mtp_args(a.mtp, a.agent, ls, model, extra)
+    extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra)
     extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:

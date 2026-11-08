@@ -653,7 +653,9 @@ def server_args(s):
         a.append("--hybrid")
     elif s.get("engine") == "plugin":
         a.append("--always-plugin")
-    if s.get("engine") != "stock" and s.get("mode", "exact") == "exact":
+    if s.get("approx") in ("safe", "careful", "aggressive"):
+        a += ["--approx", s["approx"]]       # QUALITY-970: opt-in tiers that change answers; the launcher refuses a model without a gate record
+    elif s.get("engine") != "stock" and s.get("mode", "exact") == "exact":
         a.append("--exact")                # the page says "same output as stock": no q8_0 KV default at 128k+ (audit 2026-10-30)
     if s.get("mtp") in (True, False):
         a.append("--mtp" if s["mtp"] else "--no-mtp")
@@ -2698,7 +2700,7 @@ class Handler(BaseHTTPRequestHandler):
              "engine": d.get("engine") if d.get("engine") in ("auto", "plugin", "stock") else "auto",
              "mtp": {"on": True, "off": False}.get(str(d.get("mtp")).lower()),
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"),
-             "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "no_long_prompt": str(d.get("no_long_prompt")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+             "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "no_long_prompt": str(d.get("no_long_prompt")).lower() in ("1", "true", "on"), "approx": d.get("approx") if d.get("approx") in ("safe", "careful", "aggressive") else "", "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
         if s["engine"] == "stock":
             s["mode"] = "exact"                   # --fast and --hybrid need the plugin
         for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),
