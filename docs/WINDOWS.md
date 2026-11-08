@@ -1,7 +1,7 @@
 # Windows quick start (experimental)
 
 Tested on one Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM; other cards are untested, reports welcome): identity 4/4 on four models, launcher
-and chat working; speed numbers updated 2026-10-27 with the file-view cache (RESULTS 59-61); long-context numbers updated 2026-11-03 (section 6). Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM, stock llama.cpp is all you need; the plugin
+and chat working; speed numbers updated 2026-10-27 with the file-view cache (RESULTS 59-61); long-context numbers updated 2026-11-03 (section 6). Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM and its experts all fit on the card, stock llama.cpp is all you need (the launcher picks it; with expert layers on the CPU it runs the plugin by default, `--stock` opts out); the plugin
 helps with models bigger than RAM.
 
 ## 1. What you need
@@ -115,7 +115,7 @@ The control page shows these too: in the plan before you start ("Windows + AMD: 
   IQ2_XS): 174.8 / 163.9 s stock vs **73.4 / 81.6 s** plugin (2.0-2.4x), first token 3x sooner; two agents at once 335 vs 145 s (RESULTS 60). The
   122B row replaces RESULTS 59's 13.88 vs 16.13 (+16 %): that pair ran during a slowdown of the whole PC (stock was 13 % slower too; RESULTS 61, T2b).
   These decode figures are from the 2026-10-27/28 kits at a short context; later kits are faster (Flash-Next Q2_0 decode 24.7-25.7 tok/s with the async reads, RESULTS 67, and 27.3-27.7 at 34k context with the v0.3.5 defaults). Their stock-vs-plugin ratios are recorded in RESULTS.md.
-  If your model fits in RAM, stock llama.cpp is the better choice (the launcher picks it by itself). One desktop only; Linux numbers are in the README.
+  If your model fits in RAM and its experts all fit on the card, stock llama.cpp is the better choice (the launcher picks it by itself; with expert layers on the CPU it runs the plugin by default, `--stock` opts out; the 16 GB PC measured 1.06x prompt, 1.07x decode forced through the plugin). One desktop only; Linux numbers are in the README.
 - **Which Flash-Next file for a 16 GB GPU + 32 GB RAM PC** (same PC, plugin with launcher defaults, cold; RESULTS 59, 60, 63). Tasks = 202
   exact-answer tasks; no quality difference between any two files is proven (all paired sign tests p > 0.05):
 

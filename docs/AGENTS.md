@@ -101,7 +101,7 @@ IQ2_XS were measured on IQ2_XS (superseded by Q2_0). If a smaller model is enoug
 ## Without starting a server by hand (on-demand)
 
 Hermes Agent and OpenCode only know a URL; they cannot start a server. `on-demand` gives them an endpoint that is always there and starts the model
-when an agent asks for it, the way Ollama does:
+when an agent asks for it:
 
 ```bash
 python3 bin/moe_cache.py on-demand MODEL.gguf --ram 20      # remembers the model and its options, then listens on 127.0.0.1:8080
@@ -119,7 +119,7 @@ python3 bin/moe_cache.py on-demand --install-autostart        # optional: start 
 | log | one line per start and stop on the listener's output (journal on Linux); the launcher's and llama-server's output go to `~/.cache/moe-cache/on-demand.log` |
 | `--status`, `--stop` | what is remembered, whether the listener and the model run; stop the listener (and the model) |
 | a crash | a model server that dies is noticed; the next request starts it again |
-| two models (Ollama-style) | `on-demand MODEL2.gguf [options] --add` adds another model; the first stays the default. `/v1/models` lists all of them, and the request's `"model"` picks one: one model runs at a time, so a request for the other waits until the running one has finished its requests, stops it and starts the one asked for (Granite on the laptop: about 2 s; a big model takes its load time, its pages are often still in the file cache). A name it does not know goes to the running model, else the default (llama-server ignores the field too). `--remove NAME` forgets an added model; `on-demand MODEL` alone replaces the whole choice. `connect opencode --write` puts every listed model into OpenCode's model picker |
+| two models (one local OpenAI-compatible server) | `on-demand MODEL2.gguf [options] --add` adds another model; the first stays the default. `/v1/models` lists all of them, and the request's `"model"` picks one: one model runs at a time, so a request for the other waits until the running one has finished its requests, stops it and starts the one asked for (Granite on the laptop: about 2 s; a big model takes its load time, its pages are often still in the file cache). A name it does not know goes to the running model, else the default (llama-server ignores the field too). `--remove NAME` forgets an added model; `on-demand MODEL` alone replaces the whole choice. `connect opencode --write` puts every listed model into OpenCode's model picker |
 
 **Start at login** (`--install-autostart`, undo with `--remove-autostart`, which also stops the listener):
 

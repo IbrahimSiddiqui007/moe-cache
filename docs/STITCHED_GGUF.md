@@ -1,4 +1,4 @@
-# Stitched GGUF: one file, two quantisations (MODELS-640)
+# Stitched GGUF: one file, two quantisations
 
 `tools/stitch_gguf.py` builds one GGUF from two quantisations of the same model: the layers that stay resident come from one file (for example IQ3_XXS), the layers
 that stream from disk come from the other (for example Q2_0). The tensor bytes are **copied**, nothing is re-quantised, so each tensor is exactly what its source file
@@ -48,7 +48,7 @@ Why: the streamed layers dominate the bytes read from the SSD; Q2_0 experts are 
    (b) the quality gate shows KL above the limit fixed in `QUALITY_GATE.md` before measuring, or any task regression against the IQ3_XXS file; or (c) a B run needs more peak RAM than the A runs. One failed
    run caused by the machine (another program, thermal throttling) is repeated once, not counted.
 
-## Per-expert mix simulation (`tools/expert_mix.py`, MODELS-759 / MODELS-760)
+## Per-expert mix simulation (`tools/expert_mix.py`)
 
 A quality-only test that needs no plugin work: `expert_mix.py mix` takes each expert slice from file A (for example IQ3_XXS) or from file B (for example Q2_0), the coldest experts of a usage profile (`profiles/*.usage`) first, dequantises it with libggml and writes the mix as Q6_K (Q8_0 for tensors whose rows are not a multiple of 256 columns, the down tensors of the Qwen3.8 family). Any llama.cpp then runs the mix as ordinary single-type tensors and `tests/kl_batch.sh` measures it. `--fraction 0` and `--fraction 1` are the controls: their KL against the real files must stay within 0.005. `expert_mix.py types FILE [FILE]` lists the tensor types from the headers only; `mix --dry-run` prints the output size without writing. Run on big files under `systemd-run --user --scope -p MemoryMax=20G`, one file at a time; the output is a new file and is deleted after its KL run.
 
