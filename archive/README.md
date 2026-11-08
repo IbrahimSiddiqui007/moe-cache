@@ -115,6 +115,7 @@ Restore: `git apply archive/plugin/sched_tuning.patch`. The launcher still accep
 | File | Switch | Result | Why archived | Retest if |
 |---|---|---|---|---|
 | llama.cpp/0080-cpu-moe-glu-fuse-and-split-profile.patch | `GGML_CPU_FUSE_MOE=1`; timers `GGML_R4_PROF=1/2/3` | identical text; +4 to +7 % in the machine's fast phase (2 pairs), -7 % in its slow phase (6 pairs); notes in llama.cpp/0080-NOTES.md | no robust gain (barrier skew under foreign load stays) | quiet machine or a barrier-free expert-parallel scheme |
+| llama.cpp/0081-cpu-mmid-dynamic-rows.patch | `GGML_CPU_MMID_ROWS=N` | identical text; +17 % in a noisy phase, 0 with a controlled disturbance (13.4 vs 13.4) and when quiet (24.2 vs 23.1); notes in llama.cpp/0081-NOTES.md | no robust gain; the plugin executor (+13 % quiet, +40 % disturbed) is the better fix | threads not strictly pinned, or a chunk-based barrier in the stock pool |
 
 ## Notes on 0001
 `ggml_vk_wait_for_fence` waits for the last 20 % of a graph by polling `getFenceStatus` with 1000 `pause` instructions between polls. The patch made the count an env value (N blocks of 10 pauses, unset = 100 = stock). Only the poll interval changes, so output cannot change. Tested at N = 10.
