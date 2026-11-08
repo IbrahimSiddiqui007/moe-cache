@@ -209,5 +209,5 @@ More detail, troubleshooting and the Vulkan build: [docs/QUICKSTART.md](QUICKSTA
 on a model bigger than your RAM and writes a report to paste into a [Benchmark report issue](https://github.com/IbrahimSiddiqui007/moe-cache/issues/new?template=benchmark_report.yml).
 It only measures, and the report holds no prompts, answers or names. Recipe: [docs/SHARE_YOUR_NUMBERS.md](SHARE_YOUR_NUMBERS.md). Reports from other machines are very welcome.
 
-The full benchmark tool (Linux) (web page, standard protocol, many-model matrix, quality harness) now lives in its own repository: [moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark).
+The older stand-alone benchmark repository ([moe-cache-benchmark](https://github.com/IbrahimSiddiqui007/moe-cache-benchmark)) is no longer maintained: use `bench-report` above or **Share my numbers** on the control page.
 Clone it next to this folder (or set `MOE_CACHE_DIR` for the benchmark tool) and it finds the plugin and the planner by itself.
