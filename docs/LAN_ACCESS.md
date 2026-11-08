@@ -44,7 +44,7 @@ does not set that up.
 | A remote visitor runs code on the PC | Setting the llama-server path to any program, writing an agent's config, adding a folder | rule 8 (allow-list; `/api/llama`, `/api/folders`, `/api/connect`, `/api/command` and every start, stop, bench and download route are 403) | a visitor with the token can read chats and status and send chat messages to the running model, nothing else |
 | A remote visitor fills the disk | Model download, or a chat saved over and over | rule 8 (downloads stay local); saved chats are size-limited per file | long chats are stored on the PC |
 | The key leaks through the process list | `--api-key KEY` on a command line | the launcher already takes the key from `LLAMA_API_KEY` / the stored file | a key typed after `--` is visible to other users of this PC |
-| A second user of this PC | They can reach `127.0.0.1` anyway | token and key (SERVER-011) | same as before |
+| A second user of this PC | They can reach `127.0.0.1` anyway | token and key | same as before |
 
 ## A reverse proxy on this PC
 

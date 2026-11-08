@@ -1,6 +1,6 @@
 // AVX-512 dot products for IQ2_XXS x Q8_K and IQ3_XXS x Q8_K (llama.cpp's block layouts), written for CPUs with AVX-512BW (Zen 4, Ice Lake and newer).
 //
-// STATUS: written without access to an AVX-512 machine. They are never used unless MOE_CACHE_AVX512=1, and even then only after a self-check that
+// STATUS: bit-exact on a Zen 4 7950X (AVX-512) but 0.60-0.77x of llama.cpp's own function there (RESULTS 54); not measured on Intel. They are never used unless MOE_CACHE_AVX512=1, and even then only after a self-check that
 // compares them bit-for-bit with llama.cpp's own function on random data (see avx512_selfcheck in the plugin). tests/kernel_variants.cpp and
 // tools/friend_test.sh run the same comparison and time both versions.
 //

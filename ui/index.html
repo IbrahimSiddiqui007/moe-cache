@@ -594,7 +594,7 @@ const APPROXHINT = { "": "Off. Every tier below changes some answers: they are N
 const MTPHINT = { auto: "On in Agent mode when the model has an MTP head and llama-server supports it (faster decode; the output can differ slightly for some models); the plan's Why list says what it will do.",
                   on: "--mtp: always use the model's MTP head (Start stops with a message when the model or llama-server cannot).",
                   off: "--no-mtp: never." };
-const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM (faster then), moe-cache when it does not (recommended).",
+const ENGINEHINT = { auto: "Stock llama-server when the model fits in RAM and all its experts fit on the card; moe-cache when it does not fit, or when some expert layers stay on the CPU (recommended).",
                      plugin: "--always-plugin: moe-cache even when the model fits (to compare with stock).",
                      stock: "--stock: stock llama-server even when the model does not fit (to compare; Mode is Exact then). Run the Quick benchmark in each and compare in the Benchmark card." };
 
@@ -646,7 +646,7 @@ function verdictBadge(p) {
   if (!p) return `<span class="badge wait">planning…</span>`;
   return `<span class="badge ${p.kind || "error"}">${esc(p.verdict || "?")}</span>`;
 }
-function mtpChip(i) {      // GUI-011: the model's own file has an MTP head (the launcher uses it in Agent mode); a separate mtp-*.gguf beside it is not used
+function mtpChip(i) {      // the model's own file has an MTP head (the launcher uses it in Agent mode); a separate mtp-*.gguf beside it is not used
   if (!i) return "";
   if (i.head > 0) return ` · <span class="chip mtp" title="This model has an MTP head (${i.head} layer) in its own file. Agent mode uses it when llama-server supports it (Settings → MTP).">MTP head</span>`;
   if (i.beside) return ` · <span class="chip" title="A separate head file (${esc(i.beside)}) lies in the same folder. The launcher reads only the head inside the model's own file, so this one is not used.">MTP file beside, not used</span>`;
@@ -741,7 +741,7 @@ async function applyPick() {
 }
 
 
-/* ---------- model downloads (bin/moe_cache_download.py; GUI-008) ---------- */
+/* ---------- model downloads (bin/moe_cache_download.py) ---------- */
 const DL = { models: [], job: { status: "idle" }, timer: null };
 const fmtDur = s => s == null || !isFinite(s) ? "" : s < 90 ? Math.round(s) + " s" : s < 5400 ? Math.round(s / 60) + " min" : (s / 3600).toFixed(1) + " h";
 async function loadDownloads() {
@@ -1247,7 +1247,7 @@ async function paintBench(st) {
 }
 
 /* ---------- agents (right) ---------- */
-async function loadAgentsCfg() {                // GUI-025: what OpenCode's and Hermes' config files say, read back by the page server
+async function loadAgentsCfg() {                // what OpenCode's and Hermes' config files say, read back by the page server
   try {
     const j = await api("/api/agents"), m = {};
     for (const a of j.agents || []) m[a.agent] = a;
@@ -1286,7 +1286,7 @@ function paintAgents(st) {
   });
 }
 
-/* ---------- servers on this machine (GUI-013): the ones this page started (main + up to 2 more) and the ones started elsewhere (ports 8080-8089) ---------- */
+/* ---------- servers on this machine: the ones this page started (main + up to 2 more) and the ones started elsewhere (ports 8080-8089) ---------- */
 S.chatPort = null; S.servers = { managed: [], other: [], max: 2 };
 const nextPort = () => { const used = new Set((S.servers.managed || []).map(x => x.port).concat((S.servers.other || []).map(x => x.port))); for (let p = 8081; p < 8090; p++) if (!used.has(p)) return p; return ""; };
 async function loadServers() {
@@ -1311,7 +1311,7 @@ function paintServers() {
     `<div class="row small" style="margin-top:8px"><button id="srvadd" ${can ? "" : "disabled"} title="Starts the model selected on the left, with the settings in Settings, on another port">Start another server</button><input type="number" id="srvport" min="1" max="65535" value="${nextPort()}" style="width:80px" aria-label="Port of the new server"></div>
     <div class="hint">Every server loads its own model into this PC's memory: the plan's numbers are for one model alone. Two big models at once will not fit; two small ones, or one model and a small one, can.</div>` + pairPanel();
 }
-// MULTIMODEL-010 (prototype): two models at once under ONE memory cap. "Show the split" asks the page server for the plan; "Start both" starts them with it.
+// (prototype): two models at once under ONE memory cap. "Show the split" asks the page server for the plan; "Start both" starts them with it.
 function pairPanel() {
   if (S.models.length < 2) return "";
   const opt = i => S.models.map((m, k) => `<option value="${k}"${k == i ? " selected" : ""}>${esc(shortName(m.name))} · ${fmtGB(m.size)}</option>`).join("");
@@ -1430,7 +1430,7 @@ function splitThink(m) {          // models that write <think>…</think> into t
   if (t) { think += t[1]; text = t[2] ? text.slice(t[0].length) : ""; }
   return [think.trim(), text];
 }
-// GUI-023: this chat's expert-cache numbers, added up over its answers (each answer carries the hits and misses counted while it was written)
+// this chat's expert-cache numbers, added up over its answers (each answer carries the hits and misses counted while it was written)
 function chatHits(messages) {
   let hits = 0, misses = 0, n = 0;
   for (const m of messages || []) {
@@ -1487,7 +1487,7 @@ $("inner").onclick = e => {
   if (b.dataset.regen != null && !C.busy) { C.chat.messages.pop(); paintChat(); ask(); }
 };
 function paintChatState(st, running) {
-  const other = S.chatPort != null;                                         // chatting with another server (GUI-013): its own state is what the server list shows
+  const other = S.chatPort != null;                                         // chatting with another server: its own state is what the server list shows
   const ready = st.state == "ready" || other, ondemand = st.state == "waiting";      // "waiting": the on-demand mode's state, once the launcher has it
   $("send").disabled = C.busy || !(ready || ondemand);
   $("ta").placeholder = ready ? `Message ${shortName(other ? ((S.servers.managed.concat(S.servers.other).find(y => y.port == S.chatPort) || {}).model || "") : st.model)}… (Enter sends, Shift+Enter new line; drop text or image files here)` : running ? "The model is loading…" : "Start a model to chat (top right)";
@@ -1564,7 +1564,7 @@ $("ta").onkeydown = e => { if (e.key == "Enter" && !e.shiftKey && !e.isComposing
 // attached files: text only, read in the browser, put into the message
 const MAX_FILE = 512 * 1024;
 const IMG_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"], MAX_IMG = 20 * 1024 * 1024, MAX_EDGE = 1568, MAX_IMAGES = 8;
-// GUI-009: an image is shrunk in the browser (long edge 1568 px, JPEG) and goes to a model that has an image encoder: the running llama-server says so in /props
+// an image is shrunk in the browser (long edge 1568 px, JPEG) and goes to a model that has an image encoder: the running llama-server says so in /props
 async function addImage(f) {
   if (S.status.state != "ready" && !S.chatPort) { showErr(`${f.name}: start a model first; images only go to a model with an image encoder`); return; }
   if (S.status.vision === false && !S.chatPort) { showErr(`${f.name}: the running model has no image input. A vision model needs its projector file: start it with  -- --mmproj FILE  (or use a model that has one)`); return; }
