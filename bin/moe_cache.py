@@ -1161,6 +1161,16 @@ def model_identity(model, ctx=None, ctk=None, ctv=None):
     return slot_id(model, ctx, ctk, ctv)
 
 
+def write_server_id(slotdir, model, ctx, cmd):
+    """who runs on this project folder now: `project save` stamps the saved file with server.id, a restore requires the same. Written from the FINAL command line (after
+    the long-prompt stage may have undone the q8_0 KV cache) and again when the f16 KV retry changes it; a KV type that differs from the saved state's gives another id."""
+    try:
+        write_text_atomic(os.path.join(slotdir, "server.id"),
+                          model_identity(model, ctx, arg_after(cmd, "-ctk", "--cache-type-k"), arg_after(cmd, "-ctv", "--cache-type-v")) + "\n")
+    except OSError:
+        pass
+
+
 def model_profile(model, name, dry=False):
     """The usage profile file of this model (bin/moe_cache_model.py profile_path): the old <file>.usage unless the profile there was learned on another file."""
     sys.path.insert(0, os.path.join(HERE, "bin"))
@@ -1792,8 +1802,11 @@ def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry,
     rc, seen = run_child_once(cmd, env, port, expect_plugin, mem_limit, allow_sleep)
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)
     if rc not in (0, None) and not quiet and kv_retry and seen.get("kvabort") and not seen["ready"]:
+        # The known abort (Granite 1B, 63a07fa) prints only "ggml-impl.h:NNN: fatal error", nothing about the KV type, so the text cannot be narrowed further; the retry is
+        # limited instead to: an abort before the server was ready, a q8_0 KV cache this launcher chose (kv_retry is None otherwise), and ONE retry. The matched line is logged.
         new = kv_retry()
         if new:
+            say(f"moe-cache: abort line that triggered the f16 KV retry: {seen['kvabort']}", err=True)
             return run_child_once(new, env, port, expect_plugin, mem_limit, allow_sleep, final=True)[0]
     if rc not in (0, None) and not quiet and oom_retry and seen["oom"] and not seen["ready"]:
         new = oom_retry()
@@ -1943,7 +1956,7 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
             if GGML_ABORT_RE.search(line.decode(errors="replace")):
-                seen["kvabort"] = True
+                seen["kvabort"] = line.decode(errors="replace").strip()[-200:] or True       # the matched line, so the retry can say which abort it answered
             if b"moe-cache:" in line:
                 seen["plugin"] = True
                 seen["last"] = line.decode(errors="replace").strip()
@@ -2498,8 +2511,9 @@ def find_mmproj(model):
 
 
 def vision_dense_start(a, extra, model, stock, size, avail):
-    """MM6 (PROTOTYPE, --mmproj / --auto-fit): find the projector (`--mmproj auto` or a file), pass it to llama-server, count its size in the RAM decision
-    (added to the model's size) and report it for the VRAM plan; detect a dense model. Returns (mmproj file, its bytes, dense, stock, size)."""
+    """Two jobs. (1) --mmproj (PROTOTYPE, MM6): find the projector (`--mmproj auto` or a file), pass it to llama-server, count its size in the RAM decision
+    (added to the model's size) and report it for the VRAM plan. (2) Every launch (LAUNCHER-732): read the GGUF header and detect a dense model (no experts), which gets
+    the dense route. Returns (mmproj file, its bytes, dense, stock, size)."""
     sys.path.insert(0, os.path.join(HERE, "planner"))
     mm, mmb = None, 0
     if a.mmproj:
@@ -2516,13 +2530,12 @@ def vision_dense_start(a, extra, model, stock, size, avail):
         say(f"moe-cache: --mmproj (PROTOTYPE): vision projector {os.path.basename(mm)} ({mmb / 1e9:.2f} GB) counted in the RAM floor and, with {MMPROJ_VRAM_HEADROOM / 1e9:.1f} GB "
             "for its compute buffer, taken off the GPU memory the planner may use; never run with a real vision model by the author")
     dense = False
-    if True:       # LAUNCHER-732: every launch asks the header, a dense model gets the dense route
-        try:
-            from gguf_plan import model_layout
-            lay = model_layout(model)
-            dense = not lay["n_layers"] or not lay["expert_bytes_per_layer"]
-        except Exception:
-            dense = False
+    try:           # LAUNCHER-732: every launch asks the header, a dense model gets the dense route
+        from gguf_plan import model_layout
+        lay = model_layout(model)
+        dense = not lay["n_layers"] or not lay["expert_bytes_per_layer"]
+    except Exception:
+        dense = False
     return mm, mmb, dense, stock, size
 
 
@@ -2871,12 +2884,22 @@ def gpu_stage(a, ls, win, machine):
 def plugin_for_partial_offload(a, ls, model, ctx, machine):
     """v0.3.8, laptop evidence (RTX 4060 8 GB, Qwen3.6-35B-A3B IQ3_XXS, 30 expert layers on the CPU, 32k chat, A B B A): a model that fits in RAM but not in VRAM decodes
     faster through the plugin's executor than through stock llama-server: +10 to +29 % in all six paired band comparisons (mean +15 %; 8k probe +26 %), prompt speed about 10 %
-    lower (-22 % in the short-answer chat). Returns the line to say when the plugin should run although the model fits in RAM, else None. --stock turns it off."""
+    lower (-22 % in the short-answer chat). Returns the line to say when the plugin should run although the model fits in RAM, else None. --stock turns it off.
+    Stock is kept when: --stock, --cpu-only, MOE_CACHE_STOCK_WHEN_FITS=1, no plugin build that loads here (a missing MOE_CACHE_LIB counts), a dense or unreadable model,
+    or every expert fits the GPU (n_cpu_moe 0).
+    NO-GPU MACHINES (owner decision 2026-11-08): deliberately NOT excluded. With no GPU (or --vram 0) the planner puts every expert layer on the CPU, so n_cpu_moe > 0 and
+    the plugin runs; only an explicit --cpu-only / --stock / MOE_CACHE_STOCK_WHEN_FITS=1 gives stock. The laptop evidence above has a GPU; the no-GPU case rides on the same
+    default until a measurement says otherwise. Do not add a GPU requirement here without a new owner decision (tests/planner_test.py pins this)."""
     if a.stock or a.cpu_only or os.environ.get("MOE_CACHE_STOCK_WHEN_FITS") == "1":
         return None
     try:
-        lib = machine.pick_lib(ls)
-        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        # the same library plugin_lib_stage will pick: MOE_CACHE_LIB first (a missing file there means stock, not "ask for the plugin"), else the build that matches the server
+        want = machine.ls_api(ls)
+        lib = os.environ.get("MOE_CACHE_LIB") or machine.pick_lib(ls)
+        have = machine.lib_api(lib)
+        if want and have and want != have:
+            lib = machine.pick_lib(ls)                    # plugin_lib_stage lets the matching build replace an env value built for another API
+            have = machine.lib_api(lib)
         if not machine.lib_exists(lib) or (want and have and want != have):
             return None                                   # no matching plugin build here: stock stays (this only ever adds the plugin when it can load)
         ram_gib = float(f"{machine.mem_for_server(a.ram) / 2**30:.3f}") if (a.ram or machine.mem_cap()) else None
@@ -3001,7 +3024,8 @@ def approx_stage(a, model):
 
 def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
-    if (not a.fast and not a.exact and not a.stock and ctx >= 131072
+    # --no-long-prompt gives "-ub 2048 and the f16 KV cache" (SERVER_HELP), so it also switches the 128k q8_0 default off (fixed 2026-11-08: it used to leave q8_0 on at >= 128k)
+    if (not a.fast and not a.exact and not a.stock and not getattr(a, "no_long_prompt", False) and ctx >= 131072
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
@@ -3012,10 +3036,10 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     # contexts; --long-prompt asks for it at any context. Not with --no-long-prompt, --exact, --stock, a model that runs on plain llama.cpp or a dense model, and below LONG_PROMPT_MIN_CTX
     # (the prompts of a short chat are shorter than one chunk, so q8_0 would cost exact answers for nothing)
     a.lp_explicit = bool(getattr(a, "long_prompt", False)) and not getattr(a, "no_long_prompt", False)
+    if a.lp_explicit and (a.exact or a.stock):           # checked before anything else, so --ub / --fast / -ctk cannot hide the conflict
+        raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
     a.long_prompt = a.lp_explicit or (not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
     if getattr(a, "long_prompt", False) and not a.fast and a.ub == "auto" and not any(x in ("-ub", "--ubatch-size") for x in extra):          # the long-prompt mode stores the KV cache as q8_0 (the measured setting is --fast=kv); undone below when -ub 4096 does not fit
-        if a.lp_explicit and (a.exact or a.stock):
-            raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
         if not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra) and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls))):
             a.fast, a.lp_kv = "kv", True
     if (getattr(a, "approx_kv", False) and not a.fast and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
@@ -3090,7 +3114,20 @@ def fast_env_stage(a, env, stock, model, machine):
             pass
 
 
-def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False):
+def dense_runs_on_cpu(a, model, machine):
+    """True when a dense model has layers or FFN weights on the CPU next to a GPU: a GPU is there and the model file is bigger than the free GPU memory (--vram wins) minus the
+    memory --fit leaves free. model None / unreadable size: unknown, treated as "runs partly on the CPU" (the rule's behaviour before 2026-11-08)."""
+    free = float(a.vram) * 2**30 if getattr(a, "vram", None) else machine.free_vram_bytes()
+    if not free:
+        return False
+    try:
+        size = sum(os.path.getsize(p) for p in model_parts(model))
+    except (OSError, TypeError):
+        return True
+    return size + DENSE_FIT_TARGET_MIB * 2**20 > free
+
+
+def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False, model=None):
     """ENGINE-029, stage "CPU cores": efficiency cores for the expert executor and pinning llama-server to the performance cores on hybrid CPUs (Windows core groups, Linux sysfs). env grows in place. Returns the pinning arguments for llama-server."""
     if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and machine.has_cpu_atom():
         ne = min(machine.cpu_atom_count(), 4)
@@ -3113,7 +3150,12 @@ def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False):
             say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
         mask = machine.perf_core_mask()
-        dm = machine.dense_core_mask() if (dense and not a.cpu_only and machine.free_vram_bytes()) else None        # the two free cores are for the GPU driver: no GPU, no reason
+        # Dense thread rule (laptop, Qwen3-14B with the FFN in RAM: +30-70 % decode): 8 decode threads on 4 P-cores with two cores left for the GPU driver. It only pays when part of the model
+        # really runs on the CPU, i.e. the file does not fit the free GPU memory (then the dense route keeps FFN weights in RAM or --fit splits layers). A dense model that fits the GPU
+        # runs entirely there: the decode thread is only a driver loop, so it keeps one thread per performance core. No GPU: the two cores are not needed for a driver either.
+        # This branch is LINUX ONLY (/sys/devices/cpu_core, Intel hybrid CPUs): on Windows the hybrid branch above pins the performance cores / core groups and the dense decode
+        # threads are llama.cpp's default; the +30-70 % was measured on Linux only and has no Windows measurement yet.
+        dm = machine.dense_core_mask() if (dense and not a.cpu_only and dense_runs_on_cpu(a, model, machine)) else None
         if dm and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
             pinargs = ["-C", dm[0], "--cpu-strict", "1", "-t", str(dm[1])]
             if mask and not any(x in ("-tb", "--threads-batch", "-Cb", "--cpu-mask-batch") for x in extra):
@@ -3432,14 +3474,8 @@ def _launch_plan(a, extra, argv, machine):
     # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
     # -ctk/-ctv after --) keeps llama.cpp's f16 KV
     kv_q8 = kv_stage(a, extra, ctx, ls, listing, machine, stock, dense)
-    if a.project and not dry:
-        try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same (after the KV types above are final)
-            write_text_atomic(os.path.join(slotdir, "server.id"),
-                              model_identity(model, ctx, arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")) + "\n")
-        except OSError:
-            pass
     fast_env_stage(a, env, stock, model, machine)
-    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine, dense)
+    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine, dense, model)
     # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
@@ -3448,6 +3484,8 @@ def _launch_plan(a, extra, argv, machine):
     ub, ncmoe, no_vram = layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, desk_kw, machine)
     ncmoe = gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, stock, profile, machine)
     # short prompts: in the approximate modes, batches under 64 tokens stay on the CPU (the exact default keeps llama.cpp's own threshold, 32)
+    # DELIBERATE (owner decision 2026-11-08): the long-prompt default sets a.fast = "kv", so this 64-token threshold applies to every default launch of a big model at 32k+ context,
+    # not only to --fast users. It is part of what the +77 % prompt speed (claim v038-longprompt-default) measured; do not drop it for the long-prompt default without a new measurement.
     if (a.hybrid or a.fast) and not os.environ.get("MOE_CACHE_GPU_MIN_TOKENS"):
         env.append(("MOE_CACHE_GPU_MIN_TOKENS", "64"))
     # llama-server keeps finished prompts in host RAM (--cache-ram, 8 GiB by default), which competes with the expert cache: capped at 2 GiB here
@@ -3468,6 +3506,8 @@ def _launch_plan(a, extra, argv, machine):
     # (MOE_CACHE_WIN_VIEW=0); --ram still sizes the cache (MOE_CACHE_RAM_GIB).
     win_view = os.environ.get("MOE_CACHE_WIN_VIEW", "1") != "0"
     win_limit = float(a.ram) * 1e9 if (win and a.ram and method != "none (stock)" and not win_view) else None
+    if a.project and not dry:
+        write_server_id(slotdir, model, ctx, cmd)        # after the long-prompt stage: the KV types in cmd are final
     plan = LaunchPlan()
     plan.a, plan.extra, plan.argv_in = a, extra, argv
     plan.model, plan.ls, plan.lib, plan.port, plan.ctx = model, ls, lib, port, ctx
@@ -3587,6 +3627,8 @@ def run_launch_plan(plan):
             i += 1
         if new == cmd:
             return None
+        if a.project and slotdir:
+            write_server_id(slotdir, model, ctx, new)      # the retry runs with the f16 KV cache: server.id must say so
         say("moe-cache: llama.cpp aborted at load with the q8_0 KV cache (ggml-impl.h fatal error: seen with stock llama-server b12064 on Granite 1B, any context): "
             "trying again once with the f16 KV cache (--exact does that from the start)", err=True)
         return new

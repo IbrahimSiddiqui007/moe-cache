@@ -107,6 +107,24 @@ with tempfile.TemporaryDirectory() as tmp:
     check(pd == ["-C", "0xff", "--cpu-strict", "1", "-t", "8", "-Cb", "0x555", "--cpu-strict-batch", "1", "-tb", "6"], "dense thread rule: 8 decode threads on 4 cores, 6 single batch threads (%s)" % " ".join(pd))
     check(pd_cpu == ["-C", "0x555", "--cpu-strict", "1"] and pm == pd_cpu, "dense thread rule: --cpu-only and non-dense models keep one thread per performance core")
     check(pu == ["-C", "0x555", "--cpu-strict", "1"], "dense thread rule: your own -t stands")
+    # the rule only pays when part of the model runs on the CPU: a dense model that fits the free GPU memory keeps one thread per performance core
+    class SmallGpu(PinMachine):
+        def free_vram_bytes(self): return 64 * GIB
+    class NoGpu(PinMachine):
+        def free_vram_bytes(self): return None
+    Pm = lambda machine, model_, vram=None: mc.cpu_pin_stage(types.SimpleNamespace(no_ecores=True, no_pin=False, cpu_only=False, vram=vram), [], [], True, False, machine, True, model_)
+    with contextlib.redirect_stdout(_io.StringIO()):
+        fits, spills, nogpu, vram_flag = Pm(SmallGpu(), dense), Pm(PinMachine(), dense), Pm(NoGpu(), dense), Pm(PinMachine(), dense, vram="64")
+    sz = os.path.getsize(dense)
+    check(fits == ["-C", "0x555", "--cpu-strict", "1"], "dense thread rule: the model fits the free GPU memory -> nothing runs on the CPU -> one thread per performance core")
+    check(nogpu == ["-C", "0x555", "--cpu-strict", "1"] and vram_flag == fits, "dense thread rule: no GPU, or --vram large enough -> the same")
+    check(sz + mc.DENSE_FIT_TARGET_MIB * 2**20 <= 8 * GIB and spills == fits, "dense thread rule: a tiny test file on an 8 GiB card also fits (rule unchanged for it)")
+    big_dense = os.path.join(tmp, "big-dense.gguf")
+    with open(big_dense, "wb") as f:
+        f.truncate(9 * GIB)
+    with contextlib.redirect_stdout(_io.StringIO()):
+        spill9 = Pm(PinMachine(), big_dense)
+    check(spill9[:4] == ["-C", "0xff", "--cpu-strict", "1"], "dense thread rule: a 9 GiB dense file on an 8 GiB card spills to the CPU -> the 8-thread rule")
     class PlanError(Exception):
         pass
     class DenseMachine:
