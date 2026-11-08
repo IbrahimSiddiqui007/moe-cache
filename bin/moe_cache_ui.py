@@ -452,10 +452,13 @@ def peek_servers(ports=None, own=None, extra=()):
 # row): (machine, RAM GB, setting, stock tok/s or None, moe-cache tok/s, where). Machines: laptop = i7-13620H, 31 GB RAM, RTX 4060 8 GB, Linux;
 # PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
 LAPTOP, PC = "laptop", "PC"
+# README "Where it does not help", first bullet (v0.3.8): the evidence for running the plugin on a model that fits in RAM with some expert layers on the CPU
+PARTIAL_FIT_EVIDENCE = ("Evidence: laptop with an 8 GB card, decode +10 to +29 %, prompt about 10 % lower; on the 16 GB PC, Qwen3.6-35B in a 65k conversation "
+                        "was about the same as stock: 1.06x prompt, 1.07x decode (one model, one PC, 2026-11-08). --stock or MOE_CACHE_STOCK_WHEN_FITS=1 runs plain llama-server instead.")
 MEASURED = {
-    ("qwen35moe-41x256", 21.7): [(LAPTOP, 24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44: the launcher runs stock here"),
+    ("qwen35moe-41x256", 21.7): [(LAPTOP, 24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44 (plugin forced); the launcher now runs the plugin when expert layers stay on the CPU"),
                                  (LAPTOP, 12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (LAPTOP, 12, "no GPU", 3.1, 9.9, "RESULTS 5"),
-                                 (PC, 32, "fits in RAM, agent context", 43.6, 43.1, "RESULTS 60; about 72 with --mtp: the launcher runs stock here")],
+                                 (PC, 32, "fits in RAM, agent context", 43.6, 43.1, "RESULTS 60; about 72 with --mtp (plugin forced); the launcher now runs the plugin when expert layers stay on the CPU")],
     ("qwen4exp-48x512", 68.0): [(LAPTOP, 24, "8 GB GPU", 5.2, 12.5, "RESULTS 44; 17.6 with --hybrid (approximate), RESULTS 31"),
                                 (PC, 32, "16 GB GPU", 14.89, 21.94, "RESULTS 59; agent sessions 2.0-2.4x faster, RESULTS 60"),
                                 (PC, 16, "16 GB GPU, --ram 16", None, 20.03, "RESULTS 60: 92 % of the 24 GB speed")],
@@ -500,9 +503,15 @@ def summary(out, mode="exact", engine="auto"):
     if kind == "stock" and engine == "stock" and avail and size + HEADROOM > avail:
         return (f"Stock llama-server because you chose Run as Stock: the model ({gb(size)}) is bigger than {room}, "
                 "so moe-cache is usually faster here. Use it to compare.")
+    if kind == "stock" and n.get("n_cpu_moe") == 0:
+        return (f"Stock llama-server: the model ({gb(size)}) fits in {room} and every layer of experts fits in the graphics card, "
+                "so the plain llama-server is the right choice.")
     if kind == "stock":
-        return (f"Stock llama-server: the model ({gb(size)}) fits in {room}, and when everything fits the plain llama-server is fastest. "
-                "The plugin only helps models bigger than RAM.")
+        return (f"Stock llama-server: the model ({gb(size)}) fits in {room} and the launcher keeps stock here (--stock, MOE_CACHE_STOCK_WHEN_FITS=1, "
+                "or no plugin build that loads with this llama-server).")
+    if kind == "cache" and avail and size + HEADROOM <= avail and mode == "exact" and engine != "plugin":
+        return (f"moe-cache: the model ({gb(size)}) fits in {room}, but some layers keep their experts on the CPU, and there the plugin's expert executor runs by default. "
+                + PARTIAL_FIT_EVIDENCE)
     if kind == "cache":
         x = f"{size / avail:.1f}x" if avail and size > avail else "more than"
         cpu, cache = n.get("cpu_experts_GiB"), n.get("cache_GiB")
@@ -598,11 +607,21 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
         R.append("--stock: no plugin; experts that are not in the file cache are read from the SSD by the OS (usually much slower than moe-cache "
                  "when the model is bigger than RAM; run the Quick benchmark in both to see it)")
     elif stock:
-        out.update(kind="stock", verdict="fits in RAM: stock llama-server (fastest)")
-        R.append("when everything fits, stock llama-server is faster: the page cache holds the whole file (Qwen3.6-35B: 42.9 vs 36.6 tok/s, RESULTS 44)")
+        # the launcher's own decision (lp.engine, which includes plugin_for_partial_offload) says stock for a model that fits in RAM
+        if ncmoe == 0:
+            out.update(kind="stock", verdict="fits in RAM and every expert fits the GPU: stock llama-server")
+            R.append("every layer of experts fits in VRAM next to the rest of the model: the launcher runs plain llama-server, the plugin has nothing to do")
+        else:
+            out.update(kind="stock", verdict="fits in RAM: stock llama-server (the launcher keeps stock here)")
+            R.append("the launcher keeps stock llama-server for a model that fits in RAM when --stock or MOE_CACHE_STOCK_WHEN_FITS=1 is set or no plugin build "
+                     "loads with this llama-server; otherwise it runs the plugin while some expert layers stay on the CPU")
     elif ncmoe == 0:
         out.update(kind="gpu", verdict="all experts fit on the GPU")
         R.append("every layer of experts fits in VRAM next to the rest of the model: the cache has nothing to manage")
+    elif stock_fits and mode == "exact" and engine != "plugin":
+        # the launcher's plugin_for_partial_offload (v0.3.8): fits in RAM, some expert layers on the CPU -> the plugin runs by default
+        out.update(kind="cache", verdict="runs with moe-cache (fits in RAM, some expert layers stay on the CPU)")
+        R.append(PARTIAL_FIT_EVIDENCE)
     else:
         name = {"fast": "moe-cache --fast", "hybrid": "moe-cache --hybrid"}.get(mode, "moe-cache")
         why = "you chose --always-plugin" if mode == "exact" else mode + " needs the plugin"
@@ -1224,7 +1243,7 @@ class Runner:
         self.stop_requested = False
         self.log = collections.deque(maxlen=500)
         self.seq = 0
-        self.mode = ""
+        self.mode = ""; self.fit_partial = False
         self.mtp = False                   # the launcher said "MTP on:"
         self.last = {}                     # last finished request: prefill / decode tok/s
         self.live_tps = None
@@ -1469,8 +1488,11 @@ class Runner:
                 self.mode = "stock llama-server (--stock, to compare)"
             elif "running stock llama-server" in line:
                 self.mode = "stock llama-server (the model fits in RAM)"
+            elif "the model fits in memory but some layers keep their experts on the CPU" in line:
+                self.fit_partial = True                  # the launcher's plugin_for_partial_offload line
             elif "stay on the CPU and are managed by the cache" in line:
-                self.mode = "moe-cache " + {"fast": "--fast", "hybrid": "--hybrid"}.get(self.settings.get("mode"), "exact")
+                self.mode = "moe-cache " + {"fast": "--fast", "hybrid": "--hybrid"}.get(self.settings.get("mode"), "exact") \
+                    + (" (the model fits in RAM, some experts on the CPU)" if getattr(self, "fit_partial", False) else "")
             elif "all experts fit in your GPU memory" in line:
                 self.mode = "all experts on the GPU"
             if line.startswith("moe-cache: MTP on:"):

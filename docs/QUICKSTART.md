@@ -39,10 +39,16 @@ git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp && git checkout 
 cmake -B build -G Ninja -DGGML_VULKAN=ON -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_NATIVE=OFF -DBUILD_SHARED_LIBS=ON \
       -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
 cmake --build build --target llama-server -j8
-./build/bin/llama-server --list-devices        # your GPU should be listed as Vulkan0
+./build/bin/llama-server --list-devices        # find your graphics card's name in this list
 ```
 
+<<<<<<< HEAD
 Then in the moe-cache folder: `GGML_LIB_DIR=/path/to/llama.cpp/build/bin ./build.sh` (add `GGML_API=3` for 998200491 / b12207) and use `--llama-server /path/to/llama.cpp/build/bin/llama-server` below.
+=======
+The card is not always `Vulkan0`: with a CPU that has its own graphics, that built-in GPU is often `Vulkan0` and the graphics card is `Vulkan1`. The launcher prints a line `moe-cache: GPU NAME (VulkanN): ...` at start that names the card it uses. If it picked the wrong one, pass `-- --device VulkanN` (the name from the list) to `moe-cache-server`.
+
+Then in the moe-cache folder: `GGML_LIB_DIR=/path/to/llama.cpp/build/bin ./build.sh` (add `GGML_API=3` for 51fe42c5d / b12064) and use `--llama-server /path/to/llama.cpp/build/bin/llama-server` below.
+>>>>>>> origin/experimental
 The launcher detects this kind of build and loads the plugin with `GGML_BACKEND_PATH` automatically. Package names differ between distro versions; the tools you need are cmake, ninja, a C++ compiler, the Vulkan headers/loader, `glslc` and the SPIR-V headers.
 
 ## 1. Get it (2 minutes)
