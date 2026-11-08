@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as t:
     st = lp.run_case("win", base + ["--stock"], [], m, t)
     check("-ctk" not in cmd(st), "--stock: no q8_0 KV cache")
     fast = lp.run_case("win", base + ["--long-prompt", "--fast=kv"], [], m, t)
-    check("-ub 4096" not in cmd(fast) and "-ctk q8_0" in cmd(fast) and "changes nothing" in fast["stdout"], "with --fast already given the long-prompt mode adds nothing")
+    check(" -ub 4096 " in cmd(fast) + " " and "-ctk q8_0" in cmd(fast) and "changes nothing" not in fast["stdout"], "LAUNCHER-985: with --fast=kv given the long-prompt mode still applies (-ub 4096, same q8_0 KV cache)")
 
     # --no-long-prompt gives the f16 KV cache at 128k+ too (SERVER_HELP: "-ub 2048 and the f16 KV cache"); the 128k q8_0 default is for everyone else
     big = ["--ram", "12", "--ctx", "131072"]

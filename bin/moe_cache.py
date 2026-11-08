@@ -3127,10 +3127,12 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
     # --no-long-prompt gives "-ub 2048 and the f16 KV cache" (SERVER_HELP), so it also switches the 128k q8_0 default off (fixed 2026-11-08: it used to leave q8_0 on at >= 128k)
     import moe_cache_approx as ax          # LAUNCHER-984: the defaults below follow the status rows of TOKEN_MODES ("won" = on by default)
+    kv128_default = False
     if (not a.fast and not a.exact and not a.stock and not getattr(a, "no_long_prompt", False) and ctx >= 131072 and ax.default_on("kv8")
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
+        kv128_default = True
         say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
             "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     if (dense and ax.default_on("kv8") and not a.fast and not a.exact and not a.stock and not getattr(a, "approx_kv", False)
@@ -3155,9 +3157,13 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     if a.lp_explicit and (a.exact or a.stock):           # checked before anything else, so --ub / --fast / -ctk cannot hide the conflict
         raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
     a.long_prompt = a.lp_explicit or (ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
-    if getattr(a, "long_prompt", False) and not a.fast and a.ub == "auto" and not any(x in ("-ub", "--ubatch-size") for x in extra):          # the long-prompt mode stores the KV cache as q8_0 (the measured setting is --fast=kv); undone below when -ub 4096 does not fit
+    # LAUNCHER-985: a token mode given by the user (--fast, --fast=2, --fast=fewer, --fast=kv, --approx) only adds its own settings (plugin environment, the q8_0 KV cache it implies) on top of the
+    # normal plan: the long-prompt mode (-ub 4096) still applies. lp_with_fast marks that --fast was there first, so the KV cache is never undone and the mode is not switched off.
+    a.lp_with_fast = bool(a.fast) and not kv128_default
+    if getattr(a, "long_prompt", False) and (not a.fast or a.lp_with_fast) and a.ub == "auto" and not any(x in ("-ub", "--ubatch-size") for x in extra):          # the long-prompt mode stores the KV cache as q8_0 (the measured setting is --fast=kv); undone below when -ub 4096 does not fit
         if not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra) and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls))):
-            a.fast, a.lp_kv = "kv", True
+            a.fast = a.fast or "kv"
+            a.lp_kv = True
     if (getattr(a, "approx_kv", False) and not a.fast and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):
         a.fast = "kv"                       # --approx safe: the 8-bit KV cache at any context (where the long-prompt mode did not already switch it on)
@@ -3179,15 +3185,15 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
         loud and say("moe-cache: --long-prompt: your own --ub wins, so the long-prompt mode changes nothing")
         return kv_q8, tuned, desk_kw, ub_asked
     if not getattr(a, "lp_kv", False):
-        loud and say("moe-cache: --long-prompt: no GPU found, or your own -ctk/-ctv, or --fast is set: the long-prompt mode changes nothing")
+        loud and say("moe-cache: --long-prompt: no GPU found, or your own -ctk/-ctv is set: the long-prompt mode changes nothing")
         return kv_q8, tuned, desk_kw, ub_asked
     if tuned and tuned.get("ub") == 4096:
         say("moe-cache: long-prompt mode" + ("" if loud else " (the default; --no-long-prompt or --exact turns it off)") + ": a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, "
             "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: same top token in 94-95 % of positions, the meaning stayed the same in our checks)")
         return kv_q8, tuned, desk_kw, ub_asked
-    if getattr(a, "approx_kv", False):         # --approx safe asked for the 8-bit KV cache itself: it stays, the micro-batch is the usual one
+    if getattr(a, "approx_kv", False) or getattr(a, "lp_with_fast", False):         # --approx safe / --fast asked for the 8-bit KV cache itself: it stays, the micro-batch is the usual one
         a.lp_kv = False
-        loud and say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card; --approx safe keeps the 8-bit KV cache with the usual micro-batch")
+        loud and say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card; your --fast / --approx keeps its 8-bit KV cache with the usual micro-batch")
         return kv_q8, tuned, desk_kw, ub_asked
     # -ub 4096 does not fit this card's memory plan: undo the KV cache and plan again as without the flag
     for i in range(len(extra) - 3):

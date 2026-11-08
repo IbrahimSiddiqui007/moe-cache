@@ -47,6 +47,32 @@ with tempfile.TemporaryDirectory() as t:
     r = run("--ctx", "65536", "--exact", "--approx", "safe", "--approx-unverified")
     check(r["rc"] != 0, "--exact --approx safe: refused")
 
+
+    # --- LAUNCHER-985: a token mode only adds its own environment on top of the normal plan (long-prompt -ub / KV, same layers) ---
+    import re
+    def split(r):
+        c = cmd(r)
+        env = dict(re.findall(r'\$env:(\w+)="([^"]*)"', c))
+        return env, c.split("& ", 1)[1] if "& " in c else c
+    base_env, base_argv = split(d64)
+    check(" -ub 4096 " in base_argv + " " and "--n-cpu-moe" in base_argv, "reference: the default plan at 64k has -ub 4096 and q8_0 KV")
+    EXTRA_OK = {"MOE_CACHE_ROUTE", "MOE_CACHE_ROUTE_DROP", "MOE_CACHE_FEWER", "MOE_CACHE_GPU_MIN_TOKENS"}
+    for name, opts in (("--fast", ["--fast"]), ("--fast=2", ["--fast=2"]), ("--fast=fewer", ["--fast=fewer"]), ("--fast=kv", ["--fast=kv"]),
+                       ("--approx careful", ["--approx", "careful", "--approx-unverified", "--no-approx-canary"]),
+                       ("--approx aggressive", ["--approx", "aggressive", "--approx-unverified", "--no-approx-canary"]),
+                       ("--approx safe", ["--approx", "safe", "--approx-unverified", "--no-approx-canary"])):
+        r = run("--ctx", "65536", *opts)
+        env, argv = split(r)
+        extra_keys = set(env) - set(base_env)
+        check(r["rc"] == 0 and argv == base_argv and extra_keys <= EXTRA_OK and all(env.get(k) == v for k, v in base_env.items()),
+              f"{name} at 64k: the same command as the default plan (-ub 4096, q8_0 KV, same layers) plus only its own environment {sorted(extra_keys)}")
+        check("changes nothing" not in r["stdout"], f"{name}: no 'changes nothing' line")
+    check(split(run("--ctx", "65536", "--fast"))[0].get("MOE_CACHE_ROUTE") == "skip" and split(run("--ctx", "65536", "--fast=2"))[0].get("MOE_CACHE_ROUTE_DROP") == "4"
+          and split(run("--ctx", "65536", "--fast=fewer"))[0].get("MOE_CACHE_FEWER") == "2", "each mode's own environment is there (skip, drop 4, fewer 2)")
+    low = lp.run_case("linux", ["--ram", "12", "--ctx", "65536", "--fast"], [], m, t)
+    check(low["rc"] == 0 and "-ub 4096" not in cmd(low) and "-ctk q8_0" in cmd(low), "8 GB card, --fast: -ub 4096 does not fit, the 8-bit KV cache of --fast stays with the usual micro-batch")
+    check(not any(on(run("--ctx", "65536", "--exact")).values()), "--exact is still all off")
+
     # the old names still work (aliases that force the mode on)
     f1 = run("--ctx", "8192", "--fast"); f2 = run("--ctx", "8192", "--fast=2")
     check(on(f1)["route"] and on(f1)["kv"] and on(f2)["drop"], "--fast and --fast=2 still switch their modes on")
