@@ -244,7 +244,7 @@
     }
    ],
    "notes": [
-    "The faster Flash-Next file, 9 GB smaller than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8, owner 2026-11-07): it decoded faster than IQ2_XS on 2026-10-28. Measured on the PC (v0.3.7 records): in a 65k conversation it reads new prompt tokens 430.0 against 188.2 tok/s for IQ3_XXS with moe-cache (the decode numbers of those runs rest on short answers from turn 11 and are measured again). No quality difference between any two Flash-Next files is proven (all p > 0.05).",
+    "The faster Flash-Next file, 9 GB smaller than IQ3_XXS (the default in v0.3.7; IQ3_XXS is the default again since v0.3.8, owner 2026-11-07): it decoded faster than IQ2_XS on 2026-10-28. Measured on the PC (2026-11-08, fixed driver, RAM at 6000 MT/s): in a 65k conversation moe-cache reads new prompt tokens at 434.8 tok/s on Q2_0 against 188.6 on IQ3_XXS, and decodes 26.9 against 19.1 tok/s (claims v038-conv-q2_0, v038-conv-iq3xxs). No quality difference between any two Flash-Next files is proven (all p > 0.05).",
     "Decode is CPU-bound on the measured PC; the model card's +33 % does not reproduce."
    ],
    "warnings": [
@@ -316,7 +316,7 @@
     }
    ],
    "notes": [
-    "The default Flash-Next file (the default from 0.3.2 to 0.3.6 and again since v0.3.8, owner 2026-11-07): 3-bit, the most tasks right (193/202), reads best for coding, top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context (65k conversation, new prompt tokens: 188.2 against 430.0 tok/s, v0.3.7 records)."
+    "The default Flash-Next file (the default from 0.3.2 to 0.3.6 and again since v0.3.8, owner 2026-11-07): 3-bit, the most tasks right (193/202), reads best for coding, top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context (65k conversation, new prompt tokens: 188.6 against 434.8 tok/s with moe-cache, claims v038-conv-iq3xxs, v038-conv-q2_0)."
    ],
    "warnings": [
     "Bigger than the RAM the server may use: moe-cache keeps the hot experts in RAM and reads the rest from the drive (SSD needed)."

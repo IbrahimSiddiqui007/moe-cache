@@ -55,10 +55,58 @@ with tempfile.TemporaryDirectory() as tmp:
 
     base = run(moe, [])
     check(cmdline(base) == cmdline(run(moe, ["--auto-fit"])), "MoE model with --auto-fit: same command line (nothing to fit by layers)")
-    check("-ngl 99" in cmdline(run(dense, [])), "dense, flags off: -ngl 99 as before")
+    check("-ngl" not in cmdline(run(dense, [])) and "--n-cpu-moe" not in cmdline(run(dense, [])), "LAUNCHER-732: dense, no flags: no -ngl 99 (llama.cpp's --fit places the layers; -ngl 99 aborts a file bigger than the GPU)")
+    check("-ngl 99" in cmdline(run(dense, ["--no-auto-fit"])), "dense + --no-auto-fit: -ngl 99 as before")
     r = run(dense, ["--auto-fit"])
-    check("-ngl" not in cmdline(r) and "--n-cpu-moe" not in cmdline(r) and "PROTOTYPE" in r["stdout"], "dense + --auto-fit: no -ngl, no --n-cpu-moe, says prototype")
+    check("-ngl" not in cmdline(r) and "--n-cpu-moe" not in cmdline(r) and "--fit" in r["stdout"], "dense + --auto-fit: no -ngl, no --n-cpu-moe, says why")
     check("-ngl 40" in cmdline(run(dense, ["--auto-fit"], ["-ngl", "40"])), "dense + --auto-fit + user -ngl 40: the user's value stands")
+    try:                       # LAUNCHER-732: a real dense header has no <arch>.expert_count at all; the planner used to die with TypeError (int(None)) before saying "not a MoE"
+        import plan as planmod                       # the real planner (launch_plan_test replaces mc.planner_answer with a fixed answer)
+        planmod.plan_info(dense, ctx=8192)
+        got = "no error"
+    except Exception as e:
+        got = type(e).__name__ + ": " + str(e)
+    check(got.startswith("PlanError") and "does not look like a MoE" in got, "LAUNCHER-732: planner on a dense header (no expert_count): PlanError 'not a MoE', not TypeError (" + got[:40] + ")")
+    import gguf_plan as gp                  # LAUNCHER-732 lever (a): FFN weights in RAM for a dense model bigger than the GPU
+    big, small = 64 * GIB, 0.85 * GIB
+    r_fit = gp.dense_ffn_split(dense, 8192, big)
+    r_some = gp.dense_ffn_split(dense, 8192, 1.20 * GIB, margin_gib=0.0)
+    r_none = gp.dense_ffn_split(dense, 8192, small, margin_gib=0.0)
+    check(r_fit and r_fit["fits_all"] and r_fit["n_off"] == 0, "dense_ffn_split: model fits the GPU -> nothing moved")
+    check(r_some and r_some["n_off"] and r_some["first_layer"] + r_some["n_off"] == r_some["n_layers"], "dense_ffn_split: too big -> the FFN of the LAST layers goes to RAM (%s)" % str(r_some and (r_some["first_layer"], r_some["n_off"])))
+    check(r_none is not None and r_none["n_off"] is None, "dense_ffn_split: even every FFN in RAM too big -> n_off None (caller keeps --fit)")
+    check(gp.dense_ffn_split(moe, 8192, 4 * GIB) is None, "dense_ffn_split: a MoE model is not its business")
+    check(gp.dense_ffn_split(dense, 8192, None) is None, "dense_ffn_split: GPU memory unknown -> None")
+    import types                             # LAUNCHER-732: the launcher side of the FFN plan and the dense thread rule, with fixed machine answers
+    class GpuMachine:
+        def __init__(self, free): self.free = free
+        def free_vram_bytes(self): return self.free
+    A = types.SimpleNamespace(vram=None, gpu_margin=None, no_ffn_ram=False)
+    import contextlib, io as _io
+    with contextlib.redirect_stdout(_io.StringIO()):
+        ot = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(1.5 * GIB), [])
+        mc.MMPROJ_VRAM_HEADROOM = int(0.02 * GIB)
+        ot_mm = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(1.5 * GIB), [], mm_bytes=int(0.05 * GIB))
+        ot_user = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(1.5 * GIB), ["-ot", "x"])
+        ot_off = mc.dense_ffn_override(types.SimpleNamespace(vram=None, gpu_margin=None, no_ffn_ram=True), dense, 8192, False, None, GpuMachine(1.5 * GIB), [])
+        ot_big = mc.dense_ffn_override(A, dense, 8192, False, None, GpuMachine(64 * GIB), [])
+    check(bool(ot) and ot.startswith("blk\\.(") and ot.endswith("\\.weight=CPU"), "dense_ffn_override: too big for the GPU -> an -ot text for the last layers")
+    check(bool(ot_mm) and len(ot_mm) > len(ot), "dense_ffn_override: a vision projector takes GPU memory -> more FFN layers in RAM")
+    check(ot_user is None and ot_off is None and ot_big is None, "dense_ffn_override: your own -ot, --no-ffn-ram, a model that fits -> nothing")
+    class PinMachine:
+        def has_cpu_atom(self): return False
+        def win_core_groups(self): return 1
+        def has_cpu_core(self): return True
+        def perf_core_mask(self): return "0x555"
+        def dense_core_mask(self): return ("0xff", 8)
+        def win_cores(self): return None
+        def free_vram_bytes(self): return 8 * GIB
+    P = lambda dense_, cpu_only=False, extra=(): mc.cpu_pin_stage(types.SimpleNamespace(no_ecores=True, no_pin=False, cpu_only=cpu_only), [], list(extra), True, False, PinMachine(), dense_)
+    with contextlib.redirect_stdout(_io.StringIO()):
+        pd, pd_cpu, pm, pu = P(True), P(True, cpu_only=True), P(False), P(True, extra=["-t", "3"])
+    check(pd == ["-C", "0xff", "--cpu-strict", "1", "-t", "8", "-Cb", "0x555", "--cpu-strict-batch", "1", "-tb", "6"], "dense thread rule: 8 decode threads on 4 cores, 6 single batch threads (%s)" % " ".join(pd))
+    check(pd_cpu == ["-C", "0x555", "--cpu-strict", "1"] and pm == pd_cpu, "dense thread rule: --cpu-only and non-dense models keep one thread per performance core")
+    check(pu == ["-C", "0x555", "--cpu-strict", "1"], "dense thread rule: your own -t stands")
     class PlanError(Exception):
         pass
     class DenseMachine:
@@ -69,8 +117,8 @@ with tempfile.TemporaryDirectory() as tmp:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         nc, info, err = mc.plan_placement(type("A", (), {"ram": 12, "vram": None})(), dense, 8192, None, DenseMachine())
-    check(nc == "999" and info is None and "no expert tensors (dense)" in buf.getvalue() and "--auto-fit" in buf.getvalue() and "-ngl 99" in buf.getvalue() and "planner failed" not in buf.getvalue(),
-          "LAUNCHER-732: the planner's 'not a MoE' failure on a dense model prints one honest line (no experts, -ngl 99, --auto-fit), plan unchanged (999)")
+    check(nc == "999" and info is None and "no expert tensors (dense)" in buf.getvalue() and "planner failed" not in buf.getvalue(),
+          "LAUNCHER-732: the planner's 'not a MoE' failure on a dense model prints one honest line (no experts), plan unchanged (999)")
     DenseMachine.planner_answer = lambda self, *a: (_ for _ in ()).throw(PlanError("disk on fire"))
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):

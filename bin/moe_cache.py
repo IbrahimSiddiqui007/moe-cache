@@ -16,7 +16,7 @@
   moe_cache.py connect hermes|opencode|claude|codex|pi|openclaw|aider|qwen [--url URL] [--write]   point Hermes Agent, OpenCode, Claude Code, Codex CLI, Pi, OpenClaw, Aider or Qwen Code at a running server (start it with --agent); --check proves the setup works (models, chat, tool call, window; --json)
   moe_cache.py on-demand [MODEL.gguf] [options] [--install-autostart]      agent endpoint that starts the model on the first request, stops it when idle
   moe_cache.py diffusion MODEL.gguf -p PROMPT [--canvas 256 --steps 64]  run llama-diffusion-cli (LLaDA-MoE, RND1) with the plugin, experts on the CPU side
-  moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read (BO-1)
+  moe_cache.py pack    MODEL.gguf [--out PATH] [--verify]                 write MODEL.moepack: one block per expert, so a missing expert is one large read
   moe_cache.py key     [--path]                                            print the API key that agent mode and --project servers use
   moe_cache.py ui      [--ui-port 8070] [--no-browser]                     local control page (also: moe-cache-server --ui); bin/moe_cache_ui.py
   moe_cache.py --version                                                   print the moe-cache version
@@ -2011,10 +2011,12 @@ SERVER_HELP = """\
            also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/results-archive/RESULTS.md R11, RESULTS 53).
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
---exact    keep the f16 KV cache at 128k+ (no --fast=kv default)
---long-prompt  opt-in long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache (--fast=kv), only when the memory plan of this card leaves room for
-           it (otherwise nothing changes, and the start-up line says so). Flash-Next IQ3_XXS in a 65k conversation on the PC: prompts about 35 % faster, answers about 10 % slower;
-           for agents and documents. The q8_0 KV cache may change the wording of answers a little (same meaning in our checks). Not with --exact, --stock or your own --ub
+--exact    keep the f16 KV cache at 128k+ and switch the default long-prompt mode off: the answers are the same as plain llama.cpp's (EXACTNESS.md)
+--long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
+           changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
+           the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
+           llama.cpp's (against f16: KL 0.014-0.015, same top token in 94-95 % of positions, meaning kept in 10 of 10 checks at 55k). Not with --exact, --stock or your own --ub
+--no-long-prompt  turn the long-prompt mode off: -ub 2048 and the f16 KV cache, as before v0.3.8
 --fast=fewer  --fast, and the 2 lowest-ranked experts of every token are dropped on the CPU-held layers even when they are in RAM (MOE_CACHE_FEWER=2; opt-in, new)
 --fast=2   stronger level for memory much smaller than the model: up to 4 low-ranked picks may be skipped (at least half are kept).
            Flash-Next at 12 GB (laptop; not yet measured on the PC): 13.7 vs 9.6 tok/s for --fast; KL 0.022 (two 2-bit quants of one model differ by 0.243). No gain at 24 GB.
@@ -2044,8 +2046,7 @@ SERVER_HELP = """\
 --stock    run stock llama-server without the plugin whatever the model's size (to compare stock and moe-cache on the same model)
 --allow-sleep  let the machine sleep while the server runs (by default it is kept awake without changing a power setting: Windows power request,
            Linux systemd-inhibit; MOE_CACHE_ALLOW_SLEEP=1 does the same)
---no-sched-tuning  Windows: do not lower the power throttling (EcoQoS) or raise the CPU and GPU priority of the server one step (on by default since v0.3.8: +2.0 % prompt speed on the
-           test PC, decode the same; MOE_CACHE_SCHED_TUNING=0 does the same)
+--no-sched-tuning  accepted and ignored (the Windows scheduling tuning was removed in v0.3.8: it cost 7 % decode; archive/README.md); kept for one release so old commands still run
 --no-pin     do not pin llama-server's threads (hybrid Intel CPUs: one thread per performance core by default, about +15 % decode)
 --agent    for coding agents (Hermes Agent, OpenCode, ...): context 65536 unless --ctx is given (Hermes refuses less than 64000), tool calls on (--jinja), a stable model name
            (--alias, the file name) and, once the server is ready, the base URL and config snippets for Hermes and OpenCode. Prompt reuse across
@@ -2056,6 +2057,8 @@ SERVER_HELP = """\
            one file per slot, and the two longest are restored at the next start (each agent finds its own), so the agent's 5-20k-token preamble is not processed again after a restart (OpenCode on Qwen3.6: first turn
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
 --cpu-only    run on the CPU only: llama-server gets --device none and -ngl 0 (also chosen by itself when --list-devices shows no GPU)
+--no-ffn-ram  dense model bigger than the GPU: by default attention, the KV cache and most weights stay on the GPU and the FFN weights of the last layers stay in RAM (-ot), which keeps long chats usable (Qwen3-14B on an 8 GB card at 32k tokens: 3.8 tok/s against 1.0 with a plain layer split); this brings llama.cpp's --fit layer split back
+--no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
            Output can differ slightly for some models (GLM-5.3 code text did); Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s, prompt processing 5-8 % slower. On by default with --agent when the model has the head
@@ -2068,6 +2071,8 @@ SERVER_HELP = """\
 MOE_CACHE_PYTHON  python with the gguf package for the planner (default: this python)"""
 
 
+DENSE_FIT_TARGET_MIB = 256     # dense models: GPU memory --fit leaves free (llama.cpp default 1024: 6.3 tok/s vs 8.2 at 256 on a 14B that spills, laptop 8 GB)
+LONG_PROMPT_MIN_CTX = 32768     # the long-prompt mode is the default from this context up (--long-prompt: any context)
 STOCK_HEADROOM = 1.5e9     # stock when model + this fits in the memory the server may use
 STOCK_OFFLOAD_MIN_BATCH = 512     # stock runs with CPU expert layers: batches below this stay on the CPU (llama.cpp: 32; T5, RESULTS 68)
 
@@ -2186,6 +2191,20 @@ class Machine:
             return None
 
 
+    def dense_core_mask(self):
+        """(hex mask, thread count) for a dense model that runs partly on the CPU next to a GPU: BOTH hardware threads of all performance cores but two (Linux hybrid CPUs),
+        so the GPU driver's threads have cores of their own. Laptop i7-13620H (6 P-cores), Qwen3-14B, FFN in RAM: 8 threads on 4 cores 8.7 tok/s, 12 threads 7.3, the old
+        6 single threads (one per core) 5.1; layer split 8.3 vs 5.9-6.8; RAM only +8 %; a MoE does not gain (17.3 with 6 singles, 12-14 with 8 threads). None when unreadable."""
+        try:
+            cores = parse_cpus(open("/sys/devices/cpu_core/cpus").read())
+            prim = sorted(c for c in cores if min(parse_cpus(open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read())) == c)
+            use = prim[:max(1, len(prim) - 2)]
+            cpus = sorted({t for c in use for t in parse_cpus(open(f"/sys/devices/system/cpu/cpu{c}/topology/thread_siblings_list").read())})
+            return hex(sum(1 << c for c in cpus)), len(cpus)
+        except Exception:
+            return None
+
+
 class LaunchPlan:
     """What server() will do: the decisions (engine stock/plugin, GPU layers, micro-batch, KV type, prompt cache), the environment and the llama-server
     command line, and every line the launcher said while deciding (notes: (text, is_error)). Built by launch_plan(); run_launch_plan() runs it."""
@@ -2258,14 +2277,17 @@ def parse_server(argv):
     ap.add_argument("--gpu-cache", default="off"); ap.add_argument("--gpu-margin", type=float); ap.add_argument("--ub", default="auto")
     ap.add_argument("--fast", nargs="?", const="1", choices=["1", "2", "kv", "fewer"]); ap.add_argument("--hybrid", action="store_true")
     ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
-    ap.add_argument("--long-prompt", action="store_true")      # opt-in long-prompt mode (v0.3.8, owner 2026-11-07): -ub 4096 + --fast=kv when the memory plan allows
+    ap.add_argument("--long-prompt", action="store_true")      # long-prompt mode (v0.3.8): -ub 4096 + --fast=kv when the memory plan allows; since 2026-11-08 also the DEFAULT (see kv_stage); the flag asks for it at any context
+    ap.add_argument("--no-long-prompt", action="store_true")   # opt out of the default long-prompt mode: -ub 2048 and the f16 KV cache, as before v0.3.8
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
-    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true"); ap.add_argument("--no-sched-tuning", action="store_true")
+    ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true"); ap.add_argument("--no-sched-tuning", action="store_true", help=argparse.SUPPRESS)      # no-op since v0.3.8 (WINDOWS-013 removed); accepted for one release
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--always-plugin", action="store_true")
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
     ap.add_argument("--cpu-only", action="store_true", help="run on the CPU only: --device none and -ngl 0 (also chosen by itself when llama-server lists no GPU)")
-    ap.add_argument("--auto-fit", action="store_true")      # PROTOTYPE (MM6): a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; default off
+    ap.add_argument("--auto-fit", action="store_true")      # MM6: a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; since the dense route (LAUNCHER-732) this is the default for dense models
+    ap.add_argument("--no-ffn-ram", action="store_true")    # dense models bigger than the GPU: no FFN-weights-in-RAM plan (-ot), llama.cpp's --fit layer split instead
+    ap.add_argument("--no-auto-fit", action="store_true")   # dense models: go back to the blind -ngl 99
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
@@ -2415,7 +2437,7 @@ def vision_dense_start(a, extra, model, stock, size, avail):
         say(f"moe-cache: --mmproj (PROTOTYPE): vision projector {os.path.basename(mm)} ({mmb / 1e9:.2f} GB) counted in the RAM floor and, with {MMPROJ_VRAM_HEADROOM / 1e9:.1f} GB "
             "for its compute buffer, taken off the GPU memory the planner may use; never run with a real vision model by the author")
     dense = False
-    if a.auto_fit:
+    if True:       # LAUNCHER-732: every launch asks the header, a dense model gets the dense route
         try:
             from gguf_plan import model_layout
             lay = model_layout(model)
@@ -2610,9 +2632,7 @@ def plan_placement(a, model, ctx, ncmoe, machine):
             why = str(e) if type(e).__name__ == "PlanError" else f"{type(e).__name__}: {e}"
             planner_info, planner_error = None, why
             if "does not look like a MoE" in why:       # LAUNCHER-732: a dense model has no experts to place; the old line blamed the planner and talked about experts
-                say("moe-cache: this model has no expert tensors (dense): the cache has nothing to manage. The command passes -ngl 99, so every layer goes to the GPU: "
-                    "a file bigger than free GPU memory spills into shared RAM (Windows) or fails to load. Add --auto-fit to let llama.cpp place the layers (PROTOTYPE), "
-                    "or give your own -ngl after --"); ncmoe = "999"
+                say("moe-cache: this model has no expert tensors (dense): the cache has nothing to manage (llama.cpp places the layers, see below)"); ncmoe = "999"
             else:
                 say(f"moe-cache: planner failed ({why}); keeping all experts on the CPU"); ncmoe = "999"
     return ncmoe, planner_info, planner_error
@@ -2852,7 +2872,7 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     return load, method, gcache, env, cap
 
 
-def kv_stage(a, extra, ctx, ls, listing, machine):
+def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
     if (not a.fast and not a.exact and not a.stock and ctx >= 131072
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
@@ -2861,8 +2881,13 @@ def kv_stage(a, extra, ctx, ls, listing, machine):
         say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
             "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
     a.lp_kv = False
+    # the long-prompt mode is the default (owner 2026-11-08, measured: prompts +77 %, answers +1.8 %, claim v038-longprompt-default) for a GPU plan of a big model at agent-sized
+    # contexts; --long-prompt asks for it at any context. Not with --no-long-prompt, --exact, --stock, a model that runs on plain llama.cpp or a dense model, and below LONG_PROMPT_MIN_CTX
+    # (the prompts of a short chat are shorter than one chunk, so q8_0 would cost exact answers for nothing)
+    a.lp_explicit = bool(getattr(a, "long_prompt", False)) and not getattr(a, "no_long_prompt", False)
+    a.long_prompt = a.lp_explicit or (not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
     if getattr(a, "long_prompt", False) and not a.fast and a.ub == "auto" and not any(x in ("-ub", "--ubatch-size") for x in extra):          # the long-prompt mode stores the KV cache as q8_0 (the measured setting is --fast=kv); undone below when -ub 4096 does not fit
-        if a.exact or a.stock:
+        if a.lp_explicit and (a.exact or a.stock):
             raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
         if not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra) and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls))):
             a.fast, a.lp_kv = "kv", True
@@ -2873,21 +2898,22 @@ def kv_stage(a, extra, ctx, ls, listing, machine):
 
 
 def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes, tuned, desk_kw, ub_asked):
-    """The opt-in long-prompt mode (--long-prompt, v0.3.8, owner 2026-11-07): -ub 4096 with the q8_0 KV cache, measured on Flash-Next IQ3_XXS in a 65k conversation on the PC
-    (prompts +35 %, answers -10 %; claims v038-conv-iq3xxs-shipped / -fastkv). It applies only when the memory plan of this card leaves room for -ub 4096 (the tuner tried it first);
+    """The long-prompt mode (--long-prompt; the default since v0.3.8 for a GPU plan of a big model at 32k context and up, owner 2026-11-08): -ub 4096 with the q8_0 KV cache, measured on Flash-Next IQ3_XXS in a 65k conversation on the PC
+    against -ub 2048 with the f16 KV cache (prompts +77.0 %, answers +1.8 %, claim v038-longprompt-default; --no-long-prompt gives the old setting). It applies only when the memory plan of this card leaves room for -ub 4096 (the tuner tried it first);
     when it does not, nothing changes: the q8_0 KV cache is undone (alone it lost prompt speed in the same test) and the normal plan is made again. Returns kv_q8, tuned, desk_kw, ub_asked."""
     if not getattr(a, "long_prompt", False):
         return kv_q8, tuned, desk_kw, ub_asked
+    loud = getattr(a, "lp_explicit", False)                  # the default mode stays quiet when it does not apply; the flag says why
     user_ub = a.ub != "auto" or any(x in ("-ub", "--ubatch-size") for x in extra)
     if user_ub:
-        say("moe-cache: --long-prompt: your own --ub wins, so the long-prompt mode changes nothing")
+        loud and say("moe-cache: --long-prompt: your own --ub wins, so the long-prompt mode changes nothing")
         return kv_q8, tuned, desk_kw, ub_asked
     if not getattr(a, "lp_kv", False):
-        say("moe-cache: --long-prompt: no GPU found, or your own -ctk/-ctv, or --fast is set: the long-prompt mode changes nothing")
+        loud and say("moe-cache: --long-prompt: no GPU found, or your own -ctk/-ctv, or --fast is set: the long-prompt mode changes nothing")
         return kv_q8, tuned, desk_kw, ub_asked
     if tuned and tuned.get("ub") == 4096:
-        say("moe-cache: --long-prompt: a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, answers come a little slower; the q8_0 KV cache may change the "
-            "wording of answers slightly, the meaning stayed the same in our checks)")
+        say("moe-cache: long-prompt mode" + ("" if loud else " (the default; --no-long-prompt or --exact turns it off)") + ": a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, "
+            "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: same top token in 94-95 % of positions, the meaning stayed the same in our checks)")
         return kv_q8, tuned, desk_kw, ub_asked
     # -ub 4096 does not fit this card's memory plan: undo the KV cache and plan again as without the flag
     for i in range(len(extra) - 3):
@@ -2895,7 +2921,7 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
             del extra[i:i + 4]
             break
     a.fast, a.lp_kv = None, False
-    say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card (or the plan is not a GPU plan), so nothing changes: the normal micro-batch and the f16 KV cache stay")
+    loud and say("moe-cache: --long-prompt: -ub 4096 does not fit the memory plan of this card (or the plan is not a GPU plan), so nothing changes: the normal micro-batch and the f16 KV cache stay")
     a.lp_retune = True                                       # the "other programs hold" line was said by the first plan
     tuned, desk_kw, ub_asked = tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, False, mm_bytes)
     return False, tuned, desk_kw, ub_asked
@@ -2903,8 +2929,6 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
 
 def fast_env_stage(a, env, stock, model, machine):
     """ENGINE-029, stage "approximate modes": the plugin settings and the one plain line for --fast, --fast=2, --fast=fewer and --fast=kv; without --fast, the hint where it would pay (the model is much bigger than the memory it may use). env grows in place."""
-    if a.no_sched_tuning:
-        env.append(("MOE_CACHE_SCHED_TUNING", "0"))       # WINDOWS-013: Windows scheduling tweaks are on by default (the plugin reads this); nothing happens elsewhere
     if a.fast == "kv" and getattr(a, "lp_kv", False):
         pass                                                    # --long-prompt says what it did after the memory plan (long_prompt_stage)
     elif a.fast == "kv":
@@ -2932,7 +2956,7 @@ def fast_env_stage(a, env, stock, model, machine):
             pass
 
 
-def cpu_pin_stage(a, env, extra, stock, win, machine):
+def cpu_pin_stage(a, env, extra, stock, win, machine, dense=False):
     """ENGINE-029, stage "CPU cores": efficiency cores for the expert executor and pinning llama-server to the performance cores on hybrid CPUs (Windows core groups, Linux sysfs). env grows in place. Returns the pinning arguments for llama-server."""
     if not stock and not a.no_ecores and not os.environ.get("MOE_CACHE_EXEC_ECORES") and machine.has_cpu_atom():
         ne = min(machine.cpu_atom_count(), 4)
@@ -2955,7 +2979,14 @@ def cpu_pin_stage(a, env, extra, stock, win, machine):
             say(f"moe-cache: expert executor will also use {ne} efficiency cores (--no-ecores to disable)")
     if not a.no_pin and machine.has_cpu_core() and not any(x in ("-C", "--cpu-mask", "-Cr", "--cpu-range") for x in extra):
         mask = machine.perf_core_mask()
-        if mask:
+        dm = machine.dense_core_mask() if (dense and not a.cpu_only and machine.free_vram_bytes()) else None        # the two free cores are for the GPU driver: no GPU, no reason
+        if dm and not any(x in ("-t", "--threads") or x.startswith("--threads=") for x in extra):
+            pinargs = ["-C", dm[0], "--cpu-strict", "1", "-t", str(dm[1])]
+            if mask and not any(x in ("-tb", "--threads-batch", "-Cb", "--cpu-mask-batch") for x in extra):
+                pinargs += ["-Cb", mask, "--cpu-strict-batch", "1", "-tb", str(bin(int(mask, 16)).count("1"))]       # prompt batches: one thread per performance core (8k chat, 14B: prompt 107 -> 143 tok/s, decode 9.6 -> 10.1; 12 batch threads no better)
+            say(f"moe-cache: hybrid CPU, dense model: {dm[1]} decode threads on both hardware threads of all performance cores but two (-C {dm[0]}), the GPU driver keeps the other two; "
+                "+30-70 % decode against one thread per core when part of the model runs on the CPU (laptop, Qwen3-14B); prompt batches keep one thread per performance core; --no-pin to disable")
+        elif mask:
             pinargs = ["-C", mask, "--cpu-strict", "1"]
             say(f"moe-cache: hybrid CPU: pinning llama-server threads to the performance cores (-C {mask}); --no-pin to disable")
     return pinargs
@@ -3107,17 +3138,63 @@ def multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncm
     return ncmoe, extra
 
 
-def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine):
+def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes=0):
+    """Owner lever (a), LAUNCHER-732: a pure-attention dense model bigger than the GPU keeps attention, KV and most weights on the GPU and sends the FFN weights of the last
+    layers to the RAM (-ot), instead of llama.cpp's layer split, whose CPU layers also compute attention over their KV (14B at 32k: 0.9 tok/s split vs 3.4-4.0 this way).
+    Returns the -ot text or None (then --fit places the layers). --no-ffn-ram turns it off; your own -ot / -ngl after -- stand."""
+    if getattr(a, "no_ffn_ram", False) or any(x in ("-ot", "--override-tensor") or x.startswith("--override-tensor=") for x in extra):
+        return None
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import dense_ffn_split
+        free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()
+        if free and mm_bytes:
+            free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)           # a vision projector's weights and compute buffer sit in VRAM too (same as the tuner)
+        kv_q8 = kv_q8 or arg_after(extra, "-ctk", "--cache-type-k") in ("q8_0", "q4_0")       # your own cache type after -- counts (q4_0 is sized as q8_0: a little too much)
+        r = dense_ffn_split(model, ctx, free, kv_q8=kv_q8, margin_gib=a.gpu_margin if a.gpu_margin is not None else 0.25)
+    except Exception:
+        return None
+    if not r:
+        return None
+    if r["n_off"] is None:
+        say(f"moe-cache: dense model: the KV cache for {ctx} tokens ({r['kv_gib']:.1f} GiB) leaves too little GPU memory even with every FFN weight in RAM; llama.cpp's --fit places the layers"
+            + ("" if kv_q8 else " (a q8_0 KV cache halves it, approximate: moe-cache-server ... -- -ctk q8_0 -ctv q8_0)"))
+        return None
+    if not r["n_off"]:
+        return None
+    layers = "|".join(str(i) for i in range(r["first_layer"], r["n_layers"]))
+    say(f"moe-cache: dense model: attention, the KV cache and the other weights stay on the GPU; the FFN weights of layers {r['first_layer']}-{r['n_layers'] - 1} ({r['n_off']} of {r['n_layers']}, "
+        f"{r['n_off'] * r['ffn_gib']:.1f} GiB) stay in RAM (-ot; the model plus a {ctx}-token KV cache needs {r['need_gib']:.1f} GiB, the GPU has {r['free_gib']:.1f}). "
+        "A plain layer split would run the attention of the RAM layers on the CPU: far slower in long chats. --no-ffn-ram turns this off")
+    return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
+
+
+def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8=False, mm_bytes=0):
     """ENGINE-029, stage "command": CPU-only mode (--device none, -ngl 0), the llama-server command line with the placement and the pinning, --auto-fit for a dense model, and the line that says what the cache will manage. Returns (the command, the arguments for llama-server)."""
     cpu_only, cpu_why = cpu_only_decision(a.cpu_only, extra, machine.list_devices(ls) if not a.cpu_only else "", bool(vram_user))
     if cpu_only:
         extra = ["--device", "none"] + extra          # -ngl 0 alone still lets the KV cache land on a loaded GPU backend
         say(f"moe-cache: CPU-only ({cpu_why}): --device none and -ngl 0, nothing is put on a GPU")
     cmd = [ls, "-m", model, "-ngl", "0" if cpu_only else "99", "--n-cpu-moe", ncmoe, "-c", str(ctx), "-fa", "on", "--load-mode", "mmap", "--no-warmup", "--port", str(port)] + pinargs + extra
-    if dense and a.auto_fit and not any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra):
-        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]                # MM6: with -ngl set, llama.cpp's --fit is off (fit.cpp); a dense model bigger than VRAM aborts at load
+    user_ngl = any(x in ("-ngl", "--n-gpu-layers", "--gpu-layers") or x.startswith(("--n-gpu-layers=", "--gpu-layers=")) for x in extra)
+    if dense and not cpu_only and not user_ngl and (a.auto_fit or not a.no_auto_fit):
+        # LAUNCHER-732 (laptop, RTX 4060 8 GB, Qwen3-14B Q4_K_M 8.4 GiB): -ngl 99 aborts at load ("n_gpu_layers already set by user to 99"); llama.cpp's own --fit
+        # keeps 1 GiB free by default (6.3 tok/s), --fit-target 256 MiB places more layers (8.2 tok/s, same text). With -ngl set, --fit is off (fit.cpp).
         del cmd[cmd.index("--n-cpu-moe"):cmd.index("--n-cpu-moe") + 2]
-        say("moe-cache: --auto-fit (PROTOTYPE): dense model, no experts: no -ngl / --n-cpu-moe given, llama.cpp's --fit places the layers by free GPU memory")
+        ot = dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes)
+        if ot:
+            cmd += ["-ot", ot]
+            return cmd, extra
+        del cmd[cmd.index("-ngl"):cmd.index("-ngl") + 2]
+        margin = ""
+        try:
+            if not any(x in ("-fitt", "--fit-target", "--fit") or x.startswith(("--fit-target=",)) for x in extra) and "--fit-target" in ls_help(ls, machine.run):
+                mib = int(a.gpu_margin * 1024) if a.gpu_margin is not None else DENSE_FIT_TARGET_MIB
+                cmd += ["-fitt", str(mib)]; margin = f" and keeps {mib} MiB of GPU memory free (--fit-target; --gpu-margin GiB changes it)"
+        except Exception:
+            pass
+        say("moe-cache: dense model, no experts: no -ngl 99 (it makes a file bigger than the GPU abort at load); llama.cpp's --fit places the layers by free GPU memory" + margin
+            + ("" if a.auto_fit else ". --no-auto-fit brings -ngl 99 back"))
     if method == "none (stock)":
         pass
     elif ncmoe == "0":
@@ -3178,8 +3255,7 @@ def _launch_plan(a, extra, argv, machine):
         raise SystemExit("--stock runs without the plugin: it cannot go with --fast, --hybrid or --always-plugin")
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock, machine=machine)
     mm_file, mm_bytes, dense = None, 0, False
-    if a.mmproj or a.auto_fit:
-        mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
+    mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
     ncmoe_user = a.n_cpu_moe
@@ -3216,7 +3292,7 @@ def _launch_plan(a, extra, argv, machine):
     # RESULTS 72) and at 256k on a 16 GB card the smaller KV leaves room for a bigger GPU plan (prompts about 2x). Not with --stock (that compares
     # against plain llama.cpp) and not without a GPU (q8_0 KV aborted on the CPU-only build in CI; nothing to gain there). --exact (or your own
     # -ctk/-ctv after --) keeps llama.cpp's f16 KV
-    kv_q8 = kv_stage(a, extra, ctx, ls, listing, machine)
+    kv_q8 = kv_stage(a, extra, ctx, ls, listing, machine, stock, dense)
     if a.project and not dry:
         try:        # who runs on this folder now: `project save` stamps the saved file with it, a restore requires the same (after the KV types above are final)
             write_text_atomic(os.path.join(slotdir, "server.id"),
@@ -3224,7 +3300,7 @@ def _launch_plan(a, extra, argv, machine):
         except OSError:
             pass
     fast_env_stage(a, env, stock, model, machine)
-    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine)
+    pinargs = cpu_pin_stage(a, env, extra, stock, win, machine, dense)
     # micro-batch size and GPU cache size: one shared tuner (planner/gguf_plan.py: tune), so the launcher and the benchmark tool decide the same way
     # (a micro-batch the user chose, with --ub N or llama-server's own -ub, goes into the same decision: the layers must still leave the long-prompt
     # block its room; before, a chosen -ub skipped the tuner and long prompts ran on the CPU, Flash-Next at 34k tokens 121-141 tok/s, RESULTS 61)
@@ -3243,7 +3319,7 @@ def _launch_plan(a, extra, argv, machine):
         env += sycl_sysman_env(ls, listing)
     extra = leave_room_stage(a, env, extra, pinargs, machine)
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
-    cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine)
+    cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
     # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows

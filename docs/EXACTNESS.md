@@ -1,19 +1,20 @@
 # Same tokens as stock: how moe-cache checks it
 
-moe-cache runs MoE models bigger than your RAM inside an **unmodified** llama-server. Its default promise is simple: the answer is the one stock
-llama.cpp gives for the same model, settings and layer split. This page lists how that is checked, when the checks run, and where the promise has limits.
+moe-cache runs MoE models bigger than your RAM inside an **unmodified** llama-server. The plugin itself changes no number: with the same settings the answer is the one stock
+llama.cpp gives for the same model and layer split. The launcher's default long-prompt mode (v0.3.8) stores the KV cache as q8_0, so by default, from 32k context, answers are not byte-identical to stock; `--exact` restores that promise. This page lists how that is checked, when the checks run, and where the promise has limits.
 Numbers and logs: [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md) (the identity checks of results 1, 10 and 36 are in the laptop file); the approximate modes: [QUALITY_GATE.md](QUALITY_GATE.md).
 
 ## What "the same" means
 
 | Mode | Promise | How it is checked |
 |---|---|---|
-| default, context below 128k, MTP off | **token-identical** to stock **under the stated settings**: greedy decoding, same layer split, same llama.cpp build and backend, same KV types (f16 unless you set them) | greedy decoding, stock and plugin servers, every generated token compared (`tests/identity.sh`) |
+| `--exact` or `--no-long-prompt`, context below 128k, MTP off (also the default below 32k context, with `--stock`, or when the card has no room for the long-prompt plan) | **token-identical** to stock **under the stated settings**: greedy decoding, same layer split, same llama.cpp build and backend, same KV types (f16 unless you set them) | greedy decoding, stock and plugin servers, every generated token compared (`tests/identity.sh`) |
+| **default at `--ctx 32768` and above, with a GPU and room on the card (the long-prompt mode, since v0.3.8)** | `-ub 4096` with a q8_0 KV cache. Answers are **not byte-identical** to stock: against f16 the KL divergence is 0.014-0.015, the same top token in 94-95 % of positions, and the meaning was kept in 10 of 10 checks at 55k (2026-11-07). Prompts +77.0 %, answers +1.8 % (claim `v038-longprompt-default`). `--exact` or `--no-long-prompt` go back to f16 | the long-prompt KL runs of 2026-11-07; `--exact` keeps f16 |
 | default at `--ctx 131072` and above, with a GPU | q8_0 KV cache (`--fast=kv`) is selected automatically (not with `--stock`, `--exact`, your own `-ctk`/`-ctv`, or without a GPU). It **may change answers**; measured: KL 0.0079, top-1 96.7 %, 190/202 tasks (= stock) on one model at 4k context | quality gate ([QUALITY_GATE.md](QUALITY_GATE.md)); `--exact` keeps f16 |
 | MTP (speculative decoding with the model's own draft head) | **not guaranteed identical**: with the same split, GLM code text differed under MTP (RESULTS 77) | speed pairs; compare text before relying on it |
 | `--fast`, `--fast=2`, `--fast=fewer`, `--hybrid` | approximate, opt-in only; may change answers | quality gate with limits fixed before measuring ([QUALITY_GATE.md](QUALITY_GATE.md)) |
 
-**Strict comparison with stock:** use `--exact`, do not pass `--fast*` or `--hybrid`, turn MTP off (`--no-mtp`), set `-ctk f16 -ctv f16` explicitly on both sides, and fix the layer split (`--n-cpu-moe`, same `-ub`). `--exact` alone does not remove every source of difference.
+**Strict comparison with stock:** use `--exact` (it also switches the long-prompt mode off), do not pass `--fast*` or `--hybrid`, turn MTP off (`--no-mtp`), set `-ctk f16 -ctv f16` explicitly on both sides, and fix the layer split (`--n-cpu-moe`, same `-ub`). `--exact` alone does not remove every source of difference.
 
 "Same layer split" matters: with long prompts the amount of work that runs on the GPU can change from run to run with the free VRAM, and a layer
 computed on the GPU instead of the CPU can change the last digits and then a token, in stock llama.cpp too. The identity tests fix the split.

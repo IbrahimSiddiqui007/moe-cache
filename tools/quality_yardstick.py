@@ -214,6 +214,9 @@ def cmd_kl(a):
 
 
 def main():
+    for stream in (sys.stdout, sys.stderr):   # a Windows console (cp1252) cannot print llama-perplexity's "RMS Δp": that crashed the 2026-11-08 PC run after the numbers were measured
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
     r = sp.add_parser("run", help="run the prompt set against a server and save the tokens")

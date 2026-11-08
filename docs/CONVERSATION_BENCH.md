@@ -70,7 +70,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pai
 
 `-FlushOther` names other model files (never the one under test) that together are bigger than the RAM; `-Order "stock,mc,mc,stock"` is the default.
 Outputs in `-OutDir`: one `N-kind.json` per run (every turn), `record.json`, `tables.md`, the server logs and `progress.log`. The driver was written from
-`tools\agent_bench_pair.ps1` and has been **checked only with a fake server and a Python syntax check, not on a PC**: run the trial first.
+`tools\agent_bench_pair.ps1` and has been run on the test PC (Windows desktop, see the records in `benchmarks/runs/`); on a new machine run the trial first.
 
 ## What the tables mean, and what they cannot say
 
@@ -80,7 +80,7 @@ Outputs in `-OutDir`: one `N-kind.json` per run (every turn), `record.json`, `ta
   it is left out below 64 new tokens; the cache share is reported next to it.
 - Decode speed in a band is the speed of the answer at that depth. Answers that end early (the model writes an end-of-text token) can fall under 16 tokens
   and then do not count; `--ignore-eos` makes every answer exactly `--max-tokens` long, and thinking is off by default (`chat_template_kwargs {"enable_thinking": false}`; `--think` leaves it to the server).
-- The token estimate before a turn is characters divided by 3, which is cautious: the last turns can stop a little short of the limit.
+- The size of the history before a turn is the server's own token count (`/tokenize`); only when the server has no `/tokenize` the driver estimates it as characters divided by 3, which is cautious: the last turns can then stop a little short of the limit.
 - Texts are not compared between stock and moe-cache here (`identical_to_baseline` is "not checked"). The conversation is the same, the answers are the
   model's own, so a different answer in turn 5 changes the history after it; use the identity tests for text.
 - Hits and misses come from the plugin's own counters (`MOE_CACHE_STATS_SIGNAL=1`: SIGUSR1 on Linux, the named event `Local\moe-cache-stats-<pid>` on
@@ -97,7 +97,7 @@ A B B A order, the plugin counters per turn and the record format. It is in `too
 
 The first version asked for 128 tokens with the model's thinking on. The thinking block used the answer length, so many answers were empty, and from about turn 11 the model copied its own earlier one- or two-token replies: both arms (f16 and q8_0 KV, stock and moe-cache) answered with 1-2 tokens deep in the conversation. Prompt reading was not affected (the user turns and their size are the same), but the decode speed of the deeper bands was measured over a handful of tokens and the conversation could not be used to judge meaning. The driver now defaults to thinking off, 256 tokens per answer and the answer hint on every user message; `--legacy` (`-Legacy` in `conversation_bench_pair.ps1`) restores the old settings so a run stays comparable with the v0.3.7 records, `--think`, `--no-answer-hint` and `--max-tokens` change one setting each. Every run carries `thinking`, `answer_hint` and `answer_stats` (median answer tokens, short and empty turns); when the median is under `--min-median-answer` (24 tokens) or more than a quarter of the turns have no visible answer, the log and the run say WARNING. A record made with the new defaults says "thinking off, answer hint on" in its sampler line.
 
-Records made before this change (n_predict 128, thinking on): the v0.3.7 conversation records of 2026-11-05 and the night-chain conversations of 2026-11-06/07 (`v037-conv-q2_0`, `v037-conv-iq3xxs`, TEST-684, TEST-754). Their prompt numbers stand; their decode numbers per depth band rest on short answers from turn 11 on and are not to be quoted as "decode at 60k" without that caveat. Re-measure with the new defaults before a release quotes decode by band.
+Records made before this change (n_predict 128, thinking on): the v0.3.7 conversation records of 2026-11-05 and the night-chain conversations of 2026-11-06/07 (`v037-conv-q2_0`, `v037-conv-iq3xxs`, TEST-684, TEST-754). Their prompt numbers stand; their decode numbers per depth band rest on short answers from turn 11 on and are not to be quoted as "decode at 60k" without that caveat. They were re-measured with the new defaults on 2026-11-08 (claims `v038-conv-iq3xxs`, `v038-conv-q2_0`, `v038-fits-qwen36`) and the old claims are withdrawn.
 
 ### Finding the cause of short answers
 

@@ -1,0 +1,11 @@
+---
+id: "v038-conv-iq3xxs"
+runs: ["2026-11-08_pc_e22bae"]
+cells: [{"run": "2026-11-08_pc_e22bae", "arm": "stock", "metric": "prompt_tps"}, {"run": "2026-11-08_pc_e22bae", "arm": "stock", "metric": "decode_tps"}, {"run": "2026-11-08_pc_e22bae", "arm": "moe-cache", "metric": "prompt_tps", "vs": "stock"}, {"run": "2026-11-08_pc_e22bae", "arm": "moe-cache", "metric": "decode_tps", "vs": "stock"}]
+valid_moe_cache: ["0.3.7.1", "0.3.8"]
+valid_llama_builds: [12064, 12064]
+withdrawn: ""
+---
+# v0.3.8 head kit: Flash-Next IQ3_XXS (the default model) in a 65k conversation with real answers: moe-cache reads new prompt tokens at 188.6 against 54.4 tok/s (3.5x) and decodes 19.1 against 14.2 tok/s (1.34x)
+
+Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5 running at 6000 MT/s since 2026-11-07 (EXPO; records made at 4800 MT/s are not comparable), Vulkan), kit ksched (59a4112, moe-cache 0.3.7.1 code) with the official llama.cpp b12064 (51fe42c5d), Windows scheduling tuning off (MOE_CACHE_SCHED_TUNING=0), launcher defaults of that kit (--ub 2048, f16 KV cache; this is the setting `--no-long-prompt` gives in v0.3.8), context 65,536, cold file cache before each run, 2026-11-08 night. Conversation driver 9a0a981 (real answers: thinking off, 256 tokens, an answer hint on every question, sizes by the server's token count), seed 42, history re-sent every turn, prompt cache on, temperature 0. Order stock, moe-cache, moe-cache, stock, two runs per arm. 42 expert layers on the CPU, 42 turns to 65,280 tokens in every run. The two moe-cache runs are the same setting as the stock runs plus the plugin. Per depth band (0-16k, 16-32k, 32-48k, 48-64k), prompt tok/s stock vs moe-cache: 49.8 vs 212.8, 66.0 vs 215.0, 54.9 vs 201.4, 44.0 vs 142.8 (4.27x, 3.26x, 3.67x, 3.24x); decode tok/s stock vs moe-cache: 16.5 vs 22.0, 13.1 vs 19.4, 12.6 vs 20.5, 14.5 vs 18.2 (1.33x, 1.48x, 1.63x, 1.25x). Whole-run means: prompt 54.37 vs 188.61, decode 14.25 vs 19.10; median time to first token 3.30 vs 1.51 s; plugin decode hit rate 96.8 %; process RAM peak 26507 vs 20015 MiB (stock's figure is mostly reclaimable file cache: not a saving). This claim replaces v037-conv-*, whose decode numbers came from the old driver with short answers.

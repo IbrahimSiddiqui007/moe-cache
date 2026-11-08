@@ -4,7 +4,7 @@ runs: ["2026-11-07_pc_719b3b", "2026-11-07_pc_53db60"]
 cells: [{"run": "2026-11-07_pc_53db60", "arm": "moe-cache", "metric": "prompt_tps"}, {"run": "2026-11-07_pc_719b3b", "arm": "moe-cache", "metric": "prompt_tps"}, {"run": "2026-11-07_pc_53db60", "arm": "moe-cache", "metric": "decode_tps"}, {"run": "2026-11-07_pc_719b3b", "arm": "moe-cache", "metric": "decode_tps"}]
 valid_moe_cache: ["0.3.7", "0.3.8"]
 valid_llama_builds: [12064, 12064]
-withdrawn: ""
+withdrawn: "2026-11-08: measured with all 48 expert layers on the CPU, not the long-prompt plan as shipped; replaced by v038-longprompt-default (45 expert layers on the CPU, a3dac52)."
 ---
 # Head kit (v0.3.8 candidate): Flash-Next IQ3_XXS in a 65k conversation with real answers, --ub 4096 with the q8_0 KV cache: moe-cache reads new prompt tokens at 301.2 tok/s and decodes 16.5 tok/s
 
