@@ -2,7 +2,7 @@
 """bench_record_test (docs/BENCHMARK_TEMPLATE.md): the benchmark record's collector without a model, a server or a GPU. Linux and Windows readers are driven with
 fake /proc files and fake command output (nvidia-smi, lsblk, typeperf, powercfg, PowerShell JSON); the Sampler with a fake probe; the record against the schema;
 the renderers (card lines, row, RESULTS section, issue body); and a smoke run of the real probe on this machine's own process. Same file on both systems."""
-import json, os, re, sys, tempfile, time
+import copy, json, os, re, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -284,6 +284,23 @@ check("| moe-cache | 300.0 (+0.0 % vs stock) | 23.50 (+130.4 % vs stock) | 2026-
       "board: one row per machine, model, setting, arm with the newest claim's number")
 check("| [first](claims/first.md) | superseded |" in board and "## Conflicts" in board, "board: claims that are not current are listed")
 check("2026-11-02" in cc.journal_text(claims, runs) and rid1 in cc.journal_text(claims, runs), "journal: one line per run set")
+# a community record's text (machine, model, arm names) lands in BOARD.md / JOURNAL.md: it must stay plain text in the table
+evil = "x | <img src=x onerror=alert(1)> [click](http://evil.example) `code`\nnew line"
+hostile = copy.deepcopy(runs)
+for rec in hostile.values():
+    rec["hardware"]["cpu_model"] = evil
+    for r in rec["runs"]:
+        if r["arm"] == "moe-cache":
+            r["arm"] = evil
+hclaims = copy.deepcopy(claims)
+for c in hclaims.values():
+    for cell in c["cells"]:
+        if cell["arm"] == "moe-cache":
+            cell["arm"] = evil
+hb, hj = cc.board_text(hclaims, hostile, version="0.3.5", pin=11966), cc.journal_text(hclaims, hostile)
+bad_bits = ("<img", " [click](", "`code`", "x | <")    # an escaped "\\[click\\](" is plain text, not a link
+check(not any(b in hb or b in hj for b in bad_bits) and "&lt;img" in hb and "\\[click\\]" in hb and all(l.count(" | ") >= 7 for l in hb.splitlines() if l.startswith("| ") and "&lt;img" in l),
+      "board and journal: record text is escaped (no HTML, links, code or extra table columns)")
 with contextlib.redirect_stdout(io.StringIO()):
     check(cli("board") == 0 and cli("board", "--check") == 0, "board writes BOARD.md and JOURNAL.md; --check passes right after")
 os.remove(os.path.join(bdir, "JOURNAL.md"))

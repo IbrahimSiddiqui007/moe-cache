@@ -404,12 +404,20 @@ def show_claim(c, runs, st):
 
 # ---------------------------------------------------------------- board and journal
 
+_MD_ESC = str.maketrans({"\\": "\\\\", "|": "\\|", "`": "\\`", "[": "\\[", "]": "\\]", "<": "&lt;", ">": "&gt;", "&": "&amp;", "\n": " ", "\r": " "})
+
+
+def md(s):
+    """Record text (a community record's machine, model, arm or setting names) as plain text in a Markdown table: no table breaks, links, code or HTML."""
+    return str(s).translate(_MD_ESC)
+
+
 def machine_label(runs, machine):
     for rid, rec in runs.items():
         if run_parts(rid)[1] == machine:
             h = rec["hardware"]
-            return f"{machine}: {h['os']}, {h['cpu_model']}, {h['gpu_model']}"
-    return machine
+            return md(f"{machine}: {h['os']}, {h['cpu_model']}, {h['gpu_model']}")
+    return md(machine)
 
 
 def board_text(claims, runs, version=None, pin=None):
@@ -444,19 +452,19 @@ def board_text(claims, runs, version=None, pin=None):
                 d, cid, cell = cells[metric]
                 rec = runs[cell["run"]]
                 m = arm_stats(rec, cell["arm"], metric)[0]
-                parts[metric] = fmt(metric, m) + (f" ({pct(m, arm_stats(rec, cell['vs'], metric)[0])} vs {cell['vs']})" if cell.get("vs") else "")
+                parts[metric] = fmt(metric, m) + (f" ({pct(m, arm_stats(rec, cell['vs'], metric)[0])} vs {md(cell['vs'])})" if cell.get("vs") else "")
             ids = sorted({v[1] for v in cells.values()})
             sts = sorted({status[i][0] for i in ids})
-            out.append(f"| {key[1]} | {key[2]} | {key[3]} | {parts['prompt_tps']} | {parts['decode_tps']} | {max(v[0] for v in cells.values())} | {', '.join(sts)} | "
+            out.append(f"| {md(key[1])} | {md(key[2])} | {md(key[3])} | {parts['prompt_tps']} | {parts['decode_tps']} | {max(v[0] for v in cells.values())} | {', '.join(sts)} | "
                        + ", ".join(f"[{i}](claims/{claims[i]['file']})" for i in ids) + " |")
         out.append("")
     bad = [(cid, st) for cid, st in sorted(status.items()) if st[0] != "current"]
     out += ["## Claims that are not current", ""]
-    out += ["| Claim | Status | Why |", "|---|---|---|"] + [f"| [{cid}](claims/{claims[cid]['file']}) | {st[0]} | {st[1]} |" for cid, st in bad] if bad else ["None."]
+    out += ["| Claim | Status | Why |", "|---|---|---|"] + [f"| [{cid}](claims/{claims[cid]['file']}) | {st[0]} | {md(st[1])} |" for cid, st in bad] if bad else ["None."]
     out += ["", "## Conflicts", ""]
     if conflicts:
         out += ["Two claims of the same date give different numbers for the same cell. Measure again, or withdraw one.", ""]
-        out += [f"- {' / '.join(k)}: " + ", ".join(ids) for k, ids in conflicts]
+        out += [f"- {' / '.join(md(x) for x in k)}: " + ", ".join(ids) for k, ids in conflicts]
     else:
         out.append("None.")
     return "\n".join(out) + "\n"
@@ -470,7 +478,7 @@ def journal_text(claims, runs):
         arms = list(dict.fromkeys(r["arm"] for r in rec["runs"]))
         cl = sorted(cid for cid, c in claims.items() if rid in c["runs"])
         gaps = len(rr.not_recorded_fields(rec))
-        out.append(f"- {d} {machine}: {model_of(rec)}, {setting_of(rec)}; arms {', '.join(arms)}, {len(rec['runs'])} runs; {gaps} fields not recorded. [{rid}](runs/{rid}.json)"
+        out.append(f"- {d} {md(machine)}: {md(model_of(rec))}, {md(setting_of(rec))}; arms {', '.join(md(x) for x in arms)}, {len(rec['runs'])} runs; {gaps} fields not recorded. [{md(rid)}](runs/{rid}.json)"
                    + (f". Claims: {', '.join(f'{c} ({status[c][0]})' for c in cl)}" if cl else ". No claim yet"))
     return "\n".join(out) + "\n"
 
