@@ -334,6 +334,13 @@ bool hybrid_init(moe_cache_backend_ctx * c, state_t & s) {
 
 // One expert block (gate, up, activation, down: MUL_MAT_ID / GLU nodes sharing the same ids) starting at node `first`. Returns false to leave it to the executor.
 bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int first, int & last_out) {
+    auto tp = std::chrono::steady_clock::now();
+    uint64_t ph[7] = {};
+    auto lap = [&](int i) {
+        const auto now = std::chrono::steady_clock::now();
+        ph[i] += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(now - tp).count();
+        tp = now;
+    };
     const int n_all = ggml_graph_n_nodes(cg);
     const ggml_tensor * ids = ggml_graph_node(cg, first)->src[2];
     std::vector<ggml_tensor *> seg;
@@ -407,6 +414,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     if (n_hit == 0) {
         return false;
     }
+    lap(0);
     // idea D24 (MOE_CACHE_HYBRID_COMPACT=1, default off): when some picks miss, the GPU graph gets only the hit picks as rows (1 x R, ids = their slots, one input row
     // each) instead of all picks with the misses pointed at slot 0, and only those rows are read back. Same weights times the same input row per hit pick.
     static const bool hcompact = mcenv::env_on("MOE_CACHE_HYBRID_COMPACT");
@@ -490,6 +498,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         ctx_free(c, ctx);
         return false;
     }
+    lap(1);
     if (compact) {
         ggml_backend_tensor_set(gids, crid.data(), 0, crid.size() * sizeof(int32_t));
     } else {
@@ -521,11 +530,13 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         }
         ggml_backend_tensor_set(up.second, pack.data(), 0, pack.size());
     }
+    lap(2);
     if (ggml_backend_graph_compute_async(c->gpu, g) != GGML_STATUS_SUCCESS) {
         ggml_backend_synchronize(c->gpu);    // part of it may have been submitted: let it finish before the buffers are used again
         ctx_free(c, ctx);
         return false;
     }
+    lap(3);
     // meanwhile the CPU computes the misses (the activation node runs for all picks; the hit picks' values are replaced below)
     if (n_hit < n_used * n_tok) {
         for (int j = 0; j < (int) seg.size(); j++) {
@@ -536,7 +547,9 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             }
         }
     }
+    lap(4);
     ggml_backend_synchronize(c->gpu);
+    lap(5);
     ggml_tensor * out = seg.back();
     std::vector<float> res((size_t) ggml_nelements(out));
     ggml_backend_tensor_get(gout, res.data(), 0, ggml_nbytes(gout));
@@ -553,6 +566,10 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         }
     }
     ctx_free(c, ctx);
+    lap(6);
+    for (int i = 0; i < 7; i++) {
+        s.hyb_ph_ns[i] += ph[i];
+    }
     s.hyb_groups++;
     s.hyb_picks += (uint64_t) (n_used * n_tok);
     s.hyb_hits += (uint64_t) n_hit;
