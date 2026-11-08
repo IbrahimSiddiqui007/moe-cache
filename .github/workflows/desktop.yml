@@ -24,6 +24,7 @@ on:
       - ".github/workflows/desktop.yml"
 
 env:
+  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
   # python.org's python-3.12.8-embed-amd64.zip, hash taken on 2026-11-03 from a download over https (no second source: python.org lists none)
   PY_VERSION: ${{ inputs.python_version || '3.12.8' }}
   PY_SHA256: ${{ inputs.python_sha256 || '8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb' }}
@@ -46,15 +47,29 @@ jobs:
           persist-credentials: false
       - name: mingw-w64 (UCRT when available, as windows.yml)
         run: |
-          sudo apt-get update -q
-          if sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
+          sudo apt-get -o Acquire::Retries=5 update -q
+          if sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
             echo "MINGW_CXX=x86_64-w64-mingw32ucrt-g++" >> "$GITHUB_ENV"
           else
-            sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+            sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
             echo "MINGW_CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
           fi
+      - name: Cache restore (kit's llama.cpp zip; a miss downloads in the kit step, with retries and the pinned sha256)
+        id: kitzip
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-zips
+          key: dl-kit-llama-b12064-vulkan-e0fee991
       - name: Windows kit
+        env:
+          LLAMA_ZIP_CACHE: ${{ runner.temp }}/llama-zips
         run: tools/make_windows_kit.sh 0.0.0-desktop
+      - name: Cache save (kit's llama.cpp zip; only after a build that passed its sha256)
+        if: steps.kitzip.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-zips
+          key: dl-kit-llama-b12064-vulkan-e0fee991
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-kit
@@ -109,8 +124,8 @@ jobs:
       - name: Linux libraries
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
 
       - name: Stage the kit files
         shell: bash
@@ -137,10 +152,27 @@ jobs:
           if (-not (Test-Path "$dst\llama\llama-server.exe") -or -not (Test-Path "$dst\ggml-moe-cache-api3.dll")) { throw "the kit lacks llama-server.exe or the API 3 DLL" }
           "{0:N1} MB staged" -f ((Get-ChildItem $dst -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
 
+      - name: Cache restore (python.org embeddable zip, keyed by version + sha256)
+        id: pyzip
+        if: runner.os == 'Windows' && env.PY_SHA256 != 'none'
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/pyzip
+          key: dl-pyembed-${{ env.PY_VERSION }}-${{ env.PY_SHA256 }}
+
       - name: Bundle Python (Windows)
         if: runner.os == 'Windows' && env.PY_SHA256 != 'none'
         shell: pwsh
+        env:
+          PY_ZIP_DIR: ${{ runner.temp }}/pyzip
         run: desktop/scripts/fetch-python-win.ps1 -Version "$env:PY_VERSION" -Sha256 "$env:PY_SHA256"
+
+      - name: Cache save (python.org zip; only after the sha256 check)
+        if: runner.os == 'Windows' && env.PY_SHA256 != 'none' && steps.pyzip.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/pyzip
+          key: dl-pyembed-${{ env.PY_VERSION }}-${{ env.PY_SHA256 }}
 
       - name: Empty Python folder when none is bundled (Windows)
         if: runner.os == 'Windows' && env.PY_SHA256 == 'none'
@@ -176,7 +208,7 @@ jobs:
         working-directory: desktop
         shell: bash
         run: |
-          npm install --no-audit --no-fund
+          npm install --no-audit --no-fund --fetch-retries=6 --fetch-retry-mintimeout=15000 --fetch-retry-maxtimeout=120000
           npx tauri build --bundles ${{ matrix.bundles }}
 
       # Only main and experimental save (see the restore step). A save is skipped when the exact key was restored; the prune step keeps one entry per OS on this branch.

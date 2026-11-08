@@ -38,7 +38,7 @@ tgz = os.path.join(cache, asset); make_tgz(tgz)
 sha = hashlib.sha256(open(tgz, "rb").read()).hexdigest()
 script = os.path.join(HERE, "tools", "bundle_llama_linux.sh")
 lic = os.path.join(HERE, "LICENSE")
-env = dict(os.environ, LLAMA_LICENSE_FILE=lic)
+env = dict(os.environ, LLAMA_LICENSE_FILE=lic, CI_FETCH_TRIES="1", CI_FETCH_WAIT="0")   # the wrong-sha case must not wait for retries against a host that is not there
 
 def run(dest, tag, name, digest, cache_dir=cache):
     return subprocess.run(["bash", script, dest, tag, name, digest, cache_dir], capture_output=True, text=True, env=env, timeout=120)

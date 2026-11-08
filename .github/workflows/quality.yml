@@ -27,7 +27,7 @@ jobs:
           persist-credentials: false
 
       - name: Packages
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
+        run: sudo apt-get -o Acquire::Retries=5 update && sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends build-essential cmake ninja-build git curl ca-certificates python3
 
       - name: llama.cpp at the API 3 pin (CPU only, shared libraries)
         run: |
@@ -42,10 +42,22 @@ jobs:
       - name: Plugin
         run: GGML_API=3 ./build.sh --portable
 
+      - name: Cache restore (granite; a miss downloads below, with retries)
+        id: granite
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
       - name: Small MoE model
         run: |
-          curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
+          mkdir -p dl && tools/ci/fetch.sh https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf dl/granite.gguf 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb && cp dl/granite.gguf granite.gguf
           echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+      - name: Cache save (granite; only after the sha256 check)
+        if: steps.granite.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
 
       - name: Gate, level exact (must be KL 0, 100 % top-1, same task answers)
         run: python3 tools/quality_gate.py --llama-server llama.cpp/build/bin/llama-server --perplexity llama.cpp/build/bin/llama-perplexity --model granite.gguf --lib build/libggml-moe-cache.so --level exact --smoke --out gate_exact --common-args=--no-repack --ram-env MOE_CACHE_SIZE_GIB=0.2 --ram-env MOE_CACHE_EXEC=2 | tee gate_exact.txt

@@ -21,7 +21,7 @@ rm -rf "$D/llama"; mkdir -p "$D/llama"
 cp -a "$S"/. "$D/llama/"
 [ "$P" = linux ] && chmod +x "$D/llama/llama-server"
 if [ -n "$LLAMA_LICENSE_FILE" ]; then cp "$LLAMA_LICENSE_FILE" "$D/llama/LICENSE-llama.cpp.txt"
-else curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o "$D/llama/LICENSE-llama.cpp.txt" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$TAG/LICENSE"; fi
+else "$HERE/tools/ci/fetch.sh" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$TAG/LICENSE" "$D/llama/LICENSE-llama.cpp.txt" || exit 1; fi    # retried with backoff
 NL='\n'; [ "$P" = win ] && NL='\r\n'
 printf '%s%b' "$LINE" "$NL" > "$D/llama/PATCHES-moe-cache.txt"
 {

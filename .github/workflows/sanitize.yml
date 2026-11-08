@@ -36,7 +36,7 @@ jobs:
           persist-credentials: false
 
       - name: Packages
-        run: sudo apt-get update -q && sudo apt-get install -y -q ninja-build
+        run: sudo apt-get -o Acquire::Retries=5 update -q && sudo apt-get -o Acquire::Retries=5 install -y -q ninja-build
 
       - name: llama.cpp 23b0202a1 with the ${{ matrix.san }} sanitizer (CPU only, shared libraries)
         run: |
@@ -60,10 +60,22 @@ jobs:
           MOE_CACHE_CXXFLAGS="-fsanitize=${{ matrix.san }} -g -fno-omit-frame-pointer" ./build.sh --portable
           ls -la build/libggml-moe-cache.so
 
+      - name: Cache restore (granite; a miss downloads below, with retries)
+        id: granite
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
       - name: Small MoE model
         run: |
-          curl -L -f -s -o granite.gguf https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf
+          mkdir -p dl && tools/ci/fetch.sh https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf dl/granite.gguf 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb && cp dl/granite.gguf granite.gguf
           echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+      - name: Cache save (granite; only after the sha256 check)
+        if: steps.granite.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: dl
+          key: dl-granite-3a2ec1c2
 
       - name: Identity under the sanitizer (eviction, executor forced, reads delayed)
         env:
