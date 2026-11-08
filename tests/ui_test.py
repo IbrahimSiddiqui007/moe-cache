@@ -579,6 +579,9 @@ if sys.platform.startswith("linux"):
     par.kill(); par.wait()
 check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-1] == "--no-warm" and "--no-warm" not in ui.server_args({"model": "m.gguf", "no_warm": True}),
       "Don't restore: --no-warm (agent mode only)")
+_ap = ui.server_args({"model": "m.gguf", "approx": "careful"})
+check("--approx" in _ap and _ap[_ap.index("--approx") + 1] == "careful" and "--exact" not in _ap and "--approx" not in ui.server_args({"model": "m.gguf"}), "QUALITY-970: the page's tier becomes --approx TIER (no --exact with it); no tier: no flag")
+check('id="approx"' in _html and "NOT identical" in _html and "approx: $(\"approx\").value" in _html, "QUALITY-970: the control page has the tier choice and says plainly that answers are not identical")
 check("--no-long-prompt" in ui.server_args({"model": "m.gguf", "no_long_prompt": True}) and "--no-long-prompt" not in ui.server_args({"model": "m.gguf"}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
       "Long-prompt mode is the default: --no-long-prompt on the Start command only when unticked (2026-11-08), no --long-prompt")
 check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "reads long prompts about 77 % faster" in _html,

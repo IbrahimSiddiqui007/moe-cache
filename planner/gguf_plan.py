@@ -557,6 +557,9 @@ _COMPUTE_MIB = {32768: {512: 770, 1024: 770, 2048: 990}, 65536: {512: 690, 1024:
 # Measured but never auto-picked (None above): still the size llama-server takes when the user asks for that micro-batch (audit 2026-10-29 L1:
 # without these, -ub 2048 at 128k/256k was guessed at 990 MiB, about 2-3 GiB short, so the long-prompt block found no room)
 _COMPUTE_MIB_NOT_PICKED = {131072: {2048: 3150},
+                           # SINGLE MEASUREMENT: every -ub 4096 number the planner uses comes from ONE model, Flash-Next IQ3_XXS at 64k (one run, no other model, card or context).
+                           # compute_buffer_guess_mib extrapolates it: <= 64k reuses 4660, 128k and 256k scale the 2048 rows (x2: 7958 MiB), above 256k it grows with the context.
+                           # The numbers err high on purpose; a second model or context at -ub 4096 should replace the extrapolation (tests/planner_test.py pins the current values).
                            # -ub 4096 at 64k, IQ3_XXS, f16 KV, PC night chain 2026-11-07 (item 15): 4,660 MiB (2,021 MiB at -ub 2048 on the same file); used only by the long-prompt mode
                            65536: {4096: 4660}}
 _PROMPT_GAIN = {512: 1.0, 1024: 1.26, 2048: 1.58}      # measured prefill speed-up of a bigger micro-batch (6k-token prompt)

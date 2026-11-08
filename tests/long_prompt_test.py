@@ -50,6 +50,48 @@ with tempfile.TemporaryDirectory() as t:
     fast = lp.run_case("win", base + ["--long-prompt", "--fast=kv"], [], m, t)
     check("-ub 4096" not in cmd(fast) and "-ctk q8_0" in cmd(fast) and "changes nothing" in fast["stdout"], "with --fast already given the long-prompt mode adds nothing")
 
+    # --no-long-prompt gives the f16 KV cache at 128k+ too (SERVER_HELP: "-ub 2048 and the f16 KV cache"); the 128k q8_0 default is for everyone else
+    big = ["--ram", "12", "--ctx", "131072"]
+    d128 = lp.run_case("win", big, [], m, t)
+    n128 = lp.run_case("win", big + ["--no-long-prompt"], [], m, t)
+    check("-ctk q8_0 -ctv q8_0" in cmd(d128), "128k, default: the q8_0 KV cache")
+    check(n128["rc"] == 0 and "-ctk" not in cmd(n128) and " -ub 4096" not in cmd(n128) + " " and "q8_0 KV cache by default" not in n128["stdout"],
+          "128k with --no-long-prompt: the f16 KV cache (no -ctk), -ub 2048 (SERVER_HELP)")
+    check("-ctk" not in cmd(lp.run_case("win", big + ["--exact"], [], m, t)), "128k with --exact: still the f16 KV cache")
+    # --long-prompt with --exact or --stock is an error whatever else is set (--ub / --fast used to hide the conflict)
+    for opts in (["--exact"], ["--exact", "--ub", "2048"], ["--exact", "--fast=kv"], ["--stock", "--ub", "2048"]):
+        r = lp.run_case("win", base + ["--long-prompt"] + opts, [], m, t)
+        check(r["rc"] != 0 and "does not go with --exact or --stock" in r["stderr"], f"--long-prompt {' '.join(opts)}: refused")
+
+    # server.id records the FINAL KV type (it was written before the long-prompt stage could undo the q8_0 cache, and before the f16 retry)
+    import io, contextlib, types
+    mc = lp.mc
+    saved = (mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS)
+    for f in ("llama-server", "libggml-moe-cache.so"):
+        open(os.path.join(t, f), "w").close()
+    mc.CACHE_DIR = os.path.join(t, "cache"); mc.KEY_FILE = os.path.join(mc.CACHE_DIR, "api.key"); mc.WINDOWS = False
+    mc.default_llama_server = lambda refresh=False: os.path.join(t, "llama-server")
+    def plan_id(vram, free, name, *opts):
+        a, extra, argv = mc.parse_server([m, "--llama-server", os.path.join(t, "llama-server"), "--ram", "12", "--no-pin", "--always-plugin", "--ctx", "65536", "--project", name, *opts])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            plan = mc.launch_plan(a, extra, argv, machine=lp.FakeMachine(t, vram, free))
+        ident = open(os.path.join(mc.CACHE_DIR, "slots", name, "server.id")).read().strip()
+        return plan, ident
+    try:
+        p16, id16 = plan_id(16384, 15000, "big")                      # room for -ub 4096: q8_0 stays
+        p8, id8 = plan_id(8188, 7600, "small")                        # no room: the stage undid the q8_0 KV cache
+        pn, idn = plan_id(16384, 15000, "off", "--no-long-prompt")
+        q8, f16 = mc.model_identity(m, 65536, "q8_0", "q8_0"), mc.model_identity(m, 65536, None, None)
+        check(p16.kv_q8 and "-ctk" in p16.cmd and id16 == q8, "server.id, long-prompt mode applied: records the q8_0 KV cache")
+        check(not p8.kv_q8 and "-ctk" not in p8.cmd and id8 == f16 and id8 != q8, f"server.id, long-prompt mode undone (no room on an 8 GB card): records the f16 KV cache (kv_q8 {p8.kv_q8})")
+        check("-ctk" not in pn.cmd and idn == f16, "server.id, --no-long-prompt: f16")
+        # the f16 retry (llama.cpp abort at load) rewrites it: write_server_id is what the retry calls with the new command
+        sd = os.path.join(mc.CACHE_DIR, "slots", "big")
+        mc.write_server_id(sd, m, 65536, [x for x in p16.cmd if x not in ("-ctk", "-ctv", "q8_0")])
+        check(open(os.path.join(sd, "server.id")).read().strip() == f16, "server.id after the f16 KV retry: rewritten to the f16 identity")
+    finally:
+        mc.CACHE_DIR, mc.KEY_FILE, mc.default_llama_server, mc.WINDOWS = saved
+
 free = 15.4e9
 P = lp.__dict__.get("MODEL_FOR_TUNE")
 tn = gguf_plan.tune.__doc__ or ""

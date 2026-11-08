@@ -45,6 +45,29 @@
 | `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
 
 
+## Approximate speed tiers: `--approx safe|careful|aggressive` (opt-in, off by default)
+
+**Every tier changes some answers. None is identical to plain llama.cpp's.** Without `--approx` nothing here is on. `--approx exact` means the same as leaving it out. The tiers only group switches that already exist; each mode has a quality gate (the numbers in [QUALITY_GATE](QUALITY_GATE.md)) and a list of models it was measured on.
+
+| Tier | Switches it turns on | What changes in plain words | Gate (mean KL at most / same top token at least) | Measured so far |
+|---|---|---|---|---|
+| `safe` | `kv8` (q8_0 KV cache) + `spec-exact` (the model's own MTP head, only if it has one) | the chat's memory is stored in 8 bit; the model drafts 2 tokens ahead and checks them; every expert is still computed | 0.015 / 95 % | KL 0.0045-0.015; Flash-Next chat same top token 94-95 %, meaning kept 10 of 10 at 55k |
+| `careful` | `fast1` (`--fast`, includes the q8_0 KV cache) + `spec-exact` | rarely picked experts that are not in RAM are skipped; about 1 token in 40-50 differs | 0.040 / 90 % | about +10 %; KL 0.0053 to 0.025 |
+| `aggressive` | `fast2` (`--fast=2`) + `spec-exact` | up to 4 low-ranked experts per token that are not in RAM are skipped; about 1 token in 28 differs | 0.060 / 88 % (level `fewer`) | Flash-Next at 12 GB +43 %, KL 0.022 |
+
+| Option | Meaning |
+|---|---|
+| `--approx-off MODE` | remove one mode from the tier (`kv8`, `spec-exact`, `fast1`, `fast2`) |
+| `--approx-unverified` | run a mode that has no gate record for this model (loud line; nobody measured its quality here). A record that says a mode FAILED for this model always refuses it |
+| `--no-approx-canary` | skip the startup check below |
+| your own `--fast` | wins over the tier's expert mode and is reported; `--exact` and `--stock` are refused together with a tier |
+
+Not in any tier: `--hybrid` (its GPU/CPU rounding changed tokens within 3-20 tokens on a small model), `--fast=fewer`, q4_0 KV (fails the `kv` gate), and modes that are not built yet (relaxed draft acceptance, window-level expert skipping, sparse attention).
+
+**Gate records.** A mode runs for a model only when it has a gate record: the built-in list in `bin/moe_cache_approx.py` (`MODES[...]["verified"]`, from the measurements above; "granite" there is the CI smoke guard only, not a quality statement) or a file `profiles/gates/NAME.json` written by a gate run (`{"match": "model name part", "modes": {"kv8": {"pass": true, "kl": 0.005, "kit": "...", "date": "..."}}}`). Without a record the tier is refused, with the way to go on in the message.
+
+**Startup canary.** After the plan is made and before the server starts, the launcher runs `llama-perplexity` (next to `llama-server`) on `tools/approx_canary.txt` (prose, code, French and German, numbers, SQL; two chunks of 256 tokens, about 256 scored tokens) with this launch's own placement flags, once with the exact setting and once with the tier, and compares the KL divergence and top-token share with the tier's gate. If the tier is past its gate it is stepped down one tier (aggressive, careful, safe, exact) and the server starts with that; the line says so. The result is stamped per model file, plugin library and tier, so later starts do not measure again (state in the cache folder, `approx/`). The first start of a big model costs two extra model loads. If the canary cannot run (no `llama-perplexity`, a failed run) the tier runs as asked and the launcher says nothing was checked. **A canary guards, it never proves**: passing it does not make a mode a default.
+
 ## Settings not listed above (checked against the code on 2026-11-03)
 
 The table above is the short list. This part covers the remaining `MOE_CACHE_*` names the code reads, found with `tools/env_names_check.py` (it lists every name in `src/`, `bin/` and `planner/` and whether a doc mentions it; `--missing` shows only the gaps). "Who" says who should touch it: **everyone**, **advanced** (you know what the option does), **internal/testing** (for the project's own tests and experiments; leave alone), or **set by the launcher** (the launcher sets it for the plugin; do not set it by hand). Switch values: where a row says "1/on/true/yes", those four turn it on.
