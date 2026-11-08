@@ -135,7 +135,7 @@ jobs:
           if (-not $text -or $text.Length -lt 20) { throw "the smoke run produced no text" }
       - name: Official b12064 build (pinned by sha256) for the identity run
         run: |
-          Invoke-WebRequest -UseBasicParsing "https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-win-vulkan-x64.zip" -OutFile official.zip
+          curl.exe -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o official.zip "https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-win-vulkan-x64.zip"
           if ((Get-FileHash official.zip -Algorithm SHA256).Hash.ToLower() -ne 'e0fee991887711ce74cb9c1f7715a1234e27d94f13ccfc594dc01310e5da6e22') { throw "official.zip: wrong sha256" }
           Expand-Archive official.zip -DestinationPath official
       - name: Identity at temperature 0 - official, patched (switches off), patched (switches on)
@@ -230,10 +230,10 @@ jobs:
           set -e
           sha256sum -c llama-patched-linux-x64.tar.gz.sha256
           mkdir patched && tar -C patched -xzf llama-patched-linux-x64.tar.gz
-          curl -fsSL -o official.tgz https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-ubuntu-vulkan-x64.tar.gz
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o official.tgz https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-ubuntu-vulkan-x64.tar.gz
           echo "156e0010e92079dd931c82f50cbf8be94de47d06dba637c29261bfda3f2ff297  official.tgz" | sha256sum -c -
           mkdir official && tar -C official -xzf official.tgz --strip-components=1
-          curl -fsSL -o granite.gguf "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 10 -o granite.gguf "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
           echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
           patched/llama-server --version
       - name: Identity at temperature 0 - official, patched (switches off), patched (switches on)
