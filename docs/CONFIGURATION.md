@@ -45,9 +45,25 @@
 | `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
 
 
-## Approximate speed tiers: `--approx safe|careful|aggressive` (opt-in, off by default)
+## Modes that change tokens: on by default when measured as a win, `--exact` turns all off
 
-**Every tier changes some answers. None is identical to plain llama.cpp's.** Without `--approx` nothing here is on. `--approx exact` means the same as leaving it out. The tiers only group switches that already exist; each mode has a quality gate (the numbers in [QUALITY_GATE](QUALITY_GATE.md)) and a list of models it was measured on.
+Owner rule 2026-11-09: there is no opt-in for a speed-up that changes tokens but keeps the meaning. **The default launch is faster and not token-identical to plain llama.cpp.** It enables exactly the rows below whose status is `won` (a paired run shows a speed win and the quality check passed). A row stays off only when measured `lost` (slower or the meaning changed) or still `unmeasured`. **`--exact` turns every row off** and gives plain llama.cpp's output; it is refused together with `--fast`, `--mtp`, `--long-prompt` and `--approx`. The table lives in `TOKEN_MODES` in `bin/moe_cache_approx.py`; changing a status there changes the default and nothing else (`tests/token_modes_test.py` proves both directions).
+
+| Mode | Switch | Status | Measured reason |
+|---|---|---|---|
+| q8_0 KV cache from 128k context | `--fast=kv` (default from 128k) | won | about 2x prompt speed at 256k on a 16 GB card; gate level `kv` passed, KL 0.0045-0.015 |
+| Long-prompt mode from 32k context | `--long-prompt` (default from 32k) | won | Flash-Next IQ3_XXS, 65k, A C C A: prompts +77.0 %, answers +1.8 %; meaning kept 10 of 10 at 55k |
+| MTP draft head (agent mode, model has the head) | `--mtp` | won | Qwen3.6 on the PC: decode 45.6 to 70.3 tok/s; prompt processing 5-8 % slower |
+| Skip rarely picked experts | `--fast` | unmeasured | about +10 % where memory is far below the model; no paired run with a quality check at 64k on the PC yet |
+| Skip up to 4 experts | `--fast=2` | unmeasured | laptop 12 GB +43 %, no gain at 24 GB; not measured on the PC |
+| Drop the 2 lowest experts on CPU layers | `--fast=fewer` | unmeasured | nothing measured |
+| Named groups of the rows above | `--approx safe\|careful\|aggressive` | unmeasured | a group is as good as its rows |
+
+`--fast`, `--fast=2`, `--fast=fewer` and `--approx` are **deprecated aliases**: they still work and force their modes on, whatever the status.
+
+### The `--approx safe|careful|aggressive` groups (deprecated alias)
+
+**Every tier changes some answers. None is identical to plain llama.cpp's.** Without `--approx` the default launch applies the table above. `--approx exact` means the same as leaving it out. The tiers only group switches that already exist; each mode has a quality gate (the numbers in [QUALITY_GATE](QUALITY_GATE.md)) and a list of models it was measured on.
 
 | Tier | Switches it turns on | What changes in plain words | Gate (mean KL at most / same top token at least) | Measured so far |
 |---|---|---|---|---|

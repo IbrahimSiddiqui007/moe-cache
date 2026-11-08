@@ -1651,10 +1651,14 @@ def sampling_args(off, agent, model, extra):
     return args
 
 
-def mtp_args(want, agent, ls, model, extra):
+def mtp_args(want, agent, ls, model, extra, exact=False):
     """The --spec-* arguments for the model's MTP head (see mtp_decide), and says why in one line. Reads the GGUF header and, only when the model
     has a head, llama-server --help."""
     user_spec = arg_after(extra, "--spec-type", "--model-draft", "-md") is not None
+    if exact:                       # LAUNCHER-984: --exact turns every token-changing mode off (an explicit --mtp is refused in approx_stage)
+        return []
+    import moe_cache_approx as ax
+    agent = agent and ax.default_on("mtp")          # the default-on in agent mode follows the table; --mtp still asks for it
     try:
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import mtp_layers
@@ -2031,11 +2035,12 @@ def exit_reason(rc, ready):
 # ---- server ----
 
 SERVER_HELP = """\
---fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
+--fast     DEPRECATED alias (still works; forces the mode on): approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
            also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/results-archive/RESULTS.md R11, RESULTS 53).
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
---exact    keep the f16 KV cache at 128k+ and switch the default long-prompt mode off: the answers are the same as plain llama.cpp's (EXACTNESS.md)
+--exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
+           llama.cpp's (EXACTNESS.md). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
            the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
@@ -2047,7 +2052,7 @@ SERVER_HELP = """\
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
---approx safe|careful|aggressive  OFF by default. Opt-in speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
+--approx safe|careful|aggressive  DEPRECATED alias (still works; forces the modes of the tier on; the default launch enables the modes measured as a win by itself). Speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
            head (every expert is computed). careful: --fast (rarely picked experts not in RAM are skipped, about 1 token in 40-50 differs) + the same. aggressive: --fast=2 (up to 4 low-ranked experts skipped, about 1 token
            in 28 differs). Each mode has a quality gate (docs/QUALITY_GATE.md, docs/CONFIGURATION.md) and runs only for models with a gate record, else --approx-unverified. Your own --fast wins and is reported.
            At the start a short canary (about 256 scored tokens, against the exact setting of the same model) re-measures the tier and steps it down when the KL divergence is past its gate
@@ -3001,6 +3006,14 @@ def approx_stage(a, model):
     (a.approx_kv) and the model's own MTP drafting (a.approx_spec). Off unless asked. Your own --fast wins; --exact and --stock refuse. Sets a.approx_info (the control page and --plan-json show it)."""
     a.approx_kv = a.approx_spec = False
     a.approx_info = None
+    if a.exact and (a.fast or a.mtp) and not a.long_prompt:          # (--long-prompt --exact is refused with its own message in kv_stage)
+        raise SystemExit(f"--exact does not go with {'--fast' if a.fast else '--mtp'}: --exact turns every mode off that changes tokens and gives the answers of plain llama.cpp")
+    if not a.fast and not a.approx and not a.exact and not a.stock:         # LAUNCHER-984: an expert-skipping row marked "won" in TOKEN_MODES is on by default (none is today)
+        import moe_cache_approx as ax0
+        lvl = ax0.default_expert_level()
+        if lvl:
+            a.fast = lvl
+            say(f"moe-cache: --fast={lvl} is on by default (measured as a win, TOKEN_MODES in bin/moe_cache_approx.py); --exact turns it off")
     if not a.approx:
         if a.approx_off or a.approx_unverified:
             raise SystemExit("--approx-off / --approx-unverified need --approx safe|careful|aggressive")
@@ -3025,7 +3038,8 @@ def approx_stage(a, model):
 def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
     # --no-long-prompt gives "-ub 2048 and the f16 KV cache" (SERVER_HELP), so it also switches the 128k q8_0 default off (fixed 2026-11-08: it used to leave q8_0 on at >= 128k)
-    if (not a.fast and not a.exact and not a.stock and not getattr(a, "no_long_prompt", False) and ctx >= 131072
+    import moe_cache_approx as ax          # LAUNCHER-984: the defaults below follow the status rows of TOKEN_MODES ("won" = on by default)
+    if (not a.fast and not a.exact and not a.stock and not getattr(a, "no_long_prompt", False) and ctx >= 131072 and ax.default_on("kv8")
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
@@ -3038,7 +3052,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     a.lp_explicit = bool(getattr(a, "long_prompt", False)) and not getattr(a, "no_long_prompt", False)
     if a.lp_explicit and (a.exact or a.stock):           # checked before anything else, so --ub / --fast / -ctk cannot hide the conflict
         raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
-    a.long_prompt = a.lp_explicit or (not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
+    a.long_prompt = a.lp_explicit or (ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
     if getattr(a, "long_prompt", False) and not a.fast and a.ub == "auto" and not any(x in ("-ub", "--ubatch-size") for x in extra):          # the long-prompt mode stores the KV cache as q8_0 (the measured setting is --fast=kv); undone below when -ub 4096 does not fit
         if not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra) and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls))):
             a.fast, a.lp_kv = "kv", True
@@ -3450,7 +3464,7 @@ def _launch_plan(a, extra, argv, machine):
     api_key, key_env = api_key_stage(a, extra, lan_addr)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias, slotdir = agent_stage(a, extra, model)
-    extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra)
+    extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact)
     extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:

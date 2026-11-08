@@ -54,6 +54,50 @@ TIERS = {
 }
 
 
+# --- LAUNCHER-984: the table of every mode that changes tokens (owner rule 2026-11-09: no opt-in; ON by default when measured as won; --exact turns all of them off) ---
+# status: "won" = a paired run shows a speed win AND the quality check passed -> the default enables it; "lost" = measured slower or the meaning changed -> off;
+# "unmeasured" = no paired run with a quality check yet -> off until measured. The launcher reads default_on() at each place a default is decided, so changing a status here changes the
+# default and nothing else; tests/token_modes_test.py proves the default enables exactly the "won" rows and that --exact enables none.
+TOKEN_MODES = [
+    {"id": "kv8", "what": "q8_0 KV cache from 128k context on a GPU machine", "switch": "--fast=kv (default from 128k)", "status": "won",
+     "reason": "about 2x prompt speed at 256k on a 16 GB card; gate level kv passed (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
+    {"id": "long-prompt", "what": "long-prompt mode from 32k context: -ub 4096 with the q8_0 KV cache, where the memory plan has room", "switch": "--long-prompt (default from 32k)", "status": "won",
+     "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: prompts +77.0 %, answers +1.8 % (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
+    {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the model has the head and llama-server supports it", "switch": "--mtp (default with --agent)", "status": "won",
+     "reason": "Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s; prompt processing 5-8 % slower; GLM-5.3 code text differed slightly"},
+    {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "unmeasured",
+     "reason": "about +10 % where memory is much smaller than the model; no paired run with a quality check at 64k on the PC yet"},
+    {"id": "fast2", "what": "skip up to 4 low-ranked experts per token that are not in RAM", "switch": "--fast=2", "status": "unmeasured",
+     "reason": "Flash-Next at 12 GB on the laptop +43 %, no gain at 24 GB; not measured on the PC"},
+    {"id": "fewer", "what": "drop the 2 lowest-ranked experts of every token on the CPU-held layers", "switch": "--fast=fewer", "status": "unmeasured",
+     "reason": "gate level fewer (KL 0.060) set, nothing measured"},
+    {"id": "approx-tiers", "what": "the named groups of the modes above", "switch": "--approx safe|careful|aggressive", "status": "unmeasured", "group": True,
+     "reason": "a tier is only a group of the rows above; it is as good as its rows"},
+]
+DEPRECATED_SWITCHES = ("--fast", "--fast=2", "--fast=fewer", "--approx")        # still work as aliases that force the mode on; the table decides the default
+
+
+def token_mode(mode_id):
+    return next(m for m in TOKEN_MODES if m["id"] == mode_id)
+
+
+def default_on(mode_id):
+    """True when the default launch enables this mode: its status in TOKEN_MODES is "won"."""
+    return token_mode(mode_id)["status"] == "won"
+
+
+def default_ids():
+    return [m["id"] for m in TOKEN_MODES if m["status"] == "won" and not m.get("group")]
+
+
+def default_expert_level():
+    """The --fast level the default launch uses: the strongest expert-skipping row whose status is "won" (fewer, then fast2, then fast1), else None. All three are "unmeasured" today."""
+    for mid, lvl in (("fewer", "fewer"), ("fast2", "2"), ("fast1", "1")):
+        if default_on(mid):
+            return lvl
+    return None
+
+
 class ApproxError(Exception):
     """A refusal with a plain-words message (the launcher turns it into SystemExit)."""
 
