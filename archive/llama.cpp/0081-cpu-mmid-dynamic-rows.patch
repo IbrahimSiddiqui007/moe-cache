@@ -1,0 +1,33 @@
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1551,6 +1551,8 @@
+     return ptr;
+ }
+ 
++static int ggml_cpu_mmid_rows = -1;      // read once from GGML_CPU_MMID_ROWS (0 / unset = the stock static split)
++
+ static void ggml_compute_forward_mul_mat_id(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -1561,6 +1563,8 @@
+ 
+     GGML_TENSOR_BINARY_OP_LOCALS
+ 
++    if (ggml_cpu_mmid_rows < 0) { const char * e = getenv("GGML_CPU_MMID_ROWS"); ggml_cpu_mmid_rows = e ? atoi(e) : 0; }
++
+     const int ith = params->ith;
+     const int nth = params->nth;
+ 
+@@ -1706,6 +1710,12 @@
+         if (nchunk0 * nchunk1 < nth * 4 || disable_chunking) {
+             nchunk0 = nr0 > nr1 ? nth : 1;
+             nchunk1 = nr0 > nr1 ? 1 : nth;
++            // GGML_CPU_MMID_ROWS=N: for one row of src1 (a decode token) cut each expert into chunks of N rows that the threads claim dynamically,
++            // instead of one static chunk per thread; a thread that is slow or interrupted then holds up the others by one small chunk, not a sixth of the expert
++            if (ggml_cpu_mmid_rows > 0 && nr1 == 1 && !disable_chunking) {
++                nchunk0 = (nr0 + ggml_cpu_mmid_rows - 1) / ggml_cpu_mmid_rows;
++                nchunk1 = 1;
++            }
+         }
+ 
+         const int64_t dr0 = (nr0 + nchunk0 - 1) / nchunk0;
