@@ -300,7 +300,7 @@ button.danger { border-color:var(--ink); }
     <button class="icon" id="tglLeft" title="Chats, agent sessions, models">☰</button>
     <span class="brand only-wide" id="sys" title="">moe-cache</span>
     <div class="modelpick" id="modelpick" title="The model Start uses (pick one in the list on the left)"><b id="topmodel">no model</b><span class="badge wait" id="topverdict"></span></div>
-    <div class="seg only-wide" data-seg="mode" title="Exact: same output as stock llama.cpp · Fast: about 10 % faster, about 1 token in 40-50 comes out different · Hybrid: experimental"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <div class="seg only-wide" data-seg="mode" title="Default: the launcher's own settings (long-prompt mode from 32k, q8_0 KV, MTP in agent mode; not byte-identical to plain llama.cpp) · Exact: same output as plain llama.cpp, all of that off · Fast: about 10 % faster, about 1 token in 40-50 comes out different · Hybrid: experimental"><button data-v="default">Default</button><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <span class="grow"></span>
     <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
     <span class="startgrp"><button class="primary" id="start">Start</button><button class="primary" id="switch" hidden title="Stop the running model and start the selected one with the settings shown">Switch</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
@@ -487,7 +487,7 @@ button.danger { border-color:var(--ink); }
     <label>Context</label>
     <div class="seg" id="ctx"><button data-v="8192">8k</button><button data-v="32768">32k</button><button data-v="65536">64k</button><button data-v="131072">128k</button><button data-v="262144">256k</button></div>
     <label>Mode <span class="small">(also in the top bar)</span></label>
-    <div class="seg" data-seg="mode"><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
+    <div class="seg" data-seg="mode"><button data-v="default">Default</button><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <div class="hint" id="modehint"></div>
     <label>Run as</label>
     <div class="seg" id="engine"><button data-v="auto">Auto</button><button data-v="plugin">moe-cache</button><button data-v="stock">Stock</button></div>
@@ -526,7 +526,7 @@ button.danger { border-color:var(--ink); }
 <script>
 "use strict";
 const $ = id => document.getElementById(id), app = $("app");
-const S = { agentsCfg: {}, models: [], sel: null, sys: {}, ctx: 8192, mode: "exact", engine: "auto", mtp: "auto", plans: {}, logSeq: 0, status: {}, connected: {} };
+const S = { agentsCfg: {}, models: [], sel: null, sys: {}, ctx: 8192, mode: "default", engine: "auto", mtp: "auto", plans: {}, logSeq: 0, status: {}, connected: {} };
 const fmtGB = b => b == null ? "–" : (b / 1e9).toFixed(1) + " GB";
 const fmtGiB = b => b == null ? "–" : (b / 2 ** 30).toFixed(1) + " GiB";
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -585,7 +585,8 @@ function seg(sel, key, cb) {
   els.forEach(el => el.addEventListener("click", e => { const b = e.target.closest("button"); if (b && b.dataset.v != null && !b.disabled) { S[key] = isNaN(+b.dataset.v) || b.dataset.v === "" ? b.dataset.v : +b.dataset.v; paint(); cb && cb(); } }));
   paint(); segPainters.push(paint); return paint;
 }
-const MODEHINT = { exact: "Exact: same output as stock llama.cpp (default).", fast: "Fast (--fast): skips experts that are rarely needed and not in RAM. About 10 % faster; about 1 token in 40-50 comes out different.",
+const MODEHINT = { default: "Default (no flag): the launcher's own settings: long-prompt mode from 32k context when the card has room, q8_0 KV cache, MTP where the model has it. Answers are not byte-identical to plain llama.cpp's. Exact turns all of that off.",
+                   exact: "Exact (--exact): same output as plain llama.cpp. Turns off the long-prompt mode, the q8_0 KV default and MTP.", fast: "Fast (--fast): skips experts that are rarely needed and not in RAM. About 10 % faster; about 1 token in 40-50 comes out different.",
                    hybrid: "Hybrid (--hybrid, experimental): the most used experts run on the GPU, the rest on the CPU; some tokens come out different from stock." };
 const APPROXHINT = { "": "Off. Every tier below changes some answers: they are NOT identical to plain llama.cpp's. Each mode has a quality limit (docs/QUALITY_GATE.md) and runs only for models it was measured on; at the start a short check against the exact setting steps the tier down when the answers drift too far. The plan above does not show a tier.",
   safe: "Safe: answers are NOT identical to stock. The KV cache is stored in 8 bit (mean KL 0.0045-0.015 against stock) and, if the model has the head, it drafts 2 tokens ahead and checks them. Every expert is still computed. Limit: KL 0.015, same top token 95 %.",
@@ -612,7 +613,7 @@ async function loadSystem() {
     S.inited = true;
     $("ram").value = last.ram || 0;
     $("vram").value = last.vram || 0;      // auto: the planner and the launcher read the free VRAM at start (a running server would lower it here)
-    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = last.mode; if (last.engine) S.engine = last.engine; if (last.mtp != null) S.mtp = last.mtp ? "on" : "off"; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm; $("leaveroom").checked = !!last.leave_room; $("longprompt").checked = !last.no_long_prompt;
+    if (last.ctx) S.ctx = last.ctx; if (last.mode) S.mode = MODEHINT[last.mode] ? last.mode : "default"; if (last.engine) S.engine = last.engine; if (last.mtp != null) S.mtp = last.mtp ? "on" : "off"; if (last.port) $("port").value = last.port; $("agent").checked = !!last.agent; $("nowarm").checked = !!last.no_warm; $("leaveroom").checked = !!last.leave_room; $("longprompt").checked = !last.no_long_prompt;
     if (last.model) S.sel = last.model;
   }
   $("m-ondemand").disabled = !s.on_demand;
@@ -627,7 +628,7 @@ async function loadSystem() {
 function paintRanges() {
   $("ramv").textContent = $("ram").value > 0 ? $("ram").value + " GB" : `auto (${fmtGB(S.sys.server_may_use)} now)`;
   $("vramv").textContent = $("vram").value > 0 ? $("vram").value + " GiB" : `auto (${S.sys.vram_free != null ? fmtGiB(S.sys.vram_free) + " free now" : "detected at start"})`;
-  $("modehint").textContent = MODEHINT[S.mode];
+  $("modehint").textContent = MODEHINT[S.mode] || MODEHINT["default"];
   $("enginehint").textContent = ENGINEHINT[S.engine] || "";
   $("mtphint").textContent = MTPHINT[S.mtp] || "";
   document.querySelectorAll("[data-seg=mode] button").forEach(b => { b.disabled = S.engine == "stock" && b.dataset.v != "exact";

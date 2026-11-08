@@ -48,7 +48,7 @@ The page is laid out like a chat app, in three panes:
 
 | Where | What is there |
 |---|---|
-| **Top bar** | the model Start uses (click it to pick another), its verdict, Exact / Fast / Hybrid, the state (running, idle, …), **Start** / **Stop**; the ▾ next to it: Start now, Start on first request (coming), Show the llama-server command, Open llama-server's own chat page |
+| **Top bar** | the model Start uses (click it to pick another), its verdict, Default / Exact / Fast / Hybrid, the state (running, idle, …), **Start** / **Stop**; the ▾ next to it: Start now, Start on first request (coming), Show the llama-server command, Open llama-server's own chat page |
 | **Left** | **New chat**, your saved chats (search), **Agent sessions** (saved agent conversations, ✕ moves one to the Trash), **Models** with their verdicts and "Why", and at the bottom **Settings** (a drawer) and **Agents** |
 | **Middle** | the chat (section 6) |
 | **Right** | cards: **Live** (speed, cache, memory, the two charts, mode, API key, the command), **Context of this chat**, **Files in this chat**, **Agents**, **Other servers on this machine** (llama-servers on ports 8080-8089 started outside the page; shown only), **What the launcher decided**, **Benchmark**, **Warnings**, **Log**. "⇔ wider" makes the pane wider for the tables |
@@ -102,7 +102,7 @@ The verdict uses the same rules and planner as the launcher, so it matches what 
 | RAM budget | the memory (GB) the model may use (`--ram`) | empty: what is free when it starts |
 | VRAM | graphics memory (GiB) the planner may use (`--vram`) | auto: detected at start |
 | Context | how much text the model keeps in view: 8k, 32k or 64k tokens | 8k (64k in Agent mode) |
-| Mode | **Exact**: same output as stock llama.cpp (also switches the Long-prompt mode off; with Long-prompt mode ticked, the default from 32k context, the KV cache is q8_0 and answers differ slightly). **Fast** (`--fast`): skips experts that are rarely needed and not in RAM; about 10 % faster, about 1 token in 40-50 comes out different. **Hybrid** (`--hybrid`, experimental): most used experts on the GPU, the rest on the CPU, answers differ from stock | Exact |
+| Mode | **Default** (no flag, same as the command line): the launcher's own settings: long-prompt mode from 32k context when the card has room, q8_0 KV cache (from 32k with the long-prompt mode, and from 128k), MTP in agent mode where the model has it. Faster, and answers are not byte-identical to plain llama.cpp. **Exact** (`--exact`): same output as plain llama.cpp; turns all of that off. **Fast** (`--fast`): skips experts that are rarely needed and not in RAM; about 10 % faster, about 1 token in 40-50 comes out different. **Hybrid** (`--hybrid`, experimental): most used experts on the GPU, the rest on the CPU, answers differ from stock | Default |
 | Run as | **Auto**: stock llama-server when the model fits in RAM and all its experts fit on the card, moe-cache when it does not fit or some expert layers stay on the CPU. **moe-cache** (`--always-plugin`): the plugin even when the model fits. **Stock** (`--stock`): no plugin even when the model does not fit (Mode is Exact then). The last two are for comparing the two on your machine (section 9) | Auto |
 | MTP | multi-token prediction with the model's own draft head (Qwen3.6, GLM-5.3 have one): faster replies (Qwen3.6 on the desktop PC: +54 % decode); the text is not guaranteed identical to a run without MTP (GLM code text differed in RESULTS 77). **Auto**: on in Agent mode when the model has the head and your llama-server supports it. **On** (`--mtp`) / **Off** (`--no-mtp`). The plan's Why list says what will happen; the Status panel shows "+ MTP" when it is on (GLM-5.3 on the desktop PC: 4.4 -> 6.9 tok/s; the text of one prompt matched, other prompts were not compared) | Auto |
 | Agent mode | for coding agents (`--agent`): 64k context, tool calls, saved conversations, an API key | off |
@@ -142,7 +142,7 @@ few seconds to a few minutes; the state shows *starting…* until it is ready.
 
 The two small charts show speed and hit rate over the last 2 minutes.
 
-**Mode** says what the launcher chose (stock, moe-cache exact, …). **What the launcher decided** lists its own messages from before it started
+**Mode** says what the launcher chose (stock, moe-cache default or exact, …). **What the launcher decided** lists its own messages from before it started
 llama-server: stock or plugin and why, GPU layers, micro-batch, CPU pinning; on Windows also the GPU it found, the memory limit and the AMD
 rules (highlighted). **Warnings** collects warning lines from the log (for example "the expert cache shrank", "the plugin disabled itself", why
 the server stopped), each shown once with a count.
