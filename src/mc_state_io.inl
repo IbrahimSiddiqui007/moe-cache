@@ -563,6 +563,11 @@
         if (cache_on && stats && hyb_groups) {
             fprintf(stderr, "moe-cache: hybrid: %llu layer steps, %llu of %llu picks computed on the GPU from its bank (%.1f%%), the rest on the CPU\n",
                     (unsigned long long) hyb_groups, (unsigned long long) hyb_hits, (unsigned long long) hyb_picks, hyb_picks ? 100.0 * hyb_hits / hyb_picks : 0.0);
+            if (hyb_groups) {
+                const double g = (double) hyb_groups;
+                fprintf(stderr, "moe-cache: hybrid: per layer step (us): scan %.0f, build graph %.0f, input copies %.0f, launch %.0f, CPU misses %.0f, GPU wait %.0f, read-back %.0f\n",
+                        hyb_ph_ns[0] / g / 1e3, hyb_ph_ns[1] / g / 1e3, hyb_ph_ns[2] / g / 1e3, hyb_ph_ns[3] / g / 1e3, hyb_ph_ns[4] / g / 1e3, hyb_ph_ns[5] / g / 1e3, hyb_ph_ns[6] / g / 1e3);
+            }
             if (hyb_swaps) {
                 fprintf(stderr, "moe-cache: hybrid: %llu experts swapped into the bank while running (%llu of them profile experts brought back; %.2f s uploading)\n",
                         (unsigned long long) hyb_swaps, (unsigned long long) hyb_reverts, hyb_swap_ns / 1e9);
