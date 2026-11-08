@@ -55,7 +55,14 @@ out = mc.cpu_gpu_split_stage(A("auto"), env, CMD, kit(None))
 check(out == CMD and not env, "official build (no patch note): not applied")
 env = []
 plain = [c for c in CMD[:-2]]
-out = mc.cpu_gpu_split_stage(A("auto"), env, plain, kit("0091"))
-check(out == plain and not env, "no -ot (not the FFN-in-RAM plan): not applied")
+out = mc.cpu_gpu_split_stage(A("auto"), env, plain, kit("0091"), dense=True)
+check(env == [("GGML_CPU_GPU_SPLIT", "auto")] and "--no-repack" in out, "--fit plan without -ot (hybrid dense): applied")
+env = []
+out = mc.cpu_gpu_split_stage(A("auto"), env, plain, kit("0091"), dense=False)
+check(out == plain and not env, "not a dense model: not applied")
+env = []
+cpu = ["llama-server", "--device", "none", "-ngl", "0", "--load-mode", "mmap"]
+out = mc.cpu_gpu_split_stage(A("auto"), env, cpu, kit("0091"), dense=True)
+check(out == cpu and not env, "CPU-only: not applied")
 
 sys.exit(1 if fails else 0)

@@ -13,10 +13,10 @@ index 8327c52..b657395 100644
      target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
 diff --git a/ggml/src/ggml-cpu/cpu-gpu-split.cpp b/ggml/src/ggml-cpu/cpu-gpu-split.cpp
 new file mode 100644
-index 0000000..f00916a
+index 0000000..318613b
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/cpu-gpu-split.cpp
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,374 @@
 +// CPU + GPU row split of the decode-time mat-vec on host-resident weights (moe-cache patch 0091).
 +//
 +// The CPU backend computes the first rows of a weight matrix, a GPU computes the last rows from the same host memory:
@@ -45,6 +45,7 @@ index 0000000..f00916a
 +    ggml_tensor *         out   = nullptr;
 +    ggml_cgraph *         graph = nullptr;
 +    ggml_backend_buffer_t buf   = nullptr;
++    ggml_backend_buffer_t wbuf  = nullptr; // zero-copy mode: the host rows imported as a GPU buffer
 +    bool                  ok    = false;
 +};
 +
@@ -66,6 +67,8 @@ index 0000000..f00916a
 +    int                   hold     = 0;       // windows during which the share may not grow (after a decrease)
 +    int64_t               min_rows = 1024;
 +    ggml_backend_t        gpu      = nullptr;
++    ggml_backend_dev_t    dev      = nullptr;
++    bool                  zero     = false;   // zero-copy: the GPU reads the host weight rows in place (host-pointer import), no copy. Used where the backend cannot page-lock (Vulkan)
 +    bool                (*reg_host)(void *, size_t) = nullptr;
 +    ggml_backend_buffer_t bounce   = nullptr;
 +    char *                bounce_x = nullptr;
@@ -74,6 +77,7 @@ index 0000000..f00916a
 +
 +    std::unordered_map<ggml_backend_buffer_t, bool> registered; // buffer -> registered ok
 +    std::unordered_map<uint64_t, plan>              plans;
++    std::unordered_map<const void *, plan>          zplans;   // zero-copy: one plan per weight tensor (the GPU reads that tensor's rows)
 +
 +    pending cur;
 +
@@ -134,9 +138,15 @@ index 0000000..f00916a
 +        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
 +        auto fn = (bool (*)(void *, size_t)) ggml_backend_reg_get_proc_address(reg, "ggml_backend_register_host_buffer");
 +        ggml_backend_buffer_type_t hbuft = ggml_backend_dev_host_buffer_type(dev);
-+        if (!fn || !hbuft) {
-+            continue; // this backend cannot pin host memory
++        struct ggml_backend_dev_props props;
++        ggml_backend_dev_get_props(dev, &props);
++        // CUDA: page-lock the weights and copy the GPU's rows by DMA. Vulkan (no page-locking call; copies cost 30-37 % on the PC): import the host rows as a GPU buffer and read them in place.
++        const bool by_import = !fn && hbuft && strstr(ggml_backend_dev_name(dev), "Vulkan") != nullptr;
++        if (!hbuft || (!fn && !by_import)) {
++            continue; // this backend cannot pin or import host memory
 +        }
++        s.zero = by_import;
++        s.dev  = dev;
 +        ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
 +        if (!be) {
 +            continue;
@@ -152,7 +162,7 @@ index 0000000..f00916a
 +        s.gpu      = be;
 +        s.reg_host = fn;
 +        s.enabled  = true;
-+        fprintf(stderr, "cpu_gpu_split: on, GPU share %.3f of the rows, device %s\n", f, ggml_backend_dev_name(dev));
++        fprintf(stderr, "cpu_gpu_split: on, GPU share %.3f of the rows, device %s, %s\n", f, ggml_backend_dev_name(dev), s.zero ? "zero-copy (host rows read in place)" : "DMA from page-locked RAM");
 +        s.frac = f;
 +        return;
 +    }
@@ -182,8 +192,47 @@ index 0000000..f00916a
 +    return ng > 0 && ng < n ? ng : 0;
 +}
 +
++plan * get_plan_zero(const ggml_tensor * a, int64_t ng) {
++    state & s = st();
++    auto it = s.zplans.find(a->data);
++    if (it != s.zplans.end()) {
++        return &it->second;
++    }
++    plan & p = s.zplans[a->data];
++    const int64_t nc  = a->ne[1] - ng;
++    char *        beg = (char *) a->data + (size_t) nc * a->nb[1];
++    const size_t  len = (size_t) ng * a->nb[1];
++    // the import must start and end on page boundaries: round outwards (the extra bytes are valid memory of this process, only read)
++    uintptr_t lo = 0;
++    for (const size_t page : { (size_t) 4096, (size_t) 65536 }) {
++        lo = (uintptr_t) beg & ~(uintptr_t) (page - 1);
++        const uintptr_t hi = ((uintptr_t) beg + len + page - 1) & ~(uintptr_t) (page - 1);
++        p.wbuf = ggml_backend_dev_buffer_from_host_ptr(s.dev, (void *) lo, hi - lo, hi - lo);
++        if (p.wbuf) break;
++    }
++    ggml_init_params ip = { ggml_tensor_overhead() * 8 + ggml_graph_overhead() + 4096, nullptr, true };
++    p.ctx = ggml_init(ip);
++    p.w   = ggml_new_tensor_2d(p.ctx, a->type, a->ne[0], ng);
++    p.x   = ggml_new_tensor_1d(p.ctx, GGML_TYPE_F32, a->ne[0]);
++    p.out = ggml_mul_mat(p.ctx, p.w, p.x);
++    p.graph = ggml_new_graph(p.ctx);
++    ggml_build_forward_expand(p.graph, p.out);
++    if (!p.wbuf || !ggml_backend_supports_op(s.gpu, p.out) || (size_t) (a->ne[0] * 4) > s.bounce_half || (size_t) (ng * 4) > s.bounce_half) {
++        if (!p.wbuf) fprintf(stderr, "cpu_gpu_split: cannot import host memory into the GPU; no split for this tensor\n");
++        return &p;
++    }
++    // device buffers have their own address space: the tensor sits at the buffer's base plus its offset inside the imported range
++    ggml_backend_tensor_alloc(p.wbuf, p.w, (char *) ggml_backend_buffer_get_base(p.wbuf) + ((uintptr_t) beg - lo));
++    p.buf = ggml_backend_alloc_ctx_tensors_from_buft(p.ctx, ggml_backend_get_default_buffer_type(s.gpu));
++    p.ok  = p.buf != nullptr;
++    return &p;
++}
++
 +plan * get_plan(const ggml_tensor * a, int64_t ng) {
 +    state & s = st();
++    if (s.zero) {
++        return get_plan_zero(a, ng);
++    }
 +    const uint64_t key = ((uint64_t) a->type << 56) ^ ((uint64_t) a->ne[0] << 28) ^ (uint64_t) ng;
 +    auto it = s.plans.find(key);
 +    if (it != s.plans.end()) {
@@ -215,6 +264,12 @@ index 0000000..f00916a
 +        if (kv.second.ctx) ggml_free(kv.second.ctx);
 +    }
 +    s.plans.clear();
++    for (auto & kv : s.zplans) {
++        if (kv.second.buf) ggml_backend_buffer_free(kv.second.buf);
++        if (kv.second.wbuf) ggml_backend_buffer_free(kv.second.wbuf);
++        if (kv.second.ctx) ggml_free(kv.second.ctx);
++    }
++    s.zplans.clear();
 +}
 +
 +// auto mode: every 64 ops compare the time the CPU waited for the GPU after it finished its own rows (wait) with its own
@@ -244,6 +299,9 @@ index 0000000..f00916a
 +
 +bool ensure_registered(const ggml_tensor * a) {
 +    state & s = st();
++    if (s.zero) {
++        return true;
++    }
 +    auto it = s.registered.find(a->buffer);
 +    if (it != s.registered.end()) {
 +        return it->second;
@@ -297,7 +355,9 @@ index 0000000..f00916a
 +
 +    memcpy(s.bounce_x, b->data, ggml_nbytes(b));
 +    ggml_backend_tensor_set_async(s.gpu, p->x, s.bounce_x, 0, ggml_nbytes(b));
-+    ggml_backend_tensor_set_async(s.gpu, p->w, (const char *) a->data + (size_t) nc * a->nb[1], 0, (size_t) ng * a->nb[1]);
++    if (!s.zero) {
++        ggml_backend_tensor_set_async(s.gpu, p->w, (const char *) a->data + (size_t) nc * a->nb[1], 0, (size_t) ng * a->nb[1]);
++    }
 +    GGML_ASSERT(ggml_backend_graph_compute_async(s.gpu, p->graph) == GGML_STATUS_SUCCESS);
 +    ggml_backend_tensor_get_async(s.gpu, p->out, s.bounce_o, 0, (size_t) ng * sizeof(float));
 +

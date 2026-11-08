@@ -160,7 +160,7 @@ def ls_build(ls):
 
 def llama_patch_line(ls):
     """The one-line note the kit's patched llama.cpp carries next to llama-server (PATCHES-moe-cache.txt, written by tools/bundle_llama_patched.sh), e.g.
-    'llama.cpp b12064 + moe-cache patches 0004,0020,0030,0040,0090 built in, all off'. None for an official or any other build (no such file)."""
+    'llama.cpp b12064 + moe-cache patches 0004,0020,0030,0040,0090,0091 built in, all off'. None for an official or any other build (no such file)."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(ls)), "PATCHES-moe-cache.txt"), encoding="utf-8", errors="replace") as f:
             line = f.readline().strip()
@@ -3353,9 +3353,9 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
 CPU_GPU_SPLIT_VRAM_GIB = 0.15
 
 
-def cpu_gpu_split_stage(a, env, cmd, ls):
-    """DECODE-917 (patch 0091), opt-in: with the FFN weights in RAM (-ot) the GPU also computes a share of their rows, fed by DMA from page-locked RAM, while the
-    CPU computes the rest. Needs the kit's patched llama.cpp with patch 0091 and CUDA; the server then loads the model without mmap and without repacking (a file-backed
+def cpu_gpu_split_stage(a, env, cmd, ls, dense=True):
+    """DECODE-917 (patch 0091), opt-in: for the weights of a dense model that stay in RAM (the FFN plan's -ot, or the layers --fit leaves there) the GPU also computes a
+    share of their rows, fed by DMA from page-locked RAM (CUDA) or by reading the host rows in place (Vulkan), while the CPU computes the rest. Needs the kit's patched llama.cpp with patch 0091 and CUDA; the server then loads the model without mmap and without repacking (a file-backed
     mapping cannot be page-locked, a repacked tensor is not what the GPU kernels read). Returns the command; adds GGML_CPU_GPU_SPLIT to env."""
     want = getattr(a, "cpu_gpu_split", None)
     if not want:
@@ -3367,8 +3367,9 @@ def cpu_gpu_split_stage(a, env, cmd, ls):
             ok = False
         if not ok:
             raise SystemExit("--cpu-gpu-split takes auto or a number from 0.05 to 0.6 (the GPU's share of the rows)")
-    if "-ot" not in cmd:
-        say("moe-cache: --cpu-gpu-split: only the dense plan with FFN weights in RAM (-ot) uses it; not applied here")
+    cpu_only = arg_after(cmd, "--device", "-dev") == "none" or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0"
+    if not dense or cpu_only:
+        say("moe-cache: --cpu-gpu-split: only a dense model on a GPU uses it (the FFN-in-RAM plan, or the layers --fit leaves in RAM); not applied here")
         return cmd
     line = llama_patch_line(ls) or ""
     m = re.search(r"patches ([0-9,]+)", line)
@@ -3383,7 +3384,7 @@ def cpu_gpu_split_stage(a, env, cmd, ls):
     if "--no-repack" not in cmd:
         cmd.append("--no-repack")
     env.append(("GGML_CPU_GPU_SPLIT", want))
-    say(f"moe-cache: --cpu-gpu-split {want}: the GPU computes part of the rows of the FFN weights that stay in RAM (patch 0091, DMA from page-locked RAM); "
+    say(f"moe-cache: --cpu-gpu-split {want}: the GPU computes part of the rows of the FFN weights that stay in RAM (patch 0091); "
         "the model loads without mmap and without repacking, and about 0.15 GiB of GPU memory is kept for it")
     return cmd
 
@@ -3540,7 +3541,7 @@ def _launch_plan(a, extra, argv, machine):
     extra = leave_room_stage(a, env, extra, pinargs, machine)
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
-    cmd = cpu_gpu_split_stage(a, env, cmd, ls)
+    cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
     # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows
