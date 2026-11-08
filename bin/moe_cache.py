@@ -2444,6 +2444,10 @@ def approx_canary(plan):
     if a.no_approx_canary or a.approx == "exact":
         info["canary"] = "off"
         return None
+    if a.fast not in {"safe": (None, "kv"), "careful": ("1",), "aggressive": ("2",)}[a.approx]:
+        info["canary"] = "skipped: your own --fast replaced the tier's expert mode, so the tier's gate does not describe this run"
+        say("moe-cache: --approx: canary skipped (your own --fast replaced the tier's expert mode): nothing was checked")
+        return None
     perp = shutil.which("llama-perplexity", path=os.path.dirname(os.path.abspath(plan.ls)) + os.pathsep + os.environ.get("PATH", "")) or shutil.which("llama-perplexity.exe", path=os.path.dirname(os.path.abspath(plan.ls)))
     if not perp or not os.path.isfile(ax.CANARY_TEXT):
         info["canary"] = "skipped: no llama-perplexity next to llama-server"

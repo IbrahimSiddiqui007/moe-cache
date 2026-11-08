@@ -128,9 +128,9 @@ with tempfile.TemporaryDirectory() as t:
             os.chmod(p, os.stat(p).st_mode | stat.S_IXUSR)
         class A: pass
         class P: pass
-        def stage(tier, kl, top1):
+        def stage(tier, kl, top1, fast="default"):
             fake_perp(kl, top1)
-            a = A(); a.approx = tier; a.no_approx_canary = False; a.approx_info = {"tier": tier, "canary": None}
+            a = A(); a.approx = tier; a.no_approx_canary = False; a.fast = {"safe": "kv", "careful": "1", "aggressive": "2"}[tier] if fast == "default" else fast; a.approx_info = {"tier": tier, "canary": None}
             plan = P(); plan.a = a; plan.ls = ls; plan.lib = ""; plan.model = m; plan.cmd = [ls, "-m", m, "-ngl", "99"]; plan.env = [("MOE_CACHE_ROUTE", "skip")]
             old = mc.CACHE_DIR; mc.CACHE_DIR = os.path.join(t, "cache" + tier + str(kl)); out = []
             mc.say = lambda s, err=False: out.append(s)
@@ -144,6 +144,8 @@ with tempfile.TemporaryDirectory() as t:
         check(final == "careful" and info["canary"] == "passed", "canary stage: careful within its gate stays")
         final, info, out = stage("safe", (0.0, 0.01, 0.09), 80.0)
         check(final == "exact", "canary stage: top-1 80 % is past every gate: exact")
+        final, info, out = stage("careful", (0.0, 0.5, 0.5), 50.0, fast="kv")
+        check(final is None and "skipped" in info["canary"], "canary stage: your own --fast replaced the expert mode: no canary, said so")
         os.remove(os.path.join(bindir, "llama-perplexity"))
 print("FAILED: " + "; ".join(fails) if fails else "approx_test: all passed")
 sys.exit(1 if fails else 0)
