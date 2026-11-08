@@ -234,7 +234,8 @@ jobs:
           set -e
           for v in 0 1; do
             echo "== GGML_VK_IQ3XXS_MMV=$v"
-            GGML_VK_IQ3XXS_MMV=$v build/bin/test-backend-ops test -o MUL_MAT,MUL_MAT_ID -p iq3_xxs 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | tee ../mmv_$v.log | tail -12
+            # GGML_VK_VISIBLE_DEVICES=0: by default ggml-vulkan skips software devices (lavapipe is device 0 here); naming an index takes it
+            GGML_VK_VISIBLE_DEVICES=0 GGML_VK_IQ3XXS_MMV=$v build/bin/test-backend-ops test -o MUL_MAT,MUL_MAT_ID -p iq3_xxs 2>&1 | sed 's/\x1b\[[0-9;]*m//g' | tee ../mmv_$v.log | tail -12
             grep -q "tests passed" ../mmv_$v.log && ! grep -q "FAIL" ../mmv_$v.log || { echo "FAIL: IQ3_XXS mat-vec tests did not pass with GGML_VK_IQ3XXS_MMV=$v"; exit 1; }
             grep -q "Vulkan" ../mmv_$v.log || { echo "FAIL: no Vulkan device was tested (lavapipe missing?)"; exit 1; }
           done
