@@ -567,9 +567,12 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         }
     }
     lap(1);
+    // MOE_CACHE_HYBRID_ASYNC=1 (default off; implied by PERSIST): the input copies are queued on the GPU stream without waiting each, and the result comes back with one wait
+    static const bool hasync = mcenv::env_on("MOE_CACHE_HYBRID_ASYNC");
+    const bool aio = (pg != nullptr || hasync) && !compact;
     if (compact) {
         ggml_backend_tensor_set(gids, crid.data(), 0, crid.size() * sizeof(int32_t));
-    } else if (pg) {
+    } else if (aio) {
         ggml_backend_tensor_set_async(c->gpu, gids, rid.data(), 0, rid.size() * sizeof(int32_t));
     } else {
         ggml_backend_tensor_set(gids, rid.data(), 0, rid.size() * sizeof(int32_t));
@@ -589,7 +592,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             continue;
         }
         if (ggml_is_contiguous(t)) {
-            if (pg) {
+            if (aio) {
                 ggml_backend_tensor_set_async(c->gpu, up.second, t->data, 0, ggml_nbytes(up.second));
             } else {
                 ggml_backend_tensor_set(up.second, t->data, 0, ggml_nbytes(up.second));
@@ -597,14 +600,14 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             continue;
         }
         const size_t es = ggml_type_size(t->type);
-        std::vector<uint8_t> & pk = pg ? (packs.emplace_back(), packs.back()) : pack;
+        std::vector<uint8_t> & pk = aio ? (packs.emplace_back(), packs.back()) : pack;
         pk.assign(ggml_nbytes(up.second), 0);
         size_t o = 0;
         for (int64_t i3 = 0; i3 < t->ne[3]; i3++) for (int64_t i2 = 0; i2 < t->ne[2]; i2++) for (int64_t i1 = 0; i1 < t->ne[1]; i1++) {
             memcpy(pk.data() + o, (const char *) t->data + i1 * t->nb[1] + i2 * t->nb[2] + i3 * t->nb[3], (size_t) t->ne[0] * es);
             o += (size_t) t->ne[0] * es;
         }
-        if (pg) {
+        if (aio) {
             ggml_backend_tensor_set_async(c->gpu, up.second, pk.data(), 0, pk.size());
         } else {
             ggml_backend_tensor_set(up.second, pk.data(), 0, pk.size());
@@ -630,7 +633,7 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
     lap(4);
     ggml_tensor * out = seg.back();
     std::vector<float> res((size_t) ggml_nelements(out));
-    if (pg) {                                // one wait for the compute and the copy back
+    if (aio) {                               // one wait for the compute and the copy back
         ggml_backend_tensor_get_async(c->gpu, gout, res.data(), 0, ggml_nbytes(gout));
         ggml_backend_synchronize(c->gpu);
         lap(5);
