@@ -108,7 +108,11 @@ check(p["kind"] == "cache" and p["verdict"] == "runs with moe-cache (bigger than
 check(any("10 of 48 layers keep their experts on the GPU" in r for r in p["reasons"]), "reasons: GPU layers from the tuner (as the launcher)")
 check(any("holds 33 %" in r for r in p["reasons"]), "reasons: share of the CPU experts the cache holds")
 check(any(r.startswith("tuner: ") for r in p["reasons"]), "reasons: the tuner's own lines")
-check(p["summary"].startswith("moe-cache: the model") and "keeps 33 %" in p["summary"] and "same as stock" in p["summary"], f"summary: why moe-cache ({p['summary']})")
+check(p["summary"].startswith("moe-cache: the model") and "keeps 33 %" in p["summary"] and "not byte-identical" in p["summary"] and "same as stock" not in p["summary"], f"summary: why moe-cache, Default mode ({p['summary']})")
+p = ui.plan_model(small["path"], ram="1", mode="exact")
+check("same as stock" in p["summary"] and any("exact (--exact)" in r for r in p["reasons"]), f"summary + reason: Exact mode keeps the stock promise ({p['summary']})")
+p = ui.plan_model(small["path"], ram="1", mode="default")
+check(any(r.startswith("default: ") and "not byte-identical" in r and "long-prompt mode" in r for r in p["reasons"]), "reasons: Default mode says what the launcher's defaults do")
 p = ui.plan_model(small["path"], ram="1", engine="stock")
 check(p["kind"] == "stock" and "Run as Stock" in p["summary"] and "compare" in p["summary"], f"summary: stock as asked, model bigger than RAM ({p['summary']})")
 p = ui.plan_model(small["path"], ram="2", engine="plugin")
@@ -128,6 +132,20 @@ _planner[0] = lambda path, ctx, ram, vram, kv="f16": dict(PLAN)
 args = ui.server_args({"model": "m.gguf", "port": 8123, "ctx": 32768, "ram": 12, "mode": "fast", "agent": True})
 check(args[:2] == ["m.gguf", "--port"] and "--fast" in args and "--agent" in args and args[-2:] == ["--", "--metrics"] and "12.0" in args,
       "launcher arguments: " + " ".join(args))
+_b = {"model": "m.gguf", "agent": True}
+for _mode, _want in (("default", False), ("exact", True), ("fast", False), ("hybrid", False)):
+    _a = ui.server_args(dict(_b, mode=_mode))
+    check(("--exact" in _a) == _want, f"mode {_mode}: --exact passed = {_want} ({' '.join(_a)})")
+check("--exact" not in ui.server_args({"model": "m.gguf"}) and "--exact" in ui.server_args({"model": "m.gguf", "mode": "exact"}), "no mode set = Default (no --exact)")
+check("--fast" in ui.server_args(dict(_b, mode="fast")) and "--hybrid" in ui.server_args(dict(_b, mode="hybrid")), "Fast / Hybrid unchanged")
+check("--exact" not in ui.server_args(dict(_b, mode="exact", engine="stock")) and "--stock" in ui.server_args(dict(_b, mode="exact", engine="stock")), "stock engine: --stock, no --exact")
+check("--exact" not in ui.server_args(dict(_b, mode="exact", approx="safe")), "an --approx tier does not get --exact")
+import types
+_hs = types.SimpleNamespace(known=lambda m: m, store=types.SimpleNamespace(ls="llama-server"))
+_set = lambda d: ui.Handler.settings(_hs, dict({"model": "m.gguf"}, **d))["mode"]
+check(_set({"mode": "exact"}) == "exact" and _set({"mode": "default"}) == "default" and _set({}) == "default" and _set({"mode": "bogus"}) == "default",
+      "saved settings: a saved 'exact' stays Exact; none or unknown = Default")
+check(_set({"mode": "fast", "engine": "stock"}) == "exact" and _set({"mode": "fast"}) == "fast", "saved settings: stock engine forces Exact, Fast stays")
 check("KEY" in ui.shown_command({"model": "m.gguf", "api_key": "secret"}) and "secret" not in ui.shown_command({"model": "m.gguf", "api_key": "secret"}),
       "the shown command hides the API key")
 # AUD-044: the shown command runs in the user's shell (PowerShell on Windows: quoting for & ( ) ^ and spaces, the key as $env:, not NAME=value)
@@ -1196,8 +1214,9 @@ check("--stock" in ui.server_args(dict(base, engine="stock", mode="fast")) and "
       "server args: Stock wins over Fast (they cannot go together)")
 check("--always-plugin" in ui.server_args(dict(base, engine="plugin")) and "--always-plugin" not in ui.server_args(dict(base, engine="plugin", mode="fast")),
       "server args: moe-cache adds --always-plugin (not needed with --fast)")
-check("--exact" in ui.server_args(dict(base)) and "--exact" in ui.server_args(dict(base, engine="plugin")) and "--exact" not in ui.server_args(dict(base, mode="fast"))
-      and "--exact" not in ui.server_args(dict(base, engine="stock")), "Exact mode passes --exact (no q8_0 KV default at 128k+); fast and stock do not")
+check("--exact" not in ui.server_args(dict(base)) and "--exact" not in ui.server_args(dict(base, mode="default")) and "--exact" in ui.server_args(dict(base, mode="exact"))
+      and "--exact" in ui.server_args(dict(base, mode="exact", engine="plugin")) and "--exact" not in ui.server_args(dict(base, mode="fast"))
+      and "--exact" not in ui.server_args(dict(base, engine="stock")), "Default mode passes no --exact (the launcher's defaults), Exact passes it; fast and stock do not")
 check("--mtp" in ui.server_args(dict(base, mtp=True)) and "--no-mtp" in ui.server_args(dict(base, mtp=False))
       and not any("mtp" in x for x in ui.server_args(dict(base, mtp=None))), "server args: MTP On / Off / Auto")
 # MTP line in the plan: the launcher's own mtp_decide(); the head is faked here (the real reader is tested in planner_test)
@@ -1331,8 +1350,11 @@ for nm, t in (("light", light), ("dark", dark)):
 check(resolve(rule(".cache")["color"], light) == light["text"], "the 'runs with moe-cache' class is neutral text, not the warning colour")
 check("seg button.on { background:var(--accent); color:#fff" not in html and "color:var(--bg)" not in rule(".seg button.on").get("color", ""), "no leftover selected rule with the page background as text colour")
 
-# the Mode texts: Exact keeps the default but no 'identical'; Fast says what it changes
-check("Exact: same output as stock llama.cpp (default)" in html and "identical" not in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Exact wording, no 'identical'")
+# the Mode texts: Default says what the launcher's defaults do; Exact says it turns them off; Fast says what it changes
+_mh = re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0)
+check("long-prompt mode from 32k" in _mh and "q8_0 KV" in _mh and "MTP" in _mh and "not byte-identical to plain llama.cpp" in _mh and "Exact (--exact): same output as plain llama.cpp" in _mh
+      and "same output as stock llama.cpp (default)" not in html, "Mode help: Default and Exact wording")
+check('data-v="default">Default</button><button data-v="exact">Exact</button>' in html and 'mode: "default"' in html, "Mode buttons: Default first, S.mode starts as default")
 check("about 1 token in 40-50 comes out different" in re.search(r"const MODEHINT = \{.*?\};", html, re.S).group(0), "Mode help: Fast says what it changes")
 
 # the card: run the page's own loadPick() under node with a stub DOM and look at the HTML it builds

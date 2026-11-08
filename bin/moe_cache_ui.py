@@ -492,7 +492,7 @@ def measured(path, size):
             for where, ram, what, st, mc_, src in rows]
 
 
-def summary(out, mode="exact", engine="auto"):
+def summary(out, mode="default", engine="auto"):
     """One plain sentence: why this mode (I33). Built from the verdict and the numbers plan_model() already has."""
     kind, size, avail, n = out.get("kind"), out.get("size") or 0, out.get("avail"), out.get("numbers") or {}
     room = f"the {gb(avail)} this server may use" if avail else "the memory this server may use"
@@ -509,7 +509,7 @@ def summary(out, mode="exact", engine="auto"):
     if kind == "stock":
         return (f"Stock llama-server: the model ({gb(size)}) fits in {room} and the launcher keeps stock here (--stock, MOE_CACHE_STOCK_WHEN_FITS=1, "
                 "or no plugin build that loads with this llama-server).")
-    if kind == "cache" and avail and size + HEADROOM <= avail and mode == "exact" and engine != "plugin":
+    if kind == "cache" and avail and size + HEADROOM <= avail and mode in ("default", "exact") and engine != "plugin":
         return (f"moe-cache: the model ({gb(size)}) fits in {room}, but some layers keep their experts on the CPU, and there the plugin's expert executor runs by default. "
                 + PARTIAL_FIT_EVIDENCE)
     if kind == "cache":
@@ -519,7 +519,7 @@ def summary(out, mode="exact", engine="auto"):
         if avail and size + HEADROOM <= avail:
             return f"moe-cache, as you chose: the model ({gb(size)}) fits in {room}, so stock would likely be faster."
         tail = {"fast": " --fast skips a few rarely used experts that are not in RAM (a little faster, some tokens differ).",
-                "hybrid": " --hybrid also runs the most used experts on the GPU (experimental, answers differ)."}.get(mode, " The answers are the same as stock's.")
+                "hybrid": " --hybrid also runs the most used experts on the GPU (experimental, answers differ)."}.get(mode, " The answers are the same as stock's (Exact)." if mode == "exact" else " Default settings: answers are not byte-identical to plain llama.cpp's (Exact keeps them identical).")
         return (f"moe-cache: the model ({gb(size)}) is {x} {room}. Stock llama-server would keep re-reading it from the disk; "
                 f"the cache{held} reads the rest only when needed." + tail)
     return ""
@@ -564,11 +564,11 @@ def windows_amd_rules(gpu, path, agent=False, windows=WINDOWS):
     return reasons
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None, leave_room=False, no_long_prompt=False):
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="default", agent=False, engine="auto", mtp=None, ls=None, leave_room=False, no_long_prompt=False):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units).
     engine: auto (the launcher decides), plugin (--always-plugin) or stock (--stock). mtp: None (auto), True, False; ls: llama-server for its MTP check."""
     if engine == "stock":
-        mode = "exact"                             # --fast and --hybrid need the plugin
+        mode = "exact"                             # --fast and --hybrid need the plugin; the page forces Exact with --stock
     if leave_room and not ram:
         ram = mc.leave_room_ram_gb(mc.Machine())    # the launcher's --leave-room budget, so the fit decision below is the one the start makes
     stock_fits, size, avail = mc.decide(path, ram)     # the launcher's own stock-or-plugin rule: does it fit?
@@ -618,20 +618,22 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     elif ncmoe == 0:
         out.update(kind="gpu", verdict="all experts fit on the GPU")
         R.append("every layer of experts fits in VRAM next to the rest of the model: the cache has nothing to manage")
-    elif stock_fits and mode == "exact" and engine != "plugin":
+    elif stock_fits and mode in ("default", "exact") and engine != "plugin":
         # the launcher's plugin_for_partial_offload (v0.3.8): fits in RAM, some expert layers on the CPU -> the plugin runs by default
         out.update(kind="cache", verdict="runs with moe-cache (fits in RAM, some expert layers stay on the CPU)")
         R.append(PARTIAL_FIT_EVIDENCE)
     else:
         name = {"fast": "moe-cache --fast", "hybrid": "moe-cache --hybrid"}.get(mode, "moe-cache")
-        why = "you chose --always-plugin" if mode == "exact" else mode + " needs the plugin"
+        why = "you chose --always-plugin" if mode in ("default", "exact") else mode + " needs the plugin"
         out.update(kind="cache", verdict=f"runs with {name} (fits in RAM, but {why})" if stock_fits else f"runs with {name} (bigger than free RAM)")
         if mode == "fast":
             R.append("--fast skips low-ranked experts that are not in RAM: about +10 %, about 1 token in 40-50 differs from stock")
         elif mode == "hybrid":
             R.append("--hybrid computes the most used experts on the GPU from a bank, the rest on the CPU (output differs from stock)")
+        elif mode == "exact":
+            R.append("exact (--exact): same output as plain llama.cpp, so no long-prompt mode, no q8_0 KV default and no MTP unless you set it; experts that are not in RAM are read from the SSD")
         else:
-            R.append("exact: same output as stock llama.cpp; experts that are not in RAM are read from the SSD")
+            R.append("default: the launcher's own settings (long-prompt mode from 32k context when the card has room, q8_0 KV cache, MTP where the model has it); answers are not byte-identical to plain llama.cpp; experts that are not in RAM are read from the SSD")
     if gpu_layers:
         R.append(f"{gpu_layers} of {layers} layers keep their experts on the GPU ({plan['free_vram_GiB']:.1f} GiB free VRAM)")
     elif out["kind"] != "stock" or plan["free_vram_GiB"] == 0:
@@ -642,7 +644,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
         R.append(f"expert cache {plan['cache_GiB']:.1f} GiB holds {pct:.0f} % of the {cpu:.1f} GiB of CPU experts"
                  + ("" if pct >= 100 else "; the rest are read from the SSD when needed"))
         lim = float(ram) * 1e9 if ram else mc.mem_total()
-        if mode == "exact" and lim and size > 2 * lim:
+        if mode in ("default", "exact") and lim and size > 2 * lim:
             R.append(f"the model is {size / lim:.1f}x the memory: --fast would add about +10 % (changes some tokens; off by default)")
     R.extend(amd_reasons)
     for w in (tuned or {}).get("why", []):
@@ -674,8 +676,8 @@ def server_args(s):
         a.append("--always-plugin")
     if s.get("approx") in ("safe", "careful", "aggressive"):
         a += ["--approx", s["approx"]]       # QUALITY-970: opt-in tiers that change answers; the launcher refuses a model without a gate record
-    elif s.get("engine") != "stock" and s.get("mode", "exact") == "exact":
-        a.append("--exact")                # the page says "same output as stock": no q8_0 KV default at 128k+ (audit 2026-10-30)
+    elif s.get("engine") != "stock" and s.get("mode") == "exact":
+        a.append("--exact")                # Exact = same output as plain llama.cpp (also turns the long-prompt mode, q8_0 KV and MTP defaults off); Default passes no flag (OWNER 2026-11-09)
     if s.get("mtp") in (True, False):
         a.append("--mtp" if s["mtp"] else "--no-mtp")
     if s.get("agent"):
@@ -1491,7 +1493,7 @@ class Runner:
             elif "the model fits in memory but some layers keep their experts on the CPU" in line:
                 self.fit_partial = True                  # the launcher's plugin_for_partial_offload line
             elif "stay on the CPU and are managed by the cache" in line:
-                self.mode = "moe-cache " + {"fast": "--fast", "hybrid": "--hybrid"}.get(self.settings.get("mode"), "exact") \
+                self.mode = "moe-cache " + {"fast": "--fast", "hybrid": "--hybrid"}.get(self.settings.get("mode"), "exact" if self.settings.get("mode") == "exact" else "default") \
                     + (" (the model fits in RAM, some experts on the CPU)" if getattr(self, "fit_partial", False) else "")
             elif "all experts fit in your GPU memory" in line:
                 self.mode = "all experts on the GPU"
@@ -2280,7 +2282,7 @@ class Handler(BaseHTTPRequestHandler):
                 key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"], q["leave_room"], q["no_long_prompt"])
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
-                    hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
+                    hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "default",
                                                                              q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls, q["leave_room"], q["no_long_prompt"]))
                 return self.send(200, dict(hit[1], here=measured_here(m)))       # the benchmark lines are fresh even when the plan is cached
             if u.path == "/api/agents":                     # GUI-025: the agents' config files, read back
@@ -2718,7 +2720,7 @@ class Handler(BaseHTTPRequestHandler):
         raise ValueError("unknown model (refresh the list)")
 
     def settings(self, d):
-        s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("exact", "fast", "hybrid") else "exact",
+        s = {"model": self.known(d.get("model")), "mode": d.get("mode") if d.get("mode") in ("default", "exact", "fast", "hybrid") else "default",   # a saved "exact" stays Exact
              "engine": d.get("engine") if d.get("engine") in ("auto", "plugin", "stock") else "auto",
              "mtp": {"on": True, "off": False}.get(str(d.get("mtp")).lower()),
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"),
