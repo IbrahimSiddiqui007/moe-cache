@@ -129,8 +129,9 @@ jobs:
           echo "$out" | head -20
           echo "$out" | grep -Eq 'llama-server +[^ ]*/llama/llama-server' || { echo "FAIL: moe_cache.py check did not find the bundled llama-server"; exit 1; }
           if [ "${{ needs.llama-patched.result }}" = success ]; then
-            echo "$out" | grep -Fq 'llama.cpp b12064 + moe-cache patches 0004,0020,0030,0040 built in, all off' || { echo "FAIL: check did not print the patched-build line"; exit 1; }
-            grep -Fq 'patches (0004,0020,0030,0040)' "$r/llama/README-moe-cache.txt" || { echo "FAIL: the bundled README does not name the patches"; exit 1; }
+            NUMS=$(cd patches/llama.cpp && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -)   # the patch folder is the one list
+            echo "$out" | grep -Fq "llama.cpp b12064 + moe-cache patches $NUMS built in, all off" || { echo "FAIL: check did not print the patched-build line"; exit 1; }
+            grep -Fq "patches ($NUMS)" "$r/llama/README-moe-cache.txt" || { echo "FAIL: the bundled README does not name the patches"; exit 1; }
           elif [ -f "$r/llama/PATCHES-moe-cache.txt" ]; then echo "FAIL: an official-build tarball carries a patch note"; exit 1; fi
           if echo "$out" | grep -Eq '\[FAIL\] +(llama-server|ggml version|shared ggml)'; then echo "FAIL: check rejects the bundled llama.cpp"; exit 1; fi
           for t2 in dist/moe-cache-v*-linux-x86_64.tar.gz; do
@@ -255,7 +256,7 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = tag ]; then V="${GITHUB_REF_NAME#v}"; else V=0.0.0-ci; fi
           tools/make_windows_kit.sh "$V"
           if [ "${{ needs.llama-patched.result }}" = success ]; then
-            unzip -p "dist/moe-cache-v$V-windows-x64.zip" "moe-cache-v$V-windows-x64/llama/PATCHES-moe-cache.txt" | tr -d '\r' | grep -Fx 'llama.cpp b12064 + moe-cache patches 0004,0020,0030,0040 built in, all off' || { echo "FAIL: the kit's llama has no patched-build note"; exit 1; }
+            unzip -p "dist/moe-cache-v$V-windows-x64.zip" "moe-cache-v$V-windows-x64/llama/PATCHES-moe-cache.txt" | tr -d '\r' | grep -Fx "llama.cpp b12064 + moe-cache patches $(cd patches/llama.cpp && ls -1 [0-9]*.patch | sed 's/-.*//' | paste -sd, -) built in, all off" || { echo "FAIL: the kit's llama has no patched-build note"; exit 1; }
             unzip -l "dist/moe-cache-v$V-windows-x64.zip" | grep -E 'llama/(llama-server\.exe|ggml-vulkan\.dll)' | wc -l | grep -qx 2 || { echo "FAIL: llama-server.exe / ggml-vulkan.dll missing from the kit"; exit 1; }
           fi
           python3 packaging/fill_manifests.py "dist/moe-cache-v$V-windows-x64.zip"   # scoop / winget manifests (a check here; packages.yml publishes them after the release)

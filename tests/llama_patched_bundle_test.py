@@ -20,7 +20,7 @@ lic = os.path.join(HERE, "LICENSE")
 env = dict(os.environ, LLAMA_LICENSE_FILE=lic)
 nums = ",".join(re.match(r"\d+", os.path.basename(p)).group(0) for p in sorted(glob.glob(os.path.join(HERE, "patches", "llama.cpp", "[0-9]*.patch"))))
 want = f"llama.cpp b12064 + moe-cache patches {nums} built in, all off"
-check(nums.startswith("0004,0020,0030,0040"), f"the patch set is 0004,0020,0030,0040 (got {nums}); update the docs and this test when it changes")
+check(nums == "0004,0020,0030,0040,0090", f"the patch set is 0004,0020,0030,0040,0090 (got {nums}); update the docs and this test when it changes")
 
 def write(path, data=b"x"):
     os.makedirs(os.path.dirname(path), exist_ok=True)
