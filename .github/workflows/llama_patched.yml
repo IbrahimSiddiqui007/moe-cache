@@ -227,7 +227,7 @@ jobs:
         working-directory: llama.cpp
         run: |
           cmake -B build -DCMAKE_INSTALL_RPATH='$ORIGIN' -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_VULKAN=ON $CMAKE_ARGS -DLLAMA_BUILD_TESTS=ON
-          cmake --build build --config Release --target llama-server test-backend-ops -j $(nproc)
+          cmake --build build --config Release --target llama-server test-backend-ops test-cpu-gpu-split -j $(nproc)
           build/bin/llama-server --version
       - name: "IQ3_XXS mat-vec kernel (patch 0090) against the CPU result, switch off and on (Vulkan on the CPU via mesa lavapipe, no GPU on the runner)"
         working-directory: llama.cpp
@@ -241,6 +241,12 @@ jobs:
             grep -q "Vulkan" ../mmv_$v.log || { echo "FAIL: no Vulkan device was tested (lavapipe missing?)"; exit 1; }
           done
           grep -q "restructured kernel" ../mmv_1.log || { echo "FAIL: the 0090 switch did not take effect"; exit 1; }
+      - name: "CPU + GPU row split (patch 0091): split result against a float reference for every row, share changes, weight buffer freed and replaced (a second CPU backend plays the GPU)"
+        working-directory: llama.cpp/build/bin
+        run: |
+          set -e
+          ./test-cpu-gpu-split 2>&1 | tee ../../../split_test.log | tail -5
+          grep -q "test-cpu-gpu-split: PASS" ../../../split_test.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llama-patched-linux-x64
