@@ -87,8 +87,13 @@ void hybrid_put(moe_cache_backend_ctx * c, state_t & s, moe_cache_backend_ctx::h
         const tinfo_t & ti = *s.tensors[(size_t) t];
         auto & h = c->hb[t];
         const char * src = ti.data + (size_t) e * ti.nb2;
+        const auto q0 = std::chrono::steady_clock::now();
         gpu_cache_ensure(src, h.first->nb[2]);
+        const auto q1 = std::chrono::steady_clock::now();
         ggml_backend_tensor_set(h.first, src, (size_t) sl * h.first->nb[2], h.first->nb[2]);
+        const auto q2 = std::chrono::steady_clock::now();
+        s.hyb_ens_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(q1 - q0).count();
+        s.hyb_set_ns += (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(q2 - q1).count();
         if (old >= 0) {
             h.second[(size_t) old] = -1;
         }
