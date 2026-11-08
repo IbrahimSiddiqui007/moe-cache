@@ -21,9 +21,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
-
 defaults:
   run:
     shell: bash
@@ -99,6 +96,7 @@ jobs:
       - name: Submit to winget-pkgs
         shell: pwsh
         env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
           WINGET_CREATE_GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}   # read by wingetcreate itself: the token never sits on a command line
           TAG: ${{ needs.manifests.outputs.tag }}
         run: |

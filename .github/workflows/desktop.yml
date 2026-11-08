@@ -24,7 +24,6 @@ on:
       - ".github/workflows/desktop.yml"
 
 env:
-  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
   # python.org's python-3.12.8-embed-amd64.zip, hash taken on 2026-11-03 from a download over https (no second source: python.org lists none)
   PY_VERSION: ${{ inputs.python_version || '3.12.8' }}
   PY_SHA256: ${{ inputs.python_sha256 || '8d3f33be9eb810f23c102f08475af2854e50484b8e4e06275e937be61ce3d2fb' }}
@@ -62,6 +61,7 @@ jobs:
           key: dl-kit-llama-b12064-vulkan-e0fee991
       - name: Windows kit
         env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
           LLAMA_ZIP_CACHE: ${{ runner.temp }}/llama-zips
         run: tools/make_windows_kit.sh 0.0.0-desktop
       - name: Cache save (kit's llama.cpp zip; only after a build that passed its sha256)
