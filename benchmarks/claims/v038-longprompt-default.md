@@ -1,0 +1,11 @@
+---
+id: "v038-longprompt-default"
+runs: ["2026-11-08_pc_04535e", "2026-11-08_pc_82fafc", "2026-11-08_pc_c9d10d", "2026-11-08_pc_f74766"]
+cells: [{"run": "2026-11-08_pc_f74766", "arm": "moe-cache", "metric": "prompt_tps"}, {"run": "2026-11-08_pc_f74766", "arm": "moe-cache", "metric": "decode_tps"}, {"run": "2026-11-08_pc_04535e", "arm": "moe-cache", "metric": "prompt_tps"}, {"run": "2026-11-08_pc_04535e", "arm": "moe-cache", "metric": "decode_tps"}, {"run": "2026-11-08_pc_c9d10d", "arm": "moe-cache", "metric": "prompt_tps"}, {"run": "2026-11-08_pc_c9d10d", "arm": "moe-cache", "metric": "decode_tps"}, {"run": "2026-11-08_pc_82fafc", "arm": "moe-cache", "metric": "prompt_tps"}, {"run": "2026-11-08_pc_82fafc", "arm": "moe-cache", "metric": "decode_tps"}]
+valid_moe_cache: ["0.3.7.1", "0.3.8"]
+valid_llama_builds: [12064, 12064]
+withdrawn: ""
+---
+# v0.3.8 head kit: Flash-Next IQ3_XXS in a 65k conversation, long-prompt plan (-ub 4096, q8_0 KV cache) against the previous default (-ub 2048, f16 KV): new prompt tokens 331.8 against 187.4 tok/s (+77.0 %), decode 19.35 against 19.01 tok/s (+1.8 %)
+
+Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5 at 6000 MT/s since 2026-11-07; 4800 MT/s records are not comparable), kit klong (a3dac52, moe-cache 0.3.7.1 code, --long-prompt as built in v0.3.8) with llama.cpp b12064, Windows scheduling tuning off, context 65,536, cold file cache, driver 9a0a981, seed 42, order A C C A, one run each (A1, C2, C3, A4), 2026-11-08 night. Arm A (previous default): -ub 2048, f16 KV cache, 42 expert layers on the CPU (server log): run A1 prompt 186.6, decode 18.97 tok/s; run A4 prompt 188.3, decode 19.04 tok/s; mean 187.4 and 19.01. Arm C (--long-prompt, now the default): -ub 4096, -ctk q8_0 -ctv q8_0, 45 expert layers on the CPU (server log): run C2 prompt 331.4, decode 19.30 tok/s; run C3 prompt 332.3, decode 19.39 tok/s; mean 331.8 and 19.35. Ratio C over A: prompt +77.0 %, decode +1.8 %. Per depth band, prompt tok/s A vs C (run 1 of each arm): 170.1 vs 295.8, 214.5 vs 380.9, 203.3 vs 346.4, 143.7 vs 266.2. The q8_0 KV cache means answers are not byte-identical to stock or to arm A: KL divergence 0.014-0.015 against f16, the same top token 94-95 %, meaning check 10 of 10 at 55k (2026-11-07 night chain). Process RAM peak 20.0 GB (A) vs 19.3 GB (C), VRAM peak 14.3 vs 11.9 GB.

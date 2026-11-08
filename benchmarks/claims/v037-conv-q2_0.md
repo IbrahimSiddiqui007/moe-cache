@@ -4,7 +4,7 @@ runs: ["2026-11-05_pc_b21c0e"]
 cells: [{"run": "2026-11-05_pc_b21c0e", "arm": "stock", "metric": "prompt_tps"}, {"run": "2026-11-05_pc_b21c0e", "arm": "stock", "metric": "decode_tps"}, {"run": "2026-11-05_pc_b21c0e", "arm": "moe-cache", "metric": "prompt_tps", "vs": "stock"}, {"run": "2026-11-05_pc_b21c0e", "arm": "moe-cache", "metric": "decode_tps", "vs": "stock"}]
 valid_moe_cache: ["0.3.7", "0.3.7.1"]
 valid_llama_builds: [12064, 12064]
-withdrawn: ""
+withdrawn: "2026-11-08: decode numbers came from the conversation driver before 9a0a981 (short answers); replaced by v038-conv-q2_0 (fixed driver, RAM at 6000 MT/s). Prompt numbers were not wrong."
 ---
 # v0.3.7: Flash-Next Q2_0 (the default) in a 65k conversation (46 turns to 65,379 tokens): moe-cache reads new prompt tokens at 430.0 against 194.5 tok/s (2.2x), decodes 26.98 against 22.46 tok/s (+20 %) and finishes the conversation in 388 against 613 s
 

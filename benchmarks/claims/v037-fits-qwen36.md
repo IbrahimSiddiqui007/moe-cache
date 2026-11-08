@@ -4,7 +4,7 @@ runs: ["2026-11-05_pc_11ff0f"]
 cells: [{"run": "2026-11-05_pc_11ff0f", "arm": "stock", "metric": "prompt_tps"}, {"run": "2026-11-05_pc_11ff0f", "arm": "stock", "metric": "decode_tps"}, {"run": "2026-11-05_pc_11ff0f", "arm": "moe-cache", "metric": "prompt_tps", "vs": "stock"}, {"run": "2026-11-05_pc_11ff0f", "arm": "moe-cache", "metric": "decode_tps", "vs": "stock"}]
 valid_moe_cache: ["0.3.7", "0.3.7.1"]
 valid_llama_builds: [12064, 12064]
-withdrawn: ""
+withdrawn: "2026-11-08: decode numbers from the old short-answer driver and a RAM figure that is reclaimable file cache; replaced by v038-fits-qwen36 (fixed driver, a different, smaller quant that fits in RAM)."
 ---
 # v0.3.7: Qwen3.6-35B (a model that fits in RAM, plugin forced) in a 65k conversation (33 turns): moe-cache reads new prompt tokens at 1265.1 against 983.7 tok/s (1.29x) and decodes 68.67 against 65.06 tok/s (+5.6 %), with a process RAM peak of 11.6 against 21.9 GiB
 

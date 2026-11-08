@@ -1,0 +1,11 @@
+---
+id: "v038-conv-q2_0"
+runs: ["2026-11-08_pc_08de30"]
+cells: [{"run": "2026-11-08_pc_08de30", "arm": "stock", "metric": "prompt_tps"}, {"run": "2026-11-08_pc_08de30", "arm": "stock", "metric": "decode_tps"}, {"run": "2026-11-08_pc_08de30", "arm": "moe-cache", "metric": "prompt_tps", "vs": "stock"}, {"run": "2026-11-08_pc_08de30", "arm": "moe-cache", "metric": "decode_tps", "vs": "stock"}]
+valid_moe_cache: ["0.3.7.1", "0.3.8"]
+valid_llama_builds: [12064, 12064]
+withdrawn: ""
+---
+# v0.3.8 head kit: Flash-Next Q2_0 (the faster option) in a 65k conversation with real answers: moe-cache reads new prompt tokens at 434.8 against 227.6 tok/s (1.9x) and decodes 26.9 against 25.4 tok/s (1.06x)
+
+Windows desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB DDR5 running at 6000 MT/s since 2026-11-07 (EXPO; records made at 4800 MT/s are not comparable), Vulkan), kit ksched (59a4112, moe-cache 0.3.7.1 code) with the official llama.cpp b12064 (51fe42c5d), Windows scheduling tuning off (MOE_CACHE_SCHED_TUNING=0), launcher defaults of that kit (--ub 2048, f16 KV cache; this is the setting `--no-long-prompt` gives in v0.3.8), context 65,536, cold file cache before each run, 2026-11-08 night. Conversation driver 9a0a981 (real answers: thinking off, 256 tokens, an answer hint on every question, sizes by the server's token count), seed 42, history re-sent every turn, prompt cache on, temperature 0. Order stock, moe-cache, moe-cache, stock, two runs per arm. 40 expert layers on the CPU. At 48k-64k the decode speed equals stock (0.98x); say so wherever the band table is shown. Per depth band (0-16k, 16-32k, 32-48k, 48-64k), prompt tok/s stock vs moe-cache: 89.0 vs 445.0, 281.3 vs 600.0, 280.8 vs 495.6, 202.2 vs 259.3 (5.00x, 2.13x, 1.77x, 1.28x); decode tok/s stock vs moe-cache: 25.0 vs 29.5, 24.7 vs 30.0, 23.8 vs 30.1, 26.0 vs 25.4 (1.18x, 1.22x, 1.26x, 0.98x). Whole-run means: prompt 227.55 vs 434.79, decode 25.42 vs 26.91; median time to first token 1.90 vs 0.78 s; plugin decode hit rate 96.7 %; process RAM peak 26580 vs 20180 MiB (stock's figure is mostly reclaimable file cache: not a saving). This claim replaces v037-conv-*, whose decode numbers came from the old driver with short answers.
