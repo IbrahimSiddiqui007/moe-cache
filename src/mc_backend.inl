@@ -166,7 +166,30 @@ struct moe_cache_backend_ctx {
     uint64_t           hb_tok = 0;
     int                ad_every = 8, ad_swaps = 16;
     std::unordered_map<int, std::pair<ggml_tensor *, std::vector<int>>> hb;
+    // MOE_CACHE_HYBRID_PERSIST=1 (default off): the GPU graph of a layer's expert block is built once (own allocator) and reused for every decode token of the same shape;
+    // only the input rows and the ids are copied (async) per token. Dropped with the bank.
+    struct hb_pg_t {
+        ggml_context *               ctx = nullptr;
+        ggml_gallocr_t               ga = nullptr;
+        ggml_cgraph *                g = nullptr;
+        ggml_tensor *                gids = nullptr, * gout = nullptr;
+        std::vector<ggml_tensor *>   in;     // GPU input tensors, in the order the block's source tensors are met
+        std::vector<int64_t>         sig;    // shape signature of the block it was built for
+    };
+    std::unordered_map<int, hb_pg_t> hpg;    // by layer
 };
+
+void hybrid_pg_clear(moe_cache_backend_ctx * c) {
+    for (auto & e : c->hpg) {
+        if (e.second.ga) {
+            ggml_gallocr_free(e.second.ga);
+        }
+        if (e.second.ctx) {
+            ggml_free(e.second.ctx);
+        }
+    }
+    c->hpg.clear();
+}
 
 const char * be_name(ggml_backend_t) {
     return "MOE_CACHE";
@@ -193,6 +216,7 @@ void be_free(ggml_backend_t backend) {
     if (c->galloc) {
         ggml_gallocr_free(c->galloc);
     }
+    hybrid_pg_clear(c);               // persistent hybrid graphs and their buffers: before the backend
     if (c->hb_buf) {                  // hybrid bank (GPU memory): freed before its backend
         ggml_backend_buffer_free(c->hb_buf);
     }

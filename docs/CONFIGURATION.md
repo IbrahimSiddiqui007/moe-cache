@@ -129,6 +129,8 @@ The table above is the short list. This part covers the remaining `MOE_CACHE_*` 
 | `MOE_CACHE_GPU_PIPE` | `0` turns off the pipelined GPU block (a block that ends up on the CPU then waits for all its experts first). | on | advanced |
 | `MOE_CACHE_GPU_READBACK` | `0` goes back to the old result path; by default the result goes into a pinned host buffer of the GPU device, queued right after the compute. | on | advanced |
 | `MOE_CACHE_HYBRID_DUEL` | Window W (in batches) for the hybrid bank's duel: it counts what the profile's own bank would have served next to the real bank. `0` off. | 32 | advanced |
+| `MOE_CACHE_HYBRID_ASYNC` | `1`: the hybrid bank's per-layer input copies are queued on the GPU stream without waiting for each, and the result comes back with a single wait. Same tokens as without it; less time per layer step. Printed in the exit line `hybrid: per layer step (us)` with `MOE_CACHE_STATS=1`. | off | advanced |
+| `MOE_CACHE_HYBRID_PERSIST` | `1` (experiment): also keeps each layer's GPU graph between tokens (implies `MOE_CACHE_HYBRID_ASYNC`). Costs about 12 MiB of GPU memory per layer; on a nearly full card it can end in a CUDA out-of-memory abort. | off | advanced |
 | `MOE_CACHE_IO_THREADS` | Parallel readers in total for loading experts (the calling thread reads too, so N means N readers). | 6 | advanced |
 | `MOE_CACHE_LEAVE_ROOM` | `1` turns on `--leave-room` for good: your own programs come first. Smoother PC, slower model. | 0 (off) | everyone |
 | `MOE_CACHE_LIB` | Windows `moe-cache-ui.bat` only: the plugin DLL to use. Unset: the .bat looks for the plugin DLL itself (see the comment at the top of the file). | unset | advanced |
