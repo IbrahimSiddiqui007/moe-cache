@@ -95,6 +95,14 @@ Removed on 2026-11-07; each patch is the removal read backwards (`git apply arch
 | llama.cpp/0050-layerwise-prefill-b12064.patch (second attempt, keeper fix) | `LLAMA_LAYERWISE_PREFILL=N` + `MOE_CACHE_GPU_KEEP_MIB` (PREFILL-638) | IQ3_XXS 34k prompt: N=8 prompt -51.9 % (241 vs 501), uploads 684 vs 652 GB (did not fall); N=34 uploads 0 GB but prompt -77.9 %, decode -10.4 % | the 8-layer mode does not cut uploads, the 34-layer mode costs far more in graph machinery than it saves | the machinery (one graph per layer and chunk, hidden state through host memory) becomes much cheaper |
 | llama.cpp/0042-n-outputs-max.patch | `LLAMA_N_OUTPUTS_MAX` (PATCH-128) | compute buffers identical with and without it: 2,021 MiB at `-ub 2048`, 4,660 MiB at `-ub 4096` | inert by design at b12064: llama-server sets `n_outputs_max` = 4 itself (n_parallel auto 4) and 0042 acts only when it is 0. The real top tensor is the lightning-indexer score tensor (512 MiB at `-ub 2048`), which 0042 does not touch | the indexer score tensor is chunked and the logits reserve grows again |
 
+### Removed 2026-11-08 (Windows scheduling tuning, WINDOWS-013)
+
+| File | Switch | Result | Why archived | Retest if |
+|---|---|---|---|---|
+| plugin/sched_tuning.patch (also removes `src/mc_sched_rule.h`, `tests/sched_rule_test.cpp`, the `sched_rule` entry in `tools/run_quick_tests.sh` and the launcher's `MOE_CACHE_SCHED_TUNING=0` line) | `MOE_CACHE_SCHED_TUNING` (default on since 50022b4), `MOE_CACHE_ECOQOS_OFF`, `MOE_CACHE_PROC_PRIO`, `MOE_CACHE_GPU_PRIO`, launcher `--no-sched-tuning` | Windows, Flash-Next IQ3_XXS, 64k prompt, kit ksched (59a4112), default scheduling (A) against `--no-sched-tuning` (B), two pairs each night: 2026-11-07 prompt 282.4 vs 284.5 tok/s (-0.7 %), decode 15.46 vs 16.59 (-6.8 %); 2026-11-08 prompt 206.3 vs 205.4 (+0.4 %), decode 13.19 vs 14.21 (-7.1 %). An earlier test had shown +2.0 % prompt with decode unchanged and was the reason for the default | decode lost 7 % in both repeats with no prompt gain; the owner removed the whole bundle on 2026-11-08 (not opt-in). Source: the PC logs `cn_sched.log` and `cn_sched2.log` in `C:\dl\abba`; no bench record was ingested for them | another CPU, another Windows build, or a paired run that shows decode no worse and prompt +2 % or more |
+
+Restore: `git apply archive/plugin/sched_tuning.patch`. The launcher still accepts `--no-sched-tuning` (it does nothing) so old commands keep working; that flag is removed one release after v0.3.8.
+
 ### Merged upstream (2026-11-03, pin move b11966 -> b12064)
 
 | File | Switch | Result | Why archived | Retest if |

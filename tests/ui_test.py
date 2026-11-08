@@ -72,7 +72,7 @@ PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe"
 TUNE = {"n_cpu_moe": 38, "ub": 1024, "gpu_cache_mib": 0, "why": ["10 layers of experts stay on the GPU", "micro-batch 1024"]}
 # the page asks the launcher for its plan (ui.launcher_view -> mc.launch_plan); here the plan's planner answer and tuner answer are mocked, the stock-or-plugin rule is the launcher's own
 _planner = [lambda path, ctx, ram, vram, kv="f16": dict(PLAN)]
-def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, long_prompt=False):
+def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, no_long_prompt=False):
     info = _planner[0](path, ctx, ram, vram)          # a RuntimeError here is the planner's refusal
     stock = ui.mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
     t = dict(TUNE)
@@ -579,10 +579,10 @@ if sys.platform.startswith("linux"):
     par.kill(); par.wait()
 check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-1] == "--no-warm" and "--no-warm" not in ui.server_args({"model": "m.gguf", "no_warm": True}),
       "Don't restore: --no-warm (agent mode only)")
-check("--long-prompt" in ui.server_args({"model": "m.gguf", "long_prompt": True}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
-      "Long-prompt mode: --long-prompt on the Start command only when ticked (v0.3.8, opt-in)")
-check('id="longprompt"' in _html and 'long_prompt: $("longprompt").checked' in _html and "&long_prompt=" in _html and "last.long_prompt" in _html and "faster reading of long prompts" in _html,
-      "the page has the Long-prompt mode toggle with its one-line explanation, sent with Start and with the plan request, restored from the last start")
+check("--no-long-prompt" in ui.server_args({"model": "m.gguf", "no_long_prompt": True}) and "--no-long-prompt" not in ui.server_args({"model": "m.gguf"}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
+      "Long-prompt mode is the default: --no-long-prompt on the Start command only when unticked (2026-11-08), no --long-prompt")
+check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "reads long prompts about 77 % faster" in _html,
+      "the page has the Long-prompt mode toggle, ticked by default, with its one-line explanation, sent with Start and with the plan request, restored from the last start")
 check("--leave-room" in ui.server_args({"model": "m.gguf", "leave_room": True}) and "--leave-room" not in ui.server_args({"model": "m.gguf"}),
       "Leave room for me: --leave-room on the Start command (owner 2026-10-30)")
 _html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "index.html")).read()
