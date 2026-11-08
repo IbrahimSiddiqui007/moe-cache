@@ -1,10 +1,14 @@
 # Builds llama.cpp b12064 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
-# Runs only when asked: push to the branch ci/llama-patched or ci/llama-patched-* (manual dispatch needs the file on main). release.yml does not use it. See patches/llama.cpp/README.md.
+# Runs when asked (push to the branch ci/llama-patched or ci/llama-patched-*; manual dispatch needs the file on main) and, since v0.3.8, as a called workflow of release.yml:
+# the release kits (Windows zip, Linux tarball) bundle THESE artifacts, every patch built in and off. See patches/llama.cpp/README.md.
+# Identity: windows-package and linux-identity answer three prompts at temperature 0 with the official b12064 build, with this build (all switches off) and with this
+# build (0004, 0020, 0040 switches on); the answers must be byte-identical (tools/llama_identity_run.sh).
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
 # Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first.
 name: llama-patched
 on:
   workflow_dispatch:
+  workflow_call:
   push:
     branches: [ci/llama-patched, 'ci/llama-patched-**']
 
@@ -97,6 +101,9 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: llama-patched-win-server-x64
@@ -126,6 +133,24 @@ jobs:
           $text = (($r.Content | ConvertFrom-Json).content)
           Write-Host "text: $text"
           if (-not $text -or $text.Length -lt 20) { throw "the smoke run produced no text" }
+      - name: Official b12064 build (pinned by sha256) for the identity run
+        run: |
+          Invoke-WebRequest -UseBasicParsing "https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-win-vulkan-x64.zip" -OutFile official.zip
+          if ((Get-FileHash official.zip -Algorithm SHA256).Hash.ToLower() -ne 'e0fee991887711ce74cb9c1f7715a1234e27d94f13ccfc594dc01310e5da6e22') { throw "official.zip: wrong sha256" }
+          Expand-Archive official.zip -DestinationPath official
+      - name: Identity at temperature 0 - official, patched (switches off), patched (switches on)
+        shell: bash
+        run: |
+          set -e
+          mkdir -p ident
+          tools/llama_identity_run.sh official/llama-server.exe granite.gguf 8111 ident/official.jsonl
+          tools/llama_identity_run.sh pkg/llama-patched-win-x64/llama-server.exe granite.gguf 8112 ident/patched_off.jsonl
+          tools/llama_identity_run.sh pkg/llama-patched-win-x64/llama-server.exe granite.gguf 8113 ident/patched_on.jsonl LLAMA_RESERVE_TOP=10 LLAMA_PLE_PREFETCH_AHEAD=1 LLAMA_SLOT_SAVE_ASYNC=1
+          grep -q "LLAMA_RESERVE_TOP" ident/patched_on.jsonl.log || { echo "FAIL: the 0040 switch did not take effect (no LLAMA_RESERVE_TOP line): the on-arm proves nothing"; exit 1; }
+          if grep -q "LLAMA_RESERVE_TOP" ident/patched_off.jsonl.log ident/official.jsonl.log; then echo "FAIL: 0040 printed with its switch off"; exit 1; fi
+          cmp ident/official.jsonl ident/patched_off.jsonl || { echo "FAIL: patched build (switches off) answers differently from the official one"; exit 1; }
+          cmp ident/official.jsonl ident/patched_on.jsonl || { echo "FAIL: patched build (switches on) answers differently from the official one"; exit 1; }
+          echo "identity: 3 prompts x 100 tokens, official = patched off = patched on (byte-identical, text and token ids)"
       - name: Zip and sha256
         run: |
           Compress-Archive -Path pkg\llama-patched-win-x64 -DestinationPath llama-patched-win-x64.zip
@@ -175,3 +200,56 @@ jobs:
           path: |
             llama.cpp/build/bin/llama-server
             llama.cpp/build/bin/*.so
+      - name: Pack with the library symlinks kept (the tarball the Linux release bundles)
+        run: |
+          mkdir pkg
+          cp -a llama.cpp/build/bin/llama-server llama.cpp/build/bin/*.so* pkg/
+          tar -C pkg -czf llama-patched-linux-x64.tar.gz .
+          sha256sum llama-patched-linux-x64.tar.gz | tee llama-patched-linux-x64.tar.gz.sha256
+          ls -l pkg | head -40
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llama-patched-linux-x64-tgz
+          path: |
+            llama-patched-linux-x64.tar.gz
+            llama-patched-linux-x64.tar.gz.sha256
+
+  linux-identity:
+    needs: linux
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llama-patched-linux-x64-tgz
+      - name: Unpack the patched build and fetch the official one (pinned by sha256) and the Granite test model
+        run: |
+          set -e
+          sha256sum -c llama-patched-linux-x64.tar.gz.sha256
+          mkdir patched && tar -C patched -xzf llama-patched-linux-x64.tar.gz
+          curl -fsSL -o official.tgz https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-ubuntu-vulkan-x64.tar.gz
+          echo "156e0010e92079dd931c82f50cbf8be94de47d06dba637c29261bfda3f2ff297  official.tgz" | sha256sum -c -
+          mkdir official && tar -C official -xzf official.tgz --strip-components=1
+          curl -fsSL -o granite.gguf "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf"
+          echo "3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb  granite.gguf" | sha256sum -c -
+          patched/llama-server --version
+      - name: Identity at temperature 0 - official, patched (switches off), patched (switches on)
+        run: |
+          set -e
+          mkdir -p ident
+          tools/llama_identity_run.sh official/llama-server granite.gguf 8111 ident/official.jsonl
+          tools/llama_identity_run.sh patched/llama-server granite.gguf 8112 ident/patched_off.jsonl
+          tools/llama_identity_run.sh patched/llama-server granite.gguf 8113 ident/patched_on.jsonl LLAMA_RESERVE_TOP=10 LLAMA_PLE_PREFETCH_AHEAD=1 LLAMA_SLOT_SAVE_ASYNC=1
+          grep -q "LLAMA_RESERVE_TOP" ident/patched_on.jsonl.log || { echo "FAIL: the 0040 switch did not take effect (no LLAMA_RESERVE_TOP line): the on-arm proves nothing"; exit 1; }
+          if grep -q "LLAMA_RESERVE_TOP" ident/patched_off.jsonl.log ident/official.jsonl.log; then echo "FAIL: 0040 printed with its switch off"; exit 1; fi
+          cmp ident/official.jsonl ident/patched_off.jsonl || { echo "FAIL: patched build (switches off) answers differently from the official one"; exit 1; }
+          cmp ident/official.jsonl ident/patched_on.jsonl || { echo "FAIL: patched build (switches on) answers differently from the official one"; exit 1; }
+          echo "identity: 3 prompts x 100 tokens, official = patched off = patched on (byte-identical, text and token ids)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: llama-patched-linux-identity
+          path: ident/

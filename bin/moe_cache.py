@@ -158,6 +158,17 @@ def ls_build(ls):
         return None
 
 
+def llama_patch_line(ls):
+    """The one-line note the kit's patched llama.cpp carries next to llama-server (PATCHES-moe-cache.txt, written by tools/bundle_llama_patched.sh), e.g.
+    'llama.cpp b12064 + moe-cache patches 0004,0020,0030,0040 built in, all off'. None for an official or any other build (no such file)."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(ls)), "PATCHES-moe-cache.txt"), encoding="utf-8", errors="replace") as f:
+            line = f.readline().strip()
+        return line[:200] if line.startswith("llama.cpp ") else None
+    except Exception:
+        return None
+
+
 def shipped_apis():
     """Backend APIs of the plugin builds that ship with (or were built next to) this launcher."""
     pats = [default_lib(), os.path.join(HERE, "build", "win*", "ggml-moe-cache*.dll"), os.path.join(HERE, "build-*", "ggml-moe-cache*.dll"),
@@ -3359,6 +3370,9 @@ def run_launch_plan(plan):
         raise SystemExit(f"moe-cache: port {port} is already in use (another llama-server, or on-demand: moe_cache.py on-demand --status); "
                          f"stop it or pick another with --port")
     say(loading_line(model))      # CACHE-181: the first load of a big model is silent for minutes
+    pl = llama_patch_line(ls)     # the kit's patched llama.cpp says so (every patch built in and off); an official build prints nothing
+    if pl:
+        say(f"moe-cache: {pl}")
     if a.project and os.path.isfile(os.path.join(slotdir, a.project + ".bin")) and not project_id_ok(slotdir, a.project):
         say(f"moe-cache: not restoring the saved state of project {a.project}: it has no record of the model, context and cache types it was made with, "
             "or they differ from this server's (a state is only valid for the same model file); save it again with `moe_cache.py project save`", err=True)
@@ -4671,6 +4685,10 @@ def check(argv):
             m = None; vtxt = ""
         ver = m.group(0) if m else ""
         ok("llama-server", f"{lsp} ({ver or 'version unknown'})")
+        _pl = llama_patch_line(lsp)
+        if _pl:
+            ok("llama.cpp patches", _pl)
+            facts["llama.cpp patches"] = _pl
         facts["llama-server"] = f"{ver or 'version unknown'} ({lsp})"
         if tested_commit(ver) or (WINDOWS and re.search(r"620d222|\b11669\b", vtxt)):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
@@ -4834,7 +4852,7 @@ def check(argv):
             (ok if r[0] else fail)("cache runs", r[1])
     say("")
     say("this machine at a glance")
-    for k in ("system", "cpu", "ram", "gpu", "disk", "llama-server", "moe-cache", "model"):
+    for k in ("system", "cpu", "ram", "gpu", "disk", "llama-server", "llama.cpp patches", "moe-cache", "model"):
         if k in facts:
             say(f"  {k:<13} {facts[k]}")
     if todo:

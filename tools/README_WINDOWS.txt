@@ -6,9 +6,11 @@ identical to stock llama.cpp. If your model fits in RAM, stock llama.cpp is fast
 launcher then runs it stock by itself.
 
 1. What you need
-   - llama.cpp: INCLUDED in this kit (folder llama\: the official, unmodified llama.cpp
-     b12064 Vulkan build for AMD, Intel and NVIDIA cards; MIT licence in that folder). Nothing to
-     download. To use another llama.cpp build instead, run once in a Command Prompt and open a
+   - llama.cpp: INCLUDED in this kit (folder llama\: llama.cpp b12064 Vulkan build for AMD,
+     Intel and NVIDIA cards, built from the official source with moe-cache's small patch set;
+     every patch is built in but OFF, see llama\PATCHES-moe-cache.txt; MIT licence in that
+     folder). Nothing to download. For the official build instead, download it from the
+     llama.cpp releases page and point LLAMA_SERVER at it (below). To use another llama.cpp build instead, run once in a Command Prompt and open a
      new window:  setx LLAMA_SERVER "D:\path\to\llama-server.exe"
    - Python 3.8 or newer (python.org; tick "Add python.exe to PATH"; if typing python opens the
      Microsoft Store, use py instead)
