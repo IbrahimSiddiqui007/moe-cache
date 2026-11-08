@@ -2800,6 +2800,28 @@ def gpu_stage(a, ls, win, machine):
     return vram_user, listing, gpu
 
 
+def plugin_for_partial_offload(a, ls, model, ctx, machine):
+    """v0.3.8, laptop evidence (RTX 4060 8 GB, Qwen3.6-35B-A3B IQ3_XXS, 30 expert layers on the CPU, 32k chat, A B B A): a model that fits in RAM but not in VRAM decodes
+    faster through the plugin's executor than through stock llama-server: +10 to +29 % in all six paired band comparisons (mean +15 %; 8k probe +26 %), prompt speed about 10 %
+    lower (-22 % in the short-answer chat). Returns the line to say when the plugin should run although the model fits in RAM, else None. --stock turns it off."""
+    if a.stock or a.cpu_only or os.environ.get("MOE_CACHE_STOCK_WHEN_FITS") == "1":
+        return None
+    try:
+        lib = machine.pick_lib(ls)
+        want, have = machine.ls_api(ls), machine.lib_api(lib)
+        if not machine.lib_exists(lib) or (want and have and want != have):
+            return None                                   # no matching plugin build here: stock stays (this only ever adds the plugin when it can load)
+        ram_gib = float(f"{machine.mem_for_server(a.ram) / 2**30:.3f}") if (a.ram or machine.mem_cap()) else None
+        info = machine.planner_answer(model, ctx, ram_gib, float(a.vram) if a.vram else None)
+        ncmoe = int(info["n_cpu_moe"])
+    except Exception:
+        return None                                       # dense, unreadable or no planner answer: stock stays
+    if ncmoe <= 0:
+        return None                                       # every expert fits the GPU: nothing for the executor to do
+    return ("moe-cache: the model fits in memory but some layers keep their experts on the CPU: the plugin's expert executor decodes faster than stock llama-server there "
+            "(laptop 8 GB, 35B MoE: +10 to +29 % per paired run, prompt about 10 % lower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
+
+
 def plugin_lib_stage(ls, dry, stock, win, machine):
     """ENGINE-029, stage "plugin build": which plugin library goes with this llama-server (MOE_CACHE_LIB gives way to the matching build when its backend API differs), and the refusals: llama-server missing, plugin not built, API mismatch. Returns the library path."""
     lib = os.environ.get("MOE_CACHE_LIB")
@@ -3267,6 +3289,10 @@ def _launch_plan(a, extra, argv, machine):
     stock, size, avail = decide(model, a.ram, plugin_wanted=bool(a.fast or a.hybrid or a.always_plugin), stock_wanted=a.stock, machine=machine)
     mm_file, mm_bytes, dense = None, 0, False
     mm_file, mm_bytes, dense, stock, size = vision_dense_start(a, extra, model, stock, size, avail)
+    if stock and not dense and not a.stock:
+        why = plugin_for_partial_offload(a, ls, model, ctx, machine)
+        if why:
+            say(why); stock = False
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
     ncmoe_user = a.n_cpu_moe
