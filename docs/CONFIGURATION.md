@@ -2,7 +2,7 @@
 
 **The first table is the list of common options; the second part ("Settings not listed above") covers every other `MOE_CACHE_*` name the code reads (175 in all).** `tools/env_names_check.py` checks that every name the code reads is mentioned in the docs. Defaults below are those of the code on 2026-11-03.
 
-`moe-cache-server` and the control page set these for you. Launcher options are not environment variables and are listed by `moe-cache-server --help`; one of them is new in v0.3.8 and opt-in: `--long-prompt` (page: **Long-prompt mode**) sets `-ub 4096` and the q8_0 KV cache when the card has room for it, see [INSTALL.md](INSTALL.md) (speed options). Moved here from the README on 2026-10-30, unchanged.
+`moe-cache-server` and the control page set these for you. Launcher options are not environment variables and are listed by `moe-cache-server --help`; one of them is new in v0.3.8 and on by default from 32k context: the long-prompt mode (`--long-prompt` asks for it at any context, `--no-long-prompt` turns it off; page: **Long-prompt mode**) sets `-ub 4096` and the q8_0 KV cache when the card has room for it, see [INSTALL.md](INSTALL.md) (speed options). The Windows scheduling tuning of the first v0.3.8 builds is gone; `--no-sched-tuning` is still accepted and does nothing. Moved here from the README on 2026-10-30, unchanged.
 
 
 | Variable | Meaning |

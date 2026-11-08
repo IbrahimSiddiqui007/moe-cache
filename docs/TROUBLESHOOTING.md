@@ -6,7 +6,7 @@ Still stuck? Open a [Bug report](https://github.com/IbrahimSiddiqui007/moe-cache
 
 ## Answers look wrong, misspelled or loop
 
-moe-cache is exact by default: with the same layer split its output is token-identical to stock llama.cpp (`tests/identity.sh`, CI on Linux and Windows). With long
+With `--exact` (and below 32k context) moe-cache is exact: with the same layer split its output is token-identical to stock llama.cpp; by default from 32k context the long-prompt mode uses a q8_0 KV cache and answers are close but not byte-identical (`--exact` or `--no-long-prompt` restore f16) (`tests/identity.sh`, CI on Linux and Windows). With long
 prompts, how much work runs on the GPU can change from run to run with the free VRAM, which can change the last digits and then a token (stock llama.cpp too).
 So when answers look wrong, first find out
 whether stock llama.cpp does the same (last row of the table). Go down the table in this order; each row is a cheap check.

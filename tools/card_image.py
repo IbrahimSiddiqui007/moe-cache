@@ -21,7 +21,8 @@ def find_chrome():
 def render(chrome, html, theme, sections, width, out):
     s = re.sub(r"<html([^>]*)>", lambda m: f'<html{m.group(1)} data-theme="{theme}">', html, count=1) if "<html" in html else f'<html data-theme="{theme}">' + html
     hide = (f"<style>section:nth-of-type(n+{sections + 1}), footer {{ display: none !important; }} body {{ padding-bottom: 8px !important; }}"
-            f" section:nth-of-type({sections}) > :not(h2):not(.chart) {{ display: none !important; }}</style>")    # the last shown section: heading and chart only
+            f" section:nth-of-type({sections}) > :not(h2):not(.chart) {{ display: none !important; }}"
+            " .wrap { max-width: none !important; } .scroll { overflow: visible !important; } svg { min-width: 0 !important; } table { font-size: 13px !important; } th, td { padding: 6px 8px !important; } th, th.n, td.n { white-space: normal !important; } table { table-layout: auto !important; width: 100% !important; }</style>")    # the last shown section: heading and chart only
     s = s.replace("</head>", hide + "</head>", 1) if "</head>" in s else hide + s
     with tempfile.TemporaryDirectory() as tmp:
         page = os.path.join(tmp, "card.html")
@@ -46,7 +47,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--chrome", default=find_chrome())
     ap.add_argument("--sections", type=int, default=3, help="how many <section>s of the card to show (default 3: headline numbers, the conversation tables + decode chart)")
-    ap.add_argument("--width", type=int, default=940)
+    ap.add_argument("--width", type=int, default=1280)      # wide enough for the 11-column per-band tables (at 940 the right columns were cut off)
     a = ap.parse_args()
     if not a.chrome:
         sys.exit("no Chrome / Chromium found: pass --chrome PATH")
