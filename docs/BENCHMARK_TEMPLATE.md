@@ -125,7 +125,7 @@ commit), `model_url`, `prompt_file`. With these and the record's settings a seco
 
 ### Pick a model the launcher does not run as stock
 
-The launcher runs plain llama.cpp when the model fits your RAM, and then there is nothing to compare. Pick a file **bigger than your free RAM** (rule of thumb:
+The launcher runs plain llama.cpp when the model fits your RAM and all its experts fit on the card, and then there is nothing to compare (a model that fits in RAM but keeps expert layers on the CPU runs through the plugin by default; `--stock` gives plain llama.cpp for the comparison). Pick a file **bigger than your free RAM** (rule of thumb:
 size at least 1.2 x RAM, e.g. 40 GB or more on 32 GB):
 
 ```bash

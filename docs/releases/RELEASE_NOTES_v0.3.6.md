@@ -73,7 +73,7 @@ Models that fit in RAM: the launcher still runs plain llama.cpp for them; the tw
 
 | What | State |
 |---|---|
-| `MOE_CACHE_DECODE_RELOC` (decode after long prompts; **off by default**, needs the llama.cpp patch 0070 that is not in the bundled build; DECODE-630) | Design and tests on synthetic data; **not yet run on the PC**. The ceiling of +15 % at 64k is from the design, not a release claim. |
+| `MOE_CACHE_DECODE_RELOC` (decode after long prompts; **off by default**, needs the llama.cpp patch 0070 that is not in the bundled build) | Design and tests on synthetic data; **not yet run on the PC**. The ceiling of +15 % at 64k is from the design, not a release claim. |
 | Shared-memory (integrated) GPUs | The copy of the experts for a long-prompt block is now capped and counted against the cache. **Not measured on an integrated GPU.** |
 | Intel SYCL | The launcher sets `ZES_ENABLE_SYSMAN=1` for SYCL devices. **Not run on an Intel SYCL machine.** |
 | `connect` for Qwen Code | The config is written and checked by tests; a full turn with the real program is **not proven yet**. The other agents (Codex CLI, Pi, OpenClaw, Aider, OpenCode, Claude Code) completed a turn with a small model. |
