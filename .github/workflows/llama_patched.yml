@@ -15,7 +15,6 @@ on:
 # LLAMA_CONNECT=OFF: at b12064 =ON makes CMake download a prebuilt llama-connect binary from github.com (scripts/connect-download.cmake, 3 tries, no sha256) at
 # configure/build time; a github.com 504 broke the build on 2026-11-08. We build only llama-server (+ test-backend-ops), not that tool. The option is OFF by default upstream.
 env:
-  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
   LLAMA_COMMIT: 51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c   # b12064
   VULKAN_VERSION: "1.4.357.0"
   CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=OFF"
@@ -167,6 +166,8 @@ jobs:
           Write-Host "text: $text"
           if (-not $text -or $text.Length -lt 20) { throw "the smoke run produced no text" }
       - name: Official b12064 build (pinned by sha256) for the identity run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
         run: |
           & tools\ci\fetch.ps1 -Url "https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-win-vulkan-x64.zip" -Out dl\official.zip -Sha256 e0fee991887711ce74cb9c1f7715a1234e27d94f13ccfc594dc01310e5da6e22
           if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for the official llama.cpp zip (see the ci_fetch lines above)" }
@@ -260,6 +261,8 @@ jobs:
         with:
           name: llama-patched-linux-x64-tgz
       - name: Unpack the patched build and fetch the official one and the Granite test model (pinned by sha256; retried, tools/ci/fetch.sh)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
         run: |
           set -e
           sha256sum -c llama-patched-linux-x64.tar.gz.sha256
