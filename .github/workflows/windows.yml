@@ -21,7 +21,6 @@ permissions:
   contents: read
 
 env:
-  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
   LLAMA_RELEASE: b12064       # the release the kit bundles (ggml 0.28.0, backend API 3); b11966 (0.28.0) and b11669 (0.27.0) is what the MSI Claw and the first PC runs used
 
 jobs:
@@ -81,6 +80,7 @@ jobs:
           key: dl-kit-llama-b12064-vulkan-e0fee991
       - name: Windows kit (zip with both DLLs, the launcher, the page and the one-click .bat; kept as an artifact, never published)
         env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
           LLAMA_ZIP_CACHE: ${{ runner.temp }}/llama-zips
         run: tools/make_windows_kit.sh 0.0.0-ci
       - name: Cache save (kit's llama.cpp zip; only after a build that passed its sha256)
@@ -193,6 +193,8 @@ jobs:
           path: dl
           key: dl-win-llama-b12064-c1ced735-granite-3a2ec1c2
       - name: Official llama.cpp release (CPU) and the small MoE model (cache first, else retried downloads; sha256 pinned either way)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
         run: |
           New-Item -ItemType Directory -Force dl | Out-Null
           $zip = "llama-$env:LLAMA_RELEASE-bin-win-cpu-x64.zip"

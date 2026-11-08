@@ -151,16 +151,24 @@ def board_rows(rec):
     return rows
 
 
+def cm(s, cap=80):
+    """Record-derived text for a comment on a public issue: md() plus no @mentions, no auto-linked URLs or #N references, no emphasis, capped length."""
+    s = str(s)
+    s = (s[:cap] + "...") if len(s) > cap else s
+    s = md(s).replace("@", "@\u200b").replace("://", ":\u200b//").replace("www.", "www\u200b.").replace("#", "#\u200b")
+    return s.replace("*", "\\*").replace("_", "\\_").replace("~", "\\~").replace("!", "\\!")
+
+
 def issue_comment(rec, errs, why="", number=None):
     """The text the Action posts on the issue: valid with its board row, or the problems."""
     out = [COMMENT_MARK]
     if rec is None:
-        return "\n".join(out + ["**Record check: no record found.**", "", why, "", "Paste the whole `.md` report that `bench-report` wrote (it contains the record), or the record file."]) + "\n"
+        return "\n".join(out + ["**Record check: no record found.**", "", cm(why, 200), "", "Paste the whole `.md` report that `bench-report` wrote (it contains the record), or the record file."]) + "\n"
     if errs:
-        return "\n".join(out + ["**Record check: not valid.**", "", *[f"- {e}" for e in errs[:8]], "", "Run `python bin/moe_cache.py bench-record validate FILE` on your machine, "
+        return "\n".join(out + ["**Record check: not valid.**", "", *[f"- {cm(e, 200)}" for e in errs[:8]], "", "Run `python bin/moe_cache.py bench-record validate FILE` on your machine, "
                                  "or paste the report again as it was written. A value you could not measure must say `not recorded`."]) + "\n"
     hw, sw, m = rec.get("hardware", {}), rec.get("software", {}), rec.get("model", {})
-    head = f"**Record check: valid.** moe-cache {sw.get('moe_cache_version', NR)}, {m.get('file', NR)}, {hw.get('gpu_model', NR)}, {hw.get('ram_gib', NR)} GiB RAM, {rec.get('conditions', {}).get('file_cache', NR)} start."
+    head = f"**Record check: valid.** moe-cache {cm(sw.get('moe_cache_version', NR), 40)}, {cm(m.get('file', NR))}, {cm(hw.get('gpu_model', NR))}, {cm(hw.get('ram_gib', NR), 20)} GiB RAM, {cm(rec.get('conditions', {}).get('file_cache', NR), 40)} start."
     lines = [head, "", "| metric | stock | moe-cache | ratio | runs (stock / moe-cache) | noise band | reading |", "|---|---|---|---|---|---|---|"]
     for label, a, b, x, n, noise, v in board_rows(rec):
         mt = "decode_tps" if "decode" in label else "prompt_tps"

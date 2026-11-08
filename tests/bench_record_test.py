@@ -395,6 +395,19 @@ check(rid_c is None and len(os.listdir(os.path.join(bdir, "runs"))) == n_runs an
 bad_rec = json.loads(json.dumps(rec_a)); del bad_rec["hardware"]
 rid_b, comment_b = cc.ingest_issue("```json\n" + json.dumps(bad_rec) + "\n```", 8, bdir)
 check(rid_b is None and "not valid" in comment_b and "hardware" in comment_b and len(os.listdir(os.path.join(bdir, "runs"))) == n_runs, "ingest-issue: an invalid record is not written; the comment names the problem")
+# hostile record in the issue comment (public): no links, images, @mentions, HTML, code or extra table columns; capped length
+evil_i = "x | <img src=x onerror=alert(1)> [click](http://evil.example) ![i](http://e/x.png) `code` @maintainer www.evil.example #1 *b* " + "Z" * 500 + "\nnew line"
+hrec = json.loads(json.dumps(rec_a))
+hrec["model"]["file"] = hrec["hardware"]["gpu_model"] = hrec["software"]["moe_cache_version"] = evil_i
+hc_ok = cc.ingest_issue("```json\n" + json.dumps(hrec) + "\n```", 9, bdir, write=False)[1]
+hc_bad = cc.issue_comment(hrec, [evil_i + " is wrong"] * 2)
+hc_none = cc.issue_comment(None, [], evil_i)
+def comment_clean(c):
+    bits = ("<img", "[click]", "[i]", " `code`", "x | <", "@maintainer", "://", "www.evil", "#1 ", "\nnew line", "Z" * 100)
+    return not any(b in c for b in bits)
+check("Record check: valid" in hc_ok and "Record check: not valid" in hc_bad and comment_clean(hc_ok) and comment_clean(hc_bad) and comment_clean(hc_none)
+      and "&lt;img" in hc_ok and "&lt;img" in hc_bad and len(hc_bad) < 1500 and all(l.count(" | ") == 6 for l in hc_ok.splitlines() if l.startswith("| decode")),
+      "ingest-issue: a hostile record cannot add links, images, @mentions, HTML, code or table columns to the valid, not-valid or no-record comment")
 rows = cc.board_rows(rec_a)
 check(len(rows) == 2 and all(r[6] for r in rows), "ingest-issue: a board row per metric with a reading")
 fast = json.loads(json.dumps(rec_a))

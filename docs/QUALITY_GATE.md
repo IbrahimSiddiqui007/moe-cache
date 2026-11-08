@@ -34,3 +34,4 @@ Rules that apply to every level:
   the plugin really was active and that nothing went wrong by an order of magnitude; it does not prove quality.
 - A speed gain only counts if the level passes. A level that is faster in every ABBA pair at 4k, 64k and 128k **and** passes is kept.
 - The default stays exact until the owner decides with these numbers.
+- The opt-in `--approx safe|careful|aggressive` tiers (QUALITY-970, [CONFIGURATION](CONFIGURATION.md)) use these levels as their gates: safe = `kv`, careful = `fast`, aggressive = `fewer`. `tests/approx_test.py` fails if the numbers in `bin/moe_cache_approx.py` and this table drift apart. The startup canary (about 256 tokens) is a guard only; it never replaces a gate run.

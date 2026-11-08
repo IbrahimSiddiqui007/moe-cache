@@ -20,9 +20,6 @@ on:
 permissions:
   contents: read
 
-env:
-  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
-
 defaults:
   run:
     shell: bash     # bash -eo pipefail: without it "kernel_check | tee" hides a failing kernel check
@@ -110,6 +107,7 @@ jobs:
 
       - name: Build tarball (from a clean export of this commit)
         env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
           V: ${{ steps.v.outputs.version }}
           LLAMA_TGZ_CACHE: ${{ runner.temp }}/llama-tgz
         run: tools/make_release.sh "$V"
@@ -252,6 +250,7 @@ jobs:
 
       - name: Build the kit
         env:
+          GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
           LLAMA_ZIP_CACHE: ${{ runner.temp }}/llama-zips
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then V="${GITHUB_REF_NAME#v}"; else V=0.0.0-ci; fi
