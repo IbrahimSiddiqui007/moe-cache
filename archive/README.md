@@ -110,5 +110,11 @@ Restore: `git apply archive/plugin/sched_tuning.patch`. The launcher still accep
 | llama.cpp/0022-vulkan-count-experts-fast.patch | `GGML_VK_COUNT_EXPERTS_FAST` | +5 % prompts at 34k, +7 % at 64k (PC) | merged upstream as PR 31266, in the pin from b12064 (always on there; no switch) | - |
 | llama.cpp/0027-batched-tensor-copy.patch | `GGML_BACKEND_BATCHED_COPY` | slot save / restore faster on Vulkan (see PRs) | merged upstream as PR 30881 + 31418, in the pin from b12064 (always on there; our patch only added the switch) | - |
 
+### Round 4 2026-11-08 (laptop 8 GB CUDA, Qwen3.6-35B-A3B IQ3_XXS, 30 expert layers on the CPU)
+
+| File | Switch | Result | Why archived | Retest if |
+|---|---|---|---|---|
+| llama.cpp/0080-cpu-moe-glu-fuse-and-split-profile.patch | `GGML_CPU_FUSE_MOE=1`; timers `GGML_R4_PROF=1/2/3` | identical text; +4 to +7 % in the machine's fast phase (2 pairs), -7 % in its slow phase (6 pairs); notes in llama.cpp/0080-NOTES.md | no robust gain (barrier skew under foreign load stays) | quiet machine or a barrier-free expert-parallel scheme |
+
 ## Notes on 0001
 `ggml_vk_wait_for_fence` waits for the last 20 % of a graph by polling `getFenceStatus` with 1000 `pause` instructions between polls. The patch made the count an env value (N blocks of 10 pauses, unset = 100 = stock). Only the poll interval changes, so output cannot change. Tested at N = 10.

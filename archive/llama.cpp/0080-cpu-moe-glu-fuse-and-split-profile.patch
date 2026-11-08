@@ -1,0 +1,329 @@
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -1862,11 +1862,25 @@
+     }
+ }
+ 
++
++// ---- R4 profiling (env GGML_R4_PROF=1: wall clock of the host calls; =2: also synchronize after every split to see true device time). Attribution only, never for speed numbers.
++#include <time.h>
++static inline int64_t r4_now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t) ts.tv_sec * 1000000000LL + ts.tv_nsec; }
++struct r4_prof {
++    int mode = -1;
++    int64_t calls = 0, splits = 0, cpu_splits = 0, dev_splits = 0;
++    int64_t copy_to_cpu = 0, copy_to_dev = 0, comp_cpu = 0, comp_dev_launch = 0, sync_dev = 0, tail = 0, total = 0;
++};
++static r4_prof g_r4;
++
+ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t sched) {
+     GGML_ASSERT(sched);
+     struct ggml_backend_sched_split * splits = sched->splits;
+ 
+     int prev_backend_id = -1;
++    if (g_r4.mode < 0) { const char * e = getenv("GGML_R4_PROF"); g_r4.mode = e ? atoi(e) : 0; }
++    const bool r4on = g_r4.mode > 0 && sched->n_splits >= 20;      // decode graphs of a hybrid model only
++    const int64_t r4_begin = r4on ? r4_now_ns() : 0;
+ 
+     for (int split_id = 0; split_id < sched->n_splits; split_id++) {
+         struct ggml_backend_sched_split * split = &splits[split_id];
+@@ -1883,6 +1897,8 @@
+             }
+         }
+ 
++        const bool r4_cpu = r4on && ggml_backend_dev_type(ggml_backend_get_device(split_backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
++        const int64_t r4_t0 = r4on ? r4_now_ns() : 0;
+         // copy the input tensors to the split backend
+         // the weights in host memory are copied last, so that the copy callback can read the other inputs of the split
+         for (int input_id = 0; input_id < split->n_inputs; input_id++) {
+@@ -1895,12 +1911,20 @@
+                 ggml_backend_sched_copy_input(sched, split, split->inputs[input_id]);
+             }
+         }
++        const int64_t r4_t1 = r4on ? r4_now_ns() : 0;
+ 
+         if (!sched->callback_eval) {
+             enum ggml_status ec = ggml_backend_graph_compute_async(split_backend, &split->graph);
+             if (ec != GGML_STATUS_SUCCESS) {
+                 return ec;
+             }
++            if (r4on) {
++                const int64_t r4_t2 = r4_now_ns();
++                g_r4.splits++;
++                if (r4_cpu) { g_r4.cpu_splits++; g_r4.copy_to_cpu += r4_t1 - r4_t0; g_r4.comp_cpu += r4_t2 - r4_t1; }
++                else        { g_r4.dev_splits++; g_r4.copy_to_dev += r4_t1 - r4_t0; g_r4.comp_dev_launch += r4_t2 - r4_t1;
++                              if (g_r4.mode >= 2) { ggml_backend_synchronize(split_backend); g_r4.sync_dev += r4_now_ns() - r4_t2; } }
++            }
+         } else {
+             // similar to ggml_backend_compare_graph_backend
+             for (int j0 = 0; j0 < split->graph.n_nodes; j0++) {
+@@ -1943,6 +1967,20 @@
+         prev_backend_id = split_backend_id;
+     }
+ 
++    if (r4on) {
++        const int64_t r4_loop_end = r4_now_ns();
++        for (int b = 0; b < sched->n_backends; b++) { ggml_backend_synchronize(sched->backends[b]); }
++        const int64_t r4_end = r4_now_ns();
++        g_r4.tail += r4_end - r4_loop_end; g_r4.total += r4_end - r4_begin; g_r4.calls++;
++        if (g_r4.calls % 100 == 0) {
++            const double n = (double) g_r4.calls;
++            fprintf(stderr, "R4PROF mode %d calls %lld per token: splits %.0f (cpu %.0f dev %.0f) | total %.2f ms = copy->cpu %.2f + cpu compute %.2f + copy->dev %.2f + dev launch %.2f + dev sync %.2f + tail sync %.2f (ms)\n",
++                g_r4.mode, (long long) g_r4.calls, g_r4.splits / n, g_r4.cpu_splits / n, g_r4.dev_splits / n, g_r4.total / n / 1e6,
++                g_r4.copy_to_cpu / n / 1e6, g_r4.comp_cpu / n / 1e6, g_r4.copy_to_dev / n / 1e6, g_r4.comp_dev_launch / n / 1e6, g_r4.sync_dev / n / 1e6, g_r4.tail / n / 1e6);
++            g_r4 = r4_prof(); g_r4.mode = atoi(getenv("GGML_R4_PROF") ? getenv("GGML_R4_PROF") : "0");
++        }
++    }
++
+     return GGML_STATUS_SUCCESS;
+ }
+ 
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -1551,6 +1551,11 @@
+     return ptr;
+ }
+ 
++
++// R4 (see ggml_graph_compute_thread): split of mul_mat_id time on thread 0
++static int64_t r4m_prep_ns, r4m_loop_ns, r4m_n;
++static int     r4m_on = -1;
++
+ static void ggml_compute_forward_mul_mat_id(
+         const struct ggml_compute_params * params,
+               struct ggml_tensor * dst) {
+@@ -1585,6 +1590,8 @@
+     const int n_ids = ids->ne[0]; // n_expert_used
+     const int n_as  = ne02;       // n_expert
+ 
++    if (r4m_on < 0) { const char * e = getenv("GGML_R4_PROF"); r4m_on = (e && atoi(e) >= 3) ? 1 : 0; }
++    const int64_t r4m_t0 = (r4m_on && ith == 0) ? ggml_time_us() : 0;
+     void * wdata_cur = params->wdata;
+ 
+     if (src1->type != vec_dot_type) {
+@@ -1672,6 +1679,7 @@
+     }
+ 
+     ggml_barrier(params->threadpool);
++    const int64_t r4m_t1 = (r4m_on && ith == 0) ? ggml_time_us() : 0;
+ 
+     for (int cur_a = 0; cur_a < n_as; ++cur_a) {
+         const int64_t cne1 = matrix_row_counts[cur_a];
+@@ -1738,6 +1746,115 @@
+             current_chunk = atomic_fetch_add_explicit(current_chunk_ctr, 1, memory_order_relaxed);
+         }
+     }
++    if (r4m_on && ith == 0) { r4m_prep_ns += (r4m_t1 - r4m_t0) * 1000; r4m_loop_ns += (ggml_time_us() - r4m_t1) * 1000; r4m_n++; }
++}
++
++
++// ---- R4: gate + up + SwiGLU of a decode-time MoE layer in ONE node (env GGML_CPU_FUSE_MOE=1). Same dot products and the same SwiGLU vector body as the three separate nodes
++// (chunks start at multiples of 8 rows so every element goes through the vector path, as in the whole-row SwiGLU), but one quantisation of src1, one row mapping,
++// one barrier instead of five, and the SwiGLU runs on the rows a thread has just written.
++static bool ggml_cpu_fuse_moe_glu = false;
++
++static void ggml_compute_forward_mul_mat_id_glu_fused(
++        const struct ggml_compute_params * params,
++        struct ggml_tensor * ga,          // MUL_MAT_ID (gate or up), the first operand of the GLU
++        struct ggml_tensor * gb,          // MUL_MAT_ID, the second operand
++        struct ggml_tensor * glu) {
++
++    const struct ggml_tensor * src0  = ga->src[0];
++    const struct ggml_tensor * src0a = src0;
++    const struct ggml_tensor * src0b = gb->src[0];
++    const struct ggml_tensor * src1  = ga->src[1];
++    const struct ggml_tensor * ids   = ga->src[2];
++    struct ggml_tensor * dst = ga;
++
++    GGML_TENSOR_BINARY_OP_LOCALS            // ne0x/nb0x of src0 (= src0a), ne1x/nb1x of src1, ne0/nb0.. of dst (= ga)
++
++    const int ith = params->ith;
++    const int nth = params->nth;
++
++    const enum ggml_type type = src0a->type;
++    enum ggml_type    const vec_dot_type = type_traits_cpu[type].vec_dot_type;
++    ggml_from_float_t const from_float   = type_traits_cpu[vec_dot_type].from_float;
++    const bool src1_cont = ggml_is_contiguous(src1);
++
++    const int n_ids = ids->ne[0];
++    const int n_as  = ne02;
++
++    void * wdata_cur = params->wdata;
++    if (src1->type != vec_dot_type) {
++        incr_ptr_aligned(&wdata_cur, ggml_row_size(vec_dot_type, ggml_nelements(src1)), sizeof(int64_t));
++    }
++    int64_t * matrix_row_counts = incr_ptr_aligned(&wdata_cur, n_as*sizeof(int64_t), sizeof(int64_t));
++    struct mmid_row_mapping * matrix_rows = incr_ptr_aligned(&wdata_cur, n_as*ids->ne[0]*ids->ne[1]*sizeof(struct mmid_row_mapping), sizeof(int64_t));
++
++    if (src1->type != vec_dot_type) {
++        char * wdata = params->wdata;
++        const size_t nbw0 = ggml_type_size(vec_dot_type);
++        const size_t nbw1 = ggml_row_size(vec_dot_type, ne10);
++        const size_t nbw2 = nbw1*ne11;
++        const size_t nbw3 = nbw2*ne12;
++        for (int64_t i13 = 0; i13 < ne13; ++i13) {
++            for (int64_t i12 = 0; i12 < ne12; ++i12) {
++                for (int64_t i11 = 0; i11 < ne11; ++i11) {
++                    size_t bs = ggml_blck_size(vec_dot_type);
++                    int64_t ne10_block_start = (ith * ne10/bs) / nth;
++                    int64_t ne10_block_end   = ((ith + 1) * ne10/bs) / nth;
++                    from_float((float *)((char *) src1->data + i13*nb13 + i12*nb12 + i11*nb11 + ne10_block_start*bs*nb10),
++                               (void *)               (wdata + i13*nbw3 + i12*nbw2 + i11*nbw1 + ne10_block_start*nbw0),
++                               (ne10_block_end - ne10_block_start) * bs);
++                }
++            }
++        }
++    }
++
++    if (ith == 0) {
++        memset(matrix_row_counts, 0, n_as*sizeof(int64_t));
++        for (int64_t iid1 = 0; iid1 < ids->ne[1]; ++iid1) {
++            for (int id = 0; id < n_ids; ++id) {
++                const int32_t i02 = *(const int32_t *) ((const char *) ids->data + iid1*ids->nb[1] + id*ids->nb[0]);
++                if (i02 == -1) {
++                    memset((char *) ga->data + id*ga->nb[1] + iid1*ga->nb[2], 0, ga->ne[0]*sizeof(float));
++                    memset((char *) gb->data + id*gb->nb[1] + iid1*gb->nb[2], 0, gb->ne[0]*sizeof(float));
++                    memset((char *) glu->data + id*glu->nb[1] + iid1*glu->nb[2], 0, glu->ne[0]*sizeof(float));
++                    continue;
++                }
++                MMID_MATRIX_ROW(i02, matrix_row_counts[i02]) = (struct mmid_row_mapping) {id, iid1};
++                matrix_row_counts[i02] += 1;
++            }
++        }
++    }
++
++    ggml_barrier(params->threadpool);      // the only barrier of the three nodes: src1 quantised by all threads, mapping built
++
++    const void * wdata = (src1->type == vec_dot_type) ? src1->data : params->wdata;
++    const size_t row_size = ggml_row_size(vec_dot_type, ne10);
++    const int64_t nr0 = ne01;
++    const int64_t dr0 = (((nr0 + nth - 1) / nth) + 7) & ~(int64_t) 7;       // rows per thread, a multiple of 8
++    const int64_t ir0_start = dr0 * ith;
++    const int64_t ir0_end   = MIN(ir0_start + dr0, nr0);
++
++    const struct ggml_tensor * x_t = glu->src[0];     // silu operand
++    const struct ggml_tensor * g_t = glu->src[1];
++
++    for (int cur_a = 0; cur_a < n_as && ir0_start < ir0_end; ++cur_a) {
++        const int64_t cne1 = matrix_row_counts[cur_a];
++        if (cne1 == 0) {
++            continue;
++        }
++        const char * src0a_cur = (const char *) src0a->data + cur_a * nb02;
++        const char * src0b_cur = (const char *) src0b->data + cur_a * src0b->nb[2];
++
++        ggml_compute_forward_mul_mat_id_one_chunk(ga, src0a, src1, ids, cur_a, ir0_start, ir0_end, 0, cne1, src0a_cur, matrix_rows, row_size, src1_cont, wdata);
++        ggml_compute_forward_mul_mat_id_one_chunk(gb, src0b, src1, ids, cur_a, ir0_start, ir0_end, 0, cne1, src0b_cur, matrix_rows, row_size, src1_cont, wdata);
++
++        for (int64_t ir1 = 0; ir1 < cne1; ++ir1) {
++            const struct mmid_row_mapping rm = MMID_MATRIX_ROW(cur_a, ir1);
++            const size_t off = rm.i1*ga->nb[1] + rm.i2*ga->nb[2];
++            ggml_vec_swiglu_f32(ir0_end - ir0_start, (float *) ((char *) glu->data + rm.i1*glu->nb[1] + rm.i2*glu->nb[2]) + ir0_start,
++                                (const float *) ((const char *) x_t->data + off) + ir0_start, (const float *) ((const char *) g_t->data + off) + ir0_start);
++        }
++    }
+ }
+ 
+ /////////////////////////////////
+@@ -3086,6 +3203,25 @@
+ 
+     struct ggml_tensor * node = cgraph->nodes[node_n];
+ 
++    if (ggml_cpu_fuse_moe_glu && node->op == GGML_OP_MUL_MAT_ID && node_n + 2 < cgraph->n_nodes) {
++        // MUL_MAT_ID (gate) + MUL_MAT_ID (up) + GLU(swiglu), one decode token
++        struct ggml_tensor * n1 = cgraph->nodes[node_n + 1];
++        struct ggml_tensor * n2 = cgraph->nodes[node_n + 2];
++        if (n1->op == GGML_OP_MUL_MAT_ID && n2->op == GGML_OP_GLU && ggml_get_glu_op(n2) == GGML_GLU_OP_SWIGLU &&
++            (n1->flags & GGML_TENSOR_FLAG_COMPUTE) && (n2->flags & GGML_TENSOR_FLAG_COMPUTE) &&
++            ((n2->src[0] == node && n2->src[1] == n1) || (n2->src[0] == n1 && n2->src[1] == node)) &&
++            node->src[1] == n1->src[1] && node->src[2] == n1->src[2] &&
++            node->src[0]->type == n1->src[0]->type && node->src[0]->ne[1] == n1->src[0]->ne[1] && node->src[0]->ne[2] == n1->src[0]->ne[2] &&
++            node->src[2]->ne[1] == 1 && node->src[1]->type == GGML_TYPE_F32 && node->type == GGML_TYPE_F32 && n1->type == GGML_TYPE_F32 && n2->type == GGML_TYPE_F32 &&
++            node->src[0]->nb[2] == node->src[0]->ne[1] * node->src[0]->nb[1] && n1->src[0]->nb[2] == n1->src[0]->ne[1] * n1->src[0]->nb[1] &&
++            node->nb[1] == n1->nb[1] && node->nb[1] == n2->nb[1] && node->nb[2] == n1->nb[2] && node->nb[2] == n2->nb[2] &&
++            node->ne[0] % 8 == 0 && ggml_is_contiguous_1(n2->src[0]) && ggml_is_contiguous_1(n2->src[1]) &&
++            ggml_node_has_n_uses(cgraph, node_n, 1) && ggml_node_has_n_uses(cgraph, node_n + 1, 1)) {
++            ggml_compute_forward_mul_mat_id_glu_fused(params, node, n1, n2);
++            return 2;
++        }
++    }
++
+     if (node->op == GGML_OP_RMS_NORM) {
+         // RMS_NORM + MUL fusion
+         const enum ggml_op fuse_ops[] = { GGML_OP_RMS_NORM, GGML_OP_MUL };
+@@ -3108,6 +3244,13 @@
+     return 0;
+ }
+ 
++
++// ---- R4 profiling of the CPU graph loop (env GGML_R4_PROF>=3, thread 0 only): time per op type, barrier time, in-thread time. Attribution only.
++#include <time.h>
++static inline int64_t r4c_now_ns(void) { struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts); return (int64_t) ts.tv_sec * 1000000000LL + ts.tv_nsec; }
++static int     r4c_mode = -1;
++static int64_t r4c_op_ns[GGML_OP_COUNT], r4c_op_n[GGML_OP_COUNT], r4c_bar_ns, r4c_in_thread_ns, r4c_graphs, r4c_nodes;
++
+ static thread_ret_t ggml_graph_compute_thread(void * data) {
+     struct ggml_compute_state * state = (struct ggml_compute_state *) data;
+     struct ggml_threadpool    * tp    = state->threadpool;
+@@ -3136,6 +3279,10 @@
+     GGML_PRINT_DEBUG("thread #%d compute-start cplan %p last-graph %d\n", state->ith, (const void *)cplan, state->last_graph);
+ #endif
+ 
++    if (r4c_mode < 0) { const char * e = getenv("GGML_R4_PROF"); r4c_mode = e ? atoi(e) : 0; }
++    const bool r4c = r4c_mode >= 3 && state->ith == 0 && cgraph->n_nodes >= 4;
++    const int64_t r4c_enter = r4c ? r4c_now_ns() : 0;
++
+     for (int node_n = 0; node_n < cgraph->n_nodes && atomic_load_explicit(&tp->abort, memory_order_relaxed) != node_n; node_n++) {
+         struct ggml_tensor * node = cgraph->nodes[node_n];
+ 
+@@ -3150,12 +3297,16 @@
+ 
+         // TODO: move fused-op detection into ggml_graph_plan so fusion decisions are made once at planning time
+         // Try fused ops, fall back to normal compute
++        const int64_t r4c_t0 = r4c ? r4c_now_ns() : 0;
++        const enum ggml_op r4c_op = node->op;
+         const int n_fused = ggml_cpu_try_fuse_ops(cgraph, node_n, &params, cplan);
+         if (n_fused > 0) {
+             node_n += n_fused;
+         } else {
+             ggml_compute_forward(&params, node);
+         }
++        const int64_t r4c_t1 = r4c ? r4c_now_ns() : 0;
++        if (r4c) { r4c_op_ns[r4c_op] += r4c_t1 - r4c_t0; r4c_op_n[r4c_op]++; r4c_nodes++; }
+ 
+         if (state->ith == 0 && cplan->abort_callback &&
+                 cplan->abort_callback(cplan->abort_callback_data)) {
+@@ -3165,6 +3316,7 @@
+ 
+         if (node_n + 1 < cgraph->n_nodes) {
+             ggml_barrier(state->threadpool);
++            if (r4c) { r4c_bar_ns += r4c_now_ns() - r4c_t1; }
+         }
+     }
+ 
+@@ -3176,6 +3328,18 @@
+ 
+     ggml_barrier(state->threadpool);
+ 
++    if (r4c) {
++        r4c_in_thread_ns += r4c_now_ns() - r4c_enter; r4c_graphs++;
++        if (r4c_graphs % 3100 == 0) {      // 31 CPU graphs per token on the hybrid 35B plan: 100 tokens
++            fprintf(stderr, "R4CPU per token (avg of %lld graphs, %.1f nodes/graph): in-thread %.2f ms, barriers between nodes %.2f ms;", (long long) r4c_graphs, (double) r4c_nodes / r4c_graphs, r4c_in_thread_ns / 100.0 / 1e6, r4c_bar_ns / 100.0 / 1e6);
++            for (int o = 0; o < GGML_OP_COUNT; o++) { if (r4c_op_ns[o] > 100000LL * 100) { fprintf(stderr, " %s %.2f ms (%.0f nodes);", ggml_op_name((enum ggml_op) o), r4c_op_ns[o] / 100.0 / 1e6, r4c_op_n[o] / 100.0); } }
++            fprintf(stderr, " | mul_mat_id inside: prep+first barrier %.2f ms, own expert loop %.2f ms (%lld calls)", r4m_prep_ns / 100.0 / 1e6, r4m_loop_ns / 100.0 / 1e6, (long long) r4m_n);
++            r4m_prep_ns = r4m_loop_ns = r4m_n = 0;
++            fprintf(stderr, "\n");
++            memset(r4c_op_ns, 0, sizeof(r4c_op_ns)); memset(r4c_op_n, 0, sizeof(r4c_op_n)); r4c_bar_ns = r4c_in_thread_ns = r4c_graphs = r4c_nodes = 0;
++        }
++    }
++
+ #ifdef GGML_USE_CPU_RISCV64_SPACEMIT
+     ggml_backend_cpu_riscv64_spacemit_clear_numa_thread_affinity_threaded(state->ith);
+ #endif
+@@ -3943,6 +4107,7 @@
+         {
+             const char * env = getenv("GGML_CPU_DISABLE_FUSION");
+             ggml_cpu_disable_fusion = (env != NULL && atoi(env) == 1);
++            { const char * e2 = getenv("GGML_CPU_FUSE_MOE"); ggml_cpu_fuse_moe_glu = (e2 != NULL && atoi(e2) == 1); }
+         }
+ 
+         is_first_call = false;
