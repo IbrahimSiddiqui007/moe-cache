@@ -10,11 +10,33 @@ function Test-Pinned([string]$f) {
   return ($Sha256 -eq "" -or (Get-FileHash $f -Algorithm SHA256).Hash.ToLower() -eq $Sha256.ToLower())
 }
 if (Test-Pinned $Out) { Write-Output "ci_fetch: $Out already here, not downloading"; exit 0 }
+# github.com/.../releases/download/TAG/NAME answers 504 in an outage while api.github.com still serves the asset (2026-11-08): with a token (GITHUB_TOKEN / GH_TOKEN)
+# the asset is looked up by tag + name and fetched from the API first; the plain URL is the fallback.
+function Get-ApiUrl {
+  $tok = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN }
+  if (-not $tok -or $Url -notmatch '^https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/?]+)$') { return $null }
+  $repo, $tag, $name = $Matches[1], $Matches[2], $Matches[3]
+  try {
+    $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers @{ Authorization = "Bearer $tok"; Accept = "application/vnd.github+json" } -TimeoutSec 60
+    $a = $rel.assets | Where-Object { $_.name -eq $name } | Select-Object -First 1
+    if ($a) { return "https://api.github.com/repos/$repo/releases/assets/$($a.id)" }
+  } catch { }
+  return $null
+}
 $why = ""
 for ($i = 1; $i -le $Tries; $i++) {
   Remove-Item "$Out.part" -ErrorAction SilentlyContinue
   try {
-    Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile "$Out.part" -TimeoutSec 900
+    $got = $false
+    $api = Get-ApiUrl
+    if ($api) {
+      try {
+        $tok = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN } else { $env:GH_TOKEN }
+        Invoke-WebRequest -UseBasicParsing -Uri $api -OutFile "$Out.part" -TimeoutSec 900 -Headers @{ Authorization = "Bearer $tok"; Accept = "application/octet-stream" }
+        $got = $true; Write-Output "ci_fetch: got it through the GitHub API ($api)"
+      } catch { Write-Output "ci_fetch: API route failed ($($_.Exception.Message)), trying the plain URL" }
+    }
+    if (-not $got) { Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile "$Out.part" -TimeoutSec 900 }
     if (Test-Pinned "$Out.part") { Move-Item -Force "$Out.part" $Out; Write-Output "ci_fetch: $Url ok (try $i)"; exit 0 }
     $why = "sha256 mismatch: got $((Get-FileHash "$Out.part" -Algorithm SHA256).Hash.ToLower()), pinned $Sha256"
   } catch { $why = "$($_.Exception.Message) (host $hostName)" }

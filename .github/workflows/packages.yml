@@ -21,6 +21,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
+
 defaults:
   run:
     shell: bash

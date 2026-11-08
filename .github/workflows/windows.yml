@@ -21,6 +21,7 @@ permissions:
   contents: read
 
 env:
+  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
   LLAMA_RELEASE: b12064       # the release the kit bundles (ggml 0.28.0, backend API 3); b11966 (0.28.0) and b11669 (0.27.0) is what the MSI Claw and the first PC runs used
 
 jobs:

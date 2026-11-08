@@ -12,10 +12,25 @@ TRIES="${CI_FETCH_TRIES:-6}"; WAIT="${CI_FETCH_WAIT:-15}"
 HOST="$(printf '%s' "$URL" | sed -E 's#^[a-z]+://([^/]+).*#\1#')"
 ok() { [ -s "$OUT" ] && { [ -z "$SHA" ] || [ "$(sha256sum "$OUT" | cut -d' ' -f1)" = "$SHA" ]; }; }
 if ok; then echo "ci_fetch: $OUT already here${SHA:+ (sha256 ok)}, not downloading"; exit 0; fi
+# github.com/OWNER/REPO/releases/download/TAG/NAME answers 504 in an outage while api.github.com still serves the same asset (2026-11-08): with a token
+# (GITHUB_TOKEN or GH_TOKEN; the workflow's own is enough for public repos) the asset is looked up by tag + name and fetched from the API first, the plain URL is the fallback.
+api_url() {
+  local tok="${GITHUB_TOKEN:-${GH_TOKEN:-}}" re='^https://github\.com/([^/]+/[^/]+)/releases/download/([^/]+)/([^/?]+)$' id
+  [ -n "$tok" ] && [[ "$URL" =~ $re ]] || return 1
+  id=$(curl -fsSL --connect-timeout 20 --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: application/vnd.github+json" \
+       "https://api.github.com/repos/${BASH_REMATCH[1]}/releases/tags/${BASH_REMATCH[2]}" 2>/dev/null \
+       | python3 -c 'import json,sys; n=sys.argv[1]; print(next(a["id"] for a in json.load(sys.stdin)["assets"] if a["name"]==n))' "${BASH_REMATCH[3]}" 2>/dev/null) || return 1
+  [ -n "$id" ] && echo "https://api.github.com/repos/${BASH_REMATCH[1]}/releases/assets/$id"
+}
 why=""
 for i in $(seq 1 "$TRIES"); do
   rm -f "$OUT.part"
-  code=$(curl -fsSL --connect-timeout 20 --max-time 900 -o "$OUT.part" -w '%{http_code}' "$URL"); rc=$?
+  code=000; rc=1
+  if A=$(api_url); then
+    code=$(curl -fsSL --connect-timeout 20 --max-time 900 -H "Authorization: Bearer ${GITHUB_TOKEN:-${GH_TOKEN:-}}" -H "Accept: application/octet-stream" -o "$OUT.part" -w '%{http_code}' "$A"); rc=$?
+    if [ $rc = 0 ]; then echo "ci_fetch: got it through the GitHub API ($A)"; else echo "ci_fetch: API route failed (curl $rc, HTTP $code), trying the plain URL"; fi
+  fi
+  if [ $rc != 0 ]; then code=$(curl -fsSL --connect-timeout 20 --max-time 900 -o "$OUT.part" -w '%{http_code}' "$URL"); rc=$?; fi
   if [ $rc = 0 ]; then
     if [ -n "$SHA" ] && [ "$(sha256sum "$OUT.part" | cut -d' ' -f1)" != "$SHA" ]; then
       why="sha256 mismatch: got $(sha256sum "$OUT.part" | cut -d' ' -f1), pinned $SHA"
