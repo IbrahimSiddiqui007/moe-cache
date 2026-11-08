@@ -74,7 +74,8 @@ with tempfile.TemporaryDirectory() as tmp:
     check(flag(wl, "--device") == "Vulkan1,Vulkan2", f"Windows: the 512 MiB iGPU is left out ({flag(wl, '--device')}) and the two real cards are used")
     check("left out: Vulkan0" in w["stdout"], "the iGPU is named in the GPU line")
     wo = run("win", ["--multi-gpu"])        # the standard Windows fake: 9070 XT + iGPU
-    check("--device" not in plan_line(wo) and plan_line(wo) == plan_line(run("win", [])), "Windows 9070 XT + iGPU: one usable card, plan unchanged")
+    wp = plan_line(run("win", []))           # LAUNCHER-983: without --multi-gpu the launcher itself leaves the iGPU out (--device Vulkan0 = the 9070 XT in this fake); with it the prototype's one-card fallback adds nothing
+    check("--device" not in plan_line(wo) and flag(wp, "--device") == "Vulkan0" and wp.replace(" --device Vulkan0", "") == plan_line(wo), "Windows 9070 XT + iGPU: one usable card, plan unchanged except the plain launch leaves the iGPU out")
     check(flag(wl, "-ts") is not None and len(flag(wl, "-ts").split(",")) == 2, "Windows plan has two shares")
 
     # same cards, same plan on both systems (the differences allowed: quoting, Windows commit cap)
