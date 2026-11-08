@@ -72,3 +72,22 @@ Per layer step, microseconds, from the plugin's own phase timers (`MOE_CACHE_STA
 - Token identity at temperature 0 (4 prompts x 48 tokens, Flash-Next, 41 % bank hits, live swaps): async == base and persist == base; hybrid also equals hybrid-off over these 192 tokens. Granite (100 % hits): identical.
 - Speed on the laptop is NOT a verdict: rounds of the same configuration vary 4-14 tok/s (SSD, thermals, 6 cores); the verdict is the PC chain item (07_gpu_tier, W P H A B B A H P).
 - Replay of today's swap setting (every 8 tokens, 16 swaps): 51 % at a 12.5 % bank, vs 58 % (every 4, 24 swaps) and 61 % (every 4, 96 swaps).
+
+## 7. Update 2026-11-08 night: PC verdict and the profile / swap-rate replay
+
+PC (Vulkan, IQ3_XXS p64k, 16 GB): the hybrid bank loses to the plugin default in both PC items (decode -9.6 % in item 40, -29 % in item 55 with the same code). The diagnostic (item 55) measured the bank hit at 27.3 % with the shipped swap setting, a per-layer overhead of 0.25-0.29 ms (copies about 0, launch 28-91, GPU wait 86-94, read-back 100-120 us), and CPU misses at about 122 us per pick. ASYNC is not faster on Vulkan.
+
+Replay on a real Flash-Next decode trace (laptop, 8 prompts, 1,398 tokens, `tools/gpu_tier_flash_replay.py`), bank of 4,104 experts (16.7 %, the PC's size), first 161 tokens from a cold bank:
+
+| Bank choice and swap rule | Bank hit |
+|---|---|
+| shipped profile, fixed | 43.9 % |
+| decode-only profile (other 7 requests), fixed | 40.5 % |
+| shipped profile + shipped swaps (every 8 tokens, 16 swaps) | 52.6 % |
+| decode-only + every 4 tokens, 24 swaps | 56.7 % |
+| decode-only + every 4 tokens, 96 swaps | 66.8 % |
+| PC, shipped setting (measured) | 27.3 % |
+
+- A decode-only profile does not beat the shipped one on this trace, so the prompt-heavy profile counting (every group is counted, prompts included) is not what limits the bank hit.
+- Faster swap rounds are the lever (+5 to +16 points) and already exist as `MOE_CACHE_HYBRID_ADAPT=N,K`.
+- The replay overshoots the PC by about 25 points, so the replay is not trusted for the long chat until a trace of the real chat is replayed (PC item 09_gpu_bank_hit records it).
