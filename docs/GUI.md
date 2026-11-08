@@ -77,7 +77,7 @@ Each model shows its size, its quantisation (for example `Q4_K_M`) and a verdict
 
 | Verdict | Meaning |
 |---|---|
-| **fits in RAM: stock llama-server (fastest)** | the model plus 1.5 GB fits in the memory it may use and all its experts fit on the card: the launcher runs plain llama-server without the plugin, which is faster when everything fits. If some expert layers stay on the CPU, the plugin runs instead (v0.3.8 default; laptop 8 GB card: decode +10 to +29 %; CPU-only: unmeasured) |
+| **fits in RAM: stock llama-server (fastest)** | the model plus 1.5 GB fits in the memory it may use and all its experts fit on the card: the launcher runs plain llama-server without the plugin, which is faster when everything fits. If some expert layers stay on the CPU, the plugin runs instead (v0.3.8 default; laptop 8 GB card: decode +10 to +29 %; Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden)) |
 | **runs with moe-cache (bigger than free RAM)** | the model is bigger than that: the plugin keeps the most used experts in RAM and reads the rest from the SSD; with the same settings the plugin's output is the same as stock llama.cpp's (the default Long-prompt mode is the exception, see Mode below). This is how it is meant to run, not an error |
 | **runs with moe-cache --fast** / **--hybrid (bigger than free RAM)** | the same, with the faster but approximate mode you picked in Settings |
 | **all experts fit on the GPU** | every expert fits in your graphics card's memory: nothing for the cache to do |
