@@ -35,6 +35,7 @@ MACHINES = {
 CASES = [
     ("plain_ram12", ["--ram", "12"], []),
     ("fits_stock_ram32", ["--ram", "32"], []),
+    ("fits_stock_optout", ["--ram", "32", "--stock"], []),            # v0.3.8: --stock keeps plain llama-server for a model that fits RAM but has CPU expert layers
     ("fits_always_plugin", ["--ram", "32", "--always-plugin"], []),
     ("stock_flag", ["--ram", "12", "--stock"], []),
     ("fast", ["--ram", "12", "--fast"], []),
