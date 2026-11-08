@@ -13,10 +13,10 @@ index 8327c52..b657395 100644
      target_compile_features(${GGML_CPU_NAME} PRIVATE c_std_11 cxx_std_17)
 diff --git a/ggml/src/ggml-cpu/cpu-gpu-split.cpp b/ggml/src/ggml-cpu/cpu-gpu-split.cpp
 new file mode 100644
-index 0000000..6404398
+index 0000000..f00916a
 --- /dev/null
 +++ b/ggml/src/ggml-cpu/cpu-gpu-split.cpp
-@@ -0,0 +1,262 @@
+@@ -0,0 +1,314 @@
 +// CPU + GPU row split of the decode-time mat-vec on host-resident weights (moe-cache patch 0091).
 +//
 +// The CPU backend computes the first rows of a weight matrix, a GPU computes the last rows from the same host memory:
@@ -60,6 +60,10 @@ index 0000000..6404398
 +    bool                  serial   = false; // debug: wait for the GPU inside begin() to time the GPU path alone
 +    double                t_gpu_us = 0, gpu_bytes = 0;
 +    double                frac     = 0.0;
++    bool                  autoratio = false;  // GGML_CPU_GPU_SPLIT=auto: the share follows the measured wait
++    int                   win_ops  = 0;
++    double                win_cpu_us = 0, win_wait_us = 0;
++    int                   hold     = 0;       // windows during which the share may not grow (after a decrease)
 +    int64_t               min_rows = 1024;
 +    ggml_backend_t        gpu      = nullptr;
 +    bool                (*reg_host)(void *, size_t) = nullptr;
@@ -80,7 +84,7 @@ index 0000000..6404398
 +
 +    ~state() {
 +        if (stats && n_ops > 0) {
-+            fprintf(stderr, "cpu_gpu_split: ops %lld, frac %.3f, begin %.1f us/op, cpu rows %.1f us/op, gpu wait after cpu done %.1f us/op\n",
++            fprintf(stderr, "cpu_gpu_split: ops %lld, final frac %.3f, begin %.1f us/op, cpu rows %.1f us/op, gpu wait after cpu done %.1f us/op\n",
 +                    (long long) n_ops, frac, t_begin_us / n_ops, t_cpu_us / n_ops, t_wait_us / n_ops);
 +            if (serial) {
 +                fprintf(stderr, "cpu_gpu_split: serial GPU path %.1f us/op, %.2f GB/s of weights\n", t_gpu_us / n_ops, gpu_bytes / t_gpu_us / 1e3);
@@ -103,10 +107,18 @@ index 0000000..6404398
 +    if (!e || !*e) {
 +        return;
 +    }
-+    const double f = atof(e);
++    const bool is_auto = strcmp(e, "auto") == 0;
++    double f = is_auto ? 0.30 : atof(e);
++    if (is_auto) {
++        const char * st0 = getenv("GGML_CPU_GPU_SPLIT_START");
++        if (st0 && atof(st0) > 0.0 && atof(st0) < 1.0) {
++            f = atof(st0);
++        }
++    }
 +    if (!(f > 0.0 && f < 1.0)) {
 +        return;
 +    }
++    s.autoratio = is_auto;
 +    const char * m = getenv("GGML_CPU_GPU_SPLIT_MIN_ROWS");
 +    if (m && *m) {
 +        s.min_rows = atoll(m);
@@ -195,6 +207,41 @@ index 0000000..6404398
 +    return &p;
 +}
 +
++void free_plans() {
++    state & s = st();
++    ggml_backend_synchronize(s.gpu);
++    for (auto & kv : s.plans) {
++        if (kv.second.buf) ggml_backend_buffer_free(kv.second.buf);
++        if (kv.second.ctx) ggml_free(kv.second.ctx);
++    }
++    s.plans.clear();
++}
++
++// auto mode: every 64 ops compare the time the CPU waited for the GPU after it finished its own rows (wait) with its own
++// compute time. wait above 5 % of the CPU time -> the GPU is the slower half, give it less; wait below 1 % -> the GPU
++// is idle part of the time, give it more (but not right after a decrease). Steps of 0.025, share kept in 0.05..0.60.
++void adapt(double cpu_us, double wait_us) {
++    state & s = st();
++    s.win_ops++; s.win_cpu_us += cpu_us; s.win_wait_us += wait_us;
++    if (s.win_ops < 64) {
++        return;
++    }
++    const double r = s.win_wait_us / (s.win_cpu_us > 1.0 ? s.win_cpu_us : 1.0);
++    double f = s.frac;
++    if (r > 0.05) {
++        f -= 0.025; s.hold = 4;
++    } else if (r < 0.01 && s.hold == 0) {
++        f += 0.025;
++    }
++    if (s.hold > 0 && r <= 0.05) s.hold--;
++    f = f < 0.05 ? 0.05 : (f > 0.60 ? 0.60 : f);
++    s.win_ops = 0; s.win_cpu_us = 0; s.win_wait_us = 0;
++    if (f != s.frac) {
++        s.frac = f;
++        free_plans(); // staging tensors are sized for the share; the next op builds the new ones
++    }
++}
++
 +bool ensure_registered(const ggml_tensor * a) {
 +    state & s = st();
 +    auto it = s.registered.find(a->buffer);
@@ -276,8 +323,13 @@ index 0000000..6404398
 +    const auto t2 = std::chrono::steady_clock::now();
 +    memcpy((float *) dst->data + pd->n_cpu, s.bounce_o, (size_t) pd->n_gpu * sizeof(float));
 +    s.n_ops++;
-+    s.t_cpu_us  += std::chrono::duration<double, std::micro>(t1 - s.t_mark).count();
-+    s.t_wait_us += std::chrono::duration<double, std::micro>(t2 - t1).count();
++    const double cpu_us  = std::chrono::duration<double, std::micro>(t1 - s.t_mark).count();
++    const double wait_us = std::chrono::duration<double, std::micro>(t2 - t1).count();
++    s.t_cpu_us  += cpu_us;
++    s.t_wait_us += wait_us;
++    if (s.autoratio) {
++        adapt(cpu_us, wait_us);
++    }
 +}
 diff --git a/ggml/src/ggml-cpu/cpu-gpu-split.h b/ggml/src/ggml-cpu/cpu-gpu-split.h
 new file mode 100644

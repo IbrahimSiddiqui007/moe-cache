@@ -2087,6 +2087,7 @@ SERVER_HELP = """\
            7,438 tokens in 45.6 s cold; a session that finds the preamble cached starts with 29 new tokens in 0.7 s). --no-warm to turn it off
 --cpu-only    run on the CPU only: llama-server gets --device none and -ngl 0 (also chosen by itself when --list-devices shows no GPU)
 --no-ffn-ram  dense model bigger than the GPU: by default attention, the KV cache and most weights stay on the GPU and the FFN weights of the last layers stay in RAM (-ot), which keeps long chats usable (Qwen3-14B on an 8 GB card at 32k tokens: 3.8 tok/s against 1.0 with a plain layer split); this brings llama.cpp's --fit layer split back
+--cpu-gpu-split [auto|FRACTION]  dense model with FFN weights in RAM (see --no-ffn-ram), CUDA, patched llama.cpp with patch 0091: the GPU computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM); auto follows the measured wait, a number (0.05-0.6) fixes the GPU's share. Opt-in until the PC run decides. Loads the model without mmap and without repacking (needed to page-lock it); laptop RTX 4060 + Qwen3-14B: +19 % under a controlled disturbance, +7 % quiet (noisy)
 --no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
@@ -2316,6 +2317,7 @@ def parse_server(argv):
     ap.add_argument("--mmproj", metavar="auto|FILE")        # PROTOTYPE (MM6): pass a vision projector and count it in the plan; default off
     ap.add_argument("--cpu-only", action="store_true", help="run on the CPU only: --device none and -ngl 0 (also chosen by itself when llama-server lists no GPU)")
     ap.add_argument("--auto-fit", action="store_true")      # MM6: a dense model gets no -ngl 99, so llama.cpp's --fit places the layers; since the dense route (LAUNCHER-732) this is the default for dense models
+    ap.add_argument("--cpu-gpu-split", nargs="?", const="auto", default=None, metavar="auto|FRACTION")   # DECODE-917 (patch 0091): the GPU also computes part of the rows of the RAM-held FFN weights (opt-in, CUDA)
     ap.add_argument("--no-ffn-ram", action="store_true")    # dense models bigger than the GPU: no FFN-weights-in-RAM plan (-ot), llama.cpp's --fit layer split instead
     ap.add_argument("--no-auto-fit", action="store_true")   # dense models: go back to the blind -ngl 99
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
@@ -3327,7 +3329,10 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
         if free and mm_bytes:
             free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)           # a vision projector's weights and compute buffer sit in VRAM too (same as the tuner)
         kv_q8 = kv_q8 or arg_after(extra, "-ctk", "--cache-type-k") in ("q8_0", "q4_0")       # your own cache type after -- counts (q4_0 is sized as q8_0: a little too much)
-        r = dense_ffn_split(model, ctx, free, kv_q8=kv_q8, margin_gib=a.gpu_margin if a.gpu_margin is not None else 0.25)
+        margin = a.gpu_margin if a.gpu_margin is not None else 0.25
+        if getattr(a, "cpu_gpu_split", None):
+            margin += CPU_GPU_SPLIT_VRAM_GIB            # the split's staging tensors and its own CUDA context (measured +56 MiB on the laptop)
+        r = dense_ffn_split(model, ctx, free, kv_q8=kv_q8, margin_gib=margin)
     except Exception:
         return None
     if not r:
@@ -3343,6 +3348,44 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
         f"{r['n_off'] * r['ffn_gib']:.1f} GiB) stay in RAM (-ot; the model plus a {ctx}-token KV cache needs {r['need_gib']:.1f} GiB, the GPU has {r['free_gib']:.1f}). "
         "A plain layer split would run the attention of the RAM layers on the CPU: far slower in long chats. --no-ffn-ram turns this off")
     return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
+
+
+CPU_GPU_SPLIT_VRAM_GIB = 0.15
+
+
+def cpu_gpu_split_stage(a, env, cmd, ls):
+    """DECODE-917 (patch 0091), opt-in: with the FFN weights in RAM (-ot) the GPU also computes a share of their rows, fed by DMA from page-locked RAM, while the
+    CPU computes the rest. Needs the kit's patched llama.cpp with patch 0091 and CUDA; the server then loads the model without mmap and without repacking (a file-backed
+    mapping cannot be page-locked, a repacked tensor is not what the GPU kernels read). Returns the command; adds GGML_CPU_GPU_SPLIT to env."""
+    want = getattr(a, "cpu_gpu_split", None)
+    if not want:
+        return cmd
+    if want != "auto":
+        try:
+            ok = 0.05 <= float(want) <= 0.6
+        except ValueError:
+            ok = False
+        if not ok:
+            raise SystemExit("--cpu-gpu-split takes auto or a number from 0.05 to 0.6 (the GPU's share of the rows)")
+    if "-ot" not in cmd:
+        say("moe-cache: --cpu-gpu-split: only the dense plan with FFN weights in RAM (-ot) uses it; not applied here")
+        return cmd
+    line = llama_patch_line(ls) or ""
+    m = re.search(r"patches ([0-9,]+)", line)
+    if not m or "0091" not in m.group(1).split(","):
+        say("moe-cache: --cpu-gpu-split: this llama-server does not carry patch 0091 (the kit's patched llama.cpp does); not applied")
+        return cmd
+    cmd = list(cmd)
+    if "--load-mode" in cmd:
+        cmd[cmd.index("--load-mode") + 1] = "none"
+    else:
+        cmd += ["--load-mode", "none"]
+    if "--no-repack" not in cmd:
+        cmd.append("--no-repack")
+    env.append(("GGML_CPU_GPU_SPLIT", want))
+    say(f"moe-cache: --cpu-gpu-split {want}: the GPU computes part of the rows of the FFN weights that stay in RAM (patch 0091, DMA from page-locked RAM); "
+        "the model loads without mmap and without repacking, and about 0.15 GiB of GPU memory is kept for it")
+    return cmd
 
 
 def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8=False, mm_bytes=0):
@@ -3497,6 +3540,7 @@ def _launch_plan(a, extra, argv, machine):
     extra = leave_room_stage(a, env, extra, pinargs, machine)
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
+    cmd = cpu_gpu_split_stage(a, env, cmd, ls)
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
     # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows
