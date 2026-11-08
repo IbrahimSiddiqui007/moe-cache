@@ -1,8 +1,8 @@
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index 2bd1ab9ec..3fecb3e64 100644
+index 78c8ef1..94f534b 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
-@@ -1044,6 +1044,13 @@ public:
+@@ -1047,6 +1047,13 @@ public:
      server_queue    queue_tasks;
      server_response queue_results;
  
@@ -16,7 +16,7 @@ index 2bd1ab9ec..3fecb3e64 100644
      // note: chat_params must not be refreshed upon existing sleeping state
      server_chat_params chat_params;
  
-@@ -1054,6 +1061,11 @@ public:
+@@ -1057,6 +1064,11 @@ public:
      }
  
      ~server_context_impl() {
@@ -28,7 +28,7 @@ index 2bd1ab9ec..3fecb3e64 100644
          if (!sleeping) {
              // destroy() is already called when entering sleeping state
              // we don't call it again here to avoid double free
-@@ -3240,6 +3252,115 @@ private:
+@@ -3251,6 +3263,115 @@ private:
                      }
  
                      GGML_ASSERT(packed.size() % sizeof(llama_token) == 0);
@@ -57,7 +57,7 @@ index 2bd1ab9ec..3fecb3e64 100644
 +                        }();
 +                        size_t n_ckpt_bytes = 0;
 +                        for (const auto & cur : slot->prompt.checkpoints) {
-+                            n_ckpt_bytes += cur.data_tgt.size() + cur.data_dft.size() + cur.data_spec.size();
++                            n_ckpt_bytes += cur->data_tgt.size() + cur->data_dft.size() + cur->data_spec.size();
 +                        }
 +                        const size_t n_state = llama_state_seq_get_size_ext(ctx_tgt, slot->id, LLAMA_STATE_SEQ_FLAGS_NONE);
 +                        if (n_state > 8 && n_state + 2 * n_ckpt_bytes <= max_bytes) {   // PATCH-712: the checkpoints are copied once more for the thread, so they count twice
@@ -73,7 +73,7 @@ index 2bd1ab9ec..3fecb3e64 100644
 +                                auto done = std::make_shared<std::atomic<bool>>(false);
 +                                const int     id_task  = task.id;
 +                                const int64_t n_tokens = slot->prompt.tokens.size();
-+                                std::list<common_prompt_checkpoint> ckpts = slot->prompt.checkpoints;
++                                auto ckpts = slot->prompt.checkpoints;   // b12207: a list of shared_ptr<const common_prompt_checkpoint>, so this shares the immutable data instead of copying it
 +                                slot_save_workers.push_back({ std::thread([this, done, id_task, id_slot, n_tokens, filename, filepath, t_start,
 +                                        packed = std::move(packed), state = std::move(state), ckpts = std::move(ckpts), data_spec = std::move(data_spec)]() {
 +                                    bool ok = false;
@@ -94,7 +94,7 @@ index 2bd1ab9ec..3fecb3e64 100644
 +                                            ckpt_write(ofs, &m,     sizeof(m),     n_total);
 +                                            ckpt_write(ofs, &v,     sizeof(v),     n_total);
 +                                            ckpt_write(ofs, &count, sizeof(count), n_total);
-+                                            for (const auto & cur : ckpts) {
++                                            for (const auto & ckpt_p : ckpts) { const auto & cur = *ckpt_p;
 +                                                ckpt_write(ofs, &cur.n_tokens, sizeof(cur.n_tokens), n_total);
 +                                                ckpt_write(ofs, &cur.pos_min,  sizeof(cur.pos_min),  n_total);
 +                                                ckpt_write(ofs, &cur.pos_max,  sizeof(cur.pos_max),  n_total);

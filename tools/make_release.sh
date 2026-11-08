@@ -25,15 +25,15 @@ for API in 2 3; do
   N=moe-cache-v$V$SUF-linux-x86_64; rm -rf dist/$N; mkdir -p dist/$N
   cp -r bin planner ui tests tools profiles docs LICENSE README.md CHANGELOG.md models.json build.sh install.sh third_party dist/$N/ ; mkdir -p dist/$N/build dist/$N/src; cp build/libggml-moe-cache.so dist/$N/build/; cp src/* dist/$N/src/
   rm -rf dist/$N/tools/make_release.sh dist/$N/tools/bundle_llama_linux.sh dist/$N/tools/bundle_llama_patched.sh dist/$N/tools/ci
-  # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12064 = ggml 0.28 = API 3), unmodified, sha256-checked
+  # the ggml 0.26-and-newer tarball carries the official llama.cpp Vulkan/CPU build that matches its backend API (b12207 = ggml 0.29 = API 3), unmodified, sha256-checked
   # against the release asset, in llama/ (the launcher finds it); the API-2 tarball (llama.cpp 7fe450e19) has no official build to bundle: it needs your own.
   # MOE_CACHE_RELEASE_NO_LLAMA=1 builds the old tarball without it.
   # LLAMA_PATCHED_LINUX_DIR=DIR (the release workflow sets it: the unpacked llama_patched.yml build) bundles OUR patched build of the same pin instead
   # (tools/bundle_llama_patched.sh; every patch built in and off). Unset = the official build, as before; the workflow's `llama_build: official` input unsets it.
   if [ $API = 3 ] && [ "${MOE_CACHE_RELEASE_NO_LLAMA:-0}" != 1 ] && [ -n "${LLAMA_PATCHED_LINUX_DIR:-}" ]; then
-    tools/bundle_llama_patched.sh dist/$N "$LLAMA_PATCHED_LINUX_DIR" linux b12064
+    tools/bundle_llama_patched.sh dist/$N "$LLAMA_PATCHED_LINUX_DIR" linux b12207
   elif [ $API = 3 ] && [ "${MOE_CACHE_RELEASE_NO_LLAMA:-0}" != 1 ]; then
-    tools/bundle_llama_linux.sh dist/$N b12064 llama-b12064-bin-ubuntu-vulkan-x64.tar.gz 156e0010e92079dd931c82f50cbf8be94de47d06dba637c29261bfda3f2ff297 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
+    tools/bundle_llama_linux.sh dist/$N b12207 llama-b12207-bin-ubuntu-vulkan-x64.tar.gz 178a5d6a940d74a24ee359dc8af68ce6b2fccb99150c1bdd458dbec640653c06 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
   fi
   [ -f dist/$N/ui/index.html ] || { echo "FAIL: ui/index.html missing from $N (the control page needs it)"; exit 1; }
   tar -C dist -czf dist/$N.tar.gz $N

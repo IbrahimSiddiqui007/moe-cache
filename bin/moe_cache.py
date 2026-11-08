@@ -137,7 +137,7 @@ def llama_search_dirs():
 
 # llama.cpp commits (first 9 digits) that CI ran this plugin against: the tested "yes" rows of .github/workflows/identity.yml; the @commit entries of
 # MOE_CACHE_TESTED_GGML in src/moe_cache_plugin.cpp are a subset. tests/tested_commits_test.py fails when they disagree.
-TESTED_COMMITS = ("7fe450e19", "23b0202a1", "ff0d396e3", "51fe42c5d")
+TESTED_COMMITS = ("7fe450e19", "23b0202a1", "ff0d396e3", "51fe42c5d", "998200491")
 
 
 def tested_commit(ver):
@@ -160,7 +160,7 @@ def ls_build(ls):
 
 def llama_patch_line(ls):
     """The one-line note the kit's patched llama.cpp carries next to llama-server (PATCHES-moe-cache.txt, written by tools/bundle_llama_patched.sh), e.g.
-    'llama.cpp b12064 + moe-cache patches 0004,0020,0030,0040,0090,0091 built in, all off'. None for an official or any other build (no such file)."""
+    'llama.cpp b12207 + moe-cache patches 0004,0020,0030,0040,0090,0091 built in, all off'. None for an official or any other build (no such file)."""
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(ls)), "PATCHES-moe-cache.txt"), encoding="utf-8", errors="replace") as f:
             line = f.readline().strip()
@@ -674,7 +674,7 @@ def pick_gpu_full(listing):
         m = re.search(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL|Metal)\d*): (.+)$", listing, re.M)     # a device line without memory figures
         return (m.group(1), m.group(2).strip(), 0, 0) if m else None
     ded = win_dedicated_vram()
-    d = max(devs, key=lambda x: (dedicated_for(x[1].strip(), ded), int(x[3])))
+    d = max(devs, key=lambda x: (not IGPU_NAME_RE.search(x[1].strip()), dedicated_for(x[1].strip(), ded), int(x[3])))      # LAUNCHER-983: a card that is not integrated (by name) first, then dedicated memory, then free memory
     return d[0], d[1].strip(), int(d[3]), int(d[2])
 
 
@@ -1651,10 +1651,14 @@ def sampling_args(off, agent, model, extra):
     return args
 
 
-def mtp_args(want, agent, ls, model, extra):
+def mtp_args(want, agent, ls, model, extra, exact=False):
     """The --spec-* arguments for the model's MTP head (see mtp_decide), and says why in one line. Reads the GGUF header and, only when the model
     has a head, llama-server --help."""
     user_spec = arg_after(extra, "--spec-type", "--model-draft", "-md") is not None
+    if exact:                       # LAUNCHER-984: --exact turns every token-changing mode off (an explicit --mtp is refused in approx_stage)
+        return []
+    import moe_cache_approx as ax
+    agent = agent and ax.default_on("mtp")          # the default-on in agent mode follows the table; --mtp still asks for it
     try:
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import mtp_layers
@@ -1955,6 +1959,10 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     out = None          # our own stderr is gone (closed pipe, no console): keep draining, or llama-server blocks in its next log write
             if GPU_OOM_RE.search(line.decode(errors="replace")):
                 seen["oom"] = True
+            cpn = None if EXPECT_CPU_WORK[0] else cpu_placement_note(line, cpu_run=("--device none" in " ".join(cmd) or " -ngl 0 " in " ".join(cmd) + " "))
+            if cpn and cpn[0] not in seen.setdefault("cpuplace", set()):
+                seen["cpuplace"].add(cpn[0])
+                say(cpn[1], err=True)
             if GGML_ABORT_RE.search(line.decode(errors="replace")):
                 seen["kvabort"] = line.decode(errors="replace").strip()[-200:] or True       # the matched line, so the retry can say which abort it answered
             if b"moe-cache:" in line:
@@ -2031,11 +2039,12 @@ def exit_reason(rc, ready):
 # ---- server ----
 
 SERVER_HELP = """\
---fast     opt-in approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
+--fast     DEPRECATED alias (still works; forces the mode on): approximate routing (MOE_CACHE_ROUTE=skip): a low-ranked expert that is not in RAM is skipped instead of read from the SSD;
            also a q8_0 KV cache (half the KV memory; KL on its own: 0.0120 on the PC's Vulkan GPU, 0.0045 on the laptop's CUDA GPU; docs/results-archive/RESULTS.md R11, RESULTS 53).
            About +10-12 % when the model is much bigger than RAM; about 1 top token in 40-50 differs from stock (KL 0.005-0.012, docs/results-archive/RESULTS_OLD_LAPTOP.md section 31).
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
---exact    keep the f16 KV cache at 128k+ and switch the default long-prompt mode off: the answers are the same as plain llama.cpp's (EXACTNESS.md)
+--exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
+           llama.cpp's (EXACTNESS.md). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
            the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
@@ -2047,7 +2056,7 @@ SERVER_HELP = """\
 --hybrid   opt-in, experimental: a bank of your most used experts (from the usage profile) lives in free GPU memory; the GPU computes the picks it holds
            while the CPU computes the rest at the same time (Flash-Next on 8 GB: 13.1 -> 17.4 tok/s). Not identical to stock (GPU float order, like
            --gpu-cache); replaces --gpu-cache and keeps all experts on the CPU side. MOE_CACHE_HYBRID=MIB sets the bank size (default: all free VRAM)
---approx safe|careful|aggressive  OFF by default. Opt-in speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
+--approx safe|careful|aggressive  DEPRECATED alias (still works; forces the modes of the tier on; the default launch enables the modes measured as a win by itself). Speed tiers that CHANGE THE ANSWERS (none is identical to stock; `exact` = off). safe: 8-bit KV cache + the model's own MTP drafting if it has the
            head (every expert is computed). careful: --fast (rarely picked experts not in RAM are skipped, about 1 token in 40-50 differs) + the same. aggressive: --fast=2 (up to 4 low-ranked experts skipped, about 1 token
            in 28 differs). Each mode has a quality gate (docs/QUALITY_GATE.md, docs/CONFIGURATION.md) and runs only for models with a gate record, else --approx-unverified. Your own --fast wins and is reported.
            At the start a short canary (about 256 scored tokens, against the exact setting of the same model) re-measures the tier and steps it down when the KL divergence is past its gate
@@ -2883,6 +2892,88 @@ def gpu_stage(a, ls, win, machine):
     return vram_user, listing, gpu
 
 
+def dense_fit_free(a, machine):
+    """(free GPU bytes, gap in GiB) for the dense fit estimate: --vram or the figure llama-server's own --list-devices gave (Windows AMD / Intel; no gap) else nvidia-smi / sysfs
+    (SMI_GAP_GIB too high, see planner/gguf_plan.py); (None, 0) without a GPU figure."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import SMI_GAP_GIB
+        if a.vram:
+            return float(a.vram) * 2**30, 0.0
+        f = machine.free_vram_bytes()
+        return (f, SMI_GAP_GIB) if f else (None, 0.0)
+    except Exception:
+        return None, 0.0
+
+
+def dense_gpu_fit_pair(a, model, ctx, machine):
+    """LAUNCHER-982: (f16 fit, q8_0 fit) of a model without experts at `ctx` from planner/gguf_plan.py dense_gpu_fit(); None when the layout or the GPU memory is unknown.
+    Constants: with llama-server's own free-memory figure (--vram, or --list-devices on Windows AMD / Intel) compute buffer + context 0.20 GiB and no margin, calibrated on the PC
+    (Qwen3.8-27B Q3_K_XL on the 16 GB RX 9070 XT, 14.65 GiB free, 2026-11-08: f16 KV at 32k and q8_0 KV at 64k run all on the GPU at 26.5 / 26.6 tok/s, f16 at 64k spills to 18.9);
+    with nvidia-smi / sysfs the CUDA-measured 0.30 GiB + 0.25 GiB margin and the 0.4 GiB reporting gap."""
+    free, gap = dense_fit_free(a, machine)
+    if not free:
+        return None
+    try:
+        from gguf_plan import dense_gpu_fit
+        if a.vram:
+            fixed, m = 0.20, (a.gpu_margin if a.gpu_margin is not None else 0.0)
+        else:
+            fixed, m = None, (a.gpu_margin if a.gpu_margin is not None else 0.25)
+        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed)
+        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed)
+    except Exception:
+        return None
+    return (f16, q8) if f16 and q8 else None
+
+
+def gpu_fit_words(r, kv_name):
+    """The numbers behind a fit estimate, plain: model + KV + compute (+ margin) = need of free."""
+    return (f"model {r['model_gib']:.1f} + {kv_name} KV {r['kv_gib']:.1f} + compute {r['fixed_gib']:.1f}" + (f" + margin {r['margin_gib']:.2f}" if r['margin_gib'] else "")
+            + f" = {r['need_gib']:.1f} GiB of {r['free_gib']:.1f} GiB free")
+
+
+EXPECT_CPU_WORK = [False]     # set by command_stage: the plan itself puts work on the CPU (the log scan then stays quiet)
+CPU_ATTN_RE = re.compile(r"layer\s+(\d+) is assigned to device (\S+) but Flash Attention over K/V rows is assigned to device CPU")
+OFFLOADED_RE = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
+
+
+def cpu_placement_note(line, cpu_run=False):
+    """LAUNCHER-983: (key, warning) for a llama-server log line that says work was placed on the CPU although a GPU is used, else None. cpu_run: the launcher itself asked for the
+    CPU (--cpu-only / --device none / -ngl 0), so 'offloaded 0/N' is expected."""
+    text = line.decode(errors="replace") if isinstance(line, bytes) else line
+    m = CPU_ATTN_RE.search(text)
+    if m:
+        return ("attn", f"moe-cache: WARNING: llama-server put the attention over the KV cache of layer {m.group(1)} (weights on {m.group(2)}) on the CPU: the KV cache did not fit in GPU "
+                        "memory next to the model, and decode will be much slower (Qwen3.8-27B on the 16 GB RX 9070 XT at 64k: 35 -> 19 tok/s). A smaller --ctx or an 8-bit KV cache "
+                        "keeps it on the GPU; the 'all on GPU' line above says by how much it was short")
+    m = OFFLOADED_RE.search(text)
+    if m and not cpu_run and int(m.group(1)) < int(m.group(2)):
+        return ("offload", f"moe-cache: WARNING: only {m.group(1)} of {m.group(2)} layers are on the GPU: the rest run on the CPU and decode will be slower. "
+                           "Free GPU memory, use a smaller --ctx or an 8-bit KV cache")
+    return None
+
+
+IGPU_NAME_RE = re.compile(r"(Radeon\(TM\) Graphics|Radeon\s+\d{3}M|UHD Graphics|Iris|Intel\(R\) Graphics|Graphics$)", re.I)
+
+
+def auto_gpu_device(extra, listing, cpu_only=False, multi_gpu=False):
+    """LAUNCHER-983 (owner's choice 2026-11-09): the --device value that leaves integrated GPUs out when the listing has at least one integrated GPU (by name: 'Radeon(TM) Graphics',
+    'UHD Graphics', 'Iris') AND at least one card that is not: (ids joined by commas, names, all listed ids). The plan, the control page and now the server use the same cards; two real
+    cards still split as llama.cpp does by default. None when there is nothing to leave out, an integrated GPU is the only kind (used as before), the user chose (--device / -dev / -ts /
+    -sm / --main-gpu), or the CPU / the multi-GPU prototype is wanted."""
+    if cpu_only or multi_gpu or not listing:
+        return None
+    if any(x in ("--device", "-dev", "-ts", "--tensor-split", "-sm", "--split-mode", "--main-gpu", "-mg") or x.startswith(("--device=", "--tensor-split=", "--split-mode=", "--main-gpu=")) for x in extra):
+        return None
+    devs = re.findall(r"^\s+((?:CUDA|Vulkan|ROCm|HIP|SYCL)\d*): (.+?) \((\d+) MiB, (\d+) MiB free\)", listing, re.M)
+    igpu = [d for d in devs if IGPU_NAME_RE.search(d[1].strip())]
+    real = [d for d in devs if not IGPU_NAME_RE.search(d[1].strip())]
+    if not igpu or not real:
+        return None
+    return ",".join(d[0] for d in real), ", ".join(d[1].strip() for d in real), [d[0] for d in devs]
+
+
 def plugin_for_partial_offload(a, ls, model, ctx, machine):
     """v0.3.8, laptop evidence (RTX 4060 8 GB, Qwen3.6-35B-A3B IQ3_XXS, 30 expert layers on the CPU, 32k chat, A B B A): a model that fits in RAM but not in VRAM decodes
     faster through the plugin's executor than through stock llama-server: +10 to +29 % in all six paired band comparisons (mean +15 %; 8k probe +26 %), prompt speed about 10 %
@@ -3003,6 +3094,14 @@ def approx_stage(a, model):
     (a.approx_kv) and the model's own MTP drafting (a.approx_spec). Off unless asked. Your own --fast wins; --exact and --stock refuse. Sets a.approx_info (the control page and --plan-json show it)."""
     a.approx_kv = a.approx_spec = False
     a.approx_info = None
+    if a.exact and (a.fast or a.mtp) and not a.long_prompt:          # (--long-prompt --exact is refused with its own message in kv_stage)
+        raise SystemExit(f"--exact does not go with {'--fast' if a.fast else '--mtp'}: --exact turns every mode off that changes tokens and gives the answers of plain llama.cpp")
+    if not a.fast and not a.approx and not a.exact and not a.stock:         # LAUNCHER-984: an expert-skipping row marked "won" in TOKEN_MODES is on by default (none is today)
+        import moe_cache_approx as ax0
+        lvl = ax0.default_expert_level()
+        if lvl:
+            a.fast = lvl
+            say(f"moe-cache: --fast={lvl} is on by default (measured as a win, TOKEN_MODES in bin/moe_cache_approx.py); --exact turns it off")
     if not a.approx:
         if a.approx_off or a.approx_unverified:
             raise SystemExit("--approx-off / --approx-unverified need --approx safe|careful|aggressive")
@@ -3027,12 +3126,27 @@ def approx_stage(a, model):
 def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     """ENGINE-029, stage "KV cache": q8_0 is the default from 128k context on a GPU machine (owner 2026-10-30; not with --stock, --exact or your own -ctk/-ctv); --fast also stores it as q8_0 (half the KV memory, which at agent-sized contexts is the VRAM a bigger micro-batch needs). Sets a.fast = "kv" in the default case and adds -ctk/-ctv to extra. Returns whether the KV cache is q8_0."""
     # --no-long-prompt gives "-ub 2048 and the f16 KV cache" (SERVER_HELP), so it also switches the 128k q8_0 default off (fixed 2026-11-08: it used to leave q8_0 on at >= 128k)
-    if (not a.fast and not a.exact and not a.stock and not getattr(a, "no_long_prompt", False) and ctx >= 131072
+    import moe_cache_approx as ax          # LAUNCHER-984: the defaults below follow the status rows of TOKEN_MODES ("won" = on by default)
+    if (not a.fast and not a.exact and not a.stock and not getattr(a, "no_long_prompt", False) and ctx >= 131072 and ax.default_on("kv8")
             and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
             and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls)))):     # a GPU: listed, or --vram given
         a.fast = "kv"
         say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache by default (--fast=kv: about 2x prompt speed at 256k on a 16 GB card; it passed the "
             "quality gate at 4k context, docs/QUALITY_GATE.md); --exact keeps the f16 KV")
+    if (dense and ax.default_on("kv8") and not a.fast and not a.exact and not a.stock and not getattr(a, "approx_kv", False)
+            and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)):
+        # LAUNCHER-982 (PC 2026-11-08: Qwen3.8-27B UD-Q3_K_XL at --agent --ctx 65536 ran 18.9 tok/s against 35 at 24k: the f16 KV cache did not fit beside the model, llama.cpp's --fit
+        # moved the attention over the KV cache to the CPU): estimate model + KV + compute against the free GPU memory; f16 if it fits, else the 8-bit cache when that fits (or at least
+        # spills less); --exact keeps f16 and the 'all on GPU' line says what it costs
+        pair = dense_gpu_fit_pair(a, a.model, ctx, machine)
+        if pair and not pair[0]["fits"]:
+            a.fast, a.dense_kv = "kv", True
+            if pair[1]["fits"]:
+                say(f"moe-cache: context {ctx // 1024}k: the f16 KV cache does not fit the GPU next to the model ({gpu_fit_words(pair[0], 'f16')}): q8_0 KV cache, which does "
+                    "(half the GPU memory for the same context; --exact keeps f16 and lets llama.cpp move work to the CPU)")
+            else:
+                say(f"moe-cache: context {ctx // 1024}k: q8_0 KV cache (half the GPU memory of f16, same context); the model with its KV cache is still {pair[1]['over_gib']:.1f} GiB over the GPU, "
+                    "so part of it runs from system RAM (llama.cpp's --fit places it)")
     a.lp_kv = False
     # the long-prompt mode is the default (owner 2026-11-08, measured: prompts +77 %, answers +1.8 %, claim v038-longprompt-default) for a GPU plan of a big model at agent-sized
     # contexts; --long-prompt asks for it at any context. Not with --no-long-prompt, --exact, --stock, a model that runs on plain llama.cpp or a dense model, and below LONG_PROMPT_MIN_CTX
@@ -3040,7 +3154,7 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
     a.lp_explicit = bool(getattr(a, "long_prompt", False)) and not getattr(a, "no_long_prompt", False)
     if a.lp_explicit and (a.exact or a.stock):           # checked before anything else, so --ub / --fast / -ctk cannot hide the conflict
         raise SystemExit("--long-prompt does not go with --exact or --stock (it stores the KV cache as q8_0, which is not identical to stock)")
-    a.long_prompt = a.lp_explicit or (not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
+    a.long_prompt = a.lp_explicit or (ax.default_on("long-prompt") and not getattr(a, "no_long_prompt", False) and not a.exact and not a.stock and not stock and not dense and ctx >= LONG_PROMPT_MIN_CTX)
     if getattr(a, "long_prompt", False) and not a.fast and a.ub == "auto" and not any(x in ("-ub", "--ubatch-size") for x in extra):          # the long-prompt mode stores the KV cache as q8_0 (the measured setting is --fast=kv); undone below when -ub 4096 does not fit
         if not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra) and (a.vram or machine.pick_gpu(listing if listing is not None else machine.list_devices(ls))):
             a.fast, a.lp_kv = "kv", True
@@ -3089,8 +3203,8 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
 
 def fast_env_stage(a, env, stock, model, machine):
     """ENGINE-029, stage "approximate modes": the plugin settings and the one plain line for --fast, --fast=2, --fast=fewer and --fast=kv; without --fast, the hint where it would pay (the model is much bigger than the memory it may use). env grows in place."""
-    if a.fast == "kv" and getattr(a, "lp_kv", False):
-        pass                                                    # --long-prompt says what it did after the memory plan (long_prompt_stage)
+    if a.fast == "kv" and (getattr(a, "lp_kv", False) or getattr(a, "dense_kv", False)):
+        pass                                                    # --long-prompt says what it did after the memory plan (long_prompt_stage); the dense KV choice said it in kv_stage
     elif a.fast == "kv":
         say("moe-cache: --fast=kv: q8_0 KV cache only (every expert is computed; KL about 0.005-0.012 against stock, output no longer identical)")
     elif a.fast:
@@ -3415,6 +3529,14 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
             pass
         say("moe-cache: dense model, no experts: no -ngl 99 (it makes a file bigger than the GPU abort at load); llama.cpp's --fit places the layers by free GPU memory" + margin
             + ("" if a.auto_fit else ". --no-auto-fit brings -ngl 99 back"))
+    # LAUNCHER-983: tell the log scan whether work on the CPU is part of this plan (experts on the CPU by design, FFN weights in RAM, CPU-only, a dense model the estimate says is over the GPU)
+    expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and "-ot" in cmd))
+    if dense and not expect:
+        pair = dense_gpu_fit_pair(a, model, ctx, machine)
+        kv_name = arg_after(extra, "-ctk", "--cache-type-k") or "f16"
+        r = (pair[1] if kv_name in ("q8_0", "q4_0") else pair[0]) if pair else None
+        expect = bool(r and not r["fits"])
+    EXPECT_CPU_WORK[0] = expect
     if method == "none (stock)":
         pass
     elif ncmoe == "0":
@@ -3483,6 +3605,13 @@ def _launch_plan(a, extra, argv, machine):
             say(why); stock = False
     lib = plugin_lib_stage(ls, dry, stock, win, machine)
     vram_user, listing, gpu = gpu_stage(a, ls, win, machine)
+    try:
+        ag = auto_gpu_device(extra, listing if listing is not None else machine.list_devices(ls), a.cpu_only, a.multi_gpu)
+    except Exception:
+        ag = None
+    if ag:
+        extra += ["--device", ag[0]]
+        say(f"moe-cache: GPUs: {', '.join(ag[2])}; using {ag[0]} ({ag[1]}): the integrated GPU is left out (it shares system RAM and is far slower); --device after -- chooses otherwise")
     ncmoe_user = a.n_cpu_moe
     mg = multi_gpu_start(a, extra, machine, ls, listing, vram_user, win) if a.multi_gpu else None       # PROTOTYPE (--multi-gpu); None = off
     ncmoe = a.n_cpu_moe
@@ -3494,7 +3623,7 @@ def _launch_plan(a, extra, argv, machine):
     api_key, key_env = api_key_stage(a, extra, lan_addr)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias, slotdir = agent_stage(a, extra, model)
-    extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra)
+    extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact)
     extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:
@@ -4909,7 +5038,7 @@ def check(argv):
             ok("ggml version", f"matches a tested commit ({ver or 'b11669'})")
         else:
             warn("ggml version", "this llama.cpp build is not one we tested" + (f" ({ver})" if ver else "") + ": we tested " +
-                 ("b11669, b11966 and b12064 on Windows" if WINDOWS else "four llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966 and 51fe42c5d = b12064)") +
+                 ("b11669, b11966, b12064 and b12207 on Windows" if WINDOWS else "five llama.cpp commits on Linux (7fe450e19, 23b0202a1, ff0d396e3 = b11966, 51fe42c5d = b12064 and 998200491 = b12207)") +
                  ". Other builds usually work; if the plugin does not load, the lines below say so (moe_cache.py update --check shows the newest build)")
         if not WINDOWS:
             if "libggml-base" in ldd(lsp):

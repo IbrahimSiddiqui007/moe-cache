@@ -1,13 +1,13 @@
 <h1 align="center">moe-cache</h1>
 
 <p align="center"><b>Run Mixture-of-Experts models that are bigger than your RAM, without the speed cliff.</b><br>
-A plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle llama.cpp b12064 built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
+A plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle llama.cpp b12207 built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
 
 <p align="center">
 <img alt="status" src="https://img.shields.io/badge/status-v0.3.7.1-blue">
 <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
 <img alt="platform" src="https://img.shields.io/badge/platform-Linux%20%2B%20Windows%20(experimental)-lightgrey">
-<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b12064%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
+<img alt="llama.cpp" src="https://img.shields.io/badge/llama.cpp-tested%20b12207%20(Windows)%2C%2023b0202a1%20%2F%207fe450e19%20(Linux)-green">
 <a href="https://ko-fi.com/ibrumm"><img alt="Support on Ko-fi" src="https://img.shields.io/badge/Ko--fi-support%20this%20project-ff5e5b?logo=ko-fi&logoColor=white"></a>
 </p>
 
@@ -15,7 +15,7 @@ A plugin that runs inside <code>llama-server</code>; it also works on the unmodi
 
 ## What it is
 
-**moe-cache lets a normal PC run big Mixture-of-Experts AI models** (files of 60-120 GB) that are bigger than its RAM, with the plugin itself changing no number: with the same settings its answers are the same as plain llama.cpp's in the checks we ran (greedy decoding, the same GPU/CPU layer split, same llama.cpp build; the exact list is in [EXACTNESS](docs/EXACTNESS.md)). **By default, from 32k context on a graphics card with room, answers are not byte-identical to plain llama.cpp's:** the long-prompt mode (below) stores the KV cache as q8_0 (against f16: KL 0.014-0.015, same top token in 94-95 % of positions, meaning kept in 10 of 10 checks at 55k); `--exact` keeps f16 and the stock-identical answers (also at 128k+), and MTP and the `--fast` modes can change answers too. Speed tiers that change answers on purpose exist only if you ask: `--approx safe|careful|aggressive` (off by default; each lists what it changes and its quality limit in [CONFIGURATION](docs/CONFIGURATION.md); none is identical to stock). A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token (slightly different floating-point sums) while the meaning stays. Chat in your browser, or connect coding tools (OpenCode, Hermes, Claude Code). Windows 11 and Linux. Free (MIT), no account.
+**moe-cache lets a normal PC run big Mixture-of-Experts AI models** (files of 60-120 GB) that are bigger than its RAM, with the plugin itself changing no number: with the same settings its answers are the same as plain llama.cpp's in the checks we ran (greedy decoding, the same GPU/CPU layer split, same llama.cpp build; the exact list is in [EXACTNESS](docs/EXACTNESS.md)). **By default, from 32k context on a graphics card with room, answers are not byte-identical to plain llama.cpp's:** the long-prompt mode (below) stores the KV cache as q8_0 (against f16: KL 0.014-0.015, same top token in 94-95 % of positions, meaning kept in 10 of 10 checks at 55k); `--exact` keeps f16 and the stock-identical answers (also at 128k+), and MTP and the `--fast` modes can change answers too. **The default is faster and not token-identical to plain llama.cpp:** it switches on exactly the modes we measured as a win (table in [CONFIGURATION](docs/CONFIGURATION.md): long-prompt mode from 32k, q8_0 KV from 128k, MTP drafting in agent mode); modes without a measured win (expert skipping, `--approx` tiers) stay off. **`--exact` turns every one of them off and gives plain llama.cpp's output.** `--fast` and `--approx` still work but are deprecated. A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token (slightly different floating-point sums) while the meaning stays. Chat in your browser, or connect coding tools (OpenCode, Hermes, Claude Code). Windows 11 and Linux. Free (MIT), no account.
 
 MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. When the file is bigger than your RAM, plain llama.cpp keeps reading the whole file from the disk and slows to a crawl; moe-cache keeps the experts the model actually uses in RAM and reads only the rest. If your model already fits in RAM and all its experts fit on the graphics card, the launcher runs stock llama.cpp. If it fits in RAM but some layers keep their experts on the CPU, it runs through the plugin by default; there moe-cache is about the same as plain llama.cpp on the 16 GB PC (1.06x prompt, 1.07x decode in our one test <!-- claim:v038-fits-qwen36 -->) and faster at decode on the 8 GB laptop; `--stock` turns that off ([when to use something else](docs/FAQ.md#when-to-use-something-else)).
 
@@ -59,7 +59,7 @@ If something is off, `python bin\moe_cache.py check D:\models\model.gguf` says w
 
 | Step | What to do |
 |---|---|
-| 1. Download | From [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases): `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` (llama.cpp b12064 included, Vulkan + CPU), or `moe-cache-vX-linux-x86_64.tar.gz` for an older llama.cpp of your own (ggml 0.24 / 0.25). `tar xzf` it and `cd` into the folder |
+| 1. Download | From [Releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases): `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` (llama.cpp b12207 included, Vulkan + CPU), or `moe-cache-vX-linux-x86_64.tar.gz` for an older llama.cpp of your own (ggml 0.24 / 0.25). `tar xzf` it and `cd` into the folder |
 | 2. A model | `python3 bin/moe_cache.py pick` |
 | 3. Check | `bin/moe-cache-check /path/to/model.gguf --run` ("cache runs: yes" means it works on your machine) |
 | 4. Run | `bin/moe-cache-server /path/to/model.gguf --open` (chat page and an OpenAI-compatible API at http://localhost:8080), or `bin/moe-cache-server --ui` for the control page |
@@ -68,8 +68,8 @@ Which file on the Releases page:
 
 | Your PC | File | Contains |
 |---|---|---|
-| Windows | `moe-cache-vX-windows-x64.zip` | the kit: plugin, launcher, llama.cpp b12064 (Vulkan) |
-| Linux, no llama.cpp of your own, or ggml 0.26 or newer | `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` | plugin, launcher, llama.cpp b12064 (Vulkan + CPU) |
+| Windows | `moe-cache-vX-windows-x64.zip` | the kit: plugin, launcher, llama.cpp b12207 (Vulkan) |
+| Linux, no llama.cpp of your own, or ggml 0.26 or newer | `moe-cache-vX-ggml0.26-linux-x86_64.tar.gz` | plugin, launcher, llama.cpp b12207 (Vulkan + CPU) |
 | Linux, your own older llama.cpp (ggml 0.24 / 0.25) | `moe-cache-vX-linux-x86_64.tar.gz` | plugin and launcher only |
 
 Your own llama.cpp (CUDA, ROCm), `install.sh`, building from source, the speed options (`--fast`, `--hybrid`) and proving the output yourself: [docs/INSTALL.md](docs/INSTALL.md).

@@ -58,7 +58,7 @@ jobs:
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ runner.temp }}/llama-zips
-          key: dl-kit-llama-b12064-vulkan-e0fee991
+          key: dl-kit-llama-b12207-vulkan-c8c84eff
       - name: Windows kit
         env:
           GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
@@ -69,7 +69,7 @@ jobs:
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
         with:
           path: ${{ runner.temp }}/llama-zips
-          key: dl-kit-llama-b12064-vulkan-e0fee991
+          key: dl-kit-llama-b12207-vulkan-c8c84eff
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-kit

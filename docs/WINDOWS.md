@@ -8,7 +8,7 @@ helps with models bigger than RAM.
 
 | Piece | What worked | Notes |
 |---|---|---|
-| llama.cpp | the official release zip, **Vulkan** (tested b11669, b11966 and b12064; newer builds are supported, `moe_cache.py update --check` shows the newest) (`llama-b12064-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0 and 0.28.0 (b11966, b12064) = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was 2.4x slower in our test (RESULTS 67; we ran it without AMD's HIP SDK) |
+| llama.cpp | the official release zip, **Vulkan** (tested b11669, b11966, b12064 and b12207; newer builds are supported, `moe_cache.py update --check` shows the newest) (`llama-b12207-bin-win-vulkan-x64.zip` from github.com/ggml-org/llama.cpp/releases), unpacked to e.g. `C:\llama` | ggml 0.27.0, 0.28.0 and 0.29.0 (b11966, b12064, b12207) = backend API 3. The speed numbers below (RESULTS 58-61) were measured with a Vulkan build of llama.cpp 620d2225c (also ggml 0.27). Use the Vulkan zip, also for NVIDIA cards (the CUDA zip is untested with moe-cache). The HIP zip was 2.4x slower in our test (RESULTS 67; we ran it without AMD's HIP SDK) |
 | The plugin | `ggml-moe-cache-api3.dll` (api3 for ggml 0.26 and newer, api2 for 0.25) | from the kit, or build it on Linux: `GGML_API=3 ./build.sh --windows` (mingw-w64) -> `build/win/ggml-moe-cache.dll` |
 | Python 3 | 3.8 or newer, standard library only | run the launcher with `python` |
 | This repository (or the kit with `moe_cache.py`) | `C:\moe-cache` | the launcher needs the `planner\`, `ui\` and `tools\` folders: keep the whole repository |
@@ -35,7 +35,7 @@ python bin\moe_cache.py server D:\models\model.gguf --llama-server C:\llama\llam
 ```
 
 `check --run` starts llama-server with the plugin and a small cache for one short request and reports "cache runs: yes". Two warnings are normal today:
-"Windows experimental" and, on a llama.cpp build we did not test (b11669, b11966, b12064), "this llama.cpp build is not one we tested". `server` prints the command (add `--dry-run` to only print it); `--open`
+"Windows experimental" and, on a llama.cpp build we did not test (b11669, b11966, b12064, b12207), "this llama.cpp build is not one we tested". `server` prints the command (add `--dry-run` to only print it); `--open`
 opens llama-server's chat page. The model also works with any OpenAI-compatible client at `http://127.0.0.1:8080/v1`.
 `--llama-server` can be left out when llama.cpp is unpacked to `C:\llama` (or `LLAMA_SERVER` is set, or llama-server is on the PATH). Run `check` first: it looks at the GPU,
 RAM, the model's drive and llama-server, and says what to fix. If the GPU also drives your screen and answers slow down sharply, the card is too full: add `--gpu-margin 2` to the server command.

@@ -1,6 +1,6 @@
 # Same tokens as stock: how moe-cache checks it
 
-moe-cache runs MoE models bigger than your RAM inside llama-server (the official one, or the kit's b12064 build with the moe-cache patch set, which is the official source plus patches that are all off until their own switch is set). The plugin itself changes no number: with the same settings the answer is the one stock
+moe-cache runs MoE models bigger than your RAM inside llama-server (the official one, or the kit's b12207 build with the moe-cache patch set, which is the official source plus patches that are all off until their own switch is set). The plugin itself changes no number: with the same settings the answer is the one stock
 llama.cpp gives for the same model and layer split. The launcher's default long-prompt mode (v0.3.8) stores the KV cache as q8_0, so by default, from 32k context, answers are not byte-identical to stock; `--exact` restores that promise. This page lists how that is checked, when the checks run, and where the promise has limits.
 Numbers and logs: [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md) (the identity checks of results 1, 10 and 36 are in the laptop file); the approximate modes: [QUALITY_GATE.md](QUALITY_GATE.md).
 
@@ -24,7 +24,7 @@ computed on the GPU instead of the CPU can change the last digits and then a tok
 | Workflow | Trigger | Coverage | Blocking |
 |---|---|---|---|
 | `quick` | every push to `main` and `experimental` | build, syntax checks, unit tests, kernel bit-exactness (no model) | yes |
-| `identity` | manual and daily 05:00 UTC | five llama.cpp rows: pinned commits (ggml 0.25 / API 2, ggml 0.26 / API 3, b11966, b12064) and llama.cpp **master** rows; small models on CPU runners | pinned rows; master / candidate rows are reported, never blocking |
+| `identity` | manual and daily 05:00 UTC | five llama.cpp rows: pinned commits (ggml 0.25 / API 2, ggml 0.26 / API 3, b11966, b12064, b12207) and llama.cpp **master** rows; small models on CPU runners | pinned rows; master / candidate rows are reported, never blocking |
 | `windows` | manual and nightly 03:30 UTC, or a push to `windows-ci` | the release kit unzipped as a user gets it, official release zip, CPU runner | checked before a release |
 | `sanitize` | manual, weekly (Monday 06:00 UTC), or a push to `sanitize` | address and thread sanitizers | no |
 | `release` | a version tag | builds the kits; publishes only after identity and windows passed on the tagged commit | yes |
@@ -62,7 +62,7 @@ with a fixed split. Please report what you see: [Benchmark report](https://githu
 
 ## The kit's patched llama.cpp
 
-Since v0.3.8 the kits bundle llama.cpp b12064 built from the official source plus `patches/llama.cpp/*.patch` (0004, 0020, 0030, 0040, 0090). Every patch is built in and **off**: with none of its switches set the build must answer exactly like the official b12064 build. 0040 only prints (`LLAMA_RESERVE_TOP=N` lists the largest tensors of the reserved graph); it allocates nothing and changes no number. The check runs on every build (`.github/workflows/llama_patched.yml`, called by the release workflow): the official b12064 build, the patched build with all switches off and the patched build with 0004, 0020 and 0040 switched on answer three prompts of 100 tokens at temperature 0 on a small model on CPU, and text and token ids must be byte-identical (`tools/llama_identity_run.sh`; the 0040 arm must also show its printed lines, so it proves the switch was really on). A patch that does change answers when switched on would have to say so in `patches/llama.cpp/README.md`. 0030 (Vulkan queue priority) only matters on a GPU and is not exercised by the CPU run; it changes scheduling, not arithmetic.
+Since v0.3.8 the kits bundle llama.cpp b12207 built from the official source plus `patches/llama.cpp/*.patch` (0004, 0020, 0030, 0040, 0090). Every patch is built in and **off**: with none of its switches set the build must answer exactly like the official b12064 build. 0040 only prints (`LLAMA_RESERVE_TOP=N` lists the largest tensors of the reserved graph); it allocates nothing and changes no number. The check runs on every build (`.github/workflows/llama_patched.yml`, called by the release workflow): the official b12064 build, the patched build with all switches off and the patched build with 0004, 0020 and 0040 switched on answer three prompts of 100 tokens at temperature 0 on a small model on CPU, and text and token ids must be byte-identical (`tools/llama_identity_run.sh`; the 0040 arm must also show its printed lines, so it proves the switch was really on). A patch that does change answers when switched on would have to say so in `patches/llama.cpp/README.md`. 0030 (Vulkan queue priority) only matters on a GPU and is not exercised by the CPU run; it changes scheduling, not arithmetic.
 
 ## Limits
 

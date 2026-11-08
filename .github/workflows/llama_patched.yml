@@ -1,7 +1,7 @@
-# Builds llama.cpp b12064 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
+# Builds llama.cpp b12207 plus patches/llama.cpp/*.patch (Windows Vulkan, Linux Vulkan).
 # Runs when asked (push to the branch ci/llama-patched or ci/llama-patched-*; manual dispatch needs the file on main) and, since v0.3.8, as a called workflow of release.yml:
 # the release kits (Windows zip, Linux tarball) bundle THESE artifacts, every patch built in and off. See patches/llama.cpp/README.md.
-# Identity: windows-package and linux-identity answer three prompts at temperature 0 with the official b12064 build, with this build (all switches off) and with this
+# Identity: windows-package and linux-identity answer three prompts at temperature 0 with the official b12207 build, with this build (all switches off) and with this
 # build (0004, 0020, 0040 switches on); the answers must be byte-identical (tools/llama_identity_run.sh).
 # Flags, runners and the Vulkan SDK version follow llama.cpp's own release.yml at the pin (jobs windows-cpu, windows, ubuntu-vulkan).
 # Windows is two artifacts, as upstream: llama-server + CPU backends, and ggml-vulkan.dll. Put them in one folder. test-backend-ops is included: patches that change a shader run it on the AMD card first.
@@ -12,10 +12,10 @@ on:
   push:
     branches: [ci/llama-patched, 'ci/llama-patched-**']
 
-# LLAMA_CONNECT=OFF: at b12064 =ON makes CMake download a prebuilt llama-connect binary from github.com (scripts/connect-download.cmake, 3 tries, no sha256) at
+# LLAMA_CONNECT=OFF: at b12064 (and b12207) =ON makes CMake download a prebuilt llama-connect binary from github.com (scripts/connect-download.cmake, 3 tries, no sha256) at
 # configure/build time; a github.com 504 broke the build on 2026-11-08. We build only llama-server (+ test-backend-ops), not that tool. The option is OFF by default upstream.
 env:
-  LLAMA_COMMIT: 51fe42c5d14bfb9adf0612ff98a9ab79e0e7275c   # b12064
+  LLAMA_COMMIT: 998200491327347eed85f007e4de7a1a7c871453   # b12207
   VULKAN_VERSION: "1.4.357.0"
   CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_CONNECT=OFF"
 
@@ -165,11 +165,11 @@ jobs:
           $text = (($r.Content | ConvertFrom-Json).content)
           Write-Host "text: $text"
           if (-not $text -or $text.Length -lt 20) { throw "the smoke run produced no text" }
-      - name: Official b12064 build (pinned by sha256) for the identity run
+      - name: Official b12207 build (pinned by sha256) for the identity run
         env:
           GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.*: GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages); only this step sees it
         run: |
-          & tools\ci\fetch.ps1 -Url "https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-win-vulkan-x64.zip" -Out dl\official.zip -Sha256 e0fee991887711ce74cb9c1f7715a1234e27d94f13ccfc594dc01310e5da6e22
+          & tools\ci\fetch.ps1 -Url "https://github.com/ggml-org/llama.cpp/releases/download/b12207/llama-b12207-bin-win-vulkan-x64.zip" -Out dl\official.zip -Sha256 c8c84eff8b7eae83602d3cf2dd6defe16c47d1011b4a2514905c1817e3a909ca
           if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for the official llama.cpp zip (see the ci_fetch lines above)" }
           Expand-Archive dl\official.zip -DestinationPath official
       - name: Identity at temperature 0 - official, patched (switches off), patched (switches on)
@@ -285,7 +285,7 @@ jobs:
           set -e
           sha256sum -c llama-patched-linux-x64.tar.gz.sha256
           mkdir patched && tar -C patched -xzf llama-patched-linux-x64.tar.gz
-          tools/ci/fetch.sh https://github.com/ggml-org/llama.cpp/releases/download/b12064/llama-b12064-bin-ubuntu-vulkan-x64.tar.gz official.tgz 156e0010e92079dd931c82f50cbf8be94de47d06dba637c29261bfda3f2ff297
+          tools/ci/fetch.sh https://github.com/ggml-org/llama.cpp/releases/download/b12207/llama-b12207-bin-ubuntu-vulkan-x64.tar.gz official.tgz 178a5d6a940d74a24ee359dc8af68ce6b2fccb99150c1bdd458dbec640653c06
           mkdir official && tar -C official -xzf official.tgz --strip-components=1
           tools/ci/fetch.sh "https://huggingface.co/bartowski/granite-3.1-1b-a400m-instruct-GGUF/resolve/main/granite-3.1-1b-a400m-instruct-Q4_K_M.gguf" granite.gguf 3a2ec1c2a78cb29d901e29bbf5162dcd03381e13803d2cbdcff838d4d08142eb
           patched/llama-server --version

@@ -64,7 +64,7 @@ A short session (typed answers after each question; `[...]` is trimmed output):
 1/5  This PC
      RAM:           32.0 GB (the server may use up to 28.0 GB; ...)
      graphics card: Test GPU, 8.0 GiB of its own memory
-     llama-server:  .../llama/llama-server (the one that came with moe-cache, build b12064)
+     llama-server:  .../llama/llama-server (the one that came with moe-cache, build b12207)
      What will you use it for?  1) plain chat ...  2) a coding agent ...  3) long documents
      choose 1-3 [1]: 2
 2/5  Models for this PC
@@ -110,7 +110,7 @@ Which file to download (`vX.Y.Z` stands for the newest version on the Releases p
 | Your system | File on the Releases page |
 |---|---|
 | Windows 11 | `moe-cache-vX.Y.Z-windows-x64.zip` |
-| Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.28) | `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz`: **includes the official llama.cpp b12064 (Vulkan + CPU build) in its `llama/` folder**, so there is nothing else to download |
+| Linux, llama.cpp from commit `23b0202a1` or newer (ggml 0.26 and up, including today's ggml 0.29) | `moe-cache-vX.Y.Z-ggml0.26-linux-x86_64.tar.gz`: **includes llama.cpp b12207 (Vulkan + CPU build, with moe-cache's patch set, all off) in its `llama/` folder**, so there is nothing else to download |
 | Linux, older llama.cpp (ggml 0.24 / 0.25, up to commit `7fe450e19`, e.g. Arch `llama.cpp-cuda`) | `moe-cache-vX.Y.Z-linux-x86_64.tar.gz` (no llama.cpp inside: it needs your own build of that era) |
 
 Not sure? Run `check` (step 3): it says which file fits.
@@ -183,7 +183,7 @@ two agents at once 335 -> 145 s. Details and the Desktop-app steps: [docs/AGENTS
 
 | Step | What to do |
 |---|---|
-| 1. llama.cpp | **Included in the kit from v0.3.3** (folder `llama\`: llama.cpp b12064 Vulkan, official source plus moe-cache's patch set with every patch off since v0.3.8; older kits carry the unmodified official build). With an older kit: download the **Vulkan** zip, the file whose name ends in `-bin-win-vulkan-x64.zip`, from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) and unpack it to `C:\llama`. Use it for AMD, Intel and NVIDIA cards; the CUDA zip is untested with moe-cache, skip the HIP and SYCL zips. We tested b12064 (the build in the kit); newer builds should work and `check` (step 5) tells you if not |
+| 1. llama.cpp | **Included in the kit from v0.3.3** (folder `llama\`: llama.cpp b12207 Vulkan, official source plus moe-cache's patch set with every patch off since v0.3.8; older kits carry the unmodified official build). With an older kit: download the **Vulkan** zip, the file whose name ends in `-bin-win-vulkan-x64.zip`, from [github.com/ggml-org/llama.cpp/releases](https://github.com/ggml-org/llama.cpp/releases) and unpack it to `C:\llama`. Use it for AMD, Intel and NVIDIA cards; the CUDA zip is untested with moe-cache, skip the HIP and SYCL zips. We tested b12064 (the build in the kit); newer builds should work and `check` (step 5) tells you if not |
 | 2. Python | Python 3.8 or newer from python.org (tick "Add python.exe to PATH"). If typing `python` opens the Microsoft Store instead, use `py` in its place |
 | 3. The kit | Download `moe-cache-vX.Y.Z-windows-x64.zip` (take the newest version) from this project's [releases](https://github.com/IbrahimSiddiqui007/moe-cache/releases) and unzip it, e.g. to `C:\moe-cache` |
 | 4. A model | Not sure which? `python bin\moe_cache.py pick` names one and prints the download command (see **2. Get a model** above; `pip install -U huggingface_hub` first). Keep the file on an SSD, e.g. `D:\models`, with the file size plus 10 GB free |

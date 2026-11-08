@@ -3,13 +3,13 @@
 #   tools/bundle_llama_patched.sh DEST SRC_DIR linux|win [TAG]
 #     DEST    the kit's folder; the build goes to DEST/llama/
 #     SRC_DIR the unpacked CI build: linux = llama-server + the .so files (symlinks kept); win = llama-server.exe, the CPU/ggml DLLs and ggml-vulkan.dll
-#     TAG     the llama.cpp base the patches apply to (default b12064)
+#     TAG     the llama.cpp base the patches apply to (default b12207)
 # Writes next to the server: PATCHES-moe-cache.txt (one line, read by the launcher and printed at start-up), README-moe-cache.txt, LICENSE-llama.cpp.txt.
 # Every patch in patches/llama.cpp/ is built in and OFF; each has its own environment switch (patches/llama.cpp/README.md).
 # LLAMA_LICENSE_FILE=PATH copies that licence file instead of fetching llama.cpp's from GitHub (tests, offline builds).
 set -e
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-D="$1"; S="$2"; P="$3"; TAG="${4:-b12064}"
+D="$1"; S="$2"; P="$3"; TAG="${4:-b12207}"
 [ -n "$D" ] && [ -d "$S" ] && { [ "$P" = linux ] || [ "$P" = win ]; } || { sed -n 2,9p "$0"; exit 1; }
 EXE=llama-server; [ "$P" = win ] && EXE=llama-server.exe
 [ -f "$S/$EXE" ] || { echo "FAIL: no $EXE in $S"; exit 1; }

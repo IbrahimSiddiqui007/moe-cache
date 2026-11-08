@@ -7,7 +7,7 @@
 #     --no-apt   do not install packages (you already have cmake, g++, git, python3-venv)
 #     --own-llama  build llama.cpp even when this folder has the official one in llama/ (the -ggml0.26 release tarball does)
 #     --dry-run  print what it would do and stop
-# In a release tarball with llama/ (llama.cpp b12064: the official source plus moe-cache's patches, all off, since v0.3.8) it builds nothing: no compiler, no apt, about a minute. LLAMA_SHA=... or --own-llama builds instead.
+# In a release tarball with llama/ (llama.cpp b12207: the official source plus moe-cache's patches, all off, since v0.3.8) it builds nothing: no compiler, no apt, about a minute. LLAMA_SHA=... or --own-llama builds instead.
 # Takes about 10-20 minutes, almost all of it compiling llama.cpp. Needs about 3 GB of disk. Run it as a normal user (it asks for sudo only for apt).
 # Downloaded on its own (the release's install.sh, not inside a checkout or tarball) it installs the release instead of building: it fetches the
 # ggml0.26 tarball (official llama.cpp inside), checks it against SHA256SUMS (refuses on a mismatch; that catches a damaged download, not a tampered release: see the attestation below), unpacks it under --prefix (default
