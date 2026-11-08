@@ -3,8 +3,12 @@
 param([Parameter(Mandatory)][string]$Version, [Parameter(Mandatory)][string]$Sha256)
 $ErrorActionPreference = "Stop"
 $dst = Join-Path $PSScriptRoot "..\src-tauri\resources\python"
-$zip = Join-Path $env:TEMP "python-$Version-embed-amd64.zip"
-Invoke-WebRequest "https://www.python.org/ftp/python/$Version/python-$Version-embed-amd64.zip" -OutFile $zip
+$zipDir = if ($env:PY_ZIP_DIR) { $env:PY_ZIP_DIR } else { $env:TEMP }   # CI restores PY_ZIP_DIR with actions/cache
+New-Item -ItemType Directory -Force $zipDir | Out-Null
+$zip = Join-Path $zipDir "python-$Version-embed-amd64.zip"
+# retried with backoff, skipped when the cached zip already has the pinned sha256; a failure names the host
+& (Join-Path $PSScriptRoot "..\..\tools\ci\fetch.ps1") -Url "https://www.python.org/ftp/python/$Version/python-$Version-embed-amd64.zip" -Out $zip -Sha256 $Sha256
+if ($LASTEXITCODE -ne 0) { throw "download host down or wrong sha256 for python-$Version-embed-amd64.zip" }
 if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower() -ne $Sha256.ToLower()) { throw "SHA-256 of $zip does not match" }
 Remove-Item $dst -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive $zip -DestinationPath $dst

@@ -6,6 +6,8 @@
   benchmarks/BOARD.md, JOURNAL.md             generated: what is true now, and what was run when
 
   ingest RECORD.json            copy a record into runs/ under its canonical name
+  ingest-issue N | --file BODY  the record a person pasted into a GitHub issue (the report's JSON block): validate it, write runs/DATE_community-N_ID.json;
+                                --check only validates and prints the comment for the issue (the board row it would give). Reads text, runs nothing from it.
   claim add|show|list           create a claim from run ids; show one with its computed values; list all with their status
   board                         write BOARD.md and JOURNAL.md (--check: exit 1 if they are out of date)
   lint [FILES]                  README.md, docs/RESULTS_CURRENT.md and docs/benchmark_card.html: every performance number needs a `<!-- claim:ID -->` of a current claim
@@ -102,6 +104,103 @@ def ingest(path, bdir=BENCH, machine=None, date=None, force=False):
     with open(dest, "w", encoding="utf-8") as f:
         f.write(json.dumps(rec, indent=1, ensure_ascii=False, sort_keys=True) + "\n")
     return rid, True
+
+
+# ---------------------------------------------------------------- records from issues (community)
+
+REPO = "IbrahimSiddiqui007/moe-cache"
+MAX_ISSUE_BODY = 2_000_000
+COMMENT_MARK = "<!-- moe-cache-record-check -->"
+
+
+def extract_record(body):
+    """The record a report or the issue form's JSON box carries: the biggest ```json block (or bare JSON object) whose top-level key is record_schema.
+    Returns (record or None, why not). Only json.loads reads the text: nothing in an issue is executed."""
+    body = str(body or "")
+    if len(body) > MAX_ISSUE_BODY:
+        return None, "the issue text is bigger than 2 MB"
+    cands = re.findall(r"```(?:json)?\s*\n(.*?)\n```", body, re.S) or [body]
+    best, why = None, "no JSON block with a benchmark record in the issue (paste the whole report, or the file from `bench-record assemble`)"
+    for c in cands:
+        c = c.strip()
+        if not c.startswith("{"):
+            continue
+        try:
+            d = json.loads(c)
+        except ValueError as e:
+            why = f"a JSON block does not parse ({str(e)[:80]}): was it cut when pasting?"
+            continue
+        if isinstance(d, dict) and "record_schema" in d and (best is None or len(c) > len(json.dumps(best))):
+            best = d
+    return best, ("" if best else why)
+
+
+def board_rows(rec):
+    """[(metric label, stock mean, moe-cache mean, ratio, runs per arm, noise %, verdict)] for the record: the numbers a board row would show, with the 10 % rule."""
+    rows = []
+    for metric, label in METRICS.items():
+        a, na, sa = arm_stats(rec, "stock", metric)
+        b, nb, sb = arm_stats(rec, "moe-cache", metric)
+        if not (isnum(a) and isnum(b) and a):
+            rows.append((label, a, b, None, (na, nb), None, "no ratio (one arm has no measurement)"))
+            continue
+        x = b / a
+        noise = max(10.0, sa, sb)
+        v = "within noise: do not claim" if abs(x - 1) * 100 < noise else ("faster" if x > 1 else "slower")
+        rows.append((label, a, b, x, (na, nb), noise, v))
+    return rows
+
+
+def issue_comment(rec, errs, why="", number=None):
+    """The text the Action posts on the issue: valid with its board row, or the problems."""
+    out = [COMMENT_MARK]
+    if rec is None:
+        return "\n".join(out + ["**Record check: no record found.**", "", why, "", "Paste the whole `.md` report that `bench-report` wrote (it contains the record), or the record file."]) + "\n"
+    if errs:
+        return "\n".join(out + ["**Record check: not valid.**", "", *[f"- {e}" for e in errs[:8]], "", "Run `python bin/moe_cache.py bench-record validate FILE` on your machine, "
+                                 "or paste the report again as it was written. A value you could not measure must say `not recorded`."]) + "\n"
+    hw, sw, m = rec.get("hardware", {}), rec.get("software", {}), rec.get("model", {})
+    head = f"**Record check: valid.** moe-cache {sw.get('moe_cache_version', NR)}, {m.get('file', NR)}, {hw.get('gpu_model', NR)}, {hw.get('ram_gib', NR)} GiB RAM, {rec.get('conditions', {}).get('file_cache', NR)} start."
+    lines = [head, "", "| metric | stock | moe-cache | ratio | runs (stock / moe-cache) | noise band | reading |", "|---|---|---|---|---|---|---|"]
+    for label, a, b, x, n, noise, v in board_rows(rec):
+        mt = "decode_tps" if "decode" in label else "prompt_tps"
+        lines.append(f"| {label} | {fmt(mt, a)} | {fmt(mt, b)} | {'-' if x is None else f'{x:.2f}x'} | {n[0]} / {n[1]} | {'-' if noise is None else f'{noise:.0f} %'} | {v} |")
+    lines += ["", "This is the number the record gives; a claim on the board is made by hand after the runs are read. Thank you for measuring."]
+    return "\n".join(out + lines) + "\n"
+
+
+def fetch_issue_body(number, repo=REPO):
+    """The text of a public issue (GitHub API, no login needed for a public repository). Tests replace this."""
+    import urllib.request
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/issues/{int(number)}", headers={"Accept": "application/vnd.github+json", "User-Agent": "moe-cache-bench-record"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = json.loads(r.read(MAX_ISSUE_BODY + 1).decode("utf-8", "replace"))
+    return data.get("body") or ""
+
+
+def ingest_issue(body, number, bdir=BENCH, machine=None, write=True):
+    """-> (run id or None, comment). A valid record is written to runs/ as DATE_community-N_SHORTID.json (write=False: only checked)."""
+    rec, why = extract_record(body)
+    if rec is None:
+        return None, issue_comment(None, [], why)
+    sch = rr.load_schema()
+    errs = rr.validate(rec, sch) if sch else []
+    if errs:
+        return None, issue_comment(rec, errs)
+    date = str(rec.get("created_utc", ""))[:10]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return None, issue_comment(rec, ["created_utc is not YYYY-MM-DD ..."])
+    rid = None
+    if write:
+        tmp = os.path.join(bdir, "runs", f".incoming-{os.getpid()}.json")
+        os.makedirs(os.path.dirname(tmp), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(rec, f, ensure_ascii=False)
+        try:
+            rid, _ = ingest(tmp, bdir, machine=machine or (f"community-{int(number)}" if number else "community"))
+        finally:
+            os.remove(tmp)
+    return rid, issue_comment(rec, [])
 
 
 def setting_of(rec):
@@ -305,12 +404,20 @@ def show_claim(c, runs, st):
 
 # ---------------------------------------------------------------- board and journal
 
+_MD_ESC = str.maketrans({"\\": "\\\\", "|": "\\|", "`": "\\`", "[": "\\[", "]": "\\]", "<": "&lt;", ">": "&gt;", "&": "&amp;", "\n": " ", "\r": " "})
+
+
+def md(s):
+    """Record text (a community record's machine, model, arm or setting names) as plain text in a Markdown table: no table breaks, links, code or HTML."""
+    return str(s).translate(_MD_ESC)
+
+
 def machine_label(runs, machine):
     for rid, rec in runs.items():
         if run_parts(rid)[1] == machine:
             h = rec["hardware"]
-            return f"{machine}: {h['os']}, {h['cpu_model']}, {h['gpu_model']}"
-    return machine
+            return md(f"{machine}: {h['os']}, {h['cpu_model']}, {h['gpu_model']}")
+    return md(machine)
 
 
 def board_text(claims, runs, version=None, pin=None):
@@ -345,19 +452,19 @@ def board_text(claims, runs, version=None, pin=None):
                 d, cid, cell = cells[metric]
                 rec = runs[cell["run"]]
                 m = arm_stats(rec, cell["arm"], metric)[0]
-                parts[metric] = fmt(metric, m) + (f" ({pct(m, arm_stats(rec, cell['vs'], metric)[0])} vs {cell['vs']})" if cell.get("vs") else "")
+                parts[metric] = fmt(metric, m) + (f" ({pct(m, arm_stats(rec, cell['vs'], metric)[0])} vs {md(cell['vs'])})" if cell.get("vs") else "")
             ids = sorted({v[1] for v in cells.values()})
             sts = sorted({status[i][0] for i in ids})
-            out.append(f"| {key[1]} | {key[2]} | {key[3]} | {parts['prompt_tps']} | {parts['decode_tps']} | {max(v[0] for v in cells.values())} | {', '.join(sts)} | "
+            out.append(f"| {md(key[1])} | {md(key[2])} | {md(key[3])} | {parts['prompt_tps']} | {parts['decode_tps']} | {max(v[0] for v in cells.values())} | {', '.join(sts)} | "
                        + ", ".join(f"[{i}](claims/{claims[i]['file']})" for i in ids) + " |")
         out.append("")
     bad = [(cid, st) for cid, st in sorted(status.items()) if st[0] != "current"]
     out += ["## Claims that are not current", ""]
-    out += ["| Claim | Status | Why |", "|---|---|---|"] + [f"| [{cid}](claims/{claims[cid]['file']}) | {st[0]} | {st[1]} |" for cid, st in bad] if bad else ["None."]
+    out += ["| Claim | Status | Why |", "|---|---|---|"] + [f"| [{cid}](claims/{claims[cid]['file']}) | {st[0]} | {md(st[1])} |" for cid, st in bad] if bad else ["None."]
     out += ["", "## Conflicts", ""]
     if conflicts:
         out += ["Two claims of the same date give different numbers for the same cell. Measure again, or withdraw one.", ""]
-        out += [f"- {' / '.join(k)}: " + ", ".join(ids) for k, ids in conflicts]
+        out += [f"- {' / '.join(md(x) for x in k)}: " + ", ".join(ids) for k, ids in conflicts]
     else:
         out.append("None.")
     return "\n".join(out) + "\n"
@@ -371,7 +478,7 @@ def journal_text(claims, runs):
         arms = list(dict.fromkeys(r["arm"] for r in rec["runs"]))
         cl = sorted(cid for cid, c in claims.items() if rid in c["runs"])
         gaps = len(rr.not_recorded_fields(rec))
-        out.append(f"- {d} {machine}: {model_of(rec)}, {setting_of(rec)}; arms {', '.join(arms)}, {len(rec['runs'])} runs; {gaps} fields not recorded. [{rid}](runs/{rid}.json)"
+        out.append(f"- {d} {md(machine)}: {md(model_of(rec))}, {md(setting_of(rec))}; arms {', '.join(md(x) for x in arms)}, {len(rec['runs'])} runs; {gaps} fields not recorded. [{md(rid)}](runs/{rid}.json)"
                    + (f". Claims: {', '.join(f'{c} ({status[c][0]})' for c in cl)}" if cl else ". No claim yet"))
     return "\n".join(out) + "\n"
 
@@ -537,6 +644,9 @@ def main(argv=None, prog_cmd=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("ingest", help="copy a record into runs/ under its canonical name")
     i.add_argument("record"); i.add_argument("--machine", help="short machine name (default: from the GPU)"); i.add_argument("--date"); i.add_argument("--force", action="store_true", help="ingest although the schema check fails")
+    g = sub.add_parser("ingest-issue", help="the record in a GitHub issue -> runs/ (or --check: only validate and print the comment)")
+    g.add_argument("number", nargs="?", type=int, help="issue number in the public repository (read from api.github.com)"); g.add_argument("--file", help="the issue text from a file (no network)")
+    g.add_argument("--repo", default=REPO); g.add_argument("--check", action="store_true", help="validate only; print the comment for the issue; exit 1 when the record is missing or invalid"); g.add_argument("--machine")
     c = sub.add_parser("claim", help="add | show | list")
     c.add_argument("action", choices=["add", "show", "list"]); c.add_argument("id", nargs="?")
     c.add_argument("--run", action="append", default=[], help="a run id (file name without .json); all its arms and metrics become cells"); c.add_argument("--cell", action="append", help="RUN:ARM:METRIC[:VSARM]")
@@ -553,6 +663,19 @@ def main(argv=None, prog_cmd=None):
         if a.cmd == "ingest":
             rid, wrote = ingest(a.record, a.dir, a.machine, a.date, a.force)
             print(f"{rid}" + ("" if wrote else "  (already there, unchanged)"))
+            return 0
+        if a.cmd == "ingest-issue":
+            if not a.number and not a.file:
+                ap.error("ingest-issue needs an issue number or --file")
+            body = open(a.file, encoding="utf-8", errors="replace").read(MAX_ISSUE_BODY + 1) if a.file else fetch_issue_body(a.number, a.repo)
+            rid, comment = ingest_issue(body, a.number, a.dir, a.machine, write=not a.check)
+            if a.check:
+                print(comment, end="")
+                return 0 if "Record check: valid" in comment else 1
+            if rid is None:
+                print(comment, file=sys.stderr, end="")
+                return 1
+            print(rid)
             return 0
         if a.cmd == "claim":
             if a.action != "list" and not a.id:

@@ -4,7 +4,7 @@ runs: ["2026-11-05_pc_d1b3b3"]
 cells: [{"run": "2026-11-05_pc_d1b3b3", "arm": "stock", "metric": "prompt_tps"}, {"run": "2026-11-05_pc_d1b3b3", "arm": "stock", "metric": "decode_tps"}, {"run": "2026-11-05_pc_d1b3b3", "arm": "moe-cache", "metric": "prompt_tps", "vs": "stock"}, {"run": "2026-11-05_pc_d1b3b3", "arm": "moe-cache", "metric": "decode_tps", "vs": "stock"}]
 valid_moe_cache: ["0.3.7", "0.3.7.1"]
 valid_llama_builds: [12064, 12064]
-withdrawn: ""
+withdrawn: "2026-11-08: decode numbers came from the conversation driver before 9a0a981 (short answers); replaced by v038-conv-iq3xxs (fixed driver, same model, RAM at 6000 MT/s). Prompt numbers were not wrong."
 ---
 # v0.3.7: Flash-Next IQ3_XXS in a 65k conversation (49 turns to 65,371 tokens): moe-cache reads new prompt tokens at 188.2 against 44.8 tok/s (4.2x), decodes 21.73 against 16.00 tok/s (+36 %) and finishes the conversation in 663 against 1,852 s
 

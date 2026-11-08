@@ -107,8 +107,8 @@ def plan_env(*extra_args):
     a, ex, argv = mc.parse_server([m, "--llama-server", os.path.join(tmp2, "llama-server"), "--no-pin", "--always-plugin", "--plan-json", *extra_args])
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
         return dict(mc.launch_plan(a, ex, argv, machine=M(tmp2), quiet=True).env)
-check("MOE_CACHE_SCHED_TUNING" not in plan_env(), "WINDOWS-013: no --no-sched-tuning: the plugin's own default (scheduling bundle on) applies, nothing is set")
-check(plan_env("--no-sched-tuning").get("MOE_CACHE_SCHED_TUNING") == "0", "WINDOWS-013: --no-sched-tuning sets MOE_CACHE_SCHED_TUNING=0 for the plugin")
+check("MOE_CACHE_SCHED_TUNING" not in plan_env(), "the scheduling tuning is gone: nothing is set by default")
+check("MOE_CACHE_SCHED_TUNING" not in plan_env("--no-sched-tuning"), "--no-sched-tuning is accepted and does nothing (kept for one release so old commands still run)")
 n2 = notes("--", "-t", "4")
 check(not any("CPU cores left free" in t for t in n2), "leave-room: with your own -t no cores claim")
 # CACHE-181: the loading line names the size and a seconds range; a missing file still gives a line

@@ -250,6 +250,48 @@ def system_info():
             "gpu_detecting": WINDOWS and not _GPU["done"]}
 
 
+# ---- the Results view: the records this machine has (the reports' .record.json / .json, the repository's benchmarks/runs) ----
+
+RESULT_ID = re.compile(r"^[rb]:[A-Za-z0-9._-]{1,120}\.json$")
+MAX_RESULT = 30_000_000
+
+
+def result_roots():
+    return {"r": REPORT_DIR, "b": os.path.join(os.path.dirname(HERE), "benchmarks", "runs")}
+
+
+def result_files():
+    """[{id, name, source, mtime, size}] newest first. The id is the kind and the file name only: a path from the page never reaches the disk."""
+    out = []
+    for k, root in result_roots().items():
+        try:
+            names = os.listdir(root)
+        except OSError:
+            continue
+        for n in names:
+            if not n.endswith(".json") or n.startswith(".") or (n.endswith(".record.json") and n[:-12] + ".json" in names):      # the report's .json holds the same record
+                continue
+            try:
+                st = os.stat(os.path.join(root, n))
+            except OSError:
+                continue
+            if os.path.isfile(os.path.join(root, n)) and st.st_size <= MAX_RESULT:
+                out.append({"id": f"{k}:{n}", "name": n[:-5], "source": "your reports" if k == "r" else "benchmarks/runs (the board)", "mtime": st.st_mtime, "size": st.st_size})
+    return sorted(out, key=lambda x: -x["mtime"])
+
+
+def read_result(rid):
+    """The benchmark record behind an id from result_files() (a bench-report .json holds it under "record"); ValueError when there is none."""
+    if not isinstance(rid, str) or not RESULT_ID.match(rid) or rid not in {x["id"] for x in result_files()}:
+        raise ValueError("unknown result (refresh the list)")
+    with open(os.path.join(result_roots()[rid[0]], rid[2:]), encoding="utf-8") as f:
+        d = json.load(f)
+    rec = d.get("record") if isinstance(d, dict) and isinstance(d.get("record"), dict) else d
+    if not isinstance(rec, dict) or "record_schema" not in rec:
+        raise ValueError("this file holds no benchmark record (a report written without one)")
+    return rec
+
+
 # ---- the plan and why (I33): the same rules and tools as the launcher ----
 
 LLAMA_EXTRA_ROOTS = []        # folders the page may take a llama-server from besides the usual ones (the tests add their own)
@@ -303,10 +345,10 @@ class PagePlanMachine(mc.Machine):
         return text
 
 
-def launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, long_prompt=False):
+def launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, no_long_prompt=False):
     """The launcher's own plan for these settings (XA-2): the same arguments the Start button passes, planned quietly in this process with
     mc.launch_plan; nothing is started or written. Raises RuntimeError with the planner's own words when the model cannot be planned."""
-    s = {"model": path, "ctx": ctx, "ram": ram, "vram": vram, "mode": mode, "agent": agent, "engine": engine, "mtp": mtp, "llama_server": ls, "leave_room": leave_room, "long_prompt": long_prompt}
+    s = {"model": path, "ctx": ctx, "ram": ram, "vram": vram, "mode": mode, "agent": agent, "engine": engine, "mtp": mtp, "llama_server": ls, "leave_room": leave_room, "no_long_prompt": no_long_prompt}
     args = server_args(s)
     i = args.index("--")
     a, extra, argv = mc.parse_server(args[:i] + ["--plan-json"] + args[i:])
@@ -513,7 +555,7 @@ def windows_amd_rules(gpu, path, agent=False, windows=WINDOWS):
     return reasons
 
 
-def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None, leave_room=False, long_prompt=False):
+def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, engine="auto", mtp=None, ls=None, leave_room=False, no_long_prompt=False):
     """Verdict, mode and the reasons for one model under these settings. ram in GB, vram in GiB (the launcher's units).
     engine: auto (the launcher decides), plugin (--always-plugin) or stock (--stock). mtp: None (auto), True, False; ls: llama-server for its MTP check."""
     if engine == "stock":
@@ -539,7 +581,7 @@ def plan_model(path, ram=None, vram=None, ctx=8192, mode="exact", agent=False, e
     else:
         R.append("free RAM unknown: set a RAM budget")
     try:
-        lp = launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room, long_prompt)     # engine, GPU layers, micro-batch, KV: what the launcher would start with
+        lp = launcher_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room, no_long_prompt)     # engine, GPU layers, micro-batch, KV: what the launcher would start with
         plan, tuned, stock = lp.planner_info, lp.tuned, lp.engine == "stock"
     except Exception as e:
         stock = mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
@@ -621,8 +663,8 @@ def server_args(s):
             a.append("--no-warm")          # neither restores nor saves agent conversations
     if s.get("leave_room"):
         a.append("--leave-room")
-    if s.get("long_prompt"):
-        a.append("--long-prompt")          # v0.3.8, opt-in: -ub 4096 + the q8_0 KV cache when the memory plan allows
+    if s.get("no_long_prompt"):
+        a.append("--no-long-prompt")       # the long-prompt mode (-ub 4096 + the q8_0 KV cache when the memory plan allows) is the default since 2026-11-08; unticking it opts out
     if s.get("peers"):
         a.append("--peers")                # MULTIMODEL-010: plugin servers of one group trade memory at run time (docs/internal/TWO_MODELS_DESIGN.md)
     if s.get("share_ram"):
@@ -1498,7 +1540,7 @@ class Runner:
             time.sleep(1)
 
     # -- "Share my numbers": `moe_cache.py bench-report MODEL` as a child process, its lines in the log, its markdown for the page --
-    def start_share(self, model, other=(), agent=False, force=False, pairs=1):
+    def start_share(self, model, other=(), agent=False, force=False, pairs=1, chat=False, limit_gb=None):
         if self.share.get("state") == "running":
             raise ValueError("a report is already being made")
         if self.bench.get("state") == "running":
@@ -1514,19 +1556,23 @@ class Runner:
             raise ValueError("pick a model file (.gguf) in the list first")
         self.share_p = None                 # a finished child of an earlier report must not answer for this one
         self.share = {"state": "running", "started": time.time(), "model": os.path.basename(model), "step": "starting", "lines": [], "agent": bool(agent),
-                      "force": bool(force), "pairs": int(pairs)}
+                      "force": bool(force), "pairs": int(pairs), "chat": bool(chat), "limit_gb": limit_gb}
         threading.Thread(target=self.run_share, args=(model, list(other), bool(agent), bool(force), self.share), daemon=True).start()
 
     def run_share(self, model, other, agent, force, sh):
         cmd = SHARE_CMD + [model, "--out", REPORT_DIR]
         if other:
             cmd += ["--flush-from", ",".join(other)]
-        if agent:
+        if agent and not sh.get("chat"):          # the long chat is its own test (bench-report refuses both)
             cmd += ["--scenario", "agent"]
         if force:
             cmd += ["--force-plugin"]
         if sh.get("pairs", 1) > 1:
             cmd += ["--pairs", str(sh["pairs"])]
+        if sh.get("chat"):
+            cmd += ["--chat"]
+        if sh.get("limit_gb"):
+            cmd += ["--limit-gb", f"{sh['limit_gb']:g}"]
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         env.pop("LLAMA_API_KEY", None)
         lines, p = [], None
@@ -1551,7 +1597,7 @@ class Runner:
                     mc._kill_with_parent_windows(p)
                 except Exception:
                     pass
-            self.add_line("ui: share my numbers: bench-report " + os.path.basename(model) + (" (agent scenario)" if agent else "") + (" (measure anyway)" if force else "") + (f" (fair comparison: {sh['pairs']} pairs)" if sh.get("pairs", 1) > 1 else ""))
+            self.add_line("ui: share my numbers: bench-report " + os.path.basename(model) + (" (agent scenario)" if agent else "") + (" (measure anyway)" if force else "") + (f" (fair comparison: {sh['pairs']} pairs)" if sh.get("pairs", 1) > 1 else "") + (" (long chat)" if sh.get("chat") else "") + (f" (EMULATED {sh['limit_gb']:g} GB limit)" if sh.get("limit_gb") else ""))
             for raw in iter(p.stdout.readline, b""):
                 line = raw.decode("utf-8", errors="replace").rstrip()
                 lines.append(line)
@@ -1588,7 +1634,13 @@ class Runner:
                     md = f.read(MAX_REPORT)
             except OSError as e:
                 return sh.update(state="failed", error=f"could not read the report: {e}", step="")
-            return sh.update(state="done", path=path, markdown=md, step="")
+            removed = {}
+            try:
+                with open(os.path.splitext(path)[0] + ".json", encoding="utf-8") as f:
+                    removed = json.load(f).get("scrubbed") or {}
+            except (OSError, ValueError, AttributeError):
+                pass
+            return sh.update(state="done", path=path, markdown=md, removed=removed if isinstance(removed, dict) else {}, step="")
         if rc == 3:
             return sh.update(state="fits", error="This model fits in your RAM, so moe-cache would not be used (the launcher runs stock llama.cpp). Pick a bigger model in the list (Settings > Which model?) or tick \"Measure anyway\".", step="")
         err += [l.strip() for l in lines if "[FAIL]" in l]                  # the doctor's lines that say what to fix
@@ -2200,21 +2252,26 @@ class Handler(BaseHTTPRequestHandler):
                 m = self.known(q.get("model"))
                 ps = self.settings(dict(q, model=m))             # the same checks as Start (numbers in range, no nan / inf)
                 q = {"ram": str(ps["ram"]) if "ram" in ps else "", "vram": str(ps["vram"]) if "vram" in ps else "", "ctx": str(ps.get("ctx", 8192)),
-                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"], "mtp": ps["mtp"], "leave_room": ps["leave_room"], "long_prompt": ps["long_prompt"]}
-                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"], q["leave_room"], q["long_prompt"])
+                     "mode": ps["mode"], "agent": "1" if ps["agent"] else "", "engine": ps["engine"], "mtp": ps["mtp"], "leave_room": ps["leave_room"], "no_long_prompt": ps["no_long_prompt"]}
+                key = (m, q.get("ram"), q.get("vram"), q.get("ctx"), q.get("mode"), q.get("agent"), q["engine"], q["mtp"], q["leave_room"], q["no_long_prompt"])
                 hit = self.store.plans.get(key)
                 if not hit or time.time() - hit[0] > 60:          # free RAM and VRAM change: a plan is kept for a minute
                     hit = self.store.plans[key] = (time.time(), plan_model(m, q.get("ram") or None, q.get("vram") or None, int(q.get("ctx") or 8192), q.get("mode") or "exact",
-                                                                             q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls, q["leave_room"], q["long_prompt"]))
+                                                                             q.get("agent") in ("1", "true"), q["engine"], q["mtp"], self.store.ls, q["leave_room"], q["no_long_prompt"]))
                 return self.send(200, dict(hit[1], here=measured_here(m)))       # the benchmark lines are fresh even when the plan is cached
             if u.path == "/api/agents":                     # GUI-025: the agents' config files, read back
                 return self.send(200, agents_state(self.runner.status()["url"] if self.runner.state in ("ready", "waiting") else None))
             if u.path == "/api/status":
                 _GPU["watched"] = time.time()
                 return self.send(200, self.runner.status())
+            if u.path == "/api/results":                    # the Results view: which records exist, and one of them
+                if q.get("id"):
+                    return self.send(200, {"id": q["id"], "record": read_result(q["id"])})
+                return self.send(200, {"results": result_files()[:200]})
             if u.path == "/api/ready":                      # the ready-to-measure panel: what could make a report unusable, with the fix, and the time to expect
                 import moe_cache_bench as mb
-                return self.send(200, mb.readiness(self.known(q.get("model")), pairs=number(q.get("pairs") or 2, 1, 4, int, "pairs")))
+                return self.send(200, mb.readiness(self.known(q.get("model")), pairs=number(q.get("pairs") or 2, 1, 4, int, "pairs"), chat=q.get("chat") == "1",
+                                                   limit_gb=number(q.get("limit") or None, 4, 4096, float, "limit")))
             if u.path == "/api/share":                      # the finished report (markdown) for the box on the page
                 return self.send(200, dict(self.runner.share, issue_url=ISSUE_URL, report_dir=REPORT_DIR))
             if u.path == "/api/bench":
@@ -2355,7 +2412,8 @@ class Handler(BaseHTTPRequestHandler):
                 other = [os.path.abspath(os.path.expanduser(x)) for x in other if x.strip()] or self.store.folders()
                 other = [x for x in other if os.path.exists(x)]
                 self.runner.start_share(str(body.get("model") or ""), other=other, agent=bool(body.get("agent")), force=bool(body.get("force")),
-                                         pairs=number(body.get("pairs") or 1, 1, 4, int, "pairs"))
+                                         pairs=number(body.get("pairs") or 1, 1, 4, int, "pairs"), chat=bool(body.get("chat")),
+                                         limit_gb=number(body.get("limit_gb") or None, 4, 4096, float, "limit_gb"))
                 return self.send(200, self.runner.share_public())
             if self.path == "/api/share/cancel":
                 return self.send(200, {"ok": self.runner.cancel_share()})
@@ -2640,7 +2698,7 @@ class Handler(BaseHTTPRequestHandler):
              "engine": d.get("engine") if d.get("engine") in ("auto", "plugin", "stock") else "auto",
              "mtp": {"on": True, "off": False}.get(str(d.get("mtp")).lower()),
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"),
-             "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "long_prompt": str(d.get("long_prompt")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+             "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "no_long_prompt": str(d.get("no_long_prompt")).lower() in ("1", "true", "on"), "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
         if s["engine"] == "stock":
             s["mode"] = "exact"                   # --fast and --hybrid need the plugin
         for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),

@@ -1,0 +1,44 @@
+# Checks the record in a benchmark issue and comments "valid, here is your board row" or what is wrong (benchmark fold-in, stage 3).
+# The issue text is untrusted: it goes in through an environment variable into a file, is read as JSON by `bench-record ingest-issue --check` and never
+# executed or interpolated into a script. The job has read access to the code and write access to issues only; nothing is added to the repository
+# (the owner adds a record with `bench-record ingest-issue N`; claims stay hand-made).
+name: benchmark issue
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    if: contains(github.event.issue.labels.*.name, 'benchmark')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check the record in the issue
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: |
+          printf '%s' "$ISSUE_BODY" > "$RUNNER_TEMP/issue.txt"
+          python3 bin/moe_cache.py bench-record ingest-issue --file "$RUNNER_TEMP/issue.txt" --check > "$RUNNER_TEMP/comment.md" || true
+          test -s "$RUNNER_TEMP/comment.md"
+
+      - name: Post or update the comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          old=$(gh api "repos/$REPO/issues/$NUMBER/comments" --paginate -q '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("moe-cache-record-check"))) | .id' | head -n 1)
+          if [ -n "$old" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$old" -F body=@"$RUNNER_TEMP/comment.md" > /dev/null
+          else
+            gh issue comment "$NUMBER" --repo "$REPO" --body-file "$RUNNER_TEMP/comment.md"
+          fi

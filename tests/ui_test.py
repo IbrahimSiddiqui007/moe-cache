@@ -72,7 +72,7 @@ PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe"
 TUNE = {"n_cpu_moe": 38, "ub": 1024, "gpu_cache_mib": 0, "why": ["10 layers of experts stay on the GPU", "micro-batch 1024"]}
 # the page asks the launcher for its plan (ui.launcher_view -> mc.launch_plan); here the plan's planner answer and tuner answer are mocked, the stock-or-plugin rule is the launcher's own
 _planner = [lambda path, ctx, ram, vram, kv="f16": dict(PLAN)]
-def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, long_prompt=False):
+def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, no_long_prompt=False):
     info = _planner[0](path, ctx, ram, vram)          # a RuntimeError here is the planner's refusal
     stock = ui.mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
     t = dict(TUNE)
@@ -579,13 +579,13 @@ if sys.platform.startswith("linux"):
     par.kill(); par.wait()
 check(ui.server_args({"model": "m.gguf", "agent": True, "no_warm": True})[:-2][-1] == "--no-warm" and "--no-warm" not in ui.server_args({"model": "m.gguf", "no_warm": True}),
       "Don't restore: --no-warm (agent mode only)")
-check("--long-prompt" in ui.server_args({"model": "m.gguf", "long_prompt": True}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
-      "Long-prompt mode: --long-prompt on the Start command only when ticked (v0.3.8, opt-in)")
-check('id="longprompt"' in _html and 'long_prompt: $("longprompt").checked' in _html and "&long_prompt=" in _html and "last.long_prompt" in _html and "faster reading of long prompts" in _html,
-      "the page has the Long-prompt mode toggle with its one-line explanation, sent with Start and with the plan request, restored from the last start")
+check("--no-long-prompt" in ui.server_args({"model": "m.gguf", "no_long_prompt": True}) and "--no-long-prompt" not in ui.server_args({"model": "m.gguf"}) and "--long-prompt" not in ui.server_args({"model": "m.gguf"}),
+      "Long-prompt mode is the default: --no-long-prompt on the Start command only when unticked (2026-11-08), no --long-prompt")
+check('id="longprompt" checked' in _html and 'no_long_prompt: !$("longprompt").checked' in _html and "&no_long_prompt=" in _html and "last.no_long_prompt" in _html and "reads long prompts about 77 % faster" in _html,
+      "the page has the Long-prompt mode toggle, ticked by default, with its one-line explanation, sent with Start and with the plan request, restored from the last start")
 check("--leave-room" in ui.server_args({"model": "m.gguf", "leave_room": True}) and "--leave-room" not in ui.server_args({"model": "m.gguf"}),
       "Leave room for me: --leave-room on the Start command (owner 2026-10-30)")
-_html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "index.html")).read()
+_html = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "ui", "index.html"), encoding="utf-8").read()
 check('id="leaveroom"' in _html and "leave_room: $(\"leaveroom\").checked" in _html and "&leave_room=" in _html and "last.leave_room" in _html,
       "Leave room for me: the box, sent with Start and the plan, remembered")
 
@@ -891,7 +891,7 @@ for i in range(1, 5):
 os.makedirs(out, exist_ok=True)
 base = os.path.join(out, "moe-cache-report-20261030-1200")
 md = "# moe-cache report\\n\\n| decode tok/s | 12.3 |\\n|---|---|\\nargs: " + " ".join(x for x in a[1:] if not os.path.isabs(x)) + "\\n"
-open(base + ".md", "w").write(md); open(base + ".json", "w").write("{}")
+open(base + ".md", "w").write(md); open(base + ".json", "w").write('{"scrubbed": {"home folder": 2, "user name or host name": 1}}')
 print(md, flush=True)
 print("bench-report: written %s.md and .json. Paste the .md into a new issue: https://example.invalid" % base, flush=True)
 print("bench-report: no prompts, answers, user name, host name or folder names are in the report; nothing was uploaded.", flush=True)
@@ -928,6 +928,7 @@ check(sh["state"] == "done" and sh["has_markdown"] and "markdown" not in sh, f"t
 check(json.loads(req("/api/status")[1])["state"] in ("stopped", "exited", "idle"), "share: the running server was stopped first")
 full = json.loads(req("/api/share")[1])
 check("args: --out --flush-from --scenario agent" in full["markdown"], f"agent mode becomes --scenario agent, the folders --flush-from ({full['markdown'].splitlines()[-1]})")
+check(full.get("removed") == {"home folder": 2, "user name or host name": 1}, f"the share state lists what was removed (read from the report's .json): {full.get('removed')}")
 check(full["path"].startswith(ui.REPORT_DIR) and os.path.isfile(full["path"]) and full["issue_url"].endswith("template=benchmark_report.yml") and full["report_dir"] == ui.REPORT_DIR,
       "the report file is in the reports folder; the issue page link is the benchmark template")
 lg = [l for _, l in json.loads(req("/api/log?since=0")[1])["lines"]]
@@ -937,6 +938,19 @@ check(any(l == "share: bench-report: run 2/4: moe-cache ..." for l in lg) and an
 st, body = req("/api/share", {"model": big_one, "pairs": 9}); check(st == 400 and "pairs" in body, f"share: pairs above 4: 400 ({st})")
 req("/api/share", {"model": big_one, "pairs": 2}); sh = share_state({"done", "failed"})
 check(sh["state"] == "done" and sh["pairs"] == 2 and "--pairs 2" in json.loads(req("/api/share")[1])["markdown"], "Fair comparison: --pairs 2 is passed to bench-report")
+req("/api/share", {"model": big_one, "pairs": 2, "chat": True, "agent": True}); sh = share_state({"done", "failed"})
+mdc = json.loads(req("/api/share")[1])["markdown"]
+check(sh["state"] == "done" and sh["chat"] and "--chat" in mdc and "--pairs 2" in mdc and "--scenario" not in mdc, "Long chat: --chat is passed, and the agent scenario is dropped (two different tests)")
+st, body = req("/api/share", {"model": big_one, "limit_gb": 2}); check(st == 400 and "limit_gb" in body, f"share: a limit under 4 GB: 400 ({st})")
+req("/api/share", {"model": big_one, "pairs": 2, "chat": True, "limit_gb": 16}); sh = share_state({"done", "failed"})
+mdl2 = json.loads(req("/api/share")[1])["markdown"]
+check(sh["state"] == "done" and sh["limit_gb"] == 16 and "--limit-gb 16" in mdl2, "Emulated limit: --limit-gb is passed to bench-report")
+rdp = json.loads(req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2&chat=1")[1])
+check(rdp["preset"]["ctx"] in (16384, 32768, 65536) and rdp["preset"]["pairs"] == 2 and rdp["preset"]["chat"] is True and "GB machine" in rdp["preset"]["text"], f"/api/ready: the machine-size preset ({rdp['preset']['text'][:70]})")
+st, body = req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&limit=2"); check(st == 400, "/api/ready: a limit under 4 GB: 400")
+rdc = json.loads(req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2&chat=1")[1])
+rds = json.loads(req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2&chat=0")[1])
+check(rdc["chat_ctx"] in (16384, 32768, 65536) and rds["chat_ctx"] == 0 and rdc["minutes"] > rds["minutes"] and "long chat" in rdc["checks"][-1]["text"], "/api/ready?chat=1: the estimate counts the conversation and names its context")
 st, body = req("/api/ready?model=" + urllib.parse.quote(small["path"]) + "&pairs=2")
 rd = json.loads(body) if st == 200 else {}
 check(st == 200 and {c["id"] for c in rd.get("checks", [])} >= {"size", "disk", "power", "programs", "plan", "temp", "estimate"} and rd.get("pairs") == 2, f"/api/ready: the panel's checks ({st})")
@@ -962,9 +976,141 @@ st, _ = req("/api/share", {"model": fits, "force": True}); check(st == 200, "aft
 share_state({"done", "failed", "fits"})
 ui.SHARE_CMD, ui.REPORT_DIR = saved_share
 page_html = open(ui.PAGE, encoding="utf-8").read()
-check(all(x in page_html for x in ('id="fair"', 'id="ready"', 'id="sharenoise"', 'id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
+check(all(x in page_html for x in ('id="fair"', 'id="sharelimit"', 'id="sharechat"', 'id="ready"', 'id="sharenoise"', 'id="share"', 'id="sharemd"', 'id="sharecopy"', 'id="shareissue"', 'id="sharecancel"', 'id="shareforce"')) and "Nothing is uploaded" in page_html,
       "the page has the Share my numbers button, the report box, Copy, the issue button, Cancel, 'measure anyway' and says nothing is uploaded")
 
+
+# stage 3: the result card (record -> facts -> SVG with the page's colours) and the "removed before sharing" line, run on the page's own code under node
+import shutil, subprocess
+node = shutil.which("node")
+page = page_html
+if node:       # the WHOLE page script must parse: the per-function checks never load it as one (a missing parenthesis once left the page blank)
+    _js = os.path.join(TMP, "page_all.js")
+    open(_js, "w", encoding="utf-8").write(re.search(r"<script[^>]*>(.*)</script>", page_html, re.S).group(1))
+    _o = subprocess.run([node, "--check", _js], capture_output=True, text=True, timeout=60)
+    check(_o.returncode == 0, "the page's whole script parses (node --check)" + ("" if _o.returncode == 0 else ": " + _o.stderr[:300]))
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"function removedText\(r\) \{.*?\n\}\n", r"function recordOf\(md\) \{.*?\n\}\n", r"function cardFacts\(rec\) \{.*?\n\}\n",
+                                                                 r"const xmlEsc = [^\n]*\n", r"function cardSvg\(rec, col\) \{.*?\n\}\n"))
+    mk = lambda dec_a, dec_b, pre_a, pre_b, cache="cold": {"record_schema": 1, "model": {"file": "Big<&>-Q2_0.gguf"}, "hardware": {"gpu_model": "RX 9070 XT", "ram_gib": 31.0},
+        "software": {"moe_cache_version": "0.3.7.1"}, "conditions": {"file_cache": cache}, "settings": {"ctx": 65536}, "protocol": {"runs_per_arm": 4},
+        "runs": [{"arm": "stock", "decode_tps": dec_a[0], "prompt_tps": pre_a[0]}, {"arm": "moe-cache", "decode_tps": dec_b[0], "prompt_tps": pre_b[0]},
+                 {"arm": "moe-cache", "decode_tps": dec_b[1], "prompt_tps": pre_b[1]}, {"arm": "stock", "decode_tps": dec_a[1], "prompt_tps": pre_a[1]}]}
+    recs = [mk([10, 10.2], [19, 19.4], [100, 101], [190, 192]), mk([10, 10.1], [10.4, 10.5], [100, 100], [101, 102]), mk([10, 10], [10, 10], [100, 100], [100, 100])]
+    recs[2]["runs"] = [r for r in recs[2]["runs"] if r["arm"] == "stock"]
+    md = "text\n```json\n" + json.dumps(recs[0]) + "\n```\nmore\n"
+    harness = ("const esc = t => t;\n" + fn + "const COL = {panel:'#111111', line:'#222222', text:'#333333', muted:'#444444', accent:'#555555', ok:'#666666', warn:'#777777'};\n"
+               "const recs = " + json.dumps(recs) + ";\nconst md = " + json.dumps(md) + ";\n"
+               "console.log(JSON.stringify({rec: recordOf(md) && recordOf(md).record_schema, none: recordOf('no json'), bad: recordOf('```json\\n{oops\\n```'), svgs: recs.map(r => cardSvg(r, COL)),\n"
+               "  facts: recs.map(cardFacts), removed: [removedText({'home folder': 2, 'user name or host name': 3}), removedText({})]}));\n")
+    hf = os.path.join(TMP, "card.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ is not None and r_["rec"] == 1 and r_["none"] is None and r_["bad"] is None, "card: the record is found in the report's JSON block; text without one or a cut block gives none")
+    if r_:
+        import xml.dom.minidom
+        for i, sv in enumerate(r_["svgs"]):
+            try:
+                xml.dom.minidom.parseString(sv); okx = True
+            except Exception as e:
+                okx = False; print(e)
+            check(okx, f"card {i}: the SVG is well-formed XML (a model name with < & is escaped)")
+        s0, s1, s2 = r_["svgs"]
+        check("1.91x" in s0 or "1.90x" in s0 or "1.89x" in s0, "card 0: the ratio is written on the bars")
+        check(r_["facts"][0]["claim"] is True and "Larger than the noise" in s0 and "#666666" in s0, "card 0: 1.9x with tight runs: 'Larger than the noise' in the ok colour")
+        check(r_["facts"][1]["claim"] is False and "Within noise" in s1 and "#777777" in s1, "card 1: +4 % reads 'Within noise ... no claim' in the warning colour")
+        check("No ratio" in s2, "card 2: a record without moe-cache runs says no ratio")
+        check(all(c in s0 for c in ("#111111", "#222222", "#333333", "#444444", "#555555")) and not re.search(r"#[0-9a-fA-F]{3,6}", re.sub(r"#[0-7]{6}", "", s0)),
+              "card: every colour comes from the page's variables (the stub's six), none of its own")
+        check("RX 9070 XT" in s0 and "31 GB RAM" in s0 and "COLD start" in s0 and "2 pairs" in s0 and "ctx 65536" in s0 and "v0.3.7.1" in s0, "card: machine, RAM, cold start, pairs, context and version are on it")
+        check("Removed before sharing: 2 x home folder, 3 x user name or host name" in r_["removed"][0] and "Nothing needed removing" in r_["removed"][1], "preview: the removed items are listed with counts; none says so")
+    _cs = re.search(r"function cardColours\(\) \{.*?\n\}\n", page, re.S).group(0)
+    check("getPropertyValue" in _cs and not re.search(r"#[0-9a-fA-F]{3,6}\b", _cs) and all(v in _cs for v in ("--panel", "--accent", "--ok", "--warn", "--muted")), "card: colours are read from the page's CSS variables at draw time (both themes)")
+check('id="sharecard"' in page and 'id="sharecardsave"' in page and 'id="shareremoved"' in page, "the page has Copy image, Save image and the removed-items line")
+
+
+# stage 4: the Results view (API: only listed ids, no paths; page: charts and the per-turn table on the page's own code, untrusted record text is escaped)
+_rd = ui.REPORT_DIR
+os.makedirs(_rd, exist_ok=True)
+rec_res = {"record_schema": 1, "model": {"file": "M<script>alert(1)</script>.gguf"}, "hardware": {"gpu_model": "GPU", "ram_gib": 32}, "conditions": {"file_cache": "cold", "memory_limit": "EMULATED 16 GB"},
+           "runs": [{"arm": a, "index": i + 1, "ok": True, "prompt_tps": p_, "decode_tps": d_, "vram_used_peak_mib": 2048.0, "process_ram_peak_mib": 4096.0, "cpu_avg_pct": 30.0,
+                     "bands": [{"band": "0k-2k", "turns": 2, "prompt_tps": p_, "decode_tps": d_, "hit_rate_dec_pct": None if a == "stock" else 80.0}, {"band": "2k-4k", "turns": 2, "prompt_tps": p_ / 2, "decode_tps": d_ / 2, "hit_rate_dec_pct": None if a == "stock" else 70.0}],
+                     "turns": [{"turn": 0, "kind": "code<b>", "depth_before": 100, "depth_after": 900, "prompt_n": 800, "cache_n": 0, "prompt_tps": p_, "decode_tps": d_, "ttft_s": 1.5, "predicted_n": 100, "read_gb": 0.5, "hits_dec": None if a == "stock" else 8, "misses_dec": None if a == "stock" else 2},
+                               {"turn": 1, "kind": "followup", "depth_before": 1000, "depth_after": 1200, "prompt_n": 30, "cache_n": 900, "prompt_tps": p_, "decode_tps": d_ / 2, "ttft_s": 0.1, "predicted_n": 100, "read_gb": 0.0, "hits_dec": None, "misses_dec": None}]}
+                    for i, (a, p_, d_) in enumerate((("stock", 100.0, 10.0), ("moe-cache", 200.0, 20.0), ("moe-cache", 190.0, 21.0), ("stock", 98.0, 10.5)))]}
+json.dump({"scrubbed": {}, "record": rec_res}, open(os.path.join(_rd, "moe-cache-report-20260101-0000.json"), "w"))
+json.dump(rec_res, open(os.path.join(_rd, "moe-cache-report-20260101-0000.record.json"), "w"))     # the same record again: hidden by the .json
+json.dump({"no": "record"}, open(os.path.join(_rd, "other.json"), "w"))
+st, body = req("/api/results"); lst = json.loads(body)["results"] if st == 200 else []
+ids = [x["id"] for x in lst]
+check(st == 200 and "r:moe-cache-report-20260101-0000.json" in ids and "r:moe-cache-report-20260101-0000.record.json" not in ids, f"/api/results: lists the reports' records, once each ({ids})")
+st, body = req("/api/results?id=" + urllib.parse.quote("r:moe-cache-report-20260101-0000.json"))
+check(st == 200 and json.loads(body)["record"]["record_schema"] == 1 and len(json.loads(body)["record"]["runs"]) == 4, "/api/results?id=: the record behind a report's .json")
+for bad_id in ("r:../etc/passwd", "r:other.json.json", "x:a.json", "r:/etc/passwd", "../../etc/passwd", "r:" + "a" * 200 + ".json"):
+    check(req("/api/results?id=" + urllib.parse.quote(bad_id))[0] == 400, f"/api/results: id {bad_id[:24]!r} is refused (400)")
+check(req("/api/results?id=" + urllib.parse.quote("r:other.json"))[0] == 400, "/api/results: a file without a record: 400 with the reason")
+check("/api/results" not in ui.REMOTE_GET, "/api/results stays on this PC (not in the LAN allow-list)")
+if node:
+    fn = "".join(re.search(pat, page, re.S).group(0) for pat in (r"const nz = [^\n]*\n", r"const cfmt = [^\n]*\n", r"function niceMax\(v\) \{.*?\n\}\n", r"function chartSvg\(spec, col, hidden\) \{.*?\n\}\n",
+                                                                 r"function resultCharts\(rec\) \{.*?\n\}\n", r"function turnsHtml\(run\) \{.*?\n\}\n"))
+    harness = ("const esc = s => String(s).replace(/[&<>\"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;'}[c]));\n" + fn +
+               "const COL = {stock:'#444444', moe:'#555555', gpu:'#666666', ok:'#777777', warn:'#888888', bad:'#999999', text:'#333333', muted:'#444444', line:'#222222', panel:'#111111'};\n"
+               "const rec = " + json.dumps(rec_res) + ";\nconst specs = resultCharts(rec);\n"
+               "console.log(JSON.stringify({titles: specs.map(s => s.title), types: specs.map(s => s.type), svgs: specs.map(s => chartSvg(s, COL, new Set())), hid: chartSvg(specs[0], COL, new Set(['moe-cache'])),\n"
+               "  turns: turnsHtml(rec.runs[1]), none: turnsHtml({}), empty: resultCharts({runs: []}).length, ratio: specs[0].series.map(s => s.values)}));\n")
+    hf = os.path.join(TMP, "charts.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-600:])
+    check(r_ is not None and r_["titles"][:2] == ["Prompt reading speed", "Answer speed"] and "Answer speed by conversation depth" in r_["titles"] and "Expert cache hit rate by depth (decode)" in r_["titles"]
+          and "Answer speed turn by turn" in r_["titles"] and "GPU memory in use (peak)" in r_["titles"] and r_["empty"] == 0, f"charts: speed bars, depth lines, hit rate, turn by turn, resources ({r_ and r_['titles']})")
+    if r_:
+        import xml.dom.minidom
+        okx = True
+        for sv in r_["svgs"] + [r_["hid"]]:
+            try:
+                xml.dom.minidom.parseString(sv)
+            except Exception as e:
+                okx = False; print(e)
+        check(okx, "charts: every SVG is well-formed XML")
+        check("1.97x" in r_["svgs"][0], "charts: the bar chart prints the moe-cache / stock ratio")
+        check(r_["hid"].count("<rect") < r_["svgs"][0].count("<rect"), "charts: a hidden series (legend click) is not drawn")
+        allsv = "".join(r_["svgs"])
+        check(not re.search(r"#[0-9a-fA-F]{3,6}", re.sub(r"#[0-9]{6}", "", allsv)) and "#555555" in allsv and "#444444" in allsv, "charts: stock is the muted colour, moe-cache the accent; all colours come from the page's tokens (none of their own)")
+        check("<script>" not in r_["turns"] and "<b>" not in r_["turns"].replace("<br>", "") .replace("<th", "").replace("</th", "") and "code&lt;b&gt;" in r_["turns"], "charts: text from a record is escaped in the per-turn table")
+        check("SSD MB per token" in r_["turns"] and ">5.00<" in r_["turns"] and "80.0 %" in r_["turns"] and "no per-turn numbers" in r_["none"], "per-turn table: SSD MB per token (0.5 GB / 100 tokens = 5.00), expert hits, and a clear line for a run without turns")
+    _cc = re.search(r"function chartColours\(\) \{.*?\n\}\n", page, re.S).group(0)
+    check("getPropertyValue" in _cc and not re.search(r"#[0-9a-fA-F]{3,6}\b", _cc) and all(v in _cc for v in ("--muted", "--accent", "--gpu", "--ok", "--warn", "--bad", "--panel")), "charts: colours are read from the page's CSS variables at draw time (both themes)")
+if node:
+    hostile = json.loads(json.dumps(rec_res))
+    for r_h in hostile["runs"]:
+        r_h["bands"][0]["turns"] = "<img src=x onerror=alert(1)>"
+        r_h["bands"][0]["band"] = "<svg onload=alert(2)>"
+        r_h["turns"][0]["prompt_n"] = "<img src=x onerror=alert(3)>"
+        r_h["turns"][0]["cache_n"] = "<b onmouseover=alert(4)>"
+        r_h["turns"][0]["ttft_s"] = "<i>"
+        r_h["arm"] = r_h["arm"]
+    fnh = "".join(re.search(pat, page, re.S).group(0) for pat in (r"const nz = [^\n]*\n", r"const cfmt = [^\n]*\n", r"function niceMax\(v\) \{.*?\n\}\n", r"function chartSvg\(spec, col, hidden\) \{.*?\n\}\n",
+                                                                  r"function resultCharts\(rec\) \{.*?\n\}\n", r"function turnsHtml\(run\) \{.*?\n\}\n"))
+    hh = ("const esc = s => String(s).replace(/[&<>\"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;'}[c]));\n" + fnh +
+          "const COL = {stock:'#444444', moe:'#555555', gpu:'#666666', ok:'#777777', warn:'#888888', bad:'#999999', text:'#333333', muted:'#444444', line:'#222222', panel:'#111111'};\n"
+          "const rec = " + json.dumps(hostile) + ";\nconst specs = resultCharts(rec);\n"
+          "const all = specs.map(s => chartSvg(s, COL, new Set())).join('') + specs.map(s => (s.series || []).map(x => (x.tips || []).join('')).join('')).join('') + turnsHtml(rec.runs[1]);\n"
+          "console.log(JSON.stringify({all}));\n")
+    hfh = os.path.join(TMP, "hostile.js"); open(hfh, "w", encoding="utf-8").write(hh)
+    oh = subprocess.run([node, hfh], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        allh = json.loads(oh.stdout.strip().splitlines()[-1])["all"]
+    except Exception:
+        allh = None; print(oh.stdout[-300:], oh.stderr[-500:])
+    check(allh is not None and not re.search(r"<(img|svg|b|i)\b[^>]*(onerror|onload|onmouseover)", allh) and "<img" not in allh and "&lt;img src=x onerror=alert(1)&gt;" in allh and "&lt;img src=x onerror=alert(3)&gt;" in allh,
+          "charts: a hostile record (img / svg / b tags with event handlers in turns, cached tokens, band names) renders as text in the tips, the SVG and the per-turn table")
+check(all(x in page for x in ('id="resdlg"', 'id="reslist"', 'id="rescharts"', 'id="resturns"', 'id="resopen"', 'id="chart-tip"')), "the page has the Results dialog, its list, charts, per-turn table and the button")
 import re as _re2
 _pr = page_html[page_html.index("async function paintReady"):page_html.index("async function paintShare")]
 check(not _re2.search(r"#[0-9a-fA-F]{3,6}\b|rgb\(", _pr) and "var(--" not in _pr and 'class="dot' in _pr, "the ready panel takes its colours from the page's .dot classes (both themes), none of its own")
@@ -1171,6 +1317,11 @@ check("about 1 token in 40-50 comes out different" in re.search(r"const MODEHINT
 
 # the card: run the page's own loadPick() under node with a stub DOM and look at the HTML it builds
 node = shutil.which("node")
+if node:       # the WHOLE page script must parse: the per-function checks never load it as one (a missing parenthesis once left the page blank)
+    _js = os.path.join(TMP, "page_all.js")
+    open(_js, "w", encoding="utf-8").write(re.search(r"<script[^>]*>(.*)</script>", open(ui.PAGE, encoding="utf-8").read(), re.S).group(1))
+    _o = subprocess.run([node, "--check", _js], capture_output=True, text=True, timeout=60)
+    check(_o.returncode == 0, "the page's whole script parses (node --check)" + ("" if _o.returncode == 0 else ": " + _o.stderr[:300]))
 if node:
     spec2 = dict(fake_spec, local={}, disk_kind="HDD")
     jj = {"machine": spec2, "lines": ui.picker.spec_lines(spec2), "recommendations": [ui.picker.recommend(spec2, "agents")]}     # what /api/pick sends

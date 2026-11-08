@@ -14,6 +14,9 @@ on:
 permissions:
   contents: read
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}   # tools/ci/fetch.* get GitHub release assets through api.github.com first (github.com/.../releases/download 504s in outages)
+
 defaults:
   run:
     shell: bash     # bash -eo pipefail: without it "kernel_check | tee" hides a failing kernel check
@@ -68,10 +71,25 @@ jobs:
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"; else echo "version=0.0.0-ci" >> "$GITHUB_OUTPUT"; fi
 
+      - name: Cache restore (the Linux tarball's llama.cpp; a miss downloads in the build step, with retries and the pinned sha256)
+        id: llamatgz
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-tgz
+          key: dl-tgz-llama-b12064-ubuntu-vulkan-156e0010
+
       - name: Build tarball (from a clean export of this commit)
         env:
           V: ${{ steps.v.outputs.version }}
+          LLAMA_TGZ_CACHE: ${{ runner.temp }}/llama-tgz
         run: tools/make_release.sh "$V"
+
+      - name: Cache save (the Linux tarball's llama.cpp; only after a build that passed its sha256)
+        if: steps.llamatgz.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-tgz
+          key: dl-tgz-llama-b12064-ubuntu-vulkan-156e0010
 
       - name: The ggml0.26 tarball carries the official llama.cpp and the launcher finds it (no model); the API-2 tarball does not
         run: |
@@ -166,19 +184,35 @@ jobs:
 
       - name: mingw-w64 (UCRT when available, as windows.yml)
         run: |
-          sudo apt-get update -q
-          if sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
+          sudo apt-get -o Acquire::Retries=5 update -q
+          if sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-ucrt64 binutils-mingw-w64-x86-64 2>/dev/null && command -v x86_64-w64-mingw32ucrt-g++; then
             echo "MINGW_CXX=x86_64-w64-mingw32ucrt-g++" >> "$GITHUB_ENV"
           else
-            sudo apt-get install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
+            sudo apt-get -o Acquire::Retries=5 install -y -q --no-install-recommends g++-mingw-w64-x86-64-posix binutils-mingw-w64-x86-64
             echo "MINGW_CXX=x86_64-w64-mingw32-g++" >> "$GITHUB_ENV"
           fi
 
+      - name: Cache restore (kit's llama.cpp zip; a miss downloads in the kit step, with retries and the pinned sha256)
+        id: kitzip
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-zips
+          key: dl-kit-llama-b12064-vulkan-e0fee991
+
       - name: Build the kit
+        env:
+          LLAMA_ZIP_CACHE: ${{ runner.temp }}/llama-zips
         run: |
           if [ "$GITHUB_REF_TYPE" = tag ]; then V="${GITHUB_REF_NAME#v}"; else V=0.0.0-ci; fi
           tools/make_windows_kit.sh "$V"
           python3 packaging/fill_manifests.py "dist/moe-cache-v$V-windows-x64.zip"   # scoop / winget manifests (a check here; packages.yml publishes them after the release)
+
+      - name: Cache save (kit's llama.cpp zip; only after a build that passed its sha256)
+        if: steps.kitzip.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: ${{ runner.temp }}/llama-zips
+          key: dl-kit-llama-b12064-vulkan-e0fee991
 
       - name: Attest build provenance
         if: github.ref_type == 'tag'   # as in the build job: a manual run on a branch must not get the same signature as a release

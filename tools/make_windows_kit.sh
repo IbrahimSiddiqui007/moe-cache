@@ -41,12 +41,14 @@ cp "$X/LICENSE" "$X/CHANGELOG.md" "$X/models.json" "$K/"     # the model catalog
 LLAMA_TAG=b12064; LLAMA_ZIP=llama-$LLAMA_TAG-bin-win-vulkan-x64.zip; LLAMA_SHA=e0fee991887711ce74cb9c1f7715a1234e27d94f13ccfc594dc01310e5da6e22
 if [ "${MOE_CACHE_KIT_NO_LLAMA:-0}" != 1 ]; then
   Z="${LLAMA_ZIP_CACHE:-$X}/$LLAMA_ZIP"
-  [ -f "$Z" ] || curl -fsSL -o "$Z" "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_ZIP"
+  # retried with backoff, and skipped when the zip is already in the cache folder with the right sha256 (CI restores LLAMA_ZIP_CACHE with actions/cache)
+  mkdir -p "$(dirname "$Z")"; "$X/tools/ci/fetch.sh" "https://github.com/ggml-org/llama.cpp/releases/download/$LLAMA_TAG/$LLAMA_ZIP" "$Z" "$LLAMA_SHA" || exit 1
   echo "$LLAMA_SHA  $Z" | sha256sum -c - >/dev/null || { echo "FAIL: $LLAMA_ZIP sha256 does not match the release asset"; exit 1; }
   mkdir -p "$K/llama"
   python3 -c "import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$Z" "$K/llama"
   [ -f "$K/llama/llama-server.exe" ] || { echo "FAIL: no llama-server.exe in $LLAMA_ZIP"; exit 1; }
-  curl -fsSL -o "$K/llama/LICENSE-llama.cpp.txt" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$LLAMA_TAG/LICENSE"
+  "$X/tools/ci/fetch.sh" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$LLAMA_TAG/LICENSE" "$(dirname "$Z")/LICENSE-llama.cpp-$LLAMA_TAG.txt" || exit 1   # pinned by the tag; cached next to the zip
+  cp "$(dirname "$Z")/LICENSE-llama.cpp-$LLAMA_TAG.txt" "$K/llama/LICENSE-llama.cpp.txt"
   printf 'Official llama.cpp %s Vulkan build for Windows x64, unmodified (%s, sha256 %s), from\r\nhttps://github.com/ggml-org/llama.cpp/releases/tag/%s\r\nLicence: MIT (LICENSE-llama.cpp.txt). moe-cache finds it here; set LLAMA_SERVER to use another build.\r\n' \
     "$LLAMA_TAG" "$LLAMA_ZIP" "$LLAMA_SHA" "$LLAMA_TAG" > "$K/llama/README-moe-cache.txt"
 fi

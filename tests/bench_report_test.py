@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """bench-report (R2-1): report sections and order, backend line, privacy, fit rule, identity, cold/warm stamp, run order. No model, no server:
 the doctor, the launcher's plan, the runs and llama-server's device list are replaced by fakes. Same file on Linux and Windows CI."""
-import json, os, socket, sys, tempfile
+import json, os, re as _re_l, socket, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
 import moe_cache_bench as mb  # noqa: E402
 import moe_cache_ui as ui  # noqa: E402
+import moe_cache_record as rr  # noqa: E402
 
 FAILS = []
 
@@ -71,6 +72,35 @@ nv = mb.summarize([r2("stock", 20.0), r2("moe-cache", 10.0), r2("moe-cache", 10.
 check(nv["claimable"] and nv["decode"] == "slower" and "SLOWER" in nv["sentence"], "noise: a clear slowdown is reported as slower, not hidden")
 check(not mb.summarize([r2("stock", 10.0)], exact=True)["noise"]["claimable"], "noise: a side without runs: nothing to claim")
 
+
+# 3d. the record's JSON in the report stays valid JSON when a Windows path (escaped backslashes) is in it, and the path is still scrubbed
+sc = mb.scrubber()
+dd = {"record": {"record_schema": 1, "hardware": {"storage": {"drive": "C:\\Users\\Someone Else\\models\\x.gguf", "unc": "\\\\NAS\\share\\big\\y.gguf"}}, "notes": ["n"], "runs": [{"turns": [1], "arm": "stock"}]},
+      "facts": {}, "summary": {}, "notes": []}
+mb.report_md_saved = mb.report_md
+mb.report_md = lambda d_, record_json=None: "head\n```json\n" + (record_json if record_json is not None else "?") + "\n```\ntail C:\\Users\\Someone Else\\z.gguf\n"
+try:
+    mdw = mb.scrubbed_report(dd, sc)
+finally:
+    mb.report_md = mb.report_md_saved
+import re as _rw
+blkw = _rw.search(r"```json\n(.*?)\n```", mdw, _rw.S).group(1)
+try:
+    jw = json.loads(blkw)
+except ValueError as e_:
+    jw = None
+check(jw is not None and jw["hardware"]["storage"]["drive"] == "x.gguf" and jw["hardware"]["storage"]["unc"] == "y.gguf" and "Someone Else" not in mdw and "z.gguf" in mdw and "Users" not in mdw,
+      f"a Windows path in the record: the JSON block stays valid and the path is cut to its last part ({blkw[:120]!r})")
+
+
+# 3e. presets by machine size (report section 7)
+check(mb.preset_for(16, 66)["ctx"] == 16384 and "smaller MoE" in mb.preset_for(16, 66)["text"] and mb.preset_for(16, 66)["emulate_gb"] is None, "preset: 16 GB -> a smaller MoE, 16k")
+check(mb.preset_for(32, 66)["ctx"] == 65536 and "Flash-Next Q2_0" in mb.preset_for(32, 66)["text"] and mb.preset_for(32, 66)["pairs"] == 2, "preset: 32 GB -> Flash-Next Q2_0, 65k, 2 pairs")
+check(mb.preset_for(24, 40)["ctx"] == 32768, "preset: 24 GB -> 32k")
+pb = mb.preset_for(64, 66, can_emulate=True)
+check(pb["emulate_gb"] == 32 and "EMULATED" in pb["text"] and mb.preset_for(64, 66, can_emulate=False)["emulate_gb"] is None and "Linux with systemd" in mb.preset_for(64, 66, can_emulate=False)["text"], "preset: 64 GB -> emulate 32 GB when the system can, else say what is needed")
+check(mb.preset_for(64, 80, can_emulate=True)["emulate_gb"] is None, "preset: a model that does not fit a 64 GB machine needs no emulation")
+
 # 3c. the ready-to-measure panel (reads only)
 mdl = os.path.join(tempfile.mkdtemp(prefix="moe-ready-"), "x.gguf")
 open(mdl, "wb").write(b"GGUF" + b"\0" * 4096)
@@ -99,7 +129,7 @@ mb.mc.port_busy = lambda p: False
 flush_ok = [True]
 ui.flush_model_cache = lambda m, other: (flush_ok[0], "flushed" if flush_ok[0] else "no folder with other big files")
 plan = ["plugin"]
-mb.launcher_plan = lambda m, ls, ram, ctx, extra: (plan[0], "env MOE_CACHE_SIZE_GIB=auto llama-server -m x -c 8192 --n-cpu-moe 30")
+mb.launcher_plan = lambda m, ls, ram, ctx, extra, limit_gb=None: (plan[0], "env MOE_CACHE_SIZE_GIB=auto llama-server -m x -c 8192 --n-cpu-moe 30")
 try:
     out = os.path.join(tmp, "out dir")
     rc = mb.bench_report([model, "--out", out, "--llama-server", "llama-server"])
@@ -122,6 +152,7 @@ try:
           "benchmark record: the card's detail lines and the record are in the report, and the record is valid against the schema")
     check(rj["record"]["outputs"]["identical_to_baseline"] == "yes" and rj["record"]["protocol"]["order"] == "ABBA" and len(rj["record"]["runs"]) == 4, "record: ABBA, four runs, identity yes")
     check("2.0x" in md, "decode ratio 2.0x in the result line")
+    check(isinstance(rj.get("scrubbed"), dict) and rj["scrubbed"].get("user name or host name", 0) >= 1 and rj["scrubbed"].get("folder path", 0) >= 1, f"the .json lists what was removed, by kind ({rj.get('scrubbed')})")
 
     calls.clear(); flush_ok[0] = False
     rc = mb.bench_report([model, "--out", out, "--llama-server", "llama-server", "--flush-from", ""])
@@ -134,6 +165,96 @@ try:
     md = open(os.path.join(out, sorted(f for f in os.listdir(out) if f.endswith(".md"))[-1]), encoding="utf-8").read()
     check(rc == 0 and "tokens DIFFERENT" in md and "tokens differ: stock and moe-cache ran" in md, "different tokens: reported with the explanation, exit 0")
     FAKE_TEXT["moe-cache"] = "same"
+
+
+    # long chat (--chat): the arms play the real conversation against fake servers (as tests/conversation_bench_test.py); the report carries the band table, the
+    # verdict and a record that validates; the whole record (with turns) goes to .record.json, the issue text has none
+    import http.server, socketserver, threading, types
+    sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+    import conversation_bench as cb
+
+    class FakeSrv(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.0"
+        log_message = lambda *a: None
+
+        def do_GET(self):
+            b = json.dumps({"default_generation_settings": {"n_ctx": 4096}}).encode()
+            self.send_response(200); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            s_ = self.server
+            msgs = body["messages"]; total = sum(len(m["content"]) // 4 + 8 for m in msgs)
+            common = sum(len(b["content"]) // 4 + 8 for a_, b in zip(s_.last, msgs) if a_ == b) if s_.last else 0
+            pn = total - common
+            ans = "word " * 60
+            self.send_response(200); self.send_header("Content-Type", "text/event-stream"); self.end_headers()
+            self.wfile.write(b"data: " + json.dumps({"choices": [{"delta": {"content": ans}}]}).encode() + b"\n\n")
+            tm = {"prompt_n": pn, "cache_n": common, "prompt_ms": pn / s_.p * 1000, "prompt_per_second": s_.p, "predicted_n": 60, "predicted_ms": 60 / s_.d * 1000, "predicted_per_second": s_.d}
+            self.wfile.write(b"data: " + json.dumps({"choices": [], "timings": tm, "usage": {"prompt_tokens": total, "completion_tokens": 60}}).encode() + b"\n\n")
+            self.wfile.write(b"data: [DONE]\n\n")
+            s_.last = msgs + [{"role": "assistant", "content": ans}]
+
+    class Srv(socketserver.ThreadingMixIn, http.server.HTTPServer):
+        daemon_threads = True
+    servers = {}
+    for name, p_, d_ in (("stock", 100.0, 10.0), ("moe-cache", 200.0, 20.0)):
+        sv = Srv(("127.0.0.1", 0), FakeSrv); sv.p, sv.d, sv.last = p_, d_, []
+        threading.Thread(target=sv.serve_forever, daemon=True).start(); servers[name] = sv
+    chat_calls = []
+
+    def fake_chat(model_, mode, a, port, workdir, key, plan_line):
+        chat_calls.append((mode, a.ctx, a.max_turns, key))
+        ns = cb.default_args(ctx=a.ctx, max_turns=a.max_turns or None, timeout=30, server_cmd=plan_line, load_s=3.0)
+        run = cb._one(ns, "http://127.0.0.1:%d" % servers[mode].server_address[1], mode, log=lambda m: None)
+        o = cb.overall(run)
+        return {"mode": mode, "error": "", "chat": run, "decode": o["decode_tps"], "prefill": o["prompt_tps"], "ttft_s": o["ttft_s"], "load_s": 3.0, "plugin_active": mode == "moe-cache"}
+    saved_chat = (mb.run_chat_arm, mb.mc.stored_key)
+    mb.run_chat_arm = fake_chat; mb.mc.stored_key = lambda create=False: "test-key"
+    out2 = os.path.join(tmp, "chat out")
+    rc = mb.bench_report([model, "--out", out2, "--chat", "--ctx", "4096", "--max-turns", "6", "--llama-server", "llama-server"])
+    fl = sorted(os.listdir(out2))
+    check(rc == 0 and any(f.endswith(".record.json") for f in fl), f"--chat: exit 0, the whole record is written next to the report ({fl})")
+    mdc = open(os.path.join(out2, [f for f in fl if f.endswith(".md")][-1]), encoding="utf-8").read()
+    check([c[0] for c in chat_calls] == ["stock", "moe-cache", "moe-cache", "stock"] and all(c[1] == 4096 and c[2] == 6 and c[3] == "test-key" for c in chat_calls), "--chat: A B B A, the context, the turn limit and the key reach every run")
+    check("**Long chat**" in mdc and "| band |" in mdc and "2.00x" in mdc and "**Verdict:** moe-cache vs stock" in mdc and "not checked (long chat)" in mdc, "--chat: the report has the long-chat header, the band table (2.00x) and the verdict")
+    recc = json.load(open(os.path.join(out2, [f for f in fl if f.endswith(".record.json")][0]), encoding="utf-8"))
+    check(rr.validate(recc, rr.load_schema()) == [] and all("turns" in r for r in recc["runs"]) and recc["protocol"]["order"] == "ABBA", "--chat: the full record validates (turns kept, ABBA)")
+    import re as _re
+    issue_rec = json.loads(_re.search(r"```json\n(.*?)\n```", mdc, _re.S).group(1))
+    check(all("turns" not in r for r in issue_rec["runs"]) and rr.validate(issue_rec, rr.load_schema()) == [] and len(mdc) < 60000, f"--chat: the issue text carries the record without per-turn lists, valid, under 60k characters ({len(mdc)})")
+    check("test-key" not in mdc and "test-key" not in open(os.path.join(out2, [f for f in fl if f.endswith(".json") and not f.endswith("record.json")][0])).read(), "--chat: the API key is in no output file")
+    check(mb.bench_report([model, "--out", out2, "--chat", "--scenario", "agent"]) == 2 and mb.bench_report([model, "--out", out2, "--chat", "--fast"]) == 2, "--chat with --scenario agent or --fast: refused (exit 2)")
+    check((mb.chat_ctx(16), mb.chat_ctx(20), mb.chat_ctx(24), mb.chat_ctx(32), mb.chat_ctx(64), mb.chat_ctx(None)) == (16384, 16384, 32768, 65536, 65536, 65536), "chat context by RAM: 16k up to 20 GB, 32k up to 28 GB, else 65k")
+    check(mb.estimate(66, 1, 65536)[0] > mb.estimate(66, 1, 0)[0] + 30, "the long chat's time estimate adds the conversation (about 10 min per run at 65k)")
+    mb.run_chat_arm, mb.mc.stored_key = saved_chat
+    for sv in servers.values():
+        sv.shutdown()
+
+
+    # memory-limit emulation (--limit-gb): refused where it cannot work, both arms get the limit, the report says EMULATED, the record says it and stays valid
+    check(mb.limit_prefix(16)[:4] == ["systemd-run", "--user", "--scope", "--quiet"] and "MemoryMax=16G" in mb.limit_prefix(16) and "MemorySwapMax=0" in mb.limit_prefix(16) and mb.limit_prefix(16)[-1] == "--", "limit: systemd-run user scope, MemoryMax, no swap")
+    saved_lim = mb.can_limit
+    mb.can_limit = lambda: (False, "memory-limit emulation is Linux only")
+    check(mb.bench_report([model, "--out", out, "--limit-gb", "16", "--warm"]) == 2, "limit: refused (exit 2) where the system cannot limit")
+    mb.can_limit = lambda: (True, "")
+    check(mb.bench_report([model, "--out", out, "--limit-gb", "2", "--warm"]) == 2 and mb.bench_report([model, "--out", out, "--limit-gb", "100000", "--warm"]) == 2, "limit: under 4 GB or not below the RAM: refused")
+    seen_lim = []
+    saved_run_one = mb.run_one
+    mb.run_one = lambda m_, mode, a_, port: (seen_lim.append(a_.limit_gb), fake_run(m_, mode, a_, port))[1]
+    plans_lim = []
+    saved_plan = mb.launcher_plan
+    mb.launcher_plan = lambda m_, ls_, ram_, ctx_, extra_, limit_gb=None: (plans_lim.append(limit_gb), saved_plan(m_, ls_, ram_, ctx_, extra_))[1]
+    mb.mc.meminfo_total_gb = lambda: 64.0
+    out3 = os.path.join(tmp, "limit out")
+    rc = mb.bench_report([model, "--out", out3, "--limit-gb", "16", "--warm"])
+    mdl_ = open(os.path.join(out3, [f for f in os.listdir(out3) if f.endswith(".md")][-1]), encoding="utf-8").read()
+    recl = json.loads(_re_l.search(r"```json\n(.*?)\n```", mdl_, _re_l.S).group(1))
+    check(recl["conditions"].get("memory_limit", "").startswith("EMULATED 16 GB") and rr.validate(recl, rr.load_schema()) == [], "limit: the record carries conditions.memory_limit and stays valid")
+    check(rc == 0 and seen_lim == [16.0] * 4 and plans_lim == [16.0, 16.0], f"limit: every run and both plans get the limit ({seen_lim}, {plans_lim})")
+    check("**EMULATED machine: 16 GB memory limit**" in mdl_ and "EMULATED machine: every server ran in a cgroup" in mdl_ and mdl_.find("EMULATED") < mdl_.find("**Result:**"), "limit: the report says EMULATED above the result and explains it in the notes")
+    mb.run_one, mb.launcher_plan = saved_run_one, saved_plan
+    mb.can_limit = saved_lim
 
     plan[0] = "stock"; calls.clear()
     check(mb.bench_report([model, "--out", out, "--warm"]) == 3 and calls == [], "model fits in RAM -> exit 3, nothing run")

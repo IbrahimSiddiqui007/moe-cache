@@ -109,7 +109,7 @@ get_routes = set(re.findall(r'u\.path == "(/[^"]*)"', inspect.getsource(ui.Handl
 post_routes = set(re.findall(r'self\.path == "(/[^"]*)"', inspect.getsource(ui.Handler.do_POST)))
 GET_ALLOWED = {"/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/api/downloads", "/api/download", "/api/models", "/api/plan", "/api/status",
                "/api/bench", "/api/servers", "/api/chats", "/api/log"}
-GET_DENIED = {"/api/key", "/api/agents", "/api/sessions", "/api/peek", "/api/share", "/api/ready"}
+GET_DENIED = {"/api/key", "/api/agents", "/api/sessions", "/api/peek", "/api/share", "/api/ready", "/api/results"}
 POST_ALLOWED = {"/api/chat", "/api/chats/save"}
 POST_DENIED = {"/api/chats/trash", "/api/folders", "/api/download/start", "/api/download/cancel", "/api/servers/start", "/api/servers/stop", "/api/servers/group", "/api/servers/plan", "/api/llama", "/api/start",
                "/api/pick/use", "/api/command", "/api/sessions/trash", "/api/bench", "/api/share", "/api/share/cancel", "/api/stop", "/api/connect"}

@@ -51,7 +51,7 @@ jobs:
           done
 
       - name: numpy for tests/expert_mix_test.py (pinned; the tool itself is not part of the kit)
-        run: python3 -m pip install --quiet numpy==2.1.3
+        run: python3 -m pip install --retries 8 --timeout 60 --quiet numpy==2.1.3
 
       - name: "Model-free tests (fake servers; the list lives in tools/run_quick_tests.sh - py_compile, every tests/*_test.py, apply_llama_patches_test.sh)"
         env:

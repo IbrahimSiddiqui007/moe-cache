@@ -13,7 +13,7 @@ D="$1"; TAG="$2"; ASSET="$3"; SHA="$4"; CACHE="${5:-${LLAMA_TGZ_CACHE:-${XDG_CAC
 # a shared, predictable folder like /tmp/NAME lets another user on a build host plant the asset between the download, the hash check and the unpacking (AUD-064)
 mkdir -p "$CACHE"; [ -O "$CACHE" ] && [ ! -L "$CACHE" ] || { echo "FAIL: $CACHE is not a folder you own (set LLAMA_TGZ_CACHE to one)"; exit 1; }
 chmod go-w "$CACHE"; Z="$CACHE/$ASSET"
-[ -f "$Z" ] || curl -fsSL -o "$Z" "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/$ASSET"
+"$(dirname "$0")/ci/fetch.sh" "https://github.com/ggml-org/llama.cpp/releases/download/$TAG/$ASSET" "$Z" "$SHA" || { [ -f "$Z" ] && echo "FAIL: $ASSET sha256 does not match the release asset (and could not be downloaded again)"; exit 1; }   # retried; skipped when the asset is cached with the right sha256
 echo "$SHA  $Z" | sha256sum -c - >/dev/null || { echo "FAIL: $ASSET sha256 does not match the release asset"; exit 1; }
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 tar --no-same-owner -C "$T" -xzf "$Z"
@@ -23,7 +23,7 @@ rm -rf "$D/llama"; mkdir -p "$D/llama"
 cp -a "$(dirname "$S")"/. "$D/llama/"        # the whole folder as shipped (symlinks kept): llama-server finds its libraries next to itself
 chmod +x "$D/llama/llama-server"
 if [ -n "$LLAMA_LICENSE_FILE" ]; then cp "$LLAMA_LICENSE_FILE" "$D/llama/LICENSE-llama.cpp.txt"
-else curl -fsSL -o "$D/llama/LICENSE-llama.cpp.txt" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$TAG/LICENSE"; fi
+else "$(dirname "$0")/ci/fetch.sh" "https://raw.githubusercontent.com/ggml-org/llama.cpp/$TAG/LICENSE" "$CACHE/LICENSE-llama.cpp-$TAG.txt" || exit 1; cp "$CACHE/LICENSE-llama.cpp-$TAG.txt" "$D/llama/LICENSE-llama.cpp.txt"; fi
 printf 'Official llama.cpp %s build for Linux x86-64, unmodified (%s, sha256 %s), from\nhttps://github.com/ggml-org/llama.cpp/releases/tag/%s\nLicence: MIT (LICENSE-llama.cpp.txt). moe-cache finds it here; set LLAMA_SERVER to use another build.\nThe Vulkan build needs the system Vulkan loader and a driver: sudo apt install libvulkan1 mesa-vulkan-drivers (Ubuntu / Debian). Without a GPU it runs on the CPU.\n' \
   "$TAG" "$ASSET" "$SHA" "$TAG" > "$D/llama/README-moe-cache.txt"
 echo "bundled llama.cpp $TAG ($ASSET) in $D/llama"

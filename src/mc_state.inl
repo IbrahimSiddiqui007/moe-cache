@@ -147,12 +147,6 @@ struct state_t : state_route_t, state_testfault_t, state_gpu_t, state_pack_t, st
                 hi = b;
             }
         }
-        {
-            const std::string sched = plat::sched_tuning();
-            if (!sched.empty()) {
-                fprintf(stderr, "moe-cache: scheduling: %s\n", sched.c_str());
-            }
-        }
         const char * gib = getenv("MOE_CACHE_SIZE_GIB");
         std::string file_s;
         const char * file = plat::env_utf8("MOE_CACHE_GGUF", file_s) ? file_s.c_str() : nullptr;
