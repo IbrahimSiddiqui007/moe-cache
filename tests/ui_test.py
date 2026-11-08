@@ -72,10 +72,13 @@ PLAN = {"arch": "qwen3moe", "layers": 48, "experts": 128, "used": 8, "n_cpu_moe"
 TUNE = {"n_cpu_moe": 38, "ub": 1024, "gpu_cache_mib": 0, "why": ["10 layers of experts stay on the GPU", "micro-batch 1024"]}
 # the page asks the launcher for its plan (ui.launcher_view -> mc.launch_plan); here the plan's planner answer and tuner answer are mocked, the stock-or-plugin rule is the launcher's own
 _planner = [lambda path, ctx, ram, vram, kv="f16": dict(PLAN)]
+_partial = [False]                                   # True: the mocked launcher takes the partial-offload branch for a model that fits in RAM
 def fake_view(path, ram, vram, ctx, mode, agent, engine, mtp, ls, leave_room=False, no_long_prompt=False):
     info = _planner[0](path, ctx, ram, vram)          # a RuntimeError here is the planner's refusal
     stock = ui.mc.decide(path, ram, plugin_wanted=engine == "plugin" or mode in ("fast", "hybrid"), stock_wanted=engine == "stock")[0]
     t = dict(TUNE)
+    if stock and engine != "stock" and _partial[0] and int(t["n_cpu_moe"]) > 0:
+        stock = False                                # the launcher's plugin_for_partial_offload (v0.3.8): fits in RAM, expert layers on the CPU -> the plugin (own cases in planner_test.py)
     lp = ui.mc.LaunchPlan()                          # the real class: the page now asks it for its numbers (ENGINE-029)
     lp.engine, lp.n_cpu_moe, lp.ub, lp.kv_q8 = "stock" if stock else "plugin", str(t["n_cpu_moe"]), str(t["ub"]), mode == "fast"
     lp.planner_info, lp.tuned, lp.planner_error = info, t, None
@@ -84,8 +87,22 @@ real_view, ui.launcher_view = ui.launcher_view, fake_view
 
 p = ui.plan_model(small["path"], ram="2")
 check(p["kind"] == "stock" and "fits in RAM" in p["verdict"], f"model + 1.5 GB under the RAM budget: stock ({p['verdict']})")
-check(any("RESULTS 44" in r for r in p["reasons"]), "stock: says why stock is faster")
-check(p["summary"].startswith("Stock llama-server: the model") and "fastest" in p["summary"], f"summary: why stock ({p['summary']})")
+check("launcher keeps stock" in p["verdict"], f"stock verdict names the launcher's rule ({p['verdict']})")
+check(p["summary"].startswith("Stock llama-server: the model") and "keeps stock here" in p["summary"] and "fastest" not in p["summary"]
+      and "only helps models bigger than RAM" not in p["summary"], f"summary: why stock ({p['summary']})")
+# fits in RAM, some expert layers stay on the CPU: the launcher runs the plugin, the page says so with README's evidence
+_partial[0] = True
+p = ui.plan_model(small["path"], ram="2")
+check(p["kind"] == "cache" and "fits in RAM" in p["verdict"] and "stay on the CPU" in p["verdict"], f"fits in RAM, experts on the CPU: runs with moe-cache ({p['verdict']})")
+check(any("+10 to +29 %" in r and "prompt about 10 % lower" in r and "1.06x prompt, 1.07x decode" in r for r in p["reasons"]), "partial offload: reasons carry README's evidence")
+check("fits in" in p["summary"] and "expert executor" in p["summary"] and "1.07x decode" in p["summary"] and "likely be faster" not in p["summary"], f"partial offload: summary ({p['summary']})")
+p = ui.plan_model(small["path"], ram="2", engine="stock")
+check(p["kind"] == "stock", f"--stock still gives stock when the plugin would run ({p['verdict']})")
+TUNE["n_cpu_moe"] = 0
+p = ui.plan_model(small["path"], ram="2")
+check(p["kind"] == "stock" and "every expert fits the GPU" in p["verdict"] and "right choice" in p["summary"], f"fits in RAM, all experts fit the GPU: stock ({p['verdict']}; {p['summary']})")
+TUNE["n_cpu_moe"] = 38
+_partial[0] = False
 p = ui.plan_model(small["path"], ram="1")
 check(p["kind"] == "cache" and p["verdict"] == "runs with moe-cache (bigger than free RAM)", f"over the budget: runs with moe-cache, said as what happens ({p['verdict']})")
 check(any("10 of 48 layers keep their experts on the GPU" in r for r in p["reasons"]), "reasons: GPU layers from the tuner (as the launcher)")
