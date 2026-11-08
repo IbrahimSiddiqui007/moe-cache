@@ -6,7 +6,7 @@ Branch `claude/gpu-expert-cache`. Replaces the "not built" status of `GPU_TIER_D
 
 CACHE-011 `--hybrid` / `MOE_CACHE_HYBRID` (src/mc_hybrid.inl) is already a per-expert GPU bank: filled from the usage profile (global ranking by count), the GPU computes the picks that hit, the CPU computes the misses at the same time,
 and `hybrid_adapt` swaps the most-missed experts for the coldest resident expert of the same layer (defaults every 8 tokens, 16 swaps, decay 0.97, shadow "duel" against the profile bank). The bank is freed during long prompts and reloaded.
-So the Strata-style cache is NOT a new feature: the open question is why it measured slower on the PC (hybrid 21.8 vs plugin 28 tok/s, Q2_0, 34k), and whether a better rule or lower per-layer cost turns that around.
+So a per-expert GPU cache with live swaps is NOT a new feature: the open question is why it measured slower on the PC (hybrid 21.8 vs plugin 28 tok/s, Q2_0, 34k), and whether a better rule or lower per-layer cost turns that around.
 
 ## 2. What differs from the old negative evidence
 
@@ -14,7 +14,6 @@ So the Strata-style cache is NOT a new feature: the open question is why it meas
 |---|---|---|---|---|
 | llama.cpp `--moe-cache-mib` | uploaded over PCIe, then GPU computes | every layer, uploads on the critical path | 9 vs 18 tok/s at 4 GiB, crash at 8/12 GiB | no: the new idea never uploads a miss, CPU computes it |
 | plugin `--hybrid` (today) | CPU computes from RAM, in parallel | one fresh GPU graph, allocation, small copies, wait and read-back per layer per token | 21.8 vs 28 tok/s (PC, Q2_0); laptop 17.6 vs 12.5 (+41 %, IQ2_XS, slow CPU) | this IS it. Difference left: bank size, swap rule, per-layer cost |
-| Strata cache (their code, idea only) | CPU computes from pinned RAM | captured per-layer graphs | their claim 82-84 % hit at 7.75 GiB | same idea; their win needs cheap per-layer GPU calls |
 
 ## 3. Kill check 1: hit rate (replay, `tools/gpu_tier_replay.py`, Qwen3.6-35B trace, 40 layers x 256 experts, top-8, 10 requests x 299 decode tokens, leave-one-request-out profile)
 
@@ -26,7 +25,7 @@ Flash-Next has no full-layer trace (only a profile). Its profile is MORE skewed 
 | 12.5 % (= the PC's 6 GPU layers, about 9 GiB at IQ3_XXS) | 12.5 % | 36.3 % | 36.4 % | 60.7 % | 58.1 % | 62.0 % | 64.1 % |
 | 19 % | 17.5 % | 46.6 % | 46.2 % | 70.5 % | 67.8 % | 72.2 % | 75.5 % |
 
-Findings: (a) same VRAM as whole layers, hot experts serve 3-5x the picks; (b) live swaps are the big lever (36 -> 58-62 %), per-layer ranges and decayed counts add nothing over today's rule (Strata's "global fill 2.97 %" was first-come, ours ranks by count); (c) swap cost at 12.5 %: 5.9-15.7 experts/token = 18-48 MiB/token (3.08 MiB each) = 1.5-4 ms at 12 GB/s if not overlapped. Caveat: 300-token requests; a 65k chat drifts more (needs a real long trace).
+Findings: (a) same VRAM as whole layers, hot experts serve 3-5x the picks; (b) live swaps are the big lever (36 -> 58-62 %); per-layer slot ranges and decayed counts add nothing over today's rule (ours already ranks by count); (c) swap cost at 12.5 %: 5.9-15.7 experts/token = 18-48 MiB/token (3.08 MiB each) = 1.5-4 ms at 12 GB/s if not overlapped. Caveat: 300-token requests; a 65k chat drifts more (needs a real long trace).
 
 ## 4. Kill check 2: decode time (arithmetic, PC Flash-Next IQ3_XXS: 20 tok/s = 50 ms, 48 layers, CPU holds 42)
 
@@ -54,3 +53,22 @@ The measured hybrid deficit (28 -> 21.8 tok/s = +10 ms/token over 48 layers) imp
 Identity: GPU and CPU kernels differ in the last float bits, so text is "same meaning" not byte-exact (hybrid is documented not token-identical); check by 4 prompts at temperature 0, count identical tokens, and the KL gate.
 
 Open risks: Vulkan sync cost may differ from CUDA; the planner and bank compete for the same VRAM (needs a trade rule); the f split on the PC is unmeasured (one phase-timer run on the PC would settle it, 10 PC min).
+
+## 6. Update 2026-11-08 evening: step 1 and 2 measured (laptop, RTX 4060 8 GB, CUDA, llama.cpp 7fe450e)
+
+Per layer step, microseconds, from the plugin's own phase timers (`MOE_CACHE_STATS=1`, one line at exit). Flash-Next IQ3_XXS, bank 2.2-3.0 GiB (7 % of experts, 41-54 % of picks served by the bank), CPU limited to 6 cores, so the CPU-miss time is far larger than on the PC.
+
+| Phase (us per layer step) | base | MOE_CACHE_HYBRID_ASYNC=1 | MOE_CACHE_HYBRID_PERSIST=1 |
+|---|---|---|---|
+| scan, build graph | 32-39 | 28-29 | 35-39 |
+| input copies | 42-81 | 13-14 | 21 |
+| launch | 47-62 | 42-46 | 18 |
+| GPU wait | 27-43 | 78-84 | 113 |
+| read-back | 71-89 | 11 | 12 |
+| Sum without CPU misses | 192-311 | 144-155 | 199 (same run: base 311) |
+| Extra GPU memory | 0 | 0 | +580 MiB (47 graph buffers) |
+
+- The base overhead of 0.19-0.31 ms per layer matches the 0.2 ms implied by the PC loss. Async cuts it by about 55-100 us per layer (3-5 ms per token over 47 layers) for no VRAM; persistent graphs cut more but cost 580 MiB and one run died with a CUDA out-of-memory abort in the CUDA graph instantiate at a 3 GiB bank. PERSIST therefore stays an experiment.
+- Token identity at temperature 0 (4 prompts x 48 tokens, Flash-Next, 41 % bank hits, live swaps): async == base and persist == base; hybrid also equals hybrid-off over these 192 tokens. Granite (100 % hits): identical.
+- Speed on the laptop is NOT a verdict: rounds of the same configuration vary 4-14 tok/s (SSD, thermals, 6 cores); the verdict is the PC chain item (07_gpu_tier, W P H A B B A H P).
+- Replay of today's swap setting (every 8 tokens, 16 swaps): 51 % at a 12.5 % bank, vs 58 % (every 4, 24 swaps) and 61 % (every 4, 96 swaps).

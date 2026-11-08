@@ -13,7 +13,7 @@ Arms:
   adapt-layer    layer-top + decayed-count rule: every E tokens, up to S swaps, ALL counts x decay per round, a missing expert comes in only if its
                  count beats the coldest resident expert of ITS layer
   oracle-layer   best static equal-per-layer bank for this request (upper bound for fixed per-layer ranges)
-Ideas borrowed (Strata 0.2.12, MIT): per-layer slot ranges, decayed counts, swap batch size. No code copied."""
+Ideas of per-layer slot ranges, decayed counts and swap batches come from published designs of other engines (Strata, MIT); no code copied."""
 import argparse, collections, json, sys
 
 
@@ -92,7 +92,7 @@ def run(toks, start, bank, every, swaps, decay, mode, prof, minmiss=2.0):
                 h = k in bank
                 if t >= start:
                     picks += 1; hits += h
-                if mode == "strata":
+                if mode == "decay":
                     seen[k] += 1
                 if h:
                     score[k] += 1.0
@@ -173,7 +173,7 @@ def main():
                 for sw in map(int, a.swaps.split(",")):
                     arms.append((f"adapt-glob e{ev} s{sw}", bk["global-top"], ev, sw, 0.97, "glob"))
                     for dc in map(float, a.decay.split(",")):
-                        arms.append((f"adapt-layer e{ev} s{sw} d{dc}", bk["layer-top"], ev, sw, dc, "strata"))
+                        arms.append((f"adapt-layer e{ev} s{sw} d{dc}", bk["layer-top"], ev, sw, dc, "decay"))
             for name, b, ev, sw, dc, mode in arms:
                 h, up = run(toks, start, b, ev, sw, dc, mode, prof)
                 n = len(toks) - start
