@@ -147,6 +147,13 @@ check("moe-cache: prompt cache" in o or "slot release" in o or "stop processing"
 o = make_real(1)
 check("-ub" in o and "512" in o and "Token modes" in o and "memory cap" in o, "recorded: Serving shows -ub 512, the token modes and the launcher's memory-cap line")
 
+live = json.loads(json.dumps(payload))
+live["approx"] = {"mode": "skip", "considered": 2000, "given_up": 300, "replaced": 100, "fewer": 2, "fewer_considered": 800, "fewer_dropped": 400, "live": True}
+tl = top.Top(U); tl.feed(live); tl.src_url = "x"; tl.view = 3
+ol = "\n".join(top.paint(top.render(tl, 110, 40), "dark", False))
+check("skip (live)" in ol and "20.0 % of the picks looked at" in ol and "picks changed" in ol and "dropped 400 of 800" in ol, "Engine shows the approximate counters live: looked at, given up, replaced, share changed, fewer experts")
+check("(at last stop)" in "\n".join(top.paint(top.render(make(3), 110, 40), "dark", False)), "Engine says 'at last stop' for counters that come from a stop-time line")
+
 # ---- keys ----
 t = make(0)
 for k, want in (("2", 1), ("7", 6), ("left", 5), ("right", 6), ("right", 0), ("1", 0)):

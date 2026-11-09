@@ -1808,7 +1808,8 @@ function monPanels() {
     ["KV cache type", kv], ["context", p.ctx], ["threads", p.threads], ["parallel slots", p.parallel], ["flash attention", p.flash_attn], ["agent mode", p.agent ? "yes" : ""], ["MTP", p.mtp ? "on" : ""], ["approximate tier", p.approx], ["cache policy", ex.policy]].concat(Object.entries(p.env || {}).filter(([k]) => !/_(LIB|GGUF|PROFILE)$/.test(k)).map(([k, v]) => [k.replace("MOE_CACHE_", ""), v])));
   $("mondec").innerHTML = (p.decisions || []).slice(-8).map(l => `<li>${esc(l)}</li>`).join("");
   monKv("moncount", [["MTP accepted / drafted", m.generated ? `${m.accepted} / ${m.generated} (${pct(m.rate)})` : ""],
-    ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up, ${a.replaced} replaced of ${a.considered} looked at (at last stop)` : ""], ["fewer experts", a.fewer ? `${a.fewer}: ${a.fewer_dropped} dropped` : ""],
+    ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up, ${a.replaced} replaced of ${a.considered} looked at (${a.live ? "live" : "at last stop"})` : ""],
+    ["fewer experts", a.fewer ? `${a.fewer}: ${a.fewer_dropped} dropped of ${a.fewer_considered || "?"} looked at` : ""],
     ["evictions", ex.evictions], ["prefetch used / issued / wasted", ex.pf_issued != null ? `${ex.pf_used} / ${ex.pf_issued} / ${ex.pf_wasted}` : ""], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
     ["cache resident / budget", ex.resident_bytes != null ? fmtGiB(ex.resident_bytes) + " / " + fmtGiB(ex.budget) : ""], ["requests running / queued", (d.metrics || {}).requests_processing != null ? `${d.metrics.requests_processing} / ${d.metrics.requests_deferred || 0}` : ""]]);
   const rq = (d.requests || []).slice().reverse();

@@ -710,6 +710,8 @@ def view_engine(t, W, H, g):
     out.append(trend("executor", t, "cpu", W, g, lambda v: f"{v:.0f} %", "accent", 100))
     out.append(trend("evictions", t, "evict", W, g, lambda v: f"{v:,.0f} /s", "dim"))
     out.append(trend("GPU upload", t, "up", W, g, lambda v: f"{v:.2f} GB/s", "gpu"))
+    if a:
+        out.append(trend("picks changed", t, "alt", W, g, lambda v: f"{v:,.0f} /s", "warn"))
     out.append([])
     out.append([("Hit rate by layer (top = newest; green all hits, yellow some misses, red mostly misses)", "tab")])
     cols = t.cols[::-1][:max(2, min(10, H - 26))]
@@ -731,9 +733,11 @@ def view_engine(t, W, H, g):
                                          ("fallback reads", ex.get("fallbacks")), ("GPU segments", ex.get("gpu_segments")), ("cache policy", ex.get("policy")),
                                          ("cache resident", f"{ex['resident_bytes'] / GIB:.1f} GiB" if ex.get("resident_bytes") is not None else None)], half)
     right = [[("Speed-ups that change answers", "tab")]] + kv([("MTP drafted / accepted", f"{m['generated']:,} / {m['accepted']:,} ({m['rate'] * 100:.0f} %)" if m.get("generated") else None),
-                                                              ("approx routing", a.get("mode")), ("looked at", a.get("considered")), ("given up", a.get("given_up")), ("replaced", a.get("replaced")),
-                                                              ("fewer experts", a.get("fewer")), ("dropped", a.get("fewer_dropped")),
-                                                              ("(counted at server stop)", "" if not a else "")], half)
+                                                              ("approx routing", (a.get("mode") or "") + (" (live)" if a.get("live") else " (at last stop)") if a.get("mode") else None),
+                                                              ("looked at", f"{a['considered']:,}" if a.get("mode") else None), ("given up", f"{a['given_up']:,}" if a.get("mode") else None),
+                                                              ("replaced", f"{a['replaced']:,}" if a.get("mode") else None),
+                                                              ("share changed", f"{(a['given_up'] + a['replaced']) * 100 / a['considered']:.1f} % of the picks looked at" if a.get("considered") else None),
+                                                              ("fewer experts", f"{a['fewer']} (dropped {a.get('fewer_dropped', 0):,} of {a.get('fewer_considered', 0):,})" if a.get("fewer") else None)], half)
     if not a and not m.get("generated"):
         right += [fit([("no approximate mode and no MTP drafting in use", "dim")], half)]
     out += join((left, half), (right, half), gap=2)

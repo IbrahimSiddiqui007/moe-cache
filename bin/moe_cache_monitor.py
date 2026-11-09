@@ -116,7 +116,9 @@ class Monitor:
         self.prom_now = {}
         self.ctx_depth = None
         self.mtp = {"accepted": 0, "generated": 0, "last": None}
-        self.approx = {}
+        self.approx = {}            # from the plugin's lines at server stop (older plugins)
+        self.approx_live = {}       # from the stats snapshot (GUI-042): cumulative counters while the server runs
+        self.alt_rate = None
         self.pending_req = {}
         self.slot_tokens = {}       # slot id -> tokens its cache held when its last request ended (a new request keeps f_keep of them)
         self.vram_cache = (0.0, None)
@@ -199,6 +201,10 @@ class Monitor:
                      "evict": max(0, s.get("evictions", 0) - p.get("evictions", 0)) / dt,
                      "pf_used": max(0, s.get("pf_used", 0) - p.get("pf_used", 0)), "pf_wasted": max(0, s.get("pf_wasted", 0) - p.get("pf_wasted", 0)),
                      "gpu_up_gbs": max(0, s.get("gpu_up_bytes", 0) - p.get("gpu_up_bytes", 0)) / dt / 1e9}
+                a1, a0 = s.get("approx") or {}, p.get("approx") or {}
+                if a1:                  # picks the plugin changed per second (given up + replaced + dropped by "fewer experts")
+                    ch = lambda a: a.get("skipped", 0) + a.get("substituted", 0) + a.get("fewer_dropped", 0)
+                    r["alt"] = max(0, ch(a1) - ch(a0)) / dt
                 ph, pm = list(p.get("layer_hits") or []), list(p.get("layer_misses") or [])
                 col = []
                 for i in range(len(hits)):
@@ -209,6 +215,10 @@ class Monitor:
                     self.layer_cols.append({"t": round(t, 1), "rate": col})
                 self.rates = r
             self.layers = {"hits": hits, "misses": miss}
+            ap = s.get("approx")
+            if ap:
+                self.approx_live = {"mode": {1: "skip", 2: "subst"}.get(ap.get("route")), "considered": ap.get("considered", 0), "given_up": ap.get("skipped", 0), "replaced": ap.get("substituted", 0),
+                                    "fewer": ap.get("fewer", 0), "fewer_considered": ap.get("fewer_considered", 0), "fewer_dropped": ap.get("fewer_dropped", 0), "live": True, "t": round(t, 1)}
             self.snapshot_extra = {k: s.get(k) for k in ("policy", "evictions", "resident_bytes", "budget", "gpu_segments", "fallbacks", "exec_ops", "exec_fused", "pf_issued", "pf_used", "pf_wasted") if k in s}
             if s.get("ex"):
                 self.snapshot_extra["threads"] = s["ex"].get("threads")
@@ -240,7 +250,7 @@ class Monitor:
             ctx = self.prom_now.get("kv_cache_tokens") or self.ctx_depth
             self.samples.append({"t": round(t, 1), "dec": pr.get("dec") if pr.get("dec") is not None else live_tps, "pre": pr.get("pre"), "ctx": ctx, "busy": 1 if busy else 0,
                                  "hit": r.get("hit"), "hit_dec": r.get("hit_dec"), "ssd": r.get("ssd_gbs"), "wait": r.get("ssd_wait"), "cpu": r.get("cpu"),
-                                 "evict": r.get("evict"), "up": r.get("gpu_up_gbs"), "rss": rss,
+                                 "evict": r.get("evict"), "up": r.get("gpu_up_gbs"), "alt": r.get("alt"), "rss": rss,
                                  "ram": ram[0] if ram else None, "commit": commit[0] if commit else None, "vram": vram[0] if vram else None})
             if hw:
                 self.samples[-1].update({k: (round(v, 2) if isinstance(v, float) else v) for k, v in hw.items()})
@@ -254,7 +264,7 @@ class Monitor:
                    "layer_cols": [c for c in self.layer_cols if c["t"] > since],
                    "layer_total": [round(h / (h + m), 3) if h + m else None for h, m in zip(self.layers["hits"], self.layers["misses"])],
                    "requests": list(self.requests)[-30:], "mtp": dict(self.mtp, rate=(self.mtp["accepted"] / self.mtp["generated"]) if self.mtp["generated"] else None),
-                   "approx": dict(self.approx), "ctx": {"depth": self.ctx_depth, "max": ctx_max}, "plan": plan or {}, "cap": cap, "totals": totals or {}, "modes": modes or [],
+                   "approx": dict(self.approx_live or self.approx), "ctx": {"depth": self.ctx_depth, "max": ctx_max}, "plan": plan or {}, "cap": cap, "totals": totals or {}, "modes": modes or [],
                    "extra": dict(getattr(self, "snapshot_extra", {})), "metrics": {k: v for k, v in self.prom_now.items() if k in ("requests_processing", "requests_deferred", "kv_cache_usage_ratio", "kv_cache_tokens", "n_busy_slots_per_decode")}}
             if include_log:
                 out["log"] = [list(x) for x in self.log if x[0] > log_seq]

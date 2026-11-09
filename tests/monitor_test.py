@@ -103,6 +103,21 @@ check(abs(r["ssd_gbs"] - 1.0) < 1e-9 and abs(r["ssd_wait"] - 0.25) < 1e-9 and r[
 check(abs(r["cpu"] - 0.5) < 1e-9 and abs(r["evict"] - 10.0) < 1e-9, "executor share and evictions per second")
 check(len(m.layer_cols) == 1 and m.layer_cols[0]["rate"] == [1.0, 0.0, None], f"per-layer column: layer 0 all hits, layer 1 all misses, layer 2 no lookups ({m.layer_cols[0]['rate']})")
 
+# ---- GUI-042: the approximate modes' counters live, from the stats snapshot ----
+ma = mm.Monitor()
+sa = {"hits": 1, "misses": 1, "approx": {"route": 1, "considered": 1000, "skipped": 100, "substituted": 20, "fewer": 2, "fewer_considered": 500, "fewer_dropped": 300}}
+sb = {"hits": 2, "misses": 1, "approx": {"route": 1, "considered": 3000, "skipped": 400, "substituted": 80, "fewer": 2, "fewer_considered": 1500, "fewer_dropped": 900}}
+ma.add_snapshot(10.0, sa); ma.add_snapshot(12.0, sb)
+ma.tick(13.0, None, None, None, None, None, True)
+pa = ma.payload()
+check(pa["approx"]["mode"] == "skip" and pa["approx"]["live"] is True and pa["approx"]["considered"] == 3000 and pa["approx"]["given_up"] == 400 and pa["approx"]["replaced"] == 80
+      and pa["approx"]["fewer"] == 2 and pa["approx"]["fewer_dropped"] == 900, f"approximate counters from the snapshot ({pa['approx']})")
+check(abs(pa["samples"][-1]["alt"] - ((400 + 80 + 900) - (100 + 20 + 300)) / 2) < 1e-6, f"picks changed per second between two snapshots ({pa['samples'][-1]['alt']})")
+mb = mm.Monitor(); mb.add_snapshot(1.0, {"hits": 1}); mb.add_snapshot(3.0, {"hits": 2}); mb.tick(4.0, None, None, None, None, None, False)
+check(mb.payload()["approx"] == {} and mb.payload()["samples"][-1]["alt"] is None, "no approximate mode: no counters and no rate (nothing invented)")
+mc_ = mm.Monitor(); mc_.add_line(1, 1.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up, 0 replaced by a resident expert")
+check(mc_.payload()["approx"]["mode"] == "skip" and "live" not in mc_.payload()["approx"], "an older plugin: the counters still come from its stop-time line")
+
 # ---- /metrics rates, tick, payload ----
 m.add_metrics(300.0, "llamacpp:prompt_tokens_total 100\nllamacpp:prompt_seconds_total 1\nllamacpp:tokens_predicted_total 10\nllamacpp:tokens_predicted_seconds_total 1\n")
 m.add_metrics(302.0, "llamacpp:prompt_tokens_total 1100\nllamacpp:prompt_seconds_total 2\nllamacpp:tokens_predicted_total 10\nllamacpp:tokens_predicted_seconds_total 1\nllamacpp:requests_processing 1\n")

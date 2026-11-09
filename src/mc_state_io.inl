@@ -436,6 +436,11 @@
                 }
                 j += "}";
             }
+            if (route_mode || fewer > 0) {      // GUI-042: the approximate modes' counters, live (cumulative; the stop-time lines below report the same numbers)
+                j += ",\"approx\":{\"route\":" + std::to_string(route_mode) + ",\"considered\":" + std::to_string(route_considered) + ",\"skipped\":" + std::to_string(route_skipped) +
+                     ",\"substituted\":" + std::to_string(route_substituted) + ",\"fewer\":" + std::to_string(fewer) + ",\"fewer_considered\":" + std::to_string(fewer_considered) +
+                     ",\"fewer_dropped\":" + std::to_string(fewer_dropped) + "}";
+            }
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }
             j += "],\"layer_misses\":[";

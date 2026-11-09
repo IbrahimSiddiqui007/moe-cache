@@ -173,7 +173,7 @@ The **📈 Monitor** button in the top bar opens a full-screen view of the runni
 | 1 Overview | model state (Idle, Reading, Generating, Queued, Error) with the context bar; tiles with a sparkline each for speed, cache hit, SSD read and stall time, CPU executor, GPU load, VRAM, server RAM against the cap, CPU, GPU temperature, power, PCIe and disk read; cache budget and context bars; hit rate per layer; recent requests (prompt, reused from the prompt cache, output, tok/s, duration) |
 | 2 Serving | URL, state, requests running and queued, KV cache fill; the plan as it really runs (`-ub`, KV type, GPU layers, experts on the CPU, device, threads); the token-mode table (which changing-answer modes are won, unmeasured or in use); what the launcher decided |
 | 3 Requests | every finished request, with a detail block for the selected one (up/down) |
-| 4 Engine | hit rate, SSD GB/s and wait, executor share, evictions, GPU upload as trends; the per-layer hit-rate heat rows (newest on top), whole-run row and the worst layers; cache counters, MTP acceptance and approximate-mode counters |
+| 4 Engine | hit rate, SSD GB/s and wait, executor share, evictions, GPU upload as trends; the per-layer hit-rate heat rows (newest on top), whole-run row and the worst layers; cache counters, MTP acceptance and the approximate-mode counters live (looked at, given up, replaced, share of picks changed, picks changed per second; plugins from before 0.3.8 report them at server stop only) |
 | 5 Hardware | all tiles plus GPU, CPU, RAM, cap and commit details |
 | 6 Logs | the launcher, plugin, llama-server and page lines with time and source, warnings yellow and errors red; `/` search (text or `/regex/`), `l` level, `s` source, `f` follow, arrows and PgUp/PgDn scroll |
 | 7 Connect | the OpenAI-compatible address, API key (hidden; `k` shows it), agent setup commands |
@@ -325,7 +325,7 @@ If you open the page without the password you see a short note: open the address
 - The verdict uses the launcher's own rules: `planner/plan.py --json`, `planner/gguf_plan.py tune()`, the stock rule `moe_cache.decide()`
   (model + 1.5 GB against the memory it may use; the launcher calls the same function) and the MTP rule `moe_cache.mtp_decide()`.
 - Live numbers: the plugin's stats snapshot (`MOE_CACHE_STATS_SIGNAL`: SIGUSR1 on Linux, sent only when llama-server has the plugin's handler;
-  the named event `Local\moe-cache-stats-<pid>` on Windows), llama-server's `/slots` and its timing lines. No change to the plugin or llama.cpp.
+  the named event `Local\moe-cache-stats-<pid>` on Windows), llama-server's `/slots` and its timing lines. llama.cpp is not changed; the plugin's stats line carries the approximate-mode counters (0.3.8).
 - Scripts can use the page's API with the header `X-MoeCache-Token: <the ?t= value>`.
 - Servers started elsewhere (status only, no page view yet): `GET /api/peek?port=N` says what a llama-server on 127.0.0.1:N reports (up,
   loading or ready, model, context, slots, busy slots, whether it wants a key; the key is never returned), and `GET /api/servers` does that for
