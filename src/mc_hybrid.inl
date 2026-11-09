@@ -509,17 +509,26 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
             }
         }
     } else {
-        ggml_init_params ip = { ggml_tensor_overhead() * 4 * (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
+        const size_t n_slots = mcctx::slots(seg.size(), GGML_MAX_SRC);           // CACHE-988: worst case from the real node count
+        ggml_init_params ip = { mcctx::bytes(n_slots, ggml_tensor_overhead(), ggml_graph_overhead_custom(n_slots, false)), nullptr, true };
         ctx = ctx_new(c, ip);
         if (!ctx) {
             return false;
         }
         gids = compact ? ggml_new_tensor_2d(ctx, GGML_TYPE_I32, 1, R) : ggml_new_tensor_2d(ctx, GGML_TYPE_I32, n_used, n_tok);
+        if (!gids) {
+            ctx_free(c, ctx);
+            return false;
+        }
         ggml_set_input(gids);
         for (ggml_tensor * n : seg) {
             int64_t nne[GGML_MAX_DIMS] = { n->ne[0], n->ne[1], n->ne[2], n->ne[3] };
             if (compact) { nne[1] = 1; nne[2] = R; }
             ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, nne);
+            if (!nn) {
+                ctx_free(c, ctx);
+                return false;
+            }
             nn->op = n->op;
             memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
             for (int k = 0; k < GGML_MAX_SRC; k++) {
@@ -542,6 +551,10 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
                     int64_t sne[GGML_MAX_DIMS] = { src->ne[0], src->ne[1], src->ne[2], src->ne[3] };
                     if (compact) { sne[1] = 1; sne[2] = R; }
                     ggml_tensor * nt = ggml_new_tensor(ctx, src->type, GGML_MAX_DIMS, sne);
+                    if (!nt) {
+                        ctx_free(c, ctx);
+                        return false;
+                    }
                     ggml_set_input(nt);
                     clone[src] = nt;
                     uploads.emplace_back(src, nt);
@@ -552,7 +565,11 @@ bool hybrid_group(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int 
         }
         gout = clone[seg.back()];
         ggml_set_output(gout);
-        g = ggml_new_graph(ctx);
+        g = ggml_new_graph_custom(ctx, n_slots, false);
+        if (!g) {
+            ctx_free(c, ctx);
+            return false;
+        }
         ggml_build_forward_expand(g, gout);
         if (use_pg) {
             own_ga = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
