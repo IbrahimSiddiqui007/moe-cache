@@ -3698,7 +3698,7 @@ def template_stage(a, extra, model, dry=False):
         return []
     if not path:
         return []
-    say("moe-cache: this model's chat template refuses system messages in the middle of a conversation (Claude Code sends them: every request would fail with HTTP 500 "
+    say("moe-cache: this model's chat template refuses system messages in the middle of a conversation (some clients, Claude Code among them, send them: such a request would fail with HTTP 500 "
         f"\"System message must be at the beginning\"); using a copy fixed by one line, a later system message becomes a user turn: {path} "
         "(--chat-template-file FILE after -- uses your own)")
     return ["--chat-template-file", path] + ([] if "--jinja" in extra else ["--jinja"])

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AGENTS-992: the chat-template fix for Claude Code's mid-conversation system messages, and the launcher stage that applies it.
    python3 tests/chat_template_fix_test.py
-Qwen3.8-27B's own template raises "System message must be at the beginning." (HTTP 500 on every Claude Code request, PC 2026-11-09). tests/data/qwen38_27b_midsystem_patched.jinja is the
+Qwen3.8-27B's own template raises "System message must be at the beginning." (HTTP 500, seen through Claude Code on the PC, 2026-11-09). tests/data/qwen38_27b_midsystem_patched.jinja is the
 owner's hand-patched file; its original differs by exactly one line, which is re-created here by the reverse edit, so the test needs no model file."""
 import os, struct, sys, tempfile
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,6 +30,8 @@ try:
     import jinja2
 except ImportError:
     jinja2 = None
+    if os.environ.get("REQUIRE_JINJA2"):      # CI installs it: a skipped rendering check would hide a template that no longer fails/renders
+        check(False, "jinja2 is required (REQUIRE_JINJA2) but not installed")
 if jinja2:
     def render(tpl, msgs):
         env = jinja2.Environment(loader=jinja2.BaseLoader(), extensions=["jinja2.ext.loopcontrols"])
@@ -49,6 +51,33 @@ if jinja2:
     check(out.count("<|im_start|>system") == 1 and "You are Claude Code." in out, "fixed template: the first system message is still the system prompt")
     plain = conv[:3] + [{"role": "user", "content": "Go on."}]
     check(render(original, plain) == render(patched, plain), "a conversation without a later system message renders identically with both templates")
+    # Which /v1/messages bodies produce a system message after the first turn? llama-server's Anthropic converter (tools/server/server-chat.cpp, server_chat_convert_anthropic_to_oai)
+    # turns the top-level `system` into message 0 and passes every entry of `messages` through with its own role. Checked on the laptop with the real llama-server
+    # (0.5.0-dev 7fe450e) and this template: a Claude Code shaped body (top-level system, <system-reminder> text blocks in user turns) answers 200 with the ORIGINAL template;
+    # a body with a role "system"/"developer" entry after a user turn answers 500 with exactly this error. So the trigger is such an entry, not the top-level system field.
+    def anthropic_to_oai(body):
+        out = []
+        if body.get("system") is not None:
+            s = body["system"]
+            out.append({"role": "system", "content": s if isinstance(s, str) else "".join(b.get("text", "") for b in s if b.get("type") == "text")})
+        for m in body["messages"]:
+            c = m["content"]
+            out.append({"role": m["role"], "content": c if isinstance(c, str) else "".join(b.get("text", "") for b in c if b.get("type") == "text")})
+        return out
+    def ok_original(body):
+        try:
+            render(original, anthropic_to_oai(body)); return True
+        except RuntimeError as e:
+            assert "System message must be at the beginning" in str(e); return False
+    cc_shape = {"system": [{"type": "text", "text": "You are Claude Code."}], "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "<system-reminder>x</system-reminder>"}, {"type": "text", "text": "hi"}]}, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "more"}]}
+    check(ok_original(cc_shape), "Claude Code shaped body (top-level system, reminders inside user turns): the ORIGINAL template accepts it (so it is not the trigger)")
+    for name in ("system", "developer"):
+        body = {"system": "s", "messages": [{"role": "user", "content": "hi"}, {"role": name, "content": [{"type": "text", "text": "reminder"}]}, {"role": "user", "content": "go"}]}
+        check(not ok_original(body) and "<|im_start|>user\nreminder<|im_end|>" in render(patched, anthropic_to_oai(body)),
+              f"a role \"{name}\" entry after a user turn in /v1/messages: the ORIGINAL template raises (HTTP 500), the fixed one renders it as a user turn")
+    check(not ok_original({"messages": [{"role": "user", "content": "hi"}, {"role": "system", "content": "r"}]}), "no top-level system and a system entry after the first user turn: raises with the original template")
+    check(ok_original({"system": "s", "messages": [{"role": "system", "content": "more"}, {"role": "user", "content": "hi"}]}), "system entries at the start of messages are merged, not an error (unchanged)")
     two = [{"role": "system", "content": "A"}, {"role": "system", "content": "B"}] + conv[1:3] + [{"role": "user", "content": "x"}]
     check(render(patched, two) == render(original, two), "two leading system messages are merged as before (unchanged)")
 

@@ -1,7 +1,9 @@
 """AGENTS-992: chat templates that reject a system message in the middle of a conversation.
 
-Claude Code (and other agents) send system messages after the first turn. The chat template of Qwen3.8 (27B, Flash-Next, the MTP builds) raises
-"System message must be at the beginning." for them, so llama-server answers HTTP 500 to every request (seen on the PC, 2026-11-09, Qwen3.8-27B).
+A client that sends a system (or developer) message after the first turn makes the chat template of Qwen3.8 (27B, Flash-Next, the MTP builds) raise
+"System message must be at the beginning.", so llama-server answers HTTP 500 (seen through Claude Code on the PC, 2026-11-09, Qwen3.8-27B). llama-server's /v1/messages turns the
+top-level `system` field into message 0 (fine) but passes a role "system"/"developer" entry inside `messages` through as is: that entry is the trigger (tests/chat_template_fix_test.py);
+a plain Claude Code body with a top-level system and reminders inside user turns does not trigger it on the laptop's llama-server.
 The fix is one line of the template: a later system (or developer) message is rendered as a user turn instead of raising. The fixed template is made from
 the model's OWN template (read from the GGUF header), so it always matches the model, and is given to llama-server with --chat-template-file.
 The owner's hand-patched file for Qwen3.8-27B (handover model_screen/tmpl/qwen38_27b_patched.jinja) differs from the model's template by exactly this line;
