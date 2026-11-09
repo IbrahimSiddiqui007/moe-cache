@@ -314,6 +314,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "monitor test failed" }
           python tests/top_test.py      # GUI-044/045: the mini window and `moe_cache.py top` (frames, attach by port, page file, Windows console)
           if ($LASTEXITCODE -ne 0) { throw "top test failed" }
+          python tests/audit_test.py    # GUI-043: the audit's scoring and orchestration against a fake server
+          if ($LASTEXITCODE -ne 0) { throw "audit test failed" }
 
       - name: Launcher real start with --ram (no job limit with the file view; MOE_CACHE_WIN_VIEW=0 keeps WP3) and --agent (tool call, connect)
         run: |

@@ -109,10 +109,10 @@ get_routes = set(re.findall(r'u\.path == "(/[^"]*)"', inspect.getsource(ui.Handl
 post_routes = set(re.findall(r'self\.path == "(/[^"]*)"', inspect.getsource(ui.Handler.do_POST)))
 GET_ALLOWED = {"/", "/index.html", "/api/system", "/api/busy", "/api/pick", "/api/downloads", "/api/download", "/api/models", "/api/plan", "/api/status",
                "/api/bench", "/api/servers", "/api/chats", "/api/log"}
-GET_DENIED = {"/api/key", "/api/agents", "/api/sessions", "/api/peek", "/api/share", "/api/ready", "/api/results", "/api/monitor", "/api/mini", "/api/risk"}
+GET_DENIED = {"/api/key", "/api/agents", "/api/sessions", "/api/peek", "/api/share", "/api/ready", "/api/results", "/api/monitor", "/api/mini", "/api/risk", "/api/audit", "/api/audit/plan"}
 POST_ALLOWED = {"/api/chat", "/api/chats/save"}
 POST_DENIED = {"/api/chats/trash", "/api/folders", "/api/download/start", "/api/download/cancel", "/api/servers/start", "/api/servers/stop", "/api/servers/group", "/api/servers/plan", "/api/llama", "/api/start",
-               "/api/pick/use", "/api/command", "/api/sessions/trash", "/api/bench", "/api/share", "/api/share/cancel", "/api/stop", "/api/connect"}
+               "/api/pick/use", "/api/command", "/api/sessions/trash", "/api/bench", "/api/share", "/api/share/cancel", "/api/stop", "/api/connect", "/api/audit/start", "/api/audit/cancel"}
 check(get_routes == GET_ALLOWED | GET_DENIED, f"routes: every GET route has a remote decision (undecided: {sorted(get_routes ^ (GET_ALLOWED | GET_DENIED))})")
 check(post_routes == POST_ALLOWED | POST_DENIED, f"routes: every POST route has a remote decision (undecided: {sorted(post_routes ^ (POST_ALLOWED | POST_DENIED))})")
 check(set(ui.REMOTE_GET) == GET_ALLOWED and set(ui.REMOTE_POST) == POST_ALLOWED, "routes: the code's allow-lists are exactly the decided ones")

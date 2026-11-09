@@ -1975,6 +1975,130 @@ class Runner:
                 "system": system_info()}
 
 
+# ---- the audit (GUI-043): re-score an answer in exact mode ----
+
+AUDIT_MAX_TOKENS = 4096
+
+
+def audit_plan(runner, model_size):
+    """How an audit would run for the server this page runs: {ok, mode: beside | pause, why, free, need}. `beside`: a second, exact-mode server next to the running
+    one when the RAM allows it; `pause`: the running server is stopped for the audit and started again with its own settings."""
+    if runner.state != "ready":
+        return {"ok": False, "why": "start the model first: the audit asks an exact-mode server about the answer, which needs the same model"}
+    tot, avail = ram_now()
+    need = int(model_size * 1.10 + 1.5 * GIB) if model_size else None
+    if need and avail and avail >= need:
+        return {"ok": True, "mode": "beside", "free": avail, "need": need, "why": f"a second, exact-mode server starts next to the running one ({avail / GIB:.1f} GiB free, about {need / GIB:.1f} GiB needed)"}
+    return {"ok": True, "mode": "pause", "free": avail, "need": need,
+            "why": "the model does not fit in memory twice" + (f" ({avail / GIB:.1f} GiB free, about {need / GIB:.1f} GiB needed)" if need and avail else "") +
+                   ": the running server is stopped for the audit and started again afterwards (the model loads twice, so allow a few minutes on a big one); chats that are open on it are interrupted"}
+
+
+class AuditJob:
+    """One audit at a time: state idle | planning | starting | scoring | restoring | done | error | cancelled; progress [done, total]; result (the summary for the page)."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.reset()
+
+    def reset(self):
+        self.state, self.progress, self.message, self.result, self.mode, self.started = "idle", [0, 0], "", None, None, None
+        self.cancel_flag = threading.Event()
+        self.thread = None
+
+    def status(self):
+        return {"state": self.state, "progress": self.progress, "message": self.message, "mode": self.mode, "result": self.result,
+                "elapsed": round(time.time() - self.started, 1) if self.started else None}
+
+    def start(self, runner, model_size, messages, answer, mode="auto"):
+        with self.lock:
+            if self.state in ("planning", "starting", "scoring", "restoring"):
+                raise ValueError("an audit is already running")
+            plan = audit_plan(runner, model_size)
+            if not plan["ok"]:
+                raise ValueError(plan["why"])
+            if any(m.get("images") for m in messages if isinstance(m, dict)):
+                raise ValueError("the audit reads text only: this conversation has an image in it")
+            self.reset()
+            self.mode = plan["mode"] if mode == "auto" else mode
+            if self.mode == "beside" and plan["mode"] == "pause":
+                raise ValueError("the model does not fit in memory twice: use the pause-and-audit way, or stop other programs first")
+            self.started, self.state = time.time(), "planning"
+            s = dict(runner.settings)
+            self.thread = threading.Thread(target=self.run, args=(runner, s, messages, answer), daemon=True)
+            self.thread.start()
+
+    def cancel(self):
+        self.cancel_flag.set()
+
+    def free_port(self, near):
+        for p in list(range(8190, 8200)) + [near + 10]:
+            if not mc.port_busy(p):
+                return p
+        raise ValueError("no free port between 8190 and 8199 for the exact-mode server")
+
+    def run(self, runner, s, messages, answer):
+        import moe_cache_audit as au
+        ex, paused = Runner(), False
+        try:
+            if self.mode == "pause":
+                self.message = "stopping the running server"
+                runner.stop()
+                paused = True
+            port = self.free_port(int(s.get("port") or 8080))
+            need_ctx = int((sum(len(str(m.get("content") or "")) for m in messages) + len(answer)) / 2.5) + 512
+            s2 = dict(s, mode="exact", mtp=False, agent=False, approx="", no_warm=True, port=port, api_key="", no_long_prompt=True,
+                      ctx=min(1048576, max(int(s.get("ctx") or 8192), (need_ctx // 512 + 1) * 512)))
+            if self.mode == "beside":
+                s2.pop("ram", None); s2["share_ram"] = True
+            self.state, self.message = "starting", "starting an exact-mode server (answers the same as plain llama.cpp)"
+            ex.start(s2)
+            t0 = time.time()
+            while ex.state == "starting" and not self.cancel_flag.is_set() and time.time() - t0 < 3600:
+                time.sleep(1)
+            if self.cancel_flag.is_set():
+                raise au.AuditError("cancelled")
+            if ex.state != "ready":
+                raise au.AuditError("the exact-mode server did not start (see the Log for the launcher's lines)")
+            url = f"http://127.0.0.1:{port}"
+            self.state, self.message = "scoring", "re-scoring the answer position by position"
+            prompt = au.render_prompt(url, messages)
+            res = au.score(url, prompt, answer, top=20, max_tokens=AUDIT_MAX_TOKENS, progress=lambda d, n: setattr(self, "progress", [d, n]), cancel=self.cancel_flag.is_set)
+            self.result = audit_summary(res, answer)
+            self.state, self.message = "done", ""
+        except Exception as e:
+            self.state = "cancelled" if isinstance(e, au.AuditError) and "cancelled" in str(e) else "error"
+            self.message = "cancelled" if self.state == "cancelled" else f"{type(e).__name__}: {e}"
+            if self.state == "error" and ex.log:
+                self.message += " (the exact-mode server said: " + " / ".join(l for _, l in list(ex.log)[-3:])[:300] + ")"
+        finally:
+            try:
+                ex.stop()
+            except Exception:
+                pass
+            if paused:
+                prev = self.state
+                self.state, self.message = "restoring", "starting your server again"
+                try:
+                    runner.start(s)
+                except Exception as e:
+                    self.message = f"could not start your server again: {e}"
+                if prev in ("done", "error", "cancelled"):
+                    self.state = prev
+                    if prev == "done":
+                        self.message = "your server is starting again"
+
+
+def audit_summary(res, answer):
+    """What the page gets: the totals, the changed positions with both tokens, and the character ranges of the changed words."""
+    import moe_cache_audit as au
+    ranges = au.char_ranges(res["tokens"], answer)
+    detail = {r["i"]: {"piece": r["piece"], "exact": r["exact_piece"], "exact_p": r["exact_p"], "p": r["p"], "p_below": r["p_below"]} for r in res["tokens"] if not r["same"]}
+    return {"n": res["n"], "same": res["same"], "same_pct": round(res["same_pct"], 2), "mean_logloss": res["mean_logloss"], "unknown_p": res["unknown_p"], "truncated": res["truncated"],
+            "prompt_tokens": res["prompt_tokens"], "seconds": res["seconds"], "mismatches": res["mismatches"][:300], "n_mismatches": len(res["mismatches"]),
+            "detail": {str(k): v for k, v in list(detail.items())[:300]}, "ranges": ranges[:600],
+            "flags": "".join("0" if r["same"] else "1" for r in res["tokens"])}
+
+
 # ---- the page's own chat: chats kept as JSON files, answers streamed from llama-server through the page server ----
 # The page talks only to its own server (CSP connect-src 'self', the page token); this server adds llama-server's API key, so the key never reaches
 # the browser. Chats are files and not browser storage because browser storage is per port, and the app (APP2) picks a free port each run.
@@ -2451,6 +2575,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not (math.isfinite(t0) and math.isfinite(t1) and 0 <= t1 - t0 <= 3600):
                     raise ValueError("t0 and t1: a window of at most an hour")
                 return self.send(200, self.runner.mon.risk(t0, t1))
+            if u.path == "/api/audit":                     # GUI-043: the audit's state, progress and result
+                return self.send(200, self.audit.status())
+            if u.path == "/api/audit/plan":                # how an audit would run now (beside the running server, or pausing it)
+                return self.send(200, audit_plan(self.runner, self.model_size(self.runner.settings.get("model"))))
             if u.path == "/api/mini":                      # GUI-044: the small pop-out window (the page writes it into a same-origin popup, so the token never shows in a URL)
                 with open(MINI_PAGE, "rb") as fh:
                     return self.send(200, fh.read(), "text/html")
@@ -2533,6 +2661,18 @@ class Handler(BaseHTTPRequestHandler):
                         s["share_ram"] = True
                 self.runner.start(s, on_demand=bool(body.get("on_demand")))
                 return self.send(200, self.runner.status())
+            if self.path == "/api/audit/start":            # GUI-043: re-score an answer in exact mode: {messages, answer, mode: auto | beside | pause}
+                msgs, ans = body.get("messages"), body.get("answer")
+                if not isinstance(msgs, list) or not all(isinstance(m, dict) and isinstance(m.get("content"), (str, type(None))) for m in msgs) or not isinstance(ans, str) or not ans.strip():
+                    raise ValueError("messages: the conversation before the answer; answer: its text")
+                if len(ans) > 200_000 or len(json.dumps(msgs)) > 4_000_000:
+                    raise ValueError("this conversation is too long to audit")
+                self.audit.start(self.runner, self.model_size(self.runner.settings.get("model")), [{"role": str(m.get("role") or "user"), "content": m.get("content") or ""} for m in msgs], ans,
+                                 body.get("mode") if body.get("mode") in ("auto", "beside", "pause") else "auto")
+                return self.send(200, self.audit.status())
+            if self.path == "/api/audit/cancel":
+                self.audit.cancel()
+                return self.send(200, self.audit.status())
             if self.path == "/api/pick/use":               # "Use it": the same settings `moe_cache.py pick --apply` writes (no download here)
                 if body.get("use") not in picker.USES:
                     raise ValueError("use: " + ", ".join(picker.USES))
@@ -2715,6 +2855,13 @@ class Handler(BaseHTTPRequestHandler):
         """Runners of this page that are starting or running: the main one and the further ones."""
         out = [self.runner] if self.runner.state in ("starting", "ready", "waiting", "stopping") else []
         return out + [self.extra[p] for p in self.live_extra()]
+
+    def model_size(self, path):
+        """Bytes of the model files behind `path` (all parts), or None."""
+        for m in self.store.list_models():
+            if m["path"] == path:
+                return m.get("size")
+        return None
 
     def refuse_same_model(self, model):
         """Two servers on one model would save and restore the same warm conversation files (the slot files are named after the model) and overwrite each other."""
@@ -3041,7 +3188,7 @@ def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
         mc.say(line)
     downloads = dl.Downloads()
     downloads.on_change = lambda j: setattr(store, "models_at", 0)          # a finished download shows in the model list at once
-    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "extra": {}, "lan_hosts": tuple(lan_hosts), "token": token or secrets.token_urlsafe(24)})
+    h = type("H", (Handler,), {"store": store, "runner": Runner(), "downloads": downloads, "audit": AuditJob(), "extra": {}, "lan_hosts": tuple(lan_hosts), "token": token or secrets.token_urlsafe(24)})
     class _Srv(ThreadingHTTPServer):
         # http.server sets SO_REUSEADDR; on Windows that lets a second instance bind the same port (a double-clicked moe-cache.bat twice gave two competing
         # managers on 8070 and "forbidden" pages from the wrong token). Linux needs it to restart on a port in TIME_WAIT, Windows does not.

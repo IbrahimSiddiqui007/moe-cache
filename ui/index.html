@@ -11,6 +11,10 @@
 :root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --on-bad:#0f1519; --shade:rgba(0,0,0,.45); }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
+/* GUI-043: the audit */
+.chip.audit { color:var(--gpu); border-color:var(--gpu); cursor:pointer; }
+mark.audit { background:color-mix(in srgb, var(--bad) 30%, transparent); color:inherit; border-radius:2px; cursor:help; }
+.auditlist { font-size:12px; margin:6px 0; max-width:640px; } .auditlist td { padding:2px 6px; } .auditlist code { background:var(--code); }
 /* GUI-043: at-risk marks in a chat answer */
 .chip.risk { color:var(--warn); border-color:var(--warn); cursor:pointer; }
 mark.risk { background:color-mix(in srgb, var(--warn) 38%, transparent); color:inherit; border-radius:2px; }
@@ -1533,6 +1537,13 @@ function chips(m, i, live) {
   if (t.hit_rate != null) out.push(`<span class="chip hit" title="experts found in RAM while this answer was written: ${t.hits} hits, ${t.misses} misses. The count is the server's, so a second chat or agent running at the same time is included">hit ${(t.hit_rate * 100).toFixed(1)} %</span>`);
   if (t.predicted_n) out.push(`<span class="chip">${t.predicted_n} tokens · ${(t.predicted_ms / 1000).toFixed(1)} s</span>`);
   if (t.stopped) out.push(`<span class="chip stopped">stopped</span>`);
+  const au = m.audit && Number.isFinite(Number(m.audit.n)) ? m.audit : null, last0 = i == C.chat.messages.length - 1, aj = S.audit && S.audit.i == i && S.audit.status ? S.audit.status : null;
+  if (!live && m.content && !m.error) {
+    if (aj && ["planning", "starting", "scoring", "restoring"].includes(aj.state)) out.push(`<span class="chip audit" data-auditcancel="1" title="Click to cancel">audit: ${esc(aj.state == "scoring" ? `${aj.progress[0]} of ${aj.progress[1]} tokens` : aj.message || aj.state)} · cancel</span>`);
+    else if (au) out.push(`<span class="chip audit" data-auditshow="${i}" title="The exact model's most likely next token is the answer's token at ${Number(au.same) || 0} of ${Number(au.n) || 0} positions (the quality gate's same-top-token measure). Mean log-loss of the answer's tokens under the exact model: ${au.mean_logloss != null ? Number(au.mean_logloss).toFixed(3) : "n/a"}. Click to ${m.showAudit ? "hide" : "show"} the words that differ.">audit: ${(Number(au.same_pct) || 0).toFixed(1)} % same top token · ${Number(au.n_mismatches) || 0} differ</span>`);
+    else if (last0 && !m.think) out.push(`<span class="chip audit" data-audit="${i}" title="Re-score this answer with an exact-mode server (plain llama.cpp results) and mark every word where the exact model would have chosen another token. Costs nothing until clicked.">audit (exact)</span>`);
+    if (aj && aj.state == "error") out.push(`<span class="chip stopped" title="${esc(aj.message || "")}">audit failed: ${esc(String(aj.message || "").slice(0, 90))}</span>`);
+  }
   const rk = m.risk && Number.isFinite(Number(m.risk.n)) ? m.risk : null;
   if (rk) out.push(`<span class="chip risk" data-risk="${i}" title="An approximate speed-up is on. The plugin changed which experts ${Number(rk.picks) || 0} picks used, in ${Number(rk.changed) || 0} of the ${Number(rk.n) || 0} decode steps of this answer. Click to ${m.showRisk ? "hide" : "show"} the words from those steps${rk.exact ? "" : " (approximate: this answer was drafted several tokens at a time)"}">at risk: ${Number(rk.changed) || 0} of ${Number(rk.n) || 0} steps</span>`);
   const last = i == C.chat.messages.length - 1;
@@ -1544,15 +1555,26 @@ function msgHTML(m, i, live) {
     return `<div class="msg user">${esc(m.shown ?? m.content)}${(m.images || []).length ? `<div class="att">${m.images.map(u => `<img class="pic" src="${esc(u)}" alt="attached image">`).join("")}</div>` : ""}${(m.files || []).length ? `<div class="att">${m.files.map(f => `<span class="file">${f.image ? "🖼" : "📄"} ${esc(f.name)} · ${f.tokens.toLocaleString()} tokens</span>`).join("")}</div>` : ""}</div>`;
   const [think, text] = splitThink(m);
   const rk = m.risk && Array.isArray(m.risk.ranges) ? m.risk : null;
-  let body = md(text);
-  if (rk && m.showRisk && !live && m.content.indexOf("<think>") < 0) {      // the answer as plain text with the words from changed steps marked
+  let body = md(text), auditTable = "";
+  const au = m.audit && Array.isArray(m.audit.ranges) ? m.audit : null;
+  if (au && m.showAudit && !live && m.content.indexOf("<think>") < 0) {      // the answer as plain text; the words where the exact model's top token differs are marked, hover for both tokens
+    let h = "", at = 0;
+    for (const [x, y, k] of au.ranges) {
+      if (!(x >= at && y >= x && y <= m.content.length)) continue;
+      const d = (au.detail || {})[k] || {}, pc = v => v == null ? "?" : (100 * v).toFixed(0) + " %";
+      h += esc(m.content.slice(at, x)) + `<mark class="audit" title="${esc(`answer: ${JSON.stringify(String(d.piece ?? ""))} (${d.p != null ? pc(d.p) : "less than " + pc(d.p_below)} under the exact model) — exact: ${JSON.stringify(String(d.exact ?? ""))} (${pc(d.exact_p)})`)}">${esc(m.content.slice(x, y))}</mark>`; at = y;
+    }
+    body = `<div class="riskview">${h + esc(m.content.slice(at))}</div>`;
+    const rows = Object.entries(au.detail || {}).slice(0, 30);
+    auditTable = `<table class="auditlist"><tr><th>#</th><th>answer</th><th>under exact</th><th>exact top-1</th></tr>${rows.map(([k, d]) => `<tr><td>${esc(k)}</td><td><code>${esc(JSON.stringify(String(d.piece ?? "")))}</code></td><td>${d.p != null ? (100 * d.p).toFixed(1) + " %" : "&lt; " + (100 * (d.p_below || 0)).toFixed(1) + " %"}</td><td><code>${esc(JSON.stringify(String(d.exact ?? "")))}</code> ${d.exact_p != null ? (100 * d.exact_p).toFixed(1) + " %" : ""}</td></tr>`).join("")}</table>${au.n_mismatches > rows.length ? `<div class="small">${au.n_mismatches - rows.length} more positions differ</div>` : ""}${au.truncated ? `<div class="small">only the first ${au.n} tokens were audited</div>` : ""}`;
+  } else if (rk && m.showRisk && !live && m.content.indexOf("<think>") < 0) {      // the answer as plain text with the words from changed steps marked
     let h = "", at = 0;
     for (const [x, y] of rk.ranges) { if (!(x >= at && y >= x && y <= m.content.length)) continue; h += esc(m.content.slice(at, x)) + `<mark class="risk">${esc(m.content.slice(x, y))}</mark>`; at = y; }
     body = `<div class="riskview">${h + esc(m.content.slice(at))}</div>`;
   }
   const strip = rk && Array.isArray(rk.strip) && rk.strip.length ? `<div class="riskstrip" title="the decode steps of this answer, in order: yellow = the routing change touched that step">${rk.strip.map(v => `<i${v ? ' class="on"' : ""}></i>`).join("")}</div>` : "";
   return `<div class="msg ai" data-i="${i}">${think && $("showthink").checked ? `<details class="think"${live && !text ? " open" : ""}><summary>${live && !text ? "Thinking…" : "Thinking"}</summary>${esc(think)}</details>` : ""}` +
-    (m.error ? `<p class="errmsg">${esc(m.error)}</p>` : "") + body + (live ? `<span class="cursor"></span>` : "") + strip + chips(m, i, live) + "</div>";
+    (m.error ? `<p class="errmsg">${esc(m.error)}</p>` : "") + body + auditTable + (live ? `<span class="cursor"></span>` : "") + strip + chips(m, i, live) + "</div>";
 }
 function paintChat() {
   const c = C.chat;
@@ -1571,6 +1593,12 @@ function paintLast() {             // only the answer being written (cheap enoug
   if (stick) $("msgs").scrollTop = $("msgs").scrollHeight;
 }
 $("inner").onclick = e => {
+  const ac = e.target.closest("[data-audit],[data-auditshow],[data-auditcancel]");
+  if (ac) {
+    if (ac.dataset.auditcancel) { api("/api/audit/cancel", {}).catch(() => {}); return; }
+    if (ac.dataset.auditshow != null) { const m = C.chat.messages[+ac.dataset.auditshow]; if (m) { m.showAudit = !m.showAudit; paintChat(); } return; }
+    startAudit(+ac.dataset.audit); return;
+  }
   const rc = e.target.closest("[data-risk]");
   if (rc) { const m = C.chat.messages[+rc.dataset.risk]; if (m) { m.showRisk = !m.showRisk; paintChat(); } return; }
   const b = e.target.closest("button"); if (!b) return;
@@ -1599,11 +1627,15 @@ async function send() {
   C.files = []; $("ta").value = ""; autosize();
   paintChat(); ask();
 }
+// the messages a request carries for the conversation up to (not including) message `upto`: the same for a new answer and for the audit of an old one
+function buildMsgs(c, upto) {
+  return (c.system ? [{ role: "system", content: c.system }] : []).concat(c.messages.slice(0, upto).map(m => Object.assign({ role: m.role, content: m.role == "assistant" ? splitThink(m)[1] : m.content }, m.images && m.images.length ? { images: m.images } : {})).filter(m => m.content || m.images));
+}
 async function ask() {
   const c = C.chat;
   const tgt = S.chatPort && S.servers.managed.concat(S.servers.other).find(y => y.port == S.chatPort);
   c.model = (tgt ? tgt.model : S.status.model) || c.model;
-  const msgs = (c.system ? [{ role: "system", content: c.system }] : []).concat(c.messages.map(m => Object.assign({ role: m.role, content: m.role == "assistant" ? splitThink(m)[1] : m.content }, m.images && m.images.length ? { images: m.images } : {})).filter(m => m.content || m.images));
+  const msgs = buildMsgs(c, c.messages.length);
   const a = { role: "assistant", content: "", think: "", meta: {} };
   c.messages.push(a);
   C.busy = true; C.ctrl = new AbortController(); showErr("");
@@ -1647,6 +1679,28 @@ async function ask() {
   paintChat(); paintChatState(S.status, true);
   if (!a.error || a.content) saveChat();
   if (a.content && cuts.length) loadRisk(c, a, cuts, wall0, Date.now() / 1000);
+}
+// GUI-043: the audit: ask what an exact-mode server would have written, token by token (nothing runs until the chip is clicked)
+async function startAudit(i) {
+  const m = C.chat.messages[i]; if (!m || S.audit && S.audit.timer) return;
+  let plan; try { plan = await api("/api/audit/plan"); } catch (e) { showErr(e.message); return; }
+  if (!plan.ok) { showErr(plan.why); return; }
+  if (!confirm("Audit this answer?\n\n" + plan.why + "\n\nThe audit takes about as long as the answer took to write. Nothing is changed in the chat.")) return;
+  try { await api("/api/audit/start", { messages: buildMsgs(C.chat, i), answer: m.content, mode: "auto" }); } catch (e) { showErr(e.message); return; }
+  S.audit = { i, c: C.chat, timer: setInterval(pollAudit, 1000), status: { state: "planning", progress: [0, 0] } };
+  paintChat();
+}
+async function pollAudit() {
+  const a = S.audit; if (!a) return;
+  let st; try { st = await api("/api/audit"); } catch (e) { return; }
+  a.status = st;
+  if (["done", "error", "cancelled"].includes(st.state)) {
+    clearInterval(a.timer); a.timer = null;
+    const m = a.c.messages[a.i];
+    if (st.state == "done" && st.result && m) { m.audit = st.result; m.showAudit = true; if (a.c === C.chat) saveChat(); }
+    if (st.state == "cancelled") S.audit = null;
+  }
+  if (a.c === C.chat) paintChat();
 }
 // GUI-043: which decode steps of this answer went through the approximate routing (the plugin counts them; nothing here costs anything unless a mode is on)
 function riskMarks(cuts, steps) {
