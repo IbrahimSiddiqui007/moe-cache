@@ -129,8 +129,34 @@ def llama_build(ls):
     return mc.ls_build(ls)
 
 
+def fixed_drives():
+    """Letters of the fixed (internal) drives on Windows, e.g. ["C", "D"]; [] elsewhere. GetLogicalDrives + GetDriveTypeW == DRIVE_FIXED (3): removable sticks, network
+    shares and optical drives are left out. If Windows cannot be asked, C and D (the two the page and the picker used to list)."""
+    if not WINDOWS:
+        return []
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        mask = k.GetLogicalDrives()
+        got = [chr(65 + i) for i in range(26) if mask >> i & 1 and k.GetDriveTypeW(chr(65 + i) + ":\\") == 3]
+        if got:
+            return got
+    except Exception:
+        pass
+    return ["C", "D"]
+
+
+def default_folders(windows=None, drives=None):
+    """The folders models are looked for in without any setting: ~/models and, on Windows, <drive>:\\models on every fixed drive (GUI-1052: the owner moved the models
+    from C:\\models to D:\\models; a list with only C and D would miss E: and later). One implementation for the page and the picker. `windows` / `drives` are for tests."""
+    out = [os.path.join(os.path.expanduser("~"), "models")]
+    if WINDOWS if windows is None else windows:
+        out += [f"{d}:\\models" for d in (fixed_drives() if drives is None else drives)]
+    return out
+
+
 def model_folders(extra=None):
-    out = [os.path.join(os.path.expanduser("~"), "models")] + (["C:\\models", "D:\\models"] if WINDOWS else [])
+    out = default_folders()
     try:
         out += json.load(open(SETTINGS_FILE, encoding="utf-8")).get("folders", [])
     except Exception:

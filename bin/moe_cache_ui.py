@@ -36,11 +36,7 @@ GIB = 2**30
 
 # ---- model folders ----
 
-def default_folders():
-    out = [os.path.join(os.path.expanduser("~"), "models")]
-    if WINDOWS:
-        out.append("C:\\models")
-    return out
+default_folders = picker.default_folders      # one implementation for the page and the picker: ~/models and <drive>:\\models on every fixed drive (GUI-1052)
 
 
 ollama_roots = picker.ollama_roots      # one implementation for the page and the picker (bin/moe_cache_pick.py)
