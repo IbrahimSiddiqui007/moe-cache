@@ -3861,8 +3861,13 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     a.autotune_probe is set (a real start, not --dry-run / --plan-json / the control page's plan) and there is no stored pick or --retune was given."""
     import moe_cache_autotune as at
     say_fn = say_fn or say
-    if a.exact or a.stock or os.environ.get("MOE_CACHE_NO_AUTOTUNE", "") not in ("", "0") or not model or not os.path.isfile(model):
+    if not model or not os.path.isfile(model):
         return cmd, env, None
+    off = "--exact" if a.exact else "--stock" if a.stock else "MOE_CACHE_NO_AUTOTUNE is set" if os.environ.get("MOE_CACHE_NO_AUTOTUNE", "") not in ("", "0") else None
+    if off:            # said, not silent: a user who looks for the tuner finds out why it is not there
+        line = f"moe-cache: auto-tune: off ({off})"
+        say_fn(line)
+        return cmd, env, {"state": "off", "lines": [line], "why": f"off ({off})"}
     locked = at.locked_dims(a, argv, os.environ, windows=machine.windows, agent=bool(a.agent), project=bool(a.project), engine=engine)
     # what else shapes the plan a pick was measured on (LAUNCHER-1041): the user's memory caps, the modes (--fast, --mtp, --approx, long-prompt, --hybrid) and the settings the
     # tuner does not touch but the speed depends on (the prompt cache size the USER asked for - the planner's own value is not keyed: on Windows it follows the free commit of the moment -,
@@ -3961,7 +3966,10 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
         for l in lines:
             say_fn(l)
         return cmd, env, dict(res, lines=lines, locked=locked)
-    say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: trying {len(cands)} plans for at most {at.BUDGET_S:.0f} s (stored afterwards; --retune measures again)")
+    if a.retune:       # not "first start": the stored pick is being replaced
+        say_fn(f"moe-cache: auto-tune: --retune: measuring again, trying {len(cands)} plans for at most {at.BUDGET_S:.0f} s (the stored result for this model, machine and context is replaced)")
+    else:
+        say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: trying {len(cands)} plans for at most {at.BUDGET_S:.0f} s (stored afterwards; --retune measures again)")
     def run(c, left_s, n):
         c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
         return (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)

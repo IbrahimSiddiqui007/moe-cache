@@ -206,13 +206,16 @@ try:
     check(info["state"] == "cached" and at.flag_value(cmd, "--n-cpu-moe") == "18", "dry-run / plan-json show and apply the stored pick")
     cmd, env, info, out = stage(retune=True)
     check(len(calls) > n and info["state"] == "tuned", "--retune measures again")
+    check(any("--retune: measuring again" in l for l in out) and not any("first start" in l for l in out), f"--retune says it is measuring again, not 'first start' ({[l for l in out if 'trying' in l and 'plans' in l][:1]})")
     n = len(calls)
     cmd, env, info, out = stage(exact=True)
-    check(info is None and cmd == BASE_CMD and len(calls) == n, "--exact: the tuner is off, the plan is untouched")
+    check(info["state"] == "off" and cmd == BASE_CMD and len(calls) == n and out == ["moe-cache: auto-tune: off (--exact)"], f"--exact: the tuner is off, the plan is untouched, one line says so ({out})")
     cmd, env, info, out = stage(stock=True)
-    check(info is None and cmd == BASE_CMD, "--stock: the tuner is off")
+    check(info["state"] == "off" and cmd == BASE_CMD and out == ["moe-cache: auto-tune: off (--stock)"], f"--stock: the tuner is off and says so ({out})")
     os.environ["MOE_CACHE_NO_AUTOTUNE"] = "1"
-    check(stage()[2] is None, "MOE_CACHE_NO_AUTOTUNE=1 skips it (scripts, CI)")
+    r_off = stage()
+    check(r_off[2]["state"] == "off" and r_off[3] == ["moe-cache: auto-tune: off (MOE_CACHE_NO_AUTOTUNE is set)"] and r_off[0] == BASE_CMD, f"MOE_CACHE_NO_AUTOTUNE=1 skips it (scripts, CI) and says so ({r_off[3]})")
+    check(stage(probe=False)[3] == ["moe-cache: auto-tune: off (MOE_CACHE_NO_AUTOTUNE is set)"], "...also in a dry-run / plan-json")
     del os.environ["MOE_CACHE_NO_AUTOTUNE"]
     # a user flag wins even against a stored pick: tuned with ncmoe free, then the user passes --n-cpu-moe 20
     cmd, env, info, out = stage(argv=("--", "--n-cpu-moe", "20"))
