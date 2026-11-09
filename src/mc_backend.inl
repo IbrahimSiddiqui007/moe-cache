@@ -489,7 +489,11 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
         }
         c->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(c->gpu));
     }
-    ggml_init_params ip = { ggml_tensor_overhead() * 4 * (size_t) (seg.size() + 8) + ggml_graph_overhead() + 4096, nullptr, true };
+    // Worst case from the real node count: every node plus every source of every node is a tensor of its own (a view or a clone). The graph
+    // is built with exactly that size (ggml_new_graph_custom), so the pool never depends on what ggml_new_graph's default size costs in the
+    // ggml build that is loaded (CACHE-988: a 0.29 runtime under 0.28 headers needed more than the old pool had).
+    const size_t n_slots = mcctx::slots(seg.size(), GGML_MAX_SRC);
+    ggml_init_params ip = { mcctx::bytes(n_slots, ggml_tensor_overhead(), ggml_graph_overhead_custom(n_slots, false)), nullptr, true };
     ggml_context * ctx = ctx_new(c, ip);
     if (!ctx) {
         return false;
@@ -795,6 +799,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 }
                 std::unordered_map<const ggml_tensor *, ggml_tensor *> pc;
                 std::vector<std::pair<const ggml_tensor *, ggml_tensor *>> pup;
+                bool pack_alloc_bad = false;                    // the pool ran out: give up this block (the CPU path runs it)
                 auto pext = [&](const ggml_tensor * t) {
                     auto it = pc.find(t);
                     if (it != pc.end()) {
@@ -808,6 +813,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                         ne[0] = 1;
                     }
                     ggml_tensor * nt = ggml_new_tensor(pctx, t->type, GGML_MAX_DIMS, ne);
+                    if (!nt) {
+                        pack_alloc_bad = true;
+                        return nt;
+                    }
                     ggml_set_input(nt);
                     pc[t] = nt;
                     pup.emplace_back(t, nt);
@@ -816,6 +825,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                 for (ggml_tensor * n : seg) {
                     int64_t ne[GGML_MAX_DIMS] = { n->ne[0], 1, R, 1 };
                     ggml_tensor * nn = ggml_new_tensor(pctx, n->type, GGML_MAX_DIMS, ne);
+                    if (!nn || pack_alloc_bad) {
+                        pack_alloc_bad = true;
+                        break;
+                    }
                     nn->op = n->op;
                     memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
                     for (int k = 0; k < GGML_MAX_SRC; k++) {
@@ -825,9 +838,14 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
                     }
                     pc[n] = nn;
                 }
+                ggml_cgraph * pg = pack_alloc_bad ? nullptr : ggml_new_graph_custom(pctx, n_slots, false);
+                if (!pg || pack_alloc_bad || !pc.count(out)) {
+                    ctx_free(c, pctx);
+                    ctx_free(c, ctx);
+                    return false;
+                }
                 ggml_tensor * pout = pc[out];
                 ggml_set_output(pout);
-                ggml_cgraph * pg = ggml_new_graph(pctx);
                 ggml_build_forward_expand(pg, pout);
                 if (!gpu_graph_supported(c, pg) || !ggml_gallocr_alloc_graph(c->galloc, pg)) {
                     ctx_free(c, pctx);
@@ -989,6 +1007,7 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     if (keep_mib > 0) {
         c->held_serial++;
     }
+    bool alloc_bad = false;                                     // the context pool ran out: give up this block (the CPU path runs it)
     auto ext = [&](const ggml_tensor * t) {
         auto it = clone.find(t);
         if (it != clone.end()) {
@@ -999,6 +1018,10 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             ne[2] = (int64_t) per_alloc;
         }
         ggml_tensor * nt = ggml_new_tensor(ctx, t->type, GGML_MAX_DIMS, ne);
+        if (!nt) {
+            alloc_bad = true;
+            return nt;
+        }
         ggml_set_input(nt);
         clone[t] = nt;
         uploads.emplace_back(t, nt);
@@ -1049,11 +1072,21 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
     };
     if (!from_tmpl) {
         for (ggml_tensor * n : seg) {
+            if (alloc_bad) {
+                break;
+            }
             if (n->op == GGML_OP_VIEW) {         // GPU_SUM: a view of the weighted experts shares their memory
                 clone[n] = ggml_view_2d(ctx, clone[n->view_src], n->ne[0], n->ne[1], n->nb[1], n->view_offs);
+                if (!clone[n]) {
+                    alloc_bad = true;
+                }
                 continue;
             }
             ggml_tensor * nn = ggml_new_tensor(ctx, n->type, GGML_MAX_DIMS, n->ne);
+            if (!nn) {
+                alloc_bad = true;
+                break;
+            }
             nn->op = n->op;
             memcpy(nn->op_params, n->op_params, sizeof(nn->op_params));
             for (int k = 0; k < GGML_MAX_SRC; k++) {
@@ -1063,9 +1096,17 @@ bool gpu_segment(moe_cache_backend_ctx * c, state_t & s, ggml_cgraph * cg, int f
             }
             clone[n] = nn;
         }
+        if (alloc_bad || !clone[out]) {
+            ctx_free(c, ctx);
+            return false;
+        }
         gout = clone[out];
         ggml_set_output(gout);
-        g = ggml_new_graph(ctx);
+        g = ggml_new_graph_custom(ctx, n_slots, false);
+        if (!g) {
+            ctx_free(c, ctx);
+            return false;
+        }
         ggml_build_forward_expand(g, gout);
     }
     if (!from_tmpl && !gpu_graph_supported(c, g)) {
