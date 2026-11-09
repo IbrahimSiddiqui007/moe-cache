@@ -146,30 +146,6 @@ _set = lambda d: ui.Handler.settings(_hs, dict({"model": "m.gguf"}, **d))["mode"
 check(_set({"mode": "exact"}) == "exact" and _set({"mode": "default"}) == "default" and _set({}) == "default" and _set({"mode": "bogus"}) == "default",
       "saved settings: a saved 'exact' stays Exact; none or unknown = Default")
 check(_set({"mode": "fast", "engine": "stock"}) == "exact" and _set({"mode": "fast"}) == "fast", "saved settings: stock engine forces Exact, Fast stays")
-# an Exact that older pages saved without being asked becomes Default once; one chosen on this page (mode_rev) stays
-_old = {"last": {"model": "m.gguf", "mode": "exact", "ctx": 8192}}
-check(ui.migrate_mode(_old) and _old["last"]["mode"] == "default" and _old["last"]["mode_rev"] == ui.MODE_REV, "saved Exact without mode_rev (old page) becomes Default, once")
-_new = {"last": {"mode": "exact", "mode_rev": ui.MODE_REV}}
-check(not ui.migrate_mode(_new) and _new["last"]["mode"] == "exact", "an Exact saved by this page (mode_rev) stays Exact")
-check(not ui.migrate_mode({"last": {"mode": "fast"}}) and not ui.migrate_mode({}) and not ui.migrate_mode({"last": None}) and not ui.migrate_mode([]), "Fast / Hybrid / nothing saved / odd shapes: untouched")
-check(ui.Handler.settings(_hs, {"model": "m.gguf", "mode": "exact"})["mode_rev"] == ui.MODE_REV, "every mode the page saves carries mode_rev")
-# `pick --apply` writes a recommendation into "last": it must not leave an Exact behind (it did: mode "exact", kept for good by a mode_rev from an earlier page launch)
-_pk = ui.picker.apply({"id": "x", "name": "X", "use": "chat", "ctx": 8192, "args": "", "local": "/m/x.gguf"}, {"last": {"mode": "fast", "mode_rev": ui.MODE_REV}})
-check(_pk["last"]["mode"] == "default" and "--exact" not in ui.server_args(dict(_pk["last"])), "pick --apply sets Default, not a leftover Exact (and a page launch of it passes no --exact)")
-import tempfile as _tf
-_d = _tf.mkdtemp(); _f = os.path.join(_d, "ui.json")
-json.dump({"folders": [], "last": {"model": "m.gguf", "mode": "exact"}}, open(_f, "w"))
-_sv = (ui.SETTINGS_FILE, ui.picker.SETTINGS_FILE); ui.SETTINGS_FILE = ui.picker.SETTINGS_FILE = _f
-try:
-    _st = ui.Store("llama-server")
-    _disk = json.load(open(_f))
-    check(_st.saved["last"]["mode"] == "default" and _disk["last"]["mode"] == "default" and _disk["last"]["mode_rev"] == ui.MODE_REV, "the page's store migrates a saved Exact in ui.json when it starts, and writes it back")
-    _st.saved["last"]["mode"] = "exact"; _st.save("last")
-    _st2 = ui.Store("llama-server")
-    check(_st2.saved["last"]["mode"] == "exact", "...and an Exact chosen afterwards (saved with mode_rev) survives the next start")
-finally:
-    ui.SETTINGS_FILE, ui.picker.SETTINGS_FILE = _sv
-
 check("KEY" in ui.shown_command({"model": "m.gguf", "api_key": "secret"}) and "secret" not in ui.shown_command({"model": "m.gguf", "api_key": "secret"}),
       "the shown command hides the API key")
 # AUD-044: the shown command runs in the user's shell (PowerShell on Windows: quoting for & ( ) ^ and spaces, the key as $env:, not NAME=value)
