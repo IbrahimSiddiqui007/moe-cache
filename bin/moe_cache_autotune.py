@@ -13,7 +13,7 @@ import json
 import os
 import time
 
-VERSION = 1                 # bump when the meaning of a stored pick changes: old files are then ignored
+VERSION = 2                 # bump when the meaning of a stored pick changes: old files are then ignored
 BUDGET_S = 180.0            # the owner's limit for the whole first start tuning, loads included
 MARGIN = 0.05               # a candidate must beat the plan as it is by this much (run-to-run noise on one probe is about this big)
 PROMPT_TOKENS = 1500        # the probe prompt (a prompt speed at this length ranks plans; it is not a 64k number)
@@ -125,22 +125,20 @@ def build_candidates(cmd, env, locked, ctx, n_layers=None):
             byid["ncmoe-2"] = Candidate("ncmoe-2", "2 more expert layers on the GPU", [{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": -2}])
         if n_layers is None or n + 2 <= n_layers:
             byid["ncmoe+2"] = Candidate("ncmoe+2", "2 more expert layers on the CPU (less GPU memory in use)", [{"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": 2}])
+    # LAUNCHER-1043: the probe reads a PROMPT_TOKENS-token prompt, so a micro-batch above that size does the same work as one at that size, and a KV type is judged on
+    # a short context. The planner's long-prompt defaults (-ub 4096, q8_0 KV: measured at 65k) can therefore neither be improved nor be undone by this probe: no KV
+    # candidate, and -ub only upward from a small plan (512 -> 1024), never above the prompt length.
     if "ub" not in locked and ub is not None and str(ub).isdigit():
         u = int(ub)
-        alt = 2048 if u >= 4096 else min(4096, u * 2)
-        if alt != u:
+        alt = u * 2
+        if alt <= PROMPT_TOKENS:
             byid[f"ub{alt}"] = Candidate(f"ub{alt}", f"-ub {alt} (plan: {u})", [{"dim": "ub", "flag": "-ub", "value": str(alt), "also": ["--ubatch-size"]}])
-    if "kv" not in locked and ctx >= 32768:
-        cur = flag_value(cmd, "-ctk", "--cache-type-k")
-        alt = "f16" if cur == "q8_0" else "q8_0"
-        byid["kv"] = Candidate(f"kv-{alt}", f"{alt} KV cache (plan: {cur or 'f16'})",
-                               [{"dim": "kv", "flag": "-ctk", "value": alt, "also": ["--cache-type-k"]}, {"dim": "kv", "flag": "-ctv", "value": alt, "also": ["--cache-type-v"]}])
     if "ramlock" not in locked:
         byid["ramlock"] = Candidate("ramlock", "RAM_LOCK + DROP_READAHEAD", [{"dim": "ramlock", "env": k, "value": v} for k, v in RAMLOCK_ENV])
     if "np" not in locked:
         byid["np1"] = Candidate("np1", "-np 1 (one slot)", [{"dim": "np", "flag": "-np", "value": "1", "also": ["--parallel"]}])
     # priority: more GPU layers, the batch size, the KV type, then the rest; ncmoe+2 only stands in when a slot is free
-    order = ["ncmoe-2"] + [k for k in byid if k.startswith("ub")] + ["kv", "ncmoe+2", "ramlock", "np1"]
+    order = ["ncmoe-2"] + [k for k in byid if k.startswith("ub")] + ["ncmoe+2", "ramlock", "np1"]
     out = [byid[k] for k in order if k in byid]
     return [c0] + out[:3]
 
@@ -210,6 +208,13 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         except Exception as e:                      # a runner that raises is a failed candidate, never a failed start
             r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
         took = clock() - s
+        if r.get("guard_stop"):             # LAUNCHER-1042: the memory guard stopped a probe: no more loads under memory pressure, nothing is stored, the plan as it is runs
+            row.update(status="stopped", error=str(r["guard_stop"])[:200])
+            rows.append(row)
+            say(row_line(row))
+            return {"rows": rows, "total_s": round(clock() - t0, 1), "budget_s": budget_s, "agent": agent, "prompt_tokens": PROMPT_TOKENS, "decode_tokens": DECODE_TOKENS,
+                    "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False, "state": "aborted",
+                    "why": f"the memory guard stopped the probe of {c.id} ({str(r['guard_stop'])[:160]}): the tuning was aborted, nothing was stored, the plan as it is runs. It is tried again at the next start"}
         row.update({k: r.get(k) for k in ("load_s", "prompt_tps", "decode_tps", "decode_n", "error")})
         row["took_s"] = round(took, 1)
         if r.get("ok") and r.get("prompt_tps") and r.get("decode_tps"):
@@ -259,13 +264,14 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         res["baseline_spread"] = round(spread, 3)
     best = min((r for r in rows if r["status"] == "measured" and r["id"] != "C0b"), key=lambda r: r["score_s"])
     gain = 1 - best["score_s"] / base["score_s"] if best["id"] != "C0" else 0.0
-    if best["id"] != "C0" and gain >= MARGIN:
+    need = max(MARGIN, 2 * res.get("baseline_spread", 0.0))      # LAUNCHER-1045 (margin part): a plan must beat the baseline by more than twice the baseline's own run-to-run spread
+    if best["id"] != "C0" and gain >= need:
         res.update(picked=best["id"], changed=True, state="tuned",
                    why=f"{best['id']} ({best['label']}) was {gain * 100:.0f} % faster than the plan as it is for a {SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}-token prompt plus {DECODE_TOKENS} generated tokens "
                        f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)" + noise)
     else:
         near = f"; the best other was {best['id']} at {gain * 100:.0f} %" if best["id"] != "C0" else ""
-        res.update(state="tuned", partial=any(r["status"] == "not measured" for r in rows), why=f"the plan as it is stays: no candidate was {MARGIN * 100:.0f} % faster{near}" + noise
+        res.update(state="tuned", partial=any(r["status"] == "not measured" for r in rows), why=f"the plan as it is stays: no candidate was {need * 100:.0f} % faster{near}" + noise
                                      + ("" if sum(r["status"] == "measured" and r["id"] != "C0b" for r in rows) > 1 else " (only the plan itself could be measured in the time; --retune tries again, e.g. with the model already in the page cache)"))
     return res
 

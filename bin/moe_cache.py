@@ -3754,6 +3754,16 @@ AUTOTUNE_PROMPT = ("The lighthouse keeper had kept a logbook for thirty-one year
 
 
 def autotune_probe(cmd, env, left_s, decode_n):
+    """(see _autotune_probe) plus LAUNCHER-1042: a probe the memory guard stopped says so in "guard_stop", which aborts the whole tune."""
+    holder = {}
+    r = _autotune_probe(cmd, env, left_s, decode_n, holder)
+    g = holder.get("guard")
+    if not r.get("ok") and g is not None and getattr(g, "stopped", None):
+        r["guard_stop"] = str(g.stopped)
+    return r
+
+
+def _autotune_probe(cmd, env, left_s, decode_n, holder):
     """The real runner for moe_cache_autotune.tune: start llama-server with `cmd` on a free local port, wait until it is healthy (its load time), send one request that
     reads a ~1.5k-token prompt (prompt tok/s) and one that writes decode_n tokens (decode tok/s), stop the server. Never raises; a failure is {"ok": False, "error": ...}."""
     import moe_cache_autotune as at
@@ -3780,6 +3790,7 @@ def autotune_probe(cmd, env, left_s, decode_n):
             guard = start_commit_guard(p, env)
         except Exception:
             guard = None
+        holder["guard"] = guard
         while not healthy(port, key):
             if p.poll() is not None:
                 return {"ok": False, "error": f"llama-server stopped while loading (exit {p.returncode})" + (": " + str(guard.stopped) if guard is not None and guard.stopped else "")}
@@ -3815,7 +3826,28 @@ def autotune_probe(cmd, env, left_s, decode_n):
                 pass
 
 
-def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, n_layers, say_fn=None, runner=None):
+def commit_fits(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes=0):
+    """LAUNCHER-1042: (True, "") when the LAUNCHER-991 commit check would start `cmd` as it is; (False, why) when it would refuse it or shrink it (a probe of the unshrunk plan is
+    the load that crashed the desktop). Same decision as commit_stage, said nowhere. Without a Windows commit figure, with --no-commit-check or MOE_CACHE_COMMIT_CHECK=0
+    commit_stage changes nothing, and so everything fits."""
+    old_notes, old_quiet, old_cpu = getattr(_TL, "notes", None), getattr(_TL, "quiet", 0), EXPECT_CPU_WORK[0]
+    _TL.notes, _TL.quiet = [], old_quiet + 1
+    try:
+        new_cmd, _n, _u, _k, refusal = commit_stage(a, list(cmd), list(env), argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
+    finally:
+        _TL.quiet, EXPECT_CPU_WORK[0] = old_quiet, old_cpu
+        if old_notes is None:
+            del _TL.notes
+        else:
+            _TL.notes = old_notes
+    if refusal:
+        return False, refusal
+    if list(new_cmd) != list(cmd):
+        return False, "the commit check would shrink this plan (smaller batch, mmap, more weights in RAM)"
+    return True, ""
+
+
+def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, n_layers, say_fn=None, runner=None, size=None, avail=None, fits=None):
     """LAUNCHER-994: returns (cmd, env, info). info is None when the tuner does not apply (silent: --exact / --stock / MOE_CACHE_NO_AUTOTUNE), else a dict for the plan:
     {"state": cached|tuned|too_slow|pending|..., "lines": [...], "picked", "rows", ...}. Reads the stored pick for this model + machine + context; measures only when
     a.autotune_probe is set (a real start, not --dry-run / --plan-json / the control page's plan) and there is no stored pick or --retune was given."""
@@ -3842,6 +3874,18 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         line = "moe-cache: auto-tune: " + ("--retune: the plans are measured again on the next real start" if a.retune else
                                            f"no stored pick for this model, machine and context yet: the first real start measures up to {at.BUDGET_S:.0f} s (--exact skips it)")
         return cmd, env, {"state": "pending", "lines": [line], "locked": locked}      # not said: a plan that only describes stays as it was (the goldens); plan.autotune carries it
+    # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). Measured nowhere: this
+    # is a size rule: more than 40 % of this computer's RAM, or more than the memory the server may use (the planner expects spill).
+    try:
+        ram = float(machine.mem_total())
+    except Exception:
+        ram = 0.0
+    if size and ((ram and float(size) > 0.40 * ram) or (avail and float(size) > float(avail))):
+        line = (f"moe-cache: auto-tune: skipped: the model ({float(size) / 1e9:.1f} GB) is " + (f"more than 40 % of this computer's RAM ({ram / 1e9:.0f} GB)" if ram and float(size) > 0.40 * ram
+                else f"bigger than the memory the server may use ({float(avail) / 1e9:.1f} GB)") +
+                f": loading it up to 5 times does not fit the {at.BUDGET_S:.0f} s budget, so the plan as it is runs untuned")
+        say_fn(line)
+        return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
     why_not = None
     try:
         others = machine.other_llama_servers()
@@ -3856,6 +3900,20 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         say_fn(line)
         return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
     cands = at.build_candidates(cmd, env, locked, ctx, n_layers)
+    if fits is not None and len(cands) > 1:          # LAUNCHER-1042: every command that would be loaded has passed the commit check first
+        ok, why = fits(cmd, env)
+        if not ok:
+            line = f"moe-cache: auto-tune: skipped: the commit check does not start the plan as it is unchanged ({why[:200]}), so nothing is loaded to measure"
+            say_fn(line)
+            return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
+        kept, dropped = [cands[0]], []
+        for c in cands[1:]:
+            c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
+            ok, why = fits(c_cmd, c_env)
+            (kept if ok else dropped).append(c if ok else c.id)
+        if dropped:
+            say_fn(f"moe-cache: auto-tune: not tried (the commit check would refuse or shrink them): {', '.join(dropped)}")
+        cands = kept
     if len(cands) < 2:
         res = {"rows": [{"id": "C0", "label": "the plan as it is", "status": "not measured", "edits": []}], "total_s": 0, "budget_s": at.BUDGET_S, "picked": "C0", "changed": False,
                "state": "tuned", "why": "every setting that could be tuned is yours or does not apply here; nothing to try", "tuned_at": time.strftime("%Y-%m-%d %H:%M")}
@@ -3870,7 +3928,8 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         return (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
     res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t))
     try:
-        at.save(CACHE_DIR, parts, res)
+        if res.get("state") != "aborted":          # LAUNCHER-1042: a guard stop stores nothing
+            at.save(CACHE_DIR, parts, res)
     except OSError as e:
         say_fn(f"moe-cache: auto-tune: could not store the result ({e}); it is measured again at the next start", err=True)
     new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(res), locked)
@@ -4065,7 +4124,10 @@ def _launch_plan(a, extra, argv, machine):
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
     # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
-    cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"))
+    cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"),
+                                          size=size, avail=avail,
+                                          fits=lambda c_cmd, c_env: commit_fits(a, c_cmd, c_env, argv, model, ctx, arg_after(c_cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(c_cmd, "-ub", "--ubatch-size") or ub,
+                                                                                 arg_after(c_cmd, "-ctk", "--cache-type-k") == "q8_0", gpu, machine, mm_bytes))
     env[:] = env_t                          # the same list object the plan keeps
     if tune_info and tune_info.get("changed"):
         ub = arg_after(cmd, "-ub", "--ubatch-size") or ub

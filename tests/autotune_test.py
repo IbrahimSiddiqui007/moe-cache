@@ -27,8 +27,14 @@ c = at.build_candidates(BASE_CMD, BASE_ENV, {"ncmoe": "yours", "kv": "yours", "u
 check([x.id for x in c] == ["C0", "ramlock", "np1"], f"locked dimensions are not tuned ({[x.id for x in c]})")
 c = at.build_candidates(BASE_CMD, BASE_ENV, {d: "x" for d in ("ncmoe", "kv", "ub", "ramlock", "np")}, 65536)
 check(len(c) == 1, "everything locked: only the plan as it is")
-c = at.build_candidates(BASE_CMD, BASE_ENV, {}, 8192, n_layers=40)
-check(not any(x.id.startswith("kv") for x in c), "no KV candidate below 32k context")
+# LAUNCHER-1043: the 1.5k-token probe cannot judge the KV type or a batch above its own length: the measured long-prompt default (-ub 4096, q8_0 KV) is never undone
+for ctx_ in (8192, 65536, 262144):
+    check(not any("kv" in x.id or "kv" in x.dims for x in at.build_candidates(BASE_CMD, BASE_ENV, {}, ctx_, n_layers=40)), f"never a KV candidate (ctx {ctx_})")
+for plan_ub, want in (("4096", []), ("2048", []), ("1024", []), ("750", ["ub1500"]), ("512", ["ub1024"]), ("256", ["ub512"]), ("128", ["ub256"])):
+    cmd_ = [t if t != "4096" else plan_ub for t in BASE_CMD]
+    got = [x.id for x in at.build_candidates(cmd_, BASE_ENV, {}, 65536, n_layers=40) if x.id.startswith("ub")]
+    check(got == want, f"-ub candidates for a plan of {plan_ub}: {got} (only upward, never above the {at.PROMPT_TOKENS}-token probe prompt)")
+check(not any(e.get("flag") in ("-ctk", "-ctv") for x in at.build_candidates(BASE_CMD, BASE_ENV, {}, 65536, n_layers=40) for e in x.edits), "no candidate edits -ctk / -ctv")
 
 # --- apply_edits ---
 cand = {x.id: x for x in at.build_candidates(BASE_CMD, BASE_ENV, {}, 65536, n_layers=40)}
@@ -38,8 +44,9 @@ cmd, env, sk = at.apply_edits(BASE_CMD[:-4] + ["--n-cpu-moe", "12"], BASE_ENV, c
 check(at.flag_value(cmd, "--n-cpu-moe") == "10", "the same delta on a plan of 12 gives 10 (a changed GPU memory later cannot carry 18 over)")
 cmd, env, sk = at.apply_edits(BASE_CMD, BASE_ENV, cand["ncmoe-2"].edits, locked={"ncmoe": "yours"})
 check(cmd == BASE_CMD and sk == ["ncmoe"], "a locked dimension is skipped and named")
-cmd, env, sk = at.apply_edits(BASE_CMD, BASE_ENV, cand["ub2048"].edits)
-check(cmd.count("-ub") == 1 and at.flag_value(cmd, "-ub") == "2048", "ub edit replaces, never duplicates")
+SMALL_CMD = [t if t != "4096" else "512" for t in BASE_CMD]
+cmd, env, sk = at.apply_edits(SMALL_CMD, BASE_ENV, {x.id: x for x in at.build_candidates(SMALL_CMD, BASE_ENV, {}, 65536, n_layers=40)}["ub1024"].edits)
+check(cmd.count("-ub") == 1 and at.flag_value(cmd, "-ub") == "1024", "ub edit replaces, never duplicates")
 cmd, env, sk = at.apply_edits(BASE_CMD, BASE_ENV, at.Candidate("r", "r", [{"dim": "ramlock", "env": k, "value": v} for k, v in at.RAMLOCK_ENV]).edits)
 check(dict(env).get("MOE_CACHE_RAM_LOCK") == "1" and dict(env).get("MOE_CACHE_PRELOAD") == "1", "env edits add to the environment")
 
@@ -122,6 +129,27 @@ check(r.get("baseline_spread", 0) > 0.05, "the baseline spread is stored")
 seen["C0"] = 0; clk = Clock()
 r = at.tune(cands, cold_runner, clock=clk, budget_s=70.0)
 check(all(x["id"] != "C0b" for x in r["rows"]), "no time for the second baseline run: not attempted")
+
+# --- a gain inside twice the baseline's own spread is not a verdict (LAUNCHER-1045, margin part) ---
+seen = {"C0": 0}
+def noisy(cand, left, n):
+    clk.t += 20
+    if cand.id == "C0":
+        seen["C0"] += 1
+        return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20 if seen["C0"] == 1 else 18.8, decode_n=n)       # the baseline moves 6 %
+    return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=22.0, decode_n=n)                                         # about 6 % better score than the better baseline run: over 5 %, under 2 x the spread
+clk = Clock()
+r = at.tune(cands, noisy, clock=clk)
+check(r["picked"] == "C0" and not r["changed"], f"a 6 % gain on a baseline that moves 6 % is not picked ({r['picked']}, spread {r.get('baseline_spread')})")
+seen["C0"] = 0; clk = Clock()
+def clear(cand, left, n):
+    clk.t += 20
+    if cand.id == "C0":
+        seen["C0"] += 1
+        return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20 if seen["C0"] == 1 else 18.8, decode_n=n)
+    return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=25, decode_n=n)                                            # +25 %: far outside the spread
+r = at.tune(cands, clear, clock=clk)
+check(r["changed"] and r["picked"] != "C0", "a 25 % gain is still picked")
 
 # --- cache file ---
 with tempfile.TemporaryDirectory() as tmp:
@@ -211,6 +239,111 @@ try:
     check(info["state"] == "tuned" and calls, "--retune tries it again")
 finally:
     mc.CACHE_DIR, mc.port_busy = saved
+
+
+# --- LAUNCHER-1042 / 1044 / TEST-1046: commit interplay, guard stop, model size ---
+tmp2 = tempfile.mkdtemp(prefix="autotune-b-")
+saved2 = (mc.CACHE_DIR, mc.port_busy)
+mc.CACHE_DIR = os.path.join(tmp2, "cache"); mc.port_busy = lambda port: False
+def stage2(runner, probe=True, machine=None, size=None, avail=None, fits=None, **k):
+    a = types.SimpleNamespace(exact=False, stock=False, retune=False, agent=False, project=None, ub="auto", n_cpu_moe=None, hybrid=False, port=8080, autotune_probe=probe, **k)
+    out = []
+    r = mc.autotune_stage(a, ["--dry"], list(BASE_CMD), list(BASE_ENV), [], model, 65536, ls, machine or M(tmp), "plugin", 40, say_fn=lambda t, err=False: out.append(t),
+                          runner=runner, size=size, avail=avail, fits=fits)
+    return r + (out,)
+def stored_files():
+    d = os.path.join(mc.CACHE_DIR, "autotune")
+    return os.listdir(d) if os.path.isdir(d) else []
+try:
+    # 1044: the model size
+    seen_ = []
+    def counting(cmd, env, left, n):
+        seen_.append(cmd); return fake_runner(cmd, env, left, n)
+    for size_, avail_, what in ((75.8e9, 90e9, "75 GB on a 32 GB computer (> 40 % of RAM)"), (5e9, 3e9, "bigger than the memory the server may use (spill)")):
+        seen_.clear()
+        cmd, env, info, out = stage2(counting, size=size_, avail=avail_)
+        check(info["state"] == "skipped" and not seen_ and cmd == BASE_CMD and not stored_files() and any("skipped" in l and "budget" in l for l in out), f"{what}: no probe, one clear line, nothing stored")
+    cmd, env, info, out = stage2(counting, size=5e9, avail=20e9)
+    check(info["state"] == "tuned" and seen_, "a model of 5 GB on 32 GB RAM is tuned")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    # a stored pick is still applied for a big model (only the measuring is skipped)
+    cmd, env, info, out = stage2(fake_runner, size=5e9, avail=20e9)
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, size=75.8e9, avail=90e9)
+    check(info["state"] == "cached" and not seen_, "a stored pick is still used when the size rule would skip measuring")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    # 1042: the commit check on every command that is loaded
+    asked = []
+    def fits_no_gpu_more(c_cmd, c_env):          # the candidate with 2 more expert layers on the GPU needs more commit than is free
+        asked.append(at.flag_value(c_cmd, "--n-cpu-moe"))
+        return (False, "free commit 4.1 GB after the load, under the 6 GB line") if at.flag_value(c_cmd, "--n-cpu-moe") == "18" else (True, "")
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, fits=fits_no_gpu_more)
+    check(asked and "18" in asked and all(at.flag_value(c, "--n-cpu-moe") != "18" for c in seen_), "a candidate the commit check refuses is never loaded")
+    check(any("commit check" in l and "ncmoe-2" in l for l in out), "...and the line says which and why")
+    check(info["state"] == "tuned" and at.flag_value(cmd, "--n-cpu-moe") != "18", "the pick is one of the candidates that passed")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, fits=lambda c, e: (False, "free commit 9 GB, the load needs 30 GB"))
+    check(info["state"] == "skipped" and not seen_ and cmd == BASE_CMD and not stored_files(), "the plan as it is refused or shrunk by the commit check: nothing is loaded, nothing stored")
+    # no commit check configured (Linux, --no-commit-check): everything fits
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, fits=lambda c, e: (True, ""))
+    check(info["state"] == "tuned" and len(seen_) >= 3, "a commit check that passes everything leaves the tune as before")
+    for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    # 1042: a guard stop aborts the whole tune and stores nothing
+    runs_ = []
+    def guard_runner(cmd, env, left, n):
+        runs_.append(cmd)
+        if len(runs_) == 2:
+            return {"ok": False, "error": "llama-server stopped while loading (exit 1)", "guard_stop": "memory guard: free commit 1.2 GB, under the 2 GB line"}
+        return fake_runner(cmd, env, left, n)
+    cmd, env, info, out = stage2(guard_runner)
+    check(len(runs_) == 2, f"after the first guard stop no further plan is loaded ({len(runs_)} loads)")
+    check(info["state"] == "aborted" and info["picked"] == "C0" and cmd == BASE_CMD, "...the plan as it is runs")
+    check(not stored_files(), "...and nothing is stored (the next start tries again)")
+    check(any("memory guard" in l and "aborted" in l for l in out), "...and the launcher says so")
+    r_ = at.tune(cands, lambda c, left, n: {"ok": False, "guard_stop": "g"} if c.id == "C0" else dict(T["C0"], decode_n=n), clock=Clock())
+    check(r_["state"] == "aborted" and len(r_["rows"]) == 1, "a guard stop on the first plan aborts too")
+finally:
+    mc.CACHE_DIR, mc.port_busy = saved2
+
+# --- the real commit check (commit_fits over commit_stage) on a Windows fake machine ---
+class WM(M):
+    windows = True
+    def __init__(self, tmp, limit, free): super().__init__(tmp); self.lim, self.fr = limit, free
+    def win_commit(self): return (self.lim, self.fr)
+    def win_memory(self): return (32e9, 20e9)
+    def nvidia_reports(self): return False
+a_w = types.SimpleNamespace(exact=False, stock=False, no_commit_check=False, ub="auto", n_cpu_moe=None, hybrid=False, vram=None)
+mc.WINDOWS, wsave = True, mc.WINDOWS
+try:
+    wcmd = [ls, "-m", model, "--port", "8080", "-c", "65536", "-ub", "512", "-b", "2048", "--n-cpu-moe", "20", "--cache-ram", "2048", "-ngl", "99"]
+    ok_big, _w = mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 70e9))
+    check(ok_big, f"commit_fits: plenty of free commit -> fits ({_w[:60]})")
+    ok_small, why_ = mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
+    check(not ok_small and why_, f"commit_fits: 3 GB free -> does not fit, with the reason ({why_[:70]})")
+    n0 = len(getattr(mc._TL, "notes", ()))
+    mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
+    check(len(getattr(mc._TL, "notes", ())) == n0, "commit_fits says nothing and leaves the plan's notes alone")
+    a_w.no_commit_check = True
+    ok_nc, _w = mc.commit_fits(a_w, wcmd, [], ["m"], model, 65536, "20", "512", False, None, WM(tmp, 80e9, 3e9))
+    check(ok_nc, "--no-commit-check: everything fits (the user's choice)")
+finally:
+    mc.WINDOWS = wsave
+
+# --- the real probe reports a guard stop ---
+dead = os.path.join(tmp, "dead-llama-server.py")
+open(dead, "w").write("import sys, time\ntime.sleep(0.3)\nsys.exit(1)\n")
+orig_guard = mc.start_commit_guard
+mc.start_commit_guard = lambda p, env, *a, **k: types.SimpleNamespace(stopped="memory guard: free commit 1.0 GB", min_free=1e9, soft=6e9, label="commit")
+try:
+    r = mc.autotune_probe([sys.executable, dead, "--port", "1"], dict(os.environ), 20, 512)
+    check(not r["ok"] and "memory guard" in r.get("guard_stop", ""), f"the real probe carries the guard's stop text ({r.get('guard_stop')!r})")
+finally:
+    mc.start_commit_guard = orig_guard
+r = mc.autotune_probe([sys.executable, dead, "--port", "1"], dict(os.environ), 20, 512)
+check(not r["ok"] and not r.get("guard_stop"), "a plain crash is a failed plan, not a guard stop")
 
 # --- the real probe runner against a fake llama-server ---
 fake = os.path.join(tmp, "fake-llama-server.py")
