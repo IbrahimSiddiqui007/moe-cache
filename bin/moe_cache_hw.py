@@ -1,6 +1,6 @@
 """Hardware readings for the Monitor view and `moe_cache.py top` (GUI-046). Python 3.8+, standard library only, no admin rights.
 
-Every reading is None when this machine cannot give it (no nvidia-smi, an AMD card on Windows, a process that is not ours): the screens print "n/a" and nothing
+Every reading is None when this machine cannot give it (no nvidia-smi, a GPU temperature or power on Windows, a process that is not ours): the screens print "n/a" and nothing
 else changes. Parsers are separate from the readers so tests run them on recorded output.
 """
 import glob, os, re, subprocess, time
@@ -78,7 +78,248 @@ def gpu_stats(timeout=4):
                 return d
     except (OSError, subprocess.SubprocessError):
         pass
-    return None if WINDOWS else amd_sysfs()
+    if WINDOWS:
+        return win_gpu_stats()          # R15-02: any vendor, no admin: PDH counters + DXGI (temperature and power stay None: only vendor libraries give them, R15-07)
+    return amd_sysfs()
+
+
+# ---- Windows GPU and memory counters without admin (R15-02): PDH "GPU Engine" and "GPU Adapter Memory", DXGI adapter list and video-memory budget, commit ----
+# Parsers first (tests run them on recorded instance names), the ctypes readers below them (Windows CI runs them for real; the PC check is a later chain item).
+
+_LUID_RE = re.compile(r"luid_(0x[0-9a-fA-F]+)_(0x[0-9a-fA-F]+)")
+
+
+def luid_key(text):
+    """'luid_0x00000000_0x0000A1B2_phys_0' (any PDH instance name with a LUID) -> (high, low) as ints, or None."""
+    m = _LUID_RE.search(text or "")
+    return (int(m.group(1), 16), int(m.group(2), 16)) if m else None
+
+
+def parse_gpu_engine(items):
+    """[(instance, percent)] of the PDH counter 'GPU Engine(*)\\Utilization Percentage' -> {luid: percent}. The instances are per process and per engine
+    ('pid_123_luid_..._phys_0_eng_0_engtype_3D'): per (adapter, engine index, engine type) the values of all processes are added, the adapter's figure is the busiest
+    such engine (capped at 100), which is what Task Manager's GPU column shows for its busiest engine."""
+    per_engine = {}
+    for name, val in items or []:
+        k = luid_key(name)
+        m = re.search(r"eng_(\d+)_engtype_(\w+)", name or "")
+        if not k or not m or val is None:
+            continue
+        per_engine[(k, m.group(1), m.group(2))] = per_engine.get((k, m.group(1), m.group(2)), 0.0) + float(val)
+    out = {}
+    for (k, _eng, _typ), v in per_engine.items():
+        out[k] = min(100.0, max(out.get(k, 0.0), v))
+    return out
+
+
+def parse_adapter_memory(items):
+    """[(instance, bytes)] of '\\GPU Adapter Memory(*)\\Dedicated Usage' or 'Shared Usage' -> {luid: bytes} (the instance names carry the LUID and 'phys_N')."""
+    out = {}
+    for name, val in items or []:
+        k = luid_key(name)
+        if k and val is not None:
+            out[k] = out.get(k, 0.0) + float(val)
+    return out
+
+
+def pick_adapter(adapters):
+    """The adapter the model runs on: the one with the most dedicated video memory (a discrete card), else the first with a budget; software adapters (Microsoft Basic Render)
+    only when nothing else exists. adapters: [{name, luid, dedicated, shared, budget, software}]."""
+    real = [a for a in adapters or [] if not a.get("software")]
+    pool = real or list(adapters or [])
+    if not pool:
+        return None
+    return max(pool, key=lambda a: (a.get("dedicated") or 0, a.get("shared") or 0))
+
+
+def merge_gpu(adapter, util, dedicated_used, shared_used, usage, n_adapters):
+    """The gpu_stats() dict for one adapter. mem_total is the dedicated video memory (an integrated GPU: its shared-system budget), mem_used the PDH 'Dedicated Usage'
+    (an integrated GPU: 'Shared Usage'); temp / power / pcie stay None. Extra keys: mem_shared, mem_budget (DXGI), mem_dedicated_total."""
+    if not adapter:
+        return None
+    ded = adapter.get("dedicated") or 0
+    integrated = ded < 2**30                         # a carve-out of a few hundred MiB is not the memory the model sees
+    total = adapter.get("budget") if integrated and adapter.get("budget") else (ded or adapter.get("budget"))
+    used = shared_used if integrated and shared_used is not None else dedicated_used
+    if used is None and usage is not None:
+        used = usage                                   # DXGI CurrentUsage of this process group when PDH had nothing
+    return {"name": adapter.get("name"), "util": util, "temp": None, "power": None, "power_limit": None, "mem_used": used, "mem_total": total,
+            "pcie_gen": None, "pcie_width": None, "cards": n_adapters, "mem_shared": shared_used, "mem_budget": adapter.get("budget"), "mem_dedicated_total": ded or None}
+
+
+class _WinCounters:
+    """PDH through ctypes (pdh.dll, English counter names regardless of the UI language): one query kept between samples because rate counters need two collections."""
+    def __init__(self, paths):
+        import ctypes
+        from ctypes import wintypes
+        self.ct, self.wt = ctypes, wintypes
+        self.pdh = pdh = ctypes.windll.pdh
+        self.h = ctypes.c_void_p()
+        pdh.PdhOpenQueryW.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+        pdh.PdhAddEnglishCounterW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
+        pdh.PdhCollectQueryData.argtypes = [ctypes.c_void_p]
+        pdh.PdhGetFormattedCounterArrayW.argtypes = [ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+        pdh.PdhCloseQuery.argtypes = [ctypes.c_void_p]
+        if pdh.PdhOpenQueryW(None, None, ctypes.byref(self.h)) != 0:
+            raise OSError("PdhOpenQuery failed")
+        self.counters = {}
+        for key, path in paths.items():
+            c = ctypes.c_void_p()
+            if pdh.PdhAddEnglishCounterW(self.h, path, None, ctypes.byref(c)) == 0:
+                self.counters[key] = c                  # a counter the machine does not have (no GPU counters in a VM) is just missing
+        self.collect()
+
+    def collect(self):
+        return self.pdh.PdhCollectQueryData(self.h) == 0
+
+    def read(self, key):
+        """[(instance name, float value)] of one wildcard counter, [] when missing or not yet readable."""
+        c = self.counters.get(key)
+        if c is None:
+            return []
+        ct, wt = self.ct, self.wt
+        class FmtValue(ct.Structure):
+            _fields_ = [("CStatus", wt.DWORD), ("pad", wt.DWORD), ("doubleValue", ct.c_double)]
+        class Item(ct.Structure):
+            _fields_ = [("szName", wt.LPWSTR), ("FmtValue", FmtValue)]
+        size, count = wt.DWORD(0), wt.DWORD(0)
+        PDH_FMT_DOUBLE = 0x200
+        r = self.pdh.PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, ct.byref(size), ct.byref(count), None)
+        if r != 0x800007D2 or not size.value:                          # PDH_MORE_DATA is the answer to a size query
+            return []
+        buf = ct.create_string_buffer(size.value)
+        if self.pdh.PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, ct.byref(size), ct.byref(count), buf) != 0:
+            return []
+        arr = ct.cast(buf, ct.POINTER(Item))
+        return [(arr[i].szName, arr[i].FmtValue.doubleValue) for i in range(count.value) if arr[i].FmtValue.CStatus in (0, 1)]
+
+    def close(self):
+        try:
+            self.pdh.PdhCloseQuery(self.h)
+        except Exception:
+            pass
+
+
+def dxgi_adapters():
+    """The DXGI adapters: [{name, luid, dedicated, shared, budget, usage, software}] (budget / usage: IDXGIAdapter3::QueryVideoMemoryInfo, local segment; None when the
+    interface is missing). ctypes COM calls through the vtable; any failure gives what was read so far (never raises)."""
+    out = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+        ct = ctypes
+
+        class GUID(ct.Structure):
+            _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ct.c_ubyte * 8)]
+
+        def guid(txt):
+            h = txt.replace("-", "")
+            g = GUID()
+            g.a, g.b, g.c = int(h[0:8], 16), int(h[8:12], 16), int(h[12:16], 16)
+            for i in range(8):
+                g.d[i] = int(h[16 + 2 * i:18 + 2 * i], 16)
+            return g
+
+        class Desc1(ct.Structure):
+            _fields_ = [("Description", ct.c_wchar * 128), ("VendorId", wintypes.UINT), ("DeviceId", wintypes.UINT), ("SubSysId", wintypes.UINT), ("Revision", wintypes.UINT),
+                        ("DedicatedVideoMemory", ct.c_size_t), ("DedicatedSystemMemory", ct.c_size_t), ("SharedSystemMemory", ct.c_size_t),
+                        ("LuidLow", wintypes.DWORD), ("LuidHigh", wintypes.LONG), ("Flags", wintypes.UINT)]
+
+        class MemInfo(ct.Structure):
+            _fields_ = [("Budget", ct.c_uint64), ("CurrentUsage", ct.c_uint64), ("AvailableForReservation", ct.c_uint64), ("CurrentReservation", ct.c_uint64)]
+
+        def method(obj, index, restype, *argtypes):
+            vtbl = ct.cast(ct.cast(obj, ct.POINTER(ct.c_void_p))[0], ct.POINTER(ct.c_void_p))
+            return ct.WINFUNCTYPE(restype, ct.c_void_p, *argtypes)(vtbl[index])
+
+        dxgi = ct.windll.dxgi
+        dxgi.CreateDXGIFactory1.argtypes = [ct.POINTER(GUID), ct.POINTER(ct.c_void_p)]
+        factory = ct.c_void_p()
+        if dxgi.CreateDXGIFactory1(ct.byref(guid("770aae78-f26f-4dba-a829-253c83d1b387")), ct.byref(factory)) != 0:
+            return out
+        try:
+            enum_adapters1 = method(factory, 12, ct.c_long, wintypes.UINT, ct.POINTER(ct.c_void_p))
+            i = 0
+            while i < 16:
+                ad = ct.c_void_p()
+                if enum_adapters1(factory, i, ct.byref(ad)) != 0:
+                    break
+                i += 1
+                try:
+                    d = Desc1()
+                    if method(ad, 10, ct.c_long, ct.POINTER(Desc1))(ad, ct.byref(d)) != 0:
+                        continue
+                    row = {"name": d.Description, "luid": (d.LuidHigh & 0xFFFFFFFF, d.LuidLow), "dedicated": int(d.DedicatedVideoMemory), "shared": int(d.SharedSystemMemory),
+                           "budget": None, "usage": None, "software": bool(d.Flags & 2)}           # DXGI_ADAPTER_FLAG_SOFTWARE
+                    ad3 = ct.c_void_p()
+                    if method(ad, 0, ct.c_long, ct.POINTER(GUID), ct.POINTER(ct.c_void_p))(ad, ct.byref(guid("645967a4-1392-4310-a798-8053ce3e93fd")), ct.byref(ad3)) == 0:
+                        try:
+                            mi = MemInfo()
+                            if method(ad3, 14, ct.c_long, wintypes.UINT, wintypes.UINT, ct.POINTER(MemInfo))(ad3, 0, 0, ct.byref(mi)) == 0:      # node 0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL
+                                row["budget"], row["usage"] = int(mi.Budget), int(mi.CurrentUsage)
+                        finally:
+                            method(ad3, 2, ct.c_ulong)(ad3)                                         # Release
+                    out.append(row)
+                finally:
+                    method(ad, 2, ct.c_ulong)(ad)
+        finally:
+            method(factory, 2, ct.c_ulong)(factory)
+    except Exception:
+        pass
+    return out
+
+
+def parse_memory_status(total_page, avail_page, total_phys, avail_phys):
+    """GlobalMemoryStatusEx fields -> {commit_total, commit_free, commit_used, ram_total, ram_free} (bytes). ullTotalPageFile is the commit limit (RAM + page file)."""
+    return {"commit_total": float(total_page), "commit_free": float(avail_page), "commit_used": float(total_page) - float(avail_page), "ram_total": float(total_phys), "ram_free": float(avail_phys)}
+
+
+def win_memory_status():
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MS(ctypes.Structure):
+            _fields_ = [("dwLength", wintypes.DWORD), ("dwMemoryLoad", wintypes.DWORD), ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+                        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64), ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+                        ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+        m = MS()
+        m.dwLength = ctypes.sizeof(MS)
+        ctypes.windll.kernel32.GlobalMemoryStatusEx.argtypes = [ctypes.POINTER(MS)]
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            return None
+        return parse_memory_status(m.ullTotalPageFile, m.ullAvailPageFile, m.ullTotalPhys, m.ullAvailPhys)
+    except Exception:
+        return None
+
+
+_WIN_GPU = {}
+
+
+def win_gpu_stats(counters=None, adapters=None):
+    """gpu_stats() on Windows for any vendor: PDH GPU Engine utilisation + GPU Adapter Memory + DXGI. `counters` (an object with collect() and read(key)) and `adapters`
+    (a list as dxgi_adapters() gives) are injectable for tests. The first call has no utilisation yet (rate counters need two collections): util None. None when no adapter."""
+    try:
+        if counters is None:
+            if "c" not in _WIN_GPU:
+                _WIN_GPU["c"] = _WinCounters({"engine": r"\GPU Engine(*)\Utilization Percentage", "dedicated": r"\GPU Adapter Memory(*)\Dedicated Usage",
+                                              "shared": r"\GPU Adapter Memory(*)\Shared Usage"})
+            counters = _WIN_GPU["c"]
+        if adapters is None:
+            if time.time() - _WIN_GPU.get("t", 0) > 30 or "a" not in _WIN_GPU:       # the adapter list and budget change slowly; the PDH numbers every call
+                _WIN_GPU["a"], _WIN_GPU["t"] = dxgi_adapters(), time.time()
+            adapters = _WIN_GPU["a"]
+        ok = counters.collect()
+        ad = pick_adapter(adapters)
+        if not ad:
+            return None
+        k = ad["luid"]
+        util = parse_gpu_engine(counters.read("engine")).get(k) if ok else None
+        ded = parse_adapter_memory(counters.read("dedicated")).get(k)
+        sh = parse_adapter_memory(counters.read("shared")).get(k)
+        return merge_gpu(ad, util, ded, sh, ad.get("usage"), len([a for a in adapters if not a.get("software")]) or len(adapters))
+    except Exception:
+        return None
 
 
 # ---- CPU and disk of the server process (and the whole machine) ----
