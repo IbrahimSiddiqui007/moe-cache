@@ -263,6 +263,9 @@ try:
         seen_.clear()
         cmd, env, info, out = stage2(counting, size=size_, avail=avail_)
         check(info["state"] == "skipped" and not seen_ and cmd == BASE_CMD and not stored_files() and any("skipped" in l and "budget" in l for l in out), f"{what}: no probe, one clear line, nothing stored")
+    seen_.clear()
+    cmd, env, info, out = stage2(counting, probe=False, size=75.8e9, avail=90e9)
+    check(info["state"] == "skipped" and not out and "40 %" in info["lines"][0], "dry-run / plan-json / control page: the plan says the model will not be tuned (not 'the first start measures')")
     cmd, env, info, out = stage2(counting, size=5e9, avail=20e9)
     check(info["state"] == "tuned" and seen_, "a model of 5 GB on 32 GB RAM is tuned")
     for f in stored_files(): os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
@@ -303,6 +306,18 @@ try:
     check(info["state"] == "aborted" and info["picked"] == "C0" and cmd == BASE_CMD, "...the plan as it is runs")
     check(not stored_files(), "...and nothing is stored (the next start tries again)")
     check(any("memory guard" in l and "aborted" in l for l in out), "...and the launcher says so")
+    c0calls = []
+    ck_ = Clock()
+    def guard_on_c0b(cand, left, n):
+        ck_.t += 20
+        if cand.id == "C0":
+            c0calls.append(1)
+            if len(c0calls) == 2:
+                return {"ok": False, "guard_stop": "memory guard: free commit 1.0 GB"}
+        return dict(T["C0"], decode_n=n)
+    cands_ = at.build_candidates(BASE_CMD, BASE_ENV, {}, 65536, n_layers=40)
+    r_ = at.tune(cands_[:2], guard_on_c0b, clock=ck_)
+    check(r_["state"] == "aborted" and r_["rows"][-1]["id"] == "C0b" and r_["rows"][-1]["status"] == "stopped", "a guard stop on the second baseline run aborts the tune too")
     r_ = at.tune(cands, lambda c, left, n: {"ok": False, "guard_stop": "g"} if c.id == "C0" else dict(T["C0"], decode_n=n), clock=Clock())
     check(r_["state"] == "aborted" and len(r_["rows"]) == 1, "a guard stop on the first plan aborts too")
 finally:

@@ -183,12 +183,19 @@ def score(row, agent=False):
     return (SCORE_PROMPT_AGENT if agent else SCORE_PROMPT) / pp + DECODE_TOKENS / dec
 
 
+def aborted_result(rows, cid, why, total, budget_s, agent):
+    return {"rows": rows, "total_s": round(total, 1), "budget_s": budget_s, "agent": agent, "prompt_tokens": PROMPT_TOKENS, "decode_tokens": DECODE_TOKENS,
+            "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False, "state": "aborted",
+            "why": f"the memory guard stopped the probe of {cid} ({str(why)[:160]}): the tuning was aborted, nothing was stored, the plan as it is runs. It is tried again at the next start"}
+
+
 def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None):
     """Measure the candidates in order and pick. runner(cand, left_s, decode_tokens) -> {"ok", "load_s", "prompt_tps", "decode_tps", "decode_n", "error"}.
     C0 (the plan as it is) always runs first with whatever time there is; each later candidate starts only when the time left covers a load and probe like
     C0's. When C0 cannot be measured the result is `too_slow` and nothing is picked. Returns the result dict that is stored."""
     t0 = clock()
     rows, base_cost = [], None
+    aborted = lambda rows_, cid, why: aborted_result(rows_, cid, why, clock() - t0, budget_s, agent)
     for c in cands:
         left = budget_s - (clock() - t0)
         row = {"id": c.id, "label": c.label, "status": "not measured", "edits": c.edits}
@@ -212,9 +219,7 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
             row.update(status="stopped", error=str(r["guard_stop"])[:200])
             rows.append(row)
             say(row_line(row))
-            return {"rows": rows, "total_s": round(clock() - t0, 1), "budget_s": budget_s, "agent": agent, "prompt_tokens": PROMPT_TOKENS, "decode_tokens": DECODE_TOKENS,
-                    "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False, "state": "aborted",
-                    "why": f"the memory guard stopped the probe of {c.id} ({str(r['guard_stop'])[:160]}): the tuning was aborted, nothing was stored, the plan as it is runs. It is tried again at the next start"}
+            return aborted(rows, c.id, r["guard_stop"])
         row.update({k: r.get(k) for k in ("load_s", "prompt_tps", "decode_tps", "decode_n", "error")})
         row["took_s"] = round(took, 1)
         if r.get("ok") and r.get("prompt_tps") and r.get("decode_tps"):
@@ -238,6 +243,11 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
                 r = runner(Candidate("C0", c0b["label"], []), left, DECODE_TOKENS) or {}
             except Exception as e:
                 r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            if r.get("guard_stop"):         # the same rule as in the loop: a guard stop anywhere aborts the tune and stores nothing
+                c0b.update(status="stopped", error=str(r["guard_stop"])[:200])
+                rows.append(c0b)
+                say(row_line(c0b))
+                return aborted(rows, "C0b", r["guard_stop"])
             c0b.update({k: r.get(k) for k in ("load_s", "prompt_tps", "decode_tps", "decode_n", "error")})
             if r.get("ok") and r.get("prompt_tps") and r.get("decode_tps"):
                 c0b.update(status="measured", short_probe=False, score_s=round(score(c0b, agent), 2))

@@ -3870,10 +3870,6 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         for l in lines:
             say_fn(l)
         return new_cmd, new_env, dict(stored, state="cached", lines=lines, locked=locked, key=at.key_of(parts))
-    if not getattr(a, "autotune_probe", False):
-        line = "moe-cache: auto-tune: " + ("--retune: the plans are measured again on the next real start" if a.retune else
-                                           f"no stored pick for this model, machine and context yet: the first real start measures up to {at.BUDGET_S:.0f} s (--exact skips it)")
-        return cmd, env, {"state": "pending", "lines": [line], "locked": locked}      # not said: a plan that only describes stays as it was (the goldens); plan.autotune carries it
     # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). Measured nowhere: this
     # is a size rule: more than 40 % of this computer's RAM, or more than the memory the server may use (the planner expects spill).
     try:
@@ -3884,8 +3880,13 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         line = (f"moe-cache: auto-tune: skipped: the model ({float(size) / 1e9:.1f} GB) is " + (f"more than 40 % of this computer's RAM ({ram / 1e9:.0f} GB)" if ram and float(size) > 0.40 * ram
                 else f"bigger than the memory the server may use ({float(avail) / 1e9:.1f} GB)") +
                 f": loading it up to 5 times does not fit the {at.BUDGET_S:.0f} s budget, so the plan as it is runs untuned")
-        say_fn(line)
+        if getattr(a, "autotune_probe", False):
+            say_fn(line)             # a plan that only describes (--dry-run, --plan-json, the control page) shows it in plan.autotune and stays as it was
         return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
+    if not getattr(a, "autotune_probe", False):
+        line = "moe-cache: auto-tune: " + ("--retune: the plans are measured again on the next real start" if a.retune else
+                                           f"no stored pick for this model, machine and context yet: the first real start measures up to {at.BUDGET_S:.0f} s (--exact skips it)")
+        return cmd, env, {"state": "pending", "lines": [line], "locked": locked}      # not said: a plan that only describes stays as it was (the goldens); plan.autotune carries it
     why_not = None
     try:
         others = machine.other_llama_servers()
