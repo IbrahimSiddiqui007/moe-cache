@@ -393,8 +393,12 @@ try:
         a = types.SimpleNamespace(exact=False, stock=False, retune=False, agent=False, project=None, ub="auto", n_cpu_moe=None, hybrid=False, port=8080, autotune_probe=True, **k)
         mc.autotune_stage(a, ["--dry"], cmd_, list(BASE_ENV), [], model, 65536, ls, M(tmp), "plugin", 40, say_fn=lambda *x, **y: None, runner=fake_runner)
         return set(os.listdir(os.path.join(mc.CACHE_DIR, "autotune"))) - files0
-    new1 = keyed(BASE_CMD + ["--cache-ram", "2048"])
-    check(len(new1) == 1, "another --cache-ram: another stored pick")
+    new0 = keyed(BASE_CMD + ["--cache-ram", "1536"])
+    check(len(new0) == 0, "the planner's own --cache-ram (it follows the free commit on Windows) does not change the key")
+    a_user = types.SimpleNamespace(exact=False, stock=False, retune=False, agent=False, project=None, ub="auto", n_cpu_moe=None, hybrid=False, port=8080, autotune_probe=True)
+    before_n = len(os.listdir(os.path.join(mc.CACHE_DIR, "autotune")))
+    mc.autotune_stage(a_user, ["--dry", "--cache-ram", "512"], list(BASE_CMD), list(BASE_ENV), [], model, 65536, ls, M(tmp), "plugin", 40, say_fn=lambda *x, **y: None, runner=fake_runner)
+    check(len(os.listdir(os.path.join(mc.CACHE_DIR, "autotune"))) == before_n + 1, "a --cache-ram the user gave: another stored pick")
     new2 = keyed(BASE_CMD, mtp=True)
     check(len(new2) >= 1, "--mtp: another stored pick")
     new3 = keyed(BASE_CMD, fast="kv")
@@ -454,6 +458,8 @@ rc, asked_n, starts = run_fb("dies_loading")
 check(rc == 0 and asked_n == 1 and starts == 2, f"...the fall-back is asked once, not in a loop (rc {rc}, started {starts}x)")
 rc, asked_n, starts = run_fb("dies_late")
 check(rc == 1 and asked_n == 0 and starts == 1, f"a server that was ready and died later is NOT a bad pick (stock engine too): no fall-back (rc {rc}, asked {asked_n}x)")
+import inspect
+check("range(900)" not in inspect.getsource(mc.run_child_once).split("def check")[1].split("threading.Thread(target=check")[0], "the ready check has no 15-minute cap")
 rc, asked_n, starts = run_fb("dies_loading_once", tune=False)
 check(rc == 1 and starts == 1, "no pick applied (no tune_retry): the failure is reported as before")
 
