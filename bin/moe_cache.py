@@ -1807,6 +1807,11 @@ def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sl
 def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry=None):
     rc, seen = run_child_once(cmd, env, port, expect_plugin, mem_limit, allow_sleep)
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)
+    if getattr(seen.get("guard"), "stopped", None):
+        # LAUNCHER-1029: the commit guard ended llama-server because free commit ran out. TerminateProcess gives exit code 1 (not "quiet"), and a log with an out-of-memory
+        # line would then start a second load from the same low commit: the thing the guard exists to prevent. No retry; the guard's reason is already said.
+        say_exit(rc, seen, expect_plugin and port)
+        return rc
     if rc not in (0, None) and not quiet and kv_retry and seen.get("kvabort") and not seen["ready"]:
         # The known abort (Granite 1B, 63a07fa) prints only "ggml-impl.h:NNN: fatal error", nothing about the KV type, so the text cannot be narrowed further; the retry is
         # limited instead to: an abort before the server was ready, a q8_0 KV cache this launcher chose (kv_retry is None otherwise), and ONE retry. The matched line is logged.
@@ -1934,8 +1939,8 @@ def meminfo_available():
     return None
 
 
-def start_commit_guard(p, env, say_fn=None, probe=None):
-    """LAUNCHER-991, run-time guard: while llama-server (process p) runs, poll free commit (Windows) or MemAvailable (Linux) every 2 s. Under the soft line (max(6 GB, 12.5 % of
+def start_commit_guard(p, env, say_fn=None, probe=None, loading=None):
+    """LAUNCHER-991, run-time guard: while llama-server (process p) runs, poll free commit (Windows) or MemAvailable (Linux) every 2 s (every 0.25 s while `loading()` is true: a Vulkan load can take several GB in one call). Under the soft line (max(6 GB, 12.5 % of
     the commit limit) on Windows) a loud 'moe-cache: WARNING' line goes to the terminal, which the Monitor and the control page lift from the log; under the hard line (2 GB;
     Linux 1 GB) llama-server is stopped cleanly and the reason said, before the system starts killing programs. Windows stops by default; Linux only warns unless
     MOE_CACHE_COMMIT_GUARD=stop (the Linux line is not measured). =warn only warns, =off is off.
@@ -1971,7 +1976,7 @@ def start_commit_guard(p, env, say_fn=None, probe=None):
             p.terminate()
         except OSError:
             pass
-    g = cgd.CommitGuard(probe, say_fn, stop, soft, hard, mode, label=label)
+    g = cgd.CommitGuard(probe, say_fn, stop, soft, hard, mode, label=label, loading=loading)
     g.start(lambda: p.poll() is None)
     return g
 
@@ -2011,7 +2016,7 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
         threading.Thread(target=save_now_and_then, daemon=True).start()
     seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": False}
     try:
-        seen["guard"] = start_commit_guard(p, env)       # LAUNCHER-991
+        seen["guard"] = start_commit_guard(p, env, loading=lambda: not seen["ready"])       # LAUNCHER-991
     except Exception as e:
         say(f"moe-cache: warning: the memory guard did not start ({e})", err=True)
     def pump():
@@ -3875,6 +3880,15 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts))
 
 
+def cuda_backend(ls):
+    """True when the CUDA backend of ggml sits next to this llama-server (ggml-cuda.dll / libggml-cuda.so)."""
+    try:
+        d = os.path.dirname(which(ls) or ls)
+        return any(os.path.isfile(os.path.join(d, n)) for n in ("ggml-cuda.dll", "libggml-cuda.so"))
+    except Exception:
+        return False
+
+
 def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes=0):
     """LAUNCHER-991, stage "commit": Windows charges GPU allocations (AMD / Intel Vulkan drivers), copied weights, the KV cache of a CPU-only run, the prompt cache and
     llama-server's own buffers to the commit limit (RAM + page file); when it runs out Windows kills programs (the PC, 2026-11-09: claude.exe, dwm.exe, codex.exe).
@@ -3905,7 +3919,9 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
     if flags("--cache-ram", "-cram") or arg_after(cmd, "--cache-ram") is None: locked.add("cache")      # no --cache-ram in the command: this llama-server may not have the option
     if ev.get("GGML_CPU_GPU_SPLIT") or flags("-ot", "--override-tensor", "-ngl", "--n-gpu-layers", "--gpu-layers", "--n-cpu-moe") or a.n_cpu_moe is not None or a.hybrid:
         locked.add("weights")
-    gpu_counts = not machine.nvidia_reports()          # AMD / Intel Vulkan drivers charge GPU allocations to commit; NVIDIA/CUDA is not known to, so only the host side counts there
+    # AMD / Intel Vulkan drivers charge GPU allocations to commit (measured: PC 2026-11-09). NVIDIA through the CUDA backend is not known to; an NVIDIA card on the Vulkan
+    # build (the kit's llama-server) is not known either way, so it counts like AMD (errs high) unless the CUDA backend sits next to llama-server (LAUNCHER-991 review).
+    gpu_counts = not (machine.nvidia_reports() and cuda_backend(cmd[0]))
     d = cgd.decide(f, L, free, limit, locked=locked, allow_q8=not a.exact and not a.stock, windows=gpu_counts)
     if d["ok"] and not d["steps"]:
         return cmd, ncmoe, ub, kv_q8, None

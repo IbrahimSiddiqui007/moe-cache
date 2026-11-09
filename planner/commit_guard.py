@@ -96,6 +96,9 @@ def estimate(f, L, windows=True):
         gpu = vram
     cpu_w = (model - gpu_w + f["emb"]) if not cpu_only else model + f["emb"]
     cpu_w += spill
+    # --fit puts the part that does not fit in host memory. Weights there are mapped (no commit unless copied); the KV cache and compute buffers there are PRIVATE host memory.
+    # Which share of the spill is which is not known before the load, so the spill counts as private up to kv + compute (errs high, never counted twice with copied weights).
+    spill_private = 0.0 if L.get("copy_weights") else min(spill, kv + comp)
     parts = {
         "gpu_weights": min(gpu_w, gpu) if not cpu_only else 0.0,
         "kv": kv, "compute": comp,
@@ -106,8 +109,9 @@ def estimate(f, L, windows=True):
         "plugin_cache": L.get("plugin_private_gib", 0.0) * GiB,
         "process": (PROCESS_GIB + HOST_COMPUTE_GIB) * GiB + L.get("extra_host", 0.0),
         "mm_projector": L.get("mm_bytes", 0.0),
+        "spill_private": spill_private,
     }
-    host = parts["copied_weights"] + parts["host_kv"] + parts["prompt_cache"] + parts["plugin_cache"] + parts["process"] + parts["mm_projector"]
+    host = parts["copied_weights"] + parts["host_kv"] + parts["prompt_cache"] + parts["plugin_cache"] + parts["process"] + parts["mm_projector"] + parts["spill_private"]
     parts["total"] = (gpu if windows else 0.0) + host
     return parts
 
@@ -116,7 +120,7 @@ def parts_words(p):
     """The estimate in one line, in GB: what the commit is made of."""
     g = lambda k: p[k] / 1e9
     bits = [("GPU buffers", p["gpu_total"] if p.get("total") and p["total"] >= p["gpu_total"] else 0.0), ("copied weights", p["copied_weights"]), ("KV in RAM", p["host_kv"]),
-            ("prompt cache", p["prompt_cache"]), ("plugin cache", p["plugin_cache"]), ("process + buffers", p["process"] + p["mm_projector"])]
+            ("prompt cache", p["prompt_cache"]), ("plugin cache", p["plugin_cache"]), ("KV/compute spilled to RAM", p.get("spill_private", 0.0)), ("process + buffers", p["process"] + p["mm_projector"])]
     return " + ".join(f"{b / 1e9:.1f} {n}" for n, b in bits if b >= 0.05e9) + f" = {g('total'):.1f} GB"
 
 
@@ -323,9 +327,10 @@ class CommitGuard:
     'moe-cache: WARNING' lines); stop(reason) ends llama-server cleanly. Under the soft floor: one warning, repeated every `repeat` seconds while it lasts and when it gets
     worse by 1 GB; back over soft + 0.5 GB: one 'recovered' line. Under the hard floor: stop (after two samples in a row, or at once under half of it, so one dip is
     not fatal but a fast fall is caught), then the guard ends. The clock and sleep are injectable (tests)."""
-    def __init__(self, probe, say, stop, soft, hard=HARD_FLOOR, mode="stop", interval=2.0, repeat=30.0, label="free commit", clock=time.monotonic):
+    def __init__(self, probe, say, stop, soft, hard=HARD_FLOOR, mode="stop", interval=2.0, repeat=30.0, label="free commit", clock=time.monotonic, loading=None, interval_loading=0.25):
         self.probe, self.say, self.stop_fn, self.soft, self.hard = probe, say, stop, float(soft), float(hard)
         self.mode, self.interval, self.repeat, self.label, self.clock = mode, interval, repeat, label, clock
+        self.loading, self.interval_loading = loading, interval_loading      # while loading() is true the poll is faster (a Vulkan load takes GBs in one call)
         self.state, self.last_warn, self.last_warn_free, self.low = "ok", None, None, 0
         self.stopped = None
         self.min_free = None
@@ -377,7 +382,11 @@ class CommitGuard:
             if bad >= 5 and not told:        # a guard that cannot read memory must not look alive
                 told = True
                 self.say(f"moe-cache: warning: the memory guard cannot read {self.label} (5 samples in a row failed): it is not protecting this run")
-            sleep(self.interval)
+            try:
+                fast = bool(self.loading and self.loading())
+            except Exception:
+                fast = False
+            sleep(self.interval_loading if fast else self.interval)
 
     def start(self, alive):
         t = threading.Thread(target=self.run, args=(alive,), daemon=True)

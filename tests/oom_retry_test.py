@@ -84,4 +84,32 @@ rc, calls, starts = run_kv("kv_abort_once", retry=False)
 check(rc != 0 and starts == 1, f"no kv_retry (your own -ctk/-ctv): fails as before, no retry (rc {rc})")
 rc, calls, starts = run_kv("other")
 check(rc == 1 and calls == 0 and starts == 1, f"another failure: no KV retry (rc {rc}, started {starts}x)")
+
+# LAUNCHER-1029: the commit guard stopped llama-server (TerminateProcess = exit code 1 on Windows, not "quiet") and the log has an out-of-memory line: NO second load.
+# run_child_once is replaced by a stub (the same on Windows and Linux): the first load ends with rc 1, an out-of-memory line seen, not ready.
+class _Guard:
+    def __init__(self, stopped): self.stopped, self.min_free, self.soft, self.label = stopped, 1.8e9, 6e9, "free commit"
+def run_guard(stopped, kind="oom"):
+    starts, asked = [], []
+    def once(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, final=False):
+        starts.append(cmd)
+        seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": kind == "oom", "kvabort": "ggml-impl.h:330: fatal error" if kind == "kv" else "",
+                "guard": _Guard(stopped)}
+        return (1 if len(starts) == 1 else 0), seen
+    saved = mc.run_child_once
+    mc.run_child_once = once
+    try:
+        rc = mc._run_child(["srv"], {}, None, False, None, False,
+                           lambda: (asked.append("oom"), ["srv", "again"])[1], lambda: (asked.append("kv"), ["srv", "kv"])[1])
+    finally:
+        mc.run_child_once = saved
+    return rc, asked, len(starts)
+rc, asked, n = run_guard("moe-cache: WARNING: free commit fell to 1.8 GB")
+check(rc == 1 and asked == [] and n == 1, f"the commit guard stopped the server (exit 1, out-of-memory line in the log): no retry, one start (rc {rc}, retries asked {asked}, started {n}x)")
+rc, asked, n = run_guard("moe-cache: WARNING: free commit fell to 1.8 GB", kind="kv")
+check(rc == 1 and asked == [] and n == 1, f"...and no f16 KV retry either (rc {rc}, retries asked {asked}, started {n}x)")
+rc, asked, n = run_guard(None)
+check(rc == 0 and asked == ["oom"] and n == 2, f"control: the same failure with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
+rc, asked, n = run_guard(None, kind="kv")
+check(rc == 0 and asked == ["kv"] and n == 2, f"control: the KV abort with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
 sys.exit(1 if fails else 0)
