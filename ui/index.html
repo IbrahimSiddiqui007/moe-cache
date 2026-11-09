@@ -1650,17 +1650,17 @@ async function ask() {
 }
 // GUI-043: which decode steps of this answer went through the approximate routing (the plugin counts them; nothing here costs anything unless a mode is on)
 function riskMarks(cuts, steps) {
-  const N = cuts.length, M = steps.length, ranges = [];
+  const N = cuts.length, M = steps.length, ranges = [], direct = Math.abs(M - N) <= 2;     // the stream has a piece or two more or less than the steps (its first and last)
   if (!N || !M) return { ranges, strip: [], exact: false };
   for (let i = 0; i < N; i++) {
-    const si = M == N ? i : Math.min(M - 1, Math.floor(i * M / N));        // one streamed piece is one token only without MTP: otherwise the mapping is proportional
+    const si = direct ? Math.min(i, M - 1) : Math.min(M - 1, Math.floor(i * M / N));        // one streamed piece is one token only without MTP: otherwise the mapping is proportional
     if (!(steps[si][0] > 0)) continue;
     const a = i ? cuts[i - 1] : 0, b = cuts[i];
     if (ranges.length && ranges[ranges.length - 1][1] >= a) ranges[ranges.length - 1][1] = b; else ranges.push([a, b]);
   }
   const B = Math.min(60, M), strip = [];
   for (let k = 0; k < B; k++) { let any = 0; for (let s = Math.floor(k * M / B); s < Math.floor((k + 1) * M / B) || s == Math.floor(k * M / B); s++) if (steps[s] && steps[s][0] > 0) any = 1; strip.push(any); }
-  return { ranges, strip, exact: M == N };
+  return { ranges, strip, exact: direct };
 }
 async function loadRisk(c, a, cuts, t0, t1) {
   for (let tries = 0; tries < 4; tries++) {

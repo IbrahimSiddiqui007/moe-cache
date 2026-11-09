@@ -222,7 +222,7 @@ if node:
     h2 = os.path.join(TMP, "risk.js"); open(h2, "w", encoding="utf-8").write(fn2 + """
 const cuts = [3, 6, 9, 12, 15], steps = [[0, 1], [2, 1], [0, 1], [5, 1], [1, 1]];
 const a = riskMarks(cuts, steps);
-const b = riskMarks([4, 8], [[0, 1], [0, 1], [3, 1], [0, 1]]);        // 2 pieces, 4 steps (drafted several at a time): proportional
+const b = riskMarks([4, 8], [[0, 1], [0, 1], [0, 1], [3, 1], [0, 1], [0, 1]]);        // 2 pieces, 6 steps (drafted several at a time): proportional
 const c = riskMarks([], []);
 console.log(JSON.stringify({a, b, c}));""")
     o2 = subprocess.run([node, h2], capture_output=True, text=True, encoding="utf-8", timeout=30)
