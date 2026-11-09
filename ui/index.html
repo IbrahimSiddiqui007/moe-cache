@@ -1698,7 +1698,7 @@ function askConfirm(text, okLabel) {
   return new Promise(resolve => {
     const bar = $("confirmbar");
     const end = v => { bar.hidden = true; document.removeEventListener("keydown", onKey, true); confirmDone = null; resolve(v); };
-    const onKey = ev => { if (ev.key === "Escape") { ev.preventDefault(); end(false); } };
+    const onKey = ev => { if (ev.key === "Escape") { ev.preventDefault(); ev.stopImmediatePropagation(); end(false); } };      // Escape answers the question only: the page's own Escape handler (drawer, menus) must not also fire
     confirmDone = end;
     $("confirmtext").textContent = text;
     $("confirmok").textContent = okLabel || "OK";

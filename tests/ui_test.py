@@ -1435,7 +1435,7 @@ if node and "function askConfirm(" in html:
              "  els.confirmok.onclick(); await p; out.after = calls.slice(); out.hidden = els.confirmbar.hidden; out.audit = !!S.audit;\n"
              "  S.audit = null; calls.length = 0;\n"
              "  p = startAudit(0); await new Promise(r => setTimeout(r, 20)); els.confirmno.onclick(); await p; out.cancel = calls.slice(); out.cancelHidden = els.confirmbar.hidden;\n"
-             "  calls.length = 0; p = startAudit(0); await new Promise(r => setTimeout(r, 20)); listeners[0]({ key: 'Escape', preventDefault() {} }); await p; out.esc = calls.slice(); out.listeners = listeners.length;\n"
+             "  calls.length = 0; p = startAudit(0); await new Promise(r => setTimeout(r, 20)); listeners[0]({ key: 'Escape', preventDefault() {}, stopImmediatePropagation() { out.stopped = true; } }); await p; out.esc = calls.slice(); out.listeners = listeners.length;\n"
              "  const q1 = askConfirm('one'); const q2 = askConfirm('two'); out.replaced = await q1; els.confirmok.onclick(); out.second = await q2;\n"
              "  console.log(JSON.stringify(out));\n"
              "}\nmain();\n")
@@ -1450,6 +1450,7 @@ if node and "function askConfirm(" in html:
     check(a1.get("after") == ["/api/audit/plan", "/api/audit/start"] and a1.get("hidden") is True and a1.get("audit"), "GUI-1037: OK in the bar starts the audit and hides the bar")
     check(a1.get("cancel") == ["/api/audit/plan"] and a1.get("cancelHidden") is True, "GUI-1037: Cancel in the bar starts nothing and hides it")
     check(a1.get("esc") == ["/api/audit/plan"] and a1.get("listeners") == 0, "GUI-1037: Escape cancels, and the key listener is removed again")
+    check(a1.get("stopped") is True, "GUI-1037: Escape stops there: the page's own Escape handler (settings drawer, menus) does not also fire")
     check(a1.get("replaced") is False and a1.get("second") is True, "GUI-1037: a second question replaces the first (the first answers No), one bar at a time")
     src_audit = _fn("startAudit")
     check(not re.search(r"(?<![A-Za-z.])confirm\(", src_audit), "GUI-1037: startAudit does not call window.confirm any more")
