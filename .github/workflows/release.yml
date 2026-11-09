@@ -31,10 +31,26 @@ jobs:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.llama_build != 'official' }}
     uses: ./.github/workflows/llama_patched.yml
 
+  # No work left behind (owner rule 2026-11-09): a tag is refused while any branch or tag on origin holds commits that are neither in experimental nor recorded
+  # (archive/README.md, tools/lost_work_accepted.tsv). A manual dry run reports the result but is not blocked by it.
+  lost-work-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch every branch and tag
+        run: git fetch --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: No work left behind on a branch or tag
+        continue-on-error: ${{ github.ref_type != 'tag' }}     # a manual dry run shows the result in this step's log (a warning), only a tag is blocked
+        run: python3 tools/lost_work_check.py --repo . --base origin/experimental --public --records archive/README.md --accept tools/lost_work_accepted.tsv
+
   build:
-    needs: llama-patched
+    needs: [llama-patched, lost-work-gate]
     # a skipped llama-patched (manual run, llama_build = official) is fine; a failed one stops the release
-    if: ${{ !cancelled() && (needs.llama-patched.result == 'success' || needs.llama-patched.result == 'skipped') }}
+    # a tag also needs the lost-work gate green; a manual dry run only shows its result
+    if: ${{ !cancelled() && (needs.llama-patched.result == 'success' || needs.llama-patched.result == 'skipped') && (needs.lost-work-gate.result == 'success' || github.ref_type != 'tag') }}
     # Ubuntu 22.04 on purpose: the tarball then needs glibc 2.34 or newer (measured; checked below after the build) and libstdc++ of GCC 12 or newer
     runs-on: ubuntu-22.04
     permissions:

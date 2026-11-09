@@ -1,0 +1,23 @@
+# Accept file for tools/lost_work_check.py (public mode). One line per ref (fnmatch) that holds commits that are not in origin/experimental on purpose.
+# Format: ref<TAB>kind<TAB>reason[<TAB>comma-separated commit prefixes]. Never add a line to make a failing check pass: merge the work, or record the loser in archive/README.md first.
+claude/block-prefetch-52b3eb	killed	helper-thread prefetch killed: every form measured, no gain
+archive/block-prefetch	killed	same (tag)
+claude/exec-prefetch-r02	parked	R-02 software prefetch: laptop loss, gated on a paired run on the PC
+archive/r02-prefetch	parked	same (tag)
+archive/i14-route-weight	parked	route weight: plugin sees 0 of 11677 groups; parked
+archive/win-v1-prep	superseded	v0.2.3.6 plan became v0.3.0; version bumps and drafts superseded
+archive/win-v1-prep-2	superseded	same
+archive/wt-release-prep-1d6841	superseded	same
+multimodel-010	in-base	lan_test list line and launch_plan golden are in the base under other commits (audit 2026-11-09)	6935957,862457a
+archive/multimodel-010	in-base	same	6935957,862457a
+archive/next-v0.3.7	in-base	same; desktop part restored in the base (cef3cf9)	6935957
+claude/bench-board-escape	in-base	same effect in the base as a7bc52c and db3c625; BOARD.md is regenerated	9989f3e,621fd41
+archive/gpu-cache-path	archived	GPU cache with the plugin loaded as a file on Windows: an upload hook that gave wrong tokens or no gain; kept only as a tag
+archive/wt-gpu-cache-path	archived	same (tag)
+archive/i40-amd-ram-budget	archived	RAM-budgeted GPU expert layers on Windows with AMD: measured, no gain; kept only as a tag
+archive/mtp-head-file	archived	launcher flag for an MTP draft head in its own file; left the program, kept only as a tag
+archive/wt-mtp-head-file	archived	same (tag)
+archive/quant-docs	archived	docs branch with Windows quant numbers; the numbers are in the main docs; kept only as a tag
+archive/wt-quant-docs-995b10	archived	same (tag)
+archive/win-defaults	archived	Windows-only buffered reads and one more GPU layer: superseded by the file-view cache; kept only as a tag
+archive/wt-win-defaults	archived	same (tag)
