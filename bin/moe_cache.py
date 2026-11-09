@@ -3783,6 +3783,8 @@ def autotune_probe(cmd, env, left_s, decode_n):
             time.sleep(0.5)
         load_s = time.monotonic() - t0
         url = f"http://127.0.0.1:{port}/completion"
+        if left() > 20:      # one untimed pass of the same prompt first: the first pass pages the experts in and wakes the GPU, which would make the first plan look slow
+            http(url, {"prompt": AUTOTUNE_PROMPT * 11, "n_predict": 1, "cache_prompt": False, "temperature": 0}, key, timeout=max(5, left()))
         st, body = http(url, {"prompt": AUTOTUNE_PROMPT * 11, "n_predict": 1, "cache_prompt": False, "temperature": 0}, key, timeout=max(5, left()))
         pp = json.loads(body).get("timings", {}) if st == 200 else {}
         if not pp.get("prompt_per_second"):
@@ -3947,6 +3949,7 @@ def _launch_plan(a, extra, argv, machine):
     if a.share_ram:
         share_ram_start(a, machine)
     user_flags, extra = adopt_user_flags(extra)
+    user_extra = list(extra)             # LAUNCHER-994: what the user gave after `--` (the stages below add their own flags to extra); the auto-tune leaves those settings alone
     if "port" in user_flags and user_flags["port"] != a.port:
         say(f"moe-cache: port {user_flags['port']} from the flags after '--' (the health checks, warm sessions and agent snippets use it)")
         a.port = user_flags["port"]
@@ -4042,7 +4045,7 @@ def _launch_plan(a, extra, argv, machine):
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
     # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
-    cmd, env_t, tune_info = autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"))
+    cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"))
     env[:] = env_t                          # the same list object the plan keeps
     if tune_info and tune_info.get("changed"):
         ub = arg_after(cmd, "-ub", "--ubatch-size") or ub

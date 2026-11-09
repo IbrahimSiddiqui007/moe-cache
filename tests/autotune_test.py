@@ -106,6 +106,23 @@ check(all(x["decode_n"] == 512 and not x["short_probe"] for x in full), "with ti
 Tq = {"C0": dict(ok=True, prompt_tps=100, decode_tps=30), ids[1]: dict(ok=True, prompt_tps=130, decode_tps=24), ids[2]: None}
 check(run_t(Tq, agent=True)["picked"] == ids[1] and run_t(Tq, agent=False)["picked"] in ("C0", ids[1]), "agent mode scores a long prompt")
 
+# --- the baseline is measured twice (C0 runs cold) ---
+seen = {"C0": 0}
+def cold_runner(cand, left, n):
+    clk.t += 20
+    if cand.id == "C0":
+        seen["C0"] += 1
+        return dict(ok=True, load_s=5, prompt_tps=250 if seen["C0"] == 1 else 340, decode_tps=17 if seen["C0"] == 1 else 23, decode_n=n)    # the first run is cold
+    return dict(ok=True, load_s=5, prompt_tps=300, decode_tps=20, decode_n=n)                                                               # +20 % over the cold C0 only
+clk = Clock()
+r = at.tune(cands, cold_runner, clock=clk)
+check([x["id"] for x in r["rows"]][-1] == "C0b" and r["rows"][-1]["status"] == "measured", "the plan as it is runs a second time (C0b) when the budget allows")
+check(r["picked"] == "C0" and not r["changed"] and "moved" in r["why"], "a candidate that only beats the COLD baseline is not picked; the why names the baseline spread")
+check(r.get("baseline_spread", 0) > 0.05, "the baseline spread is stored")
+seen["C0"] = 0; clk = Clock()
+r = at.tune(cands, cold_runner, clock=clk, budget_s=70.0)
+check(all(x["id"] != "C0b" for x in r["rows"]), "no time for the second baseline run: not attempted")
+
 # --- cache file ---
 with tempfile.TemporaryDirectory() as tmp:
     parts = at.key_parts("m.gguf:1:2", 65536, {"cpu": "x"}, {}, False, "plugin")

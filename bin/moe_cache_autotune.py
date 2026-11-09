@@ -223,6 +223,22 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         say(row_line(row))
         if c.id == "C0" and row["status"] != "measured":
             break
+    # the plan as it is, a second time (RULES 4: a screen needs A and A2): C0 ran first, cold, so a later plan can look faster only because the files and clocks were warm
+    if rows and rows[0]["status"] == "measured" and base_cost:
+        left = budget_s - (clock() - t0)
+        if left >= base_cost * 1.15:
+            c0b = {"id": "C0b", "label": "the plan as it is, again (noise check)", "status": "not measured", "edits": []}
+            try:
+                r = runner(Candidate("C0", c0b["label"], []), left, DECODE_TOKENS) or {}
+            except Exception as e:
+                r = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+            c0b.update({k: r.get(k) for k in ("load_s", "prompt_tps", "decode_tps", "decode_n", "error")})
+            if r.get("ok") and r.get("prompt_tps") and r.get("decode_tps"):
+                c0b.update(status="measured", short_probe=False, score_s=round(score(c0b, agent), 2))
+            else:
+                c0b["status"] = "failed"
+            rows.append(c0b)
+            say(row_line(c0b))
     total = clock() - t0
     base = rows[0] if rows else None
     res = {"rows": rows, "total_s": round(total, 1), "budget_s": budget_s, "agent": agent, "prompt_tokens": PROMPT_TOKENS, "decode_tokens": DECODE_TOKENS,
@@ -231,16 +247,25 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         res.update(state="too_slow", why=f"the plan as it is could not be measured in {budget_s:.0f} s ({(base or {}).get('error') or 'no result'}); nothing was changed. "
                                          "A model that takes longer than the budget to load is not tuned automatically; --retune tries again")
         return res
-    best = min((r for r in rows if r["status"] == "measured"), key=lambda r: r["score_s"])
+    again = next((r for r in rows if r["id"] == "C0b" and r["status"] == "measured"), None)
+    noise = ""
+    if again:
+        spread = max(abs(again["decode_tps"] - base["decode_tps"]) / max(again["decode_tps"], base["decode_tps"]), abs(again["prompt_tps"] - base["prompt_tps"]) / max(again["prompt_tps"], base["prompt_tps"]))
+        if again["score_s"] < base["score_s"]:
+            base = again                                    # the harder baseline: the better of its two runs
+        if spread > MARGIN:
+            noise = f" (the plan as it is moved {spread * 100:.0f} % between its two runs: a cold first run or noise, the better run is the baseline)"
+        res["baseline_spread"] = round(spread, 3)
+    best = min((r for r in rows if r["status"] == "measured" and r["id"] != "C0b"), key=lambda r: r["score_s"])
     gain = 1 - best["score_s"] / base["score_s"] if best["id"] != "C0" else 0.0
     if best["id"] != "C0" and gain >= MARGIN:
         res.update(picked=best["id"], changed=True, state="tuned",
                    why=f"{best['id']} ({best['label']}) was {gain * 100:.0f} % faster than the plan as it is for a {SCORE_PROMPT_AGENT if agent else SCORE_PROMPT}-token prompt plus {DECODE_TOKENS} generated tokens "
-                       f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)")
+                       f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)" + noise)
     else:
         near = f"; the best other was {best['id']} at {gain * 100:.0f} %" if best["id"] != "C0" else ""
-        res.update(state="tuned", why=f"the plan as it is stays: no candidate was {MARGIN * 100:.0f} % faster{near}"
-                                     + ("" if sum(r["status"] == "measured" for r in rows) > 1 else " (only the plan itself could be measured in the time)"))
+        res.update(state="tuned", why=f"the plan as it is stays: no candidate was {MARGIN * 100:.0f} % faster{near}" + noise
+                                     + ("" if sum(r["status"] == "measured" and r["id"] != "C0b" for r in rows) > 1 else " (only the plan itself could be measured in the time)"))
     return res
 
 
