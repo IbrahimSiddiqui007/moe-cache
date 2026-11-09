@@ -42,8 +42,10 @@ the design); the app uses the ones the page finds, as the browser page does.
 | `src-tauri/tauri.conf.json`, `tauri.windows.conf.json` | window, bundle targets, resources (Windows adds the bundled Python) |
 | `src-tauri/capabilities/default.json` | the control page gets no Tauri commands |
 | `web/index.html` | splash and error page |
+| `CLICK_THROUGH.md` | the Windows click-through for the owner (about 45 minutes) |
 | `tests/` | `shell_contract_test.py`, no model |
 | `scripts/` | `stage.sh` (kit files into the bundle), `build-linux.sh`, `fetch-python-win.ps1` |
-| `src-tauri/icons/` | placeholder icon; replace with `npx tauri icon art.png` |
+| `icons/` | the app icon: the owner's curled dragon holding a red cache block, pixel art. `make_app_icon.py` builds `src-tauri/icons/` from the maps `d64.txt`, `d32.txt`, `d16.txt` in `icons/` (64x64 for 64 px and up, 32x32 for 32-48 px, hand-made 16x16 for 16-24 px; nearest-neighbour only). Only the chosen icon is in the repository; the other concepts are not published |
+| `src-tauri/icons/` | the generated files (`icon.icns` came from `npx tauri icon` on a 1024 px nearest-neighbour render; macOS is not in version 1) |
 
 Control-page changes the app needs are listed in section 8 of the design; they are not made here.

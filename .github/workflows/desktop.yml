@@ -70,10 +70,18 @@ jobs:
         with:
           path: ${{ runner.temp }}/llama-zips
           key: dl-kit-llama-b12207-vulkan-c8c84eff
+      - name: Linux release tarball (the plugin .so and the official llama.cpp build; the ggml 0.26 one, API 3)
+        run: tools/make_release.sh 0.0.0-desktop
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: desktop-kit
           path: dist/moe-cache-v0.0.0-desktop-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 3
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-kit-linux
+          path: dist/moe-cache-v0.0.0-desktop-ggml0.26-linux-x86_64.tar.gz
           if-no-files-found: error
           retention-days: 3
 
@@ -159,6 +167,29 @@ jobs:
         with:
           path: ${{ runner.temp }}/pyzip
           key: dl-pyembed-${{ env.PY_VERSION }}-${{ env.PY_SHA256 }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: runner.os == 'Linux'
+        with:
+          name: desktop-kit-linux
+          path: kit-linux
+
+      - name: Replace the staged kit with the Linux kit (plugin .so, official llama.cpp) (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          d=desktop/src-tauri/resources/moe-cache
+          t=$(mktemp -d); tar -xzf kit-linux/*.tar.gz -C "$t"; src=$(echo "$t"/*)
+          find "$d" -mindepth 1 ! -name .gitkeep -delete
+          mkdir -p "$d/build"
+          cp -rL "$src/bin" "$src/planner" "$src/ui" "$src/profiles" "$src/llama" "$src/models.json" "$d/"    # -L: no symlinks in the bundle
+          cp "$src/build/libggml-moe-cache.so" "$d/build/"
+          rm -f "$d/bin/moe-cache-ui.bat"
+          cp desktop/app_entry.py "$d/"
+          test -x "$d/llama/llama-server" && test -f "$d/build/libggml-moe-cache.so"
+          du -sh "$d"
+          out=$(python3 "$d/bin/moe_cache.py" check 2>&1 || true); echo "$out"
+          echo "$out" | grep -Eq 'llama-server +[^ ]*/llama/llama-server' || { echo "FAIL: check did not find the bundled llama-server"; exit 1; }
+          echo "$out" | grep -q 'libggml-moe-cache.so' || { echo "FAIL: check did not find the bundled plugin"; exit 1; }
 
       - name: Bundle Python (Windows)
         if: runner.os == 'Windows' && env.PY_SHA256 != 'none'
@@ -204,12 +235,32 @@ jobs:
         shell: bash
         run: desktop/src-tauri/resources/python/python.exe desktop/tests/shell_contract_test.py
 
+      # GUI-696: the signing key never sits in a step that installs packages. The CLI comes from the lockfile (npm ci fails when package.json and
+      # package-lock.json disagree; --ignore-scripts keeps package install scripts from running), then the build step, which is the only one that sees the key.
+      - name: Install the Tauri CLI from the lockfile (no secrets in this step)
+        working-directory: desktop
+        shell: bash
+        run: npm ci --no-audit --no-fund --ignore-scripts --fetch-retries=6 --fetch-retry-mintimeout=15000 --fetch-retry-maxtimeout=120000   # retries as the other npm steps (registry outages)
+
+      - name: Refuse the placeholder update key on a tag
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          if head -c 11 desktop/src-tauri/update-pubkey.txt | grep -q PLACEHOLDER; then
+            echo "desktop/src-tauri/update-pubkey.txt is still the PLACEHOLDER: a tagged build would ship an app that cannot verify updates"; exit 1
+          fi
+
       - name: Build
         working-directory: desktop
         shell: bash
+        env:
+          # update signing: only when the owner has added the key as a repository secret (docs/DESKTOP_APP_DESIGN.md, section 6); without it the build is unsigned and has no update files
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          npm install --no-audit --no-fund --fetch-retries=6 --fetch-retry-mintimeout=15000 --fetch-retry-maxtimeout=120000
-          npx tauri build --bundles ${{ matrix.bundles }}
+          extra=()
+          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then extra=(--config '{"bundle":{"createUpdaterArtifacts":true}}'); echo "update files will be signed"; fi
+          npx --no-install tauri build --bundles ${{ matrix.bundles }} "${extra[@]}"
 
       # Only main and experimental save (see the restore step). A save is skipped when the exact key was restored; the prune step keeps one entry per OS on this branch.
       - name: Cache Cargo (save, main and experimental only)
@@ -249,5 +300,6 @@ jobs:
             desktop/src-tauri/target/release/bundle/deb/*.deb
             desktop/src-tauri/target/release/bundle/msi/*.msi
             desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/**/*.sig
           if-no-files-found: error
           retention-days: 7
