@@ -348,6 +348,9 @@ for i in range(12):
 j = json.loads(get("/api/monitor?since=0&log=0&tail=3")[1])
 check([l[4] for l in j["log"]] == ["line 9", "line 10", "line 11"], f"/api/monitor?tail=3 returns the newest three lines ({[l[4] for l in j['log']]})")
 check(len(json.loads(get("/api/monitor?since=0&log=0")[1])["log"]) == 12, "without tail, all of them")
+jd = json.loads(get("/api/monitor?since=0&log=0&req=0&layers=0")[1])
+check(jd["schema"] == 1 and jd["layers_included"] is False and jd["layer_cols"] == [] and jd["requests"] == [], f"/api/monitor?req=0&layers=0 over HTTP: schema {jd['schema']}, no layer columns, only newer requests")
+check(json.loads(get("/api/monitor?req=abc&layers=1")[1])["layers_included"] is True, "a req that is not a number is ignored, layers=1 keeps the layers")
 out = subprocess.run([sys.executable, os.path.join(HERE, "bin", "moe_cache.py"), "top", "--url", f"{base}/?t={TOKEN}", "--once", "--view", "6", "--ascii", "--no-color", "--width", "80", "--height", "20"],
                      capture_output=True, text=True, timeout=60)
 check(out.returncode == 0 and "line 11" in out.stdout and "[LIVE]" in out.stdout, f"`top --url` shows the page's log ({out.stderr[-200:]})")

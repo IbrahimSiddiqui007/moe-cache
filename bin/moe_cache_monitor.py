@@ -14,6 +14,7 @@ GIB = 2**30
 MAX_SAMPLES = 3600          # about two hours at one row per 2 s
 MAX_LOG = 20000
 MAX_REQUESTS = 100
+MONITOR_SCHEMA = 1        # R15-01: the integer version of /api/monitor's payload; changes are additive only (new keys), units sit in the key names, unknown values are null
 MAX_LAYER_COLS = 120
 MAX_STEPS = 20000            # decode steps kept for the "at risk" marks (about 15 minutes of decoding at 20 tok/s)
 LAUNCH_RE = re.compile(r"launch_slot_:.*processing task")
@@ -108,6 +109,7 @@ class Monitor:
         self.samples = collections.deque(maxlen=MAX_SAMPLES)
         self.layer_cols = collections.deque(maxlen=MAX_LAYER_COLS)
         self.requests = collections.deque(maxlen=MAX_REQUESTS)
+        self.req_seq = 0                   # R15-01: every finished request gets the next id, so a client can ask for the ones after the last it has (req=<id>)
         self.log = collections.deque(maxlen=MAX_LOG)       # (seq, t, source, level, text)
         self.starting = True
         self.snap = None            # (t, counters) of the newest plugin snapshot
@@ -186,6 +188,8 @@ class Monitor:
                         req["reused"] = max(0, req["prompt_total"] - req["prefill_tokens"])
                     elif "reused" in req and "prompt_total" not in req and "prefill_tokens" in req:
                         req["prompt_total"] = req["reused"] + req["prefill_tokens"]
+                    self.req_seq += 1
+                    req["id"] = self.req_seq
                     self.requests.append(req)
                     self.pending_req = {}
 
@@ -295,14 +299,18 @@ class Monitor:
                 self.samples[-1].update({k: (round(v, 2) if isinstance(v, float) else v) for k, v in hw.items()})
 
     # ---- output ----
-    def payload(self, since=0.0, log_seq=0, ctx_max=None, plan=None, cap=None, totals=None, include_log=True, tail=None, modes=None):
+    def payload(self, since=0.0, log_seq=0, ctx_max=None, plan=None, cap=None, totals=None, include_log=True, tail=None, modes=None, req_after=None, layers=True):
+        """R15-01: `req_after` (the id of the newest request the client has) returns only the requests after it; `layers=False` leaves out the per-layer columns and totals (the
+        big part of the payload); `reset` is true when the client's `since` / `log_seq` come from an older Monitor than this one (the server was restarted): it must drop what it holds."""
         self.touched = time.time()
         with self.lock:
-            out = {"now": round(time.time(), 1), "enabled": self.enabled, "t0": round(self.t0, 1),
+            out = {"schema": MONITOR_SCHEMA, "reset": bool((since and since < self.t0) or (log_seq and self.log and log_seq > self.log[-1][0])),
+                   "now": round(time.time(), 1), "enabled": self.enabled, "t0": round(self.t0, 1),
                    "samples": [s for s in self.samples if s["t"] > since][-MAX_SAMPLES:],
-                   "layer_cols": [c for c in self.layer_cols if c["t"] > since],
-                   "layer_total": [round(h / (h + m), 3) if h + m else None for h, m in zip(self.layers["hits"], self.layers["misses"])],
-                   "requests": [self._with_risk(r) for r in list(self.requests)[-30:]], "mtp": dict(self.mtp, rate=(self.mtp["accepted"] / self.mtp["generated"]) if self.mtp["generated"] else None),
+                   "layer_cols": [c for c in self.layer_cols if c["t"] > since] if layers else [],
+                   "layer_total": [round(h / (h + m), 3) if h + m else None for h, m in zip(self.layers["hits"], self.layers["misses"])] if layers else [],
+                   "layers_included": bool(layers),
+                   "requests": [self._with_risk(r) for r in (list(self.requests)[-30:] if req_after is None else [r for r in self.requests if r.get("id", 0) > req_after])], "mtp": dict(self.mtp, rate=(self.mtp["accepted"] / self.mtp["generated"]) if self.mtp["generated"] else None),
                    "approx": dict(self.approx_live or self.approx), "ctx": {"depth": self.ctx_depth, "max": ctx_max}, "plan": plan or {}, "cap": cap, "totals": totals or {}, "modes": modes or [],
                    "extra": dict(getattr(self, "snapshot_extra", {})), "metrics": {k: v for k, v in self.prom_now.items() if k in ("requests_processing", "requests_deferred", "kv_cache_usage_ratio", "kv_cache_tokens", "n_busy_slots_per_decode")}}
             if include_log:

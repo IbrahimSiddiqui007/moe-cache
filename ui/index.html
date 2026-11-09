@@ -1541,7 +1541,7 @@ function chips(m, i, live) {
   if (!live && m.content && !m.error) {
     if (aj && ["planning", "starting", "scoring", "restoring"].includes(aj.state)) out.push(`<span class="chip audit" data-auditcancel="1" title="Click to cancel">audit: ${esc(aj.state == "scoring" ? `${aj.progress[0]} of ${aj.progress[1]} tokens` : aj.message || aj.state)} · cancel</span>`);
     else if (au) out.push(`<span class="chip audit" data-auditshow="${i}" title="The exact model's most likely next token is the answer's token at ${Number(au.same) || 0} of ${Number(au.n) || 0} positions (the quality gate's same-top-token measure). Mean log-loss of the answer's tokens under the exact model: ${au.mean_logloss != null ? Number(au.mean_logloss).toFixed(3) : "n/a"}. Click to ${m.showAudit ? "hide" : "show"} the words that differ.">audit: ${(Number(au.same_pct) || 0).toFixed(1)} % same top token · ${Number(au.n_mismatches) || 0} differ</span>`);
-    else if (last0 && !m.think) out.push(`<span class="chip audit" data-audit="${i}" title="Re-score this answer with an exact-mode server (plain llama.cpp results) and mark every word where the exact model would have chosen another token. Costs nothing until clicked.">audit (exact)</span>`);
+    else if (last0) out.push(`<span class="chip audit" data-audit="${i}" title="Re-score this answer with an exact-mode server (plain llama.cpp results) and mark every word where the exact model would have chosen another token. Costs nothing until clicked.">audit (exact)</span>`);
     if (aj && aj.state == "error") out.push(`<span class="chip stopped" title="${esc(aj.message || "")}">audit failed: ${esc(String(aj.message || "").slice(0, 90))}</span>`);
   }
   const rk = m.risk && Number.isFinite(Number(m.risk.n)) ? m.risk : null;
@@ -1686,7 +1686,7 @@ async function startAudit(i) {
   let plan; try { plan = await api("/api/audit/plan"); } catch (e) { showErr(e.message); return; }
   if (!plan.ok) { showErr(plan.why); return; }
   if (!confirm("Audit this answer?\n\n" + plan.why + "\n\nThe audit takes about as long as the answer took to write. Nothing is changed in the chat.")) return;
-  try { await api("/api/audit/start", { messages: buildMsgs(C.chat, i), answer: m.content, mode: "auto" }); } catch (e) { showErr(e.message); return; }
+  try { const [think, text] = splitThink(m); await api("/api/audit/start", { messages: buildMsgs(C.chat, i), answer: m.think ? text : m.content, reasoning: m.think || "", mode: "auto" }); } catch (e) { showErr(e.message); return; }
   S.audit = { i, c: C.chat, timer: setInterval(pollAudit, 1000), status: { state: "planning", progress: [0, 0] } };
   paintChat();
 }
