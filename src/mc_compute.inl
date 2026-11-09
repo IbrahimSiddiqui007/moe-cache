@@ -501,6 +501,8 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                 const tinfo_t & t0 = *s.tensors[(size_t) tidx[0]];
                 // MOE_CACHE_ROUTE_DROP (default 2; --fast=2 sets 4, RESULTS 53): the lowest-ranked picks that may be skipped; at least half are always honoured
                 const int keep = s.route_keep >= 0 ? (int) std::min<int64_t>(s.route_keep, n_used) : (int) std::max<int64_t>(n_used - s.route_drop, (n_used + 1) / 2);
+                s.step_touch(n_tok, t0.layer);
+                int64_t blk_changed = 0;                // picks this block changed: added to the current decode step below
                 std::vector<int32_t> eff((size_t) (n_used * n_tok));
                 for (int64_t t = 0; t < n_tok; t++) {
                     std::vector<char> taken((size_t) t0.n_expert, 0);
@@ -518,6 +520,7 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                         if (e < (int32_t) used.size() && used[(size_t) e] > 0) used[(size_t) e]--;
                         eff[(size_t) (t * n_used + u)] = -1;
                         s.fewer_dropped++;
+                        blk_changed++;
                     }
                     for (int64_t u = keep; s.route_mode && u < n_used; u++) {
                         const int32_t e = eff[(size_t) (t * n_used + u)];
@@ -544,8 +547,10 @@ enum ggml_status be_compute(ggml_backend_t backend, ggml_cgraph * cg) {
                         } else {
                             s.route_skipped++;
                         }
+                        blk_changed++;
                     }
                 }
+                s.step_add((uint32_t) blk_changed);
                 s.route_ids[ids] = std::move(eff);
             }
             // N23-F3: a long-prompt block's misses are read by the reader threads while gpu_segment uploads the experts already in RAM (it waits for

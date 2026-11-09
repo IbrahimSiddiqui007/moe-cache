@@ -11,6 +11,12 @@
 :root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --on-bad:#0f1519; --shade:rgba(0,0,0,.45); }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
+/* GUI-043: at-risk marks in a chat answer */
+.chip.risk { color:var(--warn); border-color:var(--warn); cursor:pointer; }
+mark.risk { background:color-mix(in srgb, var(--warn) 38%, transparent); color:inherit; border-radius:2px; }
+.riskstrip { display:flex; height:10px; gap:1px; margin:4px 0 2px; max-width:480px; }
+.riskstrip i { flex:1; background:var(--line); border-radius:1px; } .riskstrip i.on { background:var(--warn); }
+.riskview { white-space:pre-wrap; }
 /* GUI-041: Monitor view */
 #mondlg .box { width:min(1500px, 100%); height:100%; display:flex; flex-direction:column; padding:10px 14px; }
 #mondlg .mhead { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -1527,6 +1533,8 @@ function chips(m, i, live) {
   if (t.hit_rate != null) out.push(`<span class="chip hit" title="experts found in RAM while this answer was written: ${t.hits} hits, ${t.misses} misses. The count is the server's, so a second chat or agent running at the same time is included">hit ${(t.hit_rate * 100).toFixed(1)} %</span>`);
   if (t.predicted_n) out.push(`<span class="chip">${t.predicted_n} tokens · ${(t.predicted_ms / 1000).toFixed(1)} s</span>`);
   if (t.stopped) out.push(`<span class="chip stopped">stopped</span>`);
+  const rk = m.risk && Number.isFinite(Number(m.risk.n)) ? m.risk : null;
+  if (rk) out.push(`<span class="chip risk" data-risk="${i}" title="An approximate speed-up is on. The plugin changed which experts ${Number(rk.picks) || 0} picks used, in ${Number(rk.changed) || 0} of the ${Number(rk.n) || 0} decode steps of this answer. Click to ${m.showRisk ? "hide" : "show"} the words from those steps${rk.exact ? "" : " (approximate: this answer was drafted several tokens at a time)"}">at risk: ${Number(rk.changed) || 0} of ${Number(rk.n) || 0} steps</span>`);
   const last = i == C.chat.messages.length - 1;
   out.push(`<span class="acts">${live ? "" : `<button data-copy="${i}">Copy</button>${last ? `<button data-regen="${i}">↻ Regenerate</button>` : ""}`}</span>`);
   return `<div class="chips">${out.join("")}</div>`;
@@ -1535,8 +1543,16 @@ function msgHTML(m, i, live) {
   if (m.role == "user")
     return `<div class="msg user">${esc(m.shown ?? m.content)}${(m.images || []).length ? `<div class="att">${m.images.map(u => `<img class="pic" src="${esc(u)}" alt="attached image">`).join("")}</div>` : ""}${(m.files || []).length ? `<div class="att">${m.files.map(f => `<span class="file">${f.image ? "🖼" : "📄"} ${esc(f.name)} · ${f.tokens.toLocaleString()} tokens</span>`).join("")}</div>` : ""}</div>`;
   const [think, text] = splitThink(m);
+  const rk = m.risk && Array.isArray(m.risk.ranges) ? m.risk : null;
+  let body = md(text);
+  if (rk && m.showRisk && !live && m.content.indexOf("<think>") < 0) {      // the answer as plain text with the words from changed steps marked
+    let h = "", at = 0;
+    for (const [x, y] of rk.ranges) { if (!(x >= at && y >= x && y <= m.content.length)) continue; h += esc(m.content.slice(at, x)) + `<mark class="risk">${esc(m.content.slice(x, y))}</mark>`; at = y; }
+    body = `<div class="riskview">${h + esc(m.content.slice(at))}</div>`;
+  }
+  const strip = rk && Array.isArray(rk.strip) && rk.strip.length ? `<div class="riskstrip" title="the decode steps of this answer, in order: yellow = the routing change touched that step">${rk.strip.map(v => `<i${v ? ' class="on"' : ""}></i>`).join("")}</div>` : "";
   return `<div class="msg ai" data-i="${i}">${think && $("showthink").checked ? `<details class="think"${live && !text ? " open" : ""}><summary>${live && !text ? "Thinking…" : "Thinking"}</summary>${esc(think)}</details>` : ""}` +
-    (m.error ? `<p class="errmsg">${esc(m.error)}</p>` : "") + md(text) + (live ? `<span class="cursor"></span>` : "") + chips(m, i, live) + "</div>";
+    (m.error ? `<p class="errmsg">${esc(m.error)}</p>` : "") + body + (live ? `<span class="cursor"></span>` : "") + strip + chips(m, i, live) + "</div>";
 }
 function paintChat() {
   const c = C.chat;
@@ -1555,6 +1571,8 @@ function paintLast() {             // only the answer being written (cheap enoug
   if (stick) $("msgs").scrollTop = $("msgs").scrollHeight;
 }
 $("inner").onclick = e => {
+  const rc = e.target.closest("[data-risk]");
+  if (rc) { const m = C.chat.messages[+rc.dataset.risk]; if (m) { m.showRisk = !m.showRisk; paintChat(); } return; }
   const b = e.target.closest("button"); if (!b) return;
   if (b.dataset.copy != null) { navigator.clipboard && navigator.clipboard.writeText(splitThink(C.chat.messages[+b.dataset.copy])[1]); b.textContent = "Copied"; setTimeout(() => b.textContent = "Copy", 1500); }
   if (b.dataset.regen != null && !C.busy) { C.chat.messages.pop(); paintChat(); ask(); }
@@ -1591,6 +1609,7 @@ async function ask() {
   C.busy = true; C.ctrl = new AbortController(); showErr("");
   $("send").hidden = true; $("stopgen").hidden = false; paintChat();
   const t0 = performance.now(); let n = 0, frame = 0;
+  const wall0 = Date.now() / 1000, cuts = [];                      // GUI-043: when the request ran, and where in the text each streamed piece ended
   const redraw = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; paintLast(); }); };
   const temp = +$("temp").value;
   try {
@@ -1612,7 +1631,7 @@ async function ask() {
         if (j.timings) Object.assign(a.meta, j.timings);
         const delta = ((j.choices || [])[0] || {}).delta || {};
         if (delta.reasoning_content) { a.think += delta.reasoning_content; n++; }
-        if (delta.content) { a.content += delta.content; n++; }
+        if (delta.content) { a.content += delta.content; n++; cuts.push(a.content.length); }
         if (n > 1) a.meta.live_tps = (n - 1) / ((performance.now() - t0) / 1000 - (a.meta.first || 0));
         if (n == 1 && a.meta.first == null) a.meta.first = (performance.now() - t0) / 1000;
         redraw();
@@ -1627,6 +1646,34 @@ async function ask() {
   if (!a.content && !a.think && !a.error && !t.stopped) a.error = "no answer (see the Log)";
   paintChat(); paintChatState(S.status, true);
   if (!a.error || a.content) saveChat();
+  if (a.content && cuts.length) loadRisk(c, a, cuts, wall0, Date.now() / 1000);
+}
+// GUI-043: which decode steps of this answer went through the approximate routing (the plugin counts them; nothing here costs anything unless a mode is on)
+function riskMarks(cuts, steps) {
+  const N = cuts.length, M = steps.length, ranges = [];
+  if (!N || !M) return { ranges, strip: [], exact: false };
+  for (let i = 0; i < N; i++) {
+    const si = M == N ? i : Math.min(M - 1, Math.floor(i * M / N));        // one streamed piece is one token only without MTP: otherwise the mapping is proportional
+    if (!(steps[si][0] > 0)) continue;
+    const a = i ? cuts[i - 1] : 0, b = cuts[i];
+    if (ranges.length && ranges[ranges.length - 1][1] >= a) ranges[ranges.length - 1][1] = b; else ranges.push([a, b]);
+  }
+  const B = Math.min(60, M), strip = [];
+  for (let k = 0; k < B; k++) { let any = 0; for (let s = Math.floor(k * M / B); s < Math.floor((k + 1) * M / B) || s == Math.floor(k * M / B); s++) if (steps[s] && steps[s][0] > 0) any = 1; strip.push(any); }
+  return { ranges, strip, exact: M == N };
+}
+async function loadRisk(c, a, cuts, t0, t1) {
+  for (let tries = 0; tries < 4; tries++) {
+    await new Promise(r => setTimeout(r, tries ? 2000 : 2600));              // the plugin's numbers arrive with its next snapshot
+    let j; try { j = await api(`/api/risk?t0=${(t0).toFixed(3)}&t1=${(t1).toFixed(3)}`); } catch (e) { return; }
+    if (!j.n) { if (j.final) return; continue; }
+    if (!j.final && tries < 3) continue;
+    const m = riskMarks(cuts, j.steps);
+    a.risk = { n: j.n, changed: j.changed_steps, picks: j.picks, exact: m.exact, ranges: m.ranges, strip: m.strip };
+    if (C.chat === c) paintChat();
+    saveChat();
+    return;
+  }
 }
 $("send").onclick = send;
 $("stopgen").onclick = () => C.ctrl && C.ctrl.abort();

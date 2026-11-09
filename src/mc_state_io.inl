@@ -440,6 +440,16 @@
                 j += ",\"approx\":{\"route\":" + std::to_string(route_mode) + ",\"considered\":" + std::to_string(route_considered) + ",\"skipped\":" + std::to_string(route_skipped) +
                      ",\"substituted\":" + std::to_string(route_substituted) + ",\"fewer\":" + std::to_string(fewer) + ",\"fewer_considered\":" + std::to_string(fewer_considered) +
                      ",\"fewer_dropped\":" + std::to_string(fewer_dropped) + "}";
+                // GUI-043: the newest decode steps, [ms, picks changed, tokens in the graph] each, newest last; "total" counts all steps so far, "now_ms" is this clock's time now
+                step_close_if_idle(100);                // the answer's last token: nothing follows it to end it
+                std::lock_guard<std::mutex> sl(step_mu);
+                const uint64_t n = std::min<uint64_t>(steps_total, STEP_RING);
+                j += ",\"steps\":{\"total\":" + std::to_string(steps_total) + ",\"now_ms\":" + std::to_string(step_now_ms()) + ",\"tail\":[";
+                for (uint64_t i = steps_total - n; i < steps_total; i++) {
+                    const step_rec_t & r = step_ring[i % STEP_RING];
+                    j += std::string(i == steps_total - n ? "" : ",") + "[" + std::to_string(r.ms) + "," + std::to_string(r.changed) + "," + std::to_string(r.n_tok) + "]";
+                }
+                j += "]}";
             }
             j += ",\"layer_hits\":[";
             for (size_t i = 0; i < layer_hits.size(); i++) { j += (i ? "," : "") + std::to_string(layer_hits[i]); }

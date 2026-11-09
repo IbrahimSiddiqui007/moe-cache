@@ -8,13 +8,15 @@ One Monitor per server run (Runner.reset makes a new one). It keeps, in memory o
 Everything is derived from what already exists: the plugin's "moe-cache-stats {json}" line (cumulative counters), llama-server's /metrics
 (--metrics is always on) and its log lines. Nothing here touches the plugin or llama-server; MOE_CACHE_MONITOR=0 turns the sampling off.
 """
-import collections, json, os, re, shlex, threading, time
+import bisect, collections, json, os, re, shlex, threading, time
 
 GIB = 2**30
 MAX_SAMPLES = 3600          # about two hours at one row per 2 s
 MAX_LOG = 20000
 MAX_REQUESTS = 100
 MAX_LAYER_COLS = 120
+MAX_STEPS = 20000            # decode steps kept for the "at risk" marks (about 15 minutes of decoding at 20 tok/s)
+LAUNCH_RE = re.compile(r"launch_slot_:.*processing task")
 
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) (?:tokens|runs).*?([\d.]+) tokens per second")
 CTX_RE = re.compile(r"\bn_tokens = (\d+)")
@@ -119,6 +121,8 @@ class Monitor:
         self.approx = {}            # from the plugin's lines at server stop (older plugins)
         self.approx_live = {}       # from the stats snapshot (GUI-042): cumulative counters while the server runs
         self.alt_rate = None
+        self.st_t, self.st_ch, self.st_nt = [], [], []      # GUI-043: decode steps the routing change touched: wall time, picks changed, tokens in the graph
+        self.steps_next, self.steps_lost, self.steps_seen_t = 0, 0, 0.0
         self.pending_req = {}
         self.slot_tokens = {}       # slot id -> tokens its cache held when its last request ended (a new request keeps f_keep of them)
         self.vram_cache = (0.0, None)
@@ -138,9 +142,13 @@ class Monitor:
                 self.ctx_depth = int(m.group(1))
             sid = SLOT_ID_RE.search(line)
             sid = sid.group(1) if sid else None
+            if LAUNCH_RE.search(line):
+                self.pending_req["t_start"] = round(t, 3)                       # the request's window starts here (wall clock of the log line)
             m = RELEASE_RE.search(line)
             if m and sid is not None:
                 self.slot_tokens[sid] = int(m.group(1))
+                if self.requests and "t_end" not in self.requests[-1]:
+                    self.requests[-1]["t_end"] = round(t, 3)
             if SLOT_LRU_RE.search(line):
                 self.pending_req = {"reused": 0}                                # an empty slot: the whole prompt is processed
             m = SLOT_LCP_RE.search(line)
@@ -215,6 +223,21 @@ class Monitor:
                     self.layer_cols.append({"t": round(t, 1), "rate": col})
                 self.rates = r
             self.layers = {"hits": hits, "misses": miss}
+            stp = s.get("steps")
+            if stp and stp.get("tail") is not None:
+                total, tail = int(stp.get("total", 0)), stp["tail"]
+                first = total - len(tail)
+                off = t - float(stp.get("now_ms", 0)) / 1000.0           # the plugin's clock to wall time (the snapshot line's own delay is milliseconds)
+                if self.steps_next and first > self.steps_next:
+                    self.steps_lost += first - self.steps_next          # more steps than one tail holds between two snapshots
+                for k, (ms, ch, nt) in enumerate(tail):
+                    if first + k >= self.steps_next:
+                        self.st_t.append(round(off + ms / 1000.0, 3)); self.st_ch.append(int(ch)); self.st_nt.append(int(nt))
+                self.steps_next = max(self.steps_next, total)
+                self.steps_seen_t = t
+                if len(self.st_t) > MAX_STEPS + 2000:
+                    for lst in (self.st_t, self.st_ch, self.st_nt):
+                        del lst[:len(lst) - MAX_STEPS]
             ap = s.get("approx")
             if ap:
                 self.approx_live = {"mode": {1: "skip", 2: "subst"}.get(ap.get("route")), "considered": ap.get("considered", 0), "given_up": ap.get("skipped", 0), "replaced": ap.get("substituted", 0),
@@ -237,6 +260,22 @@ class Monitor:
                     r[key] = dtok / dsec if dtok > 0 and dsec > 0 else None
                 self.prom_rates = r
             self.prom_prev = (t, m)
+
+    def risk(self, t0, t1, slack=0.25):
+        """The decode steps that fell in [t0, t1] (a request's window): {steps: [[picks changed, tokens]...], changed_steps, picks, lost, final}. `final`: a snapshot
+        taken after t1 has been seen, so no step of the window can still be on its way."""
+        with self.lock:
+            i, j = bisect.bisect_left(self.st_t, t0 - slack), bisect.bisect_right(self.st_t, t1 + slack)
+            ch, nt = self.st_ch[i:j], self.st_nt[i:j]
+            return {"steps": [[a, b] for a, b in zip(ch, nt)], "n": len(ch), "changed_steps": sum(1 for a in ch if a), "picks": sum(ch), "lost": self.steps_lost, "final": self.steps_seen_t > t1 + slack}
+
+    def _with_risk(self, r):
+        """A request row with its at-risk summary (called with the lock held): how many of its decode steps the plugin's routing change touched."""
+        if "t_start" not in r or "t_end" not in r or not self.st_t:
+            return r
+        i, j = bisect.bisect_left(self.st_t, r["t_start"] - 0.25), bisect.bisect_right(self.st_t, r["t_end"] + 0.25)
+        ch = self.st_ch[i:j]
+        return dict(r, risk={"steps": len(ch), "changed_steps": sum(1 for a in ch if a), "picks": sum(ch), "final": self.steps_seen_t > r["t_end"] + 0.25})
 
     def watched(self, now=None, within=20.0):
         return (now or time.time()) - self.touched < within
@@ -263,7 +302,7 @@ class Monitor:
                    "samples": [s for s in self.samples if s["t"] > since][-MAX_SAMPLES:],
                    "layer_cols": [c for c in self.layer_cols if c["t"] > since],
                    "layer_total": [round(h / (h + m), 3) if h + m else None for h, m in zip(self.layers["hits"], self.layers["misses"])],
-                   "requests": list(self.requests)[-30:], "mtp": dict(self.mtp, rate=(self.mtp["accepted"] / self.mtp["generated"]) if self.mtp["generated"] else None),
+                   "requests": [self._with_risk(r) for r in list(self.requests)[-30:]], "mtp": dict(self.mtp, rate=(self.mtp["accepted"] / self.mtp["generated"]) if self.mtp["generated"] else None),
                    "approx": dict(self.approx_live or self.approx), "ctx": {"depth": self.ctx_depth, "max": ctx_max}, "plan": plan or {}, "cap": cap, "totals": totals or {}, "modes": modes or [],
                    "extra": dict(getattr(self, "snapshot_extra", {})), "metrics": {k: v for k, v in self.prom_now.items() if k in ("requests_processing", "requests_deferred", "kv_cache_usage_ratio", "kv_cache_tokens", "n_busy_slots_per_decode")}}
             if include_log:

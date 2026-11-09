@@ -2443,6 +2443,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"dir": CHAT_DIR, "chats": list_chats()})
             if u.path == "/api/monitor":                   # GUI-041: the Monitor view (this machine only: it carries the whole log)
                 return self.send(200, self.runner.monitor_payload(float(q.get("since") or 0), int(q.get("log") or 0), tail=min(int(q.get("tail") or 0), 200) or None))
+            if u.path == "/api/risk":                      # GUI-043: the decode steps in a time window and how many picks the routing change touched in each (the chat's "at risk" marks)
+                try:
+                    t0, t1 = float(q["t0"]), float(q["t1"])
+                except (KeyError, ValueError):
+                    raise ValueError("t0 and t1: seconds since the epoch")
+                if not (math.isfinite(t0) and math.isfinite(t1) and 0 <= t1 - t0 <= 3600):
+                    raise ValueError("t0 and t1: a window of at most an hour")
+                return self.send(200, self.runner.mon.risk(t0, t1))
             if u.path == "/api/mini":                      # GUI-044: the small pop-out window (the page writes it into a same-origin popup, so the token never shows in a URL)
                 with open(MINI_PAGE, "rb") as fh:
                     return self.send(200, fh.read(), "text/html")

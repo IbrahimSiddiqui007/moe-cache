@@ -570,7 +570,8 @@ def tile_grid(t, W, g, rows, names=TILE_ORDER):
 
 def requests_table(t, W, g, n, cols_full=False):
     reqs = (t.payload.get("requests") or [])[::-1][:n]
-    spec = [("TIME", 8, 0), ("STATUS", 7, 0), ("PROMPT", 7, 1), ("REUSED", 7, 1), ("OUTPUT", 7, 1), ("TOK/S", 6, 1), ("DURATION", 9, 1)] + ([("MTP", 5, 1)] if cols_full else [])
+    risky = any(r.get("risk") for r in reqs)                       # an approximate mode is on: how many steps of each answer it touched
+    spec = [("TIME", 8, 0), ("STATUS", 7, 0), ("PROMPT", 7, 1), ("REUSED", 7, 1), ("OUTPUT", 7, 1), ("TOK/S", 6, 1), ("DURATION", 9, 1)] + ([("MTP", 5, 1)] if cols_full else []) + ([("AT RISK", 9, 1)] if risky else [])
     for drop in ("MTP", "STATUS", "REUSED", "DURATION"):          # on a narrow screen the least useful columns go first
         if sum(w + 1 for _, w, _ in spec) <= W:
             break
@@ -588,12 +589,13 @@ def requests_table(t, W, g, n, cols_full=False):
     out = [line(names, "dim")]
     cur = t.rows[-1] if t.rows else {}
     if cur.get("busy"):
-        out.append(line(pick({"TIME": "now", "STATUS": "Running", "PROMPT": "", "REUSED": "", "OUTPUT": "", "TOK/S": fnum(cur.get("dec")), "DURATION": "", "MTP": ""}), "accent"))
+        out.append(line(pick({"TIME": "now", "STATUS": "Running", "PROMPT": "", "REUSED": "", "OUTPUT": "", "TOK/S": fnum(cur.get("dec")), "DURATION": "", "MTP": "", "AT RISK": ""}), "accent"))
     for r in reqs:
         pt = r.get("prompt_total", r.get("prefill_tokens"))
         out.append(line(pick({"TIME": hms(r["t"]), "STATUS": "Done", "PROMPT": f"{pt:,}" if pt is not None else "-", "REUSED": f"{r['reused']:,}" if r.get("reused") is not None else "-",
                               "OUTPUT": f"{r['decode_tokens']:,}" if r.get("decode_tokens") is not None else "-", "TOK/S": fnum(r.get("decode_tps")),
-                              "DURATION": f"{r['total_ms'] / 1000:.1f} s" if r.get("total_ms") else "-", "MTP": f"{r['mtp'] * 100:.0f} %" if r.get("mtp") is not None else "-"})))
+                              "DURATION": f"{r['total_ms'] / 1000:.1f} s" if r.get("total_ms") else "-", "MTP": f"{r['mtp'] * 100:.0f} %" if r.get("mtp") is not None else "-",
+                              "AT RISK": (f"{r['risk']['changed_steps']}/{r['risk']['steps']}" + ("" if r["risk"].get("final") else "~")) if r.get("risk") else "-"})))
     return out[:n + 1]
 
 
@@ -686,6 +688,7 @@ def view_requests(t, W, H, g):
                    ("prompt processing", f"{r['prefill_tokens']:,} tokens in {r['prefill_ms'] / 1000:.1f} s = {r['prefill_tps']:.0f} tok/s" if r.get("prefill_ms") else None),
                    ("decoding", f"{r['decode_tokens']:,} tokens in {r['decode_ms'] / 1000:.1f} s = {r['decode_tps']:.1f} tok/s" if r.get("decode_ms") else None),
                    ("whole request", f"{r['total_ms'] / 1000:.1f} s" if r.get("total_ms") else None), ("MTP acceptance", f"{r['mtp'] * 100:.0f} %" if r.get("mtp") is not None else None),
+                   ("steps the routing change touched", (f"{r['risk']['changed_steps']:,} of {r['risk']['steps']:,} decode steps, {r['risk']['picks']:,} picks changed" + ("" if r["risk"].get("final") else " (still counting)")) if r.get("risk") else None),
                    ("context after", f"{r['ctx']:,} tokens" if r.get("ctx") else None)], W)
     else:
         out.append([("no finished request yet", "dim")])

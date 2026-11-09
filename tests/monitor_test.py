@@ -118,6 +118,27 @@ check(mb.payload()["approx"] == {} and mb.payload()["samples"][-1]["alt"] is Non
 mc_ = mm.Monitor(); mc_.add_line(1, 1.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up, 0 replaced by a resident expert")
 check(mc_.payload()["approx"]["mode"] == "skip" and "live" not in mc_.payload()["approx"], "an older plugin: the counters still come from its stop-time line")
 
+# ---- GUI-043: decode steps the routing change touched, attributed to requests by time ----
+ms = mm.Monitor()
+ms.add_line(1, 100.0, "0.00.000.001 I slot launch_slot_: id  0 | task 1 | processing task, is_child = 0")
+ms.add_line(2, 103.0, "0.00.003.000 I slot print_timing: id  0 | task 1 | prompt eval time =      50.00 ms /    10 tokens (    5.00 ms per token,   200.00 tokens per second)")
+ms.add_line(3, 103.0, "0.00.003.000 I slot print_timing: id  0 | task 1 |        eval time =    2000.00 ms /     5 tokens (  400.00 ms per token,     2.50 tokens per second)")
+ms.add_line(4, 103.0, "0.00.003.000 I slot print_timing: id  0 | task 1 |       total time =    2050.00 ms /    15 tokens")
+ms.add_line(5, 103.1, "0.00.003.100 I slot      release: id  0 | task 1 | stop processing: n_tokens = 15, truncated = 0")
+tail = [[1000 * 100 + 200 * k, [0, 3, 0, 5, 1][k], 1] for k in range(5)]          # plugin clock: 100.0 s + k * 0.2 s, picks changed per step
+snap = {"hits": 1, "approx": {"route": 1, "considered": 10, "skipped": 9, "substituted": 0, "fewer": 0}, "steps": {"total": 5, "now_ms": 101000, "tail": tail}}
+ms.add_snapshot(101.0, snap)
+rk = ms.risk(100.0, 103.1)
+check(rk["n"] == 5 and rk["changed_steps"] == 3 and rk["picks"] == 9 and rk["steps"][1] == [3, 1] and rk["lost"] == 0 and rk["final"] is False, f"steps in a request's window: 3 of 5 changed, 9 picks ({rk})")
+ms.add_snapshot(105.0, dict(snap, steps={"total": 5, "now_ms": 105000, "tail": tail}))
+check(ms.risk(100.0, 103.1)["n"] == 5 and ms.risk(100.0, 103.1)["final"] is True, "the same snapshot again adds no steps; a snapshot after the request makes the answer final")
+rq = ms.payload()["requests"][-1]
+check(rq["risk"]["steps"] == 5 and rq["risk"]["changed_steps"] == 3 and rq["risk"]["picks"] == 9 and rq["risk"]["final"] is True, f"the request row carries its at-risk summary ({rq.get('risk')})")
+ms.add_snapshot(107.0, {"hits": 1, "approx": {"route": 1}, "steps": {"total": 2000, "now_ms": 107000, "tail": [[107000, 1, 1]] * 512}})
+check(ms.steps_lost > 0 and len(ms.st_t) == 5 + 512, f"a gap bigger than one tail is counted as lost steps ({ms.steps_lost})")
+check(ms.risk(50.0, 60.0)["n"] == 0 and mm.Monitor().risk(0, 1)["n"] == 0, "no steps outside the window, none without a plugin that sends them")
+mo = mm.Monitor(); mo.add_snapshot(1.0, {"hits": 1}); check(mo.st_t == [] and "risk" not in (mo.payload()["requests"][-1] if mo.payload()["requests"] else {}), "no approximate mode: no steps and no at-risk summary")
+
 # ---- /metrics rates, tick, payload ----
 m.add_metrics(300.0, "llamacpp:prompt_tokens_total 100\nllamacpp:prompt_seconds_total 1\nllamacpp:tokens_predicted_total 10\nllamacpp:tokens_predicted_seconds_total 1\n")
 m.add_metrics(302.0, "llamacpp:prompt_tokens_total 1100\nllamacpp:prompt_seconds_total 2\nllamacpp:tokens_predicted_total 10\nllamacpp:tokens_predicted_seconds_total 1\nllamacpp:requests_processing 1\n")
@@ -197,6 +218,20 @@ if node:
     check(r_ is not None and r_["a"].count("<polyline") == 2 and "1000" not in r_["a"][:0] and "no data yet" in r_["c"] and "no data yet" not in r_["a"], "chart: two lines for two series, the gap before the first value breaks nothing, an empty chart says so")
     check(r_ is not None and "stroke-dasharray" in r_["b"] and "50 %" in r_["b"], "chart: a reference line (the cap) with the unit on the axis")
     check(r_ is not None and (r_["f1"], r_["f2"], r_["f3"], r_["f4"]) == (True, False, False, False), "log filter: regex search, source and level boxes")
+    fn2 = re.search(r"function riskMarks\(cuts, steps\) \{.*?\n\}\n", js, re.S).group(0)
+    h2 = os.path.join(TMP, "risk.js"); open(h2, "w", encoding="utf-8").write(fn2 + """
+const cuts = [3, 6, 9, 12, 15], steps = [[0, 1], [2, 1], [0, 1], [5, 1], [1, 1]];
+const a = riskMarks(cuts, steps);
+const b = riskMarks([4, 8], [[0, 1], [0, 1], [3, 1], [0, 1]]);        // 2 pieces, 4 steps (drafted several at a time): proportional
+const c = riskMarks([], []);
+console.log(JSON.stringify({a, b, c}));""")
+    o2 = subprocess.run([node, h2], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r2 = json.loads(o2.stdout.strip().splitlines()[-1])
+    except Exception:
+        r2 = None; print(o2.stdout[-300:], o2.stderr[-500:])
+    check(r2 is not None and r2["a"]["ranges"] == [[3, 6], [9, 15]] and r2["a"]["exact"] is True and r2["a"]["strip"] == [0, 1, 0, 1, 1], f"chat marks: pieces of changed steps become text ranges, neighbours merge ({r2 and r2['a']})")
+    check(r2 is not None and r2["b"]["exact"] is False and r2["b"]["ranges"] == [[4, 8]] and r2["c"]["ranges"] == [], "chat marks: proportional mapping when pieces and steps differ; nothing for an empty answer")
 else:
     print("  skip page checks: node not found")
 

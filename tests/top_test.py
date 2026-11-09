@@ -154,6 +154,14 @@ ol = "\n".join(top.paint(top.render(tl, 110, 40), "dark", False))
 check("skip (live)" in ol and "20.0 % of the picks looked at" in ol and "picks changed" in ol and "dropped 400 of 800" in ol, "Engine shows the approximate counters live: looked at, given up, replaced, share changed, fewer experts")
 check("(at last stop)" in "\n".join(top.paint(top.render(make(3), 110, 40), "dark", False)), "Engine says 'at last stop' for counters that come from a stop-time line")
 
+rk_payload = json.loads(json.dumps(payload))
+for i_, r_ in enumerate(rk_payload["requests"]):
+    r_["risk"] = {"steps": 260, "changed_steps": 37 + i_, "picks": 90, "final": i_ != 7}
+tr = top.Top(U); tr.feed(rk_payload); tr.src_url = "x"; tr.view = 2
+orr = "\n".join(top.paint(top.render(tr, 110, 33), "dark", False))
+check("AT RISK" in orr and "37/260" in orr and "44/260~" in orr and "steps the routing change touched" in orr, "Requests: the AT RISK column (a ~ while its steps are still arriving) and the detail line")
+check("AT RISK" not in "\n".join(top.paint(top.render(make(2), 110, 33), "dark", False)), "Requests: no AT RISK column when no approximate mode is on")
+
 # ---- keys ----
 t = make(0)
 for k, want in (("2", 1), ("7", 6), ("left", 5), ("right", 6), ("right", 0), ("1", 0)):
