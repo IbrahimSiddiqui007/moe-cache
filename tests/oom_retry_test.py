@@ -86,36 +86,30 @@ rc, calls, starts = run_kv("other")
 check(rc == 1 and calls == 0 and starts == 1, f"another failure: no KV retry (rc {rc}, started {starts}x)")
 
 # LAUNCHER-1029: the commit guard stopped llama-server (TerminateProcess = exit code 1 on Windows, not "quiet") and the log has an out-of-memory line: NO second load.
-stopfake = os.path.join(TMP, "stopfake.py")
-open(stopfake, "w").write('''
-import os, signal, sys, time
-mark = sys.argv[1]
-def die(*_):                      # what Windows' TerminateProcess looks like to the launcher: a plain exit code 1, with the out-of-memory text in the log
-    sys.stderr.write("ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory\\n"); sys.stderr.flush(); sys.exit(1)
-signal.signal(signal.SIGTERM, die)
-n = int(open(mark).read()) if os.path.exists(mark) else 0
-open(mark, "w").write(str(n + 1))
-if n == 0:
-    time.sleep(30)
-sys.stderr.write("moe-cache: fake ok\\n"); sys.exit(0)
-''')
-def run_guard(guard_mode):
-    mark = os.path.join(TMP, "m_guard_" + guard_mode)
-    if os.path.exists(mark):
-        os.remove(mark)
-    calls = []
-    def oom_retry():
-        calls.append(1)
-        return [sys.executable, stopfake, mark]
-    saved = (mc.meminfo_available, os.environ.get("MOE_CACHE_COMMIT_GUARD"))
-    mc.meminfo_available = lambda: 0.1e9 if os.path.exists(mark) else 50e9      # far under the hard line once the fake server runs: the guard stops it at its next sample
-    os.environ["MOE_CACHE_COMMIT_GUARD"] = guard_mode
+# run_child_once is replaced by a stub (the same on Windows and Linux): the first load ends with rc 1, an out-of-memory line seen, not ready.
+class _Guard:
+    def __init__(self, stopped): self.stopped, self.min_free, self.soft, self.label = stopped, 1.8e9, 6e9, "free commit"
+def run_guard(stopped, kind="oom"):
+    starts, asked = [], []
+    def once(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, final=False):
+        starts.append(cmd)
+        seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": kind == "oom", "kvabort": "ggml-impl.h:330: fatal error" if kind == "kv" else "",
+                "guard": _Guard(stopped)}
+        return (1 if len(starts) == 1 else 0), seen
+    saved = mc.run_child_once
+    mc.run_child_once = once
     try:
-        rc = mc.run_child([sys.executable, stopfake, mark], dict(os.environ, MOE_CACHE_COMMIT_GUARD=guard_mode), oom_retry=oom_retry)
+        rc = mc._run_child(["srv"], {}, None, False, None, False,
+                           lambda: (asked.append("oom"), ["srv", "again"])[1], lambda: (asked.append("kv"), ["srv", "kv"])[1])
     finally:
-        mc.meminfo_available = saved[0]
-        os.environ.pop("MOE_CACHE_COMMIT_GUARD", None) if saved[1] is None else os.environ.__setitem__("MOE_CACHE_COMMIT_GUARD", saved[1])
-    return rc, len(calls), int(open(mark).read())
-rc, calls, starts = run_guard("stop")
-check(rc == 1 and calls == 0 and starts == 1, f"the commit guard stopped the server (exit 1, out-of-memory line in the log): no retry, one start (rc {rc}, retry asked {calls}x, started {starts}x)")
+        mc.run_child_once = saved
+    return rc, asked, len(starts)
+rc, asked, n = run_guard("moe-cache: WARNING: free commit fell to 1.8 GB")
+check(rc == 1 and asked == [] and n == 1, f"the commit guard stopped the server (exit 1, out-of-memory line in the log): no retry, one start (rc {rc}, retries asked {asked}, started {n}x)")
+rc, asked, n = run_guard("moe-cache: WARNING: free commit fell to 1.8 GB", kind="kv")
+check(rc == 1 and asked == [] and n == 1, f"...and no f16 KV retry either (rc {rc}, retries asked {asked}, started {n}x)")
+rc, asked, n = run_guard(None)
+check(rc == 0 and asked == ["oom"] and n == 2, f"control: the same failure with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
+rc, asked, n = run_guard(None, kind="kv")
+check(rc == 0 and asked == ["kv"] and n == 2, f"control: the KV abort with no guard stop is retried once, as before (rc {rc}, asked {asked}, started {n}x)")
 sys.exit(1 if fails else 0)
