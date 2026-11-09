@@ -4,6 +4,7 @@
 # Like make_release.sh, it is built from a clean export of the last commit (git archive HEAD), never from the working tree.
 # Kit layout (the launcher's HERE is the kit folder, so it finds the DLLs there; the .bat looks one folder up from bin\):
 #   moe-cache.bat                 one click: the control page (moe-cache.bat --shortcut adds it to the Start menu)
+#   moe-cache.ico                 the app icon (concept D, the curled dragon); also the icon of moe-cache.exe and of the Start menu shortcut
 #   moe-cache.exe                 the same as a program (for winget/scoop; it runs moe-cache.bat from its own folder, also through a symlink)
 #   README_WINDOWS.txt            what to install and the first commands
 #   ggml-moe-cache-api3.dll       for llama.cpp with ggml 0.26 / 0.27 (b11669 and newer); -api2.dll for ggml 0.25
@@ -22,7 +23,12 @@ N=moe-cache-v$V-windows-x64; K="$X/kit/$N"; mkdir -p "$K"
 cp "$X/build/win-api2/ggml-moe-cache.dll" "$K/ggml-moe-cache-api2.dll"
 cp "$X/build/win-api3/ggml-moe-cache.dll" "$K/ggml-moe-cache-api3.dll"
 # moe-cache.exe: runs moe-cache.bat from its own real folder (winget's portable installs need an .exe and start it through a symlink)
-"${MINGW_CXX:-x86_64-w64-mingw32-g++}" -x c -O2 -Wall -municode -static -DMC_VERSION="\"$V\"" -o "$K/moe-cache.exe" "$X/tools/win_launcher.c"   # MINGW_CXX as build.sh
+# the app icon (concept D, desktop/src-tauri/icons/icon.ico) is the exe's icon (windres resource) and sits beside it as moe-cache.ico for the Start menu shortcut (moe-cache.bat --shortcut)
+cp "$X/desktop/src-tauri/icons/icon.ico" "$K/moe-cache.ico"
+MCXX="${MINGW_CXX:-x86_64-w64-mingw32-g++}"; WRES="${MCXX%g++}windres"; command -v "$WRES" >/dev/null || WRES=x86_64-w64-mingw32-windres
+printf '1 ICON "%s"\n' "$K/moe-cache.ico" > "$X/win_launcher.rc"
+"$WRES" -i "$X/win_launcher.rc" -o "$X/win_launcher_res.o" || { echo "FAIL: windres could not embed the icon"; exit 1; }
+"$MCXX" -x c -O2 -Wall -municode -static -DMC_VERSION="\"$V\"" -o "$K/moe-cache.exe" "$X/tools/win_launcher.c" -x none "$X/win_launcher_res.o"   # MINGW_CXX as build.sh
 # only system DLLs and llama.cpp's own ggml DLLs may be imported (libwinpthread-1.dll kept it from loading on the Claw)
 for d in "$K"/ggml-moe-cache-api*.dll "$K/moe-cache.exe"; do
   i=$(x86_64-w64-mingw32-objdump -p "$d" | grep "DLL Name") || { echo "FAIL: no import list for $d"; exit 1; }

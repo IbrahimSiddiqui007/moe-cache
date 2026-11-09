@@ -51,7 +51,7 @@ exit /b
 rem the paths reach PowerShell through the environment, never inside its command text (a folder name with a quote, or a typographic one, would end
 rem the string there and run the rest as code)
 set "SELF=%~f0"
-"%SYS32%\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Programs')+'\moe-cache.lnk'); $s.TargetPath=$env:SELF; $s.WorkingDirectory=$env:HERE; $s.Description='moe-cache control page'; $s.Save()"
+"%SYS32%\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut([Environment]::GetFolderPath('Programs')+'\moe-cache.lnk'); $s.TargetPath=$env:SELF; $s.WorkingDirectory=$env:HERE; $s.Description='moe-cache control page'; if (Test-Path ($env:HERE+'\moe-cache.ico')) { $s.IconLocation=($env:HERE+'\moe-cache.ico') }; $s.Save()"
 if errorlevel 1 (echo Could not create the shortcut. & pause & exit /b 1)
 echo Added "moe-cache" to the Start menu.
 exit /b 0

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>moe-cache</title>
+<link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABq0lEQVR4nMVXMU5DMQxNvnwG7oDEUP0bMCNGurdLB8buDN07dmCBHUbE3Bt8dUDiDr0ElasfcI0d21V/+6bm18l7iZ2XJCeGx+ePnzQgVrP7TNv5XMSakBwhXy8mqfv63P9ub+7S7dOrGIOQ/pNENGlAoJgiSANYs7cGqM0YVwtXSgNyQ2TJEZuHSSglFiDaYfTekzgEtYu/75o4sAgpgUcQEqOIIqR80wCWAIkgCloLfCUgPBoZlAqiM7biqQiodcJAOmOJxCK2AN4taBFZQsMCluOrlMakovvi0khxtYpgXic8XRRZMqI9eQWcOGJeZhGusXM/8yix5z8O8AZK24jP9GROuGHmM/3e/otB8pfrw1RNK46noUkXBtAG9fIDkNx7TsdBaqAThGFdlDRgmo45GSENDLqq87etLaBVDhtuRCWOFqh1UEnpAdqgbia5nmW32ol3kl3QOfydx6CjWv2yZMXqbgjeB6SUue8DrXD48EEl8/q9wDhT00iDlcBjbj8RclUAF1EGiQryFGXD32qSiCg5FV0jR+7w08wL79Msl8ZFH6cU536e7wAQ/PtvMxHk8AAAAABJRU5ErkJggg==">   <!-- the app icon, concept D (desktop/icons/make_app_icon.py), inline: the page server has no route to decide for it -->
 <style>
 :root { --bg:#f8efc9; --panel:#fffbe8; --line:#d8c98f; --text:#2a1b14; --muted:#645241; --accent:#c8442a; --ok:#2f7a45; --warn:#9a5a10; --bad:#b32e1c; --gpu:#5f4796; --code:#efe2aa; --side:#a9c4d4; --top:#6b99b3; --ink:#2a1b14; --on-ink:#fffbe8; --on-accent:#fffbe8; --on-bad:#ffffff; --shade:rgba(42,27,20,.28); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --on-bad:#0f1519; --shade:rgba(0,0,0,.45); } }
@@ -74,6 +75,7 @@ p.whysum { margin:4px 0 6px; font-size:13px; line-height:1.45; }
 /* ---------- frame ---------- */
 .app { display:grid; grid-template-rows:auto 1fr; height:100vh; }
 .top { display:flex; align-items:center; gap:10px; padding:8px 12px; background:var(--top); border-bottom:2px solid var(--ink); min-width:0; position:relative; }
+.top .logo { image-rendering:pixelated; margin-right:6px; vertical-align:middle; flex:none; }
 .top .brand { font-weight:600; font-size:15px; cursor:default; white-space:nowrap; }
 @media (max-width: 1000px) { .top .seg[data-seg=mode] { display:none; } }
 .top .grow { flex:1; }
@@ -327,7 +329,7 @@ button.danger { border-color:var(--ink); }
   <!-- ================= TOP BAR: model, mode, start/stop ================= -->
   <div class="top">
     <button class="icon" id="tglLeft" title="Chats, agent sessions, models">☰</button>
-    <span class="brand only-wide" id="sys" title="">moe-cache</span>
+    <img class="logo only-wide" alt="" width="16" height="16" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAA3ElEQVR42mNkYGBgyJ65+T8DGWBqui8jIz7NvWFiDAwMDAxGOt4MjnXzsaphwaeJIWwrVkORDcQw4EJoIlY2Mjh3ZSvcEAwDDFZDnarjjcLe35QI13juCsJlKGEAcz4x4EJoIkPS9VcIFyBrxhVo+5tQvQT3Ai6bY1eXw9mLQzuxGsqCL7DwRS9KIMIDCwZ0vBl6w8QYLqxG1VS86hVGTLDA/IwcshgxgiecmGCBYaTjjWI6rrSBDlCiERbX+ADMIqwpEd0l2AB6TDCSmxNhgGlqui8juZqnpvsyAgC+smIzN+7F6wAAAABJRU5ErkJggg=="><span class="brand only-wide" id="sys" title="">moe-cache</span>
     <div class="modelpick" id="modelpick" title="The model Start uses (pick one in the list on the left)"><b id="topmodel">no model</b><span class="badge wait" id="topverdict"></span></div>
     <div class="seg only-wide" data-seg="mode" title="Default: the launcher's own settings (long-prompt mode from 32k, q8_0 KV, MTP in agent mode; not byte-identical to plain llama.cpp) · Exact: same output as plain llama.cpp, all of that off · Fast: about 10 % faster, about 1 token in 40-50 comes out different · Hybrid: experimental"><button data-v="default">Default</button><button data-v="exact">Exact</button><button data-v="fast">Fast</button><button data-v="hybrid">Hybrid</button></div>
     <span class="grow"></span>
