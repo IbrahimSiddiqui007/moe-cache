@@ -46,6 +46,11 @@ finally:
 
 print("fixed_drives")
 check(pk.fixed_drives() == [] if not pk.WINDOWS else all(len(x) == 1 for x in pk.fixed_drives()), "fixed_drives(): [] off Windows; letters on Windows")
+if pk.WINDOWS:      # the real GetLogicalDrives / GetDriveTypeW query (Windows CI): the system drive is a fixed drive, and it comes from the query, not the fallback
+    real = pk.fixed_drives()
+    sysdrive = (os.environ.get("SystemDrive") or "C:")[0].upper()
+    check(sysdrive in real and real == sorted(real), f"Windows: the system drive {sysdrive}: is in the fixed drives, sorted ({real})")
+    check(f"{sysdrive}:\\models" in pk.default_folders(), "Windows: the real default list holds the system drive's models folder")
 sv = pk.WINDOWS
 try:
     pk.WINDOWS = True

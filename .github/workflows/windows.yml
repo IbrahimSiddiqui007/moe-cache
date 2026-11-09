@@ -313,6 +313,8 @@ jobs:
           python tests/autotune_test.py           # LAUNCHER-994: measured auto-tune (fake timings, a fake llama-server script)
           if ($LASTEXITCODE -ne 0) { throw "autotune test failed" }
           $env:REQUIRE_JINJA2 = "1"               # the rendering checks fail instead of skipping when jinja2 is missing
+          python tests/model_folders_test.py      # GUI-1052: model folders on every fixed drive (the real drive query runs here)
+          if ($LASTEXITCODE -ne 0) { throw "model_folders test failed" }
           python tests/chat_template_fix_test.py  # AGENTS-992: Qwen3.8 template and mid-conversation system messages
           if ($LASTEXITCODE -ne 0) { throw "chat_template_fix test failed" }
           python tests/require_node_test.py     # AUD-094: ui_test skips its JavaScript checks, exit 0, when node is missing; this fails instead
