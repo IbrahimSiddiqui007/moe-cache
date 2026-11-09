@@ -3782,6 +3782,8 @@ def autotune_probe(cmd, env, left_s, decode_n):
                 return {"ok": False, "error": "the load did not finish in the time left"}
             time.sleep(0.5)
         load_s = time.monotonic() - t0
+        if left() <= 0:           # healthy, but after the time was up (a slow poll): the budget is the owner's limit, so this plan is not measured
+            return {"ok": False, "load_s": load_s, "error": "the load did not finish in the time left"}
         url = f"http://127.0.0.1:{port}/completion"
         if left() > 20:      # one untimed pass of the same prompt first: the first pass pages the experts in and wakes the GPU, which would make the first plan look slow
             http(url, {"prompt": AUTOTUNE_PROMPT * 11, "n_predict": 1, "cache_prompt": False, "temperature": 0}, key, timeout=max(5, left()))
