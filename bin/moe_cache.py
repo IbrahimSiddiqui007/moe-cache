@@ -3817,7 +3817,8 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     if a.exact or a.stock or os.environ.get("MOE_CACHE_NO_AUTOTUNE", "") not in ("", "0") or not model or not os.path.isfile(model):
         return cmd, env, None
     locked = at.locked_dims(a, argv, os.environ, windows=machine.windows, agent=bool(a.agent), project=bool(a.project), engine=engine)
-    parts = at.key_parts(autotune_model_id(model), ctx, autotune_machine_sig(machine, ls), locked, a.agent, engine)
+    parts = at.key_parts(autotune_model_id(model), ctx, autotune_machine_sig(machine, ls), locked, a.agent, engine,
+                         {k: str(getattr(a, k)) for k in ('ram', 'vram', 'max_ram', 'gpu_margin', 'leave_room') if getattr(a, k, None)})
     stored = None if a.retune else at.load(CACHE_DIR, parts)
     if stored:
         if stored.get("state") == "too_slow":
@@ -3826,6 +3827,7 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
             return cmd, env, info
         new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(stored), locked)
         lines = at.summary_lines(stored, cached=True, skipped=skipped, locked=locked)
+        lines = [lines[0]] + [l for l in lines[1:] if "picked" in l or "stays" in l or "left alone" in l or "not applied" in l or "--retune" in l]       # the table is in the control page / --plan-json
         for l in lines:
             say_fn(l)
         return new_cmd, new_env, dict(stored, state="cached", lines=lines, locked=locked, key=at.key_of(parts))

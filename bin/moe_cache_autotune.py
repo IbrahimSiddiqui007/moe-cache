@@ -145,8 +145,9 @@ def build_candidates(cmd, env, locked, ctx, n_layers=None):
     return [c0] + out[:3]
 
 
-def key_parts(model_id, ctx, machine_sig, locked, agent, engine):
-    return {"v": VERSION, "model": model_id, "ctx": int(ctx), "machine": machine_sig, "locked": sorted(locked), "agent": bool(agent), "engine": engine}
+def key_parts(model_id, ctx, machine_sig, locked, agent, engine, limits=None):
+    """limits: the memory the user capped (--ram, --vram, --max-ram, --gpu-margin, --leave-room): a pick measured with more memory is not replayed with less."""
+    return {"v": VERSION, "model": model_id, "ctx": int(ctx), "machine": machine_sig, "locked": sorted(locked), "agent": bool(agent), "engine": engine, "limits": limits or {}}
 
 
 def key_of(parts):
@@ -264,8 +265,8 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
                        f"(prompt {best['prompt_tps']:.0f} vs {base['prompt_tps']:.0f} tok/s, decode {best['decode_tps']:.1f} vs {base['decode_tps']:.1f} tok/s)" + noise)
     else:
         near = f"; the best other was {best['id']} at {gain * 100:.0f} %" if best["id"] != "C0" else ""
-        res.update(state="tuned", why=f"the plan as it is stays: no candidate was {MARGIN * 100:.0f} % faster{near}" + noise
-                                     + ("" if sum(r["status"] == "measured" and r["id"] != "C0b" for r in rows) > 1 else " (only the plan itself could be measured in the time)"))
+        res.update(state="tuned", partial=any(r["status"] == "not measured" for r in rows), why=f"the plan as it is stays: no candidate was {MARGIN * 100:.0f} % faster{near}" + noise
+                                     + ("" if sum(r["status"] == "measured" and r["id"] != "C0b" for r in rows) > 1 else " (only the plan itself could be measured in the time; --retune tries again, e.g. with the model already in the page cache)"))
     return res
 
 
