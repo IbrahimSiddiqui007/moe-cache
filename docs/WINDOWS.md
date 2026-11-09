@@ -1,4 +1,4 @@
-# Windows quick start (experimental)
+# Windows quick start (experimental): run big MoE models on an AMD (Vulkan) or NVIDIA PC
 
 Tested on one Windows 11 desktop (Ryzen 9 7950X, RX 9070 XT 16 GB, 32 GB RAM; other cards are untested, reports welcome): identity 4/4 on four models, launcher
 and chat working; speed numbers updated 2026-10-27 with the file-view cache (RESULTS 59-61); long-context numbers updated 2026-11-03 (section 6). Status and caveats per platform: [COMPATIBILITY](COMPATIBILITY.md). If your model fits in RAM and its experts all fit on the card, stock llama.cpp is all you need (the launcher picks it; with expert layers on the CPU it runs the plugin by default, `--stock` opts out); the plugin

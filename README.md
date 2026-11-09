@@ -1,7 +1,7 @@
-<h1 align="center">moe-cache</h1>
+<h1 align="center">moe-cache: run Mixture-of-Experts LLMs bigger than your RAM with llama.cpp</h1>
 
-<p align="center"><b>Run Mixture-of-Experts models that are bigger than your RAM, without the speed cliff.</b><br>
-A plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle llama.cpp b12207 built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
+<p align="center"><b>Run big MoE models (Qwen3, GLM, gpt-oss and more) that do not fit in your RAM on a normal PC with llama.cpp: the experts you use stay in RAM, the rest is read from your SSD.</b><br>
+moe-cache is a plugin that runs inside <code>llama-server</code>; it also works on the unmodified official one. No fork: the Windows kit and the Linux ggml 0.26 tarball bundle llama.cpp b12207 built from the official source plus a small patch set (<code>patches/llama.cpp</code>). Every patch is built in but off until you set its own switch, so by default the build behaves as the official one (checked at temperature 0 in CI). To use the official build instead, point <code>LLAMA_SERVER</code> at it.</p>
 
 <p align="center">
 <img alt="status" src="https://img.shields.io/badge/status-v0.3.7.1-blue">
@@ -15,6 +15,8 @@ A plugin that runs inside <code>llama-server</code>; it also works on the unmodi
 
 ## What it is
 
+**Who it is for:** you have a PC with 32 GB RAM (16 GB for smaller models), perhaps a 16 GB graphics card (AMD, NVIDIA or Intel, Windows 11 or Linux), a fast SSD, and you want to run a large local Mixture-of-Experts model (60-120 GB file) for chat, long documents or a coding agent, and plain llama.cpp is too slow because the model does not fit in RAM. **Who it is not for:** if the whole model fits in RAM, or in your graphics card, plain llama.cpp is fine ([when to use something else](docs/FAQ.md#when-to-use-something-else)).
+
 **moe-cache lets a normal PC run big Mixture-of-Experts AI models** (files of 60-120 GB) that are bigger than its RAM, with the plugin itself changing no number: with the same settings its answers are the same as plain llama.cpp's in the checks we ran (greedy decoding, the same GPU/CPU layer split, same llama.cpp build; the exact list is in [EXACTNESS](docs/EXACTNESS.md)). **By default, from 32k context on a graphics card with room, answers are not byte-identical to plain llama.cpp's:** the long-prompt mode (below) stores the KV cache as q8_0 (against f16: KL 0.014-0.015, same top token in 94-95 % of positions, meaning kept in 10 of 10 checks at 55k); `--exact` keeps f16 and the stock-identical answers (also at 128k+), and MTP and the `--fast` modes can change answers too. **The default is faster and not token-identical to plain llama.cpp:** it switches on exactly the modes we measured as a win (table in [CONFIGURATION](docs/CONFIGURATION.md): long-prompt mode from 32k, q8_0 KV from 128k, MTP drafting in agent mode); modes without a measured win (expert skipping, `--approx` tiers) stay off. **`--exact` turns every one of them off and gives plain llama.cpp's output.** `--fast` and `--approx` still work but are deprecated. A different GPU layer split, or experts computed on the GPU instead of the CPU, can change a token (slightly different floating-point sums) while the meaning stays. Chat in your browser, or connect coding tools (OpenCode, Hermes, Claude Code). Windows 11 and Linux. Free (MIT), no account.
 
 MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. When the file is bigger than your RAM, plain llama.cpp keeps reading the whole file from the disk and slows to a crawl; moe-cache keeps the experts the model actually uses in RAM and reads only the rest. If your model already fits in RAM and all its experts fit on the graphics card, the launcher runs stock llama.cpp. If it fits in RAM but some layers keep their experts on the CPU, it runs through the plugin by default; there moe-cache is about the same as plain llama.cpp on the 16 GB PC (1.06x prompt, 1.07x decode in our one test <!-- claim:v038-fits-qwen36 -->) and faster at decode on the 8 GB laptop; `--stock` turns that off ([when to use something else](docs/FAQ.md#when-to-use-something-else)).
@@ -27,6 +29,18 @@ MoE models (Qwen3, GLM, gpt-oss, DeepSeek) use only a few "experts" per token. W
 | Time | about 10 minutes of setup, plus the model download |
 
 **Privacy:** no telemetry, no account; the plugin opens no network connections. The few times the launcher or installer uses the internet (downloads you ask for, the update check) are listed in [docs/SECURITY.md](docs/SECURITY.md#privacy-what-moe-cache-sends-and-stores).
+
+## Questions people ask
+
+| Question | Short answer |
+|---|---|
+| [How do I run a MoE model that is bigger than my RAM?](docs/FAQ.md#how-do-i-run-a-moe-model-that-is-bigger-than-my-ram) | keep the experts you use in RAM and read the rest from the SSD; that is what moe-cache does |
+| [Why is llama.cpp slow when the model does not fit in RAM?](docs/FAQ.md#why-is-llamacpp-slow-when-the-model-does-not-fit-in-ram) | the whole file is read again and again from the disk (mmap thrashing) |
+| [Does it work with `--n-cpu-moe` and `-ot`?](docs/FAQ.md#does-it-work-with-llamacpps-own-offload-options) | yes, they work together |
+| [Which model fits a 32 GB RAM + 16 GB GPU PC?](docs/MODELS.md) | see [Which model?](#which-model) |
+| [Does it run on Windows with an AMD graphics card (Vulkan)?](docs/WINDOWS.md) | yes, the Windows kit uses Vulkan; the main test PC has an RX 9070 XT |
+| [Can I use it with a coding agent?](docs/AGENTS.md) | OpenCode, Claude Code, Hermes, Codex CLI, Aider and more |
+| [Is it free and private?](docs/SECURITY.md#privacy-what-moe-cache-sends-and-stores) | MIT licence, no account, no telemetry |
 
 ## Get started
 

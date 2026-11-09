@@ -1,4 +1,4 @@
-# Quick start (Linux)
+# Quick start on Linux: run a MoE model bigger than your RAM with llama.cpp
 
 **The short version** (details below):
 

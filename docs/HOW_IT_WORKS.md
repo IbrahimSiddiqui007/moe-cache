@@ -1,6 +1,6 @@
-# How moe-cache works
+# How moe-cache works: expert caching for MoE models bigger than RAM
 
-Moved here from the README on 2026-10-30, unchanged.
+Why llama.cpp slows down when a Mixture-of-Experts model does not fit in RAM, and what the plugin does about it.
 
 
 In short, moe-cache manages the CPU-side experts itself:

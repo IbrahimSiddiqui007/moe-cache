@@ -1,8 +1,12 @@
-# FAQ
+# FAQ: running Mixture-of-Experts models bigger than your RAM with llama.cpp
 
-Moved here from the README on 2026-10-30, unchanged.
+Short answers to the questions people ask most. Setup is in [INSTALL](INSTALL.md), models in [MODELS](MODELS.md), measured speeds in [RESULTS_CURRENT](RESULTS_CURRENT.md).
 
-### Why it is needed
+### How do I run a MoE model that is bigger than my RAM?
+
+Use moe-cache with llama.cpp: the plugin keeps the experts the model actually uses in RAM and reads the rest from your SSD, instead of letting the operating system re-read the whole file. Install, then `moe-cache launch` ([README](../README.md#get-started)); `moe_cache.py pick` names the model that suits your RAM and graphics card.
+
+### Why is llama.cpp slow when the model does not fit in RAM?
 
 MoE models such as Qwen3, gpt-oss or DeepSeek only use a few "experts" per token, but stock llama.cpp keeps all expert weights in memory-mapped files.
 When they do not fit in RAM, the OS page cache thrashes and speed falls off a cliff.
@@ -15,31 +19,59 @@ When they do not fit in RAM, the OS page cache thrashes and speed falls off a cl
 | The model is **bigger than your RAM**, or it is **another MoE architecture**, or you want to stay on **stock llama.cpp with the same tokens** | **moe-cache**: about **1.2-2x faster than plain llama.cpp on Windows and 2-5x on Linux** when the model is bigger than your RAM (Windows since 2026-10-27, RESULTS 59: 1.2x to 2x on the same models, GLM-5.3 2.0x in a paired run, 3.1x with MTP in one run, coding-agent sessions 2x to 2.4x faster; Linux clean runs since 2026-10-15: 2.4x to 5.2x, up to 12x in one early test (gpt-oss-120b, v0.1, one run per side); measurements in [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md)). No gain when the model fits in RAM. |
 
 
-**Do I need this if my model fits in RAM?** No. Use stock llama.cpp with `--moe-cache-mib` (see "When to use something else" at the top of this page). Caveat: `--moe-cache-mib` is llama.cpp's own GPU expert cache; on our Vulkan PC it was slower (RESULTS 59) and its output can differ slightly from stock, so test it on your card. The gain is when memory is short or the model is larger than your RAM. Since v0.3.8 the launcher runs a model that fits in RAM but keeps expert layers on the CPU through the plugin (`--stock` opts out): laptop with an 8 GB card, decode +10 to +29 %; 16 GB PC forced through the plugin, 1.06x prompt and 1.07x decode; Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden).
+### Do I need this if my model fits in RAM?
 
-**Do you check answer quality?** We measure it; we do not promise equal meaning on arbitrary prompts. How, in one page: [docs/EXACTNESS.md](EXACTNESS.md). The plugin itself changes no number: with `--exact` (or below 32k context, or when the card has no room for the long-prompt plan) and the same layer split the tokens are identical to stock llama.cpp. By default, from 32k context on a GPU with room, the long-prompt mode stores the KV cache as q8_0 (so do 128k and above), which means answers are **not byte-identical** to stock (KL 0.014-0.015, same top token 94-95 %, meaning kept in 10 of 10 checks at 55k); `--exact` keeps f16 (`tests/identity.sh`, CI on Linux and Windows). The approximate modes (`--fast`, `--fast=kv`, `--fast=fewer`, `--hybrid`) must pass a [quality gate](QUALITY_GATE.md) whose limits were fixed before measuring: KL divergence and same-top-token rate against stock, the 202 exact-answer tasks, and a loop count. Limits: `kv` KL at most 0.015, top-1 at least 95 %, tasks within 2 of stock; `fast` 0.040 / 90 % / 4; `fewer` 0.060 / 88 % / 5. Measured on Flash-Next Q2_0: `kv` KL 0.0079, top-1 96.7 %, 190 tasks = stock; `fewer` KL 0.034, 192 vs 190, unproven at 64k-256k. If answers look wrong or loop on your machine, see [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+No. Use stock llama.cpp with `--moe-cache-mib` (see "When to use something else" at the top of this page). Caveat: `--moe-cache-mib` is llama.cpp's own GPU expert cache; on our Vulkan PC it was slower (RESULTS 59) and its output can differ slightly from stock, so test it on your card. The gain is when memory is short or the model is larger than your RAM. Since v0.3.8 the launcher runs a model that fits in RAM but keeps expert layers on the CPU through the plugin (`--stock` opts out): laptop with an 8 GB card, decode +10 to +29 %; 16 GB PC forced through the plugin, 1.06x prompt and 1.07x decode; Without a GPU the launcher stays on stock llama.cpp (checked with a dry run on the laptop with the GPU hidden).
 
-**What cache policy does it use?** LRU at expert granularity; the experts of the operation that is running are protected. We replayed 13,464 real decode layer-steps of gpt-oss-120b at the real cache size: LRU 84.2 % hits, 2Q 83.6 %, LFU 84.1-84.2 %, LRU with the hottest experts pinned from a profile 84.3-84.8 %, the offline optimum 92.5 %. No policy beat LRU by more than 0.6 points, so LRU stayed (RESULTS 12, "Smarter eviction").
+### Do you check answer quality?
 
-**Is a very long prompt still slow?** Less than before, but a long prompt is still a wait. Prompt reading runs on the GPU. On our Windows PC (Flash-Next Q2_0) v0.3.5 reads a 64k-token prompt at about 440 tok/s (441 / 436, official llama-server, 2026-11-03), so about 2.5 minutes; v0.3.4 read it at 312-334 tok/s and the first measurement (agent mode, 2026-10-28) took about 290 s (RESULTS 64, §78). A 222k-token prompt at 256k context runs at about 334 tok/s, roughly 11 minutes (launcher default `-ub 2048`, 2026-11-03).
+We measure it; we do not promise equal meaning on arbitrary prompts. How, in one page: [docs/EXACTNESS.md](EXACTNESS.md). The plugin itself changes no number: with `--exact` (or below 32k context, or when the card has no room for the long-prompt plan) and the same layer split the tokens are identical to stock llama.cpp. By default, from 32k context on a GPU with room, the long-prompt mode stores the KV cache as q8_0 (so do 128k and above), which means answers are **not byte-identical** to stock (KL 0.014-0.015, same top token 94-95 %, meaning kept in 10 of 10 checks at 55k); `--exact` keeps f16 (`tests/identity.sh`, CI on Linux and Windows). The approximate modes (`--fast`, `--fast=kv`, `--fast=fewer`, `--hybrid`) must pass a [quality gate](QUALITY_GATE.md) whose limits were fixed before measuring: KL divergence and same-top-token rate against stock, the 202 exact-answer tasks, and a loop count. Limits: `kv` KL at most 0.015, top-1 at least 95 %, tasks within 2 of stock; `fast` 0.040 / 90 % / 4; `fewer` 0.060 / 88 % / 5. Measured on Flash-Next Q2_0: `kv` KL 0.0079, top-1 96.7 %, 190 tasks = stock; `fewer` KL 0.034, 192 vs 190, unproven at 64k-256k. If answers look wrong or loop on your machine, see [docs/TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-**Why is it not faster when my model already fits in RAM?** Because there is nothing to fix: stock llama.cpp then runs from the page cache with the same kernels. On Qwen3.6-35B at 24 GB, decode needs about 0.5 GB of expert weights per token (8 experts x 32 CPU layers x 1.9 MB), which the memory bus delivers at about 35 GB/s, close to this laptop's measured maximum (40 GB/s), so it is bandwidth-bound for everyone (stock 40, moe-cache 40 tok/s). The speed-ups appear when memory is short (the same model at 12 GB: 10 to 23 tok/s), for models larger than RAM, and for models with slow kernels (Q2_0 and the IQ types, where the executor and the faster kernel help).
+### What cache policy does it use?
 
-**Does it use my GPU?** Yes, through llama.cpp as usual. `moe-cache-server` picks how many layers' experts live on the GPU from your free VRAM (that alone is worth about +60 % over keeping everything on the CPU). moe-cache itself manages the experts that stay on the CPU side.
+LRU at expert granularity; the experts of the operation that is running are protected. We replayed 13,464 real decode layer-steps of gpt-oss-120b at the real cache size: LRU 84.2 % hits, 2Q 83.6 %, LFU 84.1-84.2 %, LRU with the hottest experts pinned from a profile 84.3-84.8 %, the offline optimum 92.5 %. No policy beat LRU by more than 0.6 points, so LRU stayed (RESULTS 12, "Smarter eviction").
 
-**Is the output really the same as stock?** With `--exact`, yes (and below 32k context, and without a GPU plan with room); by default from 32k context the long-prompt mode makes it close but not byte-identical (q8_0 KV cache, see EXACTNESS.md; `--no-long-prompt` turns it off). The plugin's own check: `tests/identity.sh` compares the tokens of stock llama-server and llama-server with the plugin (temperature 0, seed 42, same command line) and every model in [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md) passed it (Hunyuan only a short test). It runs in CI on Linux and Windows. `--fast`, `--fast=kv`, `--fast=fewer`, `--fast=2` and `--hybrid` can change the output; `--fast=kv` is also chosen automatically at `--ctx 131072` and above when a GPU is detected (conditions: [CONFIGURATION.md](CONFIGURATION.md)), and MTP can change text too ([EXACTNESS.md](EXACTNESS.md)).
+### Is a very long prompt still slow?
 
-**Why not just let the OS page cache / mmap handle it?** That is what stock llama.cpp does, and it is the slow case in our measurements ([RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md)): when the model does not fit, missing experts come in through tens of thousands of small page faults per token, and the kernel evicts pages without knowing which experts matter. moe-cache keeps whole experts resident and loads them with a few hundred large parallel reads (direct reads, or the file-view cache that is the default on Windows and Linux today; the 79,000 vs 770 figure below was measured with direct reads in October) (gpt-oss-120b: about 79,000 vs 770 reads per token for the same 325 MB, RESULTS_OLD_LAPTOP 12b). `--no-mmap` or `--mlock` need the whole model in RAM, so they do not help a model bigger than RAM.
+Less than before, but a long prompt is still a wait. Prompt reading runs on the GPU. On our Windows PC (Flash-Next Q2_0) v0.3.5 reads a 64k-token prompt at about 440 tok/s (441 / 436, official llama-server, 2026-11-03), so about 2.5 minutes; v0.3.4 read it at 312-334 tok/s and the first measurement (agent mode, 2026-10-28) took about 290 s (RESULTS 64, §78). A 222k-token prompt at 256k context runs at about 334 tok/s, roughly 11 minutes (launcher default `-ub 2048`, 2026-11-03).
 
-**Does it work with llama.cpp's own offload options?** Yes: moe-cache works together with `--n-cpu-moe` / `-ot` (every comparison row in the results uses the same `--n-cpu-moe` on both sides). It is a plugin for the unmodified upstream `llama-server` and keeps its exact tokens.
+### Why is it not faster when my model already fits in RAM?
+
+Because there is nothing to fix: stock llama.cpp then runs from the page cache with the same kernels. On Qwen3.6-35B at 24 GB, decode needs about 0.5 GB of expert weights per token (8 experts x 32 CPU layers x 1.9 MB), which the memory bus delivers at about 35 GB/s, close to this laptop's measured maximum (40 GB/s), so it is bandwidth-bound for everyone (stock 40, moe-cache 40 tok/s). The speed-ups appear when memory is short (the same model at 12 GB: 10 to 23 tok/s), for models larger than RAM, and for models with slow kernels (Q2_0 and the IQ types, where the executor and the faster kernel help).
+
+### Does it use my GPU?
+
+Yes, through llama.cpp as usual. `moe-cache-server` picks how many layers' experts live on the GPU from your free VRAM (that alone is worth about +60 % over keeping everything on the CPU). moe-cache itself manages the experts that stay on the CPU side.
+
+### Is the output really the same as stock?
+
+With `--exact`, yes (and below 32k context, and without a GPU plan with room); by default from 32k context the long-prompt mode makes it close but not byte-identical (q8_0 KV cache, see EXACTNESS.md; `--no-long-prompt` turns it off). The plugin's own check: `tests/identity.sh` compares the tokens of stock llama-server and llama-server with the plugin (temperature 0, seed 42, same command line) and every model in [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md) passed it (Hunyuan only a short test). It runs in CI on Linux and Windows. `--fast`, `--fast=kv`, `--fast=fewer`, `--fast=2` and `--hybrid` can change the output; `--fast=kv` is also chosen automatically at `--ctx 131072` and above when a GPU is detected (conditions: [CONFIGURATION.md](CONFIGURATION.md)), and MTP can change text too ([EXACTNESS.md](EXACTNESS.md)).
+
+### Why not just let the OS page cache / mmap handle it?
+
+That is what stock llama.cpp does, and it is the slow case in our measurements ([RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP](results-archive/RESULTS_OLD_LAPTOP.md)): when the model does not fit, missing experts come in through tens of thousands of small page faults per token, and the kernel evicts pages without knowing which experts matter. moe-cache keeps whole experts resident and loads them with a few hundred large parallel reads (direct reads, or the file-view cache that is the default on Windows and Linux today; the 79,000 vs 770 figure below was measured with direct reads in October) (gpt-oss-120b: about 79,000 vs 770 reads per token for the same 325 MB, RESULTS_OLD_LAPTOP 12b). `--no-mmap` or `--mlock` need the whole model in RAM, so they do not help a model bigger than RAM.
+
+### Does it work with llama.cpp's own offload options?
+
+Yes: moe-cache works together with `--n-cpu-moe` / `-ot` (every comparison row in the results uses the same `--n-cpu-moe` on both sides). It is a plugin for the unmodified upstream `llama-server` and keeps its exact tokens.
 
 
-**On Windows llama-server uses a lot of RAM with GPU layers, should I add `--no-mmap`, `--mlock` (newer llama.cpp: `--load-mode none` / `mlock`) or `--moe-cache-mib`?** No. llama.cpp's Windows loader leaves the model-file pages of the GPU tensors in llama-server's working set (about as much RAM as the GPU layers; RESULTS 56 I37). It is not the GPU driver. The plugin releases those pages at the first graph (the log says "released N GiB of model-file pages from the working set"). `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. Keep the page file system-managed: the cache costs no commit, but Vulkan's GPU memory does. Details: [docs/WINDOWS.md](WINDOWS.md), "Windows: where the RAM goes".
+### Windows: llama-server uses a lot of RAM with GPU layers, should I add `--no-mmap`, `--mlock` or `--moe-cache-mib`?
 
-**Mac?** No. The plugin uses Linux (and Windows) memory and direct-I/O calls, and on Apple Silicon the GPU and CPU share one memory, which changes the problem.
+(In newer llama.cpp `--no-mmap` and `--mlock` are `--load-mode none` and `mlock`.) No. llama.cpp's Windows loader leaves the model-file pages of the GPU tensors in llama-server's working set (about as much RAM as the GPU layers; RESULTS 56 I37). It is not the GPU driver. The plugin releases those pages at the first graph (the log says "released N GiB of model-file pages from the working set"). `--moe-cache-mib` is llama.cpp's GPU cache, not this plugin's. Keep the page file system-managed: the cache costs no commit, but Vulkan's GPU memory does. Details: [docs/WINDOWS.md](WINDOWS.md), "Windows: where the RAM goes".
 
-**Does it wear out my SSD?** It only reads the model file; reads do not wear an SSD. It writes small files: the expert profile, and in `--agent` mode the saved conversations (`--no-warm` turns that off).
+### Does it run on a Mac?
 
-**Is there a GUI?** Yes: the control page (`bin/moe-cache-server --ui`, see [docs/GUI.md](GUI.md)), plus llama-server's own chat page (`--open`). Any OpenAI-compatible app such as [Open WebUI](https://github.com/open-webui/open-webui) can use `http://localhost:8080/v1` (we have not tested Open WebUI ourselves).
+No. The plugin uses Linux (and Windows) memory and direct-I/O calls, and on Apple Silicon the GPU and CPU share one memory, which changes the problem.
 
-**Why not an own inference engine?** moe-cache is a small layer for the MoE models stock llama.cpp runs (tested list in COMPATIBILITY), so a new model works as soon as llama.cpp runs it. The reasoning and our measurements: [docs/internal/ENGINE_DECISION.md](internal/ENGINE_DECISION.md).
+### Does it wear out my SSD?
+
+It only reads the model file; reads do not wear an SSD. It writes small files: the expert profile, and in `--agent` mode the saved conversations (`--no-warm` turns that off).
+
+### Is there a GUI?
+
+Yes: the control page (`bin/moe-cache-server --ui`, see [docs/GUI.md](GUI.md)), plus llama-server's own chat page (`--open`). Any OpenAI-compatible app such as [Open WebUI](https://github.com/open-webui/open-webui) can use `http://localhost:8080/v1` (we have not tested Open WebUI ourselves).
+
+### Why not an own inference engine?
+
+moe-cache is a small layer for the MoE models stock llama.cpp runs (tested list in COMPATIBILITY), so a new model works as soon as llama.cpp runs it. The reasoning and our measurements: [docs/internal/ENGINE_DECISION.md](internal/ENGINE_DECISION.md).
