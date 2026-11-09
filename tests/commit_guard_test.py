@@ -133,12 +133,22 @@ check(not r.stops and r.said, "MOE_CACHE_COMMIT_GUARD=warn only warns")
 r = Rig([None, None, 3e9])
 check([r.step() for _ in range(3)] == [None, None, "soft"], "a failed probe is skipped")
 check(cg.parse_mode(None) == "stop" and cg.parse_mode("OFF") == "off" and cg.parse_mode("nonsense") == "stop", "mode parsing")
-r = Rig([5e9, 1e9, 9e9]); r.series = [5e9, 4e9]
-calls = []
-r.g.stop_fn = lambda reason: calls.append(reason)
+r = Rig([5e9, 4e9])
 alive = iter([True, True, True, False])
 r.g.run(lambda: next(alive), sleep=lambda s: None)
-check(not calls, "run() loops until the server is gone")
+check(not r.stops, "run() loops until the server is gone")
+r = Rig([])
+boom = []
+r.g.probe = lambda: (_ for _ in ()).throw(OSError("probe broke"))
+alive = iter([True] * 8 + [False])
+r.g.run(lambda: next(alive), sleep=lambda s: None)
+check(len([x for x in r.said if "cannot read" in x]) == 1 and "not protecting" in r.said[0], "a probe that always fails: ONE warning that the guard is not protecting the run")
+d_ = cg.decide(dense27(), layout(fit=True, kv_q8=False, ctx=131072, vram_free=14.65 * GIB), 23.5 * GIB, 48 * GIB, locked=("kv", "ub", "cache"))
+check(d_["ok"] and 0 < d_["layout"]["ffn_off"] < 64 and not d_["layout"]["fit"] and 23.5 * GIB - d_["est"]["total"] >= cg.soft_floor(48 * GIB),
+      f"--fit layout: the weights step is sized on the uncapped layout (auditor case: {d_['layout']['ffn_off']} layers, {d_['est']['total'] / GIB:.1f} GiB), no false refusal")
+d_ = cg.decide(dense27(), layout(fit=True, kv_q8=False, ctx=131072, vram_free=14.65 * GIB), 23.5 * GIB, 48 * GIB, locked=("ub", "cache"))
+check(d_["ok"] and not any("q8_0" in x for x in d_["steps"]) and not d_["layout"]["kv_q8"], "--fit layout, KV free: the q8_0 step is not taken when --fit's cap means it saves no commit")
+check("estimate, not yet measured" in cg.refusal_text(cg.decide(dense27(), layout(), 3 * GIB, 48 * GIB), 3 * GIB, 48 * GIB, 32 * GIB), "the refusal says the estimate is not measured yet")
 
 print("launcher: the plan on a fake Windows PC (synthetic 18 GB MoE header, sparse file)")
 import tempfile, types
@@ -170,7 +180,10 @@ with tempfile.TemporaryDirectory() as tmp:
         check(bool(c) and bool(rs) and c.group(1) == rs.group(1), f"{free / 1e9:.0f} GB free: --cache-ram {c and c.group(1)} and the plugin's host reserve {rs and rs.group(1)} agree")
     check("-c 65536" in cmdline(tight), "...the context is still 65536")
     pinned = run("win_tight", ["--ctx", "65536", "--no-commit-check"])
-    check("free commit is tight" not in txt(pinned) and "not starting" not in txt(pinned), "--no-commit-check: the first plan stands, nothing said")
+    check("free commit is tight" not in txt(pinned) and "not starting" not in txt(pinned) and "GPU plan" not in txt(pinned), "--no-commit-check: the first plan stands, nothing said, the old GPU-plan cap is not applied either")
+    lp.MACHINES["win_nv"] = dict(lp.MACHINES["win"], commit=(48e9, 17e9), nvidia=True, listing=lp.LINUX_LIST.replace("CUDA0", "CUDA0"))
+    nv = run("win_nv", ["--ctx", "65536"])
+    check("free commit is tight" not in txt(nv) and "not starting" not in txt(nv), "Windows + NVIDIA: GPU memory is not counted as commit (only the host side), so 17 GB free of 48 changes nothing")
     full = run("win_full", ["--ctx", "131072"])
     check("not starting: this model at this context needs" in full["stderr"] and "free commit" in full["stderr"] and "page file" in full["stderr"] and "close apps" in full["stderr"], "7 GB free of 48: the plan carries the refusal text")
     userub = run("win_tight", ["--ctx", "65536", "--ub", "2048"])
@@ -189,7 +202,6 @@ with tempfile.TemporaryDirectory() as tmp:
     lin = run("linux", ["--ctx", "65536"])
     check("commit" not in lin["stderr"], "Linux: no commit lines")
     # the refusal stops the real start
-    plan = types.SimpleNamespace()
     pl = mc.LaunchPlan(); pl.commit_refusal = "moe-cache: not starting: test"
     pl.a, pl.extra, pl.machine = types.SimpleNamespace(dry_run=False), [], None
     for k in ("model", "ls", "port", "ctx", "host", "cmd", "env", "key_env", "method", "win_limit", "api_key", "alias", "slotdir", "kv_q8", "ncmoe_user"):
@@ -199,7 +211,6 @@ with tempfile.TemporaryDirectory() as tmp:
     except SystemExit as e:
         refused = "not starting" in str(e.code)
     check(refused, "run_launch_plan refuses to start a plan with a commit refusal")
-    drypl = mc.LaunchPlan(); drypl.commit_refusal = "x"
 
 print("launcher: the 27B incident, dense model on the PC (synthetic ~27B header: 64 layers, 13 GiB, 2 KV heads)")
 import struct
@@ -254,7 +265,7 @@ said, saved_say = [], mc.say
 mc.say = lambda m, err=False: said.append(m)
 try:
     seq = iter([20e9, 5e9, 1.5e9, 1.4e9, 1.3e9])
-    saved_w, saved_win = mc.WINDOWS, mc.win_commit
+    saved_w, saved_win, saved_mi = mc.WINDOWS, mc.win_commit, mc.meminfo_available
     mc.WINDOWS, mc.win_commit = True, lambda: (48e9, 20e9)
     p = FakeProc()
     g = mc.start_commit_guard(p, {}, probe=lambda: next(seq, 1e9))
@@ -270,8 +281,21 @@ try:
     check(g3 is not None and g3.mode == "stop", "Linux: MOE_CACHE_COMMIT_GUARD=stop turns the stop on")
     mc.WINDOWS = True
     check(mc.start_commit_guard(FakeProc(), {}, probe=lambda: 50e9).mode == "stop", "Windows: stop is the default")
+    said.clear()
+    r = Rig([5e9, 1.9e9, 1.8e9])
+    [r.step() for _ in range(3)]
+    mc.say_exit(1, {"guard": r.g, "ready": True, "last": ""}, False)
+    check(any("stopped by the memory guard" in m for m in said) and not any("exited" in m for m in said), "say_exit: a guard stop is named as such, not as a crash")
+    said.clear()
+    r = Rig([5e9, 4e9]); [r.step() for _ in range(2)]
+    mc.say_exit(0, {"guard": r.g, "ready": True, "last": ""}, False)
+    check(any("lowest free commit seen" in m and "4.0 GB" in m for m in said), "say_exit: the lowest free commit seen is reported when it went under the warning line (calibration data)")
+    said.clear()
+    mc.win_commit = lambda: (None, None)
+    mc.WINDOWS = True
+    check(mc.start_commit_guard(FakeProc(), {}) is None and any("memory guard is off" in m for m in said), "no commit figure: the guard says it is off")
 finally:
-    mc.say, mc.WINDOWS, mc.win_commit = saved_say, saved_w, saved_win
+    mc.say, mc.WINDOWS, mc.win_commit, mc.meminfo_available = saved_say, saved_w, saved_win, saved_mi
 
 print("FAIL" if fails else "all ok")
 sys.exit(1 if fails else 0)

@@ -131,22 +131,22 @@ def fits(est, free, limit):
     return free - est["total"] >= soft_floor(limit)
 
 
-def _more_weights_to_ram(f, L, est, free, limit):
-    """Move just enough mmapped weights (experts of MoE layers, FFN of dense layers) off the GPU to fit; None when even all of them do not."""
+def _more_weights_to_ram(f, L, est, free, limit, windows=True):
+    """Move just enough mmapped weights (experts of MoE layers, FFN of dense layers) off the GPU to fit; None when no layer can move. An explicit placement replaces
+    llama.cpp's --fit, which caps the GPU part by itself, so the number of layers is searched on the uncapped layout (the smallest count that fits, else all of them)."""
     per = f["expert_per_layer"] if not f["dense"] else f["ffn_per_layer"]
     key = "n_cpu_moe" if not f["dense"] else "ffn_off"
     if per <= 0 or L.get("cpu_only"):
         return None
-    deficit = need_with_floor(est, limit) - free
     cur = min(L.get(key) or 0, f["n_layers"])
-    k = int(math.ceil(deficit / per))
-    new = min(cur + max(1, k), f["n_layers"])
+    base = dict(L, fit=False)
+    new, L2 = cur, base
+    for n in range(cur + 1, f["n_layers"] + 1):
+        new, L2 = n, dict(base, **{key: n})
+        if fits(estimate(f, L2, windows), free, limit):
+            break
     if new <= cur:
         return None
-    L2 = dict(L)
-    L2[key] = new
-    if L.get("fit"):
-        L2["fit"] = False           # an explicit placement replaces llama.cpp's --fit (the command builder writes -ngl 99 and -ot)
     return L2, f"{new - cur} more layer(s) of {'experts' if key == 'n_cpu_moe' else 'FFN weights'} in RAM ({new} of {f['n_layers']})"
 
 
@@ -185,10 +185,11 @@ def decide(f, L, free, limit, locked=(), allow_q8=True, windows=True):
         if fits(est, free, limit):
             return done()
     if "kv" not in locked and allow_q8 and not cur.get("kv_q8") and not cur.get("cpu_only"):
-        if settle(dict(cur, kv_q8=True), "q8_0 KV cache (half the KV memory; approximate, KL 0.0079 at 4k)"):
-            return done()
+        if estimate(f, dict(cur, kv_q8=True), windows)["total"] < est["total"] - 1:      # under --fit the capped GPU part would not change: no lossy step for nothing
+            if settle(dict(cur, kv_q8=True), "q8_0 KV cache (half the KV memory; approximate, KL 0.0079 at 4k)"):
+                return done()
     if "weights" not in locked:
-        r = _more_weights_to_ram(f, cur, est, free, limit)
+        r = _more_weights_to_ram(f, cur, est, free, limit, windows)
         if r:
             cur, est = r[0], estimate(f, r[0], windows)
             steps.append(r[1])
@@ -201,7 +202,7 @@ def refusal_text(d, free, limit, ram_total=None):
     """The refusal line: how much free commit the smallest layout needs, how much there is, and what to do about it."""
     need = d["need"]
     short = max(0.0, need - free)
-    msg = f"moe-cache: not starting: this model at this context needs {need / 1e9:.1f} GB free commit (the smallest layout: {parts_words(d['est'])}, plus {d['floor'] / 1e9:.1f} GB that must stay free so Windows does not kill your programs); you have {free / 1e9:.1f} GB: "
+    msg = f"moe-cache: not starting: this model at this context needs {need / 1e9:.1f} GB free commit (estimate, not yet measured on a real PC; the smallest layout: {parts_words(d['est'])}, plus {d['floor'] / 1e9:.1f} GB that must stay free so Windows does not kill your programs); you have {free / 1e9:.1f} GB: "
     pf = ""
     if ram_total and limit:
         want = max(0.0, limit - ram_total) + short
@@ -210,7 +211,7 @@ def refusal_text(d, free, limit, ram_total=None):
 
 
 def apply_plan_text(steps):
-    return "moe-cache: free commit is tight (Windows counts GPU memory as commit): smaller layout chosen to keep your programs alive: " + "; ".join(steps)
+    return "moe-cache: free commit is tight (Windows counts GPU memory as commit; estimate not yet measured): smaller layout chosen to keep your programs alive: " + "; ".join(steps)
 
 
 # ---------------------------------------------------------------- reading the layout from a command
@@ -245,7 +246,7 @@ def layout_from_cmd(cmd, env, f, vram_free=None, mm_bytes=0):
             ram_gib = float(e.get("MOE_CACHE_RAM_GIB") or 0)
         except ValueError:
             pass
-    cram = _val(cmd, "--cache-ram")
+    cram = _val(cmd, "--cache-ram", "-cram")
     try:
         cram = int(cram) if cram is not None else DEFAULT_CACHE_RAM_MIB
     except ValueError:
@@ -366,11 +367,16 @@ class CommitGuard:
 
     def run(self, alive, sleep=time.sleep):
         """Loop until alive() is False or the guard stopped the server."""
+        bad, told = 0, False
         while alive() and not self.stopped:
             try:
-                self.poll()
+                r = self.poll()
             except Exception:
-                pass
+                r = None
+            bad = bad + 1 if r is None else 0
+            if bad >= 5 and not told:        # a guard that cannot read memory must not look alive
+                told = True
+                self.say(f"moe-cache: warning: the memory guard cannot read {self.label} (5 samples in a row failed): it is not protecting this run")
             sleep(self.interval)
 
     def start(self, alive):

@@ -537,7 +537,8 @@ def check_agent(agent, url_given=None, config=None, as_json=False, timeout=180, 
             {"role": "system", "content": "You are a coding assistant."}, {"role": "user", "content": "Hi."}, {"role": "assistant", "content": "Hello."},
             {"role": "system", "content": "Reminder: answer briefly."}, {"role": "user", "content": "Say hello in three words."}]}
         r = stream(root, "chat", key, body, timeout)
-        low = (r.error or "").lower()
+        r.error = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", r.error or "")      # text from the server goes to the terminal: no control characters
+        low = r.error.lower()
         if r.status == 404:
             add("system messages", None, t0, "skipped: no /v1/chat/completions to test a system message in the middle of a conversation")
         elif (r.status and r.status != 200) or r.error:

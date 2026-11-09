@@ -89,6 +89,12 @@ with tempfile.TemporaryDirectory() as tmp:
         check(r[:1] == ["--chat-template-file"] and "--jinja" not in r, "--jinja already given: not added twice")
         check(mc.template_stage(a, ["--chat-template-file", "mine.jinja"], bad) == [] and mc.template_stage(a, ["--chat-template", "chatml"], bad) == [] and mc.template_stage(a, ["--no-jinja"], bad) == [],
               "the user's own --chat-template[-file] / --no-jinja win")
+        odd_model = os.path.join(tmp, "odd.gguf"); make_model(odd_model, original.replace("set content = render_content(", "set body = render_content("))
+        said = []; sv_say = mc.say; mc.say = lambda m, err=False: said.append(m)
+        try:
+            check(mc.template_stage(a, [], odd_model) == [] and any("does not recognise" in m for m in said), "a template that raises but has an unknown shape: nothing added, and a warning says to pass your own")
+        finally:
+            mc.say = sv_say
         check(mc.template_stage(a, [], good) == [] and mc.template_stage(a, [], none) == [], "a model with a fine or no template: nothing added")
     finally:
         mc.CACHE_DIR = saved

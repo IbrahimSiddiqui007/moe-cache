@@ -153,6 +153,9 @@ _new = {"last": {"mode": "exact", "mode_rev": ui.MODE_REV}}
 check(not ui.migrate_mode(_new) and _new["last"]["mode"] == "exact", "an Exact saved by this page (mode_rev) stays Exact")
 check(not ui.migrate_mode({"last": {"mode": "fast"}}) and not ui.migrate_mode({}) and not ui.migrate_mode({"last": None}) and not ui.migrate_mode([]), "Fast / Hybrid / nothing saved / odd shapes: untouched")
 check(ui.Handler.settings(_hs, {"model": "m.gguf", "mode": "exact"})["mode_rev"] == ui.MODE_REV, "every mode the page saves carries mode_rev")
+# `pick --apply` writes a recommendation into "last": it must not leave an Exact behind (it did: mode "exact", kept for good by a mode_rev from an earlier page launch)
+_pk = ui.picker.apply({"id": "x", "name": "X", "use": "chat", "ctx": 8192, "args": "", "local": "/m/x.gguf"}, {"last": {"mode": "fast", "mode_rev": ui.MODE_REV}})
+check(_pk["last"]["mode"] == "default" and "--exact" not in ui.server_args(dict(_pk["last"])), "pick --apply sets Default, not a leftover Exact (and a page launch of it passes no --exact)")
 import tempfile as _tf
 _d = _tf.mkdtemp(); _f = os.path.join(_d, "ui.json")
 json.dump({"folders": [], "last": {"model": "m.gguf", "mode": "exact"}}, open(_f, "w"))
