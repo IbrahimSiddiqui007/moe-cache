@@ -3038,6 +3038,13 @@ def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
         # http.server sets SO_REUSEADDR; on Windows that lets a second instance bind the same port (a double-clicked moe-cache.bat twice gave two competing
         # managers on 8070 and "forbidden" pages from the wrong token). Linux needs it to restart on a port in TIME_WAIT, Windows does not.
         allow_reuse_address = os.name != "nt"
+
+        def handle_error(self, request, client_address):
+            """A browser that goes away (tab closed, page reloaded) resets or aborts its connection, on Windows as WinError 10053 / 10054, also while the request is
+            still being read: there is nobody to answer, so no traceback. Every other error is still reported the usual way."""
+            if isinstance(sys.exc_info()[1], (ConnectionError, TimeoutError)):
+                return
+            super().handle_error(request, client_address)
     srv = _Srv((host, port), h)
     srv.daemon_threads = True
     srv.group_error, srv.group_error_seen, srv.group_lock = None, None, threading.Lock()          # see Handler.set_group_error
