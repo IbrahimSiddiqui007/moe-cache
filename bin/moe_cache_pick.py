@@ -718,7 +718,7 @@ def apply(rec, settings=None):
                  "time": time.strftime("%Y-%m-%d %H:%M")}
     if rec["local"]:
         last = dict(s.get("last") or {})
-        last.update({"model": rec["local"], "ctx": rec["ctx"], "agent": rec["use"] == "agents", "mode": "exact", "engine": "auto"})
+        last.update({"model": rec["local"], "ctx": rec["ctx"], "agent": rec["use"] == "agents", "mode": "default", "engine": "auto"})
         s["last"] = last
     return s
 

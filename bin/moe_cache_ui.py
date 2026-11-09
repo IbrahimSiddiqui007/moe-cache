@@ -2202,6 +2202,20 @@ def chat_request(body):
 
 # ---- the page server ----
 
+MODE_REV = 2          # settings saved with mode_rev 2 or more were written by a page where Exact is a deliberate choice
+
+
+def migrate_mode(saved):
+    """Before the page had a real Default mode, "exact" was what every page launch used (and saved). Such a saved 'exact' without mode_rev was never a choice, and kept
+    page launches without the long-prompt mode, q8_0 KV and MTP defaults: it becomes Default once; a later Exact (saved with mode_rev) stays. Returns True when it changed
+    `saved["last"]` in place."""
+    last = saved.get("last") if isinstance(saved, dict) else None
+    if isinstance(last, dict) and last.get("mode") == "exact" and (last.get("mode_rev") or 0) < MODE_REV:
+        last["mode"], last["mode_rev"] = "default", MODE_REV
+        return True
+    return False
+
+
 class Store:
     def __init__(self, ls):
         self.ls = ls
@@ -2211,6 +2225,8 @@ class Store:
                 self.saved = {}
         except Exception:
             self.saved = {}
+        if migrate_mode(self.saved):
+            self.save("last")
         self.models, self.models_at = [], 0
         self.plans = {}
 
@@ -2223,6 +2239,8 @@ class Store:
         if m != getattr(self, "_mtime", None):
             self._mtime = m
             self.saved = picker.load_settings() or self.saved
+            if migrate_mode(self.saved):
+                self.save("last")
         return self.saved
 
     def folders(self):
@@ -3004,6 +3022,7 @@ class Handler(BaseHTTPRequestHandler):
              "mtp": {"on": True, "off": False}.get(str(d.get("mtp")).lower()),
              "agent": str(d.get("agent")).lower() in ("1", "true", "on"), "no_warm": str(d.get("no_warm")).lower() in ("1", "true", "on"),
              "leave_room": str(d.get("leave_room")).lower() in ("1", "true", "on"), "no_long_prompt": str(d.get("no_long_prompt")).lower() in ("1", "true", "on"), "approx": d.get("approx") if d.get("approx") in ("safe", "careful", "aggressive") else "", "llama_server": self.store.ls, "api_key": d.get("api_key") or ""}
+        s["mode_rev"] = MODE_REV                  # saved with the page's settings: this mode was chosen, not left over from the time Exact was the only launch mode
         if s["engine"] == "stock":
             s["mode"] = "exact"                   # --fast and --hybrid need the plugin
         for k, lo, hi, conv, what in (("ram", 0.1, 65536, float, "RAM budget (GB)"), ("vram", 0.1, 4096, float, "VRAM (GiB)"),
