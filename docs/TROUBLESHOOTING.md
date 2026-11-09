@@ -1,4 +1,4 @@
-# Troubleshooting
+# Troubleshooting moe-cache: slow runs, wrong-looking answers, start problems
 
 Commands are given for both systems. On Linux use `python3 bin/moe_cache.py ...`; on Windows use `python bin\moe_cache.py ...`. Everything below behaves the same on both.
 

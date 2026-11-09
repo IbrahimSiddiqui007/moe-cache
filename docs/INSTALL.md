@@ -1,4 +1,4 @@
-# Install, run and measure, in detail
+# Install moe-cache, run it and measure it, in detail (Windows and Linux)
 
 ## One line to install, one command to start
 
