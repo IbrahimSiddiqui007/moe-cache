@@ -43,7 +43,7 @@ for kind in "$@"; do
   awk "BEGIN{exit !($RES > 1.0)}" && { log "eviction failed (the file is mapped or pinned elsewhere): stop"; exit 1; }
   mkdir -p "$O/slots-$tag"
   if [ "$kind" = mc ]; then
-    MOE_CACHE_LIB=$LIB MOE_CACHE_STATS=1 systemd-run --user --scope -q --unit=$U -p MemoryMax=${LIM}G -p MemorySwapMax=0 \
+    MOE_CACHE_LIB=$LIB MOE_CACHE_STATS=1 MOE_CACHE_NO_AUTOTUNE=1 systemd-run --user --scope -q --unit=$U -p MemoryMax=${LIM}G -p MemorySwapMax=0 \
       python3 "$HERE/bin/moe_cache.py" server "$M" --agent --always-plugin --ram "$RAM" --port $P --llama-server "$LS" -- --alias "$AL" --slot-save-path "$O/slots-$tag" > "$O/server-$tag.log" 2>&1 &
   else
     echo "stock: $CMD" > "$O/server-$tag.log"

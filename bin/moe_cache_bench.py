@@ -182,7 +182,7 @@ def _launch(model, mode, a, port, tee=None, extra=()):
            "--ctx", str(a.ctx), "--no-warm", "--stock" if mode == "stock" else "--always-plugin"] + (["--ram", str(a.ram)] if a.ram else []) + list(extra) + list(a.extra)
     if getattr(a, "limit_gb", None):
         cmd = limit_prefix(a.limit_gb) + cmd          # EMULATED smaller machine: both arms, the same hard limit
-    env = dict(os.environ, MOE_CACHE_STATS_SIGNAL="1")
+    env = dict(os.environ, MOE_CACHE_STATS_SIGNAL="1", MOE_CACHE_NO_AUTOTUNE="1")      # LAUNCHER-994: a benchmark arm is the plan it is told, never a tuned one
     kw = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env)
     if mc.WINDOWS:
         kw["creationflags"] = 0x00000200                  # CREATE_NEW_PROCESS_GROUP

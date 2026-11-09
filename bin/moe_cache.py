@@ -2110,6 +2110,9 @@ SERVER_HELP = """\
 --fast=kv  only the q8_0 KV cache of --fast (no skipped experts): at 128k+ it frees VRAM for more GPU layers and a bigger micro-batch (docs/QUALITY_GATE.md, level kv); the default at --ctx 131072 and above
 --exact    turn EVERY mode off that changes tokens (q8_0 KV cache, the long-prompt mode, MTP drafting; the table is TOKEN_MODES in bin/moe_cache_approx.py): the answers are the same as plain
            llama.cpp's (EXACTNESS.md). Without --exact the default is faster and NOT token-identical: it switches on exactly the modes measured as a win (long-prompt from 32k, q8_0 KV from 128k, MTP in agent mode)
+--retune   LAUNCHER-994 auto-tune: on the first real start for a model + machine + context the launcher tries 2-4 plans (n-cpu-moe, -ub, KV type, RAM_LOCK, -np; only what you did not set), for at most 180 s in
+           all, measures prompt and decode speed on each (a 1.5k-token prompt and 512 generated tokens; a shorter decode says "short probe"), keeps the fastest (it must beat the plan by 5 %) and stores
+           it under <cache>/autotune/. Later starts use the stored pick. --retune measures again. --exact and every flag of yours win (a dimension you set is left alone); --dry-run and --plan-json only show the stored pick
 --long-prompt  the long-prompt mode: a prompt chunk of 4096 tokens (-ub 4096) with the q8_0 KV cache, only when the memory plan of this card leaves room for it (otherwise nothing
            changes). It is ON BY DEFAULT from 32k context on (--long-prompt asks for it at any context). Flash-Next IQ3_XXS in a 65k conversation on the PC, against -ub 2048 with
            the f16 KV cache: prompts 331.8 against 187.4 tok/s (+77 %), answers 19.35 against 19.01 tok/s (+1.8 %). The q8_0 KV cache means answers are NOT byte-identical to plain
@@ -2314,6 +2317,7 @@ class LaunchPlan:
     """What server() will do: the decisions (engine stock/plugin, GPU layers, micro-batch, KV type, prompt cache), the environment and the llama-server
     command line, and every line the launcher said while deciding (notes: (text, is_error)). Built by launch_plan(); run_launch_plan() runs it."""
     notes = ()
+    autotune = None              # LAUNCHER-994: the auto-tune result (bin/moe_cache_autotune.py) or None
     commit_refusal = None        # LAUNCHER-991: why this plan must not be started (Windows commit too small even for the smallest layout), or None
 
     @property
@@ -2360,6 +2364,10 @@ class LaunchPlan:
         out += [t for t, e in self.notes if e]
         return [l for l in "\n".join(out).splitlines() if l.strip()]
 
+    def autotune_dict(self):
+        t = self.autotune
+        return None if not t else {k: t.get(k) for k in ("state", "picked", "changed", "why", "rows", "total_s", "budget_s", "tuned_at", "locked", "lines", "prompt_tokens", "decode_tokens")}
+
     def to_dict(self):
         return {"engine": self.engine, "method": self.method, "model": self.model, "llama_server": self.ls, "ctx": self.ctx, "port": self.port,
                 "n_cpu_moe": self.n_cpu_moe, "micro_batch": self.ub, "kv_cache": self.kv, "prompt_cache_mib": self.cache_ram,
@@ -2367,7 +2375,7 @@ class LaunchPlan:
                 "windows_job_limit_bytes": self.win_limit, "argv": list(self.cmd),
                 "env": [[k, "(hidden)" if k == "LLAMA_API_KEY" else v] for k, v in self.env + self.key_env],
                 "command_line": self.command_line(), "reasons": self.reasons, "warnings": self.warnings,
-                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines(),
+                "notes": [[t, e] for t, e in self.notes], "dry_run_lines": self.dry_run_lines(), "autotune": self.autotune_dict(),
                 **({"approx": getattr(self.a, "approx_info")} if getattr(self.a, "approx_info", None) else {})}
 
 
@@ -2386,6 +2394,7 @@ def parse_server(argv):
     ap.add_argument("--leave-room", action="store_true", default=os.environ.get("MOE_CACHE_LEAVE_ROOM", "0") not in ("", "0"))   # I use this PC too
     ap.add_argument("--long-prompt", action="store_true")      # long-prompt mode (v0.3.8): -ub 4096 + --fast=kv when the memory plan allows; since 2026-11-08 also the DEFAULT (see kv_stage); the flag asks for it at any context
     ap.add_argument("--no-long-prompt", action="store_true")   # opt out of the default long-prompt mode: -ub 2048 and the f16 KV cache, as before v0.3.8
+    ap.add_argument("--retune", action="store_true")    # LAUNCHER-994: measure the candidate plans again and replace the stored auto-tune pick (bin/moe_cache_autotune.py)
     ap.add_argument("--exact", action="store_true")     # keep the f16 KV cache at 128k+ (default there is --fast=kv, owner 2026-10-30)
     ap.add_argument("--no-ecores", action="store_true"); ap.add_argument("--no-pin", action="store_true"); ap.add_argument("--allow-sleep", action="store_true"); ap.add_argument("--no-sched-tuning", action="store_true", help=argparse.SUPPRESS)      # no-op since v0.3.8 (WINDOWS-013 removed); accepted for one release
     ap.add_argument("--open", action="store_true"); ap.add_argument("--dry-run", action="store_true")
@@ -2504,6 +2513,7 @@ def server(argv):
         for n in notes:
             say("moe-cache: " + n, err=True)
         return 0
+    a.autotune_probe = not (a.dry_run or a.plan_json)       # LAUNCHER-994: only a real start measures; everything that just describes the launch reads the stored pick
     plan = launch_plan(a, extra, argv, quiet=a.plan_json)
     if plan.commit_refusal and not a.dry_run and not a.plan_json:
         raise SystemExit(plan.commit_refusal)       # LAUNCHER-991: before anything loads a model, the --approx canary included
@@ -3704,6 +3714,161 @@ def template_stage(a, extra, model, dry=False):
     return ["--chat-template-file", path] + ([] if "--jinja" in extra else ["--jinja"])
 
 
+# ---- LAUNCHER-994: measured auto-tune (logic and cache file: bin/moe_cache_autotune.py) ------------------------------------------------------------------------
+def autotune_machine_sig(machine, ls):
+    """What makes a tuned pick valid on this computer and no other: CPU, cores, RAM (rounded to GiB), the GPUs and their total memory (free memory is left out:
+    it changes every minute), the OS and the llama-server build (size + mtime)."""
+    try:
+        devs = re.sub(r"\(\s*(\d+) MiB,\s*\d+ MiB free\s*\)", lambda m: f"({int(m.group(1)) // 1024} GiB)", machine.list_devices(ls) or "")
+    except Exception:
+        devs = ""
+    try:
+        st = os.stat(ls)
+        build = f"{st.st_size}:{int(st.st_mtime)}"
+    except OSError:
+        build = ""
+    try:
+        mem = round(machine.mem_total() / 2**30)
+    except Exception:
+        mem = 0
+    return {"cpu": cpu_name(), "cores": machine.physical_cores(), "ram_gib": mem, "gpus": sorted(set(l.strip() for l in devs.splitlines() if "MiB" in l or "GiB" in l)),
+            "os": "windows" if machine.windows else sys.platform, "llama_server": build}
+
+
+def autotune_model_id(model):
+    try:
+        st = os.stat(model)
+        return f"{os.path.basename(model)}:{st.st_size}:{int(st.st_mtime)}"
+    except OSError:
+        return os.path.basename(model)
+
+
+AUTOTUNE_PROMPT = ("The lighthouse keeper had kept a logbook for thirty-one years, and in all that time he had never once written down a lie. "
+                   "So when the ship appeared on the horizon on the first calm morning of October, with no flag, no lights and no one on deck, "
+                   "he sat at his small wooden table for a long while before he picked up the pen. ")
+
+
+def autotune_probe(cmd, env, left_s, decode_n):
+    """The real runner for moe_cache_autotune.tune: start llama-server with `cmd` on a free local port, wait until it is healthy (its load time), send one request that
+    reads a ~1.5k-token prompt (prompt tok/s) and one that writes decode_n tokens (decode tok/s), stop the server. Never raises; a failure is {"ok": False, "error": ...}."""
+    import moe_cache_autotune as at
+    t0 = time.monotonic()
+    left = lambda: left_s - (time.monotonic() - t0)
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
+    cmd = at.set_flag(at.set_flag(list(cmd), "--port", port), "--host", "127.0.0.1")
+    key = dict(env).get("LLAMA_API_KEY")
+    kw = {"env": env, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    if sys.platform.startswith("linux"):
+        kw["preexec_fn"] = _die_with_parent_linux
+    try:
+        p = subprocess.Popen(cmd, **kw)
+    except OSError as e:
+        return {"ok": False, "error": f"could not start llama-server: {e}"}
+    try:
+        if WINDOWS:
+            try:
+                _kill_with_parent_windows(p, None)
+            except Exception:
+                pass
+        try:
+            guard = start_commit_guard(p, env)
+        except Exception:
+            guard = None
+        while not healthy(port, key):
+            if p.poll() is not None:
+                return {"ok": False, "error": f"llama-server stopped while loading (exit {p.returncode})" + (": " + str(guard.stopped) if guard is not None and guard.stopped else "")}
+            if left() <= 0:
+                return {"ok": False, "error": "the load did not finish in the time left"}
+            time.sleep(0.5)
+        load_s = time.monotonic() - t0
+        url = f"http://127.0.0.1:{port}/completion"
+        st, body = http(url, {"prompt": AUTOTUNE_PROMPT * 11, "n_predict": 1, "cache_prompt": False, "temperature": 0}, key, timeout=max(5, left()))
+        pp = json.loads(body).get("timings", {}) if st == 200 else {}
+        if not pp.get("prompt_per_second"):
+            return {"ok": False, "load_s": load_s, "error": f"the prompt probe failed (HTTP {st})"}
+        st, body = http(url, {"prompt": "Write a long story about a lighthouse.", "n_predict": int(decode_n), "ignore_eos": True, "cache_prompt": False, "temperature": 0.7}, key,
+                        timeout=max(5, left()))
+        dd = json.loads(body).get("timings", {}) if st == 200 else {}
+        if not dd.get("predicted_per_second"):
+            return {"ok": False, "load_s": load_s, "error": f"the decode probe failed (HTTP {st})"}
+        return {"ok": True, "load_s": load_s, "prompt_tps": pp["prompt_per_second"], "prompt_n": pp.get("prompt_n"),
+                "decode_tps": dd["predicted_per_second"], "decode_n": dd.get("predicted_n")}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    finally:
+        try:
+            p.terminate(); p.wait(timeout=20)
+        except Exception:
+            try:
+                p.kill(); p.wait(timeout=10)
+            except Exception:
+                pass
+
+
+def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, n_layers, say_fn=None, runner=None):
+    """LAUNCHER-994: returns (cmd, env, info). info is None when the tuner does not apply (silent: --exact / --stock / MOE_CACHE_NO_AUTOTUNE), else a dict for the plan:
+    {"state": cached|tuned|too_slow|pending|..., "lines": [...], "picked", "rows", ...}. Reads the stored pick for this model + machine + context; measures only when
+    a.autotune_probe is set (a real start, not --dry-run / --plan-json / the control page's plan) and there is no stored pick or --retune was given."""
+    import moe_cache_autotune as at
+    say_fn = say_fn or say
+    if a.exact or a.stock or os.environ.get("MOE_CACHE_NO_AUTOTUNE", "") not in ("", "0") or not model or not os.path.isfile(model):
+        return cmd, env, None
+    locked = at.locked_dims(a, argv, os.environ, windows=machine.windows, agent=bool(a.agent), project=bool(a.project), engine=engine)
+    parts = at.key_parts(autotune_model_id(model), ctx, autotune_machine_sig(machine, ls), locked, a.agent, engine)
+    stored = None if a.retune else at.load(CACHE_DIR, parts)
+    if stored:
+        if stored.get("state") == "too_slow":
+            info = dict(stored, state="too_slow", lines=[f"moe-cache: auto-tune: not tried again: {stored.get('why')}"], locked=locked)
+            say_fn(info["lines"][0])
+            return cmd, env, info
+        new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(stored), locked)
+        lines = at.summary_lines(stored, cached=True, skipped=skipped, locked=locked)
+        for l in lines:
+            say_fn(l)
+        return new_cmd, new_env, dict(stored, state="cached", lines=lines, locked=locked, key=at.key_of(parts))
+    if not getattr(a, "autotune_probe", False):
+        line = "moe-cache: auto-tune: " + ("--retune: the plans are measured again on the next real start" if a.retune else
+                                           f"no stored pick for this model, machine and context yet: the first real start measures up to {at.BUDGET_S:.0f} s (--exact skips it)")
+        return cmd, env, {"state": "pending", "lines": [line], "locked": locked}      # not said: a plan that only describes stays as it was (the goldens); plan.autotune carries it
+    why_not = None
+    try:
+        others = machine.other_llama_servers()
+    except Exception:
+        others = []
+    if others:
+        why_not = "another llama-server is running (its memory and speed would change the probe)"
+    elif port_busy(a.port):
+        why_not = f"port {a.port} is busy"
+    if why_not:
+        line = f"moe-cache: auto-tune: not measured now: {why_not}; it is tried again at the next start"
+        say_fn(line)
+        return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
+    cands = at.build_candidates(cmd, env, locked, ctx, n_layers)
+    if len(cands) < 2:
+        res = {"rows": [{"id": "C0", "label": "the plan as it is", "status": "not measured", "edits": []}], "total_s": 0, "budget_s": at.BUDGET_S, "picked": "C0", "changed": False,
+               "state": "tuned", "why": "every setting that could be tuned is yours or does not apply here; nothing to try", "tuned_at": time.strftime("%Y-%m-%d %H:%M")}
+        at.save(CACHE_DIR, parts, res)
+        lines = at.summary_lines(res, locked=locked)
+        for l in lines:
+            say_fn(l)
+        return cmd, env, dict(res, lines=lines, locked=locked)
+    say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: trying {len(cands)} plans for at most {at.BUDGET_S:.0f} s (stored afterwards; --retune measures again)")
+    def run(c, left_s, n):
+        c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
+        return (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
+    res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t))
+    try:
+        at.save(CACHE_DIR, parts, res)
+    except OSError as e:
+        say_fn(f"moe-cache: auto-tune: could not store the result ({e}); it is measured again at the next start", err=True)
+    new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(res), locked)
+    lines = [l for l in at.summary_lines(res, locked=locked) if not l.startswith("moe-cache: auto-tune:   ")]
+    for l in lines:
+        say_fn(l)
+    return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts))
+
+
 def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes=0):
     """LAUNCHER-991, stage "commit": Windows charges GPU allocations (AMD / Intel Vulkan drivers), copied weights, the KV cache of a CPU-only run, the prompt cache and
     llama-server's own buffers to the commit limit (RAM + page file); when it runs out Windows kills programs (the PC, 2026-11-09: claude.exe, dwm.exe, codex.exe).
@@ -3876,6 +4041,14 @@ def _launch_plan(a, extra, argv, machine):
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
+    # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
+    cmd, env_t, tune_info = autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"))
+    env[:] = env_t                          # the same list object the plan keeps
+    if tune_info and tune_info.get("changed"):
+        ub = arg_after(cmd, "-ub", "--ubatch-size") or ub
+        n_ = arg_after(cmd, "--n-cpu-moe", "-ncmoe")
+        ncmoe = n_ if n_ is not None else ncmoe
+        kv_q8 = arg_after(cmd, "-ctk", "--cache-type-k") == "q8_0"
     cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
     new_cram = arg_after(cmd, "--cache-ram")
     if new_cram is not None and cram is not None and re.fullmatch(r"[0-9]+", str(new_cram)) and str(new_cram) != str(cram):
@@ -3904,6 +4077,7 @@ def _launch_plan(a, extra, argv, machine):
     plan.api_key, plan.cmd, plan.env, plan.key_env, plan.win_limit = api_key, cmd, env, key_env, win_limit
     plan.machine, plan.commit_refusal = machine, commit_refusal
     plan.tuned, plan.planner_info, plan.planner_error = tuned, planner_info, planner_error
+    plan.autotune = tune_info
     return plan
 
 

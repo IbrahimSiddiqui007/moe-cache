@@ -213,3 +213,16 @@ These appear in the code but setting them in the environment does nothing (build
 | `MOE_CACHE_TEST_MUTANT_PACK_OFFSET` | Not a runtime variable: a compile-time flag (`-D`) used only by CI. It copies expert slices from a wrong offset so the pack identity test is proven able to fail. Never set it. |
 | `MOE_CACHE_TEST_NO_POPULATE` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI to test the guarded page-touch that a kernel without `MADV_POPULATE_READ` takes. Never set it. |
 | `MOE_CACHE_TEST_INPAGE_ERROR` | Not a runtime variable: a compile-time flag (`-D`, `src/platform.h`) used only by CI (`windows.yml`). It makes the Windows file-view page touch raise the in-page read error a dropped disk would, on the second page of a range, to test that `file_view_load` returns false instead of crashing (CACHE-685). |
+
+## Measured auto-tune (LAUNCHER-994)
+
+| What | How |
+|---|---|
+| When | The first real start for a model file + this machine (CPU, cores, RAM, GPUs, llama-server build) + context. `--dry-run`, `--plan-json` and the control page's plan never measure; they show the stored pick |
+| What it tries | The plan as it is, plus up to 3 of: 2 more expert layers on the GPU (`--n-cpu-moe` -2), `-ub` 2048/4096, the other KV type (from 32k context), 2 more expert layers on the CPU, `MOE_CACHE_RAM_LOCK` + `MOE_CACHE_DROP_READAHEAD` (Linux plugin), `-np 1`. A setting you gave (flag before or after `--`, or the environment variable) is never tuned |
+| Budget and probe | At most 180 s in total, loads included. Per plan: a ~1.5k-token prompt (prompt tok/s) and 512 generated tokens (decode tok/s); when the time left is short the decode is shorter and the line says "short probe". The probe ranks plans; it is not a 64k figure |
+| Pick | The lowest time for a 4,000-token prompt (16,000 in agent mode) plus 512 generated tokens; a plan must beat the plan as it is by 5 %, else that one stays |
+| Where | `<cache dir>/autotune/<key>.json` (`~/.cache/moe-cache` on Linux). The key covers the model, context, machine, user-flag set and tuner version; the expert-layer change is stored as a delta, so a changed GPU memory later cannot carry a stale layer count over |
+| Redo / skip | `--retune` measures again. `--exact` and `--stock` skip it. `MOE_CACHE_NO_AUTOTUNE=1` is for scripts and benchmark arms (the bench tool sets it) |
+| A model that cannot load in the budget | Stored as "too slow": not tried at every start; `--retune` tries again |
+| Output | Launcher lines `moe-cache: auto-tune: ...` (the control page lists them under "What the launcher decided") and the `autotune` object in `--plan-json` |

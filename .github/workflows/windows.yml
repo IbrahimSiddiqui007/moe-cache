@@ -307,6 +307,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "multigpu test failed" }
           python tests/commit_guard_test.py       # LAUNCHER-991: commit estimate, refusal, run-time guard (fake commit numbers)
           if ($LASTEXITCODE -ne 0) { throw "commit_guard test failed" }
+          python tests/autotune_test.py           # LAUNCHER-994: measured auto-tune (fake timings, a fake llama-server script)
+          if ($LASTEXITCODE -ne 0) { throw "autotune test failed" }
           python tests/chat_template_fix_test.py  # AGENTS-992: Qwen3.8 template and mid-conversation system messages
           if ($LASTEXITCODE -ne 0) { throw "chat_template_fix test failed" }
           python tests/require_node_test.py     # AUD-094: ui_test skips its JavaScript checks, exit 0, when node is missing; this fails instead
