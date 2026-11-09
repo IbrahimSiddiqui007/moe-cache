@@ -137,7 +137,7 @@ Tauri's updater plugin reads `latest.json` from the GitHub Release of the app an
   model first, then restarts). The public key is read from `desktop/src-tauri/update-pubkey.txt`; while that file starts with `PLACEHOLDER` the tray item
   says updates are not set up, and the build is unsigned and makes no update files. `requireSignedVersion` is on (an old signed release cannot be offered
   as a newer one). The workflow signs only when the repository secret `TAURI_SIGNING_PRIVATE_KEY` exists. Updater on Linux works for the AppImage only.
-- **How to make the key (owner, about 5 minutes):** `cd desktop && npm install --no-audit --no-fund && npx tauri signer generate -w ~/.tauri/moe-cache.key`
+- **How to make the key (owner, about 5 minutes):** `cd desktop && npm ci --no-audit --no-fund --ignore-scripts && npx tauri signer generate -w ~/.tauri/moe-cache.key`
   (it asks for a password and prints the public key, also saved as `~/.tauri/moe-cache.key.pub`). Put the public key into `update-pubkey.txt`; add the
   private key file's text as the repository secret `TAURI_SIGNING_PRIVATE_KEY` (and the password as `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`); keep a backup
   of the private key (without it installed apps cannot be updated any more). Still open for M4: `latest.json` in the release (day 9) and the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the app icon files from the chosen concept D (concepts/D/d64.txt, d32.txt, d16.txt), nearest-neighbour only (no smoothing):
+"""Build the app icon files from the chosen concept D (d64.txt, d32.txt, d16.txt in this folder), nearest-neighbour only (no smoothing):
 64x64 map for 64 px and up (1024 = x16), the 32x32 map for 32-48 px, the hand-made 16x16 for 16-24 px.
 Writes the PNGs and icon.ico (ImageMagick `magick`, 7 frames) into ../src-tauri/icons/. icon.icns (macOS, not in version 1) comes from `npx tauri icon`.
 Run:  python3 desktop/icons/make_app_icon.py     (needs Pillow and ImageMagick); then, once, for the .icns:  npx tauri icon <1024.png> -o <tmp> and copy icon.icns"""
@@ -9,7 +9,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "src-tauri", "icons")
 PAL = {"S": (0x6B, 0x99, 0xB3, 255), "C": (0xF8, 0xEF, 0xC9, 255), "K": (0x2A, 0x1B, 0x14, 255), "R": (0xC8, 0x44, 0x2A, 255), "M": (0xC6, 0xCE, 0xB8, 255), ".": (0, 0, 0, 0)}
 def load(n):
-    rows = open(os.path.join(HERE, "concepts", "D", n)).read().split()
+    rows = open(os.path.join(HERE, n)).read().split()
     im = Image.new("RGBA", (len(rows), len(rows))); im.putdata([PAL[c] for r in rows for c in r]); return im
 m16, m32, m64 = load("d16.txt"), load("d32.txt"), load("d64.txt")
 def render(px):
