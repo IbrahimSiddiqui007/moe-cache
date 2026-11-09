@@ -27,7 +27,7 @@ MACHINES = {
     "linux": dict(windows=False, total=32 * GIB, avail=24e9, listing=LINUX_LIST, nvidia=True, free_vram=7600 * 2**20, total_vram=8188 * 2**20,
                   win_mem=(None, None), commit=(None, None), ded={}, driver="", cores=[]),
     "win": dict(windows=True, total=32e9, avail=24e9, listing=WIN_LIST, nvidia=False, free_vram=15000 * 2**20, total_vram=16304 * 2**20,
-                win_mem=(32e9, 24e9), commit=(60e9, 20e9), ded={"AMD Radeon RX 9070 XT": 16 * GIB, "AMD Radeon(TM) Graphics": 512 * 2**20},
+                win_mem=(32e9, 24e9), commit=(96e9, 80e9), ded={"AMD Radeon RX 9070 XT": 16 * GIB, "AMD Radeon(TM) Graphics": 512 * 2**20},
                 driver="32.0.21001.1", cores=[(1, [0, 2, 4, 6, 8, 10, 12, 14]), (0, [16, 17, 18, 19])]),
 }
 

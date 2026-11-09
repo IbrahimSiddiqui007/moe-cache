@@ -1912,9 +1912,68 @@ def warn_heavy_background():
 
 
 def say_exit(rc, seen, with_ready):
+    g = seen.get("guard")
+    if g is not None and g.min_free is not None and g.min_free < g.soft:
+        say(f"moe-cache: memory guard: the lowest {g.label} seen while llama-server ran was {g.min_free / 1e9:.1f} GB (warning line {g.soft / 1e9:.1f} GB)", err=True)
+    if g is not None and g.stopped:
+        say("moe-cache: llama-server was stopped by the memory guard (see the WARNING above); it did not crash", err=True)
+        return
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)   # Ctrl-C / terminate
     if rc not in (0, None) and not quiet:
         say("moe-cache: " + exit_reason(rc, seen["ready"] if with_ready else None) + (f"; last plugin line: {seen['last']}" if seen["last"] else ""), err=True)
+
+
+def meminfo_available():
+    """MemAvailable in bytes (Linux), None elsewhere or when unreadable."""
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable"):
+                return int(line.split()[1]) * 1024.0
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def start_commit_guard(p, env, say_fn=None, probe=None):
+    """LAUNCHER-991, run-time guard: while llama-server (process p) runs, poll free commit (Windows) or MemAvailable (Linux) every 2 s. Under the soft line (max(6 GB, 12.5 % of
+    the commit limit) on Windows) a loud 'moe-cache: WARNING' line goes to the terminal, which the Monitor and the control page lift from the log; under the hard line (2 GB;
+    Linux 1 GB) llama-server is stopped cleanly and the reason said, before the system starts killing programs. Windows stops by default; Linux only warns unless
+    MOE_CACHE_COMMIT_GUARD=stop (the Linux line is not measured). =warn only warns, =off is off.
+    Returns the guard (its .stopped holds the reason after a stop) or None."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    import commit_guard as cgd
+    asked = env.get("MOE_CACHE_COMMIT_GUARD", os.environ.get("MOE_CACHE_COMMIT_GUARD"))
+    mode = cgd.parse_mode(asked if asked else ("stop" if WINDOWS else "warn"))      # Linux warns only until the 1 GiB MemAvailable line is measured on real loads
+    if mode == "off":
+        return None
+    say_fn = say_fn or (lambda m: say(m, err=True))
+    if WINDOWS:
+        limit = win_commit()[0]
+        if not limit:
+            say_fn("moe-cache: warning: Windows did not report the commit limit: the memory guard is off for this run")
+            return None
+        probe = probe or (lambda: win_commit()[1])
+        soft, hard, label = cgd.soft_floor(limit), cgd.HARD_FLOOR, "free commit"
+    else:
+        tot = mem_total()
+        if not tot:
+            say_fn("moe-cache: warning: the machine's memory size is unknown: the memory guard is off for this run")
+            return None
+        probe = probe or meminfo_available
+        (soft, hard), label = cgd.linux_floors(tot), "available memory"
+    def stop(reason):
+        if WINDOWS and env.get("MOE_CACHE_PROFILE"):
+            try:
+                win_request_save(p.pid, env["MOE_CACHE_PROFILE"], timeout=10, proc=p)      # TerminateProcess would lose what the cache learned
+            except Exception:
+                pass
+        try:
+            p.terminate()
+        except OSError:
+            pass
+    g = cgd.CommitGuard(probe, say_fn, stop, soft, hard, mode, label=label)
+    g.start(lambda: p.poll() is None)
+    return g
 
 
 def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, final=False):
@@ -1951,6 +2010,10 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     win_request_save(p.pid, env["MOE_CACHE_PROFILE"], timeout=0)
         threading.Thread(target=save_now_and_then, daemon=True).start()
     seen = {"plugin": False, "disabled": "", "last": "", "ready": False, "oom": False}
+    try:
+        seen["guard"] = start_commit_guard(p, env)       # LAUNCHER-991
+    except Exception as e:
+        say(f"moe-cache: warning: the memory guard did not start ({e})", err=True)
     def pump():
         out = getattr(sys.stderr, "buffer", None)
         for line in iter(p.stderr.readline, b""):
@@ -2099,6 +2162,7 @@ SERVER_HELP = """\
 --cpu-only    run on the CPU only: llama-server gets --device none and -ngl 0 (also chosen by itself when --list-devices shows no GPU)
 --no-ffn-ram  dense model bigger than the GPU: by default attention, the KV cache and most weights stay on the GPU and the FFN weights of the last layers stay in RAM (-ot), which keeps long chats usable (Qwen3-14B on an 8 GB card at 32k tokens: 3.8 tok/s against 1.0 with a plain layer split); this brings llama.cpp's --fit layer split back
 --cpu-gpu-split [auto|FRACTION]  dense model with FFN weights in RAM (see --no-ffn-ram), CUDA, patched llama.cpp with patch 0091: the GPU computes part of the rows of those weights while the CPU computes the rest (the weights go over PCIe by DMA from page-locked RAM); auto follows the measured wait, a number (0.05-0.6) fixes the GPU's share. Opt-in until the PC run decides. Loads the model without mmap and without repacking (needed to page-lock it); laptop RTX 4060 + Qwen3-14B: quiet +6.7 / -2.6 % (below the +10 % bar), one busy core +19 to +39 %
+--no-commit-check  Windows: do not refuse a start whose estimated commit (GPU memory counts as commit on some drivers) leaves under max(6 GB, 12.5 % of the commit limit) free, and do not shrink the layout for it. The run-time guard stays (MOE_CACHE_COMMIT_GUARD=warn|off changes that)
 --no-auto-fit  dense model: pass -ngl 99 again (a file bigger than the GPU then aborts at load)
 --no-starter  do not start from the shipped usage profile for this model family when you have no profile yet (profiles/<arch>-<layers>x<experts>.usage)
 --mtp / --no-mtp  multi-token prediction with the model's own draft head (blk.N.nextn.*, e.g. Qwen3.6, GLM-5.3): --spec-type draft-mtp --spec-draft-n-max 2.
@@ -2250,6 +2314,7 @@ class LaunchPlan:
     """What server() will do: the decisions (engine stock/plugin, GPU layers, micro-batch, KV type, prompt cache), the environment and the llama-server
     command line, and every line the launcher said while deciding (notes: (text, is_error)). Built by launch_plan(); run_launch_plan() runs it."""
     notes = ()
+    commit_refusal = None        # LAUNCHER-991: why this plan must not be started (Windows commit too small even for the smallest layout), or None
 
     @property
     def reasons(self):
@@ -2331,6 +2396,7 @@ def parse_server(argv):
     ap.add_argument("--cpu-gpu-split", nargs="?", const="auto", default=None, metavar="auto|FRACTION")   # DECODE-917 (patch 0091): the GPU also computes part of the rows of the RAM-held FFN weights (opt-in, CUDA)
     ap.add_argument("--no-ffn-ram", action="store_true")    # dense models bigger than the GPU: no FFN-weights-in-RAM plan (-ot), llama.cpp's --fit layer split instead
     ap.add_argument("--no-auto-fit", action="store_true")   # dense models: go back to the blind -ngl 99
+    ap.add_argument("--no-commit-check", action="store_true")    # LAUNCHER-991: start although the estimate says Windows' free commit is too small (see commit_stage)
     ap.add_argument("--share-ram", action="store_true")     # PROTOTYPE (MM7): count the RAM other llama-servers hold before sizing this one; default off
     ap.add_argument("--peers", action="store_true")         # PROTOTYPE (N2/MM2): servers started with this share one memory cap at run time through a folder of small files; default off
     ap.add_argument("--multi-gpu", action="store_true")     # PROTOTYPE: plan for 2+ GPUs (planner/multigpu.py); default off
@@ -2439,6 +2505,8 @@ def server(argv):
             say("moe-cache: " + n, err=True)
         return 0
     plan = launch_plan(a, extra, argv, quiet=a.plan_json)
+    if plan.commit_refusal and not a.dry_run and not a.plan_json:
+        raise SystemExit(plan.commit_refusal)       # LAUNCHER-991: before anything loads a model, the --approx canary included
     if a.max_ram and not a.plan_json:
         os.environ["MOE_CACHE_MAX_RAM_GB"] = a.max_ram     # this process is the launch: its later memory decisions (OOM retry, warm-keeper threads) keep the cap
     if a.plan_json:
@@ -2650,13 +2718,7 @@ def multi_gpu_apply(mg, a, extra, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_us
             say(f"moe-cache: --multi-gpu: not applied ({why}): the one-card plan stands")
         return ncmoe, extra
     free = [c["free_mib"] * 2**20 for c in cards]
-    if win:       # Windows commit carries Vulkan allocations: shrink the pool the same way as the one-card plan, each card by the same share
-        cfree = machine.win_commit()[1]
-        pool = sum(free) / 2**30
-        capped = vram_for_commit(pool, cfree)
-        if capped < pool:
-            free = [f * capped / pool for f in free]
-            say(f"moe-cache: GPU plan {pool:.2f} -> {capped:.2f} GiB: Windows' free commit must also carry llama-server's own buffers", err=True)
+    # (Windows commit: commit_stage counts the whole server after the plan; the old fixed 4 GiB cap of the pool is gone, LAUNCHER-991)
     kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}
     res = multigpu.launch_args([dict(c, free_mib=f / 2**20) for c, f in zip(cards, free)], model, ctx, kv_q8=kv_q8, ub=int(ub) if (ub or "").isdigit() else None, **kw)
     if "skip" in res:
@@ -2865,6 +2927,12 @@ def agent_stage(a, extra, model):
     return alias, slotdir
 
 
+def commit_check_on(a, machine):
+    """LAUNCHER-991: the whole-server commit estimate (commit_stage) is active: Windows, and neither --no-commit-check nor MOE_CACHE_COMMIT_CHECK=0. It then owns the
+    prompt-cache shrink too (the older commit_plan rule stays for --no-commit-check)."""
+    return bool(machine.windows and not a.no_commit_check and os.environ.get("MOE_CACHE_COMMIT_CHECK") != "0")
+
+
 def gpu_stage(a, ls, win, machine):
     """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
     vram_user = a.vram
@@ -2883,14 +2951,8 @@ def gpu_stage(a, ls, win, machine):
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
-            # XA-3: Vulkan's GPU allocations are charged to Windows commit; plan no more GPU memory than the free commit can carry next to llama-server's
-            # host buffers, so a desktop with a browser open gets a slower start instead of a crash (RESULTS 73)
-            cfree = machine.win_commit()[1]
-            capped = vram_for_commit(float(a.vram), cfree)
-            if capped < float(a.vram):
-                say(f"moe-cache: GPU plan {a.vram} -> {capped:.2f} GiB: Windows' free commit ({cfree / 1e9:.1f} GB, RAM + page file) must also carry "
-                    "llama-server's own buffers; close big programs or let Windows manage the page file for the full GPU plan", err=True)
-                a.vram = f"{capped:.2f}"
+            # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
+            # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
     return vram_user, listing, gpu
 
 
@@ -3356,6 +3418,11 @@ def gpu_cache_stage(a, extra, env, ls, model, listing, gcache, ncmoe, tuned, sto
     return ncmoe
 
 
+def host_reserve_mib(cram, agent):
+    """The host memory (MiB) the plugin keeps free for llama-server's prompt cache: the cache size (0 for none / unlimited) plus 1 GiB for the agent's slots."""
+    return max(int(cram), 0) + (1024 if agent else 0)
+
+
 def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
     """ENGINE-029, stage "prompt cache": llama-server's --cache-ram (8 GiB by default, which competes with the expert cache): 2 GiB, 0 below 16 GB of memory, MOE_CACHE_PROMPT_CACHE_MIB, cut to what Windows' free commit can carry; and the host reserve told to the plugin. Yours after -- always wins. extra and env grow in place. Returns the cache size as text or None."""
     cram = arg_after(extra, "--cache-ram", "-cram")
@@ -3382,7 +3449,7 @@ def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
         ctot, cfree = machine.win_commit()
         if ctot and cfree:
             say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
-            if cram_auto and re.fullmatch(r"[0-9]+", str(cram)):
+            if cram_auto and re.fullmatch(r"[0-9]+", str(cram)) and not commit_check_on(a, machine):
                 fit, short = commit_plan(cfree, a.vram, int(cram))
                 if fit < int(cram):
                     extra[len(extra) - 1 - extra[::-1].index("--cache-ram") + 1] = str(fit)
@@ -3393,7 +3460,7 @@ def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
                         "memory and stop. Close big programs, or set the page file to system-managed (or larger) in Windows' Advanced system settings", err=True)
     say(prompt_cache_note(cram, extra, a.agent))
     if cram is not None and re.fullmatch(r"[0-9-]+", cram):
-        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(max(int(cram), 0) + (1024 if a.agent else 0))))
+        env.append(("MOE_CACHE_HOST_RESERVE_MIB", str(host_reserve_mib(cram, a.agent))))
     elif a.agent:
         env.append(("MOE_CACHE_HOST_RESERVE_MIB", "1024"))     # told to the plugin directly instead of it parsing our command line
     return cram
@@ -3613,6 +3680,76 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
     return cmd, extra
 
 
+def template_stage(a, extra, model, dry=False):
+    """AGENTS-992, stage "chat template": a model whose own template raises "System message must be at the beginning." (Qwen3.8: 27B, Flash-Next) answers HTTP 500 to
+    Claude Code, which sends system messages mid-conversation. Gives llama-server a copy fixed by one line (a later system message becomes a user turn; made from the
+    model's own template, planner/chat_template_fix.py) with --chat-template-file, plus --jinja when the template file needs it. Your own --chat-template[-file] / --no-jinja
+    after -- win. Returns the flags to add."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        import chat_template_fix as ctf
+        if ctf.user_chose_template(extra):
+            return []
+        path, _ = ctf.fixed_template_file(model, CACHE_DIR, write=not dry)
+        if not path and ctf.needs_fix(ctf.model_template(model)):
+            say("moe-cache: WARNING: this model's chat template refuses system messages in the middle of a conversation (Claude Code sends them: HTTP 500), and the automatic "
+                "fix does not recognise its shape; pass your own template: -- --chat-template-file FIXED.jinja", err=True)
+    except Exception:
+        return []
+    if not path:
+        return []
+    say("moe-cache: this model's chat template refuses system messages in the middle of a conversation (some clients, Claude Code among them, send them: such a request would fail with HTTP 500 "
+        f"\"System message must be at the beginning\"); using a copy fixed by one line, a later system message becomes a user turn: {path} "
+        "(--chat-template-file FILE after -- uses your own)")
+    return ["--chat-template-file", path] + ([] if "--jinja" in extra else ["--jinja"])
+
+
+def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes=0):
+    """LAUNCHER-991, stage "commit": Windows charges GPU allocations (AMD / Intel Vulkan drivers), copied weights, the KV cache of a CPU-only run, the prompt cache and
+    llama-server's own buffers to the commit limit (RAM + page file); when it runs out Windows kills programs (the PC, 2026-11-09: claude.exe, dwm.exe, codex.exe).
+    Estimates the whole server (planner/commit_guard.py), and when free commit after the load would be under max(6 GB, 12.5 % of the limit) tries smaller layouts (mmap instead of
+    copies, smaller -ub, smaller prompt cache, q8_0 KV, more weights in RAM; never a shorter context; anything the user fixed stays) and otherwise refuses.
+    Returns (cmd, ncmoe, ub, kv_q8, refusal text or None). Linux and macOS: nothing here (the run-time guard watches MemAvailable)."""
+    if not machine.windows or a.no_commit_check or os.environ.get("MOE_CACHE_COMMIT_CHECK") == "0":
+        return cmd, ncmoe, ub, kv_q8, None
+    limit, free = machine.win_commit()
+    if not limit or not free:
+        say("moe-cache: warning: Windows did not report the commit figures: the commit check is skipped for this start", err=True)
+        return cmd, ncmoe, ub, kv_q8, None
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        import commit_guard as cgd
+        f = cgd.facts_from_model(model)
+    except Exception as e:
+        say(f"moe-cache: warning: the commit check is skipped for this start (the model's layout could not be read: {type(e).__name__}: {e})", err=True)
+        return cmd, ncmoe, ub, kv_q8, None
+    vram = gpu[2] * 2**20 if gpu and gpu[2] > 0 else (float(a.vram) * 2**30 if a.vram else None)
+    L = cgd.layout_from_cmd(cmd, env, f, vram_free=vram, mm_bytes=mm_bytes)
+    ev = dict(env)
+    user = " ".join(argv)
+    flags = lambda *names: any(re.search(r"(^| )" + re.escape(n) + r"( |=|$)", user) for n in names)
+    locked = set()
+    if a.ub != "auto" or flags("-ub", "--ubatch-size", "-b", "--batch-size"): locked.add("ub")
+    if a.exact or flags("-ctk", "--cache-type-k", "-ctv", "--cache-type-v"): locked.add("kv")
+    if flags("--cache-ram", "-cram") or arg_after(cmd, "--cache-ram") is None: locked.add("cache")      # no --cache-ram in the command: this llama-server may not have the option
+    if ev.get("GGML_CPU_GPU_SPLIT") or flags("-ot", "--override-tensor", "-ngl", "--n-gpu-layers", "--gpu-layers", "--n-cpu-moe") or a.n_cpu_moe is not None or a.hybrid:
+        locked.add("weights")
+    gpu_counts = not machine.nvidia_reports()          # AMD / Intel Vulkan drivers charge GPU allocations to commit; NVIDIA/CUDA is not known to, so only the host side counts there
+    d = cgd.decide(f, L, free, limit, locked=locked, allow_q8=not a.exact and not a.stock, windows=gpu_counts)
+    if d["ok"] and not d["steps"]:
+        return cmd, ncmoe, ub, kv_q8, None
+    if not d["ok"]:
+        txt = cgd.refusal_text(d, free, limit, (machine.win_memory() or (None, None))[0] or machine.mem_total())
+        if "weights" in locked:
+            txt += " (-ot / -ngl / --n-cpu-moe given by you are not changed)"
+        return cmd, ncmoe, ub, kv_q8, txt
+    new_cmd, n_moe, new_ub, new_q8, ffn = cgd.apply_layout_to_cmd(cmd, L, d["layout"], f)
+    say(cgd.apply_plan_text(d["steps"]) + f" (estimate: {cgd.parts_words(d['est'])}; {free / 1e9:.1f} GB free of {limit / 1e9:.1f} GB; --no-commit-check keeps the first plan)", err=True)
+    if ffn or (not f["dense"] and n_moe and n_moe > (L.get("n_cpu_moe") or 0)):
+        EXPECT_CPU_WORK[0] = True
+    return new_cmd, (str(n_moe) if (n_moe is not None and not f["dense"]) else ncmoe), (str(new_ub) if new_ub != L["ub"] else ub), new_q8, None
+
+
 def _launch_plan(a, extra, argv, machine):
     win = machine.windows
     dry = a.dry_run or a.plan_json         # a plan that only describes (or prints) what would run: no files written, llama-server need not exist
@@ -3690,6 +3827,7 @@ def _launch_plan(a, extra, argv, machine):
     api_key, key_env = api_key_stage(a, extra, lan_addr)
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias, slotdir = agent_stage(a, extra, model)
+    extra += template_stage(a, extra, model, dry)
     extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact)
     extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
@@ -3738,6 +3876,13 @@ def _launch_plan(a, extra, argv, machine):
     ncmoe, extra = multi_gpu_stage(a, env, extra, mg, model, ctx, kv_q8, ub, gcache, ncmoe, ncmoe_user, tuned, stock, machine, win)
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
+    cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
+    new_cram = arg_after(cmd, "--cache-ram")
+    if new_cram is not None and cram is not None and re.fullmatch(r"[0-9]+", str(new_cram)) and str(new_cram) != str(cram):
+        cram = new_cram                     # the stage shrank the prompt cache: the plan and the plugin's host reserve follow
+        env[:] = [(k, str(host_reserve_mib(new_cram, a.agent)) if k == "MOE_CACHE_HOST_RESERVE_MIB" else v) for k, v in env]
+    if commit_refusal:
+        say(commit_refusal, err=True)       # the plan still describes the launch (--dry-run, the control page); run_launch_plan refuses to start it
     say(f"moe-cache: web UI and API will be at http://127.0.0.1:{port}")
     # Windows has no cgroups: --ram became a job memory limit on llama-server when the plugin runs (WP3). Stock runs are not limited by it (their
     # model lives in the file cache, which job limits do not count), so it is left off there. A job limit caps committed memory, and Windows
@@ -3757,7 +3902,7 @@ def _launch_plan(a, extra, argv, machine):
     plan.n_cpu_moe, plan.ncmoe_user, plan.ub, plan.kv_q8 = ncmoe, ncmoe_user, ub, kv_q8
     plan.cache_ram, plan.profile, plan.alias, plan.slotdir, plan.host = cram, profile, alias, slotdir, host
     plan.api_key, plan.cmd, plan.env, plan.key_env, plan.win_limit = api_key, cmd, env, key_env, win_limit
-    plan.machine = machine
+    plan.machine, plan.commit_refusal = machine, commit_refusal
     plan.tuned, plan.planner_info, plan.planner_error = tuned, planner_info, planner_error
     return plan
 
@@ -3768,6 +3913,8 @@ def run_launch_plan(plan):
     model, ls, port, ctx, host = plan.model, plan.ls, plan.port, plan.ctx, plan.host
     cmd, env, key_env, method, win_limit = plan.cmd, plan.env, plan.key_env, plan.method, plan.win_limit
     api_key, alias, slotdir, kv_q8, ncmoe_user = plan.api_key, plan.alias, plan.slotdir, plan.kv_q8, plan.ncmoe_user
+    if plan.commit_refusal and not a.dry_run:
+        raise SystemExit(plan.commit_refusal)
     if a.dry_run:
         if plan.job_limit_note():
             say(plan.job_limit_note())
