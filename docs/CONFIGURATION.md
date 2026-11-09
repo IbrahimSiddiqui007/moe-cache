@@ -41,6 +41,8 @@
 | `MOE_CACHE_WIN_VIEW=0` / `MOE_CACHE_LINUX_VIEW=0` | go back from the file-view cache (read-only views of the model file; the default on Windows since 2026-10-27 and on Linux since 2026-10-28) to private memory with direct reads |
 | `MOE_CACHE_WIN_OPEN_HINT=sequential` / `random` | Windows A/B switch (default off): open the model file view's handle with `FILE_FLAG_SEQUENTIAL_SCAN` or `FILE_FLAG_RANDOM_ACCESS`, which changes the cache manager's read-ahead for that file. Unset or anything else = the flags used before. Effect unknown (0-5 %, either sign): measure with an A B B A run before using it | Windows only |
 | `MOE_CACHE_WIN_BUFFERED=0\|1\|2` | Windows private-memory path only: 0 unbuffered, 1 buffered through the file cache, 2 adds random-access hints (buffered is the default; see COMPATIBILITY.md) |
+| `MOE_CACHE_COMMIT_CHECK=0` | Windows: skip the pre-load commit estimate (same as `--no-commit-check`): see TROUBLESHOOTING.md, "Crashes on Windows with other programs open" |
+| `MOE_CACHE_COMMIT_GUARD=stop\|warn\|off` | the run-time memory guard of the launcher: warns under the soft line and stops llama-server under the hard line (2 GB free commit on Windows, 1 GB MemAvailable on Linux). Default `stop` on Windows, `warn` on Linux (not measured there yet); `warn` never stops it |
 | `MOE_CACHE_HOST_RESERVE_MIB` | memory kept free for llama-server's prompt cache (`--cache-ram`); the launcher sets it |
 | `MOE_CACHE_GUARD=1` | tests only: reading an evicted expert crashes instead of returning zeros (small models only) |
 

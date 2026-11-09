@@ -305,6 +305,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "model_parts test failed" }
           python tests/multigpu_test.py
           if ($LASTEXITCODE -ne 0) { throw "multigpu test failed" }
+          python tests/commit_guard_test.py       # LAUNCHER-991: commit estimate, refusal, run-time guard (fake commit numbers)
+          if ($LASTEXITCODE -ne 0) { throw "commit_guard test failed" }
+          python tests/chat_template_fix_test.py  # AGENTS-992: Qwen3.8 template and mid-conversation system messages
+          if ($LASTEXITCODE -ne 0) { throw "chat_template_fix test failed" }
           python tests/require_node_test.py     # AUD-094: ui_test skips its JavaScript checks, exit 0, when node is missing; this fails instead
           if ($LASTEXITCODE -ne 0) { throw "node is missing: the control page's JavaScript checks would be skipped" }
           $env:REQUIRE_NODE = "1"

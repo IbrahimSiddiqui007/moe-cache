@@ -73,6 +73,16 @@ Windows promises memory to programs out of its **commit** budget (RAM + page fil
 used up, new allocations fail even though RAM still shows as free, and llama-server can stop mid-request. The launcher prints the budget at start
 (`moe-cache: Windows memory: RAM ... GB free; commit ... GB free of ... GB`), shrinks its own prompt cache to fit, and warns when it is still too tight.
 
+**LAUNCHER-991 (v0.3.8).** On some Windows drivers (the AMD RX 9070 XT with Vulkan, measured) the GPU's memory is charged to commit too, so a 27B model at 64k or 128k context
+took llama-server to 15.7 / 17.6 GB of commit and Windows closed other programs (event log "low virtual memory"). The launcher now:
+
+| Step | What it does |
+|---|---|
+| Estimate | adds up what the whole server asks for: GPU buffers (weights on the GPU, KV cache, compute buffer), copied weights, the prompt cache, a private plugin cache, the process. Mapped model files (the weights in RAM, the file-view cache) are not commit and are not counted. Estimates are not measured on the PC yet; they err high |
+| Before the load | free commit after the load must stay at or above `max(6 GB, 12.5 % of the commit limit)`. If not, it tries smaller layouts in this order: mmap instead of copies, smaller `-ub`, smaller prompt cache, q8_0 KV cache (never with `--exact`), more weights (experts / FFN layers) in RAM. The context is never shortened, and anything you fixed yourself (`-ub`, `-ctk`, `--cache-ram`, `-ot`, `--n-cpu-moe`) stays. Moving the KV cache to RAM does not help: private memory is commit too |
+| Refusal | if even the smallest layout does not fit it does not start and says: needs N GB free commit, you have M: close apps or set the page file to X GB (system managed also works). `--no-commit-check` (or `MOE_CACHE_COMMIT_CHECK=0`) starts anyway |
+| While running | every 2 s the launcher reads free commit (Linux: MemAvailable). Under the warning line (Windows `max(6 GB, 12.5 %)`) it prints a loud `moe-cache: WARNING` line (the Monitor and the control page show it); under 2 GB it stops llama-server cleanly and says why, before Windows starts closing programs. On Linux the guard only warns (its 1 GB MemAvailable line is not measured yet; `MOE_CACHE_COMMIT_GUARD=stop` turns the stop on). `MOE_CACHE_COMMIT_GUARD=warn` only warns, `=off` turns the guard off |
+
 | Fix | How |
 |---|---|
 | Close big programs | browsers with many tabs, games, other model servers |

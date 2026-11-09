@@ -530,6 +530,27 @@ def check_agent(agent, url_given=None, config=None, as_json=False, timeout=180, 
                     add("tool call", False, t0, "call ok, but no answer after the tool result" + (" (it called the tool again)" if r2.calls else ""),
                         "the model does not continue after a tool result: check the chat template (agent mode / --jinja) and try another model")
 
+    # 4b system messages (AGENTS-992): Claude Code sends system messages after the first turn; some chat templates (Qwen3.8's) raise on them and every request answers HTTP 500
+    if agent == "claude" and not need("chat") and ready:
+        t0 = time.time()
+        body = {"model": model, "max_tokens": 16, "messages": [
+            {"role": "system", "content": "You are a coding assistant."}, {"role": "user", "content": "Hi."}, {"role": "assistant", "content": "Hello."},
+            {"role": "system", "content": "Reminder: answer briefly."}, {"role": "user", "content": "Say hello in three words."}]}
+        r = stream(root, "chat", key, body, timeout)
+        low = (r.error or "").lower()
+        if r.status == 404:
+            add("system messages", None, t0, "skipped: no /v1/chat/completions to test a system message in the middle of a conversation")
+        elif (r.status and r.status != 200) or r.error:
+            if "system message" in low or "beginning" in low:
+                add("system messages", False, t0, f"HTTP {r.status}: ...{r.error[-100:]}",
+                    "this model's chat template refuses a system message in the middle of a conversation, which Claude Code sends: start the server with moe-cache-server (it uses a "
+                    "copy of the template fixed by one line for Qwen3.8), or pass --chat-template-file FIXED.jinja after the --")
+            else:
+                d, f = http_fix(r.status, r.error, "system messages", agent)
+                add("system messages", False, t0, d, f)
+        else:
+            add("system messages", True, t0, "a system message in the middle of a conversation is accepted")
+
     # 5 window
     t0 = time.time()
     if need("config", "models"):
