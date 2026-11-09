@@ -333,6 +333,7 @@ button.danger { border-color:var(--ink); }
     <span class="grow"></span>
     <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
     <span class="startgrp"><button class="primary" id="start">Start</button><button class="primary" id="switch" hidden title="Stop the running model and start the selected one with the settings shown">Switch</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
+    <button class="ghost" id="monpop" title="Small always-on-top-able window (360 x 480): speed, context, cache, SSD, memory and the last log lines">⧉ Mini</button>
     <button class="ghost" id="monopen" title="Live monitor: speed, cache, SSD, memory, per-layer hits, plan and a searchable log">📈 Monitor</button>
     <button class="icon" id="tglRight" title="Status, context, files, agents, log">◧</button>
     <div class="menu rowmenu" id="rowmenu" role="menu" hidden></div>
@@ -1885,6 +1886,17 @@ async function monPoll() {
 }
 function monOpen() { M.open = true; M.paused = false; $("monpause").textContent = "Pause"; $("mondlg").hidden = false; monPoll(); clearInterval(M.timer); M.timer = setInterval(monPoll, 2000); }
 function monClose() { M.open = false; $("mondlg").hidden = true; clearInterval(M.timer); $("chart-tip").hidden = true; }
+async function monPop() {       // GUI-044: the small window is written into a same-origin popup: the token stays out of every URL
+  const w = window.open("", "moe-cache-mini", "popup=yes,width=360,height=480");
+  if (!w) { alert("The browser blocked the pop-up: allow pop-ups for this page, then click Mini again."); return; }
+  try {
+    const r = await fetch("/api/mini", { headers: authHeaders() }), h = (await r.text()).replace("__TOKEN__", TOKEN);
+    w.document.open(); w.document.write(h); w.document.close();
+    const th = document.documentElement.getAttribute("data-theme"); if (th) w.document.documentElement.setAttribute("data-theme", th);
+    w.focus();
+  } catch (e) { w.close(); alert("Could not open the mini window: " + (e.message || e)); }
+}
+$("monpop").onclick = monPop;
 $("monopen").onclick = monOpen; $("monclose").onclick = monClose;
 $("monpause").onclick = () => { M.paused = !M.paused; $("monpause").textContent = M.paused ? "Resume" : "Pause"; if (!M.paused) monPoll(); };
 $("monrange").onchange = () => monPaint();

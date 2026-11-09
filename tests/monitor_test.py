@@ -53,6 +53,44 @@ check(len(m.requests) == 1 and m.requests[0]["prefill_tps"] == 2030.0 and m.requ
 check(m.mtp["accepted"] == 30 and m.mtp["generated"] == 40, "MTP acceptance counted")
 check(m.approx.get("mode") == "skip" and m.approx["given_up"] == 300, f"approximate-routing line parsed ({m.approx})")
 
+# ---- per-request prompt length, reused tokens and duration (the Requests view) ----
+m2 = mm.Monitor()
+m2.add_line(1, 10.0, "slot update_slots: id 0 | task 7 | new prompt, n_ctx_slot = 4096, n_keep = 0, task.n_tokens = 1000")
+m2.add_line(2, 11.0, "prompt eval time =     500.00 ms /   200 tokens (    2.50 ms per token,   400.00 tokens per second)")
+m2.add_line(3, 12.0, "       eval time =    2000.00 ms /    40 tokens (   50.00 ms per token,    20.00 tokens per second)")
+m2.add_line(4, 12.0, "      total time =    2500.00 ms /   240 tokens")
+r2 = m2.requests[-1]
+check(r2["prompt_total"] == 1000 and r2["prefill_tokens"] == 200 and r2["reused"] == 800 and r2["total_ms"] == 2500.0 and r2["decode_tokens"] == 40, f"request row: whole prompt, reused 800 of 1000, duration ({r2})")
+m2.add_line(5, 13.0, "prompt eval time =     500.00 ms /   200 tokens (    2.50 ms per token,   400.00 tokens per second)")
+m2.add_line(6, 14.0, "       eval time =    2000.00 ms /    40 tokens (   50.00 ms per token,    20.00 tokens per second)")
+check("reused" not in m2.requests[-1], "a request whose prompt length was not logged has no reused figure (nothing invented)")
+# the same from the lines this llama-server really prints (recorded on the laptop: no "new prompt" line; the slot choice and n_past say what was reused)
+m3 = mm.Monitor()
+REAL = ["0.01.987.913 I slot get_availabl: id  3 | task -1 | selected slot by LRU, t_last = -1",
+        "0.14.827.333 I slot print_timing: id  3 | task 1 | prompt eval time =      586.50 ms /   115 tokens (    5.10 ms per token,   196.08 tokens per second)",
+        "0.14.827.343 I slot print_timing: id  3 | task 1 |        eval time =   12252.30 ms /   150 tokens (   82.23 ms per token,    12.16 tokens per second)",
+        "0.14.827.345 I slot print_timing: id  3 | task 1 |       total time =   12838.80 ms /   265 tokens",
+        "0.14.827.432 I slot      release: id  3 | task 1 | stop processing: n_tokens = 264, truncated = 0",
+        "0.14.837.617 I slot get_availabl: id  3 | task -1 | selected slot by LCP similarity, f_sim_best = 1.000 (> 0.100 thold), f_keep = 0.436",
+        "0.14.837.928 W slot   operator(): id  3 | task 170 | need to evaluate at least 1 token for each active slot (n_past = 115, task.n_tokens() = 115)",
+        "0.14.837.929 W slot   operator(): id  3 | task 170 | n_past was set to 114",
+        "0.27.126.925 I slot print_timing: id  3 | task 170 | prompt eval time =      174.72 ms /     1 tokens (  174.72 ms per token,     5.72 tokens per second)",
+        "0.27.126.930 I slot print_timing: id  3 | task 170 |        eval time =   12114.27 ms /   150 tokens (   81.30 ms per token,    12.30 tokens per second)",
+        "0.27.126.930 I slot print_timing: id  3 | task 170 |       total time =   12288.99 ms /   151 tokens"]
+for i, l in enumerate(REAL):
+    m3.add_line(i + 1, 100.0 + i, l)
+q1, q2 = m3.requests
+check(q1["reused"] == 0 and q1["prompt_total"] == 115 and q1["total_ms"] == 12838.8, f"real log, empty slot: nothing reused, prompt 115 ({q1.get('reused')}, {q1.get('prompt_total')})")
+check(q2["reused"] == 114 and q2["prompt_total"] == 115 and q2["prefill_tokens"] == 1 and q2["total_ms"] == 12288.99, f"real log, cached slot: 114 of 115 reused ({q2.get('reused')}, {q2.get('prompt_total')})")
+mh = mm.Monitor()
+mh.tick(1.0, None, None, None, None, None, False, hw={"gpu_util": 50.5, "cpu_sys": 12.3456, "io_r": None})
+check(mh.samples[-1]["gpu_util"] == 50.5 and mh.samples[-1]["cpu_sys"] == 12.35 and mh.samples[-1]["io_r"] is None, "hardware readings join the sample row")
+check(not mh.watched() and (mh.payload() and mh.watched()), "hardware is read only while somebody looked in the last 20 s")
+check(isinstance(ui.token_mode_status({"kv_k": "q8_0", "ub": "4096", "env": {"MOE_CACHE_ROUTE": "skip"}}, True, {})[0], dict), "token modes come with their status")
+tm = {x["id"]: x for x in ui.token_mode_status({"kv_k": "q8_0", "ub": "4096", "env": {"MOE_CACHE_ROUTE": "skip"}}, True, {"approx": "safe"})}
+check(tm["kv8"]["active"] is True and tm["long-prompt"]["active"] is True and tm["mtp"]["active"] is True and tm["fast1"]["active"] is True and tm["fewer"]["active"] is False and tm["approx-tiers"]["active"] is True and tm["kv8"]["status"] == "won", "token modes: which are in use from the real arguments and environment")
+check(ui.token_mode_status({"ub": "512"}, False, {})[3]["active"] is None, "token modes: unknown (not off) when the environment cannot be read")
+
 # ---- snapshots -> rates and layer columns ----
 s1 = {"hits": 100, "misses": 10, "hits_dec": 50, "misses_dec": 5, "read_bytes": 1_000_000_000, "ns_ssd_wait": 100_000_000, "n_ssd_wait": 4, "ns_cpu": 400_000_000, "ns_total": 1_000_000_000,
       "evictions": 10, "layer_hits": [10, 20, 0], "layer_misses": [0, 5, 0]}
@@ -76,6 +114,7 @@ check(smp["dec"] == 18.5 and smp["pre"] == 1000.0 and smp["hit"] == 0.9 and smp[
 check(pl["layer_total"][:2] == [1.0, 0.571] and pl["cap"] == 28 * 2**30 and pl["ctx"] == {"depth": 812, "max": 65536} and pl["mtp"]["rate"] == 0.75, "payload: whole-run layer rates, cap, context, MTP rate")
 check(json.loads(json.dumps(pl))["log_seq"] == 8 and len(pl["log"]) == 8 and len(m.payload(0, 5)["log"]) == 3, "payload: log lines after a sequence number")
 check(len(m.payload(smp["t"])["samples"]) == 0, "payload: samples after a time")
+check([x[0] for x in m.payload(0, 0, tail=3)["log"]] == [6, 7, 8], "payload: tail=3 keeps only the newest three lines")
 for i in range(mm.MAX_LOG + 50):
     m.add_line(1000 + i, 400.0, "x")
 check(len(m.log) == mm.MAX_LOG, f"the log ring holds {mm.MAX_LOG} lines")

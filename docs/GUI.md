@@ -164,6 +164,22 @@ The **📈 Monitor** button in the top bar opens a full-screen view of the runni
 | Last requests | prompt and decode speed, tokens and MTP acceptance of each finished request | llama-server's timing lines |
 | Log | the last 20,000 lines of the launcher, the plugin, llama-server and the page, with time and source; warnings and errors coloured; search by text or `/regex/`; filter by source and level; **Download .txt / .jsonl** saves the filtered lines | the server's output |
 
+**Small window.** **⧉ Mini** opens a 360 x 480 window with the numbers you glance at while working: decode speed with a sparkline, prompt speed, context, cache hit, SSD, CPU executor, RAM against the cap, VRAM and the last five log lines (warnings in colour). Allow pop-ups for the page once.
+
+**Terminal monitor.** `python3 bin/moe_cache.py top` is the same data as a full-screen terminal app for people who never open the page (Linux, macOS, Windows Terminal and PowerShell; no packages to install; read only, `q` leaves the server running). Seven views, keys `1`-`7` or left/right:
+
+| View | What it shows |
+|---|---|
+| 1 Overview | model state (Idle, Reading, Generating, Queued, Error) with the context bar; tiles with a sparkline each for speed, cache hit, SSD read and stall time, CPU executor, GPU load, VRAM, server RAM against the cap, CPU, GPU temperature, power, PCIe and disk read; cache budget and context bars; hit rate per layer; recent requests (prompt, reused from the prompt cache, output, tok/s, duration) |
+| 2 Serving | URL, state, requests running and queued, KV cache fill; the plan as it really runs (`-ub`, KV type, GPU layers, experts on the CPU, device, threads); the token-mode table (which changing-answer modes are won, unmeasured or in use); what the launcher decided |
+| 3 Requests | every finished request, with a detail block for the selected one (up/down) |
+| 4 Engine | hit rate, SSD GB/s and wait, executor share, evictions, GPU upload as trends; the per-layer hit-rate heat rows (newest on top), whole-run row and the worst layers; cache counters, MTP acceptance and approximate-mode counters |
+| 5 Hardware | all tiles plus GPU, CPU, RAM, cap and commit details |
+| 6 Logs | the launcher, plugin, llama-server and page lines with time and source, warnings yellow and errors red; `/` search (text or `/regex/`), `l` level, `s` source, `f` follow, arrows and PgUp/PgDn scroll |
+| 7 Connect | the OpenAI-compatible address, API key (hidden; `k` shows it), agent setup commands |
+
+Other keys: `space` freezes, `r` refreshes, `t` theme (dark, light, mono), `b` opens the control page (or llama-server's own page) in the browser, `?` help. `--once` prints one screen (add `--view N`), `--ascii` for the classic Windows console, `--no-color`. It finds a running control page by itself (a file only you can read), or attaches to a llama-server with `--port 8080` (then there is no plugin hit rate and no log, because that server was not started here). GPU temperature, power and PCIe come from `nvidia-smi` (NVIDIA) or sysfs (AMD on Linux) without admin rights; where this machine cannot give a number the screen says `n/a`.
+
 **Cost.** The view reads data the page already collects; the extra work is one `/metrics` request and one memory reading every 2 seconds. `MOE_CACHE_MONITOR=0` turns the sampling off (the view then shows only the log). The page answers on this machine only: `/api/monitor` is not part of what `--ui-lan` allows.
 
 ## 6. Chat

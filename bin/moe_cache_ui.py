@@ -20,11 +20,14 @@ import moe_cache_download as dl  # noqa: E402
 import moe_cache_lan as lan  # noqa: E402
 import moe_cache_concurrent as cc  # noqa: E402
 import moe_cache_monitor as monitor  # noqa: E402
+import moe_cache_hw as hw  # noqa: E402
 from moe_cache_wintool import win_tool  # noqa: E402
 
 HERE = mc.HERE
 WINDOWS = mc.WINDOWS
 PAGE = os.path.join(HERE, "ui", "index.html")
+MINI_PAGE = os.path.join(HERE, "ui", "mini.html")
+TOP_FILE = os.path.join(mc.CACHE_DIR, "ui-top.json")      # GUI-045: port + page token for `moe_cache.py top`, private to this user, removed when the page stops
 SETTINGS_FILE = os.path.join(mc.CACHE_DIR, "ui.json")
 LAUNCHER = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
 HEADROOM = mc.STOCK_HEADROOM   # shown in the reasons; the rule itself is mc.decide()
@@ -890,6 +893,18 @@ def ask_snapshot(pid):
 _ARGS_CACHE = {}
 
 
+def token_mode_status(plan, mtp_on, s):
+    """TOKEN_MODES rows (bin/moe_cache_approx.py) with whether each is in use in this run: True / False, None when this run cannot tell (no environment on Windows)."""
+    import moe_cache_approx as ap
+    env = plan.get("env") or {}
+    known = bool(env)
+    kv = (plan.get("kv_k") or "").startswith("q8")
+    on = {"kv8": kv, "long-prompt": str(plan.get("ub")) == "4096", "mtp": mtp_on,
+          "fast1": env.get("MOE_CACHE_ROUTE") in ("skip", "subst") if known else None, "fast2": (env.get("MOE_CACHE_ROUTE_DROP") == "4") if known else None,
+          "fewer": (int(env.get("MOE_CACHE_FEWER") or 0) > 0) if known else None, "approx-tiers": bool(s.get("approx"))}
+    return [{"id": m["id"], "what": m["what"], "switch": m["switch"], "status": m["status"], "active": on.get(m["id"])} for m in ap.TOKEN_MODES]
+
+
 def process_args(pid):
     """(argv, MOE_CACHE_* environment) of llama-server `pid`, read once per pid: the plan as it really runs (-ub, KV type, layers), not as asked.
     Linux: /proc. Windows: one CIM query for the command line (no admin; the environment is not readable there). ([], {}) when unknown."""
@@ -1279,6 +1294,7 @@ class Runner:
         self.state, self.rc, self.started = "idle", None, None
         self.stop_requested = False
         self.log = collections.deque(maxlen=500)
+        self.meter = None                  # hw.HostMeter of the llama-server process (made when the Monitor is first looked at)
         self.mon = monitor.Monitor()       # GUI-041: the Monitor view's samples, layer columns, requests and the long log (this run only)
         self.seq = 0
         self.mode = ""; self.fit_partial = False
@@ -1576,16 +1592,30 @@ class Runner:
                 self.mon.add_metrics(time.time(), body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body))
             tot, avail = ram_now()
             ctot, cfree = mc.win_commit() if WINDOWS else (None, None)
-            t0, v = self.mon.vram_cache
-            if time.time() - t0 > 6:
-                v = vram_now()
-                self.mon.vram_cache = (time.time(), v)
+            readings = None
+            if self.mon.watched():                  # the hardware readings (nvidia-smi is a subprocess) only while a page or `top` is looking
+                t0, g = self.mon.vram_cache
+                if time.time() - t0 > 4:
+                    g = hw.gpu_stats()
+                    self.mon.vram_cache = (time.time(), g)
+                if self.meter is None or self.meter.pid != self.pid:
+                    self.meter = hw.HostMeter(self.pid)
+                readings = dict(self.meter.sample())
+                if g:
+                    readings.update(gpu_util=g.get("util"), gpu_temp=g.get("temp"), gpu_power=g.get("power"), gpu_plimit=g.get("power_limit"), pcie_gen=g.get("pcie_gen"), pcie_w=g.get("pcie_width"))
+                    self.mon.hw = {"gpu": g.get("name"), "vram_total": g.get("mem_total"), "cards": g.get("cards")}
+                    v = {"used": g["mem_used"], "total": g["mem_total"]} if g.get("mem_used") is not None else None
+                else:
+                    v = vram_now()
+                    self.mon.hw = {}
+            else:
+                v = None
             self.mon.tick(time.time(), self.live_tps, self.rss, (tot - avail, tot) if tot and avail is not None else None,
-                          (ctot - cfree, ctot) if ctot and cfree is not None else None, (v["used"], v["total"]) if v else None, busy)
+                          (ctot - cfree, ctot) if ctot and cfree is not None else None, (v["used"], v["total"]) if v else None, busy, hw=readings)
         except Exception:
             pass                                   # the monitor must never end the poll loop
 
-    def monitor_payload(self, since, log_seq):
+    def monitor_payload(self, since, log_seq, tail=None):
         s = self.settings
         args, env = process_args(self.pid) if self.pid else ([], {})
         if not args:                            # the process is not there (yet): the launcher's own arguments
@@ -1604,14 +1634,15 @@ class Runner:
             if m:
                 cap = float(m.group(1)) * GIB
                 break
-        totals = {"ram_total": sysi.get("ram_total"), "vram_total": sysi.get("vram_total"), "gpu": sysi.get("gpu"), "state": self.state, "model": os.path.basename(str(s.get("model") or "")),
+        totals = {"ram_total": sysi.get("ram_total"), "vram_total": self.mon.hw.get("vram_total") or sysi.get("vram_total"), "gpu": self.mon.hw.get("gpu") or sysi.get("gpu"),
+                  "threads": hw.logical_cpus(), "cores": hw.physical_cores(), "state": self.state, "port": s.get("port"), "model": os.path.basename(str(s.get("model") or "")),
                   "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None, "hits_total": self.cache.get("hit_rate_total"),
                   "resident": self.cache.get("resident"), "budget": self.cache.get("budget")}
         try:
             ctx_max = int(s.get("ctx")) if s.get("ctx") else None
         except (TypeError, ValueError):
             ctx_max = None
-        return self.mon.payload(since, log_seq, ctx_max=ctx_max, plan=plan, cap=cap, totals=totals)
+        return self.mon.payload(since, log_seq, ctx_max=ctx_max, plan=plan, cap=cap, totals=totals, tail=tail, modes=token_mode_status(plan, bool(self.mtp), s))
 
     def poll(self, p):
         api_key = self.key()
@@ -2307,12 +2338,15 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(body)
         if isinstance(body, str):
             body = body.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", ctype + ("; charset=utf-8" if ctype.startswith(("text", "application/json")) else ""))
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype + ("; charset=utf-8" if ctype.startswith(("text", "application/json")) else ""))
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.close_connection = True        # the browser went away (tab closed, page reloaded) before the answer: nothing to tell it, and no traceback (Windows: WinError 10053)
 
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
@@ -2408,7 +2442,10 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(200, json.load(fh))
                 return self.send(200, {"dir": CHAT_DIR, "chats": list_chats()})
             if u.path == "/api/monitor":                   # GUI-041: the Monitor view (this machine only: it carries the whole log)
-                return self.send(200, self.runner.monitor_payload(float(q.get("since") or 0), int(q.get("log") or 0)))
+                return self.send(200, self.runner.monitor_payload(float(q.get("since") or 0), int(q.get("log") or 0), tail=min(int(q.get("tail") or 0), 200) or None))
+            if u.path == "/api/mini":                      # GUI-044: the small pop-out window (the page writes it into a same-origin popup, so the token never shows in a URL)
+                with open(MINI_PAGE, "rb") as fh:
+                    return self.send(200, fh.read(), "text/html")
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
                 return self.send(200, {"lines": [[n, l] for n, l in list(self.runner.log) if n > since]})
@@ -2969,6 +3006,27 @@ def agents_state(url):
     return {"url": url, "agents": [opencode_state(url), hermes_state(url)]}
 
 
+def write_top_file(port, token):
+    """Where `moe_cache.py top` finds this page: {port, token, pid} in a file only this user can read (the same trust as ui.json and the chats)."""
+    try:
+        os.makedirs(os.path.dirname(TOP_FILE), exist_ok=True)
+        fd = os.open(TOP_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"port": port, "token": token, "pid": os.getpid(), "t": time.time()}, f)
+    except OSError:
+        pass
+
+
+def remove_top_file():
+    try:
+        with open(TOP_FILE, encoding="utf-8") as f:
+            if json.load(f).get("pid") != os.getpid():
+                return                                  # another page's file: not ours to remove
+        os.remove(TOP_FILE)
+    except (OSError, ValueError):
+        pass
+
+
 def make_server(port=8070, ls=None, token=None, host="127.0.0.1", lan_hosts=()):
     store = Store(ls or mc.default_llama_server())
     if not ls and (line := mc.ls_found_line(store.ls)):
@@ -3013,6 +3071,7 @@ def ui(argv):
     if WINDOWS:
         threading.Thread(target=watch_windows_gpu, args=(a.llama_server,), daemon=True).start()
     url = f"http://127.0.0.1:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token}"
+    write_top_file(srv.server_address[1], srv.RequestHandlerClass.token)
     mc.say(f"moe-cache: control page at {url} (this machine and this user only; Ctrl-C stops it and any server it started)")
     if a.ui_lan:
         mc.say(f"moe-cache: LAN: the control page also answers at http://{lan_addr}:{srv.server_address[1]}/?t={srv.RequestHandlerClass.token} (open exactly this address on the other computer)")
@@ -3029,6 +3088,7 @@ def ui(argv):
         pass
     finally:
         remove_launch_files()
+        remove_top_file()
         for r in list(srv.RequestHandlerClass.extra.values()):
             r.stop()
         srv.RequestHandlerClass.runner.stop()

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>moe-cache mini</title>
+<style>
+:root { --bg:#f8efc9; --panel:#fffbe8; --line:#d8c98f; --text:#2a1b14; --muted:#645241; --accent:#c8442a; --ok:#2f7a45; --warn:#9a5a10; --bad:#b32e1c; --gpu:#5f4796; --code:#efe2aa; --side:#a9c4d4; --top:#6b99b3; --ink:#2a1b14; --on-ink:#fffbe8; --on-accent:#fffbe8; --on-bad:#ffffff; --shade:rgba(42,27,20,.28); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --on-bad:#0f1519; --shade:rgba(0,0,0,.45); } }
+:root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --on-bad:#0f1519; --shade:rgba(0,0,0,.45); }
+* { box-sizing:border-box; }
+* { box-sizing:border-box; }
+html, body { margin:0; height:100%; }
+body { background:var(--bg); color:var(--text); font:13px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; padding:10px 12px; display:flex; flex-direction:column; gap:8px; overflow:hidden; }
+.dot { display:inline-block; width:9px; height:9px; border-radius:50%; background:var(--muted); margin-right:6px; }
+.dot.ok { background:var(--ok); } .dot.warn { background:var(--warn); } .dot.bad { background:var(--bad); }
+.top { display:flex; align-items:center; gap:4px; white-space:nowrap; overflow:hidden; }
+.top b { overflow:hidden; text-overflow:ellipsis; } .top .r { margin-left:auto; color:var(--muted); font-size:11px; }
+.speed { display:flex; align-items:flex-end; gap:10px; }
+.speed .big { font-size:38px; font-weight:600; line-height:1; font-variant-numeric:tabular-nums; min-width:5.2ch; }
+.speed .big small { font-size:12px; font-weight:400; color:var(--muted); margin-left:3px; }
+.speed svg { flex:1; height:46px; min-width:0; }
+.sub { color:var(--muted); font-size:11px; }
+.row { display:grid; grid-template-columns:76px 1fr 82px; gap:8px; align-items:center; }
+.row span:first-child { color:var(--muted); font-size:12px; } .row span:last-child { text-align:right; font-variant-numeric:tabular-nums; font-size:12px; }
+.bar { height:9px; border-radius:5px; background:var(--code); overflow:hidden; border:1px solid var(--line); }
+.bar i { display:block; height:100%; background:var(--accent); width:0; transition:width .4s; }
+.bar.ok i { background:var(--ok); } .bar.gpu i { background:var(--gpu); } .bar.warn i { background:var(--warn); } .bar.bad i { background:var(--bad); }
+#log { flex:1; min-height:0; overflow:hidden; background:var(--code); border-radius:5px; padding:5px 7px; font:11px/1.35 ui-monospace, Consolas, monospace; display:flex; flex-direction:column; justify-content:flex-end; }
+#log div { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; } #log .warn { color:var(--warn); } #log .error { color:var(--bad); font-weight:600; }
+</style></head><body>
+<div class="top"><span class="dot" id="dot"></span><b id="model">moe-cache</b><span class="r" id="state">connecting</span></div>
+<div class="speed"><div class="big"><span id="dec">–</span><small>tok/s</small></div><svg id="spark" viewBox="0 0 200 46" preserveAspectRatio="none"></svg></div>
+<div class="sub" id="sub">prompt – tok/s</div>
+<div class="row"><span>Context</span><div class="bar"><i id="b-ctx"></i></div><span id="v-ctx">–</span></div>
+<div class="row"><span>Cache hit</span><div class="bar ok"><i id="b-hit"></i></div><span id="v-hit">–</span></div>
+<div class="row"><span>SSD read</span><div class="bar gpu"><i id="b-ssd"></i></div><span id="v-ssd">–</span></div>
+<div class="row"><span>Executor</span><div class="bar"><i id="b-cpu"></i></div><span id="v-cpu">–</span></div>
+<div class="row"><span>RAM</span><div class="bar" id="bar-ram"><i id="b-ram"></i></div><span id="v-ram">–</span></div>
+<div class="row"><span>VRAM</span><div class="bar gpu"><i id="b-vram"></i></div><span id="v-vram">–</span></div>
+<div id="log"></div>
+<script>
+const TOKEN = "__TOKEN__";
+const $ = id => document.getElementById(id), nz = v => typeof v == "number" && isFinite(v);
+const gib = b => (b / 2 ** 30).toFixed(1);
+let since = 0, rows = [], ssdMax = 1, timer = null;
+function bar(id, f, cls) { const b = $("b-" + id); b.style.width = (nz(f) ? Math.max(0, Math.min(1, f)) * 100 : 0) + "%"; if (cls !== undefined) b.parentNode.className = "bar " + cls; }
+function last(k) { for (let i = rows.length - 1; i >= 0; i--) if (nz(rows[i][k])) return rows[i][k]; return null; }
+function spark() {
+  const s = rows.slice(-90), v = s.map(r => r.dec).filter(nz), top = Math.max(1, ...v), W = 200, H = 46;
+  let d = "", seg = [];
+  const flush = () => { if (seg.length > 1) d += `<polyline fill="none" stroke="var(--accent)" stroke-width="1.8" vector-effect="non-scaling-stroke" points="${seg.join(" ")}"/>`; seg = []; };
+  s.forEach((r, i) => { if (nz(r.dec)) seg.push((W * i / Math.max(1, s.length - 1)).toFixed(1) + "," + (H - 3 - (H - 8) * r.dec / top).toFixed(1)); else flush(); });
+  flush(); $("spark").innerHTML = `<line x1="0" y1="${H - 1}" x2="${W}" y2="${H - 1}" stroke="var(--line)"/>` + d;
+}
+async function tick() {
+  try {
+    const r = await fetch(`/api/monitor?since=${since}&log=0&tail=5`, { headers: { "X-MoeCache-Token": TOKEN } });
+    const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status);
+    if (j.samples.length) { rows = rows.concat(j.samples).slice(-300); since = j.samples[j.samples.length - 1].t; }
+    const t = j.totals || {}, st = t.state || "idle", cap = j.cap, c = j.ctx || {};
+    $("dot").className = "dot " + (st == "ready" || st == "waiting" ? "ok" : st == "exited" ? "bad" : st == "idle" || st == "stopped" ? "" : "warn");
+    $("state").textContent = st + (t.uptime ? " · " + Math.round(t.uptime / 60) + " min" : ""); $("model").textContent = t.model || "no model";
+    const dec = last("dec"), cur = rows.length ? rows[rows.length - 1] : {};
+    const busy = cur.busy && nz(cur.dec);
+    $("dec").textContent = busy ? cur.dec.toFixed(1) : "–"; $("dec").style.opacity = busy ? 1 : .45;
+    const pre = nz(cur.pre) ? cur.pre.toFixed(0) : (j.requests.length ? (j.requests[j.requests.length - 1].prefill_tps || 0).toFixed(0) + " (last)" : "–");
+    $("sub").textContent = "prompt " + pre + " tok/s" + (nz(dec) && !busy ? " · last decode " + dec.toFixed(1) : "");
+    document.title = (busy ? cur.dec.toFixed(1) + " tok/s · " : "") + "moe-cache";
+    spark();
+    $("v-ctx").textContent = nz(c.depth) ? c.depth + (c.max ? " / " + c.max : "") : "–"; bar("ctx", c.max ? c.depth / c.max : null, c.max && c.depth > c.max * .9 ? "warn" : "");
+    const hit = last("hit"); $("v-hit").textContent = nz(hit) ? (hit * 100).toFixed(1) + " %" : "–"; bar("hit", hit);
+    const ssd = last("ssd"); if (nz(ssd)) ssdMax = Math.max(ssdMax, ssd); $("v-ssd").textContent = nz(ssd) ? ssd.toFixed(2) + " GB/s" : "–"; bar("ssd", nz(ssd) ? ssd / ssdMax : null);
+    const cpu = last("cpu"); $("v-cpu").textContent = nz(cpu) ? (cpu * 100).toFixed(0) + " %" : "–"; bar("cpu", cpu);
+    const rss = last("rss"); $("v-ram").textContent = nz(rss) ? gib(rss) + (cap ? " / " + gib(cap) : "") + " GiB" : "–";
+    bar("ram", cap && nz(rss) ? rss / cap : null, cap && rss > cap ? "bad" : cap && rss > cap * .92 ? "warn" : "");
+    const vr = last("vram"); $("v-vram").textContent = nz(vr) ? gib(vr) + (t.vram_total ? " / " + gib(t.vram_total) : "") + " GiB" : "–"; bar("vram", t.vram_total && nz(vr) ? vr / t.vram_total : null);
+    const show = x => x.replace(/^[\d.]+ [A-Z] /, "");          // llama-server's own clock is noise in a small window
+    $("log").innerHTML = (j.log || []).map(l => `<div class="${l[3] != "info" ? l[3] : ""}" title="${l[4].replace(/"/g, "&quot;")}">${show(l[4]).replace(/[&<]/g, c => c == "&" ? "&amp;" : "&lt;")}</div>`).join("");
+  } catch (e) { $("state").textContent = "no connection"; $("dot").className = "dot bad"; }
+}
+tick(); timer = setInterval(tick, 2000);
+</script></body></html>

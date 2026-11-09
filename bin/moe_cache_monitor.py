@@ -18,6 +18,14 @@ MAX_LAYER_COLS = 120
 
 TIMING_RE = re.compile(r"(prompt eval|eval) time =\s*([\d.]+) ms /\s*(\d+) (?:tokens|runs).*?([\d.]+) tokens per second")
 CTX_RE = re.compile(r"\bn_tokens = (\d+)")
+SLOT_ID_RE = re.compile(r"\bslot\s+\S+:\s+id\s+(\d+)")
+SLOT_LRU_RE = re.compile(r"selected slot by LRU")
+SLOT_LCP_RE = re.compile(r"selected slot by LCP similarity.*?f_keep = ([\d.]+)")
+NPAST_SET_RE = re.compile(r"n_past was set to (\d+)")
+NTOK_RE = re.compile(r"task\.n_tokens\(\) = (\d+)")
+RELEASE_RE = re.compile(r"stop processing: n_tokens = (\d+)")
+NEWPROMPT_RE = re.compile(r"new prompt,.*?task\.n_tokens = (\d+)")
+TOTAL_RE = re.compile(r"\btotal time =\s*([\d.]+) ms /\s*(\d+) tokens")
 MTP_RE = re.compile(r"draft acceptance rate = ([\d.]+)\s*\(\s*(\d+) accepted /\s*(\d+) generated")
 APPROX_RE = re.compile(r"moe-cache: approximate routing \((skip|subst)\): (\d+) low-ranked picks looked at, (\d+) given up, (\d+) replaced")
 FEWER_RE = re.compile(r"moe-cache: approximate: fewer experts \(MOE_CACHE_FEWER=(\d+)\): (\d+) of the lowest-ranked picks")
@@ -110,8 +118,11 @@ class Monitor:
         self.mtp = {"accepted": 0, "generated": 0, "last": None}
         self.approx = {}
         self.pending_req = {}
+        self.slot_tokens = {}       # slot id -> tokens its cache held when its last request ended (a new request keeps f_keep of them)
         self.vram_cache = (0.0, None)
         self.enabled = enabled()
+        self.touched = 0.0          # when a page or `top` last asked: hardware readings (a subprocess for nvidia-smi) are taken only while somebody looks
+        self.hw = {}
 
     # ---- input ----
     def add_line(self, seq, t, line):
@@ -123,6 +134,28 @@ class Monitor:
             m = CTX_RE.search(line)
             if m:
                 self.ctx_depth = int(m.group(1))
+            sid = SLOT_ID_RE.search(line)
+            sid = sid.group(1) if sid else None
+            m = RELEASE_RE.search(line)
+            if m and sid is not None:
+                self.slot_tokens[sid] = int(m.group(1))
+            if SLOT_LRU_RE.search(line):
+                self.pending_req = {"reused": 0}                                # an empty slot: the whole prompt is processed
+            m = SLOT_LCP_RE.search(line)
+            if m and sid is not None:
+                self.pending_req = {"reused": int(round(float(m.group(1)) * self.slot_tokens.get(sid, 0)))}      # the part of the old cache that matches
+            m = NPAST_SET_RE.search(line)
+            if m:
+                self.pending_req["reused"] = int(m.group(1))                    # llama-server re-evaluates the last token: the exact figure
+            m = NTOK_RE.search(line)
+            if m:
+                self.pending_req["prompt_total"] = int(m.group(1))
+            m = NEWPROMPT_RE.search(line)
+            if m:
+                self.pending_req["prompt_total"] = int(m.group(1))             # an older llama-server logs the whole prompt length when a request starts
+            m = TOTAL_RE.search(line)
+            if m and self.requests:
+                self.requests[-1]["total_ms"] = float(m.group(1))              # printed after the decode line: the request's whole duration
             m = MTP_RE.search(line)
             if m:
                 self.mtp["accepted"] += int(m.group(2)); self.mtp["generated"] += int(m.group(3)); self.mtp["last"] = float(m.group(1))
@@ -138,7 +171,12 @@ class Monitor:
                 kind = "prefill" if m.group(1) == "prompt eval" else "decode"
                 self.pending_req[kind + "_ms"] = float(m.group(2)); self.pending_req[kind + "_tokens"] = int(m.group(3)); self.pending_req[kind + "_tps"] = float(m.group(4))
                 if kind == "decode":        # llama-server prints "eval time" after "prompt eval time": the request is complete
-                    self.requests.append(dict(self.pending_req, t=round(t, 1), ctx=self.ctx_depth))
+                    req = dict(self.pending_req, t=round(t, 1), ctx=self.ctx_depth)
+                    if "prompt_total" in req and "prefill_tokens" in req and "reused" not in req:
+                        req["reused"] = max(0, req["prompt_total"] - req["prefill_tokens"])
+                    elif "reused" in req and "prompt_total" not in req and "prefill_tokens" in req:
+                        req["prompt_total"] = req["reused"] + req["prefill_tokens"]
+                    self.requests.append(req)
                     self.pending_req = {}
 
     def add_snapshot(self, t, s):
@@ -190,8 +228,11 @@ class Monitor:
                 self.prom_rates = r
             self.prom_prev = (t, m)
 
-    def tick(self, t, live_tps, rss, ram, commit, vram, busy):
-        """One sample row. ram / commit / vram: (used, total) bytes or None."""
+    def watched(self, now=None, within=20.0):
+        return (now or time.time()) - self.touched < within
+
+    def tick(self, t, live_tps, rss, ram, commit, vram, busy, hw=None):
+        """One sample row. ram / commit / vram: (used, total) bytes or None. hw: moe_cache_hw readings (gpu_*, cpu_*, io_*), merged when given."""
         if not self.enabled:
             return
         with self.lock:
@@ -201,19 +242,24 @@ class Monitor:
                                  "hit": r.get("hit"), "hit_dec": r.get("hit_dec"), "ssd": r.get("ssd_gbs"), "wait": r.get("ssd_wait"), "cpu": r.get("cpu"),
                                  "evict": r.get("evict"), "up": r.get("gpu_up_gbs"), "rss": rss,
                                  "ram": ram[0] if ram else None, "commit": commit[0] if commit else None, "vram": vram[0] if vram else None})
+            if hw:
+                self.samples[-1].update({k: (round(v, 2) if isinstance(v, float) else v) for k, v in hw.items()})
 
     # ---- output ----
-    def payload(self, since=0.0, log_seq=0, ctx_max=None, plan=None, cap=None, totals=None, include_log=True):
+    def payload(self, since=0.0, log_seq=0, ctx_max=None, plan=None, cap=None, totals=None, include_log=True, tail=None, modes=None):
+        self.touched = time.time()
         with self.lock:
             out = {"now": round(time.time(), 1), "enabled": self.enabled, "t0": round(self.t0, 1),
                    "samples": [s for s in self.samples if s["t"] > since][-MAX_SAMPLES:],
                    "layer_cols": [c for c in self.layer_cols if c["t"] > since],
                    "layer_total": [round(h / (h + m), 3) if h + m else None for h, m in zip(self.layers["hits"], self.layers["misses"])],
                    "requests": list(self.requests)[-30:], "mtp": dict(self.mtp, rate=(self.mtp["accepted"] / self.mtp["generated"]) if self.mtp["generated"] else None),
-                   "approx": dict(self.approx), "ctx": {"depth": self.ctx_depth, "max": ctx_max}, "plan": plan or {}, "cap": cap, "totals": totals or {},
+                   "approx": dict(self.approx), "ctx": {"depth": self.ctx_depth, "max": ctx_max}, "plan": plan or {}, "cap": cap, "totals": totals or {}, "modes": modes or [],
                    "extra": dict(getattr(self, "snapshot_extra", {})), "metrics": {k: v for k, v in self.prom_now.items() if k in ("requests_processing", "requests_deferred", "kv_cache_usage_ratio", "kv_cache_tokens", "n_busy_slots_per_decode")}}
             if include_log:
                 out["log"] = [list(x) for x in self.log if x[0] > log_seq]
+                if tail:                    # the mini window and `top` want only the newest few lines
+                    out["log"] = out["log"][-int(tail):]
                 out["log_seq"] = self.log[-1][0] if self.log else log_seq
             return out
 
