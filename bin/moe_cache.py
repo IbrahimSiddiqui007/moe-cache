@@ -3472,6 +3472,65 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
     return f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
 
 
+def dense_oom_replan(cmd, model, ctx, kv_q8, free_bytes, margin_gib, user_ot=False):
+    """LAUNCHER-850: llama-server of a dense model ran out of GPU memory at load (a game or browser took memory after the plan was made). -> (new command, plain text) or
+    (None, reason). One step smaller, from the free memory measured again: the FFN weights of at least one more layer go to RAM (-ot; never fewer than before + 1; without a
+    free-memory figure an eighth of the layers more), or, when every layer's FFN is already there or the model is a hybrid recurrent one the FFN plan does not cover, half the
+    micro-batch (-ub, its compute buffer is what scales), or a larger llama.cpp --fit margin (-fitt, +512 MiB) when --fit places the layers. Your own -ot / -ngl stand (user_ot)."""
+    if user_ot:
+        return None, "your own -ot stands"
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import dense_ffn_split
+        r = dense_ffn_split(model, ctx, free_bytes, kv_q8=kv_q8, margin_gib=margin_gib) if free_bytes else None
+    except Exception:
+        r = None
+    new = list(cmd)
+    old_n = 0
+    if "-ot" in new:
+        m = re.search(r"blk\\\.\(([0-9|]+)\)\\\.ffn_", new[new.index("-ot") + 1])
+        old_n = len(m.group(1).split("|")) if m else 0
+    if r is None and free_bytes is None:
+        try:
+            from gguf_plan import dense_ffn_split as _s
+            r = _s(model, ctx, 1e15, kv_q8=kv_q8, margin_gib=margin_gib)          # only for the layer count; the free memory is unknown
+        except Exception:
+            r = None
+        if r:
+            r = dict(r, n_off=0)
+    if r and r["n_layers"]:
+        n_layers = r["n_layers"]
+        if r.get("n_off") is None:                  # even every FFN in RAM leaves too little: all of them, and a smaller micro-batch below
+            want = n_layers
+        else:
+            want = old_n + max(1, -(-n_layers // 8)) if not free_bytes else max(r["n_off"], old_n + 1)
+        if want <= n_layers:
+            layers = "|".join(str(i) for i in range(n_layers - want, n_layers))
+            ot = f"blk\\.({layers})\\.ffn_(up|down|gate|gate_up)\\.weight=CPU"
+            if "-ot" in new:
+                new[new.index("-ot") + 1] = ot
+            else:
+                new += ["-ot", ot]
+            if r.get("n_off") is None and "-ub" in new and int(new[new.index("-ub") + 1]) >= 256:
+                ub = int(new[new.index("-ub") + 1]) // 2
+                new[new.index("-ub") + 1] = str(ub)
+                if "-b" in new:
+                    new[new.index("-b") + 1] = str(max(ub, 2048))
+                return new, f"the FFN weights of all {n_layers} layers in RAM (was {old_n}) and -ub {ub}"
+            return new, f"the FFN weights of {want} of {n_layers} layers in RAM (was {old_n})"
+    if "-ub" in new and int(new[new.index("-ub") + 1]) >= 256:
+        ub = int(new[new.index("-ub") + 1]) // 2
+        new[new.index("-ub") + 1] = str(ub)
+        if "-b" in new:
+            new[new.index("-b") + 1] = str(max(ub, 2048))
+        return new, f"-ub {ub} (was {ub * 2})"
+    if "-fitt" in new:
+        mib = int(new[new.index("-fitt") + 1]) + 512
+        new[new.index("-fitt") + 1] = str(mib)
+        return new, f"a --fit margin of {mib} MiB"
+    return None, "nothing left to shrink"
+
+
 CPU_GPU_SPLIT_VRAM_GIB = 0.15
 
 
@@ -3763,6 +3822,25 @@ def run_launch_plan(plan):
     def oom_retry():
         """llama-server could not allocate GPU memory at load: measure the free memory again, plan again with it (never fewer CPU expert layers than
         before + 1) and return the new command; None when nothing can be changed (the user fixed --n-cpu-moe, or there is no GPU figure)."""
+        if "--n-cpu-moe" not in cmd and ncmoe_user is None:       # LAUNCHER-850: a dense model
+            free = float(a.vram) * 2**30 if a.vram else None
+            if free is None:
+                try:
+                    free = machine.free_vram_bytes()
+                except Exception:
+                    free = None
+            if free is None and WINDOWS:
+                g = pick_gpu_full(list_devices(ls))
+                free = g[3] * 2**20 if g and g[3] > 0 else None
+            margin = a.gpu_margin if a.gpu_margin is not None else 0.25
+            user_ot = any(x in ("-ot", "--override-tensor") or x.startswith("--override-tensor=") for x in extra)
+            kvq = kv_q8 or arg_after(extra, "-ctk", "--cache-type-k") in ("q8_0", "q4_0")
+            new, what = dense_oom_replan(cmd, model, ctx, kvq, free, margin, user_ot)
+            if not new:
+                say(f"moe-cache: llama-server ran out of GPU memory while loading ({what}): free some GPU memory (a game or browser may have taken it), or use a smaller --ctx / -ub / --gpu-margin", err=True)
+                return None
+            say("moe-cache: llama-server ran out of GPU memory while loading (another program took some after the plan" + (f", now {free / 2**30:.1f} GiB free" if free else "") + f"): trying again once with {what}")
+            return new
         if ncmoe_user is not None or "--n-cpu-moe" not in cmd:
             say("moe-cache: llama-server ran out of GPU memory while loading: free some GPU memory, or give a larger --n-cpu-moe / smaller -ub / --gpu-margin", err=True)
             return None
