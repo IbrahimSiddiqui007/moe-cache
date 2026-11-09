@@ -1551,7 +1551,7 @@ check('id="chatinfo"' in page and "chatHitsText(c.messages)" in page, "the chat 
 # hostile counters in an answer's meta (a foreign server's SSE) must not become markup or break the page
 if node:
     fn = re.search(r"const esc = [^\n]*\n", page).group(0) + re.search(r"function chips\(m, i, live\) \{.*?\n\}\n", page, re.S).group(0)
-    harness = ("const C = {chat: {messages: [1, 2]}};\n" + fn +
+    harness = ("const C = {chat: {messages: [1, 2]}}, S = {};\n" + fn +
                "const X = '\"><img src=x onerror=alert(1)>';\n"
                "const m = {role: 'assistant', content: 'x', meta: {live_tps: X, predicted_per_second: X, prompt_per_second: X, prompt_n: X, cache_n: X, draft_n: X, draft_n_accepted: X, hit_rate: X, hits: X, misses: X, predicted_n: X, predicted_ms: X, stopped: true}};\n"
                "const bools = {role: 'assistant', content: 'x', meta: {live_tps: true, predicted_per_second: true, prompt_per_second: true, prompt_n: true, cache_n: true, draft_n: true, draft_n_accepted: true, hit_rate: true, hits: true, misses: true, predicted_n: true, predicted_ms: true, stopped: 'yes'}};\n"
