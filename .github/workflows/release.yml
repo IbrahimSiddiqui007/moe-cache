@@ -43,6 +43,7 @@ jobs:
       - name: Fetch every branch and tag
         run: git fetch --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
       - name: No work left behind on a branch or tag
+        continue-on-error: ${{ github.ref_type != 'tag' }}     # a manual dry run shows the result in this step's log (a warning), only a tag is blocked
         run: python3 tools/lost_work_check.py --repo . --base origin/experimental --public --records archive/README.md --accept tools/lost_work_accepted.tsv
 
   build:
