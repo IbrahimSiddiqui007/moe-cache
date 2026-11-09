@@ -2,7 +2,7 @@
 """LAUNCHER-994: measured auto-tune (bin/moe_cache_autotune.py + autotune_stage / autotune_probe in bin/moe_cache.py). Fake timings and a fake llama-server (a small
 HTTP script); no model weights, no real server.
    python3 tests/autotune_test.py"""
-import json, os, stat, sys, tempfile, time, types
+import contextlib, io, json, os, stat, sys, tempfile, time, types
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "bin")); sys.path.insert(0, os.path.join(HERE, "tests")); sys.path.insert(0, os.path.join(HERE, "planner"))
@@ -322,6 +322,205 @@ try:
     check(r_["state"] == "aborted" and len(r_["rows"]) == 1, "a guard stop on the first plan aborts too")
 finally:
     mc.CACHE_DIR, mc.port_busy = saved2
+
+
+# --- LAUNCHER-1045 (rest) / 1041 / TEST-1046 rest: failing stored pick, tuning lock, key coverage, progress, end state ---
+# the lock
+with tempfile.TemporaryDirectory() as lk:
+    ok1, h1 = at.acquire_lock(lk)
+    ok2, h2 = at.acquire_lock(lk)
+    check(ok1 and not ok2 and h2 == os.getpid(), "tuning lock: the second launcher does not get it and learns who holds it")
+    at.release_lock(lk)
+    check(at.acquire_lock(lk)[0], "tuning lock: free again after release")
+    at.release_lock(lk)
+    # a lock of a dead process is taken over
+    json.dump({"pid": 2 ** 22 + 12345, "t": time.time()}, open(at.lock_path(lk), "w"))
+    check(at.acquire_lock(lk, alive=lambda pid: False)[0], "tuning lock: a dead holder's lock is taken over")
+    at.release_lock(lk)
+    json.dump({"pid": os.getpid(), "t": time.time() - at.LOCK_STALE_S - 5}, open(at.lock_path(lk), "w"))
+    check(at.acquire_lock(lk)[0], "tuning lock: a lock older than the budget allows is taken over")
+    at.release_lock(lk)
+    json.dump({"pid": 1, "t": time.time()}, open(at.lock_path(lk), "w"))
+    at.release_lock(lk)
+    check(os.path.exists(at.lock_path(lk)), "release_lock leaves a lock that is not ours")
+
+tmp3 = tempfile.mkdtemp(prefix="autotune-c-")
+saved3 = (mc.CACHE_DIR, mc.port_busy)
+mc.CACHE_DIR = os.path.join(tmp3, "cache"); mc.port_busy = lambda port: False
+def stage3(runner, probe=True, retune=False, **k):
+    a = types.SimpleNamespace(exact=False, stock=False, retune=retune, agent=False, project=None, ub="auto", n_cpu_moe=None, hybrid=False, port=8080, autotune_probe=probe, **k)
+    out = []
+    r = mc.autotune_stage(a, ["--dry"], list(BASE_CMD), list(BASE_ENV), [], model, 65536, ls, M(tmp), "plugin", 40, say_fn=lambda t, err=False: out.append(t), runner=runner)
+    return r + (out,)
+try:
+    # the lock held by another launcher: nothing is measured
+    at.acquire_lock(mc.CACHE_DIR)
+    asked3 = []
+    cmd, env, info, out = stage3(lambda c, e, l, n: asked3.append(c) or fake_runner(c, e, l, n))
+    check(info["state"] == "skipped" and not asked3 and cmd == BASE_CMD and any("another start" in l for l in out), "concurrent tuners: the second start runs untuned and says why, no probe")
+    check(not any(f.endswith(".json") for f in os.listdir(os.path.join(mc.CACHE_DIR, "autotune"))), "...and stores nothing")
+    at.release_lock(mc.CACHE_DIR)
+    cmd, env, info, out = stage3(fake_runner)
+    check(info["state"] == "tuned" and not os.path.exists(at.lock_path(mc.CACHE_DIR)), "the lock is released after a tune")
+    def boom(c, e, l, n): raise KeyboardInterrupt()
+    for f in [f for f in os.listdir(os.path.join(mc.CACHE_DIR, "autotune")) if f.endswith(".json")]:
+        os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    try:
+        stage3(boom)
+    except KeyboardInterrupt:
+        pass
+    check(not os.path.exists(at.lock_path(mc.CACHE_DIR)), "...and after an interrupt (Ctrl-C while measuring)")
+    # the other start finished while this one waited: its pick is used, nothing measured twice
+    for f in [f for f in os.listdir(os.path.join(mc.CACHE_DIR, "autotune")) if f.endswith(".json")]:
+        os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    stage3(fake_runner)
+    n_before = len(calls)
+    cmd, env, info, out = stage3(fake_runner)
+    check(info["state"] == "cached" and len(calls) == n_before, "a stored pick found: used, no second tuning")
+
+    # progress lines for the control page
+    for f in [f for f in os.listdir(os.path.join(mc.CACHE_DIR, "autotune")) if f.endswith(".json")]:
+        os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    cmd, env, info, out = stage3(fake_runner)
+    prog = [l for l in out if "trying plan" in l]
+    check(len(prog) >= 3 and prog[0].startswith("moe-cache: auto-tune: trying plan 1 of ") and " of " in prog[1], f"progress lines 'trying plan N of M' ({prog[:2]})")
+    import moe_cache_ui as ui
+    check(not any(ui.is_warning(l) for l in prog), "...and the control page does not take them for warnings (it lists them under 'What the launcher decided')")
+
+    # the key covers --cache-ram / --mtp / --fast / the KV type of the plan
+    files0 = set(os.listdir(os.path.join(mc.CACHE_DIR, "autotune")))
+    def keyed(cmd_, **k):
+        a = types.SimpleNamespace(exact=False, stock=False, retune=False, agent=False, project=None, ub="auto", n_cpu_moe=None, hybrid=False, port=8080, autotune_probe=True, **k)
+        mc.autotune_stage(a, ["--dry"], cmd_, list(BASE_ENV), [], model, 65536, ls, M(tmp), "plugin", 40, say_fn=lambda *x, **y: None, runner=fake_runner)
+        return set(os.listdir(os.path.join(mc.CACHE_DIR, "autotune"))) - files0
+    new1 = keyed(BASE_CMD + ["--cache-ram", "2048"])
+    check(len(new1) == 1, "another --cache-ram: another stored pick")
+    new2 = keyed(BASE_CMD, mtp=True)
+    check(len(new2) >= 1, "--mtp: another stored pick")
+    new3 = keyed(BASE_CMD, fast="kv")
+    check(len(new3) >= 1, "--fast: another stored pick")
+    new4 = keyed([t if t != "q8_0" else "f16" for t in BASE_CMD])
+    check(len(new4) >= 1, "another KV type in the plan: another stored pick")
+
+    # a stored pick that is marked bad is not applied again
+    for f in [f for f in os.listdir(os.path.join(mc.CACHE_DIR, "autotune")) if f.endswith(".json")]:
+        os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    cmd, env, info, out = stage3(fake_runner)
+    check(info["changed"] and at.flag_value(cmd, "--n-cpu-moe") == "18" and info.get("key_parts") and info.get("before") == (BASE_CMD, BASE_ENV), "a tuned start returns what the fall-back needs (key parts, the plan before the pick)")
+    check(at.mark_bad(mc.CACHE_DIR, info["key_parts"], "llama-server stopped before it was ready (exit 1) with ncmoe-2"), "mark_bad writes into the stored file")
+    n_before = len(calls)
+    cmd, env, info, out = stage3(fake_runner)
+    check(info["state"] == "bad" and cmd == BASE_CMD and not info["changed"] and len(calls) == n_before and any("not used again" in l and "--retune" in l for l in out),
+          "a bad pick is not applied again, nothing is measured, the line names --retune")
+    cmd, env, info, out = stage3(fake_runner, retune=True)
+    check(info["state"] == "tuned" and info["changed"], "--retune replaces the bad pick")
+finally:
+    mc.CACHE_DIR, mc.port_busy = saved3
+
+# the fall-back in run_child: a server that does not come up with the picked plan starts once with the plan as it is
+fb = os.path.join(tmp, "fb-server.py")
+open(fb, "w").write('''
+import os, sys, time, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+mark, mode, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
+n = int(open(mark).read()) if os.path.exists(mark) else 0
+open(mark, "w").write(str(n + 1))
+if mode == "dies_loading" or (mode == "dies_loading_once" and n == 0):
+    sys.stderr.write("error: failed to load the model\\n"); sys.exit(1)
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *x): pass
+    def do_GET(self):
+        self.send_response(200); self.send_header("Content-Length", "2"); self.end_headers(); self.wfile.write(b"ok")
+srv = HTTPServer(("127.0.0.1", port), H); srv.timeout = 0.2
+t0 = time.time()
+while time.time() - t0 < (3.5 if mode == "dies_late" else 2.5):
+    srv.handle_request()
+sys.exit(1 if mode == "dies_late" else 0)
+''')
+def free_port():
+    import socket
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0)); return sk.getsockname()[1]
+def run_fb(mode, tune=True, expect_plugin=False):
+    mark = os.path.join(tmp, f"fb_{mode}_{tune}_{expect_plugin}"); port = free_port(); asked_ = []
+    def tune_retry(rc, seen):
+        asked_.append(rc); return [sys.executable, fb, mark, "ok", str(port)], dict(os.environ)
+    with contextlib.redirect_stderr(io.StringIO()):
+        rc = mc.run_child([sys.executable, fb, mark, mode, str(port)], dict(os.environ), port=port, expect_plugin=expect_plugin, allow_sleep=True, tune_retry=tune_retry if tune else None)
+    return rc, len(asked_), int(open(mark).read())
+rc, asked_n, starts = run_fb("dies_loading_once")
+check(rc == 0 and asked_n == 1 and starts == 2, f"failing stored pick: the server dies loading, the plan as it is starts once and runs (rc {rc}, fall-back asked {asked_n}x, started {starts}x)")
+rc, asked_n, starts = run_fb("dies_loading")
+check(rc == 0 and asked_n == 1 and starts == 2, f"...the fall-back is asked once, not in a loop (rc {rc}, started {starts}x)")
+rc, asked_n, starts = run_fb("dies_late")
+check(rc == 1 and asked_n == 0 and starts == 1, f"a server that was ready and died later is NOT a bad pick (stock engine too): no fall-back (rc {rc}, asked {asked_n}x)")
+rc, asked_n, starts = run_fb("dies_loading_once", tune=False)
+check(rc == 1 and starts == 1, "no pick applied (no tune_retry): the failure is reported as before")
+
+# end to end through a launch plan: a stored pick, a server that does not load, the fall-back command and env, the bad mark, the end-state line
+open(os.path.join(tmp, "libggml-moe-cache.so"), "w").close()
+class Big(M):
+    def mem_total(self): return 64 * 2 ** 30
+saved4 = (mc.CACHE_DIR, mc.port_busy, mc.autotune_probe, mc.run_child, mc.WINDOWS)
+mc.CACHE_DIR = os.path.join(tmp3, "cache2"); mc.port_busy = lambda port: False; mc.WINDOWS = False
+ref = {"n": None}
+def runner_rel(cmd_, env_, left_, n_):          # fewer CPU expert layers than the first (the plan as it is) is the fast one, whatever the planner chose
+    nc = int(at.flag_value(cmd_, "--n-cpu-moe")); ref["n"] = nc if ref["n"] is None else ref["n"]
+    fast = nc < ref["n"]
+    return dict(ok=True, load_s=5, prompt_tps=400 if fast else 300, decode_tps=22 if fast else 20, decode_n=n_)
+mc.autotune_probe = runner_rel
+try:
+    def make_plan():
+        ref["n"] = None
+        a, ex, argv = mc.parse_server([model, "--llama-server", ls, "--ram", "40", "--no-pin", "--always-plugin", "--ctx", "65536"])
+        a.autotune_probe = True
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return mc.launch_plan(a, ex, argv, machine=Big(tmp), quiet=True)
+    plan = make_plan()
+    t = plan.autotune
+    check(t and t["state"] == "tuned" and t["changed"] and "--n-cpu-moe" in plan.cmd, f"launch plan with a fresh tune: {t and t['state']} picked {t and t.get('picked')}")
+    fbk = plan.tune_fallback() if plan.tune_fallback else None
+    check(fbk and at.flag_value(fbk[0], "--n-cpu-moe") != at.flag_value(plan.cmd, "--n-cpu-moe") and at.flag_value(fbk[0], "--n-cpu-moe") == at.flag_value(t["before"][0], "--n-cpu-moe"),
+          f"the fall-back command is the plan without the pick (n-cpu-moe {fbk and at.flag_value(fbk[0], '--n-cpu-moe')} instead of {at.flag_value(plan.cmd, '--n-cpu-moe')})")
+    seen_run = {}
+    def fake_run_child(cmd_, env_, **kw):
+        seen_run["first"] = cmd_
+        new = kw["tune_retry"](1, {"ready": False})
+        seen_run["second"] = new
+        return 0
+    mc.run_child = fake_run_child
+    plan2 = make_plan()
+    plan2.a.dry_run = False
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        try:
+            mc.run_launch_plan(plan2)
+        except SystemExit:
+            pass
+    second = seen_run.get("second")
+    check(second and at.flag_value(second[0], "--n-cpu-moe") == at.flag_value(t["before"][0], "--n-cpu-moe"), "run_launch_plan hands run_child a fall-back that starts the plan as it is")
+    cmd_c, env_c, info_c, out_c = (None,) * 4
+    a_c, ex_c, argv_c = mc.parse_server([model, "--llama-server", ls, "--ram", "40", "--no-pin", "--always-plugin", "--ctx", "65536", "--dry-run"])
+    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        plan3 = mc.launch_plan(a_c, ex_c, argv_c, machine=Big(tmp), quiet=True)
+    check(plan3.autotune["state"] == "bad" and f"--n-cpu-moe {at.flag_value(t['before'][0], '--n-cpu-moe')}" in " ".join(plan3.cmd), "after the fall-back the next start (dry-run too) runs the plan as it is and says the pick is bad")
+    # the end-state line when the commit stage changes the picked plan
+    for f in [f for f in os.listdir(os.path.join(mc.CACHE_DIR, "autotune")) if f.endswith(".json")]:
+        os.unlink(os.path.join(mc.CACHE_DIR, "autotune", f))
+    real_stage = mc.commit_stage
+    # the probes' own commit check (commit_fits, quiet) passes every plan; the real stage after the pick moves the expert layers
+    mc.commit_stage = lambda a_, cmd_, env_, argv_, model_, ctx_, ncmoe_, ub_, kv_, gpu_, machine_, mm_=0: (
+        (list(cmd_), ncmoe_, ub_, kv_, None) if getattr(mc._TL, "quiet", 0) > 0 else (at.set_flag(list(cmd_), "--n-cpu-moe", "25"), "25", ub_, kv_, None))
+    try:
+        a, ex, argv = mc.parse_server([model, "--llama-server", ls, "--ram", "40", "--no-pin", "--always-plugin", "--ctx", "65536"])
+        a.autotune_probe = True
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            plan4 = mc.launch_plan(a, ex, argv, machine=Big(tmp), quiet=False)
+        check("the commit check changed the picked plan" in buf.getvalue() and plan4.autotune.get("final_differs"), "end state: a pick the commit check changes is said with the numbers that run")
+    finally:
+        mc.commit_stage = real_stage
+finally:
+    mc.CACHE_DIR, mc.port_busy, mc.autotune_probe, mc.run_child, mc.WINDOWS = saved4
 
 # --- the real commit check (commit_fits over commit_stage) on a Windows fake machine ---
 class WM(M):

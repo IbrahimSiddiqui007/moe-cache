@@ -1796,15 +1796,15 @@ GPU_OOM_RE = re.compile(r"ErrorOutOfDeviceMemory|Device memory allocation .* fai
 GGML_ABORT_RE = re.compile(r"ggml-impl\.h:\d+: fatal error")
 
 
-def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None, kv_retry=None):
+def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None, kv_retry=None, tune_retry=None):
     """run_child_once, and when llama-server stops before it is ready because the GPU ran out of memory at load (another program took the memory
     after the plan was made: desktop PC 2026-10-30, the control page planned with 13.4 GiB free), ask `oom_retry()` for a new command (it measures the
     free GPU memory again and plans again) and start once more. One retry only."""
     with OwnsPort(port):
-        return _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry)
+        return _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry, tune_retry)
 
 
-def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry=None):
+def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry=None, tune_retry=None):
     rc, seen = run_child_once(cmd, env, port, expect_plugin, mem_limit, allow_sleep)
     quiet = (rc & 0xFFFFFFFF) == 0xC000013A if WINDOWS else rc in (-signal.SIGINT, -signal.SIGTERM, 130, 143)
     if getattr(seen.get("guard"), "stopped", None):
@@ -1812,6 +1812,11 @@ def _run_child(cmd, env, port, expect_plugin, mem_limit, allow_sleep, oom_retry,
         # line would then start a second load from the same low commit: the thing the guard exists to prevent. No retry; the guard's reason is already said.
         say_exit(rc, seen, expect_plugin and port)
         return rc
+    if rc not in (0, None) and not quiet and tune_retry and not seen["ready"]:
+        # LAUNCHER-1045: the server did not come up with a plan the auto-tune picked: the pick is marked bad and the plan as it is starts once (the other retries still apply to it)
+        new = tune_retry(rc, seen)
+        if new:
+            return _run_child(new[0], new[1], port, expect_plugin, mem_limit, allow_sleep, oom_retry, kv_retry, None)
     if rc not in (0, None) and not quiet and kv_retry and seen.get("kvabort") and not seen["ready"]:
         # The known abort (Granite 1B, 63a07fa) prints only "ggml-impl.h:NNN: fatal error", nothing about the KV type, so the text cannot be narrowed further; the retry is
         # limited instead to: an abort before the server was ready, a q8_0 KV cache this launcher chose (kv_retry is None otherwise), and ONE retry. The matched line is logged.
@@ -2046,13 +2051,15 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     seen["disabled"] = line.decode(errors="replace").strip()
     pump_t = threading.Thread(target=pump, daemon=True)
     pump_t.start()
-    if expect_plugin and port:
-        def check():
+    if port:
+        def check():       # seen["ready"] for every engine (LAUNCHER-1045 needs it for stock runs too); the plugin warnings only when the plugin was meant to load
             for _ in range(900):
                 if p.poll() is not None:
                     return
                 if healthy(port):
                     seen["ready"] = True
+                    if not expect_plugin:
+                        return
                     time.sleep(1)
                     if seen["disabled"]:
                         say(f"moe-cache: WARNING: the plugin loaded but disabled itself ({seen['disabled']}): llama-server runs stock", err=True)
@@ -2323,6 +2330,7 @@ class LaunchPlan:
     command line, and every line the launcher said while deciding (notes: (text, is_error)). Built by launch_plan(); run_launch_plan() runs it."""
     notes = ()
     autotune = None              # LAUNCHER-994: the auto-tune result (bin/moe_cache_autotune.py) or None
+    tune_fallback = None         # LAUNCHER-1045: callable -> (cmd, env) of the plan without the stored pick, or None
     commit_refusal = None        # LAUNCHER-991: why this plan must not be started (Windows commit too small even for the smallest layout), or None
 
     @property
@@ -3856,20 +3864,31 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     if a.exact or a.stock or os.environ.get("MOE_CACHE_NO_AUTOTUNE", "") not in ("", "0") or not model or not os.path.isfile(model):
         return cmd, env, None
     locked = at.locked_dims(a, argv, os.environ, windows=machine.windows, agent=bool(a.agent), project=bool(a.project), engine=engine)
-    parts = at.key_parts(autotune_model_id(model), ctx, autotune_machine_sig(machine, ls), locked, a.agent, engine,
-                         {k: str(getattr(a, k)) for k in ('ram', 'vram', 'max_ram', 'gpu_margin', 'leave_room') if getattr(a, k, None)})
-    stored = None if a.retune else at.load(CACHE_DIR, parts)
-    if stored:
+    # what else shapes the plan a pick was measured on (LAUNCHER-1041): the user's memory caps, the modes (--fast, --mtp, --approx, long-prompt, --hybrid) and the settings the
+    # tuner does not touch but the speed depends on (the prompt cache size, the KV type of the plan, flash attention)
+    limits = {k: str(getattr(a, k)) for k in ('ram', 'vram', 'max_ram', 'gpu_margin', 'leave_room', 'fast', 'mtp', 'approx', 'long_prompt', 'no_long_prompt', 'hybrid', 'always_plugin') if getattr(a, k, None)}
+    limits.update({k: str(v) for k, v in (("cache_ram", arg_after(cmd, "--cache-ram", "-cram")), ("ctk", arg_after(cmd, "-ctk", "--cache-type-k")), ("fa", arg_after(cmd, "-fa", "--flash-attn"))) if v is not None})
+    parts = at.key_parts(autotune_model_id(model), ctx, autotune_machine_sig(machine, ls), locked, a.agent, engine, limits)
+    def apply_stored(stored):
         if stored.get("state") == "too_slow":
             info = dict(stored, state="too_slow", lines=[f"moe-cache: auto-tune: not tried again: {stored.get('why')}"], locked=locked)
             say_fn(info["lines"][0])
             return cmd, env, info
+        if stored.get("bad"):           # LAUNCHER-1045: this pick did not load once; the plan as it is runs until --retune measures again
+            line = (f"moe-cache: auto-tune: the stored pick {stored.get('picked')} failed to load on {stored['bad'].get('at')} ({stored['bad'].get('why', '')[:120]}) and is not used again: "
+                    "the plan as it is runs; --retune measures again")
+            say_fn(line)
+            return cmd, env, dict(stored, state="bad", lines=[line], locked=locked, key=at.key_of(parts), changed=False)
         new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(stored), locked)
         lines = at.summary_lines(stored, cached=True, skipped=skipped, locked=locked)
         lines = [lines[0]] + [l for l in lines[1:] if "picked" in l or "stays" in l or "left alone" in l or "not applied" in l or "--retune" in l]       # the table is in the control page / --plan-json
         for l in lines:
             say_fn(l)
-        return new_cmd, new_env, dict(stored, state="cached", lines=lines, locked=locked, key=at.key_of(parts))
+        # "before": the plan as the planner made it (for the fall-back when this pick does not load); "key_parts": where the file lives (to mark it bad)
+        return new_cmd, new_env, dict(stored, state="cached", lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
+    stored = None if a.retune else at.load(CACHE_DIR, parts)
+    if stored:
+        return apply_stored(stored)
     # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). Measured nowhere: this
     # is a size rule: more than 40 % of this computer's RAM, or more than the memory the server may use (the planner expects spill).
     try:
@@ -3900,6 +3919,24 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         line = f"moe-cache: auto-tune: not measured now: {why_not}; it is tried again at the next start"
         say_fn(line)
         return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
+    got, holder = at.acquire_lock(CACHE_DIR)             # LAUNCHER-1041: one tuning at a time
+    if not got:
+        line = (f"moe-cache: auto-tune: another start (pid {holder}) is measuring right now: the plan as it is runs untuned this time and the pick is looked up again at the next start"
+                if holder else "moe-cache: auto-tune: the tuning lock could not be taken: the plan as it is runs untuned this time")
+        say_fn(line)
+        return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
+    try:
+        if not a.retune:                                  # the other start may have finished while this one waited for its turn
+            stored = at.load(CACHE_DIR, parts)
+            if stored:
+                return apply_stored(stored)
+        return _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits)
+    finally:
+        at.release_lock(CACHE_DIR)
+
+
+def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits):
+    import moe_cache_autotune as at
     cands = at.build_candidates(cmd, env, locked, ctx, n_layers)
     if fits is not None and len(cands) > 1:          # LAUNCHER-1042: every command that would be loaded has passed the commit check first
         ok, why = fits(cmd, env)
@@ -3927,7 +3964,7 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     def run(c, left_s, n):
         c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
         return (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
-    res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t))
+    res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t), progress=lambda t: say_fn("moe-cache: auto-tune: " + t))
     try:
         if res.get("state") != "aborted":          # LAUNCHER-1042: a guard stop stores nothing
             at.save(CACHE_DIR, parts, res)
@@ -3937,7 +3974,7 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     lines = [l for l in at.summary_lines(res, locked=locked) if not l.startswith("moe-cache: auto-tune:   ")]
     for l in lines:
         say_fn(l)
-    return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts))
+    return new_cmd, new_env, dict(res, lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
 
 
 def cuda_backend(ls):
@@ -4125,6 +4162,7 @@ def _launch_plan(a, extra, argv, machine):
     cmd, extra = command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, dense, method, profile, machine, kv_q8, mm_bytes)
     cmd = cpu_gpu_split_stage(a, env, cmd, ls, dense)
     # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
+    ncmoe0, ub0, kv_q80 = ncmoe, ub, kv_q8
     cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"),
                                           size=size, avail=avail,
                                           fits=lambda c_cmd, c_env: commit_fits(a, c_cmd, c_env, argv, model, ctx, arg_after(c_cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(c_cmd, "-ub", "--ubatch-size") or ub,
@@ -4135,7 +4173,26 @@ def _launch_plan(a, extra, argv, machine):
         n_ = arg_after(cmd, "--n-cpu-moe", "-ncmoe")
         ncmoe = n_ if n_ is not None else ncmoe
         kv_q8 = arg_after(cmd, "-ctk", "--cache-type-k") == "q8_0"
+    cmd_picked = list(cmd)
     cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
+    tune_fallback = None
+    if tune_info and tune_info.get("changed") and tune_info.get("before") and tune_info.get("state") in ("cached", "tuned"):
+        # LAUNCHER-1041: the commit check may have changed the picked plan after all: the end state is said, not the pick alone
+        diff = [f"{n} {arg_after(cmd_picked, *f)} -> {arg_after(cmd, *f)}" for n, f in (("-ub", ("-ub", "--ubatch-size")), ("--n-cpu-moe", ("--n-cpu-moe", "-ncmoe")), ("-np", ("-np", "--parallel")))
+                if arg_after(cmd_picked, *f) != arg_after(cmd, *f)]
+        if diff:
+            line = f"moe-cache: auto-tune: the commit check changed the picked plan; the server starts with: {', '.join(diff)}"
+            say(line)
+            tune_info["lines"] = list(tune_info.get("lines", [])) + [line]
+            tune_info["final_differs"] = diff
+        before_cmd, before_env = tune_info["before"]
+        tuned_env = {k for k, v in env_t if (k, v) not in before_env} | {k for k, v in before_env if (k, v) not in env_t}
+        def tune_fallback():
+            """LAUNCHER-1045: the plan as the planner made it (through the same commit check), for the one retry when the picked plan does not load -> (cmd, env list) or None."""
+            c2, _n, _u, _k, refusal = commit_stage(a, list(before_cmd), list(before_env), argv, model, ctx, ncmoe0, ub0, kv_q80, gpu, machine, mm_bytes)
+            if refusal:
+                return None
+            return c2, [(k, v) for k, v in env if k not in tuned_env] + [(k, v) for k, v in before_env if k in tuned_env]
     new_cram = arg_after(cmd, "--cache-ram")
     if new_cram is not None and cram is not None and re.fullmatch(r"[0-9]+", str(new_cram)) and str(new_cram) != str(cram):
         cram = new_cram                     # the stage shrank the prompt cache: the plan and the plugin's host reserve follow
@@ -4164,6 +4221,7 @@ def _launch_plan(a, extra, argv, machine):
     plan.machine, plan.commit_refusal = machine, commit_refusal
     plan.tuned, plan.planner_info, plan.planner_error = tuned, planner_info, planner_error
     plan.autotune = tune_info
+    plan.tune_fallback = tune_fallback
     return plan
 
 
@@ -4299,8 +4357,27 @@ def run_launch_plan(plan):
         say("moe-cache: llama.cpp aborted at load with the q8_0 KV cache (ggml-impl.h fatal error: seen with stock llama-server b12064 on Granite 1B, any context): "
             "trying again once with the f16 KV cache (--exact does that from the start)", err=True)
         return new
+    def tune_retry(rc, seen):
+        """LAUNCHER-1045: llama-server stopped before it was ready with a plan the auto-tune picked (a stored pick is applied at every start, so a pick that fails once would fail
+        at every start): mark the stored pick bad, start once with the plan as the planner made it. None when no pick was applied or the plan cannot be rebuilt."""
+        nonlocal cmd, env
+        t = plan.autotune
+        if not (t and t.get("changed") and t.get("key_parts") and plan.tune_fallback):
+            return None
+        new = plan.tune_fallback()
+        if not new:
+            return None
+        import moe_cache_autotune as at
+        try:
+            at.mark_bad(CACHE_DIR, t["key_parts"], f"llama-server stopped before it was ready (exit {rc}) with {t.get('picked')}")
+        except OSError:
+            pass
+        say(f"moe-cache: auto-tune: llama-server did not come up with the picked plan {t.get('picked')} (exit {rc}): the pick is marked bad and the plan as it is starts once; "
+            "--retune measures again", err=True)
+        cmd, env = new
+        return new[0], dict(os.environ, **dict(env + key_env))
     return run_child(cmd, dict(os.environ, **dict(env + key_env)), port=port, expect_plugin=method != "none (stock)", mem_limit=win_limit,
-                     allow_sleep=a.allow_sleep, oom_retry=oom_retry, kv_retry=kv_retry)
+                     allow_sleep=a.allow_sleep, oom_retry=oom_retry, kv_retry=kv_retry, tune_retry=tune_retry)
 
 
 def warm_save_wait(n_tokens, last_tokens, bytes_per_token, poll=10, idle_polls=2, per_gb=20, small_wait=180, small_per_gb=30, small_cap=600):
