@@ -19,6 +19,7 @@ import moe_cache_pick as picker  # noqa: E402
 import moe_cache_download as dl  # noqa: E402
 import moe_cache_lan as lan  # noqa: E402
 import moe_cache_concurrent as cc  # noqa: E402
+import moe_cache_monitor as monitor  # noqa: E402
 from moe_cache_wintool import win_tool  # noqa: E402
 
 HERE = mc.HERE
@@ -886,6 +887,40 @@ def ask_snapshot(pid):
     return False
 
 
+_ARGS_CACHE = {}
+
+
+def process_args(pid):
+    """(argv, MOE_CACHE_* environment) of llama-server `pid`, read once per pid: the plan as it really runs (-ub, KV type, layers), not as asked.
+    Linux: /proc. Windows: one CIM query for the command line (no admin; the environment is not readable there). ([], {}) when unknown."""
+    hit = _ARGS_CACHE.get(pid)
+    if hit and (hit[0] or time.time() - hit[2] < 30):          # an empty answer (not readable yet) is kept for 30 s: the page must not start PowerShell every 2 s
+        return hit[0], hit[1]
+    argv, env = [], {}
+    try:
+        if WINDOWS:
+            r = subprocess.run([win_tool("powershell"), "-NoProfile", "-NonInteractive", "-Command",
+                                f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
+            argv = monitor.split_command(r.stdout.strip()) if r.returncode == 0 and r.stdout.strip() else []
+        else:
+            with open(f"/proc/{int(pid)}/cmdline", "rb") as f:
+                argv = [x.decode("utf-8", "replace") for x in f.read().split(b"\0") if x]
+            try:
+                with open(f"/proc/{int(pid)}/environ", "rb") as f:
+                    for kv in f.read().split(b"\0"):
+                        k, _, v = kv.decode("utf-8", "replace").partition("=")
+                        if k.startswith("MOE_CACHE_") and k not in ("MOE_CACHE_API_KEY",) and "KEY" not in k:
+                            env[k] = v[:200]
+            except OSError:
+                pass
+    except Exception:
+        argv = []
+    if len(_ARGS_CACHE) > 50:
+        _ARGS_CACHE.clear()
+    _ARGS_CACHE[pid] = (argv, env, time.time())
+    return argv, env
+
+
 def proc_rss(pid):
     if WINDOWS:
         try:
@@ -1244,6 +1279,7 @@ class Runner:
         self.state, self.rc, self.started = "idle", None, None
         self.stop_requested = False
         self.log = collections.deque(maxlen=500)
+        self.mon = monitor.Monitor()       # GUI-041: the Monitor view's samples, layer columns, requests and the long log (this run only)
         self.seq = 0
         self.mode = ""; self.fit_partial = False
         self.mtp = False                   # the launcher said "MTP on:"
@@ -1459,6 +1495,7 @@ class Runner:
     def add_line(self, line):
         self.seq += 1
         self.log.append((self.seq, line))
+        self.mon.add_line(self.seq, time.time(), line)
 
     def read(self, p):
         for raw in iter(p.stdout.readline, b""):
@@ -1520,6 +1557,7 @@ class Runner:
         now = time.time()
         prev, self.prev_snap = self.snap, self.snap
         self.snap = (now, s)
+        self.mon.add_snapshot(now, s)
         c = {"resident": s.get("resident_bytes"), "budget": s.get("budget")}
         h, m = s.get("hits", 0), s.get("misses", 0)
         c["hit_rate_total"] = h / (h + m) if h + m else None
@@ -1529,6 +1567,51 @@ class Runner:
             c["hit_rate"] = dh / (dh + dm) if dh + dm > 0 else self.cache.get("hit_rate")
             c["read_mbs"] = max(0, s.get("read_bytes", 0) - p0.get("read_bytes", 0)) / max(now - t0, 1e-3) / 1e6
         self.cache = c
+
+    def monitor_tick(self, port, api_key, busy):
+        """One Monitor row every 2 s: llama-server's /metrics (loopback, answered between batches), this machine's memory and the newest plugin snapshot."""
+        try:
+            st, body = mc.http(f"http://127.0.0.1:{port}/metrics", api_key=api_key, timeout=2)
+            if st == 200:
+                self.mon.add_metrics(time.time(), body.decode("utf-8", "replace") if isinstance(body, bytes) else str(body))
+            tot, avail = ram_now()
+            ctot, cfree = mc.win_commit() if WINDOWS else (None, None)
+            t0, v = self.mon.vram_cache
+            if time.time() - t0 > 6:
+                v = vram_now()
+                self.mon.vram_cache = (time.time(), v)
+            self.mon.tick(time.time(), self.live_tps, self.rss, (tot - avail, tot) if tot and avail is not None else None,
+                          (ctot - cfree, ctot) if ctot and cfree is not None else None, (v["used"], v["total"]) if v else None, busy)
+        except Exception:
+            pass                                   # the monitor must never end the poll loop
+
+    def monitor_payload(self, since, log_seq):
+        s = self.settings
+        args, env = process_args(self.pid) if self.pid else ([], {})
+        if not args:                            # the process is not there (yet): the launcher's own arguments
+            try:
+                args = monitor.split_command(shown_command(s)) if s.get("model") else []
+            except Exception:
+                args = []
+        plan = monitor.plan_from_args(args)
+        if env:
+            plan["env"] = env
+        plan.update({"mode": self.mode, "mtp": bool(self.mtp), "agent": bool(s.get("agent")), "approx": s.get("approx") or "", "decisions": list(self.decisions)})
+        sysi = system_info()
+        cap = sysi.get("server_may_use")          # the whole-server memory cap: the launcher's own line says it ("memory cap 27.0 GiB ..."), else the rule's value
+        for line in self.decisions:
+            m = re.search(r"memory cap ([\d.]+) GiB", line)
+            if m:
+                cap = float(m.group(1)) * GIB
+                break
+        totals = {"ram_total": sysi.get("ram_total"), "vram_total": sysi.get("vram_total"), "gpu": sysi.get("gpu"), "state": self.state, "model": os.path.basename(str(s.get("model") or "")),
+                  "uptime": time.time() - self.started if self.started and self.state in ("starting", "ready") else None, "hits_total": self.cache.get("hit_rate_total"),
+                  "resident": self.cache.get("resident"), "budget": self.cache.get("budget")}
+        try:
+            ctx_max = int(s.get("ctx")) if s.get("ctx") else None
+        except (TypeError, ValueError):
+            ctx_max = None
+        return self.mon.payload(since, log_seq, ctx_max=ctx_max, plan=plan, cap=cap, totals=totals)
 
     def poll(self, p):
         api_key = self.key()
@@ -1562,6 +1645,8 @@ class Runner:
                 n_prev, t_prev = n, now
                 if tick % 2 == 0 and self.pid:
                     ask_snapshot(self.pid)
+                if tick % 2 == 0 and self.mon.enabled:
+                    self.monitor_tick(port, api_key, busy)
             self.hist.append([round(time.time(), 1), self.live_tps, self.cache.get("hit_rate")])
             time.sleep(1)
 
@@ -2322,6 +2407,8 @@ class Handler(BaseHTTPRequestHandler):
                     with open(chat_path(q["id"]), encoding="utf-8") as fh:
                         return self.send(200, json.load(fh))
                 return self.send(200, {"dir": CHAT_DIR, "chats": list_chats()})
+            if u.path == "/api/monitor":                   # GUI-041: the Monitor view (this machine only: it carries the whole log)
+                return self.send(200, self.runner.monitor_payload(float(q.get("since") or 0), int(q.get("log") or 0)))
             if u.path == "/api/log":
                 since = int(q.get("since") or 0)
                 return self.send(200, {"lines": [[n, l] for n, l in list(self.runner.log) if n > since]})

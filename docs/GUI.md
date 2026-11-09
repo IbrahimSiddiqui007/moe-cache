@@ -150,6 +150,22 @@ the server stopped), each shown once with a count.
 **Copy command** copies the launcher command for these settings; **Show the llama-server command** asks the launcher what it would run (without
 running it).
 
+### The Monitor view
+
+The **📈 Monitor** button in the top bar opens a full-screen view of the running server. It polls the page's own server every 2 seconds while it is open (nothing is sent anywhere else) and keeps the last two hours of the run in memory; a new Start begins a new run.
+
+| Part | What it shows | Where the numbers come from |
+|---|---|---|
+| Tiles | decode and prompt tok/s, context tokens against the context size, hit rate now and for the run, SSD GB/s, share of time waiting for the SSD, CPU expert executor share, MTP acceptance, llama-server RAM against the memory cap, VRAM | llama-server `/metrics` (counters turned into rates), the plugin's stats line, the process's memory |
+| Charts | speed, context depth, hit rate (all lookups and decode only), SSD GB/s and wait, memory with the cap line, executor share and evictions; hover for the values; the window is 2 min, 10 min, 1 hour or the whole run | the same, one row every 2 seconds |
+| Per-layer heat map | hit rate of every layer over time (top = layer 0, green = all experts found in RAM, red = misses) and the whole-run hit rate by layer | the plugin's per-layer counters |
+| Plan and run | `-ngl`, experts on the CPU, `-ub`/`-b`, KV cache type, context, threads, device, mode, the launcher's plan lines | the real llama-server command line (Linux `/proc`; Windows one CIM query) and the launcher's own lines |
+| Counters | MTP accepted / drafted, approximate-routing and fewer-experts counters (the plugin prints them when the server stops), evictions, prefetch, fallbacks | log lines and the plugin's stats line |
+| Last requests | prompt and decode speed, tokens and MTP acceptance of each finished request | llama-server's timing lines |
+| Log | the last 20,000 lines of the launcher, the plugin, llama-server and the page, with time and source; warnings and errors coloured; search by text or `/regex/`; filter by source and level; **Download .txt / .jsonl** saves the filtered lines | the server's output |
+
+**Cost.** The view reads data the page already collects; the extra work is one `/metrics` request and one memory reading every 2 seconds. `MOE_CACHE_MONITOR=0` turns the sampling off (the view then shows only the log). The page answers on this machine only: `/api/monitor` is not part of what `--ui-lan` allows.
+
 ## 6. Chat
 
 The middle pane is the page's own chat. Start a model, type, press Enter (Shift+Enter for a new line). The answer appears as it is written.

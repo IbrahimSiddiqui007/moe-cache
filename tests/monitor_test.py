@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""GUI-041: the Monitor view without a model: bin/moe_cache_monitor.py on its own, the Runner's hooks (log line, plugin snapshot, /metrics, tick, payload),
+and the page's chart and log-filter code under node. Linux and Windows; standard library only.
+   python3 tests/monitor_test.py"""
+import json, os, re, shutil, subprocess, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TMP = tempfile.mkdtemp(prefix="moe-mon-test-")
+os.environ["XDG_CACHE_HOME"] = os.path.join(TMP, "cache")
+os.environ["XDG_CONFIG_HOME"] = os.path.join(TMP, "config")
+sys.path.insert(0, os.path.join(HERE, "bin"))
+import moe_cache_monitor as mm  # noqa: E402
+import moe_cache_ui as ui  # noqa: E402
+
+fails = []
+def check(ok, what):
+    print(("  ok   " if ok else "  FAIL ") + what)
+    if not ok:
+        fails.append(what)
+
+# ---- /metrics text ----
+prom = "# HELP llamacpp:prompt_tokens_total x\n# TYPE x counter\nllamacpp:prompt_tokens_total 120\nllamacpp:prompt_seconds_total 2.5\nllamacpp:tokens_predicted_total 40\nllamacpp:requests_processing 1\nother 5\n"
+p = mm.parse_prom(prom)
+check(p == {"prompt_tokens_total": 120.0, "prompt_seconds_total": 2.5, "tokens_predicted_total": 40.0, "requests_processing": 1.0}, f"parse_prom keeps the llamacpp: series ({p})")
+
+# ---- log classification ----
+c = mm.classify
+check(c("moe-cache: planning", True) == ("launcher", "info") and c("moe-cache: cache 6 GB", False) == ("plugin", "info"), "classify: moe-cache lines are launcher before the URL line, plugin after")
+check(c("ui: the server ended (exit code 1)", False)[0] == "ui" and c("srv  update_slots: all slots are idle", False)[0] == "llama", "classify: ui and llama-server lines")
+check(c("moe-cache: warning: low RAM", False)[1] == "warn" and c("llama_model_load: error: failed to load", False)[1] == "error", "classify: warning and error levels")
+check(c("slot release: id 0 | task 0 | stop processing", False)[1] == "info", "classify: ordinary llama-server lines are info")
+
+# ---- plan from the real llama-server arguments ----
+plan = mm.plan_from_args("llama-server -m x.gguf -c 65536 -ngl 99 --n-cpu-moe 30 -ub 4096 -b 4096 -ctk q8_0 -ctv q8_0 -fa on -t 8 --parallel 1 --device CUDA0".split())
+check(plan["ub"] == "4096" and plan["kv_k"] == "q8_0" and plan["cpu_moe_layers"] == "30" and plan["ngl"] == "99" and plan["device"] == "CUDA0" and plan["ctx"] == "65536", f"plan_from_args ({plan})")
+check(mm.plan_from_args(["x", "--cpu-moe", "--ctx-size=8192"]) == {"cpu_moe_all": True, "ctx": "8192"}, "plan_from_args: --cpu-moe and --opt=value")
+check(mm.split_command('a "b c" d') == ["a", "b c", "d"] or os.name == "nt", "split_command")
+
+# ---- the Monitor: lines ----
+m = mm.Monitor()
+m.add_line(1, 100.0, "moe-cache: MTP on: 3 drafts")
+m.add_line(2, 101.0, "moe-cache: web UI and API will be at http://127.0.0.1:8080")
+m.add_line(3, 102.0, "slot update_slots: id 0 | task 5 | prompt processing done, n_tokens = 812, batch.n_tokens = 812")
+m.add_line(4, 103.0, "prompt eval time =     400.00 ms /   812 tokens (    0.49 ms per token,  2030.00 tokens per second)")
+m.add_line(5, 104.0, "slot print_timing: draft acceptance rate = 0.75000 (   30 accepted /    40 generated)")
+m.add_line(6, 105.0, "       eval time =    2000.00 ms /    40 tokens (   50.00 ms per token,    20.00 tokens per second)")
+m.add_line(7, 106.0, "moe-cache: approximate routing (skip): 1000 low-ranked picks looked at, 300 given up, 0 replaced by a resident expert")
+check(m.starting is False and [x[2] for x in m.log][:2] == ["launcher", "launcher"], "lines up to the URL line are launcher")
+m.add_line(8, 107.0, "moe-cache: executor by type q4_k ops=5")
+check(m.log[-1][2] == "plugin", "a moe-cache line after the URL line is plugin")
+check(m.ctx_depth == 812, "context depth from 'n_tokens ='")
+check(len(m.requests) == 1 and m.requests[0]["prefill_tps"] == 2030.0 and m.requests[0]["decode_tps"] == 20.0 and m.requests[0]["decode_tokens"] == 40 and m.requests[0]["mtp"] == 0.75, f"one request row from the timing lines ({list(m.requests)})")
+check(m.mtp["accepted"] == 30 and m.mtp["generated"] == 40, "MTP acceptance counted")
+check(m.approx.get("mode") == "skip" and m.approx["given_up"] == 300, f"approximate-routing line parsed ({m.approx})")
+
+# ---- snapshots -> rates and layer columns ----
+s1 = {"hits": 100, "misses": 10, "hits_dec": 50, "misses_dec": 5, "read_bytes": 1_000_000_000, "ns_ssd_wait": 100_000_000, "n_ssd_wait": 4, "ns_cpu": 400_000_000, "ns_total": 1_000_000_000,
+      "evictions": 10, "layer_hits": [10, 20, 0], "layer_misses": [0, 5, 0]}
+s2 = dict(s1, hits=190, misses=20, hits_dec=90, misses_dec=10, read_bytes=3_000_000_000, ns_ssd_wait=600_000_000, n_ssd_wait=9, ns_cpu=900_000_000, ns_total=2_000_000_000, evictions=30,
+          layer_hits=[20, 20, 0], layer_misses=[0, 15, 0])
+m.add_snapshot(200.0, s1); m.add_snapshot(202.0, s2)
+r = m.rates
+check(abs(r["hit"] - 90 / 100) < 1e-9 and abs(r["hit_dec"] - 40 / 45) < 1e-9, f"interval hit rates ({r['hit']}, {r['hit_dec']})")
+check(abs(r["ssd_gbs"] - 1.0) < 1e-9 and abs(r["ssd_wait"] - 0.25) < 1e-9 and r["ssd_waits"] == 5, f"SSD GB/s and wait over the interval ({r['ssd_gbs']}, {r['ssd_wait']})")
+check(abs(r["cpu"] - 0.5) < 1e-9 and abs(r["evict"] - 10.0) < 1e-9, "executor share and evictions per second")
+check(len(m.layer_cols) == 1 and m.layer_cols[0]["rate"] == [1.0, 0.0, None], f"per-layer column: layer 0 all hits, layer 1 all misses, layer 2 no lookups ({m.layer_cols[0]['rate']})")
+
+# ---- /metrics rates, tick, payload ----
+m.add_metrics(300.0, "llamacpp:prompt_tokens_total 100\nllamacpp:prompt_seconds_total 1\nllamacpp:tokens_predicted_total 10\nllamacpp:tokens_predicted_seconds_total 1\n")
+m.add_metrics(302.0, "llamacpp:prompt_tokens_total 1100\nllamacpp:prompt_seconds_total 2\nllamacpp:tokens_predicted_total 10\nllamacpp:tokens_predicted_seconds_total 1\nllamacpp:requests_processing 1\n")
+check(m.prom_rates == {"pre": 1000.0, "dec": None}, f"prompt and decode tok/s from the counters' difference ({m.prom_rates})")
+m.tick(303.0, 18.5, 5e9, (20e9, 32e9), None, (6e9, 8e9), True)
+pl = m.payload(0, 0, ctx_max=65536, plan={"ub": "4096"}, cap=28 * 2**30, totals={"state": "ready"})
+smp = pl["samples"][-1]
+check(smp["dec"] == 18.5 and smp["pre"] == 1000.0 and smp["hit"] == 0.9 and smp["ssd"] == 1.0 and smp["ram"] == 20e9 and smp["vram"] == 6e9 and smp["commit"] is None, f"the sample row ({smp})")
+check(pl["layer_total"][:2] == [1.0, 0.571] and pl["cap"] == 28 * 2**30 and pl["ctx"] == {"depth": 812, "max": 65536} and pl["mtp"]["rate"] == 0.75, "payload: whole-run layer rates, cap, context, MTP rate")
+check(json.loads(json.dumps(pl))["log_seq"] == 8 and len(pl["log"]) == 8 and len(m.payload(0, 5)["log"]) == 3, "payload: log lines after a sequence number")
+check(len(m.payload(smp["t"])["samples"]) == 0, "payload: samples after a time")
+for i in range(mm.MAX_LOG + 50):
+    m.add_line(1000 + i, 400.0, "x")
+check(len(m.log) == mm.MAX_LOG, f"the log ring holds {mm.MAX_LOG} lines")
+
+# ---- off switch ----
+os.environ["MOE_CACHE_MONITOR"] = "0"
+off = mm.Monitor()
+off.add_snapshot(1.0, s1); off.add_snapshot(3.0, s2); off.tick(3.0, 1, 1, None, None, None, False)
+check(not off.samples and not off.layer_cols and off.payload()["enabled"] is False, "MOE_CACHE_MONITOR=0: no samples, no layer columns")
+del os.environ["MOE_CACHE_MONITOR"]
+
+# ---- export ----
+ex = mm.export_text([(1, 0.0, "plugin", "warn", "hello")], "jsonl")
+check(json.loads(ex)["text"] == "hello" and "[plugin/warn] hello" in mm.export_text([(1, 0.0, "plugin", "warn", "hello")]), "export as text and as JSON lines")
+
+# ---- the Runner's hooks ----
+rn = ui.Runner()
+rn.add_line("moe-cache: planning")
+rn.take_snapshot(s1); rn.take_snapshot(dict(s2))
+rn.mon.add_snapshot(time.time() + 2, dict(s2, hits=300))       # a second interval for the monitor
+rn.monitor_tick(1, None, False)       # nothing listens on port 1: /metrics fails, memory still sampled
+pay = rn.monitor_payload(0, 0)
+check(pay["log"] and pay["log"][0][4] == "moe-cache: planning" and "plan" in pay and "totals" in pay and pay["samples"], f"Runner: the payload has log, plan, totals and a sample ({list(pay)})")
+check(rn.monitor_payload(1e12, 10 ** 9)["log"] == [] and rn.monitor_payload(1e12, 10 ** 9)["samples"] == [], "Runner: nothing newer than what the page has")
+rn.reset({})
+check(len(rn.mon.log) == 0, "a new run starts a new Monitor")
+
+# ---- LAN allow-list, process arguments ----
+check("/api/monitor" not in ui.REMOTE_GET and "/api/monitor" not in ui.REMOTE_POST, "/api/monitor is not on the LAN allow-list (it carries the whole log)")
+a1 = ui.process_args(os.getpid())
+check(isinstance(a1, tuple) and ui.process_args(os.getpid()) == a1, "process_args answers (argv, env) and is cached per pid")
+check(ui.process_args(2 ** 22 + 1)[0] == [], "process_args: a pid that is not there gives no arguments")
+
+# ---- the page's own code under node ----
+node = shutil.which("node")
+page = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
+check('id="monopen"' in page and 'id="mondlg"' in page and "/api/monitor" in page, "the page has the Monitor button, view and route")
+if node:
+    js = re.search(r"<script[^>]*>(.*)</script>", page, re.S).group(1)
+    pj = os.path.join(TMP, "page_all.js"); open(pj, "w", encoding="utf-8").write(js)
+    o = subprocess.run([node, "--check", pj], capture_output=True, text=True, timeout=60)
+    check(o.returncode == 0, "the page's whole script parses (node --check)" + ("" if o.returncode == 0 else ": " + o.stderr[:300]))
+    pick = lambda pat: re.search(pat, js, re.S).group(0)
+    fn = "".join(pick(p_) for p_ in (r"const nz = [^\n]*\n", r"const cfmt = [^\n]*\n", r"function niceMax\(v\) \{.*?\n\}\n", r"const hhmmss = [^\n]*\n", r"function monRange\(\) \{[^\n]*\n",
+                                       r"function monLine\(id, series, o\) \{.*?\n\}\n", r"function monLogFilter\(\) \{.*?\n\}\n"))
+    harness = ("const esc = s => String(s);\nconst M = {samples: [], cols: [], log: []};\nconst els = {};\n"
+               "const $ = id => els[id] || (els[id] = {value: '', innerHTML: '', firstChild: {}, hidden: true, style: {}});\n"
+               "const chartColours = () => ({moe:'#c00', gpu:'#00c', ok:'#0a0', warn:'#fa0', bad:'#f00', line:'#ccc', muted:'#888', text:'#000'});\n"
+               "const document = {querySelectorAll: () => [{value:'plugin'},{value:'llama'}]};\n" + fn +
+               "for (let i = 0; i < 30; i++) M.samples.push({t: 1000 + i * 2, dec: i < 10 ? null : 20 + i, pre: 500, ctx: 100 * i, hit: 0.9});\n"
+               "$('monrange').value = '0';\n"
+               "monLine('a', [{k: 'dec', name: 'decode', color: 'moe'}, {k: 'pre', name: 'prompt', color: 'gpu'}], {});\n"
+               "const a = els['a'].innerHTML;\n"
+               "monLine('b', [{k: 'hit', color: 'ok', scale: 100}], {ymax: 100, fmt: v => v.toFixed(0) + ' %', hline: {v: 50, label: 'cap'}});\n"
+               "M.samples.length = 0; monLine('c', [{k: 'dec', color: 'moe'}], {});\n"
+               "$('monq').value = '/ba[dr]/'; $('monlevel').value = 'warn';\n"
+               "const f = monLogFilter();\n"
+               "console.log(JSON.stringify({a, b: els['b'].innerHTML, c: els['c'].innerHTML, f1: f.test([1, 0, 'plugin', 'warn', 'a BAD thing']), f2: f.test([1, 0, 'plugin', 'info', 'a BAD thing']), f3: f.test([1, 0, 'ui', 'warn', 'bad']), f4: f.test([1, 0, 'llama', 'error', 'nothing'])}));\n")
+    hf = os.path.join(TMP, "mon.js"); open(hf, "w", encoding="utf-8").write(harness)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-600:])
+    check(r_ is not None and r_["a"].count("<polyline") == 2 and "1000" not in r_["a"][:0] and "no data yet" in r_["c"] and "no data yet" not in r_["a"], "chart: two lines for two series, the gap before the first value breaks nothing, an empty chart says so")
+    check(r_ is not None and "stroke-dasharray" in r_["b"] and "50 %" in r_["b"], "chart: a reference line (the cap) with the unit on the axis")
+    check(r_ is not None and (r_["f1"], r_["f2"], r_["f3"], r_["f4"]) == (True, False, False, False), "log filter: regex search, source and level boxes")
+else:
+    print("  skip page checks: node not found")
+
+print("monitor_test:", "FAILED" if fails else "ok", f"({len(fails)} failed)" if fails else "")
+sys.exit(1 if fails else 0)

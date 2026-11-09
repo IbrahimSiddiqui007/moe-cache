@@ -10,6 +10,35 @@
 :root[data-theme=dark] { --bg:#1c262e; --panel:#27343e; --line:#3b4b58; --text:#f7ecbc; --muted:#b4b9a6; --accent:#e8664a; --ok:#7cc78a; --warn:#e8b04a; --bad:#f28a74; --gpu:#bca6ea; --code:#33444f; --side:#151d24; --top:#27343e; --ink:#0f1519; --on-ink:#f7ecbc; --on-accent:#0f1519; --on-bad:#0f1519; --shade:rgba(0,0,0,.45); }
 * { box-sizing:border-box; }
 [hidden] { display:none !important; }
+/* GUI-041: Monitor view */
+#mondlg .box { width:min(1500px, 100%); height:100%; display:flex; flex-direction:column; padding:10px 14px; }
+#mondlg .mhead { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+#mondlg .mhead h3 { margin:0; }
+#mondlg .mbody { overflow:auto; flex:1; min-height:0; margin-top:8px; }
+.mtiles { display:grid; grid-template-columns:repeat(auto-fill, minmax(128px, 1fr)); gap:8px; }
+.mtile { border:1px solid var(--line); border-radius:6px; padding:6px 9px; background:var(--bg); }
+.mtile b { display:block; font-size:20px; font-variant-numeric:tabular-nums; line-height:1.2; }
+.mtile span { font-size:11px; color:var(--muted); }
+.mtile.warn b { color:var(--warn); } .mtile.bad b { color:var(--bad); }
+.mgrid { display:grid; grid-template-columns:repeat(auto-fit, minmax(420px, 1fr)); gap:10px; margin-top:10px; }
+.mcard { border:1px solid var(--line); border-radius:6px; padding:6px 9px; background:var(--bg); min-width:0; }
+.mcard h4 { margin:0 0 2px; font-size:12px; font-weight:600; display:flex; gap:8px; align-items:baseline; flex-wrap:wrap; }
+.mcard svg { width:100%; height:auto; display:block; }
+.mleg { display:inline-flex; gap:3px; align-items:center; font-weight:400; color:var(--muted); font-size:11px; }
+.mleg i { display:inline-block; width:10px; height:3px; border-radius:2px; }
+.mkv { display:grid; grid-template-columns:auto 1fr; gap:2px 12px; font-size:12px; }
+.mkv div:nth-child(odd) { color:var(--muted); }
+#monheat { width:100%; height:240px; display:block; image-rendering:pixelated; border:1px solid var(--line); border-radius:4px; }
+#monlogbox { height:340px; overflow:auto; background:var(--code); border-radius:4px; padding:4px 6px; font:12px/1.4 ui-monospace, Consolas, monospace; }
+#monlogbox div { white-space:pre-wrap; word-break:break-all; }
+#monlogbox .t { color:var(--muted); } #monlogbox .src { display:inline-block; min-width:5.6em; color:var(--muted); }
+#monlogbox .src.plugin { color:var(--accent); } #monlogbox .src.launcher { color:var(--gpu); } #monlogbox .src.ui { color:var(--ok); }
+#monlogbox .warn { color:var(--warn); } #monlogbox .error { color:var(--bad); font-weight:600; }
+#monlogbox mark { background:var(--accent); color:var(--on-accent); border-radius:2px; }
+.mtools { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0; }
+.mtools input[type=text] { flex:1; min-width:180px; padding:5px 8px; border:1px solid var(--line); border-radius:5px; background:var(--bg); color:var(--text); font:inherit; }
+.mtools label { font-size:12px; display:inline-flex; gap:3px; align-items:center; white-space:nowrap; }
+
 html, body { height:100%; }
 body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; overflow:hidden; }
 a { color:var(--accent); }
@@ -304,6 +333,7 @@ button.danger { border-color:var(--ink); }
     <span class="grow"></span>
     <span class="state"><span class="dot" id="statedot"></span><b id="state">idle</b> <span class="small only-wide" id="statemodel"></span></span>
     <span class="startgrp"><button class="primary" id="start">Start</button><button class="primary" id="switch" hidden title="Stop the running model and start the selected one with the settings shown">Switch</button><button class="danger" id="stop" hidden>Stop</button><button class="primary" id="startmenu" title="More ways to start">▾</button></span>
+    <button class="ghost" id="monopen" title="Live monitor: speed, cache, SSD, memory, per-layer hits, plan and a searchable log">📈 Monitor</button>
     <button class="icon" id="tglRight" title="Status, context, files, agents, log">◧</button>
     <div class="menu rowmenu" id="rowmenu" role="menu" hidden></div>
     <div class="menu" id="menu" hidden>
@@ -437,6 +467,45 @@ button.danger { border-color:var(--ink); }
   <div class="scrollx" id="resturns"></div>
 </div></div>
 <div id="chart-tip" hidden></div>
+
+<!-- ================= Monitor (GUI-041) ================= -->
+<div class="modal" id="mondlg" hidden><div class="box" role="dialog" aria-labelledby="montitle">
+  <div class="mhead">
+    <h3 id="montitle">Monitor</h3><span class="small" id="monstate"></span><span class="grow" style="flex:1"></span>
+    <label class="small">Window <select id="monrange" aria-label="Time window"><option value="120">2 min</option><option value="600" selected>10 min</option><option value="3600">1 hour</option><option value="0">whole run</option></select></label>
+    <button id="monpause">Pause</button><button id="monclose" class="ghost">Close</button>
+  </div>
+  <div class="mbody">
+    <div class="mtiles" id="montiles"></div>
+    <div class="mgrid">
+      <div class="mcard"><h4>Speed <span class="mleg"><i style="background:var(--accent)"></i>decode tok/s</span><span class="mleg"><i style="background:var(--gpu)"></i>prompt tok/s</span></h4><div id="ch-speed"></div></div>
+      <div class="mcard"><h4>Context depth <span class="small" id="ch-ctx-n"></span></h4><div id="ch-ctx"></div></div>
+      <div class="mcard"><h4>Cache hit rate <span class="mleg"><i style="background:var(--ok)"></i>all</span><span class="mleg"><i style="background:var(--accent)"></i>decode only</span></h4><div id="ch-hit"></div></div>
+      <div class="mcard"><h4>SSD reads <span class="mleg"><i style="background:var(--gpu)"></i>GB/s</span><span class="mleg"><i style="background:var(--warn)"></i>wait, s per s</span></h4><div id="ch-ssd"></div></div>
+      <div class="mcard"><h4>Memory <span class="mleg"><i style="background:var(--ok)"></i>llama-server</span><span class="mleg"><i style="background:var(--accent)"></i>whole machine</span><span class="mleg"><i style="background:var(--gpu)"></i>VRAM</span><span class="mleg"><i style="background:var(--warn)"></i>commit</span><span class="mleg"><i style="background:var(--bad)"></i>cap</span></h4><div id="ch-mem"></div></div>
+      <div class="mcard"><h4>CPU expert executor <span class="mleg"><i style="background:var(--accent)"></i>share of cache time</span><span class="mleg"><i style="background:var(--muted)"></i>evictions/s</span></h4><div id="ch-cpu"></div></div>
+    </div>
+    <div class="mgrid">
+      <div class="mcard" style="grid-column:1 / -1"><h4>Hit rate per layer over time <span class="small">top = layer 0 · green = all experts found in RAM, red = misses · dark = no lookups</span></h4><canvas id="monheat" width="900" height="240"></canvas><div id="ch-layers"></div></div>
+    </div>
+    <div class="mgrid">
+      <div class="mcard"><h4>Plan and run</h4><div class="mkv" id="monplan"></div><ul class="why" id="mondec"></ul></div>
+      <div class="mcard"><h4>Counters</h4><div class="mkv" id="moncount"></div></div>
+      <div class="mcard"><h4>Last requests</h4><div class="scrollx"><table id="monreq"></table></div></div>
+    </div>
+    <div class="mcard" style="margin-top:10px"><h4>Log <span class="small" id="monlogcount"></span></h4>
+      <div class="mtools">
+        <input type="text" id="monq" placeholder="Search (text, or /regex/)" autocomplete="off" spellcheck="false">
+        <label><input type="checkbox" class="monsrc" value="launcher" checked>launcher</label><label><input type="checkbox" class="monsrc" value="plugin" checked>plugin</label>
+        <label><input type="checkbox" class="monsrc" value="llama" checked>llama-server</label><label><input type="checkbox" class="monsrc" value="ui" checked>ui</label>
+        <select id="monlevel" aria-label="Level"><option value="all">all levels</option><option value="warn">warnings and errors</option><option value="error">errors only</option></select>
+        <label><input type="checkbox" id="monfollow" checked>follow</label>
+        <button id="monlogtxt">Download .txt</button><button id="monlogjson">Download .jsonl</button>
+      </div>
+      <div id="monlogbox"></div>
+    </div>
+  </div>
+</div></div>
 
 <!-- ================= llama.cpp not found ================= -->
 <div class="modal" id="llamadlg" hidden><div class="box" role="dialog" aria-labelledby="llamatitle">
@@ -1671,6 +1740,157 @@ $("sharecopy").onclick = async () => {
   catch (e) { t.select(); try { document.execCommand("copy"); $("sharemsg").textContent = "copied"; } catch (e2) { $("sharemsg").textContent = "select the text and copy it by hand"; } }
   setTimeout(() => $("sharemsg").textContent = "", 3000);
 };
+
+// ---- Monitor (GUI-041): one poll of /api/monitor every 2 s while the view is open; charts are SVG strings from the page's own colour tokens ----
+const M = { open: false, paused: false, samples: [], cols: [], log: [], logSeq: 0, since: 0, timer: null, data: {}, busy: false, shown: 0 };
+const hex2rgb = h => { h = h.trim(); if (h[0] == "#") { if (h.length == 4) h = "#" + [...h.slice(1)].map(c => c + c).join(""); return [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16)); } const m = h.match(/\d+/g); return m ? m.slice(0, 3).map(Number) : [128, 128, 128]; };
+const hhmmss = t => new Date(t * 1000).toTimeString().slice(0, 8);
+function monRange() { const r = +$("monrange").value, last = M.samples.length ? M.samples[M.samples.length - 1].t : Date.now() / 1000; return r ? [last - r, last] : [M.samples.length ? M.samples[0].t : last - 1, last]; }
+// series: [{k, color(token), scale}], opts: {ymax, unit, fmt, hline: {v, color, label}}
+function monLine(id, series, o) {
+  o = o || {};
+  const col = chartColours(), [t0, t1] = monRange(), W = 640, H = 170, L = 46, R = 8, T = 8, B = 20, pw = W - L - R, ph = H - T - B;
+  const rows = M.samples.filter(s => s.t >= t0);
+  let top = o.ymax || 0;
+  if (!o.ymax) for (const se of series) for (const r of rows) { const v = r[se.k]; if (nz(v)) top = Math.max(top, v * (se.scale || 1)); }
+  if (o.hline && nz(o.hline.v) && o.stretch !== false) top = Math.max(top, o.hline.v);
+  const ymax = o.ymax || niceMax(top * 1.08 || 1), X = t => L + pw * (t - t0) / Math.max(1e-6, t1 - t0), Y = v => T + ph - ph * Math.min(v, ymax) / ymax;
+  let g = "";
+  for (let i = 0; i <= 4; i++) { const y = T + ph - ph * i / 4; g += `<line x1="${L}" y1="${y}" x2="${W - R}" y2="${y}" stroke="${col.line}"/><text x="${L - 5}" y="${y + 4}" text-anchor="end" font-size="10" fill="${col.muted}">${esc((o.fmt || cfmt)(ymax * i / 4))}</text>`; }
+  for (let i = 0; i <= 3; i++) { const t = t0 + (t1 - t0) * i / 3; g += `<text x="${X(t)}" y="${H - 5}" text-anchor="${i == 0 ? "start" : i == 3 ? "end" : "middle"}" font-size="10" fill="${col.muted}">${hhmmss(t)}</text>`; }
+  for (const se of series) {
+    let seg = [], d = "";
+    const flush = () => { if (seg.length > 1) d += `<polyline fill="none" stroke="${col[se.color]}" stroke-width="1.8" points="${seg.join(" ")}"/>`; else if (seg.length == 1) { const [x, y] = seg[0].split(","); d += `<circle cx="${x}" cy="${y}" r="1.6" fill="${col[se.color]}"/>`; } seg = []; };
+    for (const r of rows) { const v = r[se.k]; if (nz(v)) seg.push(X(r.t).toFixed(1) + "," + Y(v * (se.scale || 1)).toFixed(1)); else flush(); }
+    flush(); g += d;
+  }
+  if (o.hline && nz(o.hline.v) && o.hline.v <= ymax) g += `<line x1="${L}" y1="${Y(o.hline.v)}" x2="${W - R}" y2="${Y(o.hline.v)}" stroke="${col[o.hline.color || "bad"]}" stroke-dasharray="5 4"/><text x="${W - R - 2}" y="${Y(o.hline.v) - 3}" text-anchor="end" font-size="10" fill="${col[o.hline.color || "bad"]}">${esc(o.hline.label || "")}</text>`;
+  if (!rows.length) g += `<text x="${W / 2}" y="${H / 2}" text-anchor="middle" font-size="12" fill="${col.muted}">no data yet (start a model)</text>`;
+  const el = $(id); el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img">${g}</svg>`;
+  const svg = el.firstChild;
+  svg.onmousemove = ev => {
+    const b = svg.getBoundingClientRect(), t = t0 + (t1 - t0) * ((ev.clientX - b.left) / b.width * W - L) / pw;
+    let best = null; for (const r of rows) if (!best || Math.abs(r.t - t) < Math.abs(best.t - t)) best = r;
+    if (!best) return;
+    const tip = $("chart-tip"); tip.hidden = false; tip.style.left = Math.min(ev.clientX + 14, innerWidth - 240) + "px"; tip.style.top = (ev.clientY + 12) + "px";
+    tip.innerHTML = `<b>${hhmmss(best.t)}</b>` + series.map(se => `<br>${esc(se.name || se.k)}: ${nz(best[se.k]) ? esc((o.fmt || cfmt)(best[se.k] * (se.scale || 1))) : "-"}`).join("");
+  };
+  svg.onmouseleave = () => { $("chart-tip").hidden = true; };
+}
+const lastOf = k => { for (let i = M.samples.length - 1; i >= 0; i--) if (nz(M.samples[i][k])) return M.samples[i][k]; return null; };
+const pct = v => nz(v) ? (v * 100).toFixed(1) + " %" : "–";
+function monTiles() {
+  const d = M.data, cap = d.cap, last = M.samples[M.samples.length - 1] || {}, ram = last.rss, tot = d.totals || {}, t = [];
+  const tile = (v, l, cls, tip) => t.push(`<div class="mtile ${cls || ""}" title="${esc(tip || "")}"><b>${esc(v)}</b><span>${esc(l)}</span></div>`);
+  const busy = last.busy;
+  tile(nz(last.dec) ? last.dec.toFixed(1) : "–", "decode tok/s");
+  tile(nz(last.pre) ? last.pre.toFixed(0) : (M.data.requests || []).length ? (M.data.requests.slice(-1)[0].prefill_tps || 0).toFixed(0) + " (last)" : "–", "prompt tok/s");
+  tile(d.ctx && nz(d.ctx.depth) ? d.ctx.depth + (d.ctx.max ? " / " + d.ctx.max : "") : "–", "context tokens", d.ctx && d.ctx.max && d.ctx.depth > d.ctx.max * 0.9 ? "warn" : "");
+  tile(pct(lastOf("hit")), "hit rate (now)"); tile(pct(tot.hits_total), "hit rate (run)");
+  tile(nz(lastOf("ssd")) ? lastOf("ssd").toFixed(2) + " GB/s" : "–", "SSD read");
+  const w = lastOf("wait"); tile(nz(w) ? (w * 100).toFixed(0) + " %" : "–", "time waiting for SSD", w > 0.3 ? "warn" : "", "seconds the model thread waited for the SSD per second");
+  tile(pct(lastOf("cpu")), "CPU expert executor");
+  const m = d.mtp || {}; tile(nz(m.rate) ? (m.rate * 100).toFixed(0) + " %" : "–", "MTP acceptance" + (nz(m.last) ? "" : " (off)"));
+  tile(nz(ram) ? fmtGiB(ram) + (cap ? " / " + fmtGiB(cap) : "") : "–", "llama-server RAM / cap", cap && ram > cap ? "bad" : cap && ram > cap * 0.92 ? "warn" : "");
+  const vr = lastOf("vram"); tile(nz(vr) ? fmtGiB(vr) + (tot.vram_total ? " / " + fmtGiB(tot.vram_total) : "") : "–", "VRAM used");
+  const cm = lastOf("commit"); if (nz(cm)) tile(fmtGiB(cm), "commit used");
+  $("montiles").innerHTML = t.join("");
+  $("monstate").textContent = (tot.state || "idle") + (tot.model ? " · " + tot.model : "") + (busy ? " · busy" : "") + (d.enabled === false ? " · sampling is off (MOE_CACHE_MONITOR=0)" : "");
+}
+function monKv(el, rows) { $(el).innerHTML = rows.filter(r => r[1] != null && r[1] !== "").map(r => `<div>${esc(r[0])}</div><div>${esc(r[1])}</div>`).join("") || '<div class="small">nothing yet</div>'; }
+function monPanels() {
+  const d = M.data, p = d.plan || {}, ex = d.extra || {}, a = d.approx || {}, m = d.mtp || {};
+  const kv = p.kv_k || p.kv_v ? (p.kv_k || "f16") + (p.kv_v && p.kv_v != p.kv_k ? " / " + p.kv_v : "") : "";
+  monKv("monplan", [["mode", p.mode], ["device", p.device || (d.totals || {}).gpu], ["GPU layers (-ngl)", p.ngl], ["experts on the CPU, layers", p.cpu_moe_all ? "all" : p.cpu_moe_layers], ["-ub / -b", p.ub ? p.ub + (p.b ? " / " + p.b : "") : ""],
+    ["KV cache type", kv], ["context", p.ctx], ["threads", p.threads], ["parallel slots", p.parallel], ["flash attention", p.flash_attn], ["agent mode", p.agent ? "yes" : ""], ["MTP", p.mtp ? "on" : ""], ["approximate tier", p.approx], ["cache policy", ex.policy]].concat(Object.entries(p.env || {}).filter(([k]) => !/_(LIB|GGUF|PROFILE)$/.test(k)).map(([k, v]) => [k.replace("MOE_CACHE_", ""), v])));
+  $("mondec").innerHTML = (p.decisions || []).slice(-8).map(l => `<li>${esc(l)}</li>`).join("");
+  monKv("moncount", [["MTP accepted / drafted", m.generated ? `${m.accepted} / ${m.generated} (${pct(m.rate)})` : ""],
+    ["approximate routing", a.mode ? `${a.mode}: ${a.given_up} given up, ${a.replaced} replaced of ${a.considered} looked at (at last stop)` : ""], ["fewer experts", a.fewer ? `${a.fewer}: ${a.fewer_dropped} dropped` : ""],
+    ["evictions", ex.evictions], ["prefetch used / issued / wasted", ex.pf_issued != null ? `${ex.pf_used} / ${ex.pf_issued} / ${ex.pf_wasted}` : ""], ["fallback reads", ex.fallbacks], ["GPU segments", ex.gpu_segments],
+    ["cache resident / budget", ex.resident_bytes != null ? fmtGiB(ex.resident_bytes) + " / " + fmtGiB(ex.budget) : ""], ["requests running / queued", (d.metrics || {}).requests_processing != null ? `${d.metrics.requests_processing} / ${d.metrics.requests_deferred || 0}` : ""]]);
+  const rq = (d.requests || []).slice().reverse();
+  $("monreq").innerHTML = '<tr><th>time</th><th class="num">prompt tok</th><th class="num">prompt t/s</th><th class="num">decoded</th><th class="num">decode t/s</th><th class="num">MTP</th></tr>' +
+    rq.map(r => `<tr><td>${hhmmss(r.t)}</td><td class="num">${r.prefill_tokens ?? "–"}</td><td class="num">${nz(r.prefill_tps) ? r.prefill_tps.toFixed(0) : "–"}</td><td class="num">${r.decode_tokens ?? "–"}</td><td class="num">${nz(r.decode_tps) ? r.decode_tps.toFixed(1) : "–"}</td><td class="num">${nz(r.mtp) ? (r.mtp * 100).toFixed(0) + " %" : "–"}</td></tr>`).join("");
+}
+function monHeat() {
+  const cv = $("monheat"), [t0] = monRange(), cols = M.cols.filter(c => c.t >= t0), L = cols.length ? cols[0].rate.length : 0;
+  const w = Math.max(1, cols.length), h = Math.max(1, L);
+  cv.width = Math.min(1200, Math.max(w, 60)); cv.height = Math.max(h, 24);
+  const x = cv.getContext("2d"), cs = getComputedStyle(document.documentElement), bad = hex2rgb(cs.getPropertyValue("--bad")), warn = hex2rgb(cs.getPropertyValue("--warn")), ok = hex2rgb(cs.getPropertyValue("--ok")), none = hex2rgb(cs.getPropertyValue("--code"));
+  x.fillStyle = `rgb(${none})`; x.fillRect(0, 0, cv.width, cv.height);
+  const mix = (a, b, f) => a.map((v, i) => Math.round(v + (b[i] - v) * f));
+  const cw = cv.width / w;
+  cols.forEach((c, i) => c.rate.forEach((v, j) => { if (!nz(v)) return; x.fillStyle = `rgb(${v < 0.5 ? mix(bad, warn, v * 2) : mix(warn, ok, (v - 0.5) * 2)})`; x.fillRect(Math.floor(i * cw), j, Math.ceil(cw), 1); }));
+  cv.onmousemove = ev => {
+    const b = cv.getBoundingClientRect(), i = Math.floor((ev.clientX - b.left) / b.width * w), j = Math.floor((ev.clientY - b.top) / b.height * h), c = cols[i];
+    const tip = $("chart-tip"); if (!c) { tip.hidden = true; return; }
+    tip.hidden = false; tip.style.left = Math.min(ev.clientX + 14, innerWidth - 240) + "px"; tip.style.top = (ev.clientY + 12) + "px";
+    tip.innerHTML = `layer ${j} at ${hhmmss(c.t)}<br>hit rate ${nz(c.rate[j]) ? (c.rate[j] * 100).toFixed(1) + " %" : "no lookups"}`;
+  };
+  cv.onmouseleave = () => { $("chart-tip").hidden = true; };
+  const lt = M.data.layer_total || [], col = chartColours(), W = 900, H = 70, n = lt.length;
+  if (!n) { $("ch-layers").innerHTML = ""; return; }
+  const bw = (W - 20) / n;
+  $("ch-layers").innerHTML = `<div class="small">whole run, hit rate by layer (lowest ${lt.some(nz) ? (Math.min(...lt.filter(nz)) * 100).toFixed(0) + " %" : "no lookups yet"})</div><svg viewBox="0 0 ${W} ${H}">` + lt.map((v, i) => nz(v) ? `<rect x="${10 + i * bw}" y="${H - 4 - (H - 8) * v}" width="${Math.max(1, bw - 1)}" height="${(H - 8) * v}" fill="${v < 0.5 ? col.bad : v < 0.8 ? col.warn : col.ok}"><title>layer ${i}: ${(v * 100).toFixed(1)} %</title></rect>` : "").join("") + "</svg>";
+}
+function monLogFilter() {
+  const srcs = new Set([...document.querySelectorAll(".monsrc:checked")].map(e => e.value)), lv = $("monlevel").value, q = $("monq").value;
+  let re = null;
+  if (q.length > 2 && q[0] == "/" && q.endsWith("/")) { try { re = new RegExp(q.slice(1, -1), "i"); } catch (e) { re = null; } }
+  const needle = q.toLowerCase();
+  return { re, test: l => srcs.has(l[2]) && (lv == "all" || (lv == "warn" ? l[3] != "info" : l[3] == "error")) && (!q || (re ? re.test(l[4]) : l[4].toLowerCase().includes(needle))) };
+}
+function monLog(force) {
+  if (!force && M.shown == M.logSeq + M.log.length) return;
+  M.shown = M.logSeq + M.log.length;
+  const f = monLogFilter(), hit = M.log.filter(f.test), box = $("monlogbox"), keep = hit.slice(-1500), q = $("monq").value;
+  const mark = t => { let e = esc(t); if (!q) return e; try { const re = f.re ? new RegExp(f.re.source, "gi") : new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/&/g, "&amp;"), "gi"); e = e.replace(re, m => "<mark>" + m + "</mark>"); } catch (x) { } return e; };
+  const atEnd = $("monfollow").checked;
+  box.innerHTML = keep.map(l => `<div class="${l[3] != "info" ? l[3] : ""}"><span class="t">${hhmmss(l[1])}</span> <span class="src ${l[2]}">${l[2]}</span> ${mark(l[4])}</div>`).join("");
+  $("monlogcount").textContent = `${hit.length} of ${M.log.length} lines` + (hit.length > keep.length ? ` (last ${keep.length} shown; downloads have all ${hit.length})` : "");
+  if (atEnd) box.scrollTop = box.scrollHeight;
+}
+function monDownload(fmt) {
+  const f = monLogFilter(), lines = M.log.filter(f.test);
+  const out = lines.map(l => fmt == "jsonl" ? JSON.stringify({ seq: l[0], t: l[1], source: l[2], level: l[3], text: l[4] }) : `${new Date(l[1] * 1000).toISOString()} [${l[2]}/${l[3]}] ${l[4]}`).join("\n") + "\n";
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([out], { type: "text/plain" }));
+  a.download = "moe-cache-log-" + new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19) + (fmt == "jsonl" ? ".jsonl" : ".txt");
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+function monPaint() {
+  monTiles();
+  const cap = M.data.cap;
+  monLine("ch-speed", [{ k: "dec", name: "decode tok/s", color: "moe" }, { k: "pre", name: "prompt tok/s", color: "gpu" }], {});
+  monLine("ch-ctx", [{ k: "ctx", name: "tokens", color: "moe" }], { hline: M.data.ctx && M.data.ctx.max ? { v: M.data.ctx.max, color: "bad", label: "context size" } : null, fmt: v => cfmt(v, 0), stretch: false });
+  monLine("ch-hit", [{ k: "hit", name: "all lookups", color: "ok", scale: 100 }, { k: "hit_dec", name: "decode", color: "moe", scale: 100 }], { ymax: 100, fmt: v => v.toFixed(0) + " %" });
+  monLine("ch-ssd", [{ k: "ssd", name: "GB/s", color: "gpu" }, { k: "wait", name: "wait s/s", color: "warn" }], {});
+  monLine("ch-mem", [{ k: "rss", name: "llama-server", color: "ok", scale: 1 / 2 ** 30 }, { k: "ram", name: "whole machine", color: "moe", scale: 1 / 2 ** 30 }, { k: "vram", name: "VRAM", color: "gpu", scale: 1 / 2 ** 30 }, { k: "commit", name: "commit", color: "warn", scale: 1 / 2 ** 30 }],
+    { fmt: v => v.toFixed(0) + " GiB", hline: cap ? { v: cap / 2 ** 30, color: "bad", label: "cap " + (cap / 2 ** 30).toFixed(0) + " GiB" } : null });
+  monLine("ch-cpu", [{ k: "cpu", name: "executor share", color: "moe", scale: 100 }], { ymax: 100, fmt: v => v.toFixed(0) + " %" });
+  monPanels(); monHeat(); monLog(true);
+}
+async function monPoll() {
+  if (!M.open || M.paused || M.busy) return;
+  M.busy = true;
+  try {
+    const j = await api(`/api/monitor?since=${M.since}&log=${M.logSeq}`);
+    M.data = j;
+    if (j.t0 != M.t0) { const first = M.t0 === undefined; M.t0 = j.t0; M.samples = []; M.cols = []; M.log = []; M.since = 0; M.logSeq = 0; if (!first) { setTimeout(monPoll, 0); return; } }       // a new server run: start over and fetch it whole (this answer was cut by the old log position)
+    if (j.samples.length) { M.samples = M.samples.concat(j.samples).slice(-3600); M.since = j.samples[j.samples.length - 1].t; }
+    if (j.layer_cols.length) M.cols = M.cols.concat(j.layer_cols).slice(-120);
+    if (j.log.length) { M.log = M.log.concat(j.log).slice(-20000); M.logSeq = j.log_seq; }
+    monPaint();
+  } catch (e) { $("monstate").textContent = "monitor: " + (e.message || e); }
+  finally { M.busy = false; }
+}
+function monOpen() { M.open = true; M.paused = false; $("monpause").textContent = "Pause"; $("mondlg").hidden = false; monPoll(); clearInterval(M.timer); M.timer = setInterval(monPoll, 2000); }
+function monClose() { M.open = false; $("mondlg").hidden = true; clearInterval(M.timer); $("chart-tip").hidden = true; }
+$("monopen").onclick = monOpen; $("monclose").onclick = monClose;
+$("monpause").onclick = () => { M.paused = !M.paused; $("monpause").textContent = M.paused ? "Resume" : "Pause"; if (!M.paused) monPoll(); };
+$("monrange").onchange = () => monPaint();
+$("monq").oninput = () => monLog(true); $("monlevel").onchange = () => monLog(true); document.querySelectorAll(".monsrc").forEach(e => e.onchange = () => monLog(true));
+$("monlogtxt").onclick = () => monDownload("txt"); $("monlogjson").onclick = () => monDownload("jsonl");
+document.addEventListener("keydown", e => { if (e.key == "Escape" && M.open && document.activeElement !== $("monq")) monClose(); });
 $("resopen").onclick = openResults;
 $("resclose").onclick = () => { $("resdlg").hidden = true; $("chart-tip").hidden = true; };
 $("reslist").onchange = () => showResult($("reslist").value);

@@ -310,6 +310,8 @@ jobs:
           $env:REQUIRE_NODE = "1"
           python tests/ui_test.py       # control page (GUI1) without a model
           if ($LASTEXITCODE -ne 0) { throw "control page test failed" }
+          python tests/monitor_test.py  # GUI-041: the Monitor view's numbers, the Runner's hooks and the page's chart code
+          if ($LASTEXITCODE -ne 0) { throw "monitor test failed" }
 
       - name: Launcher real start with --ram (no job limit with the file view; MOE_CACHE_WIN_VIEW=0 keeps WP3) and --agent (tool call, connect)
         run: |
