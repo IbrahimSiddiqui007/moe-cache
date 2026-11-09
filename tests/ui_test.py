@@ -1440,7 +1440,7 @@ if node and "function askConfirm(" in html:
              "  console.log(JSON.stringify(out));\n"
              "}\nmain();\n")
     af = os.path.join(TMP, "audit_confirm.js"); open(af, "w", encoding="utf-8").write(audit)
-    ao = subprocess.run([node, af], capture_output=True, text=True, timeout=30)
+    ao = subprocess.run([node, af], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)      # node prints UTF-8; the Windows locale would garble the ellipsis
     try:
         a1 = json.loads(ao.stdout.strip().splitlines()[-1])
     except Exception:
@@ -1465,7 +1465,7 @@ if node and "function askConfirm(" in html:
             "  const p3 = loadModels(true); out.rescan = [els.nomodels.hidden, els.topmodel.textContent]; release({ models: [], folders: [] }); await p3;\n"
             "  console.log(JSON.stringify(out));\n}\nmain();\n")
     sf = os.path.join(TMP, "scan_state.js"); open(sf, "w", encoding="utf-8").write(scan)
-    so = subprocess.run([node, sf], capture_output=True, text=True, timeout=30)
+    so = subprocess.run([node, sf], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)      # node prints UTF-8; the Windows locale would garble the ellipsis
     try:
         s1 = json.loads(so.stdout.strip().splitlines()[-1])
     except Exception:
@@ -1479,7 +1479,7 @@ if node and "function askConfirm(" in html:
                "const api = async () => { throw new Error('scan failed'); };\n" + _fn("paintModels") + "\n" + _fn("loadModels") + "\n"
                "loadModels(false).catch(e => console.log(JSON.stringify({ err: e.message, scanning: S.scanning, text: els.nomodels.textContent })));\n")
     ff = os.path.join(TMP, "scan_fail.js"); open(ff, "w", encoding="utf-8").write(fail_js)
-    fo = subprocess.run([node, ff], capture_output=True, text=True, timeout=30)
+    fo = subprocess.run([node, ff], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)      # node prints UTF-8; the Windows locale would garble the ellipsis
     try:
         f1 = json.loads(fo.stdout.strip().splitlines()[-1])
     except Exception:
