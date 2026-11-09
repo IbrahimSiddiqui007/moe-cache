@@ -62,6 +62,8 @@ class H(http.server.BaseHTTPRequestHandler):
             return self.send(404, {"error": "not found"})
         if body.get("model") != MODEL:
             return self.send(400, {"error": {"message": "model not found"}})
+        if MODE["m"] == "midsys" and proto == "chat" and any(m.get("role") == "system" for m in (body.get("messages") or [])[1:]):
+            return self.send(500, {"error": {"message": "\n------\nWhile executing CallExpression at line 109, column 9 in source:\nSystem message must be at the beginning.", "type": "server_error"}})
         raw = json.dumps(body)
         tools = bool(body.get("tools"))
         if tools and MODE["m"] == "nojinja":
@@ -189,6 +191,26 @@ for ag in AGENTS:
     rc, j = result(ag)
     check(rc == 1 and "name" in j["verdict"] and steps(j)["models"]["result"] == "fail", f"{ag}: wrong model name -> mismatch named ({j['verdict'][:70]})")
     open(mpath, "w").write(mgood)
+
+print("-- a chat template that refuses a system message in the middle of the conversation (AGENTS-992)")
+for ag in AGENTS:
+    setup(ag)
+    rc0, j0 = result(ag)
+    check(("system messages" in steps(j0)) == (ag == "claude"), f"{ag}: the system-message step is run for claude only")
+    if ag == "claude":
+        check(steps(j0)["system messages"]["result"] == "pass" and rc0 == 0, "claude: a server that accepts a mid-conversation system message passes the step")
+        MODE["m"] = "midsys"
+        rc, j = result(ag)
+        sm = steps(j)["system messages"]
+        check(rc == 1 and not j["ok"] and sm["result"] == "fail" and "beginning" in sm["detail"] and "chat template" in j["verdict"] and "--chat-template-file" in j["verdict"],
+              f"claude: HTTP 500 'System message must be at the beginning' -> the step fails and the fix names the template ({j['verdict'][:90]})")
+        check(steps(j)["chat"]["result"] == "pass" and steps(j)["tool call"]["result"] == "pass", "claude: plain chat and the tool call still pass (only the system case fails)")
+        MODE["m"] = "ok"
+    else:
+        MODE["m"] = "midsys"
+        rc, j = result(ag)
+        check(rc == 0, f"{ag}: not affected by the template check")
+        MODE["m"] = "ok"
 
 print("-- a stream that dies with an error after some text (AGENTS-626 a)")
 for ag in ("opencode", "codex", "claude"):
