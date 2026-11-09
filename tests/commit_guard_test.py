@@ -51,6 +51,21 @@ cpu = cg.estimate(f, layout(cpu_only=True))
 check(cpu["gpu_total"] == 0 and cpu["host_kv"] > 0, "CPU only: the KV cache is private host memory, so it counts")
 sp = cg.estimate(f, layout(fit=True, vram_free=8 * GIB))
 check(sp["gpu_total"] == 8 * GIB, "--fit: GPU buffers are capped by the free VRAM, the rest is mapped host memory")
+# LAUNCHER-1029 review: the KV cache / compute buffers that --fit leaves in host memory are private memory, so they count even when the weights stay mapped
+check(sp["spill_private"] > 0 and sp["spill_private"] <= sp["kv"] + sp["compute"], f"--fit spill: its KV/compute share counts as private host memory ({sp['spill_private'] / 1e9:.1f} GB)")
+nosp = cg.estimate(f, layout(fit=True, vram_free=200 * GIB))
+check(nosp["spill_private"] == 0 and sp["total"] > nosp["total"] - nosp["gpu_total"] + sp["gpu_total"], "--fit with room on the card: nothing spilled, nothing added")
+spc = cg.estimate(f, layout(fit=True, vram_free=8 * GIB, copy_weights=True))
+check(spc["spill_private"] == 0, "--fit with copied weights: the spill is already counted as copied weights, not twice")
+check(sp["total"] > cg.estimate(f, layout()) ["total"] - cg.estimate(f, layout())["gpu_total"] + 8 * GIB, "--fit estimate is above the old one (GPU 8 GiB + host process only)")
+
+print("guard: faster poll while the server is still loading (LAUNCHER-1029 review)")
+_sl = []; _ld = [True, True, False, False]
+_g = cg.CommitGuard(lambda: 10 * GIB, lambda t: None, lambda r: None, 6 * GIB, loading=lambda: _ld.pop(0) if _ld else False)
+_al = iter([True] * 4 + [False]); _g.run(lambda: next(_al), sleep=_sl.append)
+check(_sl == [0.25, 0.25, 2.0, 2.0], f"poll every 0.25 s while loading, every 2 s once ready ({_sl})")
+_sl = []; _g = cg.CommitGuard(lambda: 10 * GIB, lambda t: None, lambda r: None, 6 * GIB); _al = iter([True, False]); _g.run(lambda: next(_al), sleep=_sl.append)
+check(_sl == [2.0], "no loading() given: always 2 s")
 
 print("decision: enough commit")
 d = cg.decide(f, layout(), 30 * GIB, 48 * GIB)
@@ -147,7 +162,7 @@ d_ = cg.decide(dense27(), layout(fit=True, kv_q8=False, ctx=131072, vram_free=14
 check(d_["ok"] and 0 < d_["layout"]["ffn_off"] < 64 and not d_["layout"]["fit"] and 23.5 * GIB - d_["est"]["total"] >= cg.soft_floor(48 * GIB),
       f"--fit layout: the weights step is sized on the uncapped layout (auditor case: {d_['layout']['ffn_off']} layers, {d_['est']['total'] / GIB:.1f} GiB), no false refusal")
 d_ = cg.decide(dense27(), layout(fit=True, kv_q8=False, ctx=131072, vram_free=14.65 * GIB), 23.5 * GIB, 48 * GIB, locked=("ub", "cache"))
-check(d_["ok"] and not any("q8_0" in x for x in d_["steps"]) and not d_["layout"]["kv_q8"], "--fit layout, KV free: the q8_0 step is not taken when --fit's cap means it saves no commit")
+check(d_["ok"] and any("q8_0" in x for x in d_["steps"]) and d_["layout"]["kv_q8"], "--fit layout, KV free: the q8_0 step is taken, because the KV cache --fit leaves in RAM is private memory and a q8_0 one is smaller (LAUNCHER-1029 review; before, the spill was not counted)")
 check("estimate, not yet measured" in cg.refusal_text(cg.decide(dense27(), layout(), 3 * GIB, 48 * GIB), 3 * GIB, 48 * GIB, 32 * GIB), "the refusal says the estimate is not measured yet")
 
 print("launcher: the plan on a fake Windows PC (synthetic 18 GB MoE header, sparse file)")
@@ -182,8 +197,22 @@ with tempfile.TemporaryDirectory() as tmp:
     pinned = run("win_tight", ["--ctx", "65536", "--no-commit-check"])
     check("free commit is tight" not in txt(pinned) and "not starting" not in txt(pinned) and "GPU plan" not in txt(pinned), "--no-commit-check: the first plan stands, nothing said, the old GPU-plan cap is not applied either")
     lp.MACHINES["win_nv"] = dict(lp.MACHINES["win"], commit=(48e9, 17e9), nvidia=True, listing=lp.LINUX_LIST.replace("CUDA0", "CUDA0"))
-    nv = run("win_nv", ["--ctx", "65536"])
-    check("free commit is tight" not in txt(nv) and "not starting" not in txt(nv), "Windows + NVIDIA: GPU memory is not counted as commit (only the host side), so 17 GB free of 48 changes nothing")
+    _cb = mc.cuda_backend
+    mc.cuda_backend = lambda ls: True
+    try:
+        nv = run("win_nv", ["--ctx", "65536"])
+        check("free commit is tight" not in txt(nv) and "not starting" not in txt(nv), "Windows + NVIDIA + the CUDA backend next to llama-server: GPU memory is not counted as commit (only the host side), so 17 GB free of 48 changes nothing")
+        mc.cuda_backend = lambda ls: False
+        nvk = run("win_nv", ["--ctx", "65536"])
+        check("free commit is tight" in txt(nvk) or "not starting" in txt(nvk), "Windows + NVIDIA card on the Vulkan build (no CUDA backend): GPU memory counts as commit like on AMD, so 17 GB free of 48 is tight")
+    finally:
+        mc.cuda_backend = _cb
+    import tempfile as _t
+    with _t.TemporaryDirectory() as _d:
+        _ls = os.path.join(_d, "llama-server"); open(_ls, "w").close()
+        check(not mc.cuda_backend(_ls), "cuda_backend: no ggml-cuda next to llama-server -> False")
+        open(os.path.join(_d, "libggml-cuda.so"), "w").close()
+        check(mc.cuda_backend(_ls), "cuda_backend: ggml-cuda next to llama-server -> True")
     full = run("win_full", ["--ctx", "131072"])
     check("not starting: this model at this context needs" in full["stderr"] and "free commit" in full["stderr"] and "page file" in full["stderr"] and "close apps" in full["stderr"], "7 GB free of 48: the plan carries the refusal text")
     userub = run("win_tight", ["--ctx", "65536", "--ub", "2048"])
