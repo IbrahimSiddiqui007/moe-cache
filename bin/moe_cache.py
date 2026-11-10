@@ -2987,7 +2987,7 @@ def dense_fit_free(a, machine):
 
 def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False):
     """LAUNCHER-982: (f16 fit, q8_0 fit) of a model without experts at `ctx` from planner/gguf_plan.py dense_gpu_fit(); None when the layout or the GPU memory is unknown.
-    with_q4 (LAUNCHER-1063): (f16, q8_0, q4_0 fit).
+    with_q4 (LAUNCHER-1063): the whole ladder (f16, q8_0, K q8_0 / V q4_0, q4_0 fit).
     Constants: with llama-server's own free-memory figure (--vram, or --list-devices on Windows AMD / Intel) compute buffer + context 0.20 GiB and no margin, calibrated on the PC
     (Qwen3.8-27B Q3_K_XL on the 16 GB RX 9070 XT, 14.65 GiB free, 2026-11-08: f16 KV at 32k and q8_0 KV at 64k run all on the GPU at 26.5 / 26.6 tok/s, f16 at 64k spills to 18.9);
     with nvidia-smi / sysfs the CUDA-measured 0.30 GiB + 0.25 GiB margin and the 0.4 GiB reporting gap."""
@@ -3002,18 +3002,28 @@ def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False):
             fixed, m = None, (a.gpu_margin if a.gpu_margin is not None else 0.25)
         f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed)
         q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed)
+        kq8vq4 = dense_gpu_fit(model, ctx, free, KV_K8V4, m, gap, fixed) if with_q4 else True
         q4 = dense_gpu_fit(model, ctx, free, "q4_0", m, gap, fixed) if with_q4 else True
     except Exception:
         return None
-    if not (f16 and q8 and q4):
+    if not (f16 and q8 and kq8vq4 and q4):
         return None
-    return (f16, q8, q4) if with_q4 else (f16, q8)
+    return (f16, q8, kq8vq4, q4) if with_q4 else (f16, q8)
+
+
+KV_K8V4 = ("q8_0", "q4_0")          # LAUNCHER-1063: K q8_0 / V q4_0 (laptop, 27B, against f16: top-1 94.6 % between q8/q8 96.5 % and q4/q4 92.9 %: K matters more than V)
 
 
 def kv_plan_type(extra, kv_q8=False):
-    """The KV type the memory planner sizes: "q4_0" when -ctk is q4_0, True for q8_0 (the launcher's own choice or -ctk q8_0), else False (f16)."""
-    t = arg_after(extra, "-ctk", "--cache-type-k")
-    return "q4_0" if t == "q4_0" else bool(kv_q8 or t == "q8_0")
+    """The KV type the memory planner sizes, from -ctk / -ctv in the command (a type missing there is f16, llama.cpp's default) or the launcher's own q8_0 flag:
+    False (f16 both), True (q8_0 both), "q4_0" (both), or a (K, V) pair for any other mix."""
+    k, v = arg_after(extra, "-ctk", "--cache-type-k"), arg_after(extra, "-ctv", "--cache-type-v")
+    if k is None and v is None:
+        return bool(kv_q8)
+    k, v = k or "f16", v or "f16"
+    if k == v:
+        return {"f16": False, "q8_0": True, "q4_0": "q4_0"}.get(k, False)
+    return (k, v)
 
 
 def gpu_fit_words(r, kv_name):
@@ -3234,15 +3244,22 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         if pair and not pair[0]["fits"]:
             a.fast, a.dense_kv = "kv", True
             if not pair[1]["fits"]:
-                # LAUNCHER-1063 (owner 2026-11-10): f16 -> q8_0 -> q4_0 -> only then layers to RAM; never a shorter context; --exact and your own -ctk/-ctv keep their say (gated above).
-                # Measured on the PC, Qwen3.8-27B 64k with the desktop on the card: decode 18.5 tok/s with q8_0 (spilling) against 27.8 with q4_0; q4_0 KV: same top token in 92.9 % of
-                # positions, KL 0.173 against f16 on 8 long-chat windows
-                a.dense_kv_q4 = True
-                q4 = triple[2]
-                say(f"moe-cache: context {ctx // 1024}k: KV q4_0: q8_0 would spill by {pair[1]['over_gib']:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); " + (
-                    f"q4_0 does not spill ({gpu_fit_words(q4, 'q4_0')}). " if q4["fits"] else
-                    f"q4_0 is still {q4['over_gib']:.1f} GiB over ({gpu_fit_words(q4, 'q4_0')}), so part of the model runs from system RAM. ") +
-                    "q4_0 is approximate (same top token in 92.9 % of positions, KL 0.173 against f16 in a long-chat test); --exact keeps f16, your own -ctk/-ctv after -- win")
+                # LAUNCHER-1063 (owner 2026-11-10): f16 -> q8_0/q8_0 -> K q8_0 / V q4_0 -> q4_0/q4_0 -> only then layers to RAM; each step only when the one before would spill; never a
+                # shorter context; --exact and your own -ctk/-ctv are gated above. Laptop, 27B, top-1 against f16: q8/q8 96.5 %, K q8/V q4 94.6 %, q4/q4 92.9 % (KL 0.173); PC, 27B 64k with the
+                # desktop on the card: decode 18.5 tok/s with q8_0 (spilling) against 27.8 with q4_0
+                mixed, q4 = triple[2], triple[3]
+                over8 = pair[1]["over_gib"]
+                if mixed["fits"]:
+                    a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
+                    quality = "approximate: same top token in 94.6 % of positions against f16 (q8_0/q8_0: 96.5 %)"
+                else:
+                    a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
+                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173 (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
+                saves = pair[1]["kv_gib"] - got["kv_gib"]
+                say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
+                    f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else
+                    f"is still {got['over_gib']:.1f} GiB over ({gpu_fit_words(got, step)}), so part of the model runs from system RAM. ") +
+                    quality + "; --exact keeps f16, your own -ctk/-ctv after -- win")
             elif pair[1]["fits"]:
                 say(f"moe-cache: context {ctx // 1024}k: the f16 KV cache does not fit the GPU next to the model ({gpu_fit_words(pair[0], 'f16')}): q8_0 KV cache, which does "
                     "(half the GPU memory for the same context; --exact keeps f16 and lets llama.cpp move work to the CPU)")
@@ -3266,8 +3283,8 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         a.fast = "kv"                       # --approx safe: the 8-bit KV cache at any context (where the long-prompt mode did not already switch it on)
     kv_q8 = bool(a.fast) and not any(x in ("-ctk", "--cache-type-k", "-ctv", "--cache-type-v") for x in extra)
     if kv_q8:
-        t = "q4_0" if getattr(a, "dense_kv_q4", False) else "q8_0"
-        extra += ["-ctk", t, "-ctv", t]
+        tk, tv = getattr(a, "dense_kv_types", None) or ("q8_0", "q8_0")
+        extra += ["-ctk", tk, "-ctv", tv]
     return kv_q8
 
 
@@ -3702,7 +3719,8 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
     if dense and not expect:
         pair = dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True)
         kv_name = arg_after(extra, "-ctk", "--cache-type-k") or "f16"
-        r = (pair[{"q8_0": 1, "q4_0": 2}.get(kv_name, 0)]) if pair else None
+        kv_v = arg_after(extra, "-ctv", "--cache-type-v") or "f16"
+        r = (pair[{("q8_0", "q8_0"): 1, ("q8_0", "q4_0"): 2, ("q4_0", "q4_0"): 3}.get((kv_name, kv_v), 0)]) if pair else None
         expect = bool(r and not r["fits"])
     EXPECT_CPU_WORK[0] = expect
     if method == "none (stock)":
