@@ -193,7 +193,7 @@ main.stop()
 page = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
 check("data-audit=" in page and "/api/audit/start" in page and "/api/audit/plan" in page and "function buildMsgs(c, upto)" in page and "const msgs = buildMsgs(c, c.messages.length);" in page,
       "the page: the audit chip, the plan and start routes, one function builds the messages for a new answer and for an audit")
-check("confirm(" in page.split("async function startAudit")[1].split("async function pollAudit")[0], "the page asks before it starts anything (plan text and a confirm)")
+check("askConfirm(" in page.split("async function startAudit")[1].split("async function pollAudit")[0], "the page asks before it starts anything (plan text and the in-page confirm bar, GUI-1037)")
 
 print("audit_test:", "FAILED" if fails else "ok", f"({len(fails)} failed)" if fails else "")
 sys.exit(1 if fails else 0)
