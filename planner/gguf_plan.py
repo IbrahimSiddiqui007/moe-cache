@@ -321,7 +321,14 @@ def read_meta(path):
     return out
 
 
-KV_ELEM = {False: 2.0, True: 34 / 32}       # bytes per K/V value: f16, q8_0 (--fast)
+KV_ELEM = {False: 2.0, True: 34 / 32, "q4_0": 18 / 32}       # bytes per K/V value: f16, q8_0 (--fast), q4_0 (a block of 32 values is 18 bytes)
+
+
+def kv_elem(kv):
+    """Bytes per K/V value for a KV type: False / "f16" = f16, True / "q8_0" = q8_0, "q4_0" = q4_0 (LAUNCHER-1063)."""
+    if kv == "q4_0":
+        return KV_ELEM["q4_0"]
+    return KV_ELEM[bool(kv) and kv != "f16"]
 
 
 def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
@@ -351,7 +358,7 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     v_len = g("attention.value_length") or k_len
     interval = int(g("full_attention_interval", 0) or 0)
     n_attn = n_main // interval if interval else n_main
-    elem = KV_ELEM[bool(kv_q8)]
+    elem = kv_elem(kv_q8)
     if kv_list is not None:                                   # llama.cpp sizes each layer by its own n_head_kv
         n_attn = sum(1 for x in kv_list[:n_main] if x > 0)
         per_tok = sum(kv_list[:n_main]) * (k_len + v_len) * elem
