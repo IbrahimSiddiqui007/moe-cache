@@ -1412,6 +1412,82 @@ if node:
 else:
     print("  skip card test: node not found")
 
+# ---- GUI-1037 (the audit's question is an in-page bar, not window.confirm) and GUI-1038 (first paint says "scanning", not "no model") ----
+check('id="confirmbar"' in html and 'id="confirmok"' in html and 'id="confirmno"' in html and re.search(r'id="confirmbar"[^>]*\bhidden\b', html), "GUI-1037: the page has a confirm bar (hidden until asked) with OK and Cancel")
+check(re.search(r'id="nomodels"[^>]*>Scanning for models', html) and re.search(r'<b id="topmodel">scanning', html) and "scanning: true" in html, "GUI-1038: the HTML as first painted says 'Scanning for models…' / 'scanning…', not 'no model'")
+if node and "function askConfirm(" not in html:
+    check(False, "GUI-1037: the page has no askConfirm() (in-page confirmation); the audit would still use window.confirm")
+if node and "function askConfirm(" in html:
+    def _fn(name, kind="function"):
+        return re.search(r"(?:async )?function " + name + r"\(.*?\n\}\n", html, re.S).group(0)
+    dom = ("const els = {}; const $ = id => els[id] || (els[id] = { hidden: false, textContent: '', innerHTML: '', value: '', focus() { this.focused = true; } });\n"
+           "const esc = s => String(s); const fmtGB = b => b + ' B'; const shortName = n => n; const planKey = p => p; const mtpChip = () => '';\n"
+           "const listeners = []; const document = { addEventListener(t, f) { listeners.push(f); }, removeEventListener(t, f) { const i = listeners.indexOf(f); if (i >= 0) listeners.splice(i, 1); } };\n")
+    # the audit: window.confirm is blocked (what an embedded browser does: it returns false/undefined without showing anything); the question must still reach the user
+    audit = (dom + "globalThis.confirm = () => false;\nlet confirmDone = null;\n" + _fn("askConfirm") + "\n" + _fn("startAudit") + "\n"
+             "const C = { chat: { messages: [{ content: 'an answer' }] } }; const S = {}; const calls = []; const shown = [];\n"
+             "const api = async u => { calls.push(u); return u == '/api/audit/plan' ? { ok: true, why: 'a second server starts' } : {}; };\n"
+             "const showErr = t => shown.push(t); const buildMsgs = () => []; const pollAudit = () => {}; const paintChat = () => {}; globalThis.setInterval = () => 1;\n"
+             "async function main() {\n"
+             "  const out = {};\n"
+             "  let p = startAudit(0); await new Promise(r => setTimeout(r, 20));\n"
+             "  out.shown = !els.confirmbar.hidden; out.text = els.confirmtext.textContent; out.ok = els.confirmok.textContent; out.before = calls.slice();\n"
+             "  els.confirmok.onclick(); await p; out.after = calls.slice(); out.hidden = els.confirmbar.hidden; out.audit = !!S.audit;\n"
+             "  S.audit = null; calls.length = 0;\n"
+             "  p = startAudit(0); await new Promise(r => setTimeout(r, 20)); els.confirmno.onclick(); await p; out.cancel = calls.slice(); out.cancelHidden = els.confirmbar.hidden;\n"
+             "  calls.length = 0; p = startAudit(0); await new Promise(r => setTimeout(r, 20)); listeners[0]({ key: 'Escape', preventDefault() {}, stopImmediatePropagation() { out.stopped = true; } }); await p; out.esc = calls.slice(); out.listeners = listeners.length;\n"
+             "  const q1 = askConfirm('one'); const q2 = askConfirm('two'); out.replaced = await q1; els.confirmok.onclick(); out.second = await q2;\n"
+             "  console.log(JSON.stringify(out));\n"
+             "}\nmain();\n")
+    af = os.path.join(TMP, "audit_confirm.js"); open(af, "w", encoding="utf-8").write(audit)
+    ao = subprocess.run([node, af], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)      # node prints UTF-8; the Windows locale would garble the ellipsis
+    try:
+        a1 = json.loads(ao.stdout.strip().splitlines()[-1])
+    except Exception:
+        a1 = {}; print(ao.stdout[-300:], ao.stderr[-500:])
+    check(a1.get("shown") and "Audit this answer?" in a1.get("text", "") and "a second server starts" in a1.get("text", "") and a1.get("ok") == "Audit" and a1.get("before") == ["/api/audit/plan"],
+          "GUI-1037: with window.confirm blocked, the audit shows its question in the page bar and starts nothing yet")
+    check(a1.get("after") == ["/api/audit/plan", "/api/audit/start"] and a1.get("hidden") is True and a1.get("audit"), "GUI-1037: OK in the bar starts the audit and hides the bar")
+    check(a1.get("cancel") == ["/api/audit/plan"] and a1.get("cancelHidden") is True, "GUI-1037: Cancel in the bar starts nothing and hides it")
+    check(a1.get("esc") == ["/api/audit/plan"] and a1.get("listeners") == 0, "GUI-1037: Escape cancels, and the key listener is removed again")
+    check(a1.get("stopped") is True, "GUI-1037: Escape stops there: the page's own Escape handler (settings drawer, menus) does not also fire")
+    check(a1.get("replaced") is False and a1.get("second") is True, "GUI-1037: a second question replaces the first (the first answers No), one bar at a time")
+    src_audit = _fn("startAudit")
+    check(not re.search(r"(?<![A-Za-z.])confirm\(", src_audit), "GUI-1037: startAudit does not call window.confirm any more")
+    # the models list: until the scan answers it says scanning
+    scan = (dom + "const S = { scanning: true, models: [], plans: {}, sel: null, runKey: null };\nconst paintPlan = () => {}; const planAll = () => {};\n"
+            "let release; const api = () => new Promise(r => { release = r; });\n" + _fn("paintModels") + "\n" + _fn("loadModels") + "\n"
+            "async function main() {\n  const out = {};\n"
+            "  paintModels(); out.first = [els.nomodels.hidden, els.nomodels.textContent, els.topmodel.textContent];\n"
+            "  const p = loadModels(true); out.during = [els.nomodels.hidden, els.nomodels.textContent, els.topmodel.textContent, S.scanning];\n"
+            "  release({ models: [], folders: ['/m'] }); await p; out.empty = [els.nomodels.hidden, els.nomodels.textContent, els.topmodel.textContent, S.scanning];\n"
+            "  const p2 = loadModels(true); release({ models: [{ path: '/m/a.gguf', name: 'a.gguf', size: 5, quant: 'Q4', mtp: null }], folders: ['/m'] }); await p2; out.found = [els.nomodels.hidden, els.topmodel.textContent, S.scanning];\n"
+            "  const p3 = loadModels(true); out.rescan = [els.nomodels.hidden, els.topmodel.textContent]; release({ models: [], folders: [] }); await p3;\n"
+            "  console.log(JSON.stringify(out));\n}\nmain();\n")
+    sf = os.path.join(TMP, "scan_state.js"); open(sf, "w", encoding="utf-8").write(scan)
+    so = subprocess.run([node, sf], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)      # node prints UTF-8; the Windows locale would garble the ellipsis
+    try:
+        s1 = json.loads(so.stdout.strip().splitlines()[-1])
+    except Exception:
+        s1 = {}; print(so.stdout[-300:], so.stderr[-500:])
+    check(s1.get("first") == [False, "Scanning for models…", "scanning…"], f"GUI-1038: before any scan answered the page says scanning, not 'no model' ({s1.get('first')})")
+    check(s1.get("during") == [False, "Scanning for models…", "scanning…", True], f"GUI-1038: while loadModels waits for the scan: still 'Scanning for models…' ({s1.get('during')})")
+    check(s1.get("empty") and s1["empty"][0] is False and s1["empty"][1].startswith("No .gguf models found") and s1["empty"][2] == "no model" and s1["empty"][3] is False, "GUI-1038: when the scan answers with nothing, the old 'No .gguf models found…' text and 'no model' come back")
+    check(s1.get("found") == [True, "a.gguf", False], "GUI-1038: when a model is found the list and the top bar show it, the hint is hidden")
+    check(s1.get("rescan") == [True, "a.gguf"], "GUI-1038: a rescan does not blank a list that already has models")
+    fail_js = (dom + "const S = { scanning: true, models: [], plans: {}, sel: null, runKey: null };\nconst paintPlan = () => {}; const planAll = () => {};\n"
+               "const api = async () => { throw new Error('scan failed'); };\n" + _fn("paintModels") + "\n" + _fn("loadModels") + "\n"
+               "loadModels(false).catch(e => console.log(JSON.stringify({ err: e.message, scanning: S.scanning, text: els.nomodels.textContent })));\n")
+    ff = os.path.join(TMP, "scan_fail.js"); open(ff, "w", encoding="utf-8").write(fail_js)
+    fo = subprocess.run([node, ff], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)      # node prints UTF-8; the Windows locale would garble the ellipsis
+    try:
+        f1 = json.loads(fo.stdout.strip().splitlines()[-1])
+    except Exception:
+        f1 = {}; print(fo.stdout[-300:], fo.stderr[-500:])
+    check(f1.get("err") == "scan failed" and f1.get("scanning") is False and f1.get("text", "").startswith("No .gguf models found"), "GUI-1038: a scan that fails does not leave the page on 'Scanning…' for good")
+else:
+    print("  skip GUI-1037/1038 page tests: node not found")
+
 # ---- finding llama-server (one function for the launcher, check, the picker and the page): the order, the registry, the newest supported build ----
 import types as _types
 mc = ui.mc
