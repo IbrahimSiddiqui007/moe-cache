@@ -173,12 +173,14 @@ def answer_with_reasoning(url, messages, prompt, content, reasoning, key=None):
     if not reasoning:
         return content, "answer only"
     try:
-        full = render_prompt(url, list(messages) + [{"role": "assistant", "content": content, "reasoning_content": reasoning}], key)
-        if full.startswith(prompt) and reasoning.strip()[:40] in full[len(prompt):]:
-            tail = full[len(prompt):]
-            end = tail.rfind(content)
-            if end >= 0:
-                return tail[:end + len(content)], "chat template"
+        turn = lambda c: list(messages) + [{"role": "assistant", "content": c, "reasoning_content": reasoning}]
+        full = render_prompt(url, turn(content), key)
+        mark = "\u0001ANSWER\u0001"
+        probe = render_prompt(url, turn(mark), key)             # the same turn with a marker for the answer: where the answer starts does not depend on what it says
+        if full.startswith(prompt) and probe.startswith(prompt) and reasoning.strip()[:40] in full[len(prompt):] and mark in probe:
+            start = probe.index(mark)
+            if full[start:start + len(content)] == content:
+                return full[len(prompt):start + len(content)], "chat template"
     except Exception:
         pass
     return f"{reasoning.rstrip()}\n</think>\n\n{content}", "reasoning + </think> + answer (the chat template did not render the thinking part)"

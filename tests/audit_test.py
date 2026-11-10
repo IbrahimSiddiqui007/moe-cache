@@ -251,6 +251,10 @@ for mode in ("think", "nothink"):
     else:
         check(txt.endswith("\n</think>\n\nHello there") and "The user says hi." in txt and how.startswith("reasoning +"), f"a template that drops the thinking part: the fall-back form says so ({how[:30]})")
     check(au.answer_with_reasoning(u2, conv, pr, "Hello there", "", None) == ("Hello there", "answer only"), "no thinking part: the answer alone")
+    if mode == "think":
+        for word in ("assistant", "user", "think", "<|im_end|>"):
+            t2, how2 = au.answer_with_reasoning(u2, conv, pr, word, "I reason about it.", None)
+            check(t2 == "<think>\nI reason about it.\n</think>\n\n" + word and how2 == "chat template", f"an answer that is also a word of the template's closing tags is not cut at the wrong place ({word!r} -> {t2[-30:]!r})")
     sv.shutdown()
 summ = ui.audit_summary({"n": 3, "same": 3, "same_pct": 100.0, "mean_logloss": 0.1, "unknown_p": 0, "truncated": False, "prompt_tokens": 5, "seconds": 1.0, "mismatches": [], "tokens": [
     {"i": 0, "piece": "ab", "same": False, "exact_piece": "x", "exact_p": .5, "p": .1, "p_below": None}, {"i": 1, "piece": "cd", "same": True}, {"i": 2, "piece": "ef", "same": False, "exact_piece": "y", "exact_p": .5, "p": .1, "p_below": None}]},

@@ -185,7 +185,7 @@ class _WinCounters:
         size, count = wt.DWORD(0), wt.DWORD(0)
         PDH_FMT_DOUBLE = 0x200
         r = self.pdh.PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, ct.byref(size), ct.byref(count), None)
-        if r != 0x800007D2 or not size.value:                          # PDH_MORE_DATA is the answer to a size query
+        if pdh_status(r) != PDH_MORE_DATA or not size.value:           # PDH_MORE_DATA is the answer to a size query
             return []
         buf = ct.create_string_buffer(size.value)
         if self.pdh.PdhGetFormattedCounterArrayW(c, PDH_FMT_DOUBLE, ct.byref(size), ct.byref(count), buf) != 0:
@@ -294,6 +294,12 @@ def win_memory_status():
 
 
 _WIN_GPU = {}
+PDH_MORE_DATA = 0x800007D2
+
+
+def pdh_status(r):
+    """A PDH return value as the unsigned status code: ctypes gives a C int, so 0x800007D2 (PDH_MORE_DATA) arrives negative and a plain comparison with it is never true."""
+    return int(r) & 0xFFFFFFFF
 
 
 def win_gpu_stats(counters=None, adapters=None):

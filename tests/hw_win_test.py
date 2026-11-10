@@ -49,6 +49,9 @@ check(hw.win_gpu_stats(counters=Boom(), adapters=ad) is None, "a reader that rai
 ig = hw.merge_gpu(ad[1], 12.0, 3e8, 4e9, None, 2)
 check(ig["mem_total"] == 15 * 2**30 and ig["mem_used"] == 4e9, "an integrated GPU: the shared-memory budget is its memory, shared usage is its use")
 
+import ctypes
+check(hw.pdh_status(ctypes.c_int(0x800007D2).value) == hw.PDH_MORE_DATA and hw.pdh_status(-2147481646) == 0x800007D2 and hw.pdh_status(0) == 0,
+      "PDH_MORE_DATA arrives from ctypes as a negative C int and is still recognised (this comparison was the bug that made the Windows reader return nothing)")
 ms = hw.parse_memory_status(48 * 2**30, 20 * 2**30, 32 * 2**30, 9 * 2**30)
 check(ms["commit_total"] == 48 * 2**30 and ms["commit_used"] == 28 * 2**30 and ms["commit_free"] == 20 * 2**30 and ms["ram_free"] == 9 * 2**30, "commit from the memory status fields")
 
@@ -64,6 +67,13 @@ else:
     time.sleep(1.0)
     s2 = hw.win_gpu_stats()
     check(s2 is None or (isinstance(s2, dict) and "mem_total" in s2), f"the real PDH + DXGI reader answers a dict or None without raising ({s2 and {k: s2[k] for k in ('name', 'util', 'mem_used', 'mem_total')}})")
+    c = hw._WIN_GPU.get("c")
+    if c is not None:
+        counts = {k: len(c.read(k)) for k in ("engine", "dedicated", "shared")}
+        print(f"       PDH instances read on this Windows: {counts}")
+        check(all(isinstance(c.read(k), list) for k in counts), "the real PDH reader returns lists (counted above; a runner without a GPU may have zero instances, the PC must not)")
+        if counts["dedicated"] or counts["shared"]:
+            check(s2 is not None and s2.get("mem_used") is not None, "PDH found adapter memory instances, so the merged answer carries a memory figure")
     st = hw.win_memory_status()
     check(st and st["commit_total"] > st["ram_total"] * 0.5 and 0 < st["commit_free"] <= st["commit_total"], f"commit from GlobalMemoryStatusEx ({st and round(st['commit_free'] / 2**30, 1)} GiB free)")
     check(time.time() - t0 < 20, "the readers do not hang")
