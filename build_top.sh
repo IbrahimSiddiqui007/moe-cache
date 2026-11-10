@@ -1,17 +1,18 @@
 #!/bin/bash
 # build_top.sh: the native Monitor `moe-cache-top` (R15-03, phase 0 spike): src/top/main.cpp + the vendored FTXUI 7.0.3 sources (third_party/ftxui, sha256 pinned in
-# third_party/THIRD_PARTY.txt; nothing is fetched at build time).
-#   ./build_top.sh              Linux: bin/moe-cache-top   (g++, C++17, -O2, glibc dynamic)
-#   ./build_top.sh --windows    Windows .exe with the mingw UCRT cross compiler (x86_64-w64-mingw32-g++, static): bin/moe-cache-top.exe
+# third_party/THIRD_PARTY.txt; nothing is fetched at build time). The binary stays in build/ (gitignored): bin/moe-cache-* is parsed as shell scripts by CI and packaged
+# by the kit scripts, so it moves to bin/ only when the packaging step (R15-06) puts it in a kit.
+#   ./build_top.sh              Linux: build/moe-cache-top  (g++, C++17, -O2, glibc dynamic)
+#   ./build_top.sh --windows    Windows .exe with the mingw UCRT cross compiler (x86_64-w64-mingw32-g++, static): build/moe-cache-top.exe
 #   JOBS=4 ./build_top.sh       parallel compile jobs (default 4)
 cd "$(dirname "$0")" || exit 1
 set -e
-CXX=${CXX:-g++}; OUT=bin/moe-cache-top; EXTRA="-pthread"; LIBS=""
+CXX=${CXX:-g++}; OUT=build/moe-cache-top; EXTRA="-pthread"; LIBS=""
 if [ "${1:-}" = "--windows" ]; then
-  CXX=${CXX_WIN:-x86_64-w64-mingw32-g++}; OUT=bin/moe-cache-top.exe; EXTRA="-static -static-libgcc -static-libstdc++ -DUNICODE -D_UNICODE -DNOMINMAX -D_WIN32_WINNT=0x0A00"; LIBS="-lws2_32"
+  CXX=${CXX_WIN:-x86_64-w64-mingw32-g++}; OUT=build/moe-cache-top.exe; EXTRA="-static -static-libgcc -static-libstdc++ -DUNICODE -D_UNICODE -DNOMINMAX -D_WIN32_WINNT=0x0A00"; LIBS="-lws2_32"
 fi
-J=${JOBS:-4}; B=build/top; if [ "$OUT" = bin/moe-cache-top.exe ]; then B=build/top-win; fi
-mkdir -p "$B" bin
+J=${JOBS:-4}; B=build/top; if [ "$OUT" = build/moe-cache-top.exe ]; then B=build/top-win; fi
+mkdir -p "$B"
 FL="-std=c++17 -O2 -Ithird_party/ftxui/include -Ithird_party/ftxui/src $EXTRA"
 SRC=$(find third_party/ftxui/src -name '*.cpp' | sort)
 objs=""; todo="$B/todo.txt"; : > "$todo"

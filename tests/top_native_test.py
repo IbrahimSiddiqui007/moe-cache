@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""R15-03 (phase 0 spike): the native Monitor bin/moe-cache-top against a fake llama-server (/metrics, /slots) and a fake control page (/api/monitor with `schema`).
+"""R15-03 (phase 0 spike): the native Monitor build/moe-cache-top against a fake llama-server (/metrics, /slots) and a fake control page (/api/monitor with `schema`).
 The binary is built by ./build_top.sh (FTXUI 7.0.3, vendored); the test builds it when MOE_CACHE_TOP_BUILD=1 or CI is set, runs it when it exists, and otherwise says SKIP.
    python3 tests/top_native_test.py"""
 import json, os, re, subprocess, sys, threading, http.server, time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-EXE = os.path.join(HERE, "bin", "moe-cache-top" + (".exe" if os.name == "nt" else ""))
+EXE = os.path.join(HERE, "build", "moe-cache-top" + (".exe" if os.name == "nt" else ""))
 fails = []
 def check(ok, what):
     print(("  ok   " if ok else "  FAIL ") + what)
@@ -19,7 +19,7 @@ if not os.path.isfile(EXE) and (os.environ.get("MOE_CACHE_TOP_BUILD") == "1" or 
     r = subprocess.run(["bash", os.path.join(HERE, "build_top.sh")], capture_output=True, text=True, timeout=1500, env=dict(os.environ, JOBS=os.environ.get("JOBS", "4")))
     print("build:", r.stdout.strip().splitlines()[-1] if r.stdout.strip() else r.stderr[-300:])
 if not os.path.isfile(EXE):
-    print("SKIP: bin/moe-cache-top is not built (./build_top.sh, or MOE_CACHE_TOP_BUILD=1)")
+    print("SKIP: build/moe-cache-top is not built (./build_top.sh, or MOE_CACHE_TOP_BUILD=1)")
     sys.exit(0)
 
 state = {"n": 0, "metrics_calls": 0}
