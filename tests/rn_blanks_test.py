@@ -33,6 +33,12 @@ for rel in clean:
     r = run(tree(f)); chk(f"a blank in {rel}: exit 1, file named", r.returncode == 1 and rel.split("/")[-1] in r.stdout)
 f = dict(clean); f["README.md"] = "a {{RN: x}} and {{RN: y}}\n"
 r = run(tree(f)); chk("two blanks on one line are counted", r.returncode == 1 and "2 blank(s)" in r.stdout)
+f = dict(clean); f["docs/releases/RELEASE_NOTES_v9.9.9.md"] = "a blank written as `{{RN: ...}}` in an explanation is not a blank\n"
+r = run(tree(f)); chk("the documentation form {{RN: ...}} does not trip the gate", r.returncode == 0)
+f = dict(clean); f["docs/RESULTS_CURRENT.md"] = "x {{RN: card number}}\n"
+r = run(tree(f)); chk("a blank in docs/RESULTS_CURRENT.md is found", r.returncode == 1)
+f = dict(clean); f["README.md"] = "see `{{RN: ...}}` and a real {{RN: IQ3_XXS 65k prompt}}\n"
+r = run(tree(f)); chk("an explanation and a real blank on one line: only the real one counts", r.returncode == 1 and "1 blank(s)" in r.stdout)
 wf = open(os.path.join(HERE, ".github", "workflows", "release.yml"), encoding="utf-8").read()
 chk("release.yml runs tools/rn_blanks_check.py", "tools/rn_blanks_check.py" in wf)
 print("rn_blanks_test: " + ("FAIL" if fails else "PASS"))

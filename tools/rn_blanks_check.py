@@ -4,7 +4,8 @@ release notes. A blank that ships is a missing number on the public page.
    python3 tools/rn_blanks_check.py [--root DIR]     exit 0 when there are no blanks, 1 when there are (each one printed with file and line)"""
 import glob, os, sys
 
-FILES = ["CHANGELOG.md", "README.md", "docs/releases/RELEASE_NOTES_v*.md"]
+FILES = ["CHANGELOG.md", "README.md", "docs/RESULTS_CURRENT.md", "docs/releases/RELEASE_NOTES_v*.md"]
+DOC_FORM = "{{RN: ...}}"      # the form written out in an explanation (not a blank); a real blank always names its number
 
 
 def blanks(root):
@@ -13,8 +14,9 @@ def blanks(root):
         for path in sorted(glob.glob(os.path.join(root, pat))):
             with open(path, encoding="utf-8") as f:
                 for n, line in enumerate(f, 1):
-                    if "{{RN" in line:
-                        out.append((os.path.relpath(path, root), n, line.count("{{RN")))
+                    c = line.replace(DOC_FORM, "").count("{{RN")
+                    if c:
+                        out.append((os.path.relpath(path, root), n, c))
     return out
 
 
