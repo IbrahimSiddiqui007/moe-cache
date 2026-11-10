@@ -3006,6 +3006,20 @@ def dense_gpu_fit_pair(a, model, ctx, machine):
     return (f16, q8) if f16 and q8 else None
 
 
+def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name):
+    """LAUNCHER-1068: Windows, a dense model that fits fully on the GPU (the LAUNCHER-982 estimate, not --fit spilling, no -ot) loads with `--load-mode none`: the default mmap load
+    spiked used RAM by ~12 GB for Qwen3.8-27B on the PC (2026-11-10), `--load-mode none` added 2-6 GB and was ready in under a minute. Returns the plain note, or None (mmap stays):
+    Linux, --exact / --stock, a layout that spills to RAM (mmap keeps those weights file-backed), an unknown fit, or a load flag of your own (--load-mode / -lm / --mmap / --no-mmap / --mlock)."""
+    if not machine.windows or a.exact or a.stock or not pair or "-ot" in cmd or arg_after(cmd, "-ngl", "--n-gpu-layers") == "0":
+        return None
+    if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
+        return None
+    r = pair[1] if kv_name in ("q8_0", "q4_0") else pair[0]
+    if not r or not r["fits"]:
+        return None
+    return "the model fits fully on the GPU: --load-mode none (no memory-mapped copy of the file in RAM while loading; --exact or --load-mode after -- keeps llama.cpp's default)"
+
+
 def gpu_fit_words(r, kv_name):
     """The numbers behind a fit estimate, plain: model + KV + compute (+ margin) = need of free."""
     return (f"model {r['model_gib']:.1f} + {kv_name} KV {r['kv_gib']:.1f} + compute {r['fixed_gib']:.1f}" + (f" + margin {r['margin_gib']:.2f}" if r['margin_gib'] else "")
@@ -3686,6 +3700,11 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         r = (pair[1] if kv_name in ("q8_0", "q4_0") else pair[0]) if pair else None
         expect = bool(r and not r["fits"])
     EXPECT_CPU_WORK[0] = expect
+    if dense and not cpu_only and not expect and "--load-mode" in cmd:
+        why = load_mode_fit_none(a, cmd, extra, machine, ctx, dense_gpu_fit_pair(a, model, ctx, machine), arg_after(extra, "-ctk", "--cache-type-k") or "f16")
+        if why:
+            cmd[cmd.index("--load-mode") + 1] = "none"
+            say("moe-cache: " + why)
     if method == "none (stock)":
         pass
     elif ncmoe == "0":
