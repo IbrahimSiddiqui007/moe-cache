@@ -3,3 +3,5 @@ build/
 __pycache__/
 dist/
 build-*/
+bin/moe-cache-top
+bin/moe-cache-top.exe
