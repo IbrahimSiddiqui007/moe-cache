@@ -754,6 +754,15 @@ try:
     seen4.clear()
     stage4(abort_on_q8, fits=lambda c, e: (at.flag_value(c, "-ctk") == "q8_0", "f16 KV would not fit the commit"))
     check(all(at.flag_value(c, "-ctk") == "q8_0" for c in seen4), "the f16 retry must pass the commit check too: refused -> not loaded")
+    # after the retry the LATER plans are f16 too: each f16 command passes the commit check before it is loaded
+    shutil.rmtree(os.path.join(mc.CACHE_DIR, "autotune"), ignore_errors=True)
+    seen4.clear(); asked_fits = []
+    def fits_f16_first(c, e):
+        asked_fits.append(at.flag_value(c, "-ctk"))
+        return (at.flag_value(c, "-ctk") == "q8_0" or asked_fits.count(None) < 2, "f16 would not fit later")       # the first f16 plan (the retry of C0) fits, later ones do not
+    cmd, env, info, out = stage4(abort_on_q8, fits=fits_f16_first)
+    check(asked_fits.count(None) >= 2 and sum(at.flag_value(c, "-ctk") is None for c in seen4) == 1,
+          f"later plans with f16 KV are checked against the commit before loading, and a refused one is not loaded ({len(seen4)} probes, fits asked about {asked_fits})")
     # the real probe keeps stderr and flags the abort (a fake llama-server that prints the abort line and exits)
     fake = os.path.join(tmp4, "fake_server.py")
     open(fake, "w").write("import sys\nsys.stderr.write('D:/a/llama.cpp/ggml/src\\\\ggml-impl.h:337: fatal error\\n')\nsys.exit(3)\n")

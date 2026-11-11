@@ -4137,6 +4137,10 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
         c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
         if kv_f16[0]:
             c_cmd = kv_retry_cmd(c_cmd)[0]
+            if fits is not None:        # the plans above passed the commit check with the KV types they had; f16 needs more, so this command is checked again (LAUNCHER-1042)
+                ok, why = fits(c_cmd, c_env)
+                if not ok:
+                    return {"ok": False, "error": f"not loaded: the commit check does not pass this plan with the f16 KV cache ({why[:120]})"}
         t_start = time.monotonic()
         r = (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
         if not r.get("ok") and r.get("kv_abort") and not kv_f16[0] and "kv" not in locked:       # a KV type the user gave (or --exact) is never changed
