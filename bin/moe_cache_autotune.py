@@ -175,6 +175,72 @@ def save(cache_dir, parts, result):
     return p
 
 
+def mark_bad(cache_dir, parts, why):
+    """LAUNCHER-1045: the stored pick did not load: keep the file (so the next start knows and says why) but never apply its pick again; --retune measures anew."""
+    d = load(cache_dir, parts)
+    if not d:
+        return False
+    d["bad"] = {"at": time.strftime("%Y-%m-%d %H:%M"), "why": str(why)[:300]}
+    save(cache_dir, parts, {k: v for k, v in d.items() if k not in ("version", "key")})
+    return True
+
+
+LOCK_STALE_S = 600.0        # the budget is 180 s plus the loads around it; a lock older than this is a launcher that died
+
+
+def _pid_alive(pid):
+    if os.name == "nt":
+        return True         # no cheap check without extra modules: only the age counts there
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError, ValueError):
+        return True
+
+
+def lock_path(cache_dir):
+    return os.path.join(cache_dir, "autotune", "tuning.lock")
+
+
+def acquire_lock(cache_dir, now=time.time, alive=_pid_alive):
+    """LAUNCHER-1041: one tuning at a time on this computer (two loads at once double the memory and spoil each other's numbers). -> (True, None) or (False, pid of the
+    launcher that holds it). A lock of a dead process or older than LOCK_STALE_S is taken over."""
+    p = lock_path(cache_dir)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(p, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            try:
+                with open(p, encoding="utf-8") as f:
+                    held = json.load(f)
+            except (OSError, ValueError):
+                held = {}
+            if held and now() - float(held.get("t", 0)) < LOCK_STALE_S and alive(held.get("pid", 0)):
+                return False, held.get("pid")
+            try:
+                os.unlink(p)            # stale: take it over (the loop tries once more)
+            except OSError:
+                return False, held.get("pid")
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"pid": os.getpid(), "t": now()}, f)
+        return True, None
+    return False, None
+
+
+def release_lock(cache_dir):
+    try:
+        with open(lock_path(cache_dir), encoding="utf-8") as f:
+            if int(json.load(f).get("pid", -1)) != os.getpid():
+                return
+        os.unlink(lock_path(cache_dir))
+    except (OSError, ValueError):
+        pass
+
+
 def score(row, agent=False):
     """Seconds to read a prompt and write DECODE_TOKENS tokens at this row's speeds (lower is better); None without both speeds."""
     pp, dec = row.get("prompt_tps"), row.get("decode_tps")
@@ -189,7 +255,7 @@ def aborted_result(rows, cid, why, total, budget_s, agent):
             "why": f"the memory guard stopped the probe of {cid} ({str(why)[:160]}): the tuning was aborted, nothing was stored, the plan as it is runs. It is tried again at the next start"}
 
 
-def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None):
+def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, say=lambda t: None, progress=lambda t: None):
     """Measure the candidates in order and pick. runner(cand, left_s, decode_tokens) -> {"ok", "load_s", "prompt_tps", "decode_tps", "decode_n", "error"}.
     C0 (the plan as it is) always runs first with whatever time there is; each later candidate starts only when the time left covers a load and probe like
     C0's. When C0 cannot be measured the result is `too_slow` and nothing is picked. Returns the result dict that is stored."""
@@ -209,6 +275,7 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
                 rows.append(row)
                 continue
             n = min(DECODE_TOKENS, int(b0["decode_tps"] * room))
+        progress(f"trying plan {len(rows) + 1} of {len(cands)}: {c.id} ({c.label})")      # LAUNCHER-1041: the control page lists this while the server is still "starting"
         s = clock()
         try:
             r = runner(c, left, n) or {}
@@ -239,6 +306,7 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
         left = budget_s - (clock() - t0)
         if left >= base_cost * 1.15:
             c0b = {"id": "C0b", "label": "the plan as it is, again (noise check)", "status": "not measured", "edits": []}
+            progress("trying the plan as it is a second time (noise check)")
             try:
                 r = runner(Candidate("C0", c0b["label"], []), left, DECODE_TOKENS) or {}
             except Exception as e:
