@@ -1611,7 +1611,7 @@ class Runner:
         except Exception:
             pass                                   # the monitor must never end the poll loop
 
-    def monitor_payload(self, since, log_seq, tail=None):
+    def monitor_payload(self, since, log_seq, tail=None, req_after=None, layers=True):
         s = self.settings
         args, env = process_args(self.pid) if self.pid else ([], {})
         if not args:                            # the process is not there (yet): the launcher's own arguments
@@ -1638,7 +1638,7 @@ class Runner:
             ctx_max = int(s.get("ctx")) if s.get("ctx") else None
         except (TypeError, ValueError):
             ctx_max = None
-        return self.mon.payload(since, log_seq, ctx_max=ctx_max, plan=plan, cap=cap, totals=totals, tail=tail, modes=token_mode_status(plan, bool(self.mtp), s))
+        return self.mon.payload(since, log_seq, ctx_max=ctx_max, plan=plan, cap=cap, totals=totals, tail=tail, modes=token_mode_status(plan, bool(self.mtp), s), req_after=req_after, layers=layers)
 
     def poll(self, p):
         api_key = self.key()
@@ -1973,7 +1973,8 @@ class Runner:
 
 # ---- the audit (GUI-043): re-score an answer in exact mode ----
 
-AUDIT_MAX_TOKENS = 4096
+AUDIT_MAX_TOKENS = 16384        # R15-01: was 4096; the audit module has the same default (moe_cache_audit.MAX_TOKENS); a request may ask for less or up to AUDIT_MAX_TOKENS_LIMIT
+AUDIT_MAX_TOKENS_LIMIT = 65536
 
 
 def audit_plan(runner, model_size):
@@ -1998,6 +1999,7 @@ class AuditJob:
 
     def reset(self):
         self.state, self.progress, self.message, self.result, self.mode, self.started = "idle", [0, 0], "", None, None, None
+        self.notes, self.max_tokens = [], AUDIT_MAX_TOKENS
         self.cancel_flag = threading.Event()
         self.thread = None
 
@@ -2005,22 +2007,25 @@ class AuditJob:
         return {"state": self.state, "progress": self.progress, "message": self.message, "mode": self.mode, "result": self.result,
                 "elapsed": round(time.time() - self.started, 1) if self.started else None}
 
-    def start(self, runner, model_size, messages, answer, mode="auto"):
+    def start(self, runner, model_size, messages, answer, mode="auto", reasoning="", max_tokens=None):
         with self.lock:
             if self.state in ("planning", "starting", "scoring", "restoring"):
                 raise ValueError("an audit is already running")
             plan = audit_plan(runner, model_size)
             if not plan["ok"]:
                 raise ValueError(plan["why"])
-            if any(m.get("images") for m in messages if isinstance(m, dict)):
-                raise ValueError("the audit reads text only: this conversation has an image in it")
+            import moe_cache_audit as au
+            messages, n_images = au.with_image_placeholders(messages)          # R15-01: images are shown to the exact server as '[image WxH]', not refused
             self.reset()
+            self.notes = ([f"{n_images} image{'s' if n_images != 1 else ''} in the conversation {'were' if n_images != 1 else 'was'} shown to the exact server as [image WxH] placeholders: "
+                           "the answer is scored given those words, not given the pictures"] if n_images else [])
+            self.max_tokens = max(64, min(int(max_tokens or AUDIT_MAX_TOKENS), AUDIT_MAX_TOKENS_LIMIT))
             self.mode = plan["mode"] if mode == "auto" else mode
             if self.mode == "beside" and plan["mode"] == "pause":
                 raise ValueError("the model does not fit in memory twice: use the pause-and-audit way, or stop other programs first")
             self.started, self.state = time.time(), "planning"
             s = dict(runner.settings)
-            self.thread = threading.Thread(target=self.run, args=(runner, s, messages, answer), daemon=True)
+            self.thread = threading.Thread(target=self.run, args=(runner, s, messages, answer, reasoning), daemon=True)
             self.thread.start()
 
     def cancel(self):
@@ -2032,7 +2037,7 @@ class AuditJob:
                 return p
         raise ValueError("no free port between 8190 and 8199 for the exact-mode server")
 
-    def run(self, runner, s, messages, answer):
+    def run(self, runner, s, messages, answer, reasoning=""):
         import moe_cache_audit as au
         ex, paused = Runner(), False
         try:
@@ -2041,7 +2046,7 @@ class AuditJob:
                 runner.stop()
                 paused = True
             port = self.free_port(int(s.get("port") or 8080))
-            need_ctx = int((sum(len(str(m.get("content") or "")) for m in messages) + len(answer)) / 2.5) + 512
+            need_ctx = int((sum(len(str(m.get("content") or "")) for m in messages) + len(answer) + len(reasoning or "")) / 2.5) + 512
             s2 = dict(s, mode="exact", mtp=False, agent=False, approx="", no_warm=True, port=port, api_key="", no_long_prompt=True,
                       ctx=min(1048576, max(int(s.get("ctx") or 8192), (need_ctx // 512 + 1) * 512)))
             if self.mode == "beside":
@@ -2058,8 +2063,14 @@ class AuditJob:
             url = f"http://127.0.0.1:{port}"
             self.state, self.message = "scoring", "re-scoring the answer position by position"
             prompt = au.render_prompt(url, messages)
-            res = au.score(url, prompt, answer, top=20, max_tokens=AUDIT_MAX_TOKENS, progress=lambda d, n: setattr(self, "progress", [d, n]), cancel=self.cancel_flag.is_set)
-            self.result = audit_summary(res, answer)
+            scored, how = au.answer_with_reasoning(url, messages, prompt, answer, reasoning)          # R15-01: the thinking part is scored too, as the model's own template writes it
+            res = au.score(url, prompt, scored, top=20, max_tokens=self.max_tokens, progress=lambda d, n: setattr(self, "progress", [d, n]), cancel=self.cancel_flag.is_set,
+                           parse_special=True if reasoning else None)
+            self.result = audit_summary(res, scored, content_offset=len(scored) - len(answer) if reasoning and scored.endswith(answer) else 0)
+            if reasoning:
+                self.result["reasoning"] = {"scored": True, "how": how}
+            if self.notes:
+                self.result["notes"] = list(self.notes)
             self.state, self.message = "done", ""
         except Exception as e:
             self.state = "cancelled" if isinstance(e, au.AuditError) and "cancelled" in str(e) else "error"
@@ -2084,14 +2095,19 @@ class AuditJob:
                         self.message = "your server is starting again"
 
 
-def audit_summary(res, answer):
-    """What the page gets: the totals, the changed positions with both tokens, and the character ranges of the changed words."""
+def audit_summary(res, answer, content_offset=0):
+    """What the page gets: the totals, the changed positions with both tokens, and the character ranges of the changed words. `answer` is the text that was scored; when it starts
+    with a thinking part, `content_offset` is where the visible answer begins: "ranges" are then the ones inside the answer (shifted to start at 0, the page marks them in
+    the answer) and "think_ranges" the ones in the thinking part."""
     import moe_cache_audit as au
     ranges = au.char_ranges(res["tokens"], answer)
+    think_ranges = [r for r in ranges if r[1] <= content_offset] if content_offset else []
+    if content_offset:
+        ranges = [[x - content_offset, y - content_offset, k] for x, y, k in ranges if x >= content_offset]
     detail = {r["i"]: {"piece": r["piece"], "exact": r["exact_piece"], "exact_p": r["exact_p"], "p": r["p"], "p_below": r["p_below"]} for r in res["tokens"] if not r["same"]}
     return {"n": res["n"], "same": res["same"], "same_pct": round(res["same_pct"], 2), "mean_logloss": res["mean_logloss"], "unknown_p": res["unknown_p"], "truncated": res["truncated"],
             "prompt_tokens": res["prompt_tokens"], "seconds": res["seconds"], "mismatches": res["mismatches"][:300], "n_mismatches": len(res["mismatches"]),
-            "detail": {str(k): v for k, v in list(detail.items())[:300]}, "ranges": ranges[:600],
+            "detail": {str(k): v for k, v in list(detail.items())[:300]}, "ranges": ranges[:600], "think_ranges": think_ranges[:600], "content_offset": content_offset,
             "flags": "".join("0" if r["same"] else "1" for r in res["tokens"])}
 
 
@@ -2580,7 +2596,9 @@ class Handler(BaseHTTPRequestHandler):
                         return self.send(200, json.load(fh))
                 return self.send(200, {"dir": CHAT_DIR, "chats": list_chats()})
             if u.path == "/api/monitor":                   # GUI-041: the Monitor view (this machine only: it carries the whole log)
-                return self.send(200, self.runner.monitor_payload(float(q.get("since") or 0), int(q.get("log") or 0), tail=min(int(q.get("tail") or 0), 200) or None))
+                # R15-01: req=<id> only the requests after that id; layers=0 without the per-layer columns (a client that polls every second wants the small payload)
+                return self.send(200, self.runner.monitor_payload(float(q.get("since") or 0), int(q.get("log") or 0), tail=min(int(q.get("tail") or 0), 200) or None,
+                                                                  req_after=int(q["req"]) if str(q.get("req") or "").lstrip("-").isdigit() else None, layers=str(q.get("layers", "1")) not in ("0", "false")))
             if u.path == "/api/risk":                      # GUI-043: the decode steps in a time window and how many picks the routing change touched in each (the chat's "at risk" marks)
                 try:
                     t0, t1 = float(q["t0"]), float(q["t1"])
@@ -2676,13 +2694,17 @@ class Handler(BaseHTTPRequestHandler):
                 self.runner.start(s, on_demand=bool(body.get("on_demand")))
                 return self.send(200, self.runner.status())
             if self.path == "/api/audit/start":            # GUI-043: re-score an answer in exact mode: {messages, answer, mode: auto | beside | pause}
-                msgs, ans = body.get("messages"), body.get("answer")
-                if not isinstance(msgs, list) or not all(isinstance(m, dict) and isinstance(m.get("content"), (str, type(None))) for m in msgs) or not isinstance(ans, str) or not ans.strip():
-                    raise ValueError("messages: the conversation before the answer; answer: its text")
-                if len(ans) > 200_000 or len(json.dumps(msgs)) > 4_000_000:
+                msgs, ans, think = body.get("messages"), body.get("answer"), body.get("reasoning") or ""
+                if not isinstance(msgs, list) or not all(isinstance(m, dict) and isinstance(m.get("content"), (str, type(None))) for m in msgs) or not isinstance(ans, str) or not ans.strip() or not isinstance(think, str):
+                    raise ValueError("messages: the conversation before the answer; answer: its text; reasoning: its thinking part (optional)")
+                if len(ans) + len(think) > 400_000 or len(json.dumps([{k: v for k, v in m.items() if k != "images"} for m in msgs])) > 4_000_000:
                     raise ValueError("this conversation is too long to audit")
-                self.audit.start(self.runner, self.model_size(self.runner.settings.get("model")), [{"role": str(m.get("role") or "user"), "content": m.get("content") or ""} for m in msgs], ans,
-                                 body.get("mode") if body.get("mode") in ("auto", "beside", "pause") else "auto")
+                if any(m.get("images") and not good_images(m["images"]) for m in msgs):
+                    raise ValueError("images: base64 data URLs only")
+                self.audit.start(self.runner, self.model_size(self.runner.settings.get("model")),
+                                 [dict({"role": str(m.get("role") or "user"), "content": m.get("content") or ""}, **({"images": m["images"]} if m.get("images") else {})) for m in msgs], ans,
+                                 body.get("mode") if body.get("mode") in ("auto", "beside", "pause") else "auto", reasoning=think,
+                                 max_tokens=body.get("max_tokens") if isinstance(body.get("max_tokens"), int) and not isinstance(body.get("max_tokens"), bool) else None)
                 return self.send(200, self.audit.status())
             if self.path == "/api/audit/cancel":
                 self.audit.cancel()

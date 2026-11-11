@@ -310,6 +310,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "multigpu test failed" }
           python tests/commit_guard_test.py       # LAUNCHER-991: commit estimate, refusal, run-time guard (fake commit numbers)
           if ($LASTEXITCODE -ne 0) { throw "commit_guard test failed" }
+          python tests/hw_win_test.py             # R15-02: PDH GPU Engine / Adapter Memory, DXGI adapters and budget, commit: parsers on recorded names, the real readers must not raise
+          if ($LASTEXITCODE -ne 0) { throw "hw_win test failed" }
           python tests/autotune_test.py           # LAUNCHER-994: measured auto-tune (fake timings, a fake llama-server script)
           if ($LASTEXITCODE -ne 0) { throw "autotune test failed" }
           $env:REQUIRE_JINJA2 = "1"               # the rendering checks fail instead of skipping when jinja2 is missing

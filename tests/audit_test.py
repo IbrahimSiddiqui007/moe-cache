@@ -181,12 +181,23 @@ job4.cancel()
 t0 = time.time()
 while job4.state not in ("done", "error", "cancelled") and time.time() - t0 < 60: time.sleep(0.2)
 check(job4.state in ("cancelled", "done"), f"cancel ends the job ({job4.state})")
+# R15-01: a conversation with an image is no longer refused: the images become [image WxH] placeholders
+import base64, struct, zlib
+def _png(w, h):
+    def ch(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    return b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)) + ch(b"IDAT", zlib.compress(b"\0" * (h * (1 + 3 * w)))) + ch(b"IEND", b"")
+PNG_URL = "data:image/png;base64," + base64.b64encode(_png(37, 19)).decode()
+job5 = ui.AuditJob()
 try:
-    ui.AuditJob().start(main, 1024, [{"role": "user", "content": "x", "images": ["data:..."]}], "the")
-    ok = False
+    job5.start(main, 1024, [{"role": "user", "content": "x", "images": [PNG_URL]}], "the cat", max_tokens=100000)
+    ok = True
 except ValueError as e:
-    ok = "text only" in str(e)
-check(ok, "a conversation with an image is refused: the audit reads text only")
+    ok = False
+job5.cancel()
+t0 = time.time()
+while job5.state not in ("done", "error", "cancelled") and time.time() - t0 < 60: time.sleep(0.2)
+check(ok and job5.notes and "placeholder" in job5.notes[0] and "1 image " in job5.notes[0], f"a conversation with an image is accepted, the result says the images were placeholders ({job5.notes})")
+check(job5.max_tokens == ui.AUDIT_MAX_TOKENS_LIMIT, "a request may ask for more tokens, up to the limit")
 main.stop()
 
 # ---- the page ----
@@ -194,6 +205,65 @@ page = open(os.path.join(HERE, "ui", "index.html"), encoding="utf-8").read()
 check("data-audit=" in page and "/api/audit/start" in page and "/api/audit/plan" in page and "function buildMsgs(c, upto)" in page and "const msgs = buildMsgs(c, c.messages.length);" in page,
       "the page: the audit chip, the plan and start routes, one function builds the messages for a new answer and for an audit")
 check("askConfirm(" in page.split("async function startAudit")[1].split("async function pollAudit")[0], "the page asks before it starts anything (plan text and the in-page confirm bar, GUI-1037)")
+
+
+# ---- R15-01: images, the thinking part, the larger cut ----
+check(au.MAX_TOKENS == 16384 and ui.AUDIT_MAX_TOKENS == 16384, "the audit scores 16384 tokens (was 4096)")
+check(au.image_size(PNG_URL) == (37, 19), "image size from a PNG header")
+gif = "data:image/gif;base64," + base64.b64encode(b"GIF89a" + struct.pack("<HH", 640, 480) + b"\0" * 20).decode()
+check(au.image_size(gif) == (640, 480), "image size from a GIF header")
+jpeg = b"\xff\xd8" + b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\0" + b"\0" * 9 + b"\xff\xc0" + struct.pack(">H", 17) + b"\x08" + struct.pack(">HH", 768, 1024) + b"\x03" + b"\0" * 9
+check(au.image_size("data:image/jpeg;base64," + base64.b64encode(jpeg).decode()) == (1024, 768), "image size from a JPEG start-of-frame (after a JFIF segment)")
+webp = b"RIFF\0\0\0\0WEBPVP8X" + b"\0" * 8 + (299).to_bytes(3, "little") + (199).to_bytes(3, "little")
+check(au.image_size("data:image/webp;base64," + base64.b64encode(webp).decode()) == (300, 200), "image size from a WebP (VP8X) header")
+check(au.image_size("data:image/png;base64,AAAA") is None and au.image_size("nonsense") is None, "an unreadable image has no size, no exception")
+msgs_i, n_i = au.with_image_placeholders([{"role": "user", "content": "what is this", "images": [PNG_URL, "data:image/png;base64,AAAA"]}, {"role": "assistant", "content": "a cat"}])
+check(n_i == 2 and msgs_i[0]["content"] == "what is this\n[image 37x19] [image]" and "images" not in msgs_i[0] and msgs_i[1] == {"role": "assistant", "content": "a cat"}, f"images become placeholders in the text ({msgs_i[0]['content']!r})")
+check(au.with_image_placeholders([{"role": "user", "content": "", "images": [PNG_URL]}])[0][0]["content"] == "[image 37x19]", "an image-only message becomes just the placeholder")
+
+TPL = r"""
+import http.server, json
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        out = ""
+        for i, m in enumerate(body["messages"]):
+            out += "<|im_start|>" + m["role"] + "\n"
+            if m["role"] == "assistant" and m.get("reasoning_content") and MODE == "think":
+                out += "<think>\n" + m["reasoning_content"] + "\n</think>\n\n"
+            out += m["content"] + "<|im_end|>\n"
+        out += "<|im_start|>assistant\n"
+        b = json.dumps({"prompt": out}).encode()
+        self.send_response(200); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
+"""
+for mode in ("think", "nothink"):
+    g = {"MODE": mode}
+    exec(TPL, g)
+    sv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), g["H"])
+    threading.Thread(target=sv.serve_forever, daemon=True).start()
+    u2 = f"http://127.0.0.1:{sv.server_address[1]}"
+    conv = [{"role": "user", "content": "hi"}]
+    pr = au.render_prompt(u2, conv)
+    txt, how = au.answer_with_reasoning(u2, conv, pr, "Hello there", "The user says hi.", None)
+    if mode == "think":
+        check(txt == "<think>\nThe user says hi.\n</think>\n\nHello there" and how == "chat template", f"the thinking part is scored as the model's own template writes it ({txt!r})")
+    else:
+        check(txt.endswith("\n</think>\n\nHello there") and "The user says hi." in txt and how.startswith("reasoning +"), f"a template that drops the thinking part: the fall-back form says so ({how[:30]})")
+    check(au.answer_with_reasoning(u2, conv, pr, "Hello there", "", None) == ("Hello there", "answer only"), "no thinking part: the answer alone")
+    if mode == "think":
+        for word in ("assistant", "user", "think", "<|im_end|>"):
+            t2, how2 = au.answer_with_reasoning(u2, conv, pr, word, "I reason about it.", None)
+            check(t2 == "<think>\nI reason about it.\n</think>\n\n" + word and how2 == "chat template", f"an answer that is also a word of the template's closing tags is not cut at the wrong place ({word!r} -> {t2[-30:]!r})")
+    sv.shutdown()
+summ = ui.audit_summary({"n": 3, "same": 3, "same_pct": 100.0, "mean_logloss": 0.1, "unknown_p": 0, "truncated": False, "prompt_tokens": 5, "seconds": 1.0, "mismatches": [], "tokens": [
+    {"i": 0, "piece": "ab", "same": False, "exact_piece": "x", "exact_p": .5, "p": .1, "p_below": None}, {"i": 1, "piece": "cd", "same": True}, {"i": 2, "piece": "ef", "same": False, "exact_piece": "y", "exact_p": .5, "p": .1, "p_below": None}]},
+    "abcdef", content_offset=4)
+check(summ["ranges"] == [[0, 2, 2]] and summ["think_ranges"] == [[0, 2, 0]] and summ["content_offset"] == 4, f"ranges inside the answer are shifted to start at 0 ({summ['ranges']}, {summ['think_ranges']})")
+summ2 = ui.audit_summary({"n": 1, "same": 0, "same_pct": 0.0, "mean_logloss": None, "unknown_p": 0, "truncated": False, "prompt_tokens": 5, "seconds": 1.0, "mismatches": [0], "tokens": [
+    {"i": 0, "piece": "ab", "same": False, "exact_piece": "x", "exact_p": .5, "p": .1, "p_below": None}]}, "abcdef"[:2], content_offset=2)
+check(summ2["think_ranges"] == [[0, 2, 0]] and summ2["ranges"] == [], "a changed token inside the thinking part goes to think_ranges")
+check('reasoning: m.think || ""' in page and "else if (last0) out.push" in page and "data-audit=" in page, "the page sends the thinking part and offers the audit for answers that have one")
 
 print("audit_test:", "FAILED" if fails else "ok", f"({len(fails)} failed)" if fails else "")
 sys.exit(1 if fails else 0)

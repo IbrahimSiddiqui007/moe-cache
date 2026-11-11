@@ -175,6 +175,25 @@ rn.monitor_tick(1, None, False)       # nothing listens on port 1: /metrics fail
 pay = rn.monitor_payload(0, 0)
 check(pay["log"] and pay["log"][0][4] == "moe-cache: planning" and "plan" in pay and "totals" in pay and pay["samples"], f"Runner: the payload has log, plan, totals and a sample ({list(pay)})")
 check(rn.monitor_payload(1e12, 10 ** 9)["log"] == [] and rn.monitor_payload(1e12, 10 ** 9)["samples"] == [], "Runner: nothing newer than what the page has")
+# R15-01: the payload's schema, request ids, the delta parameters and the reset flag
+check(isinstance(pay["schema"], int) and not isinstance(pay["schema"], bool) and pay["schema"] == mm.MONITOR_SCHEMA == 1, f"the payload carries an integer schema ({pay.get('schema')!r})")
+mr = mm.Monitor()
+for k in range(3):
+    base = 10 * k
+    mr.add_line(base + 1, 100.0 + base, "prompt eval time =     400.00 ms /   812 tokens (    0.49 ms per token,  2030.00 tokens per second)")
+    mr.add_line(base + 2, 101.0 + base, "       eval time =    2000.00 ms /    40 tokens (   50.00 ms per token,    20.00 tokens per second)")
+ids = [r["id"] for r in mr.payload()["requests"]]
+check(ids == [1, 2, 3], f"every finished request has the next id ({ids})")
+check([r["id"] for r in mr.payload(req_after=1)["requests"]] == [2, 3] and mr.payload(req_after=3)["requests"] == [] and len(mr.payload(req_after=0)["requests"]) == 3, "req=<id> returns only the requests after that id")
+check(len(mr.payload()["requests"]) == 3, "without req the last requests as before")
+mr.layers["hits"], mr.layers["misses"] = [3, 1], [1, 1]
+mr.layer_cols.append({"t": time.time(), "col": [0.5, 0.5]})
+full, slim = mr.payload(), mr.payload(layers=False)
+check(full["layer_total"] and full["layers_included"] is True and slim["layer_total"] == [] and slim["layer_cols"] == [] and slim["layers_included"] is False, "layers=0 leaves out the per-layer columns and totals")
+check(set(full) - set(slim) == set() and set(slim) == set(full), "the same keys either way (additive schema: a client never has to test for a missing key)")
+check(mr.payload(since=mr.t0 + 1000)["reset"] is False and mr.payload(since=mr.t0 - 50)["reset"] is True and mr.payload()["reset"] is False, "reset: true when the client's 'since' is older than this Monitor (the server was restarted)")
+check(mr.payload(log_seq=10 ** 6)["reset"] is True and mr.payload(log_seq=3)["reset"] is False, "reset: also when the client's log position is ahead of the log")
+check(rn.monitor_payload(0, 0, req_after=0, layers=False)["layers_included"] is False, "Runner.monitor_payload passes the delta parameters on")
 rn.reset({})
 check(len(rn.mon.log) == 0, "a new run starts a new Monitor")
 

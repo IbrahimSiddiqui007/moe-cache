@@ -41,9 +41,10 @@ def render_prompt(url, messages, key=None):
     return r["prompt"]
 
 
-def tokenize(url, text, key=None, special=False):
-    """[{id, piece}] for `text`; special=True for the prompt (BOS and the template's special tokens), False for the answer."""
-    r = _post(url, "/tokenize", {"content": text, "add_special": special, "parse_special": special, "with_pieces": True}, key, 120)
+def tokenize(url, text, key=None, special=False, parse_special=None):
+    """[{id, piece}] for `text`; special=True for the prompt (BOS and the template's special tokens), False for the answer. parse_special=True on an answer that carries the
+    template's own tags (the thinking part: '</think>' is one special token, and spelled out as text it would never match the model's token)."""
+    r = _post(url, "/tokenize", {"content": text, "add_special": special, "parse_special": special if parse_special is None else parse_special, "with_pieces": True}, key, 120)
     toks = r.get("tokens")
     if not isinstance(toks, list):
         raise AuditError("/tokenize gave no tokens")
@@ -56,14 +57,17 @@ def tokenize(url, text, key=None, special=False):
     return out
 
 
-def score(url, prompt_text, answer_text, key=None, top=20, max_tokens=4096, progress=None, cancel=None):
+MAX_TOKENS = 16384        # R15-01: was 4096 (a long answer was cut and the page said "truncated"); one position is one cached /completion call, so the cost is the answer's own length
+
+
+def score(url, prompt_text, answer_text, key=None, top=20, max_tokens=MAX_TOKENS, progress=None, cancel=None, parse_special=None):
     """Teacher-force `answer_text` after `prompt_text` on the exact-mode server at `url`.
     Returns {n, truncated, prompt_tokens, same, same_pct, mean_logloss, unknown_p, tokens: [...], mismatches: [positions], seconds}.
     tokens[i] = {i, id, piece, exact_id, exact_piece, exact_p, p, p_below, same}; p is the exact probability of the answer's token when it is among the top N
     (else None and p_below = the N-th probability: the token is less likely than that). progress(done, total) is called after each position; cancel() -> True stops."""
     t0 = time.time()
     p_ids = [t["id"] for t in tokenize(url, prompt_text, key, special=True)]
-    a = tokenize(url, answer_text, key, special=False)
+    a = tokenize(url, answer_text, key, special=False, parse_special=parse_special)
     if not a:
         raise AuditError("the answer has no tokens")
     truncated = len(a) > max_tokens
@@ -98,6 +102,88 @@ def score(url, prompt_text, answer_text, key=None, top=20, max_tokens=4096, prog
     n = len(rows)
     return {"n": n, "truncated": truncated, "prompt_tokens": len(p_ids), "same": same, "same_pct": 100.0 * same / n, "mean_logloss": (ll_sum / ll_n) if ll_n else None,
             "unknown_p": unknown, "tokens": rows, "mismatches": [r["i"] for r in rows if not r["same"]], "seconds": round(time.time() - t0, 1), "top": top}
+
+
+# ---- R15-01: what the audit may be given besides plain text ----
+
+def image_size(data_url):
+    """(width, height) of a base64 image data URL (png, gif, jpeg, webp) from its header bytes, or None. No image library."""
+    import base64
+    try:
+        head = data_url.split(",", 1)[1][:87384]                    # the first 64 KiB of the file hold every header, a JPEG's start-of-frame included, unless a huge EXIF block comes first
+        raw = base64.b64decode(head[:len(head) // 4 * 4], validate=False)
+    except Exception:
+        return None
+    try:
+        if raw[:8] == b"\x89PNG\r\n\x1a\n" and raw[12:16] == b"IHDR":
+            return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+        if raw[:6] in (b"GIF87a", b"GIF89a"):
+            return int.from_bytes(raw[6:8], "little"), int.from_bytes(raw[8:10], "little")
+        if raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+            kind = raw[12:16]
+            if kind == b"VP8X":
+                return 1 + int.from_bytes(raw[24:27], "little"), 1 + int.from_bytes(raw[27:30], "little")
+            if kind == b"VP8 ":
+                return int.from_bytes(raw[26:28], "little") & 0x3FFF, int.from_bytes(raw[28:30], "little") & 0x3FFF
+            if kind == b"VP8L":
+                b = raw[21:25]
+                bits = int.from_bytes(b, "little")
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+        if raw[:2] == b"\xff\xd8":                                # JPEG: walk the segments to the first start-of-frame
+            i = 2
+            while i + 9 < len(raw):
+                if raw[i] != 0xFF:
+                    i += 1
+                    continue
+                m = raw[i + 1]
+                if m in (0xD8, 0x01) or 0xD0 <= m <= 0xD7:
+                    i += 2
+                    continue
+                n = int.from_bytes(raw[i + 2:i + 4], "big")
+                if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+                    return int.from_bytes(raw[i + 7:i + 9], "big"), int.from_bytes(raw[i + 5:i + 7], "big")
+                i += 2 + n
+    except Exception:
+        return None
+    return None
+
+
+def with_image_placeholders(messages):
+    """(messages without the 'images' key, number of images shown as placeholders): every image of a message becomes '[image WxH]' in its text ('[image]' when the size cannot be
+    read). The audit then re-scores the answer given those placeholders, not given the pictures: the exact server is text-only here (said in the result)."""
+    out, n = [], 0
+    for m in messages:
+        imgs = m.get("images") if isinstance(m, dict) else None
+        m2 = {k: v for k, v in m.items() if k != "images"}
+        if imgs:
+            marks = []
+            for u in imgs:
+                wh = image_size(u) if isinstance(u, str) else None
+                marks.append(f"[image {wh[0]}x{wh[1]}]" if wh else "[image]")
+            n += len(marks)
+            m2["content"] = ((m2.get("content") or "") + ("\n" if m2.get("content") else "") + " ".join(marks))
+        out.append(m2)
+    return out, n
+
+
+def answer_with_reasoning(url, messages, prompt, content, reasoning, key=None):
+    """The text to teacher-force when the answer has a thinking part (`reasoning_content`): what the model's own chat template writes for an assistant turn with the thinking part
+    and the answer, taken from /apply-template (so '<think>' / '</think>' and the newlines are the template's, not ours). Returns (text, how). Falls back to
+    reasoning + '</think>' + answer when the template does not render the thinking part."""
+    if not reasoning:
+        return content, "answer only"
+    try:
+        turn = lambda c: list(messages) + [{"role": "assistant", "content": c, "reasoning_content": reasoning}]
+        full = render_prompt(url, turn(content), key)
+        mark = "\u0001ANSWER\u0001"
+        probe = render_prompt(url, turn(mark), key)             # the same turn with a marker for the answer: where the answer starts does not depend on what it says
+        if full.startswith(prompt) and probe.startswith(prompt) and reasoning.strip()[:40] in full[len(prompt):] and mark in probe:
+            start = probe.index(mark)
+            if full[start:start + len(content)] == content:
+                return full[len(prompt):start + len(content)], "chat template"
+    except Exception:
+        pass
+    return f"{reasoning.rstrip()}\n</think>\n\n{content}", "reasoning + </think> + answer (the chat template did not render the thinking part)"
 
 
 def char_ranges(tokens, answer_text):
