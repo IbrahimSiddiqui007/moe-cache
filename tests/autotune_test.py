@@ -282,6 +282,13 @@ try:
     cmd, env, info, out = stage(machine=M(tmp, free_mib=7600))
     check(info["state"] == "tuned" and len(calls) > n and _json.load(open(_f))["tuned_at"] >= _time.strftime("%Y-%m-%d"), "a real start measures again after the expiry and stores a fresh result")
     check(at.PICK_MAX_AGE_DAYS == 30 and at.pick_age_days({}) is None and at.pick_age_days({"tuned_at": "garbage"}) is None, "pick_age_days: unreadable date -> None (such a pick does not expire)")
+    # a machine whose GPU memory cannot be read at all: tuned and replayed consistently (the pick is applied at every start, nothing is held back)
+    for f in os.listdir(_dir):
+        os.unlink(os.path.join(_dir, f))
+    cmd, env, info, out = stage(machine=_NoVram(tmp))
+    check(info["state"] == "tuned" and at.flag_value(cmd, "--n-cpu-moe") == "18", "GPU memory not readable: first start measures and applies the pick")
+    cmd, env, info, out = stage(probe=False, machine=_NoVram(tmp))
+    check(info["state"] == "cached" and at.flag_value(cmd, "--n-cpu-moe") == "18" and not info.get("held_back"), "...and the next start applies the stored pick too (nothing to compare, nothing held back)")
 finally:
     mc.CACHE_DIR, mc.port_busy = saved
 
@@ -658,6 +665,8 @@ e, note = at.replay_edits(BASE_CMD, st, None)
 check(e == ram and note and "cannot be compared" in note, "replay: no GPU reading now: the GPU part is held back (cannot be checked)")
 e, note = at.replay_edits(BASE_CMD, {k: v for k, v in st.items() if k != "free_vram_mib"}, 2.0 * 2**30)
 check(e == ram and note, "replay: a stored pick without the measured figure: the GPU part is held back (the launcher measures such a result again at the next real start)")
+e, note = at.replay_edits(BASE_CMD, {k: v for k, v in st.items() if k != "free_vram_mib"}, None)
+check(e == [more] + ram and note is None, "replay: no reading when it was measured and none now (GPU memory not readable on this machine): applied, as at the first start")
 less = {"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": 2}
 e, note = at.replay_edits(BASE_CMD, dict(st, rows=[{"id": "ncmoe-2", "edits": [less]}]), 2.0 * 2**30)
 check(e == [less] and note is None, "replay: a pick that uses LESS GPU memory is never held back")
