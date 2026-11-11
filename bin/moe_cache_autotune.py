@@ -361,6 +361,42 @@ def row_line(r):
     return f"{r['id']:<9} {r['label']}: {r['status']}" + (f" ({str(r['error'])[:120]})" if r.get("error") else "")
 
 
+PICK_MAX_AGE_DAYS = 30      # a stored pick was measured on one day's drivers, llama.cpp build and desktop load: after 30 days it is measured again (LAUNCHER-994 review)
+
+
+def pick_age_days(result, now=None):
+    """Days since the stored result was tuned ("tuned_at" is local time, "%Y-%m-%d %H:%M"); None when it has no readable date."""
+    import time as _t
+    try:
+        t = _t.mktime(_t.strptime(result.get("tuned_at") or "", "%Y-%m-%d %H:%M"))
+    except (ValueError, OverflowError, TypeError):
+        return None
+    return ((now if now is not None else _t.time()) - t) / 86400.0
+
+
+def edits_fit_free_vram(stored, free_now, slack_mib=512):
+    """The stored pick may add GPU use only when the free GPU memory now is at least what it was when the pick was measured (minus slack_mib); False when either figure is missing."""
+    then = stored.get("free_vram_mib")
+    if not then or not free_now:
+        return False
+    return free_now / 2**20 >= then - slack_mib
+
+
+def adds_gpu_use(cmd, edits):
+    """True when the pick puts more on the GPU than the plan it is applied to: expert layers moved from the CPU (--n-cpu-moe lower) or a bigger micro-batch (-ub: a bigger
+    compute buffer). Such a pick was measured with the free GPU memory of that day."""
+    for e in edits or []:
+        if e.get("flag") == "--n-cpu-moe" and int(e.get("delta", 0) or 0) < 0:
+            return True
+        if e.get("flag") in ("-ub", "--ubatch-size"):
+            try:
+                if int(e.get("value")) > int(flag_value(cmd, "-ub", "--ubatch-size") or 0):
+                    return True
+            except (TypeError, ValueError):
+                pass
+    return False
+
+
 def pick_edits(result):
     """The stored pick's edits ([] for the plan as it is)."""
     for r in result.get("rows", []):

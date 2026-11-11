@@ -108,6 +108,11 @@ with tempfile.TemporaryDirectory() as tmp:
     check(s8 and s4 and sx and s4["kv_gib"] < sx["kv_gib"] < s8["kv_gib"] and (s4["n_off"] or 0) <= (sx["n_off"] or 0) <= (s8["n_off"] or 0), "layers to RAM are sized with the KV type chosen (q4_0 <= mix <= q8_0 layers)")
     check(gp.kv_elems(("bf16", "q4_0"))[0] == 2.0 and gp.kv_elems(("q5_0", "q8_0"))[0] == 22 / 32 and gp.kv_elems(("weird", "q4_0"))[0] == 2.0, "planner: other -ctk / -ctv types are sized by their own bytes, an unknown one as f16 (errs high; bf16 used to count as q8_0)")
     check([mc.kv_fit_index(*t) for t in (("f16",), ("q8_0",), ("q8_0", "q8_0"), ("q8_0", "q4_0"), ("q4_0", "q4_0"), ("bf16", "q4_0"))] == [0, 1, 1, 2, 3, 0], "kv_fit_index: which ladder entry sizes the KV types in the command")
+    kq = mc.kv_quantized
+    check(kq(["-ctk", "q8_0", "-ctv", "q8_0"]) and kq(["-ctk", "q4_0", "-ctv", "q4_0"]) and kq(["-ctk", "q8_0", "-ctv", "q4_0"]) and not kq(["-ctk", "f16", "-ctv", "f16"]) and not kq(["-c", "1"]),
+          "kv_quantized: q8_0, q4_0 and the mix count as a quantized KV cache, f16 and no flag do not (the auto-tune path compared -ctk with 'q8_0' only: q4_0 read as f16)")
+    _src = open(os.path.join(HERE, "bin", "moe_cache.py"), encoding="utf-8").read()
+    check('"--cache-type-k") == "q8_0"' not in _src, "no caller decides 'KV quantized' with == \"q8_0\" any more")
     kt = mc.kv_plan_type
     check(kt(["-ctk", "q4_0", "-ctv", "q4_0"], True) == "q4_0" and kt(["-ctk", "q8_0"], False) == ("q8_0", "f16") and kt([], True) is True and kt([], False) is False
           and kt(["-ctk", "q8_0", "-ctv", "q4_0"], False) == ("q8_0", "q4_0") and kt(["-ctk", "q8_0", "-ctv", "q8_0"], False) is True and kt(["-ctk", "f16", "-ctv", "f16"], True) is False,

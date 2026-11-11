@@ -240,6 +240,44 @@ try:
     check(info["state"] == "too_slow" and not calls and any("not tried again" in l for l in out), "...and it is not retried at every start")
     cmd, env, info, out = stage(runner=fake_runner, retune=True)
     check(info["state"] == "tuned" and calls, "--retune tries it again")
+    # LAUNCHER-994 review: a pick that puts more on the GPU (--n-cpu-moe -2) is applied only with as much free GPU memory as on the day it was measured; picks expire after 30 days
+    import json as _json, time as _time
+    _dir = os.path.join(mc.CACHE_DIR, "autotune")
+    for f in os.listdir(_dir):
+        os.unlink(os.path.join(_dir, f))
+    calls.clear()
+    cmd, env, info, out = stage(machine=M(tmp, free_mib=7600))
+    check(info["state"] == "tuned" and at.flag_value(cmd, "--n-cpu-moe") == "18", "room test setup: tuned with 7600 MiB free, pick ncmoe-2")
+    _f = os.path.join(_dir, [f for f in os.listdir(_dir) if f.endswith(".json")][0])
+    _rec = _json.load(open(_f))
+    check(_rec.get("free_vram_mib") == 7600, f"the stored result records the free GPU memory it was measured with ({_rec.get('free_vram_mib')} MiB)")
+    cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7600))
+    check(info["state"] == "cached" and at.flag_value(cmd, "--n-cpu-moe") == "18", "same free GPU memory: the pick is applied")
+    cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7300))
+    check(info["state"] == "cached" and at.flag_value(cmd, "--n-cpu-moe") == "18", "300 MiB less (inside the 512 MiB slack): still applied")
+    cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=5000))
+    check(info["state"] == "no_room" and cmd == BASE_CMD and any("puts more on the GPU" in l and "4.9 GiB" in l and "7.4 GiB" in l for l in out) and not info.get("changed"),
+          f"the desktop took 2.6 GiB since: the pick is NOT applied, the plan as it is runs, the line gives both figures ({out})")
+    class _NoVram(M):
+        def free_vram_bytes(self): return None
+    cmd, env, info, out = stage(probe=False, machine=_NoVram(tmp))
+    check(info["state"] == "no_room" and cmd == BASE_CMD, "free GPU memory not readable now: a pick that adds GPU use is not applied")
+    _old = dict(_rec); _old.pop("free_vram_mib"); _json.dump(_old, open(_f, "w"))
+    cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7600))
+    check(info["state"] == "no_room" and cmd == BASE_CMD and any("cannot be compared" in l for l in out), "a result stored without the free-memory figure cannot be compared: not applied, says so")
+    # expiry
+    def _age(days):
+        r = dict(_rec); r["tuned_at"] = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(_time.time() - days * 86400)); _json.dump(r, open(_f, "w"))
+    _age(29)
+    cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7600))
+    check(info["state"] == "cached", "a pick 29 days old is used")
+    _age(45)
+    cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7600))
+    check(info["state"] == "pending" and cmd == BASE_CMD and any("45 days old" in l and "expire after 30 days" in l for l in out), f"a pick 45 days old is not used (plan unchanged); the line says why ({out})")
+    n = len(calls)
+    cmd, env, info, out = stage(machine=M(tmp, free_mib=7600))
+    check(info["state"] == "tuned" and len(calls) > n and _json.load(open(_f))["tuned_at"] >= _time.strftime("%Y-%m-%d"), "a real start measures again after the expiry and stores a fresh result")
+    check(at.PICK_MAX_AGE_DAYS == 30 and at.pick_age_days({}) is None and at.pick_age_days({"tuned_at": "garbage"}) is None, "pick_age_days: unreadable date -> None (such a pick does not expire)")
 finally:
     mc.CACHE_DIR, mc.port_busy = saved
 

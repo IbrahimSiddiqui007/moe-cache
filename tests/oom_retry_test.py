@@ -61,6 +61,15 @@ check(rc == 1 and starts == 1, f"no oom_retry given (user fixed the plan): fails
 check(bool(mc.GGML_ABORT_RE.search("D:/a/llama.cpp/llama.cpp/ggml/src\\ggml-impl.h:330: fatal error")) and bool(mc.GGML_ABORT_RE.search("/x/ggml/src/ggml-impl.h:301: fatal error")),
       "recognised: the ggml-impl.h fatal error line (Windows and Linux paths)")
 check(not mc.GGML_ABORT_RE.search("ggml.c:1234: GGML_ASSERT(x) failed") and not mc.GGML_ABORT_RE.search("srv: fatal error in the web ui"), "not recognised: other asserts and unrelated text")
+# the real command rewrite (kv_retry_command is what the launcher's kv_retry closure calls): whatever KV types the launcher chose come out, the user's own never
+_base = ["llama-server", "-m", "m.gguf", "-c", "65536"]
+for _types, _what in ((("q8_0", "q8_0"), "q8_0/q8_0"), (("q8_0", "q4_0"), "K q8_0 / V q4_0 (the dense KV ladder)"), (("q4_0", "q4_0"), "q4_0/q4_0 (the dense KV ladder)")):
+    _cmd = _base + ["-ctk", _types[0], "-ctv", _types[1], "-fa", "on"]
+    _new = mc.kv_retry_command(_cmd, True)
+    check(_new == _base + ["-fa", "on"], f"f16 retry: {_what} is removed completely, the rest of the command stays ({_new})")
+check(mc.kv_retry_command(_base + ["-ctk", "q4_0", "-ctv", "q4_0"], False) is None, "f16 retry: -ctk / -ctv from the user (kv_q8 False) are never touched, no retry")
+check(mc.kv_retry_command(_base, True) is None, "f16 retry: nothing to remove, no retry")
+check(mc.kv_retry_command(_base + ["--cache-type-k", "q4_0", "--cache-type-v", "q4_0"], True) == _base, "f16 retry: the long option names are removed too")
 def run_kv(mode, retry=True):
     mark = os.path.join(TMP, f"kv_{mode}_{retry}")
     calls = []

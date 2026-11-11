@@ -1191,6 +1191,13 @@ check(g == {"name": "AMD Radeon RX 7900 XT", "free": 18000 * 2**20, "total": 20.
 mc.pick_gpu = lambda listing: ("Vulkan0", "AMD Radeon(TM) Graphics", 16000)
 g = ui.windows_gpu_once("llama-server")
 check(g["integrated"] and g["total"] is None and "integrated" in g["name"], "integrated GPU: marked, no dedicated total")
+# LAUNCHER-991 review: the adapter name llama.cpp lists need not equal the registry's (driver suffix, no (TM)): the iGPU must still be recognised
+mc.pick_gpu = lambda listing: ("Vulkan0", "AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)", 16000)
+g = ui.windows_gpu_once("llama-server")
+check(g["integrated"] and g["total"] is None, f"integrated GPU listed under a different name than the registry's ('AMD Radeon Graphics (RADV ...)' vs 'AMD Radeon(TM) Graphics'): still integrated ({g['integrated']})")
+mc.pick_gpu = lambda listing: ("Vulkan1", "AMD Radeon RX 7900 XT (RADV NAVI31)", 18000)
+g = ui.windows_gpu_once("llama-server")
+check(not g["integrated"] and g["total"] == 20.0 * 2**30, "a discrete card listed with a driver suffix: its dedicated total is found")
 mc.pick_gpu, mc.list_devices, mc.win_dedicated_vram = saved
 ui.vram_now, ui._GPU["gpu"] = (lambda: None), {"name": "AMD Radeon RX 7900 XT", "free": 15 * 2**30, "total": 20.0 * 2**30, "integrated": False}
 si = ui.system_info()
