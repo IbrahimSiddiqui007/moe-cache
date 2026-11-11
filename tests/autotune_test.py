@@ -716,5 +716,54 @@ with tempfile.TemporaryDirectory() as tmp_w:
     check(seen_vram[2][1] == "9", f"...and the user's own --vram 9 is passed as given ({seen_vram[2:]})")
 check("vram_user=vram_user" in open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "moe_cache.py"), encoding="utf-8").read(), "the launcher passes vram_user to autotune_stage")
 
+# --- pre-tag (Granite 1B, PC 2026-11-11): the plan's first probe aborts at load with the known ggml-impl.h q8_0 KV abort ---
+tmp4 = tempfile.mkdtemp(prefix="autotune-d-")
+saved4 = (mc.CACHE_DIR, mc.port_busy)
+mc.CACHE_DIR = os.path.join(tmp4, "cache"); mc.port_busy = lambda port: False
+def stage4(runner, exact=False, argv=("--dry",), fits=None):
+    a = types.SimpleNamespace(exact=exact, stock=False, retune=False, agent=False, project=None, ub="auto", n_cpu_moe=None, hybrid=False, port=8080, autotune_probe=True)
+    out = []
+    r = mc.autotune_stage(a, list(argv), list(BASE_CMD), list(BASE_ENV), [], model, 65536, ls, M(tmp), "plugin", 40, say_fn=lambda t, err=False: out.append(t), runner=runner, fits=fits)
+    return r + (out,)
+try:
+    seen4 = []
+    def abort_on_q8(cmd, env, left, n):
+        seen4.append(cmd)
+        if at.flag_value(cmd, "-ctk") == "q8_0":
+            return dict(ok=False, error="llama-server stopped while loading (exit 3221226505)", kv_abort=True)
+        return fake_runner(cmd, env, left, n)
+    cmd, env, info, out = stage4(abort_on_q8)
+    check(info["state"] == "tuned" and len(seen4) >= 3 and at.flag_value(seen4[0], "-ctk") == "q8_0" and at.flag_value(seen4[1], "-ctk") is None and at.flag_value(seen4[1], "-ctv") is None,
+          f"load abort with q8_0 KV: the first probe is repeated once with f16 KV and the tune goes on ({info['state']}, {len(seen4)} probes)")
+    check(all(at.flag_value(c, "-ctk") is None for c in seen4[1:]) and any("f16 KV cache" in l and "K q8_0 / V q8_0" in l for l in out), f"...the later plans are measured with f16 KV too, and one line says so ({out[:3]})")
+    check(at.flag_value(cmd, "-ctk") == "q8_0", "...the plan handed on keeps the launcher's own KV types (the start's own retry decides at load time)")
+    # not the known abort (an OOM, a bad flag): no retry, and the stored text does not blame a slow load
+    shutil.rmtree(os.path.join(mc.CACHE_DIR, "autotune"), ignore_errors=True)
+    seen4.clear()
+    crash = lambda cmd, env, left, n: (seen4.append(cmd), dict(ok=False, error="llama-server stopped while loading (exit 3221226505)"))[1]
+    cmd, env, info, out = stage4(crash)
+    check(len(seen4) == 1 and info["state"] == "too_slow" and "takes longer than the budget" not in info["why"] and "stopped while loading" in info["why"],
+          f"a crash that is not the known abort: one probe, no f16 retry, the stored text names the crash and does not blame a slow load ({info['why'][:120]})")
+    # the user's own KV type is never changed
+    shutil.rmtree(os.path.join(mc.CACHE_DIR, "autotune"), ignore_errors=True)
+    seen4.clear()
+    cmd, env, info, out = stage4(abort_on_q8, argv=("--", "-ctk", "q8_0"))
+    check(all(at.flag_value(c, "-ctk") == "q8_0" for c in seen4), f"-ctk given by the user: no probe drops it ({len(seen4)} probes)")
+    # the commit check refuses the f16 plan: no retry
+    shutil.rmtree(os.path.join(mc.CACHE_DIR, "autotune"), ignore_errors=True)
+    seen4.clear()
+    stage4(abort_on_q8, fits=lambda c, e: (at.flag_value(c, "-ctk") == "q8_0", "f16 KV would not fit the commit"))
+    check(all(at.flag_value(c, "-ctk") == "q8_0" for c in seen4), "the f16 retry must pass the commit check too: refused -> not loaded")
+    # the real probe keeps stderr and flags the abort (a fake llama-server that prints the abort line and exits)
+    fake = os.path.join(tmp4, "fake_server.py")
+    open(fake, "w").write("import sys\nsys.stderr.write('D:/a/llama.cpp/ggml/src\\\\ggml-impl.h:337: fatal error\\n')\nsys.exit(3)\n")
+    r = mc._autotune_probe([sys.executable, fake], dict(os.environ), 20, 8, {})
+    check(not r["ok"] and r.get("kv_abort") is True, f"_autotune_probe recognises the ggml-impl.h abort in the server's stderr ({r})")
+    open(fake, "w").write("import sys\nsys.stderr.write('out of memory\\n')\nsys.exit(3)\n")
+    r = mc._autotune_probe([sys.executable, fake], dict(os.environ), 20, 8, {})
+    check(not r["ok"] and not r.get("kv_abort"), f"...and does not flag another exit ({r})")
+finally:
+    mc.CACHE_DIR, mc.port_busy = saved4
+
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)

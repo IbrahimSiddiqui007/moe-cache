@@ -328,8 +328,12 @@ def tune(cands, runner, agent=False, budget_s=BUDGET_S, clock=time.monotonic, sa
     res = {"rows": rows, "total_s": round(total, 1), "budget_s": budget_s, "agent": agent, "prompt_tokens": PROMPT_TOKENS, "decode_tokens": DECODE_TOKENS,
            "tuned_at": time.strftime("%Y-%m-%d %H:%M"), "picked": "C0", "changed": False}
     if not base or base["status"] != "measured":
-        res.update(state="too_slow", why=f"the plan as it is could not be measured in {budget_s:.0f} s ({(base or {}).get('error') or 'no result'}); nothing was changed. "
-                                         "A model that takes longer than the budget to load is not tuned automatically; --retune tries again")
+        err = (base or {}).get("error") or "no result"
+        if "stopped while loading" in err:       # llama-server crashed: slow loading is not the reason (the Granite 1B abort showed this text for a 6 s crash)
+            res.update(state="too_slow", why=f"the plan as it is could not be measured: {err}; nothing was changed. The server start retries on its own where it can; --retune tries the measuring again")
+        else:
+            res.update(state="too_slow", why=f"the plan as it is could not be measured in {budget_s:.0f} s ({err}); nothing was changed. "
+                                             "A model that takes longer than the budget to load is not tuned automatically; --retune tries again")
         return res
     again = next((r for r in rows if r["id"] == "C0b" and r["status"] == "measured"), None)
     noise = ""

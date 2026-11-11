@@ -25,7 +25,7 @@
 
 `moe_cache.py server --help` (and so on) lists the options. The bash scripts bin/moe-cache-server, -check, -learn and -project call this file.
 """
-import argparse, glob, json, math, os, re, shutil, signal, socket, subprocess, sys, threading, time, urllib.error, urllib.parse, urllib.request
+import argparse, glob, json, math, os, re, shutil, signal, socket, subprocess, sys, tempfile, threading, time, urllib.error, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))) if os.path.dirname(os.path.abspath(__file__)) not in sys.path else None   # tests load this file by path
 from moe_cache_wintool import win_tool  # noqa: E402  (bin/: Windows helpers by full System32 path, AUD-034)
@@ -3886,12 +3886,14 @@ def _autotune_probe(cmd, env, left_s, decode_n, holder):
         sk.bind(("127.0.0.1", 0)); port = sk.getsockname()[1]
     cmd = at.set_flag(at.set_flag(list(cmd), "--port", port), "--host", "127.0.0.1")
     key = dict(env).get("LLAMA_API_KEY")
-    kw = {"env": env, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+    errf = tempfile.TemporaryFile()       # stderr is kept (never shown) to recognise llama.cpp's known load abort (kv_abort below); closed in the finally
+    kw = {"env": env, "stdout": subprocess.DEVNULL, "stderr": errf}
     if sys.platform.startswith("linux"):
         kw["preexec_fn"] = _die_with_parent_linux
     try:
         p = subprocess.Popen(cmd, **kw)
     except OSError as e:
+        errf.close()
         return {"ok": False, "error": f"could not start llama-server: {e}"}
     try:
         if WINDOWS:
@@ -3906,7 +3908,14 @@ def _autotune_probe(cmd, env, left_s, decode_n, holder):
         holder["guard"] = guard
         while not healthy(port, key):
             if p.poll() is not None:
-                return {"ok": False, "error": f"llama-server stopped while loading (exit {p.returncode})" + (": " + str(guard.stopped) if guard is not None and guard.stopped else "")}
+                r = {"ok": False, "error": f"llama-server stopped while loading (exit {p.returncode})" + (": " + str(guard.stopped) if guard is not None and guard.stopped else "")}
+                try:
+                    errf.seek(0, 2); errf.seek(max(0, errf.tell() - 65536))
+                    if GGML_ABORT_RE.search(errf.read().decode("utf-8", "replace")):
+                        r["kv_abort"] = True          # the known abort (Granite 1B with a q8_0 KV cache): the caller may measure the same plan with f16 KV
+                except Exception:
+                    pass
+                return r
             if left() <= 0:
                 return {"ok": False, "error": "the load did not finish in the time left"}
             time.sleep(0.5)
@@ -3937,6 +3946,10 @@ def _autotune_probe(cmd, env, left_s, decode_n, holder):
                 p.kill(); p.wait(timeout=10)
             except Exception:
                 pass
+        try:
+            errf.close()
+        except Exception:
+            pass
 
 
 def commit_fits(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes=0):
@@ -4119,9 +4132,20 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
         say_fn(f"moe-cache: auto-tune: --retune: measuring again, trying {len(cands)} plans for at most {at.BUDGET_S:.0f} s (the stored result for this model, machine and context is replaced)")
     else:
         say_fn(f"moe-cache: auto-tune: first start for this model, machine and context: trying {len(cands)} plans for at most {at.BUDGET_S:.0f} s (stored afterwards; --retune measures again)")
+    kv_f16 = [False]         # after llama.cpp's known load abort with the launcher's q8_0 KV: this and the later plans are measured with f16 KV (the start's own retry ends there too)
     def run(c, left_s, n):
         c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
-        return (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
+        if kv_f16[0]:
+            c_cmd = kv_retry_cmd(c_cmd)[0]
+        t_start = time.monotonic()
+        r = (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
+        if not r.get("ok") and r.get("kv_abort") and not kv_f16[0] and "kv" not in locked:       # a KV type the user gave (or --exact) is never changed
+            new_cmd, was = kv_retry_cmd(c_cmd)
+            if was and (fits is None or fits(new_cmd, c_env)[0]):
+                say_fn(f"moe-cache: auto-tune: llama.cpp aborted at load with the {was} KV cache (known: stock llama-server on Granite 1B): the plans are measured with the f16 KV cache from here, like the start's own retry")
+                kv_f16[0] = True
+                r = (runner or autotune_probe)(new_cmd, dict(os.environ, **dict(c_env + key_env)), left_s - (time.monotonic() - t_start), n)
+        return r
     res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t), progress=lambda t: say_fn("moe-cache: auto-tune: " + t))
     if free_vram:
         res["free_vram_mib"] = int(free_vram / 2**20)       # what a pick that puts more on the GPU is later compared with (apply_stored)
