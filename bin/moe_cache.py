@@ -3015,11 +3015,22 @@ def commit_check_on(a, machine):
     return bool(machine.windows and not a.no_commit_check and os.environ.get("MOE_CACHE_COMMIT_CHECK") != "0")
 
 
+_GPU_PROC = [0.0, ""]
+GPU_PROC_TTL_S = 15.0       # the control page plans every model of its list: one PowerShell read serves them all (a plan only describes; a start a few seconds later sees the same desktop)
+
+
 def win_gpu_process_text():
-    """LAUNCHER-1133: every process's dedicated GPU memory now (Windows counters, one PowerShell read); '' when it fails. Its own function so the recorded launch-plan tests can replace it."""
+    """LAUNCHER-1133: every process's dedicated GPU memory now (Windows counters, one PowerShell read, kept GPU_PROC_TTL_S seconds); '' when it fails (not kept). Its own function so the
+    recorded launch-plan tests can replace it."""
+    now = time.monotonic()
+    if _GPU_PROC[1] and now - _GPU_PROC[0] < GPU_PROC_TTL_S:
+        return _GPU_PROC[1]
     sys.path.insert(0, os.path.join(HERE, "planner"))
     from gguf_plan import counters_text
-    return counters_text()
+    text = counters_text()
+    if text:
+        _GPU_PROC[0], _GPU_PROC[1] = now, text
+    return text
 
 
 def real_room_stage(a, g, machine):

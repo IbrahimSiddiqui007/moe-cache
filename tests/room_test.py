@@ -100,5 +100,20 @@ check(t and t[1]["fits"], "driver figure alone: q8_0 KV fits (the old default)")
 x.room_gib = room
 t = mc.dense_gpu_fit_pair(x, model, ctx, M(), with_q4=True)
 check(t and not t[1]["fits"] and t[3]["fits"], "real room: q8_0 does not fit, q4_0 does -> the ladder steps down")
+# --- the counter read is kept for a few seconds (the page plans a whole model list) ---
+reads = []
+_ct = gp.counters_text
+gp.counters_text = lambda pid=None, timeout=8: (reads.append(1), line(100, "dedicated", 1000))[1]
+mc._GPU_PROC[:] = [0.0, ""]
+t1 = mc.win_gpu_process_text(); t2 = mc.win_gpu_process_text(); t3 = mc.win_gpu_process_text()
+check(len(reads) == 1 and t1 == t2 == t3 != "", f"win_gpu_process_text: three plans, one PowerShell read ({len(reads)})")
+mc._GPU_PROC[0] -= mc.GPU_PROC_TTL_S + 1
+mc.win_gpu_process_text()
+check(len(reads) == 2, "...and a new read after the time is up")
+gp.counters_text = lambda pid=None, timeout=8: (reads.append(1), "")[1]
+mc._GPU_PROC[:] = [0.0, ""]
+mc.win_gpu_process_text(); mc.win_gpu_process_text()
+check(len(reads) == 4, "a failed read ('') is not kept: the next plan tries again")
+gp.counters_text = _ct
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)
