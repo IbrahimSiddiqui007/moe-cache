@@ -106,6 +106,8 @@ with tempfile.TemporaryDirectory() as tmp:
     s4 = gp.dense_ffn_split(model, ctx, q4_need * GIB * 0.97, kv_q8="q4_0", margin_gib=0.0)
     sx = gp.dense_ffn_split(model, ctx, q4_need * GIB * 0.97, kv_q8=("q8_0", "q4_0"), margin_gib=0.0)
     check(s8 and s4 and sx and s4["kv_gib"] < sx["kv_gib"] < s8["kv_gib"] and (s4["n_off"] or 0) <= (sx["n_off"] or 0) <= (s8["n_off"] or 0), "layers to RAM are sized with the KV type chosen (q4_0 <= mix <= q8_0 layers)")
+    check(gp.kv_elems(("bf16", "q4_0"))[0] == 2.0 and gp.kv_elems(("q5_0", "q8_0"))[0] == 22 / 32 and gp.kv_elems(("weird", "q4_0"))[0] == 2.0, "planner: other -ctk / -ctv types are sized by their own bytes, an unknown one as f16 (errs high; bf16 used to count as q8_0)")
+    check([mc.kv_fit_index(*t) for t in (("f16",), ("q8_0",), ("q8_0", "q8_0"), ("q8_0", "q4_0"), ("q4_0", "q4_0"), ("bf16", "q4_0"))] == [0, 1, 1, 2, 3, 0], "kv_fit_index: which ladder entry sizes the KV types in the command")
     kt = mc.kv_plan_type
     check(kt(["-ctk", "q4_0", "-ctv", "q4_0"], True) == "q4_0" and kt(["-ctk", "q8_0"], False) == ("q8_0", "f16") and kt([], True) is True and kt([], False) is False
           and kt(["-ctk", "q8_0", "-ctv", "q4_0"], False) == ("q8_0", "q4_0") and kt(["-ctk", "q8_0", "-ctv", "q8_0"], False) is True and kt(["-ctk", "f16", "-ctv", "f16"], True) is False,

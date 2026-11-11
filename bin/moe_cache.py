@@ -3026,7 +3026,13 @@ def kv_plan_type(extra, kv_q8=False):
     return (k, v)
 
 
-def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name):
+def kv_fit_index(kv_k, kv_v=None):
+    """Which entry of the dense_gpu_fit_pair(..., with_q4=True) ladder (f16, q8_0/q8_0, K q8_0 / V q4_0, q4_0/q4_0) sizes the KV types in the command; anything else is f16 (0).
+    A V type that is not given counts as the K type for the quantized ones (the launcher always gives both)."""
+    return {("q8_0", "q8_0"): 1, ("q8_0", "q4_0"): 2, ("q4_0", "q4_0"): 3}.get((kv_k or "f16", kv_v or kv_k or "f16"), 0)
+
+
+def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
     """LAUNCHER-1068: Windows, a dense model that fits fully on the GPU (the LAUNCHER-982 estimate, not --fit spilling, no -ot) loads with `--load-mode none`: the default mmap load
     spiked used RAM by ~12 GB for Qwen3.8-27B on the PC (2026-11-10), `--load-mode none` added 2-6 GB and was ready in under a minute. Returns the plain note, or None (mmap stays):
     Linux, --exact / --stock, a layout that spills to RAM (mmap keeps those weights file-backed), an unknown fit, or a load flag of your own (--load-mode / -lm / --mmap / --no-mmap / --mlock)."""
@@ -3034,7 +3040,8 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name):
         return None
     if any(x in ("--load-mode", "-lm", "--mmap", "--no-mmap", "--mlock") or x.startswith(("--load-mode=", "-lm=")) for x in extra):
         return None
-    r = pair[1] if kv_name in ("q8_0", "q4_0") else pair[0]
+    i = kv_fit_index(kv_name, kv_v)          # LAUNCHER-1063: the mix and q4_0/q4_0 are sized as themselves (a 2-entry pair only knows f16 and q8_0: q4_0 then counts as q8_0, errs high)
+    r = pair[min(i, len(pair) - 1)] if pair else None
     if not r or not r["fits"]:
         return None
     return "the model fits fully on the GPU: --load-mode none (no memory-mapped copy of the file in RAM while loading; --exact or --load-mode after -- keeps llama.cpp's default)"
@@ -3733,12 +3740,12 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
     if dense and not expect:
         pair = dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True)
         kv_name = arg_after(extra, "-ctk", "--cache-type-k") or "f16"
-        kv_v = arg_after(extra, "-ctv", "--cache-type-v") or "f16"
-        r = (pair[{("q8_0", "q8_0"): 1, ("q8_0", "q4_0"): 2, ("q4_0", "q4_0"): 3}.get((kv_name, kv_v), 0)]) if pair else None
+        r = pair[min(kv_fit_index(kv_name, arg_after(extra, "-ctv", "--cache-type-v")), len(pair) - 1)] if pair else None
         expect = bool(r and not r["fits"])
     EXPECT_CPU_WORK[0] = expect
     if dense and not cpu_only and not expect and "--load-mode" in cmd:
-        why = load_mode_fit_none(a, cmd, extra, machine, ctx, dense_gpu_fit_pair(a, model, ctx, machine), arg_after(extra, "-ctk", "--cache-type-k") or "f16")
+        why = load_mode_fit_none(a, cmd, extra, machine, ctx, dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True), arg_after(extra, "-ctk", "--cache-type-k") or "f16",
+                                 arg_after(extra, "-ctv", "--cache-type-v"))
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
             say("moe-cache: " + why)
