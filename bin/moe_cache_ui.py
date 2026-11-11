@@ -189,7 +189,7 @@ def windows_gpu_once(ls):
     g = mc.pick_gpu(mc.list_devices(ls))
     if not g:
         return None
-    ded = mc.win_dedicated_vram().get(g[1])
+    ded = mc.dedicated_vram_of(g[1], mc.win_dedicated_vram())
     integrated = ded is not None and ded < GIB       # the launcher plans without VRAM there: Vulkan's "free" is shared system RAM
     return {"name": g[1] + (" (integrated: shares RAM)" if integrated else ""), "free": g[2] * 2**20 if g[2] else None,
             "total": float(ded) if ded and not integrated else None, "integrated": integrated, "device": g[0], "adapter": g[1]}

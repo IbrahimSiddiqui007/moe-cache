@@ -31,6 +31,21 @@ grep -q 'plugin v0.3.6 (ggml' "$R/src/mc_state.inl" || fail "banner"
 grep -q '^VERSION = "0.3.6"' "$R/bin/moe_cache.py" || fail "launcher VERSION"
 grep -q '^## 0.3.4 (2026-10-30)' "$R/CHANGELOG.md" || fail "older CHANGELOG heading must stay"
 
+# the heading CHANGELOG.md really has since 0.3.8: "## 0.3.8 (unreleased)" (the old script looked for "## Unreleased" only and refused)
+R="$T/versioned"; mk "$R" 0.3.5; echo "notes" > "$R/docs/releases/RELEASE_NOTES_v0.3.6.md"
+sed -i 's/^## Unreleased/## 0.3.6 (unreleased)/' "$R/CHANGELOG.md"
+bash "$R/tools/set_version.sh" 0.3.6 >"$T/out" 2>&1 || { cat "$T/out"; fail '"## 0.3.6 (unreleased)" heading: set_version.sh stopped'; }
+grep -q '^## 0.3.6 (20' "$R/CHANGELOG.md" && ! grep -qi 'unreleased' "$R/CHANGELOG.md" || fail '"## X.Y.Z (unreleased)" heading not turned into the release heading'
+grep -q '^## 0.3.4 (2026-10-30)' "$R/CHANGELOG.md" || fail "older CHANGELOG heading must stay (versioned heading case)"
+R="$T/versioned2"; mk "$R" 0.3.5; echo "notes" > "$R/docs/releases/RELEASE_NOTES_v0.3.6.md"
+sed -i 's/^## Unreleased/## 0.3.5.1 (unreleased)/' "$R/CHANGELOG.md"
+bash "$R/tools/set_version.sh" 0.3.6 >"$T/out" 2>&1 || { cat "$T/out"; fail 'a heading naming another version: set_version.sh stopped'; }
+grep -q '^## 0.3.6 (20' "$R/CHANGELOG.md" || fail "heading naming another version: not replaced with the target version"
+# this repository's own CHANGELOG.md: when its top heading is an unreleased one, set_version.sh must recognise it (the pattern is read from the script itself)
+UN="$(sed -n "s/^UNREL='\(.*\)'.*/\1/p" "$HERE/tools/set_version.sh")"; [ -n "$UN" ] || fail "cannot read the heading pattern (UNREL) from tools/set_version.sh"
+top="$(grep -m1 '^## ' "$HERE/CHANGELOG.md")"
+case "$top" in *nreleased*) echo "$top" | grep -q "$UN" || fail "the real CHANGELOG.md heading ($top) is not matched by set_version.sh";; esac
+
 # a pre-release name with a dash (badge text doubles the dash)
 R="$T/beta"; mk "$R" 0.3.5; echo n > "$R/docs/releases/RELEASE_NOTES_v0.4.0-beta.md"
 bash "$R/tools/set_version.sh" 0.4.0-beta >"$T/out" 2>&1 || { cat "$T/out"; fail "0.4.0-beta: set_version.sh stopped"; }

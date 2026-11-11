@@ -170,9 +170,41 @@ import tempfile, types
 sys.path.insert(0, os.path.join(HERE, "tests")); sys.path.insert(0, os.path.join(HERE, "bin"))
 import launch_plan_test as lp   # noqa: E402
 import moe_cache as mc          # noqa: E402
+
+print("guard stop: the profile save may not hold the stop while commit is under the floor (LAUNCHER-991 review)")
+class _P:
+    pid = 4242
+    def __init__(self, log): self.log = log
+    def terminate(self): self.log.append("terminate")
+def _stop(free, hard=2 * GIB, profile=True, windows=True, save_raises=False):
+    log = []
+    def save(pid, path, timeout=60.0, proc=None):
+        log.append(("save", pid, path, timeout))
+        if save_raises: raise RuntimeError("event not found")
+        return True
+    env = {"MOE_CACHE_PROFILE": "C:/p.json"} if profile else {}
+    mc.guard_stop(_P(log), env, free, hard, request_save=save, windows=windows)
+    return log
+lg = _stop(1.5 * GIB)
+check(lg and lg[0][0] == "save" and lg[0][3] <= 1.0 and lg[-1] == "terminate" and len(lg) == 2, f"free commit 1.5 GB (under the 2 GB floor, over half of it): the save is tried for at most 1 s, then the process is terminated ({lg})")
+lg = _stop(0.5 * GIB)
+check(lg == ["terminate"], f"free commit 0.5 GB (under half the floor): no save at all, terminated at once ({lg})")
+lg = _stop(None)
+check(lg and lg[0][0] == "save" and lg[-1] == "terminate", "free commit unknown: the short save is still tried, then terminate")
+lg = _stop(1.5 * GIB, save_raises=True)
+check(lg[-1] == "terminate", "the save raising does not stop the termination")
+check(_stop(1.5 * GIB, profile=False) == ["terminate"] and _stop(1.5 * GIB, windows=False) == ["terminate"], "no profile, or not Windows: terminate only")
+check(mc.GUARD_SAVE_WAIT_S <= 1.0, f"the wait cap is {mc.GUARD_SAVE_WAIT_S} s (was 10 s)")
+# through the guard itself: the stop function sees the sample that crossed the floor
+_seen = []
+_gg = cg.CommitGuard(lambda: 0.9 * GIB, lambda t: None, lambda r: _seen.append(_gg.last_free), 6 * GIB, 2 * GIB, "stop")
+_gg.poll(); _gg.poll()
+check(_seen and _seen[0] == 0.9 * GIB, "CommitGuard.last_free is the newest sample when the stop function runs")
 lp.MACHINES["win_roomy"] = dict(lp.MACHINES["win"], commit=(96e9, 80e9))
 lp.MACHINES["win_tight"] = dict(lp.MACHINES["win"], commit=(48e9, 17e9))
 lp.MACHINES["win_full"] = dict(lp.MACHINES["win"], commit=(48e9, 7e9))
+lp.MACHINES["win_zero"] = dict(lp.MACHINES["win"], commit=(48e9, 0.0))
+lp.MACHINES["win_unk"] = dict(lp.MACHINES["win"], commit=(None, None))
 with tempfile.TemporaryDirectory() as tmp:
     model = os.path.join(tmp, "synthetic-moe.gguf"); lp.make_synthetic_model(model)
     run = lambda m, opts=(), extra=(), flag="--dry-run": lp.run_case(m, ["--ram", "12"] + list(opts), list(extra), model, tmp, flag=flag)
@@ -194,6 +226,10 @@ with tempfile.TemporaryDirectory() as tmp:
             continue
         check(bool(c) and bool(rs) and c.group(1) == rs.group(1), f"{free / 1e9:.0f} GB free: --cache-ram {c and c.group(1)} and the plugin's host reserve {rs and rs.group(1)} agree")
     check("-c 65536" in cmdline(tight), "...the context is still 65536")
+    zero = run("win_zero", ["--ctx", "65536"])
+    check("did not report the commit figures" not in txt(zero) and ("not starting" in txt(zero) or "free commit is tight" in txt(zero)), "free commit of exactly 0 is a figure, not 'not reported': the check runs and refuses / shrinks (LAUNCHER-991 review)")
+    unk = run("win_unk", ["--ctx", "65536"])
+    check("did not report the commit figures" in txt(unk), "commit figures really not reported (None): the check is skipped, with the warning (unchanged)")
     pinned = run("win_tight", ["--ctx", "65536", "--no-commit-check"])
     check("free commit is tight" not in txt(pinned) and "not starting" not in txt(pinned) and "GPU plan" not in txt(pinned), "--no-commit-check: the first plan stands, nothing said, the old GPU-plan cap is not applied either")
     lp.MACHINES["win_nv"] = dict(lp.MACHINES["win"], commit=(48e9, 17e9), nvidia=True, listing=lp.LINUX_LIST.replace("CUDA0", "CUDA0"))
@@ -204,7 +240,14 @@ with tempfile.TemporaryDirectory() as tmp:
         check("free commit is tight" not in txt(nv) and "not starting" not in txt(nv), "Windows + NVIDIA + the CUDA backend next to llama-server: GPU memory is not counted as commit (only the host side), so 17 GB free of 48 changes nothing")
         mc.cuda_backend = lambda ls: False
         nvk = run("win_nv", ["--ctx", "65536"])
-        check("free commit is tight" in txt(nvk) or "not starting" in txt(nvk), "Windows + NVIDIA card on the Vulkan build (no CUDA backend): GPU memory counts as commit like on AMD, so 17 GB free of 48 is tight")
+        check("WARNING: free commit may be tight" in txt(nvk) and "not measured" in txt(nvk) and "a warning, not a refusal" in txt(nvk) and "not starting" not in txt(nvk),
+              "Windows + NVIDIA card on the Vulkan build (no CUDA backend): the estimate counts the GPU like AMD, so 17 GB free of 48 is tight - and it is a WARNING (not measured on NVIDIA), no refusal")
+        check(cmdline(nvk) == cmdline(run("win_nv", ["--ctx", "65536", "--no-commit-check"])), "...and the plan is not changed (same command as with --no-commit-check)")
+        lp.MACHINES["win_nv_full"] = dict(lp.MACHINES["win_nv"], commit=(48e9, 7e9))
+        nvf = run("win_nv_full", ["--ctx", "65536"])
+        check("not starting" not in txt(nvf) and "WARNING: free commit may be tight" in txt(nvf), "Windows + NVIDIA with 7 GB commit free (an AMD PC is refused here): warned and started, never refused")
+        amdf = run("win_full", ["--ctx", "65536"])
+        check("not starting" in txt(amdf), "the same 7 GB free on an AMD PC is still refused (unchanged)")
     finally:
         mc.cuda_backend = _cb
     import tempfile as _t
@@ -323,6 +366,24 @@ try:
     mc.win_commit = lambda: (None, None)
     mc.WINDOWS = True
     check(mc.start_commit_guard(FakeProc(), {}) is None and any("memory guard is off" in m for m in said), "no commit figure: the guard says it is off")
+    # the stop runs with free commit under the hard floor: the profile save may hold it up for GUARD_SAVE_WAIT_S at most (it was 10 s), then llama-server is ended
+    # (test from the outside review of 7c3d024: through start_commit_guard's own stop closure; the function-level cases are above)
+    mc.win_commit = lambda: (48e9, 20e9)
+    waits, saved_save = [], mc.win_request_save
+    mc.win_request_save = lambda pid, path, timeout=60.0, proc=None: waits.append(timeout) or False
+    try:
+        p4 = FakeProc(); p4.pid = 4242
+        g4 = mc.start_commit_guard(p4, {"MOE_CACHE_PROFILE": "x.usage"}, probe=lambda: 50e9)
+        g4.stop_fn("x")
+        check(waits == [mc.GUARD_SAVE_WAIT_S] and mc.GUARD_SAVE_WAIT_S <= 2.0, f"the guard's stop (its real closure) waits at most {mc.GUARD_SAVE_WAIT_S} s for the profile save (asked: {waits})")
+        check(p4.terminated, "the guard's stop ends the process after the short save wait, also when the save did not finish")
+        waits.clear(); p5 = FakeProc(); p5.pid = 4243
+        g5 = mc.start_commit_guard(p5, {"MOE_CACHE_PROFILE": "x.usage"}, probe=lambda: 0.5e9)
+        g5.last_free = 0.5e9
+        g5.stop_fn("x")
+        check(waits == [] and p5.terminated, "the real closure: free commit under half the hard floor (0.5 GB of 2): no save at all, terminated at once")
+    finally:
+        mc.win_request_save = saved_save
 finally:
     mc.say, mc.WINDOWS, mc.win_commit, mc.meminfo_available = saved_say, saved_w, saved_win, saved_mi
 

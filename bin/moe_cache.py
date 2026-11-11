@@ -662,6 +662,14 @@ def dedicated_for(name, ded):
     return max(hits) if hits else -1
 
 
+def dedicated_vram_of(name, ded):
+    """Dedicated VRAM in bytes of the adapter `name` (as llama.cpp lists it) from win_dedicated_vram()'s {registry name: bytes}, matched like pick_gpu_full does (dedicated_for: the
+    two names may differ in trademark signs, case or a driver suffix); None when the adapter is not in the registry list (LAUNCHER-991 review: the integrated-GPU checks looked the
+    name up exactly, so 'AMD Radeon Graphics (RADV ...)' was not found and an iGPU's shared RAM was planned as VRAM)."""
+    d = dedicated_for(name, ded or {})
+    return None if d == -1 else d
+
+
 def pick_gpu(listing):
     g = pick_gpu_full(listing)
     return g[:3] if g else None
@@ -1796,6 +1804,25 @@ GPU_OOM_RE = re.compile(r"ErrorOutOfDeviceMemory|Device memory allocation .* fai
 GGML_ABORT_RE = re.compile(r"ggml-impl\.h:\d+: fatal error")
 
 
+def kv_retry_cmd(cmd):
+    """The command for the one f16 retry after llama.cpp aborted at load with a quantized KV cache this launcher chose: every -ctk / -ctv (long form too) whose type is not f16
+    is dropped, so llama.cpp's f16 default applies to K and V alike. -> (new command, "K q8_0 / V q4_0"-style words for what was dropped), or (cmd, "") when there is nothing to
+    drop. The KV ladder (LAUNCHER-1063) also picks K q8_0 / V q4_0 and q4_0 / q4_0: dropping only q8_0 values left V at q4_0 in the first case (a retry with f16 / q4_0, announced as
+    f16) and changed nothing in the second (no retry at all). (Written by the outside review of 7c3d024; the caller only asks when the launcher chose the types.)"""
+    names = {"-ctk": "K", "--cache-type-k": "K", "-ctv": "V", "--cache-type-v": "V"}
+    new, was, i = [], {}, 0
+    while i < len(cmd):
+        if cmd[i] in names and i + 1 < len(cmd) and cmd[i + 1] != "f16":
+            was[names[cmd[i]]] = cmd[i + 1]
+            i += 2
+            continue
+        new.append(cmd[i])
+        i += 1
+    if not was:
+        return list(cmd), ""
+    return new, " / ".join(f"{k} {was[k]}" for k in ("K", "V") if k in was)
+
+
 def run_child(cmd, env, port=None, expect_plugin=False, mem_limit=None, allow_sleep=False, oom_retry=None, kv_retry=None, tune_retry=None):
     """run_child_once, and when llama-server stops before it is ready because the GPU ran out of memory at load (another program took the memory
     after the plan was made: desktop PC 2026-10-30, the control page planned with 13.4 GiB free), ask `oom_retry()` for a new command (it measures the
@@ -1944,6 +1971,24 @@ def meminfo_available():
     return None
 
 
+GUARD_SAVE_WAIT_S = 1.0      # seconds the guard's stop waits for a profile save (LAUNCHER-991 review: it used to wait up to 10 s while free commit was already under the hard floor)
+
+
+def guard_stop(p, env, free, hard, request_save=None, windows=None):
+    """The commit guard's stop of llama-server `p`: free commit is already under the hard floor, so every second counts. A profile save is tried first only on Windows with a
+    profile, only while `free` is not under half the hard floor (then it terminates at once), and waits at most GUARD_SAVE_WAIT_S s; then the process is terminated whatever the save did."""
+    save = request_save or win_request_save
+    if (WINDOWS if windows is None else windows) and env.get("MOE_CACHE_PROFILE") and (free is None or free >= hard / 2):
+        try:
+            save(p.pid, env["MOE_CACHE_PROFILE"], timeout=GUARD_SAVE_WAIT_S, proc=p)      # TerminateProcess would lose what the cache learned
+        except Exception:
+            pass
+    try:
+        p.terminate()
+    except OSError:
+        pass
+
+
 def start_commit_guard(p, env, say_fn=None, probe=None, loading=None):
     """LAUNCHER-991, run-time guard: while llama-server (process p) runs, poll free commit (Windows) or MemAvailable (Linux) every 2 s (every 0.25 s while `loading()` is true: a Vulkan load can take several GB in one call). Under the soft line (max(6 GB, 12.5 % of
     the commit limit) on Windows) a loud 'moe-cache: WARNING' line goes to the terminal, which the Monitor and the control page lift from the log; under the hard line (2 GB;
@@ -1972,15 +2017,7 @@ def start_commit_guard(p, env, say_fn=None, probe=None, loading=None):
         probe = probe or meminfo_available
         (soft, hard), label = cgd.linux_floors(tot), "available memory"
     def stop(reason):
-        if WINDOWS and env.get("MOE_CACHE_PROFILE"):
-            try:
-                win_request_save(p.pid, env["MOE_CACHE_PROFILE"], timeout=10, proc=p)      # TerminateProcess would lose what the cache learned
-            except Exception:
-                pass
-        try:
-            p.terminate()
-        except OSError:
-            pass
+        guard_stop(p, env, g.last_free if g else None, hard)
     g = cgd.CommitGuard(probe, say_fn, stop, soft, hard, mode, label=label, loading=loading)
     g.start(lambda: p.poll() is None)
     return g
@@ -2965,7 +3002,7 @@ def gpu_stage(a, ls, win, machine):
         # the planner reads free VRAM from nvidia-smi or Linux sysfs; on Windows with an AMD or Intel GPU neither answers and it would plan without a GPU
         # (nvidia-smi.exe can stay installed after an NVIDIA card is gone: seen on the desktop PC)
         g = gpu
-        ded = machine.win_dedicated_vram().get(g[1]) if g else None
+        ded = dedicated_vram_of(g[1], machine.win_dedicated_vram()) if g else None
         if g and ded is not None and ded < 2**30:
             # an integrated GPU (the Claw's Arc 140V, Ryzen APUs): Vulkan's "free" is shared system RAM, which the cache also counts;
             # plan with the dedicated carve-out only, as Linux does (planner/plan.py amd_free)
@@ -3017,6 +3054,11 @@ def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False):
     if not (f16 and q8 and kq8vq4 and q4):
         return None
     return (f16, q8, kq8vq4, q4) if with_q4 else (f16, q8)
+
+
+def kv_quantized(cmd):
+    """True when the command stores the KV cache in a quantized type (-ctk / -ctv: q8_0, q4_0 or a mix; LAUNCHER-1063 review: callers compared -ctk with "q8_0" only)."""
+    return bool(kv_plan_type(cmd, False))
 
 
 KV_K8V4 = ("q8_0", "q4_0")          # LAUNCHER-1063: K q8_0 / V q4_0 (laptop, 27B, against f16: top-1 94.6 % between q8/q8 96.5 % and q4/q4 92.9 %: K matters more than V)
@@ -3527,7 +3569,7 @@ def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
         if not dry:
             warn_heavy_background()
         ctot, cfree = machine.win_commit()
-        if ctot and cfree:
+        if ctot and cfree is not None:
             say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
             if cram_auto and re.fullmatch(r"[0-9]+", str(cram)) and not commit_check_on(a, machine):
                 fit, short = commit_plan(cfree, a.vram, int(cram))
@@ -3918,7 +3960,10 @@ def commit_fits(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, m
     return True, ""
 
 
-def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, n_layers, say_fn=None, runner=None, size=None, avail=None, fits=None):
+_VRAM_AS_GIVEN = object()     # autotune_stage: no vram_user passed (tests, older callers): a.vram is taken as the user's own value
+
+
+def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, n_layers, say_fn=None, runner=None, size=None, avail=None, fits=None, vram_user=_VRAM_AS_GIVEN):
     """LAUNCHER-994: returns (cmd, env, info). info is None when the tuner does not apply (silent: --exact / --stock / MOE_CACHE_NO_AUTOTUNE), else a dict for the plan:
     {"state": cached|tuned|too_slow|pending|..., "lines": [...], "picked", "rows", ...}. Reads the stored pick for this model + machine + context; measures only when
     a.autotune_probe is set (a real start, not --dry-run / --plan-json / the control page's plan) and there is no stored pick or --retune was given."""
@@ -3937,6 +3982,12 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
     # the KV type of the plan, flash attention)
     limits = {k: str(getattr(a, k)) for k in ('ram', 'vram', 'max_ram', 'gpu_margin', 'leave_room', 'fast', 'mtp', 'approx', 'long_prompt', 'no_long_prompt', 'hybrid', 'always_plugin') if getattr(a, k, None)}
     limits.update({k: str(v) for k, v in (("cache_ram", arg_after(argv, "--cache-ram", "-cram")), ("ctk", arg_after(cmd, "-ctk", "--cache-type-k")), ("fa", arg_after(cmd, "-fa", "--flash-attn"))) if v is not None})
+    if vram_user is not _VRAM_AS_GIVEN:
+        # gpu_stage / multi_gpu_start overwrite a.vram with the free memory of the moment (Windows AMD / Intel: "14.65"); keyed on that, a stored pick was found again only when free
+        # GPU memory was the same to 0.01 GiB, so nearly every start measured anew (up to 180 s). Only the --vram the USER gave is a limit of the key. (Found by the outside review of 7c3d024.)
+        limits.pop("vram", None)
+        if vram_user:
+            limits["vram"] = str(vram_user)
     parts = at.key_parts(autotune_model_id(model), ctx, autotune_machine_sig(machine, ls), locked, a.agent, engine, limits)
     def apply_stored(stored):
         if stored.get("state") == "too_slow":
@@ -3948,14 +3999,37 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
                     "the plan as it is runs; --retune measures again")
             say_fn(line)
             return cmd, env, dict(stored, state="bad", lines=[line], locked=locked, key=at.key_of(parts), changed=False)
-        new_cmd, new_env, skipped = at.apply_edits(cmd, env, at.pick_edits(stored), locked)
+        edits, held = at.replay_edits(cmd, stored, autotune_free_vram(a, machine))      # LAUNCHER-994 review: a part that puts more on the GPU needs as much free GPU memory as when it was measured
+        new_cmd, new_env, skipped = at.apply_edits(cmd, env, edits, locked)
         lines = at.summary_lines(stored, cached=True, skipped=skipped, locked=locked)
         lines = [lines[0]] + [l for l in lines[1:] if "picked" in l or "stays" in l or "left alone" in l or "not applied" in l or "--retune" in l]       # the table is in the control page / --plan-json
+        if held:
+            lines.append("moe-cache: auto-tune: " + held)
         for l in lines:
             say_fn(l)
         # "before": the plan as the planner made it (for the fall-back when this pick does not load); "key_parts": where the file lives (to mark it bad)
-        return new_cmd, new_env, dict(stored, state="cached", lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
-    stored = None if a.retune else at.load(CACHE_DIR, parts)
+        info = dict(stored, state="cached", lines=lines, locked=locked, key=at.key_of(parts), key_parts=parts, before=(list(cmd), list(env)))
+        if held:
+            info["held_back"] = held
+            info["changed"] = bool(edits)       # nothing of the pick applied: a failed load is then not the pick's fault (tune_retry leaves the file alone)
+        return new_cmd, new_env, info
+    expired = []
+    def fresh(stored):
+        """None for a stored pick older than PICK_MAX_AGE_DAYS (said once; the plan as it is runs and the next real start measures again)."""
+        age = at.pick_age_days(stored) if stored else None
+        if age is not None and age > at.PICK_MAX_AGE_DAYS and stored.get("state") != "too_slow":
+            expired.append(f"moe-cache: auto-tune: the stored pick is {age:.0f} days old (tuned {stored.get('tuned_at')}; picks expire after {at.PICK_MAX_AGE_DAYS} days): measured again at the next real start")
+            say_fn(expired[-1])
+            return None
+        if (stored and stored.get("state") in ("tuned", "cached") and not stored.get("bad") and not stored.get("free_vram_mib")
+                and at.adds_gpu_use(cmd, at.pick_edits(stored)) and autotune_free_vram(a, machine)):
+            # a result stored before the free GPU memory was recorded: a pick that adds GPU use cannot be compared with anything, and would stay unusable for good (a stored result is
+            # never measured again). It counts as stale: the next real start measures again and records the figure.
+            expired.append("moe-cache: auto-tune: the stored result has no record of the free GPU memory it was measured with, and its pick puts more on the GPU: measured again at the next real start")
+            say_fn(expired[-1])
+            return None
+        return stored
+    stored = None if a.retune else fresh(at.load(CACHE_DIR, parts))
     if stored:
         return apply_stored(stored)
     # LAUNCHER-1044: a model that cannot be loaded 3-5 times in the budget is not tuned (the default 75 GB model: one load alone is longer than 180 s). Measured nowhere: this
@@ -3973,7 +4047,8 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
     if not getattr(a, "autotune_probe", False):
         line = "moe-cache: auto-tune: " + ("--retune: the plans are measured again on the next real start" if a.retune else
-                                           f"no stored pick for this model, machine and context yet: the first real start measures up to {at.BUDGET_S:.0f} s (--exact skips it)")
+                                           (expired[0].split("auto-tune: ", 1)[1] if expired else
+                                            f"no stored pick for this model, machine and context yet: the first real start measures up to {at.BUDGET_S:.0f} s (--exact skips it)"))
         return cmd, env, {"state": "pending", "lines": [line], "locked": locked}      # not said: a plan that only describes stays as it was (the goldens); plan.autotune carries it
     why_not = None
     try:
@@ -3996,15 +4071,26 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
         return cmd, env, {"state": "skipped", "lines": [line], "locked": locked}
     try:
         if not a.retune:                                  # the other start may have finished while this one waited for its turn
-            stored = at.load(CACHE_DIR, parts)
+            stored = fresh(at.load(CACHE_DIR, parts))
             if stored:
                 return apply_stored(stored)
-        return _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits)
+        return _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=autotune_free_vram(a, machine))
     finally:
         at.release_lock(CACHE_DIR)
 
 
-def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits):
+def autotune_free_vram(a, machine):
+    """Free GPU memory in bytes now (--vram, else the machine's own reading), None when unknown."""
+    try:
+        v = getattr(a, "vram", None)
+        if v:
+            return float(v) * 2**30
+        return machine.free_vram_bytes() or None
+    except Exception:
+        return None
+
+
+def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn, runner, fits, free_vram=None):
     import moe_cache_autotune as at
     cands = at.build_candidates(cmd, env, locked, ctx, n_layers)
     if fits is not None and len(cands) > 1:          # LAUNCHER-1042: every command that would be loaded has passed the commit check first
@@ -4037,6 +4123,8 @@ def _autotune_measure(a, cmd, env, key_env, ctx, n_layers, locked, parts, say_fn
         c_cmd, c_env, _ = at.apply_edits(cmd, env, c.edits)
         return (runner or autotune_probe)(c_cmd, dict(os.environ, **dict(c_env + key_env)), left_s, n)
     res = at.tune(cands, run, agent=bool(a.agent), say=lambda t: say_fn("moe-cache: auto-tune:   " + t), progress=lambda t: say_fn("moe-cache: auto-tune: " + t))
+    if free_vram:
+        res["free_vram_mib"] = int(free_vram / 2**20)       # what a pick that puts more on the GPU is later compared with (apply_stored)
     try:
         if res.get("state") != "aborted":          # LAUNCHER-1042: a guard stop stores nothing
             at.save(CACHE_DIR, parts, res)
@@ -4067,7 +4155,7 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
     if not machine.windows or a.no_commit_check or os.environ.get("MOE_CACHE_COMMIT_CHECK") == "0":
         return cmd, ncmoe, ub, kv_q8, None
     limit, free = machine.win_commit()
-    if not limit or not free:
+    if not limit or free is None:         # free commit of exactly 0 is a figure (the PC is out of commit: the worst case to refuse for), not "not reported"
         say("moe-cache: warning: Windows did not report the commit figures: the commit check is skipped for this start", err=True)
         return cmd, ncmoe, ub, kv_q8, None
     try:
@@ -4093,6 +4181,13 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
     gpu_counts = not (machine.nvidia_reports() and cuda_backend(cmd[0]))
     d = cgd.decide(f, L, free, limit, locked=locked, allow_q8=not a.exact and not a.stock, windows=gpu_counts)
     if d["ok"] and not d["steps"]:
+        return cmd, ncmoe, ub, kv_q8, None
+    if machine.nvidia_reports():
+        # LAUNCHER-991 review: whether an NVIDIA card's memory is charged to Windows commit is NOT measured (CUDA or Vulkan): nothing here may refuse a start, or change the layout, on
+        # that guess. It says so, with the estimate, and starts as planned; the run-time guard stops llama-server before Windows runs out of commit.
+        say(f"moe-cache: WARNING: free commit may be tight for this plan (estimate: {cgd.parts_words(d['est'])}; {free / 1e9:.1f} GB free of {limit / 1e9:.1f} GB; the estimate is for AMD / Intel "
+            "GPUs). Whether an NVIDIA card's memory counts as Windows commit is not measured, so this is a warning, not a refusal and the plan is not changed: starting as planned; "
+            "the memory guard stops llama-server if commit runs out. Close big programs if you can", err=True)
         return cmd, ncmoe, ub, kv_q8, None
     if not d["ok"]:
         txt = cgd.refusal_text(d, free, limit, (machine.win_memory() or (None, None))[0] or machine.mem_total())
@@ -4236,15 +4331,15 @@ def _launch_plan(a, extra, argv, machine):
     # LAUNCHER-994: the measured pick (stored per model + machine + context) edits the finished command; the commit check below still has the last word on memory
     ncmoe0, ub0, kv_q80 = ncmoe, ub, kv_q8
     cmd, env_t, tune_info = autotune_stage(a, list(argv) + user_extra, cmd, env, key_env, model, ctx, ls, machine, "stock" if method == "none (stock)" else "plugin", (planner_info or {}).get("layers"),
-                                          size=size, avail=avail,
+                                          size=size, avail=avail, vram_user=vram_user,
                                           fits=lambda c_cmd, c_env: commit_fits(a, c_cmd, c_env, argv, model, ctx, arg_after(c_cmd, "--n-cpu-moe", "-ncmoe") or ncmoe, arg_after(c_cmd, "-ub", "--ubatch-size") or ub,
-                                                                                 arg_after(c_cmd, "-ctk", "--cache-type-k") == "q8_0", gpu, machine, mm_bytes))
+                                                                                 kv_quantized(c_cmd), gpu, machine, mm_bytes))
     env[:] = env_t                          # the same list object the plan keeps
     if tune_info and tune_info.get("changed"):
         ub = arg_after(cmd, "-ub", "--ubatch-size") or ub
         n_ = arg_after(cmd, "--n-cpu-moe", "-ncmoe")
         ncmoe = n_ if n_ is not None else ncmoe
-        kv_q8 = arg_after(cmd, "-ctk", "--cache-type-k") == "q8_0"
+        kv_q8 = kv_quantized(cmd)        # q8_0, the dense ladder's K q8_0 / V q4_0 and q4_0/q4_0 all count (a plain == "q8_0" read q4_0 as f16 and let the commit check put q8_0 back)
     cmd_picked = list(cmd)
     cmd, ncmoe, ub, kv_q8, commit_refusal = commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, mm_bytes)
     tune_fallback = None
@@ -4411,22 +4506,16 @@ def run_launch_plan(plan):
             say(f"moe-cache: llama-server ran out of GPU memory while loading; could not plan again ({e})", err=True)
             return None
     def kv_retry():
-        """llama.cpp aborted at load (the scheduler's hash set is full) with the q8_0 K and V cache this launcher chose (--fast, or the default from 128k on):
-        start once more with the f16 cache. Not when -ctk / -ctv came from the user (kv_q8 is False then)."""
+        """llama.cpp aborted at load (the scheduler's hash set is full) with the quantized K and V cache this launcher chose (--fast, the default from 128k on, or the dense KV ladder:
+        q8_0/q8_0, K q8_0 / V q4_0, q4_0/q4_0): start once more with the f16 cache. Not when -ctk / -ctv came from the user (kv_q8 is False then)."""
         if not kv_q8:
             return None
-        new, i = [], 0
-        while i < len(cmd):
-            if cmd[i] in ("-ctk", "-ctv") and i + 1 < len(cmd) and cmd[i + 1] == "q8_0":
-                i += 2
-                continue
-            new.append(cmd[i])
-            i += 1
-        if new == cmd:
+        new, was = kv_retry_cmd(cmd)
+        if not was:
             return None
         if a.project and slotdir:
             write_server_id(slotdir, model, ctx, new)      # the retry runs with the f16 KV cache: server.id must say so
-        say("moe-cache: llama.cpp aborted at load with the q8_0 KV cache (ggml-impl.h fatal error: seen with stock llama-server b12064 on Granite 1B, any context): "
+        say(f"moe-cache: llama.cpp aborted at load with the {was} KV cache (ggml-impl.h fatal error: seen with stock llama-server b12064 on Granite 1B with q8_0, any context): "
             "trying again once with the f16 KV cache (--exact does that from the start)", err=True)
         return new
     def tune_retry(rc, seen):
@@ -5757,7 +5846,7 @@ def check(argv):
     facts["ram"] = (f"{tot:.0f} GB total, " if tot else "") + (f"{memav:.1f} GB available" if memav else "available unknown") + (f", cgroup limit {cg:.1f} GB" if cg else "")
     ok("memory", (f"--ram {a.ram} GB; " if a.ram else "") + (f"available {memav:.1f} GB" if memav else "available: unknown") + (f", cgroup limit {cg:.1f} GB" if cg else ""))
     ctot, cfree = win_commit()
-    if ctot and cfree:      # XA-3: Windows refuses memory when commit (RAM + page file) is used up, even with RAM free; llama-server then stops
+    if ctot and cfree is not None:      # XA-3: Windows refuses memory when commit (RAM + page file) is used up, even with RAM free; llama-server then stops
         facts["ram"] += f"; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB"
         (ok if cfree >= 20e9 else warn)("commit", f"{cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)" + ("" if cfree >= 20e9 else
             ": tight for a 16 GB GPU plus llama-server's buffers; close big programs or let Windows manage the page file size (docs/TROUBLESHOOTING.md)"))

@@ -128,4 +128,21 @@ check(mc.dedicated_for("NVIDIA GeForce RTX 4090", D) == -1, "dedicated VRAM: unk
 lst = "Available devices:\n  Vulkan0: AMD Radeon Graphics (2048 MiB, 2000 MiB free)\n  Vulkan1: AMD Radeon RX 9070 XT (16304 MiB, 15000 MiB free)\n"
 mc.win_dedicated_vram = lambda: D
 check(mc.pick_gpu_full(lst)[1] == "AMD Radeon RX 9070 XT", "the discrete card wins although the registry spells its name differently")
+check(mc.dedicated_vram_of("AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)", D) == 512 << 20 and mc.dedicated_vram_of("NVIDIA GeForce RTX 4090", D) is None and mc.dedicated_vram_of("x", None) is None,
+      "dedicated_vram_of: the fuzzy match, None when the adapter is not in the registry list")
+# the launcher's GPU stage (LAUNCHER-991 review): an integrated GPU listed under a name the registry spells differently is planned without VRAM, not with its shared RAM
+class _M:
+    windows = True
+    def list_devices(self, ls): return "Available devices:\n  Vulkan0: AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO) (16000 MiB, 15000 MiB free)\n"
+    def pick_gpu_full(self, listing): return ("Vulkan0", "AMD Radeon Graphics (RADV RAPHAEL_MENDOCINO)", 15000, 16000)
+    def nvidia_reports(self): return False
+    def win_dedicated_vram(self): return {"AMD Radeon(TM) Graphics": 512 << 20}
+import types as _t
+_a = _t.SimpleNamespace(vram=None, cpu_only=False, gpu_margin=None)
+_said = []; _sv = mc.say; mc.say = lambda t, err=False: _said.append(t)
+try:
+    mc.gpu_stage(_a, "llama-server", True, _M())
+finally:
+    mc.say = _sv
+check(_a.vram is None and any("is integrated" in x for x in _said), f"gpu_stage: the iGPU under a different adapter name is recognised: planned without VRAM (a.vram {_a.vram!r})")
 sys.exit(1 if fails else 0)

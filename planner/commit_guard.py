@@ -334,6 +334,7 @@ class CommitGuard:
         self.state, self.last_warn, self.last_warn_free, self.low = "ok", None, None, 0
         self.stopped = None
         self.min_free = None
+        self.last_free = None            # the newest sample, for the stop function (how little is left decides whether a profile save may still be tried)
 
     def poll(self):
         """One sample; returns "ok", "soft", "hard" or None (probe failed)."""
@@ -341,6 +342,7 @@ class CommitGuard:
         if free is None:
             return None
         self.min_free = free if self.min_free is None else min(self.min_free, free)
+        self.last_free = free
         gb = free / 1e9
         if free < self.hard:
             self.low += 1

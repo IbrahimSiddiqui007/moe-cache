@@ -61,6 +61,20 @@ check(rc == 1 and starts == 1, f"no oom_retry given (user fixed the plan): fails
 check(bool(mc.GGML_ABORT_RE.search("D:/a/llama.cpp/llama.cpp/ggml/src\\ggml-impl.h:330: fatal error")) and bool(mc.GGML_ABORT_RE.search("/x/ggml/src/ggml-impl.h:301: fatal error")),
       "recognised: the ggml-impl.h fatal error line (Windows and Linux paths)")
 check(not mc.GGML_ABORT_RE.search("ggml.c:1234: GGML_ASSERT(x) failed") and not mc.GGML_ABORT_RE.search("srv: fatal error in the web ui"), "not recognised: other asserts and unrelated text")
+# the command of the f16 retry (the launcher's own kv_retry closure uses kv_retry_cmd; tests adopted from the outside review of 7c3d024): every quantized type of the KV ladder is dropped, not only q8_0
+base = ["llama-server", "-m", "m.gguf", "-c", "65536"]
+new, was = mc.kv_retry_cmd(base + ["-ctk", "q8_0", "-ctv", "q8_0", "--port", "8080"])
+check(new == base + ["--port", "8080"] and was == "K q8_0 / V q8_0", f"f16 retry: q8_0 / q8_0 is dropped ({was})")
+new, was = mc.kv_retry_cmd(base + ["-ctk", "q8_0", "-ctv", "q4_0"])
+check(new == base and was == "K q8_0 / V q4_0", f"f16 retry: K q8_0 / V q4_0 drops both (V q4_0 used to stay: a f16 / q4_0 retry announced as f16) ({was})")
+new, was = mc.kv_retry_cmd(base + ["-ctk", "q4_0", "-ctv", "q4_0"])
+check(new == base and was == "K q4_0 / V q4_0", f"f16 retry: q4_0 / q4_0 is dropped (there used to be no retry at all) ({was})")
+new, was = mc.kv_retry_cmd(base + ["--cache-type-k", "q8_0", "--cache-type-v", "q4_0"])
+check(new == base and was == "K q8_0 / V q4_0", "f16 retry: the long option names count too")
+new, was = mc.kv_retry_cmd(base + ["-ctk", "f16", "-ctv", "f16"])
+check(new == base + ["-ctk", "f16", "-ctv", "f16"] and was == "", "f16 retry: an f16 cache gives nothing to drop (no retry)")
+new, was = mc.kv_retry_cmd(base)
+check(new == base and was == "", "f16 retry: no cache type in the command gives nothing to drop")
 def run_kv(mode, retry=True):
     mark = os.path.join(TMP, f"kv_{mode}_{retry}")
     calls = []

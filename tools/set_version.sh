@@ -3,8 +3,8 @@
 # It only edits files: no commit, no tag, nothing published. Two flows, picked by what the files hold:
 #
 #  1. After a release (the normal case): the files name the CURRENT release (bin/moe_cache.py VERSION = "0.3.5") and CHANGELOG.md has a
-#     "## Unreleased" heading. The script changes, from the current version to VERSION:
-#       CHANGELOG.md          "## Unreleased" -> "## VERSION (today's date)"
+#     "## Unreleased" (or "## X.Y.Z (unreleased)") heading. The script changes, from the current version to VERSION:
+#       CHANGELOG.md          "## Unreleased" or "## X.Y.Z (unreleased)" -> "## VERSION (today's date)"
 #       README.md             the status badge, and the heading "Known issues in vCURRENT"
 #       install.sh            MOE_CACHE_REF default (the release workflow checks it matches the tag)
 #       src/mc_state.inl      the plugin's start-up banner
@@ -41,12 +41,13 @@ C="$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' bin/moe_cache.py | head -n 1)"
 [ "$V" != "$C" ] || { echo "VERSION $V is the current version already (bin/moe_cache.py)"; exit 1; }
 CB="${C//-/--}"; Ce="$(esc "$C")"; Ve="$(esc "$V")"
 fail() { echo "$1 (nothing was changed)"; exit 1; }
-grep -q '^## Unreleased' CHANGELOG.md                       || fail 'CHANGELOG.md has no "## Unreleased" heading to turn into the release heading'
+UNREL='^## \(Unreleased\|[0-9][0-9A-Za-z.-]* ([Uu]nreleased)\)'      # the heading of the version being written: "## Unreleased" or, since 0.3.8, "## 0.3.8 (unreleased)"
+grep -q "$UNREL" CHANGELOG.md                               || fail 'CHANGELOG.md has no "## Unreleased" (or "## X.Y.Z (unreleased)") heading to turn into the release heading'
 [ -f "docs/releases/RELEASE_NOTES_v$V.md" ]                           || fail "docs/releases/RELEASE_NOTES_v$V.md does not exist: write the release notes first (the release workflow publishes them)"
 grep -q "status-v$CB\(%20beta\)\{0,1\}-" README.md          || fail "README.md: no status badge for v$C"
 grep -q "MOE_CACHE_REF:-v$C}" install.sh                    || fail "install.sh: MOE_CACHE_REF default is not v$C"
 grep -q "plugin v$C (ggml backend API" src/mc_state.inl     || fail "src/mc_state.inl: the start-up banner does not say v$C"
-sed -i "s/^## Unreleased.*/## $V ($(date +%Y-%m-%d))/" CHANGELOG.md
+sed -i "s/$UNREL.*/## $V ($(date +%Y-%m-%d))/" CHANGELOG.md
 sed -i "s/status-v$(esc "$CB")\(%20beta\)\{0,1\}-/status-v$(esc "$B")\1-/; s/^## Known issues in v$Ce\b/## Known issues in v$Ve/" README.md
 sed -i "s/MOE_CACHE_REF:-v$Ce}/MOE_CACHE_REF:-v$Ve}/" install.sh
 sed -i "s/plugin v$Ce (ggml backend API/plugin v$Ve (ggml backend API/" src/mc_state.inl
