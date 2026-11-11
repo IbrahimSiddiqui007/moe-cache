@@ -194,7 +194,7 @@ check(lg and lg[0][0] == "save" and lg[-1] == "terminate", "free commit unknown:
 lg = _stop(1.5 * GIB, save_raises=True)
 check(lg[-1] == "terminate", "the save raising does not stop the termination")
 check(_stop(1.5 * GIB, profile=False) == ["terminate"] and _stop(1.5 * GIB, windows=False) == ["terminate"], "no profile, or not Windows: terminate only")
-check(mc.GUARD_SAVE_WAIT <= 1.0, f"the wait cap is {mc.GUARD_SAVE_WAIT} s (was 10 s)")
+check(mc.GUARD_SAVE_WAIT_S <= 1.0, f"the wait cap is {mc.GUARD_SAVE_WAIT_S} s (was 10 s)")
 # through the guard itself: the stop function sees the sample that crossed the floor
 _seen = []
 _gg = cg.CommitGuard(lambda: 0.9 * GIB, lambda t: None, lambda r: _seen.append(_gg.last_free), 6 * GIB, 2 * GIB, "stop")
@@ -366,6 +366,24 @@ try:
     mc.win_commit = lambda: (None, None)
     mc.WINDOWS = True
     check(mc.start_commit_guard(FakeProc(), {}) is None and any("memory guard is off" in m for m in said), "no commit figure: the guard says it is off")
+    # the stop runs with free commit under the hard floor: the profile save may hold it up for GUARD_SAVE_WAIT_S at most (it was 10 s), then llama-server is ended
+    # (test from the outside review of 7c3d024: through start_commit_guard's own stop closure; the function-level cases are above)
+    mc.win_commit = lambda: (48e9, 20e9)
+    waits, saved_save = [], mc.win_request_save
+    mc.win_request_save = lambda pid, path, timeout=60.0, proc=None: waits.append(timeout) or False
+    try:
+        p4 = FakeProc(); p4.pid = 4242
+        g4 = mc.start_commit_guard(p4, {"MOE_CACHE_PROFILE": "x.usage"}, probe=lambda: 50e9)
+        g4.stop_fn("x")
+        check(waits == [mc.GUARD_SAVE_WAIT_S] and mc.GUARD_SAVE_WAIT_S <= 2.0, f"the guard's stop (its real closure) waits at most {mc.GUARD_SAVE_WAIT_S} s for the profile save (asked: {waits})")
+        check(p4.terminated, "the guard's stop ends the process after the short save wait, also when the save did not finish")
+        waits.clear(); p5 = FakeProc(); p5.pid = 4243
+        g5 = mc.start_commit_guard(p5, {"MOE_CACHE_PROFILE": "x.usage"}, probe=lambda: 0.5e9)
+        g5.last_free = 0.5e9
+        g5.stop_fn("x")
+        check(waits == [] and p5.terminated, "the real closure: free commit under half the hard floor (0.5 GB of 2): no save at all, terminated at once")
+    finally:
+        mc.win_request_save = saved_save
 finally:
     mc.say, mc.WINDOWS, mc.win_commit, mc.meminfo_available = saved_say, saved_w, saved_win, saved_mi
 

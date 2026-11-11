@@ -397,6 +397,23 @@ def adds_gpu_use(cmd, edits):
     return False
 
 
+def replay_edits(cmd, stored, free_now, slack_mib=512):
+    """(edits to apply at this start, note or None). A stored pick is applied at every later start. An edit that puts more on the GPU than the plan (--n-cpu-moe lower, a bigger
+    -ub) was measured with the free GPU memory of that day: it is left out for this start unless the free memory now is at least that (minus slack_mib); the other edits of the pick
+    still apply (partial replay: the idea is from the outside review of 7c3d024). A stored result without the figure, or no reading now, cannot be compared: held back too."""
+    edits = pick_edits(stored)
+    add = [e for e in edits if adds_gpu_use(cmd, [e])]
+    if not add or edits_fit_free_vram(stored, free_now, slack_mib):
+        return edits, None
+    then = stored.get("free_vram_mib")
+    what = ", ".join(e.get("flag", "?") + (f" {e['delta']:+d}" if "delta" in e else f" {e.get('value')}") for e in add)
+    if then and free_now:
+        why = f"{free_now / 2**30:.1f} GiB of GPU memory is free now against {then / 1024:.1f} GiB when it was measured"
+    else:
+        why = "the free GPU memory cannot be compared with the day it was measured (not recorded, or not readable now)"
+    return [e for e in edits if e not in add], f"the stored pick's part that puts more on the GPU ({what}) is not applied at this start: {why} (--retune measures again)"
+
+
 def pick_edits(result):
     """The stored pick's edits ([] for the plan as it is)."""
     for r in result.get("rows", []):

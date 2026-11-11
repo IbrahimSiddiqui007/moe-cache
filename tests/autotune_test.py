@@ -256,12 +256,12 @@ try:
     cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7300))
     check(info["state"] == "cached" and at.flag_value(cmd, "--n-cpu-moe") == "18", "300 MiB less (inside the 512 MiB slack): still applied")
     cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=5000))
-    check(info["state"] == "no_room" and cmd == BASE_CMD and any("puts more on the GPU" in l and "4.9 GiB" in l and "7.4 GiB" in l for l in out) and not info.get("changed"),
-          f"the desktop took 2.6 GiB since: the pick is NOT applied, the plan as it is runs, the line gives both figures ({out})")
+    check(info["state"] == "cached" and cmd == BASE_CMD and any("more on the GPU" in l and "4.9 GiB" in l and "7.4 GiB" in l and "--n-cpu-moe" in l for l in out) and info.get("held_back") and info.get("changed") is False,
+          f"the desktop took 2.6 GiB since: the part that puts more on the GPU is NOT applied (the plan's own --n-cpu-moe stays), the line gives both figures, the result is marked unchanged ({out})")
     class _NoVram(M):
         def free_vram_bytes(self): return None
     cmd, env, info, out = stage(probe=False, machine=_NoVram(tmp))
-    check(info["state"] == "no_room" and cmd == BASE_CMD, "free GPU memory not readable now: a pick that adds GPU use is not applied")
+    check(info["state"] == "cached" and cmd == BASE_CMD and info.get("held_back") and any("cannot be compared" in l for l in out), "free GPU memory not readable now: the part that adds GPU use is not applied, says so")
     _old = dict(_rec); _old.pop("free_vram_mib"); _json.dump(_old, open(_f, "w"))
     cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7600))
     check(info["state"] == "pending" and cmd == BASE_CMD and any("no record of the free GPU memory" in l for l in out), "a result stored without the free-memory figure (older version) counts as stale: not applied, says it is measured again")
@@ -643,6 +643,69 @@ if shutil.which("pgrep"):
     time.sleep(1)
     left = subprocess.run(["pgrep", "-f", "[f]ake-llama-server.py"], capture_output=True, text=True).stdout.split()
     check(not left, "no probe server is left running")
+
+# --- replay_edits: only the part that puts more on the GPU is held back (partial replay: idea and cases from the outside review of 7c3d024; unknown figures are held back here, not applied) ---
+more = {"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": -2}
+ram = [{"dim": "ramlock", "env": k, "value": v} for k, v in at.RAMLOCK_ENV]
+st = {"picked": "ncmoe-2", "changed": True, "free_vram_mib": 14950, "rows": [{"id": "C0", "edits": []}, {"id": "ncmoe-2", "edits": [more] + ram}]}
+e, note = at.replay_edits(BASE_CMD, st, 14.4 * 2**30)
+check(e == [more] + ram and note is None, "replay: free GPU memory within the slack of the measured figure: the whole pick applies")
+e, note = at.replay_edits(BASE_CMD, st, 12.0 * 2**30)
+check(e == ram and note and "12.0 GiB" in note and "14.6 GiB" in note, f"replay: 2.6 GiB less free than when measured: the extra GPU layers are left out, the rest applies ({note})")
+c2, _, _ = at.apply_edits(BASE_CMD, BASE_ENV, e)
+check(at.flag_value(c2, "--n-cpu-moe") == "20", "replay: the plan's own --n-cpu-moe stays when the GPU part is held back")
+e, note = at.replay_edits(BASE_CMD, st, None)
+check(e == ram and note and "cannot be compared" in note, "replay: no GPU reading now: the GPU part is held back (cannot be checked)")
+e, note = at.replay_edits(BASE_CMD, {k: v for k, v in st.items() if k != "free_vram_mib"}, 2.0 * 2**30)
+check(e == ram and note, "replay: a stored pick without the measured figure: the GPU part is held back (the launcher measures such a result again at the next real start)")
+less = {"dim": "ncmoe", "flag": "--n-cpu-moe", "delta": 2}
+e, note = at.replay_edits(BASE_CMD, dict(st, rows=[{"id": "ncmoe-2", "edits": [less]}]), 2.0 * 2**30)
+check(e == [less] and note is None, "replay: a pick that uses LESS GPU memory is never held back")
+# --- the cache key does not follow the free GPU memory of the moment (gpu_stage writes it into a.vram on Windows AMD / Intel); test from the outside review of 7c3d024 ---
+with tempfile.TemporaryDirectory() as tmp_k:
+    model_k = os.path.join(tmp_k, "m.gguf"); open(model_k, "wb").write(b"GGUF")
+    class MK:
+        windows = False
+        def list_devices(self, ls): return ""
+        def mem_total(self): return 32 * 2**30
+        def physical_cores(self): return 8
+        def free_vram_bytes(self): return None
+    def info_for(vram, **kw):
+        a_k = types.SimpleNamespace(exact=False, stock=False, retune=False, agent=False, project=None, ub="auto", n_cpu_moe=None, hybrid=False, vram=vram, autotune_probe=False)
+        saved_dir, mc.CACHE_DIR = mc.CACHE_DIR, tmp_k
+        try:
+            return mc.autotune_stage(a_k, [], list(BASE_CMD), list(BASE_ENV), [], model_k, 65536, "llama-server", MK(), "plugin", 40, say_fn=lambda *x, **y: None, **kw)[2]
+        finally:
+            mc.CACHE_DIR = saved_dir
+    keys = []
+    saved_parts = at.key_parts
+    at.key_parts = lambda *p, **k: keys.append(saved_parts(*p, **k)) or keys[-1]
+    try:
+        info_for("14.65", vram_user=None); info_for("13.90", vram_user=None); info_for("12.00", vram_user="12")
+        info_for("14.65"); info_for("13.90")
+    finally:
+        at.key_parts = saved_parts
+    check(len(keys) == 5 and keys[0] == keys[1] and "vram" not in keys[0]["limits"], "key: a.vram filled in by the launcher (free memory of the moment) is not part of the key: two starts with different free VRAM share one cache entry")
+    check(keys[2]["limits"].get("vram") == "12", "key: the --vram the user gave is")
+    check(keys[3] != keys[4], "key: without vram_user (older callers) a.vram counts as the user's, as before")
+# and through the launcher: _launch_plan passes the user's --vram (None on Windows AMD / Intel, where gpu_stage fills a.vram in)
+# end to end through the launcher (Windows AMD): two plans whose free GPU memory differs ("--list-devices" 15000 vs 13800 MiB) pass the same vram_user (None) to the tuner, so they share one key
+with tempfile.TemporaryDirectory() as tmp_w:
+    model_w = os.path.join(tmp_w, "moe.gguf"); lpt.make_synthetic_model(model_w)
+    lpt.MACHINES["win_f1"] = dict(lpt.MACHINES["win"]); lpt.MACHINES["win_f2"] = dict(lpt.MACHINES["win"], listing=lpt.WIN_LIST.replace("15000 MiB free", "13800 MiB free"))
+    seen_vram = []
+    _orig_stage = mc.autotune_stage
+    mc.autotune_stage = lambda *aa, **kk: (seen_vram.append((aa[0].vram, kk.get("vram_user", "MISSING"))), _orig_stage(*aa, **kk))[1]
+    try:
+        lpt.run_case("win_f1", ["--ram", "12", "--ctx", "65536"], [], model_w, tmp_w)
+        lpt.run_case("win_f2", ["--ram", "12", "--ctx", "65536"], [], model_w, tmp_w)
+        lpt.run_case("win_f2", ["--ram", "12", "--ctx", "65536", "--vram", "9"], [], model_w, tmp_w)
+    finally:
+        mc.autotune_stage = _orig_stage
+    check(len(seen_vram) == 3 and seen_vram[0][0] != seen_vram[1][0] and seen_vram[0][1] is None and seen_vram[1][1] is None,
+          f"Windows AMD: a.vram is the free memory of the moment ({[x[0] for x in seen_vram[:2]]}) but the tuner gets vram_user None for both ({seen_vram[:2]})")
+    check(seen_vram[2][1] == "9", f"...and the user's own --vram 9 is passed as given ({seen_vram[2:]})")
+check("vram_user=vram_user" in open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "moe_cache.py"), encoding="utf-8").read(), "the launcher passes vram_user to autotune_stage")
 
 print(f"\n{len(fails)} failed" if fails else "\nall passed")
 sys.exit(1 if fails else 0)
