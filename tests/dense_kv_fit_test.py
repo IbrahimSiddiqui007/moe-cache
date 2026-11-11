@@ -2,7 +2,7 @@
 """LAUNCHER-982 / 983: the dense KV-cache choice, the 'all on GPU' line, the llama-server log scan and the integrated-GPU warning, with fake VRAM figures and fake log lines.
    python3 tests/dense_kv_fit_test.py
 PC 2026-11-08: Qwen3.8-27B at --ctx 65536 on a 16 GB card ran 18.9 tok/s against 35 at 24k because the f16 KV cache did not fit beside the model and llama.cpp moved work to the CPU."""
-import os, struct, sys, tempfile
+import os, struct, sys, tempfile, types
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(HERE, "tests")); sys.path.insert(0, os.path.join(HERE, "planner")); sys.path.insert(0, os.path.join(HERE, "bin"))
 import launch_plan_test as lp      # noqa: E402
@@ -16,7 +16,7 @@ def check(ok, what):
     if not ok:
         fails.append(what)
 
-def make_dense(path, n_layers=24, d=2048):
+def make_dense(path, n_layers=24, d=2048, nextn=0):
     def string(x):
         b = x.encode(); return struct.pack("<Q", len(b)) + b
     infos, off = [], 0
@@ -27,8 +27,13 @@ def make_dense(path, n_layers=24, d=2048):
     for l in range(n_layers):
         add(f"blk.{l}.attn_q.weight", [d, d], 12, d // 256 * 144 * d)
         add(f"blk.{l}.ffn_up.weight", [d, 4 * d], 12, d // 256 * 144 * 4 * d)
-    kv = [("general.architecture", 8, string("llama")), ("llama.block_count", 4, struct.pack("<I", n_layers)), ("llama.context_length", 4, struct.pack("<I", 131072)),
-          ("llama.embedding_length", 4, struct.pack("<I", d)), ("llama.attention.head_count", 4, struct.pack("<I", 16)), ("llama.attention.head_count_kv", 4, struct.pack("<I", 4))]
+    for l in range(n_layers, n_layers + nextn):               # the NextN / MTP layer(s): a whole layer past the main stack (Qwen3.8-27B: blk.64, 0.327 GiB)
+        add(f"blk.{l}.attn_q.weight", [d, d], 12, d // 256 * 144 * d)
+        add(f"blk.{l}.ffn_up.weight", [d, 4 * d], 12, d // 256 * 144 * 4 * d)
+        add(f"blk.{l}.nextn.eh_proj.weight", [2 * d, d], 12, 2 * d // 256 * 144 * d)
+        add(f"blk.{l}.ffn_gate.weight", [d, 40 * d], 12, d // 256 * 144 * 40 * d)        # a layer that weighs something (real: 0.327 GiB), so the plan line has a figure
+    kv = [("general.architecture", 8, string("llama")), ("llama.block_count", 4, struct.pack("<I", n_layers + nextn)), ("llama.context_length", 4, struct.pack("<I", 131072)),
+          ("llama.embedding_length", 4, struct.pack("<I", d)), ("llama.attention.head_count", 4, struct.pack("<I", 16)), ("llama.attention.head_count_kv", 4, struct.pack("<I", 4))] + ([("llama.nextn_predict_layers", 4, struct.pack("<I", nextn))] if nextn else [])
     head = b"GGUF" + struct.pack("<IQQ", 3, len(infos), len(kv))
     for k, t, v in kv:
         head += string(k) + struct.pack("<I", t) + v
@@ -108,6 +113,30 @@ with tempfile.TemporaryDirectory() as tmp:
     check(s8 and s4 and sx and s4["kv_gib"] < sx["kv_gib"] < s8["kv_gib"] and (s4["n_off"] or 0) <= (sx["n_off"] or 0) <= (s8["n_off"] or 0), "layers to RAM are sized with the KV type chosen (q4_0 <= mix <= q8_0 layers)")
     check(gp.kv_elems(("bf16", "q4_0"))[0] == 2.0 and gp.kv_elems(("q5_0", "q8_0"))[0] == 22 / 32 and gp.kv_elems(("weird", "q4_0"))[0] == 2.0, "planner: other -ctk / -ctv types are sized by their own bytes, an unknown one as f16 (errs high; bf16 used to count as q8_0)")
     check([mc.kv_fit_index(*t) for t in (("f16",), ("q8_0",), ("q8_0", "q8_0"), ("q8_0", "q4_0"), ("q4_0", "q4_0"), ("bf16", "q4_0"))] == [0, 1, 1, 2, 3, 0], "kv_fit_index: which ladder entry sizes the KV types in the command")
+    # --- the MTP layer is not on the GPU when MTP is off (the pinned llama.cpp skips its tensors without load_mtp: 0.327 GiB on Qwen3.8-27B) ---
+    mtp_model = os.path.join(tmp, "dense-mtp-Q4.gguf"); make_dense(mtp_model, nextn=1)
+    nb = gp.nextn_bytes(mtp_model)
+    check(nb > 0 and gp.nextn_bytes(model) == 0, f"nextn_bytes: the whole NextN layer ({nb / GIB:.3f} GiB), 0 for a model without one")
+    full = gp.dense_gpu_fit(mtp_model, ctx, 64 * GIB, False, 0.0, 0.0, 0.20)
+    trim = gp.dense_gpu_fit(mtp_model, ctx, 64 * GIB, False, 0.0, 0.0, 0.20, skip_mtp=True)
+    check(abs((full["model_gib"] - trim["model_gib"]) - nb / GIB) < 1e-9 and trim["mtp_skipped_gib"] == nb / GIB and full["mtp_skipped_gib"] == 0.0, "dense_gpu_fit(skip_mtp): the NextN layer's bytes come off the model size")
+    check(abs(gp.dense_gpu_fit(model, ctx, 64 * GIB, False, 0.0, 0.0, 0.20, skip_mtp=True)["need_gib"] - gp.dense_gpu_fit(model, ctx, 64 * GIB, False, 0.0, 0.0, 0.20)["need_gib"]) < 1e-9, "a model without a NextN layer: skip_mtp changes nothing")
+    class _Hm:
+        def __init__(self, text): self.text = text
+        def run(self, cmd, **k): return types.SimpleNamespace(stdout=self.text, stderr="", returncode=0)
+    check(mc.mtp_layer_skipped("/nonexistent/llama-server", [], _Hm("  --spec-type draft-mtp\n")) is True, "mtp_layer_skipped: MTP off + a llama-server that knows draft-mtp: the layer is not loaded")
+    check(mc.mtp_layer_skipped("/nonexistent/llama-server", ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"], _Hm("  --spec-type draft-mtp\n")) is False, "...MTP on: loaded, counted")
+    check(mc.mtp_layer_skipped("/nonexistent/llama-server", [], _Hm("  --cache-ram N\n")) is False, "...an older llama-server without draft-mtp loads it with the model: counted")
+    # the plan: f16 fits only without the MTP layer
+    m16 = lambda sk: gp.dense_gpu_fit(mtp_model, ctx, 64 * GIB, False, 0.0, 0.0, 0.20, skip_mtp=sk)["need_gib"]
+    lim = (m16(False) + m16(True)) / 2
+    run2 = lambda extra_opts=(): lp.run_case("linux", ["--ram", "12", "--vram", f"{lim:.3f}", "--ctx", str(ctx)] + list(extra_opts), [], mtp_model, tmp)
+    r_off = run2(["--no-mtp"]); r_on = run2(["--mtp"])
+    c_off = next((l for l in r_off["stdout"].splitlines() if "llama-server" in l and " -m " in l), ""); c_on = next((l for l in r_on["stdout"].splitlines() if "llama-server" in l and " -m " in l), "")
+    o_off = r_off["stdout"] + r_off.get("stderr", ""); o_on = r_on["stdout"] + r_on.get("stderr", "")
+    check("-ctk" not in c_off and "MTP is off, so llama-server does not load the model's MTP layer" in o_off and "KV cache does not fit" not in o_off,
+          "dry run, MTP off, f16 fits only without the MTP layer: f16 stays, the line says the layer is not counted and how many GiB")
+    check("-ctk q8_0" in c_on and "does not load the model's MTP layer" not in o_on, "dry run, --mtp: the layer is counted, so f16 does not fit: q8_0 KV (unchanged behaviour)")
     kt = mc.kv_plan_type
     check(kt(["-ctk", "q4_0", "-ctv", "q4_0"], True) == "q4_0" and kt(["-ctk", "q8_0"], False) == ("q8_0", "f16") and kt([], True) is True and kt([], False) is False
           and kt(["-ctk", "q8_0", "-ctv", "q4_0"], False) == ("q8_0", "q4_0") and kt(["-ctk", "q8_0", "-ctv", "q8_0"], False) is True and kt(["-ctk", "f16", "-ctv", "f16"], True) is False,

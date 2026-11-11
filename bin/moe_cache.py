@@ -2993,7 +2993,17 @@ def dense_fit_free(a, machine):
         return None, 0.0
 
 
-def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False):
+def mtp_layer_skipped(ls, extra, machine):
+    """True when llama-server will NOT load the model's MTP layer: MTP drafting is off (no --spec-type draft-mtp in the command) and this llama-server knows MTP drafting at all
+    (draft-mtp in its --help: builds with it load the NextN layers only when MTP is on, `load_mtp`; older builds load them with the model, so nothing is skipped there). Checked
+    by loading Qwen3.8-27B with and without MTP on the pinned build (model buffer size) - see the LAUNCHER-1063 follow-up in docs/CHANGELOG."""
+    try:
+        return "draft-mtp" not in extra and "draft-mtp" in ls_help(ls, machine.run)
+    except Exception:
+        return False
+
+
+def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False, skip_mtp=False):
     """LAUNCHER-982: (f16 fit, q8_0 fit) of a model without experts at `ctx` from planner/gguf_plan.py dense_gpu_fit(); None when the layout or the GPU memory is unknown.
     with_q4 (LAUNCHER-1063): the whole ladder (f16, q8_0, K q8_0 / V q4_0, q4_0 fit).
     Constants: with llama-server's own free-memory figure (--vram, or --list-devices on Windows AMD / Intel) compute buffer + context 0.20 GiB and no margin, calibrated on the PC
@@ -3008,10 +3018,10 @@ def dense_gpu_fit_pair(a, model, ctx, machine, with_q4=False):
             fixed, m = 0.20, (a.gpu_margin if a.gpu_margin is not None else 0.0)
         else:
             fixed, m = None, (a.gpu_margin if a.gpu_margin is not None else 0.25)
-        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed)
-        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed)
-        kq8vq4 = dense_gpu_fit(model, ctx, free, KV_K8V4, m, gap, fixed) if with_q4 else True
-        q4 = dense_gpu_fit(model, ctx, free, "q4_0", m, gap, fixed) if with_q4 else True
+        f16 = dense_gpu_fit(model, ctx, free, False, m, gap, fixed, skip_mtp)
+        q8 = dense_gpu_fit(model, ctx, free, True, m, gap, fixed, skip_mtp)
+        kq8vq4 = dense_gpu_fit(model, ctx, free, KV_K8V4, m, gap, fixed, skip_mtp) if with_q4 else True
+        q4 = dense_gpu_fit(model, ctx, free, "q4_0", m, gap, fixed, skip_mtp) if with_q4 else True
     except Exception:
         return None
     if not (f16 and q8 and kq8vq4 and q4):
@@ -3268,7 +3278,11 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
         # LAUNCHER-982 (PC 2026-11-08: Qwen3.8-27B UD-Q3_K_XL at --agent --ctx 65536 ran 18.9 tok/s against 35 at 24k: the f16 KV cache did not fit beside the model, llama.cpp's --fit
         # moved the attention over the KV cache to the CPU): estimate model + KV + compute against the free GPU memory; f16 if it fits, else the 8-bit cache when that fits (or at least
         # spills less); --exact keeps f16 and the 'all on GPU' line says what it costs
-        triple = dense_gpu_fit_pair(a, a.model, ctx, machine, with_q4=True)
+        skip = mtp_layer_skipped(ls, extra, machine)
+        triple = dense_gpu_fit_pair(a, a.model, ctx, machine, with_q4=True, skip_mtp=skip)
+        if triple and triple[0].get("mtp_skipped_gib", 0) > 0.05:
+            say(f"moe-cache: MTP is off, so llama-server does not load the model's MTP layer: its {triple[0]['mtp_skipped_gib']:.2f} GiB is not counted against the GPU "
+                "(--mtp keeps it and counts it)")
         pair = triple[:2] if triple else None
         if pair and not pair[0]["fits"]:
             a.fast, a.dense_kv = "kv", True
@@ -3746,13 +3760,13 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
     # LAUNCHER-983: tell the log scan whether work on the CPU is part of this plan (experts on the CPU by design, FFN weights in RAM, CPU-only, a dense model the estimate says is over the GPU)
     expect = bool(cpu_only or (not dense and ncmoe not in (None, "0")) or (dense and "-ot" in cmd))
     if dense and not expect:
-        pair = dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True)
+        pair = dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True, skip_mtp=mtp_layer_skipped(ls, extra, machine))
         kv_name = arg_after(extra, "-ctk", "--cache-type-k") or "f16"
         r = pair[min(kv_fit_index(kv_name, arg_after(extra, "-ctv", "--cache-type-v")), len(pair) - 1)] if pair else None
         expect = bool(r and not r["fits"])
     EXPECT_CPU_WORK[0] = expect
     if dense and not cpu_only and not expect and "--load-mode" in cmd:
-        why = load_mode_fit_none(a, cmd, extra, machine, ctx, dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True), arg_after(extra, "-ctk", "--cache-type-k") or "f16",
+        why = load_mode_fit_none(a, cmd, extra, machine, ctx, dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True, skip_mtp=mtp_layer_skipped(ls, extra, machine)), arg_after(extra, "-ctk", "--cache-type-k") or "f16",
                                  arg_after(extra, "-ctv", "--cache-type-v"))
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
