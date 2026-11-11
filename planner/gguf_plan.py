@@ -321,7 +321,20 @@ def read_meta(path):
     return out
 
 
-KV_ELEM = {False: 2.0, True: 34 / 32}       # bytes per K/V value: f16, q8_0 (--fast)
+KV_ELEM = {False: 2.0, True: 34 / 32, "q4_0": 18 / 32}       # bytes per K/V value: f16, q8_0 (--fast), q4_0 (a block of 32 values is 18 bytes)
+
+
+KV_ELEM_BY_NAME = {"f16": 2.0, "bf16": 2.0, "f32": 4.0, "q8_0": 34 / 32, "q5_1": 24 / 32, "q5_0": 22 / 32, "q4_1": 20 / 32, "q4_0": 18 / 32, "iq4_nl": 18 / 32}      # bytes per value of llama.cpp's -ctk / -ctv types
+
+
+def kv_elems(kv):
+    """(bytes per K value, bytes per V value) for a KV type (LAUNCHER-1063): False / "f16" = f16, True / "q8_0" = q8_0 for both, "q4_0" = q4_0 for both, or a pair
+    ("q8_0", "q4_0") = K type, V type (llama.cpp's -ctk / -ctv; K matters more for quality than V)."""
+    one = lambda t: KV_ELEM[t] if t == "q4_0" else (KV_ELEM_BY_NAME.get(t, 2.0) if isinstance(t, str) else KV_ELEM[bool(t)])      # a type not in the table counts as f16: errs high
+    if isinstance(kv, (tuple, list)):
+        return one(kv[0]), one(kv[1])
+    e = one(kv)
+    return e, e
 
 
 def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
@@ -351,12 +364,13 @@ def kv_bytes(path, ctx, kv_q8=False, n_seq=4):
     v_len = g("attention.value_length") or k_len
     interval = int(g("full_attention_interval", 0) or 0)
     n_attn = n_main // interval if interval else n_main
-    elem = KV_ELEM[bool(kv_q8)]
+    ek, ev = kv_elems(kv_q8)
+    elem = (ek + ev) / 2
     if kv_list is not None:                                   # llama.cpp sizes each layer by its own n_head_kv
         n_attn = sum(1 for x in kv_list[:n_main] if x > 0)
-        per_tok = sum(kv_list[:n_main]) * (k_len + v_len) * elem
+        per_tok = sum(kv_list[:n_main]) * (k_len * ek + v_len * ev)
     else:
-        per_tok = n_attn * kvh * (k_len + v_len) * elem
+        per_tok = n_attn * kvh * (k_len * ek + v_len * ev)
     if g("attention.indexer.key_length"):
         per_tok += 2 * n_attn * g("attention.indexer.key_length") * elem    # the indexer's cache: 2 x key_length per token and attention layer (PC, 256k: 1536 MiB f16)
     state = 0
