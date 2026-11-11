@@ -264,7 +264,11 @@ try:
     check(info["state"] == "no_room" and cmd == BASE_CMD, "free GPU memory not readable now: a pick that adds GPU use is not applied")
     _old = dict(_rec); _old.pop("free_vram_mib"); _json.dump(_old, open(_f, "w"))
     cmd, env, info, out = stage(probe=False, machine=M(tmp, free_mib=7600))
-    check(info["state"] == "no_room" and cmd == BASE_CMD and any("cannot be compared" in l for l in out), "a result stored without the free-memory figure cannot be compared: not applied, says so")
+    check(info["state"] == "pending" and cmd == BASE_CMD and any("no record of the free GPU memory" in l for l in out), "a result stored without the free-memory figure (older version) counts as stale: not applied, says it is measured again")
+    n = len(calls)
+    cmd, env, info, out = stage(machine=M(tmp, free_mib=7600))
+    check(info["state"] == "tuned" and len(calls) > n and _json.load(open(_f)).get("free_vram_mib") == 7600, "...and the next real start measures again and records the figure (no dead end)")
+    _rec = _json.load(open(_f))
     # expiry
     def _age(days):
         r = dict(_rec); r["tuned_at"] = _time.strftime("%Y-%m-%d %H:%M", _time.localtime(_time.time() - days * 86400)); _json.dump(r, open(_f, "w"))

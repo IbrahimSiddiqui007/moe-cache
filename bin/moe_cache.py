@@ -4014,6 +4014,13 @@ def autotune_stage(a, argv, cmd, env, key_env, model, ctx, ls, machine, engine, 
             expired.append(f"moe-cache: auto-tune: the stored pick is {age:.0f} days old (tuned {stored.get('tuned_at')}; picks expire after {at.PICK_MAX_AGE_DAYS} days): measured again at the next real start")
             say_fn(expired[-1])
             return None
+        if (stored and stored.get("state") in ("tuned", "cached") and not stored.get("bad") and not stored.get("free_vram_mib")
+                and at.adds_gpu_use(cmd, at.pick_edits(stored)) and autotune_free_vram(a, machine)):
+            # a result stored before the free GPU memory was recorded: a pick that adds GPU use cannot be compared with anything, and would stay unusable for good (a stored result is
+            # never measured again). It counts as stale: the next real start measures again and records the figure.
+            expired.append("moe-cache: auto-tune: the stored result has no record of the free GPU memory it was measured with, and its pick puts more on the GPU: measured again at the next real start")
+            say_fn(expired[-1])
+            return None
         return stored
     stored = None if a.retune else fresh(at.load(CACHE_DIR, parts))
     if stored:
