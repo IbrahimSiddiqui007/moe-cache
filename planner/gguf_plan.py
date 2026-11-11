@@ -520,7 +520,7 @@ ROOM_RESERVE_MIB = 300      # kept free below the card's size minus the other pr
 ROOM_KEEP_S = 30 * 86400    # a learned ceiling is trusted for 30 days
 
 
-def counters_text(pid=None, timeout=20):
+def counters_text(pid=None, timeout=5):
     """One PowerShell read of '\\GPU Process Memory(*)' Dedicated and Shared Usage ('path|value;...', the format parse_gpu_process_counters reads), of one process when pid is given. '' when it fails."""
     pat = f"pid_{pid}_*" if pid else "*"
     cmd = ("Get-Counter -Counter '\\GPU Process Memory(P)\\Dedicated Usage','\\GPU Process Memory(P)\\Shared Usage' -ErrorAction SilentlyContinue | "
@@ -579,19 +579,21 @@ def room_ceiling(cache_dir, device, now=None):
     return None
 
 
-def room_learn(cache_dir, device, ded, sha, now=None):
+def room_learn(cache_dir, device, ded, sha, now=None, room_mib=None):
     """Record what one reading of our own process says. Paging (shared above GPU_PAGED_MIB): the dedicated figure is this machine's ceiling now. No paging with more dedicated memory than
-    a stored ceiling: the desktop gave room back, the ceiling is dropped. Returns True when the process is paging."""
+    a stored ceiling, or a pre-load room (room_mib) clearly above it: the desktop gave room back, the ceiling is dropped. Shared use while dedicated memory is far below room_mib is not paging. Returns True when the process is paging."""
     import time
     if ded is None:
         return False
     paging = sha is not None and sha > GPU_PAGED_MIB
+    if paging and room_mib and ded < room_mib - 1024:
+        paging = False          # shared use while dedicated memory is far from the card's room is staging, not paging: no ceiling (it would ratchet the plan down)
     st = _room_read(cache_dir)
     d = st.get(device) or {}
     before = json.dumps(d, sort_keys=True)
     if paging:
         d.update(ceiling_mib=int(ded), paged_mib=int(sha), t=now or time.time())
-    elif d.get("ceiling_mib") and ded > d["ceiling_mib"] + 256:
+    elif d.get("ceiling_mib") and (ded > d["ceiling_mib"] + 256 or (room_mib and room_mib > d["ceiling_mib"] + 1024)):
         d.pop("ceiling_mib", None); d.pop("paged_mib", None)
     if json.dumps(d, sort_keys=True) != before:
         st[device] = d
@@ -606,7 +608,7 @@ def room_learn(cache_dir, device, ded, sha, now=None):
     return paging
 
 
-def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=None, delays=(5, 25, 60), every=300):
+def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=None, delays=(5, 25, 60), every=300, room_mib=None):
     """After the load (ready() true), read our own process's dedicated and shared GPU memory a few times, then every `every` seconds while alive(): learn the ceiling (room_learn) and say
     one 'moe-cache: warning:' line (the Monitor lifts those) when paging starts. Stops after 3 readings in a row without a counter. sampler(pid) -> text; sleep(s) is injectable for tests."""
     import time
@@ -628,7 +630,7 @@ def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=No
                 return
             continue
         miss = 0
-        if room_learn(cache_dir, device, ded, sha) and not warned:
+        if room_learn(cache_dir, device, ded, sha, room_mib=room_mib) and not warned:
             warned = True
             say(f"moe-cache: warning: GPU memory is paging: {sha:.0f} MiB of this server sit in shared system memory (the card keeps {ded / 1024:.1f} GiB of dedicated memory for it, "
                 "the desktop and other programs hold the rest), so decode is slower. The next start plans with that room and takes a smaller KV cache type (q8_0, then K q8_0 / V q4_0, "

@@ -2092,7 +2092,7 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
         try:
             sys.path.insert(0, os.path.join(HERE, "planner"))
             from gguf_plan import watch_room
-            threading.Thread(target=watch_room, args=(p.pid, REAL_ROOM["device"], CACHE_DIR, lambda m: say(m, err=True), lambda: p.poll() is None, lambda: seen["ready"]), daemon=True).start()
+            threading.Thread(target=watch_room, args=(p.pid, REAL_ROOM["device"], CACHE_DIR, lambda m: say(m, err=True), lambda: p.poll() is None, lambda: seen["ready"]), kwargs={"room_mib": REAL_ROOM.get("room_mib")}, daemon=True).start()
         except Exception:
             pass
     if port:
@@ -3019,10 +3019,12 @@ def real_room_stage(a, g, machine):
     try:
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import others_dedicated_mib, real_room_mib, room_ceiling
-        REAL_ROOM["device"] = g[1]
+        REAL_ROOM["device"] = g[1]; REAL_ROOM.pop("room_mib", None)
         total, driver = float(g[3]), float(g[2])
         others = others_dedicated_mib(machine.gpu_process_text()) if hasattr(machine, "gpu_process_text") else None
         pre = real_room_mib(total, others)
+        if pre:
+            REAL_ROOM["room_mib"] = pre
         ceil_ = room_ceiling(CACHE_DIR, g[1])
         room = min([x for x in (pre, ceil_) if x] or [None]) if (pre or ceil_) else None
         if room is None or room >= driver - 256:
