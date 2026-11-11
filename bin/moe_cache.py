@@ -3052,7 +3052,7 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
     r = pair[min(i, len(pair) - 1)] if pair else None
     if not r or not r["fits"]:
         return None
-    return "the model fits fully on the GPU: --load-mode none (no memory-mapped copy of the file in RAM while loading; --exact or --load-mode after -- keeps llama.cpp's default)"
+    return "the model fits fully on the GPU: --load-mode none (no memory-mapped copy of the file in RAM while loading; seen on one PC run, no published record yet; --exact or --load-mode after -- keeps llama.cpp's default)"
 
 
 def gpu_fit_words(r, kv_name):
@@ -3280,10 +3280,10 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
                 over8 = pair[1]["over_gib"]
                 if mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
-                    quality = "approximate: same top token in 94.6 % of positions against f16 (q8_0/q8_0: 96.5 %)"
+                    quality = "approximate: same top token in 94.6 % of positions against f16 (q8_0/q8_0: 96.5 %; measured on one laptop run, 27B, no published record yet)"
                 else:
                     a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
-                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173 (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
+                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173; measured on one laptop run, 27B, no published record yet (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
                 saves = pair[1]["kv_gib"] - got["kv_gib"]
                 say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
                     f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else

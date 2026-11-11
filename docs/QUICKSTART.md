@@ -80,6 +80,8 @@ It runs the model once without and once with the plugin and compares the generat
 
 ## 3. Run it
 
+The first start of a small model (under 40 % of your RAM) may spend up to 180 s auto-tuning; `--retune` measures again, `--exact` or your own flags skip it. On Windows the launcher may refuse to start when free memory commit is too low: close big programs or raise the page file as the message says (see [TROUBLESHOOTING](TROUBLESHOOTING.md#crashes-on-windows-with-other-programs-open); `--no-commit-check` skips the check).
+
 ```bash
 bin/moe-cache-server /path/to/model.gguf --ram 12 --ctx 8192 --llama-server /path/to/llama-server --open
 ```
