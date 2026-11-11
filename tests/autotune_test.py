@@ -700,7 +700,7 @@ with tempfile.TemporaryDirectory() as tmp_k:
 # and through the launcher: _launch_plan passes the user's --vram (None on Windows AMD / Intel, where gpu_stage fills a.vram in)
 # end to end through the launcher (Windows AMD): two plans whose free GPU memory differs ("--list-devices" 15000 vs 13800 MiB) pass the same vram_user (None) to the tuner, so they share one key
 with tempfile.TemporaryDirectory() as tmp_w:
-    model_w = os.path.join(tmp_w, "moe.gguf"); lpt.make_synthetic_model(model_w)
+    model_w = model          # the synthetic model of this file (do not build a second 18 GB one: on the Windows runner the file is not sparse and the disk ran full)
     lpt.MACHINES["win_f1"] = dict(lpt.MACHINES["win"]); lpt.MACHINES["win_f2"] = dict(lpt.MACHINES["win"], listing=lpt.WIN_LIST.replace("15000 MiB free", "13800 MiB free"))
     seen_vram = []
     _orig_stage = mc.autotune_stage
