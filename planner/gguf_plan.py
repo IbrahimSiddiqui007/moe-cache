@@ -250,7 +250,28 @@ def dense_ffn_split(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25):
     return out
 
 
-def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0.0, fixed_gib=None):
+def nextn_bytes(path):
+    """Bytes of the NextN / MTP layers of a model file (the blocks past the main stack: blk.N with N >= block_count - nextn_predict_layers, ALL their tensors, not only the
+    blk.N.nextn.* ones: Qwen3.8-27B's blk.64 is a whole layer, 0.327 GiB while its nextn.* tensors are 0.04 GiB); 0 when the model has none. llama.cpp builds that know
+    `load_mtp` do not load them unless MTP drafting is on (LAUNCHER-1063 follow-up: the memory plan then must not count them)."""
+    try:
+        m = read_meta(shards(path)[0])
+        arch = m.get("general.architecture")
+        n_next, blocks = int(m.get(f"{arch}.nextn_predict_layers", 0) or 0), int(m.get(f"{arch}.block_count", 0) or 0)
+        if n_next <= 0 or blocks <= n_next:
+            return 0
+        first, total = blocks - n_next, 0
+        for pth in shards(path):
+            for name, size in read_tensors(pth):
+                mm = re.match(r"blk\.(\d+)\.", name)
+                if mm and int(mm.group(1)) >= first:
+                    total += size
+        return total
+    except Exception:
+        return 0
+
+
+def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0.0, fixed_gib=None, skip_mtp=False):
     """LAUNCHER-982: does a model WITHOUT experts (dense, including the hybrid recurrent Qwen3.5/3.6/3.8 layouts) fit the GPU together with its KV cache?
     -> dict(model_gib, kv_gib, fixed_gib, margin_gib, need_gib, free_gib, fits, over_gib, ctx_fit) or None (unknown KV layout: sliding window, MLA; no GPU memory figure).
     model = file minus the token embedding (it stays on the CPU, laptop-measured); kv = kv_bytes() as llama-server sizes it (attention layers + recurrent state); fixed = CUDA/Vulkan
@@ -269,11 +290,12 @@ def dense_gpu_fit(path, ctx, free_bytes, kv_q8=False, margin_gib=0.25, gap_gib=0
         kv = kv_bytes(path, ctx, kv_q8=kv_q8)
         if kv is None:
             return None
-        model = (total - emb) / GiB
+        skipped = nextn_bytes(path) / GiB if skip_mtp else 0.0          # MTP is off and this llama-server does not load the MTP layer: it takes no GPU memory
+        model = (total - emb) / GiB - skipped
         free = free_bytes / GiB - gap_gib
         need = model + kv / GiB + fixed + margin_gib
         kv1 = kv_bytes(path, ctx, kv_q8=kv_q8, n_seq=1)
-        out = {"np1_saves_gib": ((kv - kv1) / GiB if kv1 is not None else 0.0), "model_gib": model, "kv_gib": kv / GiB, "fixed_gib": fixed, "margin_gib": margin_gib, "need_gib": need, "free_gib": free,
+        out = {"np1_saves_gib": ((kv - kv1) / GiB if kv1 is not None else 0.0), "model_gib": model, "mtp_skipped_gib": skipped, "kv_gib": kv / GiB, "fixed_gib": fixed, "margin_gib": margin_gib, "need_gib": need, "free_gib": free,
                "fits": need <= free, "over_gib": max(need - free, 0.0), "ctx_fit": ctx if need <= free else 0}
         if need > free:
             lo, hi = 0, ctx // 1024
