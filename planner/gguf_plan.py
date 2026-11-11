@@ -513,6 +513,46 @@ def start_gpu_mem_log(pid, say, windows, env=None, alive=None):
     return th
 
 
+# LAUNCHER-1133 (audit 2026-11-12, rank 1; build's LAUNCHER-1131 WIP, pre-load half only): Windows AMD / Intel: llama-server's --list-devices "free" is the Vulkan budget (what the process may
+# allocate). With the desktop on the card the process keeps only its dedicated share (PC, RX 9070 XT 16 GB: 13.1-13.5 GiB of 15.4 GiB "free") and the rest is paged to shared system memory without a log line.
+ROOM_RESERVE_MIB = 300      # kept free below the card's size minus the other programs' use (their use grows while the server runs)
+
+
+def counters_text(pid=None, timeout=8):
+    """One PowerShell read of '\\GPU Process Memory(*)' Dedicated Usage ('path|value;...', the format others_dedicated_mib reads). '' when it fails."""
+    pat = f"pid_{pid}_*" if pid else "*"
+    cmd = ("Get-Counter -Counter '\\GPU Process Memory(P)\\Dedicated Usage' -ErrorAction SilentlyContinue | "
+           "ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';' }").replace("(P)", f"({pat})")
+    try:
+        return subprocess.run([_win_ps(), "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, errors="replace", timeout=timeout).stdout
+    except Exception:
+        return ""
+
+
+def others_dedicated_mib(text, exclude_pid=None):
+    """MiB of dedicated GPU memory held by all processes (except exclude_pid) in counters_text(); None when no counter matched. All adapters are added (an integrated GPU's few
+    hundred MiB make the room a little smaller than needed: the safe side)."""
+    tot = None
+    for item in text.replace("\n", ";").split(";"):
+        path, _, val = item.rpartition("|")
+        path = path.lower()
+        if "gpu process memory" not in path or not path.endswith("dedicated usage") or (exclude_pid is not None and f"pid_{exclude_pid}_" in path):
+            continue
+        try:
+            tot = (tot or 0.0) + float(val) / 1048576
+        except ValueError:
+            pass
+    return tot
+
+
+def real_room_mib(total_mib, others_mib, reserve_mib=ROOM_RESERVE_MIB):
+    """What a new process keeps in dedicated VRAM: the card's size minus the other programs' dedicated use minus a growth reserve; None when a figure is missing or the result is not plausible."""
+    if not total_mib or others_mib is None or others_mib >= total_mib:
+        return None
+    r = total_mib - others_mib - reserve_mib
+    return r if r >= 1024 else None
+
+
 def desk_reserve_gb(total, free, base=0.5):
     """VRAM (GB) to keep free next to everything the tuner places, scaled with what other programs already hold (the desktop compositor, a browser).
     Their use grows while the server runs (a browser tab, a video): the more the desktop already takes, the more room is left so the long-prompt GPU

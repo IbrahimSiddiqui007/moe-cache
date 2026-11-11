@@ -147,6 +147,12 @@ def fake_machine(m, tmp):
     mc.win_memory = lambda: m["win_mem"]
     mc.win_commit = lambda: m["commit"]
     mc.win_dedicated_vram = lambda: m["ded"]
+    def _others_mib(m=m):           # LAUNCHER-1133: the other programs' GPU use the counters report: default = the card's total minus the driver's free figure (what the plans were recorded with)
+        if "others_mib" in m:
+            return m["others_mib"]
+        g = mc.pick_gpu_full(m["listing"]) if m.get("listing") else None
+        return max(g[3] - g[2], 0) if g else 0
+    mc.win_gpu_process_text = lambda: m.get("gpu_proc", "\\\\pc\\gpu process memory(pid_4_luid_0x0_0x1_phys_0)\\dedicated usage|%d" % (_others_mib() * 1048576))
     mc.win_driver_version = lambda name: m["driver"]
     mc.win_cores = lambda: m["cores"]
     mc.list_devices = lambda ls: m["listing"]

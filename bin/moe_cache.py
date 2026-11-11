@@ -2336,6 +2336,8 @@ class Machine:
 
     def other_llama_servers(self): return other_llama_servers()
 
+    def gpu_process_text(self): return win_gpu_process_text()       # LAUNCHER-1133
+
     def free_vram_bytes(self):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import free_vram_bytes
@@ -2902,6 +2904,8 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
                 # the margin grows with the VRAM other programs (desktop, browser) already hold: their use grows while the server runs
                 from gguf_plan import desk_reserve_gb
                 tf = (gpu[3] * 2**20, gpu[2] * 2**20) if (a.vram and gpu and gpu[3] > 0 and abs(float(a.vram) * 1024 - gpu[2]) < 2) else (None if a.vram else machine.gpu_total_free_bytes())      # --vram given by the user: no way to know what others hold
+                if tf and getattr(a, "room_used_gib", None) is not None and a.vram and gpu and tf[0]:
+                    tf = (tf[0], max(tf[0] - a.room_used_gib * 2**30, 0.0))       # LAUNCHER-1133: "used" = the other programs' dedicated use from the counters, not total minus the driver's budget figure
                 if tf:
                     res, used = desk_reserve_gb(*tf)
                     if res > 0.5:
@@ -3011,6 +3015,37 @@ def commit_check_on(a, machine):
     return bool(machine.windows and not a.no_commit_check and os.environ.get("MOE_CACHE_COMMIT_CHECK") != "0")
 
 
+def win_gpu_process_text():
+    """LAUNCHER-1133: every process's dedicated GPU memory now (Windows counters, one PowerShell read); '' when it fails. Its own function so the recorded launch-plan tests can replace it."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    from gguf_plan import counters_text
+    return counters_text()
+
+
+def real_room_stage(a, g, machine):
+    """LAUNCHER-1133 (Windows AMD / Intel, --vram not given; build's LAUNCHER-1131 WIP, pre-load half only): llama-server's free figure is the Vulkan budget; with the desktop on the card the
+    process keeps only its dedicated share and the rest is paged silently (PC 2026-11-11, RX 9070 XT: 15.4 GiB "free", 13.1-13.5 GiB kept; q8_0 KV at 64k ran 18.5 tok/s against 27.8 with q4_0).
+    Sets a.room_gib = the card's size minus the other programs' dedicated use minus a reserve when that is smaller than the driver's figure (the dense fit plans against it) and a.room_used_gib
+    (what the desk reserve counts as used). The counters unreadable: the driver's figure as before, said in one line. Never raises."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import others_dedicated_mib, real_room_mib, ROOM_RESERVE_MIB
+        total, driver = float(g[3]), float(g[2])
+        others = others_dedicated_mib(machine.gpu_process_text())
+        if others is None:
+            say("moe-cache: GPU room: the other programs' GPU memory use could not be read (Windows counters): planning with llama-server's free figure as before")
+            return
+        a.room_used_gib = others / 1024
+        room = real_room_mib(total, others)
+        if room is None or room >= driver - 256:
+            return
+        a.room_gib = room / 1024
+        say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB (the desktop and other programs hold {others / 1024:.1f} GiB of the card's "
+            f"{total / 1024:.1f} GiB, and a reserve of {ROOM_RESERVE_MIB} MiB stays free); --vram GiB sets it by hand")
+    except Exception:
+        pass
+
+
 def gpu_stage(a, ls, win, machine):
     """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
     vram_user = a.vram
@@ -3029,6 +3064,7 @@ def gpu_stage(a, ls, win, machine):
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
+            real_room_stage(a, g, machine)
             # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
             # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
     return vram_user, listing, gpu
@@ -3041,7 +3077,8 @@ def dense_fit_free(a, machine):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import SMI_GAP_GIB
         if a.vram:
-            return float(a.vram) * 2**30, 0.0
+            room = getattr(a, "room_gib", None)           # LAUNCHER-1133: the room the card really gives (gpu_stage; never set for the user's own --vram)
+            return (min(float(a.vram), room) if room else float(a.vram)) * 2**30, 0.0
         f = machine.free_vram_bytes()
         return (f, SMI_GAP_GIB) if f else (None, 0.0)
     except Exception:
