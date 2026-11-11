@@ -147,6 +147,7 @@ def fake_machine(m, tmp):
     mc.win_memory = lambda: m["win_mem"]
     mc.win_commit = lambda: m["commit"]
     mc.win_dedicated_vram = lambda: m["ded"]
+    mc.win_gpu_process_text = lambda: ""           # LAUNCHER-1131: no PowerShell read in the recorded plans (the real-room planning has its own test)
     mc.win_driver_version = lambda name: m["driver"]
     mc.win_cores = lambda: m["cores"]
     mc.list_devices = lambda ls: m["listing"]

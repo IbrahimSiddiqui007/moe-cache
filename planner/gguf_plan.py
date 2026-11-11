@@ -513,6 +513,128 @@ def start_gpu_mem_log(pid, say, windows, env=None, alive=None):
     return th
 
 
+# LAUNCHER-1131: the room the user's GPU really gives this server. Windows AMD / Intel: llama-server's --list-devices "free" is the Vulkan budget (what the process may allocate);
+# with the desktop on the card it only ever keeps its dedicated share (PC, RX 9070 XT 16 GB: 13.1-13.5 GiB of 15.4), the rest is paged to shared system memory without a log line.
+GPU_PAGED_MIB = 300         # shared use of our process above this: paging
+ROOM_RESERVE_MIB = 300      # kept free below the card's size minus the other programs' use (their use grows while the server runs)
+ROOM_KEEP_S = 30 * 86400    # a learned ceiling is trusted for 30 days
+
+
+def counters_text(pid=None, timeout=20):
+    """One PowerShell read of '\\GPU Process Memory(*)' Dedicated and Shared Usage ('path|value;...', the format parse_gpu_process_counters reads), of one process when pid is given. '' when it fails."""
+    pat = f"pid_{pid}_*" if pid else "*"
+    cmd = ("Get-Counter -Counter '\\GPU Process Memory(P)\\Dedicated Usage','\\GPU Process Memory(P)\\Shared Usage' -ErrorAction SilentlyContinue | "
+           "ForEach-Object { ($_.CounterSamples | ForEach-Object { $_.Path + '|' + $_.CookedValue }) -join ';' }").replace("(P)", f"({pat})")
+    try:
+        return subprocess.run([_win_ps(), "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, errors="replace", timeout=timeout).stdout
+    except Exception:
+        return ""
+
+
+def others_dedicated_mib(text, exclude_pid=None):
+    """MiB of dedicated GPU memory held by all processes (except exclude_pid) in counters_text(); None when no counter matched."""
+    tot = None
+    for item in text.replace("\n", ";").split(";"):
+        path, _, val = item.rpartition("|")
+        path = path.lower()
+        if "gpu process memory" not in path or not path.endswith("dedicated usage") or (exclude_pid is not None and f"pid_{exclude_pid}_" in path):
+            continue
+        try:
+            tot = (tot or 0.0) + float(val) / 1048576
+        except ValueError:
+            pass
+    return tot
+
+
+def real_room_mib(total_mib, others_mib, reserve_mib=ROOM_RESERVE_MIB):
+    """What a new process keeps in dedicated VRAM: the card's size minus the other programs' dedicated use minus a growth reserve; None when a figure is missing or the result is not plausible."""
+    if not total_mib or others_mib is None or others_mib >= total_mib:
+        return None
+    r = total_mib - others_mib - reserve_mib
+    return r if r >= 1024 else None
+
+
+def _room_file(cache_dir):
+    return os.path.join(cache_dir, "gpu_room.json")
+
+
+def _room_read(cache_dir):
+    try:
+        with open(_room_file(cache_dir), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def room_ceiling(cache_dir, device, now=None):
+    """The learned dedicated ceiling (MiB) of this GPU, or None (never paged, older than 30 days, unreadable)."""
+    import time
+    d = _room_read(cache_dir).get(device) or {}
+    try:
+        if d.get("ceiling_mib") and (now or time.time()) - float(d.get("t", 0)) <= ROOM_KEEP_S:
+            return int(d["ceiling_mib"])
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def room_learn(cache_dir, device, ded, sha, now=None):
+    """Record what one reading of our own process says. Paging (shared above GPU_PAGED_MIB): the dedicated figure is this machine's ceiling now. No paging with more dedicated memory than
+    a stored ceiling: the desktop gave room back, the ceiling is dropped. Returns True when the process is paging."""
+    import time
+    if ded is None:
+        return False
+    paging = sha is not None and sha > GPU_PAGED_MIB
+    st = _room_read(cache_dir)
+    d = st.get(device) or {}
+    before = json.dumps(d, sort_keys=True)
+    if paging:
+        d.update(ceiling_mib=int(ded), paged_mib=int(sha), t=now or time.time())
+    elif d.get("ceiling_mib") and ded > d["ceiling_mib"] + 256:
+        d.pop("ceiling_mib", None); d.pop("paged_mib", None)
+    if json.dumps(d, sort_keys=True) != before:
+        st[device] = d
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            tmp = _room_file(cache_dir) + f".{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(st, f, indent=1)
+            os.replace(tmp, _room_file(cache_dir))
+        except OSError:
+            pass
+    return paging
+
+
+def watch_room(pid, device, cache_dir, say, alive, ready, sampler=None, sleep=None, delays=(5, 25, 60), every=300):
+    """After the load (ready() true), read our own process's dedicated and shared GPU memory a few times, then every `every` seconds while alive(): learn the ceiling (room_learn) and say
+    one 'moe-cache: warning:' line (the Monitor lifts those) when paging starts. Stops after 3 readings in a row without a counter. sampler(pid) -> text; sleep(s) is injectable for tests."""
+    import time
+    sampler = sampler or counters_text
+    sleep = sleep or time.sleep
+    while alive() and not ready():
+        sleep(1)
+    warned = False; miss = 0; i = 0
+    while alive():
+        d = delays[i] if i < len(delays) else every
+        i += 1
+        sleep(d)
+        if not alive():
+            return
+        ded, sha = parse_gpu_process_counters(sampler(pid), pid)
+        if ded is None:
+            miss += 1
+            if miss >= 3:
+                return
+            continue
+        miss = 0
+        if room_learn(cache_dir, device, ded, sha) and not warned:
+            warned = True
+            say(f"moe-cache: warning: GPU memory is paging: {sha:.0f} MiB of this server sit in shared system memory (the card keeps {ded / 1024:.1f} GiB of dedicated memory for it, "
+                "the desktop and other programs hold the rest), so decode is slower. The next start plans with that room and takes a smaller KV cache type (q8_0, then K q8_0 / V q4_0, "
+                "then q4_0) or moves layers to RAM; closing programs that use the card gives it room back")
+
+
 def desk_reserve_gb(total, free, base=0.5):
     """VRAM (GB) to keep free next to everything the tuner places, scaled with what other programs already hold (the desktop compositor, a browser).
     Their use grows while the server runs (a browser tab, a video): the more the desktop already takes, the more room is left so the long-prompt GPU

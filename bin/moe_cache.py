@@ -2088,6 +2088,13 @@ def run_child_once(cmd, env, port=None, expect_plugin=False, mem_limit=None, all
                     seen["disabled"] = line.decode(errors="replace").strip()
     pump_t = threading.Thread(target=pump, daemon=True)
     pump_t.start()
+    if WINDOWS and REAL_ROOM.get("device") and "--device none" not in " ".join(cmd):      # LAUNCHER-1131: paging detector + learned ceiling (planner/gguf_plan.py watch_room)
+        try:
+            sys.path.insert(0, os.path.join(HERE, "planner"))
+            from gguf_plan import watch_room
+            threading.Thread(target=watch_room, args=(p.pid, REAL_ROOM["device"], CACHE_DIR, lambda m: say(m, err=True), lambda: p.poll() is None, lambda: seen["ready"]), daemon=True).start()
+        except Exception:
+            pass
     if port:
         def check():       # seen["ready"] for every engine (LAUNCHER-1045 needs it for stock runs too); the plugin warnings only when the plugin was meant to load
             while True:    # no cap: a model that loads in 20 minutes is ready then, and a crash hours later must not look like "never came up"
@@ -2317,6 +2324,8 @@ class Machine:
     def lib_exists(self, lib): return os.path.isfile(lib)
 
     def other_llama_servers(self): return other_llama_servers()
+
+    def gpu_process_text(self): return win_gpu_process_text()       # LAUNCHER-1131
 
     def free_vram_bytes(self):
         sys.path.insert(0, os.path.join(HERE, "planner"))
@@ -2993,6 +3002,42 @@ def commit_check_on(a, machine):
     return bool(machine.windows and not a.no_commit_check and os.environ.get("MOE_CACHE_COMMIT_CHECK") != "0")
 
 
+def win_gpu_process_text():
+    """LAUNCHER-1131: every process's dedicated GPU memory now (Windows counters, one PowerShell read); '' when it fails. Its own function so the golden launch-plan tests can replace it."""
+    sys.path.insert(0, os.path.join(HERE, "planner"))
+    from gguf_plan import counters_text
+    return counters_text()
+
+
+REAL_ROOM = {}        # LAUNCHER-1131: {"device": the GPU's name} while the planner plans against the room it really has (the watcher of _run_child learns the ceiling for it)
+
+
+def real_room_stage(a, g, machine):
+    """LAUNCHER-1131 (Windows AMD / Intel, --vram not given): llama-server's free figure is the Vulkan budget; with the desktop on the card the process keeps only its dedicated share and the rest
+    is paged silently (PC 2026-11-11, RX 9070 XT: 15.4 GiB "free", 13.1-13.5 GiB kept; q8_0 KV at 64k ran 18.5 tok/s against 27.8 with q4_0). Sets a.room_gib to the smaller of the card's size minus the
+    other programs' dedicated use minus a reserve, and the ceiling learned from an earlier paging run; the dense fit (dense_fit_free) plans against it. Never raises."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import others_dedicated_mib, real_room_mib, room_ceiling
+        REAL_ROOM["device"] = g[1]
+        total, driver = float(g[3]), float(g[2])
+        others = others_dedicated_mib(machine.gpu_process_text()) if hasattr(machine, "gpu_process_text") else None
+        pre = real_room_mib(total, others)
+        ceil_ = room_ceiling(CACHE_DIR, g[1])
+        room = min([x for x in (pre, ceil_) if x] or [None]) if (pre or ceil_) else None
+        if room is None or room >= driver - 256:
+            return
+        a.room_gib = room / 1024
+        why = []
+        if pre and pre < driver - 256:
+            why.append(f"the desktop and other programs hold {others / 1024:.1f} GiB of the card's {total / 1024:.1f} GiB")
+        if ceil_ and ceil_ <= room + 1:
+            why.append(f"an earlier start kept only {ceil_ / 1024:.1f} GiB in dedicated memory and paged the rest")
+        say(f"moe-cache: GPU room: planning with {a.room_gib:.2f} GiB, not llama-server's {driver / 1024:.2f} GiB ({'; '.join(why)}); --vram GiB sets it by hand")
+    except Exception:
+        REAL_ROOM.pop("device", None)
+
+
 def gpu_stage(a, ls, win, machine):
     """ENGINE-029, stage "GPU facts": which GPU llama-server will use and how much of its memory is free. On Windows with an AMD or Intel GPU nothing else answers, so --list-devices does (an integrated GPU plans without dedicated VRAM; Vulkan allocations are charged to the free commit). Sets a.vram when it found the figure. Returns (the --vram the user gave, the device listing or None, the picked GPU or None)."""
     vram_user = a.vram
@@ -3011,6 +3056,7 @@ def gpu_stage(a, ls, win, machine):
         if g and g[2] > 0:
             a.vram = f"{g[2] / 1024:.2f}"
             say(f"moe-cache: GPU {g[1]} ({g[0]}): {a.vram} GiB free (llama-server --list-devices; --vram GiB to override)")
+            real_room_stage(a, g, machine)
             # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
             # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
     return vram_user, listing, gpu
@@ -3023,7 +3069,8 @@ def dense_fit_free(a, machine):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import SMI_GAP_GIB
         if a.vram:
-            return float(a.vram) * 2**30, 0.0
+            room = getattr(a, "room_gib", None)           # LAUNCHER-1131: the room the card really gives (gpu_stage; never set for the user's own --vram)
+            return min(float(a.vram), room) * 2**30 if room else float(a.vram) * 2**30, 0.0
         f = machine.free_vram_bytes()
         return (f, SMI_GAP_GIB) if f else (None, 0.0)
     except Exception:

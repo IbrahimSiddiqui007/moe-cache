@@ -314,6 +314,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "hw_win test failed" }
           python tests/autotune_test.py           # LAUNCHER-994: measured auto-tune (fake timings, a fake llama-server script)
           if ($LASTEXITCODE -ne 0) { throw "autotune test failed" }
+          python tests/real_room_test.py          # LAUNCHER-1131: the real GPU room, the paging detector, the learned ceiling (fake counters)
+          if ($LASTEXITCODE -ne 0) { throw "real_room test failed" }
           $env:REQUIRE_JINJA2 = "1"               # the rendering checks fail instead of skipping when jinja2 is missing
           python tests/model_folders_test.py      # GUI-1052: model folders on every fixed drive (the real drive query runs here)
           if ($LASTEXITCODE -ne 0) { throw "model_folders test failed" }
