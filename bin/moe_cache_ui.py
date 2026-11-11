@@ -453,8 +453,9 @@ def peek_servers(ports=None, own=None, extra=()):
 # PC = Ryzen 9 7950X, 32 GB RAM, RX 9070 XT 16 GB, Windows (cold, ABBA, launcher defaults, RESULTS 59-60).
 LAPTOP, PC = "laptop", "PC"
 # README "Where it does not help", first bullet (v0.3.8): the evidence for running the plugin on a model that fits in RAM with some expert layers on the CPU
-PARTIAL_FIT_EVIDENCE = ("Evidence: laptop with an 8 GB card, decode +10 to +29 %, prompt about 10 % lower; on the 16 GB PC, Qwen3.6-35B in a 65k conversation "
-                        "was about the same as stock: 1.06x prompt, 1.07x decode (one model, one PC, 2026-11-08). --stock or MOE_CACHE_STOCK_WHEN_FITS=1 runs plain llama-server instead.")
+PARTIAL_FIT_EVIDENCE = ("Evidence: our test laptop (8 GB card, one model) was faster with the plugin in early paired runs, but a later re-run on the release code did not reproduce that "
+                        "(decode about 4 % lower, prompt about 19 % lower); our test PC (16 GB), Qwen3.6-35B in a 65k conversation, was about the same as stock: 1.06x prompt, 1.07x decode "
+                        "(one model, one PC, 2026-11-08). So on your machine it can be slower. --stock or MOE_CACHE_STOCK_WHEN_FITS=1 runs plain llama-server instead.")
 MEASURED = {
     ("qwen35moe-41x256", 21.7): [(LAPTOP, 24, "fits in RAM (warm)", 42.9, 36.6, "RESULTS 44 (plugin forced); the launcher now runs the plugin when expert layers stay on the CPU"),
                                  (LAPTOP, 12, "8 GB GPU", 6.9, 22.6, "RESULTS 44"), (LAPTOP, 12, "no GPU", 3.1, 9.9, "RESULTS 5"),

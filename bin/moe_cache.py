@@ -1944,7 +1944,7 @@ def busy_note(item):
     """One sentence for a program from busy_programs(): what Windows measured, and what closing it is worth (measured only for the EA app)."""
     base = f"{item['name']} is using {item['what']} right now."
     if item["name"].lower().startswith(("eacef", "eadesktop", "eabackground", "ealocal")):
-        return base + " Closing it: measured on Flash-Next at 34k, decode 8-14 % faster, long prompts the same to 23 % faster, depending on how much it draws."
+        return base + " Closing it: on our test PC (Flash-Next at 34k) decode was 8-14 % faster and long prompts the same to 23 % faster, depending on how much it draws; your machine can differ."
     return base + " Closing it: not measured for this program."
 
 
@@ -1957,9 +1957,9 @@ def warn_heavy_background():
     named = heavy_background_apps(r.stdout)
     for name in named:
         if name == "EA app":
-            say("moe-cache: the EA app is open: close it for full speed (measured with it open: decode 8-14 % slower, long prompts up to 23 % slower, depending on how much it draws)", err=True)
+            say("moe-cache: the EA app is open: close it for full speed (on our test PC with it open: decode 8-14 % slower, long prompts up to 23 % slower, depending on how much it draws; your machine can differ)", err=True)
         else:
-            say(f"moe-cache: {name} is open: if speed is low, close it (not measured for this program; the EA app costs up to 23 %)", err=True)
+            say(f"moe-cache: {name} is open: if speed is low, close it (not measured for this program; on our test PC the EA app cost up to 23 %)", err=True)
     if "EA app" in named:
         return
     for item in busy_programs()[:3]:       # not the EA app (already named): programs busy on the GPU or CPU in the last seconds
@@ -3202,7 +3202,7 @@ def auto_gpu_device(extra, listing, cpu_only=False, multi_gpu=False):
 def plugin_for_partial_offload(a, ls, model, ctx, machine):
     """v0.3.8, laptop evidence (RTX 4060 8 GB, Qwen3.6-35B-A3B IQ3_XXS, 30 expert layers on the CPU, 32k chat, A B B A): a model that fits in RAM but not in VRAM decodes
     faster through the plugin's executor than through stock llama-server: +10 to +29 % in all six paired band comparisons (mean +15 %; 8k probe +26 %), prompt speed about 10 %
-    lower (-22 % in the short-answer chat). Returns the line to say when the plugin should run although the model fits in RAM, else None. --stock turns it off.
+    lower (-22 % in the short-answer chat); NOT reproduced on the release code (audit 2026-11-12: decode -4 %, prompt -19 %): the user-facing text no longer claims the gain (LAUNCHER-1129). Returns the line to say when the plugin should run although the model fits in RAM, else None. --stock turns it off.
     Stock is kept when: --stock, --cpu-only, MOE_CACHE_STOCK_WHEN_FITS=1, no plugin build that loads here (a missing MOE_CACHE_LIB counts), a dense or unreadable model,
     or every expert fits the GPU (n_cpu_moe 0).
     NO-GPU MACHINES (owner decision 2026-11-08): deliberately NOT excluded. With no GPU (or --vram 0) the planner puts every expert layer on the CPU, so n_cpu_moe > 0 and
@@ -3227,8 +3227,8 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine):
         return None                                       # dense, unreadable or no planner answer: stock stays
     if ncmoe <= 0:
         return None                                       # every expert fits the GPU: nothing for the executor to do
-    return ("moe-cache: the model fits in memory but some layers keep their experts on the CPU: the plugin's expert executor decodes faster than stock llama-server there "
-            "(laptop 8 GB, 35B MoE: +10 to +29 % per paired run, prompt about 10 % lower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
+    return ("moe-cache: the model fits in memory but some layers keep their experts on the CPU: the plugin's expert executor runs those layers (on our test laptop with one model it was faster "
+            "than stock llama-server, but a later re-run on the release code did not reproduce that, so on your machine it can be slower). --stock runs plain llama-server instead (MOE_CACHE_STOCK_WHEN_FITS=1 does the same)")
 
 
 def plugin_lib_stage(ls, dry, stock, win, machine):
@@ -3377,10 +3377,10 @@ def kv_stage(a, extra, ctx, ls, listing, machine, stock=False, dense=False):
                 over8 = pair[1]["over_gib"]
                 if mixed["fits"]:
                     a.dense_kv_types, step, got = KV_K8V4, "K q8_0 / V q4_0", mixed
-                    quality = "approximate: same top token in 94.6 % of positions against f16 (q8_0/q8_0: 96.5 %)"
+                    quality = "approximate: same top token in 94.6 % of positions against f16 (measured on Qwen3.8-27B; q8_0/q8_0: 96.5 %)"
                 else:
                     a.dense_kv_types, step, got = ("q4_0", "q4_0"), "q4_0 / q4_0", q4
-                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173 (K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
+                    quality = f"approximate: same top token in 92.9 % of positions against f16, KL 0.173 (measured on Qwen3.8-27B; K q8_0 / V q4_0 would still spill by {mixed['over_gib']:.1f} GiB)"
                 saves = pair[1]["kv_gib"] - got["kv_gib"]
                 say(f"moe-cache: context {ctx // 1024}k: KV {step}: q8_0 / q8_0 would spill by {over8:.1f} GiB ({gpu_fit_words(pair[1], 'q8_0')}); this step saves {saves:.1f} GiB of KV cache and " + (
                     f"does not spill ({gpu_fit_words(got, step)}). " if got["fits"] else
@@ -3430,7 +3430,7 @@ def long_prompt_stage(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_
         return kv_q8, tuned, desk_kw, ub_asked
     if tuned and tuned.get("ub") == 4096:
         say("moe-cache: long-prompt mode" + ("" if loud else " (the default; --no-long-prompt or --exact turns it off)") + ": a prompt chunk of 4096 tokens with the q8_0 KV cache (long prompts are read faster, "
-            "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: same top token in 94-95 % of positions, the meaning stayed the same in our checks)")
+            "answers come as fast; the q8_0 KV cache means answers are not byte-identical to stock: same top token in 94-95 % of positions, the meaning stayed the same in our checks; measured on Flash-Next, other models can differ)")
         return kv_q8, tuned, desk_kw, ub_asked
     if getattr(a, "approx_kv", False) or getattr(a, "lp_with_fast", False):         # --approx safe / --fast asked for the 8-bit KV cache itself: it stays, the micro-batch is the usual one
         a.lp_kv = False

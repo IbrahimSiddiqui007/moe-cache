@@ -25,7 +25,7 @@ if got != [("EACefSubProcess", "gpu"), ("game", "mem"), ("browser", "cpu")]:
     ok = False
     print(f"FAIL: parse_busy: {got}")
 note = mc.busy_note(mc.parse_busy(lines)[0])
-if "23 %" not in note:
+if "23 %" not in note or "our test PC" not in note or "your machine can differ" not in note:       # LAUNCHER-1133: the figure is ours, labelled
     ok = False
     print(f"FAIL: EA note: {note}")
 note2 = mc.busy_note(mc.parse_busy(lines)[2])

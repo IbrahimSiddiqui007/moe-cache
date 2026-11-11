@@ -94,7 +94,8 @@ check(p["summary"].startswith("Stock llama-server: the model") and "keeps stock 
 _partial[0] = True
 p = ui.plan_model(small["path"], ram="2")
 check(p["kind"] == "cache" and "fits in RAM" in p["verdict"] and "stay on the CPU" in p["verdict"], f"fits in RAM, experts on the CPU: runs with moe-cache ({p['verdict']})")
-check(any("+10 to +29 %" in r and "prompt about 10 % lower" in r and "1.06x prompt, 1.07x decode" in r for r in p["reasons"]), "partial offload: reasons carry README's evidence")
+check(any("+10 to +29" not in r and "did not reproduce" in r and "our test laptop" in r and "1.06x prompt, 1.07x decode" in r for r in p["reasons"]) and not any("+10 to +29" in r for r in p["reasons"] + [p["summary"]]),
+      "partial offload: reasons carry the honest evidence (no +10 to +29 % claim, labelled our test laptop / PC)")
 check("fits in" in p["summary"] and "expert executor" in p["summary"] and "1.07x decode" in p["summary"] and "likely be faster" not in p["summary"], f"partial offload: summary ({p['summary']})")
 p = ui.plan_model(small["path"], ram="2", engine="stock")
 check(p["kind"] == "stock", f"--stock still gives stock when the plugin would run ({p['verdict']})")
