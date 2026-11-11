@@ -385,7 +385,7 @@ def mtp_reason(path, want, agent, ls):
     except Exception:
         return None
     try:
-        on, why = mc.mtp_decide(want, agent, head, declared, bool(head and want is not False and ls and server_has_mtp(ls)), False)
+        on, why = mc.mtp_decide(want, agent, head, declared, bool(head and want is not False and ls and server_has_mtp(ls)), False, dense=mc.is_dense_model(path))
     except SystemExit as e:                     # --mtp the launcher would refuse: say so before Start
         return f"MTP: Start would stop with: {e}"
     return why.replace("moe-cache: ", "", 1) if why else None

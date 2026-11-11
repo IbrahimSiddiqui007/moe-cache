@@ -301,6 +301,14 @@ check(_h == 0 or _d >= 1, f"mtp_layers on the test model: {_h} head layer(s), he
 D = L.mtp_decide
 check(D(None, True, 1, 1, True, False)[0] is True, "mtp: --agent + head + draft-mtp in llama-server -> on")
 check(D(None, False, 1, 1, True, False)[0] is False and "--mtp" in D(None, False, 1, 1, True, False)[1], "mtp: plain server + head -> off with a --mtp hint")
+# LAUNCHER-1133: dense models: off by default (agent or not), --mtp still on, --no-mtp / no head / old server / own spec as before, MoE unchanged
+check(D(None, True, 1, 1, True, False, dense=True)[0] is False and "dense model" in D(None, True, 1, 1, True, False, dense=True)[1] and "--mtp turns it on" in D(None, True, 1, 1, True, False, dense=True)[1],
+      "mtp: dense + --agent + head -> OFF, the line says why and how to turn it on")
+check(D(None, False, 1, 1, True, False, dense=True)[0] is False and "dense model" in D(None, False, 1, 1, True, False, dense=True)[1], "mtp: dense, plain -> off with the same reason (no 'faster decode' hint)")
+check(D(True, False, 1, 1, True, False, dense=True)[0] is True and D(True, True, 1, 1, True, False, dense=True)[0] is True, "mtp: dense + --mtp -> on")
+check(D(False, True, 1, 1, True, False, dense=True) == (False, "moe-cache: MTP off (--no-mtp)"), "mtp: dense + --no-mtp -> the --no-mtp line")
+check(D(None, True, 1, 1, True, False, dense=False)[0] is True, "mtp: MoE (dense False) + --agent -> on, as before")
+check(D(None, True, 1, 1, True, True, dense=True)[1].startswith("moe-cache: MTP: speculative decoding set by your own arguments"), "mtp: dense + your own --spec-type -> your line first")
 check(D(True, False, 1, 1, True, False)[0] is True, "mtp: --mtp + head -> on")
 check(D(False, True, 1, 1, True, False) == (False, "moe-cache: MTP off (--no-mtp)"), "mtp: --no-mtp wins over --agent")
 check(D(None, True, 1, 1, False, False)[0] is False and "draft-mtp" in D(None, True, 1, 1, False, False)[1], "mtp: llama-server without draft-mtp -> off, says why")
@@ -315,6 +323,7 @@ for args in [(True, True, 0, 0, True, False), (True, True, 1, 1, False, False)]:
 _said = []; _say = L.say; L.say = lambda m, err=False: _said.append(m)
 check(L.mtp_args(None, True, "llama-server", os.path.join(_md, "none.gguf"), []) == [] and len(_said) == 1, "mtp_args: no head -> no args, one line")
 check(L.mtp_args(True, False, "llama-server", os.path.join(_md, "head.gguf"), ["--spec-type", "ngram-simple"]) == [], "mtp_args: --mtp keeps your own --spec-type")
+check(L.mtp_args(None, True, "llama-server", os.path.join(_md, "head.gguf"), [], dense=True) == [], "mtp_args: dense + --agent -> no --spec-type args (LAUNCHER-1133)")
 L.say = _say
 
 # model-card sampling (I45): the decision table on header dicts, and the header reader on the synthetic GGUF

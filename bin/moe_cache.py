@@ -1573,9 +1573,25 @@ MTP_ARGS = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]
 MTP_GAIN = "Qwen3.6 on the PC: decode +54 %, prompt processing -5..-8 %"
 
 
-def mtp_decide(want, agent, head, declared, server_has, user_spec):
+MTP_DENSE_WHY = ("a dense model runs every layer for every token, and MTP measured slower on the Qwen3.8-27B (64k: 26.8 vs 27.8 tok/s; 128k, part of the KV cache "
+                 "on the CPU: 9.55 vs 15.4 tok/s)")
+
+
+def is_dense_model(path):
+    """True for a dense model (no expert layers), from the GGUF header; False when the header cannot be read (the MoE rule then applies)."""
+    try:
+        sys.path.insert(0, os.path.join(HERE, "planner"))
+        from gguf_plan import model_layout
+        lay = model_layout(path)
+        return not lay["n_layers"] or not lay["expert_bytes_per_layer"]
+    except Exception:
+        return False
+
+
+def mtp_decide(want, agent, head, declared, server_has, user_spec, dense=False):
     """Multi-token prediction (I43): the model's own draft head (blk.N.nextn.*) guesses the next 2 tokens, the model checks them in one step; the
-    output can differ slightly for some models (GLM-5.3 code text did). want: True (--mtp), False (--no-mtp), None (default: on in --agent mode). -> (on, one-line reason or None)."""
+    output can differ slightly for some models (GLM-5.3 code text did). want: True (--mtp), False (--no-mtp), None (default: on in --agent mode, EXCEPT for a dense
+    model: LAUNCHER-1133, it measured slower there; --mtp still turns it on). -> (on, one-line reason or None)."""
     if user_spec:
         return False, "moe-cache: MTP: speculative decoding set by your own arguments (--spec-type / --model-draft): left as given"
     if want is False:
@@ -1591,6 +1607,8 @@ def mtp_decide(want, agent, head, declared, server_has, user_spec):
             raise SystemExit("--mtp: this llama-server has no MTP speculative decoding (no draft-mtp in its --help for --spec-type); a newer llama.cpp has it")
         return False, (f"moe-cache: MTP off: the model has an MTP head but this llama-server lacks --spec-type draft-mtp (a newer llama.cpp has it; {MTP_GAIN})"
                        if agent else None)
+    if dense and not want:
+        return False, f"moe-cache: MTP off: {MTP_DENSE_WHY}; --mtp turns it on"
     if want or agent:
         return True, (f"moe-cache: MTP on: the model has an MTP head ({head} layer) and llama-server has draft-mtp: {' '.join(MTP_ARGS)} "
                       f"(the output can differ slightly for some models; {MTP_GAIN}){'' if want else '; --no-mtp turns it off'}")
@@ -1661,7 +1679,7 @@ def sampling_args(off, agent, model, extra):
     return args
 
 
-def mtp_args(want, agent, ls, model, extra, exact=False):
+def mtp_args(want, agent, ls, model, extra, exact=False, dense=None):
     """The --spec-* arguments for the model's MTP head (see mtp_decide), and says why in one line. Reads the GGUF header and, only when the model
     has a head, llama-server --help."""
     user_spec = arg_after(extra, "--spec-type", "--model-draft", "-md") is not None
@@ -1683,7 +1701,7 @@ def mtp_args(want, agent, ls, model, extra, exact=False):
             server_has = "draft-mtp" in ls_help(ls)
         except Exception:
             pass
-    on, why = mtp_decide(want, agent, head, declared, server_has, user_spec)
+    on, why = mtp_decide(want, agent, head, declared, server_has, user_spec, dense=is_dense_model(model) if dense is None else dense)
     if why:
         say(why)
     if not on:
@@ -4308,7 +4326,7 @@ def _launch_plan(a, extra, argv, machine):
     extra += amd_windows_checkpoint_args(gpu, model, extra, agent=a.agent)
     alias, slotdir = agent_stage(a, extra, model)
     extra += template_stage(a, extra, model, dry)
-    extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact)
+    extra += mtp_args(a.mtp, a.agent or getattr(a, "approx_spec", False), ls, model, extra, exact=a.exact, dense=dense)
     extra += sampling_args(a.no_sampling_defaults, a.agent, model, extra)
     host = arg_after(extra, "--host") or ""
     if not (host == "" or host.startswith("127.") or host in ("localhost", "::1")) and not api_key:

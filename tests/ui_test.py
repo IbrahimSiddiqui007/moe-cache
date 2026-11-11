@@ -1254,6 +1254,14 @@ check("--mtp" in ui.server_args(dict(base, mtp=True)) and "--no-mtp" in ui.serve
 import gguf_plan
 real_ml, gguf_plan.mtp_layers = gguf_plan.mtp_layers, (lambda path: (1, 1) if "GLM" in path or "Small" in path else (0, 0))
 ui._MTP_SERVER.update({"ls-new": True, "ls-old": False})
+_dense_real = ui.mc.is_dense_model
+check(_dense_real(small["path"]) is True, "the synthetic test model is dense (header: no expert layers)")
+# LAUNCHER-1133: a dense model: MTP off by default, also in agent mode, and says why; --mtp still turns it on
+_r = ui.mtp_reason(small["path"], None, True, "ls-new")
+check(_r.startswith("MTP off: a dense model") and "26.8 vs 27.8" in _r and "--mtp turns it on" in _r, f"MTP: dense model, agent mode: off by default, says why ({_r})")
+check(ui.mtp_reason(small["path"], None, False, "ls-new").startswith("MTP off: a dense model"), "MTP: dense model, plain server: the same line (no 'faster decode' hint)")
+check(ui.mtp_reason(small["path"], True, True, "ls-new").startswith("MTP on: the model has an MTP head"), "MTP: dense model with --mtp: on")
+ui.mc.is_dense_model = lambda path: False          # the MoE rule is unchanged: the tests below see an MoE model
 check(ui.mtp_reason(small["path"], None, True, "ls-new").startswith("MTP on: the model has an MTP head"), "MTP: Agent mode, head, new llama-server: on, and why")
 check(ui.mtp_reason(small["path"], None, False, "ls-new").startswith("this model has an MTP head: --mtp"), "MTP: plain server with a head: the hint")
 check("lacks --spec-type draft-mtp" in ui.mtp_reason(small["path"], None, True, "ls-old"), "MTP: old llama-server: off, and why")
@@ -1263,6 +1271,7 @@ check(ui.mtp_reason(blob, None, False, "ls-new") is None, "MTP: no head, plain s
 check("fails" not in ui.mtp_reason("/m/GLM-5.3-Flash.gguf", None, True, "ls-new"), "MTP: no GLM caveat any more (GLM + MTP works, RESULTS 60)")
 p = ui.plan_model(small["path"], ram="1", agent=True, mtp=None, ls="ls-new")
 check(any(r.startswith("MTP on:") for r in p["reasons"]), "MTP: the plan's Why list has the line")
+ui.mc.is_dense_model = _dense_real
 gguf_plan.mtp_layers = real_ml
 check(not any(x in ui.server_args(dict(base, engine="auto")) for x in ("--stock", "--always-plugin")), "server args: Auto adds nothing")
 check(not ui.mc.decide(small["path"], f"{(sz + ui.mc.STOCK_HEADROOM - 1) / 1e9}")[0], "decide(): model + 1.5 GB headroom must fit")

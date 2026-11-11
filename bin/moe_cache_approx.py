@@ -63,7 +63,7 @@ TOKEN_MODES = [
      "reason": "about 2x prompt speed at 256k on a 16 GB card; gate level kv passed (KL 0.0045-0.015, docs/QUALITY_GATE.md); owner 2026-10-30"},
     {"id": "long-prompt", "what": "long-prompt mode from 32k context: -ub 4096 with the q8_0 KV cache, where the memory plan has room", "switch": "--long-prompt (default from 32k)", "status": "won",
      "reason": "Flash-Next IQ3_XXS, 65k conversation, A C C A: prompts +77.0 %, answers +1.8 % (claim v038-longprompt-default); KL 0.014-0.015, meaning kept 10 of 10 at 55k"},
-    {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the model has the head and llama-server supports it", "switch": "--mtp (default with --agent)", "status": "won",
+    {"id": "mtp", "what": "the model's own MTP draft head, in agent mode when the MoE model has the head and llama-server supports it (a dense model: only with --mtp, it measured slower)", "switch": "--mtp (default with --agent)", "status": "won",
      "reason": "Qwen3.6 on the PC: decode 45.6 -> 70.3 tok/s; prompt processing 5-8 % slower; GLM-5.3 code text differed slightly"},
     {"id": "fast1", "what": "skip rarely picked experts that are not in RAM, with the q8_0 KV cache", "switch": "--fast", "status": "unmeasured",
      "reason": "about +10 % where memory is much smaller than the model; no paired run with a quality check at 64k on the PC yet"},
