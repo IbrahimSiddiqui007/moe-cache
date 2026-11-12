@@ -102,7 +102,7 @@
 | Keys and installers | The stored API key goes only to a server this launcher started; installers refuse a cut-off script, never skip a failed attestation, pin the signer workflow and check the required files; `update --apply` refuses a downgrade without `--allow-downgrade`; a cut-short model file ends with a clear message (Linux; a guard on Windows, tested with a simulated error). |
 | Numbers | The README shows the whole benchmark card as tables (`tools/card_markdown.py`, checked in CI); `docs/RESULTS.md` is split (Windows) with `docs/RESULTS_OLD_LAPTOP.md` (both now in `docs/results-archive/`); every card row says its context and prompt; "not clean" text written by the old PC harness is now "cleanliness not recorded"; a release tag fails on number problems unless a signed waiver names the claims and an expiry (`tools/claims_gate.py`). No comparisons with other projects in public text (checked by `tests/public_names_test.py`). |
 | Documented | `--ram` is a sizing hint, not a RAM cap (Windows default path and Linux); `MOE_CACHE_GPU_CATCH` is Vulkan only (CUDA errors still abort). |
-| Default model | Flash-Next **Q2_0** is the default Flash-Next file again (`pick`, `launch`, the catalogue and the docs; owner decision 2026-11-05). IQ3_XXS stays listed as the higher-quality option. Measured on the v0.3.7 candidate kit (Windows PC, 2026-11-05/06, records and claims): in a real 65k conversation Q2_0 with moe-cache reads new prompt tokens at 430.0 against 194.5 tok/s for stock (2.2x) and decodes 26.98 against 22.46 tok/s; IQ3_XXS 188.2 against 44.8 tok/s and 21.73 against 16.00. Q2_0 against IQ3_XXS on one 64k prompt (chain log, no record yet): prompt +104.3 %, decode +92.6 %; top-1 agreement with IQ3_S 73.3 % (Q2_0) against 76.5 % (IQ3_XXS), record pending. |
+| Default model | Flash-Next **Q2_0** is the default Flash-Next file again (`pick`, `launch`, the catalogue and the docs; decided 2026-11-05). IQ3_XXS stays listed as the higher-quality option. Measured on the v0.3.7 candidate kit (Windows PC, 2026-11-05/06, records and claims): in a real 65k conversation Q2_0 with moe-cache reads new prompt tokens at 430.0 against 194.5 tok/s for stock (2.2x) and decodes 26.98 against 22.46 tok/s; IQ3_XXS 188.2 against 44.8 tok/s and 21.73 against 16.00. Q2_0 against IQ3_XXS on one 64k prompt (chain log, no record yet): prompt +104.3 %, decode +92.6 %; top-1 agreement with IQ3_S 73.3 % (Q2_0) against 76.5 % (IQ3_XXS), record pending. |
 
 ## 0.3.6 (2026-11-04)
 
@@ -216,8 +216,8 @@
 | Experiments | Many small executor, read and cache changes from the 2026-10-31 optimization audit (kept in private notes); the ones not proven exact are off by default behind `MOE_CACHE_*` switches and untested |
 | Area | Change |
 |---|---|
-| Leave room for me | `--leave-room` and a control-page box for using the PC while a model runs (owner 2026-10-30: a big-model run made the desktop PC stutter): the server keeps max(8 GiB, 25 %) of the RAM free instead of max(4 GiB, 12.5 %), at least 2 GB of GPU memory, 2 physical cores, and runs at a lower priority (Windows below normal, Linux nice 10). Same rule on Linux and Windows; `MOE_CACHE_LEAVE_ROOM=1` turns it on for good. README and TROUBLESHOOTING: plug the monitor into the motherboard when the CPU has graphics |
-| Package managers | New `packages` workflow: after each release it fills the scoop and winget manifests from the published Windows zip (sha256 and build attestation checked first), pushes the scoop manifest to the `scoop-moe-cache` bucket and, once switched on, sends the winget manifests to winget-pkgs. Each part waits for the owner's token; it can also be run by hand for a tag |
+| Leave room for me | `--leave-room` and a control-page box for using the PC while a model runs (decided 2026-10-30: a big-model run made the desktop PC stutter): the server keeps max(8 GiB, 25 %) of the RAM free instead of max(4 GiB, 12.5 %), at least 2 GB of GPU memory, 2 physical cores, and runs at a lower priority (Windows below normal, Linux nice 10). Same rule on Linux and Windows; `MOE_CACHE_LEAVE_ROOM=1` turns it on for good. README and TROUBLESHOOTING: plug the monitor into the motherboard when the CPU has graphics |
+| Package managers | New `packages` workflow: after each release it fills the scoop and winget manifests from the published Windows zip (sha256 and build attestation checked first), pushes the scoop manifest to the `scoop-moe-cache` bucket and, once switched on, sends the winget manifests to winget-pkgs. Each part waits for the maintainer's token; it can also be run by hand for a tag |
 
 ## 0.3.3 (2026-10-30)
 
@@ -248,7 +248,7 @@
   - On-demand CORS accepted any name starting with `127.` (`127.attacker.example` could read the model list): origins are compared exactly (localhost, a 127.0.0.0/8 address, `[::1]`).
   - A saved warm session or `--project` state could be loaded into another model: saved files are now keyed by model file name, size, a content fingerprint (GGUF header + three samples), context and KV types; files made by older versions are not restored (project states need one new `project save`).
 - **Docs**: new `docs/TROUBLESHOOTING.md` (answers look wrong or loop, slow, does not start); FAQ entries on answer quality and cache policy; `--moe-cache-mib` is marked as llama.cpp's own GPU cache (slower on our Vulkan PC, RESULTS 59); long prompts at 63k still take minutes.
-- At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, from the bigger GPU plan; quality gate passed at 4k context, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Owner decision 2026-10-30. Not with `--stock` or without a GPU (q8_0 KV aborted on the CPU-only build); the control page's Exact mode passes `--exact`.
+- At 128k+ context the KV cache is q8_0 by default (`--fast=kv`: prompt about 2x at 256k on a 16 GB card, from the bigger GPU plan; quality gate passed at 4k context, RESULTS 72); `--exact` keeps llama.cpp's f16 KV. Decided 2026-10-30. Not with `--stock` or without a GPU (q8_0 KV aborted on the CPU-only build); the control page's Exact mode passes `--exact`.
 - **Long prompts with a browser open** (N23 split, N31): when the desktop and a browser hold VRAM, the GPU margin grows with what other programs hold and the
   long-prompt GPU block runs in parts instead of falling back to the CPU. Flash-Next Q2_0 on the PC with a browser open: 34k prompt 109-110 vs 67-68 tok/s, 128k 79-95 vs 67-75 (RESULTS 71, ABBA).
 - **Long-prompt block: +8-11 % prefill** (N23-F3): the block fills the expert cache while it uploads; every valid ABBA pair at 34k and 128k, text identical (RESULTS 69).
@@ -277,7 +277,7 @@
   that does not fit (close programs or use a system-managed / larger page file). The file-view expert cache costs no commit and is unchanged.
   The GPU plan is capped the same way (Vulkan's allocations count against commit): at most the free commit minus 4 GiB for llama-server's host side,
   so a tight desktop gets fewer GPU layers instead of a crash; `doctor` shows the commit line.
-- **Default Flash-Next file: IQ3_XXS** (owner 2026-10-30): the picker recommends it on a 16 GB GPU (3-bit, 193/202 tasks, popular for coding), with Q2_0 as the faster
+- **Default Flash-Next file: IQ3_XXS** (decided 2026-10-30): the picker recommends it on a 16 GB GPU (3-bit, 193/202 tasks, popular for coding), with Q2_0 as the faster
   alternative (about 10 % more tokens per second); the agents' Flash-Next alternative is IQ3_XXS too; README, WINDOWS.md and the card relabelled. Smaller GPUs keep Q2_0.
 - **Executor: gate and up of a layer run as one pool job** (E3): one barrier and one wake-up fewer per layer, same arithmetic per output value. Flash-Next Q2_0
   on the PC: decode +0.3-2.6 % in all 6 ABBA pairs (e.g. 17.61 -> 18.06), text identical (RESULTS 73; runs "not clean": the owner's programs were open). On by default;
@@ -634,7 +634,7 @@
   (now GiB for both), `moe-cache-learn` refuses an occupied port and fails when its server stops or no new profile appears, project save/restore report
   HTTP errors and accept `--api-key`, the check counts every shard of a split model and knows 23b0202a1, and among several plugin builds for the same API the
   newest is used (it was the first by name, which picked old test builds). CI runs a launcher dry run and the check.
-- Fixes from the static audit of 2026-10-15 (handover/STATIC_AUDIT_20261015_1324.md):
+- Fixes from the static audit of 2026-10-15 (the 2026-10-15 static audit, private notes):
   - **`--fast` and `--hybrid` were silently inactive on K-quant models in 0.2.3.4** (the K-quant speed filter switched the executor off, and both modes
     live in it; output stayed exact). An explicitly requested mode now keeps the executor.
   - Lookahead (`MOE_CACHE_LOOKAHEAD`) set and cleared the "still loading" flag with plain stores while the executor reads it without the lock: atomic now.

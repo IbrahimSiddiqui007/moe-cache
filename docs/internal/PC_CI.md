@@ -16,11 +16,11 @@ The PC is not a GitHub runner (the repository is public: no self-hosted runner, 
 |---|---|---|
 | Plugin DLL, test programs, kit (mingw cross-build) | laptop (the PC has no compiler) | `windows.yml` job `dll`, but the laptop compiler is GCC 16 / UCRT, GitHub's is GCC 13 / msvcrt.dll. Both pass the same import check. The DLL bytes differ |
 | Native Windows tests, launcher and python tests, one-click start | PC (`tools/pc_ci_windows.ps1`) | `windows.yml` job `windows` (PowerShell 5.1 instead of pwsh 7, Python 3.13 instead of 3.12) |
-| Granite steps (`--model`): kit check, bench-report, real start, control page, on-demand, 4 identity runs | PC | Same model and llama.cpp b12207 as the workflow (sha256-checked, cached in `C:\dl\pc_ci\cache`); max 15 min, a watchdog stops the PC's llama-server after that |
+| Granite steps (`--model`): kit check, bench-report, real start, control page, on-demand, 4 identity runs | PC | Same model and llama.cpp b12207 as the workflow (sha256-checked, cached in the PC's CI cache folder); max 15 min, a watchdog stops the PC's llama-server after that |
 | `installer` job, `--shortcut`, `--install-autostart`, crash-dump registry key | not run | They change the real PATH, Start menu, Startup folder or HKLM of the owner's PC: GitHub only |
 | `identity.yml` (Linux, builds llama.cpp at 4 pins) | not run | Linux only; the PC has no compiler and no WSL distro. Runs on GitHub; the Windows identity steps above are the PC's counterpart |
 
-The script refuses while `C:\dl\afternoon\runner.pid` is alive, any `llama-server` runs, or another pc_ci run is active. It writes only below `C:\dl\pc_ci`; work folders older than the newest 3 are moved to `D:\to_delete\pc_ci` (never deleted). Logs: `~/.cache/pc_ci/<time>_<sha>/` (summary table printed at the end, exit 0 only if nothing failed).
+The script refuses while the benchmark runner's pid file is alive, any `llama-server` runs, or another pc_ci run is active. It writes only below its own work folder; work folders older than the newest 3 are moved to `D:\to_delete\pc_ci` (never deleted). Logs: `~/.cache/pc_ci/<time>_<sha>/` (summary table printed at the end, exit 0 only if nothing failed).
 
 ## Actions cache
 

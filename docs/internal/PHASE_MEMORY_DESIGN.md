@@ -2,7 +2,7 @@
 
 **Status (2026-11-03): historical design note; option E and the first test of option C have since been measured (see "Update 2026-11-03" at the end). The tables below are the scout's 2026-11-01 guesses and are kept as written. The design spike that followed is [DECODE_TIER_DESIGN.md](DECODE_TIER_DESIGN.md): option C is cheaper than estimated here because the hybrid bank (`src/mc_hybrid.inl`) already frees and reloads GPU memory around long prompts, and the single-token GPU path it uses is not the one that failed in T25; the default-off prototype (`MOE_CACHE_DECODE_TIER`) was killed by its PC kill check and is archived in `archive/plugin/decode_tier.patch`.**
 
-Source: handover/archived/parts_research/scouts/scout_round2_20261101.md section 3 (R2-08 to R2-12). The gains in the tables are the scout's guesses, not measurements.
+Source: the private scout notes of round 2, section 3 (R2-08 to R2-12). The gains in the tables are the scout's guesses, not measurements.
 
 ## The problem
 A big `-ub` helps the prompt and costs decode: the compute buffer (about 3 GB of VRAM at `-ub 2048`, ctx 128k) and the plugin's block buffer (about 1.1 GB, held after the first block, never shrunk) stay allocated in decode, where `--n-cpu-moe` has already fixed which layers sit on the GPU. Each GPU layer is worth about 1.5-4 % of decode (two noisy rows). Four fewer layers at `-ub 2048` is the visible loss.

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a zip that is the same bytes every time (PACKAGING-828): reproducible_zip.py ROOT NAME OUT.zip
 Zips ROOT/NAME with sorted entries, the date of SOURCE_DATE_EPOCH (default: the last commit, else 1980-01-01), fixed permissions and no user or
-group names, so two builds of the same commit give the same sha256."""
+group names, so the archive layer adds nothing that differs between builds. (The files inside, such as compiled programs, are not proven byte-identical by this.)"""
 import os, sys, time, zipfile
 
 

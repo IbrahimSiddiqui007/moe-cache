@@ -31,14 +31,14 @@ quant; llama.cpp uses it only for the printed name, the real types are per tenso
 
 ## What it is not
 It is **not exact**: the result differs from both sources, and its quality is not the quality of either. It also departs from the rule that the base model is the
-IQ3_XXS file, so it needs the owner's word and the quality gate ([QUALITY_GATE.md](QUALITY_GATE.md)) before it is used for anything but a speed measurement.
+IQ3_XXS file, so it needs the maintainer's word and the quality gate ([QUALITY_GATE.md](QUALITY_GATE.md)) before it is used for anything but a speed measurement.
 Nothing in the launcher uses a stitched file automatically. Tested only on small synthetic files (`tests/stitch_gguf_test.py`); no real model has been stitched yet.
 
-## Plan for the real measurement (needs the owner's OK; not done)
+## Plan for the real measurement (needs the maintainer's OK; not done)
 Why: the streamed layers dominate the bytes read from the SSD; Q2_0 experts are smaller than IQ3_XXS ones, so fewer bytes stream per token and per prompt block
 (ledger guess: streamed bytes -12 %, prompt +5-8 %, decode +4-6 %). Whether the quality loss is acceptable is the open question.
 
-1. **Files** (owner approves the downloads and the disk: two quant files of the same Flash-Next revision, then the stitched file, about the size of the IQ3_XXS file).
+1. **Files** (the maintainer approves the downloads and the disk: two quant files of the same Flash-Next revision, then the stitched file, about the size of the IQ3_XXS file).
    Stitch with the `--n-cpu-moe` the launcher plans for 64k on the PC; keep the manifest with the results.
 2. **Speed, order A B B A** (A = pure IQ3_XXS, B = stitched), same launcher flags, 64k context, cold start each time (restart the server, drop nothing else), nothing else running on the PC:
    about 25 minutes per run (load about 3, 64k prompt, 256 generated tokens) = about 100 minutes for the four runs. Per run record: prefill tok/s at 64k, decode tok/s,

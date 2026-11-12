@@ -2,7 +2,7 @@
 
 Status 2026-11-04: **prototype on the branch `multimodel-010`, not merged, not run with two real models.** Built from what already exists
 (`bin/moe_cache_budget.py`, `bin/moe_cache_concurrent.py`, `--peers`, `--share-ram`, the page's "Servers on this machine" card). Nothing here changes a
-launch that does not ask for it. Background and the measurements behind each row: `handover/archived/parts_research/engine_notes/multi_model_gpu_20261030.md` (MM1, MM2, MM5, MM7).
+launch that does not ask for it. Background and the measurements behind each row: the private multi-model GPU notes (MM1, MM2, MM5, MM7).
 
 ## The rule
 

@@ -1,5 +1,5 @@
 """Split one machine's memory between several llama-servers that run at the same time (PROTOTYPE, avenue 1 of
-handover/archived/parts_research/engine_notes/multi_model_gpu_20261030.md; nothing calls it yet; on-demand would use it to set `--ram` / `--vram` per model).
+the private multi-model GPU notes; nothing calls it yet; on-demand would use it to set `--ram` / `--vram` per model).
 
 Why: the launcher sizes each server from what the machine has free when that server starts, and the cap (physical RAM minus max(4 GiB, 12.5 %), 28 GiB
 on a 32 GiB PC) is per server. Two servers started one after the other each plan against the same cap, and a cache that fills later is not seen by the

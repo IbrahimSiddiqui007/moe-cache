@@ -25,7 +25,7 @@ prompt that came from the cache, the median time to first token, and the plugin'
 
 ## What every run records besides the turns
 
-The owner's full-metrics rule: a run is only useful with its conditions. Each run in the record carries: peak VRAM, peak process RAM (working set and private
+The full-metrics rule: a run is only useful with its conditions. Each run in the record carries: peak VRAM, peak process RAM (working set and private
 bytes), the lowest free system RAM and CPU averages and peaks (sampled during the run by the same sampler `bench-report` uses, on llama-server's process
 tree: `--monitor-pid`), the load time (`--load-s`, from the server start to its first ready answer), disk reads (the plugin's own `read_bytes` counter when
 its counters are reachable, `/proc/<pid>/io` on Linux for a stock server; on Windows the raw `PhysicalDisk` read counter of the drive holding the model, taken before and after the run: it sees memory-mapped page-ins but also other programs on that drive, and `runs[].disk_read_source` says so; the server's own `ReadTransferCount` is kept next to it in `disk_read_process_gb`, but it does not count mapped page-ins: a 1 GiB map touched on the PC showed 0.000 GB there and 1.074 GB on the drive counter), and the run's own
@@ -64,8 +64,8 @@ file cache before each, waits for a quiet CPU, runs the conversation and assembl
 the Flash-Next IQ3_XXS file:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\dl\conv-trial -Model D:\models\Qwen3.8-Flash-Next-IQ3_XXS.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 8192 -MaxTurns 4
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\dl\conv -Model D:\models\Qwen3.8-Flash-Next-IQ3_XXS.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\bench\conv-trial -Model D:\models\Qwen3.8-Flash-Next-IQ3_XXS.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 8192 -MaxTurns 4
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\bench\conv -Model D:\models\Qwen3.8-Flash-Next-IQ3_XXS.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536
 ```
 
 `-FlushOther` names other model files (never the one under test) that together are bigger than the RAM; `-Order "stock,mc,mc,stock"` is the default.

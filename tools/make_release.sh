@@ -36,7 +36,7 @@ for API in 2 3; do
     tools/bundle_llama_linux.sh dist/$N b12207 llama-b12207-bin-ubuntu-vulkan-x64.tar.gz 178a5d6a940d74a24ee359dc8af68ce6b2fccb99150c1bdd458dbec640653c06 "${LLAMA_TGZ_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/moe-cache-llama}"
   fi
   [ -f dist/$N/ui/index.html ] || { echo "FAIL: ui/index.html missing from $N (the control page needs it)"; exit 1; }
-  # same commit, same bytes (PACKAGING-828): sorted names, owner 0, the commit's date, no name or time in the gzip header
+  # reproducible archive layout (PACKAGING-828; two builds of one commit are not proven byte-identical): sorted names, owner 0, the commit's date, no name or time in the gzip header
   tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}" -C dist -cf - $N | gzip -n -9 > dist/$N.tar.gz
   ( cd dist && sha256sum $N.tar.gz >> SHA256SUMS )
 done

@@ -1,10 +1,10 @@
 # Quality gate for the approximate mode
 
 Written 2026-10-29 **before any approximate item was measured**. The thresholds below are fixed; an item that misses one is not kept, and a threshold is changed
-only with a written reason and the owner's say-so (the table is the contract, not the measurement).
+only with a written reason and the maintainer's say-so (the table is the contract, not the measurement).
 
 Exact mode (no `--fast`) keeps the token-identity tests (`tests/identity.sh`, `tests/kl_batch.sh`, CI job `identity`). The approximate items cannot be token-identical,
-so they pass this gate instead: *the meaning has to match* (owner's rule 2026-10-29).
+so they pass this gate instead: *the meaning has to match* (rule of 2026-10-29).
 
 ## What is measured (`tools/quality_gate.py`)
 
@@ -33,6 +33,6 @@ Rules that apply to every level:
   mean KLD at most 0.25, same top token at least 70 %, tasks within 10, and `exact` must stay at KLD 0. It proves that every level runs, that
   the plugin really was active and that nothing went wrong by an order of magnitude; it does not prove quality.
 - A speed gain only counts if the level passes. A level that is faster in every ABBA pair at 4k, 64k and 128k **and** passes is kept.
-- The default stays exact until the owner decides with these numbers.
+- The default stays exact until the maintainer decides with these numbers.
 - Where the q8_0 KV cache (`kv`) is the default (from 32k context with a GPU that has room, and from 128k), `--exact` and `--no-long-prompt` keep f16 at any context.
 - The opt-in `--approx safe|careful|aggressive` tiers ([CONFIGURATION](CONFIGURATION.md)) use these levels as their gates: safe = `kv`, careful = `fast`, aggressive = `fewer`. `tests/approx_test.py` fails if the numbers in `bin/moe_cache_approx.py` and this table drift apart. The startup canary (about 256 tokens) is a guard only; it never replaces a gate run.
