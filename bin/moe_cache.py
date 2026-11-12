@@ -3410,6 +3410,21 @@ def memory_env_stage(a, ls, lib, model, profile, stock, gcache, machine):
     env = load + [("MOE_CACHE_SIZE_GIB", "auto"), ("MOE_CACHE_GGUF", model), ("MOE_CACHE_PROFILE", profile)]
     if a.ram:
         env.append(("MOE_CACHE_RAM_GIB", ram_gib(a.ram)))
+    elif machine.windows and not stock and not os.environ.get("MOE_CACHE_RAM_GIB"):
+        # chain's Flash-Next probe (2026-11-13, 32 GB PC, apps using 12.5-13.4 GB): the default cache filled to raw 29.8 GB, mapped 16-18 GB, leaving 1.3 GB of RAM available (stopped by the
+        # backstop twice): the plugin sizes its budget from the RAM available at start minus a 3 GiB margin, which keeps nothing free for the programs that are already open. Plan with what is
+        # available minus the same reserve the whole-server cap keeps (max(4 GiB, 12.5 % of the RAM)); --ram GB sets it by hand.
+        try:
+            avail, total = machine.mem_for_server(None), machine.mem_total()
+        except Exception:
+            avail = total = None
+        if avail and total:
+            keep = max(4 * 2**30, total / 8)
+            gib = max((avail - keep) / 2**30, 4.0)
+            if gib * 2**30 < avail:
+                env.append(("MOE_CACHE_RAM_GIB", f"{gib:.3f}"))
+                say(f"moe-cache: RAM: {avail / 2**30:.1f} GiB available now, {keep / 2**30:.1f} GiB kept free for your programs (physical RAM minus max(4 GiB, 12.5 %)): the cache plans with "
+                    f"{gib:.1f} GiB (--ram GB sets it by hand)")
     cap = machine.mem_cap()
     if a.max_ram:
         env.append(("MOE_CACHE_MAX_RAM_GB", a.max_ram))
