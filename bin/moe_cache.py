@@ -1459,6 +1459,8 @@ _QE_UNDO = []
 def win_console_no_quickedit(k=None):
     """WINDOWS-023: switch off the console's QuickEdit mode: a stray click (or a select) in the launcher's window pauses the process writing to it, so the server pipe
     stalls until a key is pressed. True when the mode was changed; False when there is nothing to change (not a console, already off, no Windows)."""
+    if os.environ.get("MOE_CACHE_QUICKEDIT", "").strip().lower() in ("1", "on", "true", "yes"):
+        return False                                   # the owner of the console wants QuickEdit (mouse selection of log lines) left on
     if k is None:
         if not WINDOWS:
             return False

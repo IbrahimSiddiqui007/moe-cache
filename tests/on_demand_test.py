@@ -501,6 +501,27 @@ for _ in range(100):
 t0 = time.time(); b4.stop("test"); dt4 = time.time() - t0
 th4.join(15)
 check("SERVER-836: stop() while a model loads returns at once and ends the load", dt4 < 10 and not th4.is_alive() and str(res4.get("r", "")).startswith("error") and b4.state == "idle", (round(dt4, 1), res4, b4.state))
+# a launcher that ignores SIGTERM during the load: killed after the grace on Linux, never on macOS (no parent-death signal: llama-server would be orphaned)
+STUBBORN = os.path.join(TMP, "stubborn_server.py"); open(STUBBORN, "w").write("import signal, time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)\n")
+if os.name != "nt":
+    od.LOAD_STOP_GRACE = 1
+    outs = {}
+    for plat in ("linux", "darwin"):
+        bs = od.Backend(dict(choice), launcher=[sys.executable, STUBBORN], idle_min=1, start_timeout=40, log=lambda m: None)
+        def _go(b=bs):
+            try: b.ensure("stubborn")
+            except Exception: pass
+        tg = threading.Thread(target=_go, daemon=True); tg.start()
+        for _ in range(100):
+            if bs.state == "starting" and bs.p is not None: break
+            time.sleep(0.1)
+        pp = bs.p; real_plat = sys.platform; sys.platform = plat
+        try: bs.stop("test")
+        finally: sys.platform = real_plat
+        time.sleep(0.3); outs[plat] = pp.poll() is None
+        if outs[plat]: pp.kill()
+        tg.join(15)
+    check("SERVER-836: a launcher that ignores SIGTERM during a load is killed after the grace on Linux and never on macOS", outs == {"linux": False, "darwin": True}, outs)
 real_http = mc.http
 mc.http = lambda url, *a, **k: (200, '{"status": "ok", "on_demand": "idle"}')
 try:

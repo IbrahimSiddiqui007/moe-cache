@@ -28,6 +28,7 @@ NOT_FOUND_PROBES = ("/api/v1/models", "/api/tags", "/v1/props", "/version")
 CHOICE_FILE = os.path.join(mc.CACHE_DIR, "on-demand.json")
 LOG_FILE = os.path.join(mc.CACHE_DIR, "on-demand.log")       # the launcher's and llama-server's output
 PID_FILE = os.path.join(mc.CACHE_DIR, "on-demand.pid")
+LOAD_STOP_GRACE = 15         # SERVER-836: seconds a stop() during a model load waits after SIGTERM before it kills the launcher (not on macOS)
 CUSTOM_KEY_FILE = os.path.join(mc.CACHE_DIR, "on-demand.key")      # the --api-key given with the default model (mode 0600)
 LISTENER_LOG = os.path.join(mc.CACHE_DIR, "on-demand-listener.log")   # the listener's own lines when it has no console (Windows)
 LAUNCHER = [mc.python_cmd(), os.path.join(mc.HERE, "bin", "moe_cache.py"), "server"]     # tests replace it with a fake server
@@ -369,7 +370,14 @@ class Backend:
             if self.state == "starting" and p is not None and p.poll() is None:      # only a load: a stop already in progress (graceful, may save the usage profile) is left to finish
                 self.stop_asked = True
                 try:
-                    p.kill()
+                    # SIGTERM first (the launcher passes it on to llama-server, as in the normal stop); SIGKILL only if it is still there after the grace, and never on macOS:
+                    # there is no parent-death signal there, so a killed launcher would leave llama-server running (Linux has PR_SET_PDEATHSIG, Windows the job object)
+                    p.terminate()
+                    try:
+                        p.wait(timeout=LOAD_STOP_GRACE)
+                    except subprocess.TimeoutExpired:
+                        if sys.platform != "darwin" and p.poll() is None:
+                            p.kill()
                 except OSError:
                     pass
                 self.log(f"stopped while the model was loading ({reason})")
