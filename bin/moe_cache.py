@@ -3402,7 +3402,7 @@ def profile_stage(a, model, pname, dry):
 def avail_reserve_gib(a, machine, stock=False):
     """GiB the plugin's cache may plan with on Windows: the RAM available now minus the reserve the whole-server cap keeps (max(4 GiB, 12.5 % of the RAM)), at least 4 GiB; None when this does not
     apply (Linux, stock, --ram or MOE_CACHE_RAM_GIB given, no figure). Chain's Flash-Next probe 2026-11-13: without it the default cache left 1.3 GB available beside the open programs."""
-    if not machine.windows or stock or a.ram or os.environ.get("MOE_CACHE_RAM_GIB"):
+    if not getattr(machine, "windows", False) or stock or a.ram or os.environ.get("MOE_CACHE_RAM_GIB"):      # (a test double without the field is not Windows)
         return None
     try:
         avail, total = machine.mem_for_server(None), machine.mem_total()
