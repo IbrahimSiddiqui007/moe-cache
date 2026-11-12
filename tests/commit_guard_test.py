@@ -84,6 +84,8 @@ d3 = cg.decide(f, layout(kv_q8=False), 22 * GIB, 48 * GIB, allow_q8=False)
 check(not any("q8_0" in s for s in d3["steps"]), "--exact: no q8_0 KV step")
 d4 = cg.decide(f, layout(ffn_off=30, copy_weights=True), 21 * GIB, 48 * GIB)
 check(d4["ok"] and d4["steps"][0].startswith("mmap"), "copied weights: mmap is the first fix")
+d4b = cg.decide(f, layout(ffn_off=30, copy_weights=True), 21 * GIB, 48 * GIB, locked=("loadmode",))
+check(not any(s.startswith("mmap") for s in d4b["steps"]), "critic L2: locked 'loadmode' (the launcher chose --load-mode none itself): no 'mmap instead of copied weights' step")
 d5 = cg.decide(moe(), layout(n_cpu_moe=10, ub=2048, kv_q8=False), 13 * GIB, 40 * GIB)
 check(d5["ok"] and d5["layout"]["n_cpu_moe"] >= 10 and "n_cpu_moe" in d5["layout"], f"MoE: {'; '.join(d5['steps'])}")
 

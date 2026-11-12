@@ -5,7 +5,6 @@ import os, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
-sys.path.insert(0, os.path.join(HERE, "..", "planner"))
 import moe_cache as mc  # noqa: E402
 
 FAILS = []
@@ -37,11 +36,11 @@ _real_getsize = os.path.getsize
 os.path.getsize = lambda p: FAKE_SIZE[p] if p in FAKE_SIZE else _real_getsize(p)
 A = lambda **k: types.SimpleNamespace(**{"exact": False, "stock": False, "ram": None, **k})
 cmd = ["llama-server", "-m", f, "--load-mode", "mmap"]
-r = lambda m=M(), a=None, c=cmd, e=(), mod=f, sp=1.0: mc.load_mode_low_ram(a or A(), c, list(e), m, mod, sp)
+r = lambda m=M(), a=None, c=cmd, e=(), mod=f, sp=5.0: mc.load_mode_low_ram(a or A(), c, list(e), m, mod, sp)
 
 why = r(M(avail=14 * GIB))
-check(why and "13.5 GiB" in why and "14.0 GiB of RAM is available" in why and "--load-mode none" in why and "1.0 GiB of it stays in RAM" in why, f"14 GiB available for a 13.5 GiB file: none, and the note says the figures ({why and why[:80]})")
-check(r(M(avail=17 * GIB)) is not None, "17 GiB available (under file + 4 = 17.5): none")
+check(why and "13.5 GiB" in why and "14.0 GiB of RAM is available" in why and "stage about 8.5 GiB" in why and "--load-mode none" in why and "5.0 GiB stays in RAM" in why, f"14 GiB available for a 13.5 GiB file: none, and the note says the figures ({why and why[:80]})")
+check(r(M(avail=16 * GIB)) is not None and r(M(avail=17 * GIB)) is None, "critic L3: mmap stages file - spill = 8.5 GiB, plus the reserve twice (8): 16 GiB available -> none, 17 -> mmap")
 check(r(M(avail=18 * GIB)) is None, "18 GiB available (over file + 4): mmap stays")
 check(r(M(windows=False, avail=1 * GIB)) is None, "Linux: mmap stays (page cache serves it, no spike measured)")
 check(r(M(avail=14 * GIB), A(exact=True)) is None and r(M(avail=14 * GIB), A(stock=True)) is None, "--exact and --stock: nothing changed")
@@ -56,8 +55,8 @@ check(r(M(avail=14 * GIB), mod=big, sp=26.0) is None, "R1: 40 GiB file, 14 GiB a
 check(r(M(avail=30 * GIB), mod=big, sp=8.0) is not None, "40 GiB file, 30 GiB available, 8 GiB stays in RAM: none")
 # critic R4: the reserve is what the machine keeps free (RAM minus mem_cap), not a fixed 4 GiB, on a bigger machine
 m64 = M(avail=19 * GIB, total=64 * GIB, cap=56 * GIB)
-check(r(m64, sp=1.0) is not None and r(M(avail=19 * GIB, total=32 * GIB, cap=28 * GIB), sp=1.0) is None, "R4: 13.5 GiB file, 19 GiB available: 64 GiB machine (8 GiB reserve) -> none, 32 GiB machine (4 GiB reserve) -> mmap")
-check("8.0 GiB the machine keeps free" in r(m64, sp=1.0) and "available to the server" in r(m64, sp=1.0), "the note names the margin and says 'available to the server' (R4, R6)")
+check(r(m64) is not None and r(M(avail=19 * GIB, total=32 * GIB, cap=28 * GIB)) is None, "R4: 13.5 GiB file, 19 GiB available: 64 GiB machine (8 GiB reserve) -> none, 32 GiB machine (4 GiB reserve) -> mmap")
+check("8.0 GiB the machine keeps free" in r(m64) and "available to the server" in r(m64), "the note names the margin and says 'available to the server' (R4, R6)")
 # the PC case through the real command_stage (main's request, 2026-11-12): dense, the planner says "does not fit", 12 GiB available for a 13.5 GiB file
 import contextlib, io
 class PCMachine(mc.Machine):
@@ -69,7 +68,7 @@ class PCMachine(mc.Machine):
     def run(self, cmd, **kw): return types.SimpleNamespace(returncode=0, stdout="--fit-target\n", stderr="")
 
 
-def stage(avail, fits, extra=(), windows=True, args=(), over=1.0):
+def stage(avail, fits, extra=(), windows=True, args=(), over=5.0):
     a, ex, _ = mc.parse_server([f, "--no-pin", *args])
     saved = (mc.dense_gpu_fit_pair, mc.dense_ffn_override)
     mc.dense_gpu_fit_pair = lambda *x, **k: [{"fits": fits, "over_gib": 0.0 if fits else over}] * 4
@@ -85,7 +84,7 @@ def stage(avail, fits, extra=(), windows=True, args=(), over=1.0):
 
 
 mode, say = stage(12 * GIB, fits=False)
-check(mode == "none" and "13.5 GiB" in say and "12.0 GiB of RAM is available" in say, f"PC case through command_stage: dense, does not fit, 12 GiB available -> --load-mode none with the plain line ({mode})")
+check(mode == "none" and "13.5 GiB" in say and "12.0 GiB of RAM is available" in say, f"low RAM through command_stage: dense, does not fit (5 GiB stays), 12 GiB available -> --load-mode none with the plain line ({mode})")
 mode, say = stage(30 * GIB, fits=False)
 check(mode == "mmap" and "load-mode none" not in say, f"does not fit, 30 GiB available -> mmap stays ({mode})")
 mode, say = stage(12 * GIB, fits=True)
@@ -100,5 +99,22 @@ mode, say = stage(14 * GIB, fits=False, over=26.0)
 check(mode == "mmap", f"plan level, R1: the planner says 26 GiB would stay in RAM, 14 GiB available -> mmap ({mode})")
 mode, say = stage(12 * GIB, fits=False, extra=["-ot", "x"])
 check(mode == "mmap", f"plan level: -ot in the command (FFN-in-RAM plan) -> no NameError, mmap stays ({mode})")
+# chain's rn038_loadcheck28b (28b80a9, 2026-11-13): 27B, planner 0.7 GiB over, 19 GB available, apps open: mmap staged ~11.5 GB through RAM and the guard stopped the load
+mode, say = stage(19 * GIB, fits=False, over=0.7)
+check(mode == "none" and "takes almost all" in say and "0.7 GiB stays in RAM" in say, f"the PC case through command_stage: small spill (0.7 GiB), 19 GiB available -> --load-mode none ({mode})")
+mode, say = stage(30 * GIB, fits=False, over=4.0)
+check(mode == "mmap", f"a spill over 3 GiB with plenty of RAM keeps mmap ({mode})")
+check(r(M(avail=30 * GIB), sp=3.0) is not None and r(M(avail=30 * GIB), sp=3.1) is None, "the small-spill limit is 3 GiB (13.5 GiB file: 25 % = 3.4)")
+smallf = os.path.join(d, "small.gguf"); open(smallf, "wb").close(); FAKE_SIZE[smallf] = 4 * GIB
+check(r(M(avail=30 * GIB), mod=smallf, sp=1.5) is None and r(M(avail=30 * GIB), mod=smallf, sp=0.9) is not None, "and at most 25 % of the file (4 GiB file: 1.0)")
+mode, say = stage(19 * GIB, fits=False, over=0.7, windows=False)
+check(mode == "mmap", f"Linux: mmap stays ({mode})")
+mode, say = stage(19 * GIB, fits=False, over=0.7, extra=["--load-mode", "mmap"])
+check(mode == "mmap" and "takes almost all" not in say, f"a --load-mode of your own: kept ({mode})")
+# critic L2: the commit check must not turn the launcher's own --load-mode none back into mmap
+mode, say = stage(19 * GIB, fits=False, over=0.7)
+check(mode == "none" and mc.LOAD_NONE_BY_RULE[0] is True, "the rule's own none is marked for the commit check")
+mode, say = stage(30 * GIB, fits=False, over=4.0)
+check(mode == "mmap" and mc.LOAD_NONE_BY_RULE[0] is False, "mmap: not marked")
 print("load mode test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)

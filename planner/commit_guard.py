@@ -155,7 +155,7 @@ def _more_weights_to_ram(f, L, est, free, limit, windows=True):
 
 
 def decide(f, L, free, limit, locked=(), allow_q8=True, windows=True):
-    """Pre-load check. free / limit: free commit and commit limit in bytes. locked: knobs the user fixed ("ub", "kv", "cache", "weights"); they are never touched.
+    """Pre-load check. free / limit: free commit and commit limit in bytes. locked: knobs the user fixed ("ub", "kv", "cache", "weights"; "loadmode": the launcher chose --load-mode none itself to avoid the mmap staging spike); they are never touched.
     Tries, cheapest in speed first: mmap instead of copies, smaller -ub, smaller prompt cache, q8_0 KV cache, then more weights in RAM (never shorter context).
     Returns {"ok", "layout", "steps": [text], "est", "need": bytes incl. the floor, "floor"}; ok False = refuse (the layout is the smallest tried)."""
     floor = soft_floor(limit)
@@ -170,7 +170,7 @@ def decide(f, L, free, limit, locked=(), allow_q8=True, windows=True):
         cur, est = new, estimate(f, new, windows)
         steps.append(text)
         return fits(est, free, limit)
-    if cur.get("copy_weights") and "weights" not in locked:
+    if cur.get("copy_weights") and "weights" not in locked and "loadmode" not in locked:
         if settle(dict(cur, copy_weights=False), "mmap instead of copied weights"):
             return done()
     if "ub" not in locked and cur.get("ub", UB_MIN) > UB_MIN:

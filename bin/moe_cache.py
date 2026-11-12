@@ -3226,6 +3226,7 @@ def load_mode_fit_none(a, cmd, extra, machine, ctx, pair, kv_name, kv_v=None):
 
 
 LOAD_MODE_RAM_MARGIN_GIB = 4.0
+LOAD_MODE_SMALL_SPILL_GIB = 3.0      # the part of a dense model that stays in RAM (planner) up to which the GPU takes "almost all" of it
 
 
 def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
@@ -3250,10 +3251,18 @@ def load_mode_low_ram(a, cmd, extra, machine, model, spill_gib=None):
     if not size or not avail:
         return None
     margin = max(LOAD_MODE_RAM_MARGIN_GIB, (total - cap) / 2**30 if total and cap and total > cap else 0.0)
-    if avail >= size + margin * 2**30 or spill_gib + margin > avail / 2**30:
+    # chain's real load of 28b80a9 (27B, 64k, q4_0, plan "0.7 GiB over", 19 GB available, apps open): mmap staged ~11.5 GB through RAM, available fell 16.0 -> 4.4 GB in 3 s and the RAM guard
+    # stopped it; `--load-mode none` on the same plan peaks at 3.8 GB. When the GPU takes almost all of the model (the planner's spill is small), mmap only adds that staging spike.
+    if spill_gib <= min(LOAD_MODE_SMALL_SPILL_GIB, 0.25 * size / 2**30):
+        return (f"the GPU takes almost all of the {size / 2**30:.1f} GiB model (about {spill_gib:.1f} GiB stays in RAM): --load-mode none (a memory-mapped load would stage the file "
+                "through RAM first, measured once as ~11.5 GB at once for the 27B; the part that stays in RAM is the planner's estimate; --exact or --load-mode after -- keeps llama.cpp's default)")
+    # critic L3: the mmap load stages what goes to the GPU (file minus the part that stays in RAM) through RAM at once; mmap stays only when that, the reserve and a second reserve for the
+    # desktop's own growth fit in the RAM available to the server; and `none` copies the part that stays in RAM, which has to fit too (a 40 GiB file with 14 GiB available stays mmap).
+    stage = size / 2**30 - spill_gib
+    if avail / 2**30 >= stage + 2 * margin or spill_gib + margin > avail / 2**30:
         return None
-    return (f"the model file is {size / 2**30:.1f} GiB, {avail / 2**30:.1f} GiB of RAM is available to the server (less than the file plus {margin:.1f} GiB the machine keeps free) "
-            f"and about {spill_gib:.1f} GiB of it stays in RAM: --load-mode none (the weights are read into memory as the GPU takes them, not mapped from the file first; "
+    return (f"the model file is {size / 2**30:.1f} GiB, {avail / 2**30:.1f} GiB of RAM is available to the server and a memory-mapped load would stage about {stage:.1f} GiB of it through RAM "
+            f"(plus {margin:.1f} GiB the machine keeps free, twice); about {spill_gib:.1f} GiB stays in RAM: --load-mode none (the weights are read into memory as the GPU takes them; "
             "--exact or --load-mode after -- keeps llama.cpp's default)")
 
 
@@ -3263,6 +3272,7 @@ def gpu_fit_words(r, kv_name):
             + f" = {r['need_gib']:.1f} GiB of {r['free_gib']:.1f} GiB free")
 
 
+LOAD_NONE_BY_RULE = [False]   # set by command_stage when the launcher itself chose --load-mode none (fits-fully, small spill, low RAM): the commit check must not turn it back into mmap
 EXPECT_CPU_WORK = [False]     # set by command_stage: the plan itself puts work on the CPU (the log scan then stays quiet)
 CPU_ATTN_RE = re.compile(r"layer\s+(\d+) is assigned to device (\S+) but Flash Attention over K/V rows is assigned to device CPU")
 OFFLOADED_RE = re.compile(r"offloaded (\d+)/(\d+) layers to GPU")
@@ -3954,16 +3964,19 @@ def command_stage(a, ls, model, ctx, port, ncmoe, extra, pinargs, vram_user, den
         r = pair[min(kv_fit_index(kv_name, arg_after(extra, "-ctv", "--cache-type-v")), len(pair) - 1)] if pair else None
         expect = bool(r and not r["fits"])
     EXPECT_CPU_WORK[0] = expect
+    LOAD_NONE_BY_RULE[0] = False
     if dense and not cpu_only and not expect and "--load-mode" in cmd:
         why = load_mode_fit_none(a, cmd, extra, machine, ctx, dense_gpu_fit_pair(a, model, ctx, machine, with_q4=True), arg_after(extra, "-ctk", "--cache-type-k") or "f16",
                                  arg_after(extra, "-ctv", "--cache-type-v"))
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
+            LOAD_NONE_BY_RULE[0] = True
             say("moe-cache: " + why)
     elif dense and not cpu_only and "--load-mode" in cmd:
         why = load_mode_low_ram(a, cmd, extra, machine, model, r["over_gib"] if r and r.get("over_gib") is not None else None)
         if why:
             cmd[cmd.index("--load-mode") + 1] = "none"
+            LOAD_NONE_BY_RULE[0] = True
             say("moe-cache: " + why)
     if method == "none (stock)":
         pass
@@ -4365,6 +4378,7 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
     user = " ".join(argv)
     flags = lambda *names: any(re.search(r"(^| )" + re.escape(n) + r"( |=|$)", user) for n in names)
     locked = set()
+    if LOAD_NONE_BY_RULE[0]: locked.add("loadmode")      # critic L2: the commit check may not undo the launcher's own --load-mode none (it would bring back the mmap staging spike)
     if a.ub != "auto" or flags("-ub", "--ubatch-size", "-b", "--batch-size"): locked.add("ub")
     if a.exact or flags("-ctk", "--cache-type-k", "-ctv", "--cache-type-v"): locked.add("kv")
     if flags("--cache-ram", "-cram") or arg_after(cmd, "--cache-ram") is None: locked.add("cache")      # no --cache-ram in the command: this llama-server may not have the option
