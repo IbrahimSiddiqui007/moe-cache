@@ -113,7 +113,7 @@ The plugin does not change the math: with the same settings its answers are the 
 **The whole A B B A on a Windows PC (one model per call; trial first with -Ctx 8192 -MaxTurns 4)**
 
 ```
-powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\dl\conv -Model D:\models\model.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\bench\conv -Model D:\models\model.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536
 ```
 
 **moe-cache (launcher defaults; it prints the llama-server command it runs)**

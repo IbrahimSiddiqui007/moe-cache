@@ -198,7 +198,7 @@ footer { color: var(--ink-3); font-size: 13px; border-top: 1px solid var(--rule)
     <h2>Commands</h2>
     <div class="cmd">
       <h3>The whole A B B A on a Windows PC (one model per call; trial first with -Ctx 8192 -MaxTurns 4)</h3>
-      <pre>powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\dl\conv -Model D:\models\model.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536</pre>
+      <pre>powershell -NoProfile -ExecutionPolicy Bypass -File tools\conversation_bench_pair.ps1 -OutDir C:\bench\conv -Model D:\models\model.gguf -Alias flash -Ram 24 -FlushOther "D:\other-models" -Ctx 65536</pre>
     </div>
     <div class="cmd">
       <h3>moe-cache (launcher defaults; it prints the llama-server command it runs)</h3>

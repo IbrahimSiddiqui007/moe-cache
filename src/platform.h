@@ -591,7 +591,7 @@ inline bool process_exiting() {
 #endif
 }
 // idle release (N3): drop the hard working-set minimum and empty the working set; file-view pages move to the standby list (still in RAM).
-// The same two calls as the PC measurement (C:\dl\pc_n3.ps1); no-op on Linux
+// The same two calls as the PC measurement (the PC measurement script); no-op on Linux
 inline void ws_release() {
 #ifdef _WIN32
     SetProcessWorkingSetSizeEx(GetCurrentProcess(), (size_t) 200 << 20, (size_t) 1 << 30, QUOTA_LIMITS_HARDWS_MIN_DISABLE | QUOTA_LIMITS_HARDWS_MAX_DISABLE);

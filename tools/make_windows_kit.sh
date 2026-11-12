@@ -76,6 +76,6 @@ git rev-parse --short HEAD > "$K/REVISION"     # the kit has no .git: the benchm
 printf '@echo off\r\nrem moe-cache control page: double-click. "moe-cache.bat --shortcut" adds it to the Start menu.\r\ncall "%%~dp0bin\\moe-cache-ui.bat" %%*\r\n' > "$K/moe-cache.bat"
 find "$K" -name __pycache__ -prune -exec rm -rf {} +
 mkdir -p dist
-SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}" python3 tools/reproducible_zip.py "$X/kit" "$N" "$PWD/dist/$N.zip"     # same commit, same bytes (PACKAGING-828)
+SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}" python3 tools/reproducible_zip.py "$X/kit" "$N" "$PWD/dist/$N.zip"     # reproducible archive layout (PACKAGING-828)
 ( cd dist && sha256sum "$N.zip" > SHA256SUMS-windows && cat SHA256SUMS-windows )
 echo "built from commit $(git rev-parse --short HEAD) -> dist/$N.zip"

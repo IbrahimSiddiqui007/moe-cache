@@ -740,7 +740,7 @@ def dry_run(s):
 
 # ---- the running server ----
 
-# Owner's decision C (handover/DECISION_LLAMA_SERVER_KEY_20261026.md): agent servers get a stable per-user random key from the launcher.
+# Decision C (private notes, 2026-10-26): agent servers get a stable per-user random key from the launcher.
 # The page asks the launcher for it (stdout: the key alone, exit 0), keeps it in memory, sends it in headers and to `connect` through the
 # environment; never in a URL, a log line or the status JSON (the page fetches it from /api/key only for the Copy button).
 KEY_CMD = [mc.python_cmd(), os.path.join(HERE, "bin", "moe_cache.py"), "key"]

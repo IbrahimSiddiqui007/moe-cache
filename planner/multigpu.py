@@ -1,4 +1,4 @@
-"""Placement for more than one GPU (PROTOTYPE, avenue 2 of handover/archived/parts_research/engine_notes/multi_model_gpu_20261030.md; not wired into the launcher yet).
+"""Placement for more than one GPU (PROTOTYPE, avenue 2 of the private multi-model GPU notes; not wired into the launcher yet).
 
 Why: llama.cpp assigns layers to devices by index, in the order of its device list, in proportion to -ts (default: each device's free memory), and
 `--n-cpu-moe N` keeps the experts of layers 0..N-1 on the CPU. The launcher plans with ONE card's free memory and passes neither -ts nor --device, so

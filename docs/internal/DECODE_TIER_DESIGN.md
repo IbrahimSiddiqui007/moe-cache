@@ -82,7 +82,7 @@ Where (archived, see `archive/plugin/decode_tier.patch`): `src/mc_tier.h` (layer
 What it does not do (on purpose): choose layers by itself, drop the bank for tiny prompts differently, evict the tier layers' experts from the RAM cache after the switch (they stay resident until normal eviction; the first token of each tier layer still reads its picks), Linux/CUDA checks, MTP/speculative graphs (the hybrid path was not checked with them either).
 
 ### PC test plan (Windows PC, Flash-Next Q2_0, about 30 minutes, load once, model already in the file cache)
-Use the launcher as in RESULTS 79 with `--ctx 65536` (so the planner picks 40 CPU layers) and a 34k-token prompt (`C:\dl\long30k.txt`, 33,979 tokens) followed by a 256-token answer, greedy. The decode loss is a property of the placement, not of the prompt length, so the shorter prompt is enough for a kill check. Add `MOE_CACHE_STATS=1` to every arm.
+Use the launcher as in RESULTS 79 with `--ctx 65536` (so the planner picks 40 CPU layers) and a 34k-token prompt (a file of 33,979 tokens) followed by a 256-token answer, greedy. The decode loss is a property of the placement, not of the prompt length, so the shorter prompt is enough for a kill check. Add `MOE_CACHE_STATS=1` to every arm.
 
 | # | Arm | Time | What to read |
 |---|---|---|---|

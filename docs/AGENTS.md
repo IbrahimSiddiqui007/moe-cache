@@ -92,7 +92,7 @@ Not covered yet: Oh My Pi (its `~/.omp/agent/models.yml` is YAML, only third-par
 | Use | Recommended file | Measured (16 GB GPU + 32 GB RAM PC, plugin) |
 |---|---|---|
 | general agent use (Hermes, OpenCode) | Qwen3.8-Flash-Next GSQ-RCO **IQ3_XXS** (75.8 GB), the default (0.3.2 to 0.3.6, and again since v0.3.8) | decode 19.9 tok/s (2026-10-27), 193/202 tasks (the most), reads best for coding; top-1 agreement with IQ3_S 76.5 % against 73.3 % for Q2_0 (measured 2026-11-05, record pending); slower than Q2_0 at long context |
-| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (owner 2026-11-05; IQ3_XXS is the default again since v0.3.8) | decode 22.2 tok/s on 2026-10-28, 191/202 tasks; in a real 65k conversation (fixed driver, RAM at 6000 MT/s) moe-cache reads new prompt tokens 1.9x as fast as stock (5.0x falling to 1.3x by depth) and decodes 26.9 against 25.4 tok/s (1.06x; equal to stock at 48k-64k depth), claim v038-conv-q2_0 |
+| the faster file | Qwen3.8-Flash-Next GSQ-RCO **Q2_0** (66.4 GB), the default in v0.3.7 only (decided 2026-11-05; IQ3_XXS is the default again since v0.3.8) | decode 22.2 tok/s on 2026-10-28, 191/202 tasks; in a real 65k conversation (fixed driver, RAM at 6000 MT/s) moe-cache reads new prompt tokens 1.9x as fast as stock (5.0x falling to 1.3x by depth) and decodes 26.9 against 25.4 tok/s (1.06x; equal to stock at 48k-64k depth), claim v038-conv-q2_0 |
 | coding agents | ISTA GSQ-RCO **Coder IQ1_M** (58.4 GB, 256 of 512 experts) | OpenCode session 55.5 s vs 73.4 s on IQ2_XS (one run), 189/202 tasks; general knowledge not checked beyond the task set |
 
 No quality difference between these files is proven on the 202-task set (all p > 0.05). The agent-session numbers further down that say
@@ -164,7 +164,7 @@ Use PowerShell. `LS` is your llama-server folder, `MODEL` your .gguf. Each step 
 
 If a step fails, send: `python bin\moe_cache.py on-demand --status`, the last 30 lines of `on-demand-listener.log` and `on-demand.log` (both in `%USERPROFILE%\.cache\moe-cache\`), and the text of the app's error.
 
-## T8: Hermes Desktop and OpenCode Desktop through the control page (Windows, owner click-through)
+## T8: Hermes Desktop and OpenCode Desktop through the control page (Windows, click-through)
 
 Both desktop apps are already installed on the test PC (Hermes Desktop; OpenCode Desktop 2.1.4 in `%LOCALAPPDATA%\Programs\@opencodedesktop`). This path needs no on-demand listener: the control page starts the server and writes both configs. Use a small model first (Qwen3.6, 20 GB). Each step says what you should see; if not, stop and note it.
 
