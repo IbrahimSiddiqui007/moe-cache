@@ -31,8 +31,10 @@ class M:
 
 d = tempfile.mkdtemp()
 f = os.path.join(d, "m.gguf")
-with open(f, "wb") as fh:
-    fh.truncate(int(13.5 * GIB))                      # sparse: no disk used
+open(f, "wb").close()
+FAKE_SIZE = {f: int(13.5 * GIB)}                       # sizes are faked (a sparse file is not sparse on a Windows runner: 40 GiB failed with "No space left")
+_real_getsize = os.path.getsize
+os.path.getsize = lambda p: FAKE_SIZE[p] if p in FAKE_SIZE else _real_getsize(p)
 A = lambda **k: types.SimpleNamespace(**{"exact": False, "stock": False, "ram": None, **k})
 cmd = ["llama-server", "-m", f, "--load-mode", "mmap"]
 r = lambda m=M(), a=None, c=cmd, e=(), mod=f, sp=1.0: mc.load_mode_low_ram(a or A(), c, list(e), m, mod, sp)
@@ -48,8 +50,8 @@ check(r(M(avail=14 * GIB), c=cmd + ["-ot", "x"]) is None and r(M(avail=14 * GIB)
 check(r(M(avail=14 * GIB), mod=os.path.join(d, "missing.gguf")) is None and r(M(avail=None)) is None and r(M(avail=14 * GIB), sp=None) is None, "unreadable file, unknown RAM or unknown spill: mmap stays (no guess)")
 # critic R1: a file much bigger than the RAM keeps mmap (none would copy the spilled part into private memory)
 big = os.path.join(d, "big.gguf")
-with open(big, "wb") as fh:
-    fh.truncate(40 * GIB)
+open(big, "wb").close()
+FAKE_SIZE[big] = 40 * GIB
 check(r(M(avail=14 * GIB), mod=big, sp=26.0) is None, "R1: 40 GiB file, 14 GiB available, 26 GiB would stay in RAM: mmap stays (the spill + reserve does not fit)")
 check(r(M(avail=30 * GIB), mod=big, sp=8.0) is not None, "40 GiB file, 30 GiB available, 8 GiB stays in RAM: none")
 # critic R4: the reserve is what the machine keeps free (RAM minus mem_cap), not a fixed 4 GiB, on a bigger machine
