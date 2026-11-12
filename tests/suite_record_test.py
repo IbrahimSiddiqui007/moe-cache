@@ -54,7 +54,7 @@ chk("higher is better: hard pass 24 against 9 of 27 is better (outside the 95 % 
 chk("lower is better: median thinking 5000 against 9000 is better", rows["thinking tokens, median"]["marks"][1] == "better")
 chk("a small difference is '=' (noise): decode 24.9 against 25.0", rows["decode at 32k"]["marks"][1] == "=")
 C = rec("model-C", 0, 20000, 20.0, loops=4); rc = {r["label"]: r for r in S.compare([A, C])["rows"]}
-chk("worse is marked worse (decode -20 %, hard pass 0 against 9, loops 1 -> 4)", rc["decode at 32k"]["marks"][1] == "worse" and rc["loops"]["marks"][1] == "worse" and rc["hard tasks passed of 27"]["marks"][1] == "worse" and rc["thinking tokens, median"]["marks"][1] == "worse")
+chk("worse is marked worse (decode -20 %, hard pass 0 against 9, loops 1 -> 4)", rc["decode at 32k"]["marks"][1] == "worse" and rc["loops in the final answer"]["marks"][1] == "worse" and rc["hard tasks passed of 27"]["marks"][1] == "worse" and rc["thinking tokens, median"]["marks"][1] == "worse")
 D = rec("model-D", 24, 5000, 25.0, proto="OTHER"); rd = S.compare([A, D])
 chk("a section with another protocol hash is not compared and says why", all(v is None or i == 0 for r in rd["rows"] if r["section"] == "hard" for i, v in enumerate(r["values"])) and any("hard" in s and "different protocol" in s for s in rd["skipped"]))
 chk("other sections of the same two records still compare", any(r["section"] == "speed" and r["values"][1] is not None for r in rd["rows"]))
@@ -64,7 +64,7 @@ chk("compare_text prints both models and the deltas", "model-A Q3" in txt and "m
 # noise: pass counts get an interval, 0 -> 1 loops is not a verdict, one-run numbers need 10 %
 near = {r["label"]: r for r in S.compare([rec("a", 20, 9000, 25.0, loops=0), rec("b", 24, 9000, 23.0, loops=1)])["rows"]}
 chk("20 -> 24 of 27 is inside the noise of the pass count ('=')", near["hard tasks passed of 27"]["marks"][1] == "=")
-chk("loops 0 -> 1 is '=' (not 'worse because the base is 0')", near["loops"]["marks"][1] == "=")
+chk("loops 0 -> 1 is '=' (not 'worse because the base is 0')", near["loops in the final answer"]["marks"][1] == "=")
 chk("a single-run speed change of -8 % is '=' (needs 10 %)", near["decode at 32k"]["marks"][1] == "=")
 chk("every row says how it was measured: pass counts carry n, speed rows are kind 'run'", near["hard tasks passed of 27"]["kind"] == "pass" and near["hard tasks passed of 27"]["ns"] == [27, 27] and near["decode at 32k"]["kind"] == "run")
 lo, hi = S.wilson(20, 27); chk("Wilson interval of 20/27 brackets 0.74 and is wide", lo < 0.74 < hi and hi - lo > 0.25)

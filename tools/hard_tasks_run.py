@@ -13,7 +13,19 @@ from concurrent.futures import ThreadPoolExecutor
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, HERE)
 import quality_yardstick as Y      # noqa: E402
 
-LOOP_RULE = "strict-32x4"      # a loop = a 32-token window seen 4 times (the old 12 tokens x 3 flagged long legitimate reasoning that re-prints grids and states: kept as `loop_weak`)
+LOOP_RULE = "final-32x4"      # `loop` = a 32-token window seen 4 times in the FINAL ANSWER (after </think>); a text cut inside the thinking has no answer: there the last quarter of the thinking is tested.
+# Repetition INSIDE the thinking is normal for long reasoning (the 27B calibration flagged every task, passes too, with the old 12x3 rule): it is reported apart as `think_repeat_share` and `think_loop` and is not a verdict.
+
+
+def repeat_stats(toks, n=32):
+    """Repetition of n-token windows: share of windows whose n-gram occurs at least twice, the most repeated n-gram (its count, first position and token ids, so a run can be recounted later)."""
+    if len(toks) < n:
+        return {"share": 0.0, "max_repeat": 1, "first_at": None, "ngram": []}
+    seen = {}
+    for i in range(len(toks) - n + 1):
+        seen.setdefault(hash(tuple(toks[i:i + n])), []).append(i)
+    tot = len(toks) - n + 1; rep = sum(len(v) for v in seen.values() if len(v) >= 2); v = max(seen.values(), key=len)
+    return {"share": round(rep / tot, 4), "max_repeat": len(v), "first_at": v[0], "ngram": list(toks[v[0]:v[0] + n])}
 
 
 def final_answer(text, stop=""):
@@ -71,8 +83,10 @@ def cmd_run(a):
             prev = {}
     out["loop_rule"] = LOOP_RULE; out["task_seconds"] = a.task_seconds
 
-    def save():
-        json.dump(out, open(a.out + ".partial", "w", encoding="utf-8"), ensure_ascii=False)
+    def save(complete=False):
+        out["complete"] = complete          # results are on disk as each task finishes (OUT.json and OUT.json.partial), also when the run is killed or times out
+        for path in (a.out + ".partial", a.out):
+            json.dump(out, open(path + ".tmp", "w", encoding="utf-8"), ensure_ascii=False); os.replace(path + ".tmp", path)
 
     def work(i):
         t = tasks[i]
@@ -97,9 +111,12 @@ def cmd_run(a):
             if timed_out:
                 rec["error"] = ""; rec["cap_hit"] = True            # over its time budget: counted like a cap hit (no answer), not as an error
         else:
-            ans = final_answer(text, stop)
-            rec = {"id": t["id"], "category": t["category"], "n_tokens": len(toks), "stop": stop, "think_tokens": think_tokens(a.url, text, len(toks), stop), "think_tag": "</think>" in text or "<think>" in text,
-                   "loop": Y.has_loop(toks, 32, 4), "loop_weak": Y.has_loop(toks), "answer": ans, "pass": check(t, ans), "cap_hit": stop == "limit", "seconds": round(time.time() - s), "text_tail": text[-300:]}
+            ans = final_answer(text, stop); tt = think_tokens(a.url, text, len(toks), stop); closed = "</think>" in text
+            th_part, fin = (toks[:tt], toks[tt:]) if closed else ([], toks) if tt == 0 else (toks, [])
+            rs = repeat_stats(th_part) if th_part else {"share": 0.0, "max_repeat": 1, "first_at": None, "ngram": []}
+            loop = Y.has_loop(fin, 32, 4) if fin else (Y.has_loop(th_part[-max(32, len(th_part) // 4):], 32, 4) if th_part and not closed else False)
+            rec = {"id": t["id"], "category": t["category"], "n_tokens": len(toks), "stop": stop, "think_tokens": tt, "think_tag": "</think>" in text or "<think>" in text,
+                   "loop": loop, "loop_weak": Y.has_loop(toks), "think_loop": Y.has_loop(th_part, 32, 4) if th_part else False, "think_repeat_share": rs["share"], "think_max_repeat": rs["max_repeat"], "think_repeat_at": rs["first_at"], "think_repeat_ngram": rs["ngram"], "answer": ans, "pass": check(t, ans), "cap_hit": stop == "limit", "seconds": round(time.time() - s), "text_tail": text[-300:]}
         with lock:
             out["items"][i] = rec; done[0] += 1
             print(f"[{done[0]}/{len(tasks)}] {t['id']:15s} {'ERROR ' + rec['error'] if rec.get('error') else ('PASS' if rec['pass'] else 'fail')} think {rec['think_tokens']:6d} total {rec['n_tokens']:6d} stop={rec['stop']} loop={rec['loop']} {rec['seconds']}s", flush=True)
@@ -107,8 +124,7 @@ def cmd_run(a):
 
     with ThreadPoolExecutor(a.workers) as ex:
         list(ex.map(work, range(len(tasks))))
-    out["seconds"] = round(time.time() - t0)
-    json.dump(out, open(a.out, "w"), ensure_ascii=False, indent=1)
+    out["seconds"] = round(time.time() - t0); save(True)
     print(summary_text(out))
 
 
@@ -120,7 +136,7 @@ def summary_text(run):
     errs = sum(1 for x in run["items"] if x and x.get("error"))
     it = [x for x in run["items"] if x and not x.get("error")]; th = [x["think_tokens"] for x in it]; tot = [x["n_tokens"] for x in it]
     lines = [f"run {run.get('label') or run.get('model','')}: {sum(x['pass'] for x in it)}/{len(it)} pass, loops {sum(x['loop'] for x in it)}, cap hits {sum(x['cap_hit'] for x in it)} (cap {run.get('cap') or 'none'}), errors {errs}, {run.get('seconds', 0)} s",
-             f"  thinking tokens: median {int(statistics.median(th))} mean {int(statistics.mean(th))} p90 {pct(th, .9)} max {max(th)}; total tokens: median {int(statistics.median(tot))} max {max(tot)}; tasks over 8k thinking: {sum(1 for v in th if v > 8000)}"]
+             f"  thinking tokens: median {int(statistics.median(th))} mean {int(statistics.mean(th))} p90 {pct(th, .9)} max {max(th)}; total tokens: median {int(statistics.median(tot))} max {max(tot)}; tasks over 8k thinking: {sum(1 for v in th if v > 8000)}; thinking repetition share median {statistics.median(x.get('think_repeat_share', 0) for x in it):.2f}, tasks with a repeated 32-token window 4+ times inside the thinking: {sum(1 for x in it if x.get('think_loop'))}"]
     cats = {}
     for x in it:
         cats.setdefault(x["category"], []).append(x)

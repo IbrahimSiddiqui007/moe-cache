@@ -89,6 +89,8 @@ if os.name != "nt":
     import moe_cache_record as rr
     kids = rr.probe().tree(pp.pid); R.kill_tree(pp.pid, grace=5); time.sleep(0.5)
     chk("kill_tree stops the process and its children", len(kids) >= 3 and not any(os.path.exists(f"/proc/{k}") and open(f"/proc/{k}/stat").read().split()[2] != "Z" for k in kids))
+sp27 = {"bands": [{"depth": 65536, "decode_tps": 27.0}]}
+chk("hard_budget: 65536 ctx at 27 tok/s -> 1.5 x 2427 s = 3640 s; a small ctx is held at 30 min; unknown speed -> 3600; capped at 6 h", R.hard_budget(sp27, 65536) == 3640 and R.hard_budget(sp27, 8192) == 1800 and R.hard_budget(None, 65536) == 3600 and R.hard_budget({"bands": [{"decode_tps": 0.5}]}, 65536) == 21600)
 ts = R.task_subset(list(range(202)), 20)
 chk("task subset: 20 of 202 spread over the whole file (the last tasks are used too)", len(ts) == 20 and ts[0] == 0 and ts[-1] > 185 and ts == sorted(set(ts)))
 sv = R.served_facts(url)

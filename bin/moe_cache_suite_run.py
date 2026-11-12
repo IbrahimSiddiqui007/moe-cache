@@ -20,7 +20,16 @@ PROFILES = {"quick": {"speed": "probe", "depth": 8192, "ctx": 12288, "tasks_n": 
             "standard": {"speed": "conv", "depth": 32768, "ctx": 32768, "tasks_n": 202, "think": ["off", "on"], "kl_chunks": 8, "hard": False},
             "night": {"speed": "conv", "depth": 65536, "ctx": 65536, "tasks_n": 202, "think": ["off", "on"], "kl_chunks": 8, "hard": True}}
 HARD_CAP = 0
-HARD_TASK_SECONDS = 3600
+HARD_TASK_SECONDS = 3600          # default; sized per run from the context and the measured decode speed (hard_budget)
+
+
+def hard_budget(speed, ctx):
+    """Seconds one hard task may take: the whole context decoded at the measured decode speed of the deepest band, times 1.5, between 30 min and 6 h (27B at 27 tok/s and 32k tokens: about 20 min of decode, so about 30 min allowed). 3600 when no speed is known."""
+    try:
+        bands = [b for b in (speed or {}).get("bands", []) if b.get("decode_tps")]; tps = bands[-1]["decode_tps"] if bands else None
+        return int(min(6 * 3600, max(1800, 1.5 * float(ctx) / float(tps)))) if tps and ctx else HARD_TASK_SECONDS
+    except (TypeError, ValueError, ZeroDivisionError):
+        return HARD_TASK_SECONDS
 KL_CTX = 8192                    # llama-perplexity window; it scores the second half of each window
 PLAN_FLAGS_WITH_VALUE = ("-ngl", "--n-gpu-layers", "-ncmoe", "--n-cpu-moe", "-ot", "--override-tensor", "-t", "--threads", "-ts", "--tensor-split", "-sm", "--split-mode", "-mg", "--main-gpu", "-dev", "--device")
 PLAN_FLAGS_SOLO = ("--cpu-moe", "-cmoe", "--no-mmap", "--mlock")
@@ -199,11 +208,11 @@ def run_tasks(url, think, n, tmp):
     return sec
 
 
-def run_hard(url, cap, workers, tmp, ctx):
-    out = os.path.join(tmp, "hard_run.json")
-    _py("hard_tasks_run.py", "run", "--url", url, "--out", out, "--label", "suite", "--cap", str(cap), "--workers", str(workers), "--resume", "--task-seconds", str(HARD_TASK_SECONDS))
+def run_hard(url, cap, workers, tmp, ctx, task_seconds=None):
+    task_seconds = task_seconds or HARD_TASK_SECONDS; out = os.path.join(tmp, "hard_run.json")
+    _py("hard_tasks_run.py", "run", "--url", url, "--out", out, "--label", "suite", "--cap", str(cap), "--workers", str(workers), "--resume", "--task-seconds", str(task_seconds))
     sec = S.section_hard(json.load(open(out)), S.file_hash(os.path.join(TOOLS, "hard_tasks.json")), ctx)
-    sec["task_seconds"] = HARD_TASK_SECONDS; sec["workers"] = workers
+    sec["task_seconds"] = task_seconds; sec["workers"] = workers
     return sec
 
 
@@ -343,7 +352,8 @@ def measure_server(url, name, prof, work, part, workers=1, monitor_pid=None, ser
         if key not in sec:
             progress(f"[{name}] tasks, thinking {think}"); done(key, run_tasks(url, think, P["tasks_n"], work))
     if P["hard"] and "hard" not in sec:
-        progress(f"[{name}] hard set (no cap, {HARD_TASK_SECONDS} s per task)"); done("hard", run_hard(url, HARD_CAP, workers, work, ctx))
+        tsec = hard_budget(sec.get("speed"), ctx); part.data["task_seconds"] = tsec
+        progress(f"[{name}] hard set (no cap, {tsec} s per task)"); done("hard", run_hard(url, HARD_CAP, workers, work, ctx, tsec))
 
 
 def measure(url, name, quant, prof, model_path=None, tmp=None, workers=1, perplexity="llama-perplexity", progress=print, served=None, monitor_pid=None, windows=None):
@@ -377,7 +387,7 @@ def finish(part, name, quant, prof, model_path, served, tmp, perplexity, progres
     if model_path and os.path.isfile(model_path):
         model["size_gb"] = round(os.path.getsize(model_path) / 1e9, 2)
     return S.new_record(model, machine=machine_facts(served.get("llama_server")), software=software_facts(served), served={k: v for k, v in served.items() if k not in ("plan_flags", "model_path")},
-                        settings={"profile": prof, "plan_flags": served.get("plan_flags") or [], "hard_task_seconds": HARD_TASK_SECONDS if P["hard"] else None}, sections=sec, profile=prof, notes=notes, partial=partial)
+                        settings={"profile": prof, "plan_flags": served.get("plan_flags") or [], "hard_task_seconds": part.data.get("task_seconds") if P["hard"] else None}, sections=sec, profile=prof, notes=notes, partial=partial)
 
 
 def _write(out, rec):
@@ -393,7 +403,7 @@ def cmd_run(a):
         try:
             st = os.stat(model) if model else None
             part = Partial(out, name, a.profile, {"model": os.path.basename(model or url), "size": st.st_size if st else None, "mtime": int(st.st_mtime) if st else None, "launch": a.launch_args, "windows": a.windows,
-                                                  "workers": a.workers, "ctx": P["ctx"], "hard": HARD_TASK_SECONDS})
+                                                  "workers": a.workers, "ctx": P["ctx"]})
             if not a.fresh and part.load():
                 print(f"[{name}] resuming: already measured: {', '.join(part.data['sections']) or 'nothing'}")
             work = os.path.join(out, "." + os.path.basename(part.path)[1:-8] + ".work"); os.makedirs(work, exist_ok=True)

@@ -35,7 +35,7 @@ class H(http.server.BaseHTTPRequestHandler):
         if i == 0: text, toks, stop = "word " * 40 + "</think>\n\nANSWER: " + ans, list(range(46)), "eos"                      # right, 40 thinking tokens
         elif i == 1: text, toks, stop = "hmm </think>\n\nANSWER: 000", list(range(5)), "eos"                              # wrong
         elif i == 2: text, toks, stop = "no answer line </think> done", list(range(5)), "eos"                              # no ANSWER line
-        elif i == 3: text, toks, stop = "loop " * 50, [1, 2, 3] * 30, "limit"                                              # loops, never leaves thinking, cap hit
+        elif i == 3: text, toks, stop = "loop " * 50, [1, 2, 3] * 120, "limit"                                              # loops, never leaves thinking, cap hit
         else: text, toks, stop = "ok </think>\n\nANSWER: " + ans, list(range(6)), "eos"
         self.send({"content": text, "tokens": toks, "stop_type": stop})
 
@@ -63,7 +63,12 @@ sys.path.insert(0, os.path.join(HERE, "tools")); import hard_tasks_run as HR, qu
 chk("an answer inside an unfinished think block (cut by the cap) is not accepted, a finished one is", HR.final_answer("ok ANSWER: 42", "limit") is None and HR.final_answer("t</think>\nANSWER: 42", "stop") == "42" and HR.final_answer("ANSWER: 42", "stop") == "42")
 chk("no think tag: 0 thinking tokens when it ended by itself, all of them when cut", HR.think_tokens("http://x", "plain", 10, "stop") == 0 and HR.think_tokens("http://x", "plain", 10, "limit") == 10)
 rep = list(range(100)) * 3; rnd = list(range(1000))
-chk("loop rule strict-32x4: a 32-token window 4 times is a loop; three repeats of a 100-token passage are not (the old 12x3 rule flagged them)", YY.has_loop((list(range(32)) * 4)) and HR.LOOP_RULE == "strict-32x4" and YY.has_loop(rep) and not YY.has_loop(rep, 32, 4) and not YY.has_loop(rnd, 32, 4))
+chk("loop rule final-32x4: a 32-token window 4 times is a loop; three repeats of a 100-token passage are not (the old 12x3 rule flagged them)", YY.has_loop((list(range(32)) * 4)) and HR.LOOP_RULE == "final-32x4" and YY.has_loop(rep) and not YY.has_loop(rep, 32, 4) and not YY.has_loop(rnd, 32, 4))
+rs = HR.repeat_stats([1, 2, 3] * 120); rn = HR.repeat_stats(list(range(500)))
+chk("repeat_stats: share of repeated windows, the most repeated n-gram with its count and token ids (so a run can be recounted)", rs["share"] > 0.9 and rs["max_repeat"] > 50 and len(rs["ngram"]) == 32 and rn["share"] == 0 and rn["max_repeat"] == 1)
+chk("each item stores its repetition inside the thinking (share, max repeat, position, n-gram ids) apart from the loop verdict", items[3]["think_repeat_share"] > 0.9 and items[3]["think_loop"] and len(items[3]["think_repeat_ngram"]) == 32 and items[0]["think_repeat_share"] == 0)
+chk("a loop in the thinking of a task that finished is not a loop verdict; the verdict tests the final answer", not items[0]["loop"] and not items[4]["loop"])
+chk("results are on disk as tasks finish: OUT.json and OUT.json.partial both exist, the final one says complete", os.path.exists(out + ".partial") and json.load(open(out))["complete"] is True)
 chk("the task file: 27 tasks, unique ids, known check kinds, an ANSWER instruction in every prompt", len(TASKS) == 27 and len(set(ids)) == 27 and all(t["check"]["kind"] in ("int", "word", "exact") and "ANSWER:" in t["prompt"] and t["why_hard"] for t in TASKS))
 print("hard_tasks_test: " + ("FAIL" if fails else "PASS"))
 sys.exit(1 if fails else 0)

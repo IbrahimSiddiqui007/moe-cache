@@ -50,7 +50,7 @@ def section_hard(run, tasks_hash="", ctx=None):
     for x in it:
         c = cats.setdefault(x["category"], [0, 0]); c[0] += int(x["pass"]); c[1] += 1
     return {"protocol": protocol_hash(kind="hard", tasks=tasks_hash, cap=run.get("cap", 0), ctx=ctx, loop=run.get("loop_rule", "weak-12x3"), temp=0), "n": len(it), "pass": sum(x["pass"] for x in it), "errors": err,
-            "think_median": statistics.median(th) if th else 0, "think_p90": pctl(th, .9), "think_max": max(th) if th else 0, "loops": sum(x["loop"] for x in it), "loops_in_passed": sum(1 for x in it if x["loop"] and x["pass"]),
+            "think_median": statistics.median(th) if th else 0, "think_p90": pctl(th, .9), "think_max": max(th) if th else 0, "loops": sum(x["loop"] for x in it), "loops_in_passed": sum(1 for x in it if x["loop"] and x["pass"]), "think_loops": sum(1 for x in it if x.get("think_loop")), "think_repeat_share_median": round(statistics.median(x.get("think_repeat_share", 0) for x in it), 3) if it else 0,
             "cap_hits": sum(x["cap_hit"] for x in it), "timeouts": sum(1 for x in it if x.get("stop") == "timeout"), "no_think_tag": sum(1 for x in it if x.get("think_tag") is False), "cap": run.get("cap", 0), "by_category": cats}
 
 
@@ -167,7 +167,7 @@ def _metrics(records):
              ("quality", "KL mean (KV cost)", lambda s: s.get("kl_mean"), "", -1, "kl"), ("quality", "same top token (KV cost)", lambda s: s.get("top1_pct"), "%", 1, "kl"),
              ("tasks", f"tasks passed of {_n(records, 'tasks')}, thinking off", lambda s: s.get("pass"), "", 1, "pass"), ("tasks_on", f"tasks passed of {_n(records, 'tasks_on')}, thinking on", lambda s: s.get("pass"), "", 1, "pass"),
              ("hard", f"hard tasks passed of {_n(records, 'hard')}", lambda s: s.get("pass"), "", 1, "pass"), ("hard", "thinking tokens, median", lambda s: s.get("think_median"), "", -1, "run"), ("hard", "thinking tokens, p90", lambda s: s.get("think_p90"), "", -1, "run"),
-             ("hard", "loops", lambda s: s.get("loops"), "", -1, "count"), ("hard", "cap hits", lambda s: s.get("cap_hits"), "", -1, "count")]
+             ("hard", "loops in the final answer", lambda s: s.get("loops"), "", -1, "count"), ("hard", "thinking repetition share (median)", lambda s: s.get("think_repeat_share_median"), "", -1, "run"), ("hard", "cap hits", lambda s: s.get("cap_hits"), "", -1, "count")]
     return rows
 
 
