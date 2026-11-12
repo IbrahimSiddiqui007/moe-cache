@@ -2926,7 +2926,7 @@ def plan_placement(a, model, ctx, ncmoe, machine):
     planner_info, planner_error = None, None       # planner/plan.py's answer (the control page shows its numbers) or why it failed
     if ncmoe is None:
         ram_gib = float(f"{machine.mem_for_server(a.ram) / 2**30:.3f}") if (a.ram or machine.mem_cap()) else None      # the planner plans with the capped memory too
-        vram_gib = float(a.vram) if a.vram else None
+        vram_gib = plan_vram_gib(a)
         try:
             planner_info = machine.planner_answer(model, ctx, ram_gib, vram_gib)
             ncmoe = str(planner_info["n_cpu_moe"])
@@ -2952,7 +2952,7 @@ def tune_launch(a, extra, ls, model, ctx, machine, gpu, gcache, kv_q8, mm_bytes)
         try:
             sys.path.insert(0, os.path.join(HERE, "planner"))
             from gguf_plan import tune
-            free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
+            free = plan_vram_gib(a) * 2**30 if a.vram else machine.free_vram_bytes()          # GiB, the same unit as the planner's --vram-gib; None: unknown, as the tuner's own probe
             if mm_bytes and free:
                 free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)       # MM6: the projector's weights and its compute buffer sit in VRAM too
             kw = {"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else {}     # default: the tuner's own 0.5 GB
@@ -3089,6 +3089,16 @@ def win_gpu_process_text():
     return text
 
 
+def plan_vram_gib(a):
+    """GiB of GPU memory a plan may use (audit 2026-11-12: every planning path, not only the dense fit): --vram, or the driver's free figure gpu_stage put in a.vram, but never more than the room
+    the card really gives (a.room_gib, set by real_room_stage; never set for the user's own --vram). None: no GPU figure."""
+    if not getattr(a, "vram", None):
+        return None
+    v = float(a.vram)
+    room = getattr(a, "room_gib", None)
+    return min(v, room) if room else v
+
+
 def real_room_stage(a, g, machine):
     """LAUNCHER-1133 (Windows AMD / Intel, --vram not given; build's LAUNCHER-1131 WIP, pre-load half only): llama-server's free figure is the Vulkan budget; with the desktop on the card the
     process keeps only its dedicated share and the rest is paged silently (PC 2026-11-11, RX 9070 XT: 15.4 GiB "free", 13.1-13.5 GiB kept; q8_0 KV at 64k ran 18.5 tok/s against 27.8 with q4_0).
@@ -3140,6 +3150,16 @@ def gpu_stage(a, ls, win, machine):
             real_room_stage(a, g, machine)
             # (Vulkan's GPU allocations are charged to Windows commit on AMD / Intel drivers: commit_stage estimates the whole server after the plan; LAUNCHER-991
             # replaced the old cap of the GPU plan, free commit minus a fixed 4 GiB, which ignored the KV cache and the compute buffers)
+    elif not a.vram:
+        # audit 2026-11-12: NVIDIA (Windows or Linux) and Linux AMD plan with the free memory the card reports now (total minus what every program uses at this moment: the room as measured
+        # by the driver tool); said once, with its source, so the figure the plan uses is never a silent assumption. A program that grows after the start is not covered.
+        try:
+            f = machine.free_vram_bytes()
+        except Exception:
+            f = None
+        if f:
+            src = "nvidia-smi" if machine.nvidia_reports() else "the amdgpu sysfs counters"
+            say(f"moe-cache: GPU memory: planning with {f / 2**30:.1f} GiB free ({src}: the card's size minus what every program uses now; a program that grows later is not counted; --vram GiB sets it by hand)")
     return vram_user, listing, gpu
 
 
@@ -3150,8 +3170,7 @@ def dense_fit_free(a, machine):
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import SMI_GAP_GIB
         if a.vram:
-            room = getattr(a, "room_gib", None)           # LAUNCHER-1133: the room the card really gives (gpu_stage; never set for the user's own --vram)
-            return (min(float(a.vram), room) if room else float(a.vram)) * 2**30, 0.0
+            return plan_vram_gib(a) * 2**30, 0.0          # LAUNCHER-1133: the room the card really gives (gpu_stage; never set for the user's own --vram)
         f = machine.free_vram_bytes()
         return (f, SMI_GAP_GIB) if f else (None, 0.0)
     except Exception:
@@ -3336,7 +3355,7 @@ def plugin_for_partial_offload(a, ls, model, ctx, machine):
         if not machine.lib_exists(lib) or (want and have and want != have):
             return None                                   # no matching plugin build here: stock stays (this only ever adds the plugin when it can load)
         ram_gib = float(f"{machine.mem_for_server(a.ram) / 2**30:.3f}") if (a.ram or machine.mem_cap()) else None
-        info = machine.planner_answer(model, ctx, ram_gib, float(a.vram) if a.vram else None)
+        info = machine.planner_answer(model, ctx, ram_gib, plan_vram_gib(a))
         ncmoe = int(info["n_cpu_moe"])
     except Exception:
         return None                                       # dense, unreadable or no planner answer: stock stays
@@ -3595,7 +3614,7 @@ def fast_env_stage(a, env, stock, model, machine):
 def dense_runs_on_cpu(a, model, machine):
     """True when a dense model has layers or FFN weights on the CPU next to a GPU: a GPU is there and the model file is bigger than the free GPU memory (--vram wins) minus the
     memory --fit leaves free. model None / unreadable size: unknown, treated as "runs partly on the CPU" (the rule's behaviour before 2026-11-08)."""
-    free = float(a.vram) * 2**30 if getattr(a, "vram", None) else machine.free_vram_bytes()
+    free = plan_vram_gib(a) * 2**30 if getattr(a, "vram", None) else machine.free_vram_bytes()
     if not free:
         return False
     try:
@@ -3665,7 +3684,7 @@ def layers_stage(a, extra, model, ctx, ncmoe, ncmoe_user, gcache, kv_q8, tuned, 
         if not kv_q8 and not a.fast:
             try:
                 from gguf_plan import fast_kv_hint
-                h = fast_kv_hint(model, ctx, free=float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
+                h = fast_kv_hint(model, ctx, free=plan_vram_gib(a) * 2**30 if a.vram else machine.free_vram_bytes(), ub=int(ub) if (ub or "").isdigit() else None,
                                  **({"reserve_gb": a.gpu_margin * 2**30 / 1e9} if a.gpu_margin is not None else ({"reserve_gb": desk_kw} if desk_kw else {})))
                 if h:
                     say("moe-cache: " + h)
@@ -3806,7 +3825,7 @@ def dense_ffn_override(a, model, ctx, kv_q8, vram_user, machine, extra, mm_bytes
     try:
         sys.path.insert(0, os.path.join(HERE, "planner"))
         from gguf_plan import dense_ffn_split
-        free = float(a.vram) * 2**30 if a.vram else machine.free_vram_bytes()
+        free = plan_vram_gib(a) * 2**30 if a.vram else machine.free_vram_bytes()
         if free and mm_bytes:
             free = max(free - (mm_bytes + MMPROJ_VRAM_HEADROOM), 0.0)           # a vision projector's weights and compute buffer sit in VRAM too (same as the tuner)
         kv_q8 = kv_plan_type(extra, kv_q8)       # your own cache type after -- counts; q4_0 is sized as q4_0 (LAUNCHER-1063)
@@ -4373,6 +4392,8 @@ def commit_stage(a, cmd, env, argv, model, ctx, ncmoe, ub, kv_q8, gpu, machine, 
         say(f"moe-cache: warning: the commit check is skipped for this start (the model's layout could not be read: {type(e).__name__}: {e})", err=True)
         return cmd, ncmoe, ub, kv_q8, None
     vram = gpu[2] * 2**20 if gpu and gpu[2] > 0 else (float(a.vram) * 2**30 if a.vram else None)
+    if vram and getattr(a, "room_gib", None):
+        vram = min(vram, a.room_gib * 2**30)            # the room the card really gives (audit 2026-11-12), as the plan itself used
     L = cgd.layout_from_cmd(cmd, env, f, vram_free=vram, mm_bytes=mm_bytes)
     ev = dict(env)
     user = " ".join(argv)
@@ -4663,7 +4684,7 @@ def run_launch_plan(plan):
         """llama-server could not allocate GPU memory at load: measure the free memory again, plan again with it (never fewer CPU expert layers than
         before + 1) and return the new command; None when nothing can be changed (the user fixed --n-cpu-moe, or there is no GPU figure)."""
         if "--n-cpu-moe" not in cmd and ncmoe_user is None:       # LAUNCHER-850: a dense model
-            free = float(a.vram) * 2**30 if a.vram else None
+            free = plan_vram_gib(a) * 2**30 if a.vram else None
             if free is None:
                 try:
                     free = machine.free_vram_bytes()

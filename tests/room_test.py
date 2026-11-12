@@ -120,6 +120,22 @@ class M5(M):
     def pick_gpu_full(self, listing): return ("Vulkan0", "AMD Radeon RX 9070 XT", 12000, 16304)
 c5, said5 = stage(m=M5())
 check(abs(c5.room_gib - (12000 - 300) / 1024) < 0.01, f"N2: the driver's figure already below card - others: room = driver - reserve ({c5.room_gib:.2f} GiB), the others are not subtracted twice")
+# audit 2026-11-12: every planning path takes min(driver figure, room): plan_vram_gib is the one place
+check(mc.plan_vram_gib(types.SimpleNamespace(vram="15.04", room_gib=12.4)) == 12.4 and mc.plan_vram_gib(types.SimpleNamespace(vram="15.04")) == 15.04 and mc.plan_vram_gib(types.SimpleNamespace(vram=None, room_gib=12.4)) is None
+      and mc.plan_vram_gib(types.SimpleNamespace(vram="10.0", room_gib=12.4)) == 10.0, "plan_vram_gib: the smaller of --vram / the driver's figure and the room; no GPU figure -> None; no room -> as before")
+import tempfile as _tf
+_m = os.path.join(_tf.mkdtemp(), "m.gguf"); open(_m, "wb").close()
+_orig_size = os.path.getsize
+os.path.getsize = lambda p: int(13.5 * 2**30) if p == _m else _orig_size(p)
+try:
+    mc.model_parts_saved = mc.model_parts
+    mc.model_parts = lambda mdl: [mdl]
+    # a 13.5 GiB dense model: with the driver's 15.04 GiB it "fits" (no CPU work), with the room (12.4) it does not (the CPU-work expectation, the --fast hint path and the log scan read it)
+    check(mc.dense_runs_on_cpu(types.SimpleNamespace(vram="15.04"), _m, M()) is False and mc.dense_runs_on_cpu(types.SimpleNamespace(vram="15.04", room_gib=12.4), _m, M()) is True,
+          "dense_runs_on_cpu (a planning path that read the driver's figure): the room makes the 13.5 GiB model a CPU-work plan")
+finally:
+    os.path.getsize = _orig_size
+    mc.model_parts = mc.model_parts_saved
 m3 = M(); m3.gpu_process_text = lambda: ""
 c, said = stage(m=m3)
 check(getattr(c, "room_gib", None) is None and sum("GPU room: the other programs' GPU memory use could not be read" in x and "free figure as before" in x for x in said) == 1,
