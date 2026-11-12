@@ -123,6 +123,8 @@ check(abs(c5.room_gib - (12000 - 300) / 1024) < 0.01, f"N2: the driver's figure 
 # audit 2026-11-12: every planning path takes min(driver figure, room): plan_vram_gib is the one place
 check(mc.plan_vram_gib(types.SimpleNamespace(vram="15.04", room_gib=12.4)) == 12.4 and mc.plan_vram_gib(types.SimpleNamespace(vram="15.04")) == 15.04 and mc.plan_vram_gib(types.SimpleNamespace(vram=None, room_gib=12.4)) is None
       and mc.plan_vram_gib(types.SimpleNamespace(vram="10.0", room_gib=12.4)) == 10.0, "plan_vram_gib: the smaller of --vram / the driver's figure and the room; no GPU figure -> None; no room -> as before")
+check(mc.autotune_free_vram(types.SimpleNamespace(vram="15.04", room_gib=12.4), M()) == 12.4 * GIB and mc.autotune_free_vram(types.SimpleNamespace(vram="15.04"), M()) == 15.04 * GIB,
+      "autotune_free_vram (critic P2): the tuner judges candidates against the room the plan used")
 import tempfile as _tf
 _m = os.path.join(_tf.mkdtemp(), "m.gguf"); open(_m, "wb").close()
 _orig_size = os.path.getsize

@@ -3761,7 +3761,7 @@ def prompt_cache_stage(a, extra, env, ls, machine, win, dry):
         if ctot and cfree is not None:
             say(f"moe-cache: Windows memory: RAM {(machine.win_memory()[1] or 0) / 1e9:.1f} GB free; commit {cfree / 1e9:.1f} GB free of {ctot / 1e9:.1f} GB (RAM + page file)")
             if cram_auto and re.fullmatch(r"[0-9]+", str(cram)) and not commit_check_on(a, machine):
-                fit, short = commit_plan(cfree, a.vram, int(cram))
+                fit, short = commit_plan(cfree, a.vram, int(cram))      # the driver's figure on purpose: Vulkan charges what llama-server allocates, the larger figure errs safe (critic P3)
                 if fit < int(cram):
                     extra[len(extra) - 1 - extra[::-1].index("--cache-ram") + 1] = str(fit)
                     say(f"moe-cache: prompt cache {cram} -> {fit} MiB so llama-server stays inside Windows' free commit (other programs hold the rest)", err=True)
@@ -4295,7 +4295,7 @@ def autotune_free_vram(a, machine):
     try:
         v = getattr(a, "vram", None)
         if v:
-            return float(v) * 2**30
+            return plan_vram_gib(a) * 2**30           # the room the plan itself used (critic P2): the tuner's candidates are judged against the same figure
         return machine.free_vram_bytes() or None
     except Exception:
         return None
