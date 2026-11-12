@@ -117,9 +117,10 @@ check(not same2 and abs(need2 - (11500.25 + 1024 + 149.62) / 1024 - 0.2) < 1e-9,
 need3, _ = rr.measured_need_gib(dict(m, compute_mib=50.0), None, 0.8)
 check(abs(need3 - (11500.25 + 1024 + 149.62) / 1024 - 0.8) < 1e-9, "measured_need_gib: a small measured compute buffer never plans below the table's fixed figure")
 exe = os.path.join(TMP, "llama-server-a"); open(exe, "w").write("x" * 10)
+exe2 = os.path.join(TMP, "llama-server-b"); open(exe2, "w").write("x" * 99)
 cmdx = [exe] + cmd[1:]
 rr.measure_save(cd, cmdx, "Vulkan0 GPU", b, now=6000)
-check(rr.measure_load(cd, mdl, 65536, "q4_0", "q4_0", "Vulkan0 GPU", now=6001, exe=exe) and rr.measure_load(cd, mdl, 65536, "q4_0", "q4_0", "Vulkan0 GPU", now=6001, exe=os.path.join(TMP, "other-build")) is None,
+check(rr.measure_load(cd, mdl, 65536, "q4_0", "q4_0", "Vulkan0 GPU", now=6001, exe=exe) and rr.measure_load(cd, mdl, 65536, "q4_0", "q4_0", "Vulkan0 GPU", now=6001, exe=exe2) is None,
       "measure: a measurement belongs to its llama-server binary")
 
 # --- the dense fit uses it ---
