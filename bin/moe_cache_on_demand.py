@@ -366,7 +366,7 @@ class Backend:
         if not self.lock.acquire(timeout=5):
             # SERVER-836: a model load holds the lock for up to start_timeout (minutes): end the loading process instead of waiting for it; the start loop sees it end
             p = self.p
-            if p is not None and p.poll() is None:
+            if self.state == "starting" and p is not None and p.poll() is None:      # only a load: a stop already in progress (graceful, may save the usage profile) is left to finish
                 self.stop_asked = True
                 try:
                     p.kill()

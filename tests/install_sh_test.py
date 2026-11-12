@@ -43,6 +43,9 @@ def release(ver, tamper=False):
     py = f'import sys\nprint("moe-cache {ver}" if sys.argv[1:2] == ["--version"] else "args: " + " ".join(sys.argv[1:]))\n'.encode()
     with tarfile.open(os.path.join(d, n + ".tar.gz"), "w:gz") as tf:
         ti = tarfile.TarInfo(n + "/bin/moe_cache.py"); ti.size = len(py); ti.mode = 0o755; tf.addfile(ti, io.BytesIO(py))
+        so = tarfile.TarInfo(n + "/llama/libllama.so.0.8.0"); so.size = 3; tf.addfile(so, io.BytesIO(b"elf"))      # RELEASE-686: the real tarball ships llama.cpp's libraries with symlinks
+        for ln_, tg in (("libllama.so.0", "libllama.so.0.8.0"), ("libllama.so", "libllama.so.0")):
+            sl = tarfile.TarInfo(n + "/llama/" + ln_); sl.type = tarfile.SYMTYPE; sl.linkname = tg; tf.addfile(sl)
     h = hashlib.sha256(open(os.path.join(d, n + ".tar.gz"), "rb").read()).hexdigest()
     open(os.path.join(d, "SHA256SUMS"), "w").write(("0" * 64 if tamper else h) + f"  {n}.tar.gz\n" + "1" * 64 + "  other-file.tar.gz\n")
     return d
@@ -69,13 +72,15 @@ rc, out = run(release("9.9.1"), "9.9.1", MOE_CACHE_REF="v9.9.1/../../x")
 check(rc != 0 and "does not look like a release tag" in out and not os.path.exists(prefix), "MOE_CACHE_REF with a path in it is refused")
 rc, out = run(release("9.9.1"), "9.9.1", MOE_CACHE_BASE_URL="http://example.invalid/mirror")
 check(rc != 0 and "not https" in out and not os.path.exists(prefix), "a plain-http mirror is refused")
+rc, out = run(release("9.9.1"), "9.9.1", MOE_CACHE_BASE_URL="http://localhost:80@example.invalid/mirror")
+check(rc != 0 and "user part" in out and not os.path.exists(prefix), "a plain-http address with a user part (localhost:80@evil) is refused")
 dl = release("9.9.3"); nl = "moe-cache-v9.9.3-ggml0.26-linux-x86_64"
 with tarfile.open(os.path.join(dl, nl + ".tar.gz"), "a:") if False else tarfile.open(os.path.join(dl, nl + ".tar.gz"), "w:gz") as tf:
     py = b'print("x")\n'; ti = tarfile.TarInfo(nl + "/bin/moe_cache.py"); ti.size = len(py); ti.mode = 0o755; tf.addfile(ti, io.BytesIO(py))
     ln = tarfile.TarInfo(nl + "/bin/evil"); ln.type = tarfile.SYMTYPE; ln.linkname = "/etc/passwd"; tf.addfile(ln)
 open(os.path.join(dl, "SHA256SUMS"), "w").write(hashlib.sha256(open(os.path.join(dl, nl + ".tar.gz"), "rb").read()).hexdigest() + f"  {nl}.tar.gz\n")
 rc, out = run(dl, "9.9.3", MOE_CACHE_ALLOW_UNVERIFIED="1")
-check(rc != 0 and "not a plain file or folder" in out and not os.path.exists(prefix), "a tarball with a symlink member is refused before it is unpacked")
+check(rc != 0 and "link to a file name beside it" in out and not os.path.exists(prefix), "a tarball with a symlink member is refused before it is unpacked")
 
 # ---- RELEASE-686: the build attestation. Without it the install stops unless the user asked for it; the sha256 is checked either way.
 rA = release("9.9.1")

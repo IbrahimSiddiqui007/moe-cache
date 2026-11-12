@@ -1770,7 +1770,16 @@ const run = async (r) => { global.fetch = async () => r; try { return "ok:" + JS
     check(r_ is not None and r_["noClip"] is False and r_["denied"] is False and r_["fine"] == [True, "hello"],
           f"GUI-839: copyText is false without navigator.clipboard (LAN http) and when the browser refuses, true only when the text was copied ({r_ and (r_['noClip'], r_['denied'], r_['fine'])})")
     check("history.replaceState(null, \"\", location.pathname + location.hash)" in page, "GUI-839: stripping the token from the address keeps the #hash")
-    check(re.search(r"async function poll\(\) \{[^}]*pollBusy[^}]*pollOnce\(\)", page, re.S) is not None, "GUI-839: poll() does not start a second poll while one is running")
+    pf = "let pollBusy = false;\n" + fnsrc(r"async function poll\(\) \{.*?\n\}\n")
+    ph = pf + ("let calls = 0, release; async function pollOnce() { calls++; await new Promise(r => { release = r; }); }\n"
+               "(async () => { const a = poll(), b = poll(), c = poll(); const during = calls; release(); await a; await b; await c; poll(); console.log(JSON.stringify([during, calls])); })();\n")
+    hf = os.path.join(TMP, "poll.js"); open(hf, "w", encoding="utf-8").write(ph)
+    o = subprocess.run([node, hf], capture_output=True, text=True, encoding="utf-8", timeout=30)
+    try:
+        r_ = json.loads(o.stdout.strip().splitlines()[-1])
+    except Exception:
+        r_ = None; print(o.stdout[-300:], o.stderr[-500:])
+    check(r_ == [1, 2], f"GUI-839: three poll() calls while one runs start one poll; the next one after it ends starts again ({r_})")
     check(re.search(r"box\.hidden = false; readyKey = S\.sel;", page) is not None and "readyKey == S.sel) return; readyKey" not in page, "GUI-839: the ready-check key is remembered only after the answer arrived")
     check("Number(f.tokens).toLocaleString()" in page, "GUI-839: a saved slot's token count goes through Number()")
     # TEST-840: hostile chat message and server list

@@ -1,4 +1,4 @@
-# moe-cache on Windows: identity test (run by the Windows CI on a CPU build, and by hand on a GPU PC). This script answers one question: does the plugin load into an official Windows llama-server and give the same tokens as stock?
+# moe-cache on Windows: identity test (run by the Windows CI on a CPU build; the GPU-build branch of the job limit has not run yet). This script answers one question: does the plugin load into an official Windows llama-server and give the same tokens as stock?
 #   powershell -ExecutionPolicy Bypass -File windows_test.ps1 -LlamaDir C:\llama -Model D:\models\model.gguf -Dll C:\moe\ggml-moe-cache-api3.dll
 # -LlamaDir : folder with llama-server.exe (an official release zip, CUDA build if you have an NVIDIA GPU)
 # -Model    : a GGUF that FITS IN RAM for the first test. The script refuses a model bigger than the memory cap (below) unless -AllowBigModel is given
