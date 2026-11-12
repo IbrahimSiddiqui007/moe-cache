@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """load_mode_test (LAUNCHER-1133 follow-up, prepared not merged): a dense model that does not fit the GPU keeps mmap, unless the RAM the server may use is under the model file
 plus 4 GiB: then --load-mode none. Fake machine and a sparse file, no model."""
-import inspect, os, sys, tempfile, types
+import os, sys, tempfile, types
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "bin"))
@@ -42,7 +42,41 @@ check(r(M(avail=14 * GIB), A(exact=True)) is None and r(M(avail=14 * GIB), A(sto
 check(r(M(avail=14 * GIB), e=["--load-mode", "mmap"]) is None and r(M(avail=14 * GIB), e=["--no-mmap"]) is None and r(M(avail=14 * GIB), e=["-lm=none"]) is None, "a load flag of your own: kept")
 check(r(M(avail=14 * GIB), c=cmd + ["-ot", "x"]) is None and r(M(avail=14 * GIB), c=cmd + ["-ngl", "0"]) is None, "-ot or -ngl 0 (FFN in RAM / CPU-only plans): mmap stays")
 check(r(M(avail=14 * GIB), mod=os.path.join(d, "missing.gguf")) is None and r(M(avail=None)) is None, "unreadable file or unknown RAM: mmap stays (no guess)")
-src = inspect.getsource(mc.command_stage)
-check("load_mode_low_ram(a, cmd, extra, machine, model)" in src and src.index("load_mode_fit_none(") < src.index("load_mode_low_ram("), "command_stage calls it after the fits-fully rule, for dense models only")
+# the PC case through the real command_stage (main's request, 2026-11-12): dense, the planner says "does not fit", 12 GiB available for a 13.5 GiB file
+import contextlib, io
+class PCMachine(mc.Machine):
+    windows = True
+    def __init__(self, avail): self.avail = avail
+    def mem_for_server(self, ram): return self.avail
+    def run(self, cmd, **kw): return types.SimpleNamespace(returncode=0, stdout="--fit-target\n", stderr="")
+
+
+def stage(avail, fits, extra=(), windows=True, args=()):
+    a, ex, _ = mc.parse_server([f, "--no-pin", *args])
+    saved = (mc.dense_gpu_fit_pair, mc.dense_ffn_override)
+    mc.dense_gpu_fit_pair = lambda *x, **k: [{"fits": fits, "over_gib": 0.0 if fits else 1.0}] * 4
+    mc.dense_ffn_override = lambda *x, **k: None
+    m = PCMachine(avail); m.windows = windows
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(out):
+            cmd, _ = mc.command_stage(a, "llama-server", f, 65536, 8080, "0", list(extra), [], None, True, "preload", "p", m)
+    finally:
+        mc.dense_gpu_fit_pair, mc.dense_ffn_override = saved
+    return cmd[cmd.index("--load-mode") + 1], out.getvalue()
+
+
+mode, say = stage(12 * GIB, fits=False)
+check(mode == "none" and "13.5 GiB" in say and "12.0 GiB of RAM is available" in say, f"PC case through command_stage: dense, does not fit, 12 GiB available -> --load-mode none with the plain line ({mode})")
+mode, say = stage(30 * GIB, fits=False)
+check(mode == "mmap" and "load-mode none" not in say, f"does not fit, 30 GiB available -> mmap stays ({mode})")
+mode, say = stage(12 * GIB, fits=True)
+check(mode == "none" and "fits fully on the GPU" in say and "less than the file" not in say, f"fits fully -> the older rule (LAUNCHER-1065) decides, not the new one ({mode})")
+mode, say = stage(12 * GIB, fits=False, extra=["--load-mode", "mmap"])
+check(mode == "mmap" and "less than the file" not in say, f"a --load-mode of your own after -- is kept ({mode})")
+mode, say = stage(12 * GIB, fits=False, windows=False)
+check(mode == "mmap", f"Linux: mmap stays ({mode})")
+mode, say = stage(12 * GIB, fits=False, args=["--exact"])
+check(mode == "mmap", f"--exact: mmap stays ({mode})")
 print("load mode test: " + ("PASS" if not FAILS else f"FAIL ({len(FAILS)})"))
 sys.exit(1 if FAILS else 0)
