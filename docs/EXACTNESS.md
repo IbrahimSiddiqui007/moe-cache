@@ -10,7 +10,7 @@ Numbers and logs: [RESULTS](results-archive/RESULTS.md) and [RESULTS_OLD_LAPTOP]
 |---|---|---|
 | `--exact` or `--no-long-prompt`, context below 128k, MTP off (also the default below 32k context, with `--stock`, or when the card has no room for the long-prompt plan) | **token-identical** to stock **under the stated settings**: greedy decoding, same layer split, same llama.cpp build and backend, same KV types (f16 unless you set them) | greedy decoding, stock and plugin servers, every generated token compared (`tests/identity.sh`) |
 | **default at `--ctx 32768` and above, with a GPU and room on the card (the long-prompt mode, since v0.3.8)** | `-ub 4096` with a q8_0 KV cache. Answers are **not byte-identical** to stock: against f16 the KL divergence is 0.014-0.015, the same top token in 94-95 % of positions, and the meaning was kept in 10 of 10 checks at 55k (2026-11-07). Prompts +77.0 %, answers +1.8 % (claim `v038-longprompt-default`). `--exact` or `--no-long-prompt` go back to f16 | the long-prompt KL runs of 2026-11-07; `--exact` keeps f16 |
-| default at `--ctx 131072` and above, with a GPU | q8_0 KV cache (`--fast=kv`) is selected automatically (not with `--stock`, `--exact`, your own `-ctk`/`-ctv`, or without a GPU, or with `--no-long-prompt`). It **may change answers**; measured: KL 0.0079, top-1 96.7 %, 190/202 tasks (= stock) on one model at 4k context | quality gate ([QUALITY_GATE.md](QUALITY_GATE.md)); `--exact` keeps f16 |
+| default at `--ctx 131072` and above, with a GPU | q8_0 KV cache (`--fast=kv`) is selected automatically (not with `--stock`, `--exact`, your own `-ctk`/`-ctv`, or without a GPU, or with `--no-long-prompt`). It **may change answers**; measured: KL 0.0079, top-1 96.7 %, 190/202 tasks (= stock) on one model at 4k context (one run, no benchmark record) | quality gate ([QUALITY_GATE.md](QUALITY_GATE.md)); `--exact` keeps f16 |
 | MTP (speculative decoding with the model's own draft head) | **not guaranteed identical**: with the same split, GLM code text differed under MTP (RESULTS 77) | speed pairs; compare text before relying on it |
 | `--fast`, `--fast=2`, `--fast=fewer`, `--hybrid` | approximate, opt-in only; may change answers | quality gate with limits fixed before measuring ([QUALITY_GATE.md](QUALITY_GATE.md)) |
 
@@ -23,7 +23,7 @@ computed on the GPU instead of the CPU can change the last digits and then a tok
 
 | Workflow | Trigger | Coverage | Blocking |
 |---|---|---|---|
-| `quick` | every push to `main` and `experimental` | build, syntax checks, unit tests, kernel bit-exactness (no model) | yes |
+| `quick` | every push to `main` and `experimental`, and every pull request | build, syntax checks, unit tests, kernel bit-exactness (no model) | yes |
 | `identity` | manual and daily 05:00 UTC | five llama.cpp rows: pinned commits (ggml 0.25 / API 2, ggml 0.26 / API 3, b11966, b12064, b12207) and llama.cpp **master** rows; small models on CPU runners | pinned rows; master / candidate rows are reported, never blocking |
 | `windows` | manual and nightly 03:30 UTC, or a push to `windows-ci` | the release kit unzipped as a user gets it, official release zip, CPU runner | checked before a release |
 | `sanitize` | manual, weekly (Monday 06:00 UTC), or a push to `sanitize` | address and thread sanitizers | no |
